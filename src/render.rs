@@ -588,7 +588,9 @@ fn column(grid: &mut Grid, session: &Session, view: &View, selected: usize) {
                 entries.push((group.clone(), panel().with_bold(true), false))
             }
             ColumnRow::Binding { key, label, argv } => {
-                let pad = " ".repeat(usize::from(key_width.saturating_sub(width(key))));
+                let pad: String =
+                    std::iter::repeat_n(' ', usize::from(key_width.saturating_sub(width(key))))
+                        .collect();
                 let mut attrs = panel();
                 if session.unavailable(argv, &ctx).is_some() {
                     attrs = attrs.with_dim(true);

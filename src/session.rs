@@ -679,7 +679,8 @@ impl Session {
             return;
         };
         let ws_id = ws.id;
-        ws.tabs.remove(t);
+        // Tab IDs are unique: this removes the tab at `t`.
+        ws.tabs.retain(|other| other.id != tab);
         // Views on the closed tab select its neighbour.
         let neighbour = ws
             .tabs
@@ -700,7 +701,7 @@ impl Session {
             }
         }
         if empty {
-            self.workspaces.remove(w);
+            self.workspaces.retain(|w| w.id != ws_id);
         }
         for pane in panes {
             if let Some(pane) = self.panes.remove(&pane) {
@@ -717,9 +718,7 @@ impl Session {
         for tab in tabs {
             self.remove_tab(tab);
         }
-        if let Some(index) = self.ws_index(ws) {
-            self.workspaces.remove(index);
-        }
+        self.workspaces.retain(|w| w.id != ws);
     }
 
     fn after_close(&mut self) {
@@ -1512,7 +1511,11 @@ impl Session {
                 let (w, index) = self.find_tab(*t).ok_or_else(|| format!("no tab {t}"))?;
                 let ws = self.workspaces.get_mut(w).ok_or("the workspace is gone")?;
                 let other = step(index, ws.tabs.len()).ok_or("the tab is already at that end")?;
-                ws.tabs.swap(index, other);
+                let [a, b] = ws
+                    .tabs
+                    .get_disjoint_mut([index, other])
+                    .map_err(|_| "the tab is gone")?;
+                std::mem::swap(a, b);
                 Ok(())
             }
             AnyRef::Workspace(r) => {
@@ -1520,7 +1523,11 @@ impl Session {
                 let index = self.ws_index(id).ok_or("the workspace is gone")?;
                 let other = step(index, self.workspaces.len())
                     .ok_or("the workspace is already at that end")?;
-                self.workspaces.swap(index, other);
+                let [a, b] = self
+                    .workspaces
+                    .get_disjoint_mut([index, other])
+                    .map_err(|_| "the workspace is gone")?;
+                std::mem::swap(a, b);
                 Ok(())
             }
         }
@@ -1852,6 +1859,5 @@ pub fn row_text(cells: &[fux_vt::Cell]) -> String {
             " "
         });
     }
-    line.truncate(line.trim_end_matches(' ').len());
-    line
+    line.trim_end_matches(' ').to_owned()
 }

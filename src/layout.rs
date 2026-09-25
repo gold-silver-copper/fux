@@ -220,7 +220,12 @@ fn insert(node: &mut Node, target: PaneId, new: PaneId, axis: Axis, after: bool)
                 let Some(at) = at else {
                     return false;
                 };
-                children.insert(at, (half, Node::Pane(new)));
+                // The new pane goes in at `at`, before the rest.
+                let mut rest = std::mem::take(children).into_iter();
+                let mut placed: Vec<_> = rest.by_ref().take(at).collect();
+                placed.push((half, Node::Pane(new)));
+                placed.extend(rest);
+                *children = placed;
                 return true;
             }
             children
@@ -250,11 +255,10 @@ fn remove_from(node: &mut Node, pane: PaneId) -> bool {
     let Node::Split { children, .. } = node else {
         return false;
     };
-    if let Some(index) = children
-        .iter()
-        .position(|(_, c)| matches!(c, Node::Pane(p) if *p == pane))
-    {
-        children.remove(index);
+    // A pane is in the tree once, so this removes it or nothing.
+    let before = children.len();
+    children.retain(|(_, c)| !matches!(c, Node::Pane(p) if *p == pane));
+    if children.len() < before {
         return true;
     }
     children.iter_mut().any(|(_, c)| remove_from(c, pane))

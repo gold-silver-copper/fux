@@ -606,6 +606,17 @@ fn describe_id(subject: &AnyRef) -> String {
     describe(subject)
 }
 
+/// `text` with the `remove` chars from char `at` replaced by `insert`:
+/// positions count chars, so no edit can fall inside one. A prompt's text is
+/// at most 4096 bytes, so building it afresh costs nothing.
+fn splice(text: &str, at: usize, remove: usize, insert: &str) -> String {
+    text.chars()
+        .take(at)
+        .chain(insert.chars())
+        .chain(text.chars().skip(at).skip(remove))
+        .collect()
+}
+
 /// A key in a prompt: a one-line editor.
 pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let Some(view) = session.views.get_mut(&client) else {
@@ -616,16 +627,10 @@ pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
     };
     view.dirty = true;
     let len = prompt.text.chars().count();
-    let byte = |text: &str, index: usize| {
-        text.char_indices()
-            .nth(index)
-            .map_or(text.len(), |(i, _)| i)
-    };
     if press.mods.ctrl && !press.mods.alt {
         match press.key {
             Key::Char('u') => {
-                let at = byte(&prompt.text, prompt.cursor);
-                prompt.text.replace_range(..at, "");
+                prompt.text = splice(&prompt.text, 0, prompt.cursor, "");
                 prompt.cursor = 0;
             }
             Key::Char('a') => prompt.cursor = 0,
@@ -656,15 +661,13 @@ pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
         }
         Key::Backspace => {
             if let Some(before) = prompt.cursor.checked_sub(1) {
-                let at = byte(&prompt.text, before);
-                prompt.text.remove(at);
+                prompt.text = splice(&prompt.text, before, 1, "");
                 prompt.cursor = before;
             }
         }
         Key::Delete => {
             if prompt.cursor < len {
-                let at = byte(&prompt.text, prompt.cursor);
-                prompt.text.remove(at);
+                prompt.text = splice(&prompt.text, prompt.cursor, 1, "");
             }
         }
         Key::Arrow(Direction::Left) => prompt.cursor = prompt.cursor.saturating_sub(1),
@@ -672,8 +675,8 @@ pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
         Key::Home => prompt.cursor = 0,
         Key::End => prompt.cursor = len,
         Key::Char(c) if !press.mods.alt && !c.is_control() && prompt.text.len() < 4096 => {
-            let at = byte(&prompt.text, prompt.cursor);
-            prompt.text.insert(at, c);
+            let mut buffer = [0u8; 4];
+            prompt.text = splice(&prompt.text, prompt.cursor, 0, c.encode_utf8(&mut buffer));
             // Exact: the text is under 4096 bytes.
             prompt.cursor = prompt.cursor.saturating_add(1);
         }
@@ -700,18 +703,13 @@ pub fn prompt_paste(session: &mut Session, client: ClientId, text: &str) {
         .take_while(|c| *c != '\n' && *c != '\r')
         .filter(|c| !c.is_control())
         .collect();
-    let byte = prompt
-        .text
-        .char_indices()
-        .nth(prompt.cursor)
-        .map_or(prompt.text.len(), |(i, _)| i);
     if prompt
         .text
         .len()
         .checked_add(line.len())
         .is_some_and(|len| len <= 4096)
     {
-        prompt.text.insert_str(byte, &line);
+        prompt.text = splice(&prompt.text, prompt.cursor, 0, &line);
         // Exact: the text is at most 4096 bytes.
         prompt.cursor = prompt.cursor.saturating_add(line.chars().count());
         view.dirty = true;
@@ -833,13 +831,40 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// Prompt edits count chars, so none falls inside one: what Ctrl-U,
+    /// Backspace, Delete, typing and a paste do, on text with wide chars.
+    #[test]
+    fn prompt_edits_count_chars_not_bytes() {
+        for (at, remove, insert, edited) in [
+            (0, 2, "", "llo界"),
+            (1, 1, "", "hllo界"),
+            (4, 1, "", "héll界"),
+            (5, 1, "", "héllo"),
+            (6, 1, "", "héllo界"),
+            (2, 0, "ü", "héüllo界"),
+            (6, 0, "x", "héllo界x"),
+            (9, 0, "x", "héllo界x"),
+            (3, 0, "p a", "hélp alo界"),
+        ] {
+            assert_eq!(
+                splice("héllo界", at, remove, insert),
+                edited,
+                "{at} {remove} {insert:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_column_scrolls_within_its_bindings() -> Outcome {
         let (mut s, c) = session()?;
         let last = s.config.bindings.len() - 1;
         s.input(c, b"\x02");
         assert_eq!(mode(&s, c), "column 0");
-        s.input(c, &b"\x1b[B".repeat(100));
+        let downs: Vec<u8> = std::iter::repeat_n(&b"\x1b[B"[..], 100)
+            .flatten()
+            .copied()
+            .collect();
+        s.input(c, &downs);
         assert_eq!(
             mode(&s, c),
             format!("column {last}"),

@@ -4,6 +4,8 @@
 //! counts the kind byte and the payload. A frame is at most `MAX_FRAME`; a
 //! longer paint or output is split across frames by the sender.
 
+use crate::bytes::ByteQueue;
+
 /// Bumped on any change to the frames below.
 pub const PROTOCOL: u32 = 1;
 /// The largest frame, kind byte included.
@@ -145,8 +147,11 @@ impl Frame {
 
     /// Frames carrying `bytes` split so each fits, for paint and output.
     pub fn chunked(make: fn(Vec<u8>) -> Frame, bytes: &[u8]) -> Vec<Frame> {
-        bytes
-            .chunks(MAX_PAYLOAD)
+        let (whole, rest) = bytes.as_chunks::<MAX_PAYLOAD>();
+        whole
+            .iter()
+            .map(|chunk| chunk.as_slice())
+            .chain((!rest.is_empty()).then_some(rest))
             .map(|chunk| make(chunk.to_vec()))
             .collect()
     }
@@ -173,10 +178,7 @@ fn put_option(out: &mut Vec<u8>, value: Option<&str>) {
 struct Reader<'a>(&'a [u8]);
 impl Reader<'_> {
     fn take(&mut self, n: usize) -> Result<&[u8], String> {
-        if self.0.len() < n {
-            return Err("truncated frame".into());
-        }
-        let (head, rest) = self.0.split_at(n);
+        let (head, rest) = self.0.split_at_checked(n).ok_or("truncated frame")?;
         self.0 = rest;
         Ok(head)
     }
@@ -194,10 +196,8 @@ impl Reader<'_> {
         ]))
     }
     fn u32(&mut self) -> Result<u32, String> {
-        let b = self.take(4)?;
-        let mut a = [0u8; 4];
-        a.copy_from_slice(b);
-        Ok(u32::from_be_bytes(a))
+        let b: [u8; 4] = self.take(4)?.try_into().map_err(|_| "truncated frame")?;
+        Ok(u32::from_be_bytes(b))
     }
     fn string(&mut self) -> Result<String, String> {
         let len = self.u32()? as usize;
@@ -281,27 +281,26 @@ fn decode_frame(kind: u8, payload: &[u8]) -> Result<Frame, String> {
 }
 
 /// Accumulates bytes from a stream and yields whole frames. A frame header
-/// claiming more than `MAX_FRAME` is refused before anything is buffered for
-/// it, so a peer cannot make the reader grow.
+/// claiming more than `MAX_FRAME` is refused as soon as it arrives, so what is
+/// held for a frame not yet complete stays under `4 + MAX_FRAME` bytes.
 #[derive(Default)]
 pub struct Decoder {
-    buffer: Vec<u8>,
+    buffer: ByteQueue,
 }
 
 impl Decoder {
     pub fn push(&mut self, bytes: &[u8]) {
-        self.buffer.extend_from_slice(bytes);
+        self.buffer.push(bytes);
     }
 
     /// The next whole frame, `Ok(None)` if more bytes are needed, or an error
     /// for a frame that is oversized or malformed; the stream is then unusable.
     pub fn frame(&mut self) -> Result<Option<Frame>, String> {
-        let Some(header) = self.buffer.get(..4) else {
+        let pending = self.buffer.as_slice();
+        let Some(header) = pending.first_chunk::<4>() else {
             return Ok(None);
         };
-        let mut length = [0u8; 4];
-        length.copy_from_slice(header);
-        let length = u32::from_be_bytes(length) as usize;
+        let length = u32::from_be_bytes(*header) as usize;
         if length == 0 {
             return Err("an empty frame".into());
         }
@@ -310,12 +309,12 @@ impl Decoder {
                 "a frame of {length} bytes exceeds the {MAX_FRAME}-byte limit"
             ));
         }
-        let Some(body) = self.buffer.get(4..4 + length) else {
+        let Some(body) = pending.get(4..4 + length) else {
             return Ok(None);
         };
         let kind = body.first().copied().unwrap_or(0);
         let frame = decode_frame(kind, body.get(1..).unwrap_or(&[]));
-        self.buffer.drain(..4 + length);
+        self.buffer.take(4 + length);
         frame.map(Some)
     }
 
