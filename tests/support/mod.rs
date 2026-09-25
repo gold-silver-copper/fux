@@ -421,6 +421,91 @@ pub fn cpu_seconds(pid: u32) -> Result<f64, String> {
     Ok(minutes.parse::<f64>().map_err(e)? * 60.0 + seconds.parse::<f64>().map_err(e)?)
 }
 
+/// Whether a process exists and has not exited: a zombie, which lingers
+/// until its parent reaps it, counts as gone.
+pub fn alive(pid: i32) -> bool {
+    let Some(p) = rustix::process::Pid::from_raw(pid) else {
+        return false;
+    };
+    if rustix::process::test_kill_process(p).is_err() {
+        return false;
+    }
+    Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .is_ok_and(|out| {
+            let stat = String::from_utf8_lossy(&out.stdout);
+            let stat = stat.trim();
+            !stat.is_empty() && !stat.starts_with('Z')
+        })
+}
+
+/// Sends a signal to a process, if it is there.
+pub fn signal(pid: i32, signal: rustix::process::Signal) {
+    if let Some(p) = rustix::process::Pid::from_raw(pid) {
+        let _ = rustix::process::kill_process(p, signal);
+    }
+}
+
+/// Processes a test started outside fux's care, killed when it ends,
+/// however it ends.
+#[derive(Default)]
+pub struct Reap(pub Vec<i32>);
+
+impl Drop for Reap {
+    fn drop(&mut self) {
+        for pid in &self.0 {
+            signal(*pid, rustix::process::Signal::KILL);
+        }
+    }
+}
+
+/// Reads a pid a shell wrote into a file, waiting for it.
+pub fn pid_in(path: &Path) -> Result<i32, String> {
+    let mut pid = None;
+    eventually(&format!("a pid in {}", path.display()), || {
+        pid = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| t.trim().parse().ok());
+        Ok(pid.is_some())
+    })?;
+    pid.ok_or_else(|| "a pid".into())
+}
+
+impl Server {
+    /// The panes `fux ls` lists, in order, with their shells' pids.
+    pub fn panes(&self) -> Result<Vec<(String, i32)>, String> {
+        Ok(self
+            .ok(&["ls"])?
+            .lines()
+            .filter_map(|line| {
+                let mut words = line.split_whitespace();
+                let id = words.next().filter(|w| w.starts_with('%'))?;
+                let pid = line.rsplit_once(" pid ")?.1.trim().parse().ok()?;
+                Some((id.to_owned(), pid))
+            })
+            .collect())
+    }
+
+    /// The pane with the highest number: the one made last.
+    pub fn newest_pane(&self) -> Result<(String, i32), String> {
+        self.panes()?
+            .into_iter()
+            .max_by_key(|(id, _)| id.trim_start_matches('%').parse::<u32>().unwrap_or(0))
+            .ok_or_else(|| "no pane".into())
+    }
+
+    /// Types a line into a pane once its shell shows a prompt.
+    pub fn type_line(&self, pane: &str, line: &str) -> Outcome {
+        eventually(&format!("a prompt in {pane}"), || {
+            Ok(self.ok(&["capture-pane", "-t", pane])?.contains('$'))
+        })?;
+        self.ok(&["send-keys", "-t", pane, "-l", line])?;
+        self.ok(&["send-keys", "-t", pane, "Enter"])?;
+        Ok(())
+    }
+}
+
 /// Waits until `test` holds, polling.
 pub fn eventually(what: &str, mut test: impl FnMut() -> Result<bool, String>) -> Outcome {
     let deadline = after(PATIENCE);
