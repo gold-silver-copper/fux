@@ -153,6 +153,9 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
 #[test]
 fn send_keys_terminate_and_buffers() -> Outcome {
     let server = Server::start("")?;
+    // send-keys types at once; after the prompt, so the output is a line
+    // of its own however slowly the shell starts.
+    shows(&server, "%1", "$")?;
     server.ok(&["send-keys", "-t", "%1", "-l", "echo lit", "eral"])?;
     server.ok(&["send-keys", "-t", "%1", "Enter"])?;
     shows(&server, "%1", "\nliteral")?;
@@ -211,20 +214,53 @@ fn ls_json_and_list_keys_have_their_documented_shapes() -> Outcome {
 /// output -- that prints a line every 5 ms for about 200 ms and flushes the
 /// terminal's pending input after the tenth line, some 50 ms in; then sh
 /// starts.
+///
+/// That tests something only if the stand-in's first line comes before
+/// fux's deadline and its lines up to the flush come within fux's quiet
+/// time of each other. A slow machine cannot always manage it (under
+/// emulated amd64 its gaps were 50 to 85 ms), and then fux types in a gap,
+/// as designed; so the stand-in reports its timing, and an attempt that
+/// missed the premise is run again, up to five times.
 #[test]
 fn a_typed_command_survives_a_startup_that_writes_then_discards_input() -> Outcome {
-    let script = std::env::temp_dir()
-        .canonicalize()
-        .map_err(e)?
-        .join(format!("fux-noisy-startup-{}.py", std::process::id()));
+    let mut missed = Vec::new();
+    for _ in 0..5 {
+        match typed_command_after_a_noisy_startup()? {
+            Ok(()) => return Ok(()),
+            Err(why) => missed.push(why),
+        }
+    }
+    Err(format!(
+        "in five attempts the stand-in startup never wrote fast enough to test anything: {missed:?}"
+    ))
+}
+
+/// One attempt: `Err` inside if the premise did not hold, and nothing was
+/// tested.
+fn typed_command_after_a_noisy_startup() -> Result<Result<(), String>, String> {
+    let dir = std::env::temp_dir().canonicalize().map_err(e)?;
+    let script = dir.join(format!("fux-noisy-startup-{}.py", std::process::id()));
+    let timing = dir.join(format!("fux-noisy-timing-{}", std::process::id()));
+    let _ = std::fs::remove_file(&timing);
     std::fs::write(
         &script,
-        "import termios, time\n\
-         for i in range(40):\n\
-         \x20   print('starting-%d' % i, flush=True)\n\
-         \x20   time.sleep(0.005)\n\
-         \x20   if i == 10:\n\
-         \x20       termios.tcflush(0, termios.TCIFLUSH)\n",
+        format!(
+            "import termios, time\n\
+             first = time.time()\n\
+             last = time.monotonic()\n\
+             gap = 0.0\n\
+             for i in range(40):\n\
+             \x20   print('starting-%d' % i, flush=True)\n\
+             \x20   now = time.monotonic()\n\
+             \x20   if i <= 10:\n\
+             \x20       gap = max(gap, now - last)\n\
+             \x20   last = now\n\
+             \x20   time.sleep(0.005)\n\
+             \x20   if i == 10:\n\
+             \x20       termios.tcflush(0, termios.TCIFLUSH)\n\
+             open('{}', 'w').write('%f %f' % (first, gap))\n",
+            timing.display()
+        ),
     )
     .map_err(e)?;
     let shell = format!(
@@ -232,13 +268,42 @@ fn a_typed_command_survives_a_startup_that_writes_then_discards_input() -> Outco
         script.display()
     );
     let server = Server::start(&shell)?;
+    let split_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(e)?
+        .as_secs_f64();
     server.ok(&["split", "-h", "-t", "%1", "--", "echo", "typed-after-quiet"])?;
+    // The command ran: its output is on a line of its own, or after a
+    // prompt drawn before it; which, the premise does not decide.
+    let ran = |screen: &str| {
+        screen
+            .lines()
+            .any(|l| l.ends_with("typed-after-quiet") && !l.contains("echo"))
+    };
     let result = eventually("the typed command's output", || {
-        let screen = server.ok(&["capture-pane", "-t", "%2"])?;
-        Ok(screen.lines().any(|l| l == "typed-after-quiet"))
+        Ok(ran(&server.ok(&["capture-pane", "-t", "%2"])?))
     });
     let screen = server.ok(&["capture-pane", "-t", "%2"])?;
     let _ = std::fs::remove_file(&script);
+    let measured = std::fs::read_to_string(&timing).unwrap_or_default();
+    let _ = std::fs::remove_file(&timing);
+    let mut words = measured.split_whitespace().map(str::parse::<f64>);
+    let (Some(Ok(first)), Some(Ok(gap))) = (words.next(), words.next()) else {
+        return Err(format!(
+            "the stand-in reported no timing; %2 shows:\n{screen}"
+        ));
+    };
+    // With a margin: the deadline counts from a little before the split.
+    let late = first - split_at;
+    let deadline = fux::session::TYPE_WAIT.as_secs_f64() * 0.8;
+    let quiet = fux::pane::QUIET.as_secs_f64() * 0.8;
+    if late > deadline || gap > quiet {
+        return Ok(Err(format!(
+            "first line {:.0} ms after the split, largest gap {:.0} ms",
+            late * 1000.0,
+            gap * 1000.0
+        )));
+    }
     if result.is_err() {
         return Err(format!("the typed command was lost; %2 shows:\n{screen}"));
     }
@@ -246,5 +311,5 @@ fn a_typed_command_survives_a_startup_that_writes_then_discards_input() -> Outco
         screen.contains("starting-39"),
         "the startup ran whole: {screen}"
     );
-    Ok(())
+    Ok(Ok(()))
 }
