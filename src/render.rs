@@ -232,9 +232,34 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
         .is_some_and(|t| t.root.is_none())
         && area.h > 0
     {
+        // The keys bound to these commands, whatever they are; the command
+        // itself if none is.
+        let key_for = |argv: &[&str]| {
+            session
+                .config
+                .bindings
+                .iter()
+                .find(|b| {
+                    b.command
+                        .iter()
+                        .map(String::as_str)
+                        .eq(argv.iter().copied())
+                })
+                .map_or_else(
+                    || argv.join(" "),
+                    |b| {
+                        format!(
+                            "{} {}",
+                            session.config.prefix,
+                            crate::config::keys_text(&b.keys)
+                        )
+                    },
+                )
+        };
         let hint = format!(
-            "empty tab: {} h splits it, {} s closes it",
-            session.config.prefix, session.config.prefix
+            "empty tab: {} splits it, {} closes it",
+            key_for(&["split", "-h"]),
+            key_for(&["confirm-close", "tab"])
         );
         let y = area.h / 2;
         let x = area.w.saturating_sub(width(&hint)) / 2;

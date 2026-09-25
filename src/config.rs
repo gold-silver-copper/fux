@@ -20,6 +20,31 @@ pub struct Binding {
     pub repeat: bool,
 }
 
+/// A key after the prefix: one letter, either case, stored in lower case,
+/// as a key typed after the prefix is matched in lower case.
+fn letter(command: &str, word: &str) -> Result<KeyPress, String> {
+    match word.chars().collect::<Vec<_>>().as_slice() {
+        [c] if c.is_ascii_alphabetic() => Ok(KeyPress::char(c.to_ascii_lowercase())),
+        [_] | [] | [_, _, ..] => Err(format!(
+            "{command}: {word:?} is not a letter: keys after the prefix are a–z, without modifiers"
+        )),
+    }
+}
+
+/// A key typed after the prefix, as bindings are matched: a letter in lower
+/// case. Anything else, and a letter with Ctrl or Alt, is left as it is and
+/// matches no binding.
+pub fn folded(press: KeyPress) -> KeyPress {
+    if let crate::keys::Key::Char(c) = press.key
+        && c.is_ascii_alphabetic()
+        && !press.mods.ctrl
+        && !press.mods.alt
+    {
+        return KeyPress::char(c.to_ascii_lowercase());
+    }
+    press
+}
+
 /// Keys as they are written: `t n`.
 pub fn keys_text(keys: &[KeyPress]) -> String {
     keys.iter()
@@ -44,43 +69,53 @@ pub struct Config {
 pub const MAX_HISTORY: usize = 1_000_000;
 pub const MAX_BUFFERS: usize = 1000;
 
-/// The default bindings, in command-column order.
-const DEFAULT_BINDINGS: &[(&str, &str)] = &[
-    ("h", "split -h"),
-    ("v", "split -v"),
-    ("x", "confirm-close pane"),
-    ("z", "zoom"),
-    ("r", "rename-prompt pane"),
-    ("p", "menu pane"),
-    ("c", "copy-mode"),
-    ("P", "paste-buffer"),
-    ("C-Left", "resize-pane -L"),
-    ("C-Right", "resize-pane -R"),
-    ("C-Up", "resize-pane -U"),
-    ("C-Down", "resize-pane -D"),
-    ("S-Left", "move-pane -L"),
-    ("S-Right", "move-pane -R"),
-    ("S-Up", "move-pane -U"),
-    ("S-Down", "move-pane -D"),
-    ("Tab", "select-pane --next"),
-    ("BTab", "select-pane --previous"),
-    ("BSpace", "select-pane --last"),
-    ("M-Left", "select-pane -L"),
-    ("M-Right", "select-pane -R"),
-    ("M-Up", "select-pane -U"),
-    ("M-Down", "select-pane -D"),
-    ("t", "new-tab"),
-    ("]", "select-tab --next"),
-    ("[", "select-tab --previous"),
-    ("T", "choose-tab"),
-    ("s", "menu tab"),
-    ("w", "new-workspace"),
-    ("}", "select-workspace --next"),
-    ("{", "select-workspace --previous"),
-    ("W", "choose-workspace"),
-    ("S", "menu workspace"),
-    (":", "command-prompt"),
-    ("d", "detach"),
+/// The default bindings, as `bind` takes them, in command-column order.
+/// After the prefix every key is a plain letter: `r` and `m` are repeat
+/// modes, `t` and `w` layers sharing their verbs.
+const DEFAULT_BINDINGS: &[&str] = &[
+    "h select-pane -L",
+    "j select-pane -D",
+    "k select-pane -U",
+    "l select-pane -R",
+    "o select-pane --next",
+    "q select-pane --last",
+    "v split -h",
+    "s split -v",
+    "x confirm-close pane",
+    "z zoom",
+    "a menu pane",
+    "c copy-mode",
+    "p paste-buffer",
+    "-g Resize -r r h resize-pane -L",
+    "-g Resize -r r j resize-pane -D",
+    "-g Resize -r r k resize-pane -U",
+    "-g Resize -r r l resize-pane -R",
+    "-g Move -r m h move-pane -L",
+    "-g Move -r m j move-pane -D",
+    "-g Move -r m k move-pane -U",
+    "-g Move -r m l move-pane -R",
+    "n select-tab --next",
+    "b select-tab --previous",
+    "t n new-tab",
+    "t h select-tab --previous",
+    "t l select-tab --next",
+    "t g choose-tab",
+    "t r rename-prompt tab",
+    "t x confirm-close tab",
+    "t a menu tab",
+    "-g Reorder -r t m h reorder tab --previous",
+    "-g Reorder -r t m l reorder tab --next",
+    "w n new-workspace",
+    "w h select-workspace --previous",
+    "w l select-workspace --next",
+    "w g choose-workspace",
+    "w r rename-prompt workspace",
+    "w x confirm-close workspace",
+    "w a menu workspace",
+    "-g Reorder -r w m h reorder workspace --previous",
+    "-g Reorder -r w m l reorder workspace --next",
+    "e command-prompt",
+    "d detach",
 ];
 
 impl Default for Config {
@@ -89,18 +124,7 @@ impl Default for Config {
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "/bin/sh".into());
-        let bindings = DEFAULT_BINDINGS
-            .iter()
-            .filter_map(|(key, command)| {
-                Some(Binding {
-                    keys: vec![key.parse().ok()?],
-                    command: words::split(command).ok()?,
-                    group: None,
-                    repeat: false,
-                })
-            })
-            .collect();
-        Self {
+        let mut config = Self {
             prefix: KeyPress::new(
                 crate::keys::Key::Char('b'),
                 crate::keys::Modifiers {
@@ -112,8 +136,15 @@ impl Default for Config {
             history_lines: 10_000,
             clipboard: true,
             buffers: 16,
-            bindings,
+            bindings: Vec::new(),
+        };
+        // Each is checked by `default_bindings_all_parse_and_are_grouped`.
+        for line in DEFAULT_BINDINGS {
+            let bind =
+                std::iter::once("bind".to_owned()).chain(words::split(line).unwrap_or_default());
+            let _ = config.apply(&bind.collect::<Vec<_>>());
         }
+        config
     }
 }
 
@@ -198,7 +229,7 @@ impl Config {
                 let (more, command) = after.split_at_checked(more).unwrap_or((after, &[]));
                 let keys = std::iter::once(first)
                     .chain(more)
-                    .map(|key| key.parse())
+                    .map(|key| letter("bind", key))
                     .collect::<Result<Vec<KeyPress>, String>>()?;
                 if command.is_empty() {
                     return Err(format!("bind {}: no command given", keys_text(&keys)));
@@ -216,7 +247,7 @@ impl Config {
                 }
                 let keys = rest
                     .iter()
-                    .map(|key| key.parse())
+                    .map(|key| letter("unbind", key))
                     .collect::<Result<Vec<KeyPress>, String>>()?;
                 // A binding, or a whole layer.
                 let before = self.bindings.len();
@@ -473,7 +504,7 @@ mod tests {
         );
         assert_eq!(
             apply(&mut c, "bind h u zoom"),
-            Err("h runs split -h, so it cannot start h u; unbind it first".into())
+            Err("h runs select-pane -L, so it cannot start h u; unbind it first".into())
         );
         assert_eq!(
             apply(&mut c, "bind g n m zoom"),
@@ -506,6 +537,37 @@ mod tests {
                 .any(|b| keys_text(&b.keys).starts_with('g'))
         );
         assert_eq!(apply(&mut c, "unbind"), Err("usage: unbind KEY…".into()));
+    }
+
+    #[test]
+    fn keys_after_the_prefix_are_letters_stored_in_lower_case() {
+        let mut c = Config::default();
+        for (line, word) in [
+            ("bind C-Left resize-pane -L", "C-Left"),
+            ("bind : command-prompt", ":"),
+            ("bind g ; zoom", ";"),
+            ("bind 1 zoom", "1"),
+        ] {
+            assert_eq!(
+                apply(&mut c, line),
+                Err(format!(
+                    "bind: {word:?} is not a letter: keys after the prefix are a–z, without modifiers"
+                )),
+                "{line}"
+            );
+        }
+        assert!(apply(&mut c, "unbind S-Left").is_err());
+        // Upper case is the same key as lower case.
+        assert!(apply(&mut c, "bind T N zoom").is_ok());
+        let t_n: Vec<_> = c
+            .bindings
+            .iter()
+            .filter(|b| keys_text(&b.keys) == "t n")
+            .collect();
+        assert_eq!(t_n.len(), 1);
+        assert!(t_n.iter().all(|b| b.command == ["zoom"]));
+        assert!(apply(&mut c, "unbind T N").is_ok());
+        assert!(!c.bindings.iter().any(|b| keys_text(&b.keys) == "t n"));
     }
 
     #[test]

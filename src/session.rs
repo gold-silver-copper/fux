@@ -928,12 +928,12 @@ impl Session {
             }
             Command::ListKeys => {
                 let mut out = String::from(
-                    "Keys, for bind and send-keys (with C-, M-, S- prefixes, or any character):\n",
+                    "Keys, for send-keys and the prefix (with C-, M-, S- prefixes, or any character):\n",
                 );
                 out.push_str(&crate::keys::all_names().join(" "));
                 out.push_str("\n\nBindings (after the prefix, ");
                 out.push_str(&self.config.prefix.to_string());
-                out.push_str("):\n");
+                out.push_str("; each key a letter, in either case):\n");
                 for binding in &self.config.bindings {
                     out.push_str(&format!(
                         "{:>8}  {}{}\n",
