@@ -33,25 +33,30 @@ fn connect(socket: &Path, role: Role) -> Result<(UnixStream, Decoder), String> {
     crate::socket::check_client_socket(socket)?;
     let mut stream = UnixStream::connect(socket)
         .map_err(|e| format!("connecting to {}: {e}", socket.display()))?;
-    send(
+    let sent = send(
         &mut stream,
         &Frame::Hello {
             protocol: PROTOCOL,
             version: env!("CARGO_PKG_VERSION").into(),
             role,
         },
-    )?;
+    );
     let mut decoder = Decoder::default();
     let mut buffer = vec![0u8; 64 * 1024];
-    match read_frame(
+    // A server that refuses a connection says why and closes it, maybe
+    // before the Hello is written: its reason is still there to read.
+    let answer = read_frame(
         &mut stream,
         &mut decoder,
         &mut buffer,
         Some(Duration::from_secs(5)),
-    )? {
-        Some(Frame::Hello { .. }) => {}
-        Some(Frame::Exit(reason)) => return Err(reason),
-        _ => return Err("the server did not answer".into()),
+    );
+    match (answer, sent) {
+        (Ok(Some(Frame::Exit(reason))), _) => return Err(reason),
+        (_, Err(error)) => return Err(error),
+        (Ok(Some(Frame::Hello { .. })), Ok(())) => {}
+        (Err(error), Ok(())) => return Err(error),
+        (Ok(_), Ok(())) => return Err("the server did not answer".into()),
     }
     // A mismatched server answers Hello and then says why it refuses.
     Ok((stream, decoder))
