@@ -758,31 +758,6 @@ pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
     };
     view.dirty = true;
     let len = prompt.text.chars().count();
-    if press.mods.ctrl && !press.mods.alt {
-        match press.key {
-            Key::Char('u') => {
-                prompt.text = splice(&prompt.text, 0, prompt.cursor, "");
-                prompt.cursor = 0;
-            }
-            Key::Char('a') => prompt.cursor = 0,
-            Key::Char('e') => prompt.cursor = len,
-            Key::Char('c') | Key::Char('g') => view.mode = Mode::Normal,
-            Key::Char(_)
-            | Key::Enter
-            | Key::Tab
-            | Key::Escape
-            | Key::Backspace
-            | Key::Delete
-            | Key::Insert
-            | Key::Arrow(_)
-            | Key::Home
-            | Key::End
-            | Key::PageUp
-            | Key::PageDown
-            | Key::F(_) => {}
-        }
-        return;
-    }
     match press.key {
         Key::Escape => view.mode = Mode::Normal,
         Key::Enter => {
@@ -805,7 +780,13 @@ pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
         Key::Arrow(Direction::Right) => prompt.cursor = prompt.cursor.saturating_add(1).min(len),
         Key::Home => prompt.cursor = 0,
         Key::End => prompt.cursor = len,
-        Key::Char(c) if !press.mods.alt && !c.is_control() && prompt.text.len() < 4096 => {
+        // Text: a letter with Ctrl or Alt types nothing.
+        Key::Char(c)
+            if !press.mods.ctrl
+                && !press.mods.alt
+                && !c.is_control()
+                && prompt.text.len() < 4096 =>
+        {
             let mut buffer = [0u8; 4];
             prompt.text = splice(&prompt.text, prompt.cursor, 0, c.encode_utf8(&mut buffer));
             // Exact: the text is under 4096 bytes.
@@ -1412,9 +1393,12 @@ mod tests {
         assert_eq!(mode(&s, c), "prompt aXc界|2");
         s.input(c, b"\x1b[3~");
         assert_eq!(mode(&s, c), "prompt aX界|2");
-        s.input(c, b"\x01Y\x05Z");
+        // Home and End; Ctrl keys type and do nothing.
+        s.input(c, b"\x1b[HY\x1b[FZ");
         assert_eq!(mode(&s, c), "prompt YaX界Z|5");
-        s.input(c, b"\x15");
+        s.input(c, b"\x01\x05\x15\x03\x07");
+        assert_eq!(mode(&s, c), "prompt YaX界Z|5");
+        s.input(c, b"\x7f\x7f\x7f\x7f\x7f");
         assert_eq!(mode(&s, c), "prompt |0");
         s.input(c, b"\x1b[200~one\ntwo\x1b[201~");
         assert_eq!(mode(&s, c), "prompt one|3");
