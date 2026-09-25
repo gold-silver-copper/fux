@@ -7,7 +7,7 @@ use crate::layout::PaneId;
 use crate::protocol::{Decoder, Frame, PROTOCOL, Role};
 use crate::render::{self, Grid};
 use crate::session::{Ctx, Outgoing, Session};
-use rustix::event::{PollFd, PollFlags};
+use fuxix::poll::{Events as PollFlags, PollFd};
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -287,12 +287,8 @@ impl Server {
                 slots.push(Slot::Pane(*id));
             }
         }
-        let timespec = timeout.map(|t| rustix::event::Timespec {
-            tv_sec: i64::try_from(t.as_secs()).unwrap_or(i64::MAX),
-            tv_nsec: i64::from(t.subsec_nanos()),
-        });
-        match rustix::event::poll(&mut fds, timespec.as_ref()) {
-            Ok(_) | Err(rustix::io::Errno::INTR) => {}
+        match fuxix::poll::poll(&mut fds, timeout) {
+            Ok(_) | Err(fuxix::Errno::INTR) => {}
             Err(error) => log(&format!("poll: {error}")),
         }
         fds.iter()
@@ -398,7 +394,7 @@ impl Server {
                             shortage.total
                         ));
                     }
-                    let euid = rustix::process::geteuid().as_raw();
+                    let euid = fuxix::process::geteuid();
                     match crate::socket::peer_uid(&stream) {
                         Ok(uid) if uid == euid => {}
                         Ok(uid) => {
@@ -466,7 +462,7 @@ impl Server {
     /// Tells a connection that there is no room for it, and closes it. The
     /// shortage is logged when it starts, then at most every `REPORT_EVERY`.
     fn refuse(&mut self, stream: UnixStream) {
-        let euid = rustix::process::geteuid().as_raw();
+        let euid = fuxix::process::geteuid();
         if crate::socket::peer_uid(&stream).is_ok_and(|uid| uid == euid)
             && stream.set_nonblocking(true).is_ok()
             && let Ok(bytes) = Frame::Exit(NO_DESCRIPTORS.into()).encode()
@@ -705,10 +701,10 @@ impl Server {
         };
         let Some(child) = &pane.child else { return };
         while let Some(bytes) = pane.input.front() {
-            match rustix::io::write(&child.master, bytes) {
+            match fuxix::io::write(&child.master, bytes) {
                 Ok(0) => break,
                 Ok(n) => pane.input.advance(n),
-                Err(rustix::io::Errno::INTR) => continue,
+                Err(fuxix::Errno::INTR) => continue,
                 Err(_) => break,
             }
         }
@@ -723,7 +719,7 @@ impl Server {
                 return;
             };
             let Some(child) = &pane.child else { return };
-            match rustix::io::read(&child.master, &mut buffer) {
+            match fuxix::io::read(&child.master, &mut buffer) {
                 Ok(0) => {
                     ended = true;
                     break;
@@ -733,8 +729,8 @@ impl Server {
                     total = total.saturating_add(n);
                     self.session.output(id, buffer.get(..n).unwrap_or_default());
                 }
-                Err(rustix::io::Errno::AGAIN) => break,
-                Err(rustix::io::Errno::INTR) => continue,
+                Err(fuxix::Errno::AGAIN) => break,
+                Err(fuxix::Errno::INTR) => continue,
                 // EIO: the slave side is closed; the program is gone.
                 Err(_) => {
                     ended = true;
@@ -808,7 +804,7 @@ fn drain(stream: &mut UnixStream) {
 /// system's.
 fn out_of_descriptors(error: &std::io::Error) -> bool {
     matches!(
-        rustix::io::Errno::from_io_error(error),
-        Some(rustix::io::Errno::MFILE | rustix::io::Errno::NFILE)
+        fuxix::Errno::from_io_error(error),
+        Some(fuxix::Errno::MFILE | fuxix::Errno::NFILE)
     )
 }
