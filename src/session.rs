@@ -569,7 +569,7 @@ impl Session {
                 }
                 crate::view::PromptFor::Command | crate::view::PromptFor::Rename(_) => None,
             },
-            Mode::Normal | Mode::Column { .. } => None,
+            Mode::Normal | Mode::Column { .. } | Mode::Repeat { .. } => None,
         };
         let Some(view) = self.views.get_mut(&id) else {
             return;
@@ -928,17 +928,18 @@ impl Session {
             }
             Command::ListKeys => {
                 let mut out = String::from(
-                    "Keys, for bind and send-keys (with C-, M-, S- prefixes, or any character):\n",
+                    "Keys, for send-keys and the prefix (with C-, M-, S- prefixes, or any character):\n",
                 );
                 out.push_str(&crate::keys::all_names().join(" "));
                 out.push_str("\n\nBindings (after the prefix, ");
                 out.push_str(&self.config.prefix.to_string());
-                out.push_str("):\n");
+                out.push_str("; each key a letter, in either case):\n");
                 for binding in &self.config.bindings {
                     out.push_str(&format!(
-                        "{:>8}  {}\n",
-                        binding.key.to_string(),
-                        crate::words::join(&binding.command)
+                        "{:>8}  {}{}\n",
+                        crate::config::keys_text(&binding.keys),
+                        crate::words::join(&binding.command),
+                        if binding.repeat { " (repeats)" } else { "" }
                     ));
                 }
                 Ok(out)
@@ -1192,7 +1193,10 @@ impl Session {
             }
             Command::CommandColumn { client } => {
                 let client = self.client_target(client, ctx)?;
-                self.view_mut(client)?.mode = Mode::Column { selected: 0 };
+                self.view_mut(client)?.mode = Mode::Column {
+                    path: Vec::new(),
+                    selected: 0,
+                };
                 Ok(String::new())
             }
             Command::CommandPrompt { client } => {

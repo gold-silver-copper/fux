@@ -239,8 +239,8 @@ fn paste_buffers_paste_and_the_clipboard_can_be_off() -> Outcome {
     eventually("copied", || Ok(buffer(&server)? == "hello-paste"))?;
     let painted = String::from_utf8_lossy(&client.painted).into_owned();
     assert!(!painted.contains("\x1b]52"), "the clipboard is off");
-    // C-b P pastes the newest buffer into the pane.
-    client.keys(&format!("{PREFIX}P"))?;
+    // C-b p pastes the newest buffer into the pane.
+    client.keys(&format!("{PREFIX}p"))?;
     client.wait("pasted at the prompt", |t| {
         t.lines().any(|l| l == "$ hello-paste")
     })?;

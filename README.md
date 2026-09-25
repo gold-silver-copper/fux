@@ -43,46 +43,75 @@ mode's position.
 
 ### Keys
 
-Every key below follows the prefix, `C-b` by default. The prefix alone opens
-the **command column**, which lists every binding, grouped: Up/Down or `j`/`k`,
-PageUp/PageDown and Home/End move through it, Enter runs the selected
-command, a bound key runs its command directly, and Esc closes it. Commands
-that cannot run now are dimmed, and running one says why. The prefix twice
-sends it to the pane. This column is the only help screen.
+Every key below follows the prefix, `C-b` by default, and every one is a
+plain letter: `a`–`z`, without modifiers, in either case (`C-b T` is `C-b t`,
+and Caps Lock changes nothing). The prefix alone opens the **command
+column**, which lists every binding, grouped: the arrows, PageUp/PageDown and
+Home/End move through it, Enter runs the selected command, a bound key runs
+its command directly, and Esc closes it. Commands that cannot run now are
+dimmed, and running one says why. The prefix twice sends it to the pane. This
+column is the only help screen.
+
+Some keys open a **layer**, where one more letter runs a command: tabs (`t`)
+and workspaces (`w`) share their verbs, so `C-b t n` is a new tab and `C-b w n`
+a new workspace, and the column shows the layer's commands. Others start a
+**repeat mode**: after `C-b r` (resize) or `C-b m` (move), `h` `j` `k` `l` act
+again and again without the prefix until Esc or Enter, and the bar shows the
+mode and its keys. Any other key ends the mode without reaching the pane.
 
 | Key | Command | Does |
 | --- | --- | --- |
-| `h` / `v` | `split -h` / `split -v` | split side by side / stacked |
+| `h` `j` `k` `l` | `select-pane -L` / `-D` / `-U` / `-R` | focus the pane that way |
+| `o` / `q` | `select-pane --next` / `--last` | focus the next / last pane |
+| `v` / `s` | `split -h` / `split -v` | split side by side / stacked |
 | `x` | `confirm-close pane` | close the pane (asks `y`/`n`) |
 | `z` | `zoom` | zoom the focused pane, or restore |
-| `r` | `rename-prompt pane` | rename the pane |
-| `p` | `menu pane` | pane actions |
+| `a` | `menu pane` | pane actions |
 | `c` | `copy-mode` | copy and select |
-| `P` | `paste-buffer` | paste the newest copy |
-| `C-Left` … `C-Down` | `resize-pane -L` … `-D` | move a border by one cell |
-| `S-Left` … `S-Down` | `move-pane -L` … `-D` | move the pane beside its neighbour that way |
-| Tab / `BTab` / `BSpace` | `select-pane --next` / `--previous` / `--last` | focus the next, previous or last pane |
-| `M-Left` … `M-Down` | `select-pane -L` … `-D` | focus the pane that way |
-| `t` / `T` | `new-tab` / `choose-tab` | new tab / tab chooser |
-| `]` / `[` | `select-tab --next` / `--previous` | next / previous tab |
-| `s` | `menu tab` | tab actions |
-| `w` / `W` | `new-workspace` / `choose-workspace` | new workspace / workspace chooser |
-| `}` / `{` | `select-workspace --next` / `--previous` | next / previous workspace |
-| `S` | `menu workspace` | workspace actions |
-| `:` | `command-prompt` | type any fux command |
+| `p` | `paste-buffer` | paste the newest copy |
+| `n` / `b` | `select-tab --next` / `--previous` | next / previous tab |
+| `e` | `command-prompt` | type any fux command |
 | `d` | `detach` | detach this terminal |
+| `r` | resize mode | see below |
+| `m` | move mode | see below |
+| `t` | tab layer | see below |
+| `w` | workspace layer | see below |
 
-**Choosers** (`T`, `W`) list each tab or workspace with its panes, the current
-one marked. Enter selects, `r` renames, `x` closes (after asking), Esc or `q`
-cancels; Up/Down, `j`/`k`, PageUp/PageDown and Home/End move.
+The repeat modes:
 
-**Action menus** (`p`, `s`, `S`) hold what has no key of its own: rename,
+| Keys | Command | Does, again and again |
+| --- | --- | --- |
+| `r`, then `h` `j` `k` `l` | `resize-pane -L` / `-D` / `-U` / `-R` | move a border by one cell |
+| `m`, then `h` `j` `k` `l` | `move-pane -L` / `-D` / `-U` / `-R` | move the pane beside its neighbour that way |
+
+The layers' verbs:
+
+| Verb | After `t`: tabs | After `w`: workspaces |
+| --- | --- | --- |
+| `n` | `new-tab` | `new-workspace` |
+| `h` / `l` | `select-tab --previous` / `--next` | `select-workspace --previous` / `--next` |
+| `g` | `choose-tab`: the chooser | `choose-workspace`: the chooser |
+| `r` | `rename-prompt tab` | `rename-prompt workspace` |
+| `x` | `confirm-close tab` | `confirm-close workspace` |
+| `a` | `menu tab`: tab actions | `menu workspace`: workspace actions |
+| `m`, then `h` / `l` | `reorder tab --previous` / `--next`, repeating | `reorder workspace --previous` / `--next`, repeating |
+
+`f`, `g`, `i`, `u` and `y` are free for your own bindings. Renaming a pane and
+focusing the previous pane have no key of their own: the pane menu renames,
+and `select-pane --previous` is a command away (`C-b e`) or a binding of your
+own.
+
+**Choosers** (`t g`, `w g`) list each tab or workspace with its panes, the
+current one marked. Enter selects, `r` renames, `x` closes (after asking), Esc
+or `q` cancels; Up/Down, `j`/`k`, PageUp/PageDown and Home/End move.
+
+**Action menus** (`a`, `t a`, `w a`) hold what has no key of its own: rename,
 close, terminate the running command, swap, move to another or a new tab or
 workspace, reorder. A menu acts on the item it was opened for, even if focus
 changes meanwhile; if that item is gone, the menu closes and says so.
 
-**The command prompt** (`:`) takes any fux command, in the same grammar as the
-command line and the config file, for example `:split -v -- htop`. Its output
+**The command prompt** (`e`) takes any fux command, in the same grammar as the
+command line and the config file, for example `split -v -- htop`. Its output
 or error shows in the bar.
 
 Directional focus picks, among the panes beyond the focused pane's edge, the
@@ -117,7 +146,7 @@ invented newline, and trims trailing blanks. One copy is at most 262,144
 cells.
 
 A copy goes into fux's paste buffers (the newest 16, `set buffers`), where
-`C-b P` pastes the newest into the focused pane, bracketed if the pane asked
+`C-b p` pastes the newest into the focused pane, bracketed if the pane asked
 for bracketed paste. It is also sent to your terminal's clipboard as OSC 52,
 up to 1 MiB encoded, unless `set clipboard off`; your terminal must allow
 OSC 52 writes (many do; some ask first or need an option). fux never reads
@@ -126,14 +155,14 @@ the clipboard.
 ## Commands
 
 Every command runs from the command line (`fux COMMAND …`), from a key
-binding, from the `:` prompt, and, for `set`/`bind`/`unbind`, from the config
+binding, from the command prompt, and, for `set`/`bind`/`unbind`, from the config
 file. Targets: a pane is `%N`, a tab `@N`, a workspace `+N` or its name (`$N`
 is avoided because the shell would expand it). A client is `cN`.
 
 Inside a pane, `FUX_PANE` names it and `FUX_SOCKET` names the server, so
 commands there target that pane without `-t`. A command that needs a target
 and has neither `-t` nor `FUX_PANE` fails with a message naming `-t`; it never
-guesses. From a key or the `:` prompt, commands act on your focused pane,
+guesses. From a key or the command prompt, commands act on your focused pane,
 tab and workspace.
 
 | Command | Does |
@@ -155,14 +184,14 @@ tab and workspace.
 | `fux terminate [-t %N]` | SIGTERM to what runs in the pane's foreground, not the shell |
 | `fux send-keys [-t %N] [-l] KEYS…` | send keys (`C-c`, `Enter`, …); an argument that is not a key name is sent as text, and `-l` sends every argument as text |
 | `fux capture-pane [-t %N] [-S -LINES] [--json]` | the pane's screen text, with LINES of history before it |
-| `fux set OPTION VALUE`, `fux bind [-g GROUP] KEY CMD…`, `fux unbind KEY`, `fux unbind-all` | change the running configuration |
+| `fux set OPTION VALUE`, `fux bind [-g GROUP] [-r] KEY… CMD…`, `fux unbind KEY…`, `fux unbind-all` | change the running configuration |
 | `fux reload` | run the config file again over the defaults |
 | `fux list-buffers`, `fux show-buffer [-b N]`, `fux paste-buffer [-b N] [-t %N]` | paste buffers, newest `0` |
 | `fux list-keys` | key names, and the current bindings |
 | `fux help`, `fux --version` | usage, and the version |
 | `fux detach [-c CLIENT]` | detach a client |
 
-These act on one client's screen. From a key or the `:` prompt they act on
+These act on one client's screen. From a key or the command prompt they act on
 yours; from the command line they need `-c CLIENT`:
 `command-column`, `command-prompt`, `copy-mode`, `zoom`,
 `choose-tab [--move]`, `choose-workspace [--move]`, `choose-pane [-t %N]`
@@ -175,13 +204,23 @@ yours; from the command line they need `-c CLIENT`:
 Exit status: 0 done; 1 the command failed, with the reason on stderr; 2 a
 usage error.
 
-Key names, for `bind`, `send-keys` and the prefix, are tmux's: `C-x`, `M-x`,
+Key names, for `send-keys` and the prefix, are tmux's: `C-x`, `M-x`,
 `S-Left`, `Enter`, `Tab`, `BTab`, `Escape`, `Space`, `BSpace`, `Up`, `Down`,
 `Left`, `Right`, `Home`, `End`, `PageUp`, `PageDown`, `Insert`, `Delete`,
 `F1`–`F12` (also `PgUp`, `PgDn`, `NPage`, `PPage`, `IC`, `DC`), plus any single
 character. A character carries its own shift (`T`, not `S-t`). `fux list-keys`
-prints them. The Kitty keyboard protocol is not supported: keys use xterm
-encodings.
+prints them, with the bindings. The Kitty keyboard protocol is not
+supported: keys use xterm encodings.
+
+The keys of `bind` and `unbind` are the keys after the prefix: one or more
+letters, `a`–`z` in either case, as separate words before the command.
+`bind t n new-tab` binds `n` in the layer `t`; any binding of two or more
+letters makes its first ones layers. `-r` makes a binding repeat:
+`bind -r r l resize-pane -R` means that after `C-b r l`, each further `l`
+resizes again, until Esc. A key sequence is a command or a layer, never both:
+`bind t zoom` is refused while `t` is a layer, and `unbind t` removes the
+whole layer. Anything else (`C-Left`, `:`, `Tab`) is refused, naming the
+rule.
 
 ### `--json`
 
@@ -214,9 +253,11 @@ set clipboard off                # default: on (OSC 52 writes)
 set buffers 16                   # paste buffers kept
 
 unbind-all                       # optional: start from no bindings
-bind h split -h
-bind v split -v
+bind v split -h
+bind s split -v
 bind d detach
+bind t n new-tab                 # t is a layer: C-b t n
+bind -r r l resize-pane -R       # -r repeats: C-b r l l l, then Esc
 bind -g Tools g split -v -- lazygit   # -g puts it under a column group
 ```
 
@@ -224,12 +265,15 @@ A line is split into words like a shell: whitespace separates, `'…'` is
 literal, `"…"` allows backslash escapes, a backslash escapes outside quotes,
 and `#` starts a comment. A binding's command is the rest of its line. `set`,
 `bind` and `unbind` are ordinary commands, so `fux bind x kill-pane` or
-`:set clipboard off` change a running server the same way.
+`set clipboard off` at the command prompt change a running server the same
+way.
 
 `fux reload` runs the file again over the defaults. On any error it names the
 file and line and keeps the previous configuration whole. At startup an
 invalid file does not stop the server: it runs on the defaults, logs the
 error, and shows it to each terminal that attaches until a reload succeeds.
+A binding from an older fux, such as `bind C-Left resize-pane -L`, is such an
+error: keys after the prefix are letters now.
 Only `set`, `bind`, `unbind` and `unbind-all` may appear in the file.
 
 Options: `prefix` (a key), `shell` (a program and its arguments),

@@ -2,6 +2,7 @@
 use crate::command::{AnyRef, ClientId, TabId, WsId};
 use crate::copy::Copy;
 use crate::decode::Decoder;
+use crate::keys::KeyPress;
 use crate::layout::PaneId;
 use std::collections::HashMap;
 
@@ -37,7 +38,7 @@ pub struct List {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PromptFor {
-    /// The `:` prompt: any fux command.
+    /// The command prompt: any fux command.
     Command,
     /// A new name for this target.
     Rename(AnyRef),
@@ -61,9 +62,16 @@ pub struct Confirm {
 
 pub enum Mode {
     Normal,
-    /// The command column, with its selected binding.
+    /// The command column: the layer it shows (none for the bindings right
+    /// after the prefix), and its selected entry.
     Column {
+        path: Vec<KeyPress>,
         selected: usize,
+    },
+    /// A repeat mode: the keys of the layer at `path` run its bindings
+    /// without the prefix, until Esc.
+    Repeat {
+        path: Vec<KeyPress>,
     },
     List(List),
     Prompt(Prompt),
