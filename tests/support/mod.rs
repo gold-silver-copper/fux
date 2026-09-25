@@ -378,7 +378,8 @@ pub fn eventually(what: &str, mut test: impl FnMut() -> Result<bool, String>) ->
 /// The real `fux attach`, on a PTY of its own, and a fux-vt screen of what it
 /// shows.
 pub struct Terminal {
-    pub master: std::os::fd::OwnedFd,
+    /// `None` once the terminal is closed.
+    master: Option<std::os::fd::OwnedFd>,
     pub child: Child,
     pub screen: fux_vt::Parser,
     pub output: Vec<u8>,
@@ -391,44 +392,54 @@ impl Terminal {
         cols: u16,
         args: &[&str],
     ) -> Result<Terminal, String> {
+        let argv: Vec<&str> = [FUX, "attach"]
+            .into_iter()
+            .chain(args.iter().copied())
+            .collect();
+        Terminal::start(rows, cols, &argv, |command| {
+            command.env("FUX_SOCKET", &server.socket);
+        })
+    }
+
+    /// `argv` on a PTY of its own, leading a new session with the PTY as its
+    /// controlling terminal, as a terminal emulator starts its shell; `setup`
+    /// adds to its environment.
+    pub fn start(
+        rows: u16,
+        cols: u16,
+        argv: &[&str],
+        setup: impl FnOnce(&mut Command),
+    ) -> Result<Terminal, String> {
         let (master, slave) = fux::process::open_pty(rows, cols)?;
-        let stdio = |fd: &std::os::fd::OwnedFd| fd.try_clone().map(Stdio::from).map_err(e);
         let child = {
             let _guard = SPAWN.lock().map_err(e)?;
-            let mut command = Command::new(FUX);
-            command
-                .arg("attach")
-                .args(args)
-                .env("FUX_SOCKET", &server.socket)
-                .env("TERM", "xterm-256color")
-                .env_remove("FUX_PANE")
-                .stdin(stdio(&slave)?)
-                .stdout(stdio(&slave)?)
-                .stderr(stdio(&slave)?);
-            // SAFETY: setsid and TIOCSCTTY are async-signal-safe system calls.
-            unsafe {
-                use std::os::unix::process::CommandExt;
-                command.pre_exec(|| {
-                    rustix::process::setsid().map_err(std::io::Error::from)?;
-                    rustix::process::ioctl_tiocsctty(rustix::stdio::stdin())
-                        .map_err(std::io::Error::from)?;
-                    Ok(())
-                });
-            }
-            command.spawn().map_err(e)?
+            fux::process::launch(Path::new(FUX), argv, &slave, |command| {
+                command.env("TERM", "xterm-256color").env_remove("FUX_PANE");
+                setup(command);
+            })
+            .map_err(e)?
         };
         drop(slave);
         Ok(Terminal {
-            master,
+            master: Some(master),
             child,
             screen: fux_vt::Parser::new(rows, cols, 0).map_err(e)?,
             output: Vec::new(),
         })
     }
 
+    /// Closes the terminal, as closing its window does: the kernel hangs up
+    /// the session it controls.
+    pub fn hang_up(&mut self) {
+        self.master = None;
+    }
+
     pub fn pump(&mut self) {
+        let Some(master) = &self.master else {
+            return;
+        };
         let mut buffer = vec![0u8; 64 * 1024];
-        while let Ok(n) = rustix::io::read(&self.master, buffer.as_mut_slice()) {
+        while let Ok(n) = rustix::io::read(master, buffer.as_mut_slice()) {
             if n == 0 {
                 break;
             }
@@ -485,9 +496,10 @@ impl Terminal {
     }
 
     pub fn type_bytes(&mut self, bytes: &[u8]) -> Outcome {
+        let master = self.master.as_ref().ok_or("the terminal is closed")?;
         let mut rest = bytes;
         while !rest.is_empty() {
-            match rustix::io::write(&self.master, rest) {
+            match rustix::io::write(master, rest) {
                 Ok(n) => rest = rest.get(n..).unwrap_or_default(),
                 Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INTR) => {
                     std::thread::sleep(Duration::from_millis(1))
@@ -499,7 +511,8 @@ impl Terminal {
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) -> Outcome {
-        fux::process::resize(&self.master, rows, cols);
+        let master = self.master.as_ref().ok_or("the terminal is closed")?;
+        fux::process::resize(master, rows, cols);
         self.screen = fux_vt::Parser::new(rows, cols, 0).map_err(e)?;
         // The kernel signals the foreground group of the PTY: the client.
         Ok(())

@@ -1,42 +1,21 @@
-[workspace]
-members = ["fux-vt", "fux-sys"]
-exclude = ["fux-vt/fuzz"]
-resolver = "3"
-
 [package]
-name = "fux"
-version = "0.13.0"
+name = "fux-sys"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "A small terminal multiplexer: workspaces, tabs and split panes, driven by keys and a CLI"
+description = "The macOS system calls fux makes that std and rustix do not offer safely"
 repository = "https://github.com/gold-silver-copper/fux"
 readme = "README.md"
-keywords = ["terminal", "multiplexer", "pty", "tmux"]
-categories = ["command-line-utilities"]
-include = ["/src/**", "/tests/**", "/README.md", "/LICENSE"]
-
-[dependencies]
-fux-vt = { path = "fux-vt", version = "0.1.1" }
-rustix = { version = "1.1", features = ["pty", "termios", "process", "event", "fs", "net", "stdio"] }
-signal-hook = "0.3"
-unicode-width = "0.2"
+keywords = ["macos", "libproc", "getpeereid", "tcgetpgrp", "fux"]
+categories = ["os::macos-apis"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
-fux-sys = { path = "fux-sys", version = "0.1.0" }
-
-[profile.dev]
-debug = 0
-
-[profile.release]
-strip = true
-lto = "thin"
-codegen-units = 1
+libc = "0.2"
 
 [lints.rust]
 unused_must_use = "forbid"
 unconditional_recursion = "forbid"
-unsafe_code = "forbid"
 
 [lints.clippy]
 suspicious = { level = "forbid", priority = -1 }
@@ -67,3 +46,5 @@ wildcard_enum_match_arm = "forbid"
 cast_possible_truncation = "forbid"
 cast_possible_wrap = "forbid"
 cast_sign_loss = "forbid"
+arithmetic_side_effects = "forbid"
+multiple_unsafe_ops_per_block = "forbid"

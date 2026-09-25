@@ -141,10 +141,14 @@ pub fn kill_server(socket: &Path) -> Result<(), String> {
     }
 }
 
+/// The hidden `fux server` flag with which a client starts a server: the
+/// server makes itself a session leader before anything else, so it
+/// outlives the terminal the client ran in.
+pub const SETSID: &str = "--setsid";
+
 /// Starts a server in the background, in a new session with its output in
 /// `fux.log` beside the socket, and waits for it to answer.
 pub fn start_server(socket: &Path) -> Result<(), String> {
-    use std::os::unix::process::CommandExt;
     let exe = std::env::current_exe().map_err(|e| format!("finding the fux binary: {e}"))?;
     let directory = socket.parent().ok_or("the socket has no directory")?;
     crate::socket::prepare_directory(directory)?;
@@ -154,22 +158,15 @@ pub fn start_server(socket: &Path) -> Result<(), String> {
         .open(directory.join("fux.log"))
         .map_err(|e| format!("opening the server log: {e}"))?;
     let mut command = std::process::Command::new(exe);
+    // `--setsid`: the server leaves this terminal's session as it starts.
     command
         .arg("server")
         .arg("--socket")
         .arg(socket)
+        .arg(SETSID)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log);
-    // SAFETY: `setsid` is an async-signal-safe system call and the hook
-    // allocates nothing.
-    unsafe {
-        command.pre_exec(|| {
-            rustix::process::setsid()
-                .map(drop)
-                .map_err(std::io::Error::from)
-        });
-    }
     let mut child = command
         .spawn()
         .map_err(|e| format!("starting a server: {e}"))?;
