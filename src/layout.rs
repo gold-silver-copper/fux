@@ -261,7 +261,7 @@ pub fn normalize(node: &mut Node) {
                     merged.push((u32::try_from(scaled).unwrap_or(u32::MAX), g));
                 }
             }
-            other => merged.push((weight, other)),
+            other @ (Node::Pane(_) | Node::Split { .. }) => merged.push((weight, other)),
         }
     }
     *children = merged;

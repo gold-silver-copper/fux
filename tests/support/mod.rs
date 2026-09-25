@@ -277,7 +277,15 @@ impl Client {
                     self.terminal.process(&bytes).map_err(e)?;
                 }
                 Frame::Exit(reason) => self.exit = Some(reason),
-                _ => {}
+                Frame::Hello { .. }
+                | Frame::Attach { .. }
+                | Frame::Input(_)
+                | Frame::Resize { .. }
+                | Frame::Detach
+                | Frame::Command { .. }
+                | Frame::Stdout(_)
+                | Frame::Stderr(_)
+                | Frame::Done { .. } => {}
             }
         }
         Ok(())

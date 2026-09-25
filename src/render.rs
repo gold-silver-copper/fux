@@ -163,7 +163,9 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
     let focus = view.focus();
     let copy = match &view.mode {
         Mode::Copy(copy) => Some(copy.as_ref()),
-        _ => None,
+        Mode::Normal | Mode::Column { .. } | Mode::List(_) | Mode::Prompt(_) | Mode::Confirm(_) => {
+            None
+        }
     };
     for (id, rect) in &placement.panes {
         let Some(pane) = session.panes.get(id) else {

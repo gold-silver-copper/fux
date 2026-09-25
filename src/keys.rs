@@ -132,7 +132,17 @@ fn key_name(key: Key) -> String {
     match key {
         Key::Char(c) => c.to_string(),
         Key::F(n) => format!("F{n}"),
-        _ => String::new(),
+        Key::Enter
+        | Key::Tab
+        | Key::Escape
+        | Key::Backspace
+        | Key::Delete
+        | Key::Insert
+        | Key::Arrow(_)
+        | Key::Home
+        | Key::End
+        | Key::PageUp
+        | Key::PageDown => String::new(),
     }
 }
 

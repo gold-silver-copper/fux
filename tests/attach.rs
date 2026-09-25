@@ -259,10 +259,11 @@ fn focus_events_reach_a_pane_that_asked_and_cursor_shapes_pass_through() -> Outc
 
 #[test]
 fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
+    use fux::protocol::Frame;
     use std::io::{Read, Write};
     let server = Server::start("")?;
     let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
-    let hello = fux::protocol::Frame::Hello {
+    let hello = Frame::Hello {
         protocol: 999,
         version: "0.0.0".into(),
         role: fux::protocol::Role::Attach,
@@ -282,8 +283,17 @@ fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
         }
     }
     let exit = frames.iter().find_map(|f| match f {
-        fux::protocol::Frame::Exit(reason) => Some(reason.clone()),
-        _ => None,
+        Frame::Exit(reason) => Some(reason.clone()),
+        Frame::Hello { .. }
+        | Frame::Attach { .. }
+        | Frame::Input(_)
+        | Frame::Resize { .. }
+        | Frame::Detach
+        | Frame::Command { .. }
+        | Frame::Paint(_)
+        | Frame::Stdout(_)
+        | Frame::Stderr(_)
+        | Frame::Done { .. } => None,
     });
     let reason = exit.ok_or("no Exit frame")?;
     assert!(

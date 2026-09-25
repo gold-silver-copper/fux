@@ -561,7 +561,7 @@ impl Session {
                 crate::view::PromptFor::Rename(target) if !self.exists(target) => {
                     Some(format!("closed: {} is gone", describe(target)))
                 }
-                _ => None,
+                crate::view::PromptFor::Command | crate::view::PromptFor::Rename(_) => None,
             },
             Mode::Normal | Mode::Column { .. } => None,
         };
@@ -874,7 +874,39 @@ impl Session {
                 | Command::MovePane { target, .. } => {
                     self.pane_target(*target, ctx)?;
                 }
-                _ => {}
+                Command::Ls { .. }
+                | Command::KillServer
+                | Command::ListKeys
+                | Command::NewWorkspace { .. }
+                | Command::NewTab { .. }
+                | Command::Split { .. }
+                | Command::KillTab { .. }
+                | Command::KillWorkspace { .. }
+                | Command::Rename { .. }
+                | Command::ResizePane { .. }
+                | Command::SendKeys { .. }
+                | Command::CapturePane { .. }
+                | Command::Reorder { .. }
+                | Command::Set { .. }
+                | Command::Bind { .. }
+                | Command::Unbind { .. }
+                | Command::UnbindAll
+                | Command::Reload
+                | Command::ListBuffers
+                | Command::ShowBuffer { .. }
+                | Command::Detach { .. }
+                | Command::CommandColumn { .. }
+                | Command::ChooseTab { .. }
+                | Command::ChooseWorkspace { .. }
+                | Command::Menu { .. }
+                | Command::CommandPrompt { .. }
+                | Command::CopyMode { .. }
+                | Command::RenamePrompt { .. }
+                | Command::ConfirmClose { .. }
+                | Command::Zoom { .. }
+                | Command::SelectPane { .. }
+                | Command::SelectTab { .. }
+                | Command::SelectWorkspace { .. } => {}
             }
             Ok(())
         })();

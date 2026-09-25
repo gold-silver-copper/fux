@@ -330,7 +330,15 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, String
                             .map_err(|e| format!("writing the terminal: {e}"))?;
                     }
                     Frame::Exit(reason) => return Ok(reason),
-                    _ => {}
+                    Frame::Hello { .. }
+                    | Frame::Attach { .. }
+                    | Frame::Input(_)
+                    | Frame::Resize { .. }
+                    | Frame::Detach
+                    | Frame::Command { .. }
+                    | Frame::Stdout(_)
+                    | Frame::Stderr(_)
+                    | Frame::Done { .. } => {}
                 }
             }
             let _ = stdout.flush();
