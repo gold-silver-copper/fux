@@ -50,6 +50,11 @@ pub struct Output {
 impl Server {
     /// A server whose shell is `sh` with a plain prompt, and `config` lines.
     pub fn start(config: &str) -> Result<Server, String> {
+        Server::start_limited(config, None)
+    }
+
+    /// The same, with at most `open_files` descriptors (`ulimit -n`).
+    pub fn start_limited(config: &str, open_files: Option<u32>) -> Result<Server, String> {
         let base = std::env::temp_dir().canonicalize().map_err(e)?;
         let dir = base.join(format!(
             "fux-t{}-{}",
@@ -65,7 +70,18 @@ impl Server {
         let log = std::fs::File::create(dir.join("server.log")).map_err(e)?;
         let child = {
             let _guard = SPAWN.lock().map_err(e)?;
-            Command::new(FUX)
+            let mut command = match open_files {
+                // `exec` keeps the pid, so `pid()` is the server's.
+                Some(n) => {
+                    let mut sh = Command::new("/bin/sh");
+                    sh.arg("-c")
+                        .arg(format!("ulimit -n {n} && exec \"$0\" \"$@\""))
+                        .arg(FUX);
+                    sh
+                }
+                None => Command::new(FUX),
+            };
+            command
                 .arg("server")
                 .arg("--socket")
                 .arg(&socket)
@@ -95,6 +111,11 @@ impl Server {
             std::thread::sleep(Duration::from_millis(10));
         }
         Ok(server)
+    }
+
+    /// The server's process id, while it runs.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
     }
 
     pub fn log(&self) -> String {
@@ -366,6 +387,38 @@ impl Client {
     pub fn bar(&self) -> String {
         self.lines().last().cloned().unwrap_or_default()
     }
+}
+
+/// The CPU time a process has used, in seconds.
+pub fn cpu_seconds(pid: u32) -> Result<f64, String> {
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        // After the command name, which is in parentheses and may hold
+        // spaces, the fields start at the state, field 3: user and system
+        // time, fields 14 and 15, are the 12th and 13th here, in ticks.
+        let (_, rest) = stat.rsplit_once(')').ok_or("a /proc stat line")?;
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        let ticks = |i: usize| -> Result<f64, String> {
+            fields
+                .get(i)
+                .ok_or("a /proc stat field")?
+                .parse::<f64>()
+                .map_err(e)
+        };
+        let hz = Command::new("getconf").arg("CLK_TCK").output().map_err(e)?;
+        let hz: f64 = String::from_utf8_lossy(&hz.stdout)
+            .trim()
+            .parse()
+            .map_err(e)?;
+        return Ok((ticks(11)? + ticks(12)?) / hz);
+    }
+    // macOS: `ps` gives minutes and seconds to the hundredth.
+    let out = Command::new("ps")
+        .args(["-o", "time=", "-p", &pid.to_string()])
+        .output()
+        .map_err(e)?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    let (minutes, seconds) = text.split_once(':').ok_or(format!("ps time {text:?}"))?;
+    Ok(minutes.parse::<f64>().map_err(e)? * 60.0 + seconds.parse::<f64>().map_err(e)?)
 }
 
 /// Waits until `test` holds, polling.

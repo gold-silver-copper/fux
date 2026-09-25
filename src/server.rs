@@ -21,6 +21,23 @@ const OUTPUT_CAP: usize = 4 << 20;
 const PANE_READ: usize = 64 * 1024;
 /// How long a stopping server waits for its clients and processes.
 const STOP_WAIT: Duration = Duration::from_millis(500);
+/// A condition that persists is logged once, then at most this often.
+const REPORT_EVERY: Duration = Duration::from_secs(10);
+/// How long the listener rests after an `accept` failure that retrying at
+/// once would only repeat.
+const ACCEPT_REST: Duration = Duration::from_millis(100);
+/// What a connection refused for want of descriptors is told.
+const NO_DESCRIPTORS: &str =
+    "the fux server is out of file descriptors; it refuses new connections until some close";
+
+/// Running out of descriptors, while it lasts: connections are refused,
+/// each told why.
+struct Shortage {
+    reported: Instant,
+    /// Refused since the last report, and in all.
+    refused: u64,
+    total: u64,
+}
 
 struct Conn {
     stream: UnixStream,
@@ -64,6 +81,16 @@ pub struct Server {
     /// Where client bytes land before their decoder takes them; one for the
     /// server, reused by every read.
     read_buffer: Vec<u8>,
+    /// A descriptor held in reserve, so that a connection that arrives when
+    /// all others are taken can still be accepted and told why it is
+    /// refused (bevy-final findings 006 and 012).
+    spare: Option<std::fs::File>,
+    shortage: Option<Shortage>,
+    /// While set, the listener is not polled: an `accept` failed in a way
+    /// that retrying at once would repeat, and it stays readable meanwhile.
+    listen_after: Option<Instant>,
+    /// When an `accept` failure other than a shortage was last logged.
+    accept_logged: Option<Instant>,
 }
 
 fn log(message: &str) {
@@ -112,6 +139,10 @@ pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), String> 
         stopping: None,
         escapes: std::collections::HashMap::new(),
         read_buffer: vec![0u8; 64 * 1024],
+        spare: std::fs::File::open("/dev/null").ok(),
+        shortage: None,
+        listen_after: None,
+        accept_logged: None,
     };
     server.run();
     drop(endpoint);
@@ -218,13 +249,19 @@ impl Server {
         if let Some((since, _)) = &self.stopping {
             sooner(crate::after(*since, STOP_WAIT));
         }
+        if let Some(at) = self.listen_after {
+            sooner(at);
+        }
         deadline.map(|d| d.saturating_duration_since(now))
     }
 
     fn poll(&mut self, timeout: Option<Duration>) -> Vec<(Slot, PollFlags)> {
         let mut slots = Vec::new();
         let mut fds = Vec::new();
-        if self.stopping.is_none() {
+        if self.listen_after.is_some_and(|at| Instant::now() >= at) {
+            self.listen_after = None;
+        }
+        if self.stopping.is_none() && self.listen_after.is_none() {
             fds.push(PollFd::new(&self.listener, PollFlags::IN));
             slots.push(Slot::Listener);
         }
@@ -337,8 +374,30 @@ impl Server {
     fn accept(&mut self) {
         // Accept until the backlog is empty, so one tick drains it.
         loop {
-            match self.listener.accept() {
+            // The spare makes room for this accept, and is taken back after
+            // it: if it cannot be, the connection took the last descriptor.
+            self.spare = None;
+            let accepted = self.listener.accept();
+            let room = match std::fs::File::open("/dev/null") {
+                Ok(spare) => {
+                    self.spare = Some(spare);
+                    true
+                }
+                Err(e) => !out_of_descriptors(&e),
+            };
+            match accepted {
+                Ok((stream, _)) if !room => {
+                    self.refuse(stream);
+                    // Closing it freed a descriptor for the spare.
+                    self.spare = std::fs::File::open("/dev/null").ok();
+                }
                 Ok((stream, _)) => {
+                    if let Some(shortage) = self.shortage.take() {
+                        log(&format!(
+                            "file descriptors available again; {} connections were refused while they were short",
+                            shortage.total
+                        ));
+                    }
                     let euid = rustix::process::geteuid().as_raw();
                     match crate::socket::peer_uid(&stream) {
                         Ok(uid) if uid == euid => {}
@@ -372,11 +431,74 @@ impl Server {
                     });
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => return,
-                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                // A peer that gave up before it was accepted: the next may
+                // be fine.
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        ErrorKind::Interrupted | ErrorKind::ConnectionAborted
+                    ) =>
+                {
+                    continue;
+                }
                 Err(e) => {
-                    // Out of descriptors or similar: try again next tick.
-                    log(&format!("accept: {e}"));
+                    // Even the spare's room was not enough, or something
+                    // else persists. The listener stays readable, so it
+                    // rests rather than being polled again at once.
+                    let now = Instant::now();
+                    self.listen_after = Some(crate::after(now, ACCEPT_REST));
+                    if self
+                        .accept_logged
+                        .is_none_or(|at| now.duration_since(at) >= REPORT_EVERY)
+                    {
+                        self.accept_logged = Some(now);
+                        log(&format!(
+                            "accept: {e}; listening again in {} ms",
+                            ACCEPT_REST.as_millis()
+                        ));
+                    }
                     return;
+                }
+            }
+        }
+    }
+
+    /// Tells a connection that there is no room for it, and closes it. The
+    /// shortage is logged when it starts, then at most every `REPORT_EVERY`.
+    fn refuse(&mut self, stream: UnixStream) {
+        let euid = rustix::process::geteuid().as_raw();
+        if crate::socket::peer_uid(&stream).is_ok_and(|uid| uid == euid)
+            && stream.set_nonblocking(true).is_ok()
+            && let Ok(bytes) = Frame::Exit(NO_DESCRIPTORS.into()).encode()
+        {
+            // A fresh socket's buffer holds the frame; if not, the peer
+            // sees the connection close.
+            let _ = (&stream).write_all(&bytes);
+        }
+        drop(stream);
+        let now = Instant::now();
+        match &mut self.shortage {
+            None => {
+                log(
+                    "out of file descriptors: new connections are refused, each told why, until some close",
+                );
+                self.shortage = Some(Shortage {
+                    reported: now,
+                    refused: 1,
+                    total: 1,
+                });
+            }
+            Some(shortage) => {
+                shortage.refused = shortage.refused.saturating_add(1);
+                shortage.total = shortage.total.saturating_add(1);
+                if now.duration_since(shortage.reported) >= REPORT_EVERY {
+                    log(&format!(
+                        "still out of file descriptors: {} connections refused in the last {} s",
+                        shortage.refused,
+                        now.duration_since(shortage.reported).as_secs()
+                    ));
+                    shortage.reported = now;
+                    shortage.refused = 0;
                 }
             }
         }
@@ -680,4 +802,13 @@ fn drain(stream: &mut UnixStream) {
             break;
         }
     }
+}
+
+/// Whether an error is a shortage of descriptors, the process's or the
+/// system's.
+fn out_of_descriptors(error: &std::io::Error) -> bool {
+    matches!(
+        rustix::io::Errno::from_io_error(error),
+        Some(rustix::io::Errno::MFILE | rustix::io::Errno::NFILE)
+    )
 }
