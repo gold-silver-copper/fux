@@ -69,11 +69,15 @@ impl Session {
             Mode::Prompt(_) => overlay::prompt_key(self, client, press),
             Mode::Confirm(_) => overlay::confirm_key(self, client, press),
             Mode::Column { .. } => overlay::column_key(self, client, press),
+            Mode::Repeat { .. } => overlay::repeat_key(self, client, press),
             Mode::Normal => {
                 // Further input clears the last notice.
                 view.notice = None;
                 if press == self.config.prefix {
-                    view.mode = Mode::Column { selected: 0 };
+                    view.mode = Mode::Column {
+                        path: Vec::new(),
+                        selected: 0,
+                    };
                 } else {
                     overlay::send_key(self, client, press);
                 }
@@ -88,7 +92,11 @@ impl Session {
         match &view.mode {
             Mode::Prompt(_) => overlay::prompt_paste(self, client, text),
             // Pastes never become commands.
-            Mode::Copy(_) | Mode::List(_) | Mode::Confirm(_) | Mode::Column { .. } => {}
+            Mode::Copy(_)
+            | Mode::List(_)
+            | Mode::Confirm(_)
+            | Mode::Column { .. }
+            | Mode::Repeat { .. } => {}
             Mode::Normal => {
                 view.notice = None;
                 let Some(pane) = view.focus() else { return };

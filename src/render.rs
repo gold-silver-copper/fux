@@ -2,6 +2,7 @@
 //! separators, the bar and any overlay; diff it against what the client has;
 //! send only the changed runs, inside synchronized output.
 use crate::command::ClientId;
+use crate::keys::KeyPress;
 use crate::layout::{PaneId, Rect};
 use crate::overlay::{self, ColumnRow};
 use crate::session::Session;
@@ -182,9 +183,12 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
     let focus = view.focus();
     let copy = match &view.mode {
         Mode::Copy(copy) => Some(copy.as_ref()),
-        Mode::Normal | Mode::Column { .. } | Mode::List(_) | Mode::Prompt(_) | Mode::Confirm(_) => {
-            None
-        }
+        Mode::Normal
+        | Mode::Column { .. }
+        | Mode::Repeat { .. }
+        | Mode::List(_)
+        | Mode::Prompt(_)
+        | Mode::Confirm(_) => None,
     };
     for (id, rect) in &placement.panes {
         let Some(pane) = session.panes.get(id) else {
@@ -269,7 +273,7 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
     }
     bar(&mut grid, session, view, copy);
     match &view.mode {
-        Mode::Column { selected } => column(&mut grid, session, view, *selected),
+        Mode::Column { path, selected } => column(&mut grid, session, view, path, *selected),
         Mode::List(list) => {
             let mut lines: Vec<(String, Attributes)> =
                 vec![(list.title.clone(), panel().with_bold(true))];
@@ -330,7 +334,8 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
             surface(&mut grid, view, &lines);
             grid.cursor = None;
         }
-        Mode::Normal | Mode::Copy(_) => {}
+        // A repeat mode shows in the bar, leaving the layout in view.
+        Mode::Normal | Mode::Copy(_) | Mode::Repeat { .. } => {}
     }
     Some(grid)
 }
@@ -477,10 +482,27 @@ fn bar(grid: &mut Grid, session: &Session, view: &View, copy: Option<&crate::cop
                 style(Color::Idx(0), Color::Idx(11)).with_bold(true),
             )
         })
-    } else if matches!(view.mode, Mode::Column { .. }) {
+    } else if let Mode::Column { path, .. } = &view.mode {
+        let typed = std::iter::once(session.config.prefix.to_string())
+            .chain(path.iter().map(|key| key.to_string()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        Some((format!("{typed} …"), style(Color::Idx(0), Color::Idx(11))))
+    } else if let Mode::Repeat { path } = &view.mode {
+        // The mode's name and its keys: `RESIZE  h j k l · Esc`.
+        let title = overlay::layer_title(session, path).unwrap_or_default();
+        let keys: Vec<String> = session
+            .config
+            .bindings
+            .iter()
+            .filter_map(|b| match b.keys.strip_prefix(path.as_slice()) {
+                Some([key]) => Some(key.to_string()),
+                Some(_) | None => None,
+            })
+            .collect();
         Some((
-            format!("{} …", session.config.prefix),
-            style(Color::Idx(0), Color::Idx(11)),
+            format!("{}  {} · Esc", title.to_uppercase(), keys.join(" ")),
+            style(Color::Idx(0), Color::Idx(11)).with_bold(true),
         ))
     } else {
         view.focus().and_then(|f| session.panes.get(&f)).map(|p| {
@@ -566,14 +588,16 @@ fn surface(grid: &mut Grid, view: &View, lines: &[(String, Attributes)]) {
     }
 }
 
-/// The command column: every binding, grouped, the selected one highlighted
-/// and those that cannot run now dimmed.
-fn column(grid: &mut Grid, session: &Session, view: &View, selected: usize) {
-    let rows = overlay::column_rows(session);
+/// The command column: the bindings and layers of the layer at `path`,
+/// grouped, the selected one highlighted and those that cannot run now
+/// dimmed.
+fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], selected: usize) {
+    let rows = overlay::column_rows(session, path);
     let key_width = rows
         .iter()
         .filter_map(|r| match r {
             ColumnRow::Binding { key, .. } => Some(width(key)),
+            ColumnRow::Layer { key, .. } => Some(width(&key.to_string())),
             ColumnRow::Heading(_) => None,
         })
         .max()
@@ -603,6 +627,19 @@ fn column(grid: &mut Grid, session: &Session, view: &View, selected: usize) {
                 // At most the number of rows.
                 index = index.saturating_add(1);
             }
+            ColumnRow::Layer { key, title } => {
+                let key = key.to_string();
+                let pad: String =
+                    std::iter::repeat_n(' ', usize::from(key_width.saturating_sub(width(&key))))
+                        .collect();
+                let mut attrs = panel();
+                if index == selected {
+                    attrs = attrs.with_inverse(true);
+                    selected_row = entries.len();
+                }
+                entries.push((format!("{pad}{key}  {title}…"), attrs, true));
+                index = index.saturating_add(1);
+            }
         }
     }
     let available = usize::from(view.rows.saturating_sub(1));
@@ -615,7 +652,17 @@ fn column(grid: &mut Grid, session: &Session, view: &View, selected: usize) {
     let start = selected_row.saturating_add(1).saturating_sub(body_room);
     let mut lines: Vec<(String, Attributes)> = Vec::new();
     if heading {
-        lines.push(("Commands".into(), panel().with_bold(true)));
+        // Right after the prefix, every command; in a layer, its keys so far
+        // and its title.
+        let title = match overlay::layer_title(session, path) {
+            Some(title) if !path.is_empty() => format!(
+                "{} {}: {title}",
+                session.config.prefix,
+                crate::config::keys_text(path)
+            ),
+            Some(_) | None => "Commands".to_owned(),
+        };
+        lines.push((title, panel().with_bold(true)));
     }
     if start > 0 {
         lines.push((format!("▲ {start} more"), panel().with_dim(true)));
