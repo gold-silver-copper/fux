@@ -1,0 +1,59 @@
+# Std methods that panic when a condition on their arguments fails at run
+# time: an index or range out of bounds, a position off a char boundary,
+# slices of different lengths, a zero size. Every crate forbids calling them
+# (`disallowed_methods = "forbid"`); each reason says what to use instead.
+# Left off, as their only panic is running out of memory or capacity, like
+# every allocation's: `Vec::with_capacity`, `reserve`, `resize` and `collect`.
+# Also left off: `slice::rotate_left` and `rotate_right`, which panic when
+# turning by more than the slice. Every other way to rotate without that panic
+# takes twice the time, and fux-vt inserts and deletes characters with them;
+# its one call site clamps the count to the slice just before (grid.rs,
+# `edit_cells`).
+# And `char::encode_utf8`, which panics only for a buffer under four bytes:
+# every call passes a buffer of fixed size, four bytes or a cell's text.
+disallowed-methods = [
+  # Vec
+  { path = "alloc::vec::Vec::insert", reason = "panics past the end: build the new Vec from iterators" },
+  { path = "alloc::vec::Vec::remove", reason = "panics past the end: build the new Vec from iterators" },
+  { path = "alloc::vec::Vec::swap_remove", reason = "panics past the end" },
+  { path = "alloc::vec::Vec::drain", reason = "panics on a range out of bounds: consume a ByteQueue, or retain" },
+  { path = "alloc::vec::Vec::split_off", reason = "panics past the end" },
+  { path = "alloc::vec::Vec::splice", reason = "panics on a range out of bounds" },
+  { path = "alloc::vec::Vec::extract_if", reason = "panics on a range out of bounds" },
+  # VecDeque
+  { path = "alloc::collections::VecDeque::insert", reason = "panics past the end: move elements with get and get_mut" },
+  { path = "alloc::collections::VecDeque::swap", reason = "panics on an index out of bounds" },
+  { path = "alloc::collections::VecDeque::drain", reason = "panics on a range out of bounds" },
+  { path = "alloc::collections::VecDeque::split_off", reason = "panics past the end" },
+  { path = "alloc::collections::VecDeque::range", reason = "panics on a range out of bounds" },
+  { path = "alloc::collections::VecDeque::range_mut", reason = "panics on a range out of bounds" },
+  { path = "alloc::collections::VecDeque::rotate_left", reason = "panics past the end" },
+  { path = "alloc::collections::VecDeque::rotate_right", reason = "panics past the end" },
+  # String and str
+  { path = "alloc::string::String::insert", reason = "panics off a char boundary: edit by chars" },
+  { path = "alloc::string::String::insert_str", reason = "panics off a char boundary: edit by chars" },
+  { path = "alloc::string::String::remove", reason = "panics off a char boundary: edit by chars" },
+  { path = "alloc::string::String::replace_range", reason = "panics off a char boundary: edit by chars" },
+  { path = "alloc::string::String::drain", reason = "panics off a char boundary" },
+  { path = "alloc::string::String::split_off", reason = "panics off a char boundary" },
+  { path = "alloc::string::String::truncate", reason = "panics off a char boundary: build the shorter string" },
+  { path = "str::split_at", reason = "panics off a char boundary: split_at_checked" },
+  { path = "str::split_at_mut", reason = "panics off a char boundary: split_at_mut_checked" },
+  { path = "str::repeat", reason = "panics when the length overflows: iter::repeat_n" },
+  # Slices
+  { path = "slice::split_at", reason = "panics past the end: split_at_checked" },
+  { path = "slice::split_at_mut", reason = "panics past the end: split_at_mut_checked" },
+  { path = "slice::swap", reason = "panics on an index out of bounds: get_disjoint_mut" },
+  { path = "slice::swap_with_slice", reason = "panics on slices of different lengths" },
+  { path = "slice::copy_from_slice", reason = "panics on slices of different lengths: first_chunk, try_into, or zip" },
+  { path = "slice::clone_from_slice", reason = "panics on slices of different lengths" },
+  { path = "slice::copy_within", reason = "panics on a range out of bounds" },
+  { path = "slice::select_nth_unstable", reason = "panics past the end" },
+  { path = "slice::chunks", reason = "panics on a zero size: as_chunks, or split_at_checked" },
+  { path = "slice::chunks_mut", reason = "panics on a zero size" },
+  { path = "slice::chunks_exact", reason = "panics on a zero size: as_chunks" },
+  { path = "slice::rchunks", reason = "panics on a zero size" },
+  { path = "slice::windows", reason = "panics on a zero size: get and starts_with" },
+  { path = "slice::repeat", reason = "panics when the length overflows: iter::repeat_n" },
+  { path = "core::iter::Iterator::step_by", reason = "panics on a zero step" },
+]

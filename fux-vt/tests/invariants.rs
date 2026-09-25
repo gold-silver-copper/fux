@@ -1,6 +1,8 @@
 mod corpus;
 #[path = "corpus/fixtures.rs"]
 mod fixtures;
+#[path = "corpus/pieces.rs"]
+mod pieces;
 
 #[test]
 fn seed_fuzz_with_golden_terminal_edge_and_tiny_operations() -> Result {
@@ -12,7 +14,7 @@ fn seed_fuzz_with_golden_terminal_edge_and_tiny_operations() -> Result {
     let seed = |name: &str, operations: &[&[u8]]| -> std::io::Result<()> {
         let mut encoded = vec![3, 11, 8];
         for operation in operations {
-            for bytes in operation.chunks(254) {
+            for bytes in pieces::pieces(operation, 254) {
                 encoded.push(u8::try_from(bytes.len() - 1).map_err(std::io::Error::other)?);
                 encoded.extend_from_slice(bytes);
             }
@@ -100,7 +102,7 @@ fn permanent_adversarial_corpus_is_chunk_invariant_and_bounded() -> Result {
                 std::fs::create_dir_all(path)?;
                 let mut encoded = vec![u8::try_from(rows - 1)?, u8::try_from(cols - 1)?, 8];
                 for op in &operations {
-                    for bytes in op.chunks(254) {
+                    for bytes in pieces::pieces(op, 254) {
                         encoded.push(u8::try_from(bytes.len() - 1)?);
                         encoded.extend_from_slice(bytes);
                     }
@@ -114,7 +116,7 @@ fn permanent_adversarial_corpus_is_chunk_invariant_and_bounded() -> Result {
             for operation in operations {
                 whole.process(&operation)?;
                 let size = usize::try_from(corpus::splitmix(&mut state) % 7 + 1)?;
-                for chunk in operation.chunks(size) {
+                for chunk in pieces::pieces(&operation, size) {
                     split.process(chunk)?;
                 }
                 invariants::equal(&whole, &split);

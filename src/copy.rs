@@ -375,9 +375,10 @@ pub fn find(
         let chars = row_chars(screen, index);
         let folded: Vec<char> = chars.iter().map(|(c, _)| fold(*c, ignore_case)).collect();
         let mut cols = Vec::new();
-        // The needle is not empty, so neither is a window.
-        for (start, window) in folded.windows(needle.len()).enumerate() {
-            if window == needle.as_slice()
+        for start in 0..folded.len() {
+            if folded
+                .get(start..)
+                .is_some_and(|rest| rest.starts_with(&needle))
                 && let Some((_, col)) = chars.get(start)
             {
                 cols.push(*col);

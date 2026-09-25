@@ -397,7 +397,9 @@ mod tests {
         assert!(checked("", "X").is_err());
         assert!(checked("relative/s.sock", "X").is_err());
         assert!(checked("/", "X").is_err());
-        let long = format!("/{}", "a".repeat(max_path_bytes()));
+        let long: String = std::iter::once('/')
+            .chain(std::iter::repeat_n('a', max_path_bytes()))
+            .collect();
         assert!(
             checked(&long, "X")
                 .err()
