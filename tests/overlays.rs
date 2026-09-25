@@ -6,6 +6,9 @@ use support::*;
 const PREFIX: &str = "\x02";
 const UP: &str = "\x1b[A";
 const DOWN: &str = "\x1b[B";
+/// Backspaces enough to empty a prompt holding a name: prompts have no key
+/// that clears them.
+const CLEAR: &str = "\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f";
 
 fn focused(server: &Server) -> Result<String, String> {
     let ls = server.ok(&["ls"])?;
@@ -170,7 +173,7 @@ fn choosers_select_rename_and_close() -> Outcome {
     client.wait_for("* @2 second")?;
     client.keys(&format!("{DOWN}r"))?;
     client.wait_for("rename tab @3")?;
-    client.keys("\x15renamed\r")?;
+    client.keys(&format!("{CLEAR}renamed\r"))?;
     eventually("renamed", || Ok(server.ok(&["ls"])?.contains("@3 renamed")))?;
     // x closes it, after asking.
     client.keys(&format!("{PREFIX}tg"))?;
@@ -254,7 +257,7 @@ fn rename_prompts_start_from_the_current_name() -> Outcome {
     // An empty name is refused, and says so.
     server.ok(&["rename-prompt", "-c", "c1", "pane"])?;
     client.wait_for("rename pane %1")?;
-    client.keys("\x15\r")?;
+    client.keys(&format!("{CLEAR}\r"))?;
     bar_has(&mut client, "a name cannot be empty")?;
     // From the CLI, a rename prompt needs -c.
     server.ok(&["rename-prompt", "-c", "c1", "tab"])?;

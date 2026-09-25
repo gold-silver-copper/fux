@@ -874,7 +874,7 @@ mod tests {
         s.input(c, b"\x02c");
         let copying = bar(&s);
         assert!(
-            copying.starts_with(" COPY   v V C-v select  q quit  / ? search  hjkl move"),
+            copying.starts_with(" COPY   v s x select  q quit  f r search  hjkl move  w b words"),
             "{copying}"
         );
         assert!(!copying.contains("main") && !copying.contains("y copy"));
@@ -886,7 +886,14 @@ mod tests {
             selecting.starts_with(" COPY select   y copy  q quit  o other end  v clear"),
             "{selecting}"
         );
-        s.input(c, b"/ab");
+        // Letters in either case: S selects lines; C-v is no key's.
+        s.input(c, b"S\x16");
+        let lines = bar(&s);
+        assert!(
+            lines.starts_with(" COPY lines   y copy  q quit  o other end  s clear"),
+            "{lines}"
+        );
+        s.input(c, b"fab");
         assert!(
             bar(&s).starts_with(" /ab▏   Enter search  Esc cancel"),
             "{}",
