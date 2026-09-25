@@ -273,10 +273,15 @@ fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
     let mut decoder = fux::protocol::Decoder::default();
     let mut buffer = [0u8; 4096];
     let mut frames = Vec::new();
-    while let Ok(n) = stream.read(&mut buffer) {
-        if n == 0 {
-            break;
-        }
+    loop {
+        // A signal interrupts a read with a timeout rather than restarting
+        // it; under emulation that happens nearly every run.
+        let n = match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(format!("reading the server's answer: {error}")),
+        };
         decoder.push(buffer.get(..n).unwrap_or_default());
         while let Some(frame) = decoder.frame()? {
             frames.push(frame);
