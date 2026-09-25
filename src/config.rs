@@ -265,7 +265,8 @@ impl Config {
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
         for (number, line) in text.lines().enumerate() {
-            let at = |e: String| format!("{}:{}: {e}", path.display(), number + 1);
+            let line_number = number.saturating_add(1);
+            let at = |e: String| format!("{}:{}: {e}", path.display(), line_number);
             let argv = words::split(line).map_err(at)?;
             if argv.is_empty() {
                 continue;

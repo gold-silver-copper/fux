@@ -26,14 +26,19 @@ impl Grid {
         Grid {
             rows,
             cols,
-            cells: vec![Cell::default(); usize::from(rows) * usize::from(cols)],
+            // Exact: a u16 by a u16 fits even a 32-bit usize.
+            cells: vec![Cell::default(); usize::from(rows).saturating_mul(usize::from(cols))],
             cursor: None,
             cursor_shape: 0,
         }
     }
     fn index(&self, y: u16, x: u16) -> Option<usize> {
-        (y < self.rows && x < self.cols)
-            .then(|| usize::from(y) * usize::from(self.cols) + usize::from(x))
+        if y >= self.rows || x >= self.cols {
+            return None;
+        }
+        usize::from(y)
+            .checked_mul(usize::from(self.cols))?
+            .checked_add(usize::from(x))
     }
     pub fn get(&self, y: u16, x: u16) -> Option<&Cell> {
         self.index(y, x).and_then(|i| self.cells.get(i))
@@ -55,7 +60,10 @@ impl Grid {
         }
         if old.is_wide()
             && !cell.is_wide()
-            && let Some(rest) = self.index(y, x + 1).and_then(|i| self.cells.get_mut(i))
+            && let Some(rest) = x
+                .checked_add(1)
+                .and_then(|x| self.index(y, x))
+                .and_then(|i| self.cells.get_mut(i))
             && rest.is_wide_continuation()
         {
             *rest = Cell::default();
@@ -90,20 +98,25 @@ impl Grid {
             if c.is_control() {
                 continue;
             }
-            let width = c.width().unwrap_or(0) as u16;
+            let width = cells(c);
             if width == 0 {
                 continue;
             }
-            if x.saturating_add(width) > limit.min(self.cols) {
+            let Some(end) = x
+                .checked_add(width)
+                .filter(|end| *end <= limit.min(self.cols))
+            else {
                 break;
-            }
+            };
             let mut buffer = [0u8; 4];
             let cell = Cell::new(c.encode_utf8(&mut buffer), width == 2, style).unwrap_or_default();
             self.set(y, x, cell);
-            if width == 2 {
-                self.set(y, x + 1, Cell::wide_continuation());
+            if width == 2
+                && let Some(second) = x.checked_add(1)
+            {
+                self.set(y, second, Cell::wide_continuation());
             }
-            x += width;
+            x = end;
         }
         x
     }
@@ -123,13 +136,20 @@ const GRAY_BG: Color = Color::Idx(236);
 const BAR_FG: Color = Color::Idx(250);
 const PANEL_BG: Color = Color::Idx(238);
 
+/// A char's display width in cells.
+fn cells(c: char) -> u16 {
+    // Widths are 0, 1 or 2; a larger one could never fit, so it saturates.
+    c.width()
+        .map_or(0, |w| u16::try_from(w).unwrap_or(u16::MAX))
+}
+
 /// Display width of a string, controls dropped.
 pub fn width(text: &str) -> u16 {
     text.chars()
         .filter(|c| !c.is_control())
-        .map(|c| c.width().unwrap_or(0))
-        .sum::<usize>()
-        .min(4096) as u16
+        .map(cells)
+        .fold(0, u16::saturating_add)
+        .min(4096)
 }
 
 /// Cuts `text` to `cols` cells, with an ellipsis when cut.
@@ -137,17 +157,16 @@ pub fn fit(text: &str, cols: u16) -> String {
     if width(text) <= cols {
         return text.to_owned();
     }
-    if cols == 0 {
+    // Room for the text, less a cell for the ellipsis.
+    let Some(mut room) = cols.checked_sub(1) else {
         return String::new();
-    }
+    };
     let mut out = String::new();
-    let mut room = cols - 1;
     for c in text.chars().filter(|c| !c.is_control()) {
-        let w = c.width().unwrap_or(0) as u16;
-        if w > room {
+        let Some(left) = room.checked_sub(cells(c)) else {
             break;
-        }
-        room -= w;
+        };
+        room = left;
         out.push(c);
     }
     out.push('…');
@@ -163,7 +182,9 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
     let focus = view.focus();
     let copy = match &view.mode {
         Mode::Copy(copy) => Some(copy.as_ref()),
-        _ => None,
+        Mode::Normal | Mode::Column { .. } | Mode::List(_) | Mode::Prompt(_) | Mode::Confirm(_) => {
+            None
+        }
     };
     for (id, rect) in &placement.panes {
         let Some(pane) = session.panes.get(id) else {
@@ -193,7 +214,10 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
                                 .unwrap_or(cell);
                     }
                 }
-                grid.set(rect.y + y, rect.x + x, cell);
+                // Past the largest position is off the grid anyway.
+                if let Some((gy, gx)) = rect.at(y, x) {
+                    grid.set(gy, gx, cell);
+                }
             }
         }
     }
@@ -222,8 +246,9 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
             Some(copy) => {
                 if let Some((y, x)) = copy.cursor_in_view(screen, rect.h)
                     && x < rect.w
+                    && let Some(at) = rect.at(y, x)
                 {
-                    grid.cursor = Some((rect.y + y, rect.x + x));
+                    grid.cursor = Some(at);
                     // The copy cursor is a block.
                     grid.cursor_shape = 2;
                 }
@@ -234,8 +259,9 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
                     && y < rect.h
                     && x < rect.w
                     && matches!(view.mode, Mode::Normal)
+                    && let Some(at) = rect.at(y, x)
                 {
-                    grid.cursor = Some((rect.y + y, rect.x + x));
+                    grid.cursor = Some(at);
                     grid.cursor_shape = pane.modes.cursor_shape;
                 }
             }
@@ -248,9 +274,10 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
             let mut lines: Vec<(String, Attributes)> =
                 vec![(list.title.clone(), panel().with_bold(true))];
             let capacity = overlay::list_capacity(view.rows);
+            // The window ends at the selection, or at the last item.
             let start = list
                 .selected
-                .saturating_sub(capacity - 1)
+                .saturating_sub(capacity.saturating_sub(1))
                 .min(list.items.len().saturating_sub(capacity));
             if start > 0 {
                 lines.push((format!("▲ {start} more"), panel().with_dim(true)));
@@ -268,7 +295,10 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
                 }
                 lines.push((format!("{marker} {}", item.label), attrs));
             }
-            let below = list.items.len().saturating_sub(start + capacity);
+            let below = list
+                .items
+                .len()
+                .saturating_sub(start.saturating_add(capacity));
             if below > 0 {
                 lines.push((format!("▼ {below} more"), panel().with_dim(true)));
             }
@@ -284,13 +314,9 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
             surface(&mut grid, view, &lines);
         }
         Mode::Prompt(prompt) => {
-            let before: String = prompt.text.chars().take(prompt.cursor).collect();
             let lines = vec![
                 (prompt.title.clone(), panel().with_bold(true)),
-                (
-                    format!("{}▏{}", before, &prompt.text[before.len()..]),
-                    panel(),
-                ),
+                (with_cursor(&prompt.text, prompt.cursor), panel()),
                 ("Enter accepts · Esc cancels".into(), panel().with_dim(true)),
             ];
             surface(&mut grid, view, &lines);
@@ -309,6 +335,17 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
     Some(grid)
 }
 
+/// A prompt's text with a bar at `cursor`, counted in chars; past the end
+/// the bar follows the text.
+fn with_cursor(text: &str, cursor: usize) -> String {
+    let at = text
+        .char_indices()
+        .nth(cursor)
+        .map_or(text.len(), |(i, _)| i);
+    let (before, after) = text.split_at_checked(at).unwrap_or((text, ""));
+    format!("{before}▏{after}")
+}
+
 fn panel() -> Attributes {
     style(Color::Idx(255), PANEL_BG)
 }
@@ -324,17 +361,24 @@ fn separators(grid: &mut Grid, placement: &crate::layout::Placement, focus: Opti
     const HORIZONTAL: u8 = 2;
     let (rows, cols) = (grid.rows, grid.cols);
     let index = |x: i32, y: i32| -> Option<usize> {
-        (x >= 0 && y >= 0 && x < i32::from(cols) && y < i32::from(rows))
-            .then(|| y as usize * usize::from(cols) + x as usize)
+        let (x, y) = (usize::try_from(x).ok()?, usize::try_from(y).ok()?);
+        if x >= usize::from(cols) || y >= usize::from(rows) {
+            return None;
+        }
+        y.checked_mul(usize::from(cols))?.checked_add(x)
     };
     let mut kind = vec![0u8; grid.cells.len()];
     let mut bits = vec![0u8; grid.cells.len()];
     for s in &placement.separators {
         for i in 0..s.len {
-            let (x, y) = if s.vertical {
-                (s.x, s.y + i)
+            let at = if s.vertical {
+                s.y.checked_add(i).map(|y| (s.x, y))
             } else {
-                (s.x + i, s.y)
+                s.x.checked_add(i).map(|x| (x, s.y))
+            };
+            // Past the largest position is off the grid.
+            let Some((x, y)) = at else {
+                break;
             };
             if let Some(at) = index(i32::from(x), i32::from(y)) {
                 if let Some(k) = kind.get_mut(at) {
@@ -356,7 +400,10 @@ fn separators(grid: &mut Grid, placement: &crate::layout::Placement, focus: Opti
                 _ => &[],
             };
             for (dx, dy, want, bit) in neighbours {
-                if let Some(at) = index(x + dx, y + dy)
+                if let Some(at) = x
+                    .checked_add(*dx)
+                    .zip(y.checked_add(*dy))
+                    .and_then(|(x, y)| index(x, y))
                     && kind.get(at) == Some(want)
                     && let Some(b) = bits.get_mut(at)
                 {
@@ -366,9 +413,13 @@ fn separators(grid: &mut Grid, placement: &crate::layout::Placement, focus: Opti
         }
     }
     let focused = focus.and_then(|f| placement.rect(f));
+    // Within a cell of the rect. Exact: values from u16s never saturate an i32.
     let near = |x: u16, y: u16, r: &Rect| {
         let (x, y, rx, ry) = (i32::from(x), i32::from(y), i32::from(r.x), i32::from(r.y));
-        x >= rx - 1 && x <= rx + i32::from(r.w) && y >= ry - 1 && y <= ry + i32::from(r.h)
+        x >= rx.saturating_sub(1)
+            && x <= rx.saturating_add(i32::from(r.w))
+            && y >= ry.saturating_sub(1)
+            && y <= ry.saturating_add(i32::from(r.h))
     };
     for y in 0..rows {
         for x in 0..cols {
@@ -405,10 +456,9 @@ fn separators(grid: &mut Grid, placement: &crate::layout::Placement, focus: Opti
 /// The bottom bar: the workspace and its tabs on the left; the focused
 /// pane, or copy mode's position, or a notice on the right.
 fn bar(grid: &mut Grid, session: &Session, view: &View, copy: Option<&crate::copy::Copy>) {
-    if view.rows == 0 {
+    let Some(y) = view.rows.checked_sub(1) else {
         return;
-    }
-    let y = view.rows - 1;
+    };
     let base = style(BAR_FG, GRAY_BG);
     grid.fill(y, 0, view.cols, base);
     let right = if let Some(notice) = &view.notice {
@@ -441,12 +491,14 @@ fn bar(grid: &mut Grid, session: &Session, view: &View, copy: Option<&crate::cop
             (text, base)
         })
     };
-    let right_width = right
-        .as_ref()
-        .map_or(0, |(t, _)| width(t).min(view.cols / 2 + view.cols / 4));
+    // At most three quarters of the bar, and a gap before it. Exact: the
+    // quarters of a u16 add up to less than one.
+    let right_width = right.as_ref().map_or(0, |(t, _)| {
+        width(t).min((view.cols / 2).saturating_add(view.cols / 4))
+    });
     let left_limit = view
         .cols
-        .saturating_sub(right_width + u16::from(right_width > 0));
+        .saturating_sub(right_width.saturating_add(u16::from(right_width > 0)));
     let mut x = 0;
     if let Some(ws) = session.workspace(view.workspace) {
         let name = format!(" {} ", ws.name);
@@ -459,21 +511,22 @@ fn bar(grid: &mut Grid, session: &Session, view: &View, copy: Option<&crate::cop
         );
         let current = view.tab();
         for tab in &ws.tabs {
-            if x >= left_limit {
+            let Some(room) = left_limit.checked_sub(x).filter(|r| *r > 0) else {
                 break;
-            }
+            };
             let label = format!(" {} ", tab.name);
             let attrs = if Some(tab.id) == current {
                 style(Color::Idx(0), Color::Idx(2)).with_bold(true)
             } else {
                 base
             };
-            x = grid.text(y, x, &fit(&label, left_limit - x), attrs, left_limit);
+            x = grid.text(y, x, &fit(&label, room), attrs, left_limit);
         }
     }
     if let Some((text, attrs)) = right {
         let text = fit(&text, right_width);
-        let start = view.cols.saturating_sub(width(&text) + 1);
+        // Right-aligned, a cell from the edge, or from the left if wider.
+        let start = view.cols.saturating_sub(width(&text).saturating_add(1));
         grid.text(y, start, &text, attrs, view.cols);
     }
 }
@@ -484,23 +537,31 @@ fn surface(grid: &mut Grid, view: &View, lines: &[(String, Attributes)]) {
     if available == 0 || view.cols == 0 || lines.is_empty() {
         return;
     }
-    let height = (lines.len() as u16).min(available);
+    // More lines than rows is the same as exactly as many.
+    let height = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .min(available);
     let inner = lines.iter().map(|(t, _)| width(t)).max().unwrap_or(0);
     let w = inner.saturating_add(2).min(view.cols);
-    let x = view.cols - w;
-    let top = available - height;
+    // The panel fits: `w` is at most the width and `height` the rows above
+    // the bar, and the text starts inside it.
+    let (Some(x), Some(top)) = (view.cols.checked_sub(w), available.checked_sub(height)) else {
+        return;
+    };
+    let Some(text_x) = x.checked_add(1) else {
+        return;
+    };
     // On a short screen the last lines (the selection and help) matter
     // most, so the first lines give way.
     let skip = lines.len().saturating_sub(usize::from(height));
-    for (row, (text, attrs)) in lines.iter().skip(skip).enumerate() {
-        let y = top + row as u16;
+    for (y, (text, attrs)) in (top..available).zip(lines.iter().skip(skip)) {
         grid.fill(y, x, view.cols, *attrs);
         grid.text(
             y,
-            x + 1,
+            text_x,
             &fit(text, w.saturating_sub(2)),
             *attrs,
-            view.cols.saturating_sub(1).max(x + 1),
+            view.cols.saturating_sub(1).max(text_x),
         );
     }
 }
@@ -537,18 +598,19 @@ fn column(grid: &mut Grid, session: &Session, view: &View, selected: usize) {
                     selected_row = entries.len();
                 }
                 entries.push((format!("{pad}{key}  {label}"), attrs, true));
-                index += 1;
+                // At most the number of rows.
+                index = index.saturating_add(1);
             }
         }
     }
     let available = usize::from(view.rows.saturating_sub(1));
     let heading = available >= 4;
-    let body_room = available.saturating_sub(usize::from(heading) + 2).max(1);
-    let start = if selected_row < body_room {
-        0
-    } else {
-        selected_row + 1 - body_room
-    };
+    // Room less the heading and the two "more" lines, but at least one.
+    let body_room = available
+        .saturating_sub(usize::from(heading).saturating_add(2))
+        .max(1);
+    // The rows scrolled off so the selection is the last shown, if any.
+    let start = selected_row.saturating_add(1).saturating_sub(body_room);
     let mut lines: Vec<(String, Attributes)> = Vec::new();
     if heading {
         lines.push(("Commands".into(), panel().with_bold(true)));
@@ -559,7 +621,9 @@ fn column(grid: &mut Grid, session: &Session, view: &View, selected: usize) {
     for (text, attrs, _) in entries.iter().skip(start).take(body_room) {
         lines.push((text.clone(), *attrs));
     }
-    let below = entries.len().saturating_sub(start + body_room);
+    let below = entries
+        .len()
+        .saturating_sub(start.saturating_add(body_room));
     if below > 0 {
         lines.push((format!("▼ {below} more"), panel().with_dim(true)));
     }
@@ -588,24 +652,31 @@ fn sgr(out: &mut String, a: Attributes) {
     if a.inverse() {
         out.push_str(";7");
     }
+    // `base` is 30 or 40, so no code comes near 255: every sum is exact.
     let color = |out: &mut String, c: Color, base: u8| match c {
         Color::Default => {}
         Color::Idx(n) if n < 8 => {
-            let _ = write!(out, ";{}", base + n);
+            let _ = write!(out, ";{}", base.saturating_add(n));
         }
+        // The bright colours 8–15 are 90–97 and 100–107.
         Color::Idx(n) if n < 16 => {
-            let _ = write!(out, ";{}", base + 60 + n - 8);
+            let _ = write!(out, ";{}", base.saturating_add(52).saturating_add(n));
         }
         Color::Idx(n) => {
-            let _ = write!(out, ";{};5;{n}", base + 8);
+            let _ = write!(out, ";{};5;{n}", base.saturating_add(8));
         }
         Color::Rgb(r, g, b) => {
-            let _ = write!(out, ";{};2;{r};{g};{b}", base + 8);
+            let _ = write!(out, ";{};2;{r};{g};{b}", base.saturating_add(8));
         }
     };
     color(out, a.foreground, 30);
     color(out, a.background, 40);
     out.push('m');
+}
+
+/// A row or column as the terminal counts it, from 1; exact in a u32.
+fn one_based(n: u16) -> u32 {
+    u32::from(n).saturating_add(1)
 }
 
 /// The bytes that turn `old` (what the client shows, or nothing) into `new`.
@@ -620,8 +691,9 @@ pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
         let mut x = 0u16;
         while x < new.cols {
             let changed = |x: u16| full || old.and_then(|o| o.get(y, x)) != new.get(y, x);
+            // Moving right stops at the last column, where the loop ends.
             if !changed(x) {
-                x += 1;
+                x = x.saturating_add(1);
                 continue;
             }
             // A run of changed cells, starting at a glyph's first half.
@@ -629,7 +701,7 @@ pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
             if new.get(y, start).is_some_and(|c| c.is_wide_continuation()) {
                 start = start.saturating_sub(1);
             }
-            let _ = write!(out, "\x1b[{};{}H", y + 1, start + 1);
+            let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(start));
             let mut cx = start;
             while cx < new.cols
                 && (cx == start
@@ -638,7 +710,7 @@ pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
             {
                 let Some(cell) = new.get(y, cx) else { break };
                 if cell.is_wide_continuation() {
-                    cx += 1;
+                    cx = cx.saturating_add(1);
                     continue;
                 }
                 let attrs = cell.attributes();
@@ -646,7 +718,7 @@ pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
                     sgr(&mut out, attrs);
                     current = Some(attrs);
                 }
-                if cell.is_wide() && cx + 1 >= new.cols {
+                if cell.is_wide() && cx.saturating_add(1) >= new.cols {
                     // A wide glyph cannot fit in the last column.
                     out.push(' ');
                 } else {
@@ -656,9 +728,9 @@ pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
                         " "
                     });
                 }
-                cx += if cell.is_wide() { 2 } else { 1 };
+                cx = cx.saturating_add(if cell.is_wide() { 2 } else { 1 });
             }
-            x = cx.max(x + 1);
+            x = cx.max(x.saturating_add(1));
         }
     }
     out.push_str("\x1b[0m");
@@ -667,7 +739,7 @@ pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
         let _ = write!(out, "\x1b[{} q", new.cursor_shape);
     }
     if let Some((y, x)) = new.cursor {
-        let _ = write!(out, "\x1b[{};{}H\x1b[?25h", y + 1, x + 1);
+        let _ = write!(out, "\x1b[{};{}H\x1b[?25h", one_based(y), one_based(x));
     }
     out.push_str("\x1b[?2026l");
     out.into_bytes()
@@ -689,6 +761,42 @@ mod tests {
                     .unwrap_or_default()
             })
             .collect()
+    }
+
+    /// At the widest a terminal can be, the last column is u16::MAX - 1:
+    /// one past it must stop a wide glyph, not overflow (in release, wrap).
+    #[test]
+    fn a_wide_glyph_does_not_fit_the_widest_last_column() {
+        let mut grid = Grid::new(1, u16::MAX);
+        let last = u16::MAX.saturating_sub(1);
+        let end = grid.text(0, last, "界", Attributes::default(), u16::MAX);
+        assert_eq!(end, last);
+    }
+
+    #[test]
+    fn painting_the_widest_last_column_ends() {
+        let mut grid = Grid::new(1, u16::MAX);
+        let wide = Cell::new("界", true, Attributes::default()).unwrap_or_default();
+        grid.set(0, u16::MAX.saturating_sub(1), wide);
+        // The glyph is painted as a blank, and moving past it stops the run.
+        let bytes = paint(None, &grid);
+        assert!(bytes.ends_with(b"\x1b[?2026l"));
+    }
+
+    #[test]
+    fn the_prompt_cursor_falls_between_chars_not_bytes() {
+        for (text, cursor, shown) in [
+            ("", 0, "▏"),
+            ("", 3, "▏"),
+            ("héllo", 0, "▏héllo"),
+            ("héllo", 2, "hé▏llo"),
+            ("héllo", 5, "héllo▏"),
+            ("héllo", 9, "héllo▏"),
+            ("界a界", 1, "界▏a界"),
+            ("界a界", 2, "界a▏界"),
+        ] {
+            assert_eq!(with_cursor(text, cursor), shown, "{text:?} at {cursor}");
+        }
     }
 
     fn grid_lines(g: &Grid) -> Vec<String> {

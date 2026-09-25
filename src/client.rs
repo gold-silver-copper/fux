@@ -42,7 +42,13 @@ fn connect(socket: &Path, role: Role) -> Result<(UnixStream, Decoder), String> {
         },
     )?;
     let mut decoder = Decoder::default();
-    match read_frame(&mut stream, &mut decoder, Some(Duration::from_secs(5)))? {
+    let mut buffer = vec![0u8; 64 * 1024];
+    match read_frame(
+        &mut stream,
+        &mut decoder,
+        &mut buffer,
+        Some(Duration::from_secs(5)),
+    )? {
         Some(Frame::Hello { .. }) => {}
         Some(Frame::Exit(reason)) => return Err(reason),
         _ => return Err("the server did not answer".into()),
@@ -61,15 +67,15 @@ fn send(stream: &mut UnixStream, frame: &Frame) -> Result<(), String> {
 fn read_frame(
     stream: &mut UnixStream,
     decoder: &mut Decoder,
+    buffer: &mut [u8],
     timeout: Option<Duration>,
 ) -> Result<Option<Frame>, String> {
     let _ = stream.set_read_timeout(timeout);
-    let mut buffer = [0u8; 65536];
     loop {
         if let Some(frame) = decoder.frame()? {
             return Ok(Some(frame));
         }
-        match stream.read(&mut buffer) {
+        match stream.read(buffer) {
             Ok(0) => return Ok(None),
             Ok(n) => decoder.push(buffer.get(..n).unwrap_or_default()),
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
@@ -97,8 +103,9 @@ pub fn command(socket: &Path, argv: &[String]) -> Result<u8, String> {
         },
     )?;
     let (mut stdout, mut stderr) = (std::io::stdout(), std::io::stderr());
+    let mut buffer = vec![0u8; 64 * 1024];
     loop {
-        match read_frame(&mut stream, &mut decoder, None)? {
+        match read_frame(&mut stream, &mut decoder, &mut buffer, None)? {
             Some(Frame::Stdout(bytes)) => {
                 let _ = stdout.write_all(&bytes);
             }
@@ -119,8 +126,14 @@ pub fn command(socket: &Path, argv: &[String]) -> Result<u8, String> {
 /// Stops the server, whatever fux version it is.
 pub fn kill_server(socket: &Path) -> Result<(), String> {
     let (mut stream, mut decoder) = connect(socket, Role::Kill)?;
+    let mut buffer = vec![0u8; 64 * 1024];
     loop {
-        match read_frame(&mut stream, &mut decoder, Some(Duration::from_secs(5))) {
+        match read_frame(
+            &mut stream,
+            &mut decoder,
+            &mut buffer,
+            Some(Duration::from_secs(5)),
+        ) {
             Ok(Some(Frame::Done { .. })) | Ok(None) => return Ok(()),
             Ok(Some(_)) => {}
             Err(error) => return Err(error),
@@ -128,10 +141,14 @@ pub fn kill_server(socket: &Path) -> Result<(), String> {
     }
 }
 
+/// The hidden `fux server` flag with which a client starts a server: the
+/// server makes itself a session leader before anything else, so it
+/// outlives the terminal the client ran in.
+pub const SETSID: &str = "--setsid";
+
 /// Starts a server in the background, in a new session with its output in
 /// `fux.log` beside the socket, and waits for it to answer.
 pub fn start_server(socket: &Path) -> Result<(), String> {
-    use std::os::unix::process::CommandExt;
     let exe = std::env::current_exe().map_err(|e| format!("finding the fux binary: {e}"))?;
     let directory = socket.parent().ok_or("the socket has no directory")?;
     crate::socket::prepare_directory(directory)?;
@@ -141,30 +158,24 @@ pub fn start_server(socket: &Path) -> Result<(), String> {
         .open(directory.join("fux.log"))
         .map_err(|e| format!("opening the server log: {e}"))?;
     let mut command = std::process::Command::new(exe);
+    // `--setsid`: the server leaves this terminal's session as it starts.
     command
         .arg("server")
         .arg("--socket")
         .arg(socket)
+        .arg(SETSID)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log);
-    // SAFETY: `setsid` is an async-signal-safe system call and the hook
-    // allocates nothing.
-    unsafe {
-        command.pre_exec(|| {
-            rustix::process::setsid()
-                .map(drop)
-                .map_err(std::io::Error::from)
-        });
-    }
     let mut child = command
         .spawn()
         .map_err(|e| format!("starting a server: {e}"))?;
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = crate::after(Instant::now(), Duration::from_secs(2));
     loop {
         if UnixStream::connect(socket).is_ok() {
-            // The child is left to run; it is not ours to wait for.
-            std::mem::forget(child);
+            // The child is left to run; it is not ours to wait for, and
+            // dropping a `Child` neither waits for nor kills it.
+            drop(child);
             return Ok(());
         }
         if let Ok(Some(status)) = child.try_wait() {
@@ -316,7 +327,15 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, String
                             .map_err(|e| format!("writing the terminal: {e}"))?;
                     }
                     Frame::Exit(reason) => return Ok(reason),
-                    _ => {}
+                    Frame::Hello { .. }
+                    | Frame::Attach { .. }
+                    | Frame::Input(_)
+                    | Frame::Resize { .. }
+                    | Frame::Detach
+                    | Frame::Command { .. }
+                    | Frame::Stdout(_)
+                    | Frame::Stderr(_)
+                    | Frame::Done { .. } => {}
                 }
             }
             let _ = stdout.flush();

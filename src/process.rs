@@ -4,10 +4,12 @@ use rustix::fs::{Mode, OFlags};
 use rustix::process::{Pid, Signal, WaitIdOptions, WaitOptions};
 use rustix::pty::OpenptFlags;
 use rustix::termios::Winsize;
+use std::ffi::OsStr;
+use std::io::{Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// A running child and the master side of its PTY.
 pub struct Child {
@@ -50,9 +52,7 @@ pub fn open_pty(rows: u16, cols: u16) -> Result<(OwnedFd, OwnedFd), String> {
 }
 
 /// Starts `argv` on a new PTY, in its own session with the PTY as its
-/// controlling terminal. std restores SIGPIPE and clears the signal mask in
-/// the child, and `exec` resets the handlers signal-hook installed, so the
-/// program starts with default dispositions and an empty mask.
+/// controlling terminal, through the launcher (`launch`).
 pub fn spawn(
     argv: &[String],
     cwd: &Path,
@@ -60,34 +60,16 @@ pub fn spawn(
     rows: u16,
     cols: u16,
 ) -> Result<Child, String> {
-    let (program, args) = argv.split_first().ok_or("no program to run")?;
+    let program = argv.first().ok_or("no program to run")?;
     let (master, slave) = open_pty(rows, cols)?;
-    let stdio = |fd: &OwnedFd| fd.try_clone().map(Stdio::from).map_err(|e| e.to_string());
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .current_dir(cwd)
-        .env("TERM", "xterm-256color")
-        .stdin(stdio(&slave)?)
-        .stdout(stdio(&slave)?)
-        .stderr(stdio(&slave)?);
-    for (key, value) in env {
-        command.env(key, value);
-    }
-    // SAFETY: the hook runs in the child between fork and exec and calls only
-    // `setsid` and the `TIOCSCTTY` ioctl, both async-signal-safe system calls
-    // that allocate nothing and take no locks.
-    unsafe {
-        command.pre_exec(|| {
-            rustix::process::setsid().map_err(std::io::Error::from)?;
-            let stdin = rustix::stdio::stdin();
-            rustix::process::ioctl_tiocsctty(stdin).map_err(std::io::Error::from)?;
-            Ok(())
-        });
-    }
-    let child = command
-        .spawn()
-        .map_err(|e| format!("starting {program}: {e}"))?;
+    let fux = launcher().map_err(|e| format!("finding the fux binary: {e}"))?;
+    let child = launch(&fux, argv, &slave, |command| {
+        command.current_dir(cwd).env("TERM", "xterm-256color");
+        for (key, value) in env {
+            command.env(key, value);
+        }
+    })
+    .map_err(|e| format!("starting {program}: {e}"))?;
     drop(slave);
     let pid = i32::try_from(child.id())
         .ok()
@@ -97,6 +79,95 @@ pub fn spawn(
     // std never waits on a dropped child.
     drop(child);
     Ok(Child { pid, master })
+}
+
+/// The hidden `fux` subcommand that starts a program for `launch`:
+/// `fux __launch PROGRAM [ARGS...]`. Only fux runs it, so it is in no usage
+/// text; its interface is fixed, as an older server may run a newer binary.
+pub const LAUNCH: &str = "__launch";
+
+/// The `fux` binary to run the launcher from: on Linux the server's own
+/// image, even once its file is replaced or removed.
+fn launcher() -> std::io::Result<PathBuf> {
+    if cfg!(target_os = "linux") {
+        return Ok(PathBuf::from("/proc/self/exe"));
+    }
+    std::env::current_exe()
+}
+
+/// Runs `argv` through the launcher in the `fux` binary, as the leader of a
+/// new session with `slave` as its controlling terminal and its stdin,
+/// stdout and stderr; `setup` sets the directory and environment. The child
+/// is the program once this returns, with the pid the launcher had.
+///
+/// Starting a process in a new session needs code between `fork` and `exec`,
+/// which std allows only through `unsafe`. The launcher runs that code as a
+/// program of its own instead, and reports a failure, including its `exec`
+/// failing, on a pipe that `exec` closes: as std reports its own, so this
+/// returns only once the program runs or cannot.
+pub fn launch<S: AsRef<OsStr>>(
+    fux: &Path,
+    argv: &[S],
+    slave: &OwnedFd,
+    setup: impl FnOnce(&mut Command),
+) -> std::io::Result<std::process::Child> {
+    let (mut failures, report) = std::io::pipe()?;
+    let mut child = {
+        let mut command = Command::new(fux);
+        command.arg(LAUNCH).args(argv);
+        setup(&mut command);
+        command
+            .stdin(slave.try_clone()?)
+            .stdout(report)
+            .stderr(slave.try_clone()?);
+        // Dropping `command` closes this side's end of the pipe.
+        command.spawn()?
+    };
+    let mut failure = String::new();
+    let read = failures.read_to_string(&mut failure);
+    if read.is_ok() && failure.is_empty() {
+        return Ok(child);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Err(read.err().unwrap_or_else(|| std::io::Error::other(failure)))
+}
+
+/// The launcher: `fux __launch PROGRAM [ARGS...]`, run by `launch` with its
+/// stdin and stderr on a PTY slave and its stdout on the pipe that reports a
+/// failure. It returns only if the program could not start.
+pub fn launched(argv: &[String]) -> u8 {
+    // A close-on-exec copy, so a successful `exec` closes the pipe; the
+    // program's stdout is the PTY.
+    let report = std::io::stdout().as_fd().try_clone_to_owned();
+    let failure = become_program(argv);
+    if let Ok(report) = report {
+        let _ = std::fs::File::from(report).write_all(failure.to_string().as_bytes());
+    }
+    127
+}
+
+/// Makes this process the leader of a new session with its stdin as the
+/// controlling terminal, then replaces it with `argv`. The error, if either
+/// fails. The server's spawn of the launcher cleared the signal mask, and
+/// `exec` restores the SIGPIPE Rust ignores and the handlers signal-hook
+/// installed, so the program starts with default dispositions and an empty
+/// mask.
+fn become_program(argv: &[String]) -> std::io::Error {
+    let Some((program, args)) = argv.split_first() else {
+        return std::io::Error::other("no program to run");
+    };
+    if let Err(errno) = rustix::process::setsid() {
+        return errno.into();
+    }
+    let terminal = std::io::stdin();
+    if let Err(errno) = rustix::process::ioctl_tiocsctty(&terminal) {
+        return errno.into();
+    }
+    match terminal.as_fd().try_clone_to_owned() {
+        Ok(stdout) => Command::new(program).args(args).stdout(stdout).exec(),
+        Err(error) => error,
+    }
 }
 
 /// Resizes a PTY; the kernel sends SIGWINCH to its foreground group.
@@ -114,12 +185,9 @@ pub fn foreground(master: impl AsFd) -> Option<Pid> {
 /// The pid of the PTY's foreground process group, if there is one.
 #[cfg(target_os = "macos")]
 pub fn foreground(master: impl AsFd) -> Option<Pid> {
-    use std::os::fd::AsRawFd;
     // rustix builds its `Pid` from the result unchecked, and 0 would be
-    // undefined behaviour; libc returns the number as it is.
-    // SAFETY: the descriptor is valid for the call.
-    let group = unsafe { libc::tcgetpgrp(master.as_fd().as_raw_fd()) };
-    Pid::from_raw(group)
+    // undefined behaviour.
+    fux_sys::foreground_group(master).and_then(Pid::from_raw)
 }
 
 /// A process's session ID, read without trusting it to be non-zero: kernel
@@ -131,21 +199,25 @@ pub(crate) fn session(pid: Pid) -> Option<i32> {
     let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid.as_raw_nonzero())).ok()?;
     // `pid (comm) state ppid pgrp session …`; comm may hold spaces and
     // parentheses, so fields are counted after the last `)`.
-    let rest = stat.get(stat.rfind(')')? + 1..)?;
+    let (_, rest) = stat.rsplit_once(')')?;
     rest.split_whitespace().nth(3)?.parse().ok()
 }
 
 /// A process's session ID.
 #[cfg(target_os = "macos")]
 pub(crate) fn session(pid: Pid) -> Option<i32> {
-    // SAFETY: getsid takes a plain number and touches no memory of ours.
-    let sid = unsafe { libc::getsid(pid.as_raw_nonzero().get()) };
-    (sid >= 0).then_some(sid)
+    fux_sys::session(pid.as_raw_nonzero().get())
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn session(_pid: Pid) -> Option<i32> {
     None
+}
+
+/// The status a shell reports for a process a signal ended: 128 plus the
+/// signal, whose numbers are small.
+fn signalled(signal: i32) -> i32 {
+    128i32.saturating_add(signal)
 }
 
 /// Whether `pid` has exited, without reaping it: its exit status, or `None`
@@ -163,7 +235,7 @@ pub fn exited(pid: Pid) -> Option<i32> {
                     return Some(status.exit_status().unwrap_or(0));
                 }
                 if status.killed() || status.dumped() {
-                    return Some(128 + status.terminating_signal().unwrap_or(0));
+                    return Some(signalled(status.terminating_signal().unwrap_or(0)));
                 }
                 return None;
             }
@@ -202,7 +274,7 @@ pub fn finish(leader: Pid) -> Option<i32> {
                 return Some(
                     status
                         .exit_status()
-                        .or_else(|| status.terminating_signal().map(|s| 128 + s))
+                        .or_else(|| status.terminating_signal().map(signalled))
                         .unwrap_or(0),
                 );
             }
@@ -228,34 +300,7 @@ pub fn cwd(pid: Pid) -> Option<std::path::PathBuf> {
 /// The current directory of a process, when the system says.
 #[cfg(target_os = "macos")]
 pub fn cwd(pid: Pid) -> Option<std::path::PathBuf> {
-    use std::os::unix::ffi::OsStrExt;
-    let mut info = std::mem::MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
-    let bytes = libc::c_int::try_from(std::mem::size_of::<libc::proc_vnodepathinfo>()).ok()?;
-    // SAFETY: the buffer is exactly one `proc_vnodepathinfo`, which the call
-    // fills; a short return is checked before the value is read.
-    let read = unsafe {
-        libc::proc_pidinfo(
-            pid.as_raw_nonzero().get(),
-            libc::PROC_PIDVNODEPATHINFO,
-            0,
-            info.as_mut_ptr().cast(),
-            bytes,
-        )
-    };
-    if read != bytes {
-        return None;
-    }
-    // SAFETY: fully written, as checked above.
-    let info = unsafe { info.assume_init() };
-    let path: Vec<u8> = info
-        .pvi_cdir
-        .vip_path
-        .iter()
-        .flatten()
-        .take_while(|c| **c != 0)
-        .map(|c| *c as u8)
-        .collect();
-    (!path.is_empty()).then(|| std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&path)))
+    fux_sys::cwd(pid.as_raw_nonzero().get())
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -279,17 +324,10 @@ pub(crate) fn processes() -> Vec<Pid> {
 /// Every process id the system lists, as candidates for `hangup`.
 #[cfg(target_os = "macos")]
 pub(crate) fn processes() -> Vec<Pid> {
-    // SAFETY: a null buffer asks only for the count.
-    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
-    let Ok(count) = usize::try_from(count) else {
-        return Vec::new();
-    };
-    let mut pids: Vec<libc::pid_t> = vec![0; count + 64];
-    let bytes = libc::c_int::try_from(std::mem::size_of_val(pids.as_slice())).unwrap_or(0);
-    // SAFETY: the buffer is `bytes` long and writable.
-    let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
-    pids.truncate(usize::try_from(listed).unwrap_or(0));
-    pids.into_iter().filter_map(Pid::from_raw).collect()
+    fux_sys::processes()
+        .into_iter()
+        .filter_map(Pid::from_raw)
+        .collect()
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -308,7 +346,10 @@ mod tests {
     fn every_process_session_can_be_read() {
         let pids = processes();
         assert!(!pids.is_empty());
-        let own = Pid::from_raw(std::process::id() as i32).and_then(session);
+        let own = i32::try_from(std::process::id())
+            .ok()
+            .and_then(Pid::from_raw)
+            .and_then(session);
         assert!(own.is_some_and(|sid| sid > 0));
         for pid in pids {
             let _ = session(pid);

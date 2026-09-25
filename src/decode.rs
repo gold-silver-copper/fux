@@ -57,7 +57,8 @@ impl Decoder {
                 // breaks off is paste text after all.
                 let expected = PASTE_END.get(self.marker).copied();
                 if Some(byte) == expected {
-                    self.marker += 1;
+                    // `expected` is there, so the marker is short of its end.
+                    self.marker = self.marker.saturating_add(1);
                     if self.marker == PASTE_END.len() {
                         self.marker = 0;
                         let text = std::mem::take(paste);
@@ -145,7 +146,8 @@ fn single(bytes: &[u8], flush: bool) -> Step {
         0x7f => press(Key::Backspace, Modifiers::NONE),
         0x1b => press(Key::Escape, Modifiers::NONE),
         0x00 => press(Key::Char(' '), ctrl),
-        0x01..=0x1a => press(Key::Char(char::from(b'a' + first - 1)), ctrl),
+        // Ctrl-A to Ctrl-Z are the letters with bits 5 and 6 cleared.
+        0x01..=0x1a => press(Key::Char(char::from(first | 0x60)), ctrl),
         0x1c => press(Key::Char('\\'), ctrl),
         0x1d => press(Key::Char(']'), ctrl),
         0x1e => press(Key::Char('^'), ctrl),
@@ -203,11 +205,12 @@ fn decode(bytes: &[u8], flush: bool) -> Step {
         // Escape Escape: an Escape, then decode the second one on its own.
         0x1b => Step::Done(1, press(Key::Escape, Modifiers::NONE)),
         _ => match single(bytes.get(1..).unwrap_or_default(), flush) {
+            // The Escape and what followed it; within `bytes`, so exact.
             Step::Done(n, Some(Input::Key(KeyPress { key, mods }))) => {
                 let mods = Modifiers { alt: true, ..mods };
-                Step::Done(n + 1, press(key, mods))
+                Step::Done(n.saturating_add(1), press(key, mods))
             }
-            Step::Done(n, other) => Step::Done(n + 1, other),
+            Step::Done(n, other) => Step::Done(n.saturating_add(1), other),
             Step::Incomplete => Step::Incomplete,
         },
     }
@@ -263,7 +266,8 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
         }
         return Step::Incomplete;
     };
-    let consumed = 2 + end + 1;
+    // `ESC [`, the parameters and the final byte; within `bytes`, so exact.
+    let consumed = end.saturating_add(3);
     let params = body.get(..end).unwrap_or_default();
     let last = body.get(end).copied().unwrap_or(0);
     if params.first() == Some(&b'<') || params.first() == Some(&b'?') {
@@ -277,6 +281,11 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
         .collect();
     let first = numbers.first().copied().unwrap_or(0);
     let mods = modifiers(numbers.get(1).copied().unwrap_or(1));
+    // `CSI n ~` numbers the function keys with gaps: F1 is `first - base`.
+    let function = |base: u32| {
+        let n = u8::try_from(first.checked_sub(base)?).ok()?;
+        press(Key::F(n), mods)
+    };
     let input = match last {
         b'A' | b'B' | b'C' | b'D' | b'H' | b'F' | b'P' | b'Q' | b'R' | b'S' => ss3(last, mods),
         b'Z' => press(
@@ -296,9 +305,9 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
             4 | 8 => press(Key::End, mods),
             5 => press(Key::PageUp, mods),
             6 => press(Key::PageDown, mods),
-            11..=15 => press(Key::F((first - 10) as u8), mods),
-            17..=21 => press(Key::F((first - 11) as u8), mods),
-            23 | 24 => press(Key::F((first - 12) as u8), mods),
+            11..=15 => function(10),
+            17..=21 => function(11),
+            23 | 24 => function(12),
             // xterm modifyOtherKeys: `CSI 27 ; mod ; code ~`.
             27 => numbers
                 .get(2)
@@ -365,6 +374,9 @@ mod tests {
             (b"\x1bOP", "F1"),
             (b"\x1b[1;2S", "S-F4"),
             (b"\x1b[15~", "F5"),
+            (b"\x1b[17~", "F6"),
+            (b"\x1b[21~", "F10"),
+            (b"\x1b[23~", "F11"),
             (b"\x1b[24~", "F12"),
             (b"\x1b[Z", "BTab"),
             (b"\x1bx", "M-x"),

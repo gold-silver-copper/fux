@@ -1,5 +1,5 @@
 [workspace]
-members = ["fux-vt"]
+members = ["fux-vt", "fux-sys"]
 exclude = ["fux-vt/fuzz"]
 resolver = "3"
 
@@ -23,7 +23,7 @@ signal-hook = "0.3"
 unicode-width = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-libc = "0.2"
+fux-sys = { path = "fux-sys", version = "0.1.0" }
 
 [profile.dev]
 debug = 0
@@ -33,11 +33,38 @@ strip = true
 lto = "thin"
 codegen-units = 1
 
+[lints.rust]
+unused_must_use = "forbid"
+unconditional_recursion = "forbid"
+unsafe_code = "forbid"
+
 [lints.clippy]
+suspicious = { level = "forbid", priority = -1 }
 unwrap_used = "forbid"
 expect_used = "forbid"
 panic = "forbid"
 unreachable = "forbid"
 todo = "forbid"
 unimplemented = "forbid"
-indexing_slicing = "warn"
+indexing_slicing = "forbid"
+exit = "forbid"
+infinite_loop = "forbid"
+large_stack_frames = "forbid"
+unchecked_time_subtraction = "forbid"
+read_zero_byte_vec = "forbid"
+unused_result_ok = "forbid"
+debug_assert_with_mut_call = "forbid"
+allow_attributes = "forbid"
+undocumented_unsafe_blocks = "forbid"
+significant_drop_in_scrutinee = "forbid"
+significant_drop_tightening = "forbid"
+cast_lossless = "forbid"
+string_slice = "forbid"
+mem_forget = "forbid"
+large_stack_arrays = "forbid"
+allow_attributes_without_reason = "forbid"
+wildcard_enum_match_arm = "forbid"
+cast_possible_truncation = "forbid"
+cast_possible_wrap = "forbid"
+cast_sign_loss = "forbid"
+arithmetic_side_effects = "forbid"

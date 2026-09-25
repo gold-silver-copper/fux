@@ -1,22 +1,21 @@
 [package]
-name = "fux-vt"
-version = "0.1.1"
+name = "fux-sys"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "Bounded terminal emulation for fux"
+description = "The macOS system calls fux makes that std and rustix do not offer safely"
 repository = "https://github.com/gold-silver-copper/fux"
 readme = "README.md"
-keywords = ["terminal", "vt100", "ansi", "emulator", "parser"]
-categories = ["command-line-interface", "parser-implementations"]
+keywords = ["macos", "libproc", "getpeereid", "tcgetpgrp", "fux"]
+categories = ["os::macos-apis"]
 
-[dependencies]
-unicode-width = "0.2"
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
 
 [lints.rust]
 unused_must_use = "forbid"
 unconditional_recursion = "forbid"
-unsafe_code = "forbid"
 
 [lints.clippy]
 suspicious = { level = "forbid", priority = -1 }
@@ -39,12 +38,13 @@ undocumented_unsafe_blocks = "forbid"
 significant_drop_in_scrutinee = "forbid"
 significant_drop_tightening = "forbid"
 cast_lossless = "forbid"
-wildcard_enum_match_arm = "forbid"
 string_slice = "forbid"
-cast_possible_truncation = "forbid"
-cast_possible_wrap = "forbid"
-cast_sign_loss = "forbid"
 mem_forget = "forbid"
 large_stack_arrays = "forbid"
 allow_attributes_without_reason = "forbid"
+wildcard_enum_match_arm = "forbid"
+cast_possible_truncation = "forbid"
+cast_possible_wrap = "forbid"
+cast_sign_loss = "forbid"
 arithmetic_side_effects = "forbid"
+multiple_unsafe_ops_per_block = "forbid"

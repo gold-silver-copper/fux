@@ -129,8 +129,14 @@ impl Frame {
                 payload.len()
             ));
         }
-        let length = u32::try_from(payload.len() + 1).map_err(|e| e.to_string())?;
-        let mut out = Vec::with_capacity(payload.len() + 5);
+        // The kind byte and the payload.
+        let length = payload
+            .len()
+            .checked_add(1)
+            .ok_or("a frame too large to count")
+            .and_then(|n| u32::try_from(n).map_err(|_| "a frame too large to count"))?;
+        // The length, then the frame; a capacity hint only.
+        let mut out = Vec::with_capacity(payload.len().saturating_add(5));
         out.extend_from_slice(&length.to_be_bytes());
         out.push(self.kind());
         out.extend_from_slice(&payload);
@@ -378,7 +384,9 @@ mod tests {
         assert!(Frame::Paint(vec![0; MAX_PAYLOAD + 1]).encode().is_err());
         assert!(Frame::Paint(vec![0; MAX_PAYLOAD]).encode().is_ok());
         let mut decoder = Decoder::default();
-        decoder.push(&((MAX_FRAME + 1) as u32).to_be_bytes());
+        // Any length past the limit will do.
+        let over = u32::try_from(MAX_FRAME + 1).unwrap_or(u32::MAX);
+        decoder.push(&over.to_be_bytes());
         assert!(decoder.frame().is_err());
         let chunks = Frame::chunked(Frame::Paint, &vec![7; MAX_PAYLOAD * 2 + 3]);
         assert_eq!(chunks.len(), 3);
