@@ -491,6 +491,7 @@ fn bar(grid: &mut Grid, session: &Session, view: &View, copy: Option<&crate::cop
     };
     let base = style(BAR_FG, GRAY_BG);
     grid.fill(y, 0, view.cols, base);
+    let copy_bar = copy.and_then(|c| session.panes.get(&c.pane).map(|p| c.bar(p.screen())));
     let right = if let Some(notice) = &view.notice {
         Some((
             notice.text.clone(),
@@ -500,13 +501,8 @@ fn bar(grid: &mut Grid, session: &Session, view: &View, copy: Option<&crate::cop
                 style(Color::Idx(11), GRAY_BG)
             },
         ))
-    } else if let Some(copy) = copy {
-        session.panes.get(&copy.pane).map(|p| {
-            (
-                copy.status(p.screen()),
-                style(Color::Idx(0), Color::Idx(11)).with_bold(true),
-            )
-        })
+    } else if let Some(copy) = &copy_bar {
+        Some((copy.position.clone(), base))
     } else if let Mode::Column { path, .. } = &view.mode {
         let typed = std::iter::once(session.config.prefix.to_string())
             .chain(path.iter().map(|key| key.to_string()))
@@ -547,7 +543,26 @@ fn bar(grid: &mut Grid, session: &Session, view: &View, copy: Option<&crate::cop
         .cols
         .saturating_sub(right_width.saturating_add(u16::from(right_width > 0)));
     let mut x = 0;
-    if let Some(ws) = session.workspace(view.workspace) {
+    if let Some(copy) = copy_bar {
+        // Copy mode's keys replace the tabs.
+        let badge = style(Color::Idx(0), Color::Idx(11)).with_bold(true);
+        x = grid.text(
+            y,
+            x,
+            &fit(&format!(" {} ", copy.badge), left_limit),
+            badge,
+            left_limit,
+        );
+        for (key, label) in copy.hints {
+            let hint = format!("  {key} {label}");
+            if x.saturating_add(width(&hint)) > left_limit {
+                break;
+            }
+            x = grid.text(y, x, "  ", base, left_limit);
+            x = grid.text(y, x, key, base.with_bold(true), left_limit);
+            x = grid.text(y, x, &format!(" {label}"), base, left_limit);
+        }
+    } else if let Some(ws) = session.workspace(view.workspace) {
         let name = format!(" {} ", ws.name);
         x = grid.text(
             y,
@@ -839,6 +854,53 @@ mod tests {
 
     /// At the widest a terminal can be, the last column is u16::MAX - 1:
     /// one past it must stop a wide glyph, not overflow (in release, wrap).
+    /// Copy mode's bar replaces the tabs with what it is doing and the keys
+    /// that act now; a narrow bar drops the least important.
+    #[test]
+    fn copy_mode_replaces_the_tabs_with_its_keys() -> Result<(), String> {
+        let mut s = Session::new(
+            crate::config::Config::default(),
+            "/nonexistent/fux.sock".into(),
+            false,
+        );
+        s.start()?;
+        let c = s.attach(10, 120, None)?;
+        let bar = |s: &Session| {
+            compose(s, c)
+                .map(|g| g.row_text(g.rows.saturating_sub(1)))
+                .unwrap_or_default()
+        };
+        assert!(bar(&s).starts_with(" main  main"), "{}", bar(&s));
+        s.input(c, b"\x02c");
+        let copying = bar(&s);
+        assert!(
+            copying.starts_with(" COPY   v V C-v select  q quit  / ? search  hjkl move"),
+            "{copying}"
+        );
+        assert!(!copying.contains("main") && !copying.contains("y copy"));
+        // Where the cursor is, on the right: its line of all the rows.
+        assert!(copying.ends_with("1/9"), "{copying}");
+        s.input(c, b"v");
+        let selecting = bar(&s);
+        assert!(
+            selecting.starts_with(" COPY select   y copy  q quit  o other end  v clear"),
+            "{selecting}"
+        );
+        s.input(c, b"/ab");
+        assert!(
+            bar(&s).starts_with(" /ab▏   Enter search  Esc cancel"),
+            "{}",
+            bar(&s)
+        );
+        s.input(c, b"\x1b");
+        s.escape(c);
+        s.resize(c, 10, 36);
+        let narrow = bar(&s);
+        assert!(narrow.contains("y copy  q quit"), "{narrow}");
+        assert!(!narrow.contains("other end"), "{narrow}");
+        Ok(())
+    }
+
     #[test]
     fn a_wide_glyph_does_not_fit_the_widest_last_column() {
         let mut grid = Grid::new(1, u16::MAX);
