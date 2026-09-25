@@ -68,3 +68,5 @@ cast_possible_truncation = "forbid"
 cast_possible_wrap = "forbid"
 cast_sign_loss = "forbid"
 arithmetic_side_effects = "forbid"
+# Forbidden in the next commit, once fux calls none of clippy.toml's list.
+disallowed_methods = "allow"
