@@ -172,8 +172,8 @@ impl Copy {
                     (
                         match kind {
                             Select::Char => "v",
-                            Select::Line => "V",
-                            Select::Block => "C-v",
+                            Select::Line => "s",
+                            Select::Block => "x",
                         },
                         "clear",
                     ),
@@ -181,11 +181,17 @@ impl Copy {
                 ],
             ),
             None => {
-                let mut hints = vec![("v V C-v", "select"), ("q", "quit"), ("/ ?", "search")];
+                let mut hints = vec![("v s x", "select"), ("q", "quit"), ("f r", "search")];
                 if self.search.is_some() {
-                    hints.push(("n N", "next"));
+                    hints.push(("n p", "next"));
                 }
-                hints.extend([("hjkl", "move"), ("w b e", "words")]);
+                hints.extend([
+                    ("hjkl", "move"),
+                    ("w b", "words"),
+                    ("u d", "half page"),
+                    ("t z", "top bottom"),
+                    ("a e", "line"),
+                ]);
                 ("COPY", hints)
             }
         };
@@ -245,24 +251,22 @@ struct Flat {
 
 struct Walker<'a> {
     screen: &'a Screen,
-    big: bool,
     row: usize,
     cells: Vec<(u16, u8)>,
 }
 
 impl<'a> Walker<'a> {
-    fn new(screen: &'a Screen, row: usize, big: bool) -> Self {
+    fn new(screen: &'a Screen, row: usize) -> Self {
         Self {
             screen,
-            big,
             row,
-            cells: classes(screen, row, big),
+            cells: classes(screen, row, false),
         }
     }
     fn load(&mut self, row: usize) {
         if row != self.row {
             self.row = row;
-            self.cells = classes(self.screen, row, self.big);
+            self.cells = classes(self.screen, row, false);
         }
     }
     fn at(&mut self, p: Flat) -> (u16, u8) {
@@ -306,9 +310,9 @@ impl<'a> Walker<'a> {
     }
 }
 
-/// `w`/`W`: the start of the next word.
-fn word_forward(screen: &Screen, row: usize, col: u16, big: bool) -> (usize, u16) {
-    let mut w = Walker::new(screen, row, big);
+/// `w`: the start of the next word.
+fn word_forward(screen: &Screen, row: usize, col: u16) -> (usize, u16) {
+    let mut w = Walker::new(screen, row);
     let mut p = w.find(row, col);
     let start = w.class(p);
     while start != 0 && w.class(p) == start {
@@ -326,32 +330,9 @@ fn word_forward(screen: &Screen, row: usize, col: u16, big: bool) -> (usize, u16
     (p.row, w.at(p).0)
 }
 
-/// `e`/`E`: the end of this word, or of the next one.
-fn word_end(screen: &Screen, row: usize, col: u16, big: bool) -> (usize, u16) {
-    let mut w = Walker::new(screen, row, big);
-    let mut p = w.find(row, col);
-    if let Some(n) = w.next(p) {
-        p = n;
-    }
-    while w.class(p) == 0 {
-        match w.next(p) {
-            Some(n) => p = n,
-            None => return (p.row, w.at(p).0),
-        }
-    }
-    let class = w.class(p);
-    while let Some(n) = w.next(p) {
-        if w.class(n) != class {
-            break;
-        }
-        p = n;
-    }
-    (p.row, w.at(p).0)
-}
-
-/// `b`/`B`: the start of this word, or of the previous one.
-fn word_back(screen: &Screen, row: usize, col: u16, big: bool) -> (usize, u16) {
-    let mut w = Walker::new(screen, row, big);
+/// `b`: the start of this word, or of the previous one.
+fn word_back(screen: &Screen, row: usize, col: u16) -> (usize, u16) {
+    let mut w = Walker::new(screen, row);
     let mut p = w.find(row, col);
     match w.prev(p) {
         Some(n) => p = n,
@@ -686,18 +667,35 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
             .find(|(_, k)| *k != 0)
             .map_or(0, |(c, _)| *c)
     };
-    let ctrl = press.mods.ctrl && !press.mods.alt;
+    // Keys are letters, in either case; a letter with Ctrl or Alt is no
+    // key's. The arrows, paging keys, Home, End, Enter and Esc also work.
+    let letter = match press.key {
+        Key::Char(c) if !press.mods.ctrl && !press.mods.alt => Some(c.to_ascii_lowercase()),
+        Key::Char(_)
+        | Key::Enter
+        | Key::Tab
+        | Key::Escape
+        | Key::Backspace
+        | Key::Delete
+        | Key::Insert
+        | Key::Arrow(_)
+        | Key::Home
+        | Key::End
+        | Key::PageUp
+        | Key::PageDown
+        | Key::F(_) => None,
+    };
     let mut target: Option<(usize, u16)> = None;
     let mut scroll: Option<Scroll> = None;
-    match (press.key, ctrl) {
-        (Key::Char('q'), false) | (Key::Escape, _) => {
+    match (letter, press.key) {
+        (Some('q'), _) | (_, Key::Escape) => {
             leave(session, client);
             return;
         }
-        (Key::Char('h'), false) | (Key::Arrow(Direction::Left), _) => {
+        (Some('h'), _) | (_, Key::Arrow(Direction::Left)) => {
             target = Some((row, col.saturating_sub(1)));
         }
-        (Key::Char('l'), false) | (Key::Arrow(Direction::Right), _) => {
+        (Some('l'), _) | (_, Key::Arrow(Direction::Right)) => {
             let wide = row_at(screen, row)
                 .and_then(|r| r.cells.get(usize::from(col)).copied())
                 .is_some_and(|c| c.is_wide());
@@ -706,46 +704,30 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
                 col.saturating_add(if wide { 2 } else { 1 }).min(last_col),
             ));
         }
-        (Key::Char('j'), false) | (Key::Arrow(Direction::Down), _) => {
+        (Some('j'), _) | (_, Key::Arrow(Direction::Down)) => {
             target = Some((row.saturating_add(1).min(last_row), col))
         }
-        (Key::Char('k'), false) | (Key::Arrow(Direction::Up), _) => {
+        (Some('k'), _) | (_, Key::Arrow(Direction::Up)) => {
             target = Some((row.saturating_sub(1), col))
         }
-        (Key::Char('w'), false) => target = Some(word_forward(screen, row, col, false)),
-        (Key::Char('W'), false) => target = Some(word_forward(screen, row, col, true)),
-        (Key::Char('b'), false) => target = Some(word_back(screen, row, col, false)),
-        (Key::Char('B'), false) => target = Some(word_back(screen, row, col, true)),
-        (Key::Char('e'), false) => target = Some(word_end(screen, row, col, false)),
-        (Key::Char('E'), false) => target = Some(word_end(screen, row, col, true)),
-        (Key::Char('0'), false) | (Key::Home, _) => target = Some((row, 0)),
-        (Key::Char('^'), false) => target = Some((row, line_start(row))),
-        (Key::Char('$'), false) | (Key::End, _) => target = Some((row, line_end(row))),
-        (Key::Char('H'), false) => target = Some((top, col)),
-        (Key::Char('M'), false) => {
-            target = Some((
-                top.saturating_add(usize::from(height) / 2).min(last_row),
-                col,
-            ))
-        }
-        (Key::Char('L'), false) => {
-            let bottom = top.saturating_add(usize::from(height)).saturating_sub(1);
-            target = Some((bottom.min(last_row), col))
-        }
-        (Key::Char('g'), false) => target = Some((0, 0)),
-        (Key::Char('G'), false) => target = Some((last_row, col)),
-        (Key::Char('u'), true) => scroll = Some(Scroll::Up(half)),
-        (Key::Char('d'), true) => scroll = Some(Scroll::Down(half)),
-        (Key::Char('b'), true) | (Key::PageUp, _) => scroll = Some(Scroll::Up(page)),
-        (Key::Char('f'), true) | (Key::PageDown, _) => scroll = Some(Scroll::Down(page)),
-        (Key::Char('/'), false) => copy.typing = Some((true, String::new())),
-        (Key::Char('?'), false) => copy.typing = Some((false, String::new())),
-        (Key::Char('n'), false) | (Key::Char('N'), false) => {
+        (Some('w'), _) => target = Some(word_forward(screen, row, col)),
+        (Some('b'), _) => target = Some(word_back(screen, row, col)),
+        (Some('a'), _) => target = Some((row, line_start(row))),
+        (Some('e'), _) | (_, Key::End) => target = Some((row, line_end(row))),
+        (_, Key::Home) => target = Some((row, 0)),
+        (Some('t'), _) => target = Some((0, 0)),
+        (Some('z'), _) => target = Some((last_row, col)),
+        (Some('u'), _) => scroll = Some(Scroll::Up(half)),
+        (Some('d'), _) => scroll = Some(Scroll::Down(half)),
+        (_, Key::PageUp) => scroll = Some(Scroll::Up(page)),
+        (_, Key::PageDown) => scroll = Some(Scroll::Down(page)),
+        (Some('f'), _) => copy.typing = Some((true, String::new())),
+        (Some('r'), _) => copy.typing = Some((false, String::new())),
+        (Some(key @ ('n' | 'p')), _) => {
             match copy.search.clone() {
                 Some(search) => {
-                    let same = press.key == Key::Char('n');
                     let search = Search {
-                        forward: if same {
+                        forward: if key == 'n' {
                             search.forward
                         } else {
                             !search.forward
@@ -761,14 +743,14 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
                         view_error(&mut view.notice),
                     );
                 }
-                None => view.error("no search yet: / or ? starts one"),
+                None => view.error("no search yet: f or r starts one"),
             }
             return;
         }
-        (Key::Char('v'), false) => toggle(copy, Select::Char),
-        (Key::Char('V'), false) => toggle(copy, Select::Line),
-        (Key::Char('v'), true) => toggle(copy, Select::Block),
-        (Key::Char('o'), false) => {
+        (Some('v'), _) => toggle(copy, Select::Char),
+        (Some('s'), _) => toggle(copy, Select::Line),
+        (Some('x'), _) => toggle(copy, Select::Block),
+        (Some('o'), _) => {
             if let Some((kind, anchor)) = copy.selection {
                 copy.selection = Some((kind, copy.cursor));
                 copy.cursor = anchor;
@@ -777,7 +759,7 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
                 }
             }
         }
-        (Key::Char('y'), false) | (Key::Enter, _) => {
+        (Some('y'), _) | (_, Key::Enter) => {
             yank(session, client);
             return;
         }
@@ -869,7 +851,7 @@ fn yank(session: &mut Session, client: ClientId) {
     let screen = pane.screen();
     let Some((kind, start, end)) = copy.ends(screen) else {
         if let Some(view) = session.views.get_mut(&client) {
-            view.error("nothing selected: v, V or C-v starts a selection");
+            view.error("nothing selected: v, s or x starts a selection");
         }
         return;
     };
@@ -946,14 +928,10 @@ mod tests {
     fn word_motions_cross_rows() -> Result<(), String> {
         let p = screen(b"foo.bar  baz\r\nqux", 2, 20)?;
         let s = p.screen();
-        assert_eq!(word_forward(s, 0, 0, false), (0, 3));
-        assert_eq!(word_forward(s, 0, 3, false), (0, 4));
-        assert_eq!(word_forward(s, 0, 0, true), (0, 9));
-        assert_eq!(word_forward(s, 0, 9, false), (1, 0));
-        assert_eq!(word_end(s, 0, 0, false), (0, 2));
-        assert_eq!(word_end(s, 0, 0, true), (0, 6));
-        assert_eq!(word_back(s, 1, 0, false), (0, 9));
-        assert_eq!(word_back(s, 0, 9, true), (0, 0));
+        assert_eq!(word_forward(s, 0, 0), (0, 3));
+        assert_eq!(word_forward(s, 0, 3), (0, 4));
+        assert_eq!(word_forward(s, 0, 9), (1, 0));
+        assert_eq!(word_back(s, 1, 0), (0, 9));
         Ok(())
     }
 

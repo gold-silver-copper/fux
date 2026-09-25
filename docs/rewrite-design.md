@@ -363,20 +363,21 @@ notice if the pane closes or its history drops the anchored rows.
   bar's tabs give way to `COPY` (or the selection's kind, or the search being
   typed) and the keys that act now, with the cursor's line in history on the
   right.
+- **Keys** are letters in either case, without Ctrl or Alt, as after the
+  prefix; the arrows, PageUp/PageDown, Home, End, Enter and Esc also work.
 - **Move:**
   - `h j k l` or the arrows;
-  - `w b e` and `W B E` by word;
-  - `0 ^ $` within a line;
-  - `H M L` within the view;
-  - `g` and `G` to the top of history and to the live bottom;
-  - Ctrl-U/D half a page, PageUp/PageDown a page.
+  - `w b` by word;
+  - `a e` to the line's first and last non-blank, Home to column 0;
+  - `t` and `z` to the top of history and to the live bottom;
+  - `u d` half a page, PageUp/PageDown a page.
 
   The view scrolls when the cursor leaves it.
-- **Search:** `/` and `?`, then `n` and `N`, over the whole history. It is
-  literal (not a regex) and smart-case: case-insensitive unless the query has
-  a capital.
-- **Select:** `v` characters, `V` lines, Ctrl-V a block (rectangle); `o` swaps
-  the selection's ends; `v` again clears it.
+- **Search:** `f` forward and `r` back, then `n` and `p` for the next and
+  previous match, over the whole history. It is literal (not a regex) and
+  smart-case: case-insensitive unless the query has a capital.
+- **Select:** `v` characters, `s` lines, `x` a block (rectangle); `o` swaps
+  the selection's ends; the same key again clears it.
 - **Copy:** `y` or Enter copies and leaves the mode. `q` or Esc leaves without
   copying.
 - **Where copies go:**
@@ -552,14 +553,18 @@ values.
 These are the current defaults. The prefix alone opens the command column,
 which lists all of them.
 
-- `[` `]` tabs; `{` `}` workspaces; Tab / Shift-Tab / Backspace pane focus;
-  Alt-arrows directional focus;
-- `t` new tab; `T` tab chooser; `w` new workspace; `W` workspace chooser;
-- `p` `s` `S` pane, tab and workspace action menus;
-- `h` `v` split; `z` zoom; `r` rename; `x` close (confirm `y`);
-- Ctrl-arrows resize; Shift-arrows move;
-- `c` copy/select mode; `P` paste the newest buffer; `:` command prompt;
-  `d` detach;
+Every key is a letter, in either case, without Ctrl or Alt.
+
+- `h j k l` directional focus; `o` next pane; `q` last pane;
+- `v` `s` split; `x` close (confirm `y`); `z` zoom; `a` pane actions;
+- `c` copy/select mode; `p` paste the newest buffer;
+- `n` `b` next and previous tab;
+- `r` then `h j k l` resizes, and `m` then `h j k l` moves, repeating until
+  Esc;
+- `t` and `w` are the tab and workspace layers, sharing their verbs: `n` new,
+  `h` `l` previous and next, `g` chooser, `r` rename, `x` close, `a` actions,
+  `m` then `h` `l` reorder, repeating;
+- `e` command prompt; `d` detach;
 - the prefix twice sends it to the pane.
 
 ## Not included
