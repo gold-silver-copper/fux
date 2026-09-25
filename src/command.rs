@@ -1,5 +1,5 @@
 //! The command grammar: the one set of commands that the CLI, key bindings,
-//! the `:` prompt and the config file all speak.
+//! the command prompt and the config file all speak.
 use crate::keys::Direction;
 use crate::layout::{Axis, PaneId};
 
@@ -871,6 +871,10 @@ pub fn label(argv: &[String]) -> String {
         ["select-workspace", "--next"] => "next workspace",
         ["select-workspace", "--previous"] => "previous workspace",
         ["choose-workspace"] => "choose workspace",
+        ["reorder", "tab", "--previous"] => "move tab left",
+        ["reorder", "tab", "--next"] => "move tab right",
+        ["reorder", "workspace", "--previous"] => "move workspace earlier",
+        ["reorder", "workspace", "--next"] => "move workspace later",
         ["command-prompt"] => "command prompt",
         ["command-column"] => "command column",
         ["detach"] => "detach this client",

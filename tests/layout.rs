@@ -38,7 +38,7 @@ fn splitting_side_by_side_and_stacked_draws_separators_and_focuses_the_new_pane(
     let server = Server::start("")?;
     let mut client = server.attach(20, 81)?;
     client.wait_for("$")?;
-    client.keys(&format!("{PREFIX}h"))?;
+    client.keys(&format!("{PREFIX}v"))?;
     client.wait("a vertical separator", |t| {
         t.lines()
             .all(|l| l.chars().nth(40) == Some('│') || l.contains("main"))
@@ -46,7 +46,7 @@ fn splitting_side_by_side_and_stacked_draws_separators_and_focuses_the_new_pane(
     assert_eq!(focused(&server)?, "%2");
     assert_eq!(size(&server, "%1")?, (19, 40));
     assert_eq!(size(&server, "%2")?, (19, 40));
-    client.keys(&format!("{PREFIX}v"))?;
+    client.keys(&format!("{PREFIX}s"))?;
     client.wait("a horizontal separator", |t| {
         t.lines().any(|l| l.contains("├─") || l.contains("─────"))
     })?;
@@ -69,27 +69,28 @@ fn focus_moves_next_previous_last_and_by_direction() -> Outcome {
     let mut client = server.attach(20, 81)?;
     client.wait_for("$")?;
     // 1 | (2 / 3)
-    client.keys(&format!("{PREFIX}h"))?;
-    eventually("%2", || Ok(focused(&server)? == "%2"))?;
     client.keys(&format!("{PREFIX}v"))?;
+    eventually("%2", || Ok(focused(&server)? == "%2"))?;
+    client.keys(&format!("{PREFIX}s"))?;
     eventually("%3", || Ok(focused(&server)? == "%3"))?;
-    client.keys(&format!("{PREFIX}\t"))?;
+    client.keys(&format!("{PREFIX}o"))?;
     eventually("next wraps to %1", || Ok(focused(&server)? == "%1"))?;
-    client.keys(&format!("{PREFIX}\x1b[Z"))?;
+    // The previous pane has no key of its own: the command.
+    server.ok(&["select-pane", "-c", "c1", "--previous"])?;
     eventually("previous: %3", || Ok(focused(&server)? == "%3"))?;
-    client.keys(&format!("{PREFIX}\x7f"))?;
+    client.keys(&format!("{PREFIX}q"))?;
     eventually("last: %1", || Ok(focused(&server)? == "%1"))?;
-    client.keys(&format!("{PREFIX}\x1b[1;3C"))?;
+    client.keys(&format!("{PREFIX}l"))?;
     eventually(
         "right of %1: the upper right, closest to its centre",
         || Ok(focused(&server)? == "%2"),
     )?;
-    client.keys(&format!("{PREFIX}\x1b[1;3B"))?;
+    client.keys(&format!("{PREFIX}j"))?;
     eventually("down: %3", || Ok(focused(&server)? == "%3"))?;
-    client.keys(&format!("{PREFIX}\x1b[1;3D"))?;
+    client.keys(&format!("{PREFIX}h"))?;
     eventually("left: %1", || Ok(focused(&server)? == "%1"))?;
     // Nothing further left: a notice, and focus stays.
-    client.keys(&format!("{PREFIX}\x1b[1;3D"))?;
+    client.keys(&format!("{PREFIX}h"))?;
     client.wait("the notice", |t| {
         t.lines()
             .last()
@@ -107,13 +108,12 @@ fn resizing_moves_the_border_and_reaches_the_programs() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 81)?;
     client.wait_for("$")?;
-    client.keys(&format!("{PREFIX}h"))?;
+    client.keys(&format!("{PREFIX}v"))?;
     eventually("two panes", || Ok(size(&server, "%2").is_ok()))?;
-    // C-Right on the right pane grows it rightward? It has no right
-    // neighbour, so its left border moves right: it shrinks.
-    for _ in 0..5 {
-        client.keys(&format!("{PREFIX}\x1b[1;5C"))?;
-    }
+    // Resizing right on the right pane grows it rightward? It has no right
+    // neighbour, so its left border moves right: it shrinks. Resize mode
+    // repeats the key without the prefix, until Enter.
+    client.keys(&format!("{PREFIX}rlllll\r"))?;
     eventually("the border moved", || Ok(size(&server, "%2")?.1 == 35))?;
     assert_eq!(size(&server, "%1")?.1, 45);
     server.ok(&["resize-pane", "-t", "%1", "-L", "10"])?;
@@ -139,7 +139,7 @@ fn zoom_fills_the_screen_and_restores() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 81)?;
     client.wait_for("$")?;
-    client.keys(&format!("{PREFIX}h"))?;
+    client.keys(&format!("{PREFIX}v"))?;
     eventually("two panes", || Ok(size(&server, "%2").is_ok()))?;
     client.keys(&format!("{PREFIX}z"))?;
     eventually("zoomed", || Ok(size(&server, "%2")? == (19, 81)))?;
@@ -158,7 +158,7 @@ fn zoom_fills_the_screen_and_restores() -> Outcome {
     // Changing focus ends a zoom.
     client.keys(&format!("{PREFIX}z"))?;
     eventually("zoomed again", || Ok(size(&server, "%2")? == (19, 81)))?;
-    client.keys(&format!("{PREFIX}\t"))?;
+    client.keys(&format!("{PREFIX}o"))?;
     eventually("focus moved and zoom ended", || {
         Ok(focused(&server)? == "%1" && size(&server, "%2")? == (19, 40))
     })?;
@@ -195,17 +195,17 @@ fn moving_a_pane_by_direction_nests_it_beside_its_neighbour() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(21, 81)?;
     client.wait_for("$")?;
-    // 1 | 2, then S-Down on 2 moves it... nowhere below: refused.
-    client.keys(&format!("{PREFIX}h"))?;
+    // 1 | 2, then moving 2 down moves it... nowhere below: refused.
+    client.keys(&format!("{PREFIX}v"))?;
     eventually("two panes", || Ok(size(&server, "%2").is_ok()))?;
-    client.keys(&format!("{PREFIX}\x1b[1;2B"))?;
+    client.keys(&format!("{PREFIX}mj"))?;
     client.wait("the refusal", |t| {
         t.lines()
             .last()
             .is_some_and(|b| b.contains("no pane down of %2"))
     })?;
-    // S-Left on 2 puts it beside 1 on the left: 2 | 1.
-    client.keys(&format!("{PREFIX}\x1b[1;2D"))?;
+    // Still in move mode: left puts 2 beside 1 on the left, 2 | 1.
+    client.keys("h\r")?;
     eventually("swapped places", || {
         let ls = server.ok(&["ls"])?;
         let order: Vec<&str> = ls

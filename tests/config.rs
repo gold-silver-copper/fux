@@ -100,6 +100,28 @@ fn set_and_bind_change_a_running_server() -> Outcome {
 }
 
 #[test]
+fn an_old_key_binding_is_a_config_error_until_a_reload_fixes_it() -> Outcome {
+    let server = Server::start("bind C-Left resize-pane -L")?;
+    let mut client = server.attach(10, 120)?;
+    client.wait("the config error", |t| {
+        t.lines()
+            .last()
+            .is_some_and(|b| b.contains("config:") && b.contains("is not a letter"))
+    })?;
+    std::fs::write(
+        server.dir.join("fux.conf"),
+        "set shell /bin/sh\nbind -r r h resize-pane -L\n",
+    )
+    .map_err(e)?;
+    server.ok(&["reload"])?;
+    client.detach()?;
+    let mut again = server.attach(10, 120)?;
+    again.wait_for("$")?;
+    assert!(!again.bar().contains("config:"), "{}", again.bar());
+    Ok(())
+}
+
+#[test]
 fn an_invalid_config_is_shown_to_attaching_clients_until_a_reload_fixes_it() -> Outcome {
     let server = Server::start("bind")?;
     let mut client = server.attach(10, 100)?;

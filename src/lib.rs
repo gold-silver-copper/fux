@@ -52,10 +52,11 @@ Commands:
   terminate [-t %N]                    SIGTERM to what runs in the pane's foreground
   send-keys [-t %N] [-l] KEYS...
   capture-pane [-t %N] [-S -LINES] [--json]
-  set OPTION VALUE | bind [-g GROUP] KEY COMMAND... | unbind KEY | unbind-all | reload
+  set OPTION VALUE | unbind KEY... | unbind-all | reload
+  bind [-g GROUP] [-r] KEY... COMMAND...   KEY is a letter after the prefix
   list-buffers | show-buffer [-b N] | paste-buffer [-b N] [-t %N]
   list-keys | detach [-c CLIENT]
-On a client's screen (from a key, the : prompt, or with -c CLIENT):
+On a client's screen (from a key, the command prompt, or with -c CLIENT):
   command-column, command-prompt, copy-mode, zoom, choose-tab, choose-workspace,
   choose-pane, menu pane|tab|workspace, rename-prompt, confirm-close,
   select-pane, select-tab, select-workspace
