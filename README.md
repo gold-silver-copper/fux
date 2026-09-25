@@ -112,7 +112,9 @@ changes meanwhile; if that item is gone, the menu closes and says so.
 
 **The command prompt** (`e`) takes any fux command, in the same grammar as the
 command line and the config file, for example `split -v -- htop`. Its output
-or error shows in the bar.
+or error shows in the bar. It and the rename prompts edit one line: letters are
+text, so editing uses the arrows, Home, End, Backspace and Delete; Enter runs
+it and Esc closes it.
 
 Directional focus picks, among the panes beyond the focused pane's edge, the
 one whose centre is closest across the direction, then along it, then the
@@ -127,16 +129,19 @@ continues (other terminals see it live). In place of the tabs, the bar shows
 typed) and the keys that act now, and on the right the cursor's line in the
 history.
 
+Like the keys after the prefix, copy mode's keys are letters, in either case,
+without Ctrl or Alt; the arrows, PageUp/PageDown, Home, End, Enter and Esc
+also work.
+
 | Keys | Do |
 | --- | --- |
 | `h` `j` `k` `l`, arrows | move |
-| `w` `b` `e`, `W` `B` `E` | by word, or by space-separated word |
-| `0` `^` `$`, Home, End | start of line, first non-blank, last non-blank |
-| `H` `M` `L` | top, middle, bottom of the view |
-| `g` / `G` | top of the history / the live bottom |
-| `C-u` / `C-d`, PageUp / PageDown (`C-b` / `C-f`) | half a page / a page |
-| `/` `?` then `n` `N` | search forward or back, again, the other way |
-| `v` / `V` / `C-v` | select characters / lines / a block; again to clear |
+| `w` / `b` | the next word / back a word |
+| `a` / `e`, Home / End | the first / last non-blank of the line; Home is column 0 |
+| `u` / `d`, PageUp / PageDown | half a page / a page, up or down |
+| `t` / `z` | top of the history / the live bottom |
+| `f` / `r`, then `n` / `p` | search forward / back; the next match, the previous |
+| `v` / `s` / `x` | select characters / lines / a block; again to clear |
 | `o` | swap the selection's ends |
 | `y` or Enter | copy and leave |
 | `q` or Esc | leave without copying |
