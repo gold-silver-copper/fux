@@ -170,7 +170,7 @@ pub fn start_server(socket: &Path) -> Result<(), String> {
     let mut child = command
         .spawn()
         .map_err(|e| format!("starting a server: {e}"))?;
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = crate::after(Instant::now(), Duration::from_secs(2));
     loop {
         if UnixStream::connect(socket).is_ok() {
             // The child is left to run; it is not ours to wait for, and

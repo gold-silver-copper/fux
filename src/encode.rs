@@ -13,7 +13,13 @@ pub fn paste(text: &str, bracketed: bool) -> Vec<u8> {
         return text.as_bytes().to_vec();
     }
     let inner = text.replace("\x1b[201~", "");
-    let mut bytes = Vec::with_capacity(inner.len() + PASTE_START.len() + PASTE_END.len());
+    // A capacity hint only.
+    let mut bytes = Vec::with_capacity(
+        inner
+            .len()
+            .saturating_add(PASTE_START.len())
+            .saturating_add(PASTE_END.len()),
+    );
     bytes.extend_from_slice(PASTE_START);
     bytes.extend_from_slice(inner.as_bytes());
     bytes.extend_from_slice(PASTE_END);
@@ -24,7 +30,12 @@ pub fn paste(text: &str, bracketed: bool) -> Vec<u8> {
 pub fn key_bytes(press: KeyPress, application: bool) -> Vec<u8> {
     let KeyPress { key, mods } = press;
     let Modifiers { ctrl, alt, shift } = mods;
-    let modifier = 1 + usize::from(shift) + 2 * usize::from(alt) + 4 * usize::from(ctrl);
+    // xterm's modifier parameter: 1 plus a bit for each, so at most 8.
+    let bits = [(shift, 1), (alt, 2), (ctrl, 4)]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .fold(0usize, |bits, (_, bit)| bits | bit);
+    let modifier = bits.saturating_add(1);
     let csi = |code: u8, final_byte: char| {
         if modifier > 1 {
             format!("\x1b[{code};{modifier}{final_byte}")
@@ -42,7 +53,10 @@ pub fn key_bytes(press: KeyPress, application: bool) -> Vec<u8> {
         Key::Arrow(Direction::Left) => Some(('D', false)),
         Key::Home => Some(('H', false)),
         Key::End => Some(('F', false)),
-        Key::F(n @ 1..=4) => Some((char::from(b'P' + n - 1), true)),
+        Key::F(1) => Some(('P', true)),
+        Key::F(2) => Some(('Q', true)),
+        Key::F(3) => Some(('R', true)),
+        Key::F(4) => Some(('S', true)),
         Key::Char(_)
         | Key::Enter
         | Key::Tab
@@ -98,7 +112,10 @@ fn control_byte(c: char) -> u8 {
     match c {
         '2' => 0,
         '3' => 0x1b,
-        '4'..='7' => 0x1c + (c as u8 - b'4'),
+        '4' => 0x1c,
+        '5' => 0x1d,
+        '6' => 0x1e,
+        '7' => 0x1f,
         '8' | '?' => 0x7f,
         '0' | '1' | '9' => c as u8,
         _ => (c.to_ascii_uppercase() as u8) & 0x1f,

@@ -24,6 +24,13 @@ static COUNT: AtomicUsize = AtomicUsize::new(0);
 /// another test's descriptors.
 static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// When a wait that starts now gives up. A time past what an `Instant`
+/// holds gives up at once.
+pub fn after(wait: Duration) -> Instant {
+    let now = Instant::now();
+    now.checked_add(wait).unwrap_or(now)
+}
+
 pub fn e(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
@@ -80,7 +87,7 @@ impl Server {
             socket,
             child: Some(child),
         };
-        let deadline = Instant::now() + PATIENCE;
+        let deadline = after(PATIENCE);
         while UnixStream::connect(&server.socket).is_err() {
             if Instant::now() > deadline {
                 return Err(format!("the server did not start: {}", server.log()));
@@ -134,7 +141,7 @@ impl Server {
 
     /// Waits until the server has exited; its exit status.
     pub fn wait_exit(&mut self) -> Result<std::process::ExitStatus, String> {
-        let deadline = Instant::now() + PATIENCE;
+        let deadline = after(PATIENCE);
         loop {
             if let Some(child) = &mut self.child
                 && let Some(status) = child.try_wait().map_err(e)?
@@ -163,7 +170,7 @@ impl Drop for Server {
                 .arg("kill-server")
                 .env("FUX_SOCKET", &self.socket)
                 .output();
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = after(Duration::from_secs(3));
             while child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -321,7 +328,7 @@ impl Client {
 
     /// Waits until the screen satisfies `test`.
     pub fn wait(&mut self, what: &str, test: impl Fn(&str) -> bool) -> Outcome {
-        let deadline = Instant::now() + PATIENCE;
+        let deadline = after(PATIENCE);
         loop {
             self.pump()?;
             let text = self.text();
@@ -342,7 +349,7 @@ impl Client {
 
     /// Waits for the server to end this attachment; the reason.
     pub fn wait_exit(&mut self) -> Result<String, String> {
-        let deadline = Instant::now() + PATIENCE;
+        let deadline = after(PATIENCE);
         loop {
             self.pump()?;
             if let Some(reason) = &self.exit {
@@ -363,7 +370,7 @@ impl Client {
 
 /// Waits until `test` holds, polling.
 pub fn eventually(what: &str, mut test: impl FnMut() -> Result<bool, String>) -> Outcome {
-    let deadline = Instant::now() + PATIENCE;
+    let deadline = after(PATIENCE);
     loop {
         if test()? {
             return Ok(());
@@ -477,7 +484,7 @@ impl Terminal {
     }
 
     pub fn wait_for(&mut self, needle: &str) -> Outcome {
-        let deadline = Instant::now() + PATIENCE;
+        let deadline = after(PATIENCE);
         loop {
             self.pump();
             if self.text().contains(needle)
@@ -520,7 +527,7 @@ impl Terminal {
 
     /// Waits for the client to exit; its status.
     pub fn wait_exit(&mut self) -> Result<std::process::ExitStatus, String> {
-        let deadline = Instant::now() + PATIENCE;
+        let deadline = after(PATIENCE);
         loop {
             self.pump();
             if let Some(status) = self.child.try_wait().map_err(e)? {

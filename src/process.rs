@@ -199,7 +199,7 @@ pub(crate) fn session(pid: Pid) -> Option<i32> {
     let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid.as_raw_nonzero())).ok()?;
     // `pid (comm) state ppid pgrp session …`; comm may hold spaces and
     // parentheses, so fields are counted after the last `)`.
-    let rest = stat.get(stat.rfind(')')? + 1..)?;
+    let (_, rest) = stat.rsplit_once(')')?;
     rest.split_whitespace().nth(3)?.parse().ok()
 }
 
@@ -212,6 +212,12 @@ pub(crate) fn session(pid: Pid) -> Option<i32> {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn session(_pid: Pid) -> Option<i32> {
     None
+}
+
+/// The status a shell reports for a process a signal ended: 128 plus the
+/// signal, whose numbers are small.
+fn signalled(signal: i32) -> i32 {
+    128i32.saturating_add(signal)
 }
 
 /// Whether `pid` has exited, without reaping it: its exit status, or `None`
@@ -229,7 +235,7 @@ pub fn exited(pid: Pid) -> Option<i32> {
                     return Some(status.exit_status().unwrap_or(0));
                 }
                 if status.killed() || status.dumped() {
-                    return Some(128 + status.terminating_signal().unwrap_or(0));
+                    return Some(signalled(status.terminating_signal().unwrap_or(0)));
                 }
                 return None;
             }
@@ -268,7 +274,7 @@ pub fn finish(leader: Pid) -> Option<i32> {
                 return Some(
                     status
                         .exit_status()
-                        .or_else(|| status.terminating_signal().map(|s| 128 + s))
+                        .or_else(|| status.terminating_signal().map(signalled))
                         .unwrap_or(0),
                 );
             }

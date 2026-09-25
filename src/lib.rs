@@ -23,6 +23,13 @@ pub mod view;
 pub mod words;
 
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
+
+/// `wait` after `from`. A time too far off for an `Instant` is taken as
+/// `from`, so that a deadline fires at once rather than never.
+pub(crate) fn after(from: Instant, wait: Duration) -> Instant {
+    from.checked_add(wait).unwrap_or(from)
+}
 
 const USAGE: &str = "\
 usage: fux [attach] [-t WORKSPACE] [--nested]
