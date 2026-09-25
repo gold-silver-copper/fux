@@ -76,6 +76,7 @@ fn usage_error(message: &str) -> Result<u8, String> {
 fn run(args: &[String]) -> Result<u8, String> {
     let first = args.first().map(String::as_str);
     match first {
+        Some(process::LAUNCH) => Ok(process::launched(args.get(1..).unwrap_or_default())),
         None | Some("attach") => {
             let mut workspace = None;
             let mut nested = false;
@@ -110,6 +111,9 @@ fn run(args: &[String]) -> Result<u8, String> {
                 match arg.as_str() {
                     "--socket" => socket_flag = rest.next().cloned(),
                     "--config" => config = rest.next().cloned(),
+                    client::SETSID => {
+                        rustix::process::setsid().map_err(|e| format!("setsid: {e}"))?;
+                    }
                     other => return usage_error(&format!("server: unexpected {other:?}")),
                 }
             }
