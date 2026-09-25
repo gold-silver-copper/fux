@@ -1,0 +1,11 @@
+bind g n new-tab
+bind -g Grow -r g m h reorder tab --previous
+bind g new-tab
+bind h u zoom
+bind g n m zoom
+bind g n zoom
+unbind g m h
+unbind g m
+bind g m l zoom
+unbind g
+unbind
