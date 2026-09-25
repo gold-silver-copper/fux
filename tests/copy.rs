@@ -131,7 +131,7 @@ fn motions_and_search_move_the_cursor() -> Outcome {
     })?;
     client.keys("v")?;
     client.wait("cleared", |t| {
-        t.lines().last().is_some_and(|b| !b.contains("select"))
+        t.lines().last().is_some_and(|b| !b.contains("COPY select"))
     })?;
     client.keys("q")?;
     client.wait("left", |t| {

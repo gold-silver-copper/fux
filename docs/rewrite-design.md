@@ -360,7 +360,9 @@ Output keeps arriving, and other clients see it live. The mode ends with a
 notice if the pane closes or its history drops the anchored rows.
 
 - **Enter it:** prefix `c`. The cursor starts at the pane's text cursor. The
-  bar shows `COPY` with the cursor's line in history.
+  bar's tabs give way to `COPY` (or the selection's kind, or the search being
+  typed) and the keys that act now, with the cursor's line in history on the
+  right.
 - **Move:**
   - `h j k l` or the arrows;
   - `w b e` and `W B E` by word;

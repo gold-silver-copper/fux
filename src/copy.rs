@@ -143,23 +143,68 @@ impl Copy {
         }
     }
 
-    /// The line the bar shows: `COPY` and where the cursor is.
-    pub fn status(&self, screen: &Screen) -> String {
+    /// What the bar shows in place of the tabs.
+    pub fn bar(&self, screen: &Screen) -> Bar {
         // Counted from 1; exact, as rows are far fewer than a usize holds.
         let line = self
             .at(screen, self.cursor)
             .map_or(0, |(r, _)| r.saturating_add(1));
-        let mode = match self.selection {
-            Some((Select::Char, _)) => " select",
-            Some((Select::Line, _)) => " lines",
-            Some((Select::Block, _)) => " block",
-            None => "",
+        let position = format!("{line}/{}", retained(screen));
+        if let Some((forward, text)) = &self.typing {
+            return Bar {
+                badge: format!("{}{text}▏", if *forward { "/" } else { "?" }),
+                hints: vec![("Enter", "search"), ("Esc", "cancel")],
+                position,
+            };
+        }
+        let (badge, hints) = match self.selection {
+            // `y` only acts on a selection, so it shows with one.
+            Some((kind, _)) => (
+                match kind {
+                    Select::Char => "COPY select",
+                    Select::Line => "COPY lines",
+                    Select::Block => "COPY block",
+                },
+                vec![
+                    ("y", "copy"),
+                    ("q", "quit"),
+                    ("o", "other end"),
+                    (
+                        match kind {
+                            Select::Char => "v",
+                            Select::Line => "V",
+                            Select::Block => "C-v",
+                        },
+                        "clear",
+                    ),
+                    ("hjkl", "extend"),
+                ],
+            ),
+            None => {
+                let mut hints = vec![("v V C-v", "select"), ("q", "quit"), ("/ ?", "search")];
+                if self.search.is_some() {
+                    hints.push(("n N", "next"));
+                }
+                hints.extend([("hjkl", "move"), ("w b e", "words")]);
+                ("COPY", hints)
+            }
         };
-        match &self.typing {
-            Some((forward, text)) => format!("{}{text}▏", if *forward { "/" } else { "?" }),
-            None => format!("COPY{mode} {line}/{}", retained(screen)),
+        Bar {
+            badge: badge.to_owned(),
+            hints,
+            position,
         }
     }
+}
+
+/// Copy mode's bar: what it is doing, the keys that act now, most
+/// important first so a narrow bar drops the least, and where the cursor
+/// is.
+pub struct Bar {
+    pub badge: String,
+    pub hints: Vec<(&'static str, &'static str)>,
+    /// The cursor's line, counted from 1, of all the rows retained.
+    pub position: String,
 }
 
 // ------------------------------------------------------------ text classes
@@ -522,7 +567,7 @@ pub fn enter(session: &mut Session, client: ClientId) -> Result<String, String> 
     };
     let view = session.views.get_mut(&client).ok_or("no such client")?;
     view.mode = Mode::Copy(Box::new(copy));
-    // The bar shows COPY and the cursor's line; a notice would hide it.
+    // The bar shows where the cursor is; a notice would hide it.
     view.notice = None;
     Ok(String::new())
 }
