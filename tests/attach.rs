@@ -183,15 +183,26 @@ fn a_panes_program_inherits_only_stdio_and_a_clean_signal_mask() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
-    // Descriptors 3..9, whatever the server holds there, are not open here.
-    client.keys("for n in 3 4 5 6 7 8 9; do (: >&$n) 2>/dev/null && echo fd$n-open; done; echo fds-checked\r")?;
+    // Descriptors 3..9, whatever the server holds there, are not open here,
+    // for reading or for writing; shells keep their own from 10 up. Any
+    // that is open gets described in a file, so a failure says what leaked.
+    let report = server.dir.join("open-fds");
+    client.keys(&format!(
+        "for n in 3 4 5 6 7 8 9; do {{ (: >&$n) || (: <&$n); }} 2>/dev/null && echo fd$n-open && \
+         {{ lsof -a -p $$ -d $n || ls -l /proc/$$/fd/$n; }} >> '{}' 2>&1; done; echo fds-checked\r",
+        report.display()
+    ))?;
     client.wait("the check", |t| t.lines().any(|l| l == "fds-checked"))?;
     let open: Vec<String> = client
         .lines()
         .into_iter()
         .filter(|l| l.starts_with("fd") && l.ends_with("-open"))
         .collect();
-    assert!(open.is_empty(), "{open:?}");
+    assert!(
+        open.is_empty(),
+        "{open:?}:\n{}",
+        std::fs::read_to_string(&report).unwrap_or_default()
+    );
     client.keys("ps -o sigmask= -p $$ | tr -d ' 0'; echo mask-checked\r")?;
     client.wait("the mask", |t| t.lines().any(|l| l == "mask-checked"))?;
     let lines = client.lines();
