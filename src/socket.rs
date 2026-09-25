@@ -456,6 +456,85 @@ mod tests {
         Ok(())
     }
 
+    fn inode(path: &Path) -> Result<u64, String> {
+        fs::symlink_metadata(path)
+            .map(|m| m.ino())
+            .map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Whether the filesystem under `dir` gives a freed inode number to
+    /// the next file it makes, as ext4 does and APFS does not.
+    fn reuses_inode_numbers(dir: &Path) -> Result<bool, String> {
+        let probe = dir.join("probe.sock");
+        for _ in 0..5 {
+            let first = UnixListener::bind(&probe).map_err(|e| e.to_string())?;
+            let number = inode(&probe)?;
+            drop(first);
+            fs::remove_file(&probe).map_err(|e| e.to_string())?;
+            let second = UnixListener::bind(&probe).map_err(|e| e.to_string())?;
+            let again = inode(&probe)?;
+            drop(second);
+            fs::remove_file(&probe).map_err(|e| e.to_string())?;
+            if number == again {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// A socket that replaces fux's own after fux's listener closed keeps
+    /// its place when fux's endpoint is dropped, and a stale socket's pin
+    /// tells a replacement from the file it pinned, even where the
+    /// replacement gets the freed inode number (bevy-final finding 014).
+    /// The test says whether its filesystem reuses numbers, since only
+    /// there does it test anything a plain identity check would not.
+    #[test]
+    fn cleanup_leaves_a_socket_that_replaced_ours_where_inodes_are_reused() -> Result<(), String> {
+        let root = scratch("reuse");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("fux")).map_err(|e| e.to_string())?;
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+        fs::set_permissions(root.join("fux"), fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+        let reuse = reuses_inode_numbers(&root.join("fux"))?;
+        eprintln!(
+            "inode numbers under {} are {}",
+            root.display(),
+            if reuse {
+                "reused: the guarantee is exercised"
+            } else {
+                "not reused: the guarantee holds here without the pin"
+            }
+        );
+        let path = root.join("fux").join("s.sock");
+        // At exit: fux's listener closes, someone replaces the socket, then
+        // fux's endpoint is dropped.
+        let (endpoint, listener) = bind_socket(&path)?;
+        let ours = inode(&path)?;
+        drop(listener);
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+        let replacement = UnixListener::bind(&path).map_err(|e| e.to_string())?;
+        let theirs = inode(&path)?;
+        eprintln!("fux's socket was inode {ours}, the replacement's {theirs}");
+        drop(endpoint);
+        assert!(exists(&path), "the replacement survives fux's cleanup");
+        drop(replacement);
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+        // Binding: a stale socket is pinned, then replaced before it could be
+        // removed. The pin must not mistake the replacement for it.
+        drop(UnixListener::bind(&path).map_err(|e| e.to_string())?);
+        let pin = Pinned::new(&path).map_err(|e| e.to_string())?;
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+        let replacement = UnixListener::bind(&path).map_err(|e| e.to_string())?;
+        assert!(
+            !pin.still_at(&path),
+            "the pin took a replacement for the stale socket"
+        );
+        drop(replacement);
+        let _ = fs::remove_dir_all(&root);
+        Ok(())
+    }
+
     #[test]
     fn a_shared_directory_is_refused() -> Result<(), String> {
         let root = scratch("shared");
