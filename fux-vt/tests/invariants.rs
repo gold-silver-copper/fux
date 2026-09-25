@@ -13,7 +13,7 @@ fn seed_fuzz_with_golden_terminal_edge_and_tiny_operations() -> Result {
         let mut encoded = vec![3, 11, 8];
         for operation in operations {
             for bytes in operation.chunks(254) {
-                encoded.push((bytes.len() - 1) as u8);
+                encoded.push(u8::try_from(bytes.len() - 1).map_err(std::io::Error::other)?);
                 encoded.extend_from_slice(bytes);
             }
         }
@@ -98,10 +98,10 @@ fn permanent_adversarial_corpus_is_chunk_invariant_and_bounded() -> Result {
             if let Ok(directory) = std::env::var("FUX_VT_FUZZ_CORPUS") {
                 let path = std::path::Path::new(&directory);
                 std::fs::create_dir_all(path)?;
-                let mut encoded = vec![(rows - 1) as u8, (cols - 1) as u8, 8];
+                let mut encoded = vec![u8::try_from(rows - 1)?, u8::try_from(cols - 1)?, 8];
                 for op in &operations {
                     for bytes in op.chunks(254) {
-                        encoded.push((bytes.len() - 1) as u8);
+                        encoded.push(u8::try_from(bytes.len() - 1)?);
                         encoded.extend_from_slice(bytes);
                     }
                 }
@@ -113,7 +113,7 @@ fn permanent_adversarial_corpus_is_chunk_invariant_and_bounded() -> Result {
             }
             for operation in operations {
                 whole.process(&operation)?;
-                let size = (corpus::splitmix(&mut state) % 7 + 1) as usize;
+                let size = usize::try_from(corpus::splitmix(&mut state) % 7 + 1)?;
                 for chunk in operation.chunks(size) {
                     split.process(chunk)?;
                 }

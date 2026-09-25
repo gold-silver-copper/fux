@@ -98,8 +98,8 @@ impl Copy {
     pub fn cursor_in_view(&self, screen: &Screen, height: u16) -> Option<(u16, u16)> {
         let top = index_of(screen, self.top)?;
         let (row, col) = self.at(screen, self.cursor)?;
-        let y = row.checked_sub(top)?;
-        (y < usize::from(height)).then_some((y as u16, col))
+        let y = u16::try_from(row.checked_sub(top)?).ok()?;
+        (y < height).then_some((y, col))
     }
 
     /// The selection's two ends, in order.
@@ -155,7 +155,8 @@ impl Copy {
 fn classes(screen: &Screen, index: usize, big: bool) -> Vec<(u16, u8)> {
     let mut out = Vec::new();
     if let Some(row) = row_at(screen, index) {
-        for (col, cell) in row.cells.iter().enumerate() {
+        // A row is never wider than a u16 screen.
+        for (col, cell) in (0..=u16::MAX).zip(row.cells) {
             if cell.is_wide_continuation() {
                 continue;
             }
@@ -167,7 +168,7 @@ fn classes(screen: &Screen, index: usize, big: bool) -> Vec<(u16, u8)> {
             } else {
                 2
             };
-            out.push((col as u16, class));
+            out.push((col, class));
         }
     }
     let end = out.last().map_or(0, |(c, _)| c.saturating_add(1));
@@ -329,7 +330,7 @@ fn word_back(screen: &Screen, row: usize, col: u16, big: bool) -> (usize, u16) {
 fn row_chars(screen: &Screen, index: usize) -> Vec<(char, u16)> {
     let mut out = Vec::new();
     if let Some(row) = row_at(screen, index) {
-        for (col, cell) in row.cells.iter().enumerate() {
+        for (col, cell) in (0..=u16::MAX).zip(row.cells) {
             if cell.is_wide_continuation() {
                 continue;
             }
@@ -339,7 +340,7 @@ fn row_chars(screen: &Screen, index: usize) -> Vec<(char, u16)> {
                 " "
             };
             for c in text.chars() {
-                out.push((c, col as u16));
+                out.push((c, col));
             }
         }
     }
@@ -522,6 +523,24 @@ fn leave(session: &mut Session, client: ClientId) {
     }
 }
 
+/// A scroll by some rows, toward older output or newer.
+#[derive(Clone, Copy)]
+enum Scroll {
+    Up(usize),
+    Down(usize),
+}
+
+impl Scroll {
+    /// Where a row index lands, stopping at 0 and at `last`.
+    fn from(self, at: usize, last: usize) -> usize {
+        match self {
+            Scroll::Up(n) => at.saturating_sub(n),
+            Scroll::Down(n) => at.saturating_add(n),
+        }
+        .min(last)
+    }
+}
+
 /// A key in copy mode.
 pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
     let Some(view) = session.views.get(&client) else {
@@ -613,7 +632,7 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
     };
     let ctrl = press.mods.ctrl && !press.mods.alt;
     let mut target: Option<(usize, u16)> = None;
-    let mut scroll: Option<isize> = None;
+    let mut scroll: Option<Scroll> = None;
     match (press.key, ctrl) {
         (Key::Char('q'), false) | (Key::Escape, _) => {
             leave(session, client);
@@ -652,10 +671,10 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
         }
         (Key::Char('g'), false) => target = Some((0, 0)),
         (Key::Char('G'), false) => target = Some((last_row, col)),
-        (Key::Char('u'), true) => scroll = Some(-(half as isize)),
-        (Key::Char('d'), true) => scroll = Some(half as isize),
-        (Key::Char('b'), true) | (Key::PageUp, _) => scroll = Some(-(page as isize)),
-        (Key::Char('f'), true) | (Key::PageDown, _) => scroll = Some(page as isize),
+        (Key::Char('u'), true) => scroll = Some(Scroll::Up(half)),
+        (Key::Char('d'), true) => scroll = Some(Scroll::Down(half)),
+        (Key::Char('b'), true) | (Key::PageUp, _) => scroll = Some(Scroll::Up(page)),
+        (Key::Char('f'), true) | (Key::PageDown, _) => scroll = Some(Scroll::Down(page)),
         (Key::Char('/'), false) => copy.typing = Some((true, String::new())),
         (Key::Char('?'), false) => copy.typing = Some((false, String::new())),
         (Key::Char('n'), false) | (Key::Char('N'), false) => {
@@ -701,9 +720,9 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
         }
         _ => {}
     }
-    if let Some(delta) = scroll {
-        let row = (row as isize + delta).clamp(0, last_row as isize) as usize;
-        let top = (top as isize + delta).clamp(0, screen.history_len() as isize) as usize;
+    if let Some(scroll) = scroll {
+        let row = scroll.from(row, last_row);
+        let top = scroll.from(top, screen.history_len());
         if let Some(r) = row_at(screen, top) {
             copy.top = r.id;
         }
@@ -831,6 +850,17 @@ mod tests {
         let mut parser = fux_vt::Parser::new(rows, cols, 100).map_err(|e| e.to_string())?;
         parser.process(text).map_err(|e| e.to_string())?;
         Ok(parser)
+    }
+
+    #[test]
+    fn a_scroll_stops_at_both_ends() {
+        assert_eq!(Scroll::Up(3).from(5, 10), 2);
+        assert_eq!(Scroll::Up(9).from(5, 10), 0);
+        assert_eq!(Scroll::Down(3).from(5, 10), 8);
+        assert_eq!(Scroll::Down(9).from(5, 10), 10);
+        assert_eq!(Scroll::Down(usize::MAX).from(5, 10), 10);
+        // A row past the end, as after output shrank history, comes back.
+        assert_eq!(Scroll::Up(1).from(20, 10), 10);
     }
 
     #[test]

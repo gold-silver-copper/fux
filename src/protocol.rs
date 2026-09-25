@@ -378,7 +378,9 @@ mod tests {
         assert!(Frame::Paint(vec![0; MAX_PAYLOAD + 1]).encode().is_err());
         assert!(Frame::Paint(vec![0; MAX_PAYLOAD]).encode().is_ok());
         let mut decoder = Decoder::default();
-        decoder.push(&((MAX_FRAME + 1) as u32).to_be_bytes());
+        // Any length past the limit will do.
+        let over = u32::try_from(MAX_FRAME + 1).unwrap_or(u32::MAX);
+        decoder.push(&over.to_be_bytes());
         assert!(decoder.frame().is_err());
         let chunks = Frame::chunked(Frame::Paint, &vec![7; MAX_PAYLOAD * 2 + 3]);
         assert_eq!(chunks.len(), 3);

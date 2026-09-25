@@ -277,6 +277,11 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
         .collect();
     let first = numbers.first().copied().unwrap_or(0);
     let mods = modifiers(numbers.get(1).copied().unwrap_or(1));
+    // `CSI n ~` numbers the function keys with gaps: F1 is `first - base`.
+    let function = |base: u32| {
+        let n = u8::try_from(first.checked_sub(base)?).ok()?;
+        press(Key::F(n), mods)
+    };
     let input = match last {
         b'A' | b'B' | b'C' | b'D' | b'H' | b'F' | b'P' | b'Q' | b'R' | b'S' => ss3(last, mods),
         b'Z' => press(
@@ -296,9 +301,9 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
             4 | 8 => press(Key::End, mods),
             5 => press(Key::PageUp, mods),
             6 => press(Key::PageDown, mods),
-            11..=15 => press(Key::F((first - 10) as u8), mods),
-            17..=21 => press(Key::F((first - 11) as u8), mods),
-            23 | 24 => press(Key::F((first - 12) as u8), mods),
+            11..=15 => function(10),
+            17..=21 => function(11),
+            23 | 24 => function(12),
             // xterm modifyOtherKeys: `CSI 27 ; mod ; code ~`.
             27 => numbers
                 .get(2)
@@ -365,6 +370,9 @@ mod tests {
             (b"\x1bOP", "F1"),
             (b"\x1b[1;2S", "S-F4"),
             (b"\x1b[15~", "F5"),
+            (b"\x1b[17~", "F6"),
+            (b"\x1b[21~", "F10"),
+            (b"\x1b[23~", "F11"),
             (b"\x1b[24~", "F12"),
             (b"\x1b[Z", "BTab"),
             (b"\x1bx", "M-x"),

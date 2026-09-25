@@ -43,6 +43,20 @@ pub struct Screen {
 #[cfg(test)]
 mod tests;
 
+/// The palette colour an SGR parameter names: 30–37 and 40–47 are colours
+/// 0–7, and 90–97 and 100–107 their bright forms 8–15.
+fn palette(n: u16) -> Option<Color> {
+    let (base, bright) = match n {
+        30..=37 => (30, 0),
+        40..=47 => (40, 0),
+        90..=97 => (90, 8),
+        100..=107 => (100, 8),
+        _ => return None,
+    };
+    let index = u8::try_from(n.checked_sub(base)?).ok()?;
+    Some(Color::Idx(index.checked_add(bright)?))
+}
+
 impl Screen {
     pub(crate) fn new(rows: u16, cols: u16, history: usize) -> Result<Self, Error> {
         let mut next_id = 1;
@@ -281,7 +295,10 @@ impl Screen {
         if width.is_none() && u32::from(c) < 256 {
             return Ok(());
         }
-        let width = width.unwrap_or(1) as u16;
+        // Too wide for the grid, whatever the number, so not printed.
+        let Ok(width) = u16::try_from(width.unwrap_or(1)) else {
+            return Ok(());
+        };
         if width > self.grid().cols {
             return Ok(());
         }
@@ -352,11 +369,14 @@ impl Screen {
         while let Some((&first, tail)) = bytes.split_first() {
             self.wrap_for(1)?;
             let (row, col) = self.grid().cursor;
-            let count = bytes.len().min(usize::from(self.grid().cols - col));
+            let room = self.grid().cols - col;
+            // A run too long for a u16 still stops at the margin.
+            let count = u16::try_from(bytes.len()).map_or(room, |n| n.min(room));
+            let span = usize::from(col)..usize::from(col) + usize::from(count);
             let simple = self
                 .grid()
                 .live_row(row)
-                .and_then(|r| r.cells.get(usize::from(col)..usize::from(col) + count))
+                .and_then(|r| r.cells.get(span.clone()))
                 .is_some_and(|cells| {
                     cells
                         .iter()
@@ -368,18 +388,18 @@ impl Screen {
                 continue;
             }
             let attributes = self.attributes;
-            let run = bytes.get(..count).unwrap_or_default();
+            let run = bytes.get(..usize::from(count)).unwrap_or_default();
             self.with_grid(|g, _, v| {
                 g.mutate_row(row, v, |cells| {
-                    if let Some(dst) = cells.get_mut(usize::from(col)..usize::from(col) + count) {
+                    if let Some(dst) = cells.get_mut(span) {
                         for (cell, byte) in dst.iter_mut().zip(run) {
                             *cell = Cell::ascii(*byte, attributes);
                         }
                     }
                 });
-                g.cursor.1 += count as u16;
+                g.cursor.1 += count;
             });
-            bytes = bytes.get(count..).unwrap_or_default();
+            bytes = bytes.get(usize::from(count)..).unwrap_or_default();
         }
         Ok(())
     }
@@ -388,9 +408,8 @@ impl Screen {
         let g = self.grid_mut();
         match byte {
             8 => g.cursor.1 = g.cursor.1.saturating_sub(1),
-            9 => {
-                g.cursor.1 = ((u32::from(g.cursor.1) / 8 + 1) * 8).min(u32::from(g.cols - 1)) as u16
-            }
+            // The next multiple of eight, stopping at the last column.
+            9 => g.cursor.1 = (g.cursor.1 / 8 + 1).saturating_mul(8).min(g.cols - 1),
             10..=12 => self.linefeed()?,
             13 => g.cursor.1 = 0,
             _ => {}
@@ -657,10 +676,16 @@ impl Screen {
                 [27] => self.attributes.flags &= !16,
                 [39] => self.attributes.foreground = Color::Default,
                 [49] => self.attributes.background = Color::Default,
-                [n @ 30..=37] => self.attributes.foreground = Color::Idx((*n - 30) as u8),
-                [n @ 40..=47] => self.attributes.background = Color::Idx((*n - 40) as u8),
-                [n @ 90..=97] => self.attributes.foreground = Color::Idx((*n - 82) as u8),
-                [n @ 100..=107] => self.attributes.background = Color::Idx((*n - 92) as u8),
+                [n @ (30..=37 | 90..=97)] => {
+                    if let Some(color) = palette(*n) {
+                        self.attributes.foreground = color;
+                    }
+                }
+                [n @ (40..=47 | 100..=107)] => {
+                    if let Some(color) = palette(*n) {
+                        self.attributes.background = color;
+                    }
+                }
                 [selector @ (38 | 48), rest @ ..] => {
                     let mut parts = [0u16; 4];
                     let count = if rest.is_empty() {

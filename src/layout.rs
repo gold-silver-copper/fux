@@ -45,6 +45,12 @@ pub const WEIGHT: u32 = 1000;
 /// The smallest pane, in each dimension.
 pub const MIN: u16 = 2;
 
+/// The separators between `children` side by side. Past what a u16 screen
+/// holds the count saturates, as the lengths added to it do.
+fn separators(children: usize) -> u16 {
+    u16::try_from(children.saturating_sub(1)).unwrap_or(u16::MAX)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Rect {
     pub x: u16,
@@ -124,8 +130,7 @@ impl Node {
             } => {
                 let mins = children.iter().map(|(_, c)| c.min_len(axis));
                 if *own == axis {
-                    let separators = children.len().saturating_sub(1) as u16;
-                    mins.fold(separators, u16::saturating_add)
+                    mins.fold(separators(children.len()), u16::saturating_add)
                 } else {
                     mins.max().unwrap_or(MIN)
                 }
@@ -335,11 +340,11 @@ fn distribute(len: u16, weights: &[u32], mins: &[u16]) -> Vec<u16> {
             let w = u64::from(weights.get(i).copied().unwrap_or(1).max(1));
             let exact = u64::from(free_len) * w;
             let share = exact / free_weight;
-            let min = u64::from(mins.get(i).copied().unwrap_or(MIN));
-            if share < min {
+            let min = mins.get(i).copied().unwrap_or(MIN);
+            if share < u64::from(min) {
                 if let (Some(f), Some(s)) = (fixed.get_mut(i), sizes.get_mut(i)) {
                     *f = true;
-                    *s = min as u16;
+                    *s = min;
                 }
                 changed = true;
             }
@@ -351,10 +356,12 @@ fn distribute(len: u16, weights: &[u32], mins: &[u16]) -> Vec<u16> {
         let mut used: u32 = 0;
         for (i, share, _) in &shares {
             if !fixed.get(*i).copied().unwrap_or(true) {
+                // A share is a fraction of `free_len`, which fits `len`.
+                let share = u16::try_from(*share).unwrap_or(len);
                 if let Some(s) = sizes.get_mut(*i) {
-                    *s = *share as u16;
+                    *s = share;
                 }
-                used += *share as u32;
+                used += u32::from(share);
             }
         }
         // Hand out the rounding remainder, largest fraction first.
@@ -394,7 +401,7 @@ fn place_node(node: &Node, area: Rect, out: &mut Placement) {
                 Axis::Horizontal => area.w,
                 Axis::Vertical => area.h,
             };
-            let separators = children.len().saturating_sub(1) as u16;
+            let separators = separators(children.len());
             let weights: Vec<u32> = children.iter().map(|(w, _)| *w).collect();
             let mins: Vec<u16> = children.iter().map(|(_, c)| c.min_len(*axis)).collect();
             let needed = mins.iter().fold(separators, |a, m| a.saturating_add(*m));
@@ -609,27 +616,24 @@ fn child_rects(
             let Some(first) = rects.first() else {
                 return Rect { w: 0, h: 0, ..area };
             };
-            let (mut x0, mut y0, mut x1, mut y1) = (
-                u32::from(first.x),
-                u32::from(first.y),
-                first.right(),
-                first.bottom(),
-            );
+            let (mut x0, mut y0, mut x1, mut y1) =
+                (first.x, first.y, first.right(), first.bottom());
             for r in &rects {
-                x0 = x0.min(u32::from(r.x));
-                y0 = y0.min(u32::from(r.y));
+                x0 = x0.min(r.x);
+                y0 = y0.min(r.y);
                 x1 = x1.max(r.right());
                 y1 = y1.max(r.bottom());
             }
+            // The children lie inside `area`, so their span fits its size.
             match axis {
                 Axis::Horizontal => Rect {
-                    x: x0 as u16,
-                    w: (x1 - x0) as u16,
+                    x: x0,
+                    w: u16::try_from(x1 - u32::from(x0)).unwrap_or(area.w),
                     ..area
                 },
                 Axis::Vertical => Rect {
-                    y: y0 as u16,
-                    h: (y1 - y0) as u16,
+                    y: y0,
+                    h: u16::try_from(y1 - u32::from(y0)).unwrap_or(area.h),
                     ..area
                 },
             }
@@ -750,8 +754,12 @@ mod tests {
         let Some(node) = &root else { return };
         let placed = place(node, area(10, 3));
         assert!(placed.panes.iter().all(|(_, r)| r.w >= MIN && r.h >= MIN));
-        let used: u16 =
-            placed.panes.iter().map(|(_, r)| r.w).sum::<u16>() + placed.separators.len() as u16;
+        let used: usize = placed
+            .panes
+            .iter()
+            .map(|(_, r)| usize::from(r.w))
+            .sum::<usize>()
+            + placed.separators.len();
         assert_eq!(used, 10);
         assert!(placed.panes.len() < 9);
         assert!(place(node, area(0, 5)).panes.is_empty());

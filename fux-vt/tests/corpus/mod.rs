@@ -40,8 +40,7 @@ pub fn operations(seed: u64, bytes: usize) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     while length < bytes {
         let r = splitmix(&mut state);
-        let a = (r >> 8) as u8;
-        let b = (r >> 16) as u8;
+        let [_, a, b, ..] = r.to_le_bytes();
         let mut op = match r % 24 {
             0 => b"\x1b[2J".to_vec(),
             1 => format!("\x1b[{};{}H", 1 + a % 40, 1 + b % 200).into_bytes(),
