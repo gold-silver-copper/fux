@@ -18,25 +18,25 @@ fn tabs_are_created_and_switched_by_key() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
-    client.keys(&format!("{PREFIX}t"))?;
+    client.keys(&format!("{PREFIX}tn"))?;
     client.wait("a second tab", |t| {
         t.lines().last().is_some_and(|b| b.contains("tab-2"))
     })?;
     eventually("on @2", || Ok(client_line(&server, "c1")?.contains(" @2 ")))?;
     client.keys("echo on-two\r")?;
     client.wait_for("on-two")?;
-    client.keys(&format!("{PREFIX}["))?;
+    client.keys(&format!("{PREFIX}b"))?;
     eventually("back on @1", || {
         Ok(client_line(&server, "c1")?.contains(" @1 "))
     })?;
     client.wait("tab 1's screen", |t| !t.contains("on-two"))?;
-    client.keys(&format!("{PREFIX}]"))?;
+    client.keys(&format!("{PREFIX}n"))?;
     eventually("on @2 again", || {
         Ok(client_line(&server, "c1")?.contains(" @2 "))
     })?;
     client.wait_for("on-two")?;
-    // Next wraps around.
-    client.keys(&format!("{PREFIX}]"))?;
+    // Next wraps around; the tab layer's `l` is next too.
+    client.keys(&format!("{PREFIX}tl"))?;
     eventually("wrapped to @1", || {
         Ok(client_line(&server, "c1")?.contains(" @1 "))
     })?;
@@ -53,16 +53,16 @@ fn workspaces_are_created_and_switched_by_key() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
-    client.keys(&format!("{PREFIX}w"))?;
+    client.keys(&format!("{PREFIX}wn"))?;
     client.wait("the new workspace", |t| {
         t.lines().last().is_some_and(|b| b.contains("workspace-2"))
     })?;
     eventually("on +2", || Ok(client_line(&server, "c1")?.contains(" +2 ")))?;
-    client.keys(&format!("{PREFIX}{{"))?;
+    client.keys(&format!("{PREFIX}wh"))?;
     eventually("back on +1", || {
         Ok(client_line(&server, "c1")?.contains(" +1 "))
     })?;
-    client.keys(&format!("{PREFIX}}}"))?;
+    client.keys(&format!("{PREFIX}wl"))?;
     eventually("+2 again", || {
         Ok(client_line(&server, "c1")?.contains(" +2 "))
     })?;
@@ -86,7 +86,7 @@ fn two_clients_have_independent_views() -> Outcome {
     one.wait_for("$")?;
     let mut two = server.attach(20, 80)?;
     two.wait_for("$")?;
-    one.keys(&format!("{PREFIX}h"))?;
+    one.keys(&format!("{PREFIX}v"))?;
     eventually("one focuses the new pane", || {
         Ok(client_line(&server, "c1")?.ends_with("%2"))
     })?;
@@ -110,7 +110,7 @@ fn two_clients_have_independent_views() -> Outcome {
         "{right}"
     );
     // Switching tabs in one leaves the other where it was.
-    one.keys(&format!("{PREFIX}t"))?;
+    one.keys(&format!("{PREFIX}tn"))?;
     eventually("one is on @2", || {
         Ok(client_line(&server, "c1")?.contains(" @2 "))
     })?;
@@ -120,7 +120,7 @@ fn two_clients_have_independent_views() -> Outcome {
     two.wait("two is zoomed", |t| {
         t.lines().last().is_some_and(|b| b.contains("[zoom]"))
     })?;
-    one.keys(&format!("{PREFIX}["))?;
+    one.keys(&format!("{PREFIX}b"))?;
     one.wait("one is not", |t| {
         t.contains('│') && !t.lines().last().is_some_and(|b| b.contains("[zoom]"))
     })?;
@@ -146,12 +146,12 @@ fn a_pty_is_the_smallest_rectangle_among_the_clients_showing_it() -> Outcome {
         "{lines:?}"
     );
     // When the small client looks elsewhere, the pane grows.
-    small.keys(&format!("{PREFIX}t"))?;
+    small.keys(&format!("{PREFIX}tn"))?;
     eventually("grown to the big client", || {
         Ok(server.ok(&["ls"])?.contains("%1 sh 100x29"))
     })?;
     // And when it detaches, only the big client counts.
-    small.keys(&format!("{PREFIX}["))?;
+    small.keys(&format!("{PREFIX}b"))?;
     eventually("small again", || {
         Ok(server.ok(&["ls"])?.contains("%1 sh 40x9"))
     })?;
@@ -201,7 +201,9 @@ fn moving_a_panes_out_leaves_an_empty_tab_with_a_hint() -> Outcome {
     server.ok(&["new-tab", "-t", "+1"])?;
     server.ok(&["select-tab", "-c", "c1", "-t", "@1"])?;
     server.ok(&["move-pane", "-t", "%1", "--to", "@2"])?;
-    client.wait("the empty tab's hint", |t| t.contains("empty tab"))?;
+    client.wait("the empty tab's hint", |t| {
+        t.contains("empty tab: C-b v splits it, C-b t x closes it")
+    })?;
     assert!(server.ok(&["ls"])?.contains("@1 main (empty)"));
     // Moving to a new tab and a new workspace creates them.
     server.ok(&["move-pane", "-t", "%2", "--to", "new-tab"])?;
