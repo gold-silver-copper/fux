@@ -384,7 +384,7 @@ impl Config {
     /// Settings as `fux` commands, for display.
     pub fn describe(&self) -> Vec<String> {
         let mut lines = vec![
-            format!("set prefix {}", self.prefix),
+            format!("set prefix {}", words::quote(&self.prefix.to_string())),
             format!("set shell {}", words::join(&self.shell)),
             format!("set history-lines {}", self.history_lines),
             format!(
@@ -595,6 +595,30 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
+    }
+
+    /// `describe()`'s lines, read back, give the configuration they describe.
+    fn read_back(c: &Config) -> Result<Config, String> {
+        let mut fresh = Config::default();
+        apply(&mut fresh, "unbind-all")?;
+        for line in c.describe() {
+            apply(&mut fresh, &line).map_err(|e| format!("{line:?}: {e}"))?;
+        }
+        Ok(fresh)
+    }
+
+    #[test]
+    fn a_prefix_that_needs_quoting_is_described_quoted() {
+        for prefix in ["'#'", "\\'", "'\\'", "'\"'", "'\u{3000}'"] {
+            let mut c = Config::default();
+            assert!(
+                apply(&mut c, &format!("set prefix {prefix}")).is_ok(),
+                "{prefix}"
+            );
+            let back = read_back(&c);
+            assert_eq!(back.as_ref().map(|b| b.prefix), Ok(c.prefix), "{prefix}");
+            assert!(back == Ok(c), "{prefix}");
+        }
     }
 
     #[test]
