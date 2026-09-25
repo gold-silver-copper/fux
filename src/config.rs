@@ -385,7 +385,9 @@ impl Config {
     pub fn describe(&self) -> Vec<String> {
         let mut lines = vec![
             format!("set prefix {}", words::quote(&self.prefix.to_string())),
-            format!("set shell {}", words::join(&self.shell)),
+            // One word, which `set shell` splits: a program whose path has
+            // a space reads back as one.
+            format!("set shell {}", words::quote(&words::join(&self.shell))),
             format!("set history-lines {}", self.history_lines),
             format!(
                 "set clipboard {}",
@@ -618,6 +620,26 @@ mod tests {
             let back = read_back(&c);
             assert_eq!(back.as_ref().map(|b| b.prefix), Ok(c.prefix), "{prefix}");
             assert!(back == Ok(c), "{prefix}");
+        }
+    }
+
+    #[test]
+    fn a_shell_is_described_so_that_it_reads_back() {
+        for shell in [
+            "/bin/sh",
+            "/bin/zsh -l",
+            "'/bin/zsh -l'",
+            "\"'/My Shell/zsh'\"",
+            "'/My Shell/zsh' -l",
+            "/bin/sh -c 'it'\\''s'",
+        ] {
+            let mut c = Config::default();
+            assert!(
+                apply(&mut c, &format!("set shell {shell}")).is_ok(),
+                "{shell}"
+            );
+            let back = read_back(&c);
+            assert_eq!(back.as_ref().map(|b| &b.shell), Ok(&c.shell), "{shell}");
         }
     }
 
