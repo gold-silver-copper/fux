@@ -121,7 +121,7 @@ fn run(args: &[String]) -> Result<u8, String> {
                     "--socket" => socket_flag = rest.next().cloned(),
                     "--config" => config = rest.next().cloned(),
                     client::SETSID => {
-                        rustix::process::setsid().map_err(|e| format!("setsid: {e}"))?;
+                        fuxix::process::setsid().map_err(|e| format!("setsid: {e}"))?;
                     }
                     other => return usage_error(&format!("server: unexpected {other:?}")),
                 }

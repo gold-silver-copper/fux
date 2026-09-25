@@ -1,8 +1,8 @@
 //! The clients: `fux attach`, a dumb pipe between a terminal and the server,
 //! and the one-shot command client every other `fux` command uses.
 use crate::protocol::{Decoder, Frame, PROTOCOL, Role};
+use fuxix::terminal::Termios;
 use rustix::event::{PollFd, PollFlags};
-use rustix::termios::{OptionalActions, Termios};
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -25,7 +25,7 @@ fn restore() {
         let mut out = std::io::stdout();
         let _ = out.write_all(LEAVE.as_bytes());
         let _ = out.flush();
-        let _ = rustix::termios::tcsetattr(std::io::stdin(), OptionalActions::Now, &termios);
+        let _ = fuxix::terminal::set_attributes(std::io::stdin(), &termios);
     }
 }
 
@@ -205,16 +205,16 @@ pub fn start_server(socket: &Path) -> Result<(), String> {
 }
 
 fn window_size() -> (u16, u16) {
-    rustix::termios::tcgetwinsize(std::io::stdout())
+    fuxix::terminal::window_size(std::io::stdout())
         .ok()
-        .filter(|w| w.ws_row > 0 && w.ws_col > 0)
-        .map_or((24, 80), |w| (w.ws_row, w.ws_col))
+        .filter(|(rows, cols)| *rows > 0 && *cols > 0)
+        .unwrap_or((24, 80))
 }
 
 /// Attaches this terminal to the server until detach or the server's end.
 pub fn attach(socket: &Path, workspace: Option<String>) -> Result<(), String> {
     let stdin = std::io::stdin();
-    if !rustix::termios::isatty(&stdin) {
+    if !std::io::IsTerminal::is_terminal(&stdin) {
         return Err("fux attach needs a terminal on stdin".into());
     }
     let (mut stream, mut decoder) = connect(socket, Role::Attach)?;
@@ -229,7 +229,7 @@ pub fn attach(socket: &Path, workspace: Option<String>) -> Result<(), String> {
     )?;
 
     let original =
-        rustix::termios::tcgetattr(&stdin).map_err(|e| format!("reading terminal modes: {e}"))?;
+        fuxix::terminal::attributes(&stdin).map_err(|e| format!("reading terminal modes: {e}"))?;
     let mut raw = original.clone();
     raw.make_raw();
     if let Ok(mut saved) = SAVED.lock() {
@@ -240,7 +240,7 @@ pub fn attach(socket: &Path, workspace: Option<String>) -> Result<(), String> {
         restore();
         previous(info);
     }));
-    rustix::termios::tcsetattr(&stdin, OptionalActions::Now, &raw).map_err(|e| {
+    fuxix::terminal::set_attributes(&stdin, &raw).map_err(|e| {
         restore();
         format!("setting raw mode: {e}")
     })?;
