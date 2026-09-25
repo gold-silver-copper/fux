@@ -5,13 +5,27 @@ use crate::keys::KeyPress;
 use crate::words;
 use std::path::{Path, PathBuf};
 
-/// A key bound, after the prefix, to a command line.
+/// Keys typed after the prefix, bound to a command line. A binding of more
+/// than one key makes each key before its last a layer: `t n` is `n` in the
+/// layer `t`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Binding {
-    pub key: KeyPress,
+    pub keys: Vec<KeyPress>,
     pub command: Vec<String>,
     /// The command-column group; derived from the command when not given.
+    /// A layer's title is the group of its first binding.
     pub group: Option<String>,
+    /// After it runs, its layer stays active: its keys repeat without the
+    /// prefix until Esc.
+    pub repeat: bool,
+}
+
+/// Keys as they are written: `t n`.
+pub fn keys_text(keys: &[KeyPress]) -> String {
+    keys.iter()
+        .map(KeyPress::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,9 +93,10 @@ impl Default for Config {
             .iter()
             .filter_map(|(key, command)| {
                 Some(Binding {
-                    key: key.parse().ok()?,
+                    keys: vec![key.parse().ok()?],
                     command: words::split(command).ok()?,
                     group: None,
+                    repeat: false,
                 })
             })
             .collect();
@@ -109,23 +124,30 @@ pub const GROUPS: &[&str] = &["Panes", "Focus", "Tabs", "Workspaces", "Session"]
 impl Binding {
     /// The group this binding is listed under.
     pub fn group(&self) -> String {
-        if let Some(group) = &self.group {
-            return group.clone();
+        match &self.group {
+            Some(group) => group.clone(),
+            None => self.derived_group(),
         }
+    }
+
+    /// The group its command belongs to, whatever `-g` said.
+    pub fn derived_group(&self) -> String {
         let name = self.command.first().map(String::as_str).unwrap_or("");
         let second = self.command.get(1).map(String::as_str);
         match (name, second) {
             ("select-pane", _) => "Focus",
             ("menu", Some("tab"))
             | ("rename-prompt", Some("tab"))
-            | ("confirm-close", Some("tab")) => "Tabs",
+            | ("confirm-close", Some("tab"))
+            | ("reorder", Some("tab")) => "Tabs",
             ("menu", Some("workspace"))
             | ("rename-prompt", Some("workspace"))
-            | ("confirm-close", Some("workspace")) => "Workspaces",
+            | ("confirm-close", Some("workspace"))
+            | ("reorder", Some("workspace")) => "Workspaces",
             (
                 "split" | "kill-pane" | "zoom" | "resize-pane" | "swap-pane" | "move-pane"
                 | "copy-mode" | "paste-buffer" | "menu" | "rename-prompt" | "confirm-close"
-                | "terminate" | "choose-pane" | "send-keys",
+                | "terminate" | "choose-pane" | "send-keys" | "reorder",
                 _,
             ) => "Panes",
             ("new-tab" | "select-tab" | "choose-tab" | "kill-tab", _) => "Tabs",
@@ -151,41 +173,56 @@ impl Config {
                 self.set(option, value)
             }
             "bind" => {
-                let (group, rest) = match rest.split_first() {
-                    Some((flag, rest)) if flag == "-g" => {
-                        let (group, rest) =
-                            rest.split_first().ok_or("bind -g needs a group name")?;
-                        (Some(group.clone()), rest)
+                let (mut group, mut repeat, mut rest) = (None, false, rest);
+                loop {
+                    match rest.split_first() {
+                        Some((flag, after)) if flag == "-g" => {
+                            let (name, after) =
+                                after.split_first().ok_or("bind -g needs a group name")?;
+                            group = Some(name.clone());
+                            rest = after;
+                        }
+                        Some((flag, after)) if flag == "-r" => {
+                            repeat = true;
+                            rest = after;
+                        }
+                        _ => break,
                     }
-                    _ => (None, rest),
-                };
-                let (key, command) = rest
-                    .split_first()
-                    .ok_or("usage: bind [-g GROUP] KEY COMMAND…")?;
-                if command.is_empty() {
-                    return Err(format!("bind {key}: no command given"));
                 }
-                let key: KeyPress = key.parse()?;
-                let binding = Binding {
-                    key,
+                // The keys: the first word, and the one-character words after
+                // it; no command's name is one character.
+                let (first, after) = rest
+                    .split_first()
+                    .ok_or("usage: bind [-g GROUP] [-r] KEY… COMMAND…")?;
+                let more = after.iter().take_while(|w| w.chars().count() == 1).count();
+                let (more, command) = after.split_at_checked(more).unwrap_or((after, &[]));
+                let keys = std::iter::once(first)
+                    .chain(more)
+                    .map(|key| key.parse())
+                    .collect::<Result<Vec<KeyPress>, String>>()?;
+                if command.is_empty() {
+                    return Err(format!("bind {}: no command given", keys_text(&keys)));
+                }
+                self.bind(Binding {
+                    keys,
                     command: command.to_vec(),
                     group,
-                };
-                match self.bindings.iter_mut().find(|b| b.key == key) {
-                    Some(existing) => *existing = binding,
-                    None => self.bindings.push(binding),
-                }
-                Ok(())
+                    repeat,
+                })
             }
             "unbind" => {
-                let [key] = rest else {
-                    return Err("usage: unbind KEY".into());
-                };
-                let key: KeyPress = key.parse()?;
+                if rest.is_empty() {
+                    return Err("usage: unbind KEY…".into());
+                }
+                let keys = rest
+                    .iter()
+                    .map(|key| key.parse())
+                    .collect::<Result<Vec<KeyPress>, String>>()?;
+                // A binding, or a whole layer.
                 let before = self.bindings.len();
-                self.bindings.retain(|b| b.key != key);
+                self.bindings.retain(|b| !b.keys.starts_with(&keys));
                 if self.bindings.len() == before {
-                    return Err(format!("{key} is not bound"));
+                    return Err(format!("{} is not bound", keys_text(&keys)));
                 }
                 Ok(())
             }
@@ -201,6 +238,43 @@ impl Config {
                  only set, bind, unbind and unbind-all are allowed there"
             )),
         }
+    }
+
+    /// Adds a binding, replacing one of the same keys. Keys are a command
+    /// or a layer, never both, so a binding that would make them both is
+    /// refused.
+    fn bind(&mut self, binding: Binding) -> Result<(), String> {
+        let keys = &binding.keys;
+        let layer: Vec<String> = self
+            .bindings
+            .iter()
+            .filter(|b| b.keys.len() > keys.len() && b.keys.starts_with(keys))
+            .map(|b| keys_text(&b.keys))
+            .collect();
+        if !layer.is_empty() {
+            return Err(format!(
+                "{} is a layer ({}); unbind it first",
+                keys_text(keys),
+                layer.join(", ")
+            ));
+        }
+        if let Some(command) = self
+            .bindings
+            .iter()
+            .find(|b| b.keys.len() < keys.len() && keys.starts_with(&b.keys))
+        {
+            return Err(format!(
+                "{} runs {}, so it cannot start {}; unbind it first",
+                keys_text(&command.keys),
+                words::join(&command.command),
+                keys_text(keys)
+            ));
+        }
+        match self.bindings.iter_mut().find(|b| b.keys == *keys) {
+            Some(existing) => *existing = binding,
+            None => self.bindings.push(binding),
+        }
+        Ok(())
     }
 
     fn set(&mut self, option: &str, value: &[String]) -> Result<(), String> {
@@ -290,13 +364,19 @@ impl Config {
         ];
         for binding in &self.bindings {
             lines.push(format!(
-                "bind{} {} {}",
+                "bind{}{} {} {}",
                 binding
                     .group
                     .as_ref()
                     .map(|g| format!(" -g {}", words::quote(g)))
                     .unwrap_or_default(),
-                words::quote(&binding.key.to_string()),
+                if binding.repeat { " -r" } else { "" },
+                binding
+                    .keys
+                    .iter()
+                    .map(|key| words::quote(&key.to_string()))
+                    .collect::<Vec<_>>()
+                    .join(" "),
                 words::join(&binding.command)
             ));
         }
@@ -360,14 +440,14 @@ mod tests {
         assert!(apply(&mut c, "set nope 1").is_err());
         assert!(apply(&mut c, "set history-lines lots").is_err());
         assert!(apply(&mut c, "bind -g Tools y split -h -- htop").is_ok());
-        let y = c.bindings.iter().find(|b| b.key.to_string() == "y");
+        let y = c.bindings.iter().find(|b| keys_text(&b.keys) == "y");
         assert_eq!(y.map(|b| b.group()), Some("Tools".into()));
         assert_eq!(y.map(|b| b.command.len()), Some(4));
         assert!(apply(&mut c, "bind h kill-pane").is_ok());
         assert_eq!(
             c.bindings
                 .iter()
-                .filter(|b| b.key.to_string() == "h")
+                .filter(|b| keys_text(&b.keys) == "h")
                 .count(),
             1
         );
@@ -383,6 +463,52 @@ mod tests {
     }
 
     #[test]
+    fn keys_are_a_command_or_a_layer_never_both() {
+        let mut c = Config::default();
+        assert!(apply(&mut c, "bind g n new-tab").is_ok());
+        assert!(apply(&mut c, "bind -g Grow -r g m h reorder tab --previous").is_ok());
+        assert_eq!(
+            apply(&mut c, "bind g new-tab"),
+            Err("g is a layer (g n, g m h); unbind it first".into())
+        );
+        assert_eq!(
+            apply(&mut c, "bind h u zoom"),
+            Err("h runs split -h, so it cannot start h u; unbind it first".into())
+        );
+        assert_eq!(
+            apply(&mut c, "bind g n m zoom"),
+            Err("g n runs new-tab, so it cannot start g n m; unbind it first".into())
+        );
+        // Rebinding the same keys replaces the binding.
+        assert!(apply(&mut c, "bind g n zoom").is_ok());
+        let g: Vec<_> = c
+            .bindings
+            .iter()
+            .filter(|b| keys_text(&b.keys).starts_with('g'))
+            .collect();
+        assert_eq!(g.len(), 2);
+        assert!(g.iter().any(|b| b.command == ["zoom"] && !b.repeat));
+        assert!(g.iter().any(|b| b.repeat && b.group() == "Grow"));
+        // The repeat flag and the keys survive `describe`.
+        let mut fresh = Config::default();
+        for line in c.describe() {
+            assert!(apply(&mut fresh, &line).is_ok(), "{line}");
+        }
+        assert_eq!(fresh, c);
+        // `unbind` takes one binding, or a whole layer.
+        assert!(apply(&mut c, "unbind g m h").is_ok());
+        assert!(apply(&mut c, "unbind g m").is_err());
+        assert!(apply(&mut c, "bind g m l zoom").is_ok());
+        assert!(apply(&mut c, "unbind g").is_ok());
+        assert!(
+            !c.bindings
+                .iter()
+                .any(|b| keys_text(&b.keys).starts_with('g'))
+        );
+        assert_eq!(apply(&mut c, "unbind"), Err("usage: unbind KEY…".into()));
+    }
+
+    #[test]
     fn a_file_applies_whole_or_names_its_bad_line() -> Result<(), String> {
         let dir = std::env::temp_dir().join(format!("fux-config-{}", std::process::id()));
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -394,7 +520,7 @@ mod tests {
         .map_err(|e| e.to_string())?;
         let config = Config::from_file(&path)?;
         assert_eq!(config.prefix.to_string(), "C-a");
-        assert!(config.bindings.iter().any(|b| b.key.to_string() == "q"));
+        assert!(config.bindings.iter().any(|b| keys_text(&b.keys) == "q"));
         std::fs::write(&path, "set prefix C-a\nset prefix Nope\n").map_err(|e| e.to_string())?;
         let error = Config::from_file(&path).err().unwrap_or_default();
         assert!(

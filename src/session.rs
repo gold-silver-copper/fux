@@ -569,7 +569,7 @@ impl Session {
                 }
                 crate::view::PromptFor::Command | crate::view::PromptFor::Rename(_) => None,
             },
-            Mode::Normal | Mode::Column { .. } => None,
+            Mode::Normal | Mode::Column { .. } | Mode::Repeat { .. } => None,
         };
         let Some(view) = self.views.get_mut(&id) else {
             return;
@@ -936,9 +936,10 @@ impl Session {
                 out.push_str("):\n");
                 for binding in &self.config.bindings {
                     out.push_str(&format!(
-                        "{:>8}  {}\n",
-                        binding.key.to_string(),
-                        crate::words::join(&binding.command)
+                        "{:>8}  {}{}\n",
+                        crate::config::keys_text(&binding.keys),
+                        crate::words::join(&binding.command),
+                        if binding.repeat { " (repeats)" } else { "" }
                     ));
                 }
                 Ok(out)
@@ -1192,7 +1193,10 @@ impl Session {
             }
             Command::CommandColumn { client } => {
                 let client = self.client_target(client, ctx)?;
-                self.view_mut(client)?.mode = Mode::Column { selected: 0 };
+                self.view_mut(client)?.mode = Mode::Column {
+                    path: Vec::new(),
+                    selected: 0,
+                };
                 Ok(String::new())
             }
             Command::CommandPrompt { client } => {
