@@ -60,6 +60,9 @@ pub struct Server {
     stopping: Option<(Instant, String)>,
     /// When each client's decoder began waiting on a lone Escape.
     escapes: std::collections::HashMap<ClientId, Instant>,
+    /// Where client bytes land before their decoder takes them; one for the
+    /// server, reused by every read.
+    read_buffer: Vec<u8>,
 }
 
 fn log(message: &str) {
@@ -107,6 +110,7 @@ pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), String> 
         stops,
         stopping: None,
         escapes: std::collections::HashMap::new(),
+        read_buffer: vec![0u8; 64 * 1024],
     };
     server.run();
     drop(endpoint);
@@ -202,7 +206,7 @@ impl Server {
             .filter(|c| self.session.waiting(**c))
         {
             let since = self.escapes.get(client).copied().unwrap_or(now);
-            sooner(since + crate::decode::ESCAPE_DELAY);
+            sooner(crate::after(since, crate::decode::ESCAPE_DELAY));
         }
         for dying in &self.session.dying {
             sooner(dying.deadline);
@@ -211,7 +215,7 @@ impl Server {
             sooner(at);
         }
         if let Some((since, _)) = &self.stopping {
-            sooner(*since + STOP_WAIT);
+            sooner(crate::after(*since, STOP_WAIT));
         }
         deadline.map(|d| d.saturating_duration_since(now))
     }
@@ -322,7 +326,7 @@ impl Server {
             let bytes = render::paint(conn.shown.as_ref(), &grid);
             conn.send_bytes(Frame::Paint, &bytes);
             conn.shown = Some(grid);
-            conn.next_paint = now + PAINT;
+            conn.next_paint = crate::after(now, PAINT);
             if let Some(view) = self.session.views.get_mut(&client) {
                 view.dirty = false;
             }
@@ -415,15 +419,15 @@ impl Server {
     }
 
     fn read_conn(&mut self, index: usize) {
-        let mut buffer = [0u8; 65536];
         let mut frames = Vec::new();
         let mut closed = false;
         {
+            let buffer = &mut self.read_buffer;
             let Some(conn) = self.conns.get_mut(index) else {
                 return;
             };
             loop {
-                match conn.stream.read(&mut buffer) {
+                match conn.stream.read(buffer) {
                     Ok(0) => {
                         closed = true;
                         break;
@@ -602,7 +606,8 @@ impl Server {
                     break;
                 }
                 Ok(n) => {
-                    total += n;
+                    // Past PANE_READ by at most one buffer, when the loop ends.
+                    total = total.saturating_add(n);
                     self.session.output(id, buffer.get(..n).unwrap_or_default());
                 }
                 Err(rustix::io::Errno::AGAIN) => break,
@@ -659,7 +664,7 @@ impl Server {
                         std::thread::sleep(Duration::from_millis(2));
                     }
                 } else {
-                    dying.deadline = now + Duration::from_millis(10);
+                    dying.deadline = crate::after(now, Duration::from_millis(10));
                     self.session.dying.push(dying);
                 }
             }

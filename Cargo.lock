@@ -22,11 +22,18 @@ dependencies = [
 name = "fux"
 version = "0.13.0"
 dependencies = [
+ "fux-sys",
  "fux-vt",
- "libc",
  "rustix",
  "signal-hook",
  "unicode-width",
+]
+
+[[package]]
+name = "fux-sys"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

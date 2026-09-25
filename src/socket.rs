@@ -306,7 +306,8 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), String> {
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .custom_flags((OFlags::NOFOLLOW | OFlags::CLOEXEC).bits() as i32)
+        // The flags are C `int` bits; rustix keeps them unsigned.
+        .custom_flags((OFlags::NOFOLLOW | OFlags::CLOEXEC).bits().cast_signed())
         .open(&lock_path)
         .map_err(|error| format!("{}: {error}", lock_path.display()))?;
     rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive).map_err(|errno| {
@@ -377,17 +378,7 @@ pub fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
 /// The effective user ID of the process at the other end of `stream`.
 #[cfg(target_os = "macos")]
 pub fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
-    use std::os::fd::AsRawFd;
-    let mut uid: libc::uid_t = 0;
-    let mut gid: libc::gid_t = 0;
-    // SAFETY: the descriptor is a live socket for the call's duration and both
-    // out-pointers point at initialised locals.
-    let result = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
-    if result == 0 {
-        Ok(uid)
-    } else {
-        Err(io::Error::last_os_error())
-    }
+    fux_sys::peer_uid(stream)
 }
 
 #[cfg(test)]

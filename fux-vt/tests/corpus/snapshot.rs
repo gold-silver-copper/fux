@@ -66,9 +66,10 @@ pub fn screen(s: &Screen) -> String {
         &format!("{:?}", s.mouse_protocol_encoding()),
         &a,
     );
-    let rows = s.history_len() + usize::from(s.size().0);
-    for index in 0..rows {
-        if let Some(row) = s.row_from_bottom(rows - index - 1) {
+    let rows = s.history_len().saturating_add(usize::from(s.size().0));
+    // Oldest first.
+    for (index, from_bottom) in (0..rows).rev().enumerate() {
+        if let Some(row) = s.row_from_bottom(from_bottom) {
             let _ = writeln!(out, "row={index} wrapped={}", row.wrapped);
             for (i, c) in row.cells.iter().enumerate() {
                 cell(

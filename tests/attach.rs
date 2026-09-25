@@ -259,10 +259,11 @@ fn focus_events_reach_a_pane_that_asked_and_cursor_shapes_pass_through() -> Outc
 
 #[test]
 fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
+    use fux::protocol::Frame;
     use std::io::{Read, Write};
     let server = Server::start("")?;
     let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
-    let hello = fux::protocol::Frame::Hello {
+    let hello = Frame::Hello {
         protocol: 999,
         version: "0.0.0".into(),
         role: fux::protocol::Role::Attach,
@@ -282,8 +283,17 @@ fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
         }
     }
     let exit = frames.iter().find_map(|f| match f {
-        fux::protocol::Frame::Exit(reason) => Some(reason.clone()),
-        _ => None,
+        Frame::Exit(reason) => Some(reason.clone()),
+        Frame::Hello { .. }
+        | Frame::Attach { .. }
+        | Frame::Input(_)
+        | Frame::Resize { .. }
+        | Frame::Detach
+        | Frame::Command { .. }
+        | Frame::Paint(_)
+        | Frame::Stdout(_)
+        | Frame::Stderr(_)
+        | Frame::Done { .. } => None,
     });
     let reason = exit.ok_or("no Exit frame")?;
     assert!(
@@ -322,5 +332,156 @@ fn a_panes_program_ignores_no_signal_fux_ignores() -> Outcome {
         .find(|l| l.starts_with("SigIgn:"))
         .unwrap_or_default();
     assert_eq!(squash(&pane), baseline);
+    Ok(())
+}
+
+#[test]
+fn a_panes_program_has_the_pty_as_its_controlling_terminal() -> Outcome {
+    // A shell that is not interactive opens no terminal itself, so what `ps`
+    // says here is what fux gave it: as controlling terminal the PTY on its
+    // stdin, with the program's own group in the foreground. (Without one,
+    // macOS names some other terminal, and Linux none.)
+    let server = Server::start(
+        "set shell /bin/sh -c 'echo $(tty) $(ps -o tty=,tpgid=,pgid= -p $$); echo checked; exec sleep 60'",
+    )?;
+    let mut fields = Vec::new();
+    eventually("the program's report", || {
+        let screen = server.ok(&["capture-pane", "-t", "%1"])?;
+        let mut lines = screen.lines().skip_while(|l| l.trim().is_empty());
+        fields = lines
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        Ok(lines.next() == Some("checked"))
+    })?;
+    let [stdin, controlling, foreground, group] = fields.as_slice() else {
+        return Err(format!("unexpected output: {fields:?}"));
+    };
+    // `ps` shortens /dev/ttys003 to ttys003, and /dev/pts/3 to pts/3.
+    assert_eq!(stdin.strip_prefix("/dev/"), Some(controlling.as_str()));
+    assert_eq!(foreground, group);
+    Ok(())
+}
+
+#[test]
+fn a_panes_shell_has_the_pty_as_its_terminal_and_job_control() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(10, 60)?;
+    client.wait_for("$")?;
+    // Only a process with a controlling terminal can open /dev/tty.
+    client.keys("(: </dev/tty) 2>/dev/null && echo has-a-tty\r")?;
+    client.wait("the controlling terminal", |t| {
+        t.lines().any(|l| l == "has-a-tty")
+    })?;
+    // C-z stops the foreground job and fg resumes it: the PTY's foreground
+    // group is the shell's to hand out.
+    client.keys("sleep 30\r")?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    client.keys("\x1a")?;
+    client.wait("the stopped job", |t| t.contains("Stopped"))?;
+    client.keys("fg\r")?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    client.keys("\x03")?;
+    // The prompt is back once the interrupted job has gone.
+    client.wait("the prompt after the job", |t| {
+        let mut lines = t.lines().rev().filter(|l| !l.trim().is_empty());
+        lines.nth(1).is_some_and(|l| l.trim_end() == "$")
+    })?;
+    client.keys("jobs; echo after-fg\r")?;
+    client.wait("the prompt after fg", |t| {
+        t.lines().any(|l| l == "after-fg")
+    })?;
+    // `jobs` printed nothing: the job ran to its end in the foreground.
+    let lines = client.lines();
+    let at = lines.iter().position(|l| l == "after-fg").unwrap_or(0);
+    let before = at.checked_sub(1).and_then(|i| lines.get(i));
+    assert!(
+        before.is_some_and(|l| l.ends_with("jobs; echo after-fg")),
+        "{lines:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_program_that_cannot_start_is_reported_as_before() -> Outcome {
+    let server = Server::start("")?;
+    let missing = server.dir.join("no-such-shell");
+    let not_executable = server.dir.join("fux.conf");
+    for (program, error) in [
+        (&missing, "No such file or directory (os error 2)"),
+        (&not_executable, "Permission denied (os error 13)"),
+    ] {
+        let program = program.to_string_lossy();
+        server.ok(&["set", "shell", &program])?;
+        let out = server.fux(&["new-workspace"])?;
+        assert_eq!(out.status, 1);
+        assert_eq!(out.stderr, format!("starting {program}: {error}\n"));
+    }
+    // The server is unharmed, and a good shell starts again.
+    server.ok(&["set", "shell", "/bin/sh"])?;
+    server.ok(&["new-workspace"])?;
+    Ok(())
+}
+
+#[test]
+fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
+    let dir = std::env::temp_dir()
+        .canonicalize()
+        .map_err(e)?
+        .join(format!("fux-hangup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(e)?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
+    let socket = dir.join("s").join("fux.sock");
+    let ls = || {
+        std::process::Command::new(FUX)
+            .arg("ls")
+            .env("FUX_SOCKET", &socket)
+            .output()
+            .map_err(e)
+    };
+    // The client leads its terminal's session, as under a terminal emulator.
+    let mut terminal = Terminal::start(10, 40, &[FUX], |command| {
+        command
+            .env("FUX_SOCKET", &socket)
+            .env("SHELL", "/bin/sh")
+            .env("XDG_CONFIG_HOME", &dir);
+    })?;
+    let started = eventually("the auto-started server", || {
+        Ok(String::from_utf8_lossy(&ls()?.stdout).contains("client c1"))
+    });
+    // Closing the terminal hangs up its session, and the kernel or the
+    // shell signals the terminal's foreground job: the client goes, and the
+    // server, in a session of its own, stays.
+    terminal.hang_up();
+    if let Some(client) = i32::try_from(terminal.child.id())
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    {
+        let _ = rustix::process::kill_process_group(client, rustix::process::Signal::HUP);
+    }
+    let gone = eventually("the client to go", || {
+        Ok(terminal.child.try_wait().map_err(e)?.is_some())
+    });
+    // Past the time a stopping server takes to go.
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let after = ls();
+    let _ = std::process::Command::new(FUX)
+        .arg("kill-server")
+        .env("FUX_SOCKET", &socket)
+        .output();
+    drop(terminal);
+    let _ = std::fs::remove_dir_all(&dir);
+    started?;
+    gone?;
+    let after = after?;
+    assert!(
+        after.status.success(),
+        "{}",
+        String::from_utf8_lossy(&after.stderr)
+    );
     Ok(())
 }

@@ -10,6 +10,7 @@ use crate::layout::PaneId;
 use crate::session::{Outgoing, Session};
 use crate::view::Mode;
 use fux_vt::{RowId, Screen};
+use std::num::NonZeroUsize;
 
 /// The most cells one copy takes.
 pub const MAX_CELLS: usize = 262_144;
@@ -47,7 +48,10 @@ pub struct Copy {
 
 /// Rows the screen keeps: history, then the live screen.
 pub fn retained(screen: &Screen) -> usize {
-    screen.history_len() + usize::from(screen.size().0)
+    // Exact: fux-vt bounds the rows it retains far below a usize.
+    screen
+        .history_len()
+        .saturating_add(usize::from(screen.size().0))
 }
 
 /// The row at `index`, counted from the oldest.
@@ -62,7 +66,12 @@ pub fn index_of(screen: &Screen, id: RowId) -> Option<usize> {
         return screen.history_len().checked_sub(offset);
     }
     let rows = usize::from(screen.size().0);
-    (0..rows).find_map(|i| (screen.row_from_bottom(i)?.id == id).then(|| retained(screen) - 1 - i))
+    (0..rows).find_map(|i| {
+        if screen.row_from_bottom(i)?.id != id {
+            return None;
+        }
+        retained(screen).checked_sub(1)?.checked_sub(i)
+    })
 }
 
 impl Copy {
@@ -98,8 +107,8 @@ impl Copy {
     pub fn cursor_in_view(&self, screen: &Screen, height: u16) -> Option<(u16, u16)> {
         let top = index_of(screen, self.top)?;
         let (row, col) = self.at(screen, self.cursor)?;
-        let y = row.checked_sub(top)?;
-        (y < usize::from(height)).then_some((y as u16, col))
+        let y = u16::try_from(row.checked_sub(top)?).ok()?;
+        (y < height).then_some((y, col))
     }
 
     /// The selection's two ends, in order.
@@ -118,7 +127,9 @@ impl Copy {
         let Some((kind, start, end)) = self.ends(screen) else {
             return false;
         };
-        let row = top + usize::from(view_row);
+        let Some(row) = top.checked_add(usize::from(view_row)) else {
+            return false;
+        };
         if row < start.0 || row > end.0 {
             return false;
         }
@@ -134,7 +145,10 @@ impl Copy {
 
     /// The line the bar shows: `COPY` and where the cursor is.
     pub fn status(&self, screen: &Screen) -> String {
-        let line = self.at(screen, self.cursor).map_or(0, |(r, _)| r + 1);
+        // Counted from 1; exact, as rows are far fewer than a usize holds.
+        let line = self
+            .at(screen, self.cursor)
+            .map_or(0, |(r, _)| r.saturating_add(1));
         let mode = match self.selection {
             Some((Select::Char, _)) => " select",
             Some((Select::Line, _)) => " lines",
@@ -155,7 +169,8 @@ impl Copy {
 fn classes(screen: &Screen, index: usize, big: bool) -> Vec<(u16, u8)> {
     let mut out = Vec::new();
     if let Some(row) = row_at(screen, index) {
-        for (col, cell) in row.cells.iter().enumerate() {
+        // A row is never wider than a u16 screen.
+        for (col, cell) in (0..=u16::MAX).zip(row.cells) {
             if cell.is_wide_continuation() {
                 continue;
             }
@@ -167,7 +182,7 @@ fn classes(screen: &Screen, index: usize, big: bool) -> Vec<(u16, u8)> {
             } else {
                 2
             };
-            out.push((col as u16, class));
+            out.push((col, class));
         }
     }
     let end = out.last().map_or(0, |(c, _)| c.saturating_add(1));
@@ -214,35 +229,23 @@ impl<'a> Walker<'a> {
         self.cells.len()
     }
     fn next(&mut self, p: Flat) -> Option<Flat> {
-        if p.k + 1 < self.len(p.row) {
-            Some(Flat {
-                row: p.row,
-                k: p.k + 1,
-            })
-        } else if p.row + 1 < retained(self.screen) {
-            Some(Flat {
-                row: p.row + 1,
-                k: 0,
-            })
-        } else {
-            None
+        let k = p.k.checked_add(1)?;
+        if k < self.len(p.row) {
+            return Some(Flat { row: p.row, k });
         }
+        let row = p.row.checked_add(1)?;
+        (row < retained(self.screen)).then_some(Flat { row, k: 0 })
     }
     fn prev(&mut self, p: Flat) -> Option<Flat> {
-        if p.k > 0 {
-            Some(Flat {
-                row: p.row,
-                k: p.k - 1,
-            })
-        } else if p.row > 0 {
-            let len = self.len(p.row - 1);
-            Some(Flat {
-                row: p.row - 1,
-                k: len.saturating_sub(1),
-            })
-        } else {
-            None
+        if let Some(k) = p.k.checked_sub(1) {
+            return Some(Flat { row: p.row, k });
         }
+        let row = p.row.checked_sub(1)?;
+        let len = self.len(row);
+        Some(Flat {
+            row,
+            k: len.saturating_sub(1),
+        })
     }
     fn find(&mut self, row: usize, col: u16) -> Flat {
         self.load(row);
@@ -329,7 +332,7 @@ fn word_back(screen: &Screen, row: usize, col: u16, big: bool) -> (usize, u16) {
 fn row_chars(screen: &Screen, index: usize) -> Vec<(char, u16)> {
     let mut out = Vec::new();
     if let Some(row) = row_at(screen, index) {
-        for (col, cell) in row.cells.iter().enumerate() {
+        for (col, cell) in (0..=u16::MAX).zip(row.cells) {
             if cell.is_wide_continuation() {
                 continue;
             }
@@ -339,7 +342,7 @@ fn row_chars(screen: &Screen, index: usize) -> Vec<(char, u16)> {
                 " "
             };
             for c in text.chars() {
-                out.push((c, col as u16));
+                out.push((c, col));
             }
         }
     }
@@ -372,22 +375,27 @@ pub fn find(
         let chars = row_chars(screen, index);
         let folded: Vec<char> = chars.iter().map(|(c, _)| fold(*c, ignore_case)).collect();
         let mut cols = Vec::new();
-        if folded.len() >= needle.len() {
-            for start in 0..=folded.len() - needle.len() {
-                if folded.get(start..start + needle.len()) == Some(needle.as_slice())
-                    && let Some((_, col)) = chars.get(start)
-                {
-                    cols.push(*col);
-                }
+        // The needle is not empty, so neither is a window.
+        for (start, window) in folded.windows(needle.len()).enumerate() {
+            if window == needle.as_slice()
+                && let Some((_, col)) = chars.get(start)
+            {
+                cols.push(*col);
             }
         }
         cols
     };
+    // Around the rows and back to the start. Exact: row counts are far
+    // below a usize, and `rows` is at least 1.
+    let rows = NonZeroUsize::new(total).unwrap_or(NonZeroUsize::MIN);
     for step in 0..=total {
         let index = if forward {
-            (from.0 + step) % total.max(1)
+            from.0.saturating_add(step) % rows
         } else {
-            (from.0 + total * 2 - step) % total.max(1)
+            from.0
+                .saturating_add(total.saturating_mul(2))
+                .saturating_sub(step)
+                % rows
         };
         let cols = matches_in(index);
         let hit = if step == 0 {
@@ -458,7 +466,8 @@ pub fn text(
             let Some(cell) = row.cells.get(usize::from(col)) else {
                 break;
             };
-            cells += 1;
+            // Refused long before it could saturate.
+            cells = cells.saturating_add(1);
             if cells > MAX_CELLS {
                 return Err(format!("the selection is larger than {MAX_CELLS} cells"));
             }
@@ -496,7 +505,9 @@ pub fn enter(session: &mut Session, client: ClientId) -> Result<String, String> 
     let screen = session.panes.get(&pane).ok_or("no such pane")?.screen();
     let (cy, cx) = screen.cursor_position();
     let history = screen.history_len();
-    let cursor = row_at(screen, history + usize::from(cy))
+    let cursor = history
+        .checked_add(usize::from(cy))
+        .and_then(|i| row_at(screen, i))
         .ok_or("the pane has no rows")?
         .id;
     let top = row_at(screen, history).ok_or("the pane has no rows")?.id;
@@ -519,6 +530,24 @@ fn leave(session: &mut Session, client: ClientId) {
     if let Some(view) = session.views.get_mut(&client) {
         view.mode = Mode::Normal;
         view.notice = None;
+    }
+}
+
+/// A scroll by some rows, toward older output or newer.
+#[derive(Clone, Copy)]
+enum Scroll {
+    Up(usize),
+    Down(usize),
+}
+
+impl Scroll {
+    /// Where a row index lands, stopping at 0 and at `last`.
+    fn from(self, at: usize, last: usize) -> usize {
+        match self {
+            Scroll::Up(n) => at.saturating_sub(n),
+            Scroll::Down(n) => at.saturating_add(n),
+        }
+        .min(last)
     }
 }
 
@@ -573,7 +602,16 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
             {
                 text.push(c);
             }
-            _ => {}
+            Key::Char(_)
+            | Key::Tab
+            | Key::Delete
+            | Key::Insert
+            | Key::Arrow(_)
+            | Key::Home
+            | Key::End
+            | Key::PageUp
+            | Key::PageDown
+            | Key::F(_) => {}
         }
         return;
     }
@@ -604,7 +642,7 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
     };
     let ctrl = press.mods.ctrl && !press.mods.alt;
     let mut target: Option<(usize, u16)> = None;
-    let mut scroll: Option<isize> = None;
+    let mut scroll: Option<Scroll> = None;
     match (press.key, ctrl) {
         (Key::Char('q'), false) | (Key::Escape, _) => {
             leave(session, client);
@@ -617,10 +655,13 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
             let wide = row_at(screen, row)
                 .and_then(|r| r.cells.get(usize::from(col)).copied())
                 .is_some_and(|c| c.is_wide());
-            target = Some((row, (col + if wide { 2 } else { 1 }).min(last_col)));
+            target = Some((
+                row,
+                col.saturating_add(if wide { 2 } else { 1 }).min(last_col),
+            ));
         }
         (Key::Char('j'), false) | (Key::Arrow(Direction::Down), _) => {
-            target = Some(((row + 1).min(last_row), col))
+            target = Some((row.saturating_add(1).min(last_row), col))
         }
         (Key::Char('k'), false) | (Key::Arrow(Direction::Up), _) => {
             target = Some((row.saturating_sub(1), col))
@@ -636,17 +677,21 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
         (Key::Char('$'), false) | (Key::End, _) => target = Some((row, line_end(row))),
         (Key::Char('H'), false) => target = Some((top, col)),
         (Key::Char('M'), false) => {
-            target = Some(((top + usize::from(height) / 2).min(last_row), col))
+            target = Some((
+                top.saturating_add(usize::from(height) / 2).min(last_row),
+                col,
+            ))
         }
         (Key::Char('L'), false) => {
-            target = Some(((top + usize::from(height) - 1).min(last_row), col))
+            let bottom = top.saturating_add(usize::from(height)).saturating_sub(1);
+            target = Some((bottom.min(last_row), col))
         }
         (Key::Char('g'), false) => target = Some((0, 0)),
         (Key::Char('G'), false) => target = Some((last_row, col)),
-        (Key::Char('u'), true) => scroll = Some(-(half as isize)),
-        (Key::Char('d'), true) => scroll = Some(half as isize),
-        (Key::Char('b'), true) | (Key::PageUp, _) => scroll = Some(-(page as isize)),
-        (Key::Char('f'), true) | (Key::PageDown, _) => scroll = Some(page as isize),
+        (Key::Char('u'), true) => scroll = Some(Scroll::Up(half)),
+        (Key::Char('d'), true) => scroll = Some(Scroll::Down(half)),
+        (Key::Char('b'), true) | (Key::PageUp, _) => scroll = Some(Scroll::Up(page)),
+        (Key::Char('f'), true) | (Key::PageDown, _) => scroll = Some(Scroll::Down(page)),
         (Key::Char('/'), false) => copy.typing = Some((true, String::new())),
         (Key::Char('?'), false) => copy.typing = Some((false, String::new())),
         (Key::Char('n'), false) | (Key::Char('N'), false) => {
@@ -692,9 +737,9 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
         }
         _ => {}
     }
-    if let Some(delta) = scroll {
-        let row = (row as isize + delta).clamp(0, last_row as isize) as usize;
-        let top = (top as isize + delta).clamp(0, screen.history_len() as isize) as usize;
+    if let Some(scroll) = scroll {
+        let row = scroll.from(row, last_row);
+        let top = scroll.from(top, screen.history_len());
         if let Some(r) = row_at(screen, top) {
             copy.top = r.id;
         }
@@ -720,10 +765,11 @@ fn move_to(copy: &mut Copy, screen: &Screen, height: u16, (row, col): (usize, u1
     }
     let top = index_of(screen, copy.top).unwrap_or(screen.history_len());
     let height = usize::from(height).max(1);
+    // Scroll just enough that the row shows; `height` is at least 1.
     let new_top = if row < top {
         row
-    } else if row >= top + height {
-        row + 1 - height
+    } else if row >= top.saturating_add(height) {
+        row.saturating_add(1).saturating_sub(height)
     } else {
         top
     };
@@ -822,6 +868,17 @@ mod tests {
         let mut parser = fux_vt::Parser::new(rows, cols, 100).map_err(|e| e.to_string())?;
         parser.process(text).map_err(|e| e.to_string())?;
         Ok(parser)
+    }
+
+    #[test]
+    fn a_scroll_stops_at_both_ends() {
+        assert_eq!(Scroll::Up(3).from(5, 10), 2);
+        assert_eq!(Scroll::Up(9).from(5, 10), 0);
+        assert_eq!(Scroll::Down(3).from(5, 10), 8);
+        assert_eq!(Scroll::Down(9).from(5, 10), 10);
+        assert_eq!(Scroll::Down(usize::MAX).from(5, 10), 10);
+        // A row past the end, as after output shrank history, comes back.
+        assert_eq!(Scroll::Up(1).from(20, 10), 10);
     }
 
     #[test]

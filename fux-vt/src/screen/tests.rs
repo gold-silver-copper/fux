@@ -1,6 +1,19 @@
 use super::*;
 
 #[test]
+fn sgr_colour_parameters_name_the_sixteen_palette_colours() {
+    for (first, index) in [(30, 0), (40, 0), (90, 8), (100, 8)] {
+        for offset in 0..8u8 {
+            let n = first + u16::from(offset);
+            assert_eq!(palette(n), Some(Color::Idx(index + offset)), "{n}");
+        }
+    }
+    for n in [0, 29, 38, 39, 48, 49, 89, 98, 99, 108, u16::MAX] {
+        assert_eq!(palette(n), None, "{n}");
+    }
+}
+
+#[test]
 fn partially_completed_scroll_error_still_invalidates_every_window() -> Result<(), Error> {
     let mut s = Screen::new(2, 1, 2)?;
     s.begin()?;

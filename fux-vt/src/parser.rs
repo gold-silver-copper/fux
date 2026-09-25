@@ -26,18 +26,21 @@ impl Default for Parameters {
 }
 impl Parameters {
     fn digit(&mut self, byte: u8) {
-        if let Some(n) = self.values.get_mut(self.len - 1) {
-            *n = n.saturating_mul(10).saturating_add(u16::from(byte - b'0'));
+        // A value too large for a u16 stays at its largest.
+        if let Some(n) = self.len.checked_sub(1).and_then(|i| self.values.get_mut(i))
+            && let Some(digit) = byte.checked_sub(b'0')
+        {
+            *n = n.saturating_mul(10).saturating_add(u16::from(digit));
         }
     }
     fn separator(&mut self, colon: bool) -> bool {
-        if self.len == self.values.len() {
+        let Some(len) = self.len.checked_add(1).filter(|n| *n <= self.values.len()) else {
             return false;
-        }
+        };
         if let Some(sub) = self.sub.get_mut(self.len) {
             *sub = colon;
         }
-        self.len += 1;
+        self.len = len;
         true
     }
     pub fn groups(&self) -> impl Iterator<Item = &[u16]> {
@@ -46,9 +49,9 @@ impl Parameters {
             if start >= self.len {
                 return None;
             }
-            let mut end = start + 1;
+            let mut end = start.checked_add(1)?;
             while end < self.len && self.sub.get(end).copied().unwrap_or(false) {
-                end += 1;
+                end = end.checked_add(1)?;
             }
             let result = self.values.get(start..end);
             start = end;
@@ -228,9 +231,11 @@ impl Parser {
         self.ignoring = false;
     }
     fn collect(&mut self, byte: u8) {
-        if let Some(slot) = self.intermediates.get_mut(self.intermediate_len) {
+        if let Some(slot) = self.intermediates.get_mut(self.intermediate_len)
+            && let Some(len) = self.intermediate_len.checked_add(1)
+        {
             *slot = byte;
-            self.intermediate_len += 1;
+            self.intermediate_len = len;
         } else {
             self.ignoring = true;
         }
@@ -247,11 +252,13 @@ impl Parser {
                         Some(0xf4) => byte < 0x90,
                         _ => true,
                     });
-            if valid_continuation {
-                if let Some(slot) = self.utf8.get_mut(self.utf8_len) {
-                    *slot = byte;
-                }
-                self.utf8_len += 1;
+            // `utf8_need` is at most 4, so a continuation always has a slot.
+            if valid_continuation
+                && let Some(len) = self.utf8_len.checked_add(1)
+                && let Some(slot) = self.utf8.get_mut(self.utf8_len)
+            {
+                *slot = byte;
+                self.utf8_len = len;
                 if self.utf8_len == self.utf8_need {
                     let scalar = self
                         .utf8
@@ -472,7 +479,10 @@ impl Parser {
         let (command, rest) = match payload.iter().position(|b| *b == b';') {
             Some(i) => (
                 payload.get(..i).unwrap_or_default(),
-                payload.get(i + 1..).unwrap_or_default(),
+                payload
+                    .get(i..)
+                    .and_then(|r| r.get(1..))
+                    .unwrap_or_default(),
             ),
             None => (payload.as_slice(), &[][..]),
         };
@@ -486,7 +496,7 @@ impl Parser {
             b"52" => {
                 if let Some(i) = rest.iter().position(|b| *b == b';') {
                     let selection = rest.get(..i).unwrap_or_default();
-                    let data = rest.get(i + 1..).unwrap_or_default();
+                    let data = rest.get(i..).and_then(|r| r.get(1..)).unwrap_or_default();
                     if data != b"?" {
                         sink.event(Event::Clipboard { selection, data });
                     }

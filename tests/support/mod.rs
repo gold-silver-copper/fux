@@ -1,6 +1,9 @@
 //! A real server, real `fux` CLI calls, and scripted attach clients that
 //! speak the protocol and keep a fux-vt screen of what they were painted.
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "each test binary uses a different part of this module"
+)]
 use fux::protocol::{Decoder, Frame, PROTOCOL, Role};
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -20,6 +23,13 @@ static COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Servers are started one at a time, so no fork in one test can inherit
 /// another test's descriptors.
 static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// When a wait that starts now gives up. A time past what an `Instant`
+/// holds gives up at once.
+pub fn after(wait: Duration) -> Instant {
+    let now = Instant::now();
+    now.checked_add(wait).unwrap_or(now)
+}
 
 pub fn e(error: impl std::fmt::Display) -> String {
     error.to_string()
@@ -77,7 +87,7 @@ impl Server {
             socket,
             child: Some(child),
         };
-        let deadline = Instant::now() + PATIENCE;
+        let deadline = after(PATIENCE);
         while UnixStream::connect(&server.socket).is_err() {
             if Instant::now() > deadline {
                 return Err(format!("the server did not start: {}", server.log()));
@@ -131,7 +141,7 @@ impl Server {
 
     /// Waits until the server has exited; its exit status.
     pub fn wait_exit(&mut self) -> Result<std::process::ExitStatus, String> {
-        let deadline = Instant::now() + PATIENCE;
+        let deadline = after(PATIENCE);
         loop {
             if let Some(child) = &mut self.child
                 && let Some(status) = child.try_wait().map_err(e)?
@@ -160,7 +170,7 @@ impl Drop for Server {
                 .arg("kill-server")
                 .env("FUX_SOCKET", &self.socket)
                 .output();
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = after(Duration::from_secs(3));
             while child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -252,7 +262,7 @@ impl Client {
 
     /// Reads whatever the server has sent.
     pub fn pump(&mut self) -> Outcome {
-        let mut buffer = [0u8; 65536];
+        let mut buffer = vec![0u8; 64 * 1024];
         loop {
             match self.stream.read(&mut buffer) {
                 Ok(0) => {
@@ -274,7 +284,15 @@ impl Client {
                     self.terminal.process(&bytes).map_err(e)?;
                 }
                 Frame::Exit(reason) => self.exit = Some(reason),
-                _ => {}
+                Frame::Hello { .. }
+                | Frame::Attach { .. }
+                | Frame::Input(_)
+                | Frame::Resize { .. }
+                | Frame::Detach
+                | Frame::Command { .. }
+                | Frame::Stdout(_)
+                | Frame::Stderr(_)
+                | Frame::Done { .. } => {}
             }
         }
         Ok(())
@@ -310,7 +328,7 @@ impl Client {
 
     /// Waits until the screen satisfies `test`.
     pub fn wait(&mut self, what: &str, test: impl Fn(&str) -> bool) -> Outcome {
-        let deadline = Instant::now() + PATIENCE;
+        let deadline = after(PATIENCE);
         loop {
             self.pump()?;
             let text = self.text();
@@ -331,7 +349,7 @@ impl Client {
 
     /// Waits for the server to end this attachment; the reason.
     pub fn wait_exit(&mut self) -> Result<String, String> {
-        let deadline = Instant::now() + PATIENCE;
+        let deadline = after(PATIENCE);
         loop {
             self.pump()?;
             if let Some(reason) = &self.exit {
@@ -352,7 +370,7 @@ impl Client {
 
 /// Waits until `test` holds, polling.
 pub fn eventually(what: &str, mut test: impl FnMut() -> Result<bool, String>) -> Outcome {
-    let deadline = Instant::now() + PATIENCE;
+    let deadline = after(PATIENCE);
     loop {
         if test()? {
             return Ok(());
@@ -367,7 +385,8 @@ pub fn eventually(what: &str, mut test: impl FnMut() -> Result<bool, String>) ->
 /// The real `fux attach`, on a PTY of its own, and a fux-vt screen of what it
 /// shows.
 pub struct Terminal {
-    pub master: std::os::fd::OwnedFd,
+    /// `None` once the terminal is closed.
+    master: Option<std::os::fd::OwnedFd>,
     pub child: Child,
     pub screen: fux_vt::Parser,
     pub output: Vec<u8>,
@@ -380,44 +399,54 @@ impl Terminal {
         cols: u16,
         args: &[&str],
     ) -> Result<Terminal, String> {
+        let argv: Vec<&str> = [FUX, "attach"]
+            .into_iter()
+            .chain(args.iter().copied())
+            .collect();
+        Terminal::start(rows, cols, &argv, |command| {
+            command.env("FUX_SOCKET", &server.socket);
+        })
+    }
+
+    /// `argv` on a PTY of its own, leading a new session with the PTY as its
+    /// controlling terminal, as a terminal emulator starts its shell; `setup`
+    /// adds to its environment.
+    pub fn start(
+        rows: u16,
+        cols: u16,
+        argv: &[&str],
+        setup: impl FnOnce(&mut Command),
+    ) -> Result<Terminal, String> {
         let (master, slave) = fux::process::open_pty(rows, cols)?;
-        let stdio = |fd: &std::os::fd::OwnedFd| fd.try_clone().map(Stdio::from).map_err(e);
         let child = {
             let _guard = SPAWN.lock().map_err(e)?;
-            let mut command = Command::new(FUX);
-            command
-                .arg("attach")
-                .args(args)
-                .env("FUX_SOCKET", &server.socket)
-                .env("TERM", "xterm-256color")
-                .env_remove("FUX_PANE")
-                .stdin(stdio(&slave)?)
-                .stdout(stdio(&slave)?)
-                .stderr(stdio(&slave)?);
-            // SAFETY: setsid and TIOCSCTTY are async-signal-safe system calls.
-            unsafe {
-                use std::os::unix::process::CommandExt;
-                command.pre_exec(|| {
-                    rustix::process::setsid().map_err(std::io::Error::from)?;
-                    rustix::process::ioctl_tiocsctty(rustix::stdio::stdin())
-                        .map_err(std::io::Error::from)?;
-                    Ok(())
-                });
-            }
-            command.spawn().map_err(e)?
+            fux::process::launch(Path::new(FUX), argv, &slave, |command| {
+                command.env("TERM", "xterm-256color").env_remove("FUX_PANE");
+                setup(command);
+            })
+            .map_err(e)?
         };
         drop(slave);
         Ok(Terminal {
-            master,
+            master: Some(master),
             child,
             screen: fux_vt::Parser::new(rows, cols, 0).map_err(e)?,
             output: Vec::new(),
         })
     }
 
+    /// Closes the terminal, as closing its window does: the kernel hangs up
+    /// the session it controls.
+    pub fn hang_up(&mut self) {
+        self.master = None;
+    }
+
     pub fn pump(&mut self) {
-        let mut buffer = [0u8; 65536];
-        while let Ok(n) = rustix::io::read(&self.master, &mut buffer) {
+        let Some(master) = &self.master else {
+            return;
+        };
+        let mut buffer = vec![0u8; 64 * 1024];
+        while let Ok(n) = rustix::io::read(master, buffer.as_mut_slice()) {
             if n == 0 {
                 break;
             }
@@ -455,7 +484,7 @@ impl Terminal {
     }
 
     pub fn wait_for(&mut self, needle: &str) -> Outcome {
-        let deadline = Instant::now() + PATIENCE;
+        let deadline = after(PATIENCE);
         loop {
             self.pump();
             if self.text().contains(needle)
@@ -474,9 +503,10 @@ impl Terminal {
     }
 
     pub fn type_bytes(&mut self, bytes: &[u8]) -> Outcome {
+        let master = self.master.as_ref().ok_or("the terminal is closed")?;
         let mut rest = bytes;
         while !rest.is_empty() {
-            match rustix::io::write(&self.master, rest) {
+            match rustix::io::write(master, rest) {
                 Ok(n) => rest = rest.get(n..).unwrap_or_default(),
                 Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INTR) => {
                     std::thread::sleep(Duration::from_millis(1))
@@ -488,7 +518,8 @@ impl Terminal {
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) -> Outcome {
-        fux::process::resize(&self.master, rows, cols);
+        let master = self.master.as_ref().ok_or("the terminal is closed")?;
+        fux::process::resize(master, rows, cols);
         self.screen = fux_vt::Parser::new(rows, cols, 0).map_err(e)?;
         // The kernel signals the foreground group of the PTY: the client.
         Ok(())
@@ -496,7 +527,7 @@ impl Terminal {
 
     /// Waits for the client to exit; its status.
     pub fn wait_exit(&mut self) -> Result<std::process::ExitStatus, String> {
-        let deadline = Instant::now() + PATIENCE;
+        let deadline = after(PATIENCE);
         loop {
             self.pump();
             if let Some(status) = self.child.try_wait().map_err(e)? {

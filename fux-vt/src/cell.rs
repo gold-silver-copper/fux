@@ -95,7 +95,7 @@ impl Cell {
         }
         let mut cell = Self::blank(attributes);
         cell.text.get_mut(..bytes.len())?.copy_from_slice(bytes);
-        cell.length = bytes.len() as u8 | if wide { 128 } else { 0 };
+        cell.length = u8::try_from(bytes.len()).ok()? | if wide { 128 } else { 0 };
         Some(cell)
     }
     /// The trailing half of a wide glyph: empty, default attributes.
@@ -153,10 +153,13 @@ impl Cell {
         let mut cell = Self::blank(attributes);
         let mut bytes = [0; 4];
         let text = c.encode_utf8(&mut bytes);
-        if let Some(dst) = cell.text.get_mut(..text.len()) {
+        // A char is at most four UTF-8 bytes, so both always hold.
+        if let Some(dst) = cell.text.get_mut(..text.len())
+            && let Ok(length) = u8::try_from(text.len())
+        {
             dst.copy_from_slice(text.as_bytes());
+            cell.length = length | if width == 2 { 128 } else { 0 };
         }
-        cell.length = text.len() as u8 | if width == 2 { 128 } else { 0 };
         cell
     }
     pub(crate) fn ascii(byte: u8, attributes: Attributes) -> Self {
@@ -186,9 +189,12 @@ impl Cell {
         }
         let mut bytes = [0; 4];
         let text = c.encode_utf8(&mut bytes);
-        if let Some(dst) = self.text.get_mut(len..len + text.len()) {
+        if let Some(end) = len.checked_add(text.len())
+            && let Some(dst) = self.text.get_mut(len..end)
+            && let Ok(length) = u8::try_from(end)
+        {
             dst.copy_from_slice(text.as_bytes());
-            self.length = (self.length & 0xe0) | (len + text.len()) as u8;
+            self.length = (self.length & 0xe0) | length;
         }
     }
 }

@@ -64,21 +64,22 @@ impl<'a> Window<'a> {
         if row >= self.rows {
             return None;
         }
-        self.grid.row_at(self.start + usize::from(row))
+        self.grid.row_at(self.start.checked_add(usize::from(row))?)
     }
     pub fn cell(&self, row: u16, col: u16) -> Option<&'a Cell> {
         if col >= self.cols {
             return None;
         }
         let cell = self.row(row)?.cells.get(usize::from(col))?;
-        if cell.is_wide() && col + 1 >= self.cols {
+        // A wide glyph in the window's last column is clipped.
+        if cell.is_wide() && col.checked_add(1).is_none_or(|next| next >= self.cols) {
             None
         } else {
             Some(cell)
         }
     }
     pub fn row_wrapped(&self, row: u16) -> bool {
-        self.cols == self.grid.cols && self.row(row).is_some_and(|r| r.wrapped)
+        self.cols == self.grid.cols.get() && self.row(row).is_some_and(|r| r.wrapped)
     }
     /// Inclusive endpoints, normalized to wide leaders. Limits are checked
     /// before allocation and before every append; an oversized copy is refused.
@@ -102,7 +103,10 @@ impl<'a> Window<'a> {
         };
         let (a, b) = (point(a)?, point(b)?);
         let (start, end) = if a <= b { (a, b) } else { (b, a) };
-        let count = usize::from(end.0 - start.0 + 1)
+        // Both points are in the window, so it has a last column.
+        let last = self.cols.checked_sub(1).ok_or(Error::InvalidRange)?;
+        let count = (start.0..=end.0)
+            .len()
             .checked_mul(usize::from(self.cols))
             .ok_or(Error::CopyLimit)?;
         if count > max_cells {
@@ -111,7 +115,7 @@ impl<'a> Window<'a> {
         let mut output = String::new();
         for y in start.0..=end.0 {
             let left = if y == start.0 { start.1 } else { 0 };
-            let right = if y == end.0 { end.1 } else { self.cols - 1 };
+            let right = if y == end.0 { end.1 } else { last };
             let line_start = output.len();
             for x in left..=right {
                 // Clipped wide glyphs and padding beyond a historical row's

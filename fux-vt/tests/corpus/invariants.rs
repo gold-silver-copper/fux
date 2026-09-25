@@ -14,7 +14,8 @@ pub fn check(p: &Parser) {
     let (top, bottom) = s.scroll_region();
     assert!(top <= bottom && bottom < rows);
     let mut ids = HashSet::new();
-    for offset in 0..usize::from(rows) + s.history_len() {
+    // A count past usize would show as a missing row.
+    for offset in 0..usize::from(rows).saturating_add(s.history_len()) {
         let row = s.row_from_bottom(offset);
         assert!(row.is_some(), "missing retained row");
         let Some(row) = row else {
@@ -26,7 +27,9 @@ pub fn check(p: &Parser) {
             assert!(cell.contents().len() <= 22);
             if cell.is_wide() {
                 assert!(
-                    row.cells.get(i + 1).is_some_and(Cell::is_wide_continuation),
+                    i.checked_add(1)
+                        .and_then(|j| row.cells.get(j))
+                        .is_some_and(Cell::is_wide_continuation),
                     "orphan wide leader at {offset},{i}"
                 );
             }
@@ -47,9 +50,9 @@ pub fn check(p: &Parser) {
             let w = s.window(offset, rows, width);
             assert!(w.offset <= s.history_len());
             assert!(w.cols <= cols && w.rows <= rows);
-            if w.cols > 0 {
+            if let Some(last) = w.cols.checked_sub(1) {
                 for y in 0..w.rows {
-                    assert!(!w.cell(y, w.cols - 1).is_some_and(Cell::is_wide));
+                    assert!(!w.cell(y, last).is_some_and(Cell::is_wide));
                 }
             }
         }
@@ -72,7 +75,7 @@ pub fn equal(a: &Parser, b: &Parser) {
     assert_eq!(a.mouse_protocol_mode(), b.mouse_protocol_mode());
     assert_eq!(a.mouse_protocol_encoding(), b.mouse_protocol_encoding());
     assert_eq!(a.history_len(), b.history_len());
-    for offset in 0..usize::from(a.size().0) + a.history_len() {
+    for offset in 0..usize::from(a.size().0).saturating_add(a.history_len()) {
         let (a, b) = (a.row_from_bottom(offset), b.row_from_bottom(offset));
         assert!(a.is_some() && b.is_some(), "missing row");
         let (Some(a), Some(b)) = (a, b) else {
