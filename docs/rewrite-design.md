@@ -476,6 +476,7 @@ a message naming `-t`. It never guesses a "current" pane.
 | `fux resize-pane -t %N -L\|-R\|-U\|-D [N]` | Adjust weights |
 | `fux send-keys -t %N [-l] KEYS…` | Keys (`C-c`, `Enter`, …) or literal text |
 | `fux capture-pane -t %N [-S -N] [--json]` | Screen text, optionally with history |
+| `fux capture-client -c CLIENT [--json]` | What a client's terminal shows, bar and overlays included: the screen the server composes for it |
 | `fux set OPTION VALUE`, `fux bind [-g GROUP] [-r] KEY… CMD…`, `fux unbind KEY…`, `fux unbind-all` | Change the running configuration |
 | `fux reload` | Re-run the config file against the defaults |
 | `fux list-buffers`, `fux show-buffer [-b N]`, `fux paste-buffer [-b N] [-t %N]` | Paste buffers |
