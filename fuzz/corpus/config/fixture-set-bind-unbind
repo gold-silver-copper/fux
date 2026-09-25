@@ -1,0 +1,14 @@
+set prefix C-a
+set shell /bin/zsh -l
+set shell '/bin/bash --norc'
+set clipboard off
+set history-lines 99
+set buffers 0
+set nope 1
+set history-lines lots
+bind -g Tools y split -h -- htop
+bind h kill-pane
+unbind h
+unbind h
+unbind-all
+bind x

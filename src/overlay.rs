@@ -86,7 +86,7 @@ pub fn layer_title(session: &Session, path: &[KeyPress]) -> Option<String> {
 }
 
 /// How many entries the column can select among in the layer at `path`.
-fn column_len(session: &Session, path: &[KeyPress]) -> usize {
+pub(crate) fn column_len(session: &Session, path: &[KeyPress]) -> usize {
     column_rows(session, path)
         .iter()
         .filter(|row| !matches!(row, ColumnRow::Heading(_)))
@@ -1160,6 +1160,34 @@ mod tests {
         s.escape(c);
         assert_eq!(mode(&s, c), "normal");
         assert_eq!(start.checked_add(3), Some(width(&s, 1)));
+        Ok(())
+    }
+
+    /// Bindings can change under a client from the command line: a column
+    /// or repeat mode whose layer goes closes, as a list whose item goes
+    /// does, and a column's selection stays within it.
+    #[test]
+    fn a_layer_unbound_under_a_client_closes_its_column_or_mode() -> Outcome {
+        let (mut s, c) = session()?;
+        with_layers(&mut s)?;
+        s.input(c, b"\x02g");
+        run(&mut s, "unbind g")?;
+        assert_eq!(mode(&s, c), "normal");
+        assert_eq!(notice(&s, c), "closed: the layer C-b g is gone");
+        s.input(c, b"\x02yl");
+        assert_eq!(mode(&s, c), "repeat y");
+        run(&mut s, "unbind y h")?;
+        assert_eq!(mode(&s, c), "repeat y");
+        run(&mut s, "bind y l zoom")?;
+        assert_eq!(mode(&s, c), "normal");
+        assert_eq!(notice(&s, c), "closed: the repeat mode C-b y is gone");
+        s.input(c, b"\x02\x1b[F");
+        let last = column_len(&s, &[]).saturating_sub(1);
+        assert_eq!(mode(&s, c), format!("column {last}"));
+        run(&mut s, "unbind d")?;
+        assert_eq!(mode(&s, c), format!("column {}", last.saturating_sub(1)));
+        run(&mut s, "unbind-all")?;
+        assert_eq!(mode(&s, c), "column 0");
         Ok(())
     }
 
