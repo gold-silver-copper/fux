@@ -68,7 +68,7 @@ fn the_column_runs_the_selected_command_and_explains_unavailable_ones() -> Outco
     // Enter on it: `next pane` is the 17th binding (after 8 pane bindings,
     // 4 resizes and 4 moves).
     client.keys("\x1b[H")?;
-    client.keys(&DOWN.repeat(16))?;
+    client.keys(&std::iter::repeat_n(DOWN, 16).collect::<String>())?;
     client.keys("\r")?;
     bar_has(&mut client, "only one pane")?;
     // And by its key, straight from the column.

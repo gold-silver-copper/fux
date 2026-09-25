@@ -76,7 +76,7 @@ pub fn key_bytes(press: KeyPress, application: bool) -> Vec<u8> {
             format!("\x1b{prefix}{final_byte}").into_bytes()
         };
     }
-    let mut bytes = match key {
+    let bytes = match key {
         Key::Enter => vec![13],
         Key::Tab if shift => b"\x1b[Z".to_vec(),
         Key::Tab => vec![9],
@@ -99,7 +99,7 @@ pub fn key_bytes(press: KeyPress, application: bool) -> Vec<u8> {
         Key::Arrow(_) | Key::Home | Key::End => Vec::new(),
     };
     if alt && !bytes.starts_with(&[27]) {
-        bytes.insert(0, 27);
+        return [&[27], bytes.as_slice()].concat();
     }
     bytes
 }

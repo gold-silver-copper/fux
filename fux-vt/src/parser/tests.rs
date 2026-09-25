@@ -1,10 +1,19 @@
 use super::*;
 
+/// `input` in 8 KiB pieces, the last one shorter.
+fn pieces(input: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let (whole, rest) = input.as_chunks::<8192>();
+    whole.iter().map(|piece| piece.as_slice()).chain([rest])
+}
+
 #[test]
 #[ignore = "explicit release-mode performance measurement"]
 fn measure_ascii_run_against_scalar_dispatch() -> Result<(), Error> {
-    let input = b"The quick brown fox: printable ASCII 0123456789 abcdefghijklmnopqrstuvwxyz\r\n"
-        .repeat(100_000);
+    let line = b"The quick brown fox: printable ASCII 0123456789 abcdefghijklmnopqrstuvwxyz\r\n";
+    let input: Vec<u8> = std::iter::repeat_n(&line[..], 100_000)
+        .flatten()
+        .copied()
+        .collect();
     let mut fast = Parser::new(24, 80, 10_000)?;
     let mut scalar = fast.clone();
     let mut fast_us = Vec::new();
@@ -12,12 +21,12 @@ fn measure_ascii_run_against_scalar_dispatch() -> Result<(), Error> {
     let mut plateau = None;
     for run in 0..6 {
         let started = std::time::Instant::now();
-        for chunk in std::hint::black_box(&input).chunks(8192) {
+        for chunk in pieces(std::hint::black_box(&input)) {
             fast.process(chunk)?;
         }
         let a = started.elapsed().as_micros();
         let started = std::time::Instant::now();
-        for chunk in std::hint::black_box(&input).chunks(8192) {
+        for chunk in pieces(std::hint::black_box(&input)) {
             scalar.screen.begin()?;
             for &byte in chunk {
                 scalar.byte(byte, &mut Replies(|_: &[u8]| {}))?;

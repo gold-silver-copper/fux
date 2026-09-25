@@ -80,7 +80,13 @@ pub fn base64(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     // A capacity hint only.
     let mut out = String::with_capacity(bytes.len().div_ceil(3).saturating_mul(4));
-    for chunk in bytes.chunks(3) {
+    // Three bytes at a time, and what is left over.
+    let (whole, rest) = bytes.as_chunks::<3>();
+    for chunk in whole
+        .iter()
+        .map(|chunk| chunk.as_slice())
+        .chain((!rest.is_empty()).then_some(rest))
+    {
         let b = [
             chunk.first().copied().unwrap_or(0),
             chunk.get(1).copied().unwrap_or(0),

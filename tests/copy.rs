@@ -216,7 +216,7 @@ fn copy_mode_ends_when_its_pane_closes_or_its_rows_are_evicted() -> Outcome {
 #[test]
 fn wide_glyphs_stay_whole_and_wrapped_lines_join() -> Outcome {
     let server = Server::start("")?;
-    let long = "abcdefghij".repeat(5);
+    let long: String = std::iter::repeat_n("abcdefghij", 5).collect();
     let mut client = prepared(&server, 12, 30, &["x界y", &long, "end"])?;
     copy_mode(&mut client)?;
     // The wrapped line takes rows 1 and 2; V over them copies it without a

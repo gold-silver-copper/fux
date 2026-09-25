@@ -55,3 +55,45 @@ fn narrowing_live_rows_uses_the_new_width_as_stride() -> Result<(), Error> {
     assert_eq!(narrow.stride, 10);
     Ok(())
 }
+
+/// `move_row` is `remove(from)` then `insert(to)`, for every pair of rows,
+/// in a deque that is one slice and in one that has wrapped round into two;
+/// and it moves nothing for an index out of range.
+#[test]
+fn moving_a_row_is_a_removal_then_an_insertion() -> Result<(), Error> {
+    let mut next = 0;
+    let contiguous = Grid::new(5, 1, 0, &mut next, 0)?;
+    let mut wrapped = Grid::new(5, 1, 4, &mut next, 0)?;
+    for version in 1..=11 {
+        wrapped.scroll((0, 4), 1, true, true, &mut next, version)?;
+    }
+    let (front, back) = wrapped.order.as_slices();
+    assert!(!front.is_empty() && !back.is_empty(), "the deque wraps");
+    moves_are_removals_then_insertions(&contiguous);
+    moves_are_removals_then_insertions(&wrapped);
+    Ok(())
+}
+
+fn moves_are_removals_then_insertions(grid: &Grid) {
+    let rows: Vec<usize> = grid.order.iter().copied().collect();
+    let len = rows.len();
+    for from in 0..len {
+        for to in 0..len {
+            let mut moved = grid.clone();
+            assert_eq!(moved.move_row(from, to), rows.get(from).copied());
+            let rest = rows.iter().enumerate().filter(|(i, _)| *i != from);
+            let mut expected: Vec<usize> = rest.clone().take(to).map(|(_, r)| *r).collect();
+            expected.extend(rows.get(from));
+            expected.extend(rest.skip(to).map(|(_, r)| *r));
+            assert_eq!(
+                moved.order.iter().copied().collect::<Vec<_>>(),
+                expected,
+                "{from} to {to}"
+            );
+        }
+    }
+    let mut untouched = grid.clone();
+    assert_eq!(untouched.move_row(1, len), None);
+    assert_eq!(untouched.move_row(len, 1), None);
+    assert_eq!(untouched.order, grid.order);
+}

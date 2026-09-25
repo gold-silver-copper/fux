@@ -1,6 +1,6 @@
 [workspace]
 members = ["fux-vt", "fux-sys"]
-exclude = ["fux-vt/fuzz"]
+exclude = ["fux-vt/fuzz", "fuzz"]
 resolver = "3"
 
 [package]
@@ -68,3 +68,4 @@ cast_possible_truncation = "forbid"
 cast_possible_wrap = "forbid"
 cast_sign_loss = "forbid"
 arithmetic_side_effects = "forbid"
+disallowed_methods = "forbid"

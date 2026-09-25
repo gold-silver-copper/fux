@@ -383,7 +383,7 @@ mod tests {
     fn modes_follow_output_split_anywhere() {
         let stream = b"x\x1b[?1004;2004hy\x1b[5 qz\x1b[?25l";
         for split in 0..stream.len() {
-            let (a, b) = stream.split_at(split);
+            let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
             let mut modes = Modes::default();
             modes.feed(a);
             modes.feed(b);
