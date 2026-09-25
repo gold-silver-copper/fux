@@ -1,6 +1,7 @@
 //! What becomes of a pane's processes: background jobs when the pane
 //! closes, and a leader that is stopped rather than exited.
 mod support;
+use rustix::process::Signal;
 use std::time::Duration;
 use support::*;
 
@@ -91,4 +92,78 @@ fn terminate_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
     // Closing the pane ends the job.
     server.ok(&["kill-pane", "-t", &pane])?;
     gone(job, "a background job, after kill-pane")
+}
+
+/// A pane whose program is stopped is not one whose program exited: it
+/// stays, and runs again on SIGCONT. Only an exit or a kill closes it, and
+/// its viewers are told the status (bevy-final finding 020, where macOS
+/// reported the stop as an exit, status 145).
+#[test]
+fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
+    let server = Server::start("")?;
+    server.ok(&["split", "-h", "-t", "%1"])?;
+    let mut client = server.attach(20, 100)?;
+    let (pane, leader) = server.newest_pane()?;
+    // Settled: the new shell has a prompt.
+    eventually("a prompt", || {
+        Ok(server.ok(&["capture-pane", "-t", &pane])?.contains('$'))
+    })?;
+    signal(leader, Signal::STOP);
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(alive(leader), "the stopped shell is gone");
+    assert!(
+        server.panes()?.iter().any(|(id, _)| *id == pane),
+        "the stopped pane closed: {}",
+        server.ok(&["ls"])?
+    );
+    client.pump()?;
+    assert!(!client.bar().contains("exited"), "{}", client.bar());
+    signal(leader, Signal::CONT);
+    server.type_line(&pane, "echo alive-$((1+1))")?;
+    eventually("the shell answers", || {
+        Ok(server
+            .ok(&["capture-pane", "-t", &pane])?
+            .contains("alive-2"))
+    })?;
+    // A kill closes it, with the signal's status: 128 + 9.
+    signal(leader, Signal::KILL);
+    eventually("the pane closed", || {
+        Ok(!server.panes()?.iter().any(|(id, _)| *id == pane))
+    })?;
+    client.wait("the status", |t| {
+        t.lines()
+            .last()
+            .is_some_and(|b| b.contains(pane.as_str()) && b.contains("exited with status 137"))
+    })?;
+    Ok(())
+}
+
+/// A program the shell stops with Ctrl-Z leaves the pane and its shell as
+/// they were; the stopped job ends when the pane closes.
+#[test]
+fn a_job_stopped_in_a_pane_leaves_the_pane_running() -> Outcome {
+    let server = Server::start("")?;
+    server.ok(&["split", "-h", "-t", "%1"])?;
+    let (pane, _) = server.newest_pane()?;
+    let front = server.dir.join("front");
+    server.type_line(
+        &pane,
+        &format!(
+            "sh -c 'echo $$ > \"$0\"; exec sleep 300' '{}'",
+            front.display()
+        ),
+    )?;
+    let job = pid_in(&front)?;
+    let _reap = Reap(vec![job]);
+    server.ok(&["send-keys", "-t", &pane, "C-z"])?;
+    server.type_line(&pane, "echo still-$((2+2))")?;
+    eventually("the shell answers", || {
+        Ok(server
+            .ok(&["capture-pane", "-t", &pane])?
+            .contains("still-4"))
+    })?;
+    assert!(alive(job), "the stopped job ended");
+    assert!(server.panes()?.iter().any(|(id, _)| *id == pane));
+    server.ok(&["kill-pane", "-t", &pane])?;
+    gone(job, "a stopped job, after kill-pane")
 }
