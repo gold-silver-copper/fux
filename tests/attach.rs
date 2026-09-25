@@ -490,3 +490,102 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
     );
     Ok(())
 }
+
+/// Resizing a terminal signals its client, and a signal can interrupt a
+/// read or write in flight. Typing while the window is resized, hundreds of
+/// times, keeps the client attached and loses no byte (bevy-final finding
+/// 010, where Linux ended the attachment with "Interrupted system call").
+#[test]
+fn resizing_while_typing_keeps_the_client_attached_and_every_byte() -> Outcome {
+    let server = Server::start("")?;
+    let mut terminal = Terminal::attach(&server, 20, 60, &[])?;
+    terminal.wait_for("%1 sh")?;
+    let out = server.dir.join("typed");
+    // The marker is assembled when it runs, so the typed line never
+    // matches it.
+    terminal.type_bytes(
+        format!(
+            "stty -echo; echo ready-$((40+2)); cat > '{}'\r",
+            out.display()
+        )
+        .as_bytes(),
+    )?;
+    terminal.wait_for("ready-42")?;
+    let rounds = 400;
+    let mut expected = String::new();
+    for i in 0..rounds {
+        let line = format!("line-{i}");
+        // A line in two writes, with a resize, and so a SIGWINCH, between
+        // them and after them.
+        let (head, tail) = line.split_at_checked(3).ok_or("a line")?;
+        terminal.type_bytes(head.as_bytes())?;
+        terminal.resize(
+            if i % 2 == 0 { 21 } else { 20 },
+            if i % 3 == 0 { 61 } else { 60 },
+        )?;
+        terminal.type_bytes(tail.as_bytes())?;
+        terminal.type_bytes(b"\r")?;
+        terminal.resize(20, 60)?;
+        // A signal straight to the client too, not only through the PTY.
+        let pid = rustix::process::Pid::from_raw(i32::try_from(terminal.child.id()).map_err(e)?)
+            .ok_or("the client's pid")?;
+        let _ = rustix::process::kill_process(pid, rustix::process::Signal::WINCH);
+        expected.push_str(&line);
+        expected.push('\n');
+        terminal.pump();
+        if let Some(status) = terminal.child.try_wait().map_err(e)? {
+            return Err(format!(
+                "the client ended after {i} rounds ({status}):\n{}",
+                String::from_utf8_lossy(&terminal.output)
+            ));
+        }
+    }
+    eventually("every line typed", || {
+        Ok(std::fs::read_to_string(&out).unwrap_or_default() == expected)
+    })
+    .map_err(|error| {
+        let got = std::fs::read_to_string(&out).unwrap_or_default();
+        format!(
+            "{error}: {} of {rounds} lines arrived; the first difference is at byte {}",
+            got.lines().count(),
+            got.bytes()
+                .zip(expected.bytes())
+                .position(|(a, b)| a != b)
+                .unwrap_or(got.len().min(expected.len()))
+        )
+    })?;
+    assert!(
+        terminal.child.try_wait().map_err(e)?.is_none(),
+        "the client ended"
+    );
+    Ok(())
+}
+
+/// Commands from the command line are not ended by signals either, when
+/// one arrives while they wait for the server.
+#[test]
+fn a_signal_does_not_end_a_command_waiting_for_the_server() -> Outcome {
+    let server = Server::start("")?;
+    for _ in 0..100 {
+        let child = std::process::Command::new(FUX)
+            .arg("ls")
+            .env("FUX_SOCKET", &server.socket)
+            .env_remove("FUX_PANE")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(e)?;
+        let pid =
+            rustix::process::Pid::from_raw(i32::try_from(child.id()).map_err(e)?).ok_or("a pid")?;
+        for _ in 0..20 {
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::WINCH);
+        }
+        let out = child.wait_with_output().map_err(e)?;
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(())
+}
