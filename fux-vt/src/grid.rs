@@ -303,7 +303,12 @@ impl Grid {
                     }
                 }
             }
+            // The tail rotates `count` cells right to insert, left to delete.
+            // `rotate_*` panics past the end of what it turns: the clamp is
+            // the reason it is allowed here (clippy.toml), and costs nothing,
+            // as `count` is at most the cells from the cursor to the edge.
             if let Some(tail) = cells.get_mut(col..) {
+                let count = count.min(tail.len());
                 if insert {
                     tail.rotate_right(count);
                 } else {
@@ -365,9 +370,8 @@ impl Grid {
                 let (Some(from), Some(to)) = (self.index(from), self.index(to)) else {
                     return Ok(());
                 };
-                if let Some(slot) = self.order.remove(from) {
+                if let Some(slot) = self.move_row(from, to) {
                     self.recycle(slot, id, version);
-                    self.order.insert(to, slot);
                 }
                 if !up {
                     self.wrap(bottom, false, version);
@@ -375,6 +379,56 @@ impl Grid {
             }
         }
         Ok(())
+    }
+
+    /// Moves the retained row at `from` to `to`, the rows between closing up
+    /// behind it: a removal then an insertion, one row at a time. Its slot,
+    /// or `None`, with nothing moved, if either index is out of range.
+    fn move_row(&mut self, from: usize, to: usize) -> Option<usize> {
+        let slot = *self.order.get(from)?;
+        if to >= self.order.len() {
+            return None;
+        }
+        // Usually the rows from `from` to `to` lie in one of the deque's two
+        // slices: there the move is two reversals of that run, the rows
+        // between, then the whole.
+        let (low, high) = (from.min(to), from.max(to));
+        let (front, back) = self.order.as_mut_slices();
+        let split = front.len();
+        let run = if high < split {
+            front.get_mut(low..=high)
+        } else {
+            match (low.checked_sub(split), high.checked_sub(split)) {
+                (Some(low), Some(high)) => back.get_mut(low..=high),
+                _ => None,
+            }
+        };
+        if let Some(run) = run {
+            let between = if from < to {
+                run.split_first_mut().map(|(_, rest)| rest)
+            } else {
+                run.split_last_mut().map(|(_, rest)| rest)
+            };
+            if let Some(between) = between {
+                between.reverse();
+            }
+            run.reverse();
+            return Some(slot);
+        }
+        // Across the two slices, one row at a time.
+        let mut at = from;
+        while at != to {
+            let next = if at < to {
+                at.checked_add(1)?
+            } else {
+                at.checked_sub(1)?
+            };
+            let row = *self.order.get(next)?;
+            *self.order.get_mut(at)? = row;
+            at = next;
+        }
+        *self.order.get_mut(to)? = slot;
+        Some(slot)
     }
 
     /// Build replacement storage first, so allocation failure leaves this grid unchanged.
@@ -494,7 +548,9 @@ impl Grid {
                         .and_then(|end| replacement.cells.get_mut(start..end)),
                     old.cells.get(..len),
                 ) {
-                    dst.copy_from_slice(src);
+                    for (dst, src) in dst.iter_mut().zip(src) {
+                        *dst = *src;
+                    }
                 }
                 repair_wide(replacement.slice_mut(p));
             }

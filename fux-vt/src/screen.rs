@@ -741,8 +741,9 @@ impl Screen {
                         if rest.len() > parts.len() {
                             continue;
                         }
-                        if let Some(dst) = parts.get_mut(..rest.len()) {
-                            dst.copy_from_slice(rest);
+                        // All of them: `rest` fits, as checked above.
+                        for (dst, src) in parts.iter_mut().zip(rest) {
+                            *dst = *src;
                         }
                         rest.len()
                     };

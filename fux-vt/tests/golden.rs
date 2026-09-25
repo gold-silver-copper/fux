@@ -1,6 +1,8 @@
 //! Independent expectations retained from the passing differential phase.
 #[path = "corpus/fixtures.rs"]
 mod fixtures;
+#[path = "corpus/pieces.rs"]
+mod pieces;
 #[path = "corpus/snapshot.rs"]
 mod snapshot;
 use fux_vt::Parser;
@@ -20,7 +22,7 @@ fn every_permanent_fixture_pins_each_operation_under_every_chunking() -> Result 
             let mut replies = Vec::new();
             let mut actual = String::new();
             for (index, operation) in operations.iter().enumerate() {
-                for bytes in operation.chunks(chunk) {
+                for bytes in pieces::pieces(operation, chunk) {
                     parser.process_with_replies(bytes, |r| replies.push(r.to_vec()))?;
                 }
                 let _ = writeln!(actual, "operation={index} replies={replies:?}");

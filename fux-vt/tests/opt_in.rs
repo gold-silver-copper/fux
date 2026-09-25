@@ -3,6 +3,8 @@
 //! stay fux's policy: no events and the original reply set.
 
 use fux_vt::{Attributes, Cell, Color, Event, OSC_PAYLOAD_LIMIT, Options, Parser, Sink};
+#[path = "corpus/pieces.rs"]
+mod pieces;
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -90,7 +92,7 @@ fn events_are_chunk_invariant() -> Result {
     for size in [1, 2, 3, 7] {
         let mut parser = Parser::with_options(24, 80, 0, EVENTS)?;
         let mut record = Record::default();
-        for chunk in SAMPLE.chunks(size) {
+        for chunk in pieces::pieces(SAMPLE, size) {
             parser.process_with(chunk, &mut record)?;
         }
         assert_eq!(record, whole, "chunk size {size}");
@@ -193,8 +195,9 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
         assert_eq!(&copy, original, "col {col}");
     }
     let attributes = Attributes::new(Color::Idx(1), Color::Default);
-    assert!(Cell::new(&"x".repeat(Cell::CONTENTS_CAPACITY), false, attributes).is_some());
-    assert!(Cell::new(&"x".repeat(Cell::CONTENTS_CAPACITY + 1), false, attributes).is_none());
+    let xs = |n: usize| std::iter::repeat_n('x', n).collect::<String>();
+    assert!(Cell::new(&xs(Cell::CONTENTS_CAPACITY), false, attributes).is_some());
+    assert!(Cell::new(&xs(Cell::CONTENTS_CAPACITY + 1), false, attributes).is_none());
     assert!(!attributes.with_bold(true).with_bold(false).bold());
     Ok(())
 }

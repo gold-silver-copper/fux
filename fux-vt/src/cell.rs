@@ -94,7 +94,10 @@ impl Cell {
             return None;
         }
         let mut cell = Self::blank(attributes);
-        cell.text.get_mut(..bytes.len())?.copy_from_slice(bytes);
+        // All of them: the length was checked against the capacity above.
+        for (dst, src) in cell.text.iter_mut().zip(bytes) {
+            *dst = *src;
+        }
         cell.length = u8::try_from(bytes.len()).ok()? | if wide { 128 } else { 0 };
         Some(cell)
     }
@@ -150,17 +153,17 @@ impl Cell {
         }
     }
     pub(crate) fn glyph(c: char, width: usize, attributes: Attributes) -> Self {
-        let mut cell = Self::blank(attributes);
-        let mut bytes = [0; 4];
-        let text = c.encode_utf8(&mut bytes);
-        // A char is at most four UTF-8 bytes, so both always hold.
-        if let Some(dst) = cell.text.get_mut(..text.len())
-            && let Ok(length) = u8::try_from(text.len())
-        {
-            dst.copy_from_slice(text.as_bytes());
-            cell.length = length | if width == 2 { 128 } else { 0 };
+        // Encoded in place: a char is at most four UTF-8 bytes, so it fits,
+        // and so does its length; the rest of the text stays zeros.
+        let mut text = [0; Self::CONTENTS_CAPACITY];
+        let Ok(length) = u8::try_from(c.encode_utf8(&mut text).len()) else {
+            return Self::blank(attributes);
+        };
+        Self {
+            text,
+            length: length | if width == 2 { 128 } else { 0 },
+            attributes,
         }
-        cell
     }
     pub(crate) fn ascii(byte: u8, attributes: Attributes) -> Self {
         let mut cell = Self::blank(attributes);
@@ -187,13 +190,12 @@ impl Cell {
             }
             len = 1;
         }
-        let mut bytes = [0; 4];
-        let text = c.encode_utf8(&mut bytes);
-        if let Some(end) = len.checked_add(text.len())
-            && let Some(dst) = self.text.get_mut(len..end)
+        // Encoded in place after what is there: under 18 bytes are, so at
+        // least four are free, as many as a char takes.
+        if let Some(free) = self.text.get_mut(len..).filter(|free| free.len() >= 4)
+            && let Some(end) = len.checked_add(c.encode_utf8(free).len())
             && let Ok(length) = u8::try_from(end)
         {
-            dst.copy_from_slice(text.as_bytes());
             self.length = (self.length & 0xe0) | length;
         }
     }
