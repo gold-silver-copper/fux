@@ -600,3 +600,31 @@ fn a_signal_does_not_end_a_command_waiting_for_the_server() -> Outcome {
     }
     Ok(())
 }
+
+/// A server may inherit descriptors without close-on-exec from whatever
+/// starts it: a shell that leaks them, or, in these tests, another thread
+/// opening one in the moment before it sets the flag. Its panes' programs
+/// inherit none of them. Before the launcher marked every descriptor above
+/// stderr close-on-exec, the tests above saw a PTY master and a socket of
+/// the test process in a pane, about once in 450 runs.
+#[test]
+fn a_descriptor_the_server_inherited_does_not_reach_its_panes() -> Outcome {
+    let (server, held) = Server::start_inheriting("")?;
+    let mut client = server.attach(10, 60)?;
+    client.wait_for("$")?;
+    // Found by what it is, not its number: shells keep descriptors of their
+    // own from 10 up. The marker is made when it runs.
+    let file = server.dir.join("inherited");
+    client.keys(&format!(
+        "if {{ lsof -p $$ 2>/dev/null || ls -l /proc/$$/fd; }} | grep -q '{}'; then echo held-$((1+1)); else echo free-$((2+2)); fi\r",
+        file.display()
+    ))?;
+    client.wait("the answer", |t| {
+        t.lines().any(|l| l == "held-2" || l == "free-4")
+    })?;
+    assert!(
+        client.lines().iter().any(|l| l == "free-4"),
+        "descriptor {held}, inherited by the server, is open in its pane"
+    );
+    Ok(())
+}
