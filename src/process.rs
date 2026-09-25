@@ -187,7 +187,7 @@ pub fn foreground(master: impl AsFd) -> Option<Pid> {
 pub fn foreground(master: impl AsFd) -> Option<Pid> {
     // rustix builds its `Pid` from the result unchecked, and 0 would be
     // undefined behaviour.
-    fux_sys::foreground_group(master).and_then(Pid::from_raw)
+    fuxix::terminal::foreground_group(master).and_then(|group| Pid::from_raw(group.as_raw()))
 }
 
 /// A process's session ID, read without trusting it to be non-zero: kernel
@@ -206,7 +206,9 @@ pub(crate) fn session(pid: Pid) -> Option<i32> {
 /// A process's session ID.
 #[cfg(target_os = "macos")]
 pub(crate) fn session(pid: Pid) -> Option<i32> {
-    fux_sys::session(pid.as_raw_nonzero().get())
+    fuxix::process::Pid::from_raw(pid.as_raw_nonzero().get())
+        .and_then(fuxix::process::session)
+        .map(fuxix::process::Pid::as_raw)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -300,7 +302,7 @@ pub fn cwd(pid: Pid) -> Option<std::path::PathBuf> {
 /// The current directory of a process, when the system says.
 #[cfg(target_os = "macos")]
 pub fn cwd(pid: Pid) -> Option<std::path::PathBuf> {
-    fux_sys::cwd(pid.as_raw_nonzero().get())
+    fuxix::process::Pid::from_raw(pid.as_raw_nonzero().get()).and_then(fuxix::process::cwd)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -324,9 +326,9 @@ pub(crate) fn processes() -> Vec<Pid> {
 /// Every process id the system lists, as candidates for `hangup`.
 #[cfg(target_os = "macos")]
 pub(crate) fn processes() -> Vec<Pid> {
-    fux_sys::processes()
+    fuxix::process::processes()
         .into_iter()
-        .filter_map(Pid::from_raw)
+        .filter_map(|pid| Pid::from_raw(pid.as_raw()))
         .collect()
 }
 
