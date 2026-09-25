@@ -1,6 +1,27 @@
 use std::collections::VecDeque;
+use std::num::NonZeroU16;
+use std::ops::Range;
 
 use crate::{Attributes, Cell, Error, Row, RowId};
+
+/// A grid's number of rows or columns. Never zero, so a grid always has a
+/// last row and a last column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Extent(NonZeroU16);
+
+impl Extent {
+    pub fn new(n: u16) -> Result<Self, Error> {
+        NonZeroU16::new(n).map(Self).ok_or(Error::ZeroSize)
+    }
+    pub fn get(self) -> u16 {
+        self.0.get()
+    }
+    /// The last row or column.
+    pub fn last(self) -> u16 {
+        // Exact: an extent is at least one.
+        self.0.get().saturating_sub(1)
+    }
+}
 
 /// Maximum addressable retained cells per buffer (2 GiB at 32 bytes/cell).
 /// Storage is committed only for live/retained rows, not empty history slots.
@@ -21,8 +42,8 @@ pub(crate) struct Grid {
     meta: Vec<Meta>,
     order: VecDeque<usize>,
     stride: usize,
-    pub rows: u16,
-    pub cols: u16,
+    pub rows: Extent,
+    pub cols: Extent,
     pub history_limit: usize,
     pub cursor: (u16, u16),
     pub saved_cursor: (u16, u16),
@@ -39,21 +60,19 @@ pub(crate) fn next_id(next: &mut u64) -> Result<RowId, Error> {
 }
 
 impl Grid {
-    pub fn check_size(rows: u16, cols: u16, history: usize) -> Result<(), Error> {
-        if rows == 0 || cols == 0 {
-            return Err(Error::ZeroSize);
-        }
+    pub fn check_size(rows: u16, cols: u16, history: usize) -> Result<(Extent, Extent), Error> {
+        let (rows, cols) = (Extent::new(rows)?, Extent::new(cols)?);
         let retained = history
-            .checked_add(usize::from(rows))
+            .checked_add(usize::from(rows.get()))
             .ok_or(Error::Capacity)?;
         if retained > MAX_ROWS
             || retained
-                .checked_mul(usize::from(cols))
+                .checked_mul(usize::from(cols.get()))
                 .is_none_or(|n| n > MAX_CELLS)
         {
             return Err(Error::Capacity);
         }
-        Ok(())
+        Ok((rows, cols))
     }
 
     pub fn new(
@@ -63,12 +82,12 @@ impl Grid {
         next: &mut u64,
         version: u64,
     ) -> Result<Self, Error> {
-        Self::check_size(rows, cols, history_limit)?;
+        let (rows, cols) = Self::check_size(rows, cols, history_limit)?;
         let mut grid = Self {
             cells: Vec::new(),
             meta: Vec::new(),
             order: VecDeque::new(),
-            stride: usize::from(cols),
+            stride: usize::from(cols.get()),
             rows,
             cols,
             history_limit,
@@ -77,10 +96,10 @@ impl Grid {
             origin: false,
             saved_origin: false,
             top: 0,
-            bottom: rows - 1,
+            bottom: rows.last(),
         };
-        grid.reserve_rows(usize::from(rows))?;
-        for _ in 0..rows {
+        grid.reserve_rows(usize::from(rows.get()))?;
+        for _ in 0..rows.get() {
             let slot = grid.allocate(next, version)?;
             grid.order.push_back(slot);
         }
@@ -106,25 +125,40 @@ impl Grid {
 
     fn allocate(&mut self, next: &mut u64, version: u64) -> Result<usize, Error> {
         let slot = self.meta.len();
-        if slot == self.meta.capacity() || self.cells.len() + self.stride > self.cells.capacity() {
-            let maximum = self.history_limit + usize::from(self.rows);
-            let capacity = (slot + 1).saturating_mul(2).min(maximum);
+        let end = self
+            .cells
+            .len()
+            .checked_add(self.stride)
+            .ok_or(Error::Capacity)?;
+        if slot == self.meta.capacity() || end > self.cells.capacity() {
+            let maximum = self
+                .history_limit
+                .checked_add(usize::from(self.rows.get()))
+                .ok_or(Error::Capacity)?;
+            // Doubling, up to what the grid can ever retain.
+            let capacity = slot
+                .checked_add(1)
+                .ok_or(Error::Capacity)?
+                .saturating_mul(2)
+                .min(maximum);
             self.reserve_rows(capacity)?;
         }
         let id = next_id(next)?;
-        self.cells
-            .resize(self.cells.len() + self.stride, Cell::default());
+        self.cells.resize(end, Cell::default());
         self.meta.push(Meta {
             id,
             version,
-            width: self.cols,
+            width: self.cols.get(),
             wrapped: false,
         });
         Ok(slot)
     }
 
     pub fn history_len(&self) -> usize {
-        self.order.len().saturating_sub(usize::from(self.rows))
+        // A grid always retains its live rows.
+        self.order
+            .len()
+            .saturating_sub(usize::from(self.rows.get()))
     }
     pub fn retained_len(&self) -> usize {
         self.order.len()
@@ -133,15 +167,22 @@ impl Grid {
         self.cells.capacity()
     }
 
+    /// Where a slot's cells are: `width` cells from the slot's stride.
+    fn cells_of(&self, slot: usize) -> Option<Range<usize>> {
+        let width = usize::from(self.meta.get(slot)?.width);
+        let start = slot.checked_mul(self.stride)?;
+        Some(start..start.checked_add(width)?)
+    }
     fn slice(&self, slot: usize) -> &[Cell] {
-        let width = self.meta.get(slot).map_or(0, |m| usize::from(m.width));
-        let start = slot * self.stride;
-        self.cells.get(start..start + width).unwrap_or(&[])
+        self.cells_of(slot)
+            .and_then(|cells| self.cells.get(cells))
+            .unwrap_or(&[])
     }
     fn slice_mut(&mut self, slot: usize) -> &mut [Cell] {
-        let width = self.meta.get(slot).map_or(0, |m| usize::from(m.width));
-        let start = slot * self.stride;
-        self.cells.get_mut(start..start + width).unwrap_or(&mut [])
+        match self.cells_of(slot) {
+            Some(cells) => self.cells.get_mut(cells).unwrap_or(&mut []),
+            None => &mut [],
+        }
     }
     pub fn row_at(&self, index: usize) -> Option<Row<'_>> {
         let slot = *self.order.get(index)?;
@@ -164,19 +205,18 @@ impl Grid {
             .iter()
             .position(|slot| self.meta.get(*slot).is_some_and(|m| m.id == id))
     }
-    pub fn live_row(&self, row: u16) -> Option<Row<'_>> {
-        if row >= self.rows {
+    /// The retained index of a live row.
+    fn index(&self, row: u16) -> Option<usize> {
+        if row >= self.rows.get() {
             return None;
         }
-        self.row_at(self.history_len() + usize::from(row))
+        self.history_len().checked_add(usize::from(row))
+    }
+    pub fn live_row(&self, row: u16) -> Option<Row<'_>> {
+        self.row_at(self.index(row)?)
     }
     fn slot(&self, row: u16) -> Option<usize> {
-        if row >= self.rows {
-            return None;
-        }
-        self.order
-            .get(self.history_len() + usize::from(row))
-            .copied()
+        self.order.get(self.index(row)?).copied()
     }
     pub fn cell(&self, row: u16, col: u16) -> Option<&Cell> {
         self.live_row(row)?.cells.get(usize::from(col))
@@ -199,16 +239,18 @@ impl Grid {
         }
     }
     pub fn erase(&mut self, row: u16, start: u16, end: u16, attributes: Attributes, version: u64) {
-        let cols = self.cols;
+        let (cols, last) = (self.cols.get(), self.cols.last());
         let mut clears_edge = end >= cols;
         self.mutate_row(row, version, |cells| {
             for col in usize::from(start)..usize::from(end.min(cols)) {
                 if let Some(cell) = cells.get(col).copied() {
                     if cell.is_wide() {
-                        if let Some(other) = cells.get_mut(col + 1) {
+                        let next = col.checked_add(1);
+                        if let Some(other) = next.and_then(|i| cells.get_mut(i)) {
                             *other = Cell::blank(other.attributes);
                         }
-                        clears_edge |= col + 2 == usize::from(cols);
+                        // The glyph's second half is in the last column.
+                        clears_edge |= next == Some(usize::from(last));
                     } else if cell.is_wide_continuation()
                         && let Some(other) = col.checked_sub(1).and_then(|i| cells.get_mut(i))
                     {
@@ -227,21 +269,31 @@ impl Grid {
 
     pub fn edit_cells(&mut self, count: u16, insert: bool, version: u64) {
         let (row, col) = self.cursor;
-        let count = usize::from(count.min(self.cols.saturating_sub(col)));
+        // At most the cells from the cursor to the edge.
+        let count = usize::from(count.min(self.cols.get().saturating_sub(col)));
         if count == 0 {
             return;
         }
         self.mutate_row(row, version, |cells| {
             let col = usize::from(col);
-            // Clear a wide glyph straddling either edit boundary before shifting.
-            for boundary in [
-                col,
+            let len = cells.len();
+            // Where the cells shifted out start, and so where blanks go.
+            let (Some(shifted), Some(blank)) = (
                 if insert {
-                    cells.len() - count
+                    len.checked_sub(count)
                 } else {
-                    col + count
+                    col.checked_add(count)
                 },
-            ] {
+                if insert {
+                    col.checked_add(count).map(|end| col..end)
+                } else {
+                    len.checked_sub(count).map(|start| start..len)
+                },
+            ) else {
+                return;
+            };
+            // Clear a wide glyph straddling either edit boundary before shifting.
+            for boundary in [col, shifted] {
                 if cells.get(boundary).is_some_and(Cell::is_wide_continuation) {
                     if let Some(c) = boundary.checked_sub(1).and_then(|i| cells.get_mut(i)) {
                         *c = Cell::blank(c.attributes);
@@ -251,7 +303,6 @@ impl Grid {
                     }
                 }
             }
-            let len = cells.len();
             if let Some(tail) = cells.get_mut(col..) {
                 if insert {
                     tail.rotate_right(count);
@@ -259,11 +310,6 @@ impl Grid {
                     tail.rotate_left(count);
                 }
             }
-            let blank = if insert {
-                col..col + count
-            } else {
-                len - count..len
-            };
             if let Some(cells) = cells.get_mut(blank) {
                 cells.fill(Cell::default());
             }
@@ -277,7 +323,7 @@ impl Grid {
             *m = Meta {
                 id,
                 version,
-                width: self.cols,
+                width: self.cols.get(),
                 wrapped: false,
             };
         }
@@ -294,12 +340,15 @@ impl Grid {
         next: &mut u64,
         version: u64,
     ) -> Result<(), Error> {
-        if top > bottom || bottom >= self.rows {
+        if bottom >= self.rows.get() {
             return Ok(());
         }
-        let count = count.min(bottom - top + 1);
+        let Some(height) = bottom.checked_sub(top).and_then(|h| h.checked_add(1)) else {
+            return Ok(());
+        };
+        let count = count.min(height);
         for _ in 0..count {
-            if up && history && top == 0 && bottom == self.rows - 1 && self.history_limit > 0 {
+            if up && history && top == 0 && bottom == self.rows.last() && self.history_limit > 0 {
                 if self.history_len() < self.history_limit {
                     let slot = self.allocate(next, version)?;
                     self.order.push_back(slot);
@@ -312,9 +361,10 @@ impl Grid {
                 }
             } else {
                 let id = next_id(next)?;
-                let offset = self.history_len();
-                let from = offset + usize::from(if up { top } else { bottom });
-                let to = offset + usize::from(if up { bottom } else { top });
+                let (from, to) = if up { (top, bottom) } else { (bottom, top) };
+                let (Some(from), Some(to)) = (self.index(from), self.index(to)) else {
+                    return Ok(());
+                };
                 if let Some(slot) = self.order.remove(from) {
                     self.recycle(slot, id, version);
                     self.order.insert(to, slot);
@@ -335,7 +385,7 @@ impl Grid {
         next: &mut u64,
         version: u64,
     ) -> Result<Self, Error> {
-        Self::check_size(rows, cols, self.history_limit)?;
+        let (rows, cols) = Self::check_size(rows, cols, self.history_limit)?;
         let history = self.history_len();
         // Reflow around the cursor so the line it is on stays visible (hunt 8
         // finding 017). A shrink drops rows below the cursor first, and only
@@ -343,32 +393,43 @@ impl Grid {
         // the top keeps it, and a full screen keeps its bottom line. A grow
         // pulls rows back from history above, as xterm does, and pads the rest
         // with blank rows below. history_limit bounds history, oldest first.
-        let old_retained = history + usize::from(self.rows);
-        let cursor_row = usize::from(self.cursor.0);
-        let live_top = if rows <= self.rows {
-            let below = usize::from(self.rows) - 1 - cursor_row;
-            history + usize::from(self.rows - rows).saturating_sub(below)
-        } else {
-            history - usize::from(rows - self.rows).min(history)
+        let old_retained = self.retained_len();
+        let live_top = match rows.get().checked_sub(self.rows.get()) {
+            // A grow takes back as many history rows as there are.
+            Some(grown) if grown > 0 => history.saturating_sub(usize::from(grown)),
+            // A shrink scrolls up only the rows from the top through the
+            // cursor's that no longer fit.
+            Some(_) | None => {
+                let through_cursor = usize::from(self.cursor.0)
+                    .checked_add(1)
+                    .ok_or(Error::Capacity)?;
+                history
+                    .checked_add(through_cursor.saturating_sub(usize::from(rows.get())))
+                    .ok_or(Error::Capacity)?
+            }
         };
         let new_history = live_top.min(self.history_limit);
-        let base = live_top - new_history;
-        let keep_total = new_history + usize::from(rows);
-        // Both cursors move with the rows they sit on.
+        // Rows past the history limit are dropped, oldest first.
+        let base = live_top.saturating_sub(self.history_limit);
+        let keep_total = new_history
+            .checked_add(usize::from(rows.get()))
+            .ok_or(Error::Capacity)?;
+        // Both cursors move with the rows they sit on, and stop at the last.
         let shifted = |row: u16| {
-            let row = (history + usize::from(row)).saturating_sub(live_top);
-            u16::try_from(row.min(usize::from(rows) - 1)).unwrap_or(rows - 1)
+            let index = history.checked_add(usize::from(row));
+            let row = index.map_or(usize::MAX, |i| i.saturating_sub(live_top));
+            u16::try_from(row).map_or(rows.last(), |row| row.min(rows.last()))
         };
         // History rows keep their old width, so the stride covers exactly the
         // rows that become history -- including live rows a shrink scrolls up,
         // which old history alone would under-size. Live rows take `cols`; a
         // wider stride would carry a narrowed pane's old width forever.
-        let stride = (base..base + new_history)
+        let stride = (base..live_top)
             .filter_map(|i| self.row_at(i))
             .map(|r| r.cells.len())
             .max()
             .unwrap_or(0)
-            .max(usize::from(cols));
+            .max(usize::from(cols.get()));
         let mut replacement = Self {
             cells: Vec::new(),
             meta: Vec::new(),
@@ -377,26 +438,26 @@ impl Grid {
             rows,
             cols,
             history_limit: self.history_limit,
-            cursor: (shifted(self.cursor.0), self.cursor.1.min(cols - 1)),
+            cursor: (shifted(self.cursor.0), self.cursor.1.min(cols.last())),
             saved_cursor: (
                 shifted(self.saved_cursor.0),
-                self.saved_cursor.1.min(cols - 1),
+                self.saved_cursor.1.min(cols.last()),
             ),
             origin: self.origin,
             saved_origin: self.saved_origin,
             top: self.top,
-            bottom: if self.bottom == self.rows - 1 {
-                rows - 1
+            bottom: if self.bottom == self.rows.last() {
+                rows.last()
             } else {
-                self.bottom.min(rows - 1)
+                self.bottom.min(rows.last())
             },
         };
         if replacement.top > replacement.bottom {
             replacement.top = 0;
         }
         replacement.reserve_rows(keep_total)?;
-        for p in 0..keep_total {
-            let source = base + p;
+        let end = base.checked_add(keep_total).ok_or(Error::Capacity)?;
+        for (p, source) in (base..end).enumerate() {
             let old = self.row_at(source).filter(|_| source < old_retained);
             let is_history = p < new_history;
             let id = match old {
@@ -408,10 +469,11 @@ impl Grid {
                 Some(r) if is_history => {
                     u16::try_from(r.cells.len()).map_err(|_| Error::Capacity)?
                 }
-                Some(_) | None => cols,
+                Some(_) | None => cols.get(),
             };
             let start = replacement.cells.len();
-            replacement.cells.resize(start + stride, Cell::default());
+            let row_end = start.checked_add(stride).ok_or(Error::Capacity)?;
+            replacement.cells.resize(row_end, Cell::default());
             let wrapped = old.is_some_and(|r| r.wrapped) && is_history;
             replacement.meta.push(Meta {
                 id,
@@ -427,7 +489,9 @@ impl Grid {
             if let Some(old) = old {
                 let len = old.cells.len().min(usize::from(width));
                 if let (Some(dst), Some(src)) = (
-                    replacement.cells.get_mut(start..start + len),
+                    start
+                        .checked_add(len)
+                        .and_then(|end| replacement.cells.get_mut(start..end)),
                     old.cells.get(..len),
                 ) {
                     dst.copy_from_slice(src);
@@ -439,7 +503,13 @@ impl Grid {
     }
 
     pub fn clear(&mut self, next: &mut u64, version: u64) -> Result<(), Error> {
-        *self = Self::new(self.rows, self.cols, self.history_limit, next, version)?;
+        *self = Self::new(
+            self.rows.get(),
+            self.cols.get(),
+            self.history_limit,
+            next,
+            version,
+        )?;
         Ok(())
     }
 
@@ -450,10 +520,10 @@ impl Grid {
         self.cursor = if self.origin {
             (
                 row.saturating_add(self.top).min(self.bottom).max(self.top),
-                col.min(self.cols - 1),
+                col.min(self.cols.last()),
             )
         } else {
-            (row.min(self.rows - 1), col.min(self.cols - 1))
+            (row.min(self.rows.last()), col.min(self.cols.last()))
         };
     }
 }
@@ -461,7 +531,11 @@ impl Grid {
 pub(crate) fn repair_wide(cells: &mut [Cell]) {
     for i in 0..cells.len() {
         let invalid = cells.get(i).is_some_and(|c| {
-            c.is_wide() && !cells.get(i + 1).is_some_and(Cell::is_wide_continuation)
+            c.is_wide()
+                && !i
+                    .checked_add(1)
+                    .and_then(|j| cells.get(j))
+                    .is_some_and(Cell::is_wide_continuation)
                 || c.is_wide_continuation()
                     && !i
                         .checked_sub(1)

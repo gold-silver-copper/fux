@@ -189,8 +189,9 @@ impl Cell {
         }
         let mut bytes = [0; 4];
         let text = c.encode_utf8(&mut bytes);
-        if let Some(dst) = self.text.get_mut(len..len + text.len())
-            && let Ok(length) = u8::try_from(len + text.len())
+        if let Some(end) = len.checked_add(text.len())
+            && let Some(dst) = self.text.get_mut(len..end)
+            && let Ok(length) = u8::try_from(end)
         {
             dst.copy_from_slice(text.as_bytes());
             self.length = (self.length & 0xe0) | length;

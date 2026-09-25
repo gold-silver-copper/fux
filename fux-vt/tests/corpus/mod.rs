@@ -43,7 +43,12 @@ pub fn operations(seed: u64, bytes: usize) -> Vec<Vec<u8>> {
         let [_, a, b, ..] = r.to_le_bytes();
         let mut op = match r % 24 {
             0 => b"\x1b[2J".to_vec(),
-            1 => format!("\x1b[{};{}H", 1 + a % 40, 1 + b % 200).into_bytes(),
+            1 => format!(
+                "\x1b[{};{}H",
+                (a % 40).saturating_add(1),
+                (b % 200).saturating_add(1)
+            )
+            .into_bytes(),
             2 => format!(
                 "\x1b[{}m",
                 [0, 1, 4, 7, 31, 42, 91]
@@ -55,12 +60,17 @@ pub fn operations(seed: u64, bytes: usize) -> Vec<Vec<u8>> {
             3 => b"\x1b[K".to_vec(),
             4 => b"\x1b[".to_vec(),
             5 => b"\x1b".to_vec(),
-            6 => vec![0x80 + a % 32],
+            6 => vec![0x80 | (a % 32)],
             7 => vec![0xc0, 0x80],
             8 => vec![0x80 | (a & 0x3f)],
             9 => vec![0xf0, 0x9f],
             10 => vec![b'L'; 500],
-            11 => format!("\x1b[{};{}r", 1 + a % 10, 12 + b % 12).into_bytes(),
+            11 => format!(
+                "\x1b[{};{}r",
+                (a % 10).saturating_add(1),
+                (b % 12).saturating_add(12)
+            )
+            .into_bytes(),
             12 => b"\x1b[r".to_vec(),
             13 => {
                 if a.is_multiple_of(2) {
@@ -90,8 +100,9 @@ pub fn operations(seed: u64, bytes: usize) -> Vec<Vec<u8>> {
                 .unwrap_or(b"x")
                 .to_vec(),
         };
-        op.truncate(bytes - length);
-        length += op.len();
+        // The loop runs while `length < bytes`; lengths are far below usize.
+        op.truncate(bytes.saturating_sub(length));
+        length = length.saturating_add(op.len());
         out.push(op);
     }
     out

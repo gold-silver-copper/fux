@@ -108,7 +108,7 @@ impl Screen {
         Ok(())
     }
     pub fn size(&self) -> (u16, u16) {
-        (self.grid().rows, self.grid().cols)
+        (self.grid().rows.get(), self.grid().cols.get())
     }
     /// The column may equal width while autowrap is pending, matching fux's
     /// existing hidden-at-right-edge cursor contract.
@@ -183,12 +183,14 @@ impl Screen {
     }
     pub fn window(&self, offset: usize, rows: u16, cols: u16) -> Window<'_> {
         let grid = self.grid();
-        let offset = offset.min(grid.history_len());
+        let history = grid.history_len();
+        let offset = offset.min(history);
         Window {
             grid,
-            start: grid.history_len() - offset,
-            rows: rows.min(grid.rows),
-            cols: cols.min(grid.cols),
+            // Exact: the offset is clamped to the history.
+            start: history.saturating_sub(offset),
+            rows: rows.min(grid.rows.get()),
+            cols: cols.min(grid.cols.get()),
             offset,
         }
     }
@@ -211,7 +213,10 @@ impl Screen {
     }
     /// Retained allocation in cells, for capacity/plateau diagnostics.
     pub fn storage_cells(&self) -> usize {
-        self.primary.storage_cells() + self.alternate.storage_cells()
+        // Each is a Vec's capacity, far below the limit of a usize.
+        self.primary
+            .storage_cells()
+            .saturating_add(self.alternate.storage_cells())
     }
 
     pub(crate) fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error> {
@@ -253,8 +258,10 @@ impl Screen {
         let g = self.grid();
         if g.cursor.0 == g.bottom {
             self.scroll(g.top, g.bottom, 1, true, true)?;
-        } else if g.cursor.0 < g.rows - 1 {
-            self.grid_mut().cursor.0 += 1;
+        } else {
+            // Down a row, stopping at the last.
+            let row = g.cursor.0.saturating_add(1).min(g.rows.last());
+            self.grid_mut().cursor.0 = row;
         }
         Ok(())
     }
@@ -269,17 +276,22 @@ impl Screen {
     }
     fn wrap_for(&mut self, width: u16) -> Result<(), Error> {
         let g = self.grid();
-        if g.cursor.1 <= g.cols - width {
+        // The last column a glyph this wide can start in; a wider glyph is
+        // never printed.
+        let Some(room) = g.cols.get().checked_sub(width) else {
+            return Ok(());
+        };
+        if g.cursor.1 <= room {
             return Ok(());
         }
         let wrap = self.autowrap;
         if !wrap {
-            self.grid_mut().cursor.1 = g.cols - width;
+            self.grid_mut().cursor.1 = room;
             return Ok(());
         }
         let row = g.cursor.0;
-        let wrapped = (row < g.rows - 1 || row == g.bottom)
-            && g.cell(row, g.cols - 1)
+        let wrapped = (row < g.rows.last() || row == g.bottom)
+            && g.cell(row, g.cols.last())
                 .is_some_and(|c| c.has_contents() || c.is_wide_continuation());
         // Set before scrolling so a departing row carries its soft-wrap into history.
         self.with_grid(|g, _, v| g.wrap(row, wrapped, v));
@@ -299,16 +311,19 @@ impl Screen {
         let Ok(width) = u16::try_from(width.unwrap_or(1)) else {
             return Ok(());
         };
-        if width > self.grid().cols {
+        if width > self.grid().cols.get() {
             return Ok(());
         }
         if width == 0 {
             let g = self.grid();
             let (row, col) = g.cursor;
-            let previous = if col > 0 {
-                Some((row, col - 1))
-            } else if row > 0 && g.live_row(row - 1).is_some_and(|r| r.wrapped) {
-                Some((row - 1, g.cols - 1))
+            let above = row.checked_sub(1);
+            let previous = if let Some(left) = col.checked_sub(1) {
+                Some((row, left))
+            } else if let Some(above) = above
+                && g.live_row(above).is_some_and(|r| r.wrapped)
+            {
+                Some((above, g.cols.last()))
             } else {
                 None
             };
@@ -358,7 +373,8 @@ impl Screen {
                     *cell = Cell::continuation();
                 }
             });
-            g.cursor.1 += width;
+            // Past the glyph; at the right edge it waits there to wrap.
+            g.cursor.1 = g.cursor.1.saturating_add(width).min(g.cols.get());
         });
         Ok(())
     }
@@ -369,10 +385,17 @@ impl Screen {
         while let Some((&first, tail)) = bytes.split_first() {
             self.wrap_for(1)?;
             let (row, col) = self.grid().cursor;
-            let room = self.grid().cols - col;
+            // `wrap_for` left room for at least one cell; without it, the run
+            // could not advance.
+            let Some(room) = self.grid().cols.get().checked_sub(col).filter(|r| *r > 0) else {
+                return Ok(());
+            };
             // A run too long for a u16 still stops at the margin.
             let count = u16::try_from(bytes.len()).map_or(room, |n| n.min(room));
-            let span = usize::from(col)..usize::from(col) + usize::from(count);
+            let Some(end) = col.checked_add(count) else {
+                return Ok(());
+            };
+            let span = usize::from(col)..usize::from(end);
             let simple = self
                 .grid()
                 .live_row(row)
@@ -397,7 +420,7 @@ impl Screen {
                         }
                     }
                 });
-                g.cursor.1 += count;
+                g.cursor.1 = end;
             });
             bytes = bytes.get(usize::from(count)..).unwrap_or_default();
         }
@@ -409,7 +432,12 @@ impl Screen {
         match byte {
             8 => g.cursor.1 = g.cursor.1.saturating_sub(1),
             // The next multiple of eight, stopping at the last column.
-            9 => g.cursor.1 = (g.cursor.1 / 8 + 1).saturating_mul(8).min(g.cols - 1),
+            9 => {
+                g.cursor.1 = (g.cursor.1 / 8)
+                    .saturating_add(1)
+                    .saturating_mul(8)
+                    .min(g.cols.last())
+            }
             10..=12 => self.linefeed()?,
             13 => g.cursor.1 = 0,
             _ => {}
@@ -569,7 +597,7 @@ impl Screen {
                 let (top, bottom) = if g.in_region() {
                     (g.top, g.bottom)
                 } else {
-                    (0, g.rows - 1)
+                    (0, g.rows.last())
                 };
                 g.cursor.0 = if matches!(byte, b'A' | b'F') {
                     row.saturating_sub(n).max(top)
@@ -582,17 +610,20 @@ impl Screen {
             }
             b'C' => {
                 let g = self.grid_mut();
-                g.cursor.1 = col.saturating_add(n).min(g.cols - 1);
+                g.cursor.1 = col.saturating_add(n).min(g.cols.last());
             }
             b'D' => self.grid_mut().cursor.1 = col.saturating_sub(n),
+            // Coordinates are one-based, and 0 means 1.
             b'G' => {
                 let g = self.grid_mut();
-                g.cursor.1 = (n - 1).min(g.cols - 1);
+                g.cursor.1 = n.saturating_sub(1).min(g.cols.last());
             }
-            b'H' => self.grid_mut().position(n - 1, p.first(1, 1) - 1),
+            b'H' => self
+                .grid_mut()
+                .position(n.saturating_sub(1), p.first(1, 1).saturating_sub(1)),
             b'd' => {
                 let g = self.grid_mut();
-                g.cursor.0 = (n - 1).min(g.rows - 1);
+                g.cursor.0 = n.saturating_sub(1).min(g.rows.last());
             }
             b'@' | b'P' => self.with_grid(|g, _, v| g.edit_cells(n, byte == b'@', v)),
             b'X' => {
@@ -604,17 +635,18 @@ impl Screen {
                 let a = self.attributes;
                 if mode <= 2 {
                     self.with_grid(|g, _, v| {
+                        let cols = g.cols.get();
                         if byte == b'J' {
-                            for y in 0..g.rows {
+                            for y in 0..g.rows.get() {
                                 if (mode == 0 && y > row) || (mode == 1 && y < row) || mode == 2 {
-                                    g.erase(y, 0, g.cols, a, v);
+                                    g.erase(y, 0, cols, a, v);
                                 }
                             }
                         }
                         let (start, end) = match mode {
-                            0 => (col, g.cols),
-                            1 => (0, col.saturating_add(1).min(g.cols)),
-                            _ => (0, g.cols),
+                            0 => (col, cols),
+                            1 => (0, col.saturating_add(1).min(cols)),
+                            _ => (0, cols),
                         };
                         g.erase(row, start, end, a, v);
                     });
@@ -631,16 +663,14 @@ impl Screen {
                 self.scroll(g.top, g.bottom, n, byte == b'S', true)?;
             }
             b'r' => {
-                let bottom = p
-                    .first(1, self.grid().rows)
-                    .saturating_sub(1)
-                    .min(self.grid().rows - 1);
-                let top = n - 1;
+                let rows = self.grid().rows;
+                let bottom = p.first(1, rows.get()).saturating_sub(1).min(rows.last());
+                let top = n.saturating_sub(1);
                 let g = self.grid_mut();
                 (g.top, g.bottom) = if top < bottom {
                     (top, bottom)
                 } else {
-                    (0, g.rows - 1)
+                    (0, rows.last())
                 };
                 g.cursor = (g.top, 0);
             }
