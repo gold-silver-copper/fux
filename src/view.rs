@@ -38,7 +38,7 @@ pub struct List {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PromptFor {
-    /// The `:` prompt: any fux command.
+    /// The command prompt: any fux command.
     Command,
     /// A new name for this target.
     Rename(AnyRef),

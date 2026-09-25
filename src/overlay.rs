@@ -1,5 +1,5 @@
 //! The keyboard overlays: the command column, choosers, action menus, the
-//! `:` prompt, rename prompts and confirmations. Each belongs to the client
+//! command prompt, rename prompts and confirmations. Each belongs to the client
 //! that opened it.
 use crate::command::{AnyRef, ClientId, Kind, TabId, WsRef};
 use crate::keys::{Direction, Key, KeyPress};

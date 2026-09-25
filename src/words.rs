@@ -1,5 +1,5 @@
 //! Splitting a line into words, the one grammar shared by the config file,
-//! bindings and the `:` prompt; and quoting words back for display and for a
+//! bindings and the command prompt; and quoting words back for display and for a
 //! shell.
 
 /// Splits `line` like a shell: whitespace separates words; `'…'` is literal;
