@@ -1,10 +1,12 @@
 use super::*;
 
+/// Heap bytes; a Vec's allocation cannot exceed `isize::MAX`, so no product
+/// saturates.
 fn heap(grid: &Grid) -> [usize; 3] {
     [
-        grid.cells.capacity() * std::mem::size_of::<Cell>(),
-        grid.meta.capacity() * std::mem::size_of::<Meta>(),
-        grid.order.capacity() * std::mem::size_of::<usize>(),
+        grid.cells.capacity().saturating_mul(size_of::<Cell>()),
+        grid.meta.capacity().saturating_mul(size_of::<Meta>()),
+        grid.order.capacity().saturating_mul(size_of::<usize>()),
     ]
 }
 #[test]
