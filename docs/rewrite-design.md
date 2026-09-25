@@ -323,9 +323,18 @@ and private to the client that opened them:
 
 - **The command column:** opened by the prefix key. It lists every binding,
   grouped (Panes, Focus, Tabs, Workspaces, Session, Other).
-  - Up/Down or `j/k`, PageUp/PageDown and Home/End navigate; Enter runs the
+  - Every key after the prefix is a plain letter, `a`–`z` in either case, so
+    the arrows, PageUp/PageDown and Home/End navigate; Enter runs the
     selected command; Esc cancels.
   - Pressing a bound key runs that binding directly.
+  - A binding of several letters makes its first ones a layer: `t` for tabs
+    and `w` for workspaces share their verbs (`t n` new tab, `w n` new
+    workspace). The column lists a layer as one entry; its letter, or Enter
+    on it, shows the layer's own commands.
+  - A repeating binding (`bind -r`) keeps its layer active after it runs: in
+    the resize and move modes (`r`, `m`), `h j k l` act without the prefix
+    until Esc or Enter, and the bar shows the mode and its keys. Any other key
+    ends the mode without reaching the pane.
   - Unavailable commands are dimmed, and running one explains why.
   - The list scrolls with `▲ n more` / `▼ n more` markers.
   - This is the only help surface.
@@ -370,7 +379,7 @@ notice if the pane closes or its history drops the anchored rows.
   copying.
 - **Where copies go:**
   - into fux's paste buffers, the last 16 by default, on the server; prefix
-    `P` pastes the newest into the focused pane (bracketed if the pane asked
+    `p` pastes the newest into the focused pane (bracketed if the pane asked
     for it);
   - `fux list-buffers`, `fux show-buffer` and `fux paste-buffer -t %N` work
     from scripts;
@@ -462,7 +471,7 @@ a message naming `-t`. It never guesses a "current" pane.
 | `fux resize-pane -t %N -L\|-R\|-U\|-D [N]` | Adjust weights |
 | `fux send-keys -t %N [-l] KEYS…` | Keys (`C-c`, `Enter`, …) or literal text |
 | `fux capture-pane -t %N [-S -N] [--json]` | Screen text, optionally with history |
-| `fux set OPTION VALUE`, `fux bind [-g GROUP] KEY CMD…`, `fux unbind KEY`, `fux unbind-all` | Change the running configuration |
+| `fux set OPTION VALUE`, `fux bind [-g GROUP] [-r] KEY… CMD…`, `fux unbind KEY…`, `fux unbind-all` | Change the running configuration |
 | `fux reload` | Re-run the config file against the defaults |
 | `fux list-buffers`, `fux show-buffer [-b N]`, `fux paste-buffer [-b N] [-t %N]` | Paste buffers |
 | `fux detach [-c CLIENT]` | Detach a client |
@@ -471,8 +480,8 @@ a message naming `-t`. It never guesses a "current" pane.
 Some commands act on a client's screen rather than on shared state:
 `command-column`, `choose-tab`, `choose-workspace`, `menu pane|tab|workspace`,
 `command-prompt`, `copy-mode`, `rename-prompt`, `confirm-close`, `zoom`,
-`select-tab`, `select-pane`, `select-workspace` (for `{` and `}`), and
-`choose-pane` (the pane menu's "swap with…"). From a binding or the `:` prompt, they act on
+`select-tab`, `select-pane`, `select-workspace`, and
+`choose-pane` (the pane menu's "swap with…"). From a binding or the command prompt, they act on
 the client that pressed the key. From the command line they need `-c CLIENT`
 (`fux ls` lists clients). Without it they fail with a message naming the
 flag.
@@ -481,10 +490,13 @@ Exit status 0 means done; 1 means the command failed, with the reason on
 stderr; 2 means usage. `--json` output is for scripts and agents; its shape is
 documented in the README, and changing it is a breaking change.
 
-Key names, for `bind` and `send-keys`, are:
+Key names, for `send-keys` and the prefix, are:
 - the tmux ones: `C-x`, `M-x`, `S-Left`, `Enter`, `Tab`, `BTab`, `Escape`,
   `Space`, `BSpace`, `Up`, `Home`, `PageUp`, `F1`–`F12`, …;
 - plus any single character.
+
+The keys of `bind` and `unbind` are letters only, one or more, as they are
+typed after the prefix.
 
 `keys.rs` defines the full list, and `fux list-keys` prints it.
 
@@ -503,15 +515,16 @@ set clipboard off                # default: write-only (OSC 52 on)
 set buffers 16
 
 unbind-all                       # optional: start from an empty key table
-bind h split -h
-bind v split -v
+bind v split -h
+bind s split -v
 bind d detach
-bind -g Tabs T choose-tab        # -g puts it under a command-column group
+bind -r r l resize-pane -R       # repeats: C-b r l l l, then Esc
+bind -g Tabs t g choose-tab      # -g puts it under a command-column group
 ```
 
 No dependency is needed, and it is the right format here anyway:
 
-- There is **one grammar** for the CLI, keybindings, the `:` prompt and the
+- There is **one grammar** for the CLI, keybindings, the command prompt and the
   config. A line is split into words like a shell (whitespace, `'…'` and
   `"…"` quoting, backslash escapes, `#` comments), and a binding's command is
   the rest of its line.
@@ -642,7 +655,7 @@ Hardening, once the functionality is in use:
 5. The full CLI, with `--json`.
 6. The config file, bindings, and the command grammar shared by all four
    surfaces.
-7. Overlays: the command column, choosers, action menus, the `:` prompt,
+7. Overlays: the command column, choosers, action menus, the command prompt,
    prompts and confirmations.
 8. Copy/select mode, paste buffers, the clipboard.
 9. Mark the PR ready. The user tries it by hand and decides when to merge it

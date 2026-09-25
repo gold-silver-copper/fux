@@ -1,5 +1,5 @@
 //! The command grammar: the one set of commands that the CLI, key bindings,
-//! the `:` prompt and the config file all speak.
+//! the command prompt and the config file all speak.
 use crate::keys::Direction;
 use crate::layout::{Axis, PaneId};
 

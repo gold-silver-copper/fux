@@ -1,6 +1,6 @@
 //! The running configuration: options and key bindings, changed by `set`,
 //! `bind`, `unbind` and `unbind-all`, whether they come from the config file,
-//! the CLI or the `:` prompt.
+//! the CLI or the command prompt.
 use crate::keys::KeyPress;
 use crate::words;
 use std::path::{Path, PathBuf};
