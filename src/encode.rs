@@ -43,7 +43,16 @@ pub fn key_bytes(press: KeyPress, application: bool) -> Vec<u8> {
         Key::Home => Some(('H', false)),
         Key::End => Some(('F', false)),
         Key::F(n @ 1..=4) => Some((char::from(b'P' + n - 1), true)),
-        _ => None,
+        Key::Char(_)
+        | Key::Enter
+        | Key::Tab
+        | Key::Escape
+        | Key::Backspace
+        | Key::Delete
+        | Key::Insert
+        | Key::PageUp
+        | Key::PageDown
+        | Key::F(_) => None,
     };
     if let Some((final_byte, function)) = cursor {
         return if modifier > 1 {

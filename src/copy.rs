@@ -573,7 +573,16 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
             {
                 text.push(c);
             }
-            _ => {}
+            Key::Char(_)
+            | Key::Tab
+            | Key::Delete
+            | Key::Insert
+            | Key::Arrow(_)
+            | Key::Home
+            | Key::End
+            | Key::PageUp
+            | Key::PageDown
+            | Key::F(_) => {}
         }
         return;
     }

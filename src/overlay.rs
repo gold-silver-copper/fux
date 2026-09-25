@@ -98,7 +98,7 @@ pub fn open_confirm(
     let name = session.name_of(&target);
     let id = match &target {
         AnyRef::Workspace(r) => session.resolve_ws(r)?.to_string(),
-        other => describe(other),
+        other @ (AnyRef::Pane(_) | AnyRef::Tab(_)) => describe(other),
     };
     let question = format!("close {kind} {id} {name}?");
     let view = session.views.get_mut(&client).ok_or("no such client")?;
@@ -210,7 +210,7 @@ pub fn open_menu(
     };
     let about = match target {
         AnyRef::Workspace(r) => AnyRef::Workspace(WsRef::Id(session.resolve_ws(&r)?)),
-        other => other,
+        other @ (AnyRef::Pane(_) | AnyRef::Tab(_)) => other,
     };
     open_list(session, client, title, items, false, Some(about))
 }
@@ -627,7 +627,19 @@ pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
             Key::Char('a') => prompt.cursor = 0,
             Key::Char('e') => prompt.cursor = len,
             Key::Char('c') | Key::Char('g') => view.mode = Mode::Normal,
-            _ => {}
+            Key::Char(_)
+            | Key::Enter
+            | Key::Tab
+            | Key::Escape
+            | Key::Backspace
+            | Key::Delete
+            | Key::Insert
+            | Key::Arrow(_)
+            | Key::Home
+            | Key::End
+            | Key::PageUp
+            | Key::PageDown
+            | Key::F(_) => {}
         }
         return;
     }
@@ -660,7 +672,13 @@ pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
             prompt.text.insert(at, c);
             prompt.cursor += 1;
         }
-        _ => {}
+        Key::Char(_)
+        | Key::Tab
+        | Key::Insert
+        | Key::Arrow(_)
+        | Key::PageUp
+        | Key::PageDown
+        | Key::F(_) => {}
     }
 }
 
@@ -715,7 +733,7 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
                         return;
                     }
                 },
-                other => describe(other),
+                other @ (AnyRef::Pane(_) | AnyRef::Tab(_)) => describe(other),
             };
             run_for(
                 session,
