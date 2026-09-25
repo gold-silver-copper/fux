@@ -42,7 +42,13 @@ fn connect(socket: &Path, role: Role) -> Result<(UnixStream, Decoder), String> {
         },
     )?;
     let mut decoder = Decoder::default();
-    match read_frame(&mut stream, &mut decoder, Some(Duration::from_secs(5)))? {
+    let mut buffer = vec![0u8; 64 * 1024];
+    match read_frame(
+        &mut stream,
+        &mut decoder,
+        &mut buffer,
+        Some(Duration::from_secs(5)),
+    )? {
         Some(Frame::Hello { .. }) => {}
         Some(Frame::Exit(reason)) => return Err(reason),
         _ => return Err("the server did not answer".into()),
@@ -61,15 +67,15 @@ fn send(stream: &mut UnixStream, frame: &Frame) -> Result<(), String> {
 fn read_frame(
     stream: &mut UnixStream,
     decoder: &mut Decoder,
+    buffer: &mut [u8],
     timeout: Option<Duration>,
 ) -> Result<Option<Frame>, String> {
     let _ = stream.set_read_timeout(timeout);
-    let mut buffer = [0u8; 65536];
     loop {
         if let Some(frame) = decoder.frame()? {
             return Ok(Some(frame));
         }
-        match stream.read(&mut buffer) {
+        match stream.read(buffer) {
             Ok(0) => return Ok(None),
             Ok(n) => decoder.push(buffer.get(..n).unwrap_or_default()),
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
@@ -97,8 +103,9 @@ pub fn command(socket: &Path, argv: &[String]) -> Result<u8, String> {
         },
     )?;
     let (mut stdout, mut stderr) = (std::io::stdout(), std::io::stderr());
+    let mut buffer = vec![0u8; 64 * 1024];
     loop {
-        match read_frame(&mut stream, &mut decoder, None)? {
+        match read_frame(&mut stream, &mut decoder, &mut buffer, None)? {
             Some(Frame::Stdout(bytes)) => {
                 let _ = stdout.write_all(&bytes);
             }
@@ -119,8 +126,14 @@ pub fn command(socket: &Path, argv: &[String]) -> Result<u8, String> {
 /// Stops the server, whatever fux version it is.
 pub fn kill_server(socket: &Path) -> Result<(), String> {
     let (mut stream, mut decoder) = connect(socket, Role::Kill)?;
+    let mut buffer = vec![0u8; 64 * 1024];
     loop {
-        match read_frame(&mut stream, &mut decoder, Some(Duration::from_secs(5))) {
+        match read_frame(
+            &mut stream,
+            &mut decoder,
+            &mut buffer,
+            Some(Duration::from_secs(5)),
+        ) {
             Ok(Some(Frame::Done { .. })) | Ok(None) => return Ok(()),
             Ok(Some(_)) => {}
             Err(error) => return Err(error),
@@ -163,8 +176,9 @@ pub fn start_server(socket: &Path) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         if UnixStream::connect(socket).is_ok() {
-            // The child is left to run; it is not ours to wait for.
-            std::mem::forget(child);
+            // The child is left to run; it is not ours to wait for, and
+            // dropping a `Child` neither waits for nor kills it.
+            drop(child);
             return Ok(());
         }
         if let Ok(Some(status)) = child.try_wait() {

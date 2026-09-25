@@ -284,13 +284,9 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
             surface(&mut grid, view, &lines);
         }
         Mode::Prompt(prompt) => {
-            let before: String = prompt.text.chars().take(prompt.cursor).collect();
             let lines = vec![
                 (prompt.title.clone(), panel().with_bold(true)),
-                (
-                    format!("{}▏{}", before, &prompt.text[before.len()..]),
-                    panel(),
-                ),
+                (with_cursor(&prompt.text, prompt.cursor), panel()),
                 ("Enter accepts · Esc cancels".into(), panel().with_dim(true)),
             ];
             surface(&mut grid, view, &lines);
@@ -307,6 +303,17 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
         Mode::Normal | Mode::Copy(_) => {}
     }
     Some(grid)
+}
+
+/// A prompt's text with a bar at `cursor`, counted in chars; past the end
+/// the bar follows the text.
+fn with_cursor(text: &str, cursor: usize) -> String {
+    let at = text
+        .char_indices()
+        .nth(cursor)
+        .map_or(text.len(), |(i, _)| i);
+    let (before, after) = text.split_at_checked(at).unwrap_or((text, ""));
+    format!("{before}▏{after}")
 }
 
 fn panel() -> Attributes {
@@ -689,6 +696,22 @@ mod tests {
                     .unwrap_or_default()
             })
             .collect()
+    }
+
+    #[test]
+    fn the_prompt_cursor_falls_between_chars_not_bytes() {
+        for (text, cursor, shown) in [
+            ("", 0, "▏"),
+            ("", 3, "▏"),
+            ("héllo", 0, "▏héllo"),
+            ("héllo", 2, "hé▏llo"),
+            ("héllo", 5, "héllo▏"),
+            ("héllo", 9, "héllo▏"),
+            ("界a界", 1, "界▏a界"),
+            ("界a界", 2, "界a▏界"),
+        ] {
+            assert_eq!(with_cursor(text, cursor), shown, "{text:?} at {cursor}");
+        }
     }
 
     fn grid_lines(g: &Grid) -> Vec<String> {

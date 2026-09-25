@@ -60,6 +60,9 @@ pub struct Server {
     stopping: Option<(Instant, String)>,
     /// When each client's decoder began waiting on a lone Escape.
     escapes: std::collections::HashMap<ClientId, Instant>,
+    /// Where client bytes land before their decoder takes them; one for the
+    /// server, reused by every read.
+    read_buffer: Vec<u8>,
 }
 
 fn log(message: &str) {
@@ -107,6 +110,7 @@ pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), String> 
         stops,
         stopping: None,
         escapes: std::collections::HashMap::new(),
+        read_buffer: vec![0u8; 64 * 1024],
     };
     server.run();
     drop(endpoint);
@@ -415,15 +419,15 @@ impl Server {
     }
 
     fn read_conn(&mut self, index: usize) {
-        let mut buffer = [0u8; 65536];
         let mut frames = Vec::new();
         let mut closed = false;
         {
+            let buffer = &mut self.read_buffer;
             let Some(conn) = self.conns.get_mut(index) else {
                 return;
             };
             loop {
-                match conn.stream.read(&mut buffer) {
+                match conn.stream.read(buffer) {
                     Ok(0) => {
                         closed = true;
                         break;
