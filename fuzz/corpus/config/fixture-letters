@@ -1,0 +1,7 @@
+bind C-Left resize-pane -L
+bind : command-prompt
+bind g ; zoom
+bind 1 zoom
+unbind S-Left
+bind T N zoom
+unbind T N

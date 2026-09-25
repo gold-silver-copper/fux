@@ -569,7 +569,28 @@ impl Session {
                 }
                 crate::view::PromptFor::Command | crate::view::PromptFor::Rename(_) => None,
             },
+            // Bindings change under a client from the command line.
+            Mode::Column { path, .. } if !path.is_empty() && !self.is_layer(path) => Some(format!(
+                "closed: the layer {} is gone",
+                self.keys_named(path)
+            )),
+            Mode::Repeat { path } if !self.repeats(path) => Some(format!(
+                "closed: the repeat mode {} is gone",
+                self.keys_named(path)
+            )),
             Mode::Normal | Mode::Column { .. } | Mode::Repeat { .. } => None,
+        };
+        // A column shorter than it was keeps its selection within it.
+        let last = match &view.mode {
+            Mode::Column { path, .. } => {
+                Some(crate::overlay::column_len(self, path).saturating_sub(1))
+            }
+            Mode::Normal
+            | Mode::Repeat { .. }
+            | Mode::List(_)
+            | Mode::Prompt(_)
+            | Mode::Confirm(_)
+            | Mode::Copy(_) => None,
         };
         let Some(view) = self.views.get_mut(&id) else {
             return;
@@ -594,10 +615,36 @@ impl Session {
                 _ => {}
             }
         }
+        if let (Mode::Column { selected, .. }, Some(last)) = (&mut view.mode, last)
+            && *selected > last
+        {
+            *selected = last;
+            view.dirty = true;
+        }
         if let Some(reason) = gone {
             view.mode = Mode::Normal;
             view.error(reason);
         }
+    }
+
+    /// Whether `path` is a layer: some binding's keys go on past it.
+    fn is_layer(&self, path: &[KeyPress]) -> bool {
+        self.config
+            .bindings
+            .iter()
+            .any(|b| b.keys.len() > path.len() && b.keys.starts_with(path))
+    }
+
+    /// Whether the layer at `path` holds a repeating binding.
+    fn repeats(&self, path: &[KeyPress]) -> bool {
+        self.config.bindings.iter().any(|b| {
+            b.repeat && b.keys.len() == path.len().saturating_add(1) && b.keys.starts_with(path)
+        })
+    }
+
+    /// Keys after the prefix as they are typed: `C-b t`.
+    fn keys_named(&self, path: &[KeyPress]) -> String {
+        format!("{} {}", self.config.prefix, crate::config::keys_text(path))
     }
 
     /// A PTY is the smallest rectangle any client shows it in; a pane nobody

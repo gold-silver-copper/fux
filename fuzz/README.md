@@ -14,9 +14,24 @@ cargo +nightly fuzz build --fuzz-dir fuzz
 cargo +nightly fuzz run TARGET --fuzz-dir fuzz -- -max_total_time=600 -max_len=4096 -rss_limit_mb=1024 -timeout=25
 ```
 
-`TARGET` is one of `protocol`, `keys`, `paint` or `layout`. `-timeout=25`
-makes a hang a failure within the run; libFuzzer's own default is 1200 s,
-longer than the run.
+`TARGET` is one of `protocol`, `keys`, `paint`, `layout`, `config` or
+`session`. `-timeout=25` makes a hang a failure within the run; libFuzzer's
+own default is 1200 s, longer than the run. `config` and `session` take a
+dictionary of their words and keys, after the `--`:
+`-dict=fuzz/config.dict` or `-dict=fuzz/session.dict`. `session` also needs a
+smaller AddressSanitizer quarantine, set in the environment:
+
+```sh
+ASAN_OPTIONS=quarantine_size_mb=16 cargo +nightly fuzz run session --fuzz-dir fuzz -- -dict=fuzz/session.dict -max_total_time=600 -max_len=4096 -rss_limit_mb=1024 -timeout=25
+```
+
+Each `session` run is small (the largest input in a 600-second corpus peaked
+at 146 MB alone, and 38 MB was live when the limit hit), but it frees
+millions of small allocations. With the default 256 MB quarantine, the
+allocator keeps taking fresh memory for them, and RSS passed 1024 MB within
+five minutes; without the sanitizer it levels off at about 140 MB. At 16 MB, a
+600-second run peaked at 437 MB. A smaller quarantine only shortens how long a freed
+allocation is watched for use after free, which safe Rust rules out anyway.
 
 ## Targets
 
@@ -68,6 +83,71 @@ the Escape deadline passing only at the end.
     fit, a split without room for its first child shows nothing, by design;
   - `neighbor` only names another placed pane.
 
+**`config`**: `set`, `bind`, `unbind` and `unbind-all` lines, into
+`Config::apply`, from the defaults.
+- Input: lines. A line starting with `0xff` is structured: its next byte picks
+  the command, and each byte after picks the word for the command's next
+  slot, from lists of keys (letters and not), groups, commands, options, and
+  values, including values that need quoting. Any other line is text, split
+  by `words::split` as a config file's lines are.
+- After every line:
+  - a line that fails changes nothing;
+  - a small model of `bind`, `unbind` and `unbind-all`, written from the
+    README's rules, accepts and refuses the same lines and holds the same
+    bindings in the same order. That covers each command's promise: after a
+    `bind`, one binding of its keys (in lower case), with its command, group
+    and repeat flag; after an `unbind K…`, none starting with `K…`, and a
+    failing `unbind` had nothing to remove;
+  - `split(&join(&words))` gives back the line's words.
+- After every line that changes the configuration:
+  - every binding has keys and a command; every key is a lower-case letter
+    without modifiers; no two bindings have the same keys, and no binding's
+    keys start another's;
+  - `describe()`'s lines, applied after `unbind-all`, give the same
+    configuration back, prefix, shell and options included. An unchanged
+    configuration was checked already, and the check is most of the cost.
+
+**`session`**: clients typing into a whole `Session`, with no processes
+(`launch` is false), while commands arrive from the command line.
+- Input: two bytes for the first client's size, 1–60 rows by 1–200 columns,
+  then operations, each a tag byte and its arguments:
+  - bytes to a client: up to 16, or up to 255 with tag 15, delivered whole or
+    in pieces of 1–7 bytes;
+  - the Escape deadline for a client (no clock: `Session::escape`);
+  - a resize, to 1–60 by 1–200;
+  - a client attaching, or once three are, detaching; the last one to go is
+    replaced, so one to three are attached;
+  - a command from the side, from a fixed list: new tabs, workspaces and
+    splits, closing, moving and selecting, the overlays with `-c`, binding
+    and unbinding layers and repeat modes, `unbind-all`, `set prefix`,
+    `set clipboard`, `reload`, `detach`, `paste-buffer` and `send-keys`;
+  - output from a pane's program, up to 64 bytes;
+  - a pane's shell exiting.
+- After every operation, the target does what the server does: settles, acts
+  on the outbox (detaching on `Exit`, stopping on `Shutdown`) and takes each
+  pane's queued input, as the PTY would. Then:
+  - every pane is in exactly one tab's layout, and every pane there exists;
+  - every view's workspace, tab and focused pane exist while any workspace
+    does, and its screen composes at its size;
+  - a column shows the bindings, or a layer that still exists, and selects
+    an entry within it; a repeat mode's layer holds a repeating binding; a
+    prompt's cursor is within its text, which is at most 4096 bytes; a list
+    selects one of its items;
+  - every `Outgoing::Bytes` is OSC 52, `ESC ] 52 ; c ;` then base64 then BEL,
+    with at most `MAX_CLIPBOARD` bytes of base64: at most `MAX_CLIPBOARD + 8`
+    bytes in all.
+- A key typed in a repeat mode reaches no pane: a second session gets every
+  client's bytes one at a time, and a decoder beside each client's tells
+  which byte completes a key. When that key arrives in a repeat mode, no
+  pane's input may grow. The exception is a key bound there to `send-keys`
+  or `paste-buffer`, which writes to a pane by design.
+- However a client's bytes arrive, the same result: at the end, both sessions
+  have the same `ls`, the same mode, notice and screen for each client, the
+  same configuration and the same paste buffers. They are compared once, not
+  after every operation, which would double the cost.
+- About 120 executions a second with the dictionary (116 over a 600-second
+  run).
+
 ## Corpus
 
 `corpus/TARGET/fixture-*` are the permanent seeds, taken from the unit tests
@@ -79,7 +159,18 @@ that state each property:
   paste cases;
 - `paint`: `a_diff_applied_to_the_old_grid_gives_the_new_one`,
   `painting_the_widest_last_column_ends`, a resize and combining marks;
-- `layout`: the split, nested, small-area and resize tests, and extremes.
+- `layout`: the split, nested, small-area and resize tests, and extremes;
+- `config`: the lines of `set_bind_and_unbind_change_the_configuration`,
+  `keys_are_a_command_or_a_layer_never_both`,
+  `keys_after_the_prefix_are_letters_stored_in_lower_case` and
+  `a_file_applies_whole_or_names_its_bad_line`, the default bindings as
+  `bind` lines, and one structured line of each kind;
+- `session`: the key sequences of the overlay unit tests: a layer, an
+  unbound key in a layer, a repeat mode left with Enter, Esc or another key,
+  letters in either case, the resize, move and tab-reorder modes, the column
+  scrolling, a menu acting on its item and one whose item goes, a chooser, a
+  prompt's edits, a confirmation and copy mode; every default binding's keys
+  in a busy session; and bindings changing under a client from the side.
 
 `corpus/TARGET/regression-*` are minimized inputs of fixed findings. Coverage
 growth stays local and ignored.

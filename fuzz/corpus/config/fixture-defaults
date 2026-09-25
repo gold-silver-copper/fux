@@ -1,0 +1,43 @@
+bind h select-pane -L
+bind j select-pane -D
+bind k select-pane -U
+bind l select-pane -R
+bind o select-pane --next
+bind q select-pane --last
+bind v split -h
+bind s split -v
+bind x confirm-close pane
+bind z zoom
+bind a menu pane
+bind c copy-mode
+bind p paste-buffer
+bind -g Resize -r r h resize-pane -L
+bind -g Resize -r r j resize-pane -D
+bind -g Resize -r r k resize-pane -U
+bind -g Resize -r r l resize-pane -R
+bind -g Move -r m h move-pane -L
+bind -g Move -r m j move-pane -D
+bind -g Move -r m k move-pane -U
+bind -g Move -r m l move-pane -R
+bind n select-tab --next
+bind b select-tab --previous
+bind t n new-tab
+bind t h select-tab --previous
+bind t l select-tab --next
+bind t g choose-tab
+bind t r rename-prompt tab
+bind t x confirm-close tab
+bind t a menu tab
+bind -g Reorder -r t m h reorder tab --previous
+bind -g Reorder -r t m l reorder tab --next
+bind w n new-workspace
+bind w h select-workspace --previous
+bind w l select-workspace --next
+bind w g choose-workspace
+bind w r rename-prompt workspace
+bind w x confirm-close workspace
+bind w a menu workspace
+bind -g Reorder -r w m h reorder workspace --previous
+bind -g Reorder -r w m l reorder workspace --next
+bind e command-prompt
+bind d detach
