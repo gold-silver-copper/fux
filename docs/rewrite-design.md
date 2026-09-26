@@ -48,8 +48,9 @@ tree, a socket and a render loop.
 
 ## What stays, what goes
 
-**Stays, unchanged:** `fux-vt`, published as 0.1.1. It is the emulator, with
-no dependency but `unicode-width`, and koh depends on it. The rewrite uses its
+**Stays, unchanged:** `fux-vt`, published as 0.1.1, then 0.1.2 with the same
+API and no panicking calls. It is the emulator, with no dependency but
+`unicode-width`, and koh depends on it. The rewrite uses its
 public API as it is. A fux-vt change is allowed only as a bug fix with a
 failing test, must keep every item koh uses (`Parser`, `Options`, `Event`,
 `Sink`, `Screen`, `Cell`, `Color`, the mouse enums, `Error`, and their
@@ -583,7 +584,7 @@ Every key is a letter, in either case, without Ctrl or Alt.
 
 | Crate | Why |
 | --- | --- |
-| `fux-vt` (path, 0.1.1) | Emulator |
+| `fux-vt` (path, 0.1.2) | Emulator |
 | `fuxix` (path, 0.1.0) | fux's system calls over `libc`, each safe to call: PTYs, processes, poll, sockets, terminal modes; its README says why each is not std's |
 | `signal-hook` | Signal → self-pipe (fuxix installs no handlers) |
 | `unicode-width` | Bar and overlay layout (already in the graph through fux-vt) |
