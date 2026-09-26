@@ -13,6 +13,20 @@ struct the kernel fills is read only after the call says it filled it.
 No function retries a call a signal interrupted: it fails with
 `Errno::INTR`, as the call did, and the caller decides.
 
+`pty::open` on macOS is the one function that retries, around two macOS
+kernel bugs that strike when PTYs are allocated and freed quickly, by any
+processes (see [the report for Apple](../docs/apple-feedback-ptmx-eredriveopen.md)):
+
+- `posix_openpt` can fail with errno -6, the kernel-private `EREDRIVEOPEN`,
+  after the kernel gives up retrying a race between openers. fuxix opens one
+  master at a time in the process and retries that code up to 8 times; if it
+  persists, the error is `AGAIN`.
+- A master can open with no replica node in `/dev`, and `grantpt` on it then
+  never returns. fuxix looks the replica up before `grantpt`, and watches
+  `grantpt`: after 1 s a watchdog thread replaces the master with `/dev/null`,
+  so the call returns. Either way that PTY is dropped and another opened, up
+  to 4 in all; then the error is `AGAIN`.
+
 | Function | Linux and Android | macOS | Why not std |
 | --- | --- | --- | --- |
 | `io::read`, `io::write` | `read`, `write` | the same | on a borrowed descriptor, with `AGAIN` and `INTR` as values |
@@ -27,7 +41,7 @@ No function retries a call a signal interrupted: it fails with
 | `process::reap` | `waitpid(WNOHANG)` | the same | for a pid, not a `Child` |
 | `process::processes` | `/proc` | `proc_listallpids` | not offered |
 | `process::cwd` | `/proc/PID/cwd` | `proc_pidinfo(PROC_PIDVNODEPATHINFO)` | not offered |
-| `pty::open` | `posix_openpt(O_CLOEXEC)`, `grantpt`, `unlockpt`, `ptsname_r` | `posix_openpt`, then close-on-exec, `TIOCPTYGNAME` | not offered |
+| `pty::open` | `posix_openpt(O_CLOEXEC)`, `grantpt`, `unlockpt`, `ptsname_r` | `posix_openpt` (one at a time, retried on -6), then close-on-exec, `TIOCPTYGNAME` and a check of the replica, `grantpt` under a watchdog, `unlockpt` | not offered |
 | `terminal::attributes`, `set_attributes`, `Termios::make_raw` | `tcgetattr`, `tcsetattr`, `cfmakeraw` | the same | not offered |
 | `terminal::window_size`, `set_window_size` | `TIOCGWINSZ`, `TIOCSWINSZ` | the same | not offered |
 | `terminal::foreground_group`, `make_controlling` | `tcgetpgrp`, `TIOCSCTTY` | the same | not offered |
