@@ -228,3 +228,70 @@ fn moving_a_pane_by_direction_nests_it_beside_its_neighbour() -> Outcome {
     assert_eq!(size(&server, "%1")?.1 + size(&server, "%2")?.1 + 1, 81);
     Ok(())
 }
+
+/// The non-blank rows of a pane's screen, from `capture-pane`.
+fn captured(server: &Server, pane: &str) -> Result<Vec<String>, String> {
+    Ok(server
+        .ok(&["capture-pane", "-t", pane])?
+        .lines()
+        .map(str::to_owned)
+        .filter(|l| !l.trim().is_empty())
+        .collect())
+}
+
+/// A pane whose output overflows it and ends without a newline keeps that
+/// last line when a split shrinks it, and gets the rows the shrink scrolled
+/// away back when it grows again (bevy-final finding 017, where the
+/// emulator dropped the cursor's row on a shrink).
+#[test]
+fn a_split_pane_keeps_its_last_line_and_regains_its_rows() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(24, 80)?;
+    client.wait_for("$")?;
+    // Forty rows, then one without a newline; the program stays, so no
+    // prompt follows it. The rows are made when they run, so the typed
+    // command never shows them.
+    client.keys(
+        "i=1; while [ $i -le 40 ]; do echo row-$i; i=$((i+1)); done; printf 'last-%s' line; sleep 300\r",
+    )?;
+    client.wait("the last line", |t| t.contains("row-40\nlast-line"))?;
+    let before = captured(&server, "%1")?;
+    assert_eq!(
+        before.last().map(String::as_str),
+        Some("last-line"),
+        "{before:?}"
+    );
+    server.ok(&["split", "-v", "-t", "%1"])?;
+    client.wait("two panes", |t| t.contains("%2"))?;
+    eventually("the shrunk pane", || {
+        let rows = captured(&server, "%1")?;
+        Ok(rows.len() < before.len() && rows.last().map(String::as_str) == Some("last-line"))
+    })
+    .map_err(|error| {
+        format!(
+            "{error}; %1 shows {:?}",
+            captured(&server, "%1").unwrap_or_default()
+        )
+    })?;
+    // And the client shows it: the row above the separator.
+    client.wait("the last line above the split", |t| {
+        let lines: Vec<&str> = t.lines().collect();
+        lines
+            .iter()
+            .position(|l| *l == "last-line")
+            .and_then(|i| lines.get(i.saturating_sub(1)))
+            .is_some_and(|above| *above == "row-40")
+    })?;
+    // Growing again brings back the rows the shrink moved into history.
+    server.ok(&["kill-pane", "-t", "%2"])?;
+    eventually("the rows restored", || {
+        Ok(captured(&server, "%1")? == before)
+    })
+    .map_err(|error| {
+        format!(
+            "{error}; before {before:?}, now {:?}",
+            captured(&server, "%1").unwrap_or_default()
+        )
+    })?;
+    Ok(())
+}

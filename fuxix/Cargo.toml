@@ -1,21 +1,22 @@
 [package]
-name = "fux-sys"
+name = "fuxix"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "The macOS system calls fux makes that std and rustix do not offer safely"
+description = "The system calls fux makes on Linux, Android and macOS, over libc, each safe to call"
 repository = "https://github.com/gold-silver-copper/fux"
 readme = "README.md"
-keywords = ["macos", "libproc", "getpeereid", "tcgetpgrp", "fux"]
-categories = ["os::macos-apis"]
+keywords = ["pty", "termios", "syscall", "unix", "fux"]
+categories = ["os::unix-apis"]
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[dependencies]
 libc = "0.2"
 
 [lints.rust]
 unused_must_use = "forbid"
 unconditional_recursion = "forbid"
+unsafe_op_in_unsafe_fn = "forbid"
 
 [lints.clippy]
 suspicious = { level = "forbid", priority = -1 }
@@ -35,6 +36,7 @@ unused_result_ok = "forbid"
 debug_assert_with_mut_call = "forbid"
 allow_attributes = "forbid"
 undocumented_unsafe_blocks = "forbid"
+multiple_unsafe_ops_per_block = "forbid"
 significant_drop_in_scrutinee = "forbid"
 significant_drop_tightening = "forbid"
 cast_lossless = "forbid"
@@ -48,4 +50,3 @@ cast_possible_wrap = "forbid"
 cast_sign_loss = "forbid"
 arithmetic_side_effects = "forbid"
 disallowed_methods = "forbid"
-multiple_unsafe_ops_per_block = "forbid"

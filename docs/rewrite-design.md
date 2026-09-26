@@ -44,7 +44,7 @@ tree, a socket and a render loop.
 | Clipboard | OSC 52 writes **on by default** (`set clipboard off` disables). Nothing ever reads the clipboard. |
 | Control surface | The `fux` CLI only. No RPC, HTTP or JSON-RPC. |
 | Bevy | None. No async runtime either. |
-| System calls | `rustix`, not `nix`. `portable-pty` is replaced by rustix's PTY API. |
+| System calls | `fuxix`, fux's own crate over `libc`, not `nix` or `rustix`. `portable-pty` is replaced by its PTY calls. |
 
 ## What stays, what goes
 
@@ -63,8 +63,8 @@ touched.
 | --- | --- | --- |
 | `src/encode.rs` | Key encoding for panes (application cursor, modifiers); its mouse half is dropped | none |
 | `src/paste.rs` | Bracketed-paste decoding, bounded to 64 KiB | trivial |
-| `src/transport.rs` | Socket path rules, 0700 directory checks, lock, stale-socket replacement, inode pin (014) | nix → rustix |
-| `src/terminal.rs` | Session hangup on close (013), stopped ≠ exited (020), byte-bounded input (021), bounded drain, EINTR retry (010) | nix/portable-pty → rustix |
+| `src/transport.rs` | Socket path rules, 0700 directory checks, lock, stale-socket replacement, inode pin (014) | nix → fuxix |
+| `src/terminal.rs` | Session hangup on close (013), stopped ≠ exited (020), byte-bounded input (021), bounded drain, EINTR retry (010) | nix/portable-pty → fuxix |
 | `src/selection.rs` | Selection over fux-vt row IDs, surviving output and scrolling | light |
 | `src/chrome.rs`, `src/interaction.rs`, `src/actions.rs` | The bottom bar, the command column, choosers, action menus, prompts; the action list with labels, groups and availability | light to moderate |
 
@@ -87,7 +87,7 @@ fux (one binary, over a library crate so integration tests can speak the protoco
 
 ### The server
 
-A single thread runs `rustix::event::poll` over:
+A single thread runs `fuxix::poll::poll` over:
 
 - the listening socket (accept until `EAGAIN`, so one tick drains the whole
   backlog: 012);
@@ -122,13 +122,15 @@ is read once, bounded, at startup and on `fux reload`.
 
 A pane owns:
 
-- a PTY: `openpt(RDWR | NOCTTY)`, `grantpt`, `unlockpt`, `ptsname`,
-  `tcsetwinsize`. rustix offers `OpenptFlags::CLOEXEC` only on Linux and the
-  BSDs, so the master is set close-on-exec with `fcntl_setfd` straight after,
-  on every platform. The slave is opened `O_CLOEXEC` too. The server has one
+- a PTY: `posix_openpt(RDWR | NOCTTY)`, `grantpt`, `unlockpt`, the slave's
+  name, `TIOCSWINSZ`, through `fuxix::pty::open`. The master is opened
+  close-on-exec on Linux and Android; macOS has no flag for it, so it is set
+  straight after. The slave is opened `O_CLOEXEC` too. The server has one
   thread, so no fork can happen in between. Every descriptor the server holds
-  is close-on-exec, and a test checks that a pane's program inherits only
-  stdio;
+  is close-on-exec. And whatever the server itself inherited without the
+  flag, the launcher marks every descriptor above stderr close-on-exec before
+  it runs the program, so a pane's program inherits only stdio; a test
+  checks both;
 - a `fux_vt::Parser`;
 - a child process: the configured shell (`set shell`), always, started
   through `std::process::Command` with the slave as stdio, `TERM=xterm-256color`, `FUX_PANE=%N` and `FUX_SOCKET`. A `pre_exec`
@@ -411,8 +413,8 @@ A socket with the same rules as today:
 Also:
 
 - The peer's UID is checked on accept, and anyone but the server's own user
-  is refused: rustix's `socket_peercred` on Linux, `getpeereid` through
-  `libc` on macOS.
+  is refused: `SO_PEERCRED` on Linux, `getpeereid` on macOS, through
+  `fuxix::socket::peer_uid`.
 - The same user can run anything through fux (`split -- CMD`, `send-keys`).
   That is the design: the socket's permissions are the access control, as in
   tmux, and the README says so.
@@ -474,6 +476,7 @@ a message naming `-t`. It never guesses a "current" pane.
 | `fux resize-pane -t %N -L\|-R\|-U\|-D [N]` | Adjust weights |
 | `fux send-keys -t %N [-l] KEYS…` | Keys (`C-c`, `Enter`, …) or literal text |
 | `fux capture-pane -t %N [-S -N] [--json]` | Screen text, optionally with history |
+| `fux capture-client -c CLIENT [--json]` | What a client's terminal shows, bar and overlays included: the screen the server composes for it |
 | `fux set OPTION VALUE`, `fux bind [-g GROUP] [-r] KEY… CMD…`, `fux unbind KEY…`, `fux unbind-all` | Change the running configuration |
 | `fux reload` | Re-run the config file against the defaults |
 | `fux list-buffers`, `fux show-buffer [-b N]`, `fux paste-buffer [-b N] [-t %N]` | Paste buffers |
@@ -581,16 +584,15 @@ Every key is a letter, in either case, without Ctrl or Alt.
 | Crate | Why |
 | --- | --- |
 | `fux-vt` (path, 0.1.1) | Emulator |
-| `rustix` 1.x (`pty`, `termios`, `process`, `event`, `fs`, `net`, `stdio`) | PTYs, processes, poll, sockets, terminal modes |
-| `signal-hook` | Signal → self-pipe (rustix does not install handlers) |
+| `fuxix` (path, 0.1.0) | fux's system calls over `libc`, each safe to call: PTYs, processes, poll, sockets, terminal modes; its README says why each is not std's |
+| `signal-hook` | Signal → self-pipe (fuxix installs no handlers) |
 | `unicode-width` | Bar and overlay layout (already in the graph through fux-vt) |
-| `libc` (macOS only) | `proc_listallpids` for session hangup, `getpeereid` for the peer check, `proc_pidinfo` for a new pane's working directory; rustix has none of them on macOS. Also `getsid` and `tcgetpgrp`: rustix builds a `Pid` from their result unchecked, and a result of 0 is undefined behaviour there (on Linux, where kernel threads have session 0, fux reads `/proc/PID/stat` instead) |
 
 The lints stay as today: clippy forbids `unwrap`, `expect`, `panic!`,
 `unreachable!`, `todo!` and `unimplemented!`, and warns on
 `indexing_slicing`. CI runs clippy with `-D warnings` on macOS and Linux.
-`unsafe` appears only for `pre_exec` and the macOS `libc` calls, each with a
-`SAFETY:` comment. The toolchain pin stays in `rust-toolchain.toml`.
+`unsafe` appears only in `fuxix`, one call per block, each with a `SAFETY:`
+comment; fux itself forbids it. The toolchain pin stays in `rust-toolchain.toml`.
 
 Written in fux instead of depended on, each small and tested:
 

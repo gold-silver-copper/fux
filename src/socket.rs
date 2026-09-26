@@ -11,14 +11,9 @@
 //!   bound. On Linux an `O_PATH` descriptor keeps its inode allocated so the
 //!   number cannot be reused by a replacement (bevy-final finding 014).
 //! - Every accepted peer must run as the server's own user.
-#[cfg(target_os = "linux")]
-use rustix::fs::Mode;
-use rustix::fs::{FlockOperation, OFlags};
-use rustix::process::geteuid;
+use fuxix::process::geteuid;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io;
-#[cfg(target_os = "linux")]
-use std::os::fd::OwnedFd;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -109,7 +104,7 @@ fn octal(mode: u32) -> String {
 /// through directories no other user can rewrite. `create` makes it when it
 /// is missing; nothing that already exists is modified.
 fn private_directory(directory: &Path, create: bool) -> Result<(), String> {
-    let euid = geteuid().as_raw();
+    let euid = geteuid();
     let shown = directory.display();
     let above = directory
         .parent()
@@ -194,7 +189,7 @@ pub fn check_client_socket(path: &Path) -> Result<(), String> {
         .parent()
         .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
     private_directory(directory, false)?;
-    if !meta.file_type().is_socket() || meta.uid() != geteuid().as_raw() {
+    if !meta.file_type().is_socket() || meta.uid() != geteuid() {
         return Err(format!(
             "{} is not a socket owned by you; refusing to connect",
             path.display()
@@ -210,26 +205,22 @@ fn identity(meta: &fs::Metadata) -> (u64, u64) {
 /// A socket file's identity, held so that it keeps meaning that file.
 struct Pinned {
     identity: (u64, u64),
-    #[cfg(target_os = "linux")]
-    _inode: OwnedFd,
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    _inode: File,
 }
 
 impl Pinned {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn new(path: &Path) -> io::Result<Self> {
-        let inode = rustix::fs::open(
-            path,
-            OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?;
-        let stat = rustix::fs::fstat(&inode)?;
+        let inode = fuxix::file::pin(path)?;
+        let meta = inode.metadata()?;
         Ok(Self {
-            identity: (stat.st_dev, stat.st_ino),
+            identity: identity(&meta),
             _inode: inode,
         })
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     fn new(path: &Path) -> io::Result<Self> {
         fs::symlink_metadata(path).map(|meta| Self {
             identity: identity(&meta),
@@ -267,16 +258,10 @@ impl Drop for Endpoint {
 /// connect answers at once. A listener with a full backlog refuses with
 /// `EAGAIN`, and counts as alive.
 fn probe(path: &Path) -> io::Result<()> {
-    let fd = rustix::net::socket(
-        rustix::net::AddressFamily::UNIX,
-        rustix::net::SocketType::STREAM,
-        None,
-    )?;
-    rustix::io::fcntl_setfd(&fd, rustix::io::FdFlags::CLOEXEC)?;
-    rustix::io::ioctl_fionbio(&fd, true)?;
-    let address = rustix::net::SocketAddrUnix::new(path)?;
-    match rustix::net::connect(&fd, &address) {
-        Ok(()) | Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INPROGRESS) => Ok(()),
+    let fd = fuxix::socket::stream()?;
+    fuxix::io::set_nonblocking(&fd, true)?;
+    match fuxix::socket::connect(&fd, path) {
+        Ok(()) | Err(fuxix::Errno::AGAIN | fuxix::Errno::INPROGRESS) => Ok(()),
         Err(error) => Err(error.into()),
     }
 }
@@ -292,7 +277,7 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), String> {
     let name = path
         .file_name()
         .ok_or_else(|| format!("{shown} names no file"))?;
-    let euid = geteuid().as_raw();
+    let euid = geteuid();
     let foreign = |meta: &fs::Metadata| !meta.file_type().is_socket() || meta.uid() != euid;
     let refused =
         || format!("{shown} exists and is not a socket owned by you; fux will not replace it");
@@ -306,16 +291,13 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), String> {
         .create(true)
         .truncate(false)
         .mode(0o600)
-        // The flags are C `int` bits; rustix keeps them unsigned.
-        .custom_flags((OFlags::NOFOLLOW | OFlags::CLOEXEC).bits().cast_signed())
+        // std opens close-on-exec.
+        .custom_flags(fuxix::file::NOFOLLOW)
         .open(&lock_path)
         .map_err(|error| format!("{}: {error}", lock_path.display()))?;
-    rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive).map_err(|errno| {
-        if errno == rustix::io::Errno::WOULDBLOCK {
-            format!("another fux server is already using {shown}")
-        } else {
-            format!("locking {}: {errno}", lock_path.display())
-        }
+    lock.try_lock().map_err(|error| match error {
+        fs::TryLockError::WouldBlock => format!("another fux server is already using {shown}"),
+        fs::TryLockError::Error(error) => format!("locking {}: {error}", lock_path.display()),
     })?;
     // Pinned before the probe, so the file found dead is the one removed.
     let stale = Pinned::new(path);
@@ -343,17 +325,8 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), String> {
             }
         },
     }
-    let fd = rustix::net::socket(
-        rustix::net::AddressFamily::UNIX,
-        rustix::net::SocketType::STREAM,
-        None,
-    )
-    .map_err(|error| format!("socket: {error}"))?;
-    rustix::io::fcntl_setfd(&fd, rustix::io::FdFlags::CLOEXEC)
-        .map_err(|error| format!("socket: {error}"))?;
-    let address =
-        rustix::net::SocketAddrUnix::new(path).map_err(|error| format!("{shown}: {error}"))?;
-    rustix::net::bind(&fd, &address).map_err(|error| format!("binding {shown}: {error}"))?;
+    let fd = fuxix::socket::stream().map_err(|error| format!("socket: {error}"))?;
+    fuxix::socket::bind(&fd, path).map_err(|error| format!("binding {shown}: {error}"))?;
     let endpoint = Endpoint {
         path: path.to_owned(),
         socket: Pinned::new(path).map_err(|error| format!("{shown}: {error}"))?,
@@ -363,22 +336,13 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), String> {
     // is set before `listen`, so no connection is accepted on an open socket.
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))
         .map_err(|error| format!("{shown}: {error}"))?;
-    rustix::net::listen(&fd, 128).map_err(|error| format!("listening on {shown}: {error}"))?;
+    fuxix::socket::listen(&fd, 128).map_err(|error| format!("listening on {shown}: {error}"))?;
     Ok((endpoint, UnixListener::from(fd)))
 }
 
 /// The effective user ID of the process at the other end of `stream`.
-#[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
-    rustix::net::sockopt::socket_peercred(stream)
-        .map(|credentials| credentials.uid.as_raw())
-        .map_err(io::Error::from)
-}
-
-/// The effective user ID of the process at the other end of `stream`.
-#[cfg(target_os = "macos")]
-pub fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
-    fux_sys::peer_uid(stream)
+    fuxix::socket::peer_uid(stream).map_err(io::Error::from)
 }
 
 #[cfg(test)]
@@ -436,7 +400,7 @@ mod tests {
         // A client connects, and its peer is this user.
         let client = UnixStream::connect(&path).map_err(|e| e.to_string())?;
         let (served, _) = listener.accept().map_err(|e| e.to_string())?;
-        assert_eq!(peer_uid(&served).ok(), Some(geteuid().as_raw()));
+        assert_eq!(peer_uid(&served).ok(), Some(geteuid()));
         drop((client, served, listener, endpoint));
         assert!(!exists(&path), "the socket is removed at exit");
         // A stale socket (nothing listening) is replaced.
@@ -450,6 +414,85 @@ mod tests {
         assert!(
             exists(&path),
             "another program's socket survives our cleanup"
+        );
+        drop(replacement);
+        let _ = fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    fn inode(path: &Path) -> Result<u64, String> {
+        fs::symlink_metadata(path)
+            .map(|m| m.ino())
+            .map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Whether the filesystem under `dir` gives a freed inode number to
+    /// the next file it makes, as ext4 does and APFS does not.
+    fn reuses_inode_numbers(dir: &Path) -> Result<bool, String> {
+        let probe = dir.join("probe.sock");
+        for _ in 0..5 {
+            let first = UnixListener::bind(&probe).map_err(|e| e.to_string())?;
+            let number = inode(&probe)?;
+            drop(first);
+            fs::remove_file(&probe).map_err(|e| e.to_string())?;
+            let second = UnixListener::bind(&probe).map_err(|e| e.to_string())?;
+            let again = inode(&probe)?;
+            drop(second);
+            fs::remove_file(&probe).map_err(|e| e.to_string())?;
+            if number == again {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// A socket that replaces fux's own after fux's listener closed keeps
+    /// its place when fux's endpoint is dropped, and a stale socket's pin
+    /// tells a replacement from the file it pinned, even where the
+    /// replacement gets the freed inode number (bevy-final finding 014).
+    /// The test says whether its filesystem reuses numbers, since only
+    /// there does it test anything a plain identity check would not.
+    #[test]
+    fn cleanup_leaves_a_socket_that_replaced_ours_where_inodes_are_reused() -> Result<(), String> {
+        let root = scratch("reuse");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("fux")).map_err(|e| e.to_string())?;
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+        fs::set_permissions(root.join("fux"), fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+        let reuse = reuses_inode_numbers(&root.join("fux"))?;
+        eprintln!(
+            "inode numbers under {} are {}",
+            root.display(),
+            if reuse {
+                "reused: the guarantee is exercised"
+            } else {
+                "not reused: the guarantee holds here without the pin"
+            }
+        );
+        let path = root.join("fux").join("s.sock");
+        // At exit: fux's listener closes, someone replaces the socket, then
+        // fux's endpoint is dropped.
+        let (endpoint, listener) = bind_socket(&path)?;
+        let ours = inode(&path)?;
+        drop(listener);
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+        let replacement = UnixListener::bind(&path).map_err(|e| e.to_string())?;
+        let theirs = inode(&path)?;
+        eprintln!("fux's socket was inode {ours}, the replacement's {theirs}");
+        drop(endpoint);
+        assert!(exists(&path), "the replacement survives fux's cleanup");
+        drop(replacement);
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+        // Binding: a stale socket is pinned, then replaced before it could be
+        // removed. The pin must not mistake the replacement for it.
+        drop(UnixListener::bind(&path).map_err(|e| e.to_string())?);
+        let pin = Pinned::new(&path).map_err(|e| e.to_string())?;
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+        let replacement = UnixListener::bind(&path).map_err(|e| e.to_string())?;
+        assert!(
+            !pin.still_at(&path),
+            "the pin took a replacement for the stale socket"
         );
         drop(replacement);
         let _ = fs::remove_dir_all(&root);
