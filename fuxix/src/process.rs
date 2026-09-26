@@ -32,7 +32,9 @@ impl fmt::Display for Pid {
     }
 }
 
-/// The signals fux sends.
+/// The signals fux sends, and `Tstp`, which koh's client sends itself to
+/// suspend: a shell reports a job `Tstp` stopped as "Stopped", and one
+/// `Stop` stopped as "Stopped (signal)".
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Signal {
     Hup,
@@ -40,6 +42,7 @@ pub enum Signal {
     Term,
     Kill,
     Stop,
+    Tstp,
     Cont,
     Winch,
 }
@@ -52,6 +55,7 @@ impl Signal {
             Signal::Term => libc::SIGTERM,
             Signal::Kill => libc::SIGKILL,
             Signal::Stop => libc::SIGSTOP,
+            Signal::Tstp => libc::SIGTSTP,
             Signal::Cont => libc::SIGCONT,
             Signal::Winch => libc::SIGWINCH,
         }
@@ -281,6 +285,65 @@ mod tests {
         // Reported without reaping: it is still there to reap.
         assert_eq!(reap(pid), Ok(Some(Status::Signalled(libc::SIGKILL))));
         let _ = child.try_wait();
+        Ok(())
+    }
+
+    /// What `ps` reports as `pid`'s state: `T` while it is stopped.
+    fn state(pid: Pid) -> std::result::Result<String, String> {
+        let out = Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .map_err(|e| e.to_string())?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    }
+
+    /// Polls `state` until `stopped` says it is `wanted`, or a few seconds pass.
+    fn wait_stopped(pid: Pid, wanted: bool) -> std::result::Result<bool, String> {
+        let deadline = Instant::now().checked_add(Duration::from_secs(5));
+        loop {
+            if state(pid)?.starts_with('T') == wanted {
+                return Ok(true);
+            }
+            if deadline.is_none_or(|d| Instant::now() > d) {
+                return Ok(false);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// `Tstp` is SIGTSTP: a child with the default disposition stops until
+    /// continued, and one that traps SIGTSTP runs its trap. The system drops
+    /// SIGTSTP sent to an orphaned process group, which the test's own group
+    /// may be; the child's own group, whose parent (this process) is in the
+    /// same session, is not orphaned.
+    #[test]
+    fn tstp_stops_a_child_until_it_continues() -> std::result::Result<(), String> {
+        use std::os::unix::process::CommandExt as _;
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        let pid = Pid::of(&child).ok_or("a pid")?;
+        kill(pid, Signal::Tstp).map_err(|e| e.to_string())?;
+        assert!(wait_stopped(pid, true)?, "stopped: {:?}", state(pid));
+        assert_eq!(ended(pid), Ok(None), "a stop is not an end");
+        kill(pid, Signal::Cont).map_err(|e| e.to_string())?;
+        assert!(wait_stopped(pid, false)?, "continued: {:?}", state(pid));
+        kill(pid, Signal::Kill).map_err(|e| e.to_string())?;
+        assert_eq!(wait_ended(pid), Some(Status::Signalled(libc::SIGKILL)));
+        let _ = child.try_wait();
+
+        let trapping = Command::new("sh")
+            .args(["-c", "trap 'exit 7' TSTP; while :; do sleep 0.05; done"])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        let pid = Pid::of(&trapping).ok_or("a pid")?;
+        // Give the shell time to install its trap.
+        std::thread::sleep(Duration::from_millis(300));
+        kill(pid, Signal::Tstp).map_err(|e| e.to_string())?;
+        assert_eq!(wait_ended(pid), Some(Status::Exited(7)));
+        assert_eq!(reap(pid), Ok(Some(Status::Exited(7))));
         Ok(())
     }
 

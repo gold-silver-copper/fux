@@ -20,7 +20,7 @@ include = ["/src/**", "/tests/**", "/README.md", "/LICENSE"]
 fux-vt = { path = "fux-vt", version = "0.1.2" }
 signal-hook = "0.3"
 unicode-width = "0.2"
-fuxix = { path = "fuxix", version = "0.1.0" }
+fuxix = { path = "fuxix", version = "0.1.1" }
 
 [profile.dev]
 debug = 0
