@@ -1,8 +1,8 @@
 //! The clients: `fux attach`, a dumb pipe between a terminal and the server,
 //! and the one-shot command client every other `fux` command uses.
 use crate::protocol::{Decoder, Frame, PROTOCOL, Role};
-use rustix::event::{PollFd, PollFlags};
-use rustix::termios::{OptionalActions, Termios};
+use fuxix::poll::{Events as PollFlags, PollFd};
+use fuxix::terminal::Termios;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -25,7 +25,7 @@ fn restore() {
         let mut out = std::io::stdout();
         let _ = out.write_all(LEAVE.as_bytes());
         let _ = out.flush();
-        let _ = rustix::termios::tcsetattr(std::io::stdin(), OptionalActions::Now, &termios);
+        let _ = fuxix::terminal::set_attributes(std::io::stdin(), &termios);
     }
 }
 
@@ -33,25 +33,30 @@ fn connect(socket: &Path, role: Role) -> Result<(UnixStream, Decoder), String> {
     crate::socket::check_client_socket(socket)?;
     let mut stream = UnixStream::connect(socket)
         .map_err(|e| format!("connecting to {}: {e}", socket.display()))?;
-    send(
+    let sent = send(
         &mut stream,
         &Frame::Hello {
             protocol: PROTOCOL,
             version: env!("CARGO_PKG_VERSION").into(),
             role,
         },
-    )?;
+    );
     let mut decoder = Decoder::default();
     let mut buffer = vec![0u8; 64 * 1024];
-    match read_frame(
+    // A server that refuses a connection says why and closes it, maybe
+    // before the Hello is written: its reason is still there to read.
+    let answer = read_frame(
         &mut stream,
         &mut decoder,
         &mut buffer,
         Some(Duration::from_secs(5)),
-    )? {
-        Some(Frame::Hello { .. }) => {}
-        Some(Frame::Exit(reason)) => return Err(reason),
-        _ => return Err("the server did not answer".into()),
+    );
+    match (answer, sent) {
+        (Ok(Some(Frame::Exit(reason))), _) => return Err(reason),
+        (_, Err(error)) => return Err(error),
+        (Ok(Some(Frame::Hello { .. })), Ok(())) => {}
+        (Err(error), Ok(())) => return Err(error),
+        (Ok(_), Ok(())) => return Err("the server did not answer".into()),
     }
     // A mismatched server answers Hello and then says why it refuses.
     Ok((stream, decoder))
@@ -200,16 +205,16 @@ pub fn start_server(socket: &Path) -> Result<(), String> {
 }
 
 fn window_size() -> (u16, u16) {
-    rustix::termios::tcgetwinsize(std::io::stdout())
+    fuxix::terminal::window_size(std::io::stdout())
         .ok()
-        .filter(|w| w.ws_row > 0 && w.ws_col > 0)
-        .map_or((24, 80), |w| (w.ws_row, w.ws_col))
+        .filter(|(rows, cols)| *rows > 0 && *cols > 0)
+        .unwrap_or((24, 80))
 }
 
 /// Attaches this terminal to the server until detach or the server's end.
 pub fn attach(socket: &Path, workspace: Option<String>) -> Result<(), String> {
     let stdin = std::io::stdin();
-    if !rustix::termios::isatty(&stdin) {
+    if !std::io::IsTerminal::is_terminal(&stdin) {
         return Err("fux attach needs a terminal on stdin".into());
     }
     let (mut stream, mut decoder) = connect(socket, Role::Attach)?;
@@ -224,7 +229,7 @@ pub fn attach(socket: &Path, workspace: Option<String>) -> Result<(), String> {
     )?;
 
     let original =
-        rustix::termios::tcgetattr(&stdin).map_err(|e| format!("reading terminal modes: {e}"))?;
+        fuxix::terminal::attributes(&stdin).map_err(|e| format!("reading terminal modes: {e}"))?;
     let mut raw = original.clone();
     raw.make_raw();
     if let Ok(mut saved) = SAVED.lock() {
@@ -235,7 +240,7 @@ pub fn attach(socket: &Path, workspace: Option<String>) -> Result<(), String> {
         restore();
         previous(info);
     }));
-    rustix::termios::tcsetattr(&stdin, OptionalActions::Now, &raw).map_err(|e| {
+    fuxix::terminal::set_attributes(&stdin, &raw).map_err(|e| {
         restore();
         format!("setting raw mode: {e}")
     })?;
@@ -282,8 +287,8 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, String
             PollFd::new(&winch, PollFlags::IN),
             PollFd::new(&stops, PollFlags::IN),
         ];
-        match rustix::event::poll(&mut fds, None) {
-            Ok(_) | Err(rustix::io::Errno::INTR) => {}
+        match fuxix::poll::poll(&mut fds, None) {
+            Ok(_) | Err(fuxix::Errno::INTR) => {}
             Err(e) => return Err(format!("poll: {e}")),
         }
         let ready: Vec<PollFlags> = fds.iter().map(PollFd::revents).collect();
@@ -299,7 +304,7 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, String
             send(stream, &Frame::Resize { rows, cols })?;
         }
         if is(0) {
-            match rustix::io::read(&stdin, &mut buffer) {
+            match fuxix::io::read(&stdin, &mut buffer) {
                 Ok(0) => {
                     let _ = send(stream, &Frame::Detach);
                     return Ok("detached: the terminal closed".into());
@@ -308,7 +313,7 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, String
                     stream,
                     &Frame::Input(buffer.get(..n).unwrap_or_default().to_vec()),
                 )?,
-                Err(rustix::io::Errno::INTR | rustix::io::Errno::AGAIN) => {}
+                Err(fuxix::Errno::INTR | fuxix::Errno::AGAIN) => {}
                 Err(e) => return Err(format!("reading the terminal: {e}")),
             }
         }

@@ -69,6 +69,15 @@ jobs:
           cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/clippy.log"
           cargo test --workspace --locked 2>&1 | tee "$CI_LOGS/test.log"
 
+      - name: Socket cleanup where inode numbers are reused
+        # Only a filesystem that gives a freed inode number to the next file
+        # tests the guarantee (bevy-final finding 014); ubuntu's /tmp is
+        # ext4, which does. The test says which it found.
+        run: |
+          set -euo pipefail
+          df -T "${TMPDIR:-/tmp}" 2>/dev/null || df "${TMPDIR:-/tmp}"
+          cargo test --locked --lib socket::tests::cleanup_leaves_a_socket_that_replaced_ours_where_inodes_are_reused -- --exact --nocapture
+
       - name: Packaging
         # fux depends on the fux-vt beside it, so the two are packaged
         # together: `-p fux` alone fails whenever fux needs a fux-vt that is

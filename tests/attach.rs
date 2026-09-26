@@ -183,15 +183,26 @@ fn a_panes_program_inherits_only_stdio_and_a_clean_signal_mask() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
-    // Descriptors 3..9, whatever the server holds there, are not open here.
-    client.keys("for n in 3 4 5 6 7 8 9; do (: >&$n) 2>/dev/null && echo fd$n-open; done; echo fds-checked\r")?;
+    // Descriptors 3..9, whatever the server holds there, are not open here,
+    // for reading or for writing; shells keep their own from 10 up. Any
+    // that is open gets described in a file, so a failure says what leaked.
+    let report = server.dir.join("open-fds");
+    client.keys(&format!(
+        "for n in 3 4 5 6 7 8 9; do {{ (: >&$n) || (: <&$n); }} 2>/dev/null && echo fd$n-open && \
+         {{ lsof -a -p $$ -d $n || ls -l /proc/$$/fd/$n; }} >> '{}' 2>&1; done; echo fds-checked\r",
+        report.display()
+    ))?;
     client.wait("the check", |t| t.lines().any(|l| l == "fds-checked"))?;
     let open: Vec<String> = client
         .lines()
         .into_iter()
         .filter(|l| l.starts_with("fd") && l.ends_with("-open"))
         .collect();
-    assert!(open.is_empty(), "{open:?}");
+    assert!(
+        open.is_empty(),
+        "{open:?}:\n{}",
+        std::fs::read_to_string(&report).unwrap_or_default()
+    );
     client.keys("ps -o sigmask= -p $$ | tr -d ' 0'; echo mask-checked\r")?;
     client.wait("the mask", |t| t.lines().any(|l| l == "mask-checked"))?;
     let lines = client.lines();
@@ -273,10 +284,15 @@ fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
     let mut decoder = fux::protocol::Decoder::default();
     let mut buffer = [0u8; 4096];
     let mut frames = Vec::new();
-    while let Ok(n) = stream.read(&mut buffer) {
-        if n == 0 {
-            break;
-        }
+    loop {
+        // A signal interrupts a read with a timeout rather than restarting
+        // it; under emulation that happens nearly every run.
+        let n = match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(format!("reading the server's answer: {error}")),
+        };
         decoder.push(buffer.get(..n).unwrap_or_default());
         while let Some(frame) = decoder.frame()? {
             frames.push(frame);
@@ -457,11 +473,8 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
     // shell signals the terminal's foreground job: the client goes, and the
     // server, in a session of its own, stays.
     terminal.hang_up();
-    if let Some(client) = i32::try_from(terminal.child.id())
-        .ok()
-        .and_then(rustix::process::Pid::from_raw)
-    {
-        let _ = rustix::process::kill_process_group(client, rustix::process::Signal::HUP);
+    if let Some(client) = fuxix::process::Pid::of(&terminal.child) {
+        let _ = fuxix::process::kill_group(client, fuxix::process::Signal::Hup);
     }
     let gone = eventually("the client to go", || {
         Ok(terminal.child.try_wait().map_err(e)?.is_some())
@@ -482,6 +495,131 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
         after.status.success(),
         "{}",
         String::from_utf8_lossy(&after.stderr)
+    );
+    Ok(())
+}
+
+/// Resizing a terminal signals its client, and a signal can interrupt a
+/// read or write in flight. Typing while the window is resized, hundreds of
+/// times, keeps the client attached and loses no byte (bevy-final finding
+/// 010, where Linux ended the attachment with "Interrupted system call").
+#[test]
+fn resizing_while_typing_keeps_the_client_attached_and_every_byte() -> Outcome {
+    let server = Server::start("")?;
+    let mut terminal = Terminal::attach(&server, 20, 60, &[])?;
+    terminal.wait_for("%1 sh")?;
+    let out = server.dir.join("typed");
+    // The marker is assembled when it runs, so the typed line never
+    // matches it.
+    terminal.type_bytes(
+        format!(
+            "stty -echo; echo ready-$((40+2)); cat > '{}'\r",
+            out.display()
+        )
+        .as_bytes(),
+    )?;
+    terminal.wait_for("ready-42")?;
+    let rounds = 400;
+    let mut expected = String::new();
+    for i in 0..rounds {
+        let line = format!("line-{i}");
+        // A line in two writes, with a resize, and so a SIGWINCH, between
+        // them and after them.
+        let (head, tail) = line.split_at_checked(3).ok_or("a line")?;
+        terminal.type_bytes(head.as_bytes())?;
+        terminal.resize(
+            if i % 2 == 0 { 21 } else { 20 },
+            if i % 3 == 0 { 61 } else { 60 },
+        )?;
+        terminal.type_bytes(tail.as_bytes())?;
+        terminal.type_bytes(b"\r")?;
+        terminal.resize(20, 60)?;
+        // A signal straight to the client too, not only through the PTY.
+        let pid = fuxix::process::Pid::of(&terminal.child).ok_or("the client's pid")?;
+        let _ = fuxix::process::kill(pid, fuxix::process::Signal::Winch);
+        expected.push_str(&line);
+        expected.push('\n');
+        terminal.pump();
+        if let Some(status) = terminal.child.try_wait().map_err(e)? {
+            return Err(format!(
+                "the client ended after {i} rounds ({status}):\n{}",
+                String::from_utf8_lossy(&terminal.output)
+            ));
+        }
+    }
+    eventually("every line typed", || {
+        Ok(std::fs::read_to_string(&out).unwrap_or_default() == expected)
+    })
+    .map_err(|error| {
+        let got = std::fs::read_to_string(&out).unwrap_or_default();
+        format!(
+            "{error}: {} of {rounds} lines arrived; the first difference is at byte {}",
+            got.lines().count(),
+            got.bytes()
+                .zip(expected.bytes())
+                .position(|(a, b)| a != b)
+                .unwrap_or(got.len().min(expected.len()))
+        )
+    })?;
+    assert!(
+        terminal.child.try_wait().map_err(e)?.is_none(),
+        "the client ended"
+    );
+    Ok(())
+}
+
+/// Commands from the command line are not ended by signals either, when
+/// one arrives while they wait for the server.
+#[test]
+fn a_signal_does_not_end_a_command_waiting_for_the_server() -> Outcome {
+    let server = Server::start("")?;
+    for _ in 0..100 {
+        let child = std::process::Command::new(FUX)
+            .arg("ls")
+            .env("FUX_SOCKET", &server.socket)
+            .env_remove("FUX_PANE")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(e)?;
+        let pid = fuxix::process::Pid::of(&child).ok_or("a pid")?;
+        for _ in 0..20 {
+            let _ = fuxix::process::kill(pid, fuxix::process::Signal::Winch);
+        }
+        let out = child.wait_with_output().map_err(e)?;
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// A server may inherit descriptors without close-on-exec from whatever
+/// starts it: a shell that leaks them, or, in these tests, another thread
+/// opening one in the moment before it sets the flag. Its panes' programs
+/// inherit none of them. Before the launcher marked every descriptor above
+/// stderr close-on-exec, the tests above saw a PTY master and a socket of
+/// the test process in a pane, about once in 450 runs.
+#[test]
+fn a_descriptor_the_server_inherited_does_not_reach_its_panes() -> Outcome {
+    let (server, held) = Server::start_inheriting("")?;
+    let mut client = server.attach(10, 60)?;
+    client.wait_for("$")?;
+    // Found by what it is, not its number: shells keep descriptors of their
+    // own from 10 up. The marker is made when it runs.
+    let file = server.dir.join("inherited");
+    client.keys(&format!(
+        "if {{ lsof -p $$ 2>/dev/null || ls -l /proc/$$/fd; }} | grep -q '{}'; then echo held-$((1+1)); else echo free-$((2+2)); fi\r",
+        file.display()
+    ))?;
+    client.wait("the answer", |t| {
+        t.lines().any(|l| l == "held-2" || l == "free-4")
+    })?;
+    assert!(
+        client.lines().iter().any(|l| l == "free-4"),
+        "descriptor {held}, inherited by the server, is open in its pane"
     );
     Ok(())
 }

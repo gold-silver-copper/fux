@@ -73,7 +73,7 @@ impl Grid {
             *slot = cell;
         }
     }
-    /// The text of a row, for tests.
+    /// The text of a row, trailing blanks trimmed: for `capture-client`.
     pub fn row_text(&self, y: u16) -> String {
         let mut out = String::new();
         for x in 0..self.cols {

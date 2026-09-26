@@ -52,6 +52,7 @@ Commands:
   terminate [-t %N]                    SIGTERM to what runs in the pane's foreground
   send-keys [-t %N] [-l] KEYS...
   capture-pane [-t %N] [-S -LINES] [--json]
+  capture-client [-c CLIENT] [--json]  what a client's terminal shows
   set OPTION VALUE | unbind KEY... | unbind-all | reload
   bind [-g GROUP] [-r] KEY... COMMAND...   KEY is a letter after the prefix
   list-buffers | show-buffer [-b N] | paste-buffer [-b N] [-t %N]
@@ -121,7 +122,7 @@ fn run(args: &[String]) -> Result<u8, String> {
                     "--socket" => socket_flag = rest.next().cloned(),
                     "--config" => config = rest.next().cloned(),
                     client::SETSID => {
-                        rustix::process::setsid().map_err(|e| format!("setsid: {e}"))?;
+                        fuxix::process::setsid().map_err(|e| format!("setsid: {e}"))?;
                     }
                     other => return usage_error(&format!("server: unexpected {other:?}")),
                 }

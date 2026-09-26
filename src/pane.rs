@@ -19,10 +19,14 @@ pub struct InputQueue {
     /// Bytes of the front piece already written.
     written: usize,
     cost: usize,
+    /// Input was refused, and the program has not read since: everything
+    /// is refused, so none arrives with a hole before it.
+    refusing: bool,
 }
 
 impl InputQueue {
-    /// Queues `bytes`, or refuses them whole if the queue is full.
+    /// Queues `bytes`, or refuses them whole if the queue is full, and then
+    /// everything until the program reads.
     pub fn push(&mut self, bytes: Vec<u8>) -> Result<(), String> {
         if bytes.is_empty() {
             return Ok(());
@@ -31,8 +35,9 @@ impl InputQueue {
             .len()
             .checked_add(ENTRY_COST)
             .and_then(|cost| self.cost.checked_add(cost))
-            .filter(|cost| *cost <= INPUT_BYTES);
+            .filter(|cost| *cost <= INPUT_BYTES && !self.refusing);
         let Some(cost) = cost else {
+            self.refusing = true;
             return Err(
                 "the pane's program is not reading its input; nothing more is queued until it does"
                     .into(),
@@ -49,8 +54,11 @@ impl InputQueue {
     pub fn front(&self) -> Option<&[u8]> {
         self.pieces.front().and_then(|p| p.get(self.written..))
     }
-    /// `n` bytes of the front were written.
+    /// `n` bytes of the front were written: the program is reading.
     pub fn advance(&mut self, n: usize) {
+        if n > 0 {
+            self.refusing = false;
+        }
         // At most the front's length; past it all the same means done.
         self.written = self.written.saturating_add(n);
         if let Some(front) = self.pieces.front()
@@ -377,6 +385,24 @@ mod tests {
         assert_eq!(partial.front(), Some(&b"bc"[..]));
         assert_eq!(partial.drain_all(), b"bc");
         assert!(partial.is_empty());
+    }
+
+    /// Once input is refused, nothing more is queued until the program
+    /// reads, as the notice says: accepting a later key would deliver it
+    /// with a hole where the refused input was.
+    #[test]
+    fn after_a_refusal_nothing_is_queued_until_the_program_reads() {
+        let mut queue = InputQueue::default();
+        while queue.push(vec![b'p'; MAX_INPUT]).is_ok() {}
+        let refusal = queue.push(vec![b'k']).err().unwrap_or_default();
+        assert!(
+            refusal.contains("not reading"),
+            "a key after a refused paste: {refusal:?}"
+        );
+        // Writing some of the front is the program reading: input is taken
+        // again.
+        queue.advance(1);
+        assert!(queue.push(vec![b'k']).is_ok());
     }
 
     #[test]

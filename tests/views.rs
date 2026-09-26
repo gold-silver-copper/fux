@@ -216,3 +216,79 @@ fn moving_a_panes_out_leaves_an_empty_tab_with_a_hint() -> Outcome {
     assert!(!server.ok(&["ls"])?.contains("@1 main"));
     Ok(())
 }
+
+/// `capture-client` prints what a client's terminal shows: in every mode,
+/// once its paints have arrived, the client's own screen and the capture
+/// agree row for row, bar and overlays included.
+#[test]
+fn capture_client_shows_what_a_client_shows_in_every_mode() -> Outcome {
+    let server = Server::start("")?;
+    server.ok(&["split", "-h", "-t", "%1"])?;
+    let mut client = server.attach(20, 90)?;
+    client.wait_for("$")?;
+    let captured = |server: &Server| -> Result<Vec<String>, String> {
+        Ok(server
+            .ok(&["capture-client", "-c", "c1"])?
+            .lines()
+            .map(str::to_owned)
+            .collect())
+    };
+    let agree = |client: &mut Client, server: &Server, mode: &str| -> Outcome {
+        client
+            .wait(mode, |t| {
+                captured(server).is_ok_and(|rows| rows.join("\n") == t)
+            })
+            .map_err(|error| {
+                format!(
+                    "{error}\ncapture-client shows:\n{}",
+                    captured(server).unwrap_or_default().join("\n")
+                )
+            })
+    };
+    agree(&mut client, &server, "normal")?;
+    // Leaving a mode is done once the screen is as it was.
+    let normal = client.text();
+    let escape = |client: &mut Client| -> Outcome {
+        client.keys("\x1b")?;
+        client.wait("normal again", |t| t == normal)
+    };
+    for (keys, mode, shows) in [
+        ("\x02", "the column", "Commands"),
+        ("\x02t", "a layer", "Tabs"),
+        ("\x02tg", "a chooser", "@1"),
+        ("\x02a", "a menu", "pane"),
+        ("\x02e", "the prompt", "Enter accepts"),
+        ("\x02x", "a confirmation", "close"),
+        ("\x02c", "copy mode", "COPY"),
+    ] {
+        client.keys(keys)?;
+        client.wait_for(shows)?;
+        agree(&mut client, &server, mode)?;
+        escape(&mut client)?;
+    }
+    // A repeat mode, from its layer's first key: the bar names it.
+    client.keys("\x02rh")?;
+    client.wait("resize mode", |t| {
+        t.lines().last().is_some_and(|b| b.contains("RESIZE"))
+    })?;
+    agree(&mut client, &server, "a repeat mode")?;
+    // The resize moved the border, so the screen is not as it was.
+    client.keys("\x1b")?;
+    client.wait("the mode ended", |t| {
+        !t.lines().last().is_some_and(|b| b.contains("RESIZE"))
+    })?;
+    // As JSON: the client, its size, the cursor or null, and the rows.
+    let json = server.ok(&["capture-client", "-c", "c1", "--json"])?;
+    assert!(
+        json.starts_with("{\"client\":\"c1\",\"rows\":20,\"cols\":90,\"cursor\":"),
+        "{json}"
+    );
+    let rows = json.split_once("\"lines\":[").map_or("", |(_, rows)| rows);
+    assert_eq!(rows.matches("\",\"").count() + 1, 20, "twenty rows: {json}");
+    // From the command line it needs -c; a client that is not there is an error.
+    let out = server.fux(&["capture-client"])?;
+    assert_eq!(out.status, 1, "{}", out.stderr);
+    assert!(out.stderr.contains("-c"), "{}", out.stderr);
+    assert_eq!(server.fux(&["capture-client", "-c", "c9"])?.status, 1);
+    Ok(())
+}

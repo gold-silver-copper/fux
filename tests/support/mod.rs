@@ -50,6 +50,29 @@ pub struct Output {
 impl Server {
     /// A server whose shell is `sh` with a plain prompt, and `config` lines.
     pub fn start(config: &str) -> Result<Server, String> {
+        Server::start_limited(config, None)
+    }
+
+    /// The same, with at most `open_files` descriptors (`ulimit -n`).
+    pub fn start_limited(config: &str, open_files: Option<u32>) -> Result<Server, String> {
+        Server::start_with(config, open_files, false).map(|(server, _)| server)
+    }
+
+    /// A server that inherits a descriptor without close-on-exec, as one
+    /// does whatever its parent leaked into it: the file `inherited` in its
+    /// directory, and the descriptor's number, which is the same in the
+    /// server. It is made while no other server can start, so only this one
+    /// inherits it.
+    pub fn start_inheriting(config: &str) -> Result<(Server, i32), String> {
+        let (server, held) = Server::start_with(config, None, true)?;
+        Ok((server, held.ok_or("a held descriptor")?))
+    }
+
+    fn start_with(
+        config: &str,
+        open_files: Option<u32>,
+        inherit: bool,
+    ) -> Result<(Server, Option<i32>), String> {
         let base = std::env::temp_dir().canonicalize().map_err(e)?;
         let dir = base.join(format!(
             "fux-t{}-{}",
@@ -63,9 +86,26 @@ impl Server {
         std::fs::write(&config_path, format!("set shell /bin/sh\n{config}\n")).map_err(e)?;
         let socket = dir.join("s").join("fux.sock");
         let log = std::fs::File::create(dir.join("server.log")).map_err(e)?;
-        let child = {
+        let (child, held) = {
             let _guard = SPAWN.lock().map_err(e)?;
-            Command::new(FUX)
+            let leaked = if inherit {
+                let file = std::fs::File::create(dir.join("inherited")).map_err(e)?;
+                Some(fuxix::io::duplicate_inheritable(&file).map_err(e)?)
+            } else {
+                None
+            };
+            let mut command = match open_files {
+                // `exec` keeps the pid, so `pid()` is the server's.
+                Some(n) => {
+                    let mut sh = Command::new("/bin/sh");
+                    sh.arg("-c")
+                        .arg(format!("ulimit -n {n} && exec \"$0\" \"$@\""))
+                        .arg(FUX);
+                    sh
+                }
+                None => Command::new(FUX),
+            };
+            let child = command
                 .arg("server")
                 .arg("--socket")
                 .arg(&socket)
@@ -80,7 +120,10 @@ impl Server {
                 .stdout(Stdio::null())
                 .stderr(log)
                 .spawn()
-                .map_err(e)?
+                .map_err(e)?;
+            // Closed here once the server has its copy.
+            let held = leaked.as_ref().map(std::os::fd::AsRawFd::as_raw_fd);
+            (child, held)
         };
         let server = Server {
             dir,
@@ -94,7 +137,12 @@ impl Server {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        Ok(server)
+        Ok((server, held))
+    }
+
+    /// The server's process id, while it runs.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
     }
 
     pub fn log(&self) -> String {
@@ -368,6 +416,123 @@ impl Client {
     }
 }
 
+/// The CPU time a process has used, in seconds.
+pub fn cpu_seconds(pid: u32) -> Result<f64, String> {
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        // After the command name, which is in parentheses and may hold
+        // spaces, the fields start at the state, field 3: user and system
+        // time, fields 14 and 15, are the 12th and 13th here, in ticks.
+        let (_, rest) = stat.rsplit_once(')').ok_or("a /proc stat line")?;
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        let ticks = |i: usize| -> Result<f64, String> {
+            fields
+                .get(i)
+                .ok_or("a /proc stat field")?
+                .parse::<f64>()
+                .map_err(e)
+        };
+        let hz = Command::new("getconf").arg("CLK_TCK").output().map_err(e)?;
+        let hz: f64 = String::from_utf8_lossy(&hz.stdout)
+            .trim()
+            .parse()
+            .map_err(e)?;
+        return Ok((ticks(11)? + ticks(12)?) / hz);
+    }
+    // macOS: `ps` gives minutes and seconds to the hundredth.
+    let out = Command::new("ps")
+        .args(["-o", "time=", "-p", &pid.to_string()])
+        .output()
+        .map_err(e)?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    let (minutes, seconds) = text.split_once(':').ok_or(format!("ps time {text:?}"))?;
+    Ok(minutes.parse::<f64>().map_err(e)? * 60.0 + seconds.parse::<f64>().map_err(e)?)
+}
+
+/// Whether a process exists and has not exited: a zombie, which lingers
+/// until its parent reaps it, counts as gone.
+pub fn alive(pid: i32) -> bool {
+    let Some(p) = fuxix::process::Pid::from_raw(pid) else {
+        return false;
+    };
+    if !fuxix::process::exists(p) {
+        return false;
+    }
+    Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .is_ok_and(|out| {
+            let stat = String::from_utf8_lossy(&out.stdout);
+            let stat = stat.trim();
+            !stat.is_empty() && !stat.starts_with('Z')
+        })
+}
+
+/// Sends a signal to a process, if it is there.
+pub fn signal(pid: i32, signal: fuxix::process::Signal) {
+    if let Some(p) = fuxix::process::Pid::from_raw(pid) {
+        let _ = fuxix::process::kill(p, signal);
+    }
+}
+
+/// Processes a test started outside fux's care, killed when it ends,
+/// however it ends.
+#[derive(Default)]
+pub struct Reap(pub Vec<i32>);
+
+impl Drop for Reap {
+    fn drop(&mut self) {
+        for pid in &self.0 {
+            signal(*pid, fuxix::process::Signal::Kill);
+        }
+    }
+}
+
+/// Reads a pid a shell wrote into a file, waiting for it.
+pub fn pid_in(path: &Path) -> Result<i32, String> {
+    let mut pid = None;
+    eventually(&format!("a pid in {}", path.display()), || {
+        pid = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| t.trim().parse().ok());
+        Ok(pid.is_some())
+    })?;
+    pid.ok_or_else(|| "a pid".into())
+}
+
+impl Server {
+    /// The panes `fux ls` lists, in order, with their shells' pids.
+    pub fn panes(&self) -> Result<Vec<(String, i32)>, String> {
+        Ok(self
+            .ok(&["ls"])?
+            .lines()
+            .filter_map(|line| {
+                let mut words = line.split_whitespace();
+                let id = words.next().filter(|w| w.starts_with('%'))?;
+                let pid = line.rsplit_once(" pid ")?.1.trim().parse().ok()?;
+                Some((id.to_owned(), pid))
+            })
+            .collect())
+    }
+
+    /// The pane with the highest number: the one made last.
+    pub fn newest_pane(&self) -> Result<(String, i32), String> {
+        self.panes()?
+            .into_iter()
+            .max_by_key(|(id, _)| id.trim_start_matches('%').parse::<u32>().unwrap_or(0))
+            .ok_or_else(|| "no pane".into())
+    }
+
+    /// Types a line into a pane once its shell shows a prompt.
+    pub fn type_line(&self, pane: &str, line: &str) -> Outcome {
+        eventually(&format!("a prompt in {pane}"), || {
+            Ok(self.ok(&["capture-pane", "-t", pane])?.contains('$'))
+        })?;
+        self.ok(&["send-keys", "-t", pane, "-l", line])?;
+        self.ok(&["send-keys", "-t", pane, "Enter"])?;
+        Ok(())
+    }
+}
+
 /// Waits until `test` holds, polling.
 pub fn eventually(what: &str, mut test: impl FnMut() -> Result<bool, String>) -> Outcome {
     let deadline = after(PATIENCE);
@@ -446,7 +611,7 @@ impl Terminal {
             return;
         };
         let mut buffer = vec![0u8; 64 * 1024];
-        while let Ok(n) = rustix::io::read(master, buffer.as_mut_slice()) {
+        while let Ok(n) = fuxix::io::read(master, buffer.as_mut_slice()) {
             if n == 0 {
                 break;
             }
@@ -506,9 +671,9 @@ impl Terminal {
         let master = self.master.as_ref().ok_or("the terminal is closed")?;
         let mut rest = bytes;
         while !rest.is_empty() {
-            match rustix::io::write(master, rest) {
+            match fuxix::io::write(master, rest) {
                 Ok(n) => rest = rest.get(n..).unwrap_or_default(),
-                Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INTR) => {
+                Err(fuxix::Errno::AGAIN | fuxix::Errno::INTR) => {
                     std::thread::sleep(Duration::from_millis(1))
                 }
                 Err(error) => return Err(e(error)),

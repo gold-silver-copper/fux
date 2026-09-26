@@ -144,6 +144,12 @@ pub enum Command {
         history: Option<usize>,
         json: bool,
     },
+    /// What a client's terminal shows: the screen the server composes for
+    /// it, bar and overlays included.
+    CaptureClient {
+        client: Option<ClientId>,
+        json: bool,
+    },
     Terminate {
         target: Option<PaneId>,
     },
@@ -686,6 +692,18 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                 }
             }
             Command::Detach { client }
+        }
+        "capture-client" => {
+            let mut json = false;
+            while let Some(flag) = a.flag() {
+                match flag {
+                    "-c" => client = Some(parse_client(a.value(flag)?)?),
+                    "--json" => json = true,
+                    other => return a.unknown(other),
+                }
+            }
+            a.no_positional()?;
+            Command::CaptureClient { client, json }
         }
         "command-column" | "command-prompt" | "copy-mode" | "zoom" | "choose-tab"
         | "choose-workspace" | "choose-pane" | "menu" | "rename-prompt" | "confirm-close"
