@@ -17,6 +17,11 @@ impl Errno {
     pub const MFILE: Errno = Errno(libc::EMFILE);
     pub const NFILE: Errno = Errno(libc::ENFILE);
     pub(crate) const INVAL: Errno = Errno(libc::EINVAL);
+    /// XNU's kernel-private `EREDRIVEOPEN` (`bsd/sys/errno.h`), which no POSIX
+    /// call should return: macOS leaks it from `open("/dev/ptmx")` when
+    /// concurrent openers keep racing for one PTY. See `pty::open`.
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) const REDRIVEOPEN: Errno = Errno(-6);
     pub(crate) const NAMETOOLONG: Errno = Errno(libc::ENAMETOOLONG);
 
     /// The number.
