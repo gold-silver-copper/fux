@@ -314,9 +314,10 @@ pub struct Session {
     pub launch: bool,
     pub outbox: Vec<Outgoing>,
     pub dying: Vec<Dying>,
-    /// Where `size_panes` gathers the rectangles each pane is shown in;
-    /// reused by every settle.
+    /// Where `size_panes` gathers the rectangles each pane is shown in, and
+    /// lays out each view to find them; reused by every settle.
     shown_sizes: Vec<(PaneId, (u16, u16))>,
+    placed: Placement,
     next_pane: u32,
     next_tab: u32,
     next_ws: u32,
@@ -344,6 +345,7 @@ impl Session {
             outbox: Vec::new(),
             dying: Vec::new(),
             shown_sizes: Vec::new(),
+            placed: Placement::default(),
             next_pane: 1,
             next_tab: 1,
             next_ws: 1,
@@ -702,9 +704,17 @@ impl Session {
 
     /// Where each pane of a view's current tab is on its screen.
     pub fn placement(&self, view: &View) -> Placement {
+        let mut out = Placement::default();
+        self.placement_into(view, &mut out);
+        out
+    }
+
+    /// Where each pane of a view's current tab is on its screen, into
+    /// `out`, whatever it held, reusing its buffers.
+    pub fn placement_into(&self, view: &View, out: &mut Placement) {
         let area = Self::pane_area(view);
         let Some(root) = view.tab().and_then(|t| self.root(t)) else {
-            return Placement::default();
+            return out.clear();
         };
         if view.zoom
             && let Some(focus) = view.focus()
@@ -712,12 +722,10 @@ impl Session {
             && area.w > 0
             && area.h > 0
         {
-            return Placement {
-                panes: vec![(focus, area)],
-                separators: Vec::new(),
-            };
+            out.clear();
+            return out.panes.push((focus, area));
         }
-        layout::place(root, area)
+        layout::place_into(root, area, out);
     }
 
     /// The area to lay out a tab in for a command without a client: a
@@ -889,11 +897,13 @@ impl Session {
     /// shows keeps its size.
     fn size_panes(&mut self) {
         let mut sizes = std::mem::take(&mut self.shown_sizes);
+        let mut placed = std::mem::take(&mut self.placed);
         sizes.clear();
         for view in self.views.values() {
-            let placement = self.placement(view);
-            sizes.extend(placement.panes.iter().map(|(p, r)| (*p, (r.h, r.w))));
+            self.placement_into(view, &mut placed);
+            sizes.extend(placed.panes.iter().map(|(p, r)| (*p, (r.h, r.w))));
         }
+        self.placed = placed;
         // A pane's rectangles side by side, for the smallest.
         sizes.sort_unstable_by_key(|(pane, _)| *pane);
         let mut resized = false;

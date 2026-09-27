@@ -117,9 +117,17 @@ impl Separator {
 pub struct Placement {
     pub panes: Vec<(PaneId, Rect)>,
     pub separators: Vec<Separator>,
+    /// Room for each split's sizes while it is placed; empty between
+    /// placements.
+    scratch: Vec<u16>,
 }
 
 impl Placement {
+    /// Nothing placed, the buffers kept.
+    pub fn clear(&mut self) {
+        self.panes.clear();
+        self.separators.clear();
+    }
     pub fn rect(&self, pane: PaneId) -> Option<Rect> {
         self.panes.iter().find(|(p, _)| *p == pane).map(|(_, r)| *r)
     }
@@ -337,189 +345,205 @@ pub fn swap(node: &mut Node, a: PaneId, b: PaneId) {
     node.replace(hole, b);
 }
 
-/// Shares `len` cells among children with `weights`, giving each at least
-/// its minimum; `len` is at least their minimums together (`place_node`
-/// lays out a split too small for them without it).
-fn distribute(len: u16, weights: &[u32], mins: &[u16]) -> Vec<u16> {
-    let n = weights.len();
-    let mut fixed = vec![false; n];
-    let mut sizes = vec![0u16; n];
+/// Shares `len` cells among `children` by weight, into `sizes`, which are
+/// zeros, giving each at least its minimum in `mins`; `len` is at least
+/// their minimums together (`place_split` lays out a split too small for
+/// them without it). `mins` is spent: it ends up marking the children that
+/// got more than their minimum.
+fn distribute(len: u16, children: &[(u32, Node)], sizes: &mut [u16], mins: &mut [u16]) {
+    let weight = |i: usize| u64::from(children.get(i).map_or(1, |(w, _)| *w).max(1));
+    // A child whose share falls short of its minimum is fixed at it, and the
+    // rest share again. A minimum is never 0, so a size of 0 is a child not
+    // fixed yet.
     loop {
         // The fixed children have their minimums, which together fit.
-        let fixed_len: u32 = sizes
-            .iter()
-            .zip(&fixed)
-            .filter(|(_, f)| **f)
-            .map(|(s, _)| u32::from(*s))
-            .sum();
+        let fixed_len: u32 = sizes.iter().map(|s| u32::from(*s)).sum();
         let Some(free_len) = u32::from(len).checked_sub(fixed_len) else {
-            return sizes;
+            return;
         };
-        let free_weight: u64 = weights
+        let free_weight: u64 = sizes
             .iter()
-            .zip(&fixed)
-            .filter(|(_, f)| !**f)
-            .map(|(w, _)| u64::from((*w).max(1)))
+            .zip(0..)
+            .filter(|(s, _)| **s == 0)
+            .map(|(_, i)| weight(i))
             .sum();
         let free_weight = NonZeroU64::new(free_weight).unwrap_or(NonZeroU64::MIN);
+        // A u32 by a u32 is exact in a u64.
+        let exact = |i: usize| u64::from(free_len).saturating_mul(weight(i));
+        let share = |i: usize| exact(i) / free_weight;
         let mut changed = false;
-        let mut shares = Vec::with_capacity(n);
-        for i in 0..n {
-            if fixed.get(i).copied().unwrap_or(true) {
-                shares.push((i, 0u64, 0u64));
-                continue;
-            }
-            let w = u64::from(weights.get(i).copied().unwrap_or(1).max(1));
-            // A u32 by a u32 is exact in a u64.
-            let exact = u64::from(free_len).saturating_mul(w);
-            let share = exact / free_weight;
-            let min = mins.get(i).copied().unwrap_or(MIN);
-            if share < u64::from(min) {
-                if let (Some(f), Some(s)) = (fixed.get_mut(i), sizes.get_mut(i)) {
-                    *f = true;
-                    *s = min;
-                }
+        for ((size, min), i) in sizes.iter_mut().zip(mins.iter()).zip(0..) {
+            if *size == 0 && share(i) < u64::from(*min) {
+                *size = *min;
                 changed = true;
             }
-            shares.push((i, share, exact % free_weight));
         }
         if changed {
             continue;
         }
-        let mut used: u32 = 0;
-        for (i, share, _) in &shares {
-            if !fixed.get(*i).copied().unwrap_or(true) {
-                // A share is a fraction of `free_len`, which fits `len`.
-                let share = u16::try_from(*share).unwrap_or(len);
-                if let Some(s) = sizes.get_mut(*i) {
-                    *s = share;
-                }
-                // The shares are parts of `free_len`.
-                used = used.saturating_add(u32::from(share));
+        // A share is a fraction of `free_len`, which fits `len`.
+        let cells = |i: usize| u16::try_from(share(i)).unwrap_or(len);
+        let used = sizes
+            .iter()
+            .zip(0..)
+            .filter(|(s, _)| **s == 0)
+            // The shares are parts of `free_len`.
+            .fold(0u32, |used, (_, i)| {
+                used.saturating_add(u32::from(cells(i)))
+            });
+        // Fewer cells are left over than there are children sharing: one
+        // each to the largest fractions of a cell, the first on a tie.
+        let left = free_len.saturating_sub(used);
+        for (min, size) in mins.iter_mut().zip(sizes.iter()) {
+            if *size == 0 {
+                *min = 0;
             }
         }
-        // Hand out the rounding remainder, largest fraction first.
-        let mut order: Vec<_> = shares
-            .into_iter()
-            .filter(|(i, _, _)| !fixed.get(*i).copied().unwrap_or(true))
-            .collect();
-        order.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
-        let mut left = free_len.saturating_sub(used);
-        for (i, _, _) in order.iter().cycle().take(order.len().saturating_mul(2)) {
-            if left == 0 {
-                break;
+        let fraction = |i: usize| exact(i) % free_weight;
+        for (size, i) in sizes.iter_mut().zip(0..) {
+            if mins.get(i) != Some(&0) {
+                continue;
             }
-            if let Some(s) = sizes.get_mut(*i)
-                && let (Some(grown), Some(rest)) = (s.checked_add(1), left.checked_sub(1))
-            {
-                *s = grown;
-                left = rest;
+            let ahead = mins
+                .iter()
+                .zip(0..)
+                .filter(|(m, j)| {
+                    **m == 0
+                        && (fraction(*j) > fraction(i) || fraction(*j) == fraction(i) && *j < i)
+                })
+                .count();
+            let extra = u32::try_from(ahead).is_ok_and(|ahead| ahead < left);
+            *size = cells(i);
+            if extra && let Some(grown) = size.checked_add(1) {
+                *size = grown;
             }
         }
-        return sizes;
+        return;
     }
 }
 
 /// The rectangles of every pane that fits in `area`, and the separators.
 pub fn place(root: &Node, area: Rect) -> Placement {
     let mut out = Placement::default();
-    if area.w > 0 && area.h > 0 {
-        place_node(root, area, &mut out);
-    }
+    place_into(root, area, &mut out);
     out
+}
+
+/// Places `root` in `area` into `out`, whatever it held, reusing its
+/// buffers: a placement made into again allocates nothing.
+pub fn place_into(root: &Node, area: Rect, out: &mut Placement) {
+    out.clear();
+    if area.w > 0 && area.h > 0 {
+        place_node(root, area, out);
+    }
 }
 
 fn place_node(node: &Node, area: Rect, out: &mut Placement) {
     match node {
         Node::Pane(p) => out.panes.push((*p, area)),
-        Node::Split { axis, children } => {
-            let along = match axis {
-                Axis::Horizontal => area.w,
-                Axis::Vertical => area.h,
+        Node::Split { axis, children } => place_split(*axis, children, area, out),
+    }
+}
+
+/// Places a split's `children`, side by side along `axis`, in `area`.
+fn place_split(axis: Axis, children: &[(u32, Node)], area: Rect, out: &mut Placement) {
+    let along = match axis {
+        Axis::Horizontal => area.w,
+        Axis::Vertical => area.h,
+    };
+    let separators = separators(children.len());
+    // The children's sizes, then their minimums, above those of the splits
+    // this one is inside, until it is placed.
+    let base = out.scratch.len();
+    out.scratch.extend(children.iter().map(|_| 0));
+    out.scratch
+        .extend(children.iter().map(|(_, c)| c.min_len(axis)));
+    let (sizes, mins) = out
+        .scratch
+        .get_mut(base..)
+        .and_then(|s| s.split_at_mut_checked(children.len()))
+        .unwrap_or_default();
+    let needed = mins.iter().fold(separators, |a, m| a.saturating_add(*m));
+    let room = along.checked_sub(separators).filter(|_| along >= needed);
+    if let Some(room) = room {
+        distribute(room, children, sizes, mins);
+    } else {
+        // Too small for all: children in order while they fit, each after
+        // the first needing a separator; the last one shown takes what is
+        // left.
+        let mut left = along;
+        let mut last = None;
+        for (i, (size, min)) in sizes.iter_mut().zip(mins.iter()).enumerate() {
+            let cost = min.saturating_add(u16::from(i > 0));
+            let Some(rest) = left.checked_sub(cost) else {
+                break;
             };
-            let separators = separators(children.len());
-            let weights: Vec<u32> = children.iter().map(|(w, _)| *w).collect();
-            let mins: Vec<u16> = children.iter().map(|(_, c)| c.min_len(*axis)).collect();
-            let needed = mins.iter().fold(separators, |a, m| a.saturating_add(*m));
-            let room = along.checked_sub(separators).filter(|_| along >= needed);
-            let sizes = if let Some(room) = room {
-                distribute(room, &weights, &mins)
-            } else {
-                // Too small for all: children in order while they fit, each
-                // after the first needing a separator; the last one shown
-                // takes what is left.
-                let mut sizes = vec![0u16; children.len()];
-                let mut left = along;
-                let mut last = None;
-                for (i, min) in mins.iter().enumerate() {
-                    let cost = min.saturating_add(u16::from(i > 0));
-                    let Some(rest) = left.checked_sub(cost) else {
-                        break;
-                    };
-                    left = rest;
-                    if let Some(size) = sizes.get_mut(i) {
-                        *size = *min;
-                    }
-                    last = Some(i);
-                }
-                // What is left fits: the sizes add up to at most `along`.
-                if let Some(size) = last.and_then(|i| sizes.get_mut(i))
-                    && let Some(grown) = size.checked_add(left)
-                {
-                    *size = grown;
-                }
-                sizes
-            };
-            // Where along the axis each child and separator starts. The sizes
-            // fit `area`, so past the largest position nothing is placed.
-            let start = match axis {
-                Axis::Horizontal => area.x,
-                Axis::Vertical => area.y,
-            };
-            let mut at = Some(start);
-            let mut first = true;
-            for ((_, child), size) in children.iter().zip(sizes) {
-                if size == 0 {
-                    continue;
-                }
-                if !first {
-                    let Some(x) = at else {
-                        break;
-                    };
-                    let separator = match axis {
-                        Axis::Horizontal => Separator {
-                            axis: *axis,
-                            x,
-                            y: area.y,
-                            len: area.h,
-                        },
-                        Axis::Vertical => Separator {
-                            axis: *axis,
-                            x: area.x,
-                            y: x,
-                            len: area.w,
-                        },
-                    };
-                    out.separators.push(separator);
-                    at = x.checked_add(1);
-                }
-                first = false;
-                let Some(x) = at else {
-                    break;
-                };
-                let rect = match axis {
-                    Axis::Horizontal => Rect { x, w: size, ..area },
-                    Axis::Vertical => Rect {
-                        y: x,
-                        h: size,
-                        ..area
-                    },
-                };
-                place_node(child, rect, out);
-                at = x.checked_add(size);
-            }
+            left = rest;
+            *size = *min;
+            last = Some(i);
+        }
+        // What is left fits: the sizes add up to at most `along`.
+        if let Some(size) = last.and_then(|i| sizes.get_mut(i))
+            && let Some(grown) = size.checked_add(left)
+        {
+            *size = grown;
         }
     }
+    // Where along the axis each child and separator starts. The sizes fit
+    // `area`, so past the largest position nothing is placed.
+    let start = match axis {
+        Axis::Horizontal => area.x,
+        Axis::Vertical => area.y,
+    };
+    let mut at = Some(start);
+    let mut first = true;
+    for (i, (_, child)) in children.iter().enumerate() {
+        let size = out
+            .scratch
+            .get(base..)
+            .and_then(|sizes| sizes.get(i))
+            .copied()
+            .unwrap_or(0);
+        if size == 0 {
+            continue;
+        }
+        if !first {
+            let Some(x) = at else {
+                break;
+            };
+            let separator = match axis {
+                Axis::Horizontal => Separator {
+                    axis,
+                    x,
+                    y: area.y,
+                    len: area.h,
+                },
+                Axis::Vertical => Separator {
+                    axis,
+                    x: area.x,
+                    y: x,
+                    len: area.w,
+                },
+            };
+            out.separators.push(separator);
+            at = x.checked_add(1);
+        }
+        first = false;
+        let Some(x) = at else {
+            break;
+        };
+        let rect = match axis {
+            Axis::Horizontal => Rect { x, w: size, ..area },
+            Axis::Vertical => Rect {
+                y: x,
+                h: size,
+                ..area
+            },
+        };
+        place_node(child, rect, out);
+        at = x.checked_add(size);
+    }
+    out.scratch.truncate(base);
 }
 
 /// The pane in `direction` from `from`, among the placed panes: rectangles
@@ -570,13 +594,10 @@ pub fn resize(
         return false;
     };
     // Deeper splits first: the border nearest the pane moves.
-    let placement = place(
-        &Node::Split {
-            axis: *axis,
-            children: children.clone(),
-        },
-        area,
-    );
+    let mut placement = Placement::default();
+    if area.w > 0 && area.h > 0 {
+        place_split(*axis, children, area, &mut placement);
+    }
     let child_area = child_rects(*axis, children, area, &placement);
     if let (Some((_, child)), Some(inner)) = (children.get_mut(index), child_area.get(index))
         && resize(child, *inner, pane, direction, amount)
@@ -780,6 +801,23 @@ mod tests {
             covered.iter().all(|c| *c == 1),
             "every cell is a pane or a separator, once"
         );
+    }
+
+    /// A placement made into again, whatever it held, is a fresh one.
+    #[test]
+    fn placing_into_a_used_placement_is_placing_afresh() {
+        let mut root = tree();
+        split(&mut root, p(0), p(1), Axis::Horizontal, true);
+        split(&mut root, p(1), p(2), Axis::Vertical, true);
+        let Some(node) = &root else { return };
+        let mut used = place(node, area(120, 40));
+        for (w, h) in [(80, 24), (3, 3), (0, 9), (200, 60)] {
+            place_into(node, area(w, h), &mut used);
+            assert_eq!(used, place(node, area(w, h)), "{w}x{h}");
+        }
+        place_into(&Node::Pane(p(7)), area(10, 10), &mut used);
+        assert_eq!(used.panes, vec![(p(7), area(10, 10))]);
+        assert!(used.separators.is_empty());
     }
 
     #[test]
