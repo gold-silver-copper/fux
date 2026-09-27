@@ -1806,10 +1806,7 @@ impl Session {
     fn select_tab(&mut self, client: ClientId, pick: Pick<TabId>) -> Result<String, Error> {
         let view = self.views.get(&client).ok_or(Error::NoSuchClient)?;
         let ws = view.workspace;
-        let tabs: Vec<TabId> = self
-            .workspace(ws)
-            .map(|w| w.tabs.iter().map(|t| t.id).collect())
-            .unwrap_or_default();
+        let tabs = self.workspace(ws).map_or(&[][..], |w| &w.tabs);
         let target_ws;
         let target = match pick {
             Pick::Id(t) => {
@@ -1823,10 +1820,10 @@ impl Session {
                 target_ws = ws;
                 let index = view
                     .tab()
-                    .and_then(|c| tabs.iter().position(|t| *t == c))
+                    .and_then(|c| tabs.iter().position(|t| t.id == c))
                     .unwrap_or(0);
                 let next = round(index, tabs.len(), matches!(pick, Pick::Next));
-                tabs.get(next).copied().ok_or(Error::NoCurrentTab)?
+                tabs.get(next).map(|t| t.id).ok_or(Error::NoCurrentTab)?
             }
             Pick::Last | Pick::Toward(_) => {
                 return Err(Error::SelectTabPick);
