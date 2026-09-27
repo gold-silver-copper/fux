@@ -9,6 +9,45 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Why a pane's process could not be started.
+#[derive(Debug)]
+pub enum Error {
+    Pty(fuxix::pty::Error),
+    Nonblocking(fuxix::Errno),
+    NoProgram,
+    /// The `fux` binary, to run the launcher from, could not be found.
+    Launcher(std::io::Error),
+    Start {
+        program: String,
+        source: std::io::Error,
+    },
+    NoPid,
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Pty(error) => error.fmt(f),
+            Error::Nonblocking(errno) => write!(f, "nonblocking: {errno}"),
+            Error::NoProgram => f.write_str("no program to run"),
+            Error::Launcher(error) => write!(f, "finding the fux binary: {error}"),
+            Error::Start { program, source } => write!(f, "starting {program}: {source}"),
+            Error::NoPid => f.write_str("the child has no valid pid"),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Pty(error) => Some(error),
+            Error::Nonblocking(errno) => Some(errno),
+            Error::Launcher(error) | Error::Start { source: error, .. } => Some(error),
+            Error::NoProgram | Error::NoPid => None,
+        }
+    }
+}
+
 /// A running child and the master side of its PTY.
 pub struct Child {
     pub pid: Pid,
@@ -16,9 +55,9 @@ pub struct Child {
 }
 
 /// Opens a PTY pair. Both ends are close-on-exec; the master is nonblocking.
-pub fn open_pty(rows: u16, cols: u16) -> Result<(OwnedFd, OwnedFd), String> {
-    let (master, slave) = fuxix::pty::open(rows, cols).map_err(|e| e.to_string())?;
-    fuxix::io::set_nonblocking(&master, true).map_err(|e| format!("nonblocking: {e}"))?;
+pub fn open_pty(rows: u16, cols: u16) -> Result<(OwnedFd, OwnedFd), Error> {
+    let (master, slave) = fuxix::pty::open(rows, cols).map_err(Error::Pty)?;
+    fuxix::io::set_nonblocking(&master, true).map_err(Error::Nonblocking)?;
     Ok((master, slave))
 }
 
@@ -30,19 +69,22 @@ pub fn spawn(
     env: &[(&str, String)],
     rows: u16,
     cols: u16,
-) -> Result<Child, String> {
-    let program = argv.first().ok_or("no program to run")?;
+) -> Result<Child, Error> {
+    let program = argv.first().ok_or(Error::NoProgram)?;
     let (master, slave) = open_pty(rows, cols)?;
-    let fux = launcher().map_err(|e| format!("finding the fux binary: {e}"))?;
+    let fux = launcher().map_err(Error::Launcher)?;
     let child = launch(&fux, argv, &slave, |command| {
         command.current_dir(cwd).env("TERM", "xterm-256color");
         for (key, value) in env {
             command.env(key, value);
         }
     })
-    .map_err(|e| format!("starting {program}: {e}"))?;
+    .map_err(|source| Error::Start {
+        program: program.clone(),
+        source,
+    })?;
     drop(slave);
-    let pid = Pid::of(&child).ok_or("the child has no valid pid")?;
+    let pid = Pid::of(&child).ok_or(Error::NoPid)?;
     // The std handle is dropped without waiting: fux reaps the pid itself, and
     // std never waits on a dropped child.
     drop(child);
@@ -214,8 +256,8 @@ pub fn finish(leader: Pid) -> Option<i32> {
 }
 
 /// Sends SIGTERM to a process group.
-pub fn terminate(group: Pid) -> Result<(), String> {
-    fuxix::process::kill_group(group, Signal::Term).map_err(|e| e.to_string())
+pub fn terminate(group: Pid) -> Result<(), fuxix::Errno> {
+    fuxix::process::kill_group(group, Signal::Term)
 }
 
 /// The current directory of a process, when the system says.

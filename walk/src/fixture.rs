@@ -287,7 +287,7 @@ impl Fixture {
     /// A new real client of `rows` by `cols`: its id.
     pub fn attach(&mut self, rows: u16, cols: u16) -> Result<String, String> {
         let before = self.listed_clients()?;
-        let (master, slave) = fux::process::open_pty(rows, cols)?;
+        let (master, slave) = fux::process::open_pty(rows, cols).map_err(|e| e.to_string())?;
         let argv = [self.fux.as_os_str(), std::ffi::OsStr::new("attach")];
         let socket = self.socket.clone();
         let dir = self.dir.clone();
