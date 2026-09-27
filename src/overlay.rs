@@ -697,8 +697,10 @@ pub fn send_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let Some(p) = session.panes.get_mut(&pane) else {
         return;
     };
-    let bytes = crate::encode::key_bytes(press, p.screen().application_cursor());
-    if let Err(error) = p.input.push(bytes)
+    let application = p.screen().application_cursor();
+    if let Err(error) = p
+        .input
+        .push_with(|out| crate::encode::key_bytes(press, application, out))
         && let Some(view) = session.views.get_mut(&client)
     {
         view.error(error.to_string());

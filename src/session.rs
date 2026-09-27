@@ -1332,17 +1332,17 @@ impl Session {
                 };
                 // Each argument is a key name (`C-c`, `Enter`, `a`), or, as in
                 // tmux, text sent as it is; `-l` makes every argument text.
-                let mut bytes = Vec::new();
                 let application = p.screen().application_cursor();
-                for key in keys {
-                    match key.parse::<KeyPress>() {
-                        Ok(press) if !literal => {
-                            bytes.extend(crate::encode::key_bytes(press, application))
+                p.input.push_with(|out| {
+                    for key in keys {
+                        match key.parse::<KeyPress>() {
+                            Ok(press) if !literal => {
+                                crate::encode::key_bytes(press, application, out)
+                            }
+                            _ => out.extend_from_slice(key.as_bytes()),
                         }
-                        _ => bytes.extend_from_slice(key.as_bytes()),
                     }
-                }
-                p.input.push(bytes)?;
+                })?;
                 Ok(String::new())
             }
             &Command::CapturePane {
@@ -1413,15 +1413,15 @@ impl Session {
                 .cloned()
                 .ok_or(Error::NoBuffer(index)),
             &Command::PasteBuffer { index, target } => {
-                let text = self
-                    .buffers
-                    .get(index)
-                    .cloned()
-                    .ok_or(Error::NoBuffer(index))?;
+                if self.buffers.get(index).is_none() {
+                    return Err(Error::NoBuffer(index));
+                }
                 let pane = self.pane_target(target, ctx)?;
                 let p = self.panes.get_mut(&pane).ok_or(Error::NoPane(pane))?;
+                let text = self.buffers.get(index).ok_or(Error::NoBuffer(index))?;
                 let bracketed = p.screen().bracketed_paste();
-                p.input.push(crate::encode::paste(&text, bracketed))?;
+                p.input
+                    .push_with(|out| crate::encode::paste(text, bracketed, out))?;
                 Ok(String::new())
             }
             &Command::Client { client, ref action } => {
