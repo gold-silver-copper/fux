@@ -1,5 +1,5 @@
 //! One attached client's own view of the shared state.
-use crate::command::{AnyRef, ClientId, TabId, WsId};
+use crate::command::{AnyRef, ClientId, Command, TabId, WsId};
 use crate::copy::Copy;
 use crate::decode::Decoder;
 use crate::keys::KeyPress;
@@ -12,13 +12,13 @@ pub struct Notice {
     pub error: bool,
 }
 
-/// One row of a chooser or an action menu: what it shows and the command
-/// line it runs, with every target written out, so it acts on the item it
-/// was built for and never on another.
+/// One row of a chooser or an action menu: what it shows and the command it
+/// runs, with every target given, so it acts on the item it was built for
+/// and never on another.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item {
     pub label: String,
-    pub argv: Vec<String>,
+    pub command: Command,
     /// Marked as the current one in a chooser.
     pub current: bool,
     /// What `r` renames and `x` closes, in a chooser.
@@ -56,7 +56,7 @@ pub struct Prompt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Confirm {
     pub question: String,
-    pub argv: Vec<String>,
+    pub command: Command,
     pub about: AnyRef,
 }
 

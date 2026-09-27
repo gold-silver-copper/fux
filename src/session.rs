@@ -865,25 +865,34 @@ impl Session {
 
     // ------------------------------------------------------------ commands
 
-    /// Runs a command line from the CLI, a binding, a menu or the prompt.
+    /// Runs a command line from the CLI or the prompt.
     pub fn run(&mut self, argv: &[String], ctx: &Ctx) -> Outcome {
-        let outcome = match command::parse(argv) {
-            Err(Usage(message)) => Outcome {
-                status: 2,
-                stdout: String::new(),
-                stderr: message,
-            },
-            Ok(command) => match self.execute(command, ctx) {
-                Ok(stdout) => Outcome {
-                    status: 0,
-                    stdout,
-                    stderr: String::new(),
-                },
-                Err(message) => Outcome {
-                    status: 1,
+        match command::parse(argv) {
+            Ok(command) => self.run_command(&command, ctx),
+            Err(Usage(message)) => {
+                self.touch();
+                self.settle();
+                Outcome {
+                    status: 2,
                     stdout: String::new(),
                     stderr: message,
-                },
+                }
+            }
+        }
+    }
+
+    /// Runs a command, parsed already: from a line, a binding or a menu.
+    pub fn run_command(&mut self, command: &Command, ctx: &Ctx) -> Outcome {
+        let outcome = match self.execute(command, ctx) {
+            Ok(stdout) => Outcome {
+                status: 0,
+                stdout,
+                stderr: String::new(),
+            },
+            Err(message) => Outcome {
+                status: 1,
+                stdout: String::new(),
+                stderr: message,
             },
         };
         self.touch();
@@ -891,13 +900,9 @@ impl Session {
         outcome
     }
 
-    /// Why a command line cannot run now, if it cannot: menus and the
-    /// command column dim such entries, and running one says why.
-    pub fn unavailable(&self, argv: &[String], ctx: &Ctx) -> Option<String> {
-        let command = match command::parse(argv) {
-            Ok(command) => command,
-            Err(Usage(message)) => return Some(message),
-        };
+    /// Why a command cannot run now, if it cannot: menus and the command
+    /// column dim such entries, and running one says why.
+    pub fn unavailable(&self, command: &Command, ctx: &Ctx) -> Option<String> {
         let view = self.view_of(ctx);
         let mut pane_count = 0usize;
         if let Some(root) = view
@@ -911,7 +916,7 @@ impl Session {
             .and_then(|v| self.workspace(v.workspace))
             .map_or(0, |w| w.tabs.len());
         let result: Result<(), String> = (|| {
-            match &command {
+            match command {
                 Command::SelectPane {
                     pick: Pick::Next | Pick::Previous | Pick::Last,
                     ..
@@ -993,15 +998,15 @@ impl Session {
         result.err()
     }
 
-    fn execute(&mut self, command: Command, ctx: &Ctx) -> Result<String, String> {
+    fn execute(&mut self, command: &Command, ctx: &Ctx) -> Result<String, String> {
         match command {
-            Command::Ls { json } => Ok(if json { self.ls_json() } else { self.ls_text() }),
-            Command::KillServer => {
+            &Command::Ls { json } => Ok(if json { self.ls_json() } else { self.ls_text() }),
+            &Command::KillServer => {
                 self.outbox
                     .push(Outgoing::Shutdown("stopped by fux kill-server".into()));
                 Ok(String::new())
             }
-            Command::ListKeys => {
+            &Command::ListKeys => {
                 let mut out = String::from(
                     "Keys, for send-keys and the prefix (with C-, M-, S- prefixes, or any character):\n",
                 );
@@ -1023,7 +1028,7 @@ impl Session {
                 if let Some(name) = &name {
                     self.check_name(name)?;
                 }
-                let ws = self.create_workspace(name, &cmd, Some(ctx))?;
+                let ws = self.create_workspace(name.clone(), cmd, Some(ctx))?;
                 if let Some(view) = ctx.client.and_then(|c| self.views.get_mut(&c)) {
                     view.workspace = ws;
                     view.zoom = false;
@@ -1039,14 +1044,14 @@ impl Session {
                 // As for a workspace: the ID first, committed after the pane.
                 let mut next_tab = self.next_tab;
                 let id = TabId(advance(&mut next_tab, "tab")?);
-                let pane = self.new_pane(&cmd, &cwd, DEFAULT_SIZE)?;
+                let pane = self.new_pane(cmd, &cwd, DEFAULT_SIZE)?;
                 self.next_tab = next_tab;
                 let index = self.ws_index(ws).ok_or("the workspace is gone")?;
                 let Some(workspace) = self.workspaces.get_mut(index) else {
                     return Err("the workspace is gone".into());
                 };
                 let number = workspace.tabs.len().saturating_add(1);
-                let name = name.unwrap_or_else(|| format!("tab-{number}"));
+                let name = name.clone().unwrap_or_else(|| format!("tab-{number}"));
                 workspace.tabs.push(Tab {
                     id,
                     name,
@@ -1059,12 +1064,16 @@ impl Session {
                 }
                 Ok(format!("{id}\n"))
             }
-            Command::Split { axis, target, cmd } => {
+            &Command::Split {
+                axis,
+                target,
+                ref cmd,
+            } => {
                 let target = self.pane_target(target, ctx)?;
                 let (_, tab) = self.locate(target).ok_or("the pane is in no tab")?;
                 let size = self.panes.get(&target).map_or(DEFAULT_SIZE, |p| p.size);
                 let cwd = self.cwd_for(ctx, Some(target));
-                let pane = self.new_pane(&cmd, &cwd, size)?;
+                let pane = self.new_pane(cmd, &cwd, size)?;
                 if let Some(t) = self.tab_mut(tab) {
                     layout::split(&mut t.root, target, pane, axis, true);
                 }
@@ -1082,12 +1091,12 @@ impl Session {
                 }
                 Ok(format!("{pane}\n"))
             }
-            Command::KillPane { target } => {
+            &Command::KillPane { target } => {
                 let pane = self.pane_target(target, ctx)?;
                 self.close_pane(pane, None);
                 Ok(String::new())
             }
-            Command::KillTab { target } => {
+            &Command::KillTab { target } => {
                 let tab = self.tab_target(target, ctx)?;
                 self.remove_tab(tab);
                 self.after_close();
@@ -1099,11 +1108,13 @@ impl Session {
                 self.after_close();
                 Ok(String::new())
             }
-            Command::Rename { target, name } => self.rename(&target, name).map(|()| String::new()),
-            Command::MovePane { target, to } => self.move_pane(target, to, ctx),
-            Command::SwapPane { target, with } => {
+            Command::Rename { target, name } => {
+                self.rename(target, name.clone()).map(|()| String::new())
+            }
+            &Command::MovePane { target, ref to } => self.move_pane(target, to, ctx),
+            &Command::SwapPane { target, ref with } => {
                 let source = self.pane_target(target, ctx)?;
-                let other = match with {
+                let other = match *with {
                     SwapWith::Pane(p) => {
                         if !self.panes.contains_key(&p) {
                             return Err(format!("no pane {p}"));
@@ -1115,7 +1126,7 @@ impl Session {
                 self.swap(source, other)?;
                 Ok(String::new())
             }
-            Command::ResizePane {
+            &Command::ResizePane {
                 target,
                 direction,
                 amount,
@@ -1132,10 +1143,10 @@ impl Session {
                     Err(format!("{pane} has no border to move {}", direction.name()))
                 }
             }
-            Command::SendKeys {
+            &Command::SendKeys {
                 target,
                 literal,
-                keys,
+                ref keys,
             } => {
                 let pane = self.pane_target(target, ctx)?;
                 let Some(p) = self.panes.get_mut(&pane) else {
@@ -1145,7 +1156,7 @@ impl Session {
                 // tmux, text sent as it is; `-l` makes every argument text.
                 let mut bytes = Vec::new();
                 let application = p.screen().application_cursor();
-                for key in &keys {
+                for key in keys {
                     match key.parse::<KeyPress>() {
                         Ok(press) if !literal => {
                             bytes.extend(crate::encode::key_bytes(press, application))
@@ -1156,7 +1167,7 @@ impl Session {
                 p.input.push(bytes)?;
                 Ok(String::new())
             }
-            Command::CapturePane {
+            &Command::CapturePane {
                 target,
                 history,
                 json,
@@ -1168,13 +1179,13 @@ impl Session {
                     .ok_or_else(|| format!("no pane {pane}"))?;
                 Ok(capture(p, history, json))
             }
-            Command::CaptureClient { client, json } => {
+            &Command::CaptureClient { client, json } => {
                 let client = self.client_target(client, ctx)?;
                 let grid = crate::render::compose(self, client)
                     .ok_or_else(|| format!("no client {client}"))?;
                 Ok(capture_client(client, &grid, json))
             }
-            Command::Terminate { target } => {
+            &Command::Terminate { target } => {
                 let pane = self.pane_target(target, ctx)?;
                 let p = self
                     .panes
@@ -1189,22 +1200,22 @@ impl Session {
                     _ => Err(format!("nothing is running in {pane} but its shell")),
                 }
             }
-            Command::Reorder {
+            &Command::Reorder {
                 kind,
-                target,
+                ref target,
                 forward,
             } => {
                 let target = self.any_target(kind, target.as_ref(), ctx)?;
                 self.reorder(&target, forward).map(|()| String::new())
             }
             Command::Set { argv } | Command::Bind { argv } | Command::Unbind { argv } => {
-                self.config.apply(&argv).map(|()| String::new())
+                self.config.apply(argv).map(|()| String::new())
             }
-            Command::UnbindAll => {
+            &Command::UnbindAll => {
                 self.config.bindings.clear();
                 Ok(String::new())
             }
-            Command::Reload => {
+            &Command::Reload => {
                 let path = self.config_path.clone().ok_or("no config file to reload")?;
                 match Config::from_file(&path) {
                     Ok(config) => {
@@ -1215,7 +1226,7 @@ impl Session {
                     Err(error) => Err(format!("{error}; the previous configuration is kept")),
                 }
             }
-            Command::ListBuffers => Ok(self
+            &Command::ListBuffers => Ok(self
                 .buffers
                 .iter()
                 .enumerate()
@@ -1228,12 +1239,12 @@ impl Session {
                     format!("{i}: {} bytes: {preview}\n", text.len())
                 })
                 .collect()),
-            Command::ShowBuffer { index } => self
+            &Command::ShowBuffer { index } => self
                 .buffers
                 .get(index)
                 .cloned()
                 .ok_or_else(|| format!("no buffer {index}")),
-            Command::PasteBuffer { index, target } => {
+            &Command::PasteBuffer { index, target } => {
                 let text = self
                     .buffers
                     .get(index)
@@ -1248,31 +1259,31 @@ impl Session {
                 p.input.push(crate::encode::paste(&text, bracketed))?;
                 Ok(String::new())
             }
-            Command::Detach { client } => {
+            &Command::Detach { client } => {
                 let client = self.client_target(client, ctx)?;
                 self.views.remove(&client);
                 self.outbox.push(Outgoing::Exit(client, "detached".into()));
                 Ok(String::new())
             }
-            Command::Zoom { client } => {
+            &Command::Zoom { client } => {
                 let client = self.client_target(client, ctx)?;
                 let view = self.view_mut(client)?;
                 view.zoom = !view.zoom;
                 Ok(String::new())
             }
-            Command::SelectPane { client, pick } => {
+            &Command::SelectPane { client, ref pick } => {
                 let client = self.client_target(client, ctx)?;
-                self.select_pane(client, pick)
+                self.select_pane(client, pick.clone())
             }
-            Command::SelectTab { client, pick } => {
+            &Command::SelectTab { client, ref pick } => {
                 let client = self.client_target(client, ctx)?;
-                self.select_tab(client, pick)
+                self.select_tab(client, pick.clone())
             }
-            Command::SelectWorkspace { client, pick } => {
+            &Command::SelectWorkspace { client, ref pick } => {
                 let client = self.client_target(client, ctx)?;
                 self.select_workspace(client, pick)
             }
-            Command::CommandColumn { client } => {
+            &Command::CommandColumn { client } => {
                 let client = self.client_target(client, ctx)?;
                 self.view_mut(client)?.mode = Mode::Column {
                     path: Vec::new(),
@@ -1280,7 +1291,7 @@ impl Session {
                 };
                 Ok(String::new())
             }
-            Command::CommandPrompt { client } => {
+            &Command::CommandPrompt { client } => {
                 let client = self.client_target(client, ctx)?;
                 crate::overlay::open_prompt(
                     self,
@@ -1290,10 +1301,10 @@ impl Session {
                     String::new(),
                 )
             }
-            Command::RenamePrompt {
+            &Command::RenamePrompt {
                 client,
                 kind,
-                target,
+                ref target,
             } => {
                 let client = self.client_target(client, ctx)?;
                 let ctx = Ctx::client(client);
@@ -1307,27 +1318,27 @@ impl Session {
                     current,
                 )
             }
-            Command::ConfirmClose {
+            &Command::ConfirmClose {
                 client,
                 kind,
-                target,
+                ref target,
             } => {
                 let client = self.client_target(client, ctx)?;
                 let ctx = Ctx::client(client);
                 let target = self.any_target(kind, target.as_ref(), &ctx)?;
                 crate::overlay::open_confirm(self, client, target)
             }
-            Command::Menu {
+            &Command::Menu {
                 client,
                 kind,
-                target,
+                ref target,
             } => {
                 let client = self.client_target(client, ctx)?;
                 let ctx = Ctx::client(client);
                 let target = self.any_target(kind, target.as_ref(), &ctx)?;
                 crate::overlay::open_menu(self, client, target)
             }
-            Command::ChooseTab {
+            &Command::ChooseTab {
                 client,
                 moving,
                 moving_now,
@@ -1336,7 +1347,7 @@ impl Session {
                 let moving = self.moving(client, moving, moving_now)?;
                 crate::overlay::open_tab_chooser(self, client, moving)
             }
-            Command::ChooseWorkspace {
+            &Command::ChooseWorkspace {
                 client,
                 moving,
                 moving_now,
@@ -1345,13 +1356,13 @@ impl Session {
                 let moving = self.moving(client, moving, moving_now)?;
                 crate::overlay::open_workspace_chooser(self, client, moving)
             }
-            Command::ChoosePane { client, target } => {
+            &Command::ChoosePane { client, target } => {
                 let client = self.client_target(client, ctx)?;
                 let ctx = Ctx::client(client);
                 let source = self.pane_target(target, &ctx)?;
                 crate::overlay::open_pane_chooser(self, client, source)
             }
-            Command::CopyMode { client } => {
+            &Command::CopyMode { client } => {
                 let client = self.client_target(client, ctx)?;
                 crate::copy::enter(self, client)
             }
@@ -1470,12 +1481,12 @@ impl Session {
     fn move_pane(
         &mut self,
         target: Option<PaneId>,
-        to: MoveTo,
+        to: &MoveTo,
         ctx: &Ctx,
     ) -> Result<String, String> {
         let pane = self.pane_target(target, ctx)?;
         let (source_ws, source_tab) = self.locate(pane).ok_or("the pane is in no tab")?;
-        if let MoveTo::Beside(direction) = to {
+        if let &MoveTo::Beside(direction) = to {
             let destination = self.neighbor(pane, direction, ctx)?;
             let tab = self.tab_mut(source_tab).ok_or("the tab is gone")?;
             layout::remove(&mut tab.root, pane);
@@ -1484,14 +1495,14 @@ impl Session {
             return Ok(String::new());
         }
         let (ws, tab) = match to {
-            MoveTo::Tab(tab) => {
+            &MoveTo::Tab(tab) => {
                 let ws = self
                     .tab_workspace(tab)
                     .ok_or_else(|| format!("no tab {tab}"))?;
                 (ws, tab)
             }
             MoveTo::Workspace(r) => {
-                let ws = self.resolve_ws(&r)?;
+                let ws = self.resolve_ws(r)?;
                 let first = self
                     .workspace(ws)
                     .and_then(|w| w.tabs.first())
@@ -1703,10 +1714,10 @@ impl Session {
         Ok(String::new())
     }
 
-    fn select_workspace(&mut self, client: ClientId, pick: Pick<WsRef>) -> Result<String, String> {
+    fn select_workspace(&mut self, client: ClientId, pick: &Pick<WsRef>) -> Result<String, String> {
         let current = self.views.get(&client).ok_or("no such client")?.workspace;
         let target = match pick {
-            Pick::Id(r) => self.resolve_ws(&r)?,
+            Pick::Id(r) => self.resolve_ws(r)?,
             Pick::Next | Pick::Previous => {
                 let len = self.workspaces.len();
                 if len < 2 {

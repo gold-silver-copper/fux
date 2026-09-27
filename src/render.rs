@@ -380,7 +380,7 @@ pub fn compose_into(session: &Session, client: ClientId, grid: &mut Grid) -> boo
             }
             let ctx = crate::session::Ctx::client(view.id);
             for (i, item) in list.items.iter().enumerate().skip(start).take(capacity) {
-                let dim = !list.chooser && session.unavailable(&item.argv, &ctx).is_some();
+                let dim = !list.chooser && session.unavailable(&item.command, &ctx).is_some();
                 let marker = if item.current { "*" } else { " " };
                 let mut attrs = panel();
                 if i == list.selected {
@@ -724,12 +724,16 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
             ColumnRow::Heading(group) => {
                 entries.push((group.clone(), panel().with_bold(true), false))
             }
-            ColumnRow::Binding { key, label, argv } => {
+            ColumnRow::Binding {
+                key,
+                label,
+                command,
+            } => {
                 let pad: String =
                     std::iter::repeat_n(' ', usize::from(key_width.saturating_sub(width(key))))
                         .collect();
                 let mut attrs = panel();
-                if session.unavailable(argv, &ctx).is_some() {
+                if session.unavailable(command, &ctx).is_some() {
                     attrs = attrs.with_dim(true);
                 }
                 if index == selected {
