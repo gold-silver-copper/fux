@@ -105,8 +105,12 @@ the primary and alternate grids. Logical order is independent of physical
 slot. Primary history is a ring of at most `history_lines` rows; zero disables
 it. Full-screen upward scroll retains departing rows; partial scroll,
 reverse scroll and insert/delete lines discard displaced rows. Surviving
-rows retain their IDs. Recycled slots receive new IDs. Cell mutations change
-row versions rather than row identities. Reset and history clearing invalidate
+rows retain their IDs. Recycled slots receive new IDs. A row's version changes
+on each edit that changes its cells or its wrap flag, and on no other: erasing
+cells that are already blank, or writing a glyph over the same glyph with the
+same attributes, leaves the version as it was, while inserting or deleting
+characters (CSI @ and P) always counts as a change. An edit never changes a
+row's identity. Reset and history clearing invalidate
 removed IDs. Identity exhaustion must be an explicit error, never wrap/reuse.
 
 Resize is not paragraph reflow: rows keep their upper-left cells and columns
@@ -147,7 +151,9 @@ Change marks are non-destructive: row versions plus a structural generation
 support independent readers. Structural changes (scroll, resize, reset,
 eviction, buffer switch) force safe window refresh. Cursor/mode changes are
 observable even without cell changes. Stale/exhausted marks must never hide
-an update. Row caching in fux uses identities/versions, not whole-screen
+an update. `dirty_rows_since` walks every retained row; a reader of the
+visible screen alone uses `dirty_live_rows_since`, which yields the same live
+rows with their places on the screen and reads only the screen's rows. Row caching in fux uses identities/versions, not whole-screen
 revision/width snapshots, and full frames still contain unchanged rows.
 
 ## Verification lifecycle

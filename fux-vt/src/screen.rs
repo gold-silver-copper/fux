@@ -59,6 +59,27 @@ fn palette(n: u16) -> Option<Color> {
     Some(Color::Idx(index.checked_add(bright)?))
 }
 
+/// Whether `cells` are already the ASCII `run` in `attributes`. Kept out of
+/// line, so that the write that usually follows compiles as if it were not
+/// there.
+#[inline(never)]
+fn unchanged(cells: &[Cell], run: &[u8], attributes: Attributes) -> bool {
+    cells
+        .iter()
+        .zip(run)
+        .all(|(c, b)| c.is_ascii(*b, attributes))
+}
+
+/// Whether a glyph `width` wide at `i` has its second half after it, if it
+/// needs one. Kept out of line, as `unchanged` is.
+#[inline(never)]
+fn whole(cells: &[Cell], i: usize, width: u16) -> bool {
+    width != 2
+        || i.checked_add(1)
+            .and_then(|j| cells.get(j))
+            .is_some_and(|c| c.same(&Cell::continuation()))
+}
+
 impl Screen {
     pub(crate) fn new(rows: u16, cols: u16, history: usize) -> Result<Self, Error> {
         let mut next_id = 1;
@@ -225,6 +246,17 @@ impl Screen {
             .filter_map(|i| self.grid().row_at(i))
             .filter(move |r| full || r.version > mark.0)
     }
+    /// The live rows changed since `mark`, each with its place on the screen
+    /// (0 at the top), top to bottom; every live row after a full refresh.
+    /// Only the screen's rows are read, however much history there is: the
+    /// live rows `dirty_rows_since` yields, without walking the history.
+    pub fn dirty_live_rows_since(&self, mark: Mark) -> impl Iterator<Item = (u16, Row<'_>)> {
+        let full = self.full_refresh_since(mark);
+        let grid = self.grid();
+        (0..grid.rows.get())
+            .filter_map(move |y| grid.live_row(y).map(|row| (y, row)))
+            .filter(move |(_, row)| full || row.version > mark.0)
+    }
     /// Retained allocation in cells, for capacity/plateau diagnostics.
     pub fn storage_cells(&self) -> usize {
         // Each is a Vec's capacity, far below the limit of a usize.
@@ -347,9 +379,12 @@ impl Screen {
                 }
                 self.with_grid(|g, _, v| {
                     g.mutate_row(row, v, |cells| {
-                        if let Some(cell) = cells.get_mut(usize::from(col)) {
+                        // A cell already holding all it can takes no more.
+                        cells.get_mut(usize::from(col)).is_some_and(|cell| {
+                            let before = *cell;
                             cell.append(c);
-                        }
+                            *cell != before
+                        })
                     })
                 });
             }
@@ -361,6 +396,16 @@ impl Screen {
         self.with_grid(|g, _, version| {
             g.mutate_row(row, version, |cells| {
                 let i = usize::from(col);
+                let glyph = Cell::glyph(c, usize::from(width), attributes);
+                // Already this glyph, whole, as a redraw finds it: the row is
+                // as it was. Otherwise what follows writes a cell that
+                // differs, the glyph or its second half.
+                let Some(current) = cells.get(i) else {
+                    return false;
+                };
+                if current.same(&glyph) && whole(cells, i, width) {
+                    return false;
+                }
                 // An overwrite at either half removes the other half too.
                 if cells.get(i).is_some_and(Cell::is_wide_continuation)
                     && let Some(other) = i.checked_sub(1).and_then(|j| cells.get_mut(j))
@@ -379,13 +424,14 @@ impl Screen {
                     *other = Cell::blank(attributes);
                 }
                 if let Some(cell) = cells.get_mut(i) {
-                    *cell = Cell::glyph(c, usize::from(width), attributes);
+                    *cell = glyph;
                 }
                 if width == 2
                     && let Some(cell) = cells.get_mut(i + 1)
                 {
                     *cell = Cell::continuation();
                 }
+                true
             });
             // Past the glyph; at the right edge it waits there to wrap.
             g.cursor.1 = g.cursor.1.saturating_add(width).min(g.cols.get());
@@ -428,11 +474,21 @@ impl Screen {
             let run = bytes.get(..usize::from(count)).unwrap_or_default();
             self.with_grid(|g, _, v| {
                 g.mutate_row(row, v, |cells| {
-                    if let Some(dst) = cells.get_mut(span) {
-                        for (cell, byte) in dst.iter_mut().zip(run) {
-                            *cell = Cell::ascii(*byte, attributes);
-                        }
+                    let Some(dst) = cells.get_mut(span) else {
+                        return false;
+                    };
+                    // Already these very cells, as a redraw finds them: the
+                    // row is as it was. New text differs at the first cell.
+                    let first = dst.first().zip(run.first());
+                    if first.is_some_and(|(c, b)| c.is_ascii(*b, attributes))
+                        && unchanged(dst, run, attributes)
+                    {
+                        return false;
                     }
+                    for (cell, byte) in dst.iter_mut().zip(run) {
+                        *cell = Cell::ascii(*byte, attributes);
+                    }
+                    true
                 });
                 g.cursor.1 = end;
             });

@@ -221,12 +221,15 @@ impl Grid {
     pub fn cell(&self, row: u16, col: u16) -> Option<&Cell> {
         self.live_row(row)?.cells.get(usize::from(col))
     }
-    pub fn mutate_row(&mut self, row: u16, version: u64, f: impl FnOnce(&mut [Cell])) {
-        if let Some(slot) = self.slot(row) {
-            if let Some(m) = self.meta.get_mut(slot) {
-                m.version = version;
-            }
-            f(self.slice_mut(slot));
+    /// Edits a live row's cells with `f`, which says whether it changed any
+    /// of them; only then does the row take `version`. An edit that leaves
+    /// the row as it was leaves its version alone.
+    pub fn mutate_row(&mut self, row: u16, version: u64, f: impl FnOnce(&mut [Cell]) -> bool) {
+        if let Some(slot) = self.slot(row)
+            && f(self.slice_mut(slot))
+            && let Some(m) = self.meta.get_mut(slot)
+        {
+            m.version = version;
         }
     }
     pub fn wrap(&mut self, row: u16, wrapped: bool, version: u64) {
@@ -242,7 +245,18 @@ impl Grid {
         let (cols, last) = (self.cols.get(), self.cols.last());
         let mut clears_edge = end >= cols;
         self.mutate_row(row, version, |cells| {
-            for col in usize::from(start)..usize::from(end.min(cols)) {
+            let span = usize::from(start)..usize::from(end.min(cols));
+            // Already blank in this style, as erasing an erased tail finds
+            // it: the row is as it was. A blank is never half a wide glyph,
+            // so there is nothing to repair either.
+            let blank = Cell::blank(attributes);
+            if cells
+                .get(span.clone())
+                .is_none_or(|run| run.iter().all(|c| c.same(&blank)))
+            {
+                return false;
+            }
+            for col in span {
                 if let Some(cell) = cells.get(col).copied() {
                     if cell.is_wide() {
                         let next = col.checked_add(1);
@@ -257,10 +271,11 @@ impl Grid {
                         *other = Cell::blank(other.attributes);
                     }
                     if let Some(cell) = cells.get_mut(col) {
-                        *cell = Cell::blank(attributes);
+                        *cell = blank;
                     }
                 }
             }
+            true
         });
         if clears_edge {
             self.wrap(row, false, version);
@@ -290,7 +305,8 @@ impl Grid {
                     len.checked_sub(count).map(|start| start..len)
                 },
             ) else {
-                return;
+                // Nothing was edited.
+                return false;
             };
             // Clear a wide glyph straddling either edit boundary before shifting.
             for boundary in [col, shifted] {
@@ -319,6 +335,8 @@ impl Grid {
                 cells.fill(Cell::default());
             }
             repair_wide(cells);
+            // Inserting and deleting always count as a change.
+            true
         });
         self.wrap(row, false, version);
     }
