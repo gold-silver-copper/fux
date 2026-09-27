@@ -220,7 +220,8 @@ fn model_letter(word: &str) -> Option<char> {
     }
 }
 
-/// What `bind` would add, if its words are well formed.
+/// What `bind` would add, if its words are well formed and its command
+/// parses.
 fn model_bind(mut rest: &[String]) -> Option<Model> {
     let (mut group, mut repeat) = (None, false);
     loop {
@@ -245,7 +246,8 @@ fn model_bind(mut rest: &[String]) -> Option<Model> {
         .map(|w| model_letter(w))
         .collect::<Option<_>>()?;
     let command = rest[count..].to_vec();
-    (!command.is_empty()).then_some(Model {
+    let parses = fux::command::parse(&command).is_ok();
+    (!command.is_empty() && parses).then_some(Model {
         keys,
         command,
         group,

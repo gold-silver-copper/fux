@@ -1,6 +1,7 @@
 //! The running configuration: options and key bindings, changed by `set`,
 //! `bind`, `unbind` and `unbind-all`, whether they come from the config file,
 //! the CLI or the command prompt.
+use crate::command::{self, Command, Usage};
 use crate::keys::KeyPress;
 use crate::words;
 use std::path::{Path, PathBuf};
@@ -11,7 +12,11 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Binding {
     pub keys: Vec<KeyPress>,
+    /// The command line as it was given, for `list-keys`, `describe` and
+    /// labels.
     pub command: Vec<String>,
+    /// The command it runs, parsed when the binding was made.
+    pub parsed: Command,
     /// The command-column group; derived from the command when not given.
     /// A layer's title is the group of its first binding.
     pub group: Option<String>,
@@ -232,9 +237,13 @@ impl Config {
                 if command.is_empty() {
                     return Err(format!("bind {}: no command given", keys_text(&keys)));
                 }
+                // Checked now, rather than each time its keys are typed.
+                let parsed = command::parse(command)
+                    .map_err(|Usage(message)| format!("bind {}: {message}", keys_text(&keys)))?;
                 self.bind(Binding {
                     keys,
                     command: command.to_vec(),
+                    parsed,
                     group,
                     repeat,
                 })
@@ -537,6 +546,51 @@ mod tests {
                 .any(|b| keys_text(&b.keys).starts_with('g'))
         );
         assert_eq!(apply(&mut c, "unbind"), Err("usage: unbind KEY…".into()));
+    }
+
+    /// A binding's command is parsed when the binding is made: one that
+    /// does not parse is refused with the parser's message, and nothing is
+    /// bound.
+    #[test]
+    fn a_binding_whose_command_does_not_parse_is_refused() -> Result<(), String> {
+        let mut c = Config::default();
+        let before = c.clone();
+        for (line, error) in [
+            (
+                "bind g no-such-command --flag",
+                "bind g: unknown command \"no-such-command\"; `fux help` lists commands",
+            ),
+            (
+                "bind -r t z split",
+                "bind t z: split needs -h (side by side) or -v (stacked)",
+            ),
+            (
+                "bind g kill-pane -t 3",
+                "bind g: \"3\" is not a pane; panes are %N",
+            ),
+        ] {
+            assert_eq!(apply(&mut c, line), Err(error.to_owned()), "{line}");
+        }
+        assert_eq!(c, before);
+        // Bound, the parsed command is what its words say.
+        apply(&mut c, "bind g split -v -- htop")?;
+        let g = c.bindings.iter().find(|b| keys_text(&b.keys) == "g");
+        assert_eq!(
+            g.map(|b| &b.parsed),
+            Some(&crate::command::parse(&words::split("split -v -- htop")?).map_err(|u| u.0)?)
+        );
+        // In a config file, such a line is an error naming its line.
+        let dir = std::env::temp_dir().join(format!("fux-config-parse-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join("fux.conf");
+        std::fs::write(&path, "set prefix C-a\nbind g nope\n").map_err(|e| e.to_string())?;
+        let error = Config::from_file(&path).err().unwrap_or_default();
+        assert!(
+            error.ends_with(":2: bind g: unknown command \"nope\"; `fux help` lists commands"),
+            "{error}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     #[test]
