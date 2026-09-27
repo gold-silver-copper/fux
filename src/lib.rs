@@ -110,9 +110,11 @@ fn run(args: &[String]) -> Result<u8, String> {
             let socket = socket::socket_path(None).map_err(|e| e.to_string())?;
             if !socket::exists(&socket) || std::os::unix::net::UnixStream::connect(&socket).is_err()
             {
-                client::start_server(&socket)?;
+                client::start_server(&socket).map_err(|e| e.to_string())?;
             }
-            client::attach(&socket, workspace).map(|()| 0)
+            client::attach(&socket, workspace)
+                .map(|()| 0)
+                .map_err(|e| e.to_string())
         }
         Some("server") => {
             let (mut socket_flag, mut config) = (None, None);
@@ -135,7 +137,9 @@ fn run(args: &[String]) -> Result<u8, String> {
         }
         Some("kill-server") => {
             let socket = socket::socket_path(None).map_err(|e| e.to_string())?;
-            client::kill_server(&socket).map(|()| 0)
+            client::kill_server(&socket)
+                .map(|()| 0)
+                .map_err(|e| e.to_string())
         }
         Some("help" | "--help" | "-h") => {
             println!("{USAGE}");
@@ -151,7 +155,7 @@ fn run(args: &[String]) -> Result<u8, String> {
                 return usage_error(&usage.to_string());
             }
             let socket = socket::socket_path(None).map_err(|e| e.to_string())?;
-            client::command(&socket, args)
+            client::command(&socket, args).map_err(|e| e.to_string())
         }
     }
 }
