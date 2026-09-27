@@ -1,12 +1,13 @@
 //! The server's state: workspaces, tabs, panes and the clients' views, and
 //! every command that changes them.
 use crate::command::{
-    self, AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, Pick, SwapWith, TabId, WsId, WsRef,
+    self, AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, Pick, Sibling, SwapWith, TabId,
+    WsId, WsRef,
 };
 use crate::config::Config;
 use crate::json::Json;
 use crate::keys::{Direction, KeyPress};
-use crate::layout::{self, Axis, Node, PaneId, Placement, Rect};
+use crate::layout::{self, Axis, Node, PaneId, Placement, Rect, Side};
 use crate::pane::Pane;
 use crate::process::Pid;
 use crate::view::{Mode, View};
@@ -1270,7 +1271,7 @@ impl Session {
                 let cwd = self.cwd_for(ctx, Some(target));
                 let pane = self.new_pane(cmd, &cwd, size)?;
                 if let Some(t) = self.tab_mut(tab) {
-                    layout::split(&mut t.root, target, pane, axis, true);
+                    layout::split(&mut t.root, target, pane, axis, Side::After);
                 }
                 // The splitting client follows the new pane; from the CLI,
                 // clients focused on the split pane do.
@@ -1386,10 +1387,10 @@ impl Session {
             &Command::Reorder {
                 kind,
                 ref target,
-                forward,
+                toward,
             } => {
                 let target = self.any_target(kind, target.as_ref(), ctx)?;
-                self.reorder(&target, forward).map(|()| String::new())
+                self.reorder(&target, toward).map(|()| String::new())
             }
             Command::Set { argv } | Command::Bind { argv } | Command::Unbind { argv } => self
                 .config
@@ -1624,8 +1625,11 @@ impl Session {
             let destination = self.neighbor(pane, direction, ctx)?;
             let tab = self.tab_mut(source_tab).ok_or(Error::TabGone)?;
             layout::remove(&mut tab.root, pane);
-            let after = matches!(direction, Direction::Right | Direction::Down);
-            layout::split(&mut tab.root, destination, pane, Axis::of(direction), after);
+            let side = match direction {
+                Direction::Right | Direction::Down => Side::After,
+                Direction::Left | Direction::Up => Side::Before,
+            };
+            layout::split(&mut tab.root, destination, pane, Axis::of(direction), side);
             return Ok(String::new());
         }
         let (ws, tab) = match to {
@@ -1698,12 +1702,11 @@ impl Session {
         Ok(format!("{tab}\n"))
     }
 
-    fn reorder(&mut self, target: &AnyRef, forward: bool) -> Result<(), Error> {
+    fn reorder(&mut self, target: &AnyRef, toward: Sibling) -> Result<(), Error> {
         let step = |index: usize, len: usize| -> Option<usize> {
-            if forward {
-                index.checked_add(1).filter(|next| *next < len)
-            } else {
-                index.checked_sub(1)
+            match toward {
+                Sibling::Next => index.checked_add(1).filter(|next| *next < len),
+                Sibling::Previous => index.checked_sub(1),
             }
         };
         match target {
