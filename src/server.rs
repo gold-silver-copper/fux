@@ -120,7 +120,7 @@ pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), String> 
         },
         None => (Config::default(), None),
     };
-    let (endpoint, listener) = crate::socket::bind_socket(socket)?;
+    let (endpoint, listener) = crate::socket::bind_socket(socket).map_err(|e| e.to_string())?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let (children, children_in) = UnixStream::pair().map_err(|e| e.to_string())?;
     let (stops, stops_in) = UnixStream::pair().map_err(|e| e.to_string())?;
