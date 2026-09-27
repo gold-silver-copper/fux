@@ -13,7 +13,7 @@ use crate::view::{Confirm, Item, List, Mode, Prompt, PromptFor};
 pub enum ColumnRow {
     Heading(String),
     Binding {
-        key: String,
+        key: KeyPress,
         label: String,
         command: Command,
     },
@@ -45,7 +45,7 @@ impl<'a> Entry<'a> {
     fn row(self) -> ColumnRow {
         match self {
             Entry::Binding(key, binding) => ColumnRow::Binding {
-                key: key.to_string(),
+                key,
                 label: crate::command::label(&binding.command),
                 command: binding.parsed.clone(),
             },
@@ -1140,7 +1140,7 @@ mod tests {
             vec![
                 ColumnRow::Heading("Tabs".into()),
                 ColumnRow::Binding {
-                    key: "n".into(),
+                    key: KeyPress::char('n'),
                     label: crate::command::label(&["new-tab".to_owned()]),
                     command: Command::NewTab {
                         target: None,

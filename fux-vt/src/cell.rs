@@ -18,6 +18,13 @@ pub struct Attributes {
 }
 
 impl Attributes {
+    // The bits of `flags`, one a style.
+    pub(crate) const BOLD: u8 = 1;
+    pub(crate) const DIM: u8 = 2;
+    pub(crate) const ITALIC: u8 = 4;
+    pub(crate) const UNDERLINE: u8 = 8;
+    pub(crate) const INVERSE: u8 = 16;
+
     /// Plain attributes with the given colours; add styles with the `with_*`
     /// builders. For consumers that store or transport cells.
     pub const fn new(foreground: Color, background: Color) -> Self {
@@ -37,38 +44,38 @@ impl Attributes {
     }
     #[must_use]
     pub const fn with_bold(self, on: bool) -> Self {
-        self.with_flag(1, on)
+        self.with_flag(Self::BOLD, on)
     }
     #[must_use]
     pub const fn with_dim(self, on: bool) -> Self {
-        self.with_flag(2, on)
+        self.with_flag(Self::DIM, on)
     }
     #[must_use]
     pub const fn with_italic(self, on: bool) -> Self {
-        self.with_flag(4, on)
+        self.with_flag(Self::ITALIC, on)
     }
     #[must_use]
     pub const fn with_underline(self, on: bool) -> Self {
-        self.with_flag(8, on)
+        self.with_flag(Self::UNDERLINE, on)
     }
     #[must_use]
     pub const fn with_inverse(self, on: bool) -> Self {
-        self.with_flag(16, on)
+        self.with_flag(Self::INVERSE, on)
     }
     pub fn bold(self) -> bool {
-        self.flags & 1 != 0
+        self.flags & Self::BOLD != 0
     }
     pub fn dim(self) -> bool {
-        self.flags & 2 != 0
+        self.flags & Self::DIM != 0
     }
     pub fn italic(self) -> bool {
-        self.flags & 4 != 0
+        self.flags & Self::ITALIC != 0
     }
     pub fn underline(self) -> bool {
-        self.flags & 8 != 0
+        self.flags & Self::UNDERLINE != 0
     }
     pub fn inverse(self) -> bool {
-        self.flags & 16 != 0
+        self.flags & Self::INVERSE != 0
     }
 }
 
@@ -84,6 +91,11 @@ pub struct Cell {
 impl Cell {
     /// The most UTF-8 bytes a cell stores.
     pub const CONTENTS_CAPACITY: usize = 22;
+    // The bits of `length`: how many bytes of `text` are the contents, and
+    // which half of a wide glyph the cell is, if either.
+    const LENGTH: u8 = 0b0001_1111;
+    const CONTINUATION: u8 = 0b0100_0000;
+    const WIDE: u8 = 0b1000_0000;
 
     /// A cell built by a consumer that stores or transports screen contents.
     /// `None` if `contents` exceeds [`Cell::CONTENTS_CAPACITY`]. Parser output
@@ -98,7 +110,7 @@ impl Cell {
         for (dst, src) in cell.text.iter_mut().zip(bytes) {
             *dst = *src;
         }
-        cell.length = u8::try_from(bytes.len()).ok()? | if wide { 128 } else { 0 };
+        cell.length = u8::try_from(bytes.len()).ok()? | if wide { Self::WIDE } else { 0 };
         Some(cell)
     }
     /// The trailing half of a wide glyph: empty, default attributes.
@@ -108,18 +120,18 @@ impl Cell {
     pub fn contents(&self) -> &str {
         // Every write uses encode_utf8, and length always ends on a scalar boundary.
         self.text
-            .get(..usize::from(self.length & 31))
+            .get(..usize::from(self.length & Self::LENGTH))
             .and_then(|s| std::str::from_utf8(s).ok())
             .unwrap_or("")
     }
     pub fn has_contents(&self) -> bool {
-        self.length & 31 != 0
+        self.length & Self::LENGTH != 0
     }
     pub fn is_wide(&self) -> bool {
-        self.length & 128 != 0
+        self.length & Self::WIDE != 0
     }
     pub fn is_wide_continuation(&self) -> bool {
-        self.length & 64 != 0
+        self.length & Self::CONTINUATION != 0
     }
     pub fn attributes(&self) -> Attributes {
         self.attributes
@@ -161,7 +173,7 @@ impl Cell {
         };
         Self {
             text,
-            length: length | if width == 2 { 128 } else { 0 },
+            length: length | if width == 2 { Self::WIDE } else { 0 },
             attributes,
         }
     }
@@ -175,12 +187,12 @@ impl Cell {
     }
     pub(crate) fn continuation() -> Self {
         Self {
-            length: 64,
+            length: Self::CONTINUATION,
             ..Self::default()
         }
     }
     pub(crate) fn append(&mut self, c: char) {
-        let mut len = usize::from(self.length & 31);
+        let mut len = usize::from(self.length & Self::LENGTH);
         if len >= 18 {
             return;
         }
@@ -196,7 +208,7 @@ impl Cell {
             && let Some(end) = len.checked_add(c.encode_utf8(free).len())
             && let Ok(length) = u8::try_from(end)
         {
-            self.length = (self.length & 0xe0) | length;
+            self.length = (self.length & !Self::LENGTH) | length;
         }
     }
 }
