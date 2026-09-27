@@ -846,12 +846,11 @@ fn yank(session: &mut Session, client: ClientId, ends: Option<Ends>) {
         }
     };
     let characters = copied.chars().count();
-    session.buffers.push_front(copied.clone());
-    session.buffers.truncate(session.config.buffers);
     let mut note = format!(
         "copied {characters} character{}",
         if characters == 1 { "" } else { "s" }
     );
+    // Encoded for the clipboard before the text moves into the buffers.
     if session.config.clipboard {
         let encoded = crate::json::base64(copied.as_bytes());
         if encoded.len() <= MAX_CLIPBOARD {
@@ -863,6 +862,8 @@ fn yank(session: &mut Session, client: ClientId, ends: Option<Ends>) {
             note.push_str(" to buffer 0; too large for the clipboard");
         }
     }
+    session.buffers.push_front(copied);
+    session.buffers.truncate(session.config.buffers);
     leave(session, client);
     if let Some(view) = session.views.get_mut(&client) {
         view.info(note);

@@ -697,47 +697,42 @@ fn surface(grid: &mut Grid, view: &View, lines: &[(String, Attributes)]) {
 /// dimmed.
 fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], selected: usize) {
     let rows = overlay::column_rows(session, path);
-    let key_width = rows
+    // Each entry's key as it is typed, written out once.
+    let keys: Vec<String> = rows
         .iter()
         .filter_map(|r| match r {
-            ColumnRow::Binding { key, .. } | ColumnRow::Layer { key, .. } => {
-                Some(width(&key.to_string()))
-            }
+            ColumnRow::Binding { key, .. } | ColumnRow::Layer { key, .. } => Some(key.to_string()),
             ColumnRow::Heading(_) => None,
         })
-        .max()
-        .unwrap_or(0);
+        .collect();
+    let key_width = keys.iter().map(|k| width(k)).max().unwrap_or(0);
+    let mut keys = keys.into_iter();
     let ctx = crate::session::Ctx::client(view.id);
     let mut entries: Vec<(String, Attributes)> = Vec::new();
     let mut index = 0usize;
     let mut selected_row = 0usize;
     for row in &rows {
-        // An entry's key, what it does, and whether it cannot run now.
-        let (key, text, dim) = match row {
+        // What an entry does, and whether it cannot run now.
+        let (text, more, dim) = match row {
             ColumnRow::Heading(group) => {
-                entries.push((group.clone(), panel().with_bold(true)));
+                entries.push(((*group).to_owned(), panel().with_bold(true)));
                 continue;
             }
-            ColumnRow::Binding {
-                key,
-                label,
-                command,
-            } => (
-                key,
-                label.clone(),
+            ColumnRow::Binding { label, command, .. } => (
+                label.as_str(),
+                "",
                 session.unavailable(command, &ctx).is_some(),
             ),
-            ColumnRow::Layer { key, title } => (key, format!("{title}…"), false),
+            ColumnRow::Layer { title, .. } => (*title, "…", false),
         };
-        let key = key.to_string();
-        let pad: String =
-            std::iter::repeat_n(' ', usize::from(key_width.saturating_sub(width(&key)))).collect();
+        let key = keys.next().unwrap_or_default();
+        let pad = usize::from(key_width.saturating_sub(width(&key)));
         let mut attrs = panel().with_dim(dim);
         if index == selected {
             attrs = attrs.with_inverse(true);
             selected_row = entries.len();
         }
-        entries.push((format!("{pad}{key}  {text}"), attrs));
+        entries.push((format!("{:pad$}{key}  {text}{more}", ""), attrs));
         // At most the number of rows.
         index = index.saturating_add(1);
     }
@@ -766,10 +761,10 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
     if start > 0 {
         lines.push((format!("▲ {start} more"), panel().with_dim(true)));
     }
-    lines.extend(entries.iter().skip(start).take(body_room).cloned());
     let below = entries
         .len()
         .saturating_sub(start.saturating_add(body_room));
+    lines.extend(entries.into_iter().skip(start).take(body_room));
     if below > 0 {
         lines.push((format!("▼ {below} more"), panel().with_dim(true)));
     }
