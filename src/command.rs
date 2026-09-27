@@ -71,6 +71,13 @@ impl Kind {
     }
 }
 
+/// Which way `reorder` moves a pane, tab or workspace among its siblings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sibling {
+    Next,
+    Previous,
+}
+
 /// Which pane, tab or workspace a `select-…` command picks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick<T> {
@@ -160,7 +167,7 @@ pub enum Command {
     Reorder {
         kind: Kind,
         target: Option<AnyRef>,
-        forward: bool,
+        toward: Sibling,
     },
     Set {
         argv: Vec<String>,
@@ -743,12 +750,15 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                     .map(AnyRef::kind)
                     .ok_or(Usage::ReorderKind)?,
             };
-            let forward = f.pick.map(|pick| pick == "--next");
-            let forward = forward.ok_or(Usage::ReorderDirection)?;
+            let toward = match f.pick {
+                Some("--next") => Sibling::Next,
+                Some(_) => Sibling::Previous,
+                None => return Err(Usage::ReorderDirection),
+            };
             Command::Reorder {
                 kind,
                 target,
-                forward,
+                toward,
             }
         }
         "set" | "bind" | "unbind" => {
