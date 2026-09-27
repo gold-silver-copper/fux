@@ -11,6 +11,7 @@ use crate::pane::Pane;
 use crate::process::Pid;
 use crate::view::{Mode, View};
 use std::collections::{BTreeMap, VecDeque};
+use std::ops::Bound;
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -96,6 +97,9 @@ pub struct Session {
     pub launch: bool,
     pub outbox: Vec<Outgoing>,
     pub dying: Vec<Dying>,
+    /// Where `size_panes` gathers the rectangles each pane is shown in;
+    /// reused by every settle.
+    shown_sizes: Vec<(PaneId, (u16, u16))>,
     next_pane: u32,
     next_tab: u32,
     next_ws: u32,
@@ -122,6 +126,7 @@ impl Session {
             launch,
             outbox: Vec::new(),
             dying: Vec::new(),
+            shown_sizes: Vec::new(),
             next_pane: 1,
             next_tab: 1,
             next_ws: 1,
@@ -508,9 +513,16 @@ impl Session {
     /// run after every event.
     pub fn settle(&mut self) {
         let first_ws = self.workspaces.first().map(|w| w.id);
-        let ids: Vec<ClientId> = self.views.keys().copied().collect();
-        for id in ids {
+        // Each client after the one before: repairing a view changes no
+        // other, and adds or removes none.
+        let mut next = self.views.keys().next().copied();
+        while let Some(id) = next {
             self.repair(id, first_ws);
+            next = self
+                .views
+                .range((Bound::Excluded(id), Bound::Unbounded))
+                .next()
+                .map(|(id, _)| *id);
         }
         self.size_panes();
     }
@@ -524,24 +536,22 @@ impl Session {
             let Some(first) = first_ws else { return };
             workspace = first;
         }
-        let tabs: Vec<TabId> = self
-            .workspace(workspace)
-            .map(|w| w.tabs.iter().map(|t| t.id).collect())
-            .unwrap_or_default();
+        let tabs = self.workspace(workspace).map_or(&[][..], |w| &w.tabs);
         let tab = view
             .tab_of
             .get(&workspace)
             .copied()
-            .filter(|t| tabs.contains(t))
-            .or_else(|| tabs.first().copied());
-        let panes = tab.map(|t| self.tab_panes(t)).unwrap_or_default();
+            .filter(|t| tabs.iter().any(|tab| tab.id == *t))
+            .or_else(|| tabs.first().map(|t| t.id));
+        let root = tab.and_then(|t| tabs.iter().find(|tab| tab.id == t)?.root.as_ref());
+        let shown = |p: &PaneId| root.is_some_and(|r| r.contains(*p));
         let focus = tab.and_then(|t| {
             view.focus_of
                 .get(&t)
                 .copied()
-                .filter(|p| panes.contains(p))
-                .or_else(|| view.last_of.get(&t).copied().filter(|p| panes.contains(p)))
-                .or_else(|| panes.first().copied())
+                .filter(shown)
+                .or_else(|| view.last_of.get(&t).copied().filter(shown))
+                .or_else(|| root.and_then(Node::first_pane))
         });
         // What the view's mode refers to must still exist.
         let gone: Option<String> = match &view.mode {
@@ -650,23 +660,32 @@ impl Session {
     /// A PTY is the smallest rectangle any client shows it in; a pane nobody
     /// shows keeps its size.
     fn size_panes(&mut self) {
-        let mut sizes: BTreeMap<PaneId, (u16, u16)> = BTreeMap::new();
+        let mut sizes = std::mem::take(&mut self.shown_sizes);
+        sizes.clear();
         for view in self.views.values() {
-            for (pane, rect) in self.placement(view).panes {
-                let entry = sizes.entry(pane).or_insert((rect.h, rect.w));
-                entry.0 = entry.0.min(rect.h);
-                entry.1 = entry.1.min(rect.w);
-            }
+            let placement = self.placement(view);
+            sizes.extend(placement.panes.iter().map(|(p, r)| (*p, (r.h, r.w))));
         }
-        for (id, (rows, cols)) in sizes {
+        // A pane's rectangles side by side, for the smallest.
+        sizes.sort_unstable_by_key(|(pane, _)| *pane);
+        let mut resized = false;
+        for shown in sizes.chunk_by(|a, b| a.0 == b.0) {
+            let Some(&(id, first)) = shown.first() else {
+                continue;
+            };
+            let (rows, cols) = shown.iter().fold(first, |(rows, cols), (_, (h, w))| {
+                (rows.min(*h), cols.min(*w))
+            });
             if let Some(pane) = self.panes.get_mut(&id)
                 && pane.size != (rows.max(1), cols.max(1))
             {
                 pane.resize(rows, cols);
-                for view in self.views.values_mut() {
-                    view.dirty = true;
-                }
+                resized = true;
             }
+        }
+        self.shown_sizes = sizes;
+        if resized {
+            self.touch();
         }
     }
 
@@ -721,10 +740,11 @@ impl Session {
         let Some((w, t)) = self.find_tab(tab) else {
             return;
         };
-        let panes = self.tab_panes(tab);
         let Some(ws) = self.workspaces.get_mut(w) else {
             return;
         };
+        // Its panes go with it.
+        let root = ws.tabs.get_mut(t).and_then(|tab| tab.root.take());
         let ws_id = ws.id;
         // Tab IDs are unique: this removes the tab at `t`.
         ws.tabs.retain(|other| other.id != tab);
@@ -750,10 +770,12 @@ impl Session {
         if empty {
             self.workspaces.retain(|w| w.id != ws_id);
         }
-        for pane in panes {
-            if let Some(pane) = self.panes.remove(&pane) {
-                self.end(pane);
-            }
+        if let Some(root) = root {
+            root.for_each_pane(&mut |pane| {
+                if let Some(pane) = self.panes.remove(&pane) {
+                    self.end(pane);
+                }
+            });
         }
     }
 
@@ -877,9 +899,14 @@ impl Session {
             Err(Usage(message)) => return Some(message),
         };
         let view = self.view_of(ctx);
-        let pane_count = view
+        let mut pane_count = 0usize;
+        if let Some(root) = view
             .and_then(View::tab)
-            .map_or(0, |t| self.tab_panes(t).len());
+            .and_then(|t| self.tab(t))
+            .and_then(|t| t.root.as_ref())
+        {
+            root.for_each_pane(&mut |_| pane_count = pane_count.saturating_add(1));
+        }
         let tab_count = view
             .and_then(|v| self.workspace(v.workspace))
             .map_or(0, |w| w.tabs.len());
@@ -1715,7 +1742,8 @@ impl Session {
                     tab.name,
                     if tab.root.is_none() { " (empty)" } else { "" }
                 ));
-                for pane in self.tab_panes(tab.id) {
+                let Some(root) = &tab.root else { continue };
+                root.for_each_pane(&mut |pane| {
                     if let Some(p) = self.panes.get(&pane) {
                         out.push_str(&format!(
                             "    {} {} {}x{}{}\n",
@@ -1729,7 +1757,7 @@ impl Session {
                                 .unwrap_or_default()
                         ));
                     }
-                }
+                });
             }
         }
         for view in self.views.values() {
@@ -1751,28 +1779,30 @@ impl Session {
     }
 
     fn ls_json(&self) -> String {
-        let panes = |tab: TabId| {
-            Json::Array(
-                self.tab_panes(tab)
-                    .into_iter()
-                    .filter_map(|id| self.panes.get(&id))
-                    .map(|p| {
-                        Json::Object(vec![
-                            ("id", Json::str(p.id.to_string())),
-                            ("name", Json::str(p.name.clone())),
-                            ("title", Json::str(p.title.clone())),
-                            ("rows", Json::Number(i64::from(p.size.0))),
-                            ("cols", Json::Number(i64::from(p.size.1))),
-                            (
-                                "pid",
-                                p.child.as_ref().map_or(Json::Null, |c| {
-                                    Json::Number(i64::from(c.pid.as_raw()))
-                                }),
-                            ),
-                        ])
-                    })
-                    .collect(),
-            )
+        let panes = |tab: &Tab| {
+            let mut panes = Vec::new();
+            let Some(root) = &tab.root else {
+                return Json::Array(panes);
+            };
+            root.for_each_pane(&mut |id| {
+                let Some(p) = self.panes.get(&id) else {
+                    return;
+                };
+                panes.push(Json::Object(vec![
+                    ("id", Json::str(p.id.to_string())),
+                    ("name", Json::str(p.name.clone())),
+                    ("title", Json::str(p.title.clone())),
+                    ("rows", Json::Number(i64::from(p.size.0))),
+                    ("cols", Json::Number(i64::from(p.size.1))),
+                    (
+                        "pid",
+                        p.child
+                            .as_ref()
+                            .map_or(Json::Null, |c| Json::Number(i64::from(c.pid.as_raw()))),
+                    ),
+                ]));
+            });
+            Json::Array(panes)
         };
         let workspaces = self
             .workspaces
@@ -1790,7 +1820,7 @@ impl Session {
                                     Json::Object(vec![
                                         ("id", Json::str(t.id.to_string())),
                                         ("name", Json::str(t.name.clone())),
-                                        ("panes", panes(t.id)),
+                                        ("panes", panes(t)),
                                     ])
                                 })
                                 .collect(),

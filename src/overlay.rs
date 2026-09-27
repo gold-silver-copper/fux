@@ -1,9 +1,10 @@
 //! The keyboard overlays: the command column, choosers, action menus, the
 //! command prompt, rename prompts and confirmations. Each belongs to the client
 //! that opened it.
-use crate::command::{AnyRef, ClientId, Kind, TabId, WsRef};
+use crate::command::{AnyRef, ClientId, Kind, WsRef};
+use crate::config::Binding;
 use crate::keys::{Direction, Key, KeyPress};
-use crate::layout::PaneId;
+use crate::layout::{Node, PaneId};
 use crate::session::{Ctx, Session, describe};
 use crate::view::{Confirm, Item, List, Mode, Prompt, PromptFor};
 
@@ -23,36 +24,64 @@ pub enum ColumnRow {
     },
 }
 
-/// The command column's rows for the layer at `path`: its bindings and the
-/// layers inside it, grouped, groups in their order, custom groups after
-/// them and `Other` last. A layer is listed once, where its first binding
-/// is, under the group its command belongs to.
-pub fn column_rows(session: &Session, path: &[KeyPress]) -> Vec<ColumnRow> {
-    let mut entries: Vec<(String, ColumnRow)> = Vec::new();
-    let mut layers: Vec<KeyPress> = Vec::new();
-    for binding in &session.config.bindings {
-        match binding.keys.strip_prefix(path) {
-            Some([key]) => entries.push((
-                binding.group(),
-                ColumnRow::Binding {
-                    key: key.to_string(),
-                    label: crate::command::label(&binding.command),
-                    argv: binding.command.clone(),
-                },
-            )),
-            Some([key, _, ..]) if !layers.contains(key) => {
-                layers.push(*key);
-                entries.push((
-                    binding.derived_group(),
-                    ColumnRow::Layer {
-                        key: *key,
-                        title: binding.group(),
-                    },
-                ));
-            }
-            Some(_) | None => {}
+/// An entry of the command column: a binding of its layer, or a key that
+/// opens a layer inside it, with the layer's first binding.
+#[derive(Clone, Copy)]
+enum Entry<'a> {
+    Binding(KeyPress, &'a Binding),
+    Layer(KeyPress, &'a Binding),
+}
+
+impl Entry<'_> {
+    /// The group it is listed under: a binding's own, or the group of the
+    /// command that a layer's first binding runs.
+    fn group(self) -> String {
+        match self {
+            Entry::Binding(_, binding) => binding.group(),
+            Entry::Layer(_, first) => first.derived_group(),
         }
     }
+
+    fn row(self) -> ColumnRow {
+        match self {
+            Entry::Binding(key, binding) => ColumnRow::Binding {
+                key: key.to_string(),
+                label: crate::command::label(&binding.command),
+                argv: binding.command.clone(),
+            },
+            Entry::Layer(key, first) => ColumnRow::Layer {
+                key,
+                title: first.group(),
+            },
+        }
+    }
+}
+
+/// The column's entries for the layer at `path`, in the order of the
+/// bindings, found without building their rows. A layer is an entry once,
+/// where its first binding is.
+fn entries<'a>(session: &'a Session, path: &'a [KeyPress]) -> impl Iterator<Item = Entry<'a>> {
+    let bindings = &session.config.bindings;
+    bindings.iter().enumerate().filter_map(move |(i, binding)| {
+        match binding.keys.strip_prefix(path) {
+            Some([key]) => Some(Entry::Binding(*key, binding)),
+            Some([key, _, ..]) if !bindings.iter().take(i).any(|b| opens(b, path, key)) => {
+                Some(Entry::Layer(*key, binding))
+            }
+            Some(_) | None => None,
+        }
+    })
+}
+
+/// Whether `binding` is in the layer that `key` opens in the layer at `path`.
+fn opens(binding: &Binding, path: &[KeyPress], key: &KeyPress) -> bool {
+    matches!(binding.keys.strip_prefix(path), Some([k, _, ..]) if k == key)
+}
+
+/// The column's entries in its order, with their groups: groups in their
+/// order, custom groups after them and `Other` last.
+fn ordered<'a>(session: &'a Session, path: &'a [KeyPress]) -> Vec<(String, Entry<'a>)> {
+    let entries: Vec<(String, Entry)> = entries(session, path).map(|e| (e.group(), e)).collect();
     let mut groups: Vec<String> = crate::config::GROUPS
         .iter()
         .map(|g| (*g).to_owned())
@@ -63,14 +92,25 @@ pub fn column_rows(session: &Session, path: &[KeyPress]) -> Vec<ColumnRow> {
         }
     }
     groups.push("Other".into());
+    groups
+        .iter()
+        .flat_map(|group| entries.iter().filter(move |(g, _)| g == group).cloned())
+        .collect()
+}
+
+/// The command column's rows for the layer at `path`: its bindings and the
+/// layers inside it, grouped, groups in their order, custom groups after
+/// them and `Other` last. A layer is listed once, where its first binding
+/// is, under the group its command belongs to.
+pub fn column_rows(session: &Session, path: &[KeyPress]) -> Vec<ColumnRow> {
     let mut rows = Vec::new();
-    for group in groups {
-        let mut members = entries.iter().filter(|(g, _)| *g == group).peekable();
-        if members.peek().is_none() {
-            continue;
+    let mut heading: Option<String> = None;
+    for (group, entry) in ordered(session, path) {
+        if heading.as_ref() != Some(&group) {
+            rows.push(ColumnRow::Heading(group.clone()));
+            heading = Some(group);
         }
-        rows.push(ColumnRow::Heading(group.clone()));
-        rows.extend(members.map(|(_, row)| row.clone()));
+        rows.push(entry.row());
     }
     rows
 }
@@ -87,18 +127,16 @@ pub fn layer_title(session: &Session, path: &[KeyPress]) -> Option<String> {
 
 /// How many entries the column can select among in the layer at `path`.
 pub(crate) fn column_len(session: &Session, path: &[KeyPress]) -> usize {
-    column_rows(session, path)
-        .iter()
-        .filter(|row| !matches!(row, ColumnRow::Heading(_)))
-        .count()
+    entries(session, path).count()
 }
 
-/// The column's `selected` entry in the layer at `path`.
+/// The column's `selected` entry in the layer at `path`; the other entries'
+/// rows are not built.
 pub fn column_selected(session: &Session, path: &[KeyPress], selected: usize) -> Option<ColumnRow> {
-    column_rows(session, path)
+    ordered(session, path)
         .into_iter()
-        .filter(|row| !matches!(row, ColumnRow::Heading(_)))
         .nth(selected)
+        .map(|(_, entry)| entry.row())
 }
 
 pub fn open_prompt(
@@ -269,13 +307,16 @@ fn open_list(
     Ok(String::new())
 }
 
-/// Panes' names for a chooser row, shortened.
-fn pane_names(session: &Session, panes: &[PaneId]) -> String {
-    let names: Vec<String> = panes
-        .iter()
-        .filter_map(|p| session.panes.get(p))
-        .map(|p| format!("{} {}", p.id, p.label()))
-        .collect();
+/// The names of the panes in `roots`, for a chooser row, shortened.
+fn pane_names<'a>(session: &Session, roots: impl IntoIterator<Item = &'a Node>) -> String {
+    let mut names: Vec<String> = Vec::new();
+    for root in roots {
+        root.for_each_pane(&mut |id| {
+            if let Some(p) = session.panes.get(&id) {
+                names.push(format!("{} {}", p.id, p.label()));
+            }
+        });
+    }
     if names.is_empty() {
         "empty".into()
     } else {
@@ -293,13 +334,13 @@ pub fn open_tab_chooser(
     let view = session.views.get(&client).ok_or("no such client")?;
     let current = view.tab();
     let ws = session.workspace(view.workspace).ok_or("no workspace")?;
-    let tabs: Vec<(TabId, String)> = ws.tabs.iter().map(|t| (t.id, t.name.clone())).collect();
-    let items = tabs
-        .into_iter()
-        .map(|(id, name)| {
-            let panes = session.tab_panes(id);
+    let items = ws
+        .tabs
+        .iter()
+        .map(|tab| {
+            let (id, name) = (tab.id, &tab.name);
             Item {
-                label: format!("{id} {name} — {}", pane_names(session, &panes)),
+                label: format!("{id} {name} — {}", pane_names(session, &tab.root)),
                 argv: match moving {
                     Some(p) => vec![
                         "move-pane".into(),
@@ -344,13 +385,9 @@ pub fn open_workspace_chooser(
         .workspaces
         .iter()
         .map(|ws| {
-            let panes: Vec<PaneId> = ws
-                .tabs
-                .iter()
-                .flat_map(|t| session.tab_panes(t.id))
-                .collect();
+            let roots = ws.tabs.iter().filter_map(|t| t.root.as_ref());
             Item {
-                label: format!("{} {} — {}", ws.id, ws.name, pane_names(session, &panes)),
+                label: format!("{} {} — {}", ws.id, ws.name, pane_names(session, roots)),
                 argv: match moving {
                     Some(p) => vec![
                         "move-pane".into(),
@@ -387,23 +424,25 @@ pub fn open_pane_chooser(
     source: PaneId,
 ) -> Result<String, String> {
     let (_, tab) = session.locate(source).ok_or("the pane is in no tab")?;
-    let items: Vec<Item> = session
-        .tab_panes(tab)
-        .into_iter()
-        .filter(|p| *p != source)
-        .filter_map(|p| session.panes.get(&p))
-        .map(|p| Item {
-            label: format!("{} {}", p.id, p.label()),
-            argv: vec![
-                "swap-pane".into(),
-                "-t".into(),
-                source.to_string(),
-                p.id.to_string(),
-            ],
-            current: false,
-            subject: Some(AnyRef::Pane(p.id)),
-        })
-        .collect();
+    let mut items: Vec<Item> = Vec::new();
+    if let Some(root) = session.tab(tab).and_then(|t| t.root.as_ref()) {
+        root.for_each_pane(&mut |id| {
+            let Some(p) = session.panes.get(&id).filter(|_| id != source) else {
+                return;
+            };
+            items.push(Item {
+                label: format!("{} {}", p.id, p.label()),
+                argv: vec![
+                    "swap-pane".into(),
+                    "-t".into(),
+                    source.to_string(),
+                    p.id.to_string(),
+                ],
+                current: false,
+                subject: Some(AnyRef::Pane(p.id)),
+            });
+        });
+    }
     if items.is_empty() {
         return Err("only one pane".into());
     }
@@ -1169,6 +1208,49 @@ mod tests {
         assert_eq!(mode(&s, c), format!("column {}", last.saturating_sub(1)));
         run(&mut s, "unbind-all")?;
         assert_eq!(mode(&s, c), "column 0");
+        Ok(())
+    }
+
+    /// The server settles after every read of a pane's output: an open
+    /// column keeps its layer and its selection, counted without building
+    /// its rows, and shows the output behind it.
+    #[test]
+    fn a_column_stays_open_while_a_pane_writes() -> Outcome {
+        let (mut s, c) = session()?;
+        with_layers(&mut s)?;
+        for path in [&[][..], &[KeyPress::char('t')], &[KeyPress::char('y')]] {
+            let entries = column_rows(&s, path)
+                .into_iter()
+                .filter(|r| !matches!(r, ColumnRow::Heading(_)))
+                .count();
+            assert_eq!(column_len(&s, path), entries, "{path:?}");
+        }
+        s.input(c, b"\x02\x1b[B\x1b[B\x1b[B");
+        assert_eq!(mode(&s, c), "column 3");
+        let selected = column_selected(&s, &[], 3);
+        assert!(selected.is_some());
+        for i in 0..50 {
+            s.output(
+                crate::layout::PaneId(1),
+                format!("output {i}\r\n").as_bytes(),
+            );
+            s.settle();
+        }
+        assert_eq!(mode(&s, c), "column 3");
+        assert_eq!(column_selected(&s, &[], 3), selected);
+        let text = screen_text(&s, c)?;
+        assert!(
+            text.contains("output 49") && text.contains("Commands"),
+            "{text}"
+        );
+        // In a layer too.
+        s.input(c, b"\x1b");
+        s.escape(c);
+        s.input(c, b"\x02t\x1b[B");
+        assert_eq!(mode(&s, c), "column t 1");
+        s.output(crate::layout::PaneId(1), b"more\r\n");
+        s.settle();
+        assert_eq!(mode(&s, c), "column t 1");
         Ok(())
     }
 
