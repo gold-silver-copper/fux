@@ -101,8 +101,10 @@ impl Session {
         let Some(p) = self.panes.get_mut(&pane) else {
             return;
         };
-        let bytes = crate::encode::paste(text, p.screen().bracketed_paste());
-        if let Err(error) = p.input.push(bytes)
+        let bracketed = p.screen().bracketed_paste();
+        if let Err(error) = p
+            .input
+            .push_with(|out| crate::encode::paste(text, bracketed, out))
             && let Some(view) = self.views.get_mut(&client)
         {
             view.error(error.to_string());
@@ -118,11 +120,7 @@ impl Session {
         if let Some(p) = self.panes.get_mut(&pane)
             && p.modes.focus_reporting
         {
-            let _ = p.input.push(if gained {
-                b"\x1b[I".to_vec()
-            } else {
-                b"\x1b[O".to_vec()
-            });
+            let _ = p.input.push(if gained { b"\x1b[I" } else { b"\x1b[O" });
         }
     }
 }
