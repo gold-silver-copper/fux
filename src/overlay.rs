@@ -1,7 +1,9 @@
 //! The keyboard overlays: the command column, choosers, action menus, the
 //! command prompt, rename prompts and confirmations. Each belongs to the client
 //! that opened it.
-use crate::command::{AnyRef, ClientId, Command, Kind, MoveTo, Pick, SwapWith, WsRef};
+use crate::command::{
+    AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, Pick, SwapWith, WsRef,
+};
 use crate::config::Binding;
 use crate::keys::{Direction, Key, KeyPress};
 use crate::layout::{Node, PaneId};
@@ -213,19 +215,19 @@ pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Res
     let mut items = vec![
         item(
             "rename",
-            Command::RenamePrompt {
-                client: None,
+            ClientAction::RenamePrompt {
                 kind,
                 target: target.clone(),
-            },
+            }
+            .here(),
         ),
         item(
             "close",
-            Command::ConfirmClose {
-                client: None,
+            ClientAction::ConfirmClose {
                 kind,
                 target: target.clone(),
-            },
+            }
+            .here(),
         ),
     ];
     match &about {
@@ -236,18 +238,15 @@ pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Res
             ),
             item(
                 "swap with…",
-                Command::ChoosePane {
-                    client: None,
-                    target: Some(p),
-                },
+                ClientAction::ChoosePane { target: Some(p) }.here(),
             ),
             item(
                 "move to tab…",
-                Command::ChooseTab {
-                    client: None,
+                ClientAction::ChooseTab {
                     moving: Some(p),
                     moving_now: false,
-                },
+                }
+                .here(),
             ),
             item(
                 "move to a new tab",
@@ -258,11 +257,11 @@ pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Res
             ),
             item(
                 "move to workspace…",
-                Command::ChooseWorkspace {
-                    client: None,
+                ClientAction::ChooseWorkspace {
                     moving: Some(p),
                     moving_now: false,
-                },
+                }
+                .here(),
             ),
             item(
                 "move to a new workspace",
@@ -362,10 +361,7 @@ pub fn open_tab_chooser(
                         target: Some(p),
                         to: MoveTo::Tab(id),
                     },
-                    None => Command::SelectTab {
-                        client: None,
-                        pick: Pick::Id(id),
-                    },
+                    None => ClientAction::SelectTab(Pick::Id(id)).here(),
                 },
                 current: Some(id) == current,
                 subject: Some(AnyRef::Tab(id)),
@@ -398,10 +394,7 @@ pub fn open_workspace_chooser(
                         target: Some(p),
                         to: MoveTo::Workspace(WsRef::Id(ws.id)),
                     },
-                    None => Command::SelectWorkspace {
-                        client: None,
-                        pick: Pick::Id(WsRef::Id(ws.id)),
-                    },
+                    None => ClientAction::SelectWorkspace(Pick::Id(WsRef::Id(ws.id))).here(),
                 },
                 current: ws.id == current,
                 subject: Some(AnyRef::Workspace(WsRef::Id(ws.id))),
@@ -748,20 +741,13 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
                 .get(list.selected)
                 .and_then(|i| i.subject.clone())
             {
-                let (client, kind, target) = (None, subject.kind(), Some(subject));
-                run = Some(if key == 'r' {
-                    Command::RenamePrompt {
-                        client,
-                        kind,
-                        target,
-                    }
+                let (kind, target) = (subject.kind(), Some(subject));
+                let action = if key == 'r' {
+                    ClientAction::RenamePrompt { kind, target }
                 } else {
-                    Command::ConfirmClose {
-                        client,
-                        kind,
-                        target,
-                    }
-                });
+                    ClientAction::ConfirmClose { kind, target }
+                };
+                run = Some(action.here());
                 close = true;
             }
         }

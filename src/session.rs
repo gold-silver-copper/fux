@@ -1,7 +1,7 @@
 //! The server's state: workspaces, tabs, panes and the clients' views, and
 //! every command that changes them.
 use crate::command::{
-    self, AnyRef, ClientId, Command, Kind, MoveTo, Pick, SwapWith, TabId, WsId, WsRef,
+    self, AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, Pick, SwapWith, TabId, WsId, WsRef,
 };
 use crate::config::Config;
 use crate::json::Json;
@@ -1126,12 +1126,17 @@ impl Session {
         let view = self.view_of(ctx);
         // Going to the next or previous one needs another.
         let alone = |kind, count: usize| (count < 2).then_some(Error::OnlyOne(kind));
+        let action = if let Command::Client { action, .. } = command {
+            Some(action)
+        } else {
+            None
+        };
         if matches!(
-            command,
-            Command::SelectPane {
-                pick: Pick::Next | Pick::Previous | Pick::Last,
-                ..
-            } | Command::ChoosePane { .. }
+            action,
+            Some(
+                ClientAction::SelectPane(Pick::Next | Pick::Previous | Pick::Last)
+                    | ClientAction::ChoosePane { .. }
+            )
         ) {
             let mut panes = 0usize;
             if let Some(root) = view.and_then(View::tab).and_then(|t| self.root(t)) {
@@ -1139,19 +1144,11 @@ impl Session {
             }
             return alone(Kind::Pane, panes);
         }
-        if let Command::SelectTab {
-            pick: Pick::Next | Pick::Previous,
-            ..
-        } = command
-        {
+        if let Some(ClientAction::SelectTab(Pick::Next | Pick::Previous)) = action {
             let tabs = view.and_then(|v| self.workspace(v.workspace));
             return alone(Kind::Tab, tabs.map_or(0, |w| w.tabs.len()));
         }
-        if let Command::SelectWorkspace {
-            pick: Pick::Next | Pick::Previous,
-            ..
-        } = command
-        {
+        if let Some(ClientAction::SelectWorkspace(Pick::Next | Pick::Previous)) = action {
             return alone(Kind::Workspace, self.workspaces.len());
         }
         if let Command::PasteBuffer { index, .. } = command {
@@ -1347,11 +1344,6 @@ impl Session {
                 let p = self.panes.get(&pane).ok_or(Error::NoPane(pane))?;
                 Ok(capture(p, history, json))
             }
-            &Command::CaptureClient { client, json } => {
-                let client = self.client_target(client, ctx)?;
-                let grid = crate::render::compose(self, client).ok_or(Error::NoClient(client))?;
-                Ok(capture_client(client, &grid, json))
-            }
             &Command::Terminate { target } => {
                 let pane = self.pane_target(target, ctx)?;
                 let p = self.panes.get(&pane).ok_or(Error::NoPane(pane))?;
@@ -1422,55 +1414,50 @@ impl Session {
                 p.input.push(crate::encode::paste(&text, bracketed))?;
                 Ok(String::new())
             }
-            &Command::Detach { client } => {
+            &Command::Client { client, ref action } => {
                 let client = self.client_target(client, ctx)?;
+                self.on_client(client, action)
+            }
+        }
+    }
+
+    /// A command on a client's screen, once the client is known. Targets it
+    /// leaves out are the client's own.
+    fn on_client(&mut self, client: ClientId, action: &ClientAction) -> Result<String, Error> {
+        let ctx = Ctx::client(client);
+        match *action {
+            ClientAction::Detach => {
                 self.views.remove(&client);
                 self.outbox.push(Outgoing::Exit(client, "detached".into()));
                 Ok(String::new())
             }
-            &Command::Zoom { client } => {
-                let client = self.client_target(client, ctx)?;
+            ClientAction::Capture { json } => {
+                let grid = crate::render::compose(self, client).ok_or(Error::NoClient(client))?;
+                Ok(capture_client(client, &grid, json))
+            }
+            ClientAction::Zoom => {
                 let view = self.view_mut(client)?;
                 view.zoom = !view.zoom;
                 Ok(String::new())
             }
-            &Command::SelectPane { client, pick } => {
-                let client = self.client_target(client, ctx)?;
-                self.select_pane(client, pick)
-            }
-            &Command::SelectTab { client, pick } => {
-                let client = self.client_target(client, ctx)?;
-                self.select_tab(client, pick)
-            }
-            &Command::SelectWorkspace { client, ref pick } => {
-                let client = self.client_target(client, ctx)?;
-                self.select_workspace(client, pick)
-            }
-            &Command::CommandColumn { client } => {
-                let client = self.client_target(client, ctx)?;
+            ClientAction::SelectPane(pick) => self.select_pane(client, pick),
+            ClientAction::SelectTab(pick) => self.select_tab(client, pick),
+            ClientAction::SelectWorkspace(ref pick) => self.select_workspace(client, pick),
+            ClientAction::CommandColumn => {
                 self.view_mut(client)?.mode = Mode::Column {
                     path: Vec::new(),
                     selected: 0,
                 };
                 Ok(String::new())
             }
-            &Command::CommandPrompt { client } => {
-                let client = self.client_target(client, ctx)?;
-                crate::overlay::open_prompt(
-                    self,
-                    client,
-                    crate::view::PromptFor::Command,
-                    ":".into(),
-                    String::new(),
-                )
-            }
-            &Command::RenamePrompt {
+            ClientAction::CommandPrompt => crate::overlay::open_prompt(
+                self,
                 client,
-                kind,
-                ref target,
-            } => {
-                let client = self.client_target(client, ctx)?;
-                let ctx = Ctx::client(client);
+                crate::view::PromptFor::Command,
+                ":".into(),
+                String::new(),
+            ),
+            ClientAction::RenamePrompt { kind, ref target } => {
                 let target = self.any_target(kind, target.as_ref(), &ctx)?;
                 let current = self.name_of(&target);
                 crate::overlay::open_prompt(
@@ -1481,54 +1468,27 @@ impl Session {
                     current,
                 )
             }
-            &Command::ConfirmClose {
-                client,
-                kind,
-                ref target,
-            } => {
-                let client = self.client_target(client, ctx)?;
-                let ctx = Ctx::client(client);
+            ClientAction::ConfirmClose { kind, ref target } => {
                 let target = self.any_target(kind, target.as_ref(), &ctx)?;
                 crate::overlay::open_confirm(self, client, target)
             }
-            &Command::Menu {
-                client,
-                kind,
-                ref target,
-            } => {
-                let client = self.client_target(client, ctx)?;
-                let ctx = Ctx::client(client);
+            ClientAction::Menu { kind, ref target } => {
                 let target = self.any_target(kind, target.as_ref(), &ctx)?;
                 crate::overlay::open_menu(self, client, target)
             }
-            &Command::ChooseTab {
-                client,
-                moving,
-                moving_now,
-            } => {
-                let client = self.client_target(client, ctx)?;
+            ClientAction::ChooseTab { moving, moving_now } => {
                 let moving = self.moving(client, moving, moving_now)?;
                 crate::overlay::open_tab_chooser(self, client, moving)
             }
-            &Command::ChooseWorkspace {
-                client,
-                moving,
-                moving_now,
-            } => {
-                let client = self.client_target(client, ctx)?;
+            ClientAction::ChooseWorkspace { moving, moving_now } => {
                 let moving = self.moving(client, moving, moving_now)?;
                 crate::overlay::open_workspace_chooser(self, client, moving)
             }
-            &Command::ChoosePane { client, target } => {
-                let client = self.client_target(client, ctx)?;
-                let ctx = Ctx::client(client);
+            ClientAction::ChoosePane { target } => {
                 let source = self.pane_target(target, &ctx)?;
                 crate::overlay::open_pane_chooser(self, client, source)
             }
-            &Command::CopyMode { client } => {
-                let client = self.client_target(client, ctx)?;
-                Ok(crate::copy::enter(self, client)?)
-            }
+            ClientAction::CopyMode => Ok(crate::copy::enter(self, client)?),
         }
     }
 

@@ -154,12 +154,6 @@ pub enum Command {
         history: Option<usize>,
         json: bool,
     },
-    /// What a client's terminal shows: the screen the server composes for
-    /// it, bar and overlays included.
-    CaptureClient {
-        client: Option<ClientId>,
-        json: bool,
-    },
     Terminate {
         target: Option<PaneId>,
     },
@@ -187,63 +181,64 @@ pub enum Command {
         index: usize,
         target: Option<PaneId>,
     },
-    Detach {
+    /// A command on one client's screen: the client `-c` names, or the one
+    /// whose key, menu or prompt ran it.
+    Client {
         client: Option<ClientId>,
+        action: ClientAction,
     },
-    // Commands on one client's screen.
-    CommandColumn {
-        client: Option<ClientId>,
+}
+
+/// What a command does on a client's screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClientAction {
+    Detach,
+    /// What the client's terminal shows: the screen the server composes for
+    /// it, bar and overlays included.
+    Capture {
+        json: bool,
     },
+    CommandColumn,
     ChooseTab {
-        client: Option<ClientId>,
         moving: Option<PaneId>,
         moving_now: bool,
     },
     ChooseWorkspace {
-        client: Option<ClientId>,
         moving: Option<PaneId>,
         moving_now: bool,
     },
     ChoosePane {
-        client: Option<ClientId>,
         target: Option<PaneId>,
     },
     Menu {
-        client: Option<ClientId>,
         kind: Kind,
         target: Option<AnyRef>,
     },
-    CommandPrompt {
-        client: Option<ClientId>,
-    },
-    CopyMode {
-        client: Option<ClientId>,
-    },
+    CommandPrompt,
+    CopyMode,
     RenamePrompt {
-        client: Option<ClientId>,
         kind: Kind,
         target: Option<AnyRef>,
     },
     ConfirmClose {
-        client: Option<ClientId>,
         kind: Kind,
         target: Option<AnyRef>,
     },
-    Zoom {
-        client: Option<ClientId>,
-    },
-    SelectPane {
-        client: Option<ClientId>,
-        pick: Pick<PaneId>,
-    },
-    SelectTab {
-        client: Option<ClientId>,
-        pick: Pick<TabId>,
-    },
-    SelectWorkspace {
-        client: Option<ClientId>,
-        pick: Pick<WsRef>,
-    },
+    Zoom,
+    SelectPane(Pick<PaneId>),
+    SelectTab(Pick<TabId>),
+    SelectWorkspace(Pick<WsRef>),
+}
+
+impl ClientAction {
+    /// The action on the client it comes from, as a key, a menu or the
+    /// prompt runs it.
+    pub fn here(self) -> Command {
+        Command::Client {
+            client: None,
+            action: self,
+        }
+    }
 }
 
 /// A command line that is not a valid command: exit status 2.
@@ -804,7 +799,10 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                     other => return a.unknown(other),
                 }
             }
-            Command::Detach { client }
+            Command::Client {
+                client,
+                action: ClientAction::Detach,
+            }
         }
         "capture-client" => {
             let mut json = false;
@@ -816,7 +814,10 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                 }
             }
             a.no_positional()?;
-            Command::CaptureClient { client, json }
+            Command::Client {
+                client,
+                action: ClientAction::Capture { json },
+            }
         }
         "command-column" | "command-prompt" | "copy-mode" | "zoom" | "choose-tab"
         | "choose-workspace" | "choose-pane" | "menu" | "rename-prompt" | "confirm-close"
@@ -846,81 +847,57 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
             let any = target.map(parse_any).transpose()?;
             // Given, or the target's; a pane's by default, but for a menu.
             let kind = kind.or(any.as_ref().map(AnyRef::kind));
-            match name {
-                "command-column" => Command::CommandColumn { client },
-                "command-prompt" => Command::CommandPrompt { client },
-                "copy-mode" => Command::CopyMode { client },
-                "zoom" => Command::Zoom { client },
-                "choose-tab" | "choose-workspace" => {
-                    let moving_pane = target.map(parse_pane).transpose()?;
-                    if name == "choose-tab" {
-                        Command::ChooseTab {
-                            client,
-                            moving: moving_pane,
-                            moving_now: moving,
-                        }
-                    } else {
-                        Command::ChooseWorkspace {
-                            client,
-                            moving: moving_pane,
-                            moving_now: moving,
-                        }
-                    }
-                }
-                "choose-pane" => Command::ChoosePane {
-                    client,
+            let moving_now = moving;
+            let action = match name {
+                "command-column" => ClientAction::CommandColumn,
+                "command-prompt" => ClientAction::CommandPrompt,
+                "copy-mode" => ClientAction::CopyMode,
+                "zoom" => ClientAction::Zoom,
+                "choose-tab" => ClientAction::ChooseTab {
+                    moving: target.map(parse_pane).transpose()?,
+                    moving_now,
+                },
+                "choose-workspace" => ClientAction::ChooseWorkspace {
+                    moving: target.map(parse_pane).transpose()?,
+                    moving_now,
+                },
+                "choose-pane" => ClientAction::ChoosePane {
                     target: target.map(parse_pane).transpose()?,
                 },
-                "menu" => {
-                    let Some(kind) = kind else {
-                        return Err(Usage::MenuKind);
-                    };
-                    Command::Menu {
-                        client,
-                        kind,
-                        target: any,
-                    }
-                }
-                "rename-prompt" => Command::RenamePrompt {
-                    client,
+                "menu" => ClientAction::Menu {
+                    kind: kind.ok_or(Usage::MenuKind)?,
+                    target: any,
+                },
+                "rename-prompt" => ClientAction::RenamePrompt {
                     kind: kind.unwrap_or(Kind::Pane),
                     target: any,
                 },
-                "confirm-close" => Command::ConfirmClose {
-                    client,
+                "confirm-close" => ClientAction::ConfirmClose {
                     kind: kind.unwrap_or(Kind::Pane),
                     target: any,
                 },
-                "select-pane" => Command::SelectPane {
-                    client,
-                    pick: match (pick, direction, target) {
-                        (Some("--next"), None, None) => Pick::Next,
-                        (Some("--previous"), None, None) => Pick::Previous,
-                        (Some("--last"), None, None) => Pick::Last,
-                        (None, Some(d), None) => Pick::Toward(d),
-                        (None, None, Some(t)) => Pick::Id(parse_pane(t)?),
-                        _ => return Err(Usage::SelectPane),
-                    },
-                },
-                "select-tab" => Command::SelectTab {
-                    client,
-                    pick: match (pick, target) {
-                        (Some("--next"), None) => Pick::Next,
-                        (Some("--previous"), None) => Pick::Previous,
-                        (None, Some(t)) => Pick::Id(parse_tab(t)?),
-                        _ => return Err(Usage::SelectTab),
-                    },
-                },
-                _ => Command::SelectWorkspace {
-                    client,
-                    pick: match (pick, target) {
-                        (Some("--next"), None) => Pick::Next,
-                        (Some("--previous"), None) => Pick::Previous,
-                        (None, Some(t)) => Pick::Id(parse_workspace(t)?),
-                        _ => return Err(Usage::SelectWorkspace),
-                    },
-                },
-            }
+                "select-pane" => ClientAction::SelectPane(match (pick, direction, target) {
+                    (Some("--next"), None, None) => Pick::Next,
+                    (Some("--previous"), None, None) => Pick::Previous,
+                    (Some("--last"), None, None) => Pick::Last,
+                    (None, Some(d), None) => Pick::Toward(d),
+                    (None, None, Some(t)) => Pick::Id(parse_pane(t)?),
+                    _ => return Err(Usage::SelectPane),
+                }),
+                "select-tab" => ClientAction::SelectTab(match (pick, target) {
+                    (Some("--next"), None) => Pick::Next,
+                    (Some("--previous"), None) => Pick::Previous,
+                    (None, Some(t)) => Pick::Id(parse_tab(t)?),
+                    _ => return Err(Usage::SelectTab),
+                }),
+                _ => ClientAction::SelectWorkspace(match (pick, target) {
+                    (Some("--next"), None) => Pick::Next,
+                    (Some("--previous"), None) => Pick::Previous,
+                    (None, Some(t)) => Pick::Id(parse_workspace(t)?),
+                    _ => return Err(Usage::SelectWorkspace),
+                }),
+            };
+            Command::Client { client, action }
         }
         other => return Err(Usage::UnknownCommand(other.to_owned())),
     };
@@ -1071,26 +1048,26 @@ mod tests {
         );
         assert_eq!(
             cmd("select-pane -c c1 --last"),
-            Ok(Command::SelectPane {
+            Ok(Command::Client {
                 client: Some(ClientId(1)),
-                pick: Pick::Last
+                action: ClientAction::SelectPane(Pick::Last)
             })
         );
         assert_eq!(
             cmd("menu tab"),
-            Ok(Command::Menu {
-                client: None,
+            Ok(ClientAction::Menu {
                 kind: Kind::Tab,
                 target: None
-            })
+            }
+            .here())
         );
         assert_eq!(
             cmd("confirm-close -t +1"),
-            Ok(Command::ConfirmClose {
-                client: None,
+            Ok(ClientAction::ConfirmClose {
                 kind: Kind::Workspace,
                 target: Some(AnyRef::Workspace(WsRef::Id(WsId(1))))
-            })
+            }
+            .here())
         );
         assert_eq!(
             cmd("paste-buffer -b 2 -t %4"),
