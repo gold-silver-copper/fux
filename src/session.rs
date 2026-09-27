@@ -365,6 +365,9 @@ impl Session {
     pub fn workspace(&self, id: WsId) -> Option<&Workspace> {
         self.workspaces.iter().find(|w| w.id == id)
     }
+    fn workspace_mut(&mut self, id: WsId) -> Option<&mut Workspace> {
+        self.workspaces.iter_mut().find(|w| w.id == id)
+    }
     /// The workspace and tab indexes of a tab.
     pub fn find_tab(&self, id: TabId) -> Option<(usize, usize)> {
         self.workspaces
@@ -585,6 +588,21 @@ impl Session {
 
     fn new_tab_id(&mut self) -> Result<TabId, Error> {
         advance(&mut self.next_tab, "tab").map(TabId)
+    }
+
+    /// Adds a tab to a workspace, named after its place if no name is given.
+    fn add_tab(
+        &mut self,
+        ws: WsId,
+        id: TabId,
+        name: Option<String>,
+        root: Option<Node>,
+    ) -> Result<(), Error> {
+        let workspace = self.workspace_mut(ws).ok_or(Error::WorkspaceGone)?;
+        let number = workspace.tabs.len().saturating_add(1);
+        let name = name.unwrap_or_else(|| format!("tab-{number}"));
+        workspace.tabs.push(Tab { id, name, root });
+        Ok(())
     }
 
     fn create_workspace(
@@ -1209,17 +1227,7 @@ impl Session {
                 let id = TabId(advance(&mut next_tab, "tab")?);
                 let pane = self.new_pane(cmd, &cwd, DEFAULT_SIZE)?;
                 self.next_tab = next_tab;
-                let index = self.ws_index(ws).ok_or(Error::WorkspaceGone)?;
-                let Some(workspace) = self.workspaces.get_mut(index) else {
-                    return Err(Error::WorkspaceGone);
-                };
-                let number = workspace.tabs.len().saturating_add(1);
-                let name = name.clone().unwrap_or_else(|| format!("tab-{number}"));
-                workspace.tabs.push(Tab {
-                    id,
-                    name,
-                    root: Some(Node::Pane(pane)),
-                });
+                self.add_tab(ws, id, name.clone(), Some(Node::Pane(pane)))?;
                 if let Some(view) = ctx.client.and_then(|c| self.views.get_mut(&c)) {
                     view.workspace = ws;
                     view.tab_of.insert(ws, id);
@@ -1574,9 +1582,6 @@ impl Session {
             }
             AnyRef::Workspace(w) => {
                 let id = self.resolve_ws(w)?;
-                if let WsRef::Name(_) = w {
-                    // Renaming by name is fine; a clash is refused.
-                }
                 if self
                     .workspaces
                     .iter()
@@ -1584,10 +1589,7 @@ impl Session {
                 {
                     return Err(Error::NameTaken(name));
                 }
-                let index = self.ws_index(id).ok_or(Error::NoSuchWorkspace)?;
-                if let Some(ws) = self.workspaces.get_mut(index) {
-                    ws.name = name;
-                }
+                self.workspace_mut(id).ok_or(Error::NoSuchWorkspace)?.name = name;
             }
         }
         Ok(())
@@ -1654,14 +1656,7 @@ impl Session {
                     Some(tab) => tab,
                     None => {
                         let id = self.new_tab_id()?;
-                        let index = self.ws_index(ws).ok_or(Error::WorkspaceGone)?;
-                        if let Some(w) = self.workspaces.get_mut(index) {
-                            w.tabs.push(Tab {
-                                id,
-                                name: "main".into(),
-                                root: None,
-                            });
-                        }
+                        self.add_tab(ws, id, Some("main".into()), None)?;
                         id
                     }
                 };
@@ -1669,15 +1664,7 @@ impl Session {
             }
             MoveTo::NewTab => {
                 let id = self.new_tab_id()?;
-                let index = self.ws_index(source_ws).ok_or(Error::WorkspaceGone)?;
-                if let Some(w) = self.workspaces.get_mut(index) {
-                    let name = format!("tab-{}", w.tabs.len().saturating_add(1));
-                    w.tabs.push(Tab {
-                        id,
-                        name,
-                        root: None,
-                    });
-                }
+                self.add_tab(source_ws, id, None, None)?;
                 (source_ws, id)
             }
             MoveTo::NewWorkspace => {

@@ -9,8 +9,8 @@ use crate::keys::{Direction, Key, KeyPress};
 use crate::layout::PaneId;
 use crate::render::shown;
 use crate::session::{Outgoing, Session};
-use crate::view::Mode;
-use fux_vt::{RowId, Screen};
+use crate::view::{Mode, Notice};
+use fux_vt::{Cell, RowId, Screen};
 use std::num::NonZeroUsize;
 
 /// The most cells one copy takes.
@@ -203,27 +203,21 @@ impl Copy {
         }
         let (badge, hints) = match self.selection {
             // `y` only acts on a selection, so it shows with one.
-            Some((kind, _)) => (
-                match kind {
-                    Select::Char => "COPY select",
-                    Select::Line => "COPY lines",
-                    Select::Block => "COPY block",
-                },
-                vec![
+            Some((kind, _)) => {
+                let (badge, clear) = match kind {
+                    Select::Char => ("COPY select", "v"),
+                    Select::Line => ("COPY lines", "s"),
+                    Select::Block => ("COPY block", "x"),
+                };
+                let hints = vec![
                     ("y", "copy"),
                     ("q", "quit"),
                     ("o", "other end"),
-                    (
-                        match kind {
-                            Select::Char => "v",
-                            Select::Line => "s",
-                            Select::Block => "x",
-                        },
-                        "clear",
-                    ),
+                    (clear, "clear"),
                     ("hjkl", "extend"),
-                ],
-            ),
+                ];
+                (badge, hints)
+            }
             None => {
                 let mut hints = vec![("v s x", "select"), ("q", "quit"), ("f r", "search")];
                 if self.search.is_some() {
@@ -262,27 +256,32 @@ pub struct Bar {
 /// A row's cells as (column, class): 0 blank, 1 word, 2 other. With `big`,
 /// every non-blank is one class. The row end is a blank.
 fn classes(screen: &Screen, index: usize, big: bool) -> Vec<(u16, u8)> {
-    let mut out = Vec::new();
-    if let Some(row) = row_at(screen, index) {
-        // A row is never wider than a u16 screen.
-        for (col, cell) in (0..=u16::MAX).zip(row.cells) {
-            if cell.is_wide_continuation() {
-                continue;
-            }
-            let c = cell.contents().chars().next().unwrap_or(' ');
-            let class = if c.is_whitespace() || !cell.has_contents() {
-                0
-            } else if big || c.is_alphanumeric() || c == '_' {
-                1
-            } else {
-                2
-            };
-            out.push((col, class));
+    let class = |cell: &Cell| {
+        let c = cell.contents().chars().next().unwrap_or(' ');
+        if c.is_whitespace() || !cell.has_contents() {
+            0
+        } else if big || c.is_alphanumeric() || c == '_' {
+            1
+        } else {
+            2
         }
-    }
+    };
+    let mut out: Vec<(u16, u8)> = glyphs(screen, index)
+        .map(|(col, cell)| (col, class(cell)))
+        .collect();
     let end = out.last().map_or(0, |(c, _)| c.saturating_add(1));
     out.push((end, 0));
     out
+}
+
+/// A row's cells and their columns, but for the second halves of wide
+/// glyphs.
+fn glyphs(screen: &Screen, index: usize) -> impl Iterator<Item = (u16, &Cell)> {
+    let cells = row_at(screen, index).map_or(&[][..], |row| row.cells);
+    // A row is never wider than a u16 screen.
+    (0..=u16::MAX)
+        .zip(cells)
+        .filter(|(_, cell)| !cell.is_wide_continuation())
 }
 
 /// A position in the flat sequence of cells: a row and an index into its
@@ -400,16 +399,9 @@ fn word_back(screen: &Screen, row: usize, col: u16) -> (usize, u16) {
 
 /// A row's characters and the column of each.
 fn row_chars(screen: &Screen, index: usize) -> Vec<(char, u16)> {
-    let mut out = Vec::new();
-    if let Some(row) = row_at(screen, index) {
-        for (col, cell) in (0..=u16::MAX).zip(row.cells) {
-            if cell.is_wide_continuation() {
-                continue;
-            }
-            out.extend(shown(cell).chars().map(|c| (c, col)));
-        }
-    }
-    out
+    glyphs(screen, index)
+        .flat_map(|(col, cell)| shown(cell).chars().map(move |c| (c, col)))
+        .collect()
 }
 
 fn fold(c: char, ignore_case: bool) -> char {
@@ -437,18 +429,17 @@ pub fn find(
     let matches_in = |index: usize| -> Vec<u16> {
         let chars = row_chars(screen, index);
         let folded: Vec<char> = chars.iter().map(|(c, _)| fold(*c, ignore_case)).collect();
-        let mut cols = Vec::new();
-        for start in 0..folded.len() {
-            if folded
-                .get(start..)
-                .is_some_and(|rest| rest.starts_with(&needle))
-                && let Some((_, col)) = chars.get(start)
-            {
-                cols.push(*col);
-            }
-        }
-        cols
+        (0..folded.len())
+            .filter(|at| {
+                folded
+                    .get(*at..)
+                    .is_some_and(|rest| rest.starts_with(&needle))
+            })
+            .filter_map(|at| chars.get(at).map(|(_, col)| *col))
+            .collect()
     };
+    // Whether a column is past the cursor, the way the search goes.
+    let past = |col: u16| if forward { col > from.1 } else { col < from.1 };
     // Around the rows and back to the start. Exact: row counts are far
     // below a usize, and `rows` is at least 1.
     let rows = NonZeroUsize::new(total).unwrap_or(NonZeroUsize::MIN);
@@ -461,25 +452,15 @@ pub fn find(
                 .saturating_sub(step)
                 % rows
         };
-        let cols = matches_in(index);
-        let hit = if step == 0 {
-            if forward {
-                cols.into_iter().find(|c| *c > from.1)
-            } else {
-                cols.into_iter().rev().find(|c| *c < from.1)
-            }
-        } else if step == total {
-            // Back at the start row: the part before (or after) the cursor.
-            if forward {
-                cols.into_iter().find(|c| *c <= from.1)
-            } else {
-                cols.into_iter().rev().find(|c| *c >= from.1)
-            }
-        } else if forward {
-            cols.into_iter().next()
-        } else {
-            cols.into_iter().next_back()
-        };
+        let mut cols = matches_in(index);
+        if !forward {
+            cols.reverse();
+        }
+        // On the cursor's row, what is past it; back at that row after
+        // going round, the rest of it.
+        let hit = cols
+            .into_iter()
+            .find(|col| (step != 0 || past(*col)) && (step != total || !past(*col)));
         if let Some(col) = hit {
             return Some((index, col));
         }
@@ -645,8 +626,7 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
             if !search.query.is_empty() {
                 copy.search = Some(search.clone());
                 let at = copy.resolve(screen);
-                let error = view_error(&mut view.notice);
-                jump(copy, screen, height, &at, &search, error);
+                jump(copy, screen, height, &at, &search, &mut view.notice);
             }
         } else if press.key == Key::Backspace {
             text.pop();
@@ -741,14 +721,7 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
                         },
                         ..search
                     };
-                    jump(
-                        copy,
-                        screen,
-                        height,
-                        &at,
-                        &search,
-                        view_error(&mut view.notice),
-                    );
+                    jump(copy, screen, height, &at, &search, &mut view.notice);
                 }
                 None => view.error("no search yet: f or r starts one"),
             }
@@ -822,21 +795,15 @@ fn toggle(copy: &mut Copy, kind: Select) {
     };
 }
 
-/// Where an error from a jump goes: the view's notice.
-fn view_error(notice: &mut Option<crate::view::Notice>) -> impl FnMut(String) + '_ {
-    move |text| {
-        *notice = Some(crate::view::Notice { text, error: true });
-    }
-}
-
-/// Moves to the next match of `search` from the cursor, as `at` found it.
+/// Moves to the next match of `search` from the cursor, as `at` found it;
+/// if there is none, the view's notice says so.
 fn jump(
     copy: &mut Copy,
     screen: &Screen,
     height: u16,
     at: &Resolved,
     search: &Search,
-    mut error: impl FnMut(String),
+    notice: &mut Option<Notice>,
 ) {
     let Some(from) = at.cursor else {
         return;
@@ -844,7 +811,10 @@ fn jump(
     let top = at.top.unwrap_or(screen.history_len());
     match find(screen, &search.query, from, search.forward) {
         Some(found) => move_to(copy, screen, height, top, found),
-        None => error(format!("not found: {}", search.query)),
+        None => {
+            let text = format!("not found: {}", search.query);
+            *notice = Some(Notice { text, error: true });
+        }
     }
 }
 
