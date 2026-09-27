@@ -717,9 +717,8 @@ impl Server {
                 let Some(conn) = self.conns.get_mut(index) else {
                     return;
                 };
-                if !outcome.stdout.is_empty() {
-                    conn.send_stream(Stream::Stdout, outcome.stdout.as_bytes());
-                }
+                // Nothing is sent for no output.
+                conn.send_stream(Stream::Stdout, outcome.stdout.as_bytes());
                 if !outcome.stderr.is_empty() {
                     let mut stderr = outcome.stderr;
                     if !stderr.ends_with('\n') {
