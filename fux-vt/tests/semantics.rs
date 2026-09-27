@@ -276,6 +276,35 @@ fn resize_rejects_bad_capacity_without_mutating_state() -> Result {
     Ok(())
 }
 
+/// Focus reporting and the cursor's shape follow output split anywhere;
+/// only their own forms set them, and a full reset clears both.
+#[test]
+fn focus_and_cursor_shape() -> Result {
+    let stream = b"x\x1b[?1004;2004hy\x1b[5 qz\x1b[?25l";
+    for split in 0..stream.len() {
+        let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
+        let mut p = Parser::new(3, 8, 0)?;
+        p.process(a)?;
+        p.process(b)?;
+        assert!(p.screen().focus_reporting(), "split {split}");
+        assert_eq!(p.screen().cursor_shape(), 5, "split {split}");
+    }
+    let mut p = Parser::new(3, 8, 0)?;
+    p.process(b"\x1b[?1004h\x1b[?1004l\x1b[2 q\x1b[ q")?;
+    assert!(!p.screen().focus_reporting());
+    assert_eq!(p.screen().cursor_shape(), 0);
+    p.process(b"\x1b[1004h\x1b[3!q\x1b[?4 q")?;
+    assert!(!p.screen().focus_reporting());
+    assert_eq!(p.screen().cursor_shape(), 0);
+    p.process(b"\x1b[?1004h\x1b[6 q")?;
+    assert!(p.screen().focus_reporting());
+    assert_eq!(p.screen().cursor_shape(), 6);
+    p.process(b"\x1bc")?;
+    assert!(!p.screen().focus_reporting());
+    assert_eq!(p.screen().cursor_shape(), 0);
+    Ok(())
+}
+
 #[test]
 fn alternate_mouse_modes_saved_cursor_and_replies() -> Result {
     let mut p = Parser::new(3, 8, 2)?;

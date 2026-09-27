@@ -57,10 +57,27 @@ pub enum Select {
 /// A selection's kind and its two ends, in order, as (row, column).
 type Ends = (Select, (usize, u16), (usize, u16));
 
+/// Which way a search goes: toward later rows, or earlier ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Seek {
+    Forward,
+    Backward,
+}
+
+impl Seek {
+    /// The other way.
+    pub fn reversed(self) -> Seek {
+        match self {
+            Seek::Forward => Seek::Backward,
+            Seek::Backward => Seek::Forward,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Search {
     pub query: String,
-    pub forward: bool,
+    pub seek: Seek,
 }
 
 pub struct Copy {
@@ -71,7 +88,7 @@ pub struct Copy {
     pub selection: Option<(Select, (RowId, u16))>,
     pub search: Option<Search>,
     /// A search being typed: its direction and text.
-    pub typing: Option<(bool, String)>,
+    pub typing: Option<(Seek, String)>,
 }
 
 // ------------------------------------------------------------- positions
@@ -194,9 +211,13 @@ impl Copy {
         // Counted from 1; exact, as rows are far fewer than a usize holds.
         let line = at.cursor.map_or(0, |(r, _)| r.saturating_add(1));
         let position = format!("{line}/{}", retained(screen));
-        if let Some((forward, text)) = &self.typing {
+        if let Some((seek, text)) = &self.typing {
+            let prompt = match seek {
+                Seek::Forward => "/",
+                Seek::Backward => "?",
+            };
             return Bar {
-                badge: format!("{}{text}▏", if *forward { "/" } else { "?" }),
+                badge: format!("{prompt}{text}▏"),
                 hints: vec![("Enter", "search"), ("Esc", "cancel")],
                 position,
             };
@@ -414,12 +435,7 @@ fn fold(c: char, ignore_case: bool) -> char {
 
 /// The next match of `query` from the cursor, literal and smart-case, over
 /// the whole history, wrapping around.
-pub fn find(
-    screen: &Screen,
-    query: &str,
-    from: (usize, u16),
-    forward: bool,
-) -> Option<(usize, u16)> {
+pub fn find(screen: &Screen, query: &str, from: (usize, u16), seek: Seek) -> Option<(usize, u16)> {
     let ignore_case = !query.chars().any(char::is_uppercase);
     let needle: Vec<char> = query.chars().map(|c| fold(c, ignore_case)).collect();
     if needle.is_empty() {
@@ -439,21 +455,25 @@ pub fn find(
             .collect()
     };
     // Whether a column is past the cursor, the way the search goes.
-    let past = |col: u16| if forward { col > from.1 } else { col < from.1 };
+    let past = |col: u16| match seek {
+        Seek::Forward => col > from.1,
+        Seek::Backward => col < from.1,
+    };
     // Around the rows and back to the start. Exact: row counts are far
     // below a usize, and `rows` is at least 1.
     let rows = NonZeroUsize::new(total).unwrap_or(NonZeroUsize::MIN);
     for step in 0..=total {
-        let index = if forward {
-            from.0.saturating_add(step) % rows
-        } else {
-            from.0
-                .saturating_add(total.saturating_mul(2))
-                .saturating_sub(step)
-                % rows
+        let index = match seek {
+            Seek::Forward => from.0.saturating_add(step) % rows,
+            Seek::Backward => {
+                from.0
+                    .saturating_add(total.saturating_mul(2))
+                    .saturating_sub(step)
+                    % rows
+            }
         };
         let mut cols = matches_in(index);
-        if !forward {
+        if seek == Seek::Backward {
             cols.reverse();
         }
         // On the cursor's row, what is past it; back at that row after
@@ -614,13 +634,13 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
     view.notice = None;
 
     // A search being typed takes the keys.
-    if let Some((forward, text)) = &mut copy.typing {
+    if let Some((seek, text)) = &mut copy.typing {
         if press.key == Key::Escape {
             copy.typing = None;
         } else if press.key == Key::Enter {
             let search = Search {
                 query: text.clone(),
-                forward: *forward,
+                seek: *seek,
             };
             copy.typing = None;
             if !search.query.is_empty() {
@@ -708,16 +728,16 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
         (Some('d'), _) => scroll = Some(Scroll::Down(half)),
         (_, Key::PageUp) => scroll = Some(Scroll::Up(page)),
         (_, Key::PageDown) => scroll = Some(Scroll::Down(page)),
-        (Some('f'), _) => copy.typing = Some((true, String::new())),
-        (Some('r'), _) => copy.typing = Some((false, String::new())),
+        (Some('f'), _) => copy.typing = Some((Seek::Forward, String::new())),
+        (Some('r'), _) => copy.typing = Some((Seek::Backward, String::new())),
         (Some(key @ ('n' | 'p')), _) => {
             match copy.search.clone() {
                 Some(search) => {
                     let search = Search {
-                        forward: if key == 'n' {
-                            search.forward
+                        seek: if key == 'n' {
+                            search.seek
                         } else {
-                            !search.forward
+                            search.seek.reversed()
                         },
                         ..search
                     };
@@ -809,7 +829,7 @@ fn jump(
         return;
     };
     let top = at.top.unwrap_or(screen.history_len());
-    match find(screen, &search.query, from, search.forward) {
+    match find(screen, &search.query, from, search.seek) {
         Some(found) => move_to(copy, screen, height, top, found),
         None => {
             let text = format!("not found: {}", search.query);
@@ -846,12 +866,11 @@ fn yank(session: &mut Session, client: ClientId, ends: Option<Ends>) {
         }
     };
     let characters = copied.chars().count();
-    session.buffers.push_front(copied.clone());
-    session.buffers.truncate(session.config.buffers);
     let mut note = format!(
         "copied {characters} character{}",
         if characters == 1 { "" } else { "s" }
     );
+    // Encoded for the clipboard before the text moves into the buffers.
     if session.config.clipboard {
         let encoded = crate::json::base64(copied.as_bytes());
         if encoded.len() <= MAX_CLIPBOARD {
@@ -863,6 +882,8 @@ fn yank(session: &mut Session, client: ClientId, ends: Option<Ends>) {
             note.push_str(" to buffer 0; too large for the clipboard");
         }
     }
+    session.buffers.push_front(copied);
+    session.buffers.truncate(session.config.buffers);
     leave(session, client);
     if let Some(view) = session.views.get_mut(&client) {
         view.info(note);
@@ -920,17 +941,21 @@ mod tests {
     fn search_is_literal_smart_case_and_wraps() -> Result<(), String> {
         let p = screen(b"Alpha beta\r\ngamma BETA\r\nx.y", 3, 20)?;
         let s = p.screen();
-        assert_eq!(find(s, "beta", (0, 0), true), Some((0, 6)));
-        assert_eq!(find(s, "beta", (0, 6), true), Some((1, 6)));
-        assert_eq!(find(s, "BETA", (0, 0), true), Some((1, 6)));
-        assert_eq!(find(s, "beta", (1, 6), true), Some((0, 6)), "wraps");
-        assert_eq!(find(s, "beta", (1, 6), false), Some((0, 6)));
+        assert_eq!(find(s, "beta", (0, 0), Seek::Forward), Some((0, 6)));
+        assert_eq!(find(s, "beta", (0, 6), Seek::Forward), Some((1, 6)));
+        assert_eq!(find(s, "BETA", (0, 0), Seek::Forward), Some((1, 6)));
         assert_eq!(
-            find(s, ".", (0, 0), true),
+            find(s, "beta", (1, 6), Seek::Forward),
+            Some((0, 6)),
+            "wraps"
+        );
+        assert_eq!(find(s, "beta", (1, 6), Seek::Backward), Some((0, 6)));
+        assert_eq!(
+            find(s, ".", (0, 0), Seek::Forward),
             Some((2, 1)),
             "literal, not a regex"
         );
-        assert_eq!(find(s, "zzz", (0, 0), true), None);
+        assert_eq!(find(s, "zzz", (0, 0), Seek::Forward), None);
         Ok(())
     }
 
