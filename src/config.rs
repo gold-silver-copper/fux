@@ -617,17 +617,11 @@ impl Config {
 /// The config file: `--config`, else `$XDG_CONFIG_HOME/fux/fux.conf`, else
 /// `~/.config/fux/fux.conf`.
 pub fn default_path() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()) {
-        return Some(PathBuf::from(dir).join("fux").join("fux.conf"));
-    }
-    std::env::var_os("HOME")
-        .filter(|d| !d.is_empty())
-        .map(|home| {
-            PathBuf::from(home)
-                .join(".config")
-                .join("fux")
-                .join("fux.conf")
-        })
+    let set = |name: &str| std::env::var_os(name).filter(|d| !d.is_empty());
+    let config = set("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| set("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+    Some(config.join("fux").join("fux.conf"))
 }
 
 /// A config file is read whole but bounded, so a mistaken path cannot make

@@ -8,6 +8,7 @@ use crate::protocol::{Decoder, Frame, PROTOCOL, Role, Stream};
 use crate::render::{self, Grid};
 use crate::session::{Ctx, Outgoing, Session};
 use fuxix::poll::{Events as PollFlags, PollFd};
+use signal_hook::consts::{SIGCHLD, SIGHUP, SIGINT, SIGTERM};
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -151,20 +152,8 @@ pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), Error> {
     };
     let (endpoint, listener) = crate::socket::bind_socket(socket).map_err(Error::Socket)?;
     listener.set_nonblocking(true).map_err(Error::Setup)?;
-    let (children, children_in) = UnixStream::pair().map_err(Error::Setup)?;
-    let (stops, stops_in) = UnixStream::pair().map_err(Error::Setup)?;
-    children.set_nonblocking(true).map_err(Error::Setup)?;
-    stops.set_nonblocking(true).map_err(Error::Setup)?;
-    signal_hook::low_level::pipe::register(signal_hook::consts::SIGCHLD, children_in)
-        .map_err(Error::Setup)?;
-    for signal in [
-        signal_hook::consts::SIGTERM,
-        signal_hook::consts::SIGINT,
-        signal_hook::consts::SIGHUP,
-    ] {
-        let stop = stops_in.try_clone().map_err(Error::Setup)?;
-        signal_hook::low_level::pipe::register(signal, stop).map_err(Error::Setup)?;
-    }
+    let children = crate::signal_pipe(&[SIGCHLD]).map_err(Error::Setup)?;
+    let stops = crate::signal_pipe(&[SIGTERM, SIGINT, SIGHUP]).map_err(Error::Setup)?;
     let mut session = Session::new(config, endpoint.path().to_owned(), true);
     session.config_path = config_path;
     session.config_error = error;
@@ -222,11 +211,11 @@ impl Server {
                 match slot {
                     Slot::Listener => self.accept(),
                     Slot::Children => {
-                        drain(&mut self.children);
+                        crate::drain(&mut self.children);
                         self.reap();
                     }
                     Slot::Stops => {
-                        drain(&mut self.stops);
+                        crate::drain(&mut self.stops);
                         self.stop("stopped by a signal".into());
                     }
                     Slot::Conn(i) => self.serve_conn(i, flags, now),
@@ -623,7 +612,7 @@ impl Server {
             let Ok(frame) = raw.decode() else {
                 break;
             };
-            self.frame(index, frame, now);
+            self.frame(index, frame);
         }
         if closed && let Some(conn) = self.conns.get_mut(index) {
             conn.dead = true;
@@ -633,7 +622,9 @@ impl Server {
         }
     }
 
-    fn frame(&mut self, index: usize, frame: Frame, now: Instant) {
+    /// Handles a frame from a client: any but an attached client's input,
+    /// which `read_conn` hands to the session itself.
+    fn frame(&mut self, index: usize, frame: Frame) {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
@@ -682,11 +673,6 @@ impl Server {
                         conn.send(&Frame::Exit(error.to_string()));
                         conn.closing = true;
                     }
-                }
-            }
-            (Role::Attach, Frame::Input(bytes)) => {
-                if let Some(client) = conn.client {
-                    self.session.input_at(client, &bytes, now);
                 }
             }
             (Role::Attach, Frame::Resize { rows, cols }) => {
@@ -831,15 +817,6 @@ impl Server {
                     self.session.dying.push(dying);
                 }
             }
-        }
-    }
-}
-
-fn drain(stream: &mut UnixStream) {
-    let mut buffer = [0u8; 256];
-    while let Ok(n) = stream.read(&mut buffer) {
-        if n == 0 {
-            break;
         }
     }
 }
