@@ -330,7 +330,11 @@ impl Config {
             Ok(n)
         };
         match option {
-            "prefix" => self.prefix = one()?.parse()?,
+            "prefix" => {
+                self.prefix = one()?
+                    .parse()
+                    .map_err(|e: crate::keys::Error| e.to_string())?
+            }
             "shell" => {
                 // `set shell /bin/zsh -l` and `set shell '/bin/zsh -l'` alike.
                 let argv = if let [single] = value {

@@ -164,9 +164,23 @@ impl fmt::Display for KeyPress {
     }
 }
 
+/// A name that is no key's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Error {
+    pub name: String,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown key {:?}; `fux list-keys` lists them", self.name)
+    }
+}
+
+impl std::error::Error for Error {}
+
 impl std::str::FromStr for KeyPress {
-    type Err = String;
-    fn from_str(name: &str) -> Result<Self, String> {
+    type Err = Error;
+    fn from_str(name: &str) -> Result<Self, Error> {
         let mut mods = Modifiers::NONE;
         let mut rest = name;
         // `C-` and friends are prefixes only while something follows them,
@@ -202,7 +216,11 @@ impl std::str::FromStr for KeyPress {
             let mut chars = rest.chars();
             match (chars.next(), chars.next()) {
                 (Some(c), None) if !c.is_control() => Key::Char(c),
-                _ => return Err(format!("unknown key {name:?}; `fux list-keys` lists them")),
+                _ => {
+                    return Err(Error {
+                        name: name.to_owned(),
+                    });
+                }
             }
         };
         Ok(KeyPress::new(key, mods))
@@ -262,6 +280,10 @@ mod tests {
         for bad in ["", "F13", "F0", "Nope", "C-", "ab"] {
             assert!(parse(bad).is_none(), "{bad}");
         }
+        assert_eq!(
+            "Nope".parse::<KeyPress>().map_err(|e| e.to_string()),
+            Err("unknown key \"Nope\"; `fux list-keys` lists them".to_owned())
+        );
         for name in all_names() {
             assert_eq!(parse(&name).map(|k| k.to_string()), Some(name.clone()));
         }
