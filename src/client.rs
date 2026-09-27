@@ -3,6 +3,7 @@
 use crate::protocol::{Decoder, Frame, PROTOCOL, Role};
 use fuxix::poll::{Events as PollFlags, PollFd};
 use fuxix::terminal::Termios;
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGWINCH};
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -282,10 +283,11 @@ pub fn start_server(socket: &Path) -> Result<(), Error> {
     let exe = std::env::current_exe().map_err(Error::Exe)?;
     let directory = socket.parent().ok_or(Error::NoDirectory)?;
     crate::socket::prepare_directory(directory)?;
-    let log = std::fs::OpenOptions::new()
+    let log = directory.join("fux.log");
+    let output = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(directory.join("fux.log"))
+        .open(&log)
         .map_err(Error::Log)?;
     let mut command = std::process::Command::new(exe);
     // `--setsid`: the server leaves this terminal's session as it starts.
@@ -296,7 +298,7 @@ pub fn start_server(socket: &Path) -> Result<(), Error> {
         .arg(SETSID)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(log);
+        .stderr(output);
     let mut child = command.spawn().map_err(Error::Spawn)?;
     let deadline = crate::after(Instant::now(), Duration::from_secs(2));
     loop {
@@ -312,15 +314,10 @@ pub fn start_server(socket: &Path) -> Result<(), Error> {
             if UnixStream::connect(socket).is_ok() {
                 return Ok(());
             }
-            return Err(Error::Exited {
-                status,
-                log: directory.join("fux.log"),
-            });
+            return Err(Error::Exited { status, log });
         }
         if Instant::now() > deadline {
-            return Err(Error::NotStarted {
-                log: directory.join("fux.log"),
-            });
+            return Err(Error::NotStarted { log });
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -382,27 +379,14 @@ pub fn attach(socket: &Path, workspace: Option<String>) -> Result<(), Error> {
 
 /// Moves bytes both ways until the server ends the attachment. The reason.
 fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, Error> {
-    let (winch, winch_in) = UnixStream::pair().map_err(Error::Signals)?;
-    let (stops, stops_in) = UnixStream::pair().map_err(Error::Signals)?;
-    winch.set_nonblocking(true).map_err(Error::Signals)?;
-    stops.set_nonblocking(true).map_err(Error::Signals)?;
-    signal_hook::low_level::pipe::register(signal_hook::consts::SIGWINCH, winch_in)
-        .map_err(Error::Signals)?;
-    for signal in [
-        signal_hook::consts::SIGTERM,
-        signal_hook::consts::SIGHUP,
-        signal_hook::consts::SIGINT,
-    ] {
-        let stop = stops_in.try_clone().map_err(Error::Signals)?;
-        signal_hook::low_level::pipe::register(signal, stop).map_err(Error::Signals)?;
-    }
+    let mut winch = crate::signal_pipe(&[SIGWINCH]).map_err(Error::Signals)?;
+    let stops = crate::signal_pipe(&[SIGTERM, SIGHUP, SIGINT]).map_err(Error::Signals)?;
     let _ = stream.set_read_timeout(None);
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     let mut buffer = vec![0u8; 64 * 1024];
     // Where each read from the terminal is framed; reused by every read.
     let mut input = Vec::new();
-    let mut winch = winch;
     loop {
         let mut fds = [
             PollFd::new(&stdin, PollFlags::IN),
@@ -421,8 +405,7 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, Error>
             return Ok("detached by a signal".into());
         }
         if is(2) {
-            let mut sink = [0u8; 64];
-            while matches!(winch.read(&mut sink), Ok(n) if n > 0) {}
+            crate::drain(&mut winch);
             let (rows, cols) = window_size();
             send(stream, &Frame::Resize { rows, cols })?;
         }

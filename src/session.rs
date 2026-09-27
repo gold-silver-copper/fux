@@ -1,10 +1,11 @@
 //! The server's state: workspaces, tabs, panes and the clients' views, and
 //! every command that changes them.
 use crate::command::{
-    self, AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, Pick, Sibling, SwapWith, TabId,
-    WsId, WsRef,
+    self, AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, PanePick, Pick, Sibling, SwapWith,
+    TabId, WsId, WsRef,
 };
 use crate::config::Config;
+use crate::copy::MAX_CELLS;
 use crate::json::Json;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::{self, Axis, Node, PaneId, Placement, Rect, Side};
@@ -98,10 +99,13 @@ pub enum Error {
     NoCurrentTab,
     NoCurrentWorkspace,
     NoLastPane,
+    /// The client focuses no pane.
+    NoPaneToCopy,
     // What changed under a command, or is not where it must be.
     WorkspaceGone,
     TabGone,
     PaneGone,
+    NoSuchPane,
     DestinationGone,
     NotInTab,
     OtherNotInTab,
@@ -119,8 +123,12 @@ pub enum Error {
     },
     /// Nothing runs in the pane but its shell.
     OnlyShell(PaneId),
-    SelectTabPick,
-    SelectWorkspacePick,
+    // What copy mode cannot do.
+    NoRows,
+    /// The history no longer holds the rows copy mode was on.
+    RowsDropped,
+    /// A selection of more than `MAX_CELLS` cells.
+    SelectionTooLarge,
     // A name that cannot be given.
     EmptyName,
     ControlInName,
@@ -135,7 +143,6 @@ pub enum Error {
     Pane(crate::pane::Error),
     Process(crate::process::Error),
     Terminate(fuxix::Errno),
-    Copy(crate::copy::Error),
     Config(crate::config::Error),
     Reload(crate::config::Error),
 }
@@ -168,9 +175,11 @@ impl std::fmt::Display for Error {
             Error::NoCurrentTab => f.write_str("no tab"),
             Error::NoCurrentWorkspace => f.write_str("no workspace"),
             Error::NoLastPane => f.write_str("no previously focused pane"),
+            Error::NoPaneToCopy => f.write_str("no pane to copy from"),
             Error::WorkspaceGone => f.write_str("the workspace is gone"),
             Error::TabGone => f.write_str("the tab is gone"),
             Error::PaneGone => f.write_str("the pane is gone"),
+            Error::NoSuchPane => f.write_str("no such pane"),
             Error::DestinationGone => f.write_str("the destination tab is gone"),
             Error::NotInTab => f.write_str("the pane is in no tab"),
             Error::OtherNotInTab => f.write_str("the other pane is in no tab"),
@@ -184,10 +193,11 @@ impl std::fmt::Display for Error {
                 write!(f, "no pane {} of {from}", direction.name())
             }
             Error::OnlyShell(pane) => write!(f, "nothing is running in {pane} but its shell"),
-            Error::SelectTabPick => f.write_str("select-tab takes -t, --next or --previous"),
-            Error::SelectWorkspacePick => {
-                f.write_str("select-workspace takes -t, --next or --previous")
+            Error::NoRows => f.write_str("the pane has no rows"),
+            Error::RowsDropped => {
+                f.write_str("copy mode ended: the history dropped the rows it held")
             }
+            Error::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
             Error::EmptyName => f.write_str("a name cannot be empty"),
             Error::ControlInName => f.write_str("a name cannot contain control characters"),
             Error::LongName => f.write_str("a name is at most 256 bytes"),
@@ -199,7 +209,6 @@ impl std::fmt::Display for Error {
             Error::Pane(error) => error.fmt(f),
             Error::Process(error) => error.fmt(f),
             Error::Terminate(error) => error.fmt(f),
-            Error::Copy(error) => error.fmt(f),
             Error::Config(error) => error.fmt(f),
             Error::Reload(error) => write!(f, "{error}; the previous configuration is kept"),
         }
@@ -214,7 +223,6 @@ impl std::error::Error for Error {
             Error::Pane(error) => Some(error),
             Error::Process(error) => Some(error),
             Error::Terminate(error) => Some(error),
-            Error::Copy(error) => Some(error),
             Error::Config(error) | Error::Reload(error) => Some(error),
             Error::NoWorkspace(_)
             | Error::NoWorkspaceNamed(_)
@@ -237,9 +245,11 @@ impl std::error::Error for Error {
             | Error::NoCurrentTab
             | Error::NoCurrentWorkspace
             | Error::NoLastPane
+            | Error::NoPaneToCopy
             | Error::WorkspaceGone
             | Error::TabGone
             | Error::PaneGone
+            | Error::NoSuchPane
             | Error::DestinationGone
             | Error::NotInTab
             | Error::OtherNotInTab
@@ -249,8 +259,9 @@ impl std::error::Error for Error {
             | Error::NoBorder { .. }
             | Error::NoNeighbor { .. }
             | Error::OnlyShell(_)
-            | Error::SelectTabPick
-            | Error::SelectWorkspacePick
+            | Error::NoRows
+            | Error::RowsDropped
+            | Error::SelectionTooLarge
             | Error::EmptyName
             | Error::ControlInName
             | Error::LongName
@@ -276,12 +287,6 @@ impl From<crate::pane::Error> for Error {
 impl From<crate::process::Error> for Error {
     fn from(error: crate::process::Error) -> Error {
         Error::Process(error)
-    }
-}
-
-impl From<crate::copy::Error> for Error {
-    fn from(error: crate::copy::Error) -> Error {
-        Error::Copy(error)
     }
 }
 
@@ -691,6 +696,28 @@ impl Session {
         self.settle();
     }
 
+    /// Gives a client an error notice, if it is still attached.
+    pub fn error_to(&mut self, client: ClientId, text: impl Into<String>) {
+        if let Some(view) = self.views.get_mut(&client) {
+            view.error(text);
+        }
+    }
+
+    /// Gives a client a notice, if it is still attached.
+    pub fn info_to(&mut self, client: ClientId, text: impl Into<String>) {
+        if let Some(view) = self.views.get_mut(&client) {
+            view.info(text);
+        }
+    }
+
+    /// Sets a client's mode, if it is still attached, for its next paint.
+    pub fn set_mode(&mut self, client: ClientId, mode: Mode) {
+        if let Some(view) = self.views.get_mut(&client) {
+            view.mode = mode;
+            view.dirty = true;
+        }
+    }
+
     // -------------------------------------------------------------- layout
 
     /// The area panes share on a client's screen: all but the bar.
@@ -892,7 +919,7 @@ impl Session {
     }
 
     /// Whether `path` is a layer: some binding's keys go on past it.
-    fn is_layer(&self, path: &[KeyPress]) -> bool {
+    pub(crate) fn is_layer(&self, path: &[KeyPress]) -> bool {
         self.config
             .bindings
             .iter()
@@ -1162,7 +1189,7 @@ impl Session {
         if matches!(
             action,
             Some(
-                ClientAction::SelectPane(Pick::Next | Pick::Previous | Pick::Last)
+                ClientAction::SelectPane(PanePick::Step(_) | PanePick::Last)
                     | ClientAction::ChoosePane { .. }
             )
         ) {
@@ -1172,11 +1199,11 @@ impl Session {
             }
             return alone(Kind::Pane, panes);
         }
-        if let Some(ClientAction::SelectTab(Pick::Next | Pick::Previous)) = action {
+        if let Some(ClientAction::SelectTab(Pick::Step(_))) = action {
             let tabs = view.and_then(|v| self.workspace(v.workspace));
             return alone(Kind::Tab, tabs.map_or(0, |w| w.tabs.len()));
         }
-        if let Some(ClientAction::SelectWorkspace(Pick::Next | Pick::Previous)) = action {
+        if let Some(ClientAction::SelectWorkspace(Pick::Step(_))) = action {
             return alone(Kind::Workspace, self.workspaces.len());
         }
         if let Command::PasteBuffer { index, .. } = command {
@@ -1516,7 +1543,7 @@ impl Session {
                 let source = self.pane_target(target, &ctx)?;
                 crate::overlay::open_pane_chooser(self, client, source)
             }
-            ClientAction::CopyMode => Ok(crate::copy::enter(self, client)?),
+            ClientAction::CopyMode => crate::copy::enter(self, client),
         }
     }
 
@@ -1746,13 +1773,13 @@ impl Session {
         }
     }
 
-    fn select_pane(&mut self, client: ClientId, pick: Pick<PaneId>) -> Result<String, Error> {
+    fn select_pane(&mut self, client: ClientId, pick: PanePick) -> Result<String, Error> {
         let view = self.views.get(&client).ok_or(Error::NoSuchClient)?;
         let tab = view.tab().ok_or(Error::NoCurrentTab)?;
         let panes = self.tab_panes(tab);
         let current = view.focus();
         let target = match pick {
-            Pick::Id(p) => {
+            PanePick::Id(p) => {
                 let (ws, tab) = self.locate(p).ok_or(Error::NoPane(p))?;
                 let view = self.view_mut(client)?;
                 view.workspace = ws;
@@ -1761,23 +1788,23 @@ impl Session {
                 view.zoom = false;
                 return Ok(String::new());
             }
-            Pick::Next | Pick::Previous => {
+            PanePick::Step(toward) => {
                 if panes.len() < 2 {
                     return Err(Error::OnlyOne(Kind::Pane));
                 }
                 let index = current
                     .and_then(|c| panes.iter().position(|p| *p == c))
                     .unwrap_or(0);
-                let next = round(index, panes.len(), matches!(pick, Pick::Next));
+                let next = round(index, panes.len(), toward);
                 panes.get(next).copied().ok_or(Error::NoCurrentPane)?
             }
-            Pick::Last => view
+            PanePick::Last => view
                 .last_of
                 .get(&tab)
                 .copied()
                 .filter(|p| panes.contains(p) && Some(*p) != current)
                 .ok_or(Error::NoLastPane)?,
-            Pick::Toward(direction) => {
+            PanePick::Toward(direction) => {
                 let placement = layout::place(
                     self.root(tab).ok_or(Error::TabEmpty)?,
                     Self::pane_area(view),
@@ -1803,7 +1830,7 @@ impl Session {
                 target_ws = self.tab_workspace(t).ok_or(Error::NoTab(t))?;
                 t
             }
-            Pick::Next | Pick::Previous => {
+            Pick::Step(toward) => {
                 if tabs.len() < 2 {
                     return Err(Error::OnlyOne(Kind::Tab));
                 }
@@ -1812,11 +1839,8 @@ impl Session {
                     .tab()
                     .and_then(|c| tabs.iter().position(|t| t.id == c))
                     .unwrap_or(0);
-                let next = round(index, tabs.len(), matches!(pick, Pick::Next));
+                let next = round(index, tabs.len(), toward);
                 tabs.get(next).map(|t| t.id).ok_or(Error::NoCurrentTab)?
-            }
-            Pick::Last | Pick::Toward(_) => {
-                return Err(Error::SelectTabPick);
             }
         };
         let view = self.view_mut(client)?;
@@ -1834,20 +1858,17 @@ impl Session {
             .workspace;
         let target = match pick {
             Pick::Id(r) => self.resolve_ws(r)?,
-            Pick::Next | Pick::Previous => {
+            Pick::Step(toward) => {
                 let len = self.workspaces.len();
                 if len < 2 {
                     return Err(Error::OnlyOne(Kind::Workspace));
                 }
                 let index = self.ws_index(current).unwrap_or(0);
-                let next = round(index, len, matches!(pick, Pick::Next));
+                let next = round(index, len, *toward);
                 self.workspaces
                     .get(next)
                     .map(|w| w.id)
                     .ok_or(Error::NoCurrentWorkspace)?
-            }
-            Pick::Last | Pick::Toward(_) => {
-                return Err(Error::SelectWorkspacePick);
             }
         };
         let view = self.view_mut(client)?;
@@ -2001,13 +2022,12 @@ fn advance(counter: &mut u32, what: &'static str) -> Result<u32, Error> {
 }
 
 /// The index after `index` among `len`, or before it, going round.
-fn round(index: usize, len: usize, forward: bool) -> usize {
-    if forward {
-        index.checked_add(1).filter(|next| *next < len).unwrap_or(0)
-    } else {
-        index
+fn round(index: usize, len: usize, toward: Sibling) -> usize {
+    match toward {
+        Sibling::Next => index.checked_add(1).filter(|next| *next < len).unwrap_or(0),
+        Sibling::Previous => index
             .checked_sub(1)
-            .unwrap_or_else(|| len.saturating_sub(1))
+            .unwrap_or_else(|| len.saturating_sub(1)),
     }
 }
 

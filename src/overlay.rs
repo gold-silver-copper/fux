@@ -474,30 +474,32 @@ pub fn open_pane_chooser(
 /// Runs a command for a client: output and errors become its notice.
 pub fn run_for(session: &mut Session, client: ClientId, command: &Command) {
     let outcome = session.run_command(command, &Ctx::client(client));
-    if let Some(view) = session.views.get_mut(&client) {
-        if outcome.status != 0 {
-            view.error(outcome.stderr.lines().next().unwrap_or("failed").to_owned());
-        } else if let Some(line) = outcome.stdout.lines().find(|l| !l.trim().is_empty())
-            && !matches!(
-                command,
-                Command::Split { .. }
-                    | Command::NewTab { .. }
-                    | Command::NewWorkspace { .. }
-                    | Command::MovePane { .. }
-            )
-        {
-            let more = outcome
-                .stdout
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .count()
-                > 1;
-            view.info(if more {
+    if outcome.status != 0 {
+        let line = outcome.stderr.lines().next().unwrap_or("failed");
+        session.error_to(client, line);
+    } else if let Some(line) = outcome.stdout.lines().find(|l| !l.trim().is_empty())
+        && !matches!(
+            command,
+            Command::Split { .. }
+                | Command::NewTab { .. }
+                | Command::NewWorkspace { .. }
+                | Command::MovePane { .. }
+        )
+    {
+        let more = outcome
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count()
+            > 1;
+        session.info_to(
+            client,
+            if more {
                 format!("{line} …")
             } else {
                 line.to_owned()
-            });
-        }
+            },
+        );
     }
 }
 
@@ -507,24 +509,41 @@ fn run_line(session: &mut Session, client: ClientId, argv: &[String]) {
     match crate::command::parse(argv) {
         Ok(command) => run_for(session, client, &command),
         Err(usage) => {
-            if let Some(view) = session.views.get_mut(&client) {
-                let message = usage.to_string();
-                view.error(message.lines().next().unwrap_or("failed").to_owned());
-            }
+            let message = usage.to_string();
+            session.error_to(client, message.lines().next().unwrap_or("failed"));
         }
     }
 }
 
 /// Runs an entry of a list or the column, unless it cannot run now, in
-/// which case the reason is shown and nothing happens.
-fn run_entry(session: &mut Session, client: ClientId, command: &Command) {
+/// which case the reason is shown and nothing happens: a list closes, to
+/// `closed`, only if its entry runs.
+fn run_entry(session: &mut Session, client: ClientId, command: &Command, closed: Option<Mode>) {
     if let Some(reason) = session.unavailable(command, &Ctx::client(client)) {
-        if let Some(view) = session.views.get_mut(&client) {
-            view.error(reason.to_string());
-        }
-        return;
+        return session.error_to(client, reason.to_string());
+    }
+    if let Some(mode) = closed {
+        session.set_mode(client, mode);
     }
     run_for(session, client, command);
+}
+
+/// Runs the binding of `keys`, if there is one, entering its layer's repeat
+/// mode if it repeats: whether there is one.
+fn run_binding(session: &mut Session, client: ClientId, keys: &[KeyPress]) -> bool {
+    let Some(binding) = session.config.bindings.iter().find(|b| b.keys == keys) else {
+        return false;
+    };
+    let command = binding.parsed.clone();
+    let mode = match keys.split_last() {
+        Some((_, path)) if binding.repeat => Mode::Repeat {
+            path: path.to_vec(),
+        },
+        Some(_) | None => Mode::Normal,
+    };
+    session.set_mode(client, mode);
+    run_entry(session, client, &command, None);
+    true
 }
 
 fn plain(press: KeyPress) -> Option<Key> {
@@ -555,7 +574,7 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let new = match unmodified {
         _ if press == prefix => {
             // The prefix, at any depth, sends it to the pane.
-            set_mode(session, client, Mode::Normal);
+            session.set_mode(client, Mode::Normal);
             send_key(session, client, prefix);
             return;
         }
@@ -567,18 +586,18 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
         Some(Key::Home) => 0,
         Some(Key::End) => last,
         Some(Key::Escape) => {
-            set_mode(session, client, Mode::Normal);
+            session.set_mode(client, Mode::Normal);
             return;
         }
         Some(Key::Enter) => {
             match column_selected(session, &path, selected) {
                 Some(ColumnRow::Binding { command, .. }) => {
                     let command = command.clone();
-                    set_mode(session, client, Mode::Normal);
-                    run_entry(session, client, &command);
+                    session.set_mode(client, Mode::Normal);
+                    run_entry(session, client, &command, None);
                 }
                 Some(ColumnRow::Layer { key, .. }) => follow(session, client, &path, key),
-                Some(ColumnRow::Heading(_)) | None => set_mode(session, client, Mode::Normal),
+                Some(ColumnRow::Heading(_)) | None => session.set_mode(client, Mode::Normal),
             }
             return;
         }
@@ -587,8 +606,7 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
             return;
         }
     };
-    set_mode(
-        session,
+    session.set_mode(
         client,
         Mode::Column {
             path,
@@ -603,36 +621,21 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
 fn follow(session: &mut Session, client: ClientId, path: &[KeyPress], press: KeyPress) {
     let mut keys = path.to_vec();
     keys.push(crate::config::folded(press));
-    let bindings = &session.config.bindings;
-    if let Some(binding) = bindings.iter().find(|b| b.keys == keys) {
-        let (command, repeat) = (binding.parsed.clone(), binding.repeat);
-        let mode = if repeat {
-            Mode::Repeat {
-                path: path.to_vec(),
-            }
-        } else {
-            Mode::Normal
-        };
-        set_mode(session, client, mode);
-        run_entry(session, client, &command);
-    } else if bindings
-        .iter()
-        .any(|b| b.keys.len() > keys.len() && b.keys.starts_with(&keys))
-    {
-        set_mode(
-            session,
+    if run_binding(session, client, &keys) {
+        return;
+    }
+    if session.is_layer(&keys) {
+        session.set_mode(
             client,
             Mode::Column {
                 path: keys,
                 selected: 0,
             },
         );
-    } else if let Some(view) = session.views.get_mut(&client) {
+    } else {
         let prefix = session.config.prefix;
-        view.error(format!(
-            "{prefix} {} is not bound",
-            crate::config::keys_text(&keys)
-        ));
+        let keys = crate::config::keys_text(&keys);
+        session.error_to(client, format!("{prefix} {keys} is not bound"));
     }
 }
 
@@ -646,8 +649,7 @@ pub fn repeat_key(session: &mut Session, client: ClientId, press: KeyPress) {
     };
     let path = path.clone();
     if press == prefix {
-        set_mode(
-            session,
+        session.set_mode(
             client,
             Mode::Column {
                 path: Vec::new(),
@@ -657,41 +659,18 @@ pub fn repeat_key(session: &mut Session, client: ClientId, press: KeyPress) {
         return;
     }
     if matches!(plain(press), Some(Key::Escape | Key::Enter)) {
-        set_mode(session, client, Mode::Normal);
+        session.set_mode(client, Mode::Normal);
         return;
     }
     let mut keys = path.clone();
     keys.push(crate::config::folded(press));
-    let found = session
-        .config
-        .bindings
-        .iter()
-        .find(|b| b.keys == keys)
-        .map(|b| (b.parsed.clone(), b.repeat));
-    match found {
-        Some((command, repeat)) => {
-            let mode = if repeat {
-                Mode::Repeat { path }
-            } else {
-                Mode::Normal
-            };
-            set_mode(session, client, mode);
-            run_entry(session, client, &command);
-        }
-        None => {
-            let title = layer_title(session, &path).unwrap_or_default().to_owned();
-            set_mode(session, client, Mode::Normal);
-            if let Some(view) = session.views.get_mut(&client) {
-                view.info(format!("{title} ended: {press} is not one of its keys"));
-            }
-        }
-    }
-}
-
-fn set_mode(session: &mut Session, client: ClientId, mode: Mode) {
-    if let Some(view) = session.views.get_mut(&client) {
-        view.mode = mode;
-        view.dirty = true;
+    if !run_binding(session, client, &keys) {
+        let title = layer_title(session, &path).unwrap_or_default().to_owned();
+        session.set_mode(client, Mode::Normal);
+        session.info_to(
+            client,
+            format!("{title} ended: {press} is not one of its keys"),
+        );
     }
 }
 
@@ -707,9 +686,8 @@ pub fn send_key(session: &mut Session, client: ClientId, press: KeyPress) {
     if let Err(error) = p
         .input
         .push_with(|out| crate::encode::key_bytes(press, application, out))
-        && let Some(view) = session.views.get_mut(&client)
     {
-        view.error(error.to_string());
+        session.error_to(client, error.to_string());
     }
 }
 
@@ -739,10 +717,7 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
         Some(Key::Home) => list.selected = 0,
         Some(Key::End) => list.selected = last,
         Some(Key::Escape) | Some(Key::Char('q')) => close = true,
-        Some(Key::Enter) => {
-            run = list.items.get(list.selected).map(|i| i.command.clone());
-            close = run.is_some();
-        }
+        Some(Key::Enter) => run = list.items.get(list.selected).map(|i| i.command.clone()),
         Some(Key::Char(key @ ('r' | 'x'))) if list.chooser => {
             if let Some(subject) = list
                 .items
@@ -756,26 +731,16 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
                     ClientAction::ConfirmClose { kind, target }
                 };
                 run = Some(action.here());
-                close = true;
             }
         }
         _ => {}
     }
     view.dirty = true;
-    if let Some(command) = run {
+    match run {
         // An unavailable entry explains itself and the list stays open.
-        if let Some(reason) = session.unavailable(&command, &Ctx::client(client)) {
-            if let Some(view) = session.views.get_mut(&client) {
-                view.error(reason.to_string());
-            }
-            return;
-        }
-        if let Some(view) = session.views.get_mut(&client) {
-            view.mode = Mode::Normal;
-        }
-        run_for(session, client, &command);
-    } else if close && let Some(view) = session.views.get_mut(&client) {
-        view.mode = Mode::Normal;
+        Some(command) => run_entry(session, client, &command, Some(Mode::Normal)),
+        None if close => session.set_mode(client, Mode::Normal),
+        None => {}
     }
 }
 
@@ -876,12 +841,7 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
             let argv = match crate::words::split(&prompt.text) {
                 Ok(argv) if argv.is_empty() => return,
                 Ok(argv) => argv,
-                Err(error) => {
-                    if let Some(view) = session.views.get_mut(&client) {
-                        view.error(error.to_string());
-                    }
-                    return;
-                }
+                Err(error) => return session.error_to(client, error.to_string()),
             };
             run_line(session, client, &argv);
         }
@@ -889,12 +849,7 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
             let id = match &target {
                 AnyRef::Workspace(r) => match session.resolve_ws(r) {
                     Ok(w) => w.to_string(),
-                    Err(error) => {
-                        if let Some(view) = session.views.get_mut(&client) {
-                            view.error(error.to_string());
-                        }
-                        return;
-                    }
+                    Err(error) => return session.error_to(client, error.to_string()),
                 },
                 other @ (AnyRef::Pane(_) | AnyRef::Tab(_)) => describe(other),
             };
@@ -1343,7 +1298,7 @@ mod tests {
                 typed.input(c, b"\r");
             }
             let (mut ran, d) = busy()?;
-            run_entry(&mut ran, d, &binding.parsed);
+            run_entry(&mut ran, d, &binding.parsed, None);
             assert_eq!(state(&mut typed, c), state(&mut ran, d), "{keys}");
         }
         Ok(())
