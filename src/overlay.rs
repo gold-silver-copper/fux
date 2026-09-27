@@ -372,18 +372,7 @@ pub fn open_tab_chooser(
             }
         })
         .collect();
-    let title = match moving {
-        Some(p) => format!("move {p} to tab"),
-        None => "tabs".into(),
-    };
-    open_list(
-        session,
-        client,
-        title,
-        items,
-        true,
-        moving.map(AnyRef::Pane),
-    )
+    open_chooser(session, client, "tab", items, moving)
 }
 
 /// Every workspace, with its tabs' panes.
@@ -419,9 +408,21 @@ pub fn open_workspace_chooser(
             }
         })
         .collect();
+    open_chooser(session, client, "workspace", items, moving)
+}
+
+/// A chooser of tabs or workspaces, `what`, to select one or to move a pane
+/// to.
+fn open_chooser(
+    session: &mut Session,
+    client: ClientId,
+    what: &str,
+    items: Vec<Item>,
+    moving: Option<PaneId>,
+) -> Result<String, Error> {
     let title = match moving {
-        Some(p) => format!("move {p} to workspace"),
-        None => "workspaces".into(),
+        Some(p) => format!("move {p} to {what}"),
+        None => format!("{what}s"),
     };
     open_list(
         session,
@@ -741,30 +742,25 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
             run = list.items.get(list.selected).map(|i| i.command.clone());
             close = run.is_some();
         }
-        Some(Key::Char('r')) if list.chooser => {
+        Some(Key::Char(key @ ('r' | 'x'))) if list.chooser => {
             if let Some(subject) = list
                 .items
                 .get(list.selected)
                 .and_then(|i| i.subject.clone())
             {
-                run = Some(Command::RenamePrompt {
-                    client: None,
-                    kind: subject.kind(),
-                    target: Some(subject),
-                });
-                close = true;
-            }
-        }
-        Some(Key::Char('x')) if list.chooser => {
-            if let Some(subject) = list
-                .items
-                .get(list.selected)
-                .and_then(|i| i.subject.clone())
-            {
-                run = Some(Command::ConfirmClose {
-                    client: None,
-                    kind: subject.kind(),
-                    target: Some(subject),
+                let (client, kind, target) = (None, subject.kind(), Some(subject));
+                run = Some(if key == 'r' {
+                    Command::RenamePrompt {
+                        client,
+                        kind,
+                        target,
+                    }
+                } else {
+                    Command::ConfirmClose {
+                        client,
+                        kind,
+                        target,
+                    }
                 });
                 close = true;
             }

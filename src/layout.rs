@@ -320,34 +320,10 @@ pub fn swap(node: &mut Node, a: PaneId, b: PaneId) {
 }
 
 /// Shares `len` cells among children with `weights`, giving each at least
-/// its minimum while there is room; children that do not fit get zero.
+/// its minimum; `len` is at least their minimums together (`place_node`
+/// lays out a split too small for them without it).
 fn distribute(len: u16, weights: &[u32], mins: &[u16]) -> Vec<u16> {
     let n = weights.len();
-    let needed: u32 = mins.iter().map(|m| u32::from(*m)).sum();
-    if u32::from(len) < needed {
-        // Not enough room: minimums in order while they fit; the last child
-        // shown takes what is left.
-        let mut sizes = vec![0u16; n];
-        let mut left = len;
-        let mut last = None;
-        for (i, min) in mins.iter().enumerate() {
-            let Some(rest) = left.checked_sub(*min) else {
-                break;
-            };
-            if let Some(size) = sizes.get_mut(i) {
-                *size = *min;
-            }
-            left = rest;
-            last = Some(i);
-        }
-        // What is left fits: the sizes add up to at most `len`.
-        if let Some(size) = last.and_then(|i| sizes.get_mut(i))
-            && let Some(grown) = size.checked_add(left)
-        {
-            *size = grown;
-        }
-        return sizes;
-    }
     let mut fixed = vec![false; n];
     let mut sizes = vec![0u16; n];
     loop {
