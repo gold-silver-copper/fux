@@ -857,17 +857,13 @@ fn yank(session: &mut Session, client: ClientId, ends: Option<Ends>) {
     };
     let screen = pane.screen();
     let Some((kind, start, end)) = ends else {
-        if let Some(view) = session.views.get_mut(&client) {
-            view.error("nothing selected: v, s or x starts a selection");
-        }
+        session.error_to(client, "nothing selected: v, s or x starts a selection");
         return;
     };
     let copied = match text(screen, kind, start, end) {
         Ok(copied) => copied,
         Err(error) => {
-            if let Some(view) = session.views.get_mut(&client) {
-                view.error(error.to_string());
-            }
+            session.error_to(client, error.to_string());
             return;
         }
     };
@@ -891,9 +887,7 @@ fn yank(session: &mut Session, client: ClientId, ends: Option<Ends>) {
     session.buffers.push_front(copied);
     session.buffers.truncate(session.config.buffers);
     leave(session, client);
-    if let Some(view) = session.views.get_mut(&client) {
-        view.info(note);
-    }
+    session.info_to(client, note);
 }
 
 #[cfg(test)]

@@ -57,11 +57,7 @@ impl Session {
             match input {
                 Input::Key(press) => self.key(client, press),
                 Input::Paste(text) => self.paste(client, &text),
-                Input::PasteTooLong => {
-                    if let Some(view) = self.views.get_mut(&client) {
-                        view.error("paste exceeds 64 KiB; discarded");
-                    }
-                }
+                Input::PasteTooLong => self.error_to(client, "paste exceeds 64 KiB; discarded"),
                 Input::FocusIn | Input::FocusOut => {
                     self.focus_event(client, input == Input::FocusIn)
                 }
@@ -118,9 +114,8 @@ impl Session {
         if let Err(error) = p
             .input
             .push_with(|out| crate::encode::paste(text, bracketed, out))
-            && let Some(view) = self.views.get_mut(&client)
         {
-            view.error(error.to_string());
+            self.error_to(client, error.to_string());
         }
     }
 
