@@ -119,20 +119,8 @@ impl Grid {
     }
     /// The text of a row, trailing blanks trimmed: for `capture-client`.
     pub fn row_text(&self, y: u16) -> String {
-        let mut out = String::new();
-        for x in 0..self.cols {
-            if let Some(cell) = self.get(y, x) {
-                if cell.is_wide_continuation() {
-                    continue;
-                }
-                out.push_str(if cell.has_contents() {
-                    cell.contents()
-                } else {
-                    " "
-                });
-            }
-        }
-        out.trim_end().to_owned()
+        let row = self.row(y).iter().filter(|c| !c.is_wide_continuation());
+        row.map(shown).collect::<String>().trim_end().to_owned()
     }
 
     /// Writes `text` from (y, x), clipped at `limit`, wide glyphs whole; the
@@ -171,6 +159,15 @@ impl Grid {
         for x in from..to.min(self.cols) {
             self.set(y, x, blank);
         }
+    }
+}
+
+/// What a cell shows: its text, or a space if it has none.
+pub fn shown(cell: &Cell) -> &str {
+    if cell.has_contents() {
+        cell.contents()
+    } else {
+        " "
     }
 }
 
@@ -274,14 +271,8 @@ pub fn compose_into(session: &Session, client: ClientId, grid: &mut Grid) -> boo
                     && let Some(cell) = gx.checked_add(x).and_then(|x| grid.get_mut(gy, x))
                     && !cell.is_wide_continuation()
                 {
-                    let attrs = cell.attributes();
-                    let text = if cell.has_contents() {
-                        cell.contents()
-                    } else {
-                        " "
-                    };
-                    *cell = Cell::new(text, cell.is_wide(), attrs.with_inverse(!attrs.inverse()))
-                        .unwrap_or(*cell);
+                    let attrs = cell.attributes().with_inverse(!cell.inverse());
+                    *cell = Cell::new(shown(cell), cell.is_wide(), attrs).unwrap_or(*cell);
                 }
             }
         }
@@ -300,12 +291,7 @@ pub fn compose_into(session: &Session, client: ClientId, grid: &mut Grid) -> boo
                 .config
                 .bindings
                 .iter()
-                .find(|b| {
-                    b.command
-                        .iter()
-                        .map(String::as_str)
-                        .eq(argv.iter().copied())
-                })
+                .find(|b| b.command == argv)
                 .map_or_else(
                     || argv.join(" "),
                     |b| {
@@ -376,13 +362,7 @@ pub fn compose_into(session: &Session, client: ClientId, grid: &mut Grid) -> boo
             for (i, item) in list.items.iter().enumerate().skip(start).take(capacity) {
                 let dim = !list.chooser && session.unavailable(&item.command, &ctx).is_some();
                 let marker = if item.current { "*" } else { " " };
-                let mut attrs = panel();
-                if i == list.selected {
-                    attrs = attrs.with_inverse(true);
-                }
-                if dim {
-                    attrs = attrs.with_dim(true);
-                }
+                let attrs = panel().with_inverse(i == list.selected).with_dim(dim);
                 lines.push((format!("{marker} {}", item.label), attrs));
             }
             let below = list
@@ -711,49 +691,38 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
         .max()
         .unwrap_or(0);
     let ctx = crate::session::Ctx::client(view.id);
-    let mut entries: Vec<(String, Attributes, bool)> = Vec::new();
+    let mut entries: Vec<(String, Attributes)> = Vec::new();
     let mut index = 0usize;
     let mut selected_row = 0usize;
     for row in &rows {
-        match row {
+        // An entry's key, what it does, and whether it cannot run now.
+        let (key, text, dim) = match row {
             ColumnRow::Heading(group) => {
-                entries.push((group.clone(), panel().with_bold(true), false))
+                entries.push((group.clone(), panel().with_bold(true)));
+                continue;
             }
             ColumnRow::Binding {
                 key,
                 label,
                 command,
-            } => {
-                let key = key.to_string();
-                let pad: String =
-                    std::iter::repeat_n(' ', usize::from(key_width.saturating_sub(width(&key))))
-                        .collect();
-                let mut attrs = panel();
-                if session.unavailable(command, &ctx).is_some() {
-                    attrs = attrs.with_dim(true);
-                }
-                if index == selected {
-                    attrs = attrs.with_inverse(true);
-                    selected_row = entries.len();
-                }
-                entries.push((format!("{pad}{key}  {label}"), attrs, true));
-                // At most the number of rows.
-                index = index.saturating_add(1);
-            }
-            ColumnRow::Layer { key, title } => {
-                let key = key.to_string();
-                let pad: String =
-                    std::iter::repeat_n(' ', usize::from(key_width.saturating_sub(width(&key))))
-                        .collect();
-                let mut attrs = panel();
-                if index == selected {
-                    attrs = attrs.with_inverse(true);
-                    selected_row = entries.len();
-                }
-                entries.push((format!("{pad}{key}  {title}…"), attrs, true));
-                index = index.saturating_add(1);
-            }
+            } => (
+                key,
+                label.clone(),
+                session.unavailable(command, &ctx).is_some(),
+            ),
+            ColumnRow::Layer { key, title } => (key, format!("{title}…"), false),
+        };
+        let key = key.to_string();
+        let pad: String =
+            std::iter::repeat_n(' ', usize::from(key_width.saturating_sub(width(&key)))).collect();
+        let mut attrs = panel().with_dim(dim);
+        if index == selected {
+            attrs = attrs.with_inverse(true);
+            selected_row = entries.len();
         }
+        entries.push((format!("{pad}{key}  {text}"), attrs));
+        // At most the number of rows.
+        index = index.saturating_add(1);
     }
     let available = usize::from(view.rows.saturating_sub(1));
     let heading = available >= 4;
@@ -780,9 +749,7 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
     if start > 0 {
         lines.push((format!("▲ {start} more"), panel().with_dim(true)));
     }
-    for (text, attrs, _) in entries.iter().skip(start).take(body_room) {
-        lines.push((text.clone(), *attrs));
-    }
+    lines.extend(entries.iter().skip(start).take(body_room).cloned());
     let below = entries
         .len()
         .saturating_sub(start.saturating_add(body_room));
@@ -860,13 +827,13 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
     for y in 0..new.rows {
         let row = new.row(y);
         // What the client shows of the row, unless it is painted whole.
-        let shown = old.filter(|_| !full).map(|o| o.row(y));
+        let before = old.filter(|_| !full).map(|o| o.row(y));
         // An unchanged row costs this one comparison.
-        if shown == Some(row) {
+        if before == Some(row) {
             continue;
         }
         let cell = |x: u16| row.get(usize::from(x));
-        let changed = |x: u16| shown.is_none_or(|o| o.get(usize::from(x)) != cell(x));
+        let changed = |x: u16| before.is_none_or(|o| o.get(usize::from(x)) != cell(x));
         let mut x = 0u16;
         while x < new.cols {
             // Moving right stops at the last column, where the loop ends.
@@ -900,11 +867,7 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
                     // A wide glyph cannot fit in the last column.
                     out.push(b' ');
                 } else {
-                    out.extend_from_slice(if cell.has_contents() {
-                        cell.contents().as_bytes()
-                    } else {
-                        b" "
-                    });
+                    out.extend_from_slice(shown(cell).as_bytes());
                 }
                 cx = cx.saturating_add(if cell.is_wide() { 2 } else { 1 });
             }
