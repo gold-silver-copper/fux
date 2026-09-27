@@ -51,10 +51,11 @@ tree, a socket and a render loop.
 **Stays:** `fux-vt`, published as 0.1.1, then 0.1.2 with the same API and no
 panicking calls, then 0.1.3 with the same API again, then 0.1.4, which adds
 `Screen::focus_reporting` and `Screen::cursor_shape` so that fux reads a
-pane's output once. It is the emulator, with no dependency but
+pane's output once, then 0.1.5 with the same API, replying and starting its
+screens again without allocating. It is the emulator, with no dependency but
 `unicode-width`, and koh depends on it. A fux-vt change is allowed as a bug
-fix with a failing test, or as an addition to its API that makes fux faster
-or its code simpler. Either must keep every item koh uses (`Parser`,
+fix with a failing test, or as a change inside it or an addition to its API
+that makes fux faster or its code simpler. Either must keep every item koh uses (`Parser`,
 `Options`, `Event`, `Sink`, `Screen`, `Cell`, `Color`, the mouse enums,
 `Error`, and their meanings), and is checked against koh in a throwaway
 clone. The branch
@@ -587,7 +588,7 @@ Every key is a letter, in either case, without Ctrl or Alt.
 
 | Crate | Why |
 | --- | --- |
-| `fux-vt` (path, 0.1.4) | Emulator |
+| `fux-vt` (path, 0.1.5) | Emulator |
 | `fuxix` (path, 0.1.2) | fux's system calls over `libc`, each safe to call: PTYs, processes, poll, sockets, terminal modes; its README says why each is not std's |
 | `signal-hook` | Signal → self-pipe (fuxix installs no handlers) |
 | `unicode-width` | Bar and overlay layout (already in the graph through fux-vt) |

@@ -482,12 +482,26 @@ impl Screen {
             b'M' => self.reverse_index()?,
             b'c' => {
                 let (rows, cols) = self.size();
-                let history = self.primary.history_limit;
                 let mut next = self.next_id;
-                let primary = Grid::new(rows, cols, history, &mut next, self.version)?;
-                let alternate = Grid::new(rows, cols, 0, &mut next, self.version)?;
-                self.primary = primary;
-                self.alternate = alternate;
+                // Both grids start again: in the storage they have, if both
+                // hold only their live rows at this size, else afresh. Either
+                // way nothing changes unless both can.
+                let same = |g: &Grid| (g.rows.get(), g.cols.get()) == (rows, cols);
+                let recycle = [&self.primary, &self.alternate]
+                    .iter()
+                    .all(|g| g.recyclable() && same(g));
+                if recycle {
+                    let needed = u64::from(rows).saturating_mul(2);
+                    next.checked_add(needed).ok_or(Error::IdentityExhausted)?;
+                    self.primary.clear(&mut next, self.version)?;
+                    self.alternate.clear(&mut next, self.version)?;
+                } else {
+                    let history = self.primary.history_limit;
+                    let primary = Grid::new(rows, cols, history, &mut next, self.version)?;
+                    let alternate = Grid::new(rows, cols, 0, &mut next, self.version)?;
+                    self.primary = primary;
+                    self.alternate = alternate;
+                }
                 self.next_id = next;
                 self.alternate_active = false;
                 self.attributes = Attributes::default();

@@ -553,14 +553,57 @@ impl Grid {
         Ok(replacement)
     }
 
+    /// Starts the grid again, as `new` makes it. A grid that holds only its
+    /// live rows, in storage made for them, keeps that storage: its rows are
+    /// blanked and given new identities, top to bottom, as `new` gives them.
     pub fn clear(&mut self, next: &mut u64, version: u64) -> Result<(), Error> {
-        *self = Self::new(
-            self.rows.get(),
-            self.cols.get(),
-            self.history_limit,
-            next,
-            version,
-        )?;
+        if !self.recyclable() {
+            *self = Self::new(
+                self.rows.get(),
+                self.cols.get(),
+                self.history_limit,
+                next,
+                version,
+            )?;
+            return Ok(());
+        }
+        // `new` would run out of identities partway, having taken those
+        // before; the rows are left as they were.
+        if next.checked_add(u64::from(self.rows.get())).is_none() {
+            *next = u64::MAX;
+            return Err(Error::IdentityExhausted);
+        }
+        self.renew(next, version)
+    }
+
+    /// Whether `clear` can start the grid again in the storage it has: it
+    /// holds its live rows alone, each as wide as the grid, in storage that
+    /// `new` would make no smaller.
+    pub fn recyclable(&self) -> bool {
+        let rows = usize::from(self.rows.get());
+        let cols = usize::from(self.cols.get());
+        self.order.len() == rows
+            && self.meta.len() == rows
+            && self.stride == cols
+            && self.cells.capacity() == rows.saturating_mul(cols)
+    }
+
+    /// Blanks every row of a recyclable grid and gives each a new identity,
+    /// top to bottom; the cursors, origin and margins are reset. `next` must
+    /// have identities enough.
+    fn renew(&mut self, next: &mut u64, version: u64) -> Result<(), Error> {
+        for index in 0..self.order.len() {
+            let id = next_id(next)?;
+            if let Some(&slot) = self.order.get(index) {
+                self.recycle(slot, id, version);
+            }
+        }
+        self.cursor = (0, 0);
+        self.saved_cursor = (0, 0);
+        self.origin = false;
+        self.saved_origin = false;
+        self.top = 0;
+        self.bottom = self.rows.last();
         Ok(())
     }
 
