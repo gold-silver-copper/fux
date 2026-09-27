@@ -279,7 +279,7 @@ fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
         version: "0.0.0".into(),
         role: fux::protocol::Role::Attach,
     };
-    stream.write_all(&hello.encode()?).map_err(e)?;
+    stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
     stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
     let mut decoder = fux::protocol::Decoder::default();
     let mut buffer = [0u8; 4096];
@@ -294,7 +294,7 @@ fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
             Err(error) => return Err(format!("reading the server's answer: {error}")),
         };
         decoder.push(buffer.get(..n).unwrap_or_default());
-        while let Some(frame) = decoder.frame()? {
+        while let Some(frame) = decoder.frame().map_err(e)? {
             frames.push(frame);
         }
     }

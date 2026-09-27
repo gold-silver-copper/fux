@@ -13,6 +13,54 @@ pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
 pub const MAX_PAYLOAD: usize = MAX_FRAME - 1;
 
+/// Why bytes are not a frame, or a frame cannot be sent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    /// A frame longer than the limit: one to send, or one a header
+    /// announces.
+    Oversized {
+        bytes: usize,
+        limit: usize,
+    },
+    /// A header announcing no bytes, not even the kind.
+    Empty,
+    /// A payload that ends before its fields do.
+    Truncated,
+    /// Bytes after a payload's last field.
+    Trailing,
+    /// A string field that is not UTF-8.
+    NotUtf8,
+    /// An exit reason that is not UTF-8.
+    ExitNotUtf8,
+    /// An option's marker that is neither 0 nor 1.
+    BadMarker,
+    /// More arguments than the payload has room for.
+    BadCount,
+    UnknownRole(u8),
+    UnknownKind(u8),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Oversized { bytes, limit } => {
+                write!(f, "a frame of {bytes} bytes exceeds the {limit}-byte limit")
+            }
+            Error::Empty => f.write_str("an empty frame"),
+            Error::Truncated => f.write_str("truncated frame"),
+            Error::Trailing => f.write_str("trailing bytes in frame"),
+            Error::NotUtf8 => f.write_str("a frame string is not UTF-8"),
+            Error::ExitNotUtf8 => f.write_str("an exit reason is not UTF-8"),
+            Error::BadMarker => f.write_str("bad option marker in frame"),
+            Error::BadCount => f.write_str("bad argument count in frame"),
+            Error::UnknownRole(role) => write!(f, "unknown client role {role}"),
+            Error::UnknownKind(kind) => write!(f, "unknown frame kind {kind}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
 /// What a connecting client is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -117,7 +165,7 @@ impl Frame {
     }
 
     /// The encoded frame, or an error if its payload exceeds `MAX_PAYLOAD`.
-    pub fn encode(&self) -> Result<Vec<u8>, String> {
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
         let mut out = Vec::new();
         self.encode_into(&mut out)?;
         Ok(out)
@@ -126,7 +174,7 @@ impl Frame {
     /// Appends the encoded frame to `out`: the header, then the payload,
     /// written in place, and the length patched in once it is known. A
     /// payload over `MAX_PAYLOAD` is an error, and leaves `out` as it was.
-    pub fn encode_into(&self, out: &mut Vec<u8>) -> Result<(), String> {
+    pub fn encode_into(&self, out: &mut Vec<u8>) -> Result<(), Error> {
         let start = out.len();
         out.extend_from_slice(&[0; 4]);
         out.push(self.kind());
@@ -179,15 +227,14 @@ impl Frame {
         let payload = out.len().saturating_sub(start).saturating_sub(5);
         if payload > MAX_PAYLOAD {
             out.truncate(start);
-            return Err(format!(
-                "a frame of {payload} bytes exceeds the {MAX_PAYLOAD}-byte limit"
-            ));
+            return Err(Error::Oversized {
+                bytes: payload,
+                limit: MAX_PAYLOAD,
+            });
         }
-        // The kind byte and the payload.
-        let Ok(length) = u32::try_from(payload.saturating_add(1)) else {
-            out.truncate(start);
-            return Err("a frame too large to count".into());
-        };
+        // The kind byte and the payload; exact, as the payload is at most
+        // MAX_PAYLOAD.
+        let length = u32::try_from(payload.saturating_add(1)).unwrap_or(u32::MAX);
         if let Some(header) = out.get_mut(start..).and_then(|f| f.first_chunk_mut::<4>()) {
             *header = length.to_be_bytes();
         }
@@ -215,50 +262,47 @@ fn put_option(out: &mut Vec<u8>, value: Option<&str>) {
 /// A cursor over a payload being decoded.
 struct Reader<'a>(&'a [u8]);
 impl Reader<'_> {
-    fn take(&mut self, n: usize) -> Result<&[u8], String> {
-        let (head, rest) = self.0.split_at_checked(n).ok_or("truncated frame")?;
+    fn take(&mut self, n: usize) -> Result<&[u8], Error> {
+        let (head, rest) = self.0.split_at_checked(n).ok_or(Error::Truncated)?;
         self.0 = rest;
         Ok(head)
     }
-    fn u8(&mut self) -> Result<u8, String> {
-        self.take(1)?
-            .first()
-            .copied()
-            .ok_or_else(|| "truncated frame".into())
+    fn u8(&mut self) -> Result<u8, Error> {
+        self.take(1)?.first().copied().ok_or(Error::Truncated)
     }
-    fn u16(&mut self) -> Result<u16, String> {
+    fn u16(&mut self) -> Result<u16, Error> {
         let b = self.take(2)?;
         Ok(u16::from_be_bytes([
             b.first().copied().unwrap_or(0),
             b.get(1).copied().unwrap_or(0),
         ]))
     }
-    fn u32(&mut self) -> Result<u32, String> {
-        let b: [u8; 4] = self.take(4)?.try_into().map_err(|_| "truncated frame")?;
+    fn u32(&mut self) -> Result<u32, Error> {
+        let b: [u8; 4] = self.take(4)?.try_into().map_err(|_| Error::Truncated)?;
         Ok(u32::from_be_bytes(b))
     }
-    fn string(&mut self) -> Result<String, String> {
+    fn string(&mut self) -> Result<String, Error> {
         let len = self.u32()? as usize;
         let bytes = self.take(len)?;
-        String::from_utf8(bytes.to_vec()).map_err(|_| "a frame string is not UTF-8".into())
+        String::from_utf8(bytes.to_vec()).map_err(|_| Error::NotUtf8)
     }
-    fn option(&mut self) -> Result<Option<String>, String> {
+    fn option(&mut self) -> Result<Option<String>, Error> {
         match self.u8()? {
             0 => Ok(None),
             1 => Ok(Some(self.string()?)),
-            _ => Err("bad option marker in frame".into()),
+            _ => Err(Error::BadMarker),
         }
     }
-    fn end(&self) -> Result<(), String> {
+    fn end(&self) -> Result<(), Error> {
         if self.0.is_empty() {
             Ok(())
         } else {
-            Err("trailing bytes in frame".into())
+            Err(Error::Trailing)
         }
     }
 }
 
-fn decode_frame(kind: u8, payload: &[u8]) -> Result<Frame, String> {
+fn decode_frame(kind: u8, payload: &[u8]) -> Result<Frame, Error> {
     let mut r = Reader(payload);
     let frame = match kind {
         1 => {
@@ -267,7 +311,7 @@ fn decode_frame(kind: u8, payload: &[u8]) -> Result<Frame, String> {
                 0 => Role::Attach,
                 1 => Role::Command,
                 2 => Role::Kill,
-                other => return Err(format!("unknown client role {other}")),
+                other => return Err(Error::UnknownRole(other)),
             };
             let version = r.string()?;
             Frame::Hello {
@@ -291,7 +335,7 @@ fn decode_frame(kind: u8, payload: &[u8]) -> Result<Frame, String> {
             let count = r.u32()? as usize;
             // Each argument takes at least its 4-byte length.
             if count > payload.len() / 4 {
-                return Err("bad argument count in frame".into());
+                return Err(Error::BadCount);
             }
             let mut argv = Vec::with_capacity(count);
             for _ in 0..count {
@@ -307,12 +351,12 @@ fn decode_frame(kind: u8, payload: &[u8]) -> Result<Frame, String> {
         8 => {
             return String::from_utf8(payload.to_vec())
                 .map(Frame::Exit)
-                .map_err(|_| "an exit reason is not UTF-8".into());
+                .map_err(|_| Error::ExitNotUtf8);
         }
         9 => return Ok(Frame::Stdout(payload.to_vec())),
         10 => return Ok(Frame::Stderr(payload.to_vec())),
         11 => Frame::Done { status: r.u8()? },
-        other => return Err(format!("unknown frame kind {other}")),
+        other => return Err(Error::UnknownKind(other)),
     };
     r.end()?;
     Ok(frame)
@@ -331,7 +375,7 @@ impl<'a> Raw<'a> {
         (self.kind == Stream::Paint.kind()).then_some(self.payload)
     }
 
-    pub fn decode(&self) -> Result<Frame, String> {
+    pub fn decode(&self) -> Result<Frame, Error> {
         decode_frame(self.kind, self.payload)
     }
 }
@@ -351,7 +395,7 @@ impl Decoder {
 
     /// The next whole frame, `Ok(None)` if more bytes are needed, or an error
     /// for a frame that is oversized or malformed; the stream is then unusable.
-    pub fn frame(&mut self) -> Result<Option<Frame>, String> {
+    pub fn frame(&mut self) -> Result<Option<Frame>, Error> {
         self.raw()?.map(|raw| raw.decode()).transpose()
     }
 
@@ -359,19 +403,20 @@ impl Decoder {
     /// from the decoder, not copied. `Ok(None)` if more bytes are needed;
     /// an error for a frame that is oversized, and the stream is then
     /// unusable.
-    pub fn raw(&mut self) -> Result<Option<Raw<'_>>, String> {
+    pub fn raw(&mut self) -> Result<Option<Raw<'_>>, Error> {
         let pending = self.buffer.as_slice();
         let Some(header) = pending.first_chunk::<4>() else {
             return Ok(None);
         };
         let length = u32::from_be_bytes(*header) as usize;
         if length == 0 {
-            return Err("an empty frame".into());
+            return Err(Error::Empty);
         }
         if length > MAX_FRAME {
-            return Err(format!(
-                "a frame of {length} bytes exceeds the {MAX_FRAME}-byte limit"
-            ));
+            return Err(Error::Oversized {
+                bytes: length,
+                limit: MAX_FRAME,
+            });
         }
         if pending.len() < 4 + length {
             return Ok(None);
@@ -608,7 +653,7 @@ mod tests {
 
     /// A paint is lent from the decoder as it arrived; other frames decode.
     #[test]
-    fn raw_frames_lend_a_paint_and_decode_the_rest() -> Result<(), String> {
+    fn raw_frames_lend_a_paint_and_decode_the_rest() -> Result<(), Box<dyn std::error::Error>> {
         let mut decoder = Decoder::default();
         decoder.push(&Frame::Paint(b"\x1b[Hhi".to_vec()).encode()?);
         decoder.push(&Frame::Exit("detached".into()).encode()?);
@@ -624,17 +669,64 @@ mod tests {
 
     #[test]
     fn malformed_frames_are_errors_not_panics() {
-        for bytes in [
-            vec![0, 0, 0, 1, 99],
-            vec![0, 0, 0, 1, 11],
-            vec![0, 0, 0, 3, 11, 0, 0],
-            vec![0, 0, 0, 5, 6, 255, 255, 255, 255],
-            vec![0, 0, 0, 0],
-            vec![0, 0, 0, 2, 8, 0xff],
+        for (bytes, error, message) in [
+            (
+                vec![0, 0, 0, 1, 99],
+                Error::UnknownKind(99),
+                "unknown frame kind 99",
+            ),
+            (vec![0, 0, 0, 1, 11], Error::Truncated, "truncated frame"),
+            (
+                vec![0, 0, 0, 3, 11, 0, 0],
+                Error::Trailing,
+                "trailing bytes in frame",
+            ),
+            (
+                vec![0, 0, 0, 5, 6, 255, 255, 255, 255],
+                Error::BadCount,
+                "bad argument count in frame",
+            ),
+            (vec![0, 0, 0, 0], Error::Empty, "an empty frame"),
+            (
+                vec![0, 0, 0, 2, 8, 0xff],
+                Error::ExitNotUtf8,
+                "an exit reason is not UTF-8",
+            ),
+            (
+                vec![0, 0, 0, 3, 1, 0, 0],
+                Error::Truncated,
+                "truncated frame",
+            ),
+            (
+                vec![0, 0, 0, 6, 1, 0, 0, 0, 1, 7],
+                Error::UnknownRole(7),
+                "unknown client role 7",
+            ),
+            (
+                vec![0, 0, 0, 6, 2, 0, 1, 0, 1, 2],
+                Error::BadMarker,
+                "bad option marker in frame",
+            ),
+            (
+                vec![0, 0, 0, 11, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0xff],
+                Error::NotUtf8,
+                "a frame string is not UTF-8",
+            ),
         ] {
             let mut decoder = Decoder::default();
             decoder.push(&bytes);
-            assert!(decoder.frame().is_err(), "{bytes:?}");
+            let got = decoder.frame();
+            assert_eq!(got, Err(error), "{bytes:?}");
+            assert_eq!(got.map_err(|e| e.to_string()), Err(message.to_owned()));
         }
+        assert_eq!(
+            Frame::Paint(vec![0; MAX_PAYLOAD + 1])
+                .encode()
+                .map_err(|e| e.to_string()),
+            Err(format!(
+                "a frame of {} bytes exceeds the {MAX_PAYLOAD}-byte limit",
+                MAX_PAYLOAD + 1
+            ))
+        );
     }
 }

@@ -2,7 +2,7 @@
 //! Input: one byte choosing a piece size (0 is the whole stream at once),
 //! then the bytes a peer sends on the socket.
 use fux::bytes::ByteQueue;
-use fux::protocol::{Decoder, Frame, MAX_FRAME, Stream};
+use fux::protocol::{Decoder, Error, Frame, MAX_FRAME, Stream};
 use libfuzzer_sys::fuzz_target;
 use std::num::NonZeroUsize;
 
@@ -17,7 +17,7 @@ fn pieces(mut rest: &[u8], size: NonZeroUsize) -> impl Iterator<Item = &[u8]> {
 
 /// The frames, then the first error, from `stream` pushed in pieces of
 /// `size` bytes (the whole stream at once for 0).
-fn decode(stream: &[u8], size: usize) -> (Vec<Frame>, Option<String>) {
+fn decode(stream: &[u8], size: usize) -> (Vec<Frame>, Option<Error>) {
     let mut decoder = Decoder::default();
     let mut frames = Vec::new();
     let pieces: Vec<&[u8]> = match NonZeroUsize::new(size) {
