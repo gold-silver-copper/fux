@@ -61,10 +61,6 @@ pub struct Rect {
 }
 
 impl Rect {
-    pub fn contains(&self, x: u16, y: u16) -> bool {
-        x.checked_sub(self.x).is_some_and(|dx| dx < self.w)
-            && y.checked_sub(self.y).is_some_and(|dy| dy < self.h)
-    }
     /// Where (y, x) inside the rect is on the screen, if that is a position.
     pub fn at(&self, y: u16, x: u16) -> Option<(u16, u16)> {
         Some((self.y.checked_add(y)?, self.x.checked_add(x)?))
