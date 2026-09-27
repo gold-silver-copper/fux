@@ -3,16 +3,25 @@
 //! then the bytes a peer sends on the socket.
 use fux::protocol::{Decoder, Frame, MAX_FRAME};
 use libfuzzer_sys::fuzz_target;
+use std::num::NonZeroUsize;
+
+/// `bytes` in pieces of `size`, the last one maybe shorter.
+fn pieces(mut rest: &[u8], size: NonZeroUsize) -> impl Iterator<Item = &[u8]> {
+    std::iter::from_fn(move || {
+        let (piece, after) = rest.split_at_checked(size.get()).unwrap_or((rest, &[]));
+        rest = after;
+        (!piece.is_empty()).then_some(piece)
+    })
+}
 
 /// The frames, then the first error, from `stream` pushed in pieces of
 /// `size` bytes (the whole stream at once for 0).
 fn decode(stream: &[u8], size: usize) -> (Vec<Frame>, Option<String>) {
     let mut decoder = Decoder::default();
     let mut frames = Vec::new();
-    let pieces: Vec<&[u8]> = if size == 0 {
-        vec![stream]
-    } else {
-        stream.chunks(size).collect()
+    let pieces: Vec<&[u8]> = match NonZeroUsize::new(size) {
+        Some(size) => pieces(stream, size).collect(),
+        None => vec![stream],
     };
     for piece in pieces {
         decoder.push(piece);

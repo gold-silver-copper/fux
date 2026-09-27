@@ -3,18 +3,29 @@
 //! then the bytes an attached client's terminal sends.
 use fux::decode::{Decoder, Input, PASTE_LIMIT};
 use libfuzzer_sys::fuzz_target;
+use std::num::NonZeroUsize;
+
+/// `bytes` in pieces of `size`, the last one maybe shorter.
+fn pieces(mut rest: &[u8], size: NonZeroUsize) -> impl Iterator<Item = &[u8]> {
+    std::iter::from_fn(move || {
+        let (piece, after) = rest.split_at_checked(size.get()).unwrap_or((rest, &[]));
+        rest = after;
+        (!piece.is_empty()).then_some(piece)
+    })
+}
 
 /// The inputs from `stream` given in pieces of `size` bytes (whole for 0),
 /// with the Escape deadline passing only at the end.
 fn decode(stream: &[u8], size: usize) -> Vec<Input> {
     let mut decoder = Decoder::default();
     let mut out = Vec::new();
-    if size == 0 {
-        decoder.bytes(stream, &mut out);
-    } else {
-        for piece in stream.chunks(size) {
-            decoder.bytes(piece, &mut out);
+    match NonZeroUsize::new(size) {
+        Some(size) => {
+            for piece in pieces(stream, size) {
+                decoder.bytes(piece, &mut out);
+            }
         }
+        None => decoder.bytes(stream, &mut out),
     }
     decoder.timeout(&mut out);
     out
