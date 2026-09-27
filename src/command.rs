@@ -62,7 +62,7 @@ impl Kind {
 }
 
 /// Which pane, tab or workspace a `select-…` command picks.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick<T> {
     Next,
     Previous,
@@ -81,7 +81,7 @@ pub enum MoveTo {
     Beside(Direction),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SwapWith {
     Pane(PaneId),
     Toward(Direction),
@@ -238,10 +238,126 @@ pub enum Command {
 
 /// A command line that is not a valid command: exit status 2.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Usage(pub String);
+pub enum Usage {
+    NoCommand,
+    UnknownCommand(String),
+    // A word that is not the target it must be.
+    NotPane(String),
+    NotTab(String),
+    NotWorkspace(String),
+    NotClient(String),
+    /// A flag of `command` given no value.
+    NeedsValue {
+        command: String,
+        flag: String,
+    },
+    UnknownFlag {
+        command: String,
+        flag: String,
+    },
+    Unexpected {
+        command: String,
+        word: String,
+    },
+    /// A word that is not `pane`, `tab` or `workspace`.
+    NotKind {
+        command: String,
+        word: String,
+    },
+    NotBuffer {
+        command: String,
+        value: String,
+    },
+    NotCells(String),
+    NotLines(String),
+    /// Words after `--` for a command that takes none.
+    NoCommandAfter {
+        command: String,
+    },
+    // What a command needs and was not given.
+    SplitAxis,
+    RenameTarget,
+    RenameName,
+    MoveTo,
+    SwapWith,
+    ResizeDirection,
+    NoKeys,
+    ReorderKind,
+    ReorderDirection,
+    MenuKind,
+    SelectPane,
+    SelectTab,
+    SelectWorkspace,
+}
 
-fn usage<T>(message: impl Into<String>) -> Result<T, Usage> {
-    Err(Usage(message.into()))
+impl std::fmt::Display for Usage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Usage::NoCommand => f.write_str("no command given; `fux help` lists commands"),
+            Usage::UnknownCommand(name) => {
+                write!(f, "unknown command {name:?}; `fux help` lists commands")
+            }
+            Usage::NotPane(text) => write!(f, "{text:?} is not a pane; panes are %N"),
+            Usage::NotTab(text) => write!(f, "{text:?} is not a tab; tabs are @N"),
+            Usage::NotWorkspace(text) => {
+                write!(
+                    f,
+                    "{text:?} is not a workspace; workspaces are +N or a name"
+                )
+            }
+            Usage::NotClient(text) => {
+                write!(f, "{text:?} is not a client; `fux ls` lists clients as cN")
+            }
+            Usage::NeedsValue { command, flag } => write!(f, "{command} {flag} needs a value"),
+            Usage::UnknownFlag { command, flag } => write!(f, "{command}: unknown flag {flag}"),
+            Usage::Unexpected { command, word } => {
+                write!(f, "{command}: unexpected argument {word:?}")
+            }
+            Usage::NotKind { command, word } => {
+                write!(f, "{command}: {word:?} is not pane, tab or workspace")
+            }
+            Usage::NotBuffer { command, value } => {
+                write!(f, "{command} -b: {value:?} is not a buffer number")
+            }
+            Usage::NotCells(text) => write!(f, "resize-pane: {text:?} is not a number of cells"),
+            Usage::NotLines(text) => write!(f, "capture-pane -S: {text:?} is not -N"),
+            Usage::NoCommandAfter { command } => write!(f, "{command} takes no command after --"),
+            Usage::SplitAxis => f.write_str("split needs -h (side by side) or -v (stacked)"),
+            Usage::RenameTarget => {
+                f.write_str("rename needs -t TARGET (%N, @N, +N or a workspace name)")
+            }
+            Usage::RenameName => {
+                f.write_str("usage: rename -t TARGET NAME (quote a name with spaces)")
+            }
+            Usage::MoveTo => {
+                f.write_str("move-pane needs --to @N|+N|new-tab|new-workspace or -L/-R/-U/-D")
+            }
+            Usage::SwapWith => f.write_str("swap-pane needs another pane (%N) or -L/-R/-U/-D"),
+            Usage::ResizeDirection => f.write_str("resize-pane needs -L, -R, -U or -D"),
+            Usage::NoKeys => f.write_str("send-keys needs keys to send"),
+            Usage::ReorderKind => {
+                f.write_str("usage: reorder pane|tab|workspace [-t TARGET] --next|--previous")
+            }
+            Usage::ReorderDirection => f.write_str("reorder needs --next or --previous"),
+            Usage::MenuKind => f.write_str("usage: menu pane|tab|workspace [-t TARGET]"),
+            Usage::SelectPane => f.write_str(
+                "select-pane needs one of -t %N, --next, --previous, --last, -L/-R/-U/-D",
+            ),
+            Usage::SelectTab => f.write_str("select-tab needs one of -t @N, --next, --previous"),
+            Usage::SelectWorkspace => {
+                f.write_str("select-workspace needs one of -t +N, --next, --previous")
+            }
+        }
+    }
+}
+
+impl std::error::Error for Usage {}
+
+fn needs_value(command: &str, flag: &str) -> Usage {
+    Usage::NeedsValue {
+        command: command.to_owned(),
+        flag: flag.to_owned(),
+    }
 }
 
 fn number(text: &str) -> Option<u32> {
@@ -254,28 +370,24 @@ fn number(text: &str) -> Option<u32> {
 pub fn parse_pane(text: &str) -> Result<PaneId, Usage> {
     match text.strip_prefix('%').and_then(number) {
         Some(n) => Ok(PaneId(n)),
-        None => usage(format!("{text:?} is not a pane; panes are %N")),
+        None => Err(Usage::NotPane(text.to_owned())),
     }
 }
 pub fn parse_tab(text: &str) -> Result<TabId, Usage> {
     match text.strip_prefix('@').and_then(number) {
         Some(n) => Ok(TabId(n)),
-        None => usage(format!("{text:?} is not a tab; tabs are @N")),
+        None => Err(Usage::NotTab(text.to_owned())),
     }
 }
 pub fn parse_workspace(text: &str) -> Result<WsRef, Usage> {
     if let Some(rest) = text.strip_prefix('+') {
         return match number(rest) {
             Some(n) => Ok(WsRef::Id(WsId(n))),
-            None => usage(format!(
-                "{text:?} is not a workspace; workspaces are +N or a name"
-            )),
+            None => Err(Usage::NotWorkspace(text.to_owned())),
         };
     }
     if text.is_empty() || text.starts_with(['%', '@', '-']) {
-        return usage(format!(
-            "{text:?} is not a workspace; workspaces are +N or a name"
-        ));
+        return Err(Usage::NotWorkspace(text.to_owned()));
     }
     Ok(WsRef::Name(text.to_owned()))
 }
@@ -295,9 +407,7 @@ pub fn parse_client(text: &str) -> Result<ClientId, Usage> {
         .or_else(|| number(text))
     {
         Some(n) => Ok(ClientId(n)),
-        None => usage(format!(
-            "{text:?} is not a client; `fux ls` lists clients as cN"
-        )),
+        None => Err(Usage::NotClient(text.to_owned())),
     }
 }
 fn parse_kind(text: &str) -> Option<Kind> {
@@ -357,16 +467,28 @@ impl<'a> Args<'a> {
     fn value(&mut self, flag: &str) -> Result<&'a str, Usage> {
         match self.words.next() {
             Some(v) => Ok(v.as_str()),
-            None => usage(format!("{} {flag} needs a value", self.name)),
+            None => Err(needs_value(self.name, flag)),
         }
     }
     fn unknown<T>(&self, flag: &str) -> Result<T, Usage> {
-        usage(format!("{}: unknown flag {flag}", self.name))
+        Err(Usage::UnknownFlag {
+            command: self.name.to_owned(),
+            flag: flag.to_owned(),
+        })
     }
     fn no_positional(&self) -> Result<(), Usage> {
         match self.positional.first() {
-            Some(word) => usage(format!("{}: unexpected argument {word:?}", self.name)),
+            Some(word) => Err(Usage::Unexpected {
+                command: self.name.to_owned(),
+                word: (*word).to_owned(),
+            }),
             None => Ok(()),
+        }
+    }
+    fn not_kind(&self, word: &str) -> Usage {
+        Usage::NotKind {
+            command: self.name.to_owned(),
+            word: word.to_owned(),
         }
     }
 }
@@ -374,7 +496,7 @@ impl<'a> Args<'a> {
 /// Parses one command line.
 pub fn parse(argv: &[String]) -> Result<Command, Usage> {
     let Some((name, words)) = argv.split_first() else {
-        return usage("no command given; `fux help` lists commands");
+        return Err(Usage::NoCommand);
     };
     let name = name.as_str();
     let mut a = Args::new(name, words);
@@ -423,7 +545,7 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                 }
             }
             let Some(axis) = axis else {
-                return usage("split needs -h (side by side) or -v (stacked)");
+                return Err(Usage::SplitAxis);
             };
             Command::Split {
                 axis,
@@ -463,7 +585,7 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                 }
             }
             let Some(target) = target else {
-                return usage("rename needs -t TARGET (%N, @N, +N or a workspace name)");
+                return Err(Usage::RenameTarget);
             };
             let name_words: Vec<String> = a
                 .positional
@@ -472,7 +594,7 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                 .chain(a.rest.iter().cloned())
                 .collect();
             let [new_name] = name_words.as_slice() else {
-                return usage("usage: rename -t TARGET NAME (quote a name with spaces)");
+                return Err(Usage::RenameName);
             };
             a.positional.clear();
             Command::Rename {
@@ -502,7 +624,7 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                 }
             }
             let Some(to) = to else {
-                return usage("move-pane needs --to @N|+N|new-tab|new-workspace or -L/-R/-U/-D");
+                return Err(Usage::MoveTo);
             };
             Command::MovePane { target, to }
         }
@@ -522,7 +644,7 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                 with = Some(SwapWith::Pane(parse_pane(other)?));
             }
             let Some(with) = with else {
-                return usage("swap-pane needs another pane (%N) or -L/-R/-U/-D");
+                return Err(Usage::SwapWith);
             };
             Command::SwapPane { target, with }
         }
@@ -539,12 +661,12 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                 }
             }
             let Some(direction) = direction else {
-                return usage("resize-pane needs -L, -R, -U or -D");
+                return Err(Usage::ResizeDirection);
             };
             let amount = match a.positional.pop() {
                 Some(n) => match number(n).and_then(|n| u16::try_from(n).ok()) {
                     Some(n) if n > 0 => n,
-                    _ => return usage(format!("resize-pane: {n:?} is not a number of cells")),
+                    _ => return Err(Usage::NotCells(n.to_owned())),
                 },
                 None => 1,
             };
@@ -564,7 +686,7 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                     "-t" => {
                         iter.next();
                         let Some(value) = iter.next() else {
-                            return usage("send-keys -t needs a value");
+                            return Err(needs_value(name, "-t"));
                         };
                         target = Some(parse_pane(value)?);
                     }
@@ -581,7 +703,7 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
             }
             keys.extend(iter.cloned());
             if keys.is_empty() {
-                return usage("send-keys needs keys to send");
+                return Err(Usage::NoKeys);
             }
             return Ok(Command::SendKeys {
                 target,
@@ -595,24 +717,20 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
             while let Some(word) = iter.next() {
                 match word.as_str() {
                     "-t" => {
-                        let value = iter
-                            .next()
-                            .ok_or(Usage("capture-pane -t needs a value".into()))?;
+                        let value = iter.next().ok_or_else(|| needs_value(name, "-t"))?;
                         target = Some(parse_pane(value)?);
                     }
                     "-S" => {
-                        let value = iter
-                            .next()
-                            .ok_or(Usage("capture-pane -S needs a value".into()))?;
+                        let value = iter.next().ok_or_else(|| needs_value(name, "-S"))?;
                         let lines = value
                             .strip_prefix('-')
                             .unwrap_or(value)
                             .parse::<usize>()
-                            .map_err(|_| Usage(format!("capture-pane -S: {value:?} is not -N")))?;
+                            .map_err(|_| Usage::NotLines(value.clone()))?;
                         history = Some(lines);
                     }
                     "--json" => json = true,
-                    other => return usage(format!("capture-pane: unknown flag {other}")),
+                    other => return a.unknown(other),
                 }
             }
             return Ok(Command::CapturePane {
@@ -632,20 +750,14 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                 }
             }
             let kind = match (a.positional.pop(), &target) {
-                (Some(k), _) => parse_kind(k).ok_or(Usage(format!(
-                    "reorder: {k:?} is not pane, tab or workspace"
-                )))?,
+                (Some(k), _) => parse_kind(k).ok_or_else(|| a.not_kind(k))?,
                 (None, Some(AnyRef::Pane(_))) => Kind::Pane,
                 (None, Some(AnyRef::Tab(_))) => Kind::Tab,
                 (None, Some(AnyRef::Workspace(_))) => Kind::Workspace,
-                (None, None) => {
-                    return usage(
-                        "usage: reorder pane|tab|workspace [-t TARGET] --next|--previous",
-                    );
-                }
+                (None, None) => return Err(Usage::ReorderKind),
             };
             let Some(forward) = forward else {
-                return usage("reorder needs --next or --previous");
+                return Err(Usage::ReorderDirection);
             };
             Command::Reorder {
                 kind,
@@ -670,9 +782,13 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                 match flag {
                     "-b" => {
                         let value = a.value(flag)?;
-                        index = number(value).map(|n| n as usize).ok_or(Usage(format!(
-                            "{name} -b: {value:?} is not a buffer number"
-                        )))?;
+                        index =
+                            number(value)
+                                .map(|n| n as usize)
+                                .ok_or_else(|| Usage::NotBuffer {
+                                    command: name.to_owned(),
+                                    value: value.to_owned(),
+                                })?;
                     }
                     "-t" if name == "paste-buffer" => target = Some(parse_pane(a.value(flag)?)?),
                     other => return a.unknown(other),
@@ -726,9 +842,7 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                 }
             }
             let kind = match a.positional.pop() {
-                Some(k) => Some(parse_kind(k).ok_or(Usage(format!(
-                    "{name}: {k:?} is not pane, tab or workspace"
-                )))?),
+                Some(k) => Some(parse_kind(k).ok_or_else(|| a.not_kind(k))?),
                 None => None,
             };
             a.no_positional()?;
@@ -769,7 +883,7 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                     let Some(kind) =
                         kind.or(any.as_ref().map(|a| kind_of(&Some(a.clone()), Kind::Pane)))
                     else {
-                        return usage("usage: menu pane|tab|workspace [-t TARGET]");
+                        return Err(Usage::MenuKind);
                     };
                     Command::Menu {
                         client,
@@ -795,11 +909,7 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                         (Some("--last"), None, None) => Pick::Last,
                         (None, Some(d), None) => Pick::Toward(d),
                         (None, None, Some(t)) => Pick::Id(parse_pane(t)?),
-                        _ => {
-                            return usage(
-                                "select-pane needs one of -t %N, --next, --previous, --last, -L/-R/-U/-D",
-                            );
-                        }
+                        _ => return Err(Usage::SelectPane),
                     },
                 },
                 "select-tab" => Command::SelectTab {
@@ -808,7 +918,7 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                         (Some("--next"), None) => Pick::Next,
                         (Some("--previous"), None) => Pick::Previous,
                         (None, Some(t)) => Pick::Id(parse_tab(t)?),
-                        _ => return usage("select-tab needs one of -t @N, --next, --previous"),
+                        _ => return Err(Usage::SelectTab),
                     },
                 },
                 _ => Command::SelectWorkspace {
@@ -817,20 +927,12 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                         (Some("--next"), None) => Pick::Next,
                         (Some("--previous"), None) => Pick::Previous,
                         (None, Some(t)) => Pick::Id(parse_workspace(t)?),
-                        _ => {
-                            return usage(
-                                "select-workspace needs one of -t +N, --next, --previous",
-                            );
-                        }
+                        _ => return Err(Usage::SelectWorkspace),
                     },
                 },
             }
         }
-        other => {
-            return usage(format!(
-                "unknown command {other:?}; `fux help` lists commands"
-            ));
-        }
+        other => return Err(Usage::UnknownCommand(other.to_owned())),
     };
     a.no_positional()?;
     if !a.rest.is_empty()
@@ -842,7 +944,9 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                 | Command::Rename { .. }
         )
     {
-        return usage(format!("{name} takes no command after --"));
+        return Err(Usage::NoCommandAfter {
+            command: name.to_owned(),
+        });
     }
     Ok(command)
 }
@@ -908,7 +1012,7 @@ mod tests {
     use super::*;
 
     fn cmd(line: &str) -> Result<Command, Usage> {
-        parse(&crate::words::split(line).map_err(Usage)?)
+        parse(&crate::words::split(line).unwrap_or_default())
     }
 
     #[test]
@@ -1030,6 +1134,107 @@ mod tests {
         ] {
             assert!(cmd(line).is_err(), "{line}");
         }
+    }
+
+    /// Each usage error says what it said as a string, word for word.
+    #[test]
+    fn usage_errors_keep_their_words() {
+        for (line, message) in [
+            ("", "no command given; `fux help` lists commands"),
+            (
+                "nope",
+                r#"unknown command "nope"; `fux help` lists commands"#,
+            ),
+            ("kill-pane -t 3", r#""3" is not a pane; panes are %N"#),
+            ("kill-tab -t %1", r#""%1" is not a tab; tabs are @N"#),
+            (
+                "new-tab -t %1",
+                r#""%1" is not a workspace; workspaces are +N or a name"#,
+            ),
+            (
+                "new-tab -t +x",
+                r#""+x" is not a workspace; workspaces are +N or a name"#,
+            ),
+            (
+                "detach -c zz",
+                r#""zz" is not a client; `fux ls` lists clients as cN"#,
+            ),
+            ("split -t", "split -t needs a value"),
+            ("ls --nope", "ls: unknown flag --nope"),
+            ("ls extra", r#"ls: unexpected argument "extra""#),
+            (
+                "menu thing",
+                r#"menu: "thing" is not pane, tab or workspace"#,
+            ),
+            (
+                "reorder thing --next",
+                r#"reorder: "thing" is not pane, tab or workspace"#,
+            ),
+            (
+                "show-buffer -b x",
+                r#"show-buffer -b: "x" is not a buffer number"#,
+            ),
+            (
+                "paste-buffer -b -1",
+                r#"paste-buffer -b: "-1" is not a buffer number"#,
+            ),
+            (
+                "resize-pane -L zero",
+                r#"resize-pane: "zero" is not a number of cells"#,
+            ),
+            ("capture-pane -S x", r#"capture-pane -S: "x" is not -N"#),
+            ("capture-pane -t", "capture-pane -t needs a value"),
+            ("capture-pane -S", "capture-pane -S needs a value"),
+            ("capture-pane --nope", "capture-pane: unknown flag --nope"),
+            ("send-keys -t", "send-keys -t needs a value"),
+            ("kill-pane -- x", "kill-pane takes no command after --"),
+            ("split", "split needs -h (side by side) or -v (stacked)"),
+            (
+                "rename x",
+                "rename needs -t TARGET (%N, @N, +N or a workspace name)",
+            ),
+            (
+                "rename -t %1",
+                "usage: rename -t TARGET NAME (quote a name with spaces)",
+            ),
+            (
+                "move-pane",
+                "move-pane needs --to @N|+N|new-tab|new-workspace or -L/-R/-U/-D",
+            ),
+            (
+                "swap-pane",
+                "swap-pane needs another pane (%N) or -L/-R/-U/-D",
+            ),
+            ("resize-pane", "resize-pane needs -L, -R, -U or -D"),
+            ("send-keys -t %1", "send-keys needs keys to send"),
+            (
+                "reorder --next",
+                "usage: reorder pane|tab|workspace [-t TARGET] --next|--previous",
+            ),
+            ("reorder tab", "reorder needs --next or --previous"),
+            ("menu", "usage: menu pane|tab|workspace [-t TARGET]"),
+            (
+                "select-pane",
+                "select-pane needs one of -t %N, --next, --previous, --last, -L/-R/-U/-D",
+            ),
+            (
+                "select-tab",
+                "select-tab needs one of -t @N, --next, --previous",
+            ),
+            (
+                "select-workspace",
+                "select-workspace needs one of -t +N, --next, --previous",
+            ),
+            (
+                "confirm-close thing",
+                r#"confirm-close: "thing" is not pane, tab or workspace"#,
+            ),
+        ] {
+            let usage = cmd(line).err().map(|u| u.to_string());
+            assert_eq!(usage.as_deref(), Some(message), "{line:?}");
+        }
+        assert_eq!(cmd("split -t"), Err(needs_value("split", "-t")));
+        assert_eq!(cmd("kill-pane -t 3"), Err(Usage::NotPane("3".into())));
     }
 
     #[test]

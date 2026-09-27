@@ -1,18 +1,28 @@
 #![no_main]
 //! Input: one byte choosing a piece size (0 is the whole stream at once),
 //! then the bytes a peer sends on the socket.
-use fux::protocol::{Decoder, Frame, MAX_FRAME};
+use fux::bytes::ByteQueue;
+use fux::protocol::{Decoder, Error, Frame, MAX_FRAME, Stream};
 use libfuzzer_sys::fuzz_target;
+use std::num::NonZeroUsize;
+
+/// `bytes` in pieces of `size`, the last one maybe shorter.
+fn pieces(mut rest: &[u8], size: NonZeroUsize) -> impl Iterator<Item = &[u8]> {
+    std::iter::from_fn(move || {
+        let (piece, after) = rest.split_at_checked(size.get()).unwrap_or((rest, &[]));
+        rest = after;
+        (!piece.is_empty()).then_some(piece)
+    })
+}
 
 /// The frames, then the first error, from `stream` pushed in pieces of
 /// `size` bytes (the whole stream at once for 0).
-fn decode(stream: &[u8], size: usize) -> (Vec<Frame>, Option<String>) {
+fn decode(stream: &[u8], size: usize) -> (Vec<Frame>, Option<Error>) {
     let mut decoder = Decoder::default();
     let mut frames = Vec::new();
-    let pieces: Vec<&[u8]> = if size == 0 {
-        vec![stream]
-    } else {
-        stream.chunks(size).collect()
+    let pieces: Vec<&[u8]> = match NonZeroUsize::new(size) {
+        Some(size) => pieces(stream, size).collect(),
+        None => vec![stream],
     };
     for piece in pieces {
         decoder.push(piece);
@@ -49,5 +59,23 @@ fuzz_target!(|data: &[u8]| {
         assert!(bytes.is_ok(), "{frame:?} does not encode: {bytes:?}");
         let bytes = bytes.unwrap_or_default();
         assert_eq!(decode(&bytes, 0), (vec![frame.clone()], None));
+        // Encoded after other bytes, it is the same bytes after them.
+        let mut out = b"before".to_vec();
+        assert!(frame.encode_into(&mut out).is_ok());
+        assert_eq!(out.strip_prefix(b"before"), Some(bytes.as_slice()));
+        // A stream's frame is what the stream writes for its payload, and
+        // an empty stream writes nothing.
+        let stream = match frame {
+            Frame::Paint(payload) => Some((Stream::Paint, payload)),
+            Frame::Stdout(payload) => Some((Stream::Stdout, payload)),
+            Frame::Stderr(payload) => Some((Stream::Stderr, payload)),
+            _ => None,
+        };
+        if let Some((stream, payload)) = stream {
+            let mut queue = ByteQueue::default();
+            stream.encode_into(payload, &mut queue);
+            let expected: &[u8] = if payload.is_empty() { &[] } else { &bytes };
+            assert_eq!(queue.as_slice(), expected);
+        }
     }
 });

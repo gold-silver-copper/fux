@@ -1,6 +1,21 @@
 //! Bytes that arrive at one end and are taken from the other: a socket's
 //! input waiting to be decoded, its output waiting to be written, a key
 //! sequence waiting to complete.
+use std::ops::Range;
+
+/// `slice::copy_within`, checked: copies the run `src` of `slice` to start at
+/// `dest`, if both runs lie within it.
+///
+/// `copy_within` panics on a range out of bounds, so fux calls it here, after
+/// this check, and nowhere else (clippy.toml).
+pub fn copy_within<T: Copy>(slice: &mut [T], src: Range<usize>, dest: usize) -> Option<()> {
+    let fits = src.start <= src.end
+        && src.end <= slice.len()
+        && dest
+            .checked_add(src.len())
+            .is_some_and(|end| end <= slice.len());
+    fits.then(|| slice.copy_within(src, dest))
+}
 
 /// A queue of bytes. Taking from the front moves an offset, not the bytes
 /// behind it; the space taken is reclaimed when the queue empties, or on the
@@ -25,20 +40,27 @@ impl ByteQueue {
         self.len() == 0
     }
     pub fn push(&mut self, more: &[u8]) {
+        self.compact();
+        self.bytes.extend_from_slice(more);
+    }
+    /// Appends what `write` adds to the end of the queue's buffer, in place.
+    /// The bytes already there are the queue's: `write` only adds after
+    /// them, or takes back what it added.
+    pub fn push_with<T>(&mut self, write: impl FnOnce(&mut Vec<u8>) -> T) -> T {
+        self.compact();
+        write(&mut self.bytes)
+    }
+    /// Reclaims the space taken, once at least as much has been taken as is
+    /// left.
+    fn compact(&mut self) {
+        let (taken, end) = (self.taken, self.bytes.len());
         let left = self.len();
-        if self.taken > 0 && self.taken >= left {
-            // What is left moves to the front, into the space taken, which is
-            // at least as large, so the two do not overlap. Only what is left
-            // is copied.
-            if let Some((front, back)) = self.bytes.split_at_mut_checked(self.taken) {
-                for (to, from) in front.iter_mut().zip(back.iter()) {
-                    *to = *from;
-                }
-            }
+        // What is left moves to the front, into the space taken, which is at
+        // least as large. Only what is left is copied.
+        if taken > 0 && taken >= left && copy_within(&mut self.bytes, taken..end, 0).is_some() {
             self.bytes.truncate(left);
             self.taken = 0;
         }
-        self.bytes.extend_from_slice(more);
     }
     /// Takes `n` bytes from the front, or all there are.
     pub fn take(&mut self, n: usize) {
@@ -47,6 +69,13 @@ impl ByteQueue {
             self.bytes.clear();
             self.taken = 0;
         }
+    }
+    /// Takes `n` bytes from the front, or all there are, and returns them,
+    /// borrowed: their space is reclaimed by a later push.
+    pub fn take_front(&mut self, n: usize) -> &[u8] {
+        let start = self.taken;
+        self.taken = self.taken.saturating_add(n).min(self.bytes.len());
+        self.bytes.get(start..self.taken).unwrap_or_default()
     }
     /// Everything not yet taken, leaving the queue empty.
     pub fn take_all(&mut self) -> Vec<u8> {
@@ -80,6 +109,32 @@ mod tests {
         queue.push(b"abc");
         assert_eq!(queue.take_all(), b"abc");
         assert!(queue.is_empty() && queue.as_slice().is_empty());
+        // Bytes taken from the front are lent until the next push, which
+        // reclaims their space once the queue is empty.
+        queue.push(b"frame");
+        assert_eq!(queue.take_front(3), b"fra");
+        assert_eq!(queue.take_front(9), b"me");
+        assert!(queue.is_empty());
+        queue.push(b"next");
+        assert_eq!((queue.as_slice(), queue.taken), (&b"next"[..], 0));
+    }
+
+    #[test]
+    fn copies_within_happen_only_in_bounds() {
+        let mut bytes = *b"abcdef";
+        assert_eq!(copy_within(&mut bytes, 3..6, 0), Some(()));
+        assert_eq!(&bytes, b"defdef");
+        assert_eq!(copy_within(&mut bytes, 1..3, 2), Some(()));
+        assert_eq!(&bytes, b"deefef");
+        let backwards = Range { start: 3, end: 1 };
+        for (src, dest) in [(4..7, 0), (0..3, 4), (3..6, usize::MAX), (backwards, 0)] {
+            assert_eq!(
+                copy_within(&mut bytes, src.clone(), dest),
+                None,
+                "{src:?} {dest}"
+            );
+        }
+        assert_eq!(&bytes, b"deefef");
     }
 
     #[test]

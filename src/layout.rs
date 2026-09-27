@@ -108,20 +108,29 @@ impl Placement {
 }
 
 impl Node {
-    /// Every pane, in tree order.
+    /// Every pane, in tree order: for when a list is needed, as to step
+    /// through it by index.
     pub fn panes(&self) -> Vec<PaneId> {
         let mut out = Vec::new();
-        self.collect(&mut out);
+        self.for_each_pane(&mut |pane| out.push(pane));
         out
     }
-    fn collect(&self, out: &mut Vec<PaneId>) {
+    /// Calls `f` with every pane, in tree order.
+    pub fn for_each_pane(&self, f: &mut impl FnMut(PaneId)) {
         match self {
-            Node::Pane(p) => out.push(*p),
+            Node::Pane(p) => f(*p),
             Node::Split { children, .. } => {
                 for (_, child) in children {
-                    child.collect(out);
+                    child.for_each_pane(f);
                 }
             }
+        }
+    }
+    /// The first pane in tree order.
+    pub fn first_pane(&self) -> Option<PaneId> {
+        match self {
+            Node::Pane(p) => Some(*p),
+            Node::Split { children, .. } => children.first()?.1.first_pane(),
         }
     }
     pub fn contains(&self, pane: PaneId) -> bool {
@@ -647,22 +656,24 @@ fn child_rects(
     children
         .iter()
         .map(|(_, child)| {
-            let rects: Vec<Rect> = child
-                .panes()
-                .iter()
-                .filter_map(|p| placement.rect(*p))
-                .collect();
-            let Some(first) = rects.first() else {
+            // The span of the child's placed panes.
+            let mut span: Option<(u16, u16, u32, u32)> = None;
+            child.for_each_pane(&mut |p| {
+                if let Some(r) = placement.rect(p) {
+                    span = Some(match span {
+                        None => (r.x, r.y, r.right(), r.bottom()),
+                        Some((x0, y0, x1, y1)) => (
+                            x0.min(r.x),
+                            y0.min(r.y),
+                            x1.max(r.right()),
+                            y1.max(r.bottom()),
+                        ),
+                    });
+                }
+            });
+            let Some((x0, y0, x1, y1)) = span else {
                 return Rect { w: 0, h: 0, ..area };
             };
-            let (mut x0, mut y0, mut x1, mut y1) =
-                (first.x, first.y, first.right(), first.bottom());
-            for r in &rects {
-                x0 = x0.min(r.x);
-                y0 = y0.min(r.y);
-                x1 = x1.max(r.right());
-                y1 = y1.max(r.bottom());
-            }
             // The children lie inside `area`, so their span fits its size.
             match axis {
                 Axis::Horizontal => Rect {

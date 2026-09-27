@@ -1,17 +1,20 @@
 //! A small JSON writer for `--json` output. Output only: fux never reads JSON.
+use std::borrow::Cow;
 use std::fmt::Write;
 
-pub enum Json {
+/// A value to write, its strings borrowed from what it describes where they
+/// can be.
+pub enum Json<'a> {
     Null,
     Bool(bool),
     Number(i64),
-    String(String),
-    Array(Vec<Json>),
-    Object(Vec<(&'static str, Json)>),
+    String(Cow<'a, str>),
+    Array(Vec<Json<'a>>),
+    Object(Vec<(&'static str, Json<'a>)>),
 }
 
-impl Json {
-    pub fn str(text: impl Into<String>) -> Json {
+impl<'a> Json<'a> {
+    pub fn str(text: impl Into<Cow<'a, str>>) -> Json<'a> {
         Json::String(text.into())
     }
 
@@ -28,27 +31,7 @@ impl Json {
             Json::Number(n) => {
                 let _ = write!(out, "{n}");
             }
-            Json::String(s) => {
-                out.push('"');
-                for c in s.chars() {
-                    match c {
-                        '"' => out.push_str("\\\""),
-                        '\\' => out.push_str("\\\\"),
-                        '\n' => out.push_str("\\n"),
-                        '\r' => out.push_str("\\r"),
-                        '\t' => out.push_str("\\t"),
-                        c if (c as u32) < 0x20
-                            || c == '\u{7f}'
-                            || c == '\u{2028}'
-                            || c == '\u{2029}' =>
-                        {
-                            let _ = write!(out, "\\u{:04x}", c as u32);
-                        }
-                        c => out.push(c),
-                    }
-                }
-                out.push('"');
-            }
+            Json::String(s) => write_str(out, s),
             Json::Array(items) => {
                 out.push('[');
                 for (i, item) in items.iter().enumerate() {
@@ -65,7 +48,7 @@ impl Json {
                     if i > 0 {
                         out.push(',');
                     }
-                    Json::str(*key).write(out);
+                    write_str(out, key);
                     out.push(':');
                     value.write(out);
                 }
@@ -73,6 +56,25 @@ impl Json {
             }
         }
     }
+}
+
+/// Writes `text` as a JSON string, escaped.
+fn write_str(out: &mut String, text: &str) {
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 || c == '\u{7f}' || c == '\u{2028}' || c == '\u{2029}' => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
 }
 
 /// Standard base64 with padding, for OSC 52.

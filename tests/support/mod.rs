@@ -254,13 +254,13 @@ impl Client {
             version: "test".into(),
             role: Role::Attach,
         };
-        stream.write_all(&hello.encode()?).map_err(e)?;
+        stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
         let attach = Frame::Attach {
             rows,
             cols,
             workspace: workspace.map(str::to_owned),
         };
-        stream.write_all(&attach.encode()?).map_err(e)?;
+        stream.write_all(&attach.encode().map_err(e)?).map_err(e)?;
         stream.set_nonblocking(true).map_err(e)?;
         Ok(Client {
             stream,
@@ -277,7 +277,7 @@ impl Client {
         self.stream.set_nonblocking(false).map_err(e)?;
         let result = self
             .stream
-            .write_all(&Frame::Input(bytes.to_vec()).encode()?)
+            .write_all(&Frame::Input(bytes.to_vec()).encode().map_err(e)?)
             .map_err(e);
         self.stream.set_nonblocking(true).map_err(e)?;
         result
@@ -295,7 +295,7 @@ impl Client {
         self.stream.set_nonblocking(false).map_err(e)?;
         let result = self
             .stream
-            .write_all(&Frame::Resize { rows, cols }.encode()?)
+            .write_all(&Frame::Resize { rows, cols }.encode().map_err(e)?)
             .map_err(e);
         self.stream.set_nonblocking(true).map_err(e)?;
         result
@@ -303,7 +303,10 @@ impl Client {
 
     pub fn detach(&mut self) -> Outcome {
         self.stream.set_nonblocking(false).map_err(e)?;
-        let result = self.stream.write_all(&Frame::Detach.encode()?).map_err(e);
+        let result = self
+            .stream
+            .write_all(&Frame::Detach.encode().map_err(e)?)
+            .map_err(e);
         self.stream.set_nonblocking(true).map_err(e)?;
         result
     }
@@ -325,7 +328,7 @@ impl Client {
                 Err(err) => return Err(e(err)),
             }
         }
-        while let Some(frame) = self.decoder.frame()? {
+        while let Some(frame) = self.decoder.frame().map_err(e)? {
             match frame {
                 Frame::Paint(bytes) => {
                     self.painted.extend_from_slice(&bytes);
@@ -582,7 +585,7 @@ impl Terminal {
         argv: &[&str],
         setup: impl FnOnce(&mut Command),
     ) -> Result<Terminal, String> {
-        let (master, slave) = fux::process::open_pty(rows, cols)?;
+        let (master, slave) = fux::process::open_pty(rows, cols).map_err(e)?;
         let child = {
             let _guard = SPAWN.lock().map_err(e)?;
             fux::process::launch(Path::new(FUX), argv, &slave, |command| {

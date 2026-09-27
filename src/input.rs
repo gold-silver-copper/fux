@@ -107,7 +107,7 @@ impl Session {
                 if let Err(error) = p.input.push(bytes)
                     && let Some(view) = self.views.get_mut(&client)
                 {
-                    view.error(error);
+                    view.error(error.to_string());
                 }
             }
         }

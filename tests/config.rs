@@ -92,6 +92,16 @@ fn set_and_bind_change_a_running_server() -> Outcome {
         let out = server.fux(args)?;
         assert_eq!(out.status, 1, "{args:?}: {}", out.stderr);
     }
+    // A binding's command is checked when the binding is made.
+    let out = server.fux(&["bind", "g", "no-such-command", "--flag"])?;
+    assert_eq!(
+        (out.status, out.stderr.as_str()),
+        (
+            1,
+            "bind g: unknown command \"no-such-command\"; `fux help` lists commands\n"
+        )
+    );
+    assert!(!server.ok(&["list-keys"])?.contains("no-such-command"));
     assert!(server.ok(&["list-keys"])?.contains("after the prefix, C-b"));
     server.ok(&["unbind-all"])?;
     client.keys("\x02")?;
