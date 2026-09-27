@@ -105,8 +105,12 @@ the primary and alternate grids. Logical order is independent of physical
 slot. Primary history is a ring of at most `history_lines` rows; zero disables
 it. Full-screen upward scroll retains departing rows; partial scroll,
 reverse scroll and insert/delete lines discard displaced rows. Surviving
-rows retain their IDs. Recycled slots receive new IDs. Cell mutations change
-row versions rather than row identities. Reset and history clearing invalidate
+rows retain their IDs. Recycled slots receive new IDs. A row's version changes
+on each edit that changes its cells or its wrap flag, and on no other: erasing
+cells that are already blank, or writing a glyph over the same glyph with the
+same attributes, leaves the version as it was, while inserting or deleting
+characters (CSI @ and P) always counts as a change. An edit never changes a
+row's identity. Reset and history clearing invalidate
 removed IDs. Identity exhaustion must be an explicit error, never wrap/reuse.
 
 Resize is not paragraph reflow: rows keep their upper-left cells and columns

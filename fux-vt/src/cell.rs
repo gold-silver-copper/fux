@@ -80,7 +80,9 @@ impl Attributes {
 }
 
 /// One fixed-size glyph cell. A continuation has empty contents and default
-/// attributes; its leader owns the wide glyph's appearance.
+/// attributes; its leader owns the wide glyph's appearance. The bytes of
+/// `text` past its length are always zero: every constructor starts from
+/// zeros, and `append` only writes past the length and lengthens it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Cell {
     text: [u8; 22],
@@ -183,6 +185,20 @@ impl Cell {
         cell.length = 1;
         cell
     }
+    /// Whether the cell equals `other`, as `==` says: told from the length
+    /// and attributes, where cells that differ usually differ, and then only
+    /// the text in use, as what follows it is zero in every cell.
+    pub(crate) fn same(&self, other: &Cell) -> bool {
+        let used = usize::from(self.length & Self::LENGTH);
+        self.length == other.length
+            && self.attributes == other.attributes
+            && self.text.get(..used) == other.text.get(..used)
+    }
+    /// Whether the cell is exactly what `ascii(byte, attributes)` makes: one
+    /// byte of text, the rest zero as in every cell.
+    pub(crate) fn is_ascii(&self, byte: u8, attributes: Attributes) -> bool {
+        self.length == 1 && self.text.first() == Some(&byte) && self.attributes == attributes
+    }
     pub(crate) fn continuation() -> Self {
         Self {
             length: Self::CONTINUATION,
@@ -214,6 +230,48 @@ impl Cell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What follows a cell's text is zero, however it was made, so `same`
+    /// and `is_ascii`, which compare only the text in use, agree with `==`.
+    #[test]
+    fn text_past_the_length_is_zero_and_the_quick_comparisons_agree() {
+        let bold = Attributes::default().with_bold(true);
+        let red = Attributes::new(Color::Idx(1), Color::Rgb(1, 2, 3));
+        let mut cells = vec![
+            Cell::default(),
+            Cell::blank(bold),
+            Cell::continuation(),
+            Cell::ascii(b'a', Attributes::default()),
+            Cell::ascii(b'a', bold),
+            Cell::ascii(b'b', red),
+            Cell::glyph('界', 2, red),
+            Cell::glyph('é', 1, Attributes::default()),
+            Cell::glyph(' ', 1, bold),
+            Cell::new("xy", false, red).unwrap_or_default(),
+        ];
+        let mut marked = Cell::glyph('a', 1, bold);
+        let mut blank = Cell::blank(red);
+        for _ in 0..30 {
+            marked.append('\u{301}');
+            blank.append('\u{302}');
+            cells.push(marked);
+            cells.push(blank);
+        }
+        for cell in &cells {
+            let used = usize::from(cell.length & Cell::LENGTH);
+            assert!(cell.text.iter().skip(used).all(|b| *b == 0), "{cell:?}");
+            for other in &cells {
+                assert_eq!(cell.same(other), cell == other, "{cell:?} {other:?}");
+            }
+            for (byte, attributes) in [(b'a', Attributes::default()), (b'a', bold), (b'b', red)] {
+                assert_eq!(
+                    cell.is_ascii(byte, attributes),
+                    *cell == Cell::ascii(byte, attributes),
+                    "{cell:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn text_and_attributes_are_fixed_size_and_bounded() {
