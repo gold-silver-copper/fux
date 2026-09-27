@@ -1,7 +1,7 @@
 //! The running configuration: options and key bindings, changed by `set`,
 //! `bind`, `unbind` and `unbind-all`, whether they come from the config file,
 //! the CLI or the command prompt.
-use crate::command::{self, Command, Usage};
+use crate::command::{self, Command};
 use crate::keys::KeyPress;
 use crate::words;
 use std::path::{Path, PathBuf};
@@ -239,7 +239,7 @@ impl Config {
                 }
                 // Checked now, rather than each time its keys are typed.
                 let parsed = command::parse(command)
-                    .map_err(|Usage(message)| format!("bind {}: {message}", keys_text(&keys)))?;
+                    .map_err(|usage| format!("bind {}: {usage}", keys_text(&keys)))?;
                 self.bind(Binding {
                     keys,
                     command: command.to_vec(),
@@ -585,7 +585,7 @@ mod tests {
                 &crate::command::parse(
                     &words::split("split -v -- htop").map_err(|e| e.to_string())?
                 )
-                .map_err(|u| u.0)?
+                .map_err(|u| u.to_string())?
             )
         );
         // In a config file, such a line is an error naming its line.

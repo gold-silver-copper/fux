@@ -1,7 +1,7 @@
 //! The keyboard overlays: the command column, choosers, action menus, the
 //! command prompt, rename prompts and confirmations. Each belongs to the client
 //! that opened it.
-use crate::command::{AnyRef, ClientId, Command, Kind, MoveTo, Pick, SwapWith, Usage, WsRef};
+use crate::command::{AnyRef, ClientId, Command, Kind, MoveTo, Pick, SwapWith, WsRef};
 use crate::config::Binding;
 use crate::keys::{Direction, Key, KeyPress};
 use crate::layout::{Node, PaneId};
@@ -509,8 +509,9 @@ pub fn run_for(session: &mut Session, client: ClientId, command: &Command) {
 fn run_line(session: &mut Session, client: ClientId, argv: &[String]) {
     match crate::command::parse(argv) {
         Ok(command) => run_for(session, client, &command),
-        Err(Usage(message)) => {
+        Err(usage) => {
             if let Some(view) = session.views.get_mut(&client) {
+                let message = usage.to_string();
                 view.error(message.lines().next().unwrap_or("failed").to_owned());
             }
         }
@@ -1386,7 +1387,7 @@ mod tests {
         let (mut s, c) = busy()?;
         let parsed = |line: &str| -> Result<Command, String> {
             crate::command::parse(&crate::words::split(line).map_err(|e| e.to_string())?)
-                .map_err(|u| u.0)
+                .map_err(|u| u.to_string())
         };
         let listed = |s: &Session| match s.views.get(&c).map(|v| &v.mode) {
             Some(Mode::List(list)) => list.items.iter().map(|i| i.command.clone()).collect(),
