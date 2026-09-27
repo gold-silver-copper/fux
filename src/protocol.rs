@@ -25,6 +25,45 @@ pub enum Role {
     Kill,
 }
 
+/// The frames that carry a stream of bytes, server to client: a paint of
+/// any length, or a command's output, split across as many frames as it
+/// takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stream {
+    Paint,
+    Stdout,
+    Stderr,
+}
+
+impl Stream {
+    fn kind(self) -> u8 {
+        match self {
+            Stream::Paint => 7,
+            Stream::Stdout => 9,
+            Stream::Stderr => 10,
+        }
+    }
+
+    /// Writes `bytes` into `out` as frames of this stream, each a header and
+    /// then its piece of `bytes`, split so that each fits. No bytes, no
+    /// frames.
+    pub fn encode_into(self, bytes: &[u8], out: &mut ByteQueue) {
+        let (whole, rest) = bytes.as_chunks::<MAX_PAYLOAD>();
+        for piece in whole
+            .iter()
+            .map(|piece| piece.as_slice())
+            .chain((!rest.is_empty()).then_some(rest))
+        {
+            // Exact: a piece is at most MAX_PAYLOAD, so the kind byte and the
+            // piece fit a u32.
+            let length = u32::try_from(piece.len().saturating_add(1)).unwrap_or(u32::MAX);
+            let [a, b, c, d] = length.to_be_bytes();
+            out.push(&[a, b, c, d, self.kind()]);
+            out.push(piece);
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Frame {
     /// Both ways: the first frame from each side.
@@ -69,91 +108,90 @@ impl Frame {
             Frame::Resize { .. } => 4,
             Frame::Detach => 5,
             Frame::Command { .. } => 6,
-            Frame::Paint(_) => 7,
+            Frame::Paint(_) => Stream::Paint.kind(),
             Frame::Exit(_) => 8,
-            Frame::Stdout(_) => 9,
-            Frame::Stderr(_) => 10,
+            Frame::Stdout(_) => Stream::Stdout.kind(),
+            Frame::Stderr(_) => Stream::Stderr.kind(),
             Frame::Done { .. } => 11,
         }
     }
 
     /// The encoded frame, or an error if its payload exceeds `MAX_PAYLOAD`.
     pub fn encode(&self) -> Result<Vec<u8>, String> {
-        let mut payload = Vec::new();
+        let mut out = Vec::new();
+        self.encode_into(&mut out)?;
+        Ok(out)
+    }
+
+    /// Appends the encoded frame to `out`: the header, then the payload,
+    /// written in place, and the length patched in once it is known. A
+    /// payload over `MAX_PAYLOAD` is an error, and leaves `out` as it was.
+    pub fn encode_into(&self, out: &mut Vec<u8>) -> Result<(), String> {
+        let start = out.len();
+        out.extend_from_slice(&[0; 4]);
+        out.push(self.kind());
         match self {
             Frame::Hello {
                 protocol,
                 version,
                 role,
             } => {
-                payload.extend_from_slice(&protocol.to_be_bytes());
-                payload.push(match role {
+                out.extend_from_slice(&protocol.to_be_bytes());
+                out.push(match role {
                     Role::Attach => 0,
                     Role::Command => 1,
                     Role::Kill => 2,
                 });
-                put_bytes(&mut payload, version.as_bytes());
+                put_bytes(out, version.as_bytes());
             }
             Frame::Attach {
                 rows,
                 cols,
                 workspace,
             } => {
-                payload.extend_from_slice(&rows.to_be_bytes());
-                payload.extend_from_slice(&cols.to_be_bytes());
-                put_option(&mut payload, workspace.as_deref());
+                out.extend_from_slice(&rows.to_be_bytes());
+                out.extend_from_slice(&cols.to_be_bytes());
+                put_option(out, workspace.as_deref());
             }
             Frame::Input(bytes)
             | Frame::Paint(bytes)
             | Frame::Stdout(bytes)
             | Frame::Stderr(bytes) => {
-                payload.extend_from_slice(bytes);
+                out.extend_from_slice(bytes);
             }
             Frame::Resize { rows, cols } => {
-                payload.extend_from_slice(&rows.to_be_bytes());
-                payload.extend_from_slice(&cols.to_be_bytes());
+                out.extend_from_slice(&rows.to_be_bytes());
+                out.extend_from_slice(&cols.to_be_bytes());
             }
             Frame::Detach => {}
             Frame::Command { argv, cwd, pane } => {
-                put_len(&mut payload, argv.len());
+                put_len(out, argv.len());
                 for arg in argv {
-                    put_bytes(&mut payload, arg.as_bytes());
+                    put_bytes(out, arg.as_bytes());
                 }
-                put_bytes(&mut payload, cwd.as_bytes());
-                put_option(&mut payload, pane.as_deref());
+                put_bytes(out, cwd.as_bytes());
+                put_option(out, pane.as_deref());
             }
-            Frame::Exit(reason) => payload.extend_from_slice(reason.as_bytes()),
-            Frame::Done { status } => payload.push(*status),
+            Frame::Exit(reason) => out.extend_from_slice(reason.as_bytes()),
+            Frame::Done { status } => out.push(*status),
         }
-        if payload.len() > MAX_PAYLOAD {
+        // The payload is what follows the four length bytes and the kind.
+        let payload = out.len().saturating_sub(start).saturating_sub(5);
+        if payload > MAX_PAYLOAD {
+            out.truncate(start);
             return Err(format!(
-                "a frame of {} bytes exceeds the {MAX_PAYLOAD}-byte limit",
-                payload.len()
+                "a frame of {payload} bytes exceeds the {MAX_PAYLOAD}-byte limit"
             ));
         }
         // The kind byte and the payload.
-        let length = payload
-            .len()
-            .checked_add(1)
-            .ok_or("a frame too large to count")
-            .and_then(|n| u32::try_from(n).map_err(|_| "a frame too large to count"))?;
-        // The length, then the frame; a capacity hint only.
-        let mut out = Vec::with_capacity(payload.len().saturating_add(5));
-        out.extend_from_slice(&length.to_be_bytes());
-        out.push(self.kind());
-        out.extend_from_slice(&payload);
-        Ok(out)
-    }
-
-    /// Frames carrying `bytes` split so each fits, for paint and output.
-    pub fn chunked(make: fn(Vec<u8>) -> Frame, bytes: &[u8]) -> Vec<Frame> {
-        let (whole, rest) = bytes.as_chunks::<MAX_PAYLOAD>();
-        whole
-            .iter()
-            .map(|chunk| chunk.as_slice())
-            .chain((!rest.is_empty()).then_some(rest))
-            .map(|chunk| make(chunk.to_vec()))
-            .collect()
+        let Ok(length) = u32::try_from(payload.saturating_add(1)) else {
+            out.truncate(start);
+            return Err("a frame too large to count".into());
+        };
+        if let Some(header) = out.get_mut(start..).and_then(|f| f.first_chunk_mut::<4>()) {
+            *header = length.to_be_bytes();
+        }
+        Ok(())
     }
 }
 
@@ -387,9 +425,154 @@ mod tests {
         let over = u32::try_from(MAX_FRAME + 1).unwrap_or(u32::MAX);
         decoder.push(&over.to_be_bytes());
         assert!(decoder.frame().is_err());
-        let chunks = Frame::chunked(Frame::Paint, &vec![7; MAX_PAYLOAD * 2 + 3]);
-        assert_eq!(chunks.len(), 3);
-        assert!(chunks.iter().all(|f| f.encode().is_ok()));
+        // A longer paint is split into frames that fit.
+        let mut queue = ByteQueue::default();
+        Stream::Paint.encode_into(&vec![7; MAX_PAYLOAD * 2 + 3], &mut queue);
+        let mut decoder = Decoder::default();
+        decoder.push(queue.as_slice());
+        let mut frames = 0;
+        while let Ok(Some(Frame::Paint(_))) = decoder.frame() {
+            frames += 1;
+        }
+        assert_eq!(frames, 3);
+        assert_eq!(decoder.buffered(), 0);
+    }
+
+    /// Frames as they were encoded before `encode_into`: the payload built
+    /// alone, then copied after its header.
+    fn reference(frame: &Frame) -> Vec<u8> {
+        let mut payload = Vec::new();
+        match frame {
+            Frame::Hello {
+                protocol,
+                version,
+                role,
+            } => {
+                payload.extend_from_slice(&protocol.to_be_bytes());
+                payload.push(match role {
+                    Role::Attach => 0,
+                    Role::Command => 1,
+                    Role::Kill => 2,
+                });
+                put_bytes(&mut payload, version.as_bytes());
+            }
+            Frame::Attach {
+                rows,
+                cols,
+                workspace,
+            } => {
+                payload.extend_from_slice(&rows.to_be_bytes());
+                payload.extend_from_slice(&cols.to_be_bytes());
+                put_option(&mut payload, workspace.as_deref());
+            }
+            Frame::Input(bytes)
+            | Frame::Paint(bytes)
+            | Frame::Stdout(bytes)
+            | Frame::Stderr(bytes) => payload.extend_from_slice(bytes),
+            Frame::Resize { rows, cols } => {
+                payload.extend_from_slice(&rows.to_be_bytes());
+                payload.extend_from_slice(&cols.to_be_bytes());
+            }
+            Frame::Detach => {}
+            Frame::Command { argv, cwd, pane } => {
+                put_len(&mut payload, argv.len());
+                for arg in argv {
+                    put_bytes(&mut payload, arg.as_bytes());
+                }
+                put_bytes(&mut payload, cwd.as_bytes());
+                put_option(&mut payload, pane.as_deref());
+            }
+            Frame::Exit(reason) => payload.extend_from_slice(reason.as_bytes()),
+            Frame::Done { status } => payload.push(*status),
+        }
+        let length = u32::try_from(payload.len().saturating_add(1)).unwrap_or(u32::MAX);
+        let mut out = length.to_be_bytes().to_vec();
+        out.push(frame.kind());
+        out.extend_from_slice(&payload);
+        out
+    }
+
+    /// The bytes on the wire are what they were, for every kind of frame
+    /// and every size of stream.
+    #[test]
+    fn frames_encode_as_they_did() {
+        let frames = [
+            Frame::Hello {
+                protocol: PROTOCOL,
+                version: "0.13.0".into(),
+                role: Role::Kill,
+            },
+            Frame::Attach {
+                rows: 24,
+                cols: 80,
+                workspace: Some("main".into()),
+            },
+            Frame::Attach {
+                rows: 1,
+                cols: 1,
+                workspace: None,
+            },
+            Frame::Input(b"\x1b[A".to_vec()),
+            Frame::Resize {
+                rows: 50,
+                cols: 200,
+            },
+            Frame::Detach,
+            Frame::Command {
+                argv: vec!["split".into(), "-h".into(), "".into(), "界".into()],
+                cwd: "/tmp".into(),
+                pane: Some("%3".into()),
+            },
+            Frame::Paint(vec![0, 1, 2, 255]),
+            Frame::Exit("detached".into()),
+            Frame::Stdout(b"out".to_vec()),
+            Frame::Stderr(Vec::new()),
+            Frame::Done { status: 2 },
+        ];
+        for frame in &frames {
+            let mut out = b"before".to_vec();
+            assert!(frame.encode_into(&mut out).is_ok(), "{frame:?}");
+            let expected: Vec<u8> = b"before".iter().copied().chain(reference(frame)).collect();
+            assert_eq!(out, expected, "{frame:?}");
+            assert_eq!(frame.encode().ok(), Some(reference(frame)), "{frame:?}");
+        }
+        // Too long a payload is refused, and nothing is left behind.
+        let mut out = b"before".to_vec();
+        assert!(
+            Frame::Stdout(vec![0; MAX_PAYLOAD + 1])
+                .encode_into(&mut out)
+                .is_err()
+        );
+        assert_eq!(out, b"before");
+        for stream in [Stream::Paint, Stream::Stdout, Stream::Stderr] {
+            let make = match stream {
+                Stream::Paint => Frame::Paint,
+                Stream::Stdout => Frame::Stdout,
+                Stream::Stderr => Frame::Stderr,
+            };
+            for len in [0, 1, MAX_PAYLOAD, 2 * MAX_PAYLOAD + 3] {
+                let bytes: Vec<u8> = (0..len)
+                    .map(|i| u8::try_from(i % 251).unwrap_or(0))
+                    .collect();
+                let mut queue = ByteQueue::default();
+                queue.push(b"before");
+                stream.encode_into(&bytes, &mut queue);
+                // The frames `Frame::chunked` made, each encoded.
+                let (whole, rest) = bytes.as_chunks::<MAX_PAYLOAD>();
+                let expected: Vec<u8> = b"before"
+                    .iter()
+                    .copied()
+                    .chain(
+                        whole
+                            .iter()
+                            .map(|piece| piece.as_slice())
+                            .chain((!rest.is_empty()).then_some(rest))
+                            .flat_map(|piece| reference(&make(piece.to_vec()))),
+                    )
+                    .collect();
+                assert!(queue.as_slice() == expected, "{stream:?} of {len} bytes");
+            }
+        }
     }
 
     #[test]
