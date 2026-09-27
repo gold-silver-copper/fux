@@ -33,6 +33,22 @@ impl Grid {
             cursor_shape: 0,
         }
     }
+    /// Blanks the grid at `rows` by `cols`, resizing its cells only if the
+    /// size changed: a grid composed into again allocates nothing.
+    fn reset(&mut self, rows: u16, cols: u16) {
+        if (self.rows, self.cols) == (rows, cols) {
+            self.cells.fill(Cell::default());
+        } else {
+            self.rows = rows;
+            self.cols = cols;
+            self.cells.clear();
+            // Exact: a u16 by a u16 fits even a 32-bit usize.
+            let len = usize::from(rows).saturating_mul(usize::from(cols));
+            self.cells.resize(len, Cell::default());
+        }
+        self.cursor = None;
+        self.cursor_shape = 0;
+    }
     fn index(&self, y: u16, x: u16) -> Option<usize> {
         if y >= self.rows || x >= self.cols {
             return None;
@@ -174,10 +190,19 @@ pub fn fit(text: &str, cols: u16) -> String {
     out
 }
 
-/// The client's screen as it should look now.
+/// The client's screen as it should look now, in a grid of its own.
 pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
-    let view = session.views.get(&client)?;
-    let mut grid = Grid::new(view.rows, view.cols);
+    let mut grid = Grid::new(0, 0);
+    compose_into(session, client, &mut grid).then_some(grid)
+}
+
+/// Composes the client's screen as it should look now into `grid`, whatever
+/// it held; false if there is no such client.
+pub fn compose_into(session: &Session, client: ClientId, grid: &mut Grid) -> bool {
+    let Some(view) = session.views.get(&client) else {
+        return false;
+    };
+    grid.reset(view.rows, view.cols);
     let area = Session::pane_area(view);
     let placement = session.placement(view);
     let focus = view.focus();
@@ -226,7 +251,7 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
             }
         }
     }
-    separators(&mut grid, &placement, focus);
+    separators(grid, &placement, focus);
     if view
         .tab()
         .and_then(|t| session.tab(t))
@@ -297,9 +322,9 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
             }
         }
     }
-    bar(&mut grid, session, view, copy);
+    bar(grid, session, view, copy);
     match &view.mode {
-        Mode::Column { path, selected } => column(&mut grid, session, view, path, *selected),
+        Mode::Column { path, selected } => column(grid, session, view, path, *selected),
         Mode::List(list) => {
             let mut lines: Vec<(String, Attributes)> =
                 vec![(list.title.clone(), panel().with_bold(true))];
@@ -341,7 +366,7 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
                 "Enter runs · Esc cancels"
             };
             lines.push((help.into(), panel().with_dim(true)));
-            surface(&mut grid, view, &lines);
+            surface(grid, view, &lines);
         }
         Mode::Prompt(prompt) => {
             let lines = vec![
@@ -349,7 +374,7 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
                 (with_cursor(&prompt.text, prompt.cursor), panel()),
                 ("Enter accepts · Esc cancels".into(), panel().with_dim(true)),
             ];
-            surface(&mut grid, view, &lines);
+            surface(grid, view, &lines);
             grid.cursor = None;
         }
         Mode::Confirm(confirm) => {
@@ -357,13 +382,13 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
                 (confirm.question.clone(), panel().with_bold(true)),
                 ("y confirms · n or Esc cancels".into(), panel()),
             ];
-            surface(&mut grid, view, &lines);
+            surface(grid, view, &lines);
             grid.cursor = None;
         }
         // A repeat mode shows in the bar, leaving the layout in view.
         Mode::Normal | Mode::Copy(_) | Mode::Repeat { .. } => {}
     }
-    Some(grid)
+    true
 }
 
 /// A prompt's text with a bar at `cursor`, counted in chars; past the end
@@ -1027,6 +1052,56 @@ mod tests {
         use crate::copy::Select;
         for kind in [Select::Char, Select::Line, Select::Block] {
             assert!(kinds.contains(&Some(kind)), "{kind:?}: {kinds:?}");
+        }
+        Ok(())
+    }
+
+    /// A grid composed into again, whatever it held and whatever its size,
+    /// comes out as a fresh one would.
+    #[test]
+    fn composing_into_a_used_grid_is_composing_afresh() -> Result<(), String> {
+        let mut s = Session::new(
+            crate::config::Config::default(),
+            "/nonexistent/fux.sock".into(),
+            false,
+        );
+        s.start()?;
+        let c = s.attach(12, 50, None)?;
+        s.output(PaneId(1), b"first screen\r\n\x1b[5 q");
+        let before = compose(&s, c).ok_or("a screen")?;
+        let outcome = s.run(
+            &["split".to_owned(), "-h".to_owned()],
+            &crate::session::Ctx::client(c),
+        );
+        assert_eq!(outcome.status, 0, "{}", outcome.stderr);
+        // The focused pane hides its cursor, and a smaller client makes the
+        // panes smaller than their places: compose leaves cells untouched.
+        s.output(PaneId(2), "界 second\r\n\x1b[?25l".as_bytes());
+        s.attach(8, 30, None)?;
+        let fresh = compose(&s, c).ok_or("a screen")?;
+        assert_ne!(before, fresh);
+        assert!(before.cursor.is_some() && fresh.cursor.is_none());
+        assert!(fresh.cells.contains(&Cell::default()));
+        // The previous screen, with its cursor and shape.
+        let mut used = before;
+        assert!(compose_into(&s, c, &mut used));
+        assert_eq!(used, fresh);
+        // Grids of this size and others, full of text.
+        for (rows, cols) in [(12, 50), (3, 7), (12, 49), (40, 200)] {
+            let mut other = Grid::new(rows, cols);
+            for y in 0..rows {
+                other.text(
+                    y,
+                    0,
+                    "junk 界 junk",
+                    Attributes::default().with_bold(true),
+                    cols,
+                );
+            }
+            other.cursor = Some((1, 1));
+            other.cursor_shape = 3;
+            assert!(compose_into(&s, c, &mut other));
+            assert_eq!(other, fresh, "{rows}x{cols}");
         }
         Ok(())
     }

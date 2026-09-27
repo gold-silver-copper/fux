@@ -45,8 +45,14 @@ struct Conn {
     out: ByteQueue,
     role: Option<Role>,
     client: Option<ClientId>,
-    /// What the client's terminal shows, for diffing.
-    shown: Option<Grid>,
+    /// What the client's terminal shows, for diffing, once `painted`.
+    shown: Grid,
+    /// Whether `shown` is on the client's terminal; if not, the next paint
+    /// is a full one.
+    painted: bool,
+    /// The grid the next paint is composed into, then swapped with `shown`:
+    /// the two are reused by every paint.
+    spare: Grid,
     next_paint: Instant,
     /// Paints were skipped while its output was full: repaint all once drained.
     starved: bool,
@@ -342,7 +348,7 @@ impl Server {
                 // A client that stops reading gets nothing more queued; once
                 // it drains, one full repaint.
                 conn.starved = true;
-                conn.shown = None;
+                conn.painted = false;
                 continue;
             }
             if conn.starved {
@@ -355,13 +361,15 @@ impl Server {
             if !dirty || now < conn.next_paint {
                 continue;
             }
-            let Some(grid) = render::compose(&self.session, client) else {
+            if !render::compose_into(&self.session, client, &mut conn.spare) {
                 continue;
-            };
+            }
             self.paint_buffer.clear();
-            render::paint_into(conn.shown.as_ref(), &grid, &mut self.paint_buffer);
+            let shown = conn.painted.then_some(&conn.shown);
+            render::paint_into(shown, &conn.spare, &mut self.paint_buffer);
             conn.send_stream(Stream::Paint, &self.paint_buffer);
-            conn.shown = Some(grid);
+            std::mem::swap(&mut conn.shown, &mut conn.spare);
+            conn.painted = true;
             conn.next_paint = crate::after(now, PAINT);
             if let Some(view) = self.session.views.get_mut(&client) {
                 view.dirty = false;
@@ -421,7 +429,9 @@ impl Server {
                         out: ByteQueue::default(),
                         role: None,
                         client: None,
-                        shown: None,
+                        shown: Grid::new(0, 0),
+                        painted: false,
+                        spare: Grid::new(0, 0),
                         next_paint: Instant::now(),
                         starved: false,
                         closing: false,
@@ -648,7 +658,7 @@ impl Server {
             }
             (Role::Attach, Frame::Resize { rows, cols }) => {
                 if let Some(client) = conn.client {
-                    conn.shown = None;
+                    conn.painted = false;
                     self.session.resize(client, rows, cols);
                 }
             }
