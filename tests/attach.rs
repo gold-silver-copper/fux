@@ -143,7 +143,7 @@ fn attach_starts_a_server_when_none_answers() -> Outcome {
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
     let socket = dir.join("s").join("fux.sock");
     // A server handle that only cleans up; the client starts the real one.
-    let (master, slave) = fux::process::open_pty(10, 40)?;
+    let (master, slave) = fux::process::open_pty(10, 40).map_err(e)?;
     let stdio =
         |fd: &std::os::fd::OwnedFd| fd.try_clone().map(std::process::Stdio::from).map_err(e);
     let mut child = std::process::Command::new(FUX)

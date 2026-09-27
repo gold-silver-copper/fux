@@ -327,19 +327,17 @@ impl Session {
             size.0,
             size.1,
             self.config.history_lines,
-        )?;
+        )
+        .map_err(|e| e.to_string())?;
         if self.launch {
             let env = [
                 ("FUX_PANE", id.to_string()),
                 ("FUX_SOCKET", self.socket.to_string_lossy().into_owned()),
             ];
-            pane.child = Some(crate::process::spawn(
-                &self.config.shell,
-                cwd,
-                &env,
-                size.0,
-                size.1,
-            )?);
+            pane.child = Some(
+                crate::process::spawn(&self.config.shell, cwd, &env, size.0, size.1)
+                    .map_err(|e| e.to_string())?,
+            );
         }
         if let Some(line) = line {
             let mut typed = line.into_bytes();
@@ -1165,7 +1163,7 @@ impl Session {
                         _ => bytes.extend_from_slice(key.as_bytes()),
                     }
                 }
-                p.input.push(bytes)?;
+                p.input.push(bytes).map_err(|e| e.to_string())?;
                 Ok(String::new())
             }
             &Command::CapturePane {
@@ -1195,7 +1193,7 @@ impl Session {
                 let child = p.child.as_ref().ok_or("the pane has no process")?;
                 match crate::process::foreground(&child.master) {
                     Some(group) if group != child.pid => {
-                        crate::process::terminate(group)?;
+                        crate::process::terminate(group).map_err(|e| e.to_string())?;
                         Ok(String::new())
                     }
                     _ => Err(format!("nothing is running in {pane} but its shell")),
@@ -1259,7 +1257,9 @@ impl Session {
                     .get_mut(&pane)
                     .ok_or_else(|| format!("no pane {pane}"))?;
                 let bracketed = p.screen().bracketed_paste();
-                p.input.push(crate::encode::paste(&text, bracketed))?;
+                p.input
+                    .push(crate::encode::paste(&text, bracketed))
+                    .map_err(|e| e.to_string())?;
                 Ok(String::new())
             }
             &Command::Detach { client } => {

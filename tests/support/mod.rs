@@ -585,7 +585,7 @@ impl Terminal {
         argv: &[&str],
         setup: impl FnOnce(&mut Command),
     ) -> Result<Terminal, String> {
-        let (master, slave) = fux::process::open_pty(rows, cols)?;
+        let (master, slave) = fux::process::open_pty(rows, cols).map_err(e)?;
         let child = {
             let _guard = SPAWN.lock().map_err(e)?;
             fux::process::launch(Path::new(FUX), argv, &slave, |command| {

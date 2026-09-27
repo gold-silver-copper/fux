@@ -720,7 +720,7 @@ pub fn send_key(session: &mut Session, client: ClientId, press: KeyPress) {
     if let Err(error) = p.input.push(bytes)
         && let Some(view) = session.views.get_mut(&client)
     {
-        view.error(error);
+        view.error(error.to_string());
     }
 }
 

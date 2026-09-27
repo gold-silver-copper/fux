@@ -11,6 +11,48 @@ pub const INPUT_BYTES: usize = 16 * MAX_INPUT;
 /// What one queued piece costs beyond its bytes.
 pub const ENTRY_COST: usize = 64;
 
+/// Why input is not queued, or a pane cannot be made.
+#[derive(Debug)]
+pub enum Error {
+    /// The queue is full, or refusing until the program reads.
+    NotReading,
+    /// No terminal of this size and history.
+    Terminal {
+        rows: u16,
+        cols: u16,
+        history: usize,
+        source: fux_vt::Error,
+    },
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::NotReading => f.write_str(
+                "the pane's program is not reading its input; nothing more is queued until it does",
+            ),
+            Error::Terminal {
+                rows,
+                cols,
+                history,
+                source,
+            } => write!(
+                f,
+                "a {rows}x{cols} terminal with {history} lines of history: {source}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::NotReading => None,
+            Error::Terminal { source, .. } => Some(source),
+        }
+    }
+}
+
 /// Input and terminal replies waiting for the pane's program to read them,
 /// bounded by what they cost rather than by how many pieces they came in.
 #[derive(Default)]
@@ -27,7 +69,7 @@ pub struct InputQueue {
 impl InputQueue {
     /// Queues `bytes`, or refuses them whole if the queue is full, and then
     /// everything until the program reads.
-    pub fn push(&mut self, bytes: Vec<u8>) -> Result<(), String> {
+    pub fn push(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
         if bytes.is_empty() {
             return Ok(());
         }
@@ -38,10 +80,7 @@ impl InputQueue {
             .filter(|cost| *cost <= INPUT_BYTES && !self.refusing);
         let Some(cost) = cost else {
             self.refusing = true;
-            return Err(
-                "the pane's program is not reading its input; nothing more is queued until it does"
-                    .into(),
-            );
+            return Err(Error::NotReading);
         };
         self.cost = cost;
         self.pieces.push_back(bytes);
@@ -260,14 +299,17 @@ impl Pane {
         rows: u16,
         cols: u16,
         history: usize,
-    ) -> Result<Pane, String> {
+    ) -> Result<Pane, Error> {
         let options = fux_vt::Options {
             events: true,
             extended_replies: false,
         };
         let parser = fux_vt::Parser::with_options(rows.max(1), cols.max(1), history, options)
-            .map_err(|e| {
-                format!("a {rows}x{cols} terminal with {history} lines of history: {e}")
+            .map_err(|source| Error::Terminal {
+                rows,
+                cols,
+                history,
+                source,
             })?;
         Ok(Pane {
             id,
@@ -394,11 +436,12 @@ mod tests {
     fn after_a_refusal_nothing_is_queued_until_the_program_reads() {
         let mut queue = InputQueue::default();
         while queue.push(vec![b'p'; MAX_INPUT]).is_ok() {}
-        let refusal = queue.push(vec![b'k']).err().unwrap_or_default();
+        let refusal = queue.push(vec![b'k']);
         assert!(
-            refusal.contains("not reading"),
+            matches!(refusal, Err(Error::NotReading)),
             "a key after a refused paste: {refusal:?}"
         );
+        assert!(refusal.is_err_and(|e| e.to_string().contains("not reading")));
         // Writing some of the front is the program reading: input is taken
         // again.
         queue.advance(1);
@@ -446,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn output_records_when_the_shell_wrote_and_types_nothing_itself() -> Result<(), String> {
+    fn output_records_when_the_shell_wrote_and_types_nothing_itself() -> Result<(), Error> {
         let mut pane = Pane::new(PaneId(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
         let before = std::time::Instant::now();
         pane.typed = Some(Typed {
@@ -468,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn output_answers_queries_and_takes_titles() -> Result<(), String> {
+    fn output_answers_queries_and_takes_titles() -> Result<(), Error> {
         let mut pane = Pane::new(PaneId(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
         pane.output(b"hello\x1b]2;my title\x07\x1b[6n");
         assert_eq!(pane.title, "my title");
