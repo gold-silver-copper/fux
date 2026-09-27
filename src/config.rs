@@ -334,7 +334,7 @@ impl Config {
             "shell" => {
                 // `set shell /bin/zsh -l` and `set shell '/bin/zsh -l'` alike.
                 let argv = if let [single] = value {
-                    words::split(single)?
+                    words::split(single).map_err(|e| e.to_string())?
                 } else {
                     value.to_vec()
                 };
@@ -379,7 +379,7 @@ impl Config {
         for (number, line) in text.lines().enumerate() {
             let line_number = number.saturating_add(1);
             let at = |e: String| format!("{}:{}: {e}", path.display(), line_number);
-            let argv = words::split(line).map_err(at)?;
+            let argv = words::split(line).map_err(|e| at(e.to_string()))?;
             if argv.is_empty() {
                 continue;
             }
@@ -460,7 +460,7 @@ mod tests {
     use super::*;
 
     fn apply(config: &mut Config, line: &str) -> Result<(), String> {
-        config.apply(&words::split(line)?)
+        config.apply(&words::split(line).map_err(|e| e.to_string())?)
     }
 
     #[test]
@@ -577,7 +577,12 @@ mod tests {
         let g = c.bindings.iter().find(|b| keys_text(&b.keys) == "g");
         assert_eq!(
             g.map(|b| &b.parsed),
-            Some(&crate::command::parse(&words::split("split -v -- htop")?).map_err(|u| u.0)?)
+            Some(
+                &crate::command::parse(
+                    &words::split("split -v -- htop").map_err(|e| e.to_string())?
+                )
+                .map_err(|u| u.0)?
+            )
         );
         // In a config file, such a line is an error naming its line.
         let dir = std::env::temp_dir().join(format!("fux-config-parse-{}", std::process::id()));
