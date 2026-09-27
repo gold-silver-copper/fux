@@ -29,6 +29,12 @@ impl Errno {
         self.0
     }
 
+    /// The `errno` a call reported as its number rather than in `errno`.
+    #[cfg(any(target_os = "linux", target_os = "android", test))]
+    pub(crate) const fn from_raw(raw: i32) -> Errno {
+        Errno(raw)
+    }
+
     /// The `errno` behind an I/O error, if it came from the system.
     pub fn from_io_error(error: &std::io::Error) -> Option<Errno> {
         error.raw_os_error().map(Errno)
@@ -92,6 +98,7 @@ mod tests {
         let io: std::io::Error = Errno::MFILE.into();
         assert_eq!(Errno::from_io_error(&io), Some(Errno::MFILE));
         assert_eq!(Errno::AGAIN, Errno::WOULDBLOCK);
+        assert_eq!(Errno::from_raw(libc::EINTR), Errno::INTR);
         assert_eq!(check(3), Ok(3));
         assert_eq!(check_size(7), Ok(7));
     }

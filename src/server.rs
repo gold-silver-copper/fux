@@ -568,47 +568,61 @@ impl Server {
         }
     }
 
+    /// Reads what a client sent until it has sent no more, or 256 whole
+    /// frames, or a bad one; then handles each whole frame, in order.
     fn read_conn(&mut self, index: usize, now: Instant) {
-        let mut frames = Vec::new();
-        let mut closed = false;
-        {
-            let buffer = &mut self.read_buffer;
-            let Some(conn) = self.conns.get_mut(index) else {
-                return;
-            };
-            loop {
-                match conn.stream.read(buffer) {
-                    Ok(0) => {
+        // The frames read and checked, and where they end in the decoder.
+        let (mut end, mut frames, mut closed) = (0usize, 0usize, false);
+        let Some(conn) = self.conns.get_mut(index) else {
+            return;
+        };
+        loop {
+            match conn.stream.read(&mut self.read_buffer) {
+                Ok(0) => {
+                    closed = true;
+                    break;
+                }
+                Ok(n) => {
+                    conn.decoder
+                        .push(self.read_buffer.get(..n).unwrap_or_default());
+                    let checked = conn.decoder.check(end);
+                    (end, frames) = (checked.end, frames.saturating_add(checked.frames));
+                    if let Some(error) = checked.error {
+                        log(&format!("a client sent a bad frame: {error}"));
                         closed = true;
                         break;
                     }
-                    Ok(n) => {
-                        conn.decoder.push(buffer.get(..n).unwrap_or_default());
-                        loop {
-                            match conn.decoder.frame() {
-                                Ok(Some(frame)) => frames.push(frame),
-                                Ok(None) => break,
-                                Err(error) => {
-                                    log(&format!("a client sent a bad frame: {error}"));
-                                    closed = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if closed || frames.len() > 256 {
-                            break;
-                        }
-                    }
-                    Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                    Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                    Err(_) => {
-                        closed = true;
+                    if frames > 256 {
                         break;
                     }
                 }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    closed = true;
+                    break;
+                }
             }
         }
-        for frame in frames {
+        for _ in 0..frames {
+            let Some(conn) = self.conns.get_mut(index) else {
+                return;
+            };
+            // Checked above, so each is there and decodes.
+            let Ok(Some(raw)) = conn.decoder.raw() else {
+                break;
+            };
+            // An attached client's input goes to the session from the
+            // decoder, uncopied.
+            if let (Some(Role::Attach), Some(bytes)) = (conn.role, raw.input()) {
+                if let Some(client) = conn.client {
+                    self.session.input_at(client, bytes, now);
+                }
+                continue;
+            }
+            let Ok(frame) = raw.decode() else {
+                break;
+            };
             self.frame(index, frame, now);
         }
         if closed && let Some(conn) = self.conns.get_mut(index) {
