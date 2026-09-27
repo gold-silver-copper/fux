@@ -63,7 +63,7 @@ fn connect(socket: &Path, role: Role) -> Result<(UnixStream, Decoder), String> {
 }
 
 fn send(stream: &mut UnixStream, frame: &Frame) -> Result<(), String> {
-    let bytes = frame.encode()?;
+    let bytes = frame.encode().map_err(|e| e.to_string())?;
     stream
         .write_all(&bytes)
         .map_err(|e| format!("writing to the server: {e}"))
@@ -77,7 +77,7 @@ fn read_frame(
 ) -> Result<Option<Frame>, String> {
     let _ = stream.set_read_timeout(timeout);
     loop {
-        if let Some(frame) = decoder.frame()? {
+        if let Some(frame) = decoder.frame().map_err(|e| e.to_string())? {
             return Ok(Some(frame));
         }
         match stream.read(buffer) {
@@ -324,7 +324,7 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, String
                 Err(e) if matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock) => {}
                 Err(e) => return Err(format!("reading from the server: {e}")),
             }
-            while let Some(raw) = decoder.raw()? {
+            while let Some(raw) = decoder.raw().map_err(|e| e.to_string())? {
                 // A paint goes to the terminal straight from the decoder.
                 if let Some(bytes) = raw.paint() {
                     stdout
@@ -332,7 +332,7 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, String
                         .map_err(|e| format!("writing the terminal: {e}"))?;
                     continue;
                 }
-                match raw.decode()? {
+                match raw.decode().map_err(|e| e.to_string())? {
                     Frame::Exit(reason) => return Ok(reason),
                     Frame::Paint(_)
                     | Frame::Hello { .. }
