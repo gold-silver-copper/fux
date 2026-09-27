@@ -139,16 +139,11 @@ pub fn shell_line(argv: &[String], fish: bool) -> Result<String, Error> {
                 character,
             });
         }
-        if bare(arg) {
-            words.push(arg.clone());
+        words.push(if fish {
+            quote(&arg.replace('\\', "\\\\"))
         } else {
-            let inner = if fish {
-                arg.replace('\\', "\\\\")
-            } else {
-                arg.clone()
-            };
-            words.push(format!("'{}'", inner.replace('\'', "'\\''")));
-        }
+            quote(arg)
+        });
     }
     Ok(words.join(" "))
 }

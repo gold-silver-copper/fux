@@ -71,22 +71,29 @@ impl Kind {
     }
 }
 
-/// Which way `reorder` moves a pane, tab or workspace among its siblings.
+/// Which way `reorder` moves a pane, tab or workspace among its siblings,
+/// or `select-…` steps from the current one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sibling {
     Next,
     Previous,
 }
 
-/// Which pane, tab or workspace a `select-…` command picks.
+/// Which tab or workspace `select-tab` or `select-workspace` picks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick<T> {
-    Next,
-    Previous,
-    /// The previously focused pane (panes only).
+    Step(Sibling),
+    Id(T),
+}
+
+/// Which pane `select-pane` picks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanePick {
+    Step(Sibling),
+    Id(PaneId),
+    /// The previously focused pane.
     Last,
     Toward(Direction),
-    Id(T),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -232,7 +239,7 @@ pub enum ClientAction {
         target: Option<AnyRef>,
     },
     Zoom,
-    SelectPane(Pick<PaneId>),
+    SelectPane(PanePick),
     SelectTab(Pick<TabId>),
     SelectWorkspace(Pick<WsRef>),
 }
@@ -839,22 +846,22 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                     target: any,
                 },
                 "select-pane" => ClientAction::SelectPane(match (pick, direction, target) {
-                    (Some("--next"), None, None) => Pick::Next,
-                    (Some("--previous"), None, None) => Pick::Previous,
-                    (Some("--last"), None, None) => Pick::Last,
-                    (None, Some(d), None) => Pick::Toward(d),
-                    (None, None, Some(t)) => Pick::Id(parse_pane(t)?),
+                    (Some("--next"), None, None) => PanePick::Step(Sibling::Next),
+                    (Some("--previous"), None, None) => PanePick::Step(Sibling::Previous),
+                    (Some("--last"), None, None) => PanePick::Last,
+                    (None, Some(d), None) => PanePick::Toward(d),
+                    (None, None, Some(t)) => PanePick::Id(parse_pane(t)?),
                     _ => return Err(Usage::SelectPane),
                 }),
                 "select-tab" => ClientAction::SelectTab(match (pick, target) {
-                    (Some("--next"), None) => Pick::Next,
-                    (Some("--previous"), None) => Pick::Previous,
+                    (Some("--next"), None) => Pick::Step(Sibling::Next),
+                    (Some("--previous"), None) => Pick::Step(Sibling::Previous),
                     (None, Some(t)) => Pick::Id(parse_tab(t)?),
                     _ => return Err(Usage::SelectTab),
                 }),
                 _ => ClientAction::SelectWorkspace(match (pick, target) {
-                    (Some("--next"), None) => Pick::Next,
-                    (Some("--previous"), None) => Pick::Previous,
+                    (Some("--next"), None) => Pick::Step(Sibling::Next),
+                    (Some("--previous"), None) => Pick::Step(Sibling::Previous),
                     (None, Some(t)) => Pick::Id(parse_workspace(t)?),
                     _ => return Err(Usage::SelectWorkspace),
                 }),
@@ -1012,7 +1019,7 @@ mod tests {
             cmd("select-pane -c c1 --last"),
             Ok(Command::Client {
                 client: Some(ClientId(1)),
-                action: ClientAction::SelectPane(Pick::Last)
+                action: ClientAction::SelectPane(PanePick::Last)
             })
         );
         assert_eq!(
