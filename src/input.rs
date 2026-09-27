@@ -6,21 +6,34 @@ use crate::keys::KeyPress;
 use crate::overlay;
 use crate::session::Session;
 use crate::view::Mode;
+use std::time::Instant;
 
 impl Session {
-    /// Raw bytes from a client's terminal.
+    /// Raw bytes from a client's terminal, now.
     pub fn input(&mut self, client: ClientId, bytes: &[u8]) {
+        self.input_at(client, bytes, Instant::now());
+    }
+
+    /// Raw bytes from a client's terminal, read at `now`: an Escape they
+    /// leave waiting is due `ESCAPE_DELAY` after it.
+    pub fn input_at(&mut self, client: ClientId, bytes: &[u8], now: Instant) {
         let mut inputs = Vec::new();
         match self.views.get_mut(&client) {
-            Some(view) => view.decoder.bytes(bytes, &mut inputs),
+            Some(view) => {
+                view.decoder.bytes(bytes, &mut inputs);
+                view.decoder.mark(now);
+            }
             None => return,
         }
         self.dispatch(client, inputs);
     }
 
-    /// Whether a client's decoder waits on the Escape deadline.
-    pub fn waiting(&self, client: ClientId) -> bool {
-        self.views.get(&client).is_some_and(|v| v.decoder.waiting())
+    /// The first client, in their order, whose Escape was due by `now`.
+    pub fn escape_due(&self, now: Instant) -> Option<ClientId> {
+        self.views
+            .iter()
+            .find(|(_, v)| v.decoder.deadline().is_some_and(|due| due <= now))
+            .map(|(client, _)| *client)
     }
 
     /// The Escape deadline passed for a client.

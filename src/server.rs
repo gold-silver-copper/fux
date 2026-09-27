@@ -81,8 +81,6 @@ pub struct Server {
     children: UnixStream,
     stops: UnixStream,
     stopping: Option<(Instant, String)>,
-    /// When each client's decoder began waiting on a lone Escape.
-    escapes: std::collections::HashMap<ClientId, Instant>,
     /// Where client bytes land before their decoder takes them; one for the
     /// server, reused by every read.
     read_buffer: Vec<u8>,
@@ -178,7 +176,6 @@ pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), Error> {
         children,
         stops,
         stopping: None,
-        escapes: std::collections::HashMap::new(),
         read_buffer: vec![0u8; 64 * 1024],
         paint_buffer: Vec::new(),
         slots: Vec::new(),
@@ -232,7 +229,7 @@ impl Server {
                         drain(&mut self.stops);
                         self.stop("stopped by a signal".into());
                     }
-                    Slot::Conn(i) => self.serve_conn(i, flags),
+                    Slot::Conn(i) => self.serve_conn(i, flags, now),
                     Slot::Pane(id) => self.serve_pane(id, flags),
                 }
             }
@@ -248,21 +245,9 @@ impl Server {
     /// A lone Escape becomes a key once `ESCAPE_DELAY` passes with no byte
     /// after it.
     fn escapes(&mut self, now: Instant) {
-        let session = &self.session;
-        self.escapes.retain(|c, _| session.waiting(*c));
-        for client in session.views.keys().filter(|c| session.waiting(**c)) {
-            self.escapes.entry(*client).or_insert(now);
-        }
         // One at a time, in the clients' order: an Escape runs whatever it
         // completes.
-        while let Some(client) = self
-            .escapes
-            .iter()
-            .filter(|(_, since)| now.duration_since(**since) >= crate::decode::ESCAPE_DELAY)
-            .map(|(client, _)| *client)
-            .min()
-        {
-            self.escapes.remove(&client);
+        while let Some(client) = self.session.escape_due(now) {
             self.session.escape(client);
         }
     }
@@ -273,14 +258,7 @@ impl Server {
             let dirty = session.views.get(&conn.client?).is_some_and(|v| v.dirty);
             (dirty && !conn.starved).then_some(conn.next_paint)
         });
-        let escapes = session
-            .views
-            .keys()
-            .filter(|c| session.waiting(**c))
-            .map(|client| {
-                let since = self.escapes.get(client).copied().unwrap_or(now);
-                crate::after(since, crate::decode::ESCAPE_DELAY)
-            });
+        let escapes = session.views.values().filter_map(|v| v.decoder.deadline());
         let stop = self
             .stopping
             .as_ref()
@@ -552,12 +530,13 @@ impl Server {
         }
     }
 
-    fn serve_conn(&mut self, index: usize, flags: PollFlags) {
+    /// A client's connection is ready, as found at `now`.
+    fn serve_conn(&mut self, index: usize, flags: PollFlags, now: Instant) {
         if flags.contains(PollFlags::OUT) {
             self.write_conn(index);
         }
         if flags.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
-            self.read_conn(index);
+            self.read_conn(index, now);
         }
     }
 
@@ -589,7 +568,7 @@ impl Server {
         }
     }
 
-    fn read_conn(&mut self, index: usize) {
+    fn read_conn(&mut self, index: usize, now: Instant) {
         let mut frames = Vec::new();
         let mut closed = false;
         {
@@ -630,7 +609,7 @@ impl Server {
             }
         }
         for frame in frames {
-            self.frame(index, frame);
+            self.frame(index, frame, now);
         }
         if closed && let Some(conn) = self.conns.get_mut(index) {
             conn.dead = true;
@@ -640,7 +619,7 @@ impl Server {
         }
     }
 
-    fn frame(&mut self, index: usize, frame: Frame) {
+    fn frame(&mut self, index: usize, frame: Frame, now: Instant) {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
@@ -693,7 +672,7 @@ impl Server {
             }
             (Role::Attach, Frame::Input(bytes)) => {
                 if let Some(client) = conn.client {
-                    self.session.input(client, &bytes);
+                    self.session.input_at(client, &bytes, now);
                 }
             }
             (Role::Attach, Frame::Resize { rows, cols }) => {
