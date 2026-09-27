@@ -6,11 +6,17 @@
 # every allocation's: `Vec::with_capacity`, `reserve`, `resize` and `collect`.
 # Also left off: `slice::rotate_left` and `rotate_right`, which panic when
 # turning by more than the slice. Every other way to rotate without that panic
-# takes twice the time, and fux-vt inserts and deletes characters with them;
-# its one call site clamps the count to the slice just before (grid.rs,
-# `edit_cells`).
+# takes twice the time, and fux-vt turns rows and cells with them: inserting
+# and deleting characters clamps the count to the slice just before
+# (grid.rs, `edit_cells`), and moving a row turns a run of at least one by
+# one (grid.rs, `move_row`).
 # And `char::encode_utf8`, which panics only for a buffer under four bytes:
 # every call passes a buffer of fixed size, four bytes or a cell's text.
+# And `slice::copy_within` and `copy_from_slice`, which panic on a range out
+# of bounds and on slices of different lengths. The rule: each crate calls
+# them only in one small helper, after the helper has checked what they would
+# panic on, and nowhere else; grep finds no other call. fux's is `copy_within`
+# in src/bytes.rs, fux-vt's `copy_from` in its lib.rs.
 disallowed-methods = [
   # Vec
   { path = "alloc::vec::Vec::insert", reason = "panics past the end: build the new Vec from iterators" },
@@ -45,9 +51,7 @@ disallowed-methods = [
   { path = "slice::split_at_mut", reason = "panics past the end: split_at_mut_checked" },
   { path = "slice::swap", reason = "panics on an index out of bounds: get_disjoint_mut" },
   { path = "slice::swap_with_slice", reason = "panics on slices of different lengths" },
-  { path = "slice::copy_from_slice", reason = "panics on slices of different lengths: first_chunk, try_into, or zip" },
   { path = "slice::clone_from_slice", reason = "panics on slices of different lengths" },
-  { path = "slice::copy_within", reason = "panics on a range out of bounds" },
   { path = "slice::select_nth_unstable", reason = "panics past the end" },
   { path = "slice::chunks", reason = "panics on a zero size: as_chunks, or split_at_checked" },
   { path = "slice::chunks_mut", reason = "panics on a zero size" },
