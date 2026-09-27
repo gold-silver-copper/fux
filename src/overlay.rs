@@ -10,19 +10,20 @@ use crate::layout::{Node, PaneId};
 use crate::session::{Ctx, Error, Session, describe};
 use crate::view::{Confirm, Item, List, Mode, Prompt, PromptFor};
 
-/// One row of the command column: a group heading, a binding, or a layer.
+/// One row of the command column: a group heading, a binding, or a layer,
+/// borrowed from the configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ColumnRow {
-    Heading(String),
+pub enum ColumnRow<'a> {
+    Heading(&'a str),
     Binding {
         key: KeyPress,
         label: String,
-        command: Command,
+        command: &'a Command,
     },
     /// A key that opens a layer, and the layer's title.
     Layer {
         key: KeyPress,
-        title: String,
+        title: &'a str,
     },
 }
 
@@ -44,16 +45,16 @@ impl<'a> Entry<'a> {
         }
     }
 
-    fn row(self) -> ColumnRow {
+    fn row(self) -> ColumnRow<'a> {
         match self {
             Entry::Binding(key, binding) => ColumnRow::Binding {
                 key,
                 label: crate::command::label(&binding.command),
-                command: binding.parsed.clone(),
+                command: &binding.parsed,
             },
             Entry::Layer(key, first) => ColumnRow::Layer {
                 key,
-                title: first.group().to_owned(),
+                title: first.group(),
             },
         }
     }
@@ -62,7 +63,7 @@ impl<'a> Entry<'a> {
 /// The column's entries for the layer at `path`, in the order of the
 /// bindings, found without building their rows. A layer is an entry once,
 /// where its first binding is.
-fn entries<'a>(session: &'a Session, path: &'a [KeyPress]) -> impl Iterator<Item = Entry<'a>> {
+fn entries<'a>(session: &'a Session, path: &[KeyPress]) -> impl Iterator<Item = Entry<'a>> {
     let bindings = &session.config.bindings;
     bindings.iter().enumerate().filter_map(move |(i, binding)| {
         match binding.keys.strip_prefix(path) {
@@ -82,7 +83,7 @@ fn opens(binding: &Binding, path: &[KeyPress], key: &KeyPress) -> bool {
 
 /// The column's entries in its order, with their groups: groups in their
 /// order, custom groups after them and `Other` last.
-fn ordered<'a>(session: &'a Session, path: &'a [KeyPress]) -> Vec<(&'a str, Entry<'a>)> {
+fn ordered<'a>(session: &'a Session, path: &[KeyPress]) -> Vec<(&'a str, Entry<'a>)> {
     let entries: Vec<(&str, Entry)> = entries(session, path).map(|e| (e.group(), e)).collect();
     let mut groups: Vec<&str> = crate::config::GROUPS.to_vec();
     for (group, _) in &entries {
@@ -101,12 +102,12 @@ fn ordered<'a>(session: &'a Session, path: &'a [KeyPress]) -> Vec<(&'a str, Entr
 /// layers inside it, grouped, groups in their order, custom groups after
 /// them and `Other` last. A layer is listed once, where its first binding
 /// is, under the group its command belongs to.
-pub fn column_rows(session: &Session, path: &[KeyPress]) -> Vec<ColumnRow> {
+pub fn column_rows<'a>(session: &'a Session, path: &[KeyPress]) -> Vec<ColumnRow<'a>> {
     let mut rows = Vec::new();
     let mut heading = None;
     for (group, entry) in ordered(session, path) {
         if heading != Some(group) {
-            rows.push(ColumnRow::Heading(group.to_owned()));
+            rows.push(ColumnRow::Heading(group));
             heading = Some(group);
         }
         rows.push(entry.row());
@@ -131,7 +132,11 @@ pub(crate) fn column_len(session: &Session, path: &[KeyPress]) -> usize {
 
 /// The column's `selected` entry in the layer at `path`; the other entries'
 /// rows are not built.
-pub fn column_selected(session: &Session, path: &[KeyPress], selected: usize) -> Option<ColumnRow> {
+pub fn column_selected<'a>(
+    session: &'a Session,
+    path: &[KeyPress],
+    selected: usize,
+) -> Option<ColumnRow<'a>> {
     ordered(session, path)
         .into_iter()
         .nth(selected)
@@ -568,6 +573,7 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
         Some(Key::Enter) => {
             match column_selected(session, &path, selected) {
                 Some(ColumnRow::Binding { command, .. }) => {
+                    let command = command.clone();
                     set_mode(session, client, Mode::Normal);
                     run_entry(session, client, &command);
                 }
@@ -697,8 +703,10 @@ pub fn send_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let Some(p) = session.panes.get_mut(&pane) else {
         return;
     };
-    let bytes = crate::encode::key_bytes(press, p.screen().application_cursor());
-    if let Err(error) = p.input.push(bytes)
+    let application = p.screen().application_cursor();
+    if let Err(error) = p
+        .input
+        .push_with(|out| crate::encode::key_bytes(press, application, out))
         && let Some(view) = session.views.get_mut(&client)
     {
         view.error(error.to_string());
@@ -1087,7 +1095,7 @@ mod tests {
         // command's group, titled by its first binding's group.
         let layer = ColumnRow::Layer {
             key: KeyPress::char('g'),
-            title: "Tabs".into(),
+            title: "Tabs",
         };
         assert!(column_rows(&s, &[]).contains(&layer));
         s.input(c, b"\x02g");
@@ -1100,11 +1108,11 @@ mod tests {
         assert_eq!(
             column_rows(&s, &[KeyPress::char('g')]),
             vec![
-                ColumnRow::Heading("Tabs".into()),
+                ColumnRow::Heading("Tabs"),
                 ColumnRow::Binding {
                     key: KeyPress::char('n'),
                     label: crate::command::label(&["new-tab".to_owned()]),
-                    command: Command::NewTab {
+                    command: &Command::NewTab {
                         target: None,
                         name: None,
                         cmd: Vec::new(),
@@ -1225,7 +1233,8 @@ mod tests {
         }
         s.input(c, b"\x02\x1b[B\x1b[B\x1b[B");
         assert_eq!(mode(&s, c), "column 3");
-        let selected = column_selected(&s, &[], 3);
+        // What it was, kept past the output that changes the session.
+        let selected = column_selected(&s, &[], 3).map(|row| format!("{row:?}"));
         assert!(selected.is_some());
         for i in 0..50 {
             s.output(
@@ -1235,7 +1244,8 @@ mod tests {
             s.settle();
         }
         assert_eq!(mode(&s, c), "column 3");
-        assert_eq!(column_selected(&s, &[], 3), selected);
+        let now = column_selected(&s, &[], 3).map(|row| format!("{row:?}"));
+        assert_eq!(now, selected);
         let text = screen_text(&s, c)?;
         assert!(
             text.contains("output 49") && text.contains("Commands"),

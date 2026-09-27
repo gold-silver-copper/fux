@@ -97,21 +97,7 @@ fn check(root: &Node, area: Rect, placement: &Placement) {
     }
     for s in &placement.separators {
         assert!(s.len > 0, "an empty separator: {s:?}");
-        pieces.push(if s.vertical {
-            Rect {
-                x: s.x,
-                y: s.y,
-                w: 1,
-                h: s.len,
-            }
-        } else {
-            Rect {
-                x: s.x,
-                y: s.y,
-                w: s.len,
-                h: 1,
-            }
-        });
+        pieces.push(s.rect());
     }
     let (ax, ay) = span(&area);
     let mut covered = 0u64;
