@@ -67,7 +67,10 @@ impl Decoder {
                         out.push(if text.len() > PASTE_LIMIT {
                             Input::PasteTooLong
                         } else {
-                            Input::Paste(String::from_utf8_lossy(&text).into_owned())
+                            // Moved as it is, unless it is not UTF-8.
+                            Input::Paste(String::from_utf8(text).unwrap_or_else(|e| {
+                                String::from_utf8_lossy(e.as_bytes()).into_owned()
+                            }))
                         });
                     }
                     continue;
