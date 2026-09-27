@@ -139,7 +139,7 @@ pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), String> 
     let mut session = Session::new(config, endpoint.path().to_owned(), true);
     session.config_path = config_path;
     session.config_error = error;
-    session.start()?;
+    session.start().map_err(|e| e.to_string())?;
     let mut server = Server {
         session,
         listener,
@@ -663,7 +663,7 @@ impl Server {
                         conn.next_paint = Instant::now();
                     }
                     Err(error) => {
-                        conn.send(&Frame::Exit(error));
+                        conn.send(&Frame::Exit(error.to_string()));
                         conn.closing = true;
                     }
                 }

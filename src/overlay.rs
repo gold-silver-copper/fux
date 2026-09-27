@@ -5,7 +5,7 @@ use crate::command::{AnyRef, ClientId, Command, Kind, MoveTo, Pick, SwapWith, Ws
 use crate::config::Binding;
 use crate::keys::{Direction, Key, KeyPress};
 use crate::layout::{Node, PaneId};
-use crate::session::{Ctx, Session, describe};
+use crate::session::{Ctx, Error, Session, describe};
 use crate::view::{Confirm, Item, List, Mode, Prompt, PromptFor};
 
 /// One row of the command column: a group heading, a binding, or a layer.
@@ -142,8 +142,8 @@ pub fn open_prompt(
     purpose: PromptFor,
     title: String,
     text: String,
-) -> Result<String, String> {
-    let view = session.views.get_mut(&client).ok_or("no such client")?;
+) -> Result<String, Error> {
+    let view = session.views.get_mut(&client).ok_or(Error::NoSuchClient)?;
     let cursor = text.chars().count();
     view.mode = Mode::Prompt(Prompt {
         title,
@@ -158,7 +158,7 @@ pub fn open_confirm(
     session: &mut Session,
     client: ClientId,
     target: AnyRef,
-) -> Result<String, String> {
+) -> Result<String, Error> {
     let (kind, id, command) = match &target {
         AnyRef::Pane(p) => (
             "pane",
@@ -176,7 +176,7 @@ pub fn open_confirm(
     };
     let name = session.name_of(&target);
     let question = format!("close {kind} {id} {name}?");
-    let view = session.views.get_mut(&client).ok_or("no such client")?;
+    let view = session.views.get_mut(&client).ok_or(Error::NoSuchClient)?;
     view.mode = Mode::Confirm(Confirm {
         question,
         command,
@@ -195,11 +195,7 @@ fn item(label: &str, command: Command) -> Item {
 }
 
 /// An action menu for a pane, tab or workspace: what has no default key.
-pub fn open_menu(
-    session: &mut Session,
-    client: ClientId,
-    target: AnyRef,
-) -> Result<String, String> {
+pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Result<String, Error> {
     // What the menu is for, which every item names.
     let about = match target {
         AnyRef::Workspace(r) => AnyRef::Workspace(WsRef::Id(session.resolve_ws(&r)?)),
@@ -312,9 +308,9 @@ fn open_list(
     items: Vec<Item>,
     chooser: bool,
     about: Option<AnyRef>,
-) -> Result<String, String> {
+) -> Result<String, Error> {
     let selected = items.iter().position(|i| i.current).unwrap_or(0);
-    let view = session.views.get_mut(&client).ok_or("no such client")?;
+    let view = session.views.get_mut(&client).ok_or(Error::NoSuchClient)?;
     view.mode = Mode::List(List {
         title,
         items,
@@ -348,10 +344,12 @@ pub fn open_tab_chooser(
     session: &mut Session,
     client: ClientId,
     moving: Option<PaneId>,
-) -> Result<String, String> {
-    let view = session.views.get(&client).ok_or("no such client")?;
+) -> Result<String, Error> {
+    let view = session.views.get(&client).ok_or(Error::NoSuchClient)?;
     let current = view.tab();
-    let ws = session.workspace(view.workspace).ok_or("no workspace")?;
+    let ws = session
+        .workspace(view.workspace)
+        .ok_or(Error::NoCurrentWorkspace)?;
     let items = ws
         .tabs
         .iter()
@@ -393,11 +391,11 @@ pub fn open_workspace_chooser(
     session: &mut Session,
     client: ClientId,
     moving: Option<PaneId>,
-) -> Result<String, String> {
+) -> Result<String, Error> {
     let current = session
         .views
         .get(&client)
-        .ok_or("no such client")?
+        .ok_or(Error::NoSuchClient)?
         .workspace;
     let items = session
         .workspaces
@@ -440,8 +438,8 @@ pub fn open_pane_chooser(
     session: &mut Session,
     client: ClientId,
     source: PaneId,
-) -> Result<String, String> {
-    let (_, tab) = session.locate(source).ok_or("the pane is in no tab")?;
+) -> Result<String, Error> {
+    let (_, tab) = session.locate(source).ok_or(Error::NotInTab)?;
     let mut items: Vec<Item> = Vec::new();
     if let Some(root) = session.tab(tab).and_then(|t| t.root.as_ref()) {
         root.for_each_pane(&mut |id| {
@@ -460,7 +458,7 @@ pub fn open_pane_chooser(
         });
     }
     if items.is_empty() {
-        return Err("only one pane".into());
+        return Err(Error::OnlyOne(Kind::Pane));
     }
     open_list(
         session,
@@ -523,7 +521,7 @@ fn run_line(session: &mut Session, client: ClientId, argv: &[String]) {
 fn run_entry(session: &mut Session, client: ClientId, command: &Command) {
     if let Some(reason) = session.unavailable(command, &Ctx::client(client)) {
         if let Some(view) = session.views.get_mut(&client) {
-            view.error(reason);
+            view.error(reason.to_string());
         }
         return;
     }
@@ -789,7 +787,7 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
         // An unavailable entry explains itself and the list stays open.
         if let Some(reason) = session.unavailable(&command, &Ctx::client(client)) {
             if let Some(view) = session.views.get_mut(&client) {
-                view.error(reason);
+                view.error(reason.to_string());
             }
             return;
         }
@@ -914,7 +912,7 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
                     Ok(w) => w.to_string(),
                     Err(error) => {
                         if let Some(view) = session.views.get_mut(&client) {
-                            view.error(error);
+                            view.error(error.to_string());
                         }
                         return;
                     }
@@ -973,8 +971,8 @@ mod tests {
     /// A session without processes, one client attached.
     fn session() -> Result<(Session, ClientId), String> {
         let mut session = Session::new(Config::default(), "/nonexistent/fux.sock".into(), false);
-        session.start()?;
-        let client = session.attach(30, 100, None)?;
+        session.start().map_err(|e| e.to_string())?;
+        let client = session.attach(30, 100, None).map_err(|e| e.to_string())?;
         Ok((session, client))
     }
 

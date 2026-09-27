@@ -951,7 +951,7 @@ mod tests {
     /// Copy mode's bar replaces the tabs with what it is doing and the keys
     /// that act now; a narrow bar drops the least important.
     #[test]
-    fn copy_mode_replaces_the_tabs_with_its_keys() -> Result<(), String> {
+    fn copy_mode_replaces_the_tabs_with_its_keys() -> Result<(), Box<dyn std::error::Error>> {
         let mut s = Session::new(
             crate::config::Config::default(),
             "/nonexistent/fux.sock".into(),
@@ -1042,7 +1042,7 @@ mod tests {
     /// are exactly those the old per-cell test selected, for each kind of
     /// selection, over a screen with history and a view scrolled into it.
     #[test]
-    fn compose_inverts_exactly_the_selected_cells() -> Result<(), String> {
+    fn compose_inverts_exactly_the_selected_cells() -> Result<(), Box<dyn std::error::Error>> {
         let mut s = Session::new(
             crate::config::Config::default(),
             "/nonexistent/fux.sock".into(),
@@ -1114,7 +1114,7 @@ mod tests {
     /// A grid composed into again, whatever it held and whatever its size,
     /// comes out as a fresh one would.
     #[test]
-    fn composing_into_a_used_grid_is_composing_afresh() -> Result<(), String> {
+    fn composing_into_a_used_grid_is_composing_afresh() -> Result<(), Box<dyn std::error::Error>> {
         let mut s = Session::new(
             crate::config::Config::default(),
             "/nonexistent/fux.sock".into(),
