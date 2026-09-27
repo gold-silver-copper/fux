@@ -1,7 +1,9 @@
 //! The keyboard overlays: the command column, choosers, action menus, the
 //! command prompt, rename prompts and confirmations. Each belongs to the client
 //! that opened it.
-use crate::command::{AnyRef, ClientId, Command, Kind, MoveTo, Pick, SwapWith, WsRef};
+use crate::command::{
+    AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, Pick, SwapWith, WsRef,
+};
 use crate::config::Binding;
 use crate::keys::{Direction, Key, KeyPress};
 use crate::layout::{Node, PaneId};
@@ -201,7 +203,7 @@ pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Res
         AnyRef::Workspace(r) => AnyRef::Workspace(WsRef::Id(session.resolve_ws(&r)?)),
         other @ (AnyRef::Pane(_) | AnyRef::Tab(_)) => other,
     };
-    let kind = kind_of(&about);
+    let kind = about.kind();
     let name = session.name_of(&about);
     let title = format!("{} {} {name}", kind.name(), describe(&about));
     let target = Some(about.clone());
@@ -213,19 +215,19 @@ pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Res
     let mut items = vec![
         item(
             "rename",
-            Command::RenamePrompt {
-                client: None,
+            ClientAction::RenamePrompt {
                 kind,
                 target: target.clone(),
-            },
+            }
+            .here(),
         ),
         item(
             "close",
-            Command::ConfirmClose {
-                client: None,
+            ClientAction::ConfirmClose {
                 kind,
                 target: target.clone(),
-            },
+            }
+            .here(),
         ),
     ];
     match &about {
@@ -236,18 +238,15 @@ pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Res
             ),
             item(
                 "swap with…",
-                Command::ChoosePane {
-                    client: None,
-                    target: Some(p),
-                },
+                ClientAction::ChoosePane { target: Some(p) }.here(),
             ),
             item(
                 "move to tab…",
-                Command::ChooseTab {
-                    client: None,
+                ClientAction::ChooseTab {
                     moving: Some(p),
                     moving_now: false,
-                },
+                }
+                .here(),
             ),
             item(
                 "move to a new tab",
@@ -258,11 +257,11 @@ pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Res
             ),
             item(
                 "move to workspace…",
-                Command::ChooseWorkspace {
-                    client: None,
+                ClientAction::ChooseWorkspace {
                     moving: Some(p),
                     moving_now: false,
-                },
+                }
+                .here(),
             ),
             item(
                 "move to a new workspace",
@@ -362,28 +361,14 @@ pub fn open_tab_chooser(
                         target: Some(p),
                         to: MoveTo::Tab(id),
                     },
-                    None => Command::SelectTab {
-                        client: None,
-                        pick: Pick::Id(id),
-                    },
+                    None => ClientAction::SelectTab(Pick::Id(id)).here(),
                 },
                 current: Some(id) == current,
                 subject: Some(AnyRef::Tab(id)),
             }
         })
         .collect();
-    let title = match moving {
-        Some(p) => format!("move {p} to tab"),
-        None => "tabs".into(),
-    };
-    open_list(
-        session,
-        client,
-        title,
-        items,
-        true,
-        moving.map(AnyRef::Pane),
-    )
+    open_chooser(session, client, "tab", items, moving)
 }
 
 /// Every workspace, with its tabs' panes.
@@ -409,19 +394,28 @@ pub fn open_workspace_chooser(
                         target: Some(p),
                         to: MoveTo::Workspace(WsRef::Id(ws.id)),
                     },
-                    None => Command::SelectWorkspace {
-                        client: None,
-                        pick: Pick::Id(WsRef::Id(ws.id)),
-                    },
+                    None => ClientAction::SelectWorkspace(Pick::Id(WsRef::Id(ws.id))).here(),
                 },
                 current: ws.id == current,
                 subject: Some(AnyRef::Workspace(WsRef::Id(ws.id))),
             }
         })
         .collect();
+    open_chooser(session, client, "workspace", items, moving)
+}
+
+/// A chooser of tabs or workspaces, `what`, to select one or to move a pane
+/// to.
+fn open_chooser(
+    session: &mut Session,
+    client: ClientId,
+    what: &str,
+    items: Vec<Item>,
+    moving: Option<PaneId>,
+) -> Result<String, Error> {
     let title = match moving {
-        Some(p) => format!("move {p} to workspace"),
-        None => "workspaces".into(),
+        Some(p) => format!("move {p} to {what}"),
+        None => format!("{what}s"),
     };
     open_list(
         session,
@@ -441,7 +435,7 @@ pub fn open_pane_chooser(
 ) -> Result<String, Error> {
     let (_, tab) = session.locate(source).ok_or(Error::NotInTab)?;
     let mut items: Vec<Item> = Vec::new();
-    if let Some(root) = session.tab(tab).and_then(|t| t.root.as_ref()) {
+    if let Some(root) = session.root(tab) {
         root.for_each_pane(&mut |id| {
             let Some(p) = session.panes.get(&id).filter(|_| id != source) else {
                 return;
@@ -540,17 +534,13 @@ pub fn list_capacity(rows: u16) -> usize {
 /// A key while the command column is open.
 pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let prefix = session.config.prefix;
-    let Some((path, selected, rows)) = session.views.get(&client).and_then(|v| match &v.mode {
-        Mode::Column { path, selected } => Some((path.clone(), *selected, v.rows)),
-        Mode::Normal
-        | Mode::Repeat { .. }
-        | Mode::List(_)
-        | Mode::Prompt(_)
-        | Mode::Confirm(_)
-        | Mode::Copy(_) => None,
-    }) else {
+    let Some(view) = session.views.get(&client) else {
         return;
     };
+    let Mode::Column { path, selected } = &view.mode else {
+        return;
+    };
+    let (path, selected, rows) = (path.clone(), *selected, view.rows);
     let len = column_len(session, &path);
     let page = list_capacity(rows);
     let last = len.saturating_sub(1);
@@ -645,17 +635,10 @@ fn follow(session: &mut Session, client: ClientId, path: &[KeyPress], press: Key
 /// column; any other key leaves, not reaching the pane, and says so.
 pub fn repeat_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let prefix = session.config.prefix;
-    let Some(path) = session.views.get(&client).and_then(|v| match &v.mode {
-        Mode::Repeat { path } => Some(path.clone()),
-        Mode::Normal
-        | Mode::Column { .. }
-        | Mode::List(_)
-        | Mode::Prompt(_)
-        | Mode::Confirm(_)
-        | Mode::Copy(_) => None,
-    }) else {
+    let Some(Mode::Repeat { path }) = session.views.get(&client).map(|v| &v.mode) else {
         return;
     };
+    let path = path.clone();
     if press == prefix {
         set_mode(
             session,
@@ -752,31 +735,19 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
             run = list.items.get(list.selected).map(|i| i.command.clone());
             close = run.is_some();
         }
-        Some(Key::Char('r')) if list.chooser => {
+        Some(Key::Char(key @ ('r' | 'x'))) if list.chooser => {
             if let Some(subject) = list
                 .items
                 .get(list.selected)
                 .and_then(|i| i.subject.clone())
             {
-                run = Some(Command::RenamePrompt {
-                    client: None,
-                    kind: kind_of(&subject),
-                    target: Some(subject),
-                });
-                close = true;
-            }
-        }
-        Some(Key::Char('x')) if list.chooser => {
-            if let Some(subject) = list
-                .items
-                .get(list.selected)
-                .and_then(|i| i.subject.clone())
-            {
-                run = Some(Command::ConfirmClose {
-                    client: None,
-                    kind: kind_of(&subject),
-                    target: Some(subject),
-                });
+                let (kind, target) = (subject.kind(), Some(subject));
+                let action = if key == 'r' {
+                    ClientAction::RenamePrompt { kind, target }
+                } else {
+                    ClientAction::ConfirmClose { kind, target }
+                };
+                run = Some(action.here());
                 close = true;
             }
         }
@@ -947,15 +918,6 @@ pub fn confirm_key(session: &mut Session, client: ClientId, press: KeyPress) {
             view.mode = Mode::Normal;
         }
         _ => {}
-    }
-}
-
-/// The kind a target is.
-pub fn kind_of(target: &AnyRef) -> Kind {
-    match target {
-        AnyRef::Pane(_) => Kind::Pane,
-        AnyRef::Tab(_) => Kind::Tab,
-        AnyRef::Workspace(_) => Kind::Workspace,
     }
 }
 

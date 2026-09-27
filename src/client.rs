@@ -451,18 +451,10 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, Error>
                     stdout.write_all(bytes).map_err(Error::WriteTerminal)?;
                     continue;
                 }
-                match raw.decode()? {
-                    Frame::Exit(reason) => return Ok(reason),
-                    Frame::Paint(_)
-                    | Frame::Hello { .. }
-                    | Frame::Attach { .. }
-                    | Frame::Input(_)
-                    | Frame::Resize { .. }
-                    | Frame::Detach
-                    | Frame::Command { .. }
-                    | Frame::Stdout(_)
-                    | Frame::Stderr(_)
-                    | Frame::Done { .. } => {}
+                // Every other frame is decoded, so a bad one is an error,
+                // and ignored.
+                if let Frame::Exit(reason) = raw.decode()? {
+                    return Ok(reason);
                 }
             }
             let _ = stdout.flush();

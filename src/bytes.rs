@@ -77,13 +77,6 @@ impl ByteQueue {
         self.taken = self.taken.saturating_add(n).min(self.bytes.len());
         self.bytes.get(start..self.taken).unwrap_or_default()
     }
-    /// Everything not yet taken, leaving the queue empty.
-    pub fn take_all(&mut self) -> Vec<u8> {
-        let rest = self.as_slice().to_vec();
-        self.bytes.clear();
-        self.taken = 0;
-        rest
-    }
 }
 
 #[cfg(test)]
@@ -107,7 +100,8 @@ mod tests {
         queue.take(100);
         assert!(queue.is_empty());
         queue.push(b"abc");
-        assert_eq!(queue.take_all(), b"abc");
+        let len = queue.len();
+        assert_eq!(queue.take_front(len), b"abc");
         assert!(queue.is_empty() && queue.as_slice().is_empty());
         // Bytes taken from the front are lent until the next push, which
         // reclaims their space once the queue is empty.
@@ -141,7 +135,7 @@ mod tests {
     fn a_long_stream_through_a_queue_is_unchanged() {
         let stream: Vec<u8> = (0..10_000u32).flat_map(u32::to_be_bytes).collect();
         let mut queue = ByteQueue::default();
-        let mut out = Vec::new();
+        let mut out: Vec<u8> = Vec::new();
         let mut rest = stream.as_slice();
         // Pushes of 7 and takes of 5 bytes, then a drain at the end.
         while let Some((piece, after)) = rest.split_at_checked(7) {
@@ -151,7 +145,7 @@ mod tests {
             rest = after;
         }
         queue.push(rest);
-        out.extend(queue.take_all());
+        out.extend(queue.as_slice());
         assert_eq!(out, stream);
     }
 }

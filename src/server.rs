@@ -267,40 +267,31 @@ impl Server {
     }
 
     fn timeout(&self, now: Instant) -> Option<Duration> {
-        let mut deadline: Option<Instant> = None;
-        let mut sooner = |at: Instant| {
-            deadline = Some(deadline.map_or(at, |d| d.min(at)));
-        };
-        for conn in &self.conns {
-            if let Some(client) = conn.client
-                && self.session.views.get(&client).is_some_and(|v| v.dirty)
-                && !conn.starved
-            {
-                sooner(conn.next_paint);
-            }
-        }
-        for client in self
-            .session
+        let session = &self.session;
+        let paints = self.conns.iter().filter_map(|conn| {
+            let dirty = session.views.get(&conn.client?).is_some_and(|v| v.dirty);
+            (dirty && !conn.starved).then_some(conn.next_paint)
+        });
+        let escapes = session
             .views
             .keys()
-            .filter(|c| self.session.waiting(**c))
-        {
-            let since = self.escapes.get(client).copied().unwrap_or(now);
-            sooner(crate::after(since, crate::decode::ESCAPE_DELAY));
-        }
-        for dying in &self.session.dying {
-            sooner(dying.deadline);
-        }
-        if let Some(at) = self.session.next_typing() {
-            sooner(at);
-        }
-        if let Some((since, _)) = &self.stopping {
-            sooner(crate::after(*since, STOP_WAIT));
-        }
-        if let Some(at) = self.listen_after {
-            sooner(at);
-        }
-        deadline.map(|d| d.saturating_duration_since(now))
+            .filter(|c| session.waiting(**c))
+            .map(|client| {
+                let since = self.escapes.get(client).copied().unwrap_or(now);
+                crate::after(since, crate::decode::ESCAPE_DELAY)
+            });
+        let stop = self
+            .stopping
+            .as_ref()
+            .map(|(since, _)| crate::after(*since, STOP_WAIT));
+        paints
+            .chain(escapes)
+            .chain(session.dying.iter().map(|d| d.deadline))
+            .chain(session.next_typing())
+            .chain(stop)
+            .chain(self.listen_after)
+            .min()
+            .map(|d| d.saturating_duration_since(now))
     }
 
     /// Waits for descriptors to be ready, or `timeout`; which are, and for
@@ -726,9 +717,8 @@ impl Server {
                 let Some(conn) = self.conns.get_mut(index) else {
                     return;
                 };
-                if !outcome.stdout.is_empty() {
-                    conn.send_stream(Stream::Stdout, outcome.stdout.as_bytes());
-                }
+                // Nothing is sent for no output.
+                conn.send_stream(Stream::Stdout, outcome.stdout.as_bytes());
                 if !outcome.stderr.is_empty() {
                     let mut stderr = outcome.stderr;
                     if !stderr.ends_with('\n') {

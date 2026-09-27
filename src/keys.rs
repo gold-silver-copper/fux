@@ -129,21 +129,14 @@ fn key_name(key: Key) -> String {
     if let Some((name, _)) = NAMED.iter().find(|(_, k)| *k == key) {
         return (*name).to_owned();
     }
-    match key {
-        Key::Char(c) => c.to_string(),
-        Key::F(n) => format!("F{n}"),
-        Key::Enter
-        | Key::Tab
-        | Key::Escape
-        | Key::Backspace
-        | Key::Delete
-        | Key::Insert
-        | Key::Arrow(_)
-        | Key::Home
-        | Key::End
-        | Key::PageUp
-        | Key::PageDown => String::new(),
+    // Every key but a character and a function key is named above.
+    if let Key::F(n) = key {
+        return format!("F{n}");
     }
+    if let Key::Char(c) = key {
+        return c.to_string();
+    }
+    String::new()
 }
 
 impl fmt::Display for KeyPress {
