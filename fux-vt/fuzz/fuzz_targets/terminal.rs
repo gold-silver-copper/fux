@@ -1,6 +1,7 @@
 #![no_main]
-use fux_vt::{Event, OSC_PAYLOAD_LIMIT, Options, Parser, Sink};
+use fux_vt::{Cell, Event, OSC_PAYLOAD_LIMIT, Options, Parser, RowId, Sink};
 use libfuzzer_sys::fuzz_target;
+use std::collections::HashMap;
 #[path = "../../tests/corpus/invariants.rs"]
 mod invariants;
 
@@ -35,6 +36,28 @@ impl Sink for Record {
         }
         assert!(entry.len() <= OSC_PAYLOAD_LIMIT + 2);
         self.0.push(entry);
+    }
+}
+
+/// Every retained row by identity: its version, wrap flag and cells.
+fn rows(p: &Parser) -> HashMap<RowId, (u64, bool, Vec<Cell>)> {
+    let screen = p.screen();
+    let retained = screen.history_len() + usize::from(screen.size().0);
+    (0..retained)
+        .filter_map(|i| screen.row_from_bottom(i))
+        .map(|row| (row.id, (row.version, row.wrapped, row.cells.to_vec())))
+        .collect()
+}
+
+/// A row whose cells or wrap flag changed has a newer version: a change is
+/// never missed.
+fn versions_follow(before: &HashMap<RowId, (u64, bool, Vec<Cell>)>, after: &Parser) {
+    for (id, (version, wrapped, cells)) in rows(after) {
+        if let Some((was, was_wrapped, was_cells)) = before.get(&id)
+            && (wrapped != *was_wrapped || cells != *was_cells)
+        {
+            assert!(version > *was, "{id:?} changed without a new version");
+        }
     }
 }
 
@@ -118,13 +141,17 @@ fuzz_target!(|data: &[u8]| {
                 let bytes = input.get(..length).unwrap_or_default();
                 let mut a = Record::default();
                 let mut b = Record::default();
+                let before = rows(&whole);
                 assert!(whole.process_with(bytes, &mut a).is_ok());
+                versions_follow(&before, &whole);
                 for byte in bytes {
+                    let before = rows(&split);
                     assert!(
                         split
                             .process_with(std::slice::from_ref(byte), &mut b)
                             .is_ok()
                     );
+                    versions_follow(&before, &split);
                 }
                 assert_eq!(a, b);
                 input = input.get(length..).unwrap_or_default();
