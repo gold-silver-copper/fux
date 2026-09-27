@@ -13,17 +13,7 @@ pub fn paste(text: &str, bracketed: bool) -> Vec<u8> {
         return text.as_bytes().to_vec();
     }
     let inner = text.replace("\x1b[201~", "");
-    // A capacity hint only.
-    let mut bytes = Vec::with_capacity(
-        inner
-            .len()
-            .saturating_add(PASTE_START.len())
-            .saturating_add(PASTE_END.len()),
-    );
-    bytes.extend_from_slice(PASTE_START);
-    bytes.extend_from_slice(inner.as_bytes());
-    bytes.extend_from_slice(PASTE_END);
-    bytes
+    [PASTE_START, inner.as_bytes(), PASTE_END].concat()
 }
 
 /// xterm key bytes. Every key has an encoding.
@@ -45,38 +35,27 @@ pub fn key_bytes(press: KeyPress, application: bool) -> Vec<u8> {
         .into_bytes()
     };
     // Cursor-style keys share one shape: `ESC [ final`, `ESC O final` in
-    // application mode or for F1..F4, and `ESC [ 1 ; mod final` when modified.
-    let cursor = match key {
-        Key::Arrow(Direction::Up) => Some(('A', false)),
-        Key::Arrow(Direction::Down) => Some(('B', false)),
-        Key::Arrow(Direction::Right) => Some(('C', false)),
-        Key::Arrow(Direction::Left) => Some(('D', false)),
-        Key::Home => Some(('H', false)),
-        Key::End => Some(('F', false)),
-        Key::F(1) => Some(('P', true)),
-        Key::F(2) => Some(('Q', true)),
-        Key::F(3) => Some(('R', true)),
-        Key::F(4) => Some(('S', true)),
-        Key::Char(_)
-        | Key::Enter
-        | Key::Tab
-        | Key::Escape
-        | Key::Backspace
-        | Key::Delete
-        | Key::Insert
-        | Key::PageUp
-        | Key::PageDown
-        | Key::F(_) => None,
-    };
-    if let Some((final_byte, function)) = cursor {
-        return if modifier > 1 {
+    // application mode or for F1..F4, and `ESC [ 1 ; mod final` when
+    // modified. Alt adds nothing to them.
+    let cursor = |final_byte: char, function: bool| {
+        if modifier > 1 {
             csi(1, final_byte)
         } else {
             let prefix = if application || function { 'O' } else { '[' };
             format!("\x1b{prefix}{final_byte}").into_bytes()
-        };
-    }
+        }
+    };
     let bytes = match key {
+        Key::Arrow(Direction::Up) => return cursor('A', false),
+        Key::Arrow(Direction::Down) => return cursor('B', false),
+        Key::Arrow(Direction::Right) => return cursor('C', false),
+        Key::Arrow(Direction::Left) => return cursor('D', false),
+        Key::Home => return cursor('H', false),
+        Key::End => return cursor('F', false),
+        Key::F(1) => return cursor('P', true),
+        Key::F(2) => return cursor('Q', true),
+        Key::F(3) => return cursor('R', true),
+        Key::F(4) => return cursor('S', true),
         Key::Enter => vec![13],
         Key::Tab if shift => b"\x1b[Z".to_vec(),
         Key::Tab => vec![9],
@@ -95,8 +74,6 @@ pub fn key_bytes(press: KeyPress, application: bool) -> Vec<u8> {
         }
         Key::Char(c) if ctrl && c.is_ascii() => vec![control_byte(c)],
         Key::Char(c) => c.to_string().into_bytes(),
-        // Handled by the cursor table above.
-        Key::Arrow(_) | Key::Home | Key::End => Vec::new(),
     };
     if alt && !bytes.starts_with(&[27]) {
         return [&[27], bytes.as_slice()].concat();
