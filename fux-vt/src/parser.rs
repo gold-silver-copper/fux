@@ -2,7 +2,7 @@
 //! model (reference and attribution in the crate README), with UTF-8 ground decoding.
 //! Ignored control strings retain no payload. No parser dependency is used.
 
-use crate::{Error, Screen};
+use crate::{Error, Reply, Screen};
 
 #[cfg(test)]
 #[path = "../tests/corpus/mod.rs"]
@@ -456,8 +456,8 @@ impl Parser {
                                         }
                                         None => None,
                                     };
-                                if let Some(bytes) = answer {
-                                    sink.reply(&bytes);
+                                if let Some(reply) = answer {
+                                    sink.reply(reply.as_bytes());
                                 }
                             }
                         }
@@ -511,19 +511,20 @@ impl Parser {
 
     /// Replies enabled by [`Options::extended_replies`] for CSI sequences the
     /// screen does not answer itself.
-    fn extended_reply(&self, intermediates: &[u8], byte: u8) -> Option<Vec<u8>> {
+    fn extended_reply(&self, intermediates: &[u8], byte: u8) -> Option<Reply> {
         let n = self.params.first(0, 0);
         match (intermediates, byte) {
             (b"?", b'n') if n == 6 => {
                 let (row, col) = self.screen.cursor_position();
-                Some(format!("\x1b[?{};{}R", u32::from(row) + 1, u32::from(col) + 1).into_bytes())
+                let (row, col) = (u32::from(row) + 1, u32::from(col) + 1);
+                Some(Reply::of(format_args!("\x1b[?{row};{col}R")))
             }
-            (b">", b'c') if n == 0 => Some(b"\x1b[>1;10;0c".to_vec()),
+            (b">", b'c') if n == 0 => Some(Reply::of(format_args!("\x1b[>1;10;0c"))),
             (b"?$", b'p') => {
                 let status = self.screen.private_mode_status(n);
-                Some(format!("\x1b[?{n};{status}$y").into_bytes())
+                Some(Reply::of(format_args!("\x1b[?{n};{status}$y")))
             }
-            (b"$", b'p') => Some(format!("\x1b[{n};0$y").into_bytes()),
+            (b"$", b'p') => Some(Reply::of(format_args!("\x1b[{n};0$y"))),
             _ => None,
         }
     }

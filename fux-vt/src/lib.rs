@@ -19,6 +19,37 @@ pub(crate) fn copy_from<T: Copy>(dst: &mut [T], src: &[T]) -> Option<()> {
     (dst.len() == src.len()).then(|| dst.copy_from_slice(src))
 }
 
+/// A reply to a query, built where it is kept rather than on the heap: the
+/// longest fux-vt makes, `ESC [ ? 65535 ; 65535 R`, is 15 bytes.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Reply {
+    bytes: [u8; 32],
+    len: usize,
+}
+
+impl Reply {
+    /// The reply `args` write.
+    pub(crate) fn of(args: std::fmt::Arguments<'_>) -> Reply {
+        let mut reply = Reply::default();
+        // Every reply fits, so the write cannot run out of room.
+        let _ = std::fmt::Write::write_fmt(&mut reply, args);
+        reply
+    }
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        self.bytes.get(..self.len).unwrap_or_default()
+    }
+}
+
+impl std::fmt::Write for Reply {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        let end = self.len.checked_add(text.len()).ok_or(std::fmt::Error)?;
+        let room = self.bytes.get_mut(self.len..end).ok_or(std::fmt::Error)?;
+        copy_from(room, text.as_bytes()).ok_or(std::fmt::Error)?;
+        self.len = end;
+        Ok(())
+    }
+}
+
 /// A row identity, never recycled within one parser's lifetime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RowId(pub(crate) u64);
@@ -168,6 +199,22 @@ impl<'a> Window<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write;
+
+    #[test]
+    fn a_reply_holds_the_longest_and_builds_in_pieces() {
+        let (row, col) = (u16::MAX, u16::MAX);
+        let reply = super::Reply::of(format_args!("\x1b[?{row};{col}R"));
+        assert_eq!(reply.as_bytes(), b"\x1b[?65535;65535R");
+        let mut built = super::Reply::default();
+        assert!(built.write_str("\x1b[0").is_ok() && built.write_str("n").is_ok());
+        assert_eq!(built.as_bytes(), b"\x1b[0n");
+        // More than it holds is refused, and what it held stays.
+        let long: String = std::iter::repeat_n('x', 40).collect();
+        assert!(built.write_str(&long).is_err());
+        assert_eq!(built.as_bytes(), b"\x1b[0n");
+    }
+
     #[test]
     fn copies_happen_only_between_slices_of_one_length() {
         let mut cells = [0u8; 4];
