@@ -142,96 +142,6 @@ impl InputQueue {
     }
 }
 
-/// Modes fux tracks from a pane's output itself: fux-vt keeps the screen,
-/// and these two decide what fux sends outside it.
-#[derive(Default)]
-pub struct Modes {
-    /// `CSI ? 1004 h`: the program wants focus-in and focus-out reports.
-    pub focus_reporting: bool,
-    /// The last `CSI Ps SP q` (DECSCUSR) cursor shape; 0 is the default.
-    pub cursor_shape: u16,
-    state: Scan,
-    params: Vec<u8>,
-    private: bool,
-    space: bool,
-    other: bool,
-}
-
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-enum Scan {
-    #[default]
-    Ground,
-    Escape,
-    Csi,
-}
-
-impl Modes {
-    pub fn feed(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            match self.state {
-                Scan::Ground => {
-                    if byte == 0x1b {
-                        self.state = Scan::Escape;
-                    }
-                }
-                Scan::Escape => match byte {
-                    b'[' => {
-                        self.state = Scan::Csi;
-                        self.params.clear();
-                        self.private = false;
-                        self.space = false;
-                        self.other = false;
-                    }
-                    // RIS: a full reset.
-                    b'c' => {
-                        self.focus_reporting = false;
-                        self.cursor_shape = 0;
-                        self.state = Scan::Ground;
-                    }
-                    0x1b => {}
-                    _ => self.state = Scan::Ground,
-                },
-                Scan::Csi => match byte {
-                    b'?' if self.params.is_empty() && !self.private => self.private = true,
-                    b'0'..=b'9' | b';' => {
-                        if self.params.len() < 64 {
-                            self.params.push(byte);
-                        } else {
-                            self.other = true;
-                        }
-                    }
-                    b' ' => self.space = true,
-                    0x40..=0x7e => {
-                        self.dispatch(byte);
-                        self.state = Scan::Ground;
-                    }
-                    0x1b => self.state = Scan::Escape,
-                    0x18 | 0x1a => self.state = Scan::Ground,
-                    _ => self.other = true,
-                },
-            }
-        }
-    }
-
-    fn dispatch(&mut self, last: u8) {
-        if self.other {
-            return;
-        }
-        let params = std::str::from_utf8(&self.params).unwrap_or("");
-        if self.private && !self.space && (last == b'h' || last == b'l') {
-            if params.split(';').any(|p| p == "1004") {
-                self.focus_reporting = last == b'h';
-            }
-        } else if !self.private && self.space && last == b'q' {
-            self.cursor_shape = params
-                .split(';')
-                .next()
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(0);
-        }
-    }
-}
-
 /// Replies (DSR, DA) and events the parser produces while reading output.
 struct Sink<'a> {
     replies: &'a mut Vec<u8>,
@@ -267,7 +177,6 @@ pub struct Pane {
     /// Set by the program with OSC 0 or 2.
     pub title: String,
     pub parser: fux_vt::Parser,
-    pub modes: Modes,
     /// The PTY size, the smallest rectangle any client shows the pane in.
     pub size: (u16, u16),
     pub child: Option<Child>,
@@ -335,7 +244,6 @@ impl Pane {
             name,
             title: String::new(),
             parser,
-            modes: Modes::default(),
             size: (rows.max(1), cols.max(1)),
             child: None,
             input: InputQueue::default(),
@@ -348,7 +256,6 @@ impl Pane {
     /// Reads program output into the screen. Returns whether a reply had to
     /// be dropped because the program is not reading its input.
     pub fn output(&mut self, bytes: &[u8]) -> bool {
-        self.modes.feed(bytes);
         let mut replies = Vec::new();
         let mut title = None;
         let mut sink = Sink {
@@ -467,23 +374,26 @@ mod tests {
         assert!(queue.push(vec![b'k']).is_ok());
     }
 
+    /// The screen follows the modes fux sends on, focus reporting and the
+    /// cursor's shape, from output split anywhere.
     #[test]
-    fn modes_follow_output_split_anywhere() {
+    fn modes_follow_output_split_anywhere() -> Result<(), Error> {
         let stream = b"x\x1b[?1004;2004hy\x1b[5 qz\x1b[?25l";
         for split in 0..stream.len() {
             let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
-            let mut modes = Modes::default();
-            modes.feed(a);
-            modes.feed(b);
-            assert!(modes.focus_reporting, "split {split}");
-            assert_eq!(modes.cursor_shape, 5, "split {split}");
+            let mut pane = Pane::new(PaneId(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
+            pane.output(a);
+            pane.output(b);
+            assert!(pane.screen().focus_reporting(), "split {split}");
+            assert_eq!(pane.screen().cursor_shape(), 5, "split {split}");
         }
-        let mut modes = Modes::default();
-        modes.feed(b"\x1b[?1004h\x1b[?1004l\x1b[2 q\x1b[ q");
-        assert!(!modes.focus_reporting);
-        assert_eq!(modes.cursor_shape, 0);
-        modes.feed(b"\x1b[?1004h\x1bc");
-        assert!(!modes.focus_reporting);
+        let mut pane = Pane::new(PaneId(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
+        pane.output(b"\x1b[?1004h\x1b[?1004l\x1b[2 q\x1b[ q");
+        assert!(!pane.screen().focus_reporting());
+        assert_eq!(pane.screen().cursor_shape(), 0);
+        pane.output(b"\x1b[?1004h\x1bc");
+        assert!(!pane.screen().focus_reporting());
+        Ok(())
     }
 
     #[test]

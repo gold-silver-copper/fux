@@ -118,7 +118,7 @@ impl Session {
             return;
         };
         if let Some(p) = self.panes.get_mut(&pane)
-            && p.modes.focus_reporting
+            && p.screen().focus_reporting()
         {
             let _ = p.input.push(if gained { b"\x1b[I" } else { b"\x1b[O" });
         }

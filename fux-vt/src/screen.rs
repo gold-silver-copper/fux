@@ -36,6 +36,8 @@ pub struct Screen {
     application_keypad: bool,
     hide_cursor: bool,
     bracketed_paste: bool,
+    focus_reporting: bool,
+    cursor_shape: u16,
     mouse: MouseProtocolMode,
     encoding: MouseProtocolEncoding,
 }
@@ -74,6 +76,8 @@ impl Screen {
             application_keypad: false,
             hide_cursor: false,
             bracketed_paste: false,
+            focus_reporting: false,
+            cursor_shape: 0,
             mouse: MouseProtocolMode::None,
             encoding: MouseProtocolEncoding::Default,
         })
@@ -128,6 +132,16 @@ impl Screen {
     }
     pub fn bracketed_paste(&self) -> bool {
         self.bracketed_paste
+    }
+    /// `CSI ? 1004 h` / `l` state: whether the program wants focus-in and
+    /// focus-out reports. State only: fux-vt sends none.
+    pub fn focus_reporting(&self) -> bool {
+        self.focus_reporting
+    }
+    /// The cursor shape last set with DECSCUSR (`CSI Ps SP q`); 0, the
+    /// default, is the terminal's own. State only: fux-vt draws no cursor.
+    pub fn cursor_shape(&self) -> u16 {
+        self.cursor_shape
     }
     pub fn alternate_screen(&self) -> bool {
         self.alternate_active
@@ -483,6 +497,8 @@ impl Screen {
                 self.application_keypad = false;
                 self.hide_cursor = false;
                 self.bracketed_paste = false;
+                self.focus_reporting = false;
+                self.cursor_shape = 0;
                 self.mouse = MouseProtocolMode::None;
                 self.encoding = MouseProtocolEncoding::Default;
                 self.structural = self.version;
@@ -523,6 +539,7 @@ impl Screen {
             7 => self.autowrap = set,
             25 => self.hide_cursor = !set,
             2004 => self.bracketed_paste = set,
+            1004 => self.focus_reporting = set,
             47 => {
                 self.alternate_active = set;
                 self.structural = self.version;
@@ -575,6 +592,11 @@ impl Screen {
         byte: u8,
     ) -> Result<Option<Vec<u8>>, Error> {
         let private = intermediates == b"?";
+        // DECSCUSR: its intermediate is a space.
+        if intermediates == b" " && byte == b'q' {
+            self.cursor_shape = p.first(0, 0);
+            return Ok(None);
+        }
         if !intermediates.is_empty() && !private {
             return Ok(None);
         }

@@ -345,7 +345,7 @@ pub fn compose_into(
                     && let Some(at) = rect.at(y, x)
                 {
                     grid.cursor = Some(at);
-                    grid.cursor_shape = pane.modes.cursor_shape;
+                    grid.cursor_shape = screen.cursor_shape();
                 }
             }
         }
