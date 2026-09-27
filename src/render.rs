@@ -181,8 +181,12 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
     let area = Session::pane_area(view);
     let placement = session.placement(view);
     let focus = view.focus();
+    // Copy mode and its positions, their rows found once for the paint.
     let copy = match &view.mode {
-        Mode::Copy(copy) => Some(copy.as_ref()),
+        Mode::Copy(copy) => session
+            .panes
+            .get(&copy.pane)
+            .map(|pane| (copy.as_ref(), copy.resolve(pane.screen()))),
         Mode::Normal
         | Mode::Column { .. }
         | Mode::Repeat { .. }
@@ -195,17 +199,14 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
             continue;
         };
         let screen = pane.screen();
-        let offset = copy
-            .filter(|c| c.pane == *id)
-            .map_or(0, |c| c.offset(screen));
+        let at = copy.filter(|(c, _)| c.pane == *id).map(|(_, at)| at);
+        let offset = at.map_or(0, |at| at.offset(screen));
         let (rows, cols) = screen.size();
         let window = screen.window(offset, rows, cols);
         for y in 0..rect.h.min(window.rows) {
             for x in 0..rect.w.min(window.cols) {
                 let mut cell = window.cell(y, x).copied().unwrap_or_default();
-                if let Some(copy) = copy.filter(|c| c.pane == *id)
-                    && copy.selected(screen, y, x)
-                {
+                if at.is_some_and(|at| at.selected(y, x)) {
                     let attrs = cell.attributes();
                     let text = if cell.has_contents() {
                         cell.contents()
@@ -271,9 +272,9 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
         && let Some(pane) = session.panes.get(&focus)
     {
         let screen = pane.screen();
-        match copy.filter(|c| c.pane == focus) {
-            Some(copy) => {
-                if let Some((y, x)) = copy.cursor_in_view(screen, rect.h)
+        match copy.filter(|(c, _)| c.pane == focus) {
+            Some((_, at)) => {
+                if let Some((y, x)) = at.cursor_in_view(rect.h)
                     && x < rect.w
                     && let Some(at) = rect.at(y, x)
                 {
@@ -485,13 +486,19 @@ fn separators(grid: &mut Grid, placement: &crate::layout::Placement, focus: Opti
 
 /// The bottom bar: the workspace and its tabs on the left; the focused
 /// pane, or copy mode's position, or a notice on the right.
-fn bar(grid: &mut Grid, session: &Session, view: &View, copy: Option<&crate::copy::Copy>) {
+fn bar(
+    grid: &mut Grid,
+    session: &Session,
+    view: &View,
+    copy: Option<(&crate::copy::Copy, crate::copy::Resolved)>,
+) {
     let Some(y) = view.rows.checked_sub(1) else {
         return;
     };
     let base = style(BAR_FG, GRAY_BG);
     grid.fill(y, 0, view.cols, base);
-    let copy_bar = copy.and_then(|c| session.panes.get(&c.pane).map(|p| c.bar(p.screen())));
+    let copy_bar =
+        copy.and_then(|(c, at)| session.panes.get(&c.pane).map(|p| c.bar(p.screen(), &at)));
     let right = if let Some(notice) = &view.notice {
         Some((
             notice.text.clone(),
@@ -905,6 +912,115 @@ mod tests {
         let narrow = bar(&s);
         assert!(narrow.contains("y copy  q quit"), "{narrow}");
         assert!(!narrow.contains("other end"), "{narrow}");
+        Ok(())
+    }
+
+    /// The selection test compose used to make for every cell, finding
+    /// the view's top and both ends in the history each time.
+    fn reference_selected(
+        copy: &crate::copy::Copy,
+        screen: &fux_vt::Screen,
+        view_row: u16,
+        col: u16,
+    ) -> bool {
+        use crate::copy::{Select, index_of};
+        let at = |(id, col)| Some((index_of(screen, id)?, col));
+        let Some(top) = index_of(screen, copy.top) else {
+            return false;
+        };
+        let Some((kind, anchor)) = copy.selection else {
+            return false;
+        };
+        let (Some(a), Some(b)) = (at(anchor), at(copy.cursor)) else {
+            return false;
+        };
+        let (start, end) = (a.min(b), a.max(b));
+        let Some(row) = top.checked_add(usize::from(view_row)) else {
+            return false;
+        };
+        if row < start.0 || row > end.0 {
+            return false;
+        }
+        match kind {
+            Select::Line => true,
+            Select::Block => {
+                let (left, right) = (start.1.min(end.1), start.1.max(end.1));
+                (left..=right).contains(&col)
+            }
+            Select::Char => (row, col) >= start && (row, col) <= end,
+        }
+    }
+
+    /// Copy mode finds its rows once per paint: the cells compose inverts
+    /// are exactly those the old per-cell test selected, for each kind of
+    /// selection, over a screen with history and a view scrolled into it.
+    #[test]
+    fn compose_inverts_exactly_the_selected_cells() -> Result<(), String> {
+        let mut s = Session::new(
+            crate::config::Config::default(),
+            "/nonexistent/fux.sock".into(),
+            false,
+        );
+        s.start()?;
+        let c = s.attach(10, 30, None)?;
+        let pane = PaneId(1);
+        let text: String = (0..60)
+            .map(|i| {
+                let tail: String = std::iter::repeat_n('x', i % 20).collect();
+                format!("line {i} 界 {tail}\r\n")
+            })
+            .collect();
+        s.output(pane, text.as_bytes());
+        s.input(c, b"\x02c");
+        let mut kinds = Vec::new();
+        // Up into the history, then each kind of selection, with its ends
+        // moved about, a block's end left of its start, and the view
+        // scrolled past the anchor.
+        for keys in [
+            &b"kkkkkkkkkkkkkkkllllllllv"[..],
+            b"kkklllll",
+            b"s",
+            b"jjjjjjjjjjjjjj",
+            b"x",
+            b"hhhhhhhhhh",
+            b"kkkkkkkkkkkkkkkkkkkkkkkkk",
+            b"uv",
+            b"ollll",
+        ] {
+            s.input(c, keys);
+            let grid = compose(&s, c).ok_or("a screen")?;
+            let view = s.views.get(&c).ok_or("the client")?;
+            let Mode::Copy(copy) = &view.mode else {
+                return Err("copy mode ended".into());
+            };
+            kinds.push(copy.selection.map(|(kind, _)| kind));
+            let screen = s.panes.get(&pane).ok_or("the pane")?.screen();
+            let rect = s.placement(view).rect(pane).ok_or("the pane's place")?;
+            // The view shows the rows from its top.
+            let top = crate::copy::index_of(screen, copy.top).ok_or("the top row")?;
+            for y in 0..rect.h {
+                let row = crate::copy::row_at(screen, top + usize::from(y)).ok_or("a row")?;
+                assert_eq!(grid.row_text(y), crate::session::row_text(row.cells));
+            }
+            let mut selected = 0;
+            for y in 0..rect.h {
+                for x in 0..rect.w {
+                    let cell = rect.at(y, x).and_then(|(gy, gx)| grid.get(gy, gx));
+                    let cell = cell.copied().unwrap_or_default();
+                    let expected =
+                        reference_selected(copy, screen, y, x) && !cell.is_wide_continuation();
+                    assert_eq!(cell.inverse(), expected, "{keys:?} at {y},{x}");
+                    selected += usize::from(expected);
+                }
+            }
+            if copy.selection.is_some() {
+                assert!(selected > 0, "{keys:?}: nothing selected in view");
+            }
+        }
+        use crate::copy::Select;
+        for kind in [Select::Char, Select::Line, Select::Block] {
+            assert!(kinds.contains(&Some(kind)), "{kind:?}: {kinds:?}");
+        }
         Ok(())
     }
 

@@ -74,57 +74,39 @@ pub fn index_of(screen: &Screen, id: RowId) -> Option<usize> {
     })
 }
 
-impl Copy {
-    /// Whether the rows it holds are still there.
-    pub fn check(&self, screen: &Screen) -> Result<(), String> {
-        let held = [
-            Some(self.top),
-            Some(self.cursor.0),
-            self.selection.map(|(_, (id, _))| id),
-        ];
-        if held
-            .into_iter()
-            .flatten()
-            .all(|id| index_of(screen, id).is_some())
-        {
-            Ok(())
-        } else {
-            Err("copy mode ended: the history dropped the rows it held".into())
-        }
-    }
+/// Copy mode's positions as retained-row indexes, each row found once for
+/// the paint or key that needs them rather than at every use. A position
+/// whose row is gone is `None`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Resolved {
+    /// The row at the top of the view.
+    pub top: Option<usize>,
+    pub cursor: Option<(usize, u16)>,
+    /// The selection's anchor, if there is a selection.
+    pub anchor: Option<(usize, u16)>,
+    /// The selection's kind and its two ends, in order, if both are there.
+    pub ends: Option<Ends>,
+    /// Whether every row copy mode holds is still retained.
+    pub held: bool,
+}
 
+impl Resolved {
     /// The history offset of the view, for `Screen::window`.
     pub fn offset(&self, screen: &Screen) -> usize {
-        let top = index_of(screen, self.top).unwrap_or(screen.history_len());
-        screen.history_len().saturating_sub(top)
-    }
-
-    fn at(&self, screen: &Screen, point: (RowId, u16)) -> Option<(usize, u16)> {
-        Some((index_of(screen, point.0)?, point.1))
+        let history = screen.history_len();
+        history.saturating_sub(self.top.unwrap_or(history))
     }
 
     /// The cursor, as a row and column of the view, if it is in view.
-    pub fn cursor_in_view(&self, screen: &Screen, height: u16) -> Option<(u16, u16)> {
-        let top = index_of(screen, self.top)?;
-        let (row, col) = self.at(screen, self.cursor)?;
-        let y = u16::try_from(row.checked_sub(top)?).ok()?;
+    pub fn cursor_in_view(&self, height: u16) -> Option<(u16, u16)> {
+        let (row, col) = self.cursor?;
+        let y = u16::try_from(row.checked_sub(self.top?)?).ok()?;
         (y < height).then_some((y, col))
     }
 
-    /// The selection's two ends, in order.
-    fn ends(&self, screen: &Screen) -> Option<Ends> {
-        let (kind, anchor) = self.selection?;
-        let a = self.at(screen, anchor)?;
-        let b = self.at(screen, self.cursor)?;
-        Some((kind, a.min(b), a.max(b)))
-    }
-
     /// Whether the cell at a view row and column is selected.
-    pub fn selected(&self, screen: &Screen, view_row: u16, col: u16) -> bool {
-        let Some(top) = index_of(screen, self.top) else {
-            return false;
-        };
-        let Some((kind, start, end)) = self.ends(screen) else {
+    pub fn selected(&self, view_row: u16, col: u16) -> bool {
+        let (Some(top), Some((kind, start, end))) = (self.top, self.ends) else {
             return false;
         };
         let Some(row) = top.checked_add(usize::from(view_row)) else {
@@ -142,13 +124,45 @@ impl Copy {
             Select::Char => (row, col) >= start && (row, col) <= end,
         }
     }
+}
 
-    /// What the bar shows in place of the tabs.
-    pub fn bar(&self, screen: &Screen) -> Bar {
+impl Copy {
+    /// Finds the rows it holds, once each.
+    pub fn resolve(&self, screen: &Screen) -> Resolved {
+        let at = |(id, col): (RowId, u16)| Some((index_of(screen, id)?, col));
+        let top = index_of(screen, self.top);
+        let cursor = at(self.cursor);
+        let anchor = self.selection.and_then(|(_, anchor)| at(anchor));
+        let ends = self
+            .selection
+            .zip(anchor)
+            .zip(cursor)
+            .map(|(((kind, _), a), b)| (kind, a.min(b), a.max(b)));
+        Resolved {
+            top,
+            cursor,
+            anchor,
+            ends,
+            held: top.is_some()
+                && cursor.is_some()
+                && (self.selection.is_none() || anchor.is_some()),
+        }
+    }
+
+    /// Whether the rows it holds are still there.
+    pub fn check(&self, screen: &Screen) -> Result<(), String> {
+        if self.resolve(screen).held {
+            Ok(())
+        } else {
+            Err("copy mode ended: the history dropped the rows it held".into())
+        }
+    }
+
+    /// What the bar shows in place of the tabs, with the cursor where `at`
+    /// found it.
+    pub fn bar(&self, screen: &Screen, at: &Resolved) -> Bar {
         // Counted from 1; exact, as rows are far fewer than a usize holds.
-        let line = self
-            .at(screen, self.cursor)
-            .map_or(0, |(r, _)| r.saturating_add(1));
+        let line = at.cursor.map_or(0, |(r, _)| r.saturating_add(1));
         let position = format!("{line}/{}", retained(screen));
         if let Some((forward, text)) = &self.typing {
             return Bar {
@@ -611,12 +625,13 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
                 copy.typing = None;
                 if !search.query.is_empty() {
                     copy.search = Some(search.clone());
+                    let at = copy.resolve(screen);
                     jump(
                         copy,
                         screen,
                         height,
+                        &at,
                         &search,
-                        true,
                         view_error(&mut view.notice),
                     );
                 }
@@ -643,13 +658,10 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
         return;
     }
 
-    let Some(cursor) = copy.at(screen, copy.cursor) else {
+    let at = copy.resolve(screen);
+    let (Some((row, col)), Some(mut top)) = (at.cursor, at.top) else {
         return;
     };
-    let Some(top) = index_of(screen, copy.top) else {
-        return;
-    };
-    let (row, col) = cursor;
     let last_row = retained(screen).saturating_sub(1);
     let last_col = screen.size().1.saturating_sub(1);
     let half = usize::from(height / 2).max(1);
@@ -738,8 +750,8 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
                         copy,
                         screen,
                         height,
+                        &at,
                         &search,
-                        false,
                         view_error(&mut view.notice),
                     );
                 }
@@ -754,32 +766,34 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
             if let Some((kind, anchor)) = copy.selection {
                 copy.selection = Some((kind, copy.cursor));
                 copy.cursor = anchor;
-                if let Some(at) = copy.at(screen, anchor) {
-                    target = Some(at);
+                if let Some(anchor) = at.anchor {
+                    target = Some(anchor);
                 }
             }
         }
         (Some('y'), _) | (_, Key::Enter) => {
-            yank(session, client);
+            yank(session, client, at.ends);
             return;
         }
         _ => {}
     }
     if let Some(scroll) = scroll {
         let row = scroll.from(row, last_row);
-        let top = scroll.from(top, screen.history_len());
-        if let Some(r) = row_at(screen, top) {
+        let scrolled = scroll.from(top, screen.history_len());
+        if let Some(r) = row_at(screen, scrolled) {
             copy.top = r.id;
+            top = scrolled;
         }
         target = Some((row, col));
     }
     if let Some(target) = target {
-        move_to(copy, screen, height, target);
+        move_to(copy, screen, height, top, target);
     }
 }
 
-/// Moves the cursor, scrolling the view to keep it in sight.
-fn move_to(copy: &mut Copy, screen: &Screen, height: u16, (row, col): (usize, u16)) {
+/// Moves the cursor, scrolling the view, whose top row is at `top`, to keep
+/// it in sight.
+fn move_to(copy: &mut Copy, screen: &Screen, height: u16, top: usize, (row, col): (usize, u16)) {
     let last_col = screen.size().1.saturating_sub(1);
     let mut col = col.min(last_col);
     if let Some(r) = row_at(screen, row) {
@@ -791,7 +805,6 @@ fn move_to(copy: &mut Copy, screen: &Screen, height: u16, (row, col): (usize, u1
         }
         copy.cursor = (r.id, col);
     }
-    let top = index_of(screen, copy.top).unwrap_or(screen.history_len());
     let height = usize::from(height).max(1);
     // Scroll just enough that the row shows; `height` is at least 1.
     let new_top = if row < top {
@@ -821,26 +834,29 @@ fn view_error(notice: &mut Option<crate::view::Notice>) -> impl FnMut(String) + 
     }
 }
 
+/// Moves to the next match of `search` from the cursor, as `at` found it.
 fn jump(
     copy: &mut Copy,
     screen: &Screen,
     height: u16,
+    at: &Resolved,
     search: &Search,
-    _first: bool,
     mut error: impl FnMut(String),
 ) {
-    let Some(from) = copy.at(screen, copy.cursor) else {
+    let Some(from) = at.cursor else {
         return;
     };
+    let top = at.top.unwrap_or(screen.history_len());
     match find(screen, &search.query, from, search.forward) {
-        Some(at) => move_to(copy, screen, height, at),
+        Some(found) => move_to(copy, screen, height, top, found),
         None => error(format!("not found: {}", search.query)),
     }
 }
 
-/// Copies the selection into the paste buffers, and to the client's
-/// clipboard through OSC 52 when allowed; then leaves copy mode.
-fn yank(session: &mut Session, client: ClientId) {
+/// Copies the selection, whose ends are `ends`, into the paste buffers, and
+/// to the client's clipboard through OSC 52 when allowed; then leaves copy
+/// mode.
+fn yank(session: &mut Session, client: ClientId, ends: Option<Ends>) {
     let Some(view) = session.views.get(&client) else {
         return;
     };
@@ -849,7 +865,7 @@ fn yank(session: &mut Session, client: ClientId) {
         return;
     };
     let screen = pane.screen();
-    let Some((kind, start, end)) = copy.ends(screen) else {
+    let Some((kind, start, end)) = ends else {
         if let Some(view) = session.views.get_mut(&client) {
             view.error("nothing selected: v, s or x starts a selection");
         }
