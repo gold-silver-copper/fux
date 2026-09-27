@@ -72,6 +72,10 @@ impl Rect {
     fn bottom(&self) -> u32 {
         u32::from(self.y).saturating_add(u32::from(self.h))
     }
+    /// Whether (x, y) is inside the rect.
+    pub fn contains(&self, x: u16, y: u16) -> bool {
+        x >= self.x && u32::from(x) < self.right() && y >= self.y && u32::from(y) < self.bottom()
+    }
     /// Twice the centre, so that it is whole.
     fn centre2(&self) -> (u32, u32) {
         (
@@ -85,10 +89,28 @@ impl Rect {
 /// between stacked ones.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Separator {
-    pub vertical: bool,
+    /// The axis of the split it divides: a `Horizontal` split's line is
+    /// vertical.
+    pub axis: Axis,
     pub x: u16,
     pub y: u16,
     pub len: u16,
+}
+
+impl Separator {
+    /// The cells it covers: a rectangle one cell wide or high.
+    pub fn rect(&self) -> Rect {
+        let (w, h) = match self.axis {
+            Axis::Horizontal => (1, self.len),
+            Axis::Vertical => (self.len, 1),
+        };
+        Rect {
+            x: self.x,
+            y: self.y,
+            w,
+            h,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -466,13 +488,13 @@ fn place_node(node: &Node, area: Rect, out: &mut Placement) {
                     };
                     let separator = match axis {
                         Axis::Horizontal => Separator {
-                            vertical: true,
+                            axis: *axis,
                             x,
                             y: area.y,
                             len: area.h,
                         },
                         Axis::Vertical => Separator {
-                            vertical: false,
+                            axis: *axis,
                             x: area.x,
                             y: x,
                             len: area.w,
@@ -707,7 +729,7 @@ mod tests {
         assert_eq!(
             placed.separators,
             vec![Separator {
-                vertical: true,
+                axis: Axis::Horizontal,
                 x: 40,
                 y: 0,
                 len: 24
@@ -745,15 +767,12 @@ mod tests {
                 }
             }
         }
-        for s in &placed.separators {
-            for i in 0..s.len {
-                let (x, y) = if s.vertical {
-                    (s.x, s.y + i)
-                } else {
-                    (s.x + i, s.y)
-                };
-                if let Some(c) = covered.get_mut(usize::from(y) * 81 + usize::from(x)) {
-                    *c += 1;
+        for r in placed.separators.iter().map(Separator::rect) {
+            for y in r.y..r.y + r.h {
+                for x in r.x..r.x + r.w {
+                    if let Some(c) = covered.get_mut(usize::from(y) * 81 + usize::from(x)) {
+                        *c += 1;
+                    }
                 }
             }
         }
