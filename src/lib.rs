@@ -23,6 +23,8 @@ pub mod socket;
 pub mod view;
 pub mod words;
 
+use std::io::Read;
+use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -30,6 +32,23 @@ use std::time::{Duration, Instant};
 /// `from`, so that a deadline fires at once rather than never.
 pub(crate) fn after(from: Instant, wait: Duration) -> Instant {
     from.checked_add(wait).unwrap_or(from)
+}
+
+/// A socket that becomes readable when any of `signals` arrives: each writes
+/// a byte to the other end, of which it holds a copy.
+pub(crate) fn signal_pipe(signals: &[std::ffi::c_int]) -> std::io::Result<UnixStream> {
+    let (pipe, write) = UnixStream::pair()?;
+    pipe.set_nonblocking(true)?;
+    for &signal in signals {
+        signal_hook::low_level::pipe::register(signal, write.try_clone()?)?;
+    }
+    Ok(pipe)
+}
+
+/// Reads whatever a signal pipe holds.
+pub(crate) fn drain(pipe: &mut UnixStream) {
+    let mut buffer = [0u8; 256];
+    while matches!(pipe.read(&mut buffer), Ok(n) if n > 0) {}
 }
 
 const USAGE: &str = "\
