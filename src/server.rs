@@ -4,7 +4,7 @@ use crate::bytes::ByteQueue;
 use crate::command::ClientId;
 use crate::config::Config;
 use crate::layout::PaneId;
-use crate::protocol::{Decoder, Frame, PROTOCOL, Role};
+use crate::protocol::{Decoder, Frame, PROTOCOL, Role, Stream};
 use crate::render::{self, Grid};
 use crate::session::{Ctx, Outgoing, Session};
 use fuxix::poll::{Events as PollFlags, PollFd};
@@ -56,16 +56,14 @@ struct Conn {
 }
 
 impl Conn {
+    /// Encodes a frame straight into the output.
     fn send(&mut self, frame: &Frame) {
-        match frame.encode() {
-            Ok(bytes) => self.out.push(&bytes),
-            Err(_) => self.dead = true,
+        if self.out.push_with(|out| frame.encode_into(out)).is_err() {
+            self.dead = true;
         }
     }
-    fn send_bytes(&mut self, make: fn(Vec<u8>) -> Frame, bytes: &[u8]) {
-        for frame in Frame::chunked(make, bytes) {
-            self.send(&frame);
-        }
+    fn send_stream(&mut self, stream: Stream, bytes: &[u8]) {
+        stream.encode_into(bytes, &mut self.out);
     }
 }
 
@@ -81,6 +79,8 @@ pub struct Server {
     /// Where client bytes land before their decoder takes them; one for the
     /// server, reused by every read.
     read_buffer: Vec<u8>,
+    /// Where a paint is written before it is framed; reused by every paint.
+    paint_buffer: Vec<u8>,
     /// A descriptor held in reserve, so that a connection that arrives when
     /// all others are taken can still be accepted and told why it is
     /// refused (bevy-final findings 006 and 012).
@@ -139,6 +139,7 @@ pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), String> 
         stopping: None,
         escapes: std::collections::HashMap::new(),
         read_buffer: vec![0u8; 64 * 1024],
+        paint_buffer: Vec::new(),
         spare: std::fs::File::open("/dev/null").ok(),
         shortage: None,
         listen_after: None,
@@ -319,7 +320,7 @@ impl Server {
             match outgoing {
                 Outgoing::Bytes(client, bytes) => {
                     if let Some(conn) = self.conns.iter_mut().find(|c| c.client == Some(client)) {
-                        conn.send_bytes(Frame::Paint, &bytes);
+                        conn.send_stream(Stream::Paint, &bytes);
                     }
                 }
                 Outgoing::Exit(client, reason) => {
@@ -357,8 +358,9 @@ impl Server {
             let Some(grid) = render::compose(&self.session, client) else {
                 continue;
             };
-            let bytes = render::paint(conn.shown.as_ref(), &grid);
-            conn.send_bytes(Frame::Paint, &bytes);
+            self.paint_buffer.clear();
+            render::paint_into(conn.shown.as_ref(), &grid, &mut self.paint_buffer);
+            conn.send_stream(Stream::Paint, &self.paint_buffer);
             conn.shown = Some(grid);
             conn.next_paint = crate::after(now, PAINT);
             if let Some(view) = self.session.views.get_mut(&client) {
@@ -668,14 +670,14 @@ impl Server {
                     return;
                 };
                 if !outcome.stdout.is_empty() {
-                    conn.send_bytes(Frame::Stdout, outcome.stdout.as_bytes());
+                    conn.send_stream(Stream::Stdout, outcome.stdout.as_bytes());
                 }
                 if !outcome.stderr.is_empty() {
                     let mut stderr = outcome.stderr;
                     if !stderr.ends_with('\n') {
                         stderr.push('\n');
                     }
-                    conn.send_bytes(Frame::Stderr, stderr.as_bytes());
+                    conn.send_stream(Stream::Stderr, stderr.as_bytes());
                 }
                 conn.send(&Frame::Done {
                     status: outcome.status,

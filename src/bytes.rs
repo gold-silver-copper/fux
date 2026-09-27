@@ -25,6 +25,19 @@ impl ByteQueue {
         self.len() == 0
     }
     pub fn push(&mut self, more: &[u8]) {
+        self.compact();
+        self.bytes.extend_from_slice(more);
+    }
+    /// Appends what `write` adds to the end of the queue's buffer, in place.
+    /// The bytes already there are the queue's: `write` only adds after
+    /// them, or takes back what it added.
+    pub fn push_with<T>(&mut self, write: impl FnOnce(&mut Vec<u8>) -> T) -> T {
+        self.compact();
+        write(&mut self.bytes)
+    }
+    /// Reclaims the space taken, once at least as much has been taken as is
+    /// left.
+    fn compact(&mut self) {
         let left = self.len();
         if self.taken > 0 && self.taken >= left {
             // What is left moves to the front, into the space taken, which is
@@ -38,7 +51,6 @@ impl ByteQueue {
             self.bytes.truncate(left);
             self.taken = 0;
         }
-        self.bytes.extend_from_slice(more);
     }
     /// Takes `n` bytes from the front, or all there are.
     pub fn take(&mut self, n: usize) {

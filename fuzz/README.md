@@ -45,7 +45,10 @@ allocation is watched for use after free, which safe Rust rules out anyway.
     it holds is one incomplete frame, whose header claimed at most `MAX_FRAME`;
   - the frames and the first error are the same pushed whole, in pieces, and
     byte by byte;
-  - each decoded frame, re-encoded with `Frame::encode`, decodes back to itself.
+  - each decoded frame, re-encoded with `Frame::encode`, decodes back to itself;
+  - encoded with `Frame::encode_into` after other bytes, it is the same bytes
+    after them; and a paint, stdout or stderr frame is what `Stream::encode_into`
+    writes for its payload, nothing for an empty one.
 
 **`keys`**: an attached client's terminal bytes, into `decode::Decoder`, with
 the Escape deadline passing only at the end.

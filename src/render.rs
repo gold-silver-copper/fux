@@ -8,7 +8,7 @@ use crate::overlay::{self, ColumnRow};
 use crate::session::Session;
 use crate::view::{Mode, View};
 use fux_vt::{Attributes, Cell, Color};
-use std::fmt::Write;
+use std::io::Write;
 use unicode_width::UnicodeWidthChar;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -731,25 +731,25 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
 
 // ------------------------------------------------------------------ paint
 
-fn sgr(out: &mut String, a: Attributes) {
-    out.push_str("\x1b[0");
+fn sgr(out: &mut Vec<u8>, a: Attributes) {
+    out.extend_from_slice(b"\x1b[0");
     if a.bold() {
-        out.push_str(";1");
+        out.extend_from_slice(b";1");
     }
     if a.dim() {
-        out.push_str(";2");
+        out.extend_from_slice(b";2");
     }
     if a.italic() {
-        out.push_str(";3");
+        out.extend_from_slice(b";3");
     }
     if a.underline() {
-        out.push_str(";4");
+        out.extend_from_slice(b";4");
     }
     if a.inverse() {
-        out.push_str(";7");
+        out.extend_from_slice(b";7");
     }
     // `base` is 30 or 40, so no code comes near 255: every sum is exact.
-    let color = |out: &mut String, c: Color, base: u8| match c {
+    let color = |out: &mut Vec<u8>, c: Color, base: u8| match c {
         Color::Default => {}
         Color::Idx(n) if n < 8 => {
             let _ = write!(out, ";{}", base.saturating_add(n));
@@ -767,7 +767,7 @@ fn sgr(out: &mut String, a: Attributes) {
     };
     color(out, a.foreground, 30);
     color(out, a.background, 40);
-    out.push('m');
+    out.push(b'm');
 }
 
 /// A row or column as the terminal counts it, from 1; exact in a u32.
@@ -777,10 +777,18 @@ fn one_based(n: u16) -> u32 {
 
 /// The bytes that turn `old` (what the client shows, or nothing) into `new`.
 pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
-    let mut out = String::from("\x1b[?2026h\x1b[?25l");
+    let mut out = Vec::new();
+    paint_into(old, new, &mut out);
+    out
+}
+
+/// Appends the bytes that turn `old` (what the client shows, or nothing)
+/// into `new` to `out`.
+pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
+    out.extend_from_slice(b"\x1b[?2026h\x1b[?25l");
     let full = old.is_none_or(|o| o.rows != new.rows || o.cols != new.cols);
     if full {
-        out.push_str("\x1b[0m\x1b[H\x1b[2J");
+        out.extend_from_slice(b"\x1b[0m\x1b[H\x1b[2J");
     }
     let mut current: Option<Attributes> = None;
     for y in 0..new.rows {
@@ -811,17 +819,17 @@ pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
                 }
                 let attrs = cell.attributes();
                 if current != Some(attrs) {
-                    sgr(&mut out, attrs);
+                    sgr(out, attrs);
                     current = Some(attrs);
                 }
                 if cell.is_wide() && cx.saturating_add(1) >= new.cols {
                     // A wide glyph cannot fit in the last column.
-                    out.push(' ');
+                    out.push(b' ');
                 } else {
-                    out.push_str(if cell.has_contents() {
-                        cell.contents()
+                    out.extend_from_slice(if cell.has_contents() {
+                        cell.contents().as_bytes()
                     } else {
-                        " "
+                        b" "
                     });
                 }
                 cx = cx.saturating_add(if cell.is_wide() { 2 } else { 1 });
@@ -829,7 +837,7 @@ pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
             x = cx.max(x.saturating_add(1));
         }
     }
-    out.push_str("\x1b[0m");
+    out.extend_from_slice(b"\x1b[0m");
     let shape_changed = old.is_none_or(|o| o.cursor_shape != new.cursor_shape);
     if shape_changed {
         let _ = write!(out, "\x1b[{} q", new.cursor_shape);
@@ -837,8 +845,7 @@ pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
     if let Some((y, x)) = new.cursor {
         let _ = write!(out, "\x1b[{};{}H\x1b[?25h", one_based(y), one_based(x));
     }
-    out.push_str("\x1b[?2026l");
-    out.into_bytes()
+    out.extend_from_slice(b"\x1b[?2026l");
 }
 
 #[cfg(test)]
