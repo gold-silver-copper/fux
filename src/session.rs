@@ -906,7 +906,7 @@ impl Session {
     }
 
     /// Whether `path` is a layer: some binding's keys go on past it.
-    fn is_layer(&self, path: &[KeyPress]) -> bool {
+    pub(crate) fn is_layer(&self, path: &[KeyPress]) -> bool {
         self.config
             .bindings
             .iter()
