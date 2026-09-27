@@ -4,11 +4,11 @@
 //! The outer terminal is in normal (not application) cursor and keypad mode,
 //! so each key has one xterm encoding. A lone Escape is only known to be one
 //! when no more bytes follow within `ESCAPE_DELAY`; the server calls
-//! `timeout` at the deadline `pending_since` reports. Mouse sequences, which a
+//! `timeout` at the `deadline` the decoder reports. Mouse sequences, which a
 //! correctly configured outer terminal never sends, are dropped.
 use crate::bytes::ByteQueue;
 use crate::keys::{Direction, Key, KeyPress, Modifiers};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long a lone Escape waits for the rest of a sequence.
 pub const ESCAPE_DELAY: Duration = Duration::from_millis(35);
@@ -33,6 +33,8 @@ pub struct Decoder {
     paste: Option<Vec<u8>>,
     /// The paste's end marker, as far as it has arrived.
     marker: usize,
+    /// When decoding began waiting on a timeout, as `mark` found it.
+    since: Option<Instant>,
 }
 
 const PASTE_END: &[u8] = b"\x1b[201~";
@@ -40,6 +42,8 @@ const PASTE_END: &[u8] = b"\x1b[201~";
 enum Step {
     /// Consumed this many bytes, producing an input or nothing.
     Done(usize, Option<Input>),
+    /// Consumed this many bytes, the start of a bracketed paste.
+    PasteStart(usize),
     /// The pending bytes are a prefix of something longer.
     Incomplete,
 }
@@ -51,7 +55,30 @@ impl Decoder {
         self.paste.is_none() && !self.pending.is_empty()
     }
 
+    /// Records `now` as when decoding began waiting, if it is waiting and
+    /// was not when last marked.
+    pub fn mark(&mut self, now: Instant) {
+        if self.waiting() && self.since.is_none() {
+            self.since = Some(now);
+        }
+    }
+
+    /// When `timeout` is due: `ESCAPE_DELAY` after decoding began waiting,
+    /// as marked; none while it is not waiting.
+    pub fn deadline(&self) -> Option<Instant> {
+        let since = self.since.filter(|_| self.waiting())?;
+        Some(crate::after(since, ESCAPE_DELAY))
+    }
+
     pub fn bytes(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
+        self.feed(bytes, out);
+        // Waiting that stops and starts again within these bytes goes on.
+        if !self.waiting() {
+            self.since = None;
+        }
+    }
+
+    fn feed(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
         for &byte in bytes {
             if let Some(paste) = &mut self.paste {
                 // Match the end marker incrementally; a partial marker that
@@ -96,6 +123,9 @@ impl Decoder {
         if self.paste.is_none() {
             self.drain(out, true);
         }
+        if !self.waiting() {
+            self.since = None;
+        }
     }
 
     fn drain(&mut self, out: &mut Vec<Input>, flush: bool) {
@@ -105,17 +135,17 @@ impl Decoder {
                     // Nearly always the whole sequence; else what follows it
                     // stays, without moving.
                     self.pending.take(n);
-                    if input.as_ref() == Some(&Input::Paste(String::new())) {
-                        // The start marker: switch to paste mode.
-                        self.paste = Some(Vec::new());
-                        // Bytes after the marker in this batch are paste text.
-                        let rest = std::mem::take(&mut self.pending);
-                        self.bytes(rest.as_slice(), out);
-                        return;
-                    }
                     if let Some(input) = input {
                         out.push(input);
                     }
+                }
+                Step::PasteStart(n) => {
+                    self.pending.take(n);
+                    self.paste = Some(Vec::new());
+                    // Bytes after the marker in this batch are paste text.
+                    let rest = std::mem::take(&mut self.pending);
+                    self.feed(rest.as_slice(), out);
+                    return;
                 }
                 Step::Incomplete => return,
             }
@@ -217,6 +247,7 @@ fn decode(bytes: &[u8], flush: bool) -> Step {
                 Step::Done(n.saturating_add(1), press(key, mods))
             }
             Step::Done(n, other) => Step::Done(n.saturating_add(1), other),
+            Step::PasteStart(n) => Step::PasteStart(n.saturating_add(1)),
             Step::Incomplete => Step::Incomplete,
         },
     }
@@ -304,7 +335,7 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
         b'I' => Some(Input::FocusIn),
         b'O' => Some(Input::FocusOut),
         b'~' => match first {
-            200 => Some(Input::Paste(String::new())),
+            200 => return Step::PasteStart(consumed),
             1 | 7 => press(Key::Home, mods),
             2 => press(Key::Insert, mods),
             3 => press(Key::Delete, mods),
@@ -394,6 +425,41 @@ mod tests {
         ] {
             assert_eq!(all(bytes), vec![key(name)], "{bytes:?}");
         }
+    }
+
+    /// The deadline runs from when decoding began waiting, through bytes
+    /// that leave it waiting, even across a paste; a wait that ends and
+    /// begins again runs from the new start.
+    #[test]
+    fn the_deadline_runs_from_when_waiting_began() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.mark(t0);
+        assert_eq!(d.deadline(), None, "not waiting");
+        d.bytes(b"\x1b", &mut out);
+        d.mark(t0);
+        assert_eq!(d.deadline(), Some(t0 + ESCAPE_DELAY));
+        d.bytes(b"[", &mut out);
+        d.mark(t0 + ms(10));
+        assert_eq!(
+            d.deadline(),
+            Some(t0 + ESCAPE_DELAY),
+            "still the first wait"
+        );
+        d.bytes(b"200~pasted\x1b[201~\x1b", &mut out);
+        d.mark(t0 + ms(20));
+        assert_eq!(d.deadline(), Some(t0 + ESCAPE_DELAY), "through a paste");
+        d.timeout(&mut out);
+        assert_eq!(d.deadline(), None);
+        d.bytes(b"\x1b", &mut out);
+        d.mark(t0 + ms(30));
+        assert_eq!(d.deadline(), Some(t0 + ms(30) + ESCAPE_DELAY));
+        d.bytes(b"a", &mut out);
+        d.bytes(b"\x1b", &mut out);
+        d.mark(t0 + ms(40));
+        assert_eq!(d.deadline(), Some(t0 + ms(40) + ESCAPE_DELAY), "a new wait");
     }
 
     #[test]
