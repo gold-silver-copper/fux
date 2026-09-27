@@ -107,7 +107,7 @@ fn run(args: &[String]) -> Result<u8, String> {
                         .into(),
                 );
             }
-            let socket = socket::socket_path(None)?;
+            let socket = socket::socket_path(None).map_err(|e| e.to_string())?;
             if !socket::exists(&socket) || std::os::unix::net::UnixStream::connect(&socket).is_err()
             {
                 client::start_server(&socket)?;
@@ -127,14 +127,14 @@ fn run(args: &[String]) -> Result<u8, String> {
                     other => return usage_error(&format!("server: unexpected {other:?}")),
                 }
             }
-            let socket = socket::socket_path(socket_flag.as_deref())?;
+            let socket = socket::socket_path(socket_flag.as_deref()).map_err(|e| e.to_string())?;
             let config = config
                 .map(std::path::PathBuf::from)
                 .or_else(config::default_path);
             server::serve(&socket, config).map(|()| 0)
         }
         Some("kill-server") => {
-            let socket = socket::socket_path(None)?;
+            let socket = socket::socket_path(None).map_err(|e| e.to_string())?;
             client::kill_server(&socket).map(|()| 0)
         }
         Some("help" | "--help" | "-h") => {
@@ -150,7 +150,7 @@ fn run(args: &[String]) -> Result<u8, String> {
             if let Err(command::Usage(message)) = command::parse(args) {
                 return usage_error(&message);
             }
-            let socket = socket::socket_path(None)?;
+            let socket = socket::socket_path(None).map_err(|e| e.to_string())?;
             client::command(&socket, args)
         }
     }

@@ -30,7 +30,7 @@ fn restore() {
 }
 
 fn connect(socket: &Path, role: Role) -> Result<(UnixStream, Decoder), String> {
-    crate::socket::check_client_socket(socket)?;
+    crate::socket::check_client_socket(socket).map_err(|e| e.to_string())?;
     let mut stream = UnixStream::connect(socket)
         .map_err(|e| format!("connecting to {}: {e}", socket.display()))?;
     let sent = send(
@@ -156,7 +156,7 @@ pub const SETSID: &str = "--setsid";
 pub fn start_server(socket: &Path) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("finding the fux binary: {e}"))?;
     let directory = socket.parent().ok_or("the socket has no directory")?;
-    crate::socket::prepare_directory(directory)?;
+    crate::socket::prepare_directory(directory).map_err(|e| e.to_string())?;
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
