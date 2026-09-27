@@ -691,19 +691,21 @@ impl Screen {
     }
 
     fn sgr(&mut self, p: &Parameters) {
+        const WEIGHT: u8 = Attributes::BOLD | Attributes::DIM;
         let mut groups = p.groups();
         while let Some(group) = groups.next() {
             match group {
                 [0] => self.attributes = Attributes::default(),
-                [1] => self.attributes.flags = self.attributes.flags & !3 | 1,
-                [2] => self.attributes.flags = self.attributes.flags & !3 | 2,
-                [3] => self.attributes.flags |= 4,
-                [4] => self.attributes.flags |= 8,
-                [7] => self.attributes.flags |= 16,
-                [22] => self.attributes.flags &= !3,
-                [23] => self.attributes.flags &= !4,
-                [24] => self.attributes.flags &= !8,
-                [27] => self.attributes.flags &= !16,
+                // Bold and dim replace one another.
+                [1] => self.attributes.flags = self.attributes.flags & !WEIGHT | Attributes::BOLD,
+                [2] => self.attributes.flags = self.attributes.flags & !WEIGHT | Attributes::DIM,
+                [3] => self.attributes.flags |= Attributes::ITALIC,
+                [4] => self.attributes.flags |= Attributes::UNDERLINE,
+                [7] => self.attributes.flags |= Attributes::INVERSE,
+                [22] => self.attributes.flags &= !WEIGHT,
+                [23] => self.attributes.flags &= !Attributes::ITALIC,
+                [24] => self.attributes.flags &= !Attributes::UNDERLINE,
+                [27] => self.attributes.flags &= !Attributes::INVERSE,
                 [39] => self.attributes.foreground = Color::Default,
                 [49] => self.attributes.background = Color::Default,
                 [n @ (30..=37 | 90..=97)] => {

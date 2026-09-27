@@ -62,7 +62,7 @@ impl Kind {
 }
 
 /// Which pane, tab or workspace a `select-…` command picks.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick<T> {
     Next,
     Previous,
@@ -81,7 +81,7 @@ pub enum MoveTo {
     Beside(Direction),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SwapWith {
     Pane(PaneId),
     Toward(Direction),

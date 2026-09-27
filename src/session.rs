@@ -1112,9 +1112,9 @@ impl Session {
                 self.rename(target, name.clone()).map(|()| String::new())
             }
             &Command::MovePane { target, ref to } => self.move_pane(target, to, ctx),
-            &Command::SwapPane { target, ref with } => {
+            &Command::SwapPane { target, with } => {
                 let source = self.pane_target(target, ctx)?;
-                let other = match *with {
+                let other = match with {
                     SwapWith::Pane(p) => {
                         if !self.panes.contains_key(&p) {
                             return Err(format!("no pane {p}"));
@@ -1271,13 +1271,13 @@ impl Session {
                 view.zoom = !view.zoom;
                 Ok(String::new())
             }
-            &Command::SelectPane { client, ref pick } => {
+            &Command::SelectPane { client, pick } => {
                 let client = self.client_target(client, ctx)?;
-                self.select_pane(client, pick.clone())
+                self.select_pane(client, pick)
             }
-            &Command::SelectTab { client, ref pick } => {
+            &Command::SelectTab { client, pick } => {
                 let client = self.client_target(client, ctx)?;
-                self.select_tab(client, pick.clone())
+                self.select_tab(client, pick)
             }
             &Command::SelectWorkspace { client, ref pick } => {
                 let client = self.client_target(client, ctx)?;

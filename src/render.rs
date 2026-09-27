@@ -709,8 +709,9 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
     let key_width = rows
         .iter()
         .filter_map(|r| match r {
-            ColumnRow::Binding { key, .. } => Some(width(key)),
-            ColumnRow::Layer { key, .. } => Some(width(&key.to_string())),
+            ColumnRow::Binding { key, .. } | ColumnRow::Layer { key, .. } => {
+                Some(width(&key.to_string()))
+            }
             ColumnRow::Heading(_) => None,
         })
         .max()
@@ -729,8 +730,9 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
                 label,
                 command,
             } => {
+                let key = key.to_string();
                 let pad: String =
-                    std::iter::repeat_n(' ', usize::from(key_width.saturating_sub(width(key))))
+                    std::iter::repeat_n(' ', usize::from(key_width.saturating_sub(width(&key))))
                         .collect();
                 let mut attrs = panel();
                 if session.unavailable(command, &ctx).is_some() {
