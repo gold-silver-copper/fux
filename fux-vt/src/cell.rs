@@ -106,10 +106,8 @@ impl Cell {
             return None;
         }
         let mut cell = Self::blank(attributes);
-        // All of them: the length was checked against the capacity above.
-        for (dst, src) in cell.text.iter_mut().zip(bytes) {
-            *dst = *src;
-        }
+        // The length was checked against the capacity above.
+        crate::copy_from(cell.text.get_mut(..bytes.len())?, bytes)?;
         cell.length = u8::try_from(bytes.len()).ok()? | if wide { Self::WIDE } else { 0 };
         Some(cell)
     }

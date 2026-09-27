@@ -1,6 +1,21 @@
 //! Bytes that arrive at one end and are taken from the other: a socket's
 //! input waiting to be decoded, its output waiting to be written, a key
 //! sequence waiting to complete.
+use std::ops::Range;
+
+/// `slice::copy_within`, checked: copies the run `src` of `slice` to start at
+/// `dest`, if both runs lie within it.
+///
+/// `copy_within` panics on a range out of bounds, so fux calls it here, after
+/// this check, and nowhere else (clippy.toml).
+pub fn copy_within<T: Copy>(slice: &mut [T], src: Range<usize>, dest: usize) -> Option<()> {
+    let fits = src.start <= src.end
+        && src.end <= slice.len()
+        && dest
+            .checked_add(src.len())
+            .is_some_and(|end| end <= slice.len());
+    fits.then(|| slice.copy_within(src, dest))
+}
 
 /// A queue of bytes. Taking from the front moves an offset, not the bytes
 /// behind it; the space taken is reclaimed when the queue empties, or on the
@@ -38,16 +53,11 @@ impl ByteQueue {
     /// Reclaims the space taken, once at least as much has been taken as is
     /// left.
     fn compact(&mut self) {
+        let (taken, end) = (self.taken, self.bytes.len());
         let left = self.len();
-        if self.taken > 0 && self.taken >= left {
-            // What is left moves to the front, into the space taken, which is
-            // at least as large, so the two do not overlap. Only what is left
-            // is copied.
-            if let Some((front, back)) = self.bytes.split_at_mut_checked(self.taken) {
-                for (to, from) in front.iter_mut().zip(back.iter()) {
-                    *to = *from;
-                }
-            }
+        // What is left moves to the front, into the space taken, which is at
+        // least as large. Only what is left is copied.
+        if taken > 0 && taken >= left && copy_within(&mut self.bytes, taken..end, 0).is_some() {
             self.bytes.truncate(left);
             self.taken = 0;
         }
@@ -107,6 +117,24 @@ mod tests {
         assert!(queue.is_empty());
         queue.push(b"next");
         assert_eq!((queue.as_slice(), queue.taken), (&b"next"[..], 0));
+    }
+
+    #[test]
+    fn copies_within_happen_only_in_bounds() {
+        let mut bytes = *b"abcdef";
+        assert_eq!(copy_within(&mut bytes, 3..6, 0), Some(()));
+        assert_eq!(&bytes, b"defdef");
+        assert_eq!(copy_within(&mut bytes, 1..3, 2), Some(()));
+        assert_eq!(&bytes, b"deefef");
+        let backwards = Range { start: 3, end: 1 };
+        for (src, dest) in [(4..7, 0), (0..3, 4), (3..6, usize::MAX), (backwards, 0)] {
+            assert_eq!(
+                copy_within(&mut bytes, src.clone(), dest),
+                None,
+                "{src:?} {dest}"
+            );
+        }
+        assert_eq!(&bytes, b"deefef");
     }
 
     #[test]

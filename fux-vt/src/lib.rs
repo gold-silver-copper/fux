@@ -10,6 +10,15 @@ pub use cell::{Attributes, Cell, Color};
 pub use parser::{Event, OSC_PAYLOAD_LIMIT, Options, Parser, Sink};
 pub use screen::{MouseProtocolEncoding, MouseProtocolMode, Screen};
 
+/// `slice::copy_from_slice`, checked: copies `src` over `dst`, if they are the
+/// same length.
+///
+/// `copy_from_slice` panics when the lengths differ, so fux-vt calls it here,
+/// after this check, and nowhere else (fux's clippy.toml).
+pub(crate) fn copy_from<T: Copy>(dst: &mut [T], src: &[T]) -> Option<()> {
+    (dst.len() == src.len()).then(|| dst.copy_from_slice(src))
+}
+
 /// A row identity, never recycled within one parser's lifetime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RowId(pub(crate) u64);
@@ -154,5 +163,18 @@ impl<'a> Window<'a> {
             }
         }
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn copies_happen_only_between_slices_of_one_length() {
+        let mut cells = [0u8; 4];
+        assert_eq!(super::copy_from(&mut cells, &[1, 2, 3, 4]), Some(()));
+        assert_eq!(cells, [1, 2, 3, 4]);
+        assert_eq!(super::copy_from(&mut cells, &[9, 9]), None);
+        assert_eq!(super::copy_from(&mut cells[..2], &[9, 9, 9]), None);
+        assert_eq!(cells, [1, 2, 3, 4]);
     }
 }

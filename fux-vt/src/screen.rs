@@ -740,13 +740,13 @@ impl Screen {
                         }
                         count
                     } else {
-                        if rest.len() > parts.len() {
+                        // All of them, if they fit.
+                        let Some(()) = parts
+                            .get_mut(..rest.len())
+                            .and_then(|start| crate::copy_from(start, rest))
+                        else {
                             continue;
-                        }
-                        // All of them: `rest` fits, as checked above.
-                        for (dst, src) in parts.iter_mut().zip(rest) {
-                            *dst = *src;
-                        }
+                        };
                         rest.len()
                     };
                     let colour = match parts.get(..count) {
