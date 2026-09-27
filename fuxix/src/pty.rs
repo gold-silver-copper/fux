@@ -262,9 +262,7 @@ fn slave_name(master: impl AsFd) -> crate::Result<PathBuf> {
         )
     };
     if error != 0 {
-        return Err(
-            Errno::from_io_error(&std::io::Error::from_raw_os_error(error)).unwrap_or(Errno::INVAL),
-        );
+        return Err(Errno::from_raw(error));
     }
     Ok(path(&buffer))
 }
