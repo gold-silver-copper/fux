@@ -246,6 +246,17 @@ impl Screen {
             .filter_map(|i| self.grid().row_at(i))
             .filter(move |r| full || r.version > mark.0)
     }
+    /// The live rows changed since `mark`, each with its place on the screen
+    /// (0 at the top), top to bottom; every live row after a full refresh.
+    /// Only the screen's rows are read, however much history there is: the
+    /// live rows `dirty_rows_since` yields, without walking the history.
+    pub fn dirty_live_rows_since(&self, mark: Mark) -> impl Iterator<Item = (u16, Row<'_>)> {
+        let full = self.full_refresh_since(mark);
+        let grid = self.grid();
+        (0..grid.rows.get())
+            .filter_map(move |y| grid.live_row(y).map(|row| (y, row)))
+            .filter(move |(_, row)| full || row.version > mark.0)
+    }
     /// Retained allocation in cells, for capacity/plateau diagnostics.
     pub fn storage_cells(&self) -> usize {
         // Each is a Vec's capacity, far below the limit of a usize.

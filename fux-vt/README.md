@@ -151,7 +151,9 @@ Change marks are non-destructive: row versions plus a structural generation
 support independent readers. Structural changes (scroll, resize, reset,
 eviction, buffer switch) force safe window refresh. Cursor/mode changes are
 observable even without cell changes. Stale/exhausted marks must never hide
-an update. Row caching in fux uses identities/versions, not whole-screen
+an update. `dirty_rows_since` walks every retained row; a reader of the
+visible screen alone uses `dirty_live_rows_since`, which yields the same live
+rows with their places on the screen and reads only the screen's rows. Row caching in fux uses identities/versions, not whole-screen
 revision/width snapshots, and full frames still contain unchanged rows.
 
 ## Verification lifecycle

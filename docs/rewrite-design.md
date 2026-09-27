@@ -51,11 +51,14 @@ tree, a socket and a render loop.
 **Stays:** `fux-vt`, published as 0.1.1, then 0.1.2 with the same API and no
 panicking calls, then 0.1.3 with the same API again, then 0.1.4, which adds
 `Screen::focus_reporting` and `Screen::cursor_shape` so that fux reads a
-pane's output once, then 0.1.5 with the same API, replying and starting its
-screens again without allocating. It is the emulator, with no dependency but
-`unicode-width`, and koh depends on it. A fux-vt change is allowed as a bug
-fix with a failing test, or as a change inside it or an addition to its API
-that makes fux faster or its code simpler. Either must keep every item koh uses (`Parser`,
+pane's output once, then 0.1.5, which replies and starts its screens again
+without allocating, changes a row's version only when an edit changes the
+row, and adds `Screen::dirty_live_rows_since` for readers of the visible
+screen alone. It is the emulator, with no dependency but `unicode-width`,
+and koh depends on it. A fux-vt change is allowed as a bug fix with a
+failing test, or as a change inside it or an addition to its API that makes
+fux or koh faster, or fux's code simpler. Either must keep every item koh
+uses (`Parser`,
 `Options`, `Event`, `Sink`, `Screen`, `Cell`, `Color`, the mouse enums,
 `Error`, and their meanings), and is checked against koh in a throwaway
 clone. The branch
