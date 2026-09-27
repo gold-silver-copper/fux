@@ -29,13 +29,17 @@ pub fn set_nonblocking(fd: impl AsFd, nonblocking: bool) -> Result<()> {
     let raw = fd.as_fd().as_raw_fd();
     // SAFETY: F_GETFL takes no argument and touches no memory.
     let flags = check(unsafe { libc::fcntl(raw, libc::F_GETFL) })?;
-    let flags = if nonblocking {
+    let wanted = if nonblocking {
         flags | libc::O_NONBLOCK
     } else {
         flags & !libc::O_NONBLOCK
     };
+    // Already as asked: nothing to set.
+    if wanted == flags {
+        return Ok(());
+    }
     // SAFETY: F_SETFL takes an int and touches no memory.
-    check(unsafe { libc::fcntl(raw, libc::F_SETFL, flags) }).map(drop)
+    check(unsafe { libc::fcntl(raw, libc::F_SETFL, wanted) }).map(drop)
 }
 
 /// Closes `fd` when this process runs another program.
@@ -134,6 +138,13 @@ mod tests {
         assert_eq!(buffer.get(..5), Some(&b"hello"[..]));
         set_nonblocking(&reader, true).map_err(|e| e.to_string())?;
         assert_eq!(read(&reader, &mut buffer), Err(Errno::AGAIN));
+        // Asked again, it is already so; asked the other way, it is not.
+        set_nonblocking(&reader, true).map_err(|e| e.to_string())?;
+        assert_eq!(read(&reader, &mut buffer), Err(Errno::AGAIN));
+        set_nonblocking(&reader, false).map_err(|e| e.to_string())?;
+        // SAFETY: F_GETFL on a valid descriptor touches no memory.
+        let flags = unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_GETFL) };
+        assert!(flags >= 0 && flags & libc::O_NONBLOCK == 0);
         // Not "and 0 once the writer is dropped": on macOS std makes a pipe
         // close-on-exec a step after it makes it, and a child another test
         // spawns in between keeps the writer open.

@@ -12,6 +12,8 @@ pub const PROTOCOL: u32 = 1;
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
 pub const MAX_PAYLOAD: usize = MAX_FRAME - 1;
+/// The kind byte of an `Input` frame.
+const INPUT: u8 = 3;
 
 /// Why bytes are not a frame, or a frame cannot be sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -152,7 +154,7 @@ impl Frame {
         match self {
             Frame::Hello { .. } => 1,
             Frame::Attach { .. } => 2,
-            Frame::Input(_) => 3,
+            Frame::Input(_) => INPUT,
             Frame::Resize { .. } => 4,
             Frame::Detach => 5,
             Frame::Command { .. } => 6,
@@ -256,7 +258,7 @@ pub fn encode_input(bytes: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
     // MAX_PAYLOAD.
     let length = u32::try_from(bytes.len().saturating_add(1)).unwrap_or(u32::MAX);
     out.extend_from_slice(&length.to_be_bytes());
-    out.push(Frame::Input(Vec::new()).kind());
+    out.push(INPUT);
     out.extend_from_slice(bytes);
     Ok(())
 }
@@ -340,7 +342,7 @@ fn decode_frame(kind: u8, payload: &[u8]) -> Result<Frame, Error> {
             cols: r.u16()?,
             workspace: r.option()?,
         },
-        3 => return Ok(Frame::Input(payload.to_vec())),
+        INPUT => return Ok(Frame::Input(payload.to_vec())),
         4 => Frame::Resize {
             rows: r.u16()?,
             cols: r.u16()?,
@@ -390,9 +392,24 @@ impl<'a> Raw<'a> {
         (self.kind == Stream::Paint.kind()).then_some(self.payload)
     }
 
+    /// An input's bytes, as they are, without copying them.
+    pub fn input(&self) -> Option<&'a [u8]> {
+        (self.kind == INPUT).then_some(self.payload)
+    }
+
     pub fn decode(&self) -> Result<Frame, Error> {
         decode_frame(self.kind, self.payload)
     }
+}
+
+/// What `Decoder::check` found.
+pub struct Checked {
+    /// Where, in what is not yet taken, the last whole frame checked ends.
+    pub end: usize,
+    /// How many whole frames were found good.
+    pub frames: usize,
+    /// The error of the bad frame after them, if one is.
+    pub error: Option<Error>,
 }
 
 /// Accumulates bytes from a stream and yields whole frames. A frame header
@@ -445,6 +462,51 @@ impl Decoder {
             kind: *kind,
             payload,
         }))
+    }
+
+    /// Checks the whole frames held from byte `from` of what is not yet
+    /// taken, as `frame` would decode them, taking nothing: where the last
+    /// whole one ends, how many there are, and the first bad one's error,
+    /// where the check stops. An input's payload is any bytes, so it is
+    /// not copied to be checked.
+    pub fn check(&self, from: usize) -> Checked {
+        let mut checked = Checked {
+            end: from,
+            frames: 0,
+            error: None,
+        };
+        let pending = self.buffer.as_slice();
+        while let Some(rest) = pending.get(checked.end..) {
+            let Some(header) = rest.first_chunk::<4>() else {
+                break;
+            };
+            let length = u32::from_be_bytes(*header) as usize;
+            if length == 0 {
+                checked.error = Some(Error::Empty);
+                break;
+            }
+            if length > MAX_FRAME {
+                checked.error = Some(Error::Oversized {
+                    bytes: length,
+                    limit: MAX_FRAME,
+                });
+                break;
+            }
+            // At most `4 + MAX_FRAME`.
+            let whole = length.saturating_add(4);
+            let Some((&kind, payload)) = rest.get(4..whole).and_then(<[u8]>::split_first) else {
+                break;
+            };
+            if kind != INPUT
+                && let Err(error) = decode_frame(kind, payload)
+            {
+                checked.error = Some(error);
+                break;
+            }
+            checked.frames = checked.frames.saturating_add(1);
+            checked.end = checked.end.saturating_add(whole);
+        }
+        checked
     }
 
     /// Bytes held for a frame not yet complete.

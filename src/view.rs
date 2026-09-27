@@ -4,7 +4,7 @@ use crate::copy::Copy;
 use crate::decode::Decoder;
 use crate::keys::KeyPress;
 use crate::layout::PaneId;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notice {
@@ -85,10 +85,10 @@ pub struct View {
     pub cols: u16,
     pub workspace: WsId,
     /// Per workspace, the selected tab.
-    pub tab_of: HashMap<WsId, TabId>,
+    pub tab_of: BTreeMap<WsId, TabId>,
     /// Per tab, the focused pane and the one focused before it.
-    pub focus_of: HashMap<TabId, PaneId>,
-    pub last_of: HashMap<TabId, PaneId>,
+    pub focus_of: BTreeMap<TabId, PaneId>,
+    pub last_of: BTreeMap<TabId, PaneId>,
     pub zoom: bool,
     pub mode: Mode,
     pub notice: Option<Notice>,
@@ -104,9 +104,9 @@ impl View {
             rows,
             cols,
             workspace,
-            tab_of: HashMap::new(),
-            focus_of: HashMap::new(),
-            last_of: HashMap::new(),
+            tab_of: BTreeMap::new(),
+            focus_of: BTreeMap::new(),
+            last_of: BTreeMap::new(),
             zoom: false,
             mode: Mode::Normal,
             notice: None,

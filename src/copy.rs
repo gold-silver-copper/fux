@@ -89,6 +89,9 @@ pub struct Copy {
     pub search: Option<Search>,
     /// A search being typed: its direction and text.
     pub typing: Option<(Seek, String)>,
+    /// The screen as it was when the rows copy mode holds were last found
+    /// still there; forgotten when a key moves it.
+    pub held_at: Option<fux_vt::Mark>,
 }
 
 // ------------------------------------------------------------- positions
@@ -579,6 +582,7 @@ pub fn enter(session: &mut Session, client: ClientId) -> Result<String, Error> {
         selection: None,
         search: None,
         typing: None,
+        held_at: None,
     };
     let view = session.views.get_mut(&client).ok_or(Error::NoClient)?;
     view.mode = Mode::Copy(Box::new(copy));
@@ -624,6 +628,8 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
     let Mode::Copy(copy) = &mut view.mode else {
         return;
     };
+    // The key may move the rows it holds.
+    copy.held_at = None;
     let pane_id = copy.pane;
     let height = placement.rect(pane_id).map_or(1, |r| r.h.max(1));
     let Some(pane) = session.panes.get(&pane_id) else {

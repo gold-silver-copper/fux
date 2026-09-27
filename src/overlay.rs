@@ -2,7 +2,7 @@
 //! command prompt, rename prompts and confirmations. Each belongs to the client
 //! that opened it.
 use crate::command::{
-    AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, Pick, SwapWith, WsRef,
+    AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, Pick, Sibling, SwapWith, WsRef,
 };
 use crate::config::Binding;
 use crate::keys::{Direction, Key, KeyPress};
@@ -212,10 +212,10 @@ pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Res
     let name = session.name_of(&about);
     let title = format!("{} {} {name}", kind.name(), describe(&about));
     let target = Some(about.clone());
-    let reorder = |forward| Command::Reorder {
+    let reorder = |toward| Command::Reorder {
         kind,
         target: target.clone(),
-        forward,
+        toward,
     };
     let mut items = vec![
         item(
@@ -299,8 +299,8 @@ pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Res
         )),
     }
     items.extend([
-        item("reorder previous", reorder(false)),
-        item("reorder next", reorder(true)),
+        item("reorder previous", reorder(Sibling::Previous)),
+        item("reorder next", reorder(Sibling::Next)),
     ]);
     open_list(session, client, title, items, false, Some(about))
 }

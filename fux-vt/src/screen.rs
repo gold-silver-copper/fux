@@ -1,5 +1,5 @@
 use crate::{
-    Attributes, Cell, Color, Error, Mark, Row, RowId, Window, grid::Grid, parser::Parameters,
+    Attributes, Cell, Color, Error, Mark, Reply, Row, RowId, Window, grid::Grid, parser::Parameters,
 };
 use unicode_width::UnicodeWidthChar;
 
@@ -482,12 +482,26 @@ impl Screen {
             b'M' => self.reverse_index()?,
             b'c' => {
                 let (rows, cols) = self.size();
-                let history = self.primary.history_limit;
                 let mut next = self.next_id;
-                let primary = Grid::new(rows, cols, history, &mut next, self.version)?;
-                let alternate = Grid::new(rows, cols, 0, &mut next, self.version)?;
-                self.primary = primary;
-                self.alternate = alternate;
+                // Both grids start again: in the storage they have, if both
+                // hold only their live rows at this size, else afresh. Either
+                // way nothing changes unless both can.
+                let same = |g: &Grid| (g.rows.get(), g.cols.get()) == (rows, cols);
+                let recycle = [&self.primary, &self.alternate]
+                    .iter()
+                    .all(|g| g.recyclable() && same(g));
+                if recycle {
+                    let needed = u64::from(rows).saturating_mul(2);
+                    next.checked_add(needed).ok_or(Error::IdentityExhausted)?;
+                    self.primary.clear(&mut next, self.version)?;
+                    self.alternate.clear(&mut next, self.version)?;
+                } else {
+                    let history = self.primary.history_limit;
+                    let primary = Grid::new(rows, cols, history, &mut next, self.version)?;
+                    let alternate = Grid::new(rows, cols, 0, &mut next, self.version)?;
+                    self.primary = primary;
+                    self.alternate = alternate;
+                }
                 self.next_id = next;
                 self.alternate_active = false;
                 self.attributes = Attributes::default();
@@ -590,7 +604,7 @@ impl Screen {
         p: &Parameters,
         intermediates: &[u8],
         byte: u8,
-    ) -> Result<Option<Vec<u8>>, Error> {
+    ) -> Result<Option<Reply>, Error> {
         let private = intermediates == b"?";
         // DECSCUSR: its intermediate is a space.
         if intermediates == b" " && byte == b'q' {
@@ -698,15 +712,14 @@ impl Screen {
             }
             b'm' => self.sgr(p),
             b'n' => match p.first(0, 0) {
-                5 => return Ok(Some(b"\x1b[0n".to_vec())),
+                5 => return Ok(Some(Reply::of(format_args!("\x1b[0n")))),
                 6 => {
-                    return Ok(Some(
-                        format!("\x1b[{};{}R", u32::from(row) + 1, u32::from(col) + 1).into_bytes(),
-                    ));
+                    let (row, col) = (u32::from(row) + 1, u32::from(col) + 1);
+                    return Ok(Some(Reply::of(format_args!("\x1b[{row};{col}R"))));
                 }
                 _ => {}
             },
-            b'c' if p.first(0, 0) == 0 => return Ok(Some(b"\x1b[?1;2c".to_vec())),
+            b'c' if p.first(0, 0) == 0 => return Ok(Some(Reply::of(format_args!("\x1b[?1;2c")))),
             _ => {}
         }
         Ok(None)

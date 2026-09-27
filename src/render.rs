@@ -8,6 +8,7 @@ use crate::overlay::{self, ColumnRow};
 use crate::session::Session;
 use crate::view::{Mode, View};
 use fux_vt::{Attributes, Cell, Color};
+use std::borrow::Cow;
 use std::io::Write;
 use unicode_width::UnicodeWidthChar;
 
@@ -33,11 +34,14 @@ impl Grid {
             cursor_shape: 0,
         }
     }
-    /// Blanks the grid at `rows` by `cols`, resizing its cells only if the
-    /// size changed: a grid composed into again allocates nothing.
-    fn reset(&mut self, rows: u16, cols: u16) {
+    /// Makes the grid `rows` by `cols`, resizing its cells only if the size
+    /// changed, so that a grid composed into again allocates nothing; and
+    /// blanks it if `blank`, as a resized grid is anyway.
+    fn reset(&mut self, rows: u16, cols: u16, blank: bool) {
         if (self.rows, self.cols) == (rows, cols) {
-            self.cells.fill(Cell::default());
+            if blank {
+                self.cells.fill(Cell::default());
+            }
         } else {
             self.rows = rows;
             self.cols = cols;
@@ -86,6 +90,16 @@ impl Grid {
         let slots = self.cells.iter_mut().skip(start).take(room);
         for (slot, cell) in slots.zip(cells) {
             *slot = *cell;
+        }
+    }
+    /// Blanks row `y` from column `from` to `to`, clipped at the grid's edge.
+    fn blank(&mut self, y: u16, from: u16, to: u16) {
+        let Some(start) = self.index(y, from) else {
+            return;
+        };
+        let count = usize::from(to.min(self.cols).saturating_sub(from));
+        for slot in self.cells.iter_mut().skip(start).take(count) {
+            *slot = Cell::default();
         }
     }
     /// Sets a cell, keeping wide glyphs whole: overwriting either half of
@@ -194,14 +208,15 @@ pub fn width(text: &str) -> u16 {
         .min(4096)
 }
 
-/// Cuts `text` to `cols` cells, with an ellipsis when cut.
-pub fn fit(text: &str, cols: u16) -> String {
+/// Cuts `text` to `cols` cells, with an ellipsis when cut; as it is, if it
+/// fits.
+pub fn fit(text: &str, cols: u16) -> Cow<'_, str> {
     if width(text) <= cols {
-        return text.to_owned();
+        return Cow::Borrowed(text);
     }
     // Room for the text, less a cell for the ellipsis.
     let Some(mut room) = cols.checked_sub(1) else {
-        return String::new();
+        return Cow::Borrowed("");
     };
     let mut out = String::new();
     for c in text.chars().filter(|c| !c.is_control()) {
@@ -212,7 +227,7 @@ pub fn fit(text: &str, cols: u16) -> String {
         out.push(c);
     }
     out.push('…');
-    out
+    Cow::Owned(out)
 }
 
 /// The client's screen as it should look now, in a grid of its own.
@@ -233,10 +248,21 @@ pub fn compose_into(
     let Some(view) = session.views.get(&client) else {
         return false;
     };
-    grid.reset(view.rows, view.cols);
     let area = Session::pane_area(view);
     session.placement_into(view, placement);
     let placement = &*placement;
+    // The panes and separators, which never overlap, cover the pane area
+    // unless a split has no room for even its first child; the bar covers
+    // its row. Covered, every cell is written below, and the grid needs no
+    // blanking first.
+    let covered = placement
+        .panes
+        .iter()
+        .map(|(_, r)| u32::from(r.w).saturating_mul(u32::from(r.h)))
+        .chain(placement.separators.iter().map(|s| u32::from(s.len)))
+        .fold(0u32, u32::saturating_add);
+    let tiled = covered == u32::from(area.w).saturating_mul(u32::from(area.h));
+    grid.reset(view.rows, view.cols, !tiled);
     let focus = view.focus();
     // Copy mode and its positions, their rows found once for the paint.
     let copy = if let Mode::Copy(copy) = &view.mode {
@@ -247,6 +273,9 @@ pub fn compose_into(
     };
     for (id, rect) in &placement.panes {
         let Some(pane) = session.panes.get(id) else {
+            for (gy, gx) in (0..rect.h).filter_map(|y| rect.at(y, 0)).filter(|_| tiled) {
+                grid.blank(gy, gx, gx.saturating_add(rect.w));
+            }
             continue;
         };
         let screen = pane.screen();
@@ -255,14 +284,29 @@ pub fn compose_into(
         let (rows, cols) = screen.size();
         let window = screen.window(offset, rows, cols);
         let width = rect.w.min(window.cols);
-        for y in 0..rect.h.min(window.rows) {
+        let screen_rows = rect.h.min(window.rows);
+        // What the pane's screen does not cover of its place is blank.
+        for (gy, gx) in (screen_rows..rect.h)
+            .filter_map(|y| rect.at(y, 0))
+            .filter(|_| tiled)
+        {
+            grid.blank(gy, gx, gx.saturating_add(rect.w));
+        }
+        for y in 0..screen_rows {
             // Past the largest position is off the grid anyway.
             let Some((gy, gx)) = rect.at(y, 0) else {
                 continue;
             };
-            // The pane's own row, well formed, goes onto blank cells whole.
+            // The pane's own row, well formed, goes whole onto cells that
+            // are blank, or are blanked after it.
             let cells = window.row(y).map_or(&[][..], |row| row.cells);
-            grid.put_row(gy, gx, cells.get(..usize::from(width)).unwrap_or(cells));
+            let cells = cells.get(..usize::from(width)).unwrap_or(cells);
+            grid.put_row(gy, gx, cells);
+            if tiled {
+                // At most `width`, which is at most the place's width.
+                let end = u16::try_from(cells.len()).unwrap_or(width);
+                grid.blank(gy, gx.saturating_add(end), gx.saturating_add(rect.w));
+            }
             // A wide glyph in the window's last column is cut off, as
             // `Window::cell` has it.
             if let Some(last) = window.cols.checked_sub(1)
@@ -354,8 +398,8 @@ pub fn compose_into(
     match &view.mode {
         Mode::Column { path, selected } => column(grid, session, view, path, *selected),
         Mode::List(list) => {
-            let mut lines: Vec<(String, Attributes)> =
-                vec![(list.title.clone(), panel().with_bold(true))];
+            let mut lines: Vec<Line<'_>> =
+                vec![(list.title.as_str().into(), panel().with_bold(true))];
             let capacity = overlay::list_capacity(view.rows);
             // The window ends at the selection, or at the last item.
             let start = list
@@ -363,21 +407,21 @@ pub fn compose_into(
                 .saturating_sub(capacity.saturating_sub(1))
                 .min(list.items.len().saturating_sub(capacity));
             if start > 0 {
-                lines.push((format!("▲ {start} more"), panel().with_dim(true)));
+                lines.push((format!("▲ {start} more").into(), panel().with_dim(true)));
             }
             let ctx = crate::session::Ctx::client(view.id);
             for (i, item) in list.items.iter().enumerate().skip(start).take(capacity) {
                 let dim = !list.chooser && session.unavailable(&item.command, &ctx).is_some();
                 let marker = if item.current { "*" } else { " " };
                 let attrs = panel().with_inverse(i == list.selected).with_dim(dim);
-                lines.push((format!("{marker} {}", item.label), attrs));
+                lines.push((format!("{marker} {}", item.label).into(), attrs));
             }
             let below = list
                 .items
                 .len()
                 .saturating_sub(start.saturating_add(capacity));
             if below > 0 {
-                lines.push((format!("▼ {below} more"), panel().with_dim(true)));
+                lines.push((format!("▼ {below} more").into(), panel().with_dim(true)));
             }
             if list.items.is_empty() {
                 lines.push(("nothing to choose".into(), panel().with_dim(true)));
@@ -391,17 +435,17 @@ pub fn compose_into(
             surface(grid, view, &lines);
         }
         Mode::Prompt(prompt) => {
-            let lines = vec![
-                (prompt.title.clone(), panel().with_bold(true)),
-                (with_cursor(&prompt.text, prompt.cursor), panel()),
+            let lines: [Line<'_>; 3] = [
+                (prompt.title.as_str().into(), panel().with_bold(true)),
+                (with_cursor(&prompt.text, prompt.cursor).into(), panel()),
                 ("Enter accepts · Esc cancels".into(), panel().with_dim(true)),
             ];
             surface(grid, view, &lines);
             grid.cursor = None;
         }
         Mode::Confirm(confirm) => {
-            let lines = vec![
-                (confirm.question.clone(), panel().with_bold(true)),
+            let lines: [Line<'_>; 2] = [
+                (confirm.question.as_str().into(), panel().with_bold(true)),
                 ("y confirms · n or Esc cancels".into(), panel()),
             ];
             surface(grid, view, &lines);
@@ -498,11 +542,11 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
         } else {
             Color::Idx(240)
         };
-        grid.set(
-            y,
-            x,
-            Cell::new(glyph, false, style(color, Color::Default)).unwrap_or_default(),
-        );
+        // A separator's cell is no pane's, so no wide glyph has a half there
+        // to repair: it is only ever drawn over.
+        if let Some(cell) = grid.get_mut(y, x) {
+            *cell = Cell::new(glyph, false, style(color, Color::Default)).unwrap_or_default();
+        }
     };
     // Each line plain, in order, so the last one drawn at a cell is its.
     for s in lines {
@@ -556,9 +600,9 @@ fn bar(
     grid.fill(y, 0, view.cols, base);
     let copy_bar =
         copy.and_then(|(c, at)| session.panes.get(&c.pane).map(|p| c.bar(p.screen(), &at)));
-    let right = if let Some(notice) = &view.notice {
+    let right: Option<(Cow<'_, str>, Attributes)> = if let Some(notice) = &view.notice {
         Some((
-            notice.text.clone(),
+            notice.text.as_str().into(),
             if notice.error {
                 style(Color::Idx(9), GRAY_BG)
             } else {
@@ -566,13 +610,16 @@ fn bar(
             },
         ))
     } else if let Some(copy) = &copy_bar {
-        Some((copy.position.clone(), base))
+        Some((copy.position.as_str().into(), base))
     } else if let Mode::Column { path, .. } = &view.mode {
         let typed = std::iter::once(session.config.prefix.to_string())
             .chain(path.iter().map(|key| key.to_string()))
             .collect::<Vec<_>>()
             .join(" ");
-        Some((format!("{typed} …"), style(Color::Idx(0), Color::Idx(11))))
+        Some((
+            format!("{typed} …").into(),
+            style(Color::Idx(0), Color::Idx(11)),
+        ))
     } else if let Mode::Repeat { path } = &view.mode {
         // The mode's name and its keys: `RESIZE  h j k l · Esc`.
         let title = overlay::layer_title(session, path).unwrap_or_default();
@@ -586,7 +633,7 @@ fn bar(
             })
             .collect();
         Some((
-            format!("{}  {} · Esc", title.to_uppercase(), keys.join(" ")),
+            format!("{}  {} · Esc", title.to_uppercase(), keys.join(" ")).into(),
             style(Color::Idx(0), Color::Idx(11)).with_bold(true),
         ))
     } else {
@@ -595,7 +642,7 @@ fn bar(
             if view.zoom {
                 text.push_str(" [zoom]");
             }
-            (text, base)
+            (text.into(), base)
         })
     };
     // At most three quarters of the bar, and a gap before it. Exact: the
@@ -607,7 +654,7 @@ fn bar(
         .cols
         .saturating_sub(right_width.saturating_add(u16::from(right_width > 0)));
     let mut x = 0;
-    if let Some(copy) = copy_bar {
+    if let Some(copy) = &copy_bar {
         // Copy mode's keys replace the tabs.
         let badge = style(Color::Idx(0), Color::Idx(11)).with_bold(true);
         x = grid.text(
@@ -617,7 +664,7 @@ fn bar(
             badge,
             left_limit,
         );
-        for (key, label) in copy.hints {
+        for &(key, label) in &copy.hints {
             let hint = format!("  {key} {label}");
             if x.saturating_add(width(&hint)) > left_limit {
                 break;
@@ -657,8 +704,11 @@ fn bar(
     }
 }
 
+/// A line of a panel: its text, borrowed where it can be, and its style.
+type Line<'a> = (Cow<'a, str>, Attributes);
+
 /// A panel in the bottom-right corner, above the bar, sized to its lines.
-fn surface(grid: &mut Grid, view: &View, lines: &[(String, Attributes)]) {
+fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
     let available = view.rows.saturating_sub(1);
     if available == 0 || view.cols == 0 || lines.is_empty() {
         return;
@@ -708,14 +758,14 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
     let key_width = keys.iter().map(|k| width(k)).max().unwrap_or(0);
     let mut keys = keys.into_iter();
     let ctx = crate::session::Ctx::client(view.id);
-    let mut entries: Vec<(String, Attributes)> = Vec::new();
+    let mut entries: Vec<Line<'_>> = Vec::new();
     let mut index = 0usize;
     let mut selected_row = 0usize;
     for row in &rows {
         // What an entry does, and whether it cannot run now.
         let (text, more, dim) = match row {
             ColumnRow::Heading(group) => {
-                entries.push(((*group).to_owned(), panel().with_bold(true)));
+                entries.push(((*group).into(), panel().with_bold(true)));
                 continue;
             }
             ColumnRow::Binding { label, command, .. } => (
@@ -732,7 +782,7 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
             attrs = attrs.with_inverse(true);
             selected_row = entries.len();
         }
-        entries.push((format!("{:pad$}{key}  {text}{more}", ""), attrs));
+        entries.push((format!("{:pad$}{key}  {text}{more}", "").into(), attrs));
         // At most the number of rows.
         index = index.saturating_add(1);
     }
@@ -744,29 +794,29 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
         .max(1);
     // The rows scrolled off so the selection is the last shown, if any.
     let start = selected_row.saturating_add(1).saturating_sub(body_room);
-    let mut lines: Vec<(String, Attributes)> = Vec::new();
+    let mut lines: Vec<Line<'_>> = Vec::new();
     if heading {
         // Right after the prefix, every command; in a layer, its keys so far
         // and its title.
         let title = match overlay::layer_title(session, path) {
-            Some(title) if !path.is_empty() => format!(
+            Some(title) if !path.is_empty() => Cow::Owned(format!(
                 "{} {}: {title}",
                 session.config.prefix,
                 crate::config::keys_text(path)
-            ),
-            Some(_) | None => "Commands".to_owned(),
+            )),
+            Some(_) | None => Cow::Borrowed("Commands"),
         };
         lines.push((title, panel().with_bold(true)));
     }
     if start > 0 {
-        lines.push((format!("▲ {start} more"), panel().with_dim(true)));
+        lines.push((format!("▲ {start} more").into(), panel().with_dim(true)));
     }
     let below = entries
         .len()
         .saturating_sub(start.saturating_add(body_room));
     lines.extend(entries.into_iter().skip(start).take(body_room));
     if below > 0 {
-        lines.push((format!("▼ {below} more"), panel().with_dim(true)));
+        lines.push((format!("▼ {below} more").into(), panel().with_dim(true)));
     }
     if rows.is_empty() {
         lines.push(("no bindings".into(), panel().with_dim(true)));
