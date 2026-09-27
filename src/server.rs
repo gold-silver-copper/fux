@@ -3,7 +3,7 @@
 use crate::bytes::ByteQueue;
 use crate::command::ClientId;
 use crate::config::Config;
-use crate::layout::PaneId;
+use crate::layout::{PaneId, Placement};
 use crate::protocol::{Decoder, Frame, PROTOCOL, Role, Stream};
 use crate::render::{self, Grid};
 use crate::session::{Ctx, Outgoing, Session};
@@ -51,8 +51,9 @@ struct Conn {
     /// is a full one.
     painted: bool,
     /// The grid the next paint is composed into, then swapped with `shown`:
-    /// the two are reused by every paint.
+    /// the two are reused by every paint, as is the placement of its panes.
     spare: Grid,
+    placement: Placement,
     next_paint: Instant,
     /// Paints were skipped while its output was full: repaint all once drained.
     starved: bool,
@@ -399,7 +400,7 @@ impl Server {
             if !dirty || now < conn.next_paint {
                 continue;
             }
-            if !render::compose_into(&self.session, client, &mut conn.spare) {
+            if !render::compose_into(&self.session, client, &mut conn.spare, &mut conn.placement) {
                 continue;
             }
             self.paint_buffer.clear();
@@ -470,6 +471,7 @@ impl Server {
                         shown: Grid::new(0, 0),
                         painted: false,
                         spare: Grid::new(0, 0),
+                        placement: Placement::default(),
                         next_paint: Instant::now(),
                         starved: false,
                         closing: false,

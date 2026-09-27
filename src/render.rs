@@ -3,7 +3,7 @@
 //! send only the changed runs, inside synchronized output.
 use crate::command::ClientId;
 use crate::keys::KeyPress;
-use crate::layout::{Axis, PaneId, Rect, Separator};
+use crate::layout::{Axis, PaneId, Placement, Rect, Separator};
 use crate::overlay::{self, ColumnRow};
 use crate::session::Session;
 use crate::view::{Mode, View};
@@ -218,18 +218,25 @@ pub fn fit(text: &str, cols: u16) -> String {
 /// The client's screen as it should look now, in a grid of its own.
 pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
     let mut grid = Grid::new(0, 0);
-    compose_into(session, client, &mut grid).then_some(grid)
+    compose_into(session, client, &mut grid, &mut Placement::default()).then_some(grid)
 }
 
 /// Composes the client's screen as it should look now into `grid`, whatever
-/// it held; false if there is no such client.
-pub fn compose_into(session: &Session, client: ClientId, grid: &mut Grid) -> bool {
+/// it held, laying out its panes in `placement`; false if there is no such
+/// client. Neither allocates when used again.
+pub fn compose_into(
+    session: &Session,
+    client: ClientId,
+    grid: &mut Grid,
+    placement: &mut Placement,
+) -> bool {
     let Some(view) = session.views.get(&client) else {
         return false;
     };
     grid.reset(view.rows, view.cols);
     let area = Session::pane_area(view);
-    let placement = session.placement(view);
+    session.placement_into(view, placement);
+    let placement = &*placement;
     let focus = view.focus();
     // Copy mode and its positions, their rows found once for the paint.
     let copy = if let Mode::Copy(copy) = &view.mode {
@@ -277,7 +284,7 @@ pub fn compose_into(session: &Session, client: ClientId, grid: &mut Grid) -> boo
             }
         }
     }
-    separators(grid, &placement, focus);
+    separators(grid, placement, focus);
     if view
         .tab()
         .and_then(|t| session.tab(t))
@@ -423,7 +430,7 @@ fn panel() -> Attributes {
 
 /// Separator lines, with tees where one meets another; the ones beside the
 /// focused pane are highlighted.
-fn separators(grid: &mut Grid, placement: &crate::layout::Placement, focus: Option<PaneId>) {
+fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
     const UP: u8 = 1;
     const DOWN: u8 = 2;
     const LEFT: u8 = 4;
@@ -1106,7 +1113,7 @@ mod tests {
         assert!(fresh.cells.contains(&Cell::default()));
         // The previous screen, with its cursor and shape.
         let mut used = before;
-        assert!(compose_into(&s, c, &mut used));
+        assert!(compose_into(&s, c, &mut used, &mut Placement::default()));
         assert_eq!(used, fresh);
         // Grids of this size and others, full of text.
         for (rows, cols) in [(12, 50), (3, 7), (12, 49), (40, 200)] {
@@ -1122,7 +1129,7 @@ mod tests {
             }
             other.cursor = Some((1, 1));
             other.cursor_shape = 3;
-            assert!(compose_into(&s, c, &mut other));
+            assert!(compose_into(&s, c, &mut other, &mut Placement::default()));
             assert_eq!(other, fresh, "{rows}x{cols}");
         }
         Ok(())
