@@ -201,7 +201,7 @@ pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Res
         AnyRef::Workspace(r) => AnyRef::Workspace(WsRef::Id(session.resolve_ws(&r)?)),
         other @ (AnyRef::Pane(_) | AnyRef::Tab(_)) => other,
     };
-    let kind = kind_of(&about);
+    let kind = about.kind();
     let name = session.name_of(&about);
     let title = format!("{} {} {name}", kind.name(), describe(&about));
     let target = Some(about.clone());
@@ -441,7 +441,7 @@ pub fn open_pane_chooser(
 ) -> Result<String, Error> {
     let (_, tab) = session.locate(source).ok_or(Error::NotInTab)?;
     let mut items: Vec<Item> = Vec::new();
-    if let Some(root) = session.tab(tab).and_then(|t| t.root.as_ref()) {
+    if let Some(root) = session.root(tab) {
         root.for_each_pane(&mut |id| {
             let Some(p) = session.panes.get(&id).filter(|_| id != source) else {
                 return;
@@ -540,17 +540,13 @@ pub fn list_capacity(rows: u16) -> usize {
 /// A key while the command column is open.
 pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let prefix = session.config.prefix;
-    let Some((path, selected, rows)) = session.views.get(&client).and_then(|v| match &v.mode {
-        Mode::Column { path, selected } => Some((path.clone(), *selected, v.rows)),
-        Mode::Normal
-        | Mode::Repeat { .. }
-        | Mode::List(_)
-        | Mode::Prompt(_)
-        | Mode::Confirm(_)
-        | Mode::Copy(_) => None,
-    }) else {
+    let Some(view) = session.views.get(&client) else {
         return;
     };
+    let Mode::Column { path, selected } = &view.mode else {
+        return;
+    };
+    let (path, selected, rows) = (path.clone(), *selected, view.rows);
     let len = column_len(session, &path);
     let page = list_capacity(rows);
     let last = len.saturating_sub(1);
@@ -645,17 +641,10 @@ fn follow(session: &mut Session, client: ClientId, path: &[KeyPress], press: Key
 /// column; any other key leaves, not reaching the pane, and says so.
 pub fn repeat_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let prefix = session.config.prefix;
-    let Some(path) = session.views.get(&client).and_then(|v| match &v.mode {
-        Mode::Repeat { path } => Some(path.clone()),
-        Mode::Normal
-        | Mode::Column { .. }
-        | Mode::List(_)
-        | Mode::Prompt(_)
-        | Mode::Confirm(_)
-        | Mode::Copy(_) => None,
-    }) else {
+    let Some(Mode::Repeat { path }) = session.views.get(&client).map(|v| &v.mode) else {
         return;
     };
+    let path = path.clone();
     if press == prefix {
         set_mode(
             session,
@@ -760,7 +749,7 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
             {
                 run = Some(Command::RenamePrompt {
                     client: None,
-                    kind: kind_of(&subject),
+                    kind: subject.kind(),
                     target: Some(subject),
                 });
                 close = true;
@@ -774,7 +763,7 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
             {
                 run = Some(Command::ConfirmClose {
                     client: None,
-                    kind: kind_of(&subject),
+                    kind: subject.kind(),
                     target: Some(subject),
                 });
                 close = true;
@@ -947,15 +936,6 @@ pub fn confirm_key(session: &mut Session, client: ClientId, press: KeyPress) {
             view.mode = Mode::Normal;
         }
         _ => {}
-    }
-}
-
-/// The kind a target is.
-pub fn kind_of(target: &AnyRef) -> Kind {
-    match target {
-        AnyRef::Pane(_) => Kind::Pane,
-        AnyRef::Tab(_) => Kind::Tab,
-        AnyRef::Workspace(_) => Kind::Workspace,
     }
 }
 

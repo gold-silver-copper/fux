@@ -235,17 +235,11 @@ pub fn compose_into(session: &Session, client: ClientId, grid: &mut Grid) -> boo
     let placement = session.placement(view);
     let focus = view.focus();
     // Copy mode and its positions, their rows found once for the paint.
-    let copy = match &view.mode {
-        Mode::Copy(copy) => session
-            .panes
-            .get(&copy.pane)
-            .map(|pane| (copy.as_ref(), copy.resolve(pane.screen()))),
-        Mode::Normal
-        | Mode::Column { .. }
-        | Mode::Repeat { .. }
-        | Mode::List(_)
-        | Mode::Prompt(_)
-        | Mode::Confirm(_) => None,
+    let copy = if let Mode::Copy(copy) = &view.mode {
+        let pane = session.panes.get(&copy.pane);
+        pane.map(|pane| (copy.as_ref(), copy.resolve(pane.screen())))
+    } else {
+        None
     };
     for (id, rect) in &placement.panes {
         let Some(pane) = session.panes.get(id) else {
