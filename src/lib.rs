@@ -147,8 +147,8 @@ fn run(args: &[String]) -> Result<u8, String> {
         }
         Some(_) => {
             // Parsed here as well, so a usage error needs no server.
-            if let Err(command::Usage(message)) = command::parse(args) {
-                return usage_error(&message);
+            if let Err(usage) = command::parse(args) {
+                return usage_error(&usage.to_string());
             }
             let socket = socket::socket_path(None).map_err(|e| e.to_string())?;
             client::command(&socket, args)

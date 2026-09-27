@@ -1,7 +1,7 @@
 //! The server's state: workspaces, tabs, panes and the clients' views, and
 //! every command that changes them.
 use crate::command::{
-    self, AnyRef, ClientId, Command, Kind, MoveTo, Pick, SwapWith, TabId, Usage, WsId, WsRef,
+    self, AnyRef, ClientId, Command, Kind, MoveTo, Pick, SwapWith, TabId, WsId, WsRef,
 };
 use crate::config::Config;
 use crate::json::Json;
@@ -408,7 +408,7 @@ impl Session {
     ) -> Result<ClientId, String> {
         let ws = match workspace {
             Some(name) => {
-                self.resolve_ws(&command::parse_workspace(name).map_err(|Usage(e)| e)?)?
+                self.resolve_ws(&command::parse_workspace(name).map_err(|e| e.to_string())?)?
             }
             None => self
                 .workspaces
@@ -869,13 +869,13 @@ impl Session {
     pub fn run(&mut self, argv: &[String], ctx: &Ctx) -> Outcome {
         match command::parse(argv) {
             Ok(command) => self.run_command(&command, ctx),
-            Err(Usage(message)) => {
+            Err(usage) => {
                 self.touch();
                 self.settle();
                 Outcome {
                     status: 2,
                     stdout: String::new(),
-                    stderr: message,
+                    stderr: usage.to_string(),
                 }
             }
         }
