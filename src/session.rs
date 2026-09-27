@@ -89,7 +89,7 @@ pub struct Session {
     pub config: Config,
     pub config_path: Option<PathBuf>,
     /// Why the config file could not be used, until a reload succeeds.
-    pub config_error: Option<String>,
+    pub config_error: Option<crate::config::Error>,
     /// Paste buffers, newest first.
     pub buffers: VecDeque<String>,
     pub socket: PathBuf,
@@ -419,6 +419,7 @@ impl Session {
         let id = ClientId(advance(&mut self.next_client, "client")?);
         let mut view = View::new(id, rows.clamp(1, 4096), cols.clamp(1, 4096), ws);
         if let Some(error) = &self.config_error {
+            let error = error.to_string();
             // The bar is narrow: the file's name, not its whole path, which
             // the server's log has.
             let shown = match &self.config_path {
@@ -428,7 +429,7 @@ impl Session {
                         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
                     error.replacen(&path.display().to_string(), &name, 1)
                 }
-                None => error.clone(),
+                None => error,
             };
             view.error(format!("config: {shown}"));
         }
@@ -1208,9 +1209,11 @@ impl Session {
                 let target = self.any_target(kind, target.as_ref(), ctx)?;
                 self.reorder(&target, forward).map(|()| String::new())
             }
-            Command::Set { argv } | Command::Bind { argv } | Command::Unbind { argv } => {
-                self.config.apply(argv).map(|()| String::new())
-            }
+            Command::Set { argv } | Command::Bind { argv } | Command::Unbind { argv } => self
+                .config
+                .apply(argv)
+                .map(|()| String::new())
+                .map_err(|e| e.to_string()),
             &Command::UnbindAll => {
                 self.config.bindings.clear();
                 Ok(String::new())

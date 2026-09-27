@@ -1,7 +1,7 @@
 //! The running configuration: options and key bindings, changed by `set`,
 //! `bind`, `unbind` and `unbind-all`, whether they come from the config file,
 //! the CLI or the command prompt.
-use crate::command::{self, Command};
+use crate::command::{self, Command, Usage};
 use crate::keys::KeyPress;
 use crate::words;
 use std::path::{Path, PathBuf};
@@ -25,14 +25,190 @@ pub struct Binding {
     pub repeat: bool,
 }
 
+/// Why `set`, `bind`, `unbind`, `unbind-all` or a config file is refused.
+#[derive(Debug)]
+pub enum Error {
+    /// A key after the prefix that is not a letter, in `command`.
+    NotALetter {
+        command: &'static str,
+        word: String,
+    },
+    Empty,
+    SetUsage,
+    NoGroupName,
+    BindUsage,
+    NoCommand {
+        keys: Vec<KeyPress>,
+    },
+    /// A binding whose command does not parse.
+    Unparsed {
+        keys: Vec<KeyPress>,
+        usage: Usage,
+    },
+    /// Keys that are a layer, of the bindings `layer`.
+    Layer {
+        keys: Vec<KeyPress>,
+        layer: Vec<Vec<KeyPress>>,
+    },
+    /// Keys that would start with a binding's keys, which run `command`.
+    Runs {
+        keys: Vec<KeyPress>,
+        command: Vec<String>,
+        new: Vec<KeyPress>,
+    },
+    UnbindUsage,
+    NotBound {
+        keys: Vec<KeyPress>,
+    },
+    UnbindAllUsage,
+    /// A command other than `set`, `bind`, `unbind` and `unbind-all`.
+    NotConfig {
+        command: String,
+    },
+    OneValue {
+        option: String,
+    },
+    NotANumber {
+        option: String,
+    },
+    TooLarge {
+        option: String,
+        max: usize,
+    },
+    Key(crate::keys::Error),
+    Words(words::Error),
+    NoProgram,
+    NotOnOff {
+        value: String,
+    },
+    NoBuffers,
+    UnknownOption {
+        option: String,
+    },
+    /// A config file that could not be read.
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    /// A line of a config file, and what is wrong with it.
+    Line {
+        path: PathBuf,
+        line: usize,
+        error: Box<Error>,
+    },
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::NotALetter { command, word } => write!(
+                f,
+                "{command}: {word:?} is not a letter: keys after the prefix are a–z, without modifiers"
+            ),
+            Error::Empty => f.write_str("an empty command"),
+            Error::SetUsage => f.write_str("usage: set OPTION VALUE"),
+            Error::NoGroupName => f.write_str("bind -g needs a group name"),
+            Error::BindUsage => f.write_str("usage: bind [-g GROUP] [-r] KEY… COMMAND…"),
+            Error::NoCommand { keys } => {
+                write!(f, "bind {}: no command given", keys_text(keys))
+            }
+            Error::Unparsed { keys, usage } => write!(f, "bind {}: {usage}", keys_text(keys)),
+            Error::Layer { keys, layer } => {
+                let layer: Vec<String> = layer.iter().map(|keys| keys_text(keys)).collect();
+                write!(
+                    f,
+                    "{} is a layer ({}); unbind it first",
+                    keys_text(keys),
+                    layer.join(", ")
+                )
+            }
+            Error::Runs { keys, command, new } => write!(
+                f,
+                "{} runs {}, so it cannot start {}; unbind it first",
+                keys_text(keys),
+                words::join(command),
+                keys_text(new)
+            ),
+            Error::UnbindUsage => f.write_str("usage: unbind KEY…"),
+            Error::NotBound { keys } => write!(f, "{} is not bound", keys_text(keys)),
+            Error::UnbindAllUsage => f.write_str("usage: unbind-all"),
+            Error::NotConfig { command } => write!(
+                f,
+                "{command} changes panes or layout, which a config file cannot do; \
+                 only set, bind, unbind and unbind-all are allowed there"
+            ),
+            Error::OneValue { option } => write!(f, "set {option} takes one value"),
+            Error::NotANumber { option } => write!(f, "set {option}: not a number"),
+            Error::TooLarge { option, max } => write!(f, "set {option}: at most {max}"),
+            Error::Key(error) => error.fmt(f),
+            Error::Words(error) => error.fmt(f),
+            Error::NoProgram => f.write_str("set shell needs a program"),
+            Error::NotOnOff { value } => write!(f, "set clipboard: {value:?} is not on or off"),
+            Error::NoBuffers => f.write_str("set buffers: at least 1"),
+            Error::UnknownOption { option } => write!(
+                f,
+                "unknown option {option}; options are prefix, shell, history-lines, clipboard, buffers"
+            ),
+            Error::Read { path, source } => write!(f, "{}: {source}", path.display()),
+            Error::Line { path, line, error } => {
+                write!(f, "{}:{line}: {error}", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Unparsed { usage, .. } => Some(usage),
+            Error::Key(error) => Some(error),
+            Error::Words(error) => Some(error),
+            Error::Read { source, .. } => Some(source),
+            Error::Line { error, .. } => Some(error.as_ref()),
+            Error::NotALetter { .. }
+            | Error::Empty
+            | Error::SetUsage
+            | Error::NoGroupName
+            | Error::BindUsage
+            | Error::NoCommand { .. }
+            | Error::Layer { .. }
+            | Error::Runs { .. }
+            | Error::UnbindUsage
+            | Error::NotBound { .. }
+            | Error::UnbindAllUsage
+            | Error::NotConfig { .. }
+            | Error::OneValue { .. }
+            | Error::NotANumber { .. }
+            | Error::TooLarge { .. }
+            | Error::NoProgram
+            | Error::NotOnOff { .. }
+            | Error::NoBuffers
+            | Error::UnknownOption { .. } => None,
+        }
+    }
+}
+
+impl From<crate::keys::Error> for Error {
+    fn from(error: crate::keys::Error) -> Error {
+        Error::Key(error)
+    }
+}
+
+impl From<words::Error> for Error {
+    fn from(error: words::Error) -> Error {
+        Error::Words(error)
+    }
+}
+
 /// A key after the prefix: one letter, either case, stored in lower case,
 /// as a key typed after the prefix is matched in lower case.
-fn letter(command: &str, word: &str) -> Result<KeyPress, String> {
+fn letter(command: &'static str, word: &str) -> Result<KeyPress, Error> {
     match word.chars().collect::<Vec<_>>().as_slice() {
         [c] if c.is_ascii_alphabetic() => Ok(KeyPress::char(c.to_ascii_lowercase())),
-        [_] | [] | [_, _, ..] => Err(format!(
-            "{command}: {word:?} is not a letter: keys after the prefix are a–z, without modifiers"
-        )),
+        [_] | [] | [_, _, ..] => Err(Error::NotALetter {
+            command,
+            word: word.to_owned(),
+        }),
     }
 }
 
@@ -199,11 +375,11 @@ impl Binding {
 
 impl Config {
     /// Applies `set`, `bind`, `unbind` or `unbind-all` given as words.
-    pub fn apply(&mut self, argv: &[String]) -> Result<(), String> {
-        let (name, rest) = argv.split_first().ok_or("an empty command")?;
+    pub fn apply(&mut self, argv: &[String]) -> Result<(), Error> {
+        let (name, rest) = argv.split_first().ok_or(Error::Empty)?;
         match name.as_str() {
             "set" => {
-                let (option, value) = rest.split_first().ok_or("usage: set OPTION VALUE")?;
+                let (option, value) = rest.split_first().ok_or(Error::SetUsage)?;
                 self.set(option, value)
             }
             "bind" => {
@@ -211,8 +387,7 @@ impl Config {
                 loop {
                     match rest.split_first() {
                         Some((flag, after)) if flag == "-g" => {
-                            let (name, after) =
-                                after.split_first().ok_or("bind -g needs a group name")?;
+                            let (name, after) = after.split_first().ok_or(Error::NoGroupName)?;
                             group = Some(name.clone());
                             rest = after;
                         }
@@ -225,21 +400,21 @@ impl Config {
                 }
                 // The keys: the first word, and the one-character words after
                 // it; no command's name is one character.
-                let (first, after) = rest
-                    .split_first()
-                    .ok_or("usage: bind [-g GROUP] [-r] KEY… COMMAND…")?;
+                let (first, after) = rest.split_first().ok_or(Error::BindUsage)?;
                 let more = after.iter().take_while(|w| w.chars().count() == 1).count();
                 let (more, command) = after.split_at_checked(more).unwrap_or((after, &[]));
                 let keys = std::iter::once(first)
                     .chain(more)
                     .map(|key| letter("bind", key))
-                    .collect::<Result<Vec<KeyPress>, String>>()?;
+                    .collect::<Result<Vec<KeyPress>, Error>>()?;
                 if command.is_empty() {
-                    return Err(format!("bind {}: no command given", keys_text(&keys)));
+                    return Err(Error::NoCommand { keys });
                 }
                 // Checked now, rather than each time its keys are typed.
-                let parsed = command::parse(command)
-                    .map_err(|usage| format!("bind {}: {usage}", keys_text(&keys)))?;
+                let parsed = match command::parse(command) {
+                    Ok(parsed) => parsed,
+                    Err(usage) => return Err(Error::Unparsed { keys, usage }),
+                };
                 self.bind(Binding {
                     keys,
                     command: command.to_vec(),
@@ -250,63 +425,60 @@ impl Config {
             }
             "unbind" => {
                 if rest.is_empty() {
-                    return Err("usage: unbind KEY…".into());
+                    return Err(Error::UnbindUsage);
                 }
                 let keys = rest
                     .iter()
                     .map(|key| letter("unbind", key))
-                    .collect::<Result<Vec<KeyPress>, String>>()?;
+                    .collect::<Result<Vec<KeyPress>, Error>>()?;
                 // A binding, or a whole layer.
                 let before = self.bindings.len();
                 self.bindings.retain(|b| !b.keys.starts_with(&keys));
                 if self.bindings.len() == before {
-                    return Err(format!("{} is not bound", keys_text(&keys)));
+                    return Err(Error::NotBound { keys });
                 }
                 Ok(())
             }
             "unbind-all" => {
                 if !rest.is_empty() {
-                    return Err("usage: unbind-all".into());
+                    return Err(Error::UnbindAllUsage);
                 }
                 self.bindings.clear();
                 Ok(())
             }
-            other => Err(format!(
-                "{other} changes panes or layout, which a config file cannot do; \
-                 only set, bind, unbind and unbind-all are allowed there"
-            )),
+            other => Err(Error::NotConfig {
+                command: other.to_owned(),
+            }),
         }
     }
 
     /// Adds a binding, replacing one of the same keys. Keys are a command
     /// or a layer, never both, so a binding that would make them both is
     /// refused.
-    fn bind(&mut self, binding: Binding) -> Result<(), String> {
+    fn bind(&mut self, binding: Binding) -> Result<(), Error> {
         let keys = &binding.keys;
-        let layer: Vec<String> = self
+        let layer: Vec<Vec<KeyPress>> = self
             .bindings
             .iter()
             .filter(|b| b.keys.len() > keys.len() && b.keys.starts_with(keys))
-            .map(|b| keys_text(&b.keys))
+            .map(|b| b.keys.clone())
             .collect();
         if !layer.is_empty() {
-            return Err(format!(
-                "{} is a layer ({}); unbind it first",
-                keys_text(keys),
-                layer.join(", ")
-            ));
+            return Err(Error::Layer {
+                keys: binding.keys,
+                layer,
+            });
         }
         if let Some(command) = self
             .bindings
             .iter()
             .find(|b| b.keys.len() < keys.len() && keys.starts_with(&b.keys))
         {
-            return Err(format!(
-                "{} runs {}, so it cannot start {}; unbind it first",
-                keys_text(&command.keys),
-                words::join(&command.command),
-                keys_text(keys)
-            ));
+            return Err(Error::Runs {
+                keys: command.keys.clone(),
+                command: command.command.clone(),
+                new: binding.keys,
+            });
         }
         match self.bindings.iter_mut().find(|b| b.keys == *keys) {
             Some(existing) => *existing = binding,
@@ -315,35 +487,37 @@ impl Config {
         Ok(())
     }
 
-    fn set(&mut self, option: &str, value: &[String]) -> Result<(), String> {
+    fn set(&mut self, option: &str, value: &[String]) -> Result<(), Error> {
+        let option_name = || option.to_owned();
         let one = || match value {
             [single] => Ok(single.as_str()),
-            _ => Err(format!("set {option} takes one value")),
+            _ => Err(Error::OneValue {
+                option: option_name(),
+            }),
         };
-        let number = |max: usize| -> Result<usize, String> {
-            let n: usize = one()?
-                .parse()
-                .map_err(|_| format!("set {option}: not a number"))?;
+        let number = |max: usize| -> Result<usize, Error> {
+            let n: usize = one()?.parse().map_err(|_| Error::NotANumber {
+                option: option_name(),
+            })?;
             if n > max {
-                return Err(format!("set {option}: at most {max}"));
+                return Err(Error::TooLarge {
+                    option: option_name(),
+                    max,
+                });
             }
             Ok(n)
         };
         match option {
-            "prefix" => {
-                self.prefix = one()?
-                    .parse()
-                    .map_err(|e: crate::keys::Error| e.to_string())?
-            }
+            "prefix" => self.prefix = one()?.parse()?,
             "shell" => {
                 // `set shell /bin/zsh -l` and `set shell '/bin/zsh -l'` alike.
                 let argv = if let [single] = value {
-                    words::split(single).map_err(|e| e.to_string())?
+                    words::split(single)?
                 } else {
                     value.to_vec()
                 };
                 if argv.first().is_none_or(|p| p.is_empty()) {
-                    return Err("set shell needs a program".into());
+                    return Err(Error::NoProgram);
                 }
                 self.shell = argv;
             }
@@ -352,20 +526,24 @@ impl Config {
                 self.clipboard = match one()? {
                     "on" | "write-only" => true,
                     "off" => false,
-                    other => return Err(format!("set clipboard: {other:?} is not on or off")),
+                    other => {
+                        return Err(Error::NotOnOff {
+                            value: other.to_owned(),
+                        });
+                    }
                 }
             }
             "buffers" => {
                 let n = number(MAX_BUFFERS)?;
                 if n == 0 {
-                    return Err("set buffers: at least 1".into());
+                    return Err(Error::NoBuffers);
                 }
                 self.buffers = n;
             }
             other => {
-                return Err(format!(
-                    "unknown option {other}; options are prefix, shell, history-lines, clipboard, buffers"
-                ));
+                return Err(Error::UnknownOption {
+                    option: other.to_owned(),
+                });
             }
         }
         Ok(())
@@ -373,17 +551,25 @@ impl Config {
 
     /// The configuration a file gives, applied line by line over the
     /// defaults. Any error names its file and line, and nothing applies.
-    pub fn from_file(path: &Path) -> Result<Config, String> {
+    pub fn from_file(path: &Path) -> Result<Config, Error> {
         let mut config = Config::default();
         let text = match read_bounded(path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(config),
-            Err(e) => return Err(format!("{}: {e}", path.display())),
+            Err(source) => {
+                return Err(Error::Read {
+                    path: path.to_owned(),
+                    source,
+                });
+            }
         };
         for (number, line) in text.lines().enumerate() {
-            let line_number = number.saturating_add(1);
-            let at = |e: String| format!("{}:{}: {e}", path.display(), line_number);
-            let argv = words::split(line).map_err(|e| at(e.to_string()))?;
+            let at = |error: Error| Error::Line {
+                path: path.to_owned(),
+                line: number.saturating_add(1),
+                error: Box::new(error),
+            };
+            let argv = words::split(line).map_err(|e| at(e.into()))?;
             if argv.is_empty() {
                 continue;
             }
@@ -464,7 +650,8 @@ mod tests {
     use super::*;
 
     fn apply(config: &mut Config, line: &str) -> Result<(), String> {
-        config.apply(&words::split(line).map_err(|e| e.to_string())?)
+        let argv = words::split(line).map_err(|e| e.to_string())?;
+        config.apply(&argv).map_err(|e| e.to_string())
     }
 
     #[test]
@@ -504,6 +691,32 @@ mod tests {
             "layout commands are refused"
         );
         assert!(apply(&mut c, "bind x").is_err());
+    }
+
+    /// What `bind` says tells its failures apart: keys that are a layer,
+    /// keys that are not letters, and a command that does not parse.
+    #[test]
+    fn bind_tells_a_layer_from_a_bad_key_and_a_bad_command() {
+        let mut c = Config::default();
+        let mut bind = |line: &str| c.apply(&words::split(line).unwrap_or_default());
+        assert!(matches!(bind("bind t zoom"), Err(Error::Layer { .. })));
+        assert!(matches!(bind("bind h u zoom"), Err(Error::Runs { .. })));
+        assert!(matches!(
+            bind("bind C-Left zoom"),
+            Err(Error::NotALetter {
+                command: "bind",
+                ..
+            })
+        ));
+        assert!(matches!(
+            bind("bind g nope"),
+            Err(Error::Unparsed {
+                usage: Usage::UnknownCommand(_),
+                ..
+            })
+        ));
+        assert!(matches!(bind("bind g"), Err(Error::NoCommand { .. })));
+        assert!(bind("bind g zoom").is_ok());
     }
 
     #[test]
@@ -593,7 +806,10 @@ mod tests {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join("fux.conf");
         std::fs::write(&path, "set prefix C-a\nbind g nope\n").map_err(|e| e.to_string())?;
-        let error = Config::from_file(&path).err().unwrap_or_default();
+        let error = Config::from_file(&path)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
         assert!(
             error.ends_with(":2: bind g: unknown command \"nope\"; `fux help` lists commands"),
             "{error}"
@@ -634,7 +850,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_applies_whole_or_names_its_bad_line() -> Result<(), String> {
+    fn a_file_applies_whole_or_names_its_bad_line() -> Result<(), Box<dyn std::error::Error>> {
         let dir = std::env::temp_dir().join(format!("fux-config-{}", std::process::id()));
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join("fux.conf");
@@ -647,15 +863,17 @@ mod tests {
         assert_eq!(config.prefix.to_string(), "C-a");
         assert!(config.bindings.iter().any(|b| keys_text(&b.keys) == "q"));
         std::fs::write(&path, "set prefix C-a\nset prefix Nope\n").map_err(|e| e.to_string())?;
-        let error = Config::from_file(&path).err().unwrap_or_default();
+        let error = Config::from_file(&path);
+        assert!(matches!(
+            &error,
+            Err(Error::Line { line: 2, error, .. }) if matches!(error.as_ref(), Error::Key(_))
+        ));
+        let error = error.err().map(|e| e.to_string()).unwrap_or_default();
         assert!(
             error.ends_with(":2: unknown key \"Nope\"; `fux list-keys` lists them"),
             "{error}"
         );
-        assert_eq!(
-            Config::from_file(&dir.join("missing")),
-            Ok(Config::default())
-        );
+        assert!(Config::from_file(&dir.join("missing")).is_ok_and(|c| c == Config::default()));
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
