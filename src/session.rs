@@ -563,6 +563,7 @@ impl Session {
                     self.panes
                         .get(&copy.pane)
                         .and_then(|p| copy.check(p.screen()).err())
+                        .map(|e| e.to_string())
                 }
             }
             Mode::List(list) => list
@@ -1367,7 +1368,7 @@ impl Session {
             }
             &Command::CopyMode { client } => {
                 let client = self.client_target(client, ctx)?;
-                crate::copy::enter(self, client)
+                crate::copy::enter(self, client).map_err(|e| e.to_string())
             }
         }
     }
