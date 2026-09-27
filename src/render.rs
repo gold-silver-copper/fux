@@ -60,6 +60,34 @@ impl Grid {
     pub fn get(&self, y: u16, x: u16) -> Option<&Cell> {
         self.index(y, x).and_then(|i| self.cells.get(i))
     }
+    fn get_mut(&mut self, y: u16, x: u16) -> Option<&mut Cell> {
+        self.index(y, x).and_then(|i| self.cells.get_mut(i))
+    }
+    /// The cells of row `y`; none past the last row.
+    pub fn row(&self, y: u16) -> &[Cell] {
+        if y >= self.rows {
+            return &[];
+        }
+        let cols = usize::from(self.cols);
+        // Exact: a u16 by a u16 fits even a 32-bit usize.
+        let start = usize::from(y).saturating_mul(cols);
+        self.cells
+            .get(start..start.saturating_add(cols))
+            .unwrap_or_default()
+    }
+    /// Copies `cells` into row `y` from column `x`, clipped at the grid's
+    /// edge, without `set`'s repairs: for a run of one well-formed row onto
+    /// blank cells, which keeps its wide glyphs whole by itself.
+    fn put_row(&mut self, y: u16, x: u16, cells: &[Cell]) {
+        let Some(start) = self.index(y, x) else {
+            return;
+        };
+        let room = usize::from(self.cols.saturating_sub(x));
+        let slots = self.cells.iter_mut().skip(start).take(room);
+        for (slot, cell) in slots.zip(cells) {
+            *slot = *cell;
+        }
+    }
     /// Sets a cell, keeping wide glyphs whole: overwriting either half of
     /// one blanks the other, as a terminal would.
     fn set(&mut self, y: u16, x: u16, cell: Cell) {
@@ -228,25 +256,38 @@ pub fn compose_into(session: &Session, client: ClientId, grid: &mut Grid) -> boo
         let offset = at.map_or(0, |at| at.offset(screen));
         let (rows, cols) = screen.size();
         let window = screen.window(offset, rows, cols);
+        let width = rect.w.min(window.cols);
         for y in 0..rect.h.min(window.rows) {
-            for x in 0..rect.w.min(window.cols) {
-                let mut cell = window.cell(y, x).copied().unwrap_or_default();
-                if at.is_some_and(|at| at.selected(y, x)) {
+            // Past the largest position is off the grid anyway.
+            let Some((gy, gx)) = rect.at(y, 0) else {
+                continue;
+            };
+            // The pane's own row, well formed, goes onto blank cells whole.
+            let cells = window.row(y).map_or(&[][..], |row| row.cells);
+            grid.put_row(gy, gx, cells.get(..usize::from(width)).unwrap_or(cells));
+            // A wide glyph in the window's last column is cut off, as
+            // `Window::cell` has it.
+            if let Some(last) = window.cols.checked_sub(1)
+                && last < width
+                && cells.get(usize::from(last)).is_some_and(Cell::is_wide)
+                && let Some(cell) = gx.checked_add(last).and_then(|x| grid.get_mut(gy, x))
+            {
+                *cell = Cell::default();
+            }
+            let Some(at) = at else { continue };
+            for x in 0..width {
+                if at.selected(y, x)
+                    && let Some(cell) = gx.checked_add(x).and_then(|x| grid.get_mut(gy, x))
+                    && !cell.is_wide_continuation()
+                {
                     let attrs = cell.attributes();
                     let text = if cell.has_contents() {
                         cell.contents()
                     } else {
                         " "
                     };
-                    if !cell.is_wide_continuation() {
-                        cell =
-                            Cell::new(text, cell.is_wide(), attrs.with_inverse(!attrs.inverse()))
-                                .unwrap_or(cell);
-                    }
-                }
-                // Past the largest position is off the grid anyway.
-                if let Some((gy, gx)) = rect.at(y, x) {
-                    grid.set(gy, gx, cell);
+                    *cell = Cell::new(text, cell.is_wide(), attrs.with_inverse(!attrs.inverse()))
+                        .unwrap_or(*cell);
                 }
             }
         }
@@ -817,9 +858,17 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
     }
     let mut current: Option<Attributes> = None;
     for y in 0..new.rows {
+        let row = new.row(y);
+        // What the client shows of the row, unless it is painted whole.
+        let shown = old.filter(|_| !full).map(|o| o.row(y));
+        // An unchanged row costs this one comparison.
+        if shown == Some(row) {
+            continue;
+        }
+        let cell = |x: u16| row.get(usize::from(x));
+        let changed = |x: u16| shown.is_none_or(|o| o.get(usize::from(x)) != cell(x));
         let mut x = 0u16;
         while x < new.cols {
-            let changed = |x: u16| full || old.and_then(|o| o.get(y, x)) != new.get(y, x);
             // Moving right stops at the last column, where the loop ends.
             if !changed(x) {
                 x = x.saturating_add(1);
@@ -827,7 +876,7 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
             }
             // A run of changed cells, starting at a glyph's first half.
             let mut start = x;
-            if new.get(y, start).is_some_and(|c| c.is_wide_continuation()) {
+            if cell(start).is_some_and(|c| c.is_wide_continuation()) {
                 start = start.saturating_sub(1);
             }
             let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(start));
@@ -835,9 +884,9 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
             while cx < new.cols
                 && (cx == start
                     || changed(cx)
-                    || new.get(y, cx).is_some_and(|c| c.is_wide_continuation()))
+                    || cell(cx).is_some_and(|c| c.is_wide_continuation()))
             {
-                let Some(cell) = new.get(y, cx) else { break };
+                let Some(cell) = cell(cx) else { break };
                 if cell.is_wide_continuation() {
                     cx = cx.saturating_add(1);
                     continue;
@@ -1163,6 +1212,49 @@ mod tests {
         // Nothing changed: nothing but the envelope.
         let quiet = String::from_utf8_lossy(&paint(Some(&b), &b)).into_owned();
         assert_eq!(quiet, "\x1b[?2026h\x1b[?25l\x1b[0m\x1b[?2026l");
+        Ok(())
+    }
+
+    /// The rows a paint writes to: those it moves the cursor to, from 0.
+    fn rows_written(bytes: &[u8]) -> Vec<u16> {
+        let text = String::from_utf8_lossy(bytes);
+        let mut rows: Vec<u16> = text
+            .split("\x1b[")
+            .filter_map(|sequence| {
+                let (row, rest) = sequence.split_once(';')?;
+                let (col, _) = rest.split_once('H')?;
+                col.parse::<u16>().ok()?;
+                row.parse::<u16>().ok()?.checked_sub(1)
+            })
+            .collect();
+        rows.dedup();
+        rows
+    }
+
+    /// A row that did not change gets no bytes at all.
+    #[test]
+    fn only_the_rows_that_changed_are_painted() -> Result<(), String> {
+        let mut a = Grid::new(6, 20);
+        for y in 0..6 {
+            a.text(y, 0, &format!("row {y} 界 text"), Attributes::default(), 20);
+        }
+        let mut b = a.clone();
+        b.text(3, 5, "X", Attributes::default().with_bold(true), 20);
+        let diff = paint(Some(&a), &b);
+        assert_eq!(rows_written(&diff), [3]);
+        let mut parser = fux_vt::Parser::new(6, 20, 0).map_err(|e| e.to_string())?;
+        apply(&paint(None, &a), 6, 20, &mut parser);
+        assert_eq!(apply(&diff, 6, 20, &mut parser), grid_lines(&b));
+        // The first and last rows, and a wide glyph's second half.
+        let mut c = b.clone();
+        c.text(0, 19, "!", Attributes::default(), 20);
+        c.text(5, 7, "y", Attributes::default(), 20);
+        let diff = paint(Some(&b), &c);
+        assert_eq!(rows_written(&diff), [0, 5]);
+        assert_eq!(apply(&diff, 6, 20, &mut parser), grid_lines(&c));
+        // Nothing changed: no row is written; painted whole, every row is.
+        assert_eq!(rows_written(&paint(Some(&c), &c)), Vec::<u16>::new());
+        assert_eq!(rows_written(&paint(None, &c)), [0, 1, 2, 3, 4, 5]);
         Ok(())
     }
 
