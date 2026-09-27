@@ -1,8 +1,8 @@
 //! The server's state: workspaces, tabs, panes and the clients' views, and
 //! every command that changes them.
 use crate::command::{
-    self, AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, Pick, Sibling, SwapWith, TabId,
-    WsId, WsRef,
+    self, AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, PanePick, Pick, Sibling, SwapWith,
+    TabId, WsId, WsRef,
 };
 use crate::config::Config;
 use crate::json::Json;
@@ -119,8 +119,6 @@ pub enum Error {
     },
     /// Nothing runs in the pane but its shell.
     OnlyShell(PaneId),
-    SelectTabPick,
-    SelectWorkspacePick,
     // A name that cannot be given.
     EmptyName,
     ControlInName,
@@ -184,10 +182,6 @@ impl std::fmt::Display for Error {
                 write!(f, "no pane {} of {from}", direction.name())
             }
             Error::OnlyShell(pane) => write!(f, "nothing is running in {pane} but its shell"),
-            Error::SelectTabPick => f.write_str("select-tab takes -t, --next or --previous"),
-            Error::SelectWorkspacePick => {
-                f.write_str("select-workspace takes -t, --next or --previous")
-            }
             Error::EmptyName => f.write_str("a name cannot be empty"),
             Error::ControlInName => f.write_str("a name cannot contain control characters"),
             Error::LongName => f.write_str("a name is at most 256 bytes"),
@@ -249,8 +243,6 @@ impl std::error::Error for Error {
             | Error::NoBorder { .. }
             | Error::NoNeighbor { .. }
             | Error::OnlyShell(_)
-            | Error::SelectTabPick
-            | Error::SelectWorkspacePick
             | Error::EmptyName
             | Error::ControlInName
             | Error::LongName
@@ -1184,7 +1176,7 @@ impl Session {
         if matches!(
             action,
             Some(
-                ClientAction::SelectPane(Pick::Next | Pick::Previous | Pick::Last)
+                ClientAction::SelectPane(PanePick::Step(_) | PanePick::Last)
                     | ClientAction::ChoosePane { .. }
             )
         ) {
@@ -1194,11 +1186,11 @@ impl Session {
             }
             return alone(Kind::Pane, panes);
         }
-        if let Some(ClientAction::SelectTab(Pick::Next | Pick::Previous)) = action {
+        if let Some(ClientAction::SelectTab(Pick::Step(_))) = action {
             let tabs = view.and_then(|v| self.workspace(v.workspace));
             return alone(Kind::Tab, tabs.map_or(0, |w| w.tabs.len()));
         }
-        if let Some(ClientAction::SelectWorkspace(Pick::Next | Pick::Previous)) = action {
+        if let Some(ClientAction::SelectWorkspace(Pick::Step(_))) = action {
             return alone(Kind::Workspace, self.workspaces.len());
         }
         if let Command::PasteBuffer { index, .. } = command {
@@ -1768,13 +1760,13 @@ impl Session {
         }
     }
 
-    fn select_pane(&mut self, client: ClientId, pick: Pick<PaneId>) -> Result<String, Error> {
+    fn select_pane(&mut self, client: ClientId, pick: PanePick) -> Result<String, Error> {
         let view = self.views.get(&client).ok_or(Error::NoSuchClient)?;
         let tab = view.tab().ok_or(Error::NoCurrentTab)?;
         let panes = self.tab_panes(tab);
         let current = view.focus();
         let target = match pick {
-            Pick::Id(p) => {
+            PanePick::Id(p) => {
                 let (ws, tab) = self.locate(p).ok_or(Error::NoPane(p))?;
                 let view = self.view_mut(client)?;
                 view.workspace = ws;
@@ -1783,23 +1775,23 @@ impl Session {
                 view.zoom = false;
                 return Ok(String::new());
             }
-            Pick::Next | Pick::Previous => {
+            PanePick::Step(toward) => {
                 if panes.len() < 2 {
                     return Err(Error::OnlyOne(Kind::Pane));
                 }
                 let index = current
                     .and_then(|c| panes.iter().position(|p| *p == c))
                     .unwrap_or(0);
-                let next = round(index, panes.len(), matches!(pick, Pick::Next));
+                let next = round(index, panes.len(), toward);
                 panes.get(next).copied().ok_or(Error::NoCurrentPane)?
             }
-            Pick::Last => view
+            PanePick::Last => view
                 .last_of
                 .get(&tab)
                 .copied()
                 .filter(|p| panes.contains(p) && Some(*p) != current)
                 .ok_or(Error::NoLastPane)?,
-            Pick::Toward(direction) => {
+            PanePick::Toward(direction) => {
                 let placement = layout::place(
                     self.root(tab).ok_or(Error::TabEmpty)?,
                     Self::pane_area(view),
@@ -1825,7 +1817,7 @@ impl Session {
                 target_ws = self.tab_workspace(t).ok_or(Error::NoTab(t))?;
                 t
             }
-            Pick::Next | Pick::Previous => {
+            Pick::Step(toward) => {
                 if tabs.len() < 2 {
                     return Err(Error::OnlyOne(Kind::Tab));
                 }
@@ -1834,11 +1826,8 @@ impl Session {
                     .tab()
                     .and_then(|c| tabs.iter().position(|t| t.id == c))
                     .unwrap_or(0);
-                let next = round(index, tabs.len(), matches!(pick, Pick::Next));
+                let next = round(index, tabs.len(), toward);
                 tabs.get(next).map(|t| t.id).ok_or(Error::NoCurrentTab)?
-            }
-            Pick::Last | Pick::Toward(_) => {
-                return Err(Error::SelectTabPick);
             }
         };
         let view = self.view_mut(client)?;
@@ -1856,20 +1845,17 @@ impl Session {
             .workspace;
         let target = match pick {
             Pick::Id(r) => self.resolve_ws(r)?,
-            Pick::Next | Pick::Previous => {
+            Pick::Step(toward) => {
                 let len = self.workspaces.len();
                 if len < 2 {
                     return Err(Error::OnlyOne(Kind::Workspace));
                 }
                 let index = self.ws_index(current).unwrap_or(0);
-                let next = round(index, len, matches!(pick, Pick::Next));
+                let next = round(index, len, *toward);
                 self.workspaces
                     .get(next)
                     .map(|w| w.id)
                     .ok_or(Error::NoCurrentWorkspace)?
-            }
-            Pick::Last | Pick::Toward(_) => {
-                return Err(Error::SelectWorkspacePick);
             }
         };
         let view = self.view_mut(client)?;
@@ -2023,13 +2009,12 @@ fn advance(counter: &mut u32, what: &'static str) -> Result<u32, Error> {
 }
 
 /// The index after `index` among `len`, or before it, going round.
-fn round(index: usize, len: usize, forward: bool) -> usize {
-    if forward {
-        index.checked_add(1).filter(|next| *next < len).unwrap_or(0)
-    } else {
-        index
+fn round(index: usize, len: usize, toward: Sibling) -> usize {
+    match toward {
+        Sibling::Next => index.checked_add(1).filter(|next| *next < len).unwrap_or(0),
+        Sibling::Previous => index
             .checked_sub(1)
-            .unwrap_or_else(|| len.saturating_sub(1))
+            .unwrap_or_else(|| len.saturating_sub(1)),
     }
 }
 
