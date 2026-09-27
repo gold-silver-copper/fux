@@ -60,6 +60,13 @@ impl ByteQueue {
             self.taken = 0;
         }
     }
+    /// Takes `n` bytes from the front, or all there are, and returns them,
+    /// borrowed: their space is reclaimed by a later push.
+    pub fn take_front(&mut self, n: usize) -> &[u8] {
+        let start = self.taken;
+        self.taken = self.taken.saturating_add(n).min(self.bytes.len());
+        self.bytes.get(start..self.taken).unwrap_or_default()
+    }
     /// Everything not yet taken, leaving the queue empty.
     pub fn take_all(&mut self) -> Vec<u8> {
         let rest = self.as_slice().to_vec();
@@ -92,6 +99,14 @@ mod tests {
         queue.push(b"abc");
         assert_eq!(queue.take_all(), b"abc");
         assert!(queue.is_empty() && queue.as_slice().is_empty());
+        // Bytes taken from the front are lent until the next push, which
+        // reclaims their space once the queue is empty.
+        queue.push(b"frame");
+        assert_eq!(queue.take_front(3), b"fra");
+        assert_eq!(queue.take_front(9), b"me");
+        assert!(queue.is_empty());
+        queue.push(b"next");
+        assert_eq!((queue.as_slice(), queue.taken), (&b"next"[..], 0));
     }
 
     #[test]

@@ -6,6 +6,7 @@
 //! when no more bytes follow within `ESCAPE_DELAY`; the server calls
 //! `timeout` at the deadline `pending_since` reports. Mouse sequences, which a
 //! correctly configured outer terminal never sends, are dropped.
+use crate::bytes::ByteQueue;
 use crate::keys::{Direction, Key, KeyPress, Modifiers};
 use std::time::Duration;
 
@@ -27,7 +28,7 @@ pub enum Input {
 #[derive(Default)]
 pub struct Decoder {
     /// Bytes of an incomplete sequence or character.
-    pending: Vec<u8>,
+    pending: ByteQueue,
     /// Inside a bracketed paste: its bytes so far, capped one past the limit.
     paste: Option<Vec<u8>>,
     /// The paste's end marker, as far as it has arrived.
@@ -82,7 +83,7 @@ impl Decoder {
                 self.marker = usize::from(byte == 0x1b);
                 continue;
             }
-            self.pending.push(byte);
+            self.pending.push(&[byte]);
             self.drain(out, false);
         }
     }
@@ -96,20 +97,17 @@ impl Decoder {
 
     fn drain(&mut self, out: &mut Vec<Input>, flush: bool) {
         while !self.pending.is_empty() && self.paste.is_none() {
-            match decode(&self.pending, flush) {
+            match decode(self.pending.as_slice(), flush) {
                 Step::Done(n, input) => {
-                    // Nearly always the whole sequence; else what follows it.
-                    if n >= self.pending.len() {
-                        self.pending.clear();
-                    } else {
-                        self.pending = self.pending.get(n..).unwrap_or_default().to_vec();
-                    }
+                    // Nearly always the whole sequence; else what follows it
+                    // stays, without moving.
+                    self.pending.take(n);
                     if input.as_ref() == Some(&Input::Paste(String::new())) {
                         // The start marker: switch to paste mode.
                         self.paste = Some(Vec::new());
                         // Bytes after the marker in this batch are paste text.
                         let rest = std::mem::take(&mut self.pending);
-                        self.bytes(&rest, out);
+                        self.bytes(rest.as_slice(), out);
                         return;
                     }
                     if let Some(input) = input {

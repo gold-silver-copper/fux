@@ -154,15 +154,14 @@ pub const GROUPS: &[&str] = &["Panes", "Focus", "Tabs", "Workspaces", "Session"]
 
 impl Binding {
     /// The group this binding is listed under.
-    pub fn group(&self) -> String {
-        match &self.group {
-            Some(group) => group.clone(),
-            None => self.derived_group(),
-        }
+    pub fn group(&self) -> &str {
+        self.group
+            .as_deref()
+            .unwrap_or_else(|| self.derived_group())
     }
 
     /// The group its command belongs to, whatever `-g` said.
-    pub fn derived_group(&self) -> String {
+    pub fn derived_group(&self) -> &'static str {
         let name = self.command.first().map(String::as_str).unwrap_or("");
         let second = self.command.get(1).map(String::as_str);
         match (name, second) {
@@ -190,7 +189,6 @@ impl Binding {
             }
             _ => "Other",
         }
-        .to_owned()
     }
 }
 
@@ -474,7 +472,7 @@ mod tests {
         assert!(apply(&mut c, "set history-lines lots").is_err());
         assert!(apply(&mut c, "bind -g Tools y split -h -- htop").is_ok());
         let y = c.bindings.iter().find(|b| keys_text(&b.keys) == "y");
-        assert_eq!(y.map(|b| b.group()), Some("Tools".into()));
+        assert_eq!(y.map(|b| b.group()), Some("Tools"));
         assert_eq!(y.map(|b| b.command.len()), Some(4));
         assert!(apply(&mut c, "bind h kill-pane").is_ok());
         assert_eq!(
