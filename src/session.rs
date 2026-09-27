@@ -311,7 +311,7 @@ impl Session {
         let line = if cmd.is_empty() {
             None
         } else {
-            Some(crate::words::shell_line(cmd, fish)?)
+            Some(crate::words::shell_line(cmd, fish).map_err(|e| e.to_string())?)
         };
         let id = PaneId(self.next_pane);
         let mut next_pane = self.next_pane;
@@ -2004,7 +2004,8 @@ mod tests {
         s.start()?;
         s.attach(4, 30, None)?;
         let run = |s: &mut Session, line: &str| -> Result<String, String> {
-            let outcome = s.run(&crate::words::split(line)?, &Ctx::default());
+            let words = crate::words::split(line).map_err(|e| e.to_string())?;
+            let outcome = s.run(&words, &Ctx::default());
             match outcome.status {
                 0 => Ok(outcome.stdout),
                 _ => Err(outcome.stderr),

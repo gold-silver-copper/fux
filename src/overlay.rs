@@ -900,7 +900,7 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
                 Ok(argv) => argv,
                 Err(error) => {
                     if let Some(view) = session.views.get_mut(&client) {
-                        view.error(error);
+                        view.error(error.to_string());
                     }
                     return;
                 }
@@ -978,7 +978,8 @@ mod tests {
     }
 
     fn run(session: &mut Session, line: &str) -> Outcome {
-        let outcome = session.run(&crate::words::split(line)?, &Ctx::default());
+        let words = crate::words::split(line).map_err(|e| e.to_string())?;
+        let outcome = session.run(&words, &Ctx::default());
         if outcome.status == 0 {
             Ok(())
         } else {
@@ -1384,7 +1385,8 @@ mod tests {
     fn listed_commands_are_what_their_lines_parse_to() -> Outcome {
         let (mut s, c) = busy()?;
         let parsed = |line: &str| -> Result<Command, String> {
-            crate::command::parse(&crate::words::split(line)?).map_err(|u| u.0)
+            crate::command::parse(&crate::words::split(line).map_err(|e| e.to_string())?)
+                .map_err(|u| u.0)
         };
         let listed = |s: &Session| match s.views.get(&c).map(|v| &v.mode) {
             Some(Mode::List(list)) => list.items.iter().map(|i| i.command.clone()).collect(),

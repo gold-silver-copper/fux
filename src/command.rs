@@ -908,7 +908,7 @@ mod tests {
     use super::*;
 
     fn cmd(line: &str) -> Result<Command, Usage> {
-        parse(&crate::words::split(line).map_err(Usage)?)
+        parse(&crate::words::split(line).map_err(|e| Usage(e.to_string()))?)
     }
 
     #[test]
