@@ -563,16 +563,6 @@ pub fn neighbor(placement: &Placement, from: PaneId, direction: Direction) -> Op
 /// the nearest split along the direction's axis that has a sibling on that
 /// side moves the border between them. Weights become the new cell sizes.
 pub fn resize(
-    root: &mut Node,
-    area: Rect,
-    pane: PaneId,
-    direction: Direction,
-    amount: u16,
-) -> bool {
-    resize_node(root, area, pane, direction, amount)
-}
-
-fn resize_node(
     node: &mut Node,
     area: Rect,
     pane: PaneId,
@@ -595,7 +585,7 @@ fn resize_node(
     );
     let child_area = child_rects(*axis, children, area, &placement);
     if let (Some((_, child)), Some(inner)) = (children.get_mut(index), child_area.get(index))
-        && resize_node(child, *inner, pane, direction, amount)
+        && resize(child, *inner, pane, direction, amount)
     {
         return true;
     }

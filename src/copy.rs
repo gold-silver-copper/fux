@@ -7,6 +7,7 @@
 use crate::command::ClientId;
 use crate::keys::{Direction, Key, KeyPress};
 use crate::layout::PaneId;
+use crate::render::shown;
 use crate::session::{Outgoing, Session};
 use crate::view::Mode;
 use fux_vt::{RowId, Screen};
@@ -405,14 +406,7 @@ fn row_chars(screen: &Screen, index: usize) -> Vec<(char, u16)> {
             if cell.is_wide_continuation() {
                 continue;
             }
-            let text = if cell.has_contents() {
-                cell.contents()
-            } else {
-                " "
-            };
-            for c in text.chars() {
-                out.push((c, col));
-            }
+            out.extend(shown(cell).chars().map(|c| (c, col)));
         }
     }
     out
@@ -542,11 +536,7 @@ pub fn text(
                 return Err(Error::TooLarge);
             }
             if !cell.is_wide_continuation() {
-                line.push_str(if cell.has_contents() {
-                    cell.contents()
-                } else {
-                    " "
-                });
+                line.push_str(shown(cell));
             }
             col = col.saturating_add(1);
             if col == u16::MAX {

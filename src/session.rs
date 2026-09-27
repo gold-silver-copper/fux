@@ -1038,21 +1038,13 @@ impl Session {
         }
     }
 
-    /// Types held command lines whose wait is over; the next moment one is
-    /// due.
-    pub fn type_due(&mut self, now: Instant) -> Option<Instant> {
-        let mut next: Option<Instant> = None;
+    /// Types held command lines whose wait is over.
+    pub fn type_due(&mut self, now: Instant) {
         for pane in self.panes.values_mut() {
-            let Some(at) = pane.typed.as_ref().map(crate::pane::Typed::due_at) else {
-                continue;
-            };
-            if at <= now {
+            if pane.typed.as_ref().is_some_and(|t| t.due_at() <= now) {
                 pane.type_now();
-            } else {
-                next = Some(next.map_or(at, |n| n.min(at)));
             }
         }
-        next
     }
 
     /// The next moment a held command line is due, for the poll timeout.
@@ -2050,89 +2042,70 @@ fn capture(pane: &Pane, history: Option<usize>, json: bool) -> String {
     let screen = pane.screen();
     let (rows, cols) = screen.size();
     let back = history.unwrap_or(0).min(screen.history_len());
-    let window = screen.window(back, rows, cols);
-    let mut lines = Vec::new();
-    // History rows above the screen, then the screen itself.
-    for offset in (0..back).rev() {
-        if let Some(row) = usize::from(rows)
-            .checked_add(offset)
-            .and_then(|i| screen.row_from_bottom(i))
-        {
-            lines.push(row_text(row.cells));
-        }
-    }
+    // History rows above the screen, oldest first, then the screen itself.
+    let history = (0..back).rev().filter_map(|offset| {
+        let row = usize::from(rows).checked_add(offset)?;
+        Some(row_text(screen.row_from_bottom(row)?.cells))
+    });
     let live = screen.window(0, rows, cols);
-    let _ = window;
-    for y in 0..rows {
-        lines.push(live.row(y).map(|r| row_text(r.cells)).unwrap_or_default());
-    }
-    if json {
-        let (cy, cx) = screen.cursor_position();
-        let mut text = Json::Object(vec![
-            ("pane", Json::str(pane.id.to_string())),
-            ("rows", Json::Number(i64::from(rows))),
-            ("cols", Json::Number(i64::from(cols))),
-            (
-                "cursor",
-                Json::Array(vec![
-                    Json::Number(i64::from(cy)),
-                    Json::Number(i64::from(cx)),
-                ]),
-            ),
-            (
-                "lines",
-                Json::Array(lines.into_iter().map(Json::str).collect()),
-            ),
-        ])
-        .render();
-        text.push('\n');
-        return text;
-    }
-    let mut text = lines.join("\n");
-    text.push('\n');
-    text
+    let screen_rows = (0..rows).map(|y| live.row(y).map(|r| row_text(r.cells)).unwrap_or_default());
+    let lines = history.chain(screen_rows).collect();
+    let cursor = Some(screen.cursor_position());
+    captured(
+        ("pane", pane.id.to_string()),
+        (rows, cols),
+        cursor,
+        lines,
+        json,
+    )
 }
 
 /// What a client's terminal shows, row by row, as `capture-client` prints
 /// it.
 fn capture_client(client: ClientId, grid: &crate::render::Grid, json: bool) -> String {
-    let lines: Vec<String> = (0..grid.rows).map(|y| grid.row_text(y)).collect();
-    if json {
-        let cursor = grid.cursor.map_or(Json::Null, |(y, x)| {
-            Json::Array(vec![Json::Number(i64::from(y)), Json::Number(i64::from(x))])
-        });
-        let mut text = Json::Object(vec![
-            ("client", Json::str(client.to_string())),
-            ("rows", Json::Number(i64::from(grid.rows))),
-            ("cols", Json::Number(i64::from(grid.cols))),
+    let lines = (0..grid.rows).map(|y| grid.row_text(y)).collect();
+    let size = (grid.rows, grid.cols);
+    captured(
+        ("client", client.to_string()),
+        size,
+        grid.cursor,
+        lines,
+        json,
+    )
+}
+
+/// A capture as it is printed: its lines, or with `--json` an object naming
+/// what was captured, with its size, cursor and lines.
+fn captured(
+    (key, id): (&'static str, String),
+    (rows, cols): (u16, u16),
+    cursor: Option<(u16, u16)>,
+    lines: Vec<String>,
+    json: bool,
+) -> String {
+    let mut text = if json {
+        let number = |n: u16| Json::Number(i64::from(n));
+        let cursor = cursor.map_or(Json::Null, |(y, x)| Json::Array(vec![number(y), number(x)]));
+        let lines = Json::Array(lines.into_iter().map(Json::str).collect());
+        let fields = vec![
+            (key, Json::str(id)),
+            ("rows", number(rows)),
+            ("cols", number(cols)),
             ("cursor", cursor),
-            (
-                "lines",
-                Json::Array(lines.into_iter().map(Json::str).collect()),
-            ),
-        ])
-        .render();
-        text.push('\n');
-        return text;
-    }
-    let mut text = lines.join("\n");
+            ("lines", lines),
+        ];
+        Json::Object(fields).render()
+    } else {
+        lines.join("\n")
+    };
     text.push('\n');
     text
 }
 
 /// A row's text, wide glyphs whole and trailing blanks trimmed.
 pub fn row_text(cells: &[fux_vt::Cell]) -> String {
-    let mut line = String::new();
-    for cell in cells {
-        if cell.is_wide_continuation() {
-            continue;
-        }
-        line.push_str(if cell.has_contents() {
-            cell.contents()
-        } else {
-            " "
-        });
-    }
+    let row = cells.iter().filter(|c| !c.is_wide_continuation());
+    let line: String = row.map(crate::render::shown).collect();
     line.trim_end_matches(' ').to_owned()
 }
 
