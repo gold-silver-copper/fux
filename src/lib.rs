@@ -78,12 +78,61 @@ pub fn main() -> ExitCode {
     }
 }
 
-fn usage_error(message: &str) -> Result<u8, String> {
+/// Why the `fux` binary failed: exit status 1.
+#[derive(Debug)]
+enum Error {
+    /// `fux attach` inside a pane, without `--nested`.
+    Nested,
+    Setsid(fuxix::Errno),
+    Socket(socket::Error),
+    Client(client::Error),
+    Server(server::Error),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Nested => f.write_str(
+                "this is already a fux pane; attaching here would show fux inside itself (--nested does it anyway)",
+            ),
+            Error::Setsid(errno) => write!(f, "setsid: {errno}"),
+            Error::Socket(error) => error.fmt(f),
+            Error::Client(error) => error.fmt(f),
+            Error::Server(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Nested => None,
+            Error::Setsid(errno) => Some(errno),
+            Error::Socket(error) => Some(error),
+            Error::Client(error) => Some(error),
+            Error::Server(error) => Some(error),
+        }
+    }
+}
+
+impl From<socket::Error> for Error {
+    fn from(error: socket::Error) -> Error {
+        Error::Socket(error)
+    }
+}
+
+impl From<client::Error> for Error {
+    fn from(error: client::Error) -> Error {
+        Error::Client(error)
+    }
+}
+
+fn usage_error(message: &str) -> Result<u8, Error> {
     eprintln!("fux: {message}\n{USAGE}");
     Ok(2)
 }
 
-fn run(args: &[String]) -> Result<u8, String> {
+fn run(args: &[String]) -> Result<u8, Error> {
     let first = args.first().map(String::as_str);
     match first {
         Some(process::LAUNCH) => Ok(process::launched(args.get(1..).unwrap_or_default())),
@@ -102,17 +151,15 @@ fn run(args: &[String]) -> Result<u8, String> {
                 }
             }
             if !nested && std::env::var_os("FUX_PANE").is_some_and(|p| !p.is_empty()) {
-                return Err(
-                    "this is already a fux pane; attaching here would show fux inside itself (--nested does it anyway)"
-                        .into(),
-                );
+                return Err(Error::Nested);
             }
             let socket = socket::socket_path(None)?;
             if !socket::exists(&socket) || std::os::unix::net::UnixStream::connect(&socket).is_err()
             {
                 client::start_server(&socket)?;
             }
-            client::attach(&socket, workspace).map(|()| 0)
+            client::attach(&socket, workspace)?;
+            Ok(0)
         }
         Some("server") => {
             let (mut socket_flag, mut config) = (None, None);
@@ -122,7 +169,7 @@ fn run(args: &[String]) -> Result<u8, String> {
                     "--socket" => socket_flag = rest.next().cloned(),
                     "--config" => config = rest.next().cloned(),
                     client::SETSID => {
-                        fuxix::process::setsid().map_err(|e| format!("setsid: {e}"))?;
+                        fuxix::process::setsid().map_err(Error::Setsid)?;
                     }
                     other => return usage_error(&format!("server: unexpected {other:?}")),
                 }
@@ -131,11 +178,13 @@ fn run(args: &[String]) -> Result<u8, String> {
             let config = config
                 .map(std::path::PathBuf::from)
                 .or_else(config::default_path);
-            server::serve(&socket, config).map(|()| 0)
+            server::serve(&socket, config).map_err(Error::Server)?;
+            Ok(0)
         }
         Some("kill-server") => {
             let socket = socket::socket_path(None)?;
-            client::kill_server(&socket).map(|()| 0)
+            client::kill_server(&socket)?;
+            Ok(0)
         }
         Some("help" | "--help" | "-h") => {
             println!("{USAGE}");
@@ -147,11 +196,31 @@ fn run(args: &[String]) -> Result<u8, String> {
         }
         Some(_) => {
             // Parsed here as well, so a usage error needs no server.
-            if let Err(command::Usage(message)) = command::parse(args) {
-                return usage_error(&message);
+            if let Err(usage) = command::parse(args) {
+                return usage_error(&usage.to_string());
             }
             let socket = socket::socket_path(None)?;
-            client::command(&socket, args)
+            Ok(client::command(&socket, args)?)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_binary_says_what_it_said() {
+        assert_eq!(
+            Error::Nested.to_string(),
+            "this is already a fux pane; attaching here would show fux inside itself (--nested does it anyway)"
+        );
+        assert_eq!(
+            Error::Setsid(fuxix::Errno::INTR).to_string(),
+            format!("setsid: {}", fuxix::Errno::INTR)
+        );
+        let refused = Error::from(client::Error::Refused("why".into()));
+        assert_eq!(refused.to_string(), "why");
+        assert!(std::error::Error::source(&refused).is_some());
     }
 }

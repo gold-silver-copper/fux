@@ -147,7 +147,7 @@ impl Step {
 
     /// A trace line as a step.
     pub fn parse(line: &str) -> Result<Step, String> {
-        let words = words::split(line)?;
+        let words = words::split(line).map_err(|e| e.to_string())?;
         let text: Vec<&str> = words.iter().map(String::as_str).collect();
         let number = |w: &str| w.parse::<u16>().map_err(|e| format!("{w:?}: {e}"));
         Ok(match text.as_slice() {

@@ -8,7 +8,7 @@ use crate::overlay::{self, ColumnRow};
 use crate::session::Session;
 use crate::view::{Mode, View};
 use fux_vt::{Attributes, Cell, Color};
-use std::fmt::Write;
+use std::io::Write;
 use unicode_width::UnicodeWidthChar;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,6 +33,22 @@ impl Grid {
             cursor_shape: 0,
         }
     }
+    /// Blanks the grid at `rows` by `cols`, resizing its cells only if the
+    /// size changed: a grid composed into again allocates nothing.
+    fn reset(&mut self, rows: u16, cols: u16) {
+        if (self.rows, self.cols) == (rows, cols) {
+            self.cells.fill(Cell::default());
+        } else {
+            self.rows = rows;
+            self.cols = cols;
+            self.cells.clear();
+            // Exact: a u16 by a u16 fits even a 32-bit usize.
+            let len = usize::from(rows).saturating_mul(usize::from(cols));
+            self.cells.resize(len, Cell::default());
+        }
+        self.cursor = None;
+        self.cursor_shape = 0;
+    }
     fn index(&self, y: u16, x: u16) -> Option<usize> {
         if y >= self.rows || x >= self.cols {
             return None;
@@ -43,6 +59,34 @@ impl Grid {
     }
     pub fn get(&self, y: u16, x: u16) -> Option<&Cell> {
         self.index(y, x).and_then(|i| self.cells.get(i))
+    }
+    fn get_mut(&mut self, y: u16, x: u16) -> Option<&mut Cell> {
+        self.index(y, x).and_then(|i| self.cells.get_mut(i))
+    }
+    /// The cells of row `y`; none past the last row.
+    pub fn row(&self, y: u16) -> &[Cell] {
+        if y >= self.rows {
+            return &[];
+        }
+        let cols = usize::from(self.cols);
+        // Exact: a u16 by a u16 fits even a 32-bit usize.
+        let start = usize::from(y).saturating_mul(cols);
+        self.cells
+            .get(start..start.saturating_add(cols))
+            .unwrap_or_default()
+    }
+    /// Copies `cells` into row `y` from column `x`, clipped at the grid's
+    /// edge, without `set`'s repairs: for a run of one well-formed row onto
+    /// blank cells, which keeps its wide glyphs whole by itself.
+    fn put_row(&mut self, y: u16, x: u16, cells: &[Cell]) {
+        let Some(start) = self.index(y, x) else {
+            return;
+        };
+        let room = usize::from(self.cols.saturating_sub(x));
+        let slots = self.cells.iter_mut().skip(start).take(room);
+        for (slot, cell) in slots.zip(cells) {
+            *slot = *cell;
+        }
     }
     /// Sets a cell, keeping wide glyphs whole: overwriting either half of
     /// one blanks the other, as a terminal would.
@@ -174,15 +218,28 @@ pub fn fit(text: &str, cols: u16) -> String {
     out
 }
 
-/// The client's screen as it should look now.
+/// The client's screen as it should look now, in a grid of its own.
 pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
-    let view = session.views.get(&client)?;
-    let mut grid = Grid::new(view.rows, view.cols);
+    let mut grid = Grid::new(0, 0);
+    compose_into(session, client, &mut grid).then_some(grid)
+}
+
+/// Composes the client's screen as it should look now into `grid`, whatever
+/// it held; false if there is no such client.
+pub fn compose_into(session: &Session, client: ClientId, grid: &mut Grid) -> bool {
+    let Some(view) = session.views.get(&client) else {
+        return false;
+    };
+    grid.reset(view.rows, view.cols);
     let area = Session::pane_area(view);
     let placement = session.placement(view);
     let focus = view.focus();
+    // Copy mode and its positions, their rows found once for the paint.
     let copy = match &view.mode {
-        Mode::Copy(copy) => Some(copy.as_ref()),
+        Mode::Copy(copy) => session
+            .panes
+            .get(&copy.pane)
+            .map(|pane| (copy.as_ref(), copy.resolve(pane.screen()))),
         Mode::Normal
         | Mode::Column { .. }
         | Mode::Repeat { .. }
@@ -195,16 +252,33 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
             continue;
         };
         let screen = pane.screen();
-        let offset = copy
-            .filter(|c| c.pane == *id)
-            .map_or(0, |c| c.offset(screen));
+        let at = copy.filter(|(c, _)| c.pane == *id).map(|(_, at)| at);
+        let offset = at.map_or(0, |at| at.offset(screen));
         let (rows, cols) = screen.size();
         let window = screen.window(offset, rows, cols);
+        let width = rect.w.min(window.cols);
         for y in 0..rect.h.min(window.rows) {
-            for x in 0..rect.w.min(window.cols) {
-                let mut cell = window.cell(y, x).copied().unwrap_or_default();
-                if let Some(copy) = copy.filter(|c| c.pane == *id)
-                    && copy.selected(screen, y, x)
+            // Past the largest position is off the grid anyway.
+            let Some((gy, gx)) = rect.at(y, 0) else {
+                continue;
+            };
+            // The pane's own row, well formed, goes onto blank cells whole.
+            let cells = window.row(y).map_or(&[][..], |row| row.cells);
+            grid.put_row(gy, gx, cells.get(..usize::from(width)).unwrap_or(cells));
+            // A wide glyph in the window's last column is cut off, as
+            // `Window::cell` has it.
+            if let Some(last) = window.cols.checked_sub(1)
+                && last < width
+                && cells.get(usize::from(last)).is_some_and(Cell::is_wide)
+                && let Some(cell) = gx.checked_add(last).and_then(|x| grid.get_mut(gy, x))
+            {
+                *cell = Cell::default();
+            }
+            let Some(at) = at else { continue };
+            for x in 0..width {
+                if at.selected(y, x)
+                    && let Some(cell) = gx.checked_add(x).and_then(|x| grid.get_mut(gy, x))
+                    && !cell.is_wide_continuation()
                 {
                     let attrs = cell.attributes();
                     let text = if cell.has_contents() {
@@ -212,20 +286,13 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
                     } else {
                         " "
                     };
-                    if !cell.is_wide_continuation() {
-                        cell =
-                            Cell::new(text, cell.is_wide(), attrs.with_inverse(!attrs.inverse()))
-                                .unwrap_or(cell);
-                    }
-                }
-                // Past the largest position is off the grid anyway.
-                if let Some((gy, gx)) = rect.at(y, x) {
-                    grid.set(gy, gx, cell);
+                    *cell = Cell::new(text, cell.is_wide(), attrs.with_inverse(!attrs.inverse()))
+                        .unwrap_or(*cell);
                 }
             }
         }
     }
-    separators(&mut grid, &placement, focus);
+    separators(grid, &placement, focus);
     if view
         .tab()
         .and_then(|t| session.tab(t))
@@ -271,9 +338,9 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
         && let Some(pane) = session.panes.get(&focus)
     {
         let screen = pane.screen();
-        match copy.filter(|c| c.pane == focus) {
-            Some(copy) => {
-                if let Some((y, x)) = copy.cursor_in_view(screen, rect.h)
+        match copy.filter(|(c, _)| c.pane == focus) {
+            Some((_, at)) => {
+                if let Some((y, x)) = at.cursor_in_view(rect.h)
                     && x < rect.w
                     && let Some(at) = rect.at(y, x)
                 {
@@ -296,9 +363,9 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
             }
         }
     }
-    bar(&mut grid, session, view, copy);
+    bar(grid, session, view, copy);
     match &view.mode {
-        Mode::Column { path, selected } => column(&mut grid, session, view, path, *selected),
+        Mode::Column { path, selected } => column(grid, session, view, path, *selected),
         Mode::List(list) => {
             let mut lines: Vec<(String, Attributes)> =
                 vec![(list.title.clone(), panel().with_bold(true))];
@@ -313,7 +380,7 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
             }
             let ctx = crate::session::Ctx::client(view.id);
             for (i, item) in list.items.iter().enumerate().skip(start).take(capacity) {
-                let dim = !list.chooser && session.unavailable(&item.argv, &ctx).is_some();
+                let dim = !list.chooser && session.unavailable(&item.command, &ctx).is_some();
                 let marker = if item.current { "*" } else { " " };
                 let mut attrs = panel();
                 if i == list.selected {
@@ -340,7 +407,7 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
                 "Enter runs · Esc cancels"
             };
             lines.push((help.into(), panel().with_dim(true)));
-            surface(&mut grid, view, &lines);
+            surface(grid, view, &lines);
         }
         Mode::Prompt(prompt) => {
             let lines = vec![
@@ -348,7 +415,7 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
                 (with_cursor(&prompt.text, prompt.cursor), panel()),
                 ("Enter accepts · Esc cancels".into(), panel().with_dim(true)),
             ];
-            surface(&mut grid, view, &lines);
+            surface(grid, view, &lines);
             grid.cursor = None;
         }
         Mode::Confirm(confirm) => {
@@ -356,13 +423,13 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
                 (confirm.question.clone(), panel().with_bold(true)),
                 ("y confirms · n or Esc cancels".into(), panel()),
             ];
-            surface(&mut grid, view, &lines);
+            surface(grid, view, &lines);
             grid.cursor = None;
         }
         // A repeat mode shows in the bar, leaving the layout in view.
         Mode::Normal | Mode::Copy(_) | Mode::Repeat { .. } => {}
     }
-    Some(grid)
+    true
 }
 
 /// A prompt's text with a bar at `cursor`, counted in chars; past the end
@@ -485,13 +552,19 @@ fn separators(grid: &mut Grid, placement: &crate::layout::Placement, focus: Opti
 
 /// The bottom bar: the workspace and its tabs on the left; the focused
 /// pane, or copy mode's position, or a notice on the right.
-fn bar(grid: &mut Grid, session: &Session, view: &View, copy: Option<&crate::copy::Copy>) {
+fn bar(
+    grid: &mut Grid,
+    session: &Session,
+    view: &View,
+    copy: Option<(&crate::copy::Copy, crate::copy::Resolved)>,
+) {
     let Some(y) = view.rows.checked_sub(1) else {
         return;
     };
     let base = style(BAR_FG, GRAY_BG);
     grid.fill(y, 0, view.cols, base);
-    let copy_bar = copy.and_then(|c| session.panes.get(&c.pane).map(|p| c.bar(p.screen())));
+    let copy_bar =
+        copy.and_then(|(c, at)| session.panes.get(&c.pane).map(|p| c.bar(p.screen(), &at)));
     let right = if let Some(notice) = &view.notice {
         Some((
             notice.text.clone(),
@@ -636,8 +709,9 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
     let key_width = rows
         .iter()
         .filter_map(|r| match r {
-            ColumnRow::Binding { key, .. } => Some(width(key)),
-            ColumnRow::Layer { key, .. } => Some(width(&key.to_string())),
+            ColumnRow::Binding { key, .. } | ColumnRow::Layer { key, .. } => {
+                Some(width(&key.to_string()))
+            }
             ColumnRow::Heading(_) => None,
         })
         .max()
@@ -651,12 +725,17 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
             ColumnRow::Heading(group) => {
                 entries.push((group.clone(), panel().with_bold(true), false))
             }
-            ColumnRow::Binding { key, label, argv } => {
+            ColumnRow::Binding {
+                key,
+                label,
+                command,
+            } => {
+                let key = key.to_string();
                 let pad: String =
-                    std::iter::repeat_n(' ', usize::from(key_width.saturating_sub(width(key))))
+                    std::iter::repeat_n(' ', usize::from(key_width.saturating_sub(width(&key))))
                         .collect();
                 let mut attrs = panel();
-                if session.unavailable(argv, &ctx).is_some() {
+                if session.unavailable(command, &ctx).is_some() {
                     attrs = attrs.with_dim(true);
                 }
                 if index == selected {
@@ -724,25 +803,25 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
 
 // ------------------------------------------------------------------ paint
 
-fn sgr(out: &mut String, a: Attributes) {
-    out.push_str("\x1b[0");
+fn sgr(out: &mut Vec<u8>, a: Attributes) {
+    out.extend_from_slice(b"\x1b[0");
     if a.bold() {
-        out.push_str(";1");
+        out.extend_from_slice(b";1");
     }
     if a.dim() {
-        out.push_str(";2");
+        out.extend_from_slice(b";2");
     }
     if a.italic() {
-        out.push_str(";3");
+        out.extend_from_slice(b";3");
     }
     if a.underline() {
-        out.push_str(";4");
+        out.extend_from_slice(b";4");
     }
     if a.inverse() {
-        out.push_str(";7");
+        out.extend_from_slice(b";7");
     }
     // `base` is 30 or 40, so no code comes near 255: every sum is exact.
-    let color = |out: &mut String, c: Color, base: u8| match c {
+    let color = |out: &mut Vec<u8>, c: Color, base: u8| match c {
         Color::Default => {}
         Color::Idx(n) if n < 8 => {
             let _ = write!(out, ";{}", base.saturating_add(n));
@@ -760,7 +839,7 @@ fn sgr(out: &mut String, a: Attributes) {
     };
     color(out, a.foreground, 30);
     color(out, a.background, 40);
-    out.push('m');
+    out.push(b'm');
 }
 
 /// A row or column as the terminal counts it, from 1; exact in a u32.
@@ -770,16 +849,32 @@ fn one_based(n: u16) -> u32 {
 
 /// The bytes that turn `old` (what the client shows, or nothing) into `new`.
 pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
-    let mut out = String::from("\x1b[?2026h\x1b[?25l");
+    let mut out = Vec::new();
+    paint_into(old, new, &mut out);
+    out
+}
+
+/// Appends the bytes that turn `old` (what the client shows, or nothing)
+/// into `new` to `out`.
+pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
+    out.extend_from_slice(b"\x1b[?2026h\x1b[?25l");
     let full = old.is_none_or(|o| o.rows != new.rows || o.cols != new.cols);
     if full {
-        out.push_str("\x1b[0m\x1b[H\x1b[2J");
+        out.extend_from_slice(b"\x1b[0m\x1b[H\x1b[2J");
     }
     let mut current: Option<Attributes> = None;
     for y in 0..new.rows {
+        let row = new.row(y);
+        // What the client shows of the row, unless it is painted whole.
+        let shown = old.filter(|_| !full).map(|o| o.row(y));
+        // An unchanged row costs this one comparison.
+        if shown == Some(row) {
+            continue;
+        }
+        let cell = |x: u16| row.get(usize::from(x));
+        let changed = |x: u16| shown.is_none_or(|o| o.get(usize::from(x)) != cell(x));
         let mut x = 0u16;
         while x < new.cols {
-            let changed = |x: u16| full || old.and_then(|o| o.get(y, x)) != new.get(y, x);
             // Moving right stops at the last column, where the loop ends.
             if !changed(x) {
                 x = x.saturating_add(1);
@@ -787,7 +882,7 @@ pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
             }
             // A run of changed cells, starting at a glyph's first half.
             let mut start = x;
-            if new.get(y, start).is_some_and(|c| c.is_wide_continuation()) {
+            if cell(start).is_some_and(|c| c.is_wide_continuation()) {
                 start = start.saturating_sub(1);
             }
             let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(start));
@@ -795,26 +890,26 @@ pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
             while cx < new.cols
                 && (cx == start
                     || changed(cx)
-                    || new.get(y, cx).is_some_and(|c| c.is_wide_continuation()))
+                    || cell(cx).is_some_and(|c| c.is_wide_continuation()))
             {
-                let Some(cell) = new.get(y, cx) else { break };
+                let Some(cell) = cell(cx) else { break };
                 if cell.is_wide_continuation() {
                     cx = cx.saturating_add(1);
                     continue;
                 }
                 let attrs = cell.attributes();
                 if current != Some(attrs) {
-                    sgr(&mut out, attrs);
+                    sgr(out, attrs);
                     current = Some(attrs);
                 }
                 if cell.is_wide() && cx.saturating_add(1) >= new.cols {
                     // A wide glyph cannot fit in the last column.
-                    out.push(' ');
+                    out.push(b' ');
                 } else {
-                    out.push_str(if cell.has_contents() {
-                        cell.contents()
+                    out.extend_from_slice(if cell.has_contents() {
+                        cell.contents().as_bytes()
                     } else {
-                        " "
+                        b" "
                     });
                 }
                 cx = cx.saturating_add(if cell.is_wide() { 2 } else { 1 });
@@ -822,7 +917,7 @@ pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
             x = cx.max(x.saturating_add(1));
         }
     }
-    out.push_str("\x1b[0m");
+    out.extend_from_slice(b"\x1b[0m");
     let shape_changed = old.is_none_or(|o| o.cursor_shape != new.cursor_shape);
     if shape_changed {
         let _ = write!(out, "\x1b[{} q", new.cursor_shape);
@@ -830,8 +925,7 @@ pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
     if let Some((y, x)) = new.cursor {
         let _ = write!(out, "\x1b[{};{}H\x1b[?25h", one_based(y), one_based(x));
     }
-    out.push_str("\x1b[?2026l");
-    out.into_bytes()
+    out.extend_from_slice(b"\x1b[?2026l");
 }
 
 #[cfg(test)]
@@ -857,7 +951,7 @@ mod tests {
     /// Copy mode's bar replaces the tabs with what it is doing and the keys
     /// that act now; a narrow bar drops the least important.
     #[test]
-    fn copy_mode_replaces_the_tabs_with_its_keys() -> Result<(), String> {
+    fn copy_mode_replaces_the_tabs_with_its_keys() -> Result<(), Box<dyn std::error::Error>> {
         let mut s = Session::new(
             crate::config::Config::default(),
             "/nonexistent/fux.sock".into(),
@@ -905,6 +999,165 @@ mod tests {
         let narrow = bar(&s);
         assert!(narrow.contains("y copy  q quit"), "{narrow}");
         assert!(!narrow.contains("other end"), "{narrow}");
+        Ok(())
+    }
+
+    /// The selection test compose used to make for every cell, finding
+    /// the view's top and both ends in the history each time.
+    fn reference_selected(
+        copy: &crate::copy::Copy,
+        screen: &fux_vt::Screen,
+        view_row: u16,
+        col: u16,
+    ) -> bool {
+        use crate::copy::{Select, index_of};
+        let at = |(id, col)| Some((index_of(screen, id)?, col));
+        let Some(top) = index_of(screen, copy.top) else {
+            return false;
+        };
+        let Some((kind, anchor)) = copy.selection else {
+            return false;
+        };
+        let (Some(a), Some(b)) = (at(anchor), at(copy.cursor)) else {
+            return false;
+        };
+        let (start, end) = (a.min(b), a.max(b));
+        let Some(row) = top.checked_add(usize::from(view_row)) else {
+            return false;
+        };
+        if row < start.0 || row > end.0 {
+            return false;
+        }
+        match kind {
+            Select::Line => true,
+            Select::Block => {
+                let (left, right) = (start.1.min(end.1), start.1.max(end.1));
+                (left..=right).contains(&col)
+            }
+            Select::Char => (row, col) >= start && (row, col) <= end,
+        }
+    }
+
+    /// Copy mode finds its rows once per paint: the cells compose inverts
+    /// are exactly those the old per-cell test selected, for each kind of
+    /// selection, over a screen with history and a view scrolled into it.
+    #[test]
+    fn compose_inverts_exactly_the_selected_cells() -> Result<(), Box<dyn std::error::Error>> {
+        let mut s = Session::new(
+            crate::config::Config::default(),
+            "/nonexistent/fux.sock".into(),
+            false,
+        );
+        s.start()?;
+        let c = s.attach(10, 30, None)?;
+        let pane = PaneId(1);
+        let text: String = (0..60)
+            .map(|i| {
+                let tail: String = std::iter::repeat_n('x', i % 20).collect();
+                format!("line {i} 界 {tail}\r\n")
+            })
+            .collect();
+        s.output(pane, text.as_bytes());
+        s.input(c, b"\x02c");
+        let mut kinds = Vec::new();
+        // Up into the history, then each kind of selection, with its ends
+        // moved about, a block's end left of its start, and the view
+        // scrolled past the anchor.
+        for keys in [
+            &b"kkkkkkkkkkkkkkkllllllllv"[..],
+            b"kkklllll",
+            b"s",
+            b"jjjjjjjjjjjjjj",
+            b"x",
+            b"hhhhhhhhhh",
+            b"kkkkkkkkkkkkkkkkkkkkkkkkk",
+            b"uv",
+            b"ollll",
+        ] {
+            s.input(c, keys);
+            let grid = compose(&s, c).ok_or("a screen")?;
+            let view = s.views.get(&c).ok_or("the client")?;
+            let Mode::Copy(copy) = &view.mode else {
+                return Err("copy mode ended".into());
+            };
+            kinds.push(copy.selection.map(|(kind, _)| kind));
+            let screen = s.panes.get(&pane).ok_or("the pane")?.screen();
+            let rect = s.placement(view).rect(pane).ok_or("the pane's place")?;
+            // The view shows the rows from its top.
+            let top = crate::copy::index_of(screen, copy.top).ok_or("the top row")?;
+            for y in 0..rect.h {
+                let row = crate::copy::row_at(screen, top + usize::from(y)).ok_or("a row")?;
+                assert_eq!(grid.row_text(y), crate::session::row_text(row.cells));
+            }
+            let mut selected = 0;
+            for y in 0..rect.h {
+                for x in 0..rect.w {
+                    let cell = rect.at(y, x).and_then(|(gy, gx)| grid.get(gy, gx));
+                    let cell = cell.copied().unwrap_or_default();
+                    let expected =
+                        reference_selected(copy, screen, y, x) && !cell.is_wide_continuation();
+                    assert_eq!(cell.inverse(), expected, "{keys:?} at {y},{x}");
+                    selected += usize::from(expected);
+                }
+            }
+            if copy.selection.is_some() {
+                assert!(selected > 0, "{keys:?}: nothing selected in view");
+            }
+        }
+        use crate::copy::Select;
+        for kind in [Select::Char, Select::Line, Select::Block] {
+            assert!(kinds.contains(&Some(kind)), "{kind:?}: {kinds:?}");
+        }
+        Ok(())
+    }
+
+    /// A grid composed into again, whatever it held and whatever its size,
+    /// comes out as a fresh one would.
+    #[test]
+    fn composing_into_a_used_grid_is_composing_afresh() -> Result<(), Box<dyn std::error::Error>> {
+        let mut s = Session::new(
+            crate::config::Config::default(),
+            "/nonexistent/fux.sock".into(),
+            false,
+        );
+        s.start()?;
+        let c = s.attach(12, 50, None)?;
+        s.output(PaneId(1), b"first screen\r\n\x1b[5 q");
+        let before = compose(&s, c).ok_or("a screen")?;
+        let outcome = s.run(
+            &["split".to_owned(), "-h".to_owned()],
+            &crate::session::Ctx::client(c),
+        );
+        assert_eq!(outcome.status, 0, "{}", outcome.stderr);
+        // The focused pane hides its cursor, and a smaller client makes the
+        // panes smaller than their places: compose leaves cells untouched.
+        s.output(PaneId(2), "界 second\r\n\x1b[?25l".as_bytes());
+        s.attach(8, 30, None)?;
+        let fresh = compose(&s, c).ok_or("a screen")?;
+        assert_ne!(before, fresh);
+        assert!(before.cursor.is_some() && fresh.cursor.is_none());
+        assert!(fresh.cells.contains(&Cell::default()));
+        // The previous screen, with its cursor and shape.
+        let mut used = before;
+        assert!(compose_into(&s, c, &mut used));
+        assert_eq!(used, fresh);
+        // Grids of this size and others, full of text.
+        for (rows, cols) in [(12, 50), (3, 7), (12, 49), (40, 200)] {
+            let mut other = Grid::new(rows, cols);
+            for y in 0..rows {
+                other.text(
+                    y,
+                    0,
+                    "junk 界 junk",
+                    Attributes::default().with_bold(true),
+                    cols,
+                );
+            }
+            other.cursor = Some((1, 1));
+            other.cursor_shape = 3;
+            assert!(compose_into(&s, c, &mut other));
+            assert_eq!(other, fresh, "{rows}x{cols}");
+        }
         Ok(())
     }
 
@@ -965,6 +1218,49 @@ mod tests {
         // Nothing changed: nothing but the envelope.
         let quiet = String::from_utf8_lossy(&paint(Some(&b), &b)).into_owned();
         assert_eq!(quiet, "\x1b[?2026h\x1b[?25l\x1b[0m\x1b[?2026l");
+        Ok(())
+    }
+
+    /// The rows a paint writes to: those it moves the cursor to, from 0.
+    fn rows_written(bytes: &[u8]) -> Vec<u16> {
+        let text = String::from_utf8_lossy(bytes);
+        let mut rows: Vec<u16> = text
+            .split("\x1b[")
+            .filter_map(|sequence| {
+                let (row, rest) = sequence.split_once(';')?;
+                let (col, _) = rest.split_once('H')?;
+                col.parse::<u16>().ok()?;
+                row.parse::<u16>().ok()?.checked_sub(1)
+            })
+            .collect();
+        rows.dedup();
+        rows
+    }
+
+    /// A row that did not change gets no bytes at all.
+    #[test]
+    fn only_the_rows_that_changed_are_painted() -> Result<(), String> {
+        let mut a = Grid::new(6, 20);
+        for y in 0..6 {
+            a.text(y, 0, &format!("row {y} 界 text"), Attributes::default(), 20);
+        }
+        let mut b = a.clone();
+        b.text(3, 5, "X", Attributes::default().with_bold(true), 20);
+        let diff = paint(Some(&a), &b);
+        assert_eq!(rows_written(&diff), [3]);
+        let mut parser = fux_vt::Parser::new(6, 20, 0).map_err(|e| e.to_string())?;
+        apply(&paint(None, &a), 6, 20, &mut parser);
+        assert_eq!(apply(&diff, 6, 20, &mut parser), grid_lines(&b));
+        // The first and last rows, and a wide glyph's second half.
+        let mut c = b.clone();
+        c.text(0, 19, "!", Attributes::default(), 20);
+        c.text(5, 7, "y", Attributes::default(), 20);
+        let diff = paint(Some(&b), &c);
+        assert_eq!(rows_written(&diff), [0, 5]);
+        assert_eq!(apply(&diff, 6, 20, &mut parser), grid_lines(&c));
+        // Nothing changed: no row is written; painted whole, every row is.
+        assert_eq!(rows_written(&paint(Some(&c), &c)), Vec::<u16>::new());
+        assert_eq!(rows_written(&paint(None, &c)), [0, 1, 2, 3, 4, 5]);
         Ok(())
     }
 

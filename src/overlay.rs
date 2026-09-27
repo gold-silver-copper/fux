@@ -1,10 +1,11 @@
 //! The keyboard overlays: the command column, choosers, action menus, the
 //! command prompt, rename prompts and confirmations. Each belongs to the client
 //! that opened it.
-use crate::command::{AnyRef, ClientId, Kind, TabId, WsRef};
+use crate::command::{AnyRef, ClientId, Command, Kind, MoveTo, Pick, SwapWith, WsRef};
+use crate::config::Binding;
 use crate::keys::{Direction, Key, KeyPress};
-use crate::layout::PaneId;
-use crate::session::{Ctx, Session, describe};
+use crate::layout::{Node, PaneId};
+use crate::session::{Ctx, Error, Session, describe};
 use crate::view::{Confirm, Item, List, Mode, Prompt, PromptFor};
 
 /// One row of the command column: a group heading, a binding, or a layer.
@@ -12,9 +13,9 @@ use crate::view::{Confirm, Item, List, Mode, Prompt, PromptFor};
 pub enum ColumnRow {
     Heading(String),
     Binding {
-        key: String,
+        key: KeyPress,
         label: String,
-        argv: Vec<String>,
+        command: Command,
     },
     /// A key that opens a layer, and the layer's title.
     Layer {
@@ -23,60 +24,96 @@ pub enum ColumnRow {
     },
 }
 
+/// An entry of the command column: a binding of its layer, or a key that
+/// opens a layer inside it, with the layer's first binding.
+#[derive(Clone, Copy)]
+enum Entry<'a> {
+    Binding(KeyPress, &'a Binding),
+    Layer(KeyPress, &'a Binding),
+}
+
+impl<'a> Entry<'a> {
+    /// The group it is listed under: a binding's own, or the group of the
+    /// command that a layer's first binding runs.
+    fn group(self) -> &'a str {
+        match self {
+            Entry::Binding(_, binding) => binding.group(),
+            Entry::Layer(_, first) => first.derived_group(),
+        }
+    }
+
+    fn row(self) -> ColumnRow {
+        match self {
+            Entry::Binding(key, binding) => ColumnRow::Binding {
+                key,
+                label: crate::command::label(&binding.command),
+                command: binding.parsed.clone(),
+            },
+            Entry::Layer(key, first) => ColumnRow::Layer {
+                key,
+                title: first.group().to_owned(),
+            },
+        }
+    }
+}
+
+/// The column's entries for the layer at `path`, in the order of the
+/// bindings, found without building their rows. A layer is an entry once,
+/// where its first binding is.
+fn entries<'a>(session: &'a Session, path: &'a [KeyPress]) -> impl Iterator<Item = Entry<'a>> {
+    let bindings = &session.config.bindings;
+    bindings.iter().enumerate().filter_map(move |(i, binding)| {
+        match binding.keys.strip_prefix(path) {
+            Some([key]) => Some(Entry::Binding(*key, binding)),
+            Some([key, _, ..]) if !bindings.iter().take(i).any(|b| opens(b, path, key)) => {
+                Some(Entry::Layer(*key, binding))
+            }
+            Some(_) | None => None,
+        }
+    })
+}
+
+/// Whether `binding` is in the layer that `key` opens in the layer at `path`.
+fn opens(binding: &Binding, path: &[KeyPress], key: &KeyPress) -> bool {
+    matches!(binding.keys.strip_prefix(path), Some([k, _, ..]) if k == key)
+}
+
+/// The column's entries in its order, with their groups: groups in their
+/// order, custom groups after them and `Other` last.
+fn ordered<'a>(session: &'a Session, path: &'a [KeyPress]) -> Vec<(&'a str, Entry<'a>)> {
+    let entries: Vec<(&str, Entry)> = entries(session, path).map(|e| (e.group(), e)).collect();
+    let mut groups: Vec<&str> = crate::config::GROUPS.to_vec();
+    for (group, _) in &entries {
+        if !groups.contains(group) && *group != "Other" {
+            groups.push(group);
+        }
+    }
+    groups.push("Other");
+    groups
+        .iter()
+        .flat_map(|group| entries.iter().filter(move |(g, _)| g == group).cloned())
+        .collect()
+}
+
 /// The command column's rows for the layer at `path`: its bindings and the
 /// layers inside it, grouped, groups in their order, custom groups after
 /// them and `Other` last. A layer is listed once, where its first binding
 /// is, under the group its command belongs to.
 pub fn column_rows(session: &Session, path: &[KeyPress]) -> Vec<ColumnRow> {
-    let mut entries: Vec<(String, ColumnRow)> = Vec::new();
-    let mut layers: Vec<KeyPress> = Vec::new();
-    for binding in &session.config.bindings {
-        match binding.keys.strip_prefix(path) {
-            Some([key]) => entries.push((
-                binding.group(),
-                ColumnRow::Binding {
-                    key: key.to_string(),
-                    label: crate::command::label(&binding.command),
-                    argv: binding.command.clone(),
-                },
-            )),
-            Some([key, _, ..]) if !layers.contains(key) => {
-                layers.push(*key);
-                entries.push((
-                    binding.derived_group(),
-                    ColumnRow::Layer {
-                        key: *key,
-                        title: binding.group(),
-                    },
-                ));
-            }
-            Some(_) | None => {}
-        }
-    }
-    let mut groups: Vec<String> = crate::config::GROUPS
-        .iter()
-        .map(|g| (*g).to_owned())
-        .collect();
-    for (group, _) in &entries {
-        if !groups.contains(group) && group != "Other" {
-            groups.push(group.clone());
-        }
-    }
-    groups.push("Other".into());
     let mut rows = Vec::new();
-    for group in groups {
-        let mut members = entries.iter().filter(|(g, _)| *g == group).peekable();
-        if members.peek().is_none() {
-            continue;
+    let mut heading = None;
+    for (group, entry) in ordered(session, path) {
+        if heading != Some(group) {
+            rows.push(ColumnRow::Heading(group.to_owned()));
+            heading = Some(group);
         }
-        rows.push(ColumnRow::Heading(group.clone()));
-        rows.extend(members.map(|(_, row)| row.clone()));
+        rows.push(entry.row());
     }
     rows
 }
 
 /// The title of the layer at `path`: the group of its first binding.
-pub fn layer_title(session: &Session, path: &[KeyPress]) -> Option<String> {
+pub fn layer_title<'a>(session: &'a Session, path: &[KeyPress]) -> Option<&'a str> {
     session
         .config
         .bindings
@@ -87,18 +124,16 @@ pub fn layer_title(session: &Session, path: &[KeyPress]) -> Option<String> {
 
 /// How many entries the column can select among in the layer at `path`.
 pub(crate) fn column_len(session: &Session, path: &[KeyPress]) -> usize {
-    column_rows(session, path)
-        .iter()
-        .filter(|row| !matches!(row, ColumnRow::Heading(_)))
-        .count()
+    entries(session, path).count()
 }
 
-/// The column's `selected` entry in the layer at `path`.
+/// The column's `selected` entry in the layer at `path`; the other entries'
+/// rows are not built.
 pub fn column_selected(session: &Session, path: &[KeyPress], selected: usize) -> Option<ColumnRow> {
-    column_rows(session, path)
+    ordered(session, path)
         .into_iter()
-        .filter(|row| !matches!(row, ColumnRow::Heading(_)))
         .nth(selected)
+        .map(|(_, entry)| entry.row())
 }
 
 pub fn open_prompt(
@@ -107,8 +142,8 @@ pub fn open_prompt(
     purpose: PromptFor,
     title: String,
     text: String,
-) -> Result<String, String> {
-    let view = session.views.get_mut(&client).ok_or("no such client")?;
+) -> Result<String, Error> {
+    let view = session.views.get_mut(&client).ok_or(Error::NoSuchClient)?;
     let cursor = text.chars().count();
     view.mode = Mode::Prompt(Prompt {
         title,
@@ -123,129 +158,146 @@ pub fn open_confirm(
     session: &mut Session,
     client: ClientId,
     target: AnyRef,
-) -> Result<String, String> {
-    let (kind, command) = match &target {
-        AnyRef::Pane(_) => ("pane", "kill-pane"),
-        AnyRef::Tab(_) => ("tab", "kill-tab"),
-        AnyRef::Workspace(_) => ("workspace", "kill-workspace"),
+) -> Result<String, Error> {
+    let (kind, id, command) = match &target {
+        AnyRef::Pane(p) => (
+            "pane",
+            p.to_string(),
+            Command::KillPane { target: Some(*p) },
+        ),
+        AnyRef::Tab(t) => ("tab", t.to_string(), Command::KillTab { target: Some(*t) }),
+        AnyRef::Workspace(r) => {
+            let ws = session.resolve_ws(r)?;
+            let command = Command::KillWorkspace {
+                target: Some(WsRef::Id(ws)),
+            };
+            ("workspace", ws.to_string(), command)
+        }
     };
     let name = session.name_of(&target);
-    let id = match &target {
-        AnyRef::Workspace(r) => session.resolve_ws(r)?.to_string(),
-        other @ (AnyRef::Pane(_) | AnyRef::Tab(_)) => describe(other),
-    };
     let question = format!("close {kind} {id} {name}?");
-    let view = session.views.get_mut(&client).ok_or("no such client")?;
+    let view = session.views.get_mut(&client).ok_or(Error::NoSuchClient)?;
     view.mode = Mode::Confirm(Confirm {
         question,
-        argv: vec![command.into(), "-t".into(), id],
+        command,
         about: target,
     });
     Ok(String::new())
 }
 
-fn argv(words: &[&str]) -> Vec<String> {
-    words.iter().map(|w| (*w).to_owned()).collect()
-}
-
-fn item(label: &str, words: Vec<String>) -> Item {
+fn item(label: &str, command: Command) -> Item {
     Item {
         label: label.to_owned(),
-        argv: words,
+        command,
         current: false,
         subject: None,
     }
 }
 
 /// An action menu for a pane, tab or workspace: what has no default key.
-pub fn open_menu(
-    session: &mut Session,
-    client: ClientId,
-    target: AnyRef,
-) -> Result<String, String> {
-    let (title, items) = match &target {
-        AnyRef::Pane(p) => {
-            let t = p.to_string();
-            let with = |words: &[&str]| {
-                let mut v = argv(words);
-                v.push("-t".into());
-                v.push(t.clone());
-                v
-            };
-            let name = session.name_of(&target);
-            (
-                format!("pane {p} {name}"),
-                vec![
-                    item("rename", with(&["rename-prompt", "pane"])),
-                    item("close", with(&["confirm-close", "pane"])),
-                    item("terminate the running command", with(&["terminate"])),
-                    item("swap with…", with(&["choose-pane"])),
-                    item("move to tab…", with(&["choose-tab"])),
-                    item("move to a new tab", with(&["move-pane", "--to", "new-tab"])),
-                    item("move to workspace…", with(&["choose-workspace"])),
-                    item(
-                        "move to a new workspace",
-                        with(&["move-pane", "--to", "new-workspace"]),
-                    ),
-                    item("reorder previous", with(&["reorder", "pane", "--previous"])),
-                    item("reorder next", with(&["reorder", "pane", "--next"])),
-                ],
-            )
-        }
-        AnyRef::Tab(tab) => {
-            let t = tab.to_string();
-            let with = |words: &[&str]| {
-                let mut v = argv(words);
-                v.push("-t".into());
-                v.push(t.clone());
-                v
-            };
-            let name = session.name_of(&target);
-            let ws = session
-                .find_tab(*tab)
-                .and_then(|(w, _)| session.workspaces.get(w))
-                .map(|w| w.id.to_string())
-                .unwrap_or_default();
-            (
-                format!("tab {tab} {name}"),
-                vec![
-                    item("rename", with(&["rename-prompt", "tab"])),
-                    item("close", with(&["confirm-close", "tab"])),
-                    item("new tab", vec!["new-tab".into(), "-t".into(), ws]),
-                    item("reorder previous", with(&["reorder", "tab", "--previous"])),
-                    item("reorder next", with(&["reorder", "tab", "--next"])),
-                ],
-            )
-        }
-        AnyRef::Workspace(r) => {
-            let id = session.resolve_ws(r)?;
-            let t = id.to_string();
-            let with = |words: &[&str]| {
-                let mut v = argv(words);
-                v.push("-t".into());
-                v.push(t.clone());
-                v
-            };
-            let name = session.name_of(&target);
-            (
-                format!("workspace {id} {name}"),
-                vec![
-                    item("rename", with(&["rename-prompt", "workspace"])),
-                    item("close", with(&["confirm-close", "workspace"])),
-                    item("new workspace", argv(&["new-workspace"])),
-                    item(
-                        "reorder previous",
-                        with(&["reorder", "workspace", "--previous"]),
-                    ),
-                    item("reorder next", with(&["reorder", "workspace", "--next"])),
-                ],
-            )
-        }
-    };
+pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Result<String, Error> {
+    // What the menu is for, which every item names.
     let about = match target {
         AnyRef::Workspace(r) => AnyRef::Workspace(WsRef::Id(session.resolve_ws(&r)?)),
         other @ (AnyRef::Pane(_) | AnyRef::Tab(_)) => other,
     };
+    let kind = kind_of(&about);
+    let name = session.name_of(&about);
+    let title = format!("{} {} {name}", kind.name(), describe(&about));
+    let target = Some(about.clone());
+    let reorder = |forward| Command::Reorder {
+        kind,
+        target: target.clone(),
+        forward,
+    };
+    let mut items = vec![
+        item(
+            "rename",
+            Command::RenamePrompt {
+                client: None,
+                kind,
+                target: target.clone(),
+            },
+        ),
+        item(
+            "close",
+            Command::ConfirmClose {
+                client: None,
+                kind,
+                target: target.clone(),
+            },
+        ),
+    ];
+    match &about {
+        &AnyRef::Pane(p) => items.extend([
+            item(
+                "terminate the running command",
+                Command::Terminate { target: Some(p) },
+            ),
+            item(
+                "swap with…",
+                Command::ChoosePane {
+                    client: None,
+                    target: Some(p),
+                },
+            ),
+            item(
+                "move to tab…",
+                Command::ChooseTab {
+                    client: None,
+                    moving: Some(p),
+                    moving_now: false,
+                },
+            ),
+            item(
+                "move to a new tab",
+                Command::MovePane {
+                    target: Some(p),
+                    to: MoveTo::NewTab,
+                },
+            ),
+            item(
+                "move to workspace…",
+                Command::ChooseWorkspace {
+                    client: None,
+                    moving: Some(p),
+                    moving_now: false,
+                },
+            ),
+            item(
+                "move to a new workspace",
+                Command::MovePane {
+                    target: Some(p),
+                    to: MoveTo::NewWorkspace,
+                },
+            ),
+        ]),
+        &AnyRef::Tab(tab) => {
+            let ws = session
+                .find_tab(tab)
+                .and_then(|(w, _)| session.workspaces.get(w))
+                .map(|w| WsRef::Id(w.id));
+            items.push(item(
+                "new tab",
+                Command::NewTab {
+                    target: ws,
+                    name: None,
+                    cmd: Vec::new(),
+                },
+            ));
+        }
+        AnyRef::Workspace(_) => items.push(item(
+            "new workspace",
+            Command::NewWorkspace {
+                name: None,
+                cmd: Vec::new(),
+            },
+        )),
+    }
+    items.extend([
+        item("reorder previous", reorder(false)),
+        item("reorder next", reorder(true)),
+    ]);
     open_list(session, client, title, items, false, Some(about))
 }
 
@@ -256,9 +308,9 @@ fn open_list(
     items: Vec<Item>,
     chooser: bool,
     about: Option<AnyRef>,
-) -> Result<String, String> {
+) -> Result<String, Error> {
     let selected = items.iter().position(|i| i.current).unwrap_or(0);
-    let view = session.views.get_mut(&client).ok_or("no such client")?;
+    let view = session.views.get_mut(&client).ok_or(Error::NoSuchClient)?;
     view.mode = Mode::List(List {
         title,
         items,
@@ -269,13 +321,16 @@ fn open_list(
     Ok(String::new())
 }
 
-/// Panes' names for a chooser row, shortened.
-fn pane_names(session: &Session, panes: &[PaneId]) -> String {
-    let names: Vec<String> = panes
-        .iter()
-        .filter_map(|p| session.panes.get(p))
-        .map(|p| format!("{} {}", p.id, p.label()))
-        .collect();
+/// The names of the panes in `roots`, for a chooser row, shortened.
+fn pane_names<'a>(session: &Session, roots: impl IntoIterator<Item = &'a Node>) -> String {
+    let mut names: Vec<String> = Vec::new();
+    for root in roots {
+        root.for_each_pane(&mut |id| {
+            if let Some(p) = session.panes.get(&id) {
+                names.push(format!("{} {}", p.id, p.label()));
+            }
+        });
+    }
     if names.is_empty() {
         "empty".into()
     } else {
@@ -289,26 +344,28 @@ pub fn open_tab_chooser(
     session: &mut Session,
     client: ClientId,
     moving: Option<PaneId>,
-) -> Result<String, String> {
-    let view = session.views.get(&client).ok_or("no such client")?;
+) -> Result<String, Error> {
+    let view = session.views.get(&client).ok_or(Error::NoSuchClient)?;
     let current = view.tab();
-    let ws = session.workspace(view.workspace).ok_or("no workspace")?;
-    let tabs: Vec<(TabId, String)> = ws.tabs.iter().map(|t| (t.id, t.name.clone())).collect();
-    let items = tabs
-        .into_iter()
-        .map(|(id, name)| {
-            let panes = session.tab_panes(id);
+    let ws = session
+        .workspace(view.workspace)
+        .ok_or(Error::NoCurrentWorkspace)?;
+    let items = ws
+        .tabs
+        .iter()
+        .map(|tab| {
+            let (id, name) = (tab.id, &tab.name);
             Item {
-                label: format!("{id} {name} — {}", pane_names(session, &panes)),
-                argv: match moving {
-                    Some(p) => vec![
-                        "move-pane".into(),
-                        "-t".into(),
-                        p.to_string(),
-                        "--to".into(),
-                        id.to_string(),
-                    ],
-                    None => vec!["select-tab".into(), "-t".into(), id.to_string()],
+                label: format!("{id} {name} — {}", pane_names(session, &tab.root)),
+                command: match moving {
+                    Some(p) => Command::MovePane {
+                        target: Some(p),
+                        to: MoveTo::Tab(id),
+                    },
+                    None => Command::SelectTab {
+                        client: None,
+                        pick: Pick::Id(id),
+                    },
                 },
                 current: Some(id) == current,
                 subject: Some(AnyRef::Tab(id)),
@@ -334,32 +391,28 @@ pub fn open_workspace_chooser(
     session: &mut Session,
     client: ClientId,
     moving: Option<PaneId>,
-) -> Result<String, String> {
+) -> Result<String, Error> {
     let current = session
         .views
         .get(&client)
-        .ok_or("no such client")?
+        .ok_or(Error::NoSuchClient)?
         .workspace;
     let items = session
         .workspaces
         .iter()
         .map(|ws| {
-            let panes: Vec<PaneId> = ws
-                .tabs
-                .iter()
-                .flat_map(|t| session.tab_panes(t.id))
-                .collect();
+            let roots = ws.tabs.iter().filter_map(|t| t.root.as_ref());
             Item {
-                label: format!("{} {} — {}", ws.id, ws.name, pane_names(session, &panes)),
-                argv: match moving {
-                    Some(p) => vec![
-                        "move-pane".into(),
-                        "-t".into(),
-                        p.to_string(),
-                        "--to".into(),
-                        ws.id.to_string(),
-                    ],
-                    None => vec!["select-workspace".into(), "-t".into(), ws.id.to_string()],
+                label: format!("{} {} — {}", ws.id, ws.name, pane_names(session, roots)),
+                command: match moving {
+                    Some(p) => Command::MovePane {
+                        target: Some(p),
+                        to: MoveTo::Workspace(WsRef::Id(ws.id)),
+                    },
+                    None => Command::SelectWorkspace {
+                        client: None,
+                        pick: Pick::Id(WsRef::Id(ws.id)),
+                    },
                 },
                 current: ws.id == current,
                 subject: Some(AnyRef::Workspace(WsRef::Id(ws.id))),
@@ -385,27 +438,27 @@ pub fn open_pane_chooser(
     session: &mut Session,
     client: ClientId,
     source: PaneId,
-) -> Result<String, String> {
-    let (_, tab) = session.locate(source).ok_or("the pane is in no tab")?;
-    let items: Vec<Item> = session
-        .tab_panes(tab)
-        .into_iter()
-        .filter(|p| *p != source)
-        .filter_map(|p| session.panes.get(&p))
-        .map(|p| Item {
-            label: format!("{} {}", p.id, p.label()),
-            argv: vec![
-                "swap-pane".into(),
-                "-t".into(),
-                source.to_string(),
-                p.id.to_string(),
-            ],
-            current: false,
-            subject: Some(AnyRef::Pane(p.id)),
-        })
-        .collect();
+) -> Result<String, Error> {
+    let (_, tab) = session.locate(source).ok_or(Error::NotInTab)?;
+    let mut items: Vec<Item> = Vec::new();
+    if let Some(root) = session.tab(tab).and_then(|t| t.root.as_ref()) {
+        root.for_each_pane(&mut |id| {
+            let Some(p) = session.panes.get(&id).filter(|_| id != source) else {
+                return;
+            };
+            items.push(Item {
+                label: format!("{} {}", p.id, p.label()),
+                command: Command::SwapPane {
+                    target: Some(source),
+                    with: SwapWith::Pane(p.id),
+                },
+                current: false,
+                subject: Some(AnyRef::Pane(p.id)),
+            });
+        });
+    }
     if items.is_empty() {
-        return Err("only one pane".into());
+        return Err(Error::OnlyOne(Kind::Pane));
     }
     open_list(
         session,
@@ -419,16 +472,19 @@ pub fn open_pane_chooser(
 
 // ----------------------------------------------------------------- input
 
-/// Runs a command line for a client: output and errors become its notice.
-pub fn run_for(session: &mut Session, client: ClientId, argv: &[String]) {
-    let outcome = session.run(argv, &Ctx::client(client));
+/// Runs a command for a client: output and errors become its notice.
+pub fn run_for(session: &mut Session, client: ClientId, command: &Command) {
+    let outcome = session.run_command(command, &Ctx::client(client));
     if let Some(view) = session.views.get_mut(&client) {
         if outcome.status != 0 {
             view.error(outcome.stderr.lines().next().unwrap_or("failed").to_owned());
         } else if let Some(line) = outcome.stdout.lines().find(|l| !l.trim().is_empty())
             && !matches!(
-                argv.first().map(String::as_str),
-                Some("split" | "new-tab" | "new-workspace" | "move-pane")
+                command,
+                Command::Split { .. }
+                    | Command::NewTab { .. }
+                    | Command::NewWorkspace { .. }
+                    | Command::MovePane { .. }
             )
         {
             let more = outcome
@@ -446,16 +502,30 @@ pub fn run_for(session: &mut Session, client: ClientId, argv: &[String]) {
     }
 }
 
+/// Runs a command line typed for a client, as `run_for` runs a command; one
+/// that does not parse says why.
+fn run_line(session: &mut Session, client: ClientId, argv: &[String]) {
+    match crate::command::parse(argv) {
+        Ok(command) => run_for(session, client, &command),
+        Err(usage) => {
+            if let Some(view) = session.views.get_mut(&client) {
+                let message = usage.to_string();
+                view.error(message.lines().next().unwrap_or("failed").to_owned());
+            }
+        }
+    }
+}
+
 /// Runs an entry of a list or the column, unless it cannot run now, in
 /// which case the reason is shown and nothing happens.
-fn run_entry(session: &mut Session, client: ClientId, argv: &[String]) {
-    if let Some(reason) = session.unavailable(argv, &Ctx::client(client)) {
+fn run_entry(session: &mut Session, client: ClientId, command: &Command) {
+    if let Some(reason) = session.unavailable(command, &Ctx::client(client)) {
         if let Some(view) = session.views.get_mut(&client) {
-            view.error(reason);
+            view.error(reason.to_string());
         }
         return;
     }
-    run_for(session, client, argv);
+    run_for(session, client, command);
 }
 
 fn plain(press: KeyPress) -> Option<Key> {
@@ -507,9 +577,9 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
         }
         Some(Key::Enter) => {
             match column_selected(session, &path, selected) {
-                Some(ColumnRow::Binding { argv, .. }) => {
+                Some(ColumnRow::Binding { command, .. }) => {
                     set_mode(session, client, Mode::Normal);
-                    run_entry(session, client, &argv);
+                    run_entry(session, client, &command);
                 }
                 Some(ColumnRow::Layer { key, .. }) => follow(session, client, &path, key),
                 Some(ColumnRow::Heading(_)) | None => set_mode(session, client, Mode::Normal),
@@ -539,7 +609,7 @@ fn follow(session: &mut Session, client: ClientId, path: &[KeyPress], press: Key
     keys.push(crate::config::folded(press));
     let bindings = &session.config.bindings;
     if let Some(binding) = bindings.iter().find(|b| b.keys == keys) {
-        let (argv, repeat) = (binding.command.clone(), binding.repeat);
+        let (command, repeat) = (binding.parsed.clone(), binding.repeat);
         let mode = if repeat {
             Mode::Repeat {
                 path: path.to_vec(),
@@ -548,7 +618,7 @@ fn follow(session: &mut Session, client: ClientId, path: &[KeyPress], press: Key
             Mode::Normal
         };
         set_mode(session, client, mode);
-        run_entry(session, client, &argv);
+        run_entry(session, client, &command);
     } else if bindings
         .iter()
         .any(|b| b.keys.len() > keys.len() && b.keys.starts_with(&keys))
@@ -608,19 +678,19 @@ pub fn repeat_key(session: &mut Session, client: ClientId, press: KeyPress) {
         .bindings
         .iter()
         .find(|b| b.keys == keys)
-        .map(|b| (b.command.clone(), b.repeat));
+        .map(|b| (b.parsed.clone(), b.repeat));
     match found {
-        Some((argv, repeat)) => {
+        Some((command, repeat)) => {
             let mode = if repeat {
                 Mode::Repeat { path }
             } else {
                 Mode::Normal
             };
             set_mode(session, client, mode);
-            run_entry(session, client, &argv);
+            run_entry(session, client, &command);
         }
         None => {
-            let title = layer_title(session, &path).unwrap_or_default();
+            let title = layer_title(session, &path).unwrap_or_default().to_owned();
             set_mode(session, client, Mode::Normal);
             if let Some(view) = session.views.get_mut(&client) {
                 view.info(format!("{title} ended: {press} is not one of its keys"));
@@ -648,7 +718,7 @@ pub fn send_key(session: &mut Session, client: ClientId, press: KeyPress) {
     if let Err(error) = p.input.push(bytes)
         && let Some(view) = session.views.get_mut(&client)
     {
-        view.error(error);
+        view.error(error.to_string());
     }
 }
 
@@ -663,7 +733,7 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
     };
     let last = list.items.len().saturating_sub(1);
     let page = list_capacity(rows);
-    let mut run: Option<Vec<String>> = None;
+    let mut run: Option<Command> = None;
     let mut close = false;
     match plain(press) {
         Some(Key::Arrow(Direction::Up)) | Some(Key::Char('k')) => {
@@ -679,7 +749,7 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
         Some(Key::End) => list.selected = last,
         Some(Key::Escape) | Some(Key::Char('q')) => close = true,
         Some(Key::Enter) => {
-            run = list.items.get(list.selected).map(|i| i.argv.clone());
+            run = list.items.get(list.selected).map(|i| i.command.clone());
             close = run.is_some();
         }
         Some(Key::Char('r')) if list.chooser => {
@@ -688,11 +758,11 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
                 .get(list.selected)
                 .and_then(|i| i.subject.clone())
             {
-                run = Some(vec![
-                    "rename-prompt".into(),
-                    "-t".into(),
-                    describe_id(session_ws(&subject)),
-                ]);
+                run = Some(Command::RenamePrompt {
+                    client: None,
+                    kind: kind_of(&subject),
+                    target: Some(subject),
+                });
                 close = true;
             }
         }
@@ -702,39 +772,32 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
                 .get(list.selected)
                 .and_then(|i| i.subject.clone())
             {
-                run = Some(vec![
-                    "confirm-close".into(),
-                    "-t".into(),
-                    describe_id(session_ws(&subject)),
-                ]);
+                run = Some(Command::ConfirmClose {
+                    client: None,
+                    kind: kind_of(&subject),
+                    target: Some(subject),
+                });
                 close = true;
             }
         }
         _ => {}
     }
     view.dirty = true;
-    if let Some(argv) = run {
+    if let Some(command) = run {
         // An unavailable entry explains itself and the list stays open.
-        if let Some(reason) = session.unavailable(&argv, &Ctx::client(client)) {
+        if let Some(reason) = session.unavailable(&command, &Ctx::client(client)) {
             if let Some(view) = session.views.get_mut(&client) {
-                view.error(reason);
+                view.error(reason.to_string());
             }
             return;
         }
         if let Some(view) = session.views.get_mut(&client) {
             view.mode = Mode::Normal;
         }
-        run_for(session, client, &argv);
+        run_for(session, client, &command);
     } else if close && let Some(view) = session.views.get_mut(&client) {
         view.mode = Mode::Normal;
     }
-}
-
-fn session_ws(subject: &AnyRef) -> &AnyRef {
-    subject
-}
-fn describe_id(subject: &AnyRef) -> String {
-    describe(subject)
 }
 
 /// `text` with the `remove` chars from char `at` replaced by `insert`:
@@ -836,12 +899,12 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
                 Ok(argv) => argv,
                 Err(error) => {
                     if let Some(view) = session.views.get_mut(&client) {
-                        view.error(error);
+                        view.error(error.to_string());
                     }
                     return;
                 }
             };
-            run_for(session, client, &argv);
+            run_line(session, client, &argv);
         }
         PromptFor::Rename(target) => {
             let id = match &target {
@@ -849,14 +912,14 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
                     Ok(w) => w.to_string(),
                     Err(error) => {
                         if let Some(view) = session.views.get_mut(&client) {
-                            view.error(error);
+                            view.error(error.to_string());
                         }
                         return;
                     }
                 },
                 other @ (AnyRef::Pane(_) | AnyRef::Tab(_)) => describe(other),
             };
-            run_for(
+            run_line(
                 session,
                 client,
                 &["rename".into(), "-t".into(), id, prompt.text],
@@ -876,9 +939,9 @@ pub fn confirm_key(session: &mut Session, client: ClientId, press: KeyPress) {
     view.dirty = true;
     match plain(press) {
         Some(Key::Char('y')) | Some(Key::Char('Y')) => {
-            let argv = confirm.argv.clone();
+            let command = confirm.command.clone();
             view.mode = Mode::Normal;
-            run_for(session, client, &argv);
+            run_for(session, client, &command);
         }
         Some(Key::Char('n')) | Some(Key::Char('N')) | Some(Key::Escape) | Some(Key::Char('q')) => {
             view.mode = Mode::Normal;
@@ -908,13 +971,14 @@ mod tests {
     /// A session without processes, one client attached.
     fn session() -> Result<(Session, ClientId), String> {
         let mut session = Session::new(Config::default(), "/nonexistent/fux.sock".into(), false);
-        session.start()?;
-        let client = session.attach(30, 100, None)?;
+        session.start().map_err(|e| e.to_string())?;
+        let client = session.attach(30, 100, None).map_err(|e| e.to_string())?;
         Ok((session, client))
     }
 
     fn run(session: &mut Session, line: &str) -> Outcome {
-        let outcome = session.run(&crate::words::split(line)?, &Ctx::default());
+        let words = crate::words::split(line).map_err(|e| e.to_string())?;
+        let outcome = session.run(&words, &Ctx::default());
         if outcome.status == 0 {
             Ok(())
         } else {
@@ -1008,7 +1072,14 @@ mod tests {
         // Panes come first.
         assert!(matches!(
             column_selected(&s, &[], 0),
-            Some(ColumnRow::Binding { argv, .. }) if argv == ["split", "-h"]
+            Some(ColumnRow::Binding {
+                command: Command::Split {
+                    axis: crate::layout::Axis::Horizontal,
+                    target: None,
+                    cmd,
+                },
+                ..
+            }) if cmd.is_empty()
         ));
         // Letters are bindings, not moves: `j` focuses down and closes it.
         s.input(c, b"\x1b[Hj");
@@ -1069,9 +1140,13 @@ mod tests {
             vec![
                 ColumnRow::Heading("Tabs".into()),
                 ColumnRow::Binding {
-                    key: "n".into(),
+                    key: KeyPress::char('n'),
                     label: crate::command::label(&["new-tab".to_owned()]),
-                    argv: vec!["new-tab".into()],
+                    command: Command::NewTab {
+                        target: None,
+                        name: None,
+                        cmd: Vec::new(),
+                    },
                 },
             ]
         );
@@ -1172,6 +1247,49 @@ mod tests {
         Ok(())
     }
 
+    /// The server settles after every read of a pane's output: an open
+    /// column keeps its layer and its selection, counted without building
+    /// its rows, and shows the output behind it.
+    #[test]
+    fn a_column_stays_open_while_a_pane_writes() -> Outcome {
+        let (mut s, c) = session()?;
+        with_layers(&mut s)?;
+        for path in [&[][..], &[KeyPress::char('t')], &[KeyPress::char('y')]] {
+            let entries = column_rows(&s, path)
+                .into_iter()
+                .filter(|r| !matches!(r, ColumnRow::Heading(_)))
+                .count();
+            assert_eq!(column_len(&s, path), entries, "{path:?}");
+        }
+        s.input(c, b"\x02\x1b[B\x1b[B\x1b[B");
+        assert_eq!(mode(&s, c), "column 3");
+        let selected = column_selected(&s, &[], 3);
+        assert!(selected.is_some());
+        for i in 0..50 {
+            s.output(
+                crate::layout::PaneId(1),
+                format!("output {i}\r\n").as_bytes(),
+            );
+            s.settle();
+        }
+        assert_eq!(mode(&s, c), "column 3");
+        assert_eq!(column_selected(&s, &[], 3), selected);
+        let text = screen_text(&s, c)?;
+        assert!(
+            text.contains("output 49") && text.contains("Commands"),
+            "{text}"
+        );
+        // In a layer too.
+        s.input(c, b"\x1b");
+        s.escape(c);
+        s.input(c, b"\x02t\x1b[B");
+        assert_eq!(mode(&s, c), "column t 1");
+        s.output(crate::layout::PaneId(1), b"more\r\n");
+        s.settle();
+        assert_eq!(mode(&s, c), "column t 1");
+        Ok(())
+    }
+
     #[test]
     fn another_key_leaves_a_repeat_mode_without_reaching_the_pane() -> Outcome {
         let (mut s, c) = session()?;
@@ -1253,9 +1371,105 @@ mod tests {
                 typed.input(c, b"\r");
             }
             let (mut ran, d) = busy()?;
-            run_entry(&mut ran, d, &binding.command);
+            run_entry(&mut ran, d, &binding.parsed);
             assert_eq!(state(&mut typed, c), state(&mut ran, d), "{keys}");
         }
+        Ok(())
+    }
+
+    /// Menus, choosers and confirmations build their commands, typed,
+    /// with every target given: each is what the command line they used to
+    /// hold parses to.
+    #[test]
+    fn listed_commands_are_what_their_lines_parse_to() -> Outcome {
+        let (mut s, c) = busy()?;
+        let parsed = |line: &str| -> Result<Command, String> {
+            crate::command::parse(&crate::words::split(line).map_err(|e| e.to_string())?)
+                .map_err(|u| u.to_string())
+        };
+        let listed = |s: &Session| match s.views.get(&c).map(|v| &v.mode) {
+            Some(Mode::List(list)) => list.items.iter().map(|i| i.command.clone()).collect(),
+            Some(Mode::Confirm(confirm)) => vec![confirm.command.clone()],
+            _ => Vec::new(),
+        };
+        for (open, lines) in [
+            (
+                "menu -c c1 pane -t %2",
+                &[
+                    "rename-prompt pane -t %2",
+                    "confirm-close pane -t %2",
+                    "terminate -t %2",
+                    "choose-pane -t %2",
+                    "choose-tab -t %2",
+                    "move-pane -t %2 --to new-tab",
+                    "choose-workspace -t %2",
+                    "move-pane -t %2 --to new-workspace",
+                    "reorder pane --previous -t %2",
+                    "reorder pane --next -t %2",
+                ][..],
+            ),
+            (
+                "menu -c c1 tab -t @1",
+                &[
+                    "rename-prompt tab -t @1",
+                    "confirm-close tab -t @1",
+                    "new-tab -t +1",
+                    "reorder tab --previous -t @1",
+                    "reorder tab --next -t @1",
+                ],
+            ),
+            (
+                "menu -c c1 workspace -t main",
+                &[
+                    "rename-prompt workspace -t +1",
+                    "confirm-close workspace -t +1",
+                    "new-workspace",
+                    "reorder workspace --previous -t +1",
+                    "reorder workspace --next -t +1",
+                ],
+            ),
+            (
+                "choose-tab -c c1",
+                &["select-tab -t @1", "select-tab -t @2"],
+            ),
+            (
+                "choose-tab -c c1 -t %2",
+                &["move-pane -t %2 --to @1", "move-pane -t %2 --to @2"],
+            ),
+            (
+                "choose-workspace -c c1",
+                &["select-workspace -t +1", "select-workspace -t +2"],
+            ),
+            (
+                "choose-workspace -c c1 --move",
+                &["move-pane -t %2 --to +1", "move-pane -t %2 --to +2"],
+            ),
+            (
+                "choose-pane -c c1 -t %2",
+                &["swap-pane -t %2 %1", "swap-pane -t %2 %3"],
+            ),
+            ("confirm-close -c c1 pane -t %3", &["kill-pane -t %3"]),
+            ("confirm-close -c c1 tab -t @2", &["kill-tab -t @2"]),
+            (
+                "confirm-close -c c1 workspace -t main",
+                &["kill-workspace -t +1"],
+            ),
+        ] {
+            run(&mut s, open)?;
+            let expected = lines
+                .iter()
+                .map(|l| parsed(l))
+                .collect::<Result<Vec<_>, _>>()?;
+            assert_eq!(listed(&s), expected, "{open}");
+        }
+        // A chooser's `r` and `x` act on the selected item.
+        run(&mut s, "choose-tab -c c1")?;
+        s.input(c, b"r");
+        assert_eq!(mode(&s, c), "prompt main|4");
+        s.input(c, b"\r");
+        run(&mut s, "choose-tab -c c1")?;
+        s.input(c, b"x");
+        assert_eq!(mode(&s, c), "confirm close tab @1 main?");
         Ok(())
     }
 

@@ -229,7 +229,10 @@ letters makes its first ones layers. `-r` makes a binding repeat:
 resizes again, until Esc. A key sequence is a command or a layer, never both:
 `bind t zoom` is refused while `t` is a layer, and `unbind t` removes the
 whole layer. Anything else (`C-Left`, `:`, `Tab`) is refused, naming the
-rule.
+rule. The command is checked when the binding is made, not when its keys
+are typed: `fux bind g no-such-command` is refused with the reason the
+command does not parse (`bind g: unknown command "no-such-command"; …`),
+and such a line in the config file is a config error like any other.
 
 ### `--json`
 

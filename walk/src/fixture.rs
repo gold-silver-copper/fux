@@ -287,7 +287,7 @@ impl Fixture {
     /// A new real client of `rows` by `cols`: its id.
     pub fn attach(&mut self, rows: u16, cols: u16) -> Result<String, String> {
         let before = self.listed_clients()?;
-        let (master, slave) = fux::process::open_pty(rows, cols)?;
+        let (master, slave) = fux::process::open_pty(rows, cols).map_err(|e| e.to_string())?;
         let argv = [self.fux.as_os_str(), std::ffi::OsStr::new("attach")];
         let socket = self.socket.clone();
         let dir = self.dir.clone();
@@ -338,7 +338,7 @@ impl Fixture {
             role: Role::Attach,
         };
         stream
-            .write_all(&hello.encode()?)
+            .write_all(&hello.encode().map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
         let attach = Frame::Attach {
             rows: 9000,
@@ -346,7 +346,7 @@ impl Fixture {
             workspace: None,
         };
         stream
-            .write_all(&attach.encode()?)
+            .write_all(&attach.encode().map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
         // Composing a 4096 by 4096 screen, some 16.7 million cells, takes
         // most of a second in a release build and seconds in a debug one.
@@ -371,7 +371,7 @@ impl Fixture {
             }
             std::thread::sleep(Duration::from_millis(5));
         };
-        let _ = stream.write_all(&Frame::Detach.encode()?);
+        let _ = stream.write_all(&Frame::Detach.encode().map_err(|e| e.to_string())?);
         Ok(size)
     }
 

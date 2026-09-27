@@ -4,7 +4,7 @@ use crate::bytes::ByteQueue;
 use crate::command::ClientId;
 use crate::config::Config;
 use crate::layout::PaneId;
-use crate::protocol::{Decoder, Frame, PROTOCOL, Role};
+use crate::protocol::{Decoder, Frame, PROTOCOL, Role, Stream};
 use crate::render::{self, Grid};
 use crate::session::{Ctx, Outgoing, Session};
 use fuxix::poll::{Events as PollFlags, PollFd};
@@ -45,8 +45,14 @@ struct Conn {
     out: ByteQueue,
     role: Option<Role>,
     client: Option<ClientId>,
-    /// What the client's terminal shows, for diffing.
-    shown: Option<Grid>,
+    /// What the client's terminal shows, for diffing, once `painted`.
+    shown: Grid,
+    /// Whether `shown` is on the client's terminal; if not, the next paint
+    /// is a full one.
+    painted: bool,
+    /// The grid the next paint is composed into, then swapped with `shown`:
+    /// the two are reused by every paint.
+    spare: Grid,
     next_paint: Instant,
     /// Paints were skipped while its output was full: repaint all once drained.
     starved: bool,
@@ -56,16 +62,14 @@ struct Conn {
 }
 
 impl Conn {
+    /// Encodes a frame straight into the output.
     fn send(&mut self, frame: &Frame) {
-        match frame.encode() {
-            Ok(bytes) => self.out.push(&bytes),
-            Err(_) => self.dead = true,
+        if self.out.push_with(|out| frame.encode_into(out)).is_err() {
+            self.dead = true;
         }
     }
-    fn send_bytes(&mut self, make: fn(Vec<u8>) -> Frame, bytes: &[u8]) {
-        for frame in Frame::chunked(make, bytes) {
-            self.send(&frame);
-        }
+    fn send_stream(&mut self, stream: Stream, bytes: &[u8]) {
+        stream.encode_into(bytes, &mut self.out);
     }
 }
 
@@ -81,6 +85,12 @@ pub struct Server {
     /// Where client bytes land before their decoder takes them; one for the
     /// server, reused by every read.
     read_buffer: Vec<u8>,
+    /// Where a paint is written before it is framed; reused by every paint.
+    paint_buffer: Vec<u8>,
+    /// What each descriptor polled is, and then what is ready; reused by
+    /// every tick.
+    slots: Vec<Slot>,
+    ready: Vec<(Slot, PollFlags)>,
     /// A descriptor held in reserve, so that a connection that arrives when
     /// all others are taken can still be accepted and told why it is
     /// refused (bevy-final findings 006 and 012).
@@ -97,9 +107,39 @@ fn log(message: &str) {
     eprintln!("fux server: {message}");
 }
 
+/// Why a server could not start.
+#[derive(Debug)]
+pub enum Error {
+    Socket(crate::socket::Error),
+    /// The listener or the signal pipes could not be set up.
+    Setup(std::io::Error),
+    /// The first workspace could not be made.
+    Start(crate::session::Error),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Socket(error) => error.fmt(f),
+            Error::Setup(error) => error.fmt(f),
+            Error::Start(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Socket(error) => Some(error),
+            Error::Setup(error) => Some(error),
+            Error::Start(error) => Some(error),
+        }
+    }
+}
+
 /// Runs a server on `socket` until it is told to stop or its last pane
 /// closes.
-pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), String> {
+pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), Error> {
     let (config, error) = match &config_path {
         Some(path) => match Config::from_file(path) {
             Ok(config) => (config, None),
@@ -110,26 +150,26 @@ pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), String> 
         },
         None => (Config::default(), None),
     };
-    let (endpoint, listener) = crate::socket::bind_socket(socket)?;
-    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
-    let (children, children_in) = UnixStream::pair().map_err(|e| e.to_string())?;
-    let (stops, stops_in) = UnixStream::pair().map_err(|e| e.to_string())?;
-    children.set_nonblocking(true).map_err(|e| e.to_string())?;
-    stops.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let (endpoint, listener) = crate::socket::bind_socket(socket).map_err(Error::Socket)?;
+    listener.set_nonblocking(true).map_err(Error::Setup)?;
+    let (children, children_in) = UnixStream::pair().map_err(Error::Setup)?;
+    let (stops, stops_in) = UnixStream::pair().map_err(Error::Setup)?;
+    children.set_nonblocking(true).map_err(Error::Setup)?;
+    stops.set_nonblocking(true).map_err(Error::Setup)?;
     signal_hook::low_level::pipe::register(signal_hook::consts::SIGCHLD, children_in)
-        .map_err(|e| e.to_string())?;
+        .map_err(Error::Setup)?;
     for signal in [
         signal_hook::consts::SIGTERM,
         signal_hook::consts::SIGINT,
         signal_hook::consts::SIGHUP,
     ] {
-        let stop = stops_in.try_clone().map_err(|e| e.to_string())?;
-        signal_hook::low_level::pipe::register(signal, stop).map_err(|e| e.to_string())?;
+        let stop = stops_in.try_clone().map_err(Error::Setup)?;
+        signal_hook::low_level::pipe::register(signal, stop).map_err(Error::Setup)?;
     }
     let mut session = Session::new(config, endpoint.path().to_owned(), true);
     session.config_path = config_path;
     session.config_error = error;
-    session.start()?;
+    session.start().map_err(Error::Start)?;
     let mut server = Server {
         session,
         listener,
@@ -139,6 +179,9 @@ pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), String> 
         stopping: None,
         escapes: std::collections::HashMap::new(),
         read_buffer: vec![0u8; 64 * 1024],
+        paint_buffer: Vec::new(),
+        slots: Vec::new(),
+        ready: Vec::new(),
         spare: std::fs::File::open("/dev/null").ok(),
         shortage: None,
         listen_after: None,
@@ -149,6 +192,7 @@ pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), String> 
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 enum Slot {
     Listener,
     Children,
@@ -173,9 +217,10 @@ impl Server {
             }
             self.paint(now);
             let timeout = self.timeout(Instant::now());
-            let ready = self.poll(timeout);
+            let mut ready = std::mem::take(&mut self.ready);
+            self.poll(timeout, &mut ready);
             let now = Instant::now();
-            for (slot, flags) in ready {
+            for &(slot, flags) in &ready {
                 match slot {
                     Slot::Listener => self.accept(),
                     Slot::Children => {
@@ -190,6 +235,7 @@ impl Server {
                     Slot::Pane(id) => self.serve_pane(id, flags),
                 }
             }
+            self.ready = ready;
             self.escapes(now);
             self.session.type_due(now);
             self.finish_dying(false);
@@ -201,20 +247,22 @@ impl Server {
     /// A lone Escape becomes a key once `ESCAPE_DELAY` passes with no byte
     /// after it.
     fn escapes(&mut self, now: Instant) {
-        let waiting: Vec<ClientId> = self
-            .session
-            .views
-            .keys()
-            .copied()
-            .filter(|c| self.session.waiting(*c))
-            .collect();
-        self.escapes.retain(|c, _| waiting.contains(c));
-        for client in waiting {
-            let since = *self.escapes.entry(client).or_insert(now);
-            if now.duration_since(since) >= crate::decode::ESCAPE_DELAY {
-                self.escapes.remove(&client);
-                self.session.escape(client);
-            }
+        let session = &self.session;
+        self.escapes.retain(|c, _| session.waiting(*c));
+        for client in session.views.keys().filter(|c| session.waiting(**c)) {
+            self.escapes.entry(*client).or_insert(now);
+        }
+        // One at a time, in the clients' order: an Escape runs whatever it
+        // completes.
+        while let Some(client) = self
+            .escapes
+            .iter()
+            .filter(|(_, since)| now.duration_since(**since) >= crate::decode::ESCAPE_DELAY)
+            .map(|(client, _)| *client)
+            .min()
+        {
+            self.escapes.remove(&client);
+            self.session.escape(client);
         }
     }
 
@@ -255,8 +303,13 @@ impl Server {
         deadline.map(|d| d.saturating_duration_since(now))
     }
 
-    fn poll(&mut self, timeout: Option<Duration>) -> Vec<(Slot, PollFlags)> {
-        let mut slots = Vec::new();
+    /// Waits for descriptors to be ready, or `timeout`; which are, and for
+    /// what, go into `ready`.
+    fn poll(&mut self, timeout: Option<Duration>, ready: &mut Vec<(Slot, PollFlags)>) {
+        ready.clear();
+        let slots = &mut self.slots;
+        slots.clear();
+        // Built afresh, as it borrows the descriptors.
         let mut fds = Vec::new();
         if self.listen_after.is_some_and(|at| Instant::now() >= at) {
             self.listen_after = None;
@@ -291,12 +344,13 @@ impl Server {
             Ok(_) | Err(fuxix::Errno::INTR) => {}
             Err(error) => log(&format!("poll: {error}")),
         }
-        fds.iter()
-            .map(PollFd::revents)
-            .zip(slots)
-            .filter(|(flags, _)| !flags.is_empty())
-            .map(|(flags, slot)| (slot, flags))
-            .collect()
+        ready.extend(
+            fds.iter()
+                .map(PollFd::revents)
+                .zip(slots.iter().copied())
+                .filter(|(flags, _)| !flags.is_empty())
+                .map(|(flags, slot)| (slot, flags)),
+        );
     }
 
     fn stop(&mut self, reason: String) {
@@ -319,7 +373,7 @@ impl Server {
             match outgoing {
                 Outgoing::Bytes(client, bytes) => {
                     if let Some(conn) = self.conns.iter_mut().find(|c| c.client == Some(client)) {
-                        conn.send_bytes(Frame::Paint, &bytes);
+                        conn.send_stream(Stream::Paint, &bytes);
                     }
                 }
                 Outgoing::Exit(client, reason) => {
@@ -341,7 +395,7 @@ impl Server {
                 // A client that stops reading gets nothing more queued; once
                 // it drains, one full repaint.
                 conn.starved = true;
-                conn.shown = None;
+                conn.painted = false;
                 continue;
             }
             if conn.starved {
@@ -354,12 +408,15 @@ impl Server {
             if !dirty || now < conn.next_paint {
                 continue;
             }
-            let Some(grid) = render::compose(&self.session, client) else {
+            if !render::compose_into(&self.session, client, &mut conn.spare) {
                 continue;
-            };
-            let bytes = render::paint(conn.shown.as_ref(), &grid);
-            conn.send_bytes(Frame::Paint, &bytes);
-            conn.shown = Some(grid);
+            }
+            self.paint_buffer.clear();
+            let shown = conn.painted.then_some(&conn.shown);
+            render::paint_into(shown, &conn.spare, &mut self.paint_buffer);
+            conn.send_stream(Stream::Paint, &self.paint_buffer);
+            std::mem::swap(&mut conn.shown, &mut conn.spare);
+            conn.painted = true;
             conn.next_paint = crate::after(now, PAINT);
             if let Some(view) = self.session.views.get_mut(&client) {
                 view.dirty = false;
@@ -419,7 +476,9 @@ impl Server {
                         out: ByteQueue::default(),
                         role: None,
                         client: None,
-                        shown: None,
+                        shown: Grid::new(0, 0),
+                        painted: false,
+                        spare: Grid::new(0, 0),
                         next_paint: Instant::now(),
                         starved: false,
                         closing: false,
@@ -634,7 +693,7 @@ impl Server {
                         conn.next_paint = Instant::now();
                     }
                     Err(error) => {
-                        conn.send(&Frame::Exit(error));
+                        conn.send(&Frame::Exit(error.to_string()));
                         conn.closing = true;
                     }
                 }
@@ -646,7 +705,7 @@ impl Server {
             }
             (Role::Attach, Frame::Resize { rows, cols }) => {
                 if let Some(client) = conn.client {
-                    conn.shown = None;
+                    conn.painted = false;
                     self.session.resize(client, rows, cols);
                 }
             }
@@ -668,14 +727,14 @@ impl Server {
                     return;
                 };
                 if !outcome.stdout.is_empty() {
-                    conn.send_bytes(Frame::Stdout, outcome.stdout.as_bytes());
+                    conn.send_stream(Stream::Stdout, outcome.stdout.as_bytes());
                 }
                 if !outcome.stderr.is_empty() {
                     let mut stderr = outcome.stderr;
                     if !stderr.ends_with('\n') {
                         stderr.push('\n');
                     }
-                    conn.send_bytes(Frame::Stderr, stderr.as_bytes());
+                    conn.send_stream(Stream::Stderr, stderr.as_bytes());
                 }
                 conn.send(&Frame::Done {
                     status: outcome.status,

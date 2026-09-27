@@ -390,8 +390,7 @@ impl Grid {
             return None;
         }
         // Usually the rows from `from` to `to` lie in one of the deque's two
-        // slices: there the move is two reversals of that run, the rows
-        // between, then the whole.
+        // slices: there the move turns that run by one.
         let (low, high) = (from.min(to), from.max(to));
         let (front, back) = self.order.as_mut_slices();
         let split = front.len();
@@ -404,15 +403,13 @@ impl Grid {
             }
         };
         if let Some(run) = run {
-            let between = if from < to {
-                run.split_first_mut().map(|(_, rest)| rest)
+            // The run holds `from` and `to`, so at least one row: a turn by
+            // one never passes its end.
+            if from < to {
+                run.rotate_left(1);
             } else {
-                run.split_last_mut().map(|(_, rest)| rest)
-            };
-            if let Some(between) = between {
-                between.reverse();
+                run.rotate_right(1);
             }
-            run.reverse();
             return Some(slot);
         }
         // Across the two slices, one row at a time.
@@ -541,16 +538,14 @@ impl Grid {
             });
             replacement.order.push_back(p);
             if let Some(old) = old {
+                // As much of the old row as fits, over the new one's start:
+                // both runs are `len` long.
                 let len = old.cells.len().min(usize::from(width));
-                if let (Some(dst), Some(src)) = (
-                    start
-                        .checked_add(len)
-                        .and_then(|end| replacement.cells.get_mut(start..end)),
-                    old.cells.get(..len),
-                ) {
-                    for (dst, src) in dst.iter_mut().zip(src) {
-                        *dst = *src;
-                    }
+                let dst = start
+                    .checked_add(len)
+                    .and_then(|end| replacement.cells.get_mut(start..end));
+                if let (Some(dst), Some(src)) = (dst, old.cells.get(..len)) {
+                    crate::copy_from(dst, src);
                 }
                 repair_wide(replacement.slice_mut(p));
             }
