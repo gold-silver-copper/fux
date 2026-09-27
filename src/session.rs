@@ -691,6 +691,28 @@ impl Session {
         self.settle();
     }
 
+    /// Gives a client an error notice, if it is still attached.
+    pub fn error_to(&mut self, client: ClientId, text: impl Into<String>) {
+        if let Some(view) = self.views.get_mut(&client) {
+            view.error(text);
+        }
+    }
+
+    /// Gives a client a notice, if it is still attached.
+    pub fn info_to(&mut self, client: ClientId, text: impl Into<String>) {
+        if let Some(view) = self.views.get_mut(&client) {
+            view.info(text);
+        }
+    }
+
+    /// Sets a client's mode, if it is still attached, for its next paint.
+    pub fn set_mode(&mut self, client: ClientId, mode: Mode) {
+        if let Some(view) = self.views.get_mut(&client) {
+            view.mode = mode;
+            view.dirty = true;
+        }
+    }
+
     // -------------------------------------------------------------- layout
 
     /// The area panes share on a client's screen: all but the bar.
