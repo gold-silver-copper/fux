@@ -107,9 +107,39 @@ fn log(message: &str) {
     eprintln!("fux server: {message}");
 }
 
+/// Why a server could not start.
+#[derive(Debug)]
+pub enum Error {
+    Socket(crate::socket::Error),
+    /// The listener or the signal pipes could not be set up.
+    Setup(std::io::Error),
+    /// The first workspace could not be made.
+    Start(crate::session::Error),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Socket(error) => error.fmt(f),
+            Error::Setup(error) => error.fmt(f),
+            Error::Start(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Socket(error) => Some(error),
+            Error::Setup(error) => Some(error),
+            Error::Start(error) => Some(error),
+        }
+    }
+}
+
 /// Runs a server on `socket` until it is told to stop or its last pane
 /// closes.
-pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), String> {
+pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), Error> {
     let (config, error) = match &config_path {
         Some(path) => match Config::from_file(path) {
             Ok(config) => (config, None),
@@ -120,26 +150,26 @@ pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), String> 
         },
         None => (Config::default(), None),
     };
-    let (endpoint, listener) = crate::socket::bind_socket(socket).map_err(|e| e.to_string())?;
-    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
-    let (children, children_in) = UnixStream::pair().map_err(|e| e.to_string())?;
-    let (stops, stops_in) = UnixStream::pair().map_err(|e| e.to_string())?;
-    children.set_nonblocking(true).map_err(|e| e.to_string())?;
-    stops.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let (endpoint, listener) = crate::socket::bind_socket(socket).map_err(Error::Socket)?;
+    listener.set_nonblocking(true).map_err(Error::Setup)?;
+    let (children, children_in) = UnixStream::pair().map_err(Error::Setup)?;
+    let (stops, stops_in) = UnixStream::pair().map_err(Error::Setup)?;
+    children.set_nonblocking(true).map_err(Error::Setup)?;
+    stops.set_nonblocking(true).map_err(Error::Setup)?;
     signal_hook::low_level::pipe::register(signal_hook::consts::SIGCHLD, children_in)
-        .map_err(|e| e.to_string())?;
+        .map_err(Error::Setup)?;
     for signal in [
         signal_hook::consts::SIGTERM,
         signal_hook::consts::SIGINT,
         signal_hook::consts::SIGHUP,
     ] {
-        let stop = stops_in.try_clone().map_err(|e| e.to_string())?;
-        signal_hook::low_level::pipe::register(signal, stop).map_err(|e| e.to_string())?;
+        let stop = stops_in.try_clone().map_err(Error::Setup)?;
+        signal_hook::low_level::pipe::register(signal, stop).map_err(Error::Setup)?;
     }
     let mut session = Session::new(config, endpoint.path().to_owned(), true);
     session.config_path = config_path;
     session.config_error = error;
-    session.start().map_err(|e| e.to_string())?;
+    session.start().map_err(Error::Start)?;
     let mut server = Server {
         session,
         listener,
