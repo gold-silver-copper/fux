@@ -51,6 +51,16 @@ pub enum Kind {
     Workspace,
 }
 
+impl AnyRef {
+    pub fn kind(&self) -> Kind {
+        match self {
+            AnyRef::Pane(_) => Kind::Pane,
+            AnyRef::Tab(_) => Kind::Tab,
+            AnyRef::Workspace(_) => Kind::Workspace,
+        }
+    }
+}
+
 impl Kind {
     pub fn name(self) -> &'static str {
         match self {
@@ -144,12 +154,6 @@ pub enum Command {
         history: Option<usize>,
         json: bool,
     },
-    /// What a client's terminal shows: the screen the server composes for
-    /// it, bar and overlays included.
-    CaptureClient {
-        client: Option<ClientId>,
-        json: bool,
-    },
     Terminate {
         target: Option<PaneId>,
     },
@@ -177,63 +181,64 @@ pub enum Command {
         index: usize,
         target: Option<PaneId>,
     },
-    Detach {
+    /// A command on one client's screen: the client `-c` names, or the one
+    /// whose key, menu or prompt ran it.
+    Client {
         client: Option<ClientId>,
+        action: ClientAction,
     },
-    // Commands on one client's screen.
-    CommandColumn {
-        client: Option<ClientId>,
+}
+
+/// What a command does on a client's screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClientAction {
+    Detach,
+    /// What the client's terminal shows: the screen the server composes for
+    /// it, bar and overlays included.
+    Capture {
+        json: bool,
     },
+    CommandColumn,
     ChooseTab {
-        client: Option<ClientId>,
         moving: Option<PaneId>,
         moving_now: bool,
     },
     ChooseWorkspace {
-        client: Option<ClientId>,
         moving: Option<PaneId>,
         moving_now: bool,
     },
     ChoosePane {
-        client: Option<ClientId>,
         target: Option<PaneId>,
     },
     Menu {
-        client: Option<ClientId>,
         kind: Kind,
         target: Option<AnyRef>,
     },
-    CommandPrompt {
-        client: Option<ClientId>,
-    },
-    CopyMode {
-        client: Option<ClientId>,
-    },
+    CommandPrompt,
+    CopyMode,
     RenamePrompt {
-        client: Option<ClientId>,
         kind: Kind,
         target: Option<AnyRef>,
     },
     ConfirmClose {
-        client: Option<ClientId>,
         kind: Kind,
         target: Option<AnyRef>,
     },
-    Zoom {
-        client: Option<ClientId>,
-    },
-    SelectPane {
-        client: Option<ClientId>,
-        pick: Pick<PaneId>,
-    },
-    SelectTab {
-        client: Option<ClientId>,
-        pick: Pick<TabId>,
-    },
-    SelectWorkspace {
-        client: Option<ClientId>,
-        pick: Pick<WsRef>,
-    },
+    Zoom,
+    SelectPane(Pick<PaneId>),
+    SelectTab(Pick<TabId>),
+    SelectWorkspace(Pick<WsRef>),
+}
+
+impl ClientAction {
+    /// The action on the client it comes from, as a key, a menu or the
+    /// prompt runs it.
+    pub fn here(self) -> Command {
+        Command::Client {
+            client: None,
+            action: self,
+        }
+    }
 }
 
 /// A command line that is not a valid command: exit status 2.
@@ -411,21 +416,12 @@ pub fn parse_client(text: &str) -> Result<ClientId, Usage> {
     }
 }
 fn parse_kind(text: &str) -> Option<Kind> {
-    match text {
-        "pane" => Some(Kind::Pane),
-        "tab" => Some(Kind::Tab),
-        "workspace" => Some(Kind::Workspace),
-        _ => None,
-    }
+    [Kind::Pane, Kind::Tab, Kind::Workspace]
+        .into_iter()
+        .find(|k| k.name() == text)
 }
 fn direction_flag(flag: &str) -> Option<Direction> {
-    match flag {
-        "-L" => Some(Direction::Left),
-        "-R" => Some(Direction::Right),
-        "-U" => Some(Direction::Up),
-        "-D" => Some(Direction::Down),
-        _ => None,
-    }
+    Direction::ALL.into_iter().find(|d| d.flag() == flag)
 }
 
 /// Words after the command name: flags (some taking a value), positionals,
@@ -454,15 +450,11 @@ impl<'a> Args<'a> {
                 self.rest = self.words.by_ref().cloned().collect();
                 return None;
             }
-            if word.starts_with('-') && word.len() > 1 && !self.at_amount(word) {
+            if word.starts_with('-') && word.len() > 1 {
                 return Some(word.as_str());
             }
             self.positional.push(word.as_str());
         }
-    }
-    /// `-5` is a number, not a flag, only for `capture-pane -S`.
-    fn at_amount(&self, _word: &str) -> bool {
-        false
     }
     fn value(&mut self, flag: &str) -> Result<&'a str, Usage> {
         match self.words.next() {
@@ -491,6 +483,87 @@ impl<'a> Args<'a> {
             word: word.to_owned(),
         }
     }
+    /// The flags, in order, of those `takes` names (space-separated); any
+    /// other is refused where it stands, and each value is parsed there,
+    /// `-t`'s by `target`, so a line with two mistakes reports the first.
+    /// A flag given twice counts the second time.
+    fn flags<T>(
+        &mut self,
+        takes: &str,
+        target: impl Fn(&'a str) -> Result<T, Usage>,
+    ) -> Result<Flags<'a, T>, Usage> {
+        let mut f = Flags {
+            target: None,
+            client: None,
+            name: None,
+            buffer: None,
+            to: None,
+            axis: None,
+            direction: None,
+            pick: None,
+            json: false,
+            moving: false,
+        };
+        while let Some(flag) = self.flag() {
+            if !takes.split(' ').any(|t| t == flag) {
+                return self.unknown(flag);
+            }
+            if let Some(d) = direction_flag(flag) {
+                f.direction = Some(d);
+                f.to = Some(MoveTo::Beside(d));
+                continue;
+            }
+            match flag {
+                "-t" => f.target = Some(target(self.value(flag)?)?),
+                "-c" => f.client = Some(parse_client(self.value(flag)?)?),
+                "-n" => f.name = Some(self.value(flag)?),
+                "-b" => {
+                    let value = self.value(flag)?;
+                    let index = number(value).map(|n| n as usize);
+                    f.buffer = Some(index.ok_or_else(|| Usage::NotBuffer {
+                        command: self.name.to_owned(),
+                        value: value.to_owned(),
+                    })?);
+                }
+                "--to" => f.to = Some(parse_move_to(self.value(flag)?)?),
+                "-h" => f.axis = Some(Axis::Horizontal),
+                "-v" => f.axis = Some(Axis::Vertical),
+                "--json" => f.json = true,
+                "--move" => f.moving = true,
+                "--next" | "--previous" | "--last" => f.pick = Some(flag),
+                other => return self.unknown(other),
+            }
+        }
+        Ok(f)
+    }
+}
+
+/// What a command line's flags gave, as `Args::flags` found them: `-t`'s
+/// target, as the command parses it; `-c`'s client; `-n`'s name; `-b`'s
+/// buffer; where `--to` or a direction moves a pane; `-h` or `-v`; the
+/// last direction flag; `--next`, `--previous` or `--last`; `--json`;
+/// `--move`.
+struct Flags<'a, T> {
+    target: Option<T>,
+    client: Option<ClientId>,
+    name: Option<&'a str>,
+    buffer: Option<usize>,
+    to: Option<MoveTo>,
+    axis: Option<Axis>,
+    direction: Option<Direction>,
+    pick: Option<&'a str>,
+    json: bool,
+    moving: bool,
+}
+
+/// Where `move-pane --to` sends a pane.
+fn parse_move_to(value: &str) -> Result<MoveTo, Usage> {
+    Ok(match value {
+        "new-tab" => MoveTo::NewTab,
+        "new-workspace" => MoveTo::NewWorkspace,
+        v if v.starts_with('@') => MoveTo::Tab(parse_tab(v)?),
+        v => MoveTo::Workspace(parse_workspace(v)?),
+    })
 }
 
 /// Parses one command line.
@@ -500,67 +573,35 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
     };
     let name = name.as_str();
     let mut a = Args::new(name, words);
-    let mut client: Option<ClientId> = None;
     let command = match name {
-        "ls" | "list" => {
-            let mut json = false;
-            while let Some(flag) = a.flag() {
-                match flag {
-                    "--json" => json = true,
-                    other => return a.unknown(other),
-                }
-            }
-            Command::Ls { json }
-        }
+        "ls" | "list" => Command::Ls {
+            json: a.flags("--json", Ok)?.json,
+        },
         "kill-server" => Command::KillServer,
         "list-keys" => Command::ListKeys,
-        "new-workspace" | "new-tab" => {
-            let (mut target, mut ws_name) = (None, None);
-            while let Some(flag) = a.flag() {
-                match flag {
-                    "-n" => ws_name = Some(a.value(flag)?.to_owned()),
-                    "-t" if name == "new-tab" => target = Some(parse_workspace(a.value(flag)?)?),
-                    other => return a.unknown(other),
-                }
-            }
-            let cmd = std::mem::take(&mut a.rest);
-            if name == "new-tab" {
-                Command::NewTab {
-                    target,
-                    name: ws_name,
-                    cmd,
-                }
-            } else {
-                Command::NewWorkspace { name: ws_name, cmd }
+        "new-workspace" => Command::NewWorkspace {
+            name: a.flags("-n", Ok)?.name.map(str::to_owned),
+            cmd: std::mem::take(&mut a.rest),
+        },
+        "new-tab" => {
+            let f = a.flags("-n -t", parse_workspace)?;
+            Command::NewTab {
+                target: f.target,
+                name: f.name.map(str::to_owned),
+                cmd: std::mem::take(&mut a.rest),
             }
         }
         "split" => {
-            let (mut axis, mut target) = (None, None);
-            while let Some(flag) = a.flag() {
-                match flag {
-                    "-h" => axis = Some(Axis::Horizontal),
-                    "-v" => axis = Some(Axis::Vertical),
-                    "-t" => target = Some(parse_pane(a.value(flag)?)?),
-                    other => return a.unknown(other),
-                }
-            }
-            let Some(axis) = axis else {
-                return Err(Usage::SplitAxis);
-            };
+            let f = a.flags("-h -v -t", parse_pane)?;
             Command::Split {
-                axis,
-                target,
+                axis: f.axis.ok_or(Usage::SplitAxis)?,
+                target: f.target,
                 cmd: std::mem::take(&mut a.rest),
             }
         }
         "kill-pane" | "kill-tab" | "kill-workspace" | "terminate" => {
-            let mut target = None;
-            while let Some(flag) = a.flag() {
-                match flag {
-                    "-t" => target = Some(a.value(flag)?),
-                    other => return a.unknown(other),
-                }
-            }
+            // Kept as given, and parsed once every flag is known.
+            let target = a.flags("-t", Ok)?.target;
             match name {
                 "kill-pane" => Command::KillPane {
                     target: target.map(parse_pane).transpose()?,
@@ -577,16 +618,8 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
             }
         }
         "rename" => {
-            let mut target = None;
-            while let Some(flag) = a.flag() {
-                match flag {
-                    "-t" => target = Some(parse_any(a.value(flag)?)?),
-                    other => return a.unknown(other),
-                }
-            }
-            let Some(target) = target else {
-                return Err(Usage::RenameTarget);
-            };
+            let target = a.flags("-t", parse_any)?.target;
+            let target = target.ok_or(Usage::RenameTarget)?;
             let name_words: Vec<String> = a
                 .positional
                 .iter()
@@ -603,66 +636,27 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
             }
         }
         "move-pane" => {
-            let (mut target, mut to) = (None, None);
-            while let Some(flag) = a.flag() {
-                if let Some(direction) = direction_flag(flag) {
-                    to = Some(MoveTo::Beside(direction));
-                    continue;
-                }
-                match flag {
-                    "-t" => target = Some(parse_pane(a.value(flag)?)?),
-                    "--to" => {
-                        let value = a.value(flag)?;
-                        to = Some(match value {
-                            "new-tab" => MoveTo::NewTab,
-                            "new-workspace" => MoveTo::NewWorkspace,
-                            v if v.starts_with('@') => MoveTo::Tab(parse_tab(v)?),
-                            v => MoveTo::Workspace(parse_workspace(v)?),
-                        });
-                    }
-                    other => return a.unknown(other),
-                }
+            let f = a.flags("-t --to -L -R -U -D", parse_pane)?;
+            Command::MovePane {
+                target: f.target,
+                to: f.to.ok_or(Usage::MoveTo)?,
             }
-            let Some(to) = to else {
-                return Err(Usage::MoveTo);
-            };
-            Command::MovePane { target, to }
         }
         "swap-pane" => {
-            let (mut target, mut with) = (None, None);
-            while let Some(flag) = a.flag() {
-                if let Some(direction) = direction_flag(flag) {
-                    with = Some(SwapWith::Toward(direction));
-                    continue;
-                }
-                match flag {
-                    "-t" => target = Some(parse_pane(a.value(flag)?)?),
-                    other => return a.unknown(other),
-                }
-            }
-            if let Some(other) = a.positional.pop() {
-                with = Some(SwapWith::Pane(parse_pane(other)?));
-            }
-            let Some(with) = with else {
-                return Err(Usage::SwapWith);
+            let f = a.flags("-t -L -R -U -D", parse_pane)?;
+            // Another pane, if one is named, rather than a direction.
+            let with = match a.positional.pop() {
+                Some(other) => SwapWith::Pane(parse_pane(other)?),
+                None => f.direction.map(SwapWith::Toward).ok_or(Usage::SwapWith)?,
             };
-            Command::SwapPane { target, with }
+            Command::SwapPane {
+                target: f.target,
+                with,
+            }
         }
         "resize-pane" => {
-            let (mut target, mut direction) = (None, None);
-            while let Some(flag) = a.flag() {
-                if let Some(d) = direction_flag(flag) {
-                    direction = Some(d);
-                    continue;
-                }
-                match flag {
-                    "-t" => target = Some(parse_pane(a.value(flag)?)?),
-                    other => return a.unknown(other),
-                }
-            }
-            let Some(direction) = direction else {
-                return Err(Usage::ResizeDirection);
-            };
+            let f = a.flags("-t -L -R -U -D", parse_pane)?;
+            let (target, direction) = (f.target, f.direction.ok_or(Usage::ResizeDirection)?);
             let amount = match a.positional.pop() {
                 Some(n) => match number(n).and_then(|n| u16::try_from(n).ok()) {
                     Some(n) if n > 0 => n,
@@ -740,25 +734,17 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
             });
         }
         "reorder" => {
-            let (mut target, mut forward) = (None, None);
-            while let Some(flag) = a.flag() {
-                match flag {
-                    "-t" => target = Some(parse_any(a.value(flag)?)?),
-                    "--next" => forward = Some(true),
-                    "--previous" => forward = Some(false),
-                    other => return a.unknown(other),
-                }
-            }
-            let kind = match (a.positional.pop(), &target) {
-                (Some(k), _) => parse_kind(k).ok_or_else(|| a.not_kind(k))?,
-                (None, Some(AnyRef::Pane(_))) => Kind::Pane,
-                (None, Some(AnyRef::Tab(_))) => Kind::Tab,
-                (None, Some(AnyRef::Workspace(_))) => Kind::Workspace,
-                (None, None) => return Err(Usage::ReorderKind),
+            let f = a.flags("-t --next --previous", parse_any)?;
+            let target = f.target;
+            let kind = match a.positional.pop() {
+                Some(k) => parse_kind(k).ok_or_else(|| a.not_kind(k))?,
+                None => target
+                    .as_ref()
+                    .map(AnyRef::kind)
+                    .ok_or(Usage::ReorderKind)?,
             };
-            let Some(forward) = forward else {
-                return Err(Usage::ReorderDirection);
-            };
+            let forward = f.pick.map(|pick| pick == "--next");
+            let forward = forward.ok_or(Usage::ReorderDirection)?;
             Command::Reorder {
                 kind,
                 target,
@@ -776,161 +762,94 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
         "unbind-all" => Command::UnbindAll,
         "reload" => Command::Reload,
         "list-buffers" => Command::ListBuffers,
-        "show-buffer" | "paste-buffer" => {
-            let (mut index, mut target) = (0usize, None);
-            while let Some(flag) = a.flag() {
-                match flag {
-                    "-b" => {
-                        let value = a.value(flag)?;
-                        index =
-                            number(value)
-                                .map(|n| n as usize)
-                                .ok_or_else(|| Usage::NotBuffer {
-                                    command: name.to_owned(),
-                                    value: value.to_owned(),
-                                })?;
-                    }
-                    "-t" if name == "paste-buffer" => target = Some(parse_pane(a.value(flag)?)?),
-                    other => return a.unknown(other),
-                }
-            }
-            if name == "show-buffer" {
-                Command::ShowBuffer { index }
-            } else {
-                Command::PasteBuffer { index, target }
+        "show-buffer" => Command::ShowBuffer {
+            index: a.flags("-b", Ok)?.buffer.unwrap_or(0),
+        },
+        "paste-buffer" => {
+            let f = a.flags("-b -t", parse_pane)?;
+            Command::PasteBuffer {
+                index: f.buffer.unwrap_or(0),
+                target: f.target,
             }
         }
-        "detach" => {
-            while let Some(flag) = a.flag() {
-                match flag {
-                    "-c" => client = Some(parse_client(a.value(flag)?)?),
-                    other => return a.unknown(other),
-                }
-            }
-            Command::Detach { client }
-        }
+        "detach" => Command::Client {
+            client: a.flags("-c", Ok)?.client,
+            action: ClientAction::Detach,
+        },
         "capture-client" => {
-            let mut json = false;
-            while let Some(flag) = a.flag() {
-                match flag {
-                    "-c" => client = Some(parse_client(a.value(flag)?)?),
-                    "--json" => json = true,
-                    other => return a.unknown(other),
-                }
-            }
+            let f = a.flags("-c --json", Ok)?;
             a.no_positional()?;
-            Command::CaptureClient { client, json }
+            Command::Client {
+                client: f.client,
+                action: ClientAction::Capture { json: f.json },
+            }
         }
         "command-column" | "command-prompt" | "copy-mode" | "zoom" | "choose-tab"
         | "choose-workspace" | "choose-pane" | "menu" | "rename-prompt" | "confirm-close"
         | "select-pane" | "select-tab" | "select-workspace" => {
-            let mut target: Option<&str> = None;
-            let mut pick: Option<&str> = None;
-            let mut moving = false;
-            let mut direction = None;
-            while let Some(flag) = a.flag() {
-                if let Some(d) = direction_flag(flag) {
-                    direction = Some(d);
-                    continue;
-                }
-                match flag {
-                    "-c" => client = Some(parse_client(a.value(flag)?)?),
-                    "-t" => target = Some(a.value(flag)?),
-                    "--next" | "--previous" | "--last" => pick = Some(flag),
-                    "--move" => moving = true,
-                    other => return a.unknown(other),
-                }
-            }
+            // The target is kept as given, and parsed once every flag and
+            // the kind are known.
+            let f = a.flags("-c -t --next --previous --last --move -L -R -U -D", Ok)?;
+            let (client, target, pick, direction) = (f.client, f.target, f.pick, f.direction);
             let kind = match a.positional.pop() {
                 Some(k) => Some(parse_kind(k).ok_or_else(|| a.not_kind(k))?),
                 None => None,
             };
             a.no_positional()?;
             let any = target.map(parse_any).transpose()?;
-            let kind_of = |any: &Option<AnyRef>, default: Kind| match (kind, any) {
-                (Some(k), _) => k,
-                (None, Some(AnyRef::Pane(_))) => Kind::Pane,
-                (None, Some(AnyRef::Tab(_))) => Kind::Tab,
-                (None, Some(AnyRef::Workspace(_))) => Kind::Workspace,
-                (None, None) => default,
-            };
-            match name {
-                "command-column" => Command::CommandColumn { client },
-                "command-prompt" => Command::CommandPrompt { client },
-                "copy-mode" => Command::CopyMode { client },
-                "zoom" => Command::Zoom { client },
-                "choose-tab" | "choose-workspace" => {
-                    let moving_pane = target.map(parse_pane).transpose()?;
-                    if name == "choose-tab" {
-                        Command::ChooseTab {
-                            client,
-                            moving: moving_pane,
-                            moving_now: moving,
-                        }
-                    } else {
-                        Command::ChooseWorkspace {
-                            client,
-                            moving: moving_pane,
-                            moving_now: moving,
-                        }
-                    }
-                }
-                "choose-pane" => Command::ChoosePane {
-                    client,
+            // Given, or the target's; a pane's by default, but for a menu.
+            let kind = kind.or(any.as_ref().map(AnyRef::kind));
+            let moving_now = f.moving;
+            let action = match name {
+                "command-column" => ClientAction::CommandColumn,
+                "command-prompt" => ClientAction::CommandPrompt,
+                "copy-mode" => ClientAction::CopyMode,
+                "zoom" => ClientAction::Zoom,
+                "choose-tab" => ClientAction::ChooseTab {
+                    moving: target.map(parse_pane).transpose()?,
+                    moving_now,
+                },
+                "choose-workspace" => ClientAction::ChooseWorkspace {
+                    moving: target.map(parse_pane).transpose()?,
+                    moving_now,
+                },
+                "choose-pane" => ClientAction::ChoosePane {
                     target: target.map(parse_pane).transpose()?,
                 },
-                "menu" => {
-                    let Some(kind) =
-                        kind.or(any.as_ref().map(|a| kind_of(&Some(a.clone()), Kind::Pane)))
-                    else {
-                        return Err(Usage::MenuKind);
-                    };
-                    Command::Menu {
-                        client,
-                        kind,
-                        target: any,
-                    }
-                }
-                "rename-prompt" => Command::RenamePrompt {
-                    client,
-                    kind: kind_of(&any, Kind::Pane),
+                "menu" => ClientAction::Menu {
+                    kind: kind.ok_or(Usage::MenuKind)?,
                     target: any,
                 },
-                "confirm-close" => Command::ConfirmClose {
-                    client,
-                    kind: kind_of(&any, Kind::Pane),
+                "rename-prompt" => ClientAction::RenamePrompt {
+                    kind: kind.unwrap_or(Kind::Pane),
                     target: any,
                 },
-                "select-pane" => Command::SelectPane {
-                    client,
-                    pick: match (pick, direction, target) {
-                        (Some("--next"), None, None) => Pick::Next,
-                        (Some("--previous"), None, None) => Pick::Previous,
-                        (Some("--last"), None, None) => Pick::Last,
-                        (None, Some(d), None) => Pick::Toward(d),
-                        (None, None, Some(t)) => Pick::Id(parse_pane(t)?),
-                        _ => return Err(Usage::SelectPane),
-                    },
+                "confirm-close" => ClientAction::ConfirmClose {
+                    kind: kind.unwrap_or(Kind::Pane),
+                    target: any,
                 },
-                "select-tab" => Command::SelectTab {
-                    client,
-                    pick: match (pick, target) {
-                        (Some("--next"), None) => Pick::Next,
-                        (Some("--previous"), None) => Pick::Previous,
-                        (None, Some(t)) => Pick::Id(parse_tab(t)?),
-                        _ => return Err(Usage::SelectTab),
-                    },
-                },
-                _ => Command::SelectWorkspace {
-                    client,
-                    pick: match (pick, target) {
-                        (Some("--next"), None) => Pick::Next,
-                        (Some("--previous"), None) => Pick::Previous,
-                        (None, Some(t)) => Pick::Id(parse_workspace(t)?),
-                        _ => return Err(Usage::SelectWorkspace),
-                    },
-                },
-            }
+                "select-pane" => ClientAction::SelectPane(match (pick, direction, target) {
+                    (Some("--next"), None, None) => Pick::Next,
+                    (Some("--previous"), None, None) => Pick::Previous,
+                    (Some("--last"), None, None) => Pick::Last,
+                    (None, Some(d), None) => Pick::Toward(d),
+                    (None, None, Some(t)) => Pick::Id(parse_pane(t)?),
+                    _ => return Err(Usage::SelectPane),
+                }),
+                "select-tab" => ClientAction::SelectTab(match (pick, target) {
+                    (Some("--next"), None) => Pick::Next,
+                    (Some("--previous"), None) => Pick::Previous,
+                    (None, Some(t)) => Pick::Id(parse_tab(t)?),
+                    _ => return Err(Usage::SelectTab),
+                }),
+                _ => ClientAction::SelectWorkspace(match (pick, target) {
+                    (Some("--next"), None) => Pick::Next,
+                    (Some("--previous"), None) => Pick::Previous,
+                    (None, Some(t)) => Pick::Id(parse_workspace(t)?),
+                    _ => return Err(Usage::SelectWorkspace),
+                }),
+            };
+            Command::Client { client, action }
         }
         other => return Err(Usage::UnknownCommand(other.to_owned())),
     };
@@ -1081,26 +1000,26 @@ mod tests {
         );
         assert_eq!(
             cmd("select-pane -c c1 --last"),
-            Ok(Command::SelectPane {
+            Ok(Command::Client {
                 client: Some(ClientId(1)),
-                pick: Pick::Last
+                action: ClientAction::SelectPane(Pick::Last)
             })
         );
         assert_eq!(
             cmd("menu tab"),
-            Ok(Command::Menu {
-                client: None,
+            Ok(ClientAction::Menu {
                 kind: Kind::Tab,
                 target: None
-            })
+            }
+            .here())
         );
         assert_eq!(
             cmd("confirm-close -t +1"),
-            Ok(Command::ConfirmClose {
-                client: None,
+            Ok(ClientAction::ConfirmClose {
                 kind: Kind::Workspace,
                 target: Some(AnyRef::Workspace(WsRef::Id(WsId(1))))
-            })
+            }
+            .here())
         );
         assert_eq!(
             cmd("paste-buffer -b 2 -t %4"),

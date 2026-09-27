@@ -267,19 +267,19 @@ impl Reader<'_> {
         self.0 = rest;
         Ok(head)
     }
+    fn bytes<const N: usize>(&mut self) -> Result<[u8; N], Error> {
+        let (head, rest) = self.0.split_first_chunk().ok_or(Error::Truncated)?;
+        self.0 = rest;
+        Ok(*head)
+    }
     fn u8(&mut self) -> Result<u8, Error> {
-        self.take(1)?.first().copied().ok_or(Error::Truncated)
+        self.bytes().map(u8::from_be_bytes)
     }
     fn u16(&mut self) -> Result<u16, Error> {
-        let b = self.take(2)?;
-        Ok(u16::from_be_bytes([
-            b.first().copied().unwrap_or(0),
-            b.get(1).copied().unwrap_or(0),
-        ]))
+        self.bytes().map(u16::from_be_bytes)
     }
     fn u32(&mut self) -> Result<u32, Error> {
-        let b: [u8; 4] = self.take(4)?.try_into().map_err(|_| Error::Truncated)?;
-        Ok(u32::from_be_bytes(b))
+        self.bytes().map(u32::from_be_bytes)
     }
     fn string(&mut self) -> Result<String, Error> {
         let len = self.u32()? as usize;
@@ -294,11 +294,7 @@ impl Reader<'_> {
         }
     }
     fn end(&self) -> Result<(), Error> {
-        if self.0.is_empty() {
-            Ok(())
-        } else {
-            Err(Error::Trailing)
-        }
+        self.0.is_empty().then_some(()).ok_or(Error::Trailing)
     }
 }
 
