@@ -6,6 +6,7 @@
 //! operations: one given each client's bytes as the input says, the other
 //! one byte at a time.
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 
 use fux::command::ClientId;
 use fux::config::{Binding, Config, folded};
@@ -95,9 +96,27 @@ impl<'a> Bytes<'a> {
     }
 }
 
+/// `bytes` in pieces of `size`, the last one maybe shorter.
+fn pieces(mut rest: &[u8], size: NonZeroUsize) -> impl Iterator<Item = &[u8]> {
+    std::iter::from_fn(move || {
+        let (piece, after) = rest.split_at_checked(size.get()).unwrap_or((rest, &[]));
+        rest = after;
+        (!piece.is_empty()).then_some(piece)
+    })
+}
+
 fn size(rows: u8, cols: u8) -> (u16, u16) {
     (1 + u16::from(rows) % 60, 1 + u16::from(cols) % 200)
 }
+
+/// What anyone can tell apart: the session's items, each client's mode,
+/// notice and screen, the configuration and the paste buffers.
+type State = (
+    String,
+    Vec<(ClientId, String, Option<Grid>)>,
+    Config,
+    Vec<String>,
+);
 
 /// One session, and what drove it that the checks need.
 struct Run {
@@ -175,12 +194,13 @@ impl Run {
         if let Some(shadow) = self.shadows.get_mut(&client) {
             shadow.bytes(bytes, &mut Vec::new());
         }
-        if piece == 0 {
-            self.s.input(client, bytes);
-        } else {
-            for chunk in bytes.chunks(piece) {
-                self.s.input(client, chunk);
+        match NonZeroUsize::new(piece) {
+            Some(piece) => {
+                for chunk in pieces(bytes, piece) {
+                    self.s.input(client, chunk);
+                }
             }
+            None => self.s.input(client, bytes),
         }
     }
 
@@ -246,16 +266,8 @@ impl Run {
         }
     }
 
-    /// What anyone can tell apart: the session's items, each client's
-    /// mode, notice and screen, the configuration and the paste buffers.
-    fn state(
-        &mut self,
-    ) -> (
-        String,
-        Vec<(ClientId, String, Option<Grid>)>,
-        Config,
-        Vec<String>,
-    ) {
+    /// What anyone can tell apart, as `State` lists it.
+    fn state(&mut self) -> State {
         let ls = self.s.run(&["ls".to_owned()], &Ctx::default()).stdout;
         let screens = self
             .s
