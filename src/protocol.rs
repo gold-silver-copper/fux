@@ -242,6 +242,25 @@ impl Frame {
     }
 }
 
+/// Appends `bytes` to `out` as the `Input` frame `Frame::Input` would
+/// encode, without their being copied into one first. A payload over
+/// `MAX_PAYLOAD` is an error, and leaves `out` as it was.
+pub fn encode_input(bytes: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
+    if bytes.len() > MAX_PAYLOAD {
+        return Err(Error::Oversized {
+            bytes: bytes.len(),
+            limit: MAX_PAYLOAD,
+        });
+    }
+    // The kind byte and the payload; exact, as the payload is at most
+    // MAX_PAYLOAD.
+    let length = u32::try_from(bytes.len().saturating_add(1)).unwrap_or(u32::MAX);
+    out.extend_from_slice(&length.to_be_bytes());
+    out.push(Frame::Input(Vec::new()).kind());
+    out.extend_from_slice(bytes);
+    Ok(())
+}
+
 fn put_len(out: &mut Vec<u8>, len: usize) {
     out.extend_from_slice(&u32::try_from(len).unwrap_or(u32::MAX).to_be_bytes());
 }
@@ -437,6 +456,27 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Input framed from its bytes is the frame `Frame::Input` encodes,
+    /// after whatever the buffer held, and too long an input is refused
+    /// alike, leaving the buffer as it was.
+    #[test]
+    fn input_is_framed_from_its_bytes_as_its_frame_is() {
+        let long = vec![0xff; 70_000];
+        for bytes in [&b""[..], b"k", b"\x1b[A\x1b[B", &long] {
+            let mut out = b"held".to_vec();
+            assert_eq!(encode_input(bytes, &mut out), Ok(()));
+            let frame = Frame::Input(bytes.to_vec()).encode();
+            assert_eq!(out.get(4..), frame.as_deref().ok());
+        }
+        let long = vec![0; MAX_PAYLOAD + 1];
+        let mut out = b"held".to_vec();
+        assert_eq!(
+            encode_input(&long, &mut out).err(),
+            Frame::Input(long.clone()).encode().err()
+        );
+        assert_eq!(out, b"held");
+    }
 
     fn round_trip(frame: Frame) {
         let bytes = frame.encode().unwrap_or_default();

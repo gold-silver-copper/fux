@@ -400,7 +400,9 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, Error>
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     let mut buffer = vec![0u8; 64 * 1024];
-    let (mut winch, mut stops) = (winch, stops);
+    // Where each read from the terminal is framed; reused by every read.
+    let mut input = Vec::new();
+    let mut winch = winch;
     loop {
         let mut fds = [
             PollFd::new(&stdin, PollFlags::IN),
@@ -412,7 +414,7 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, Error>
             Ok(_) | Err(fuxix::Errno::INTR) => {}
             Err(e) => return Err(Error::Poll(e)),
         }
-        let ready: Vec<PollFlags> = fds.iter().map(PollFd::revents).collect();
+        let ready = fds.each_ref().map(PollFd::revents);
         let is = |i: usize| ready.get(i).is_some_and(|f| !f.is_empty());
         if is(3) {
             let _ = send(stream, &Frame::Detach);
@@ -430,10 +432,11 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, Error>
                     let _ = send(stream, &Frame::Detach);
                     return Ok("detached: the terminal closed".into());
                 }
-                Ok(n) => send(
-                    stream,
-                    &Frame::Input(buffer.get(..n).unwrap_or_default().to_vec()),
-                )?,
+                Ok(n) => {
+                    input.clear();
+                    crate::protocol::encode_input(buffer.get(..n).unwrap_or_default(), &mut input)?;
+                    stream.write_all(&input).map_err(Error::Write)?;
+                }
                 Err(fuxix::Errno::INTR | fuxix::Errno::AGAIN) => {}
                 Err(e) => return Err(Error::ReadTerminal(e)),
             }
@@ -459,9 +462,6 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, Error>
             }
             let _ = stdout.flush();
         }
-        // The signal pipes are drained by being read above.
-        let mut sink = [0u8; 64];
-        let _ = stops.read(&mut sink);
     }
 }
 
