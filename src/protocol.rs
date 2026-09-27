@@ -318,6 +318,24 @@ fn decode_frame(kind: u8, payload: &[u8]) -> Result<Frame, String> {
     Ok(frame)
 }
 
+/// A whole frame not yet decoded: its kind, and its payload lent from the
+/// decoder.
+pub struct Raw<'a> {
+    kind: u8,
+    payload: &'a [u8],
+}
+
+impl<'a> Raw<'a> {
+    /// A paint's bytes, as they are, without copying them.
+    pub fn paint(&self) -> Option<&'a [u8]> {
+        (self.kind == Stream::Paint.kind()).then_some(self.payload)
+    }
+
+    pub fn decode(&self) -> Result<Frame, String> {
+        decode_frame(self.kind, self.payload)
+    }
+}
+
 /// Accumulates bytes from a stream and yields whole frames. A frame header
 /// claiming more than `MAX_FRAME` is refused as soon as it arrives, so what is
 /// held for a frame not yet complete stays under `4 + MAX_FRAME` bytes.
@@ -334,6 +352,14 @@ impl Decoder {
     /// The next whole frame, `Ok(None)` if more bytes are needed, or an error
     /// for a frame that is oversized or malformed; the stream is then unusable.
     pub fn frame(&mut self) -> Result<Option<Frame>, String> {
+        self.raw()?.map(|raw| raw.decode()).transpose()
+    }
+
+    /// The next whole frame, taken but not decoded: its payload is lent
+    /// from the decoder, not copied. `Ok(None)` if more bytes are needed;
+    /// an error for a frame that is oversized, and the stream is then
+    /// unusable.
+    pub fn raw(&mut self) -> Result<Option<Raw<'_>>, String> {
         let pending = self.buffer.as_slice();
         let Some(header) = pending.first_chunk::<4>() else {
             return Ok(None);
@@ -347,13 +373,18 @@ impl Decoder {
                 "a frame of {length} bytes exceeds the {MAX_FRAME}-byte limit"
             ));
         }
-        let Some(body) = pending.get(4..4 + length) else {
+        if pending.len() < 4 + length {
             return Ok(None);
-        };
-        let kind = body.first().copied().unwrap_or(0);
-        let frame = decode_frame(kind, body.get(1..).unwrap_or(&[]));
-        self.buffer.take(4 + length);
-        frame.map(Some)
+        }
+        let frame = self.buffer.take_front(4 + length);
+        let (kind, payload) = frame
+            .get(4..)
+            .and_then(<[u8]>::split_first)
+            .unwrap_or((&0, &[]));
+        Ok(Some(Raw {
+            kind: *kind,
+            payload,
+        }))
     }
 
     /// Bytes held for a frame not yet complete.
@@ -573,6 +604,22 @@ mod tests {
                 assert!(queue.as_slice() == expected, "{stream:?} of {len} bytes");
             }
         }
+    }
+
+    /// A paint is lent from the decoder as it arrived; other frames decode.
+    #[test]
+    fn raw_frames_lend_a_paint_and_decode_the_rest() -> Result<(), String> {
+        let mut decoder = Decoder::default();
+        decoder.push(&Frame::Paint(b"\x1b[Hhi".to_vec()).encode()?);
+        decoder.push(&Frame::Exit("detached".into()).encode()?);
+        let raw = decoder.raw()?.ok_or("a paint")?;
+        assert_eq!(raw.paint(), Some(&b"\x1b[Hhi"[..]));
+        let raw = decoder.raw()?.ok_or("an exit")?;
+        assert_eq!(raw.paint(), None);
+        assert_eq!(raw.decode()?, Frame::Exit("detached".into()));
+        assert!(decoder.raw()?.is_none());
+        assert_eq!(decoder.buffered(), 0);
+        Ok(())
     }
 
     #[test]

@@ -32,10 +32,10 @@ enum Entry<'a> {
     Layer(KeyPress, &'a Binding),
 }
 
-impl Entry<'_> {
+impl<'a> Entry<'a> {
     /// The group it is listed under: a binding's own, or the group of the
     /// command that a layer's first binding runs.
-    fn group(self) -> String {
+    fn group(self) -> &'a str {
         match self {
             Entry::Binding(_, binding) => binding.group(),
             Entry::Layer(_, first) => first.derived_group(),
@@ -51,7 +51,7 @@ impl Entry<'_> {
             },
             Entry::Layer(key, first) => ColumnRow::Layer {
                 key,
-                title: first.group(),
+                title: first.group().to_owned(),
             },
         }
     }
@@ -80,18 +80,15 @@ fn opens(binding: &Binding, path: &[KeyPress], key: &KeyPress) -> bool {
 
 /// The column's entries in its order, with their groups: groups in their
 /// order, custom groups after them and `Other` last.
-fn ordered<'a>(session: &'a Session, path: &'a [KeyPress]) -> Vec<(String, Entry<'a>)> {
-    let entries: Vec<(String, Entry)> = entries(session, path).map(|e| (e.group(), e)).collect();
-    let mut groups: Vec<String> = crate::config::GROUPS
-        .iter()
-        .map(|g| (*g).to_owned())
-        .collect();
+fn ordered<'a>(session: &'a Session, path: &'a [KeyPress]) -> Vec<(&'a str, Entry<'a>)> {
+    let entries: Vec<(&str, Entry)> = entries(session, path).map(|e| (e.group(), e)).collect();
+    let mut groups: Vec<&str> = crate::config::GROUPS.to_vec();
     for (group, _) in &entries {
-        if !groups.contains(group) && group != "Other" {
-            groups.push(group.clone());
+        if !groups.contains(group) && *group != "Other" {
+            groups.push(group);
         }
     }
-    groups.push("Other".into());
+    groups.push("Other");
     groups
         .iter()
         .flat_map(|group| entries.iter().filter(move |(g, _)| g == group).cloned())
@@ -104,10 +101,10 @@ fn ordered<'a>(session: &'a Session, path: &'a [KeyPress]) -> Vec<(String, Entry
 /// is, under the group its command belongs to.
 pub fn column_rows(session: &Session, path: &[KeyPress]) -> Vec<ColumnRow> {
     let mut rows = Vec::new();
-    let mut heading: Option<String> = None;
+    let mut heading = None;
     for (group, entry) in ordered(session, path) {
-        if heading.as_ref() != Some(&group) {
-            rows.push(ColumnRow::Heading(group.clone()));
+        if heading != Some(group) {
+            rows.push(ColumnRow::Heading(group.to_owned()));
             heading = Some(group);
         }
         rows.push(entry.row());
@@ -116,7 +113,7 @@ pub fn column_rows(session: &Session, path: &[KeyPress]) -> Vec<ColumnRow> {
 }
 
 /// The title of the layer at `path`: the group of its first binding.
-pub fn layer_title(session: &Session, path: &[KeyPress]) -> Option<String> {
+pub fn layer_title<'a>(session: &'a Session, path: &[KeyPress]) -> Option<&'a str> {
     session
         .config
         .bindings
@@ -659,7 +656,7 @@ pub fn repeat_key(session: &mut Session, client: ClientId, press: KeyPress) {
             run_entry(session, client, &argv);
         }
         None => {
-            let title = layer_title(session, &path).unwrap_or_default();
+            let title = layer_title(session, &path).unwrap_or_default().to_owned();
             set_mode(session, client, Mode::Normal);
             if let Some(view) = session.views.get_mut(&client) {
                 view.info(format!("{title} ended: {press} is not one of its keys"));

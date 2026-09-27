@@ -324,15 +324,18 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, String
                 Err(e) if matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock) => {}
                 Err(e) => return Err(format!("reading from the server: {e}")),
             }
-            while let Some(frame) = decoder.frame()? {
-                match frame {
-                    Frame::Paint(bytes) => {
-                        stdout
-                            .write_all(&bytes)
-                            .map_err(|e| format!("writing the terminal: {e}"))?;
-                    }
+            while let Some(raw) = decoder.raw()? {
+                // A paint goes to the terminal straight from the decoder.
+                if let Some(bytes) = raw.paint() {
+                    stdout
+                        .write_all(bytes)
+                        .map_err(|e| format!("writing the terminal: {e}"))?;
+                    continue;
+                }
+                match raw.decode()? {
                     Frame::Exit(reason) => return Ok(reason),
-                    Frame::Hello { .. }
+                    Frame::Paint(_)
+                    | Frame::Hello { .. }
                     | Frame::Attach { .. }
                     | Frame::Input(_)
                     | Frame::Resize { .. }

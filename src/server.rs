@@ -87,6 +87,10 @@ pub struct Server {
     read_buffer: Vec<u8>,
     /// Where a paint is written before it is framed; reused by every paint.
     paint_buffer: Vec<u8>,
+    /// What each descriptor polled is, and then what is ready; reused by
+    /// every tick.
+    slots: Vec<Slot>,
+    ready: Vec<(Slot, PollFlags)>,
     /// A descriptor held in reserve, so that a connection that arrives when
     /// all others are taken can still be accepted and told why it is
     /// refused (bevy-final findings 006 and 012).
@@ -146,6 +150,8 @@ pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), String> 
         escapes: std::collections::HashMap::new(),
         read_buffer: vec![0u8; 64 * 1024],
         paint_buffer: Vec::new(),
+        slots: Vec::new(),
+        ready: Vec::new(),
         spare: std::fs::File::open("/dev/null").ok(),
         shortage: None,
         listen_after: None,
@@ -156,6 +162,7 @@ pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), String> 
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 enum Slot {
     Listener,
     Children,
@@ -180,9 +187,10 @@ impl Server {
             }
             self.paint(now);
             let timeout = self.timeout(Instant::now());
-            let ready = self.poll(timeout);
+            let mut ready = std::mem::take(&mut self.ready);
+            self.poll(timeout, &mut ready);
             let now = Instant::now();
-            for (slot, flags) in ready {
+            for &(slot, flags) in &ready {
                 match slot {
                     Slot::Listener => self.accept(),
                     Slot::Children => {
@@ -197,6 +205,7 @@ impl Server {
                     Slot::Pane(id) => self.serve_pane(id, flags),
                 }
             }
+            self.ready = ready;
             self.escapes(now);
             self.session.type_due(now);
             self.finish_dying(false);
@@ -208,20 +217,22 @@ impl Server {
     /// A lone Escape becomes a key once `ESCAPE_DELAY` passes with no byte
     /// after it.
     fn escapes(&mut self, now: Instant) {
-        let waiting: Vec<ClientId> = self
-            .session
-            .views
-            .keys()
-            .copied()
-            .filter(|c| self.session.waiting(*c))
-            .collect();
-        self.escapes.retain(|c, _| waiting.contains(c));
-        for client in waiting {
-            let since = *self.escapes.entry(client).or_insert(now);
-            if now.duration_since(since) >= crate::decode::ESCAPE_DELAY {
-                self.escapes.remove(&client);
-                self.session.escape(client);
-            }
+        let session = &self.session;
+        self.escapes.retain(|c, _| session.waiting(*c));
+        for client in session.views.keys().filter(|c| session.waiting(**c)) {
+            self.escapes.entry(*client).or_insert(now);
+        }
+        // One at a time, in the clients' order: an Escape runs whatever it
+        // completes.
+        while let Some(client) = self
+            .escapes
+            .iter()
+            .filter(|(_, since)| now.duration_since(**since) >= crate::decode::ESCAPE_DELAY)
+            .map(|(client, _)| *client)
+            .min()
+        {
+            self.escapes.remove(&client);
+            self.session.escape(client);
         }
     }
 
@@ -262,8 +273,13 @@ impl Server {
         deadline.map(|d| d.saturating_duration_since(now))
     }
 
-    fn poll(&mut self, timeout: Option<Duration>) -> Vec<(Slot, PollFlags)> {
-        let mut slots = Vec::new();
+    /// Waits for descriptors to be ready, or `timeout`; which are, and for
+    /// what, go into `ready`.
+    fn poll(&mut self, timeout: Option<Duration>, ready: &mut Vec<(Slot, PollFlags)>) {
+        ready.clear();
+        let slots = &mut self.slots;
+        slots.clear();
+        // Built afresh, as it borrows the descriptors.
         let mut fds = Vec::new();
         if self.listen_after.is_some_and(|at| Instant::now() >= at) {
             self.listen_after = None;
@@ -298,12 +314,13 @@ impl Server {
             Ok(_) | Err(fuxix::Errno::INTR) => {}
             Err(error) => log(&format!("poll: {error}")),
         }
-        fds.iter()
-            .map(PollFd::revents)
-            .zip(slots)
-            .filter(|(flags, _)| !flags.is_empty())
-            .map(|(flags, slot)| (slot, flags))
-            .collect()
+        ready.extend(
+            fds.iter()
+                .map(PollFd::revents)
+                .zip(slots.iter().copied())
+                .filter(|(flags, _)| !flags.is_empty())
+                .map(|(flags, slot)| (slot, flags)),
+        );
     }
 
     fn stop(&mut self, reason: String) {

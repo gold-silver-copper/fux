@@ -1790,8 +1790,8 @@ impl Session {
                 };
                 panes.push(Json::Object(vec![
                     ("id", Json::str(p.id.to_string())),
-                    ("name", Json::str(p.name.clone())),
-                    ("title", Json::str(p.title.clone())),
+                    ("name", Json::str(p.name.as_str())),
+                    ("title", Json::str(p.title.as_str())),
                     ("rows", Json::Number(i64::from(p.size.0))),
                     ("cols", Json::Number(i64::from(p.size.1))),
                     (
@@ -1810,7 +1810,7 @@ impl Session {
             .map(|ws| {
                 Json::Object(vec![
                     ("id", Json::str(ws.id.to_string())),
-                    ("name", Json::str(ws.name.clone())),
+                    ("name", Json::str(ws.name.as_str())),
                     (
                         "tabs",
                         Json::Array(
@@ -1819,7 +1819,7 @@ impl Session {
                                 .map(|t| {
                                     Json::Object(vec![
                                         ("id", Json::str(t.id.to_string())),
-                                        ("name", Json::str(t.name.clone())),
+                                        ("name", Json::str(t.name.as_str())),
                                         ("panes", panes(t)),
                                     ])
                                 })
@@ -1922,7 +1922,7 @@ fn capture(pane: &Pane, history: Option<usize>, json: bool) -> String {
             ),
             (
                 "lines",
-                Json::Array(lines.into_iter().map(Json::String).collect()),
+                Json::Array(lines.into_iter().map(Json::str).collect()),
             ),
         ])
         .render();
@@ -1949,7 +1949,7 @@ fn capture_client(client: ClientId, grid: &crate::render::Grid, json: bool) -> S
             ("cursor", cursor),
             (
                 "lines",
-                Json::Array(lines.into_iter().map(Json::String).collect()),
+                Json::Array(lines.into_iter().map(Json::str).collect()),
             ),
         ])
         .render();
@@ -1975,4 +1975,56 @@ pub fn row_text(cells: &[fux_vt::Cell]) -> String {
         });
     }
     line.trim_end_matches(' ').to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `--json` outputs, byte for byte: escapes, borrowed names and
+    /// formatted IDs alike.
+    #[test]
+    fn json_outputs_are_what_they_were() -> Result<(), String> {
+        let config = Config {
+            shell: vec!["/bin/sh".into()],
+            ..Config::default()
+        };
+        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
+        s.start()?;
+        s.attach(4, 30, None)?;
+        let run = |s: &mut Session, line: &str| -> Result<String, String> {
+            let outcome = s.run(&crate::words::split(line)?, &Ctx::default());
+            match outcome.status {
+                0 => Ok(outcome.stdout),
+                _ => Err(outcome.stderr),
+            }
+        };
+        run(&mut s, "split -h -t %1")?;
+        run(&mut s, r#"rename -t %1 'say "hi" \ 界'"#)?;
+        run(&mut s, "new-tab -t +1 -n two")?;
+        run(&mut s, "select-tab -c c1 -t @1")?;
+        s.output(PaneId(2), "a\tb \"q\" 界\x1b]2;tab\\title\x07".as_bytes());
+        assert_eq!(
+            run(&mut s, "ls --json")?,
+            concat!(
+                r#"{"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[{"id":"%1","name":"say \"hi\" \\ 界","title":"","rows":3,"cols":15,"pid":null},{"id":"%2","name":"sh","title":"tab\\title","rows":3,"cols":14,"pid":null}]},{"id":"@2","name":"two","panes":[{"id":"%3","name":"sh","title":"","rows":24,"cols":80,"pid":null}]}]}],"clients":[{"id":"c1","rows":4,"cols":30,"workspace":"+1","tab":"@1","pane":"%2","zoom":false}]}"#,
+                "\n"
+            )
+        );
+        assert_eq!(
+            run(&mut s, "capture-pane -t %2 --json")?,
+            concat!(
+                r#"{"pane":"%2","rows":3,"cols":14,"cursor":[1,2],"lines":["a       b \"q\"","界",""]}"#,
+                "\n"
+            )
+        );
+        assert_eq!(
+            run(&mut s, "capture-client -c c1 --json")?,
+            concat!(
+                r#"{"client":"c1","rows":4,"cols":30,"cursor":[1,18],"lines":["               │a       b \"q\"","               │界","               │"," main  main  two %2 tab\\title"]}"#,
+                "\n"
+            )
+        );
+        Ok(())
+    }
 }
