@@ -33,11 +33,14 @@ impl Grid {
             cursor_shape: 0,
         }
     }
-    /// Blanks the grid at `rows` by `cols`, resizing its cells only if the
-    /// size changed: a grid composed into again allocates nothing.
-    fn reset(&mut self, rows: u16, cols: u16) {
+    /// Makes the grid `rows` by `cols`, resizing its cells only if the size
+    /// changed, so that a grid composed into again allocates nothing; and
+    /// blanks it if `blank`, as a resized grid is anyway.
+    fn reset(&mut self, rows: u16, cols: u16, blank: bool) {
         if (self.rows, self.cols) == (rows, cols) {
-            self.cells.fill(Cell::default());
+            if blank {
+                self.cells.fill(Cell::default());
+            }
         } else {
             self.rows = rows;
             self.cols = cols;
@@ -86,6 +89,16 @@ impl Grid {
         let slots = self.cells.iter_mut().skip(start).take(room);
         for (slot, cell) in slots.zip(cells) {
             *slot = *cell;
+        }
+    }
+    /// Blanks row `y` from column `from` to `to`, clipped at the grid's edge.
+    fn blank(&mut self, y: u16, from: u16, to: u16) {
+        let Some(start) = self.index(y, from) else {
+            return;
+        };
+        let count = usize::from(to.min(self.cols).saturating_sub(from));
+        for slot in self.cells.iter_mut().skip(start).take(count) {
+            *slot = Cell::default();
         }
     }
     /// Sets a cell, keeping wide glyphs whole: overwriting either half of
@@ -233,10 +246,21 @@ pub fn compose_into(
     let Some(view) = session.views.get(&client) else {
         return false;
     };
-    grid.reset(view.rows, view.cols);
     let area = Session::pane_area(view);
     session.placement_into(view, placement);
     let placement = &*placement;
+    // The panes and separators, which never overlap, cover the pane area
+    // unless a split has no room for even its first child; the bar covers
+    // its row. Covered, every cell is written below, and the grid needs no
+    // blanking first.
+    let covered = placement
+        .panes
+        .iter()
+        .map(|(_, r)| u32::from(r.w).saturating_mul(u32::from(r.h)))
+        .chain(placement.separators.iter().map(|s| u32::from(s.len)))
+        .fold(0u32, u32::saturating_add);
+    let tiled = covered == u32::from(area.w).saturating_mul(u32::from(area.h));
+    grid.reset(view.rows, view.cols, !tiled);
     let focus = view.focus();
     // Copy mode and its positions, their rows found once for the paint.
     let copy = if let Mode::Copy(copy) = &view.mode {
@@ -247,6 +271,9 @@ pub fn compose_into(
     };
     for (id, rect) in &placement.panes {
         let Some(pane) = session.panes.get(id) else {
+            for (gy, gx) in (0..rect.h).filter_map(|y| rect.at(y, 0)).filter(|_| tiled) {
+                grid.blank(gy, gx, gx.saturating_add(rect.w));
+            }
             continue;
         };
         let screen = pane.screen();
@@ -255,14 +282,29 @@ pub fn compose_into(
         let (rows, cols) = screen.size();
         let window = screen.window(offset, rows, cols);
         let width = rect.w.min(window.cols);
-        for y in 0..rect.h.min(window.rows) {
+        let screen_rows = rect.h.min(window.rows);
+        // What the pane's screen does not cover of its place is blank.
+        for (gy, gx) in (screen_rows..rect.h)
+            .filter_map(|y| rect.at(y, 0))
+            .filter(|_| tiled)
+        {
+            grid.blank(gy, gx, gx.saturating_add(rect.w));
+        }
+        for y in 0..screen_rows {
             // Past the largest position is off the grid anyway.
             let Some((gy, gx)) = rect.at(y, 0) else {
                 continue;
             };
-            // The pane's own row, well formed, goes onto blank cells whole.
+            // The pane's own row, well formed, goes whole onto cells that
+            // are blank, or are blanked after it.
             let cells = window.row(y).map_or(&[][..], |row| row.cells);
-            grid.put_row(gy, gx, cells.get(..usize::from(width)).unwrap_or(cells));
+            let cells = cells.get(..usize::from(width)).unwrap_or(cells);
+            grid.put_row(gy, gx, cells);
+            if tiled {
+                // At most `width`, which is at most the place's width.
+                let end = u16::try_from(cells.len()).unwrap_or(width);
+                grid.blank(gy, gx.saturating_add(end), gx.saturating_add(rect.w));
+            }
             // A wide glyph in the window's last column is cut off, as
             // `Window::cell` has it.
             if let Some(last) = window.cols.checked_sub(1)
@@ -498,11 +540,11 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
         } else {
             Color::Idx(240)
         };
-        grid.set(
-            y,
-            x,
-            Cell::new(glyph, false, style(color, Color::Default)).unwrap_or_default(),
-        );
+        // A separator's cell is no pane's, so no wide glyph has a half there
+        // to repair: it is only ever drawn over.
+        if let Some(cell) = grid.get_mut(y, x) {
+            *cell = Cell::new(glyph, false, style(color, Color::Default)).unwrap_or_default();
+        }
     };
     // Each line plain, in order, so the last one drawn at a cell is its.
     for s in lines {
