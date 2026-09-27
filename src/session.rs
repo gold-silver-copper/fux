@@ -5,6 +5,7 @@ use crate::command::{
     TabId, WsId, WsRef,
 };
 use crate::config::Config;
+use crate::copy::MAX_CELLS;
 use crate::json::Json;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::{self, Axis, Node, PaneId, Placement, Rect, Side};
@@ -98,10 +99,13 @@ pub enum Error {
     NoCurrentTab,
     NoCurrentWorkspace,
     NoLastPane,
+    /// The client focuses no pane.
+    NoPaneToCopy,
     // What changed under a command, or is not where it must be.
     WorkspaceGone,
     TabGone,
     PaneGone,
+    NoSuchPane,
     DestinationGone,
     NotInTab,
     OtherNotInTab,
@@ -119,6 +123,12 @@ pub enum Error {
     },
     /// Nothing runs in the pane but its shell.
     OnlyShell(PaneId),
+    // What copy mode cannot do.
+    NoRows,
+    /// The history no longer holds the rows copy mode was on.
+    RowsDropped,
+    /// A selection of more than `MAX_CELLS` cells.
+    SelectionTooLarge,
     // A name that cannot be given.
     EmptyName,
     ControlInName,
@@ -133,7 +143,6 @@ pub enum Error {
     Pane(crate::pane::Error),
     Process(crate::process::Error),
     Terminate(fuxix::Errno),
-    Copy(crate::copy::Error),
     Config(crate::config::Error),
     Reload(crate::config::Error),
 }
@@ -166,9 +175,11 @@ impl std::fmt::Display for Error {
             Error::NoCurrentTab => f.write_str("no tab"),
             Error::NoCurrentWorkspace => f.write_str("no workspace"),
             Error::NoLastPane => f.write_str("no previously focused pane"),
+            Error::NoPaneToCopy => f.write_str("no pane to copy from"),
             Error::WorkspaceGone => f.write_str("the workspace is gone"),
             Error::TabGone => f.write_str("the tab is gone"),
             Error::PaneGone => f.write_str("the pane is gone"),
+            Error::NoSuchPane => f.write_str("no such pane"),
             Error::DestinationGone => f.write_str("the destination tab is gone"),
             Error::NotInTab => f.write_str("the pane is in no tab"),
             Error::OtherNotInTab => f.write_str("the other pane is in no tab"),
@@ -182,6 +193,11 @@ impl std::fmt::Display for Error {
                 write!(f, "no pane {} of {from}", direction.name())
             }
             Error::OnlyShell(pane) => write!(f, "nothing is running in {pane} but its shell"),
+            Error::NoRows => f.write_str("the pane has no rows"),
+            Error::RowsDropped => {
+                f.write_str("copy mode ended: the history dropped the rows it held")
+            }
+            Error::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
             Error::EmptyName => f.write_str("a name cannot be empty"),
             Error::ControlInName => f.write_str("a name cannot contain control characters"),
             Error::LongName => f.write_str("a name is at most 256 bytes"),
@@ -193,7 +209,6 @@ impl std::fmt::Display for Error {
             Error::Pane(error) => error.fmt(f),
             Error::Process(error) => error.fmt(f),
             Error::Terminate(error) => error.fmt(f),
-            Error::Copy(error) => error.fmt(f),
             Error::Config(error) => error.fmt(f),
             Error::Reload(error) => write!(f, "{error}; the previous configuration is kept"),
         }
@@ -208,7 +223,6 @@ impl std::error::Error for Error {
             Error::Pane(error) => Some(error),
             Error::Process(error) => Some(error),
             Error::Terminate(error) => Some(error),
-            Error::Copy(error) => Some(error),
             Error::Config(error) | Error::Reload(error) => Some(error),
             Error::NoWorkspace(_)
             | Error::NoWorkspaceNamed(_)
@@ -231,9 +245,11 @@ impl std::error::Error for Error {
             | Error::NoCurrentTab
             | Error::NoCurrentWorkspace
             | Error::NoLastPane
+            | Error::NoPaneToCopy
             | Error::WorkspaceGone
             | Error::TabGone
             | Error::PaneGone
+            | Error::NoSuchPane
             | Error::DestinationGone
             | Error::NotInTab
             | Error::OtherNotInTab
@@ -243,6 +259,9 @@ impl std::error::Error for Error {
             | Error::NoBorder { .. }
             | Error::NoNeighbor { .. }
             | Error::OnlyShell(_)
+            | Error::NoRows
+            | Error::RowsDropped
+            | Error::SelectionTooLarge
             | Error::EmptyName
             | Error::ControlInName
             | Error::LongName
@@ -268,12 +287,6 @@ impl From<crate::pane::Error> for Error {
 impl From<crate::process::Error> for Error {
     fn from(error: crate::process::Error) -> Error {
         Error::Process(error)
-    }
-}
-
-impl From<crate::copy::Error> for Error {
-    fn from(error: crate::copy::Error) -> Error {
-        Error::Copy(error)
     }
 }
 
@@ -1530,7 +1543,7 @@ impl Session {
                 let source = self.pane_target(target, &ctx)?;
                 crate::overlay::open_pane_chooser(self, client, source)
             }
-            ClientAction::CopyMode => Ok(crate::copy::enter(self, client)?),
+            ClientAction::CopyMode => crate::copy::enter(self, client),
         }
     }
 

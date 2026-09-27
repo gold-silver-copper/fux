@@ -8,7 +8,7 @@ use crate::command::ClientId;
 use crate::keys::{Direction, Key, KeyPress};
 use crate::layout::PaneId;
 use crate::render::shown;
-use crate::session::{Outgoing, Session};
+use crate::session::{Error, Outgoing, Session};
 use crate::view::{Mode, Notice};
 use fux_vt::{Cell, RowId, Screen};
 use std::num::NonZeroUsize;
@@ -17,35 +17,6 @@ use std::num::NonZeroUsize;
 pub const MAX_CELLS: usize = 262_144;
 /// The largest OSC 52 payload, encoded.
 pub const MAX_CLIPBOARD: usize = 1 << 20;
-
-/// Why copy mode cannot start, goes on, or copies.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Error {
-    NoClient,
-    /// The client focuses no pane.
-    NoPane,
-    PaneGone,
-    NoRows,
-    /// The history no longer holds the rows copy mode was on.
-    Dropped,
-    /// A selection of more than `MAX_CELLS` cells.
-    TooLarge,
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::NoClient => f.write_str("no such client"),
-            Error::NoPane => f.write_str("no pane to copy from"),
-            Error::PaneGone => f.write_str("no such pane"),
-            Error::NoRows => f.write_str("the pane has no rows"),
-            Error::Dropped => f.write_str("copy mode ended: the history dropped the rows it held"),
-            Error::TooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Select {
@@ -204,7 +175,7 @@ impl Copy {
         if self.resolve(screen).held {
             Ok(())
         } else {
-            Err(Error::Dropped)
+            Err(Error::RowsDropped)
         }
     }
 
@@ -537,7 +508,7 @@ pub fn text(
             // Refused long before it could saturate.
             cells = cells.saturating_add(1);
             if cells > MAX_CELLS {
-                return Err(Error::TooLarge);
+                return Err(Error::SelectionTooLarge);
             }
             if !cell.is_wide_continuation() {
                 line.push_str(shown(cell));
@@ -564,9 +535,9 @@ pub fn text(
 
 /// Enters copy mode on the client's focused pane.
 pub fn enter(session: &mut Session, client: ClientId) -> Result<String, Error> {
-    let view = session.views.get(&client).ok_or(Error::NoClient)?;
-    let pane = view.focus().ok_or(Error::NoPane)?;
-    let screen = session.panes.get(&pane).ok_or(Error::PaneGone)?.screen();
+    let view = session.views.get(&client).ok_or(Error::NoSuchClient)?;
+    let pane = view.focus().ok_or(Error::NoPaneToCopy)?;
+    let screen = session.panes.get(&pane).ok_or(Error::NoSuchPane)?.screen();
     let (cy, cx) = screen.cursor_position();
     let history = screen.history_len();
     let cursor = history
@@ -584,7 +555,7 @@ pub fn enter(session: &mut Session, client: ClientId) -> Result<String, Error> {
         typing: None,
         held_at: None,
     };
-    let view = session.views.get_mut(&client).ok_or(Error::NoClient)?;
+    let view = session.views.get_mut(&client).ok_or(Error::NoSuchClient)?;
     view.mode = Mode::Copy(Box::new(copy));
     // The bar shows where the cursor is; a notice would hide it.
     view.notice = None;
@@ -971,7 +942,7 @@ mod tests {
         let s = parser.screen();
         let last = retained(s).saturating_sub(1);
         let copied = text(s, Select::Line, (0, 0), (last, 0));
-        assert_eq!(copied, Err(Error::TooLarge));
+        assert!(matches!(copied, Err(Error::SelectionTooLarge)));
         assert_eq!(
             copied.map_err(|e| e.to_string()),
             Err(format!("the selection is larger than {MAX_CELLS} cells"))
