@@ -51,6 +51,16 @@ pub enum Kind {
     Workspace,
 }
 
+impl AnyRef {
+    pub fn kind(&self) -> Kind {
+        match self {
+            AnyRef::Pane(_) => Kind::Pane,
+            AnyRef::Tab(_) => Kind::Tab,
+            AnyRef::Workspace(_) => Kind::Workspace,
+        }
+    }
+}
+
 impl Kind {
     pub fn name(self) -> &'static str {
         match self {
@@ -411,21 +421,12 @@ pub fn parse_client(text: &str) -> Result<ClientId, Usage> {
     }
 }
 fn parse_kind(text: &str) -> Option<Kind> {
-    match text {
-        "pane" => Some(Kind::Pane),
-        "tab" => Some(Kind::Tab),
-        "workspace" => Some(Kind::Workspace),
-        _ => None,
-    }
+    [Kind::Pane, Kind::Tab, Kind::Workspace]
+        .into_iter()
+        .find(|k| k.name() == text)
 }
 fn direction_flag(flag: &str) -> Option<Direction> {
-    match flag {
-        "-L" => Some(Direction::Left),
-        "-R" => Some(Direction::Right),
-        "-U" => Some(Direction::Up),
-        "-D" => Some(Direction::Down),
-        _ => None,
-    }
+    Direction::ALL.into_iter().find(|d| d.flag() == flag)
 }
 
 /// Words after the command name: flags (some taking a value), positionals,
@@ -454,15 +455,11 @@ impl<'a> Args<'a> {
                 self.rest = self.words.by_ref().cloned().collect();
                 return None;
             }
-            if word.starts_with('-') && word.len() > 1 && !self.at_amount(word) {
+            if word.starts_with('-') && word.len() > 1 {
                 return Some(word.as_str());
             }
             self.positional.push(word.as_str());
         }
-    }
-    /// `-5` is a number, not a flag, only for `capture-pane -S`.
-    fn at_amount(&self, _word: &str) -> bool {
-        false
     }
     fn value(&mut self, flag: &str) -> Result<&'a str, Usage> {
         match self.words.next() {
@@ -749,12 +746,12 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                     other => return a.unknown(other),
                 }
             }
-            let kind = match (a.positional.pop(), &target) {
-                (Some(k), _) => parse_kind(k).ok_or_else(|| a.not_kind(k))?,
-                (None, Some(AnyRef::Pane(_))) => Kind::Pane,
-                (None, Some(AnyRef::Tab(_))) => Kind::Tab,
-                (None, Some(AnyRef::Workspace(_))) => Kind::Workspace,
-                (None, None) => return Err(Usage::ReorderKind),
+            let kind = match a.positional.pop() {
+                Some(k) => parse_kind(k).ok_or_else(|| a.not_kind(k))?,
+                None => target
+                    .as_ref()
+                    .map(AnyRef::kind)
+                    .ok_or(Usage::ReorderKind)?,
             };
             let Some(forward) = forward else {
                 return Err(Usage::ReorderDirection);
@@ -847,13 +844,8 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
             };
             a.no_positional()?;
             let any = target.map(parse_any).transpose()?;
-            let kind_of = |any: &Option<AnyRef>, default: Kind| match (kind, any) {
-                (Some(k), _) => k,
-                (None, Some(AnyRef::Pane(_))) => Kind::Pane,
-                (None, Some(AnyRef::Tab(_))) => Kind::Tab,
-                (None, Some(AnyRef::Workspace(_))) => Kind::Workspace,
-                (None, None) => default,
-            };
+            // Given, or the target's; a pane's by default, but for a menu.
+            let kind = kind.or(any.as_ref().map(AnyRef::kind));
             match name {
                 "command-column" => Command::CommandColumn { client },
                 "command-prompt" => Command::CommandPrompt { client },
@@ -880,9 +872,7 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                     target: target.map(parse_pane).transpose()?,
                 },
                 "menu" => {
-                    let Some(kind) =
-                        kind.or(any.as_ref().map(|a| kind_of(&Some(a.clone()), Kind::Pane)))
-                    else {
+                    let Some(kind) = kind else {
                         return Err(Usage::MenuKind);
                     };
                     Command::Menu {
@@ -893,12 +883,12 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                 }
                 "rename-prompt" => Command::RenamePrompt {
                     client,
-                    kind: kind_of(&any, Kind::Pane),
+                    kind: kind.unwrap_or(Kind::Pane),
                     target: any,
                 },
                 "confirm-close" => Command::ConfirmClose {
                     client,
-                    kind: kind_of(&any, Kind::Pane),
+                    kind: kind.unwrap_or(Kind::Pane),
                     target: any,
                 },
                 "select-pane" => Command::SelectPane {

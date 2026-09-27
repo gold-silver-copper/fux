@@ -89,27 +89,23 @@ impl Session {
         let Some(view) = self.views.get_mut(&client) else {
             return;
         };
-        match &view.mode {
-            Mode::Prompt(_) => overlay::prompt_paste(self, client, text),
-            // Pastes never become commands.
-            Mode::Copy(_)
-            | Mode::List(_)
-            | Mode::Confirm(_)
-            | Mode::Column { .. }
-            | Mode::Repeat { .. } => {}
-            Mode::Normal => {
-                view.notice = None;
-                let Some(pane) = view.focus() else { return };
-                let Some(p) = self.panes.get_mut(&pane) else {
-                    return;
-                };
-                let bytes = crate::encode::paste(text, p.screen().bracketed_paste());
-                if let Err(error) = p.input.push(bytes)
-                    && let Some(view) = self.views.get_mut(&client)
-                {
-                    view.error(error.to_string());
-                }
-            }
+        if let Mode::Prompt(_) = view.mode {
+            return overlay::prompt_paste(self, client, text);
+        }
+        // Pastes never become commands.
+        if !matches!(view.mode, Mode::Normal) {
+            return;
+        }
+        view.notice = None;
+        let Some(pane) = view.focus() else { return };
+        let Some(p) = self.panes.get_mut(&pane) else {
+            return;
+        };
+        let bytes = crate::encode::paste(text, p.screen().bracketed_paste());
+        if let Err(error) = p.input.push(bytes)
+            && let Some(view) = self.views.get_mut(&client)
+        {
+            view.error(error.to_string());
         }
     }
 

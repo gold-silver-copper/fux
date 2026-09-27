@@ -644,45 +644,29 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
 
     // A search being typed takes the keys.
     if let Some((forward, text)) = &mut copy.typing {
-        match press.key {
-            Key::Escape => copy.typing = None,
-            Key::Enter => {
-                let search = Search {
-                    query: text.clone(),
-                    forward: *forward,
-                };
-                copy.typing = None;
-                if !search.query.is_empty() {
-                    copy.search = Some(search.clone());
-                    let at = copy.resolve(screen);
-                    jump(
-                        copy,
-                        screen,
-                        height,
-                        &at,
-                        &search,
-                        view_error(&mut view.notice),
-                    );
-                }
+        if press.key == Key::Escape {
+            copy.typing = None;
+        } else if press.key == Key::Enter {
+            let search = Search {
+                query: text.clone(),
+                forward: *forward,
+            };
+            copy.typing = None;
+            if !search.query.is_empty() {
+                copy.search = Some(search.clone());
+                let at = copy.resolve(screen);
+                let error = view_error(&mut view.notice);
+                jump(copy, screen, height, &at, &search, error);
             }
-            Key::Backspace => {
-                text.pop();
-            }
-            Key::Char(c)
-                if !press.mods.ctrl && !press.mods.alt && !c.is_control() && text.len() < 1024 =>
-            {
-                text.push(c);
-            }
-            Key::Char(_)
-            | Key::Tab
-            | Key::Delete
-            | Key::Insert
-            | Key::Arrow(_)
-            | Key::Home
-            | Key::End
-            | Key::PageUp
-            | Key::PageDown
-            | Key::F(_) => {}
+        } else if press.key == Key::Backspace {
+            text.pop();
+        } else if let Key::Char(c) = press.key
+            && !press.mods.ctrl
+            && !press.mods.alt
+            && !c.is_control()
+            && text.len() < 1024
+        {
+            text.push(c);
         }
         return;
     }
@@ -710,21 +694,13 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
     };
     // Keys are letters, in either case; a letter with Ctrl or Alt is no
     // key's. The arrows, paging keys, Home, End, Enter and Esc also work.
-    let letter = match press.key {
-        Key::Char(c) if !press.mods.ctrl && !press.mods.alt => Some(c.to_ascii_lowercase()),
-        Key::Char(_)
-        | Key::Enter
-        | Key::Tab
-        | Key::Escape
-        | Key::Backspace
-        | Key::Delete
-        | Key::Insert
-        | Key::Arrow(_)
-        | Key::Home
-        | Key::End
-        | Key::PageUp
-        | Key::PageDown
-        | Key::F(_) => None,
+    let letter = if let Key::Char(c) = press.key
+        && !press.mods.ctrl
+        && !press.mods.alt
+    {
+        Some(c.to_ascii_lowercase())
+    } else {
+        None
     };
     let mut target: Option<(usize, u16)> = None;
     let mut scroll: Option<Scroll> = None;

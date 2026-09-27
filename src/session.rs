@@ -380,6 +380,13 @@ impl Session {
         let (w, t) = self.find_tab(id)?;
         self.workspaces.get_mut(w)?.tabs.get_mut(t)
     }
+    /// A tab's layout, unless it is empty.
+    pub fn root(&self, tab: TabId) -> Option<&Node> {
+        self.tab(tab)?.root.as_ref()
+    }
+    fn root_mut(&mut self, tab: TabId) -> Option<&mut Node> {
+        self.tab_mut(tab)?.root.as_mut()
+    }
     /// The workspace and tab that hold a pane.
     pub fn locate(&self, pane: PaneId) -> Option<(WsId, TabId)> {
         self.workspaces.iter().find_map(|ws| {
@@ -408,10 +415,7 @@ impl Session {
         }
     }
     pub fn tab_panes(&self, tab: TabId) -> Vec<PaneId> {
-        self.tab(tab)
-            .and_then(|t| t.root.as_ref())
-            .map(Node::panes)
-            .unwrap_or_default()
+        self.root(tab).map(Node::panes).unwrap_or_default()
     }
     pub fn exists(&self, what: &AnyRef) -> bool {
         match what {
@@ -681,11 +685,7 @@ impl Session {
     /// Where each pane of a view's current tab is on its screen.
     pub fn placement(&self, view: &View) -> Placement {
         let area = Self::pane_area(view);
-        let Some(root) = view
-            .tab()
-            .and_then(|t| self.tab(t))
-            .and_then(|t| t.root.as_ref())
-        else {
+        let Some(root) = view.tab().and_then(|t| self.root(t)) else {
             return Placement::default();
         };
         if view.zoom
@@ -807,16 +807,10 @@ impl Session {
             Mode::Normal | Mode::Column { .. } | Mode::Repeat { .. } => None,
         };
         // A column shorter than it was keeps its selection within it.
-        let last = match &view.mode {
-            Mode::Column { path, .. } => {
-                Some(crate::overlay::column_len(self, path).saturating_sub(1))
-            }
-            Mode::Normal
-            | Mode::Repeat { .. }
-            | Mode::List(_)
-            | Mode::Prompt(_)
-            | Mode::Confirm(_)
-            | Mode::Copy(_) => None,
+        let last = if let Mode::Column { path, .. } = &view.mode {
+            Some(crate::overlay::column_len(self, path).saturating_sub(1))
+        } else {
+            None
         };
         let Some(view) = self.views.get_mut(&id) else {
             return;
@@ -1120,98 +1114,59 @@ impl Session {
     /// column dim such entries, and running one says why.
     pub fn unavailable(&self, command: &Command, ctx: &Ctx) -> Option<Error> {
         let view = self.view_of(ctx);
-        let mut pane_count = 0usize;
-        if let Some(root) = view
-            .and_then(View::tab)
-            .and_then(|t| self.tab(t))
-            .and_then(|t| t.root.as_ref())
-        {
-            root.for_each_pane(&mut |_| pane_count = pane_count.saturating_add(1));
-        }
-        let tab_count = view
-            .and_then(|v| self.workspace(v.workspace))
-            .map_or(0, |w| w.tabs.len());
-        let result: Result<(), Error> = (|| {
-            match command {
-                Command::SelectPane {
-                    pick: Pick::Next | Pick::Previous | Pick::Last,
-                    ..
-                }
-                | Command::ChoosePane { .. } => {
-                    if pane_count < 2 {
-                        return Err(Error::OnlyOne(Kind::Pane));
-                    }
-                }
-                Command::SelectTab {
-                    pick: Pick::Next | Pick::Previous,
-                    ..
-                } => {
-                    if tab_count < 2 {
-                        return Err(Error::OnlyOne(Kind::Tab));
-                    }
-                }
-                Command::SelectWorkspace {
-                    pick: Pick::Next | Pick::Previous,
-                    ..
-                } => {
-                    if self.workspaces.len() < 2 {
-                        return Err(Error::OnlyOne(Kind::Workspace));
-                    }
-                }
-                Command::Terminate { target } => {
-                    let pane = self.pane_target(*target, ctx)?;
-                    if self.panes.get(&pane).is_none_or(Pane::idle) {
-                        return Err(Error::OnlyShell(pane));
-                    }
-                }
-                Command::PasteBuffer { index, .. } => {
-                    if self.buffers.get(*index).is_none() {
-                        return Err(Error::NoCopiedText);
-                    }
-                }
-                Command::KillPane { target }
-                | Command::SwapPane { target, .. }
-                | Command::MovePane { target, .. } => {
-                    self.pane_target(*target, ctx)?;
-                }
-                Command::Ls { .. }
-                | Command::KillServer
-                | Command::ListKeys
-                | Command::NewWorkspace { .. }
-                | Command::NewTab { .. }
-                | Command::Split { .. }
-                | Command::KillTab { .. }
-                | Command::KillWorkspace { .. }
-                | Command::Rename { .. }
-                | Command::ResizePane { .. }
-                | Command::SendKeys { .. }
-                | Command::CapturePane { .. }
-                | Command::CaptureClient { .. }
-                | Command::Reorder { .. }
-                | Command::Set { .. }
-                | Command::Bind { .. }
-                | Command::Unbind { .. }
-                | Command::UnbindAll
-                | Command::Reload
-                | Command::ListBuffers
-                | Command::ShowBuffer { .. }
-                | Command::Detach { .. }
-                | Command::CommandColumn { .. }
-                | Command::ChooseTab { .. }
-                | Command::ChooseWorkspace { .. }
-                | Command::Menu { .. }
-                | Command::CommandPrompt { .. }
-                | Command::CopyMode { .. }
-                | Command::RenamePrompt { .. }
-                | Command::ConfirmClose { .. }
-                | Command::Zoom { .. }
-                | Command::SelectPane { .. }
-                | Command::SelectTab { .. }
-                | Command::SelectWorkspace { .. } => {}
+        // Going to the next or previous one needs another.
+        let alone = |kind, count: usize| (count < 2).then_some(Error::OnlyOne(kind));
+        if matches!(
+            command,
+            Command::SelectPane {
+                pick: Pick::Next | Pick::Previous | Pick::Last,
+                ..
+            } | Command::ChoosePane { .. }
+        ) {
+            let mut panes = 0usize;
+            if let Some(root) = view.and_then(View::tab).and_then(|t| self.root(t)) {
+                root.for_each_pane(&mut |_| panes = panes.saturating_add(1));
             }
-            Ok(())
-        })();
-        result.err()
+            return alone(Kind::Pane, panes);
+        }
+        if let Command::SelectTab {
+            pick: Pick::Next | Pick::Previous,
+            ..
+        } = command
+        {
+            let tabs = view.and_then(|v| self.workspace(v.workspace));
+            return alone(Kind::Tab, tabs.map_or(0, |w| w.tabs.len()));
+        }
+        if let Command::SelectWorkspace {
+            pick: Pick::Next | Pick::Previous,
+            ..
+        } = command
+        {
+            return alone(Kind::Workspace, self.workspaces.len());
+        }
+        if let Command::PasteBuffer { index, .. } = command {
+            return self
+                .buffers
+                .get(*index)
+                .is_none()
+                .then_some(Error::NoCopiedText);
+        }
+        if let Command::Terminate { target } = command {
+            return match self.pane_target(*target, ctx) {
+                Ok(pane) => {
+                    let idle = self.panes.get(&pane).is_none_or(Pane::idle);
+                    idle.then_some(Error::OnlyShell(pane))
+                }
+                Err(error) => Some(error),
+            };
+        }
+        if let Command::KillPane { target }
+        | Command::SwapPane { target, .. }
+        | Command::MovePane { target, .. } = command
+        {
+            return self.pane_target(*target, ctx).err();
+        }
+        None
     }
 
     fn execute(&mut self, command: &Command, ctx: &Ctx) -> Result<String, Error> {
@@ -1350,7 +1305,7 @@ impl Session {
                 let pane = self.pane_target(target, ctx)?;
                 let (_, tab) = self.locate(pane).ok_or(Error::NotInTab)?;
                 let area = self.reference_area(tab, ctx);
-                let Some(root) = self.tab_mut(tab).and_then(|t| t.root.as_mut()) else {
+                let Some(root) = self.root_mut(tab) else {
                     return Err(Error::TabEmpty);
                 };
                 if layout::resize(root, area, pane, direction, amount) {
@@ -1649,10 +1604,7 @@ impl Session {
     fn neighbor(&self, from: PaneId, direction: Direction, ctx: &Ctx) -> Result<PaneId, Error> {
         let (_, tab) = self.locate(from).ok_or(Error::NotInTab)?;
         let area = self.reference_area(tab, ctx);
-        let root = self
-            .tab(tab)
-            .and_then(|t| t.root.as_ref())
-            .ok_or(Error::TabEmpty)?;
+        let root = self.root(tab).ok_or(Error::TabEmpty)?;
         let placement = layout::place(root, area);
         layout::neighbor(&placement, from, direction).ok_or(Error::NoNeighbor { from, direction })
     }
@@ -1664,19 +1616,16 @@ impl Session {
         let (_, ta) = self.locate(a).ok_or(Error::NotInTab)?;
         let (_, tb) = self.locate(b).ok_or(Error::OtherNotInTab)?;
         if ta == tb {
-            if let Some(root) = self.tab_mut(ta).and_then(|t| t.root.as_mut()) {
+            if let Some(root) = self.root_mut(ta) {
                 layout::swap(root, a, b);
             }
         } else {
-            let hole = PaneId(u32::MAX);
-            if let Some(root) = self.tab_mut(ta).and_then(|t| t.root.as_mut()) {
-                root.replace(a, hole);
+            // In different trees, each takes the other's place.
+            if let Some(root) = self.root_mut(ta) {
+                root.replace(a, b);
             }
-            if let Some(root) = self.tab_mut(tb).and_then(|t| t.root.as_mut()) {
+            if let Some(root) = self.root_mut(tb) {
                 root.replace(b, a);
-            }
-            if let Some(root) = self.tab_mut(ta).and_then(|t| t.root.as_mut()) {
-                root.replace(hole, b);
             }
         }
         Ok(())
@@ -1861,9 +1810,7 @@ impl Session {
                 .ok_or(Error::NoLastPane)?,
             Pick::Toward(direction) => {
                 let placement = layout::place(
-                    self.tab(tab)
-                        .and_then(|t| t.root.as_ref())
-                        .ok_or(Error::TabEmpty)?,
+                    self.root(tab).ok_or(Error::TabEmpty)?,
                     Self::pane_area(view),
                 );
                 let from = current.ok_or(Error::NoCurrentPane)?;
