@@ -3,7 +3,7 @@
 //! send only the changed runs, inside synchronized output.
 use crate::command::ClientId;
 use crate::keys::KeyPress;
-use crate::layout::{PaneId, Rect};
+use crate::layout::{Axis, PaneId, Rect, Separator};
 use crate::overlay::{self, ColumnRow};
 use crate::session::Session;
 use crate::view::{Mode, View};
@@ -428,61 +428,45 @@ fn separators(grid: &mut Grid, placement: &crate::layout::Placement, focus: Opti
     const DOWN: u8 = 2;
     const LEFT: u8 = 4;
     const RIGHT: u8 = 8;
-    const VERTICAL: u8 = 1;
-    const HORIZONTAL: u8 = 2;
+    let lines = &placement.separators;
+    if lines.is_empty() {
+        return;
+    }
     let (rows, cols) = (grid.rows, grid.cols);
-    let index = |x: i32, y: i32| -> Option<usize> {
-        let (x, y) = (usize::try_from(x).ok()?, usize::try_from(y).ok()?);
-        if x >= usize::from(cols) || y >= usize::from(rows) {
+    // The axis of the line drawn at a cell on the grid, if one is: the last
+    // separator there, as it is drawn last.
+    let axis_at = |x: Option<u16>, y: Option<u16>| {
+        let (x, y) = (x?, y?);
+        if x >= cols || y >= rows {
             return None;
         }
-        y.checked_mul(usize::from(cols))?.checked_add(x)
+        lines
+            .iter()
+            .rev()
+            .find(|s| s.rect().contains(x, y))
+            .map(|s| s.axis)
     };
-    let mut kind = vec![0u8; grid.cells.len()];
-    let mut bits = vec![0u8; grid.cells.len()];
-    for s in &placement.separators {
-        for i in 0..s.len {
-            let at = if s.vertical {
-                s.y.checked_add(i).map(|y| (s.x, y))
-            } else {
-                s.x.checked_add(i).map(|x| (x, s.y))
-            };
-            // Past the largest position is off the grid.
-            let Some((x, y)) = at else {
-                break;
-            };
-            if let Some(at) = index(i32::from(x), i32::from(y)) {
-                if let Some(k) = kind.get_mut(at) {
-                    *k = if s.vertical { VERTICAL } else { HORIZONTAL };
-                }
-                if let Some(b) = bits.get_mut(at) {
-                    *b = if s.vertical { UP | DOWN } else { LEFT | RIGHT };
-                }
+    // A line's own directions, and a tee toward each perpendicular line
+    // beside it.
+    let bits_at = |x: u16, y: u16| {
+        let beside = |bit: u8, x: Option<u16>, y: Option<u16>, axis: Axis| {
+            if axis_at(x, y) == Some(axis) { bit } else { 0 }
+        };
+        let (at_x, at_y) = (Some(x), Some(y));
+        Some(match axis_at(at_x, at_y)? {
+            // A vertical line.
+            Axis::Horizontal => {
+                UP | DOWN
+                    | beside(LEFT, x.checked_sub(1), at_y, Axis::Vertical)
+                    | beside(RIGHT, x.checked_add(1), at_y, Axis::Vertical)
             }
-        }
-    }
-    // A line whose end meets a perpendicular line joins it with a tee.
-    for y in 0..i32::from(rows) {
-        for x in 0..i32::from(cols) {
-            let here = index(x, y).and_then(|i| kind.get(i)).copied().unwrap_or(0);
-            let neighbours: &[(i32, i32, u8, u8)] = match here {
-                HORIZONTAL => &[(-1, 0, VERTICAL, RIGHT), (1, 0, VERTICAL, LEFT)],
-                VERTICAL => &[(0, -1, HORIZONTAL, DOWN), (0, 1, HORIZONTAL, UP)],
-                _ => &[],
-            };
-            for (dx, dy, want, bit) in neighbours {
-                if let Some(at) = x
-                    .checked_add(*dx)
-                    .zip(y.checked_add(*dy))
-                    .and_then(|(x, y)| index(x, y))
-                    && kind.get(at) == Some(want)
-                    && let Some(b) = bits.get_mut(at)
-                {
-                    *b |= bit;
-                }
+            Axis::Vertical => {
+                LEFT | RIGHT
+                    | beside(UP, at_x, y.checked_sub(1), Axis::Horizontal)
+                    | beside(DOWN, at_x, y.checked_add(1), Axis::Horizontal)
             }
-        }
-    }
+        })
+    };
     let focused = focus.and_then(|f| placement.rect(f));
     // Within a cell of the rect. Exact: values from u16s never saturate an i32.
     let near = |x: u16, y: u16, r: &Rect| {
@@ -492,34 +476,60 @@ fn separators(grid: &mut Grid, placement: &crate::layout::Placement, focus: Opti
             && y >= ry.saturating_sub(1)
             && y <= ry.saturating_add(i32::from(r.h))
     };
-    for y in 0..rows {
-        for x in 0..cols {
-            let b = index(i32::from(x), i32::from(y))
-                .and_then(|i| bits.get(i))
-                .copied()
-                .unwrap_or(0);
-            if b == 0 {
-                continue;
+    let draw = |grid: &mut Grid, x: u16, y: u16, bits: u8| {
+        let glyph = match bits {
+            b if b == UP | DOWN => "│",
+            b if b == LEFT | RIGHT => "─",
+            b if b == UP | DOWN | RIGHT => "├",
+            b if b == UP | DOWN | LEFT => "┤",
+            b if b == LEFT | RIGHT | DOWN => "┬",
+            b if b == LEFT | RIGHT | UP => "┴",
+            _ => "┼",
+        };
+        let color = if focused.is_some_and(|r| near(x, y, &r)) {
+            Color::Idx(2)
+        } else {
+            Color::Idx(240)
+        };
+        grid.set(
+            y,
+            x,
+            Cell::new(glyph, false, style(color, Color::Default)).unwrap_or_default(),
+        );
+    };
+    // Each line plain, in order, so the last one drawn at a cell is its.
+    for s in lines {
+        let bits = match s.axis {
+            Axis::Horizontal => UP | DOWN,
+            Axis::Vertical => LEFT | RIGHT,
+        };
+        for i in 0..s.len {
+            let at = match s.axis {
+                Axis::Horizontal => s.y.checked_add(i).map(|y| (s.x, y)),
+                Axis::Vertical => s.x.checked_add(i).map(|x| (x, s.y)),
+            };
+            // Past the largest position is off the grid.
+            let Some((x, y)) = at else {
+                break;
+            };
+            if x < cols && y < rows {
+                draw(grid, x, y, bits);
             }
-            let glyph = match b {
-                b if b == UP | DOWN => "│",
-                b if b == LEFT | RIGHT => "─",
-                b if b == UP | DOWN | RIGHT => "├",
-                b if b == UP | DOWN | LEFT => "┤",
-                b if b == LEFT | RIGHT | DOWN => "┬",
-                b if b == LEFT | RIGHT | UP => "┴",
-                _ => "┼",
-            };
-            let color = if focused.is_some_and(|r| near(x, y, &r)) {
-                Color::Idx(2)
-            } else {
-                Color::Idx(240)
-            };
-            grid.set(
-                y,
-                x,
-                Cell::new(glyph, false, style(color, Color::Default)).unwrap_or_default(),
-            );
+        }
+    }
+    // A tee can only be where a vertical line and a horizontal one meet or
+    // cross, at the vertical one's column and the horizontal one's row.
+    let vertical = lines.iter().filter(|s| s.axis == Axis::Horizontal);
+    for v in vertical.map(Separator::rect) {
+        for h in lines.iter().filter(|s| s.axis == Axis::Vertical) {
+            let (x, y, h) = (v.x, h.y, h.rect());
+            let near_x = [x.checked_sub(1), Some(x), x.checked_add(1)];
+            let near_y = [y.checked_sub(1), Some(y), y.checked_add(1)];
+            let meet = near_x.iter().flatten().any(|x| h.contains(*x, y))
+                && near_y.iter().flatten().any(|y| v.contains(x, *y));
+            if meet && let Some(bits) = bits_at(x, y) {
+                draw(grid, x, y, bits);
+            }
         }
     }
 }
