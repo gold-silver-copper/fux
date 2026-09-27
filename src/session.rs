@@ -794,6 +794,9 @@ impl Session {
                 .or_else(|| view.last_of.get(&t).copied().filter(shown))
                 .or_else(|| root.and_then(Node::first_pane))
         });
+        // Copy mode's rows are looked for only if the screen changed since
+        // they were last found, and then it is noted.
+        let mut held_at = None;
         // What the view's mode refers to must still exist.
         let gone: Option<String> = match &view.mode {
             Mode::Copy(copy) => {
@@ -802,10 +805,21 @@ impl Session {
                 } else if Some(copy.pane) != focus {
                     Some("copy mode ended: its pane is no longer focused".into())
                 } else {
-                    self.panes
-                        .get(&copy.pane)
-                        .and_then(|p| copy.check(p.screen()).err())
-                        .map(|e| e.to_string())
+                    let screen = self.panes.get(&copy.pane).map(|p| p.screen());
+                    let unchanged = screen
+                        .zip(copy.held_at)
+                        .is_some_and(|(screen, at)| !screen.changed_since(at));
+                    let checked = screen
+                        .filter(|_| !unchanged)
+                        .map(|s| (s.mark(), copy.check(s)));
+                    match checked {
+                        Some((mark, Ok(()))) => {
+                            held_at = Some(mark);
+                            None
+                        }
+                        Some((_, Err(error))) => Some(error.to_string()),
+                        None => None,
+                    }
                 }
             }
             Mode::List(list) => list
@@ -866,6 +880,9 @@ impl Session {
         {
             *selected = last;
             view.dirty = true;
+        }
+        if let (Mode::Copy(copy), Some(at)) = (&mut view.mode, held_at) {
+            copy.held_at = Some(at);
         }
         if let Some(reason) = gone {
             view.mode = Mode::Normal;
