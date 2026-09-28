@@ -1,6 +1,6 @@
 [workspace]
 members = ["fux-vt", "fuxix"]
-exclude = ["fux-vt/fuzz", "fuzz", "walk", "diff"]
+exclude = ["fux-vt/fuzz", "fux-vt/gen", "fuzz", "walk", "diff"]
 resolver = "3"
 
 [package]
@@ -24,6 +24,11 @@ fuxix = { path = "fuxix", version = "0.1.3" }
 
 [profile.dev]
 debug = 0
+
+# fux-vt's grapheme tables are tested against unicode-segmentation for every
+# code point; optimized, that takes seconds rather than half a minute.
+[profile.dev.package.unicode-segmentation]
+opt-level = 3
 
 [profile.release]
 strip = true

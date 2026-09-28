@@ -145,19 +145,29 @@ fn output(r: &mut Rng) -> Vec<u8> {
 }
 
 macro_rules! stack {
-    ($name:ident, $vt:ident $(, $rest:tt)?) => {
+    (
+        $name:ident,
+        $vt:ident,
+        |$row:ident| $cells:expr,
+        |$attrs:ident| $colors:expr
+        $(, $rest:tt)?
+    ) => {
         mod $name {
             use std::fmt::Write;
-            use $vt::{Attributes, Cell, Event, Mark, Options, Parser, Sink};
+            use $vt::{Attributes, Event, Mark, Options, Parser, Row, Sink};
 
             /// Attributes through the accessors both sides have, so a field
             /// one side's `Debug` shows and the other's lacks is no
             /// difference.
             fn attributes(a: Attributes) -> String {
+                let (foreground, background) = {
+                    let $attrs = a;
+                    $colors
+                };
                 format!(
                     "fg {:?} bg {:?} bold {} dim {} italic {} underline {} inverse {}",
-                    a.foreground,
-                    a.background,
+                    foreground,
+                    background,
                     a.bold(),
                     a.dim(),
                     a.italic(),
@@ -167,9 +177,9 @@ macro_rules! stack {
             }
 
             /// Each cell's contents, halves and attributes, whatever its layout.
-            fn cells(cells: &[Cell]) -> String {
+            fn cells($row: Row<'_>) -> String {
                 let mut out = String::new();
-                for cell in cells {
+                for cell in $cells {
                     let _ = write!(
                         out,
                         "[{:?} wide {} continuation {} {}]",
@@ -257,7 +267,7 @@ macro_rules! stack {
                                 row.version,
                                 row.wrapped,
                                 s.offset_for_row(row.id),
-                                cells(row.cells)
+                                cells(row)
                             );
                         }
                     }
@@ -277,10 +287,21 @@ macro_rules! stack {
     };
 }
 
-stack!(base, baseline_vt);
+stack!(base, baseline_vt, |row| row.cells.iter(), |a| (
+    a.foreground,
+    a.background
+));
 // This fux-vt's opt-in options beyond those of the baseline stay off, so
 // both sides answer the same input the same way.
-stack!(cur, fux_vt, (Options::default()));
+// Its cells are read through the row, which holds the text of long clusters.
+// Its colours are read through methods, as it packs them.
+stack!(
+    cur,
+    fux_vt,
+    |row| row.cells(),
+    |a| (a.foreground(), a.background()),
+    (Options::default())
+);
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
     let (mut terminals, mut pieces, mut resizes) = (0u64, 0u64, 0u64);

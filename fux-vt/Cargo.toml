@@ -11,8 +11,11 @@ keywords = ["terminal", "vt100", "ansi", "emulator", "parser"]
 categories = ["command-line-interface", "parser-implementations"]
 
 [dependencies]
-unicode-segmentation = "1.12"
 unicode-width = "0.2"
+
+[dev-dependencies]
+# The reference the generated grapheme tables are tested against.
+unicode-segmentation = "=1.13.3"
 
 [lints.rust]
 unused_must_use = "forbid"

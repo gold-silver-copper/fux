@@ -2039,10 +2039,10 @@ fn capture(pane: &Pane, history: Option<usize>, json: bool) -> String {
     // History rows above the screen, oldest first, then the screen itself.
     let history = (0..back).rev().filter_map(|offset| {
         let row = usize::from(rows).checked_add(offset)?;
-        Some(row_text(screen.row_from_bottom(row)?.cells))
+        Some(row_text(screen.row_from_bottom(row)?))
     });
     let live = screen.window(0, rows, cols);
-    let screen_rows = (0..rows).map(|y| live.row(y).map(|r| row_text(r.cells)).unwrap_or_default());
+    let screen_rows = (0..rows).map(|y| live.row(y).map(row_text).unwrap_or_default());
     let lines = history.chain(screen_rows).collect();
     let cursor = Some(screen.cursor_position());
     captured(
@@ -2097,8 +2097,8 @@ fn captured(
 }
 
 /// A row's text, wide glyphs whole and trailing blanks trimmed.
-pub fn row_text(cells: &[fux_vt::Cell]) -> String {
-    let row = cells.iter().filter(|c| !c.is_wide_continuation());
+pub fn row_text(row: fux_vt::Row<'_>) -> String {
+    let row = row.cells().filter(|c| !c.is_wide_continuation());
     let line: String = row.map(crate::render::shown).collect();
     line.trim_end_matches(' ').to_owned()
 }

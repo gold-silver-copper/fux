@@ -1,5 +1,5 @@
 #![no_main]
-use fux_vt::{Cell, Event, Identity, OSC_PAYLOAD_LIMIT, Options, Parser, RowId, Sink, Unhandled};
+use fux_vt::{Cells, Event, Identity, OSC_PAYLOAD_LIMIT, Options, Parser, RowId, Sink, Unhandled};
 use libfuzzer_sys::fuzz_target;
 use std::collections::HashMap;
 #[path = "../../tests/corpus/invariants.rs"]
@@ -70,18 +70,18 @@ impl Sink for Record {
 }
 
 /// Every retained row by identity: its version, wrap flag and cells.
-fn rows(p: &Parser) -> HashMap<RowId, (u64, bool, Vec<Cell>)> {
+fn rows(p: &Parser) -> HashMap<RowId, (u64, bool, Cells)> {
     let screen = p.screen();
     let retained = screen.history_len() + usize::from(screen.size().0);
     (0..retained)
         .filter_map(|i| screen.row_from_bottom(i))
-        .map(|row| (row.id, (row.version, row.wrapped, row.cells.to_vec())))
+        .map(|row| (row.id, (row.version, row.wrapped, row.cells().collect())))
         .collect()
 }
 
 /// A row whose cells or wrap flag changed has a newer version: a change is
 /// never missed.
-fn versions_follow(before: &HashMap<RowId, (u64, bool, Vec<Cell>)>, after: &Parser) {
+fn versions_follow(before: &HashMap<RowId, (u64, bool, Cells)>, after: &Parser) {
     for (id, (version, wrapped, cells)) in rows(after) {
         if let Some((was, was_wrapped, was_cells)) = before.get(&id)
             && (wrapped != *was_wrapped || cells != *was_cells)

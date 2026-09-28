@@ -16,7 +16,7 @@ is vt100 0.16.2 plus fux's existing reply callback, not every xterm feature.
 | Family | Contract/default/reset | Permanent test family |
 | --- | --- | --- |
 | Printable ASCII / UTF-8 | Printable runs bypass state dispatch in ground state; unicode-width 0.2 supplies widths; incomplete UTF-8 survives calls; invalid input and U+FFFD are discarded like the baseline | `text`, `chunking` |
-| Grapheme clusters | A character that continues the extended grapheme cluster (UAX #29, unicode-segmentation) of the cell printed just before the cursor joins that cell: spacing marks, variation selectors, ZWJ sequences, flags. A narrow cell whose cluster's string width becomes two is widened, the cell under the cursor becoming its second half; in the last column it stays narrow. Anything that moves the cursor or edits a row ends the cluster; SGR, modes and queries do not. Nothing joins after a Prepend character. A cell that cannot hold the character drops a zero-width one and starts a new cell for any other | `extended::grapheme_*`, `extended::a_cluster_*`, `extended::widening_*` |
+| Grapheme clusters | A character that continues the extended grapheme cluster of the cell printed just before the cursor joins that cell: spacing marks, variation selectors, ZWJ sequences, flags, Indic conjuncts. Boundaries follow UAX #29 (Unicode 17) as a state machine fed one character at a time, from tables `gen/` generates, never from the text a cell stores; the one departure is that nothing joins after a Prepend character. A narrow cell whose cluster's string width becomes two is widened, the cell under the cursor becoming its second half; in the last column it stays narrow. Anything that moves the cursor or edits a row ends the cluster; SGR, modes and queries do not. A cluster is never split: past `Cell::CLUSTER_CAPACITY` (128) bytes, or past its row's text budget, the rest of it is dropped, and what follows lands where UAX #29 puts it | `unicode::tests` (all 766 conformance cases, every assigned code point against unicode-segmentation), `extended::grapheme_*`, `extended::long_clusters_*`, `extended::a_full_cluster_*` |
 | C0 | BS subtracts a column; HT advances to next fixed eight-column stop, clamped; LF/VT/FF advance/scroll without CR; CR goes to column zero; BEL, SI/SO and other unhandled C0 have no visible effect | `controls` |
 | ESC 7 / 8, CSI s / u | Save/restore position, origin and drawing attributes; SCOSC/SCORC (`CSI s` / `CSI u`) share DECSC's slot; saved cursor is clamped after resize | `saved_cursor`, `extended::scosc_*` |
 | ESC = / > | DECKPAM / DECKPNM set and clear `application_keypad()` (default off; reset clears it). State only: fux-vt encodes no keypad input | `opt_in::keypad_mode_is_tracked_and_reset` |
@@ -55,10 +55,13 @@ independently; `Parser::process_with` delivers to a `Sink` whose
 | `reflow` | Resize re-wraps the primary screen and its history at the new width: each logical line (soft-wrapped rows and the row ending it) loses its blank tail and is laid out again without splitting wide glyphs (a glyph that does not fit leaves a blank and starts the next row). The cursor stays on its character, or as far past the text as it was, at most waiting to wrap. Surplus rows go blank lines below the cursor first, then the oldest lines into history, then history past its limit; rows below the screen once the cursor's row reaches its top are dropped. A reflowed line's k-th row keeps the identity of its k-th row before, if it had one; every row takes a new version and the resize forces a full refresh. The scroll region is reset. The alternate screen resizes without reflow. Two passes over the rows, no line gathered in memory; transactional like every resize | `extended::*reflow*`, fuzz header bit `0x40` |
 | `identity` | An `Identity { name, version }`. Primary DA answers `CSI ? 62 ; 22 c`; secondary DA answers `CSI > 1 ; Pv ; 0 c`, Pv the version as `major*10000 + minor*100 + patch`, with or without `extended_replies`; XTVERSION (`CSI > q`, `CSI > 0 q`) answers `DCS > \| name version ST`, unless name and version exceed `Identity::MAX_LEN` (48) bytes, when it is unhandled; DSR 6n and DECXCPR report a cursor waiting to wrap at the last column, as xterm does. Without one, XTVERSION is unhandled | `extended::an_identity_*`, `extended::identity_*`, fuzz header bit `0x80` |
 
-`Cell::new`, `Cell::wide_continuation` and `Attributes::new`/`with_*` let a
-consumer that stores or transports screen contents rebuild cells exactly;
-`Cell::new` refuses contents over `Cell::CONTENTS_CAPACITY` (25) bytes. Parser
-output never goes through them.
+Cells are read as `CellRef`s (`Screen::cell`, `Window::cell`, `Row::cell`,
+`Row::cells`), which find a long cluster's text in its row. A consumer that
+stores or transports screen contents keeps them in `Cells`, which holds long
+clusters the same way (`row.cells().collect::<Cells>()`, `Cells::set`,
+`Cells::set_text`); `Cell::new` (inline, at most `Cell::INLINE_CAPACITY`, 17,
+bytes), `Cell::wide_continuation` and `Attributes::new`/`with_*` build the
+rest. Parser output never goes through them.
 
 ### Deliberate boundary
 
@@ -96,9 +99,14 @@ parameter/intermediate overflow and string termination. Parameters saturate
 at u16::MAX; at most 32 numeric fields and two intermediates are retained;
 overflow moves to ignore-until-final. Ignored strings retain no payload.
 
-Cells retain at most 25 UTF-8 bytes, enough for the longest common emoji
-sequence (a four-person family, 25 bytes); a scalar is appended only if it
-fits. A combining scalar after an empty preceding cell attaches to a space;
+A cell is 32 bytes: its attributes and 17 bytes of text, enough for single
+emoji with modifiers, flags, keycaps and most accented text. A longer
+cluster, up to 128 bytes (Unicode's stream-safe limit, which holds every
+emoji sequence), goes in its row's text, which the cell locates. A row's
+text is at most 32 bytes a cell and 128 more; overwritten clusters leave
+their text until the row runs out of room and is compacted. A cluster that
+would not fit even then keeps what fits inline, whole chars, in its cell.
+A combining scalar after an empty preceding cell attaches to a space;
 at column zero it attaches to the previous row only when that row is
 soft-wrapped. Otherwise it is dropped. An over-capacity mark is dropped, not
 allocated.
@@ -134,7 +142,8 @@ Zero dimensions are rejected. Allocation uses checked arithmetic and explicit
 cell/row caps; errors leave the existing terminal usable. Processing may
 retain an already-applied input prefix; even a partially completed scroll
 forces every old window mark to refresh. Resize replacement is transactional. Each buffer permits
-at most 64 Mi retained cells (40 bytes each) and 1,048,576 retained rows.
+at most 64 Mi retained cells (32 bytes each, and at most 32 bytes of long
+cluster text each) and 1,048,576 retained rows.
 Storage grows geometrically only to the configured cap as history fills;
 empty history is not eagerly allocated. At capacity, scrolling reuses slots
 without allocating. Resize builds replacement storage before swapping it in,

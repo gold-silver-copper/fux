@@ -2,7 +2,7 @@
 //! `Options::extended_replies` (DECRQM, DECXCPR, secondary DA). The default must
 //! stay fux's policy: no events and the original reply set.
 
-use fux_vt::{Attributes, Cell, Color, Event, OSC_PAYLOAD_LIMIT, Options, Parser, Sink};
+use fux_vt::{Attributes, Cell, Cells, Color, Event, OSC_PAYLOAD_LIMIT, Options, Parser, Sink};
 #[path = "corpus/pieces.rs"]
 mod pieces;
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
@@ -128,7 +128,7 @@ fn osc_payloads_are_bounded_and_cancellable() -> Result {
     parser.process_with(b"\x1b]2;gone\x18\x1b]2;kept\x07ok", &mut record)?;
     assert_eq!(record.events, ["title:kept"]);
     assert_eq!(
-        parser.screen().cell(0, 0).map(Cell::contents),
+        parser.screen().cell(0, 0).map(|c| c.contents()),
         Some("o"),
         "OSC payload never reaches the grid"
     );
@@ -182,28 +182,35 @@ fn keypad_mode_is_tracked_and_reset() -> Result {
 #[test]
 fn consumers_can_reconstruct_cells_exactly() -> Result {
     let mut parser = Parser::new(2, 10, 0)?;
-    parser.process("\x1b[1;4;38;5;208;48;2;1;2;3m界e\u{301}\x1b[m ".as_bytes())?;
+    let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
+    let input = format!("\x1b[1;4;38;5;208;48;2;1;2;3m界e\u{301}\x1b[m {family}");
+    parser.process(input.as_bytes())?;
     let screen = parser.screen();
-    for col in 0..4 {
+    let mut copy = Cells::new(6);
+    for col in 0..6 {
         let original = screen.cell(0, col).ok_or("cell")?;
-        let copy = if original.is_wide_continuation() {
-            Cell::wide_continuation()
-        } else {
-            let a = original.attributes();
-            let attributes = Attributes::new(a.foreground, a.background)
-                .with_bold(a.bold())
-                .with_dim(a.dim())
-                .with_italic(a.italic())
-                .with_underline(a.underline())
-                .with_inverse(a.inverse());
-            Cell::new(original.contents(), original.is_wide(), attributes).ok_or("fits")?
-        };
-        assert_eq!(&copy, original, "col {col}");
+        if original.is_wide_continuation() {
+            copy.set_cell(usize::from(col), Cell::wide_continuation());
+            continue;
+        }
+        let a = original.attributes();
+        let attributes = Attributes::new(a.foreground(), a.background())
+            .with_bold(a.bold())
+            .with_dim(a.dim())
+            .with_italic(a.italic())
+            .with_underline(a.underline())
+            .with_inverse(a.inverse());
+        let text = original.contents();
+        assert!(copy.set_text(usize::from(col), text, original.is_wide(), attributes));
     }
+    let row = screen.row_from_bottom(1).ok_or("row")?;
+    let original: Cells = row.cells().take(6).collect();
+    assert_eq!(copy, original);
+    assert_eq!(copy.get(4).map(|c| c.contents()), Some(family));
     let attributes = Attributes::new(Color::Idx(1), Color::Default);
     let xs = |n: usize| std::iter::repeat_n('x', n).collect::<String>();
-    assert!(Cell::new(&xs(Cell::CONTENTS_CAPACITY), false, attributes).is_some());
-    assert!(Cell::new(&xs(Cell::CONTENTS_CAPACITY + 1), false, attributes).is_none());
+    assert!(Cell::new(&xs(Cell::INLINE_CAPACITY), false, attributes).is_some());
+    assert!(Cell::new(&xs(Cell::INLINE_CAPACITY + 1), false, attributes).is_none());
     assert!(!attributes.with_bold(true).with_bold(false).bold());
     Ok(())
 }
