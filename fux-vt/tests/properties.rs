@@ -3,12 +3,13 @@
 //! every line's text; `Cells` behaves as a plain list of cells; the kitty
 //! keyboard flag stacks behave as plain stacks.
 
-use fux_vt::{Attributes, Cell, Cells, Color, Options, Parser};
-use std::collections::VecDeque;
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use fux_vt::{Cells, Options, Parser};
+use unicode_width::UnicodeWidthChar;
 #[path = "corpus/graphemes.rs"]
 mod graphemes;
+#[path = "corpus/models.rs"]
+mod models;
+use models::{CellsOp, Model, cells_of, printable};
 
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
@@ -43,28 +44,6 @@ impl Rng {
 
 // Printing and grapheme clusters.
 
-/// Whether `c` continues any cluster: Extend, ZWJ or SpacingMark.
-fn extends(c: char) -> bool {
-    format!("a{c}").graphemes(true).count() == 1
-}
-
-/// Whether `c` is Prepend: it joins a letter after it.
-fn prepend(c: char) -> bool {
-    format!("{c}a").graphemes(true).count() == 1
-}
-
-/// A character fux-vt prints as a glyph or joins to one: not a control, and
-/// if it takes no columns, one that continues a cluster (others have no
-/// cell to go in, and are attached to whatever is before them). U+17D8, the
-/// one character unicode-width makes three columns wide, is left to its own
-/// test (`a_three_column_character_*`).
-fn printable(c: char) -> bool {
-    !c.is_control()
-        && c != '\u{FFFD}'
-        && c.width().is_some_and(|w| w <= 2)
-        && (c.width() != Some(0) || extends(c))
-}
-
 fn character(r: &mut Rng, first: bool) -> char {
     loop {
         let c = if r.chance(85) {
@@ -77,80 +56,6 @@ fn character(r: &mut Rng, first: bool) -> char {
             return c;
         }
     }
-}
-
-/// The clusters fux-vt makes of `text`: UAX #29's, broken after a Prepend
-/// character unless what follows extends it.
-fn clusters(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for grapheme in text.graphemes(true) {
-        let mut current = String::new();
-        let mut previous = None;
-        for c in grapheme.chars() {
-            if previous.is_some_and(prepend) && !extends(c) {
-                out.push(std::mem::take(&mut current));
-            }
-            current.push(c);
-            previous = Some(c);
-        }
-        out.push(current);
-    }
-    out
-}
-
-/// Adds `c` to `text` if the result fits in `Cell::CLUSTER_CAPACITY` bytes.
-fn append(text: &mut String, c: char) -> bool {
-    let fits = text
-        .len()
-        .checked_add(c.len_utf8())
-        .is_some_and(|n| n <= Cell::CLUSTER_CAPACITY);
-    if fits {
-        text.push(c);
-    }
-    fits
-}
-
-/// The cells `text` printed on one line makes, as (text, wide): one a
-/// cluster, keeping its characters until one does not fit in
-/// `Cell::CLUSTER_CAPACITY` bytes, wide once a kept prefix is two columns
-/// wide. A cluster that starts with characters taking no columns (after a
-/// Control-class format character, which UAX #29 breaks after) has no cell
-/// for them: they join the cell before, as marks always have, without
-/// widening it, and the rest of it starts afresh.
-fn cells_of(text: &str) -> Vec<(String, bool)> {
-    let mut cells: Vec<(String, bool)> = Vec::new();
-    let mut queue: VecDeque<String> = clusters(text).into();
-    while let Some(cluster) = queue.pop_front() {
-        let mut chars = cluster.chars();
-        let Some(first) = chars.next() else { continue };
-        if first.width() == Some(0) {
-            let leading: String = cluster
-                .chars()
-                .take_while(|c| c.width() == Some(0))
-                .collect();
-            if let Some((text, _)) = cells.last_mut() {
-                for c in leading.chars() {
-                    append(text, c);
-                }
-            }
-            let rest: String = cluster.chars().skip(leading.chars().count()).collect();
-            for next in clusters(&rest).into_iter().rev() {
-                queue.push_front(next);
-            }
-            continue;
-        }
-        let mut text = String::from(first);
-        let mut wide = first.width() == Some(2);
-        // A start of the cluster: once a character is dropped, the rest go.
-        for c in chars {
-            if !append(&mut text, c) {
-                break;
-            }
-            wide |= text.width() >= 2;
-        }
-        cells.push((text, wide));
-    }
-    cells
 }
 
 /// Random text printed on one line, in random pieces (splitting UTF-8) with
@@ -352,91 +257,11 @@ fn reflow_narrower_and_back_keeps_every_line() -> Result {
 
 // Cells.
 
-/// A cell as the model keeps it.
-#[derive(Clone, Debug, PartialEq)]
-struct Model {
-    text: String,
-    wide: bool,
-    continuation: bool,
-    attributes: Attributes,
-}
-
-impl Model {
-    fn blank() -> Self {
-        Self {
-            text: String::new(),
-            wide: false,
-            continuation: false,
-            attributes: Attributes::default(),
-        }
-    }
-}
-
-/// The longest start of `text` of at most `max` bytes, in whole chars.
-fn floor(text: &str, max: usize) -> String {
-    let mut out = String::new();
-    for c in text.chars() {
-        if out.len().saturating_add(c.len_utf8()) > max {
-            break;
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// The text `Cells` keeps of `text` stored at `i`, given the others:
-/// `CLUSTER_CAPACITY` bytes of it at most, in whole chars; and if what the
-/// others keep beyond their cells leaves no room, what fits inline.
-fn kept(model: &[Model], i: usize, text: &str) -> String {
-    let text = floor(text, Cell::CLUSTER_CAPACITY);
-    if text.len() <= Cell::INLINE_CAPACITY {
-        return text;
-    }
-    let others = model
-        .iter()
-        .enumerate()
-        .filter(|(j, m)| *j != i && m.text.len() > Cell::INLINE_CAPACITY)
-        .fold(0usize, |sum, (_, m)| sum.saturating_add(m.text.len()));
-    if others.saturating_add(text.len()) <= Cells::text_limit(model.len()) {
-        text
-    } else {
-        floor(&text, Cell::INLINE_CAPACITY)
-    }
-}
-
-/// Sets model cell `i`, if there is one.
-fn put(model: &mut [Model], i: usize, cell: Model) {
-    if let Some(slot) = model.get_mut(i) {
-        *slot = cell;
-    }
-}
-
 /// Random edits to `Cells`, of every kind, on runs small enough that their
 /// text budget runs out, agree with a plain list of cells after each.
 #[test]
 fn cells_agree_with_a_plain_list_of_cells() -> Result {
-    let mut texts: Vec<String> = [
-        "a",
-        "",
-        "界",
-        "e\u{301}",
-        "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}",
-    ]
-    .iter()
-    .map(|s| (*s).to_owned())
-    .collect();
-    for marks in [10, 35, 60, 85] {
-        texts.push(
-            std::iter::once('e')
-                .chain(std::iter::repeat_n('\u{301}', marks))
-                .collect(),
-        );
-    }
-    let styles = [
-        Attributes::default(),
-        Attributes::new(Color::Idx(1), Color::Rgb(1, 2, 3)).with_bold(true),
-        Attributes::default().with_underline_color(Color::Idx(9)),
-    ];
+    let texts = models::texts();
     let mut r = Rng(0xce11_5000_0000_0003);
     let mut edits = 0usize;
     for _ in 0..1_500 {
@@ -448,110 +273,33 @@ fn cells_agree_with_a_plain_list_of_cells() -> Result {
             let i = r.below(model.len().saturating_add(1));
             let text = texts.get(r.below(texts.len())).cloned().unwrap_or_default();
             let wide = r.chance(30);
-            let attributes = r.pick(&styles).unwrap_or_default();
-            match r.below(6) {
-                0 | 1 => {
-                    let whole = cells.set_text(i, &text, wide, attributes);
-                    if i < model.len() {
-                        let keep = kept(&model, i, &text);
-                        assert_eq!(whole, keep == text, "{text:?}");
-                        let cell = Model {
-                            text: keep,
-                            wide,
-                            continuation: false,
-                            attributes,
-                        };
-                        put(&mut model, i, cell);
-                    }
-                }
-                2 => {
-                    // From another run, wherever it keeps its text.
-                    let j = r.below(4);
-                    other.set_text(j, &text, wide, attributes);
-                    if let Some(from) = other.get(j) {
-                        let whole = cells.set(i, from);
-                        if i < model.len() {
-                            let keep = kept(&model, i, from.contents());
-                            assert_eq!(whole, keep == from.contents());
-                            let cell = Model {
-                                text: keep,
-                                wide: from.is_wide(),
-                                continuation: false,
-                                attributes: from.attributes(),
-                            };
-                            put(&mut model, i, cell);
-                        }
-                    }
-                }
-                3 => {
-                    cells.set_attributes(i, attributes);
-                    if let Some(m) = model.get_mut(i) {
-                        m.attributes = attributes;
-                    }
-                }
-                4 => {
-                    let (a, b) = (
-                        r.below(len.saturating_add(2)),
-                        r.below(len.saturating_add(2)),
-                    );
-                    let (a, b) = (a.min(b), a.max(b));
-                    let continuation = r.chance(50);
-                    let cell = if continuation {
-                        Cell::wide_continuation()
-                    } else {
-                        Cell::new("z", false, attributes).unwrap_or_default()
-                    };
-                    cells.fill(a..b, cell);
-                    for m in model.iter_mut().take(b).skip(a) {
-                        *m = if continuation {
-                            Model {
-                                continuation: true,
-                                ..Model::blank()
-                            }
-                        } else {
-                            Model {
-                                text: "z".into(),
-                                wide: false,
-                                continuation: false,
-                                attributes,
-                            }
-                        };
-                    }
-                }
-                _ => {
-                    let new = r.below(8);
-                    cells.resize(new, Cell::default());
-                    model.resize(new, Model::blank());
-                    // A shorter run keeps a shorter run's budget: cells whose
-                    // text no longer fits, left to right, keep what fits
-                    // inline.
-                    let whole = model.clone();
-                    for (i, m) in whole.iter().enumerate() {
-                        let mut prefix = model.clone();
-                        for later in prefix.iter_mut().skip(i) {
-                            *later = Model::blank();
-                        }
-                        if let Some(slot) = model.get_mut(i) {
-                            slot.text = kept(&prefix, i, &m.text);
-                        }
-                    }
-                }
-            }
+            let attributes = r.pick(&models::STYLES).unwrap_or_default();
+            let op = match r.below(6) {
+                0 | 1 => CellsOp::SetText {
+                    i,
+                    text,
+                    wide,
+                    attributes,
+                },
+                2 => CellsOp::SetFrom {
+                    i,
+                    j: r.below(4),
+                    text,
+                    wide,
+                    attributes,
+                },
+                3 => CellsOp::SetAttributes { i, attributes },
+                4 => CellsOp::Fill {
+                    a: r.below(len.saturating_add(2)),
+                    b: r.below(len.saturating_add(2)),
+                    continuation: r.chance(50),
+                    attributes,
+                },
+                _ => CellsOp::Resize { len: r.below(8) },
+            };
+            models::apply(&mut cells, &mut other, &mut model, &op);
+            models::check(&cells, &model);
             edits = edits.saturating_add(1);
-            assert_eq!(cells.len(), model.len());
-            for (i, m) in model.iter().enumerate() {
-                let cell = cells.get(i).ok_or("cell")?;
-                let got = Model {
-                    text: cell.contents().to_owned(),
-                    wide: cell.is_wide(),
-                    continuation: cell.is_wide_continuation(),
-                    attributes: cell.attributes(),
-                };
-                assert_eq!(&got, m, "cell {i} of {model:?}");
-            }
-            assert!(cells.text_len() <= Cells::text_limit(cells.len()));
-            let copy: Cells = cells.iter().collect();
-            assert_eq!(copy, cells);
         }
     }
     assert!(edits > 80_000, "{edits}");
