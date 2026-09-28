@@ -60,3 +60,48 @@ fn identity_and_mark_exhaustion_never_alias_old_rows() -> Result<(), Error> {
     }
     Ok(())
 }
+
+/// The fast answer never contradicts the tables: for every scalar value
+/// after a spread of cluster endings (letters, marks, CJK, Hangul, Indic,
+/// emoji, flags, joiners), whenever `starts_cluster` says a new cluster
+/// begins, UAX #29 puts a boundary there.
+#[test]
+fn the_fast_cluster_answer_agrees_with_the_tables() {
+    let endings = [
+        "a",
+        "e\u{301}",
+        "\u{4f60}",
+        "\u{3042}",
+        "\u{ac00}",
+        "\u{1100}",
+        "\u{1161}",
+        "\u{11a8}",
+        "\u{915}",
+        "\u{915}\u{94d}",
+        "\u{928}\u{93f}",
+        "\u{2764}",
+        "\u{1f600}",
+        "\u{1f469}\u{200d}",
+        "\u{1f1ef}",
+        "\u{1f1ef}\u{1f1f5}",
+        "\u{200d}",
+        "\u{a9}",
+        " ",
+        "\u{e33}",
+        "\u{16ff0}",
+        "1\u{fe0f}",
+    ];
+    let mut decided = 0u32;
+    for previous in endings {
+        let Some(last) = previous.chars().next_back() else {
+            continue;
+        };
+        for c in (0..=0x10ffff).filter_map(char::from_u32) {
+            if starts_cluster(last, c) {
+                assert!(!joins_by_tables(previous, c), "{previous:?} + {c:?}");
+                decided = decided.saturating_add(1);
+            }
+        }
+    }
+    assert!(decided > 1_000_000, "{decided}");
+}

@@ -6,8 +6,8 @@ mod grid;
 mod parser;
 mod screen;
 
-pub use cell::{Attributes, Cell, Color};
-pub use parser::{Event, OSC_PAYLOAD_LIMIT, Options, Parser, Sink};
+pub use cell::{Attributes, Blink, Cell, Color};
+pub use parser::{Event, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink, Unhandled};
 pub use screen::{MouseProtocolEncoding, MouseProtocolMode, Screen};
 
 /// `slice::copy_from_slice`, checked: copies `src` over `dst`, if they are the
@@ -20,11 +20,21 @@ pub(crate) fn copy_from<T: Copy>(dst: &mut [T], src: &[T]) -> Option<()> {
 }
 
 /// A reply to a query, built where it is kept rather than on the heap: the
-/// longest fux-vt makes, `ESC [ ? 65535 ; 65535 R`, is 15 bytes.
-#[derive(Clone, Copy, Debug, Default)]
+/// longest fux-vt makes, XTVERSION's `DCS > | name version ST` with
+/// [`Identity::MAX_LEN`] bytes of name and version, is 55 bytes.
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Reply {
-    bytes: [u8; 32],
+    bytes: [u8; 64],
     len: usize,
+}
+
+impl Default for Reply {
+    fn default() -> Self {
+        Self {
+            bytes: [0; 64],
+            len: 0,
+        }
+    }
 }
 
 impl Reply {
@@ -210,7 +220,7 @@ mod tests {
         assert!(built.write_str("\x1b[0").is_ok() && built.write_str("n").is_ok());
         assert_eq!(built.as_bytes(), b"\x1b[0n");
         // More than it holds is refused, and what it held stays.
-        let long: String = std::iter::repeat_n('x', 40).collect();
+        let long: String = std::iter::repeat_n('x', 70).collect();
         assert!(built.write_str(&long).is_err());
         assert_eq!(built.as_bytes(), b"\x1b[0n");
     }

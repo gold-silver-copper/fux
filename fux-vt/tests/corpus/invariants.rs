@@ -24,7 +24,7 @@ pub fn check(p: &Parser) {
         assert!(ids.insert(row.id), "row identities alias");
         assert!(!row.cells.is_empty());
         for (i, cell) in row.cells.iter().enumerate() {
-            assert!(cell.contents().len() <= 22);
+            assert!(cell.contents().len() <= Cell::CONTENTS_CAPACITY);
             if cell.is_wide() {
                 assert!(
                     i.checked_add(1)
@@ -74,6 +74,8 @@ pub fn equal(a: &Parser, b: &Parser) {
     assert_eq!(a.alternate_screen(), b.alternate_screen());
     assert_eq!(a.mouse_protocol_mode(), b.mouse_protocol_mode());
     assert_eq!(a.mouse_protocol_encoding(), b.mouse_protocol_encoding());
+    assert_eq!(a.kitty_keyboard_flags(), b.kitty_keyboard_flags());
+    assert_eq!(a.modify_other_keys(), b.modify_other_keys());
     assert_eq!(a.history_len(), b.history_len());
     for offset in 0..usize::from(a.size().0).saturating_add(a.history_len()) {
         let (a, b) = (a.row_from_bottom(offset), b.row_from_bottom(offset));

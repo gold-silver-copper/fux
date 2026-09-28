@@ -35,7 +35,7 @@ fn measured_storage_plateau_and_transactional_resize_peak_include_metadata() -> 
     let new_heap = new_primary.iter().sum::<usize>() + new_alternate.iter().sum::<usize>();
     let screen_bytes = std::mem::size_of::<crate::Screen>();
     let peak_reserved = old_heap + new_heap + screen_bytes + 2 * std::mem::size_of::<Grid>();
-    assert_eq!(std::mem::size_of::<Cell>(), 32);
+    assert_eq!(std::mem::size_of::<Cell>(), 40);
     println!(
         "MEMORY-BOUNDS {{\"components\":[\"cells\",\"row_metadata\",\"slot_order\"],\"initial_primary\":{initial_primary:?},\"initial_alternate\":{initial_alternate:?},\"plateau_primary\":{plateau:?},\"resized_primary\":{new_primary:?},\"resized_alternate\":{new_alternate:?},\"screen_object_bytes\":{screen_bytes},\"steady_reserved_bytes\":{},\"resize_peak_reserved_bytes\":{peak_reserved},\"scrolls\":20000}}",
         old_heap + screen_bytes

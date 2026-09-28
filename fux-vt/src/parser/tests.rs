@@ -107,3 +107,34 @@ fn ascii_run_path_equals_scalar_dispatch_on_the_permanent_corpus() -> Result<(),
     }
     Ok(())
 }
+
+/// The ASCII run path writes cells without asking about grapheme clusters.
+/// That is only right because no ASCII character continues a cluster (fux-vt
+/// never joins after a Prepend), and because the run leaves its last cell
+/// for a following mark or selector to join. Both paths must agree on text
+/// that mixes ASCII with every kind of cluster, at every wrap position.
+#[test]
+fn ascii_run_path_equals_scalar_dispatch_around_grapheme_clusters() -> Result<(), Error> {
+    let text = "ab1\u{fe0f}\u{20e3}x\u{2764}\u{fe0f}y#\u{fe0f}\u{20e3}e\u{301}\u{302}z\
+        \u{1f1ef}\u{1f1f5}q\u{1f469}\u{200d}\u{1f52c}w\u{928}\u{93f}v\u{600}5\u{200d}k\
+        \u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}!\r\n\x1b[1mA\u{301}\x1b[0m";
+    for cols in 1..=12 {
+        let mut fast = Parser::new(6, cols, 8)?;
+        let mut scalar = fast.clone();
+        fast.process(text.as_bytes())?;
+        scalar.screen.begin()?;
+        for byte in text.as_bytes() {
+            scalar.byte(*byte, &mut Replies(|_: &[u8]| {}))?;
+        }
+        let (a, b) = (fast.screen(), scalar.screen());
+        assert_eq!(a.cursor_position(), b.cursor_position(), "{cols} columns");
+        for offset in 0..6 + a.history_len() {
+            assert_eq!(
+                a.row_from_bottom(offset).map(|r| r.cells),
+                b.row_from_bottom(offset).map(|r| r.cells),
+                "{cols} columns, row {offset} from the bottom"
+            );
+        }
+    }
+    Ok(())
+}

@@ -23,7 +23,7 @@ impl Extent {
     }
 }
 
-/// Maximum addressable retained cells per buffer (2 GiB at 32 bytes/cell).
+/// Maximum addressable retained cells per buffer (2.5 GiB at 40 bytes/cell).
 /// Storage is committed only for live/retained rows, not empty history slots.
 pub(crate) const MAX_CELLS: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_ROWS: usize = 1_048_576;
@@ -571,6 +571,219 @@ impl Grid {
         Ok(replacement)
     }
 
+    /// The primary screen resized with reflow: every logical line, a run of
+    /// soft-wrapped rows and the row that ends it, history included, is
+    /// re-wrapped at `cols`, without splitting wide glyphs. The cursor stays
+    /// on its character. When there are more rows than fit, blank lines
+    /// below the cursor go first, then lines scroll into history, oldest
+    /// dropped first past the history limit; rows below the screen once
+    /// the cursor's row is at its top are dropped. The scroll region is
+    /// reset, as xterm does on resize. Like `resized`, it builds replacement
+    /// storage first, so allocation failure leaves this grid unchanged.
+    ///
+    /// Two walks over the rows, one to lay them out and one to copy them,
+    /// so no line is ever gathered in memory of its own. The k-th row of a
+    /// reflowed line keeps the identity of the line's k-th row before, if it
+    /// had one; every row takes `version`.
+    pub fn reflowed(
+        &self,
+        rows: u16,
+        cols: u16,
+        next: &mut u64,
+        version: u64,
+    ) -> Result<Self, Error> {
+        let (rows, cols) = Self::check_size(rows, cols, self.history_limit)?;
+        let cursor = self
+            .history_len()
+            .checked_add(usize::from(self.cursor.0))
+            .map(|row| (row, usize::from(self.cursor.1)));
+        let layout = self.reflow(usize::from(cols.get()), cursor, &mut Layout)?;
+        // Blank lines below the cursor are dropped before any line scrolls
+        // into history: a mostly empty screen keeps its text on screen.
+        let screen = usize::from(rows.get());
+        let (cursor_row, cursor_col) = layout.cursor;
+        let drop = layout
+            .trailing_blank
+            .min(layout.rows.saturating_sub(screen))
+            .min(layout.rows.saturating_sub(cursor_row.saturating_add(1)));
+        let total = layout.rows.saturating_sub(drop);
+        let live_top = total.saturating_sub(screen).min(cursor_row);
+        let base = live_top.saturating_sub(self.history_limit);
+        let end = total.min(live_top.checked_add(screen).ok_or(Error::Capacity)?);
+        let keep_total = live_top
+            .saturating_sub(base)
+            .checked_add(screen)
+            .ok_or(Error::Capacity)?;
+        let mut replacement = Self {
+            cells: Vec::new(),
+            meta: Vec::new(),
+            order: VecDeque::new(),
+            stride: usize::from(cols.get()),
+            rows,
+            cols,
+            history_limit: self.history_limit,
+            // The cursor's row is on screen: `live_top` is at most its row,
+            // and the screen reaches past it.
+            cursor: (
+                u16::try_from(cursor_row.saturating_sub(live_top))
+                    .map_or(rows.last(), |row| row.min(rows.last())),
+                u16::try_from(cursor_col).map_or(cols.get(), |col| col.min(cols.get())),
+            ),
+            saved_cursor: (
+                self.saved_cursor.0.min(rows.last()),
+                self.saved_cursor.1.min(cols.last()),
+            ),
+            origin: self.origin,
+            saved_origin: self.saved_origin,
+            top: 0,
+            bottom: rows.last(),
+        };
+        replacement.reserve_rows(keep_total)?;
+        let size = keep_total
+            .checked_mul(replacement.stride)
+            .ok_or(Error::Capacity)?;
+        replacement.cells.resize(size, Cell::default());
+        let mut copy = Copy {
+            grid: &mut replacement,
+            rows: base..end,
+            next,
+            version,
+        };
+        self.reflow(usize::from(cols.get()), cursor, &mut copy)?;
+        // Blank rows under the last line, if the lines do not fill the screen.
+        while replacement.order.len() < keep_total {
+            let slot = replacement.meta.len();
+            replacement.meta.push(Meta {
+                id: next_id(next)?,
+                version,
+                width: cols.get(),
+                wrapped: false,
+            });
+            replacement.order.push_back(slot);
+        }
+        Ok(replacement)
+    }
+
+    /// Lays every retained row out again at `width` columns, one logical
+    /// line after another, giving each cell and each finished row to
+    /// `target`. `cursor` is the retained row and column of the cursor.
+    fn reflow(
+        &self,
+        width: usize,
+        cursor: Option<(usize, usize)>,
+        target: &mut impl Reflow,
+    ) -> Result<Reflowed, Error> {
+        let retained = self.retained_len();
+        let blank = Cell::default();
+        let mut out = Reflowed {
+            rows: 0,
+            cursor: (0, 0),
+            trailing_blank: 0,
+        };
+        let mut found = false;
+        let mut start = 0;
+        while start < retained {
+            // A line runs through its wrapped rows to the row that ends it.
+            let mut end = start;
+            while end.checked_add(1).is_some_and(|next| next < retained)
+                && self.row_at(end).is_some_and(|r| r.wrapped)
+            {
+                end = end.saturating_add(1);
+            }
+            let line = (start..=end).filter_map(|i| self.row_at(i));
+            // Its length without the blank tail, and where the cursor is in it.
+            let mut length = 0usize;
+            let mut offset = None;
+            for (i, row) in (start..=end).zip(line.clone()) {
+                if let Some((row_index, col)) = cursor
+                    && row_index == i
+                {
+                    offset = length.checked_add(col);
+                }
+                let used = if i == end {
+                    row.cells
+                        .iter()
+                        .rposition(|c| !c.same(&blank))
+                        .map_or(0, |last| last.saturating_add(1))
+                } else {
+                    row.cells.len()
+                };
+                length = length.saturating_add(used);
+                if i == end && used == 0 {
+                    // The tail runs back over earlier rows' blanks too.
+                    length = self.trimmed(start, end);
+                }
+            }
+            let first = out.rows;
+            let mut used = 0usize;
+            let mut placed = false;
+            let ids = line.clone().map(|r| r.id);
+            let mut ids = ids.fuse();
+            for (n, cell) in line.flat_map(|r| r.cells.iter()).take(length).enumerate() {
+                if width < 2 && (cell.is_wide() || cell.is_wide_continuation()) {
+                    // A wide glyph cannot be drawn in one column.
+                    continue;
+                }
+                let full = used >= width;
+                let pad = !full && cell.is_wide() && used.saturating_add(1) == width;
+                if full || pad {
+                    if pad {
+                        target.cell(out.rows, used, blank);
+                    }
+                    target.row(out.rows, true, ids.next())?;
+                    out.rows = out.rows.saturating_add(1);
+                    used = 0;
+                }
+                if offset == Some(n) {
+                    out.cursor = (out.rows, used);
+                    placed = true;
+                }
+                target.cell(out.rows, used, *cell);
+                used = used.saturating_add(1);
+            }
+            if let Some(offset) = offset
+                && !placed
+            {
+                // At or past the end of the line's text: as far past it on
+                // the last row, at most waiting to wrap after the last column.
+                let past = offset.saturating_sub(length);
+                out.cursor = (out.rows, used.saturating_add(past).min(width));
+                placed = true;
+            }
+            found |= placed;
+            target.row(out.rows, false, ids.next())?;
+            out.rows = out.rows.saturating_add(1);
+            out.trailing_blank = if length == 0 {
+                out.trailing_blank
+                    .saturating_add(out.rows.saturating_sub(first))
+            } else {
+                0
+            };
+            start = end.saturating_add(1);
+        }
+        if !found {
+            out.cursor = (out.rows.saturating_sub(1), 0);
+        }
+        Ok(out)
+    }
+
+    /// How many cells of the line from row `start` through `end` come before
+    /// its blank tail, which can run back over several rows.
+    fn trimmed(&self, start: usize, end: usize) -> usize {
+        let blank = Cell::default();
+        let mut length = 0usize;
+        let mut kept = 0usize;
+        for row in (start..=end).filter_map(|i| self.row_at(i)) {
+            for cell in row.cells {
+                length = length.saturating_add(1);
+                if !cell.same(&blank) {
+                    kept = length;
+                }
+            }
+        }
+        kept
+    }
+
     /// Starts the grid again, as `new` makes it. A grid that holds only its
     /// live rows, in storage made for them, keeps that storage: its rows are
     /// blanked and given new identities, top to bottom, as `new` gives them.
@@ -637,6 +850,74 @@ impl Grid {
         } else {
             (row.min(self.rows.last()), col.min(self.cols.last()))
         };
+    }
+}
+
+/// Where a reflow's rows go: `Layout` only counts them; `Copy` writes the
+/// ones kept into the replacement grid.
+trait Reflow {
+    /// `cell` is at `col` of reflowed row `row`.
+    fn cell(&mut self, row: usize, col: usize, cell: Cell);
+    /// Reflowed row `row` is finished; `wrapped` if its line goes on, and
+    /// the identity of its line's row in the same place before, if any.
+    fn row(&mut self, row: usize, wrapped: bool, id: Option<RowId>) -> Result<(), Error>;
+}
+
+/// The shape of a reflow: how many rows, where the cursor is, and how many
+/// rows at the end hold blank lines.
+struct Reflowed {
+    rows: usize,
+    cursor: (usize, usize),
+    trailing_blank: usize,
+}
+
+struct Layout;
+impl Reflow for Layout {
+    fn cell(&mut self, _: usize, _: usize, _: Cell) {}
+    fn row(&mut self, _: usize, _: bool, _: Option<RowId>) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+/// Writes reflowed rows `rows` into `grid`, whose cells are allocated and
+/// blank, one slot a row in order.
+struct Copy<'a> {
+    grid: &'a mut Grid,
+    rows: Range<usize>,
+    next: &'a mut u64,
+    version: u64,
+}
+impl Reflow for Copy<'_> {
+    fn cell(&mut self, row: usize, col: usize, cell: Cell) {
+        if self.rows.contains(&row)
+            && let Some(slot) = row.checked_sub(self.rows.start)
+            && let Some(at) = slot
+                .checked_mul(self.grid.stride)
+                .and_then(|start| start.checked_add(col))
+            && col < self.grid.stride
+            && let Some(target) = self.grid.cells.get_mut(at)
+        {
+            *target = cell;
+        }
+    }
+    fn row(&mut self, row: usize, wrapped: bool, id: Option<RowId>) -> Result<(), Error> {
+        if !self.rows.contains(&row) {
+            return Ok(());
+        }
+        let id = match id {
+            Some(id) => id,
+            None => next_id(self.next)?,
+        };
+        let slot = self.grid.meta.len();
+        self.grid.meta.push(Meta {
+            id,
+            version: self.version,
+            width: self.grid.cols.get(),
+            wrapped,
+        });
+        self.grid.order.push_back(slot);
+        repair_wide(self.grid.slice_mut(slot));
+        Ok(())
     }
 }
 

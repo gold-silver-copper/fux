@@ -2,7 +2,7 @@
 //! other: after every `process`, a row whose cells or wrap flag differ has a
 //! greater version and is among the dirty rows; and input whose every edit
 //! leaves its row as it was changes no version at all.
-use fux_vt::{Attributes, Cell, Color, Parser, RowId};
+use fux_vt::{Attributes, Blink, Cell, Color, Parser, RowId};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -96,13 +96,21 @@ fn sgr(attributes: Attributes) -> String {
         (attributes.italic(), "3"),
         (attributes.underline(), "4"),
         (attributes.inverse(), "7"),
+        (attributes.blink() == Blink::Slow, "5"),
+        (attributes.blink() == Blink::Rapid, "6"),
+        (attributes.hidden(), "8"),
+        (attributes.strikeout(), "9"),
     ] {
         if on {
             out.push(';');
             out.push_str(code);
         }
     }
-    for (color, base) in [(attributes.foreground, 38), (attributes.background, 48)] {
+    for (color, base) in [
+        (attributes.foreground, 38),
+        (attributes.background, 48),
+        (attributes.underline_color, 58),
+    ] {
         let _ = match color {
             Color::Default => Ok(()),
             Color::Idx(i) => write!(out, ";{base};5;{i}"),

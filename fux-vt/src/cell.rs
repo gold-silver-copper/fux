@@ -9,21 +9,38 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
+/// How a cell blinks: SGR 5 (slow) and 6 (rapid) replace one another, and
+/// SGR 25 stops either.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Blink {
+    #[default]
+    None,
+    Slow,
+    Rapid,
+}
+
 /// Attributes are independent of glyph storage and copied onto erased cells.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Attributes {
     pub foreground: Color,
     pub background: Color,
-    pub(crate) flags: u8,
+    /// SGR 58; `Default` draws underlines in the foreground colour.
+    pub underline_color: Color,
+    pub(crate) flags: u16,
 }
 
 impl Attributes {
     // The bits of `flags`, one a style.
-    pub(crate) const BOLD: u8 = 1;
-    pub(crate) const DIM: u8 = 2;
-    pub(crate) const ITALIC: u8 = 4;
-    pub(crate) const UNDERLINE: u8 = 8;
-    pub(crate) const INVERSE: u8 = 16;
+    pub(crate) const BOLD: u16 = 1;
+    pub(crate) const DIM: u16 = 2;
+    pub(crate) const ITALIC: u16 = 4;
+    pub(crate) const UNDERLINE: u16 = 8;
+    pub(crate) const INVERSE: u16 = 16;
+    pub(crate) const SLOW_BLINK: u16 = 32;
+    pub(crate) const RAPID_BLINK: u16 = 64;
+    pub(crate) const HIDDEN: u16 = 128;
+    pub(crate) const STRIKEOUT: u16 = 256;
+    pub(crate) const BLINK: u16 = Self::SLOW_BLINK | Self::RAPID_BLINK;
 
     /// Plain attributes with the given colours; add styles with the `with_*`
     /// builders. For consumers that store or transport cells.
@@ -31,10 +48,11 @@ impl Attributes {
         Self {
             foreground,
             background,
+            underline_color: Color::Default,
             flags: 0,
         }
     }
-    const fn with_flag(mut self, bit: u8, on: bool) -> Self {
+    const fn with_flag(mut self, bit: u16, on: bool) -> Self {
         self.flags = if on {
             self.flags | bit
         } else {
@@ -62,6 +80,28 @@ impl Attributes {
     pub const fn with_inverse(self, on: bool) -> Self {
         self.with_flag(Self::INVERSE, on)
     }
+    #[must_use]
+    pub const fn with_blink(self, blink: Blink) -> Self {
+        let bit = match blink {
+            Blink::None => 0,
+            Blink::Slow => Self::SLOW_BLINK,
+            Blink::Rapid => Self::RAPID_BLINK,
+        };
+        self.with_flag(Self::BLINK, false).with_flag(bit, true)
+    }
+    #[must_use]
+    pub const fn with_hidden(self, on: bool) -> Self {
+        self.with_flag(Self::HIDDEN, on)
+    }
+    #[must_use]
+    pub const fn with_strikeout(self, on: bool) -> Self {
+        self.with_flag(Self::STRIKEOUT, on)
+    }
+    #[must_use]
+    pub const fn with_underline_color(mut self, color: Color) -> Self {
+        self.underline_color = color;
+        self
+    }
     pub fn bold(self) -> bool {
         self.flags & Self::BOLD != 0
     }
@@ -77,6 +117,21 @@ impl Attributes {
     pub fn inverse(self) -> bool {
         self.flags & Self::INVERSE != 0
     }
+    pub fn blink(self) -> Blink {
+        if self.flags & Self::SLOW_BLINK != 0 {
+            Blink::Slow
+        } else if self.flags & Self::RAPID_BLINK != 0 {
+            Blink::Rapid
+        } else {
+            Blink::None
+        }
+    }
+    pub fn hidden(self) -> bool {
+        self.flags & Self::HIDDEN != 0
+    }
+    pub fn strikeout(self) -> bool {
+        self.flags & Self::STRIKEOUT != 0
+    }
 }
 
 /// One fixed-size glyph cell. A continuation has empty contents and default
@@ -85,14 +140,14 @@ impl Attributes {
 /// zeros, and `append` only writes past the length and lengthens it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Cell {
-    text: [u8; 22],
+    text: [u8; 25],
     length: u8,
     pub(crate) attributes: Attributes,
 }
 
 impl Cell {
     /// The most UTF-8 bytes a cell stores.
-    pub const CONTENTS_CAPACITY: usize = 22;
+    pub const CONTENTS_CAPACITY: usize = 25;
     // The bits of `length`: how many bytes of `text` are the contents, and
     // which half of a wide glyph the cell is, if either.
     const LENGTH: u8 = 0b0001_1111;
@@ -157,6 +212,18 @@ impl Cell {
     pub fn inverse(&self) -> bool {
         self.attributes.inverse()
     }
+    pub fn blink(&self) -> Blink {
+        self.attributes.blink()
+    }
+    pub fn hidden(&self) -> bool {
+        self.attributes.hidden()
+    }
+    pub fn strikeout(&self) -> bool {
+        self.attributes.strikeout()
+    }
+    pub fn underline_color(&self) -> Color {
+        self.attributes.underline_color
+    }
 
     pub(crate) fn blank(attributes: Attributes) -> Self {
         Self {
@@ -205,25 +272,41 @@ impl Cell {
             ..Self::default()
         }
     }
+    /// Whether `append(c)` has room for `c`: an empty cell takes a space
+    /// before it.
+    pub(crate) fn can_append(&self, c: char) -> bool {
+        usize::from(self.length & Self::LENGTH)
+            .max(1)
+            .checked_add(c.len_utf8())
+            .is_some_and(|end| end <= Self::CONTENTS_CAPACITY)
+    }
+    /// Adds `c` to the contents, if it fits; an empty cell first takes a
+    /// space for `c` to follow.
     pub(crate) fn append(&mut self, c: char) {
-        let mut len = usize::from(self.length & Self::LENGTH);
-        if len >= 18 {
+        if !self.can_append(c) {
             return;
         }
+        let mut len = usize::from(self.length & Self::LENGTH);
         if len == 0 {
             if let Some(first) = self.text.first_mut() {
                 *first = b' ';
             }
             len = 1;
         }
-        // Encoded in place after what is there: under 18 bytes are, so at
-        // least four are free, as many as a char takes.
-        if let Some(free) = self.text.get_mut(len..).filter(|free| free.len() >= 4)
-            && let Some(end) = len.checked_add(c.encode_utf8(free).len())
+        // Encoded in place after what is there: `can_append` found room.
+        let mut encoded = [0; 4];
+        let encoded = c.encode_utf8(&mut encoded).as_bytes();
+        if let Some(end) = len.checked_add(encoded.len())
+            && let Some(free) = self.text.get_mut(len..end)
+            && crate::copy_from(free, encoded).is_some()
             && let Ok(length) = u8::try_from(end)
         {
             self.length = (self.length & !Self::LENGTH) | length;
         }
+    }
+    /// Marks the cell as the leading half of a wide glyph.
+    pub(crate) fn widen(&mut self) {
+        self.length |= Self::WIDE;
     }
 }
 
@@ -275,11 +358,12 @@ mod tests {
 
     #[test]
     fn text_and_attributes_are_fixed_size_and_bounded() {
-        assert_eq!(std::mem::size_of::<Cell>(), 32);
+        assert_eq!(std::mem::size_of::<Cell>(), 40);
         let attributes = Attributes {
             foreground: Color::Idx(9),
             background: Color::Rgb(1, 2, 3),
-            flags: 31,
+            underline_color: Color::Idx(4),
+            flags: 0x1ff & !Attributes::RAPID_BLINK,
         };
         let mut c = Cell::glyph('界', 2, attributes);
         c.append('\u{301}');
@@ -289,10 +373,14 @@ mod tests {
         assert_eq!(c.fgcolor(), Color::Idx(9));
         assert_eq!(c.bgcolor(), Color::Rgb(1, 2, 3));
         assert!(c.bold() && c.dim() && c.italic() && c.underline() && c.inverse());
+        assert!(c.hidden() && c.strikeout() && c.blink() == Blink::Slow);
+        assert_eq!(c.underline_color(), Color::Idx(4));
+        // Marks are two bytes: the glyph's three and eleven marks fill it.
         for _ in 0..1000 {
             c.append('\u{301}');
         }
-        assert_eq!(c.contents().len(), 19);
+        assert_eq!(c.contents().len(), Cell::CONTENTS_CAPACITY);
+        assert!(!c.can_append('a'));
         assert!(Cell::continuation().is_wide_continuation());
         assert!(!Cell::continuation().has_contents());
         let mut blank = Cell::default();
