@@ -53,12 +53,14 @@ the supplied budget and match the independently chunked parser.
 
 The 120 adversarial seeds retain generator seeds 0–19 across six input
 geometries (the small-dimension fuzz policy reduces the larger geometries).
-Twenty additional seeds cover all eleven permanent golden operation
+Twenty-two additional seeds cover all eleven permanent golden operation
 families, terminal-edge streams, tiny wrapping/wide glyphs, the widened
 history-copy regression, long grapheme clusters (in a 12-column and a
 2-column grid, and with reflow through several resizes), the grapheme
 operation, the kitty keyboard protocol with an identity, and the new SGR
-and cursor sequences; each includes an explicit resize/copy operation. Inputs are truncated to 4096 bytes for
+and cursor sequences, and a row's text budget (exhausted, compacted and
+cut to fit a narrower row, with and without reflow); each includes an
+explicit resize/copy operation. Inputs are truncated to 4096 bytes for
 this target; the full 160 KiB deterministic stream remains in the ordinary
 invariant suite. Coverage-growth inputs are local/ignored, not silently
 substituted for the named permanent corpus.

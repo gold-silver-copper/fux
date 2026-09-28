@@ -78,6 +78,27 @@ fn seed_fuzz_with_golden_terminal_edge_and_tiny_operations() -> Result {
     picks.extend_from_slice(&[0xfd, 40]);
     picks.extend((0..40u8).map(|i| i.wrapping_mul(7)));
     std::fs::write(directory.join("fixture-graphemes-operation"), picks)?;
+    // A row's text budget: two 101-byte clusters in a 1x6 grid (320
+    // bytes of text) leave the second out of room once they share a
+    // 2-column row (192); a rewrite of the first leaves text behind for
+    // compaction. Without reflow, then with.
+    let long: String = std::iter::once('e')
+        .chain(std::iter::repeat_n('\u{301}', 50))
+        .collect();
+    for (name, rows) in [("fixture-budget", 0u8), ("fixture-budget-reflow", 0x10)] {
+        let mut budget = vec![rows, 5, 2];
+        for piece in [long.as_bytes(), long.as_bytes(), b"\r", long.as_bytes()] {
+            budget.push(u8::try_from(piece.len() - 1)?);
+            budget.extend_from_slice(piece);
+        }
+        budget.extend_from_slice(&[255, 0, 1]);
+        for piece in [long.as_bytes(), long.as_bytes(), b"\r\n", long.as_bytes()] {
+            budget.push(u8::try_from(piece.len() - 1)?);
+            budget.extend_from_slice(piece);
+        }
+        budget.extend_from_slice(&[255, 0, 23, 255, 1, 0]);
+        std::fs::write(directory.join(name), budget)?;
+    }
     seed_with(
         "fixture-kitty-identity",
         [0x63, 11, 0x38],
