@@ -198,8 +198,7 @@ fn error_notice(client: &crate::fixture::Client) -> Option<String> {
     let window = screen.window(0, client.rows, client.cols);
     let bar = window.row(client.rows.saturating_sub(1))?;
     let text: String = bar
-        .cells
-        .iter()
+        .cells()
         .filter(|c| c.fgcolor() == fux_vt::Color::Idx(9) && !c.is_wide_continuation())
         .map(|c| if c.has_contents() { c.contents() } else { " " })
         .collect();
@@ -499,7 +498,7 @@ impl Checker {
         for y in 0..client.rows {
             let last = window
                 .row(y)
-                .and_then(|r| r.cells.get(usize::from(client.cols.saturating_sub(1))));
+                .and_then(|r| r.cell(usize::from(client.cols.saturating_sub(1))));
             if last.is_some_and(|c| c.is_wide()) {
                 return Err(fail(
                     at,
@@ -583,8 +582,7 @@ fn has_notice(client: &crate::fixture::Client) -> bool {
     window
         .row(client.rows.saturating_sub(1))
         .is_some_and(|bar| {
-            bar.cells
-                .iter()
+            bar.cells()
                 .any(|c| matches!(c.fgcolor(), fux_vt::Color::Idx(9 | 11)) && c.has_contents())
         })
 }

@@ -125,7 +125,7 @@ fuzz_target!(|input: Input| {
         let size = sizes
             .next()
             .map_or(rest.len(), |s| usize::from(*s % 16) + 1);
-        let (piece, tail) = rest.split_at(size.min(rest.len()));
+        let (piece, tail) = rest.split_at_checked(size).unwrap_or((rest, &[]));
         assert!(parser.process(piece).is_ok());
         rest = tail;
     }
