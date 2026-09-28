@@ -11,6 +11,7 @@ keywords = ["terminal", "vt100", "ansi", "emulator", "parser"]
 categories = ["command-line-interface", "parser-implementations"]
 
 [dependencies]
+unicode-segmentation = "1.12"
 unicode-width = "0.2"
 
 [lints.rust]

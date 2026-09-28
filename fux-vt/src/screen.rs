@@ -1,7 +1,8 @@
 use crate::{
-    Attributes, Cell, Color, Error, Mark, Reply, Row, RowId, Window, grid::Grid, parser::Parameters,
+    Attributes, Blink, Cell, Color, Error, Mark, Options, Reply, Row, RowId, Window, grid::Grid,
+    parser::Parameters,
 };
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MouseProtocolMode {
@@ -18,6 +19,69 @@ pub enum MouseProtocolEncoding {
     Default,
     Utf8,
     Sgr,
+}
+
+/// What a CSI sequence came to.
+pub(crate) enum Dispatch {
+    /// Carried out, with nothing to answer.
+    Done,
+    /// A query, and its answer.
+    Reply(Reply),
+    /// Not a sequence the screen implements.
+    Unhandled,
+}
+
+/// The most flag sets a kitty keyboard stack holds; a push onto a full stack
+/// drops the oldest, as kitty does, so a runaway program cannot grow it.
+const KEYBOARD_STACK_LIMIT: usize = 32;
+
+/// One screen's kitty keyboard protocol flag stack. The primary and
+/// alternate screens each keep one, so a program that pushes flags on the
+/// alternate screen and exits without popping them leaves the shell's alone.
+#[derive(Clone, Copy, Debug, Default)]
+struct KeyboardStack {
+    flags: [u8; KEYBOARD_STACK_LIMIT],
+    len: usize,
+}
+
+impl KeyboardStack {
+    fn top(&self) -> u8 {
+        self.len
+            .checked_sub(1)
+            .and_then(|i| self.flags.get(i))
+            .copied()
+            .unwrap_or(0)
+    }
+    fn push(&mut self, flags: u8) {
+        if self.len >= KEYBOARD_STACK_LIMIT {
+            // A turn by one of the whole, non-empty array.
+            self.flags.rotate_left(1);
+            self.len = KEYBOARD_STACK_LIMIT.saturating_sub(1);
+        }
+        if let Some(slot) = self.flags.get_mut(self.len)
+            && let Some(len) = self.len.checked_add(1)
+        {
+            *slot = flags;
+            self.len = len;
+        }
+    }
+    fn pop(&mut self, count: u16) {
+        self.len = self.len.saturating_sub(usize::from(count));
+    }
+    /// `CSI = flags ; mode u`: mode 1 (the default) replaces the top's
+    /// flags, 2 adds to them and 3 removes from them.
+    fn set(&mut self, flags: u8, mode: u16) {
+        if self.len == 0 {
+            self.push(0);
+        }
+        if let Some(top) = self.len.checked_sub(1).and_then(|i| self.flags.get_mut(i)) {
+            *top = match mode {
+                2 => *top | flags,
+                3 => *top & !flags,
+                _ => flags,
+            };
+        }
+    }
 }
 
 /// Terminal state. Reading a window never changes where subsequent output lands.
@@ -40,6 +104,94 @@ pub struct Screen {
     cursor_shape: u16,
     mouse: MouseProtocolMode,
     encoding: MouseProtocolEncoding,
+    primary_keyboard: KeyboardStack,
+    alternate_keyboard: KeyboardStack,
+    modify_other_keys: Option<u8>,
+    /// The cell the last glyph was printed in, while the cursor has not
+    /// moved nor the row been edited since: a character that continues its
+    /// grapheme cluster joins it rather than taking a cell of its own.
+    last_print: Option<(u16, u16)>,
+}
+
+/// Whether `c` continues the last grapheme cluster of `previous`, by UAX #29
+/// extended grapheme cluster rules, asking only about the one new boundary.
+/// A Prepend character (U+0600 ARABIC NUMBER SIGN and others) joins what
+/// follows it under UAX #29, which would swallow a letter or a space into its
+/// cell; terminals keep them apart, so a cluster never grows past one.
+fn clusters_with(previous: &str, c: char) -> bool {
+    let Some(last) = previous.chars().next_back() else {
+        return false;
+    };
+    !is_prepend(last) && !starts_cluster(last, c) && joins_by_tables(previous, c)
+}
+
+/// Whether the UAX #29 segmentation tables put no boundary between
+/// `previous` and `c`.
+fn joins_by_tables(previous: &str, c: char) -> bool {
+    use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
+    let mut encoded = [0; 4];
+    let next = c.encode_utf8(&mut encoded);
+    let Some(end) = previous.len().checked_add(next.len()) else {
+        return false;
+    };
+    let mut cursor = GraphemeCursor::new(previous.len(), end, true);
+    // Each round either answers or takes more of `previous` as context,
+    // which it asks for from its start: a cell holds at most 25 bytes.
+    for _ in 0..=Cell::CONTENTS_CAPACITY {
+        match cursor.is_boundary(next, previous.len()) {
+            Ok(boundary) => return !boundary,
+            Err(GraphemeIncomplete::PreContext(at)) => match previous.get(..at) {
+                Some(context) => cursor.provide_context(context, 0),
+                None => return false,
+            },
+            // Both chunks cover the string and the cursor is at the start of
+            // `next`, so no other answer comes; if one did, no cluster.
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+/// Whether `c` certainly begins a new cluster after `last`, told without the
+/// segmentation tables: the letters and wide characters most text is made
+/// of, which UAX #29 joins to nothing before them unless that ends in a
+/// zero-width character (a joiner, GB11, or an Indic virama, GB9c) or a
+/// Hangul leading jamo (GB6). Emoji modifiers and the two wide spacing marks
+/// are wide yet extend what precedes them. A `false` answer decides nothing;
+/// the tables do. The screen tests check every scalar value against them.
+fn starts_cluster(last: char, c: char) -> bool {
+    if last.width() == Some(0) || matches!(u32::from(last), 0x1100..=0x115F | 0xA960..=0xA97F) {
+        return false;
+    }
+    let letter = matches!(
+        u32::from(c),
+        0x00A0..=0x02FF | 0x0370..=0x0482 | 0x048A..=0x052F
+    );
+    let wide =
+        c.width() == Some(2) && !matches!(u32::from(c), 0x1F3FB..=0x1F3FF | 0x16FF0..=0x16FF1);
+    letter || wide
+}
+
+/// Grapheme_Cluster_Break=Prepend (Unicode 16).
+fn is_prepend(c: char) -> bool {
+    matches!(
+        u32::from(c),
+        0x0600..=0x0605
+            | 0x06DD
+            | 0x070F
+            | 0x0890..=0x0891
+            | 0x08E2
+            | 0x0D4E
+            | 0x110BD
+            | 0x110CD
+            | 0x111C2..=0x111C3
+            | 0x1193F
+            | 0x11941
+            | 0x11A3A
+            | 0x11A84..=0x11A89
+            | 0x11D46
+            | 0x11F02
+    )
 }
 
 #[cfg(test)]
@@ -101,6 +253,10 @@ impl Screen {
             cursor_shape: 0,
             mouse: MouseProtocolMode::None,
             encoding: MouseProtocolEncoding::Default,
+            primary_keyboard: KeyboardStack::default(),
+            alternate_keyboard: KeyboardStack::default(),
+            modify_other_keys: None,
+            last_print: None,
         })
     }
     fn grid(&self) -> &Grid {
@@ -181,6 +337,43 @@ impl Screen {
     }
     pub fn mouse_protocol_encoding(&self) -> MouseProtocolEncoding {
         self.encoding
+    }
+    /// The kitty keyboard protocol flags in force: the top of the current
+    /// screen's stack, 0 (legacy key reporting) when it is empty. Always 0
+    /// without [`Options::kitty_keyboard`].
+    pub fn kitty_keyboard_flags(&self) -> u8 {
+        self.keyboard().top()
+    }
+    /// The xterm modifyOtherKeys level set by `CSI > 4 ; Pv m`, `None` when
+    /// it is off (`Pv` 0 or absent). Always `None` without
+    /// [`Options::kitty_keyboard`].
+    pub fn modify_other_keys(&self) -> Option<u8> {
+        self.modify_other_keys
+    }
+    fn keyboard(&self) -> &KeyboardStack {
+        if self.alternate_active {
+            &self.alternate_keyboard
+        } else {
+            &self.primary_keyboard
+        }
+    }
+    fn keyboard_mut(&mut self) -> &mut KeyboardStack {
+        if self.alternate_active {
+            &mut self.alternate_keyboard
+        } else {
+            &mut self.primary_keyboard
+        }
+    }
+    /// The one-based cursor position a DSR 6n or DECXCPR reports. A cursor
+    /// waiting to wrap is one past the last column; with an identity it is
+    /// reported at the last column, as xterm does.
+    pub(crate) fn reported_cursor(&self, options: &Options) -> (u32, u32) {
+        let g = self.grid();
+        let (row, mut col) = g.cursor;
+        if options.identity.is_some() {
+            col = col.min(g.cols.last());
+        }
+        (u32::from(row) + 1, u32::from(col) + 1)
     }
     pub fn attributes(&self) -> Attributes {
         self.attributes
@@ -265,16 +458,21 @@ impl Screen {
             .saturating_add(self.alternate.storage_cells())
     }
 
-    pub(crate) fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error> {
+    pub(crate) fn resize(&mut self, rows: u16, cols: u16, reflow: bool) -> Result<(), Error> {
         if self.size() == (rows, cols) {
             return Ok(());
         }
+        self.last_print = None;
         let version = self
             .version
             .checked_add(1)
             .ok_or(Error::IdentityExhausted)?;
         let mut next = self.next_id;
-        let primary = self.primary.resized(rows, cols, &mut next, version)?;
+        let primary = if reflow {
+            self.primary.reflowed(rows, cols, &mut next, version)?
+        } else {
+            self.primary.resized(rows, cols, &mut next, version)?
+        };
         let alternate = self.alternate.resized(rows, cols, &mut next, version)?;
         self.primary = primary;
         self.alternate = alternate;
@@ -360,6 +558,9 @@ impl Screen {
         if width > self.grid().cols.get() {
             return Ok(());
         }
+        if self.extend_cluster(c) {
+            return Ok(());
+        }
         if width == 0 {
             let g = self.grid();
             let (row, col) = g.cursor;
@@ -436,7 +637,95 @@ impl Screen {
             // Past the glyph; at the right edge it waits there to wrap.
             g.cursor.1 = g.cursor.1.saturating_add(width).min(g.cols.get());
         });
+        self.last_print = Some((row, col));
         Ok(())
+    }
+
+    /// Joins `c` to the cell printed last, if the cursor is just past it and
+    /// `c` continues its grapheme cluster: a spacing vowel sign, a variation
+    /// selector, a ZWJ sequence, a flag's second regional indicator. Programs
+    /// laid out with unicode-width give a cluster one cell of its string
+    /// width, so a narrow cell whose cluster becomes two columns wide is
+    /// widened, the cell under the cursor becoming its second half, as
+    /// kitty and Ghostty (mode 2027) do. A zero-width mark joins the cell
+    /// before the cursor even after a cursor move, as it always has. Whether
+    /// `c` was taken, joined or, when the cell is full, dropped.
+    fn extend_cluster(&mut self, c: char) -> bool {
+        let g = self.grid();
+        let (row, col) = g.cursor;
+        let anchor = self.last_print.or_else(|| {
+            if c.width() != Some(0) {
+                return None;
+            }
+            let mut left = col.checked_sub(1)?;
+            if g.cell(row, left)?.is_wide_continuation() {
+                left = left.checked_sub(1)?;
+            }
+            Some((row, left))
+        });
+        let Some((anchor_row, anchor_col)) = anchor else {
+            return false;
+        };
+        let Some(cell) = g.cell(anchor_row, anchor_col) else {
+            return false;
+        };
+        let narrow = !cell.is_wide();
+        let next = anchor_col.checked_add(if narrow { 1 } else { 2 });
+        if anchor_row != row
+            || next != Some(col)
+            || !cell.has_contents()
+            || cell.is_wide_continuation()
+        {
+            return false;
+        }
+        if !cell.can_append(c) {
+            // A full cell takes no more marks; a spacing character starts a
+            // cell of its own rather than joining a cut-short cluster.
+            self.last_print = None;
+            return c.width() == Some(0);
+        }
+        if !clusters_with(cell.contents(), c) {
+            return false;
+        }
+        let mut joined = *cell;
+        joined.append(c);
+        // Width is kept once wide; the last column has no room to widen.
+        let widen = narrow && joined.contents().width() >= 2 && col < g.cols.get();
+        if widen {
+            joined.widen();
+        }
+        self.with_grid(|g, _, v| {
+            g.mutate_row(row, v, |cells| {
+                if let Some(cell) = cells.get_mut(usize::from(anchor_col)) {
+                    *cell = joined;
+                }
+                if widen {
+                    let at = usize::from(col);
+                    // The cell under the cursor becomes the second half; if
+                    // it led a wide glyph, that glyph's half is left blank.
+                    if cells.get(at).is_some_and(Cell::is_wide)
+                        && let Some(orphan) = at.checked_add(1).and_then(|i| cells.get_mut(i))
+                    {
+                        *orphan = Cell::default();
+                    }
+                    if let Some(cell) = cells.get_mut(at) {
+                        *cell = Cell::continuation();
+                    }
+                }
+                true
+            });
+            if widen {
+                g.cursor.1 = g.cursor.1.saturating_add(1).min(g.cols.get());
+            }
+        });
+        self.last_print = Some((anchor_row, anchor_col));
+        true
+    }
+
+    /// Ends the cluster being printed: the next character starts a cell of
+    /// its own. Anything that moves the cursor or edits a row does.
+    pub(crate) fn break_cluster(&mut self) {
+        self.last_print = None;
     }
 
     /// Copy an ASCII run directly to cells until a wide-cell collision or right
@@ -492,12 +781,17 @@ impl Screen {
                 });
                 g.cursor.1 = end;
             });
+            // The run's last glyph, which a mark or selector may join.
+            self.last_print = end.checked_sub(1).map(|last| (row, last));
             bytes = bytes.get(usize::from(count)..).unwrap_or_default();
         }
         Ok(())
     }
 
     pub(crate) fn control(&mut self, byte: u8) -> Result<(), Error> {
+        if (8..=13).contains(&byte) {
+            self.break_cluster();
+        }
         let g = self.grid_mut();
         match byte {
             8 => g.cursor.1 = g.cursor.1.saturating_sub(1),
@@ -526,9 +820,13 @@ impl Screen {
         g.origin = g.saved_origin;
         self.attributes = self.saved_attributes;
     }
-    pub(crate) fn escape(&mut self, intermediates: &[u8], byte: u8) -> Result<(), Error> {
+    /// Carries out an escape sequence; whether fux-vt implements it.
+    pub(crate) fn escape(&mut self, intermediates: &[u8], byte: u8) -> Result<bool, Error> {
         if !intermediates.is_empty() {
-            return Ok(());
+            return Ok(false);
+        }
+        if matches!(byte, b'7' | b'8' | b'M' | b'c') {
+            self.break_cluster();
         }
         match byte {
             b'7' => self.save(),
@@ -571,11 +869,14 @@ impl Screen {
                 self.cursor_shape = 0;
                 self.mouse = MouseProtocolMode::None;
                 self.encoding = MouseProtocolEncoding::Default;
+                self.primary_keyboard = KeyboardStack::default();
+                self.alternate_keyboard = KeyboardStack::default();
+                self.modify_other_keys = None;
                 self.structural = self.version;
             }
-            _ => {}
+            _ => return Ok(false),
         }
-        Ok(())
+        Ok(true)
     }
 
     /// DECRQM status for a DEC private mode: 1 set, 2 reset, 0 not recognized.
@@ -655,31 +956,97 @@ impl Screen {
         Ok(())
     }
 
+    /// The kitty keyboard protocol and modifyOtherKeys sequences, with
+    /// [`Options::kitty_keyboard`]; `None` for any other sequence.
+    fn keyboard_protocol(
+        &mut self,
+        p: &Parameters,
+        intermediates: &[u8],
+        byte: u8,
+    ) -> Option<Dispatch> {
+        // Flags are a bit set below 32, but kitty tolerates larger values:
+        // they saturate rather than being refused.
+        let flags = |n: u16| u8::try_from(n).unwrap_or(u8::MAX);
+        match (intermediates, byte) {
+            (b">", b'u') => self.keyboard_mut().push(flags(p.first(0, 0))),
+            (b"<", b'u') => self.keyboard_mut().pop(p.first(0, 1)),
+            (b"=", b'u') => {
+                let (set, mode) = (flags(p.first(0, 0)), p.first(1, 1));
+                self.keyboard_mut().set(set, mode);
+            }
+            (b"?", b'u') => {
+                let flags = self.kitty_keyboard_flags();
+                return Some(Dispatch::Reply(Reply::of(format_args!("\x1b[?{flags}u"))));
+            }
+            // Only resource 4 is modifyOtherKeys; other resources are unhandled.
+            (b">", b'm') if p.groups().next() == Some(&[4][..]) => {
+                self.modify_other_keys = match p.first(1, 0) {
+                    0 => None,
+                    level => Some(flags(level)),
+                };
+            }
+            _ => return None,
+        }
+        Some(Dispatch::Done)
+    }
+
     pub(crate) fn csi(
         &mut self,
         p: &Parameters,
         intermediates: &[u8],
         byte: u8,
-    ) -> Result<Option<Reply>, Error> {
+        options: &Options,
+    ) -> Result<Dispatch, Error> {
         let private = intermediates == b"?";
         // DECSCUSR: its intermediate is a space.
         if intermediates == b" " && byte == b'q' {
             self.cursor_shape = p.first(0, 0);
-            return Ok(None);
+            return Ok(Dispatch::Done);
+        }
+        if options.kitty_keyboard
+            && let Some(dispatch) = self.keyboard_protocol(p, intermediates, byte)
+        {
+            return Ok(dispatch);
         }
         if !intermediates.is_empty() && !private {
-            return Ok(None);
+            return Ok(Dispatch::Unhandled);
         }
         if private && matches!(byte, b'h' | b'l') {
             for group in p.groups() {
                 if let [n] = group {
+                    // A switch of screens leaves the printed cell behind.
+                    if matches!(n, 47 | 1049) {
+                        self.break_cluster();
+                    }
                     self.mode(*n, byte == b'h')?;
                 }
             }
-            return Ok(None);
+            return Ok(Dispatch::Done);
+        }
+        // Every sequence that moves the cursor or edits a row; not SGR,
+        // modes or queries.
+        if matches!(
+            byte,
+            b'A'..=b'H'
+                | b'J'
+                | b'K'
+                | b'L'
+                | b'M'
+                | b'P'
+                | b'S'
+                | b'T'
+                | b'X'
+                | b'@'
+                | b'd'
+                | b'f'
+                | b'r'
+                | b's'
+                | b'u'
+        ) {
+            self.break_cluster();
         }
         if private && !matches!(byte, b'J' | b'K') {
-            return Ok(None);
+            return Ok(Dispatch::Unhandled);
         }
         let n = p.first(0, 1);
         let (row, col) = self.grid().cursor;
@@ -710,9 +1077,14 @@ impl Screen {
                 let g = self.grid_mut();
                 g.cursor.1 = n.saturating_sub(1).min(g.cols.last());
             }
-            b'H' => self
+            // CUP, and HVP, which is CUP with another final byte.
+            b'H' | b'f' => self
                 .grid_mut()
                 .position(n.saturating_sub(1), p.first(1, 1).saturating_sub(1)),
+            // SCOSC and SCORC share DECSC's slot and, like DECSC, save and
+            // restore the attributes with the position.
+            b's' => self.save(),
+            b'u' => self.restore(),
             b'd' => {
                 let g = self.grid_mut();
                 g.cursor.0 = n.saturating_sub(1).min(g.rows.last());
@@ -725,24 +1097,25 @@ impl Screen {
             b'J' | b'K' => {
                 let mode = p.first(0, 0);
                 let a = self.attributes;
-                if mode <= 2 {
-                    self.with_grid(|g, _, v| {
-                        let cols = g.cols.get();
-                        if byte == b'J' {
-                            for y in 0..g.rows.get() {
-                                if (mode == 0 && y > row) || (mode == 1 && y < row) || mode == 2 {
-                                    g.erase(y, 0, cols, a, v);
-                                }
+                if mode > 2 {
+                    return Ok(Dispatch::Unhandled);
+                }
+                self.with_grid(|g, _, v| {
+                    let cols = g.cols.get();
+                    if byte == b'J' {
+                        for y in 0..g.rows.get() {
+                            if (mode == 0 && y > row) || (mode == 1 && y < row) || mode == 2 {
+                                g.erase(y, 0, cols, a, v);
                             }
                         }
-                        let (start, end) = match mode {
-                            0 => (col, cols),
-                            1 => (0, col.saturating_add(1).min(cols)),
-                            _ => (0, cols),
-                        };
-                        g.erase(row, start, end, a, v);
-                    });
-                }
+                    }
+                    let (start, end) = match mode {
+                        0 => (col, cols),
+                        1 => (0, col.saturating_add(1).min(cols)),
+                        _ => (0, cols),
+                    };
+                    g.erase(row, start, end, a, v);
+                });
             }
             b'L' | b'M' => {
                 let g = self.grid();
@@ -768,21 +1141,29 @@ impl Screen {
             }
             b'm' => self.sgr(p),
             b'n' => match p.first(0, 0) {
-                5 => return Ok(Some(Reply::of(format_args!("\x1b[0n")))),
+                5 => return Ok(Dispatch::Reply(Reply::of(format_args!("\x1b[0n")))),
                 6 => {
-                    let (row, col) = (u32::from(row) + 1, u32::from(col) + 1);
-                    return Ok(Some(Reply::of(format_args!("\x1b[{row};{col}R"))));
+                    let (row, col) = self.reported_cursor(options);
+                    let reply = Reply::of(format_args!("\x1b[{row};{col}R"));
+                    return Ok(Dispatch::Reply(reply));
                 }
-                _ => {}
+                _ => return Ok(Dispatch::Unhandled),
             },
-            b'c' if p.first(0, 0) == 0 => return Ok(Some(Reply::of(format_args!("\x1b[?1;2c")))),
-            _ => {}
+            b'c' if p.first(0, 0) == 0 => {
+                let reply = if options.identity.is_some() {
+                    Reply::of(format_args!("\x1b[?62;22c"))
+                } else {
+                    Reply::of(format_args!("\x1b[?1;2c"))
+                };
+                return Ok(Dispatch::Reply(reply));
+            }
+            _ => return Ok(Dispatch::Unhandled),
         }
-        Ok(None)
+        Ok(Dispatch::Done)
     }
 
     fn sgr(&mut self, p: &Parameters) {
-        const WEIGHT: u8 = Attributes::BOLD | Attributes::DIM;
+        const WEIGHT: u16 = Attributes::BOLD | Attributes::DIM;
         let mut groups = p.groups();
         while let Some(group) = groups.next() {
             match group {
@@ -792,13 +1173,22 @@ impl Screen {
                 [2] => self.attributes.flags = self.attributes.flags & !WEIGHT | Attributes::DIM,
                 [3] => self.attributes.flags |= Attributes::ITALIC,
                 [4] => self.attributes.flags |= Attributes::UNDERLINE,
+                // Slow and rapid blink replace one another.
+                [5] => self.attributes = self.attributes.with_blink(Blink::Slow),
+                [6] => self.attributes = self.attributes.with_blink(Blink::Rapid),
                 [7] => self.attributes.flags |= Attributes::INVERSE,
+                [8] => self.attributes.flags |= Attributes::HIDDEN,
+                [9] => self.attributes.flags |= Attributes::STRIKEOUT,
                 [22] => self.attributes.flags &= !WEIGHT,
                 [23] => self.attributes.flags &= !Attributes::ITALIC,
                 [24] => self.attributes.flags &= !Attributes::UNDERLINE,
+                [25] => self.attributes.flags &= !Attributes::BLINK,
                 [27] => self.attributes.flags &= !Attributes::INVERSE,
+                [28] => self.attributes.flags &= !Attributes::HIDDEN,
+                [29] => self.attributes.flags &= !Attributes::STRIKEOUT,
                 [39] => self.attributes.foreground = Color::Default,
                 [49] => self.attributes.background = Color::Default,
+                [59] => self.attributes.underline_color = Color::Default,
                 [n @ (30..=37 | 90..=97)] => {
                     if let Some(color) = palette(*n) {
                         self.attributes.foreground = color;
@@ -809,7 +1199,8 @@ impl Screen {
                         self.attributes.background = color;
                     }
                 }
-                [selector @ (38 | 48), rest @ ..] => {
+                // Foreground, background and underline colour share their forms.
+                [selector @ (38 | 48 | 58), rest @ ..] => {
                     let mut parts = [0u16; 4];
                     let count = if rest.is_empty() {
                         let Some([kind]) = groups.next() else {
@@ -852,10 +1243,10 @@ impl Screen {
                     let Some(colour) = colour else {
                         return;
                     };
-                    if *selector == 38 {
-                        self.attributes.foreground = colour;
-                    } else {
-                        self.attributes.background = colour;
+                    match selector {
+                        38 => self.attributes.foreground = colour,
+                        48 => self.attributes.background = colour,
+                        _ => self.attributes.underline_color = colour,
                     }
                 }
                 _ => {}

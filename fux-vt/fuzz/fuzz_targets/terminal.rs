@@ -1,5 +1,5 @@
 #![no_main]
-use fux_vt::{Cell, Event, OSC_PAYLOAD_LIMIT, Options, Parser, RowId, Sink};
+use fux_vt::{Cell, Event, Identity, OSC_PAYLOAD_LIMIT, Options, Parser, RowId, Sink, Unhandled};
 use libfuzzer_sys::fuzz_target;
 use std::collections::HashMap;
 #[path = "../../tests/corpus/invariants.rs"]
@@ -37,6 +37,36 @@ impl Sink for Record {
         assert!(entry.len() <= OSC_PAYLOAD_LIMIT + 2);
         self.0.push(entry);
     }
+    fn unhandled(&mut self, sequence: Unhandled<'_>) {
+        let mut entry = vec![0xfe];
+        match sequence {
+            Unhandled::Csi {
+                params,
+                intermediates,
+                action,
+            } => {
+                entry.push(b'C');
+                entry.extend_from_slice(intermediates);
+                for group in params.groups() {
+                    for value in group {
+                        entry.extend_from_slice(&value.to_le_bytes());
+                    }
+                    entry.push(b';');
+                }
+                entry.push(action);
+            }
+            Unhandled::Escape {
+                intermediates,
+                action,
+            } => {
+                entry.push(b'E');
+                entry.extend_from_slice(intermediates);
+                entry.push(action);
+            }
+            _ => entry.push(b'?'),
+        }
+        self.0.push(entry);
+    }
 }
 
 /// Every retained row by identity: its version, wrap flag and cells.
@@ -65,11 +95,18 @@ fuzz_target!(|data: &[u8]| {
     let (Some(&r), Some(&c), Some(&history)) = (data.first(), data.get(1), data.get(2)) else {
         return;
     };
-    // Header bits above the history count opt into events (0x10) and extended
-    // replies (0x20), so the opt-in paths are fuzzed alongside the default.
+    // Header bits above the history count opt into events (0x10), extended
+    // replies (0x20), reflow (0x40), and the kitty keyboard protocol with an
+    // identity (0x80), so the opt-in paths are fuzzed alongside the default.
     let options = Options {
         events: history & 0x10 != 0,
         extended_replies: history & 0x20 != 0,
+        reflow: history & 0x40 != 0,
+        kitty_keyboard: history & 0x80 != 0,
+        identity: (history & 0x80 != 0).then_some(Identity {
+            name: "fuzz",
+            version: "1.2.3",
+        }),
     };
     let Ok(mut whole) = Parser::with_options(
         1 + u16::from(r % 16),

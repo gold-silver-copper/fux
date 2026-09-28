@@ -33,10 +33,16 @@ impl Sink for Record {
 const EVENTS: Options = Options {
     events: true,
     extended_replies: false,
+    kitty_keyboard: false,
+    reflow: false,
+    identity: None,
 };
 const REPLIES: Options = Options {
     events: false,
     extended_replies: true,
+    kitty_keyboard: false,
+    reflow: false,
+    identity: None,
 };
 
 fn run(options: Options, input: &[u8]) -> std::result::Result<Record, fux_vt::Error> {

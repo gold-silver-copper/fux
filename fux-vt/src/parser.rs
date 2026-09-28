@@ -2,7 +2,7 @@
 //! model (reference and attribution in the crate README), with UTF-8 ground decoding.
 //! Ignored control strings retain no payload. No parser dependency is used.
 
-use crate::{Error, Reply, Screen};
+use crate::{Error, Reply, Screen, screen::Dispatch};
 
 #[cfg(test)]
 #[path = "../tests/corpus/mod.rs"]
@@ -43,7 +43,7 @@ impl Parameters {
         self.len = len;
         true
     }
-    pub fn groups(&self) -> impl Iterator<Item = &[u16]> {
+    pub fn groups(&self) -> impl Iterator<Item = &[u16]> + use<'_> {
         let mut start = 0;
         std::iter::from_fn(move || {
             if start >= self.len {
@@ -92,9 +92,11 @@ enum State {
 /// string is consumed without an event; nothing beyond this is ever buffered.
 pub const OSC_PAYLOAD_LIMIT: usize = 64 * 1024;
 
-/// Opt-in outputs beyond the screen. The default (everything off) is fux's
-/// policy: child output causes no title, bell or clipboard side effects, OSC
-/// payloads are never retained, and only DSR 5n/6n and primary DA are answered.
+/// Opt-in behaviour that needs the host's cooperation. The default
+/// (everything off) is fux's policy: child output causes no title, bell or
+/// clipboard side effects, OSC payloads are never retained, only DSR 5n/6n
+/// and primary DA are answered, keyboard protocol requests are ignored, and a
+/// resize does not reflow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Options {
     /// Deliver OSC 0/1/2 (icon name / window title), OSC 52 (clipboard) and BEL
@@ -103,6 +105,51 @@ pub struct Options {
     /// Also answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`), DECXCPR
     /// (`CSI ? 6 n`) and secondary device attributes (`CSI > c`).
     pub extended_replies: bool,
+    /// Track the kitty keyboard protocol's flag stacks (`CSI > u`, `CSI < u`,
+    /// `CSI = u`) and xterm's modifyOtherKeys (`CSI > 4 ; Pv m`), and answer
+    /// the flag query `CSI ? u`. State only: the host encodes keys, reading
+    /// [`Screen::kitty_keyboard_flags`] and [`Screen::modify_other_keys`].
+    /// A host that cannot encode keys that way must leave this off, or
+    /// programs will believe it can.
+    pub kitty_keyboard: bool,
+    /// Re-wrap the primary screen and its history at the new width on
+    /// resize, keeping the cursor on its character. The alternate screen is
+    /// resized without reflow, as its programs redraw anyway.
+    pub reflow: bool,
+    /// Answer as this terminal rather than as a bare VT100: see [`Identity`].
+    pub identity: Option<Identity>,
+}
+
+/// Who the terminal says it is. With [`Options::identity`] set, primary DA
+/// (`CSI c`) answers `CSI ? 62 ; 22 c` (VT220 class, ANSI colour), secondary
+/// DA (`CSI > c`) answers `CSI > 1 ; Pv ; 0 c` with `version` encoded as
+/// `major * 10000 + minor * 100 + patch`, XTVERSION (`CSI > q`) answers
+/// `DCS > | name version ST`, and cursor reports (DSR 6n, DECXCPR) give a
+/// cursor waiting to wrap at the last column, as xterm does, rather than
+/// one past it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Identity {
+    /// The terminal's name, as XTVERSION reports it.
+    pub name: &'static str,
+    /// Its `major.minor.patch` version; a pre-release suffix is ignored in
+    /// DA2. XTVERSION goes unanswered if name and version exceed
+    /// [`Identity::MAX_LEN`] bytes together.
+    pub version: &'static str,
+}
+
+impl Identity {
+    /// The most bytes of name and version XTVERSION reports.
+    pub const MAX_LEN: usize = 48;
+
+    /// The version as DA2's firmware field: each component weighted by a
+    /// power of 100, anything past a `-` or `+` dropped, as `0.5.0` is 500.
+    fn encoded_version(&self) -> u32 {
+        let release = self.version.split(['-', '+']).next().unwrap_or_default();
+        release.split('.').take(3).fold(0u32, |sum, part| {
+            let part = part.parse::<u32>().unwrap_or(0).min(99);
+            sum.saturating_mul(100).saturating_add(part)
+        })
+    }
 }
 
 /// A side effect requested by child output. Only delivered with
@@ -121,11 +168,41 @@ pub enum Event<'a> {
     Clipboard { selection: &'a [u8], data: &'a [u8] },
 }
 
-/// Receives terminal query replies and, with [`Options::events`], events. Both
-/// default to discarding, so an implementation handles only what it needs.
+/// A complete sequence fux-vt parsed but does not implement, so a host can
+/// log or answer it. Sequences cut short by their bounds (too many
+/// parameters or intermediates) are dropped without being reported.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub enum Unhandled<'a> {
+    /// `CSI`, its private marker and intermediates, parameters and final byte.
+    Csi {
+        params: Params<'a>,
+        intermediates: &'a [u8],
+        action: u8,
+    },
+    /// `ESC`, its intermediates and final byte.
+    Escape { intermediates: &'a [u8], action: u8 },
+}
+
+/// A CSI sequence's parameters.
+#[derive(Clone, Copy, Debug)]
+pub struct Params<'a>(&'a Parameters);
+
+impl<'a> Params<'a> {
+    /// Each parameter with its colon-separated subparameters; an empty
+    /// parameter is 0.
+    pub fn groups(&self) -> impl Iterator<Item = &'a [u16]> + use<'a> {
+        self.0.groups()
+    }
+}
+
+/// Receives terminal query replies, with [`Options::events`] events, and
+/// sequences fux-vt does not implement. All default to discarding, so an
+/// implementation handles only what it needs.
 pub trait Sink {
     fn reply(&mut self, _bytes: &[u8]) {}
     fn event(&mut self, _event: Event<'_>) {}
+    fn unhandled(&mut self, _sequence: Unhandled<'_>) {}
 }
 
 struct Replies<F>(F);
@@ -185,8 +262,10 @@ impl Parser {
     pub fn screen(&self) -> &Screen {
         &self.screen
     }
+    /// Resizes the terminal, reflowing the primary screen with
+    /// [`Options::reflow`].
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error> {
-        self.screen.resize(rows, cols)
+        self.screen.resize(rows, cols, self.options.reflow)
     }
     pub fn options(&self) -> Options {
         self.options
@@ -371,12 +450,15 @@ impl Parser {
                     }
                     if self.state == State::Ground && !self.ignoring {
                         let intermediates = self.intermediates;
-                        self.screen.escape(
-                            intermediates
-                                .get(..self.intermediate_len)
-                                .unwrap_or_default(),
-                            byte,
-                        )?;
+                        let intermediates = intermediates
+                            .get(..self.intermediate_len)
+                            .unwrap_or_default();
+                        if !self.screen.escape(intermediates, byte)? {
+                            sink.unhandled(Unhandled::Escape {
+                                intermediates,
+                                action: byte,
+                            });
+                        }
                     }
                 }
                 _ => {}
@@ -448,16 +530,25 @@ impl Parser {
                                 let intermediates = intermediates
                                     .get(..self.intermediate_len)
                                     .unwrap_or_default();
-                                let answer =
-                                    match self.screen.csi(&self.params, intermediates, byte)? {
-                                        Some(bytes) => Some(bytes),
-                                        None if self.options.extended_replies => {
-                                            self.extended_reply(intermediates, byte)
+                                let dispatch = self.screen.csi(
+                                    &self.params,
+                                    intermediates,
+                                    byte,
+                                    &self.options,
+                                )?;
+                                match dispatch {
+                                    Dispatch::Done => {}
+                                    Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
+                                    Dispatch::Unhandled => {
+                                        match self.query_reply(intermediates, byte) {
+                                            Some(reply) => sink.reply(reply.as_bytes()),
+                                            None => sink.unhandled(Unhandled::Csi {
+                                                params: Params(&self.params),
+                                                intermediates,
+                                                action: byte,
+                                            }),
                                         }
-                                        None => None,
-                                    };
-                                if let Some(reply) = answer {
-                                    sink.reply(reply.as_bytes());
+                                    }
                                 }
                             }
                         }
@@ -509,22 +600,40 @@ impl Parser {
         self.osc.clear();
     }
 
-    /// Replies enabled by [`Options::extended_replies`] for CSI sequences the
-    /// screen does not answer itself.
-    fn extended_reply(&self, intermediates: &[u8], byte: u8) -> Option<Reply> {
+    /// Replies enabled by [`Options::extended_replies`] and
+    /// [`Options::identity`] for CSI sequences the screen does not answer
+    /// itself.
+    fn query_reply(&self, intermediates: &[u8], byte: u8) -> Option<Reply> {
         let n = self.params.first(0, 0);
+        let extended = self.options.extended_replies;
+        let identity = self.options.identity;
         match (intermediates, byte) {
-            (b"?", b'n') if n == 6 => {
-                let (row, col) = self.screen.cursor_position();
-                let (row, col) = (u32::from(row) + 1, u32::from(col) + 1);
+            (b"?", b'n') if n == 6 && extended => {
+                let (row, col) = self.screen.reported_cursor(&self.options);
                 Some(Reply::of(format_args!("\x1b[?{row};{col}R")))
             }
-            (b">", b'c') if n == 0 => Some(Reply::of(format_args!("\x1b[>1;10;0c"))),
-            (b"?$", b'p') => {
+            (b">", b'c') if n == 0 => match identity {
+                Some(identity) => {
+                    let version = identity.encoded_version();
+                    Some(Reply::of(format_args!("\x1b[>1;{version};0c")))
+                }
+                None if extended => Some(Reply::of(format_args!("\x1b[>1;10;0c"))),
+                None => None,
+            },
+            (b">", b'q') if n == 0 => {
+                let identity = identity?;
+                let length = identity.name.len().checked_add(identity.version.len())?;
+                if length > Identity::MAX_LEN {
+                    return None;
+                }
+                let (name, version) = (identity.name, identity.version);
+                Some(Reply::of(format_args!("\x1bP>|{name} {version}\x1b\\")))
+            }
+            (b"?$", b'p') if extended => {
                 let status = self.screen.private_mode_status(n);
                 Some(Reply::of(format_args!("\x1b[?{n};{status}$y")))
             }
-            (b"$", b'p') => Some(Reply::of(format_args!("\x1b[{n};0$y"))),
+            (b"$", b'p') if extended => Some(Reply::of(format_args!("\x1b[{n};0$y"))),
             _ => None,
         }
     }
