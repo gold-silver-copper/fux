@@ -1,34 +1,33 @@
 [workspace]
-members = ["fux-vt", "fuxix"]
-exclude = ["fux-vt/fuzz", "fuzz", "walk", "diff"]
-resolver = "3"
 
 [package]
-name = "fux"
-version = "0.16.0"
+name = "fux-diff"
+version = "0.0.0"
+publish = false
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "A small terminal multiplexer: workspaces, tabs and split panes, driven by keys and a CLI"
-repository = "https://github.com/gold-silver-copper/fux"
-readme = "README.md"
-keywords = ["terminal", "multiplexer", "pty", "tmux"]
-categories = ["command-line-utilities"]
-include = ["/src/**", "/tests/**", "/README.md", "/LICENSE"]
+
+[[bin]]
+name = "fux-diff"
+path = "src/main.rs"
+doc = false
+bench = false
 
 [dependencies]
-fux-vt = { path = "fux-vt", version = "0.1.5" }
-signal-hook = "0.3"
-unicode-width = "0.2"
-fuxix = { path = "fuxix", version = "0.1.3" }
-
-[profile.dev]
-debug = 0
+# The code under test: fux and its crates beside this one.
+fux = { path = ".." }
+fux-vt = { path = "../fux-vt" }
+fuxix = { path = "../fuxix" }
+# The baseline it is run beside: the last release of each, as published.
+# Bump these after each release.
+baseline = { package = "fux", version = "=0.16.0" }
+baseline-vt = { package = "fux-vt", version = "=0.1.5" }
+baseline-ix = { package = "fuxix", version = "=0.1.3" }
 
 [profile.release]
-strip = true
-lto = "thin"
-codegen-units = 1
+# Overflow is an error here, as in a debug build.
+overflow-checks = true
 
 [lints.rust]
 unused_must_use = "forbid"

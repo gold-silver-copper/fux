@@ -1,0 +1,293 @@
+//! fux-vt, the baseline's and the current one, fed the same random output
+//! in random pieces, with resizes between: after every piece, the same
+//! replies and events, and the same screen -- every cell of the history and
+//! the screen with its row's identity, version and wrap flag, the cursor,
+//! every mode, the scroll region, the rows changed since the last look --
+//! and the same errors.
+use crate::rng::Rng;
+use crate::{Outcome, bump, same_lines, times};
+
+/// A sequence a program writes, well formed.
+fn well_formed(r: &mut Rng) -> Vec<u8> {
+    let pick = |r: &mut Rng, items: &[&str]| r.pick(items).copied().unwrap_or_default().to_owned();
+    let number = |r: &mut Rng| {
+        pick(
+            r,
+            &[
+                "", "0", "1", "2", "3", "4", "5", "6", "7", "9", "12", "25", "99", "65535",
+            ],
+        )
+    };
+    let text = match r.below(20) {
+        0..=2 => {
+            let modes = [
+                "1004", "1", "25", "2004", "1049", "47", "1047", "7", "6", "1000", "1002", "1003",
+                "1006", "9999", "",
+            ];
+            let params: Vec<String> = (0..r.below(3).saturating_add(1))
+                .map(|_| pick(r, &modes))
+                .collect();
+            format!("\x1b[?{}{}", params.join(";"), pick(r, &["h", "l"]))
+        }
+        3 => format!("\x1b[{} q", number(r)),
+        4 => format!(
+            "\x1b[{}m",
+            (0..r.below(4))
+                .map(|_| number(r))
+                .collect::<Vec<_>>()
+                .join(";")
+        ),
+        5 => format!(
+            "\x1b[{}{}",
+            number(r),
+            pick(
+                r,
+                &[
+                    "A", "B", "C", "D", "E", "F", "G", "d", "J", "K", "L", "M", "P", "@", "X", "S",
+                    "T", "b"
+                ]
+            )
+        ),
+        6 => format!(
+            "\x1b[{};{}{}",
+            number(r),
+            number(r),
+            pick(r, &["H", "f", "r"])
+        ),
+        7 => pick(
+            r,
+            &[
+                "\x1b[6n",
+                "\x1b[5n",
+                "\x1b[c",
+                "\x1b[>c",
+                "\x1b[?6n",
+                "\x1b[?25$p",
+                "\x1b[4$p",
+                "\x1b[0c",
+            ],
+        ),
+        8 => pick(
+            r,
+            &[
+                "\x1b]2;title\x07",
+                "\x1b]0;both\x1b\\",
+                "\x1b]1;icon\x07",
+                "\x1b]52;c;aGVsbG8=\x07",
+                "\x1b]52;c;?\x07",
+                "\x07",
+                "\x1bPq#0;2\x1b\\",
+                "\x1b_apc\x1b\\",
+                "\x1bXsos\x1b\\",
+            ],
+        ),
+        9 => pick(
+            r,
+            &[
+                "\x1b(B", "\x1b(0", "\x1b7", "\x1b8", "\x1bM", "\x1bD", "\x1bE", "\x1b=", "\x1b>",
+                "\x1bc", "\x1bH",
+            ],
+        ),
+        10 => pick(
+            r,
+            &["é", "界", "e\u{301}", "\u{200d}", "👍🏽", "\u{fe0f}", "ｱ"],
+        ),
+        11 => pick(
+            r,
+            &[
+                "\r\n", "\n", "\r", "\x08", "\t", "\x0b", "\x0c", "\x0e", "\x0f",
+            ],
+        ),
+        12..=14 => {
+            let words = ["hello ", "world", "a", "界界", "long-line-", "x"];
+            (0..r.below(8)).map(|_| pick(r, &words)).collect()
+        }
+        _ => pick(
+            r,
+            &[
+                "abc",
+                "0123456789",
+                " ",
+                "text\r\n",
+                "wrap wrap wrap wrap wrap wrap wrap ",
+            ],
+        ),
+    };
+    text.into_bytes()
+}
+
+/// Bytes a hostile or broken program writes.
+fn hostile(r: &mut Rng) -> Vec<u8> {
+    let alphabet: &[u8] = b"\x1b\x1b\x1b[[[??0011244556;; ;:hhllqqcmHJK\x07\n\r\x7f\x18\x1a]P\\\xc3\xa9\x9b(X_\x90\xe7\x95";
+    (0..r.below(40))
+        .map(|_| r.pick(alphabet).copied().unwrap_or(b'x'))
+        .collect()
+}
+
+/// Output: well-formed sequences, now and then broken or hostile.
+fn output(r: &mut Rng) -> Vec<u8> {
+    let mut out: Vec<u8> = (0..r.below(12).saturating_add(1))
+        .flat_map(|_| well_formed(r))
+        .collect();
+    if r.chance(15) {
+        out.extend(hostile(r));
+    }
+    if r.chance(10) && !out.is_empty() {
+        let at = r.below(out.len());
+        out = out
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != at)
+            .map(|(_, b)| *b)
+            .collect();
+    }
+    out
+}
+
+macro_rules! stack {
+    ($name:ident, $vt:ident) => {
+        mod $name {
+            use std::fmt::Write;
+            use $vt::{Event, Mark, Options, Parser, Sink};
+
+            #[derive(Default)]
+            struct Heard(String);
+
+            impl Sink for Heard {
+                fn reply(&mut self, bytes: &[u8]) {
+                    let _ = write!(self.0, "reply {bytes:?}; ");
+                }
+                fn event(&mut self, event: Event<'_>) {
+                    let _ = write!(self.0, "event {event:?}; ");
+                }
+            }
+
+            pub struct Terminal {
+                parser: Parser,
+                mark: Mark,
+            }
+
+            impl Terminal {
+                pub fn new(rows: u16, cols: u16, history: usize, events: bool, extended: bool) -> Result<Terminal, String> {
+                    let options = Options {
+                        events,
+                        extended_replies: extended,
+                    };
+                    let parser = Parser::with_options(rows, cols, history, options).map_err(|e| format!("{e:?}"))?;
+                    let mark = parser.screen().mark();
+                    Ok(Terminal { parser, mark })
+                }
+
+                /// What processing the bytes gave back.
+                pub fn process(&mut self, bytes: &[u8]) -> String {
+                    let mut heard = Heard::default();
+                    let result = self.parser.process_with(bytes, &mut heard);
+                    format!("{result:?} {}", heard.0)
+                }
+
+                pub fn resize(&mut self, rows: u16, cols: u16) -> String {
+                    format!("{:?}", self.parser.resize(rows, cols))
+                }
+
+                /// The screen, whole.
+                pub fn screen(&mut self) -> String {
+                    let s = self.parser.screen();
+                    let mut out = String::new();
+                    let (rows, cols) = s.size();
+                    let _ = writeln!(
+                        out,
+                        "{rows}x{cols} cursor {:?} hidden {} app cursor {} keypad {} paste {} focus {} shape {} alternate {} autowrap {} origin {} region {:?} mouse {:?} {:?} attributes {:?} history {} storage {}",
+                        s.cursor_position(),
+                        s.hide_cursor(),
+                        s.application_cursor(),
+                        s.application_keypad(),
+                        s.bracketed_paste(),
+                        s.focus_reporting(),
+                        s.cursor_shape(),
+                        s.alternate_screen(),
+                        s.autowrap(),
+                        s.origin_mode(),
+                        s.scroll_region(),
+                        s.mouse_protocol_mode(),
+                        s.mouse_protocol_encoding(),
+                        s.attributes(),
+                        s.history_len(),
+                        s.storage_cells(),
+                    );
+                    let retained = s.history_len().saturating_add(usize::from(rows));
+                    for offset in (0..retained).rev() {
+                        if let Some(row) = s.row_from_bottom(offset) {
+                            let _ = writeln!(
+                                out,
+                                "{:?} v{} wrapped {} at {:?} {:?}",
+                                row.id,
+                                row.version,
+                                row.wrapped,
+                                s.offset_for_row(row.id),
+                                row.cells
+                            );
+                        }
+                    }
+                    let _ = writeln!(
+                        out,
+                        "changed {} refresh {} dirty {:?} live {:?}",
+                        s.changed_since(self.mark),
+                        s.full_refresh_since(self.mark),
+                        s.dirty_rows_since(self.mark).map(|row| row.id).collect::<Vec<_>>(),
+                        s.dirty_live_rows_since(self.mark).map(|(y, row)| (y, row.id)).collect::<Vec<_>>()
+                    );
+                    self.mark = s.mark();
+                    out
+                }
+            }
+        }
+    };
+}
+
+stack!(base, baseline_vt);
+stack!(cur, fux_vt);
+
+pub fn run(r: &mut Rng, scale: usize) -> Outcome {
+    let (mut terminals, mut pieces, mut resizes) = (0u64, 0u64, 0u64);
+    let size = |r: &mut Rng| {
+        let n = match r.below(6) {
+            0 => r.below(3).saturating_add(1),
+            1 => r.below(300).saturating_add(1),
+            _ => r.below(30).saturating_add(1),
+        };
+        u16::try_from(n).unwrap_or(1)
+    };
+    for case in 0..times(500, scale) {
+        let (rows, cols) = (size(r), size(r));
+        let history = r.pick(&[0usize, 1, 3, 20, 200]).copied().unwrap_or(3);
+        let (events, extended) = (r.chance(50), r.chance(50));
+        let mut a = base::Terminal::new(rows, cols, history, events, extended)?;
+        let mut b = cur::Terminal::new(rows, cols, history, events, extended)?;
+        let mut log: Vec<String> = Vec::new();
+        for _ in 0..r.below(20).saturating_add(1) {
+            let (ra, rb) = if r.chance(10) {
+                let (rows, cols) = (size(r), size(r));
+                log.push(format!("resize {rows}x{cols}"));
+                bump(&mut resizes);
+                (a.resize(rows, cols), b.resize(rows, cols))
+            } else {
+                let bytes = output(r);
+                log.push(format!("{:?}", String::from_utf8_lossy(&bytes)));
+                bump(&mut pieces);
+                (a.process(&bytes), b.process(&bytes))
+            };
+            let context = || {
+                format!(
+                    "terminal {case}: {rows}x{cols}, history {history}, events {events}, extended replies {extended}, after:\n  {}",
+                    log.join("\n  ")
+                )
+            };
+            same_lines(&context(), &ra, &rb)?;
+            same_lines(&context(), &a.screen(), &b.screen())?;
+        }
+        bump(&mut terminals);
+    }
+    Ok(format!(
+        "{terminals} terminals, {pieces} pieces of output, {resizes} resizes"
+    ))
+}
