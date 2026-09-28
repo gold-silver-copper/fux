@@ -1,5 +1,5 @@
 //! Shared independent invariants for deterministic tests and cargo-fuzz.
-use fux_vt::{Cell, Parser};
+use fux_vt::{Cell, Cells, Parser};
 
 fn cells(row: fux_vt::Row<'_>) -> Vec<fux_vt::CellRef<'_>> {
     row.cells().collect()
@@ -27,8 +27,28 @@ pub fn check(p: &Parser) {
         };
         assert!(ids.insert(row.id), "row identities alias");
         assert!(!row.is_empty());
+        // The row's text stays within its budget.
+        assert!(
+            row.text_len() <= Cells::text_limit(row.len()),
+            "row {offset}: {} bytes of text in {} cells",
+            row.text_len(),
+            row.len()
+        );
+        // Copied cell by cell, with their text, the row is the same.
+        let copy: Cells = row.cells().collect();
+        assert!(
+            copy.iter().eq(row.cells()),
+            "row {offset} copies differently"
+        );
         for (i, cell) in row.cells().enumerate() {
             assert!(cell.contents().len() <= Cell::CLUSTER_CAPACITY);
+            // A cell with contents shows them: its text is where it says.
+            if cell.has_contents() {
+                assert!(
+                    !cell.contents().is_empty(),
+                    "row {offset}: cell {i} lost its text"
+                );
+            }
             if cell.is_wide() {
                 assert!(
                     i.checked_add(1)

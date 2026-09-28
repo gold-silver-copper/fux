@@ -4,6 +4,14 @@
 //! the screen with its row's identity, version and wrap flag, the cursor,
 //! every mode, the scroll region, the rows changed since the last look --
 //! and the same errors.
+//!
+//! The output is what both mean the same by. Left out is what the current
+//! fux-vt changed on purpose since 0.1.5: SGR 5, 6, 8, 9, 25, 28, 29, 58 and
+//! 59, which now set attributes (and so change row versions); CSI f, s and
+//! u, which now move and save the cursor; and characters that join the
+//! grapheme cluster before them (joiners, variation selectors, emoji
+//! modifiers, regional indicators, spacing marks). Those are tested against
+//! their own models in fux-vt's tests.
 use crate::rng::Rng;
 use crate::{Outcome, bump, same_lines, times};
 
@@ -33,7 +41,7 @@ fn well_formed(r: &mut Rng) -> Vec<u8> {
         4 => format!(
             "\x1b[{}m",
             (0..r.below(4))
-                .map(|_| number(r))
+                .map(|_| { pick(r, &["", "0", "1", "2", "3", "4", "7", "12", "99", "65535"],) })
                 .collect::<Vec<_>>()
                 .join(";")
         ),
@@ -48,12 +56,7 @@ fn well_formed(r: &mut Rng) -> Vec<u8> {
                 ]
             )
         ),
-        6 => format!(
-            "\x1b[{};{}{}",
-            number(r),
-            number(r),
-            pick(r, &["H", "f", "r"])
-        ),
+        6 => format!("\x1b[{};{}{}", number(r), number(r), pick(r, &["H", "r"])),
         7 => pick(
             r,
             &[
@@ -88,10 +91,7 @@ fn well_formed(r: &mut Rng) -> Vec<u8> {
                 "\x1bc", "\x1bH",
             ],
         ),
-        10 => pick(
-            r,
-            &["é", "界", "e\u{301}", "\u{200d}", "👍🏽", "\u{fe0f}", "ｱ"],
-        ),
+        10 => pick(r, &["é", "界", "e\u{301}", "ｱ"]),
         11 => pick(
             r,
             &[
@@ -118,7 +118,8 @@ fn well_formed(r: &mut Rng) -> Vec<u8> {
 
 /// Bytes a hostile or broken program writes.
 fn hostile(r: &mut Rng) -> Vec<u8> {
-    let alphabet: &[u8] = b"\x1b\x1b\x1b[[[??0011244556;; ;:hhllqqcmHJK\x07\n\r\x7f\x18\x1a]P\\\xc3\xa9\x9b(X_\x90\xe7\x95";
+    // No 5 or 6, which could make SGR 5 or 6.
+    let alphabet: &[u8] = b"\x1b\x1b\x1b[[[??00112447;; ;:hhllqqcmHJK\x07\n\r\x7f\x18\x1a]P\\\xc3\xa9\x9b(X_\x90\xe7\x95";
     (0..r.below(40))
         .map(|_| r.pick(alphabet).copied().unwrap_or(b'x'))
         .collect()

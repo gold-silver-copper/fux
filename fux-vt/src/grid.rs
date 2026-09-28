@@ -592,10 +592,7 @@ impl Grid {
                 width,
                 wrapped,
             });
-            // Cells keep locating their text: the row's text comes along.
-            replacement
-                .spill
-                .push(old.map(|r| r.spill.clone()).unwrap_or_default());
+            replacement.spill.push(Spill::default());
             replacement.order.push_back(p);
             if let Some(old) = old {
                 // As much of the old row as fits, over the new one's start:
@@ -608,6 +605,12 @@ impl Grid {
                     crate::copy_from(dst, src);
                 }
                 repair_wide(replacement.slice_mut(p));
+                // The row's text comes along, stored again within the
+                // budget of the row's new width.
+                let text = Line::rebuilt(replacement.slice_mut(p), old.spill);
+                if let Some(spill) = replacement.spill.get_mut(p) {
+                    *spill = text;
+                }
             }
         }
         Ok(replacement)
@@ -737,14 +740,29 @@ impl Grid {
                 end = end.saturating_add(1);
             }
             let line = (start..=end).filter_map(|i| self.row_at(i));
-            // Its length without the blank tail, and where the cursor is in it.
+            // Its length without the blank tail, where the cursor is in it,
+            // and the spacers in it: the blank a reflow left at the end of a
+            // row when a wide glyph did not fit, which is no part of the text.
             let mut length = 0usize;
             let mut offset = None;
+            let mut spacers = Vec::new();
             for (i, row) in (start..=end).zip(line.clone()) {
                 if let Some((row_index, col)) = cursor
                     && row_index == i
                 {
                     offset = length.checked_add(col);
+                }
+                if i != end
+                    && row.cells.last().is_some_and(|c| c.same(&blank))
+                    && self
+                        .row_at(i.saturating_add(1))
+                        .and_then(|next| next.cells.first())
+                        .is_some_and(Cell::is_wide)
+                    && let Some(at) = length
+                        .checked_add(row.cells.len())
+                        .and_then(|end| end.checked_sub(1))
+                {
+                    spacers.push(at);
                 }
                 let used = if i == end {
                     row.cells
@@ -766,6 +784,13 @@ impl Grid {
             let ids = line.clone().map(|r| r.id);
             let mut ids = ids.fuse();
             for (n, cell) in line.flat_map(|r| r.cells()).take(length).enumerate() {
+                if spacers.contains(&n) {
+                    // A cursor on a spacer goes with the glyph after it.
+                    if offset == Some(n) {
+                        offset = n.checked_add(1);
+                    }
+                    continue;
+                }
                 if width < 2 && (cell.is_wide() || cell.is_wide_continuation()) {
                     // A wide glyph cannot be drawn in one column.
                     continue;

@@ -30,6 +30,8 @@ diff/target/release/fux-diff --scale 10 --seed 7 sessions layout
 
 # What each area compares:
 diff/target/release/fux-diff --list
+# fux-vt's parse time beside its last release, by thread CPU time:
+diff/target/release/fux-diff --speed
 ```
 
 - Each area prints what it found alike and how much it compared.
@@ -50,7 +52,7 @@ diff/target/release/fux-diff --list
 | `commands` | Random command lines, half of them `select-*` lines | The command or usage error, the usage message, the label, and every word read as each kind of target |
 | `layout` | Random trees, normalized and not, with weights from 0 to `u32::MAX`, in areas from empty to `u16::MAX` wide, on the screen and past its edge | Placements (panes and separators), neighbours in every direction, and resizes, splits, removals and swaps: what each returns and the tree it leaves |
 | `protocol` | Random frames, up to twice the largest payload; random byte streams of frames, broken frames, stray headers and bad lengths | Encoded bytes (`encode`, `encode_into`, each stream's frames, `encode_input`); frames, errors and bytes held, decoding whole and in pieces; `check`; raw frames' paints, inputs and decodings |
-| `terminal` | fux-vt fed random output (well-formed sequences, and some hostile or broken ones) in pieces, with resizes, with events and extended replies on and off | After every piece: replies, events and errors, every retained row's identity, version, wrap flag, place and cells, the cursor, every mode, the scroll region, and the rows changed since the last look |
+| `terminal` | fux-vt fed random output (well-formed sequences, and some hostile or broken ones) in pieces, with resizes, with events and extended replies on and off. Only output both mean the same by: not what the current fux-vt changed on purpose (SGR 5, 6, 8, 9, 25, 28, 29, 58, 59; CSI f, s, u; characters that join a grapheme cluster), which fux-vt's own tests check against their models | After every piece: replies, events and errors, every retained row's identity, version, wrap flag, place and cells, the cursor, every mode, the scroll region, and the rows changed since the last look |
 | `input` | Random client input in pieces, with Escape timeouts; random key names with modifiers; pastes; held command lines; pushes and reads on a pane's input queue | Decoded keys, pastes and focus changes, and the Escape deadline; each key's bytes in both cursor modes; each paste plain and bracketed; when a held line is due; the queue's results and contents |
 | `copy` | Panes' screens and history from random lines; searches from random places, both ways; every copy-mode error in a session | Matches, the text each kind of selection copies, row positions; each error's outcome and notice (and that each is still reached) |
 | `text` | Random lines of words, key names, config lines and files | `split`, `quote`, `join` and `shell_line` with and without fish; key names read and printed; each config line's result and the configuration left; config files; JSON strings and base64 |
@@ -73,4 +75,8 @@ diff/target/release/fux-diff --list
   refusing connections, and painting on a timer all live in `server.rs`,
   behind a real socket and real processes. The walk (`walk/`) and the
   integration tests cover them.
-- **Performance.** Timing isn't compared; this compares only what fux does.
+- **Performance.** The areas compare only what fux does. `fux-diff --speed`
+  times fux-vt beside its last release instead: five streams of output
+  (ASCII, SGR, CJK, emoji, cursor movement), each parsed in turn by both,
+  best of nine, by the CPU time of the thread, so a busy machine slows
+  neither. `--scale` lengthens the streams.

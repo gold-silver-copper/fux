@@ -11,6 +11,7 @@ mod layout;
 mod protocol;
 mod rng;
 mod sessions;
+mod speed;
 mod system;
 mod terminal;
 mod text;
@@ -22,10 +23,12 @@ use std::time::Instant;
 const USAGE: &str = "\
 usage: fux-diff [--seed N] [--scale N] [AREA...]
        fux-diff --list
+       fux-diff --speed [--scale N]
 
 Runs the current fux beside its last release (the baseline in Cargo.toml)
 on the same random inputs, and compares what each gives back. With no AREA,
-every area runs. --scale multiplies each area's number of cases (default 1).";
+every area runs. --scale multiplies each area's number of cases (default 1).
+--speed times fux-vt beside its last release instead, by thread CPU time.";
 
 /// What a run of an area found alike: a line saying how much was compared.
 pub type Outcome = Result<String, String>;
@@ -91,6 +94,7 @@ struct Options {
     seed: u64,
     scale: usize,
     areas: Vec<String>,
+    speed: bool,
 }
 
 /// What the command line asks for: a run, or text to print and stop, with
@@ -114,6 +118,7 @@ fn parse() -> Result<Asked, String> {
         seed: 1,
         scale: 1,
         areas: Vec::new(),
+        speed: false,
     };
     let number = |value: Option<String>, flag: &str| -> Result<u64, String> {
         value
@@ -134,6 +139,7 @@ fn parse() -> Result<Asked, String> {
                     .collect();
                 return Ok(Asked::Print(lines.join("\n")));
             }
+            "--speed" => o.speed = true,
             system::PROBE => return Ok(Asked::Print(system::probe())),
             "--help" | "-h" => return Ok(Asked::Print(USAGE.into())),
             area if AREAS.iter().any(|(name, _, _)| *name == area) => o.areas.push(arg),
@@ -155,6 +161,18 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if o.speed {
+        return match speed::run(o.scale) {
+            Ok(table) => {
+                println!("{table}");
+                ExitCode::SUCCESS
+            }
+            Err(message) => {
+                eprintln!("fux-diff: {message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let mut failed = false;
     for (name, run, _) in AREAS {
         if !o.areas.is_empty() && !o.areas.iter().any(|a| a == name) {

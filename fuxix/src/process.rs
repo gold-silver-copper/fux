@@ -90,6 +90,22 @@ pub fn geteuid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
+/// The CPU time the calling thread has used: time it spent waiting for a
+/// processor while other processes ran is not counted, so timing work on a
+/// busy machine measures the work. For fux-diff's `--speed`.
+pub fn thread_cpu_time() -> Result<std::time::Duration> {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `time` is a valid timespec for clock_gettime to fill, and it
+    // is read only after the call says it filled it.
+    check(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut time) })?;
+    let seconds = u64::try_from(time.tv_sec).map_err(|_| Errno::INVAL)?;
+    let nanos = u32::try_from(time.tv_nsec).map_err(|_| Errno::INVAL)?;
+    Ok(std::time::Duration::new(seconds, nanos))
+}
+
 /// Makes this process the leader of a new session: the session's ID.
 pub fn setsid() -> Result<Pid> {
     // SAFETY: setsid takes nothing and touches no memory.
@@ -393,6 +409,24 @@ mod tests {
             geteuid().to_string(),
             String::from_utf8_lossy(&out.stdout).trim()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_threads_cpu_time_grows_with_its_work_and_not_with_sleep() -> Result<()> {
+        let start = thread_cpu_time()?;
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let slept = thread_cpu_time()?.saturating_sub(start);
+        let mut n = 0u64;
+        let before = thread_cpu_time()?;
+        while thread_cpu_time()?.saturating_sub(before) < std::time::Duration::from_millis(20) {
+            n = std::hint::black_box(n.wrapping_add(1));
+        }
+        assert!(
+            slept < std::time::Duration::from_millis(20),
+            "{slept:?} asleep"
+        );
+        assert!(n > 0);
         Ok(())
     }
 }

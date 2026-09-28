@@ -335,6 +335,43 @@ fn a_full_cluster_drops_what_follows_and_is_never_split() -> Result {
     Ok(())
 }
 
+/// A row's text stays within its budget however it is filled and resized:
+/// clusters that do not fit keep what fits inline, in their one cell.
+#[test]
+fn a_rows_text_stays_within_its_budget_through_resizes() -> Result {
+    let zalgo: String = std::iter::once('e')
+        .chain(std::iter::repeat_n('\u{301}', 60))
+        .collect();
+    let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
+    for options in [Options::default(), REFLOW] {
+        let mut p = with(options, 3, 40, 10)?;
+        for _ in 0..3 {
+            for _ in 0..20 {
+                p.process(zalgo.as_bytes())?;
+                p.process(family.as_bytes())?;
+            }
+            p.process(b"\r\n")?;
+        }
+        invariants::check(&p);
+        for (rows, cols) in [(3, 5), (6, 2), (2, 80), (3, 1), (3, 40)] {
+            p.resize(rows, cols)?;
+            invariants::check(&p);
+        }
+        // Each cell holds one cluster, whole or cut to what fits inline.
+        let screen = p.screen();
+        for offset in 0..screen.history_len() + 3 {
+            for cell in screen.row_from_bottom(offset).ok_or("row")?.cells() {
+                let text = cell.contents();
+                assert!(
+                    zalgo.starts_with(text) || family.starts_with(text),
+                    "{text:?}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 // Unhandled sequences.
 
 #[test]
