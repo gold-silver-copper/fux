@@ -10,7 +10,7 @@ use crate::layout::PaneId;
 use crate::render::shown;
 use crate::session::{Error, Outgoing, Session};
 use crate::view::{Mode, Notice};
-use fux_vt::{Cell, RowId, Screen};
+use fux_vt::{CellRef, RowId, Screen};
 use std::num::NonZeroUsize;
 
 /// The most cells one copy takes.
@@ -251,7 +251,7 @@ pub struct Bar {
 /// A row's cells as (column, class): 0 blank, 1 word, 2 other. With `big`,
 /// every non-blank is one class. The row end is a blank.
 fn classes(screen: &Screen, index: usize, big: bool) -> Vec<(u16, u8)> {
-    let class = |cell: &Cell| {
+    let class = |cell: CellRef<'_>| {
         let c = cell.contents().chars().next().unwrap_or(' ');
         if c.is_whitespace() || !cell.has_contents() {
             0
@@ -271,8 +271,10 @@ fn classes(screen: &Screen, index: usize, big: bool) -> Vec<(u16, u8)> {
 
 /// A row's cells and their columns, but for the second halves of wide
 /// glyphs.
-fn glyphs(screen: &Screen, index: usize) -> impl Iterator<Item = (u16, &Cell)> {
-    let cells = row_at(screen, index).map_or(&[][..], |row| row.cells);
+fn glyphs(screen: &Screen, index: usize) -> impl Iterator<Item = (u16, CellRef<'_>)> {
+    let cells = row_at(screen, index)
+        .into_iter()
+        .flat_map(|row| row.cells());
     // A row is never wider than a u16 screen.
     (0..=u16::MAX)
         .zip(cells)
@@ -495,14 +497,13 @@ pub fn text(
         let mut col = from;
         // Starting on the second half of a wide glyph takes the glyph.
         if row
-            .cells
-            .get(usize::from(col))
+            .cell(usize::from(col))
             .is_some_and(|c| c.is_wide_continuation())
         {
             col = col.saturating_sub(1);
         }
         while col <= to {
-            let Some(cell) = row.cells.get(usize::from(col)) else {
+            let Some(cell) = row.cell(usize::from(col)) else {
                 break;
             };
             // Refused long before it could saturate.
@@ -681,7 +682,7 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
         }
         (Some('l'), _) | (_, Key::Arrow(Direction::Right)) => {
             let wide = row_at(screen, row)
-                .and_then(|r| r.cells.get(usize::from(col)).copied())
+                .and_then(|r| r.cell(usize::from(col)))
                 .is_some_and(|c| c.is_wide());
             target = Some((
                 row,
@@ -762,8 +763,7 @@ fn move_to(copy: &mut Copy, screen: &Screen, height: u16, top: usize, (row, col)
     let last_col = screen.size().1.saturating_sub(1);
     let mut col = col.min(last_col);
     if let Some(r) = row_at(screen, row) {
-        if r.cells
-            .get(usize::from(col))
+        if r.cell(usize::from(col))
             .is_some_and(|c| c.is_wide_continuation())
         {
             col = col.saturating_sub(1);
@@ -887,7 +887,7 @@ mod tests {
         let p = screen(b"one\r\ntwo\r\nthree\r\nfour", 2, 10)?;
         let s = p.screen();
         assert_eq!(retained(s), 4);
-        let text = |i| row_at(s, i).map(|r| crate::session::row_text(r.cells));
+        let text = |i| row_at(s, i).map(crate::session::row_text);
         assert_eq!(text(0), Some("one".into()));
         assert_eq!(text(3), Some("four".into()));
         for i in 0..4 {

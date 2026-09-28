@@ -230,7 +230,7 @@ impl Pane {
     ) -> Result<Pane, Error> {
         let options = fux_vt::Options {
             events: true,
-            extended_replies: false,
+            ..fux_vt::Options::default()
         };
         let parser = fux_vt::Parser::with_options(rows.max(1), cols.max(1), history, options)
             .map_err(|source| Error::Terminal {

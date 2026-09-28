@@ -1,7 +1,8 @@
 #![no_main]
-use fux_vt::{Cell, Event, OSC_PAYLOAD_LIMIT, Options, Parser, RowId, Sink};
+use fux_vt::{Color, Event, Identity, OSC_PAYLOAD_LIMIT, Options, Parser, RowId, Sink, Unhandled};
 use libfuzzer_sys::fuzz_target;
-use std::collections::HashMap;
+#[path = "../../tests/corpus/graphemes.rs"]
+mod graphemes;
 #[path = "../../tests/corpus/invariants.rs"]
 mod invariants;
 
@@ -37,23 +38,111 @@ impl Sink for Record {
         assert!(entry.len() <= OSC_PAYLOAD_LIMIT + 2);
         self.0.push(entry);
     }
+    fn unhandled(&mut self, sequence: Unhandled<'_>) {
+        let mut entry = vec![0xfe];
+        match sequence {
+            Unhandled::Csi {
+                params,
+                intermediates,
+                action,
+            } => {
+                entry.push(b'C');
+                entry.extend_from_slice(intermediates);
+                for group in params.groups() {
+                    for value in group {
+                        entry.extend_from_slice(&value.to_le_bytes());
+                    }
+                    entry.push(b';');
+                }
+                entry.push(action);
+            }
+            Unhandled::Escape {
+                intermediates,
+                action,
+            } => {
+                entry.push(b'E');
+                entry.extend_from_slice(intermediates);
+                entry.push(action);
+            }
+            _ => entry.push(b'?'),
+        }
+        self.0.push(entry);
+    }
 }
 
-/// Every retained row by identity: its version, wrap flag and cells.
-fn rows(p: &Parser) -> HashMap<RowId, (u64, bool, Vec<Cell>)> {
+/// A colour as a number, for hashing.
+fn color(c: Color) -> u32 {
+    match c {
+        Color::Default => 0,
+        Color::Idx(i) => 0x100 | u32::from(i),
+        Color::Rgb(r, g, b) => 0x0100_0000 | u32::from_be_bytes([0, r, g, b]),
+    }
+}
+
+/// FNV-1a, folded in a byte at a time: cheap enough to run on every row
+/// after every byte of input, where SipHash and a hash map dominated.
+struct Fnv(u64);
+impl Fnv {
+    fn bytes(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 = (self.0 ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    fn u32(&mut self, n: u32) {
+        self.bytes(&n.to_le_bytes());
+    }
+}
+
+/// A hash of a row's cells: their text, halves and attributes. Checked
+/// after every byte of byte-at-a-time processing, so it hashes rather than
+/// copies: a collision could only hide a change, with odds of 2^-64.
+fn cells_hash(row: fux_vt::Row<'_>) -> u64 {
+    let mut h = Fnv(0xcbf2_9ce4_8422_2325);
+    for cell in row.cells() {
+        let a = cell.attributes();
+        h.bytes(cell.contents().as_bytes());
+        h.u32(color(a.foreground()));
+        h.u32(color(a.background()));
+        h.u32(color(a.underline_color()));
+        let flags = [
+            cell.is_wide(),
+            cell.is_wide_continuation(),
+            a.bold(),
+            a.dim(),
+            a.italic(),
+            a.underline(),
+            a.inverse(),
+            a.hidden(),
+            a.strikeout(),
+        ];
+        let bits = flags
+            .iter()
+            .fold(a.blink() as u32, |n, f| (n << 1) | u32::from(*f));
+        // Ends each cell, so text cannot run into the next cell's.
+        h.u32(bits | 0x8000_0000);
+    }
+    h.0
+}
+
+/// Every retained row, sorted by identity: its version, wrap flag and
+/// cells' hash.
+fn rows(p: &Parser) -> Vec<(RowId, u64, bool, u64)> {
     let screen = p.screen();
     let retained = screen.history_len() + usize::from(screen.size().0);
-    (0..retained)
+    let mut rows: Vec<_> = (0..retained)
         .filter_map(|i| screen.row_from_bottom(i))
-        .map(|row| (row.id, (row.version, row.wrapped, row.cells.to_vec())))
-        .collect()
+        .map(|row| (row.id, row.version, row.wrapped, cells_hash(row)))
+        .collect();
+    rows.sort_unstable_by_key(|r| r.0);
+    rows
 }
 
 /// A row whose cells or wrap flag changed has a newer version: a change is
 /// never missed.
-fn versions_follow(before: &HashMap<RowId, (u64, bool, Vec<Cell>)>, after: &Parser) {
-    for (id, (version, wrapped, cells)) in rows(after) {
-        if let Some((was, was_wrapped, was_cells)) = before.get(&id)
+fn versions_follow(before: &[(RowId, u64, bool, u64)], after: &Parser) {
+    for (id, version, wrapped, cells) in rows(after) {
+        if let Ok(at) = before.binary_search_by_key(&id, |r| r.0)
+            && let Some((_, was, was_wrapped, was_cells)) = before.get(at)
             && (wrapped != *was_wrapped || cells != *was_cells)
         {
             assert!(version > *was, "{id:?} changed without a new version");
@@ -65,11 +154,19 @@ fuzz_target!(|data: &[u8]| {
     let (Some(&r), Some(&c), Some(&history)) = (data.first(), data.get(1), data.get(2)) else {
         return;
     };
-    // Header bits above the history count opt into events (0x10) and extended
-    // replies (0x20), so the opt-in paths are fuzzed alongside the default.
+    // Header bits above the history count opt into events (0x10) and
+    // extended replies (0x20); above the row count, into reflow (0x10), the
+    // kitty keyboard protocol (0x20) and an identity (0x40). Each is fuzzed
+    // alone and with the others, alongside the default.
     let options = Options {
         events: history & 0x10 != 0,
         extended_replies: history & 0x20 != 0,
+        reflow: r & 0x10 != 0,
+        kitty_keyboard: r & 0x20 != 0,
+        identity: (r & 0x40 != 0).then_some(Identity {
+            name: "fuzz",
+            version: "1.2.3",
+        }),
     };
     let Ok(mut whole) = Parser::with_options(
         1 + u16::from(r % 16),
@@ -80,6 +177,10 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     let mut split = whole.clone();
+    // A third copy is fed each piece of output cut at sizes from 2 to 17,
+    // chosen by the output itself: runs of text and clusters then break at
+    // places neither whole nor byte-at-a-time processing puts a break.
+    let mut chunked = whole.clone();
     let mut input = data.get(3..).unwrap_or_default();
     while let Some((&operation, tail)) = input.split_first() {
         input = tail;
@@ -89,11 +190,20 @@ fuzz_target!(|data: &[u8]| {
                     break;
                 };
                 input = input.get(2..).unwrap_or_default();
+                let size = (1 + u16::from(r % 16), 1 + u16::from(c % 24));
+                // Resizing to the size it has changes nothing, not even marks.
+                let unchanged = whole.screen().size() == size;
+                let mark = whole.screen().mark();
+                assert!(chunked.resize(size.0, size.1).is_ok());
                 assert!(
                     whole
                         .resize(1 + u16::from(r % 16), 1 + u16::from(c % 24))
                         .is_ok()
                 );
+                if unchanged {
+                    assert_eq!(whole.screen().mark(), mark);
+                    assert!(!whole.screen().full_refresh_since(mark));
+                }
                 assert!(
                     split
                         .resize(1 + u16::from(r % 16), 1 + u16::from(c % 24))
@@ -137,8 +247,25 @@ fuzz_target!(|data: &[u8]| {
                 assert_eq!(mark, screen.mark());
             }
             operation => {
-                let length = (usize::from(operation) + 1).min(input.len());
-                let bytes = input.get(..length).unwrap_or_default();
+                // 0xfd: a count, then a byte a character, each one of
+                // `graphemes::CHARACTERS`, so clusters of every kind, and
+                // longer than a cell holds inline, are made far more often
+                // than random bytes make them. Otherwise, raw bytes.
+                let mut text = Vec::new();
+                let (length, bytes) = if operation == 0xfd {
+                    let count = input.first().map_or(0, |n| usize::from(n % 64));
+                    let picks = input.get(1..).unwrap_or_default();
+                    for pick in picks.iter().take(count) {
+                        let table = graphemes::CHARACTERS;
+                        let c = table[usize::from(*pick) % table.len()];
+                        let mut buffer = [0; 4];
+                        text.extend_from_slice(c.encode_utf8(&mut buffer).as_bytes());
+                    }
+                    ((count + 1).min(input.len()), &text[..])
+                } else {
+                    let length = (usize::from(operation) + 1).min(input.len());
+                    (length, input.get(..length).unwrap_or_default())
+                };
                 let mut a = Record::default();
                 let mut b = Record::default();
                 let before = rows(&whole);
@@ -154,10 +281,24 @@ fuzz_target!(|data: &[u8]| {
                     versions_follow(&before, &split);
                 }
                 assert_eq!(a, b);
+                let mut c = Record::default();
+                let mut rest = bytes;
+                let mut cut = bytes
+                    .iter()
+                    .fold(length, |h, b| h.wrapping_mul(31) ^ usize::from(*b));
+                while !rest.is_empty() {
+                    let size = cut % 16 + 2;
+                    cut = cut.rotate_right(4) ^ size;
+                    let (piece, tail) = rest.split_at_checked(size).unwrap_or((rest, &[]));
+                    assert!(chunked.process_with(piece, &mut c).is_ok());
+                    rest = tail;
+                }
+                assert_eq!(a, c);
                 input = input.get(length..).unwrap_or_default();
             }
         }
         invariants::check(&whole);
         invariants::equal(&whole, &split);
+        invariants::equal(&whole, &chunked);
     }
 });

@@ -1,4 +1,4 @@
-use fux_vt::{Cell, Color, Error, MouseProtocolEncoding, MouseProtocolMode, Parser};
+use fux_vt::{CellRef, Color, Error, MouseProtocolEncoding, MouseProtocolMode, Parser};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 fn lines(parser: &Parser) -> Vec<String> {
@@ -16,7 +16,7 @@ fn lines(parser: &Parser) -> Vec<String> {
         })
         .collect()
 }
-fn cell(parser: &Parser, row: u16, col: u16) -> std::result::Result<&Cell, Error> {
+fn cell(parser: &Parser, row: u16, col: u16) -> std::result::Result<CellRef<'_>, Error> {
     parser.screen().cell(row, col).ok_or(Error::InvalidRange)
 }
 
@@ -153,8 +153,7 @@ fn history_ids_survive_scrolling_and_recycled_slots_do_not_alias() -> Result {
         p.screen()
             .row_by_id(id)
             .ok_or(Error::InvalidRange)?
-            .cells
-            .first()
+            .cell(0)
             .ok_or(Error::InvalidRange)?
             .contents(),
         "o"
