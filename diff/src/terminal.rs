@@ -145,10 +145,42 @@ fn output(r: &mut Rng) -> Vec<u8> {
 }
 
 macro_rules! stack {
-    ($name:ident, $vt:ident) => {
+    ($name:ident, $vt:ident $(, $rest:tt)?) => {
         mod $name {
             use std::fmt::Write;
-            use $vt::{Event, Mark, Options, Parser, Sink};
+            use $vt::{Attributes, Cell, Event, Mark, Options, Parser, Sink};
+
+            /// Attributes through the accessors both sides have, so a field
+            /// one side's `Debug` shows and the other's lacks is no
+            /// difference.
+            fn attributes(a: Attributes) -> String {
+                format!(
+                    "fg {:?} bg {:?} bold {} dim {} italic {} underline {} inverse {}",
+                    a.foreground,
+                    a.background,
+                    a.bold(),
+                    a.dim(),
+                    a.italic(),
+                    a.underline(),
+                    a.inverse()
+                )
+            }
+
+            /// Each cell's contents, halves and attributes, whatever its layout.
+            fn cells(cells: &[Cell]) -> String {
+                let mut out = String::new();
+                for cell in cells {
+                    let _ = write!(
+                        out,
+                        "[{:?} wide {} continuation {} {}]",
+                        cell.contents(),
+                        cell.is_wide(),
+                        cell.is_wide_continuation(),
+                        attributes(cell.attributes())
+                    );
+                }
+                out
+            }
 
             #[derive(Default)]
             struct Heard(String);
@@ -172,6 +204,7 @@ macro_rules! stack {
                     let options = Options {
                         events,
                         extended_replies: extended,
+                        $(..$rest)?
                     };
                     let parser = Parser::with_options(rows, cols, history, options).map_err(|e| format!("{e:?}"))?;
                     let mark = parser.screen().mark();
@@ -196,7 +229,7 @@ macro_rules! stack {
                     let (rows, cols) = s.size();
                     let _ = writeln!(
                         out,
-                        "{rows}x{cols} cursor {:?} hidden {} app cursor {} keypad {} paste {} focus {} shape {} alternate {} autowrap {} origin {} region {:?} mouse {:?} {:?} attributes {:?} history {} storage {}",
+                        "{rows}x{cols} cursor {:?} hidden {} app cursor {} keypad {} paste {} focus {} shape {} alternate {} autowrap {} origin {} region {:?} mouse {:?} {:?} attributes {} history {} storage {}",
                         s.cursor_position(),
                         s.hide_cursor(),
                         s.application_cursor(),
@@ -210,7 +243,7 @@ macro_rules! stack {
                         s.scroll_region(),
                         s.mouse_protocol_mode(),
                         s.mouse_protocol_encoding(),
-                        s.attributes(),
+                        attributes(s.attributes()),
                         s.history_len(),
                         s.storage_cells(),
                     );
@@ -219,12 +252,12 @@ macro_rules! stack {
                         if let Some(row) = s.row_from_bottom(offset) {
                             let _ = writeln!(
                                 out,
-                                "{:?} v{} wrapped {} at {:?} {:?}",
+                                "{:?} v{} wrapped {} at {:?} {}",
                                 row.id,
                                 row.version,
                                 row.wrapped,
                                 s.offset_for_row(row.id),
-                                row.cells
+                                cells(row.cells)
                             );
                         }
                     }
@@ -245,7 +278,9 @@ macro_rules! stack {
 }
 
 stack!(base, baseline_vt);
-stack!(cur, fux_vt);
+// This fux-vt's opt-in options beyond those of the baseline stay off, so
+// both sides answer the same input the same way.
+stack!(cur, fux_vt, (Options::default()));
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
     let (mut terminals, mut pieces, mut resizes) = (0u64, 0u64, 0u64);
