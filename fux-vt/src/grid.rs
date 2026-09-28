@@ -2,7 +2,8 @@ use std::collections::VecDeque;
 use std::num::NonZeroU16;
 use std::ops::Range;
 
-use crate::{Attributes, Cell, Error, Row, RowId};
+use crate::cell::{Line, Spill};
+use crate::{Attributes, Cell, CellRef, Error, Row, RowId};
 
 /// A grid's number of rows or columns. Never zero, so a grid always has a
 /// last row and a last column.
@@ -40,6 +41,8 @@ struct Meta {
 pub(crate) struct Grid {
     cells: Vec<Cell>,
     meta: Vec<Meta>,
+    /// Each slot's text too long for its cells to hold inline.
+    spill: Vec<Spill>,
     order: VecDeque<usize>,
     stride: usize,
     pub rows: Extent,
@@ -86,6 +89,7 @@ impl Grid {
         let mut grid = Self {
             cells: Vec::new(),
             meta: Vec::new(),
+            spill: Vec::new(),
             order: VecDeque::new(),
             stride: usize::from(cols.get()),
             rows,
@@ -116,6 +120,9 @@ impl Grid {
             .map_err(|_| Error::Capacity)?;
         self.meta
             .try_reserve_exact(count.saturating_sub(self.meta.len()))
+            .map_err(|_| Error::Capacity)?;
+        self.spill
+            .try_reserve_exact(count.saturating_sub(self.spill.len()))
             .map_err(|_| Error::Capacity)?;
         self.order
             .try_reserve_exact(count.saturating_sub(self.order.len()))
@@ -151,6 +158,7 @@ impl Grid {
             width: self.cols.get(),
             wrapped: false,
         });
+        self.spill.push(Spill::default());
         Ok(slot)
     }
 
@@ -184,15 +192,24 @@ impl Grid {
             None => &mut [],
         }
     }
+    /// A slot's cells and text, to write into.
+    fn line(&mut self, slot: usize) -> Option<Line<'_>> {
+        let cells = self.cells_of(slot)?;
+        Some(Line {
+            cells: self.cells.get_mut(cells)?,
+            spill: self.spill.get_mut(slot)?,
+        })
+    }
     pub fn row_at(&self, index: usize) -> Option<Row<'_>> {
         let slot = *self.order.get(index)?;
         let m = self.meta.get(slot)?;
-        Some(Row {
-            id: m.id,
-            version: m.version,
-            wrapped: m.wrapped,
-            cells: self.slice(slot),
-        })
+        Some(Row::new(
+            m.id,
+            m.version,
+            m.wrapped,
+            self.slice(slot),
+            self.spill.get(slot)?,
+        ))
     }
     pub fn row_by_id(&self, id: RowId) -> Option<Row<'_>> {
         self.order
@@ -218,8 +235,8 @@ impl Grid {
     fn slot(&self, row: u16) -> Option<usize> {
         self.order.get(self.index(row)?).copied()
     }
-    pub fn cell(&self, row: u16, col: u16) -> Option<&Cell> {
-        self.live_row(row)?.cells.get(usize::from(col))
+    pub fn cell(&self, row: u16, col: u16) -> Option<CellRef<'_>> {
+        self.live_row(row)?.cell(usize::from(col))
     }
     /// Edits a live row's cells with `f`, which says whether it changed any
     /// of them; only then does the row take `version`. An edit that leaves
@@ -227,6 +244,16 @@ impl Grid {
     pub fn mutate_row(&mut self, row: u16, version: u64, f: impl FnOnce(&mut [Cell]) -> bool) {
         if let Some(slot) = self.slot(row)
             && f(self.slice_mut(slot))
+            && let Some(m) = self.meta.get_mut(slot)
+        {
+            m.version = version;
+        }
+    }
+    /// `mutate_row` with the row's text too, for edits that store clusters.
+    pub fn mutate_line(&mut self, row: u16, version: u64, f: impl FnOnce(&mut Line<'_>) -> bool) {
+        if let Some(slot) = self.slot(row)
+            && let Some(mut line) = self.line(slot)
+            && f(&mut line)
             && let Some(m) = self.meta.get_mut(slot)
         {
             m.version = version;
@@ -279,6 +306,13 @@ impl Grid {
         });
         if clears_edge {
             self.wrap(row, false, version);
+        }
+        // A whole row erased keeps no text.
+        if start == 0
+            && end >= cols
+            && let Some(spill) = self.slot(row).and_then(|slot| self.spill.get_mut(slot))
+        {
+            spill.clear();
         }
     }
 
@@ -351,6 +385,9 @@ impl Grid {
             };
         }
         self.slice_mut(slot).fill(Cell::default());
+        if let Some(spill) = self.spill.get_mut(slot) {
+            spill.clear();
+        }
     }
 
     /// Moves slots, not cells. Only whole-screen upward scrolling enters history.
@@ -502,6 +539,7 @@ impl Grid {
         let mut replacement = Self {
             cells: Vec::new(),
             meta: Vec::new(),
+            spill: Vec::new(),
             order: VecDeque::new(),
             stride,
             rows,
@@ -554,6 +592,10 @@ impl Grid {
                 width,
                 wrapped,
             });
+            // Cells keep locating their text: the row's text comes along.
+            replacement
+                .spill
+                .push(old.map(|r| r.spill.clone()).unwrap_or_default());
             replacement.order.push_back(p);
             if let Some(old) = old {
                 // As much of the old row as fits, over the new one's start:
@@ -617,6 +659,7 @@ impl Grid {
         let mut replacement = Self {
             cells: Vec::new(),
             meta: Vec::new(),
+            spill: Vec::new(),
             order: VecDeque::new(),
             stride: usize::from(cols.get()),
             rows,
@@ -643,6 +686,7 @@ impl Grid {
             .checked_mul(replacement.stride)
             .ok_or(Error::Capacity)?;
         replacement.cells.resize(size, Cell::default());
+        replacement.spill.resize_with(keep_total, Spill::default);
         let mut copy = Copy {
             grid: &mut replacement,
             rows: base..end,
@@ -675,6 +719,8 @@ impl Grid {
     ) -> Result<Reflowed, Error> {
         let retained = self.retained_len();
         let blank = Cell::default();
+        let no_text = Spill::default();
+        let pad = CellRef::new(&blank, &no_text);
         let mut out = Reflowed {
             rows: 0,
             cursor: (0, 0),
@@ -719,16 +765,16 @@ impl Grid {
             let mut placed = false;
             let ids = line.clone().map(|r| r.id);
             let mut ids = ids.fuse();
-            for (n, cell) in line.flat_map(|r| r.cells.iter()).take(length).enumerate() {
+            for (n, cell) in line.flat_map(|r| r.cells()).take(length).enumerate() {
                 if width < 2 && (cell.is_wide() || cell.is_wide_continuation()) {
                     // A wide glyph cannot be drawn in one column.
                     continue;
                 }
                 let full = used >= width;
-                let pad = !full && cell.is_wide() && used.saturating_add(1) == width;
-                if full || pad {
-                    if pad {
-                        target.cell(out.rows, used, blank);
+                let padded = !full && cell.is_wide() && used.saturating_add(1) == width;
+                if full || padded {
+                    if padded {
+                        target.cell(out.rows, used, pad);
                     }
                     target.row(out.rows, true, ids.next())?;
                     out.rows = out.rows.saturating_add(1);
@@ -738,7 +784,7 @@ impl Grid {
                     out.cursor = (out.rows, used);
                     placed = true;
                 }
-                target.cell(out.rows, used, *cell);
+                target.cell(out.rows, used, cell);
                 used = used.saturating_add(1);
             }
             if let Some(offset) = offset
@@ -857,7 +903,7 @@ impl Grid {
 /// ones kept into the replacement grid.
 trait Reflow {
     /// `cell` is at `col` of reflowed row `row`.
-    fn cell(&mut self, row: usize, col: usize, cell: Cell);
+    fn cell(&mut self, row: usize, col: usize, cell: CellRef<'_>);
     /// Reflowed row `row` is finished; `wrapped` if its line goes on, and
     /// the identity of its line's row in the same place before, if any.
     fn row(&mut self, row: usize, wrapped: bool, id: Option<RowId>) -> Result<(), Error>;
@@ -873,14 +919,15 @@ struct Reflowed {
 
 struct Layout;
 impl Reflow for Layout {
-    fn cell(&mut self, _: usize, _: usize, _: Cell) {}
+    fn cell(&mut self, _: usize, _: usize, _: CellRef<'_>) {}
     fn row(&mut self, _: usize, _: bool, _: Option<RowId>) -> Result<(), Error> {
         Ok(())
     }
 }
 
-/// Writes reflowed rows `rows` into `grid`, whose cells are allocated and
-/// blank, one slot a row in order.
+/// Writes reflowed rows `rows` into `grid`, whose cells and texts are
+/// allocated and blank, one slot a row in order. A cluster held in its old
+/// row's text is stored again in its new row's.
 struct Copy<'a> {
     grid: &'a mut Grid,
     rows: Range<usize>,
@@ -888,16 +935,32 @@ struct Copy<'a> {
     version: u64,
 }
 impl Reflow for Copy<'_> {
-    fn cell(&mut self, row: usize, col: usize, cell: Cell) {
-        if self.rows.contains(&row)
-            && let Some(slot) = row.checked_sub(self.rows.start)
-            && let Some(at) = slot
-                .checked_mul(self.grid.stride)
-                .and_then(|start| start.checked_add(col))
-            && col < self.grid.stride
-            && let Some(target) = self.grid.cells.get_mut(at)
-        {
-            *target = cell;
+    fn cell(&mut self, row: usize, col: usize, cell: CellRef<'_>) {
+        let stride = self.grid.stride;
+        if !self.rows.contains(&row) || col >= stride {
+            return;
+        }
+        let Some(slot) = row.checked_sub(self.rows.start) else {
+            return;
+        };
+        let Some(start) = slot.checked_mul(stride) else {
+            return;
+        };
+        let stored = *cell.stored();
+        if !stored.is_spilled() {
+            if let Some(target) = start
+                .checked_add(col)
+                .and_then(|at| self.grid.cells.get_mut(at))
+            {
+                *target = stored;
+            }
+            return;
+        }
+        let cells = start
+            .checked_add(stride)
+            .and_then(|end| self.grid.cells.get_mut(start..end));
+        if let (Some(cells), Some(spill)) = (cells, self.grid.spill.get_mut(slot)) {
+            Line { cells, spill }.set(col, stored, cell.contents());
         }
     }
     fn row(&mut self, row: usize, wrapped: bool, id: Option<RowId>) -> Result<(), Error> {

@@ -3,7 +3,7 @@
 //! reported as unhandled; and the opt-in kitty keyboard protocol, identity
 //! replies and reflow on resize.
 
-use fux_vt::{Blink, Cell, Color, Error, Identity, Options, Parser, Sink, Unhandled};
+use fux_vt::{Blink, Cell, CellRef, Color, Error, Identity, Options, Parser, Sink, Unhandled};
 mod corpus;
 #[path = "corpus/invariants.rs"]
 mod invariants;
@@ -45,12 +45,8 @@ fn window_lines(parser: &Parser, offset: usize) -> Vec<String> {
         .collect()
 }
 
-fn cell(parser: &Parser, row: u16, col: u16) -> std::result::Result<Cell, Error> {
-    parser
-        .screen()
-        .cell(row, col)
-        .copied()
-        .ok_or(Error::InvalidRange)
+fn cell(parser: &Parser, row: u16, col: u16) -> std::result::Result<CellRef<'_>, Error> {
+    parser.screen().cell(row, col).ok_or(Error::InvalidRange)
 }
 
 /// Replies and unhandled sequences, in order, as text.
@@ -183,7 +179,7 @@ fn scosc_and_scorc_save_and_restore_position_and_attributes() -> Result {
     // Like DECRC, SCORC restores the attributes SCOSC saved: an image
     // placeholder row wrapped in `CSI s` ... `CSI u` leaves the pen as it was.
     assert!(!p.screen().attributes().bold());
-    assert_eq!(p.screen().attributes().foreground, Color::Default);
+    assert_eq!(p.screen().attributes().foreground(), Color::Default);
     p.process(b"X")?;
     assert_eq!(cell(&p, 1, 2)?.contents(), "X");
     Ok(())
@@ -279,14 +275,63 @@ fn widening_needs_room_and_clears_what_it_covers() -> Result {
     Ok(())
 }
 
+/// Clusters longer than a cell holds inline are kept whole, in the row's
+/// text, one cell each: the cursor lands where unicode-width lays them out.
 #[test]
-fn a_full_cell_drops_marks_and_starts_a_new_cell_for_the_rest() -> Result {
+fn long_clusters_keep_one_cell_and_all_their_text() -> Result {
+    for cluster in [
+        // A family, 25 bytes; with skin tones, 41; a kiss with skin tones,
+        // 35; a subdivision flag, 28.
+        "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}",
+        "\u{1F468}\u{1F3FB}\u{200D}\u{1F469}\u{1F3FB}\u{200D}\u{1F467}\u{1F3FB}\u{200D}\u{1F466}\u{1F3FB}",
+        "\u{1F469}\u{1F3FD}\u{200D}\u{2764}\u{FE0F}\u{200D}\u{1F48B}\u{200D}\u{1F468}\u{1F3FB}",
+        "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}",
+    ] {
+        let mut whole = Parser::new(2, 10, 0)?;
+        whole.process(format!("{cluster}|").as_bytes())?;
+        // In pieces, a byte at a time, the same.
+        let mut split = Parser::new(2, 10, 0)?;
+        for byte in format!("{cluster}|").as_bytes() {
+            split.process(std::slice::from_ref(byte))?;
+        }
+        for p in [&whole, &split] {
+            assert_eq!(cell(p, 0, 0)?.contents(), cluster);
+            assert!(cell(p, 0, 0)?.is_wide() && cell(p, 0, 1)?.is_wide_continuation());
+            assert_eq!(cell(p, 0, 2)?.contents(), "|", "{cluster:?}");
+            assert_eq!(p.screen().cursor_position(), (0, 3));
+        }
+    }
+    // Zalgo: 'e' and 15 marks, 31 bytes, in one narrow cell.
     let mut p = Parser::new(2, 10, 0)?;
-    // 'e' and twelve two-byte marks fill 25 bytes; a thirteenth is dropped.
-    let marks: String = std::iter::repeat_n('\u{301}', 13).collect();
+    let zalgo: String = std::iter::once("e")
+        .chain(std::iter::repeat_n("\u{301}\u{316}\u{330}", 5))
+        .collect();
+    p.process(format!("{zalgo}|").as_bytes())?;
+    assert_eq!(cell(&p, 0, 0)?.contents(), zalgo);
+    assert_eq!(cell(&p, 0, 1)?.contents(), "|");
+    Ok(())
+}
+
+#[test]
+fn a_full_cluster_drops_what_follows_and_is_never_split() -> Result {
+    let mut p = Parser::new(2, 10, 0)?;
+    // 'e' and 63 two-byte marks fill 127 of 128 bytes; the rest is dropped.
+    let marks: String = std::iter::repeat_n('\u{301}', 100).collect();
     p.process(format!("e{marks}x").as_bytes())?;
-    assert_eq!(cell(&p, 0, 0)?.contents().len(), Cell::CONTENTS_CAPACITY);
+    assert_eq!(cell(&p, 0, 0)?.contents().len(), Cell::CLUSTER_CAPACITY - 1);
     assert_eq!(cell(&p, 0, 1)?.contents(), "x");
+    // A ZWJ sequence past the capacity still ends in its one cell: the
+    // pictographs after it are dropped, not given cells of their own.
+    let mut p = Parser::new(2, 20, 0)?;
+    let long: String = std::iter::once("\u{1F468}")
+        .chain(std::iter::repeat_n("\u{200D}\u{1F468}", 30))
+        .collect();
+    p.process(format!("{long}|").as_bytes())?;
+    assert!(cell(&p, 0, 0)?.is_wide());
+    assert!(cell(&p, 0, 0)?.contents().len() <= Cell::CLUSTER_CAPACITY);
+    assert!(long.starts_with(cell(&p, 0, 0)?.contents()));
+    assert_eq!(cell(&p, 0, 2)?.contents(), "|");
+    assert_eq!(p.screen().cursor_position(), (0, 3));
     Ok(())
 }
 

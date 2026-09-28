@@ -5,10 +5,12 @@ mod cell;
 mod grid;
 mod parser;
 mod screen;
+mod unicode;
 
-pub use cell::{Attributes, Blink, Cell, Color};
+pub use cell::{Attributes, Blink, Cell, CellRef, Cells, Color};
 pub use parser::{Event, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink, Unhandled};
 pub use screen::{MouseProtocolEncoding, MouseProtocolMode, Screen};
+pub use unicode::UNICODE_VERSION;
 
 /// `slice::copy_from_slice`, checked: copies `src` over `dst`, if they are the
 /// same length.
@@ -74,7 +76,45 @@ pub struct Row<'a> {
     pub id: RowId,
     pub version: u64,
     pub wrapped: bool,
-    pub cells: &'a [Cell],
+    pub(crate) cells: &'a [Cell],
+    pub(crate) spill: &'a cell::Spill,
+}
+
+impl<'a> Row<'a> {
+    pub(crate) fn new(
+        id: RowId,
+        version: u64,
+        wrapped: bool,
+        cells: &'a [Cell],
+        spill: &'a cell::Spill,
+    ) -> Self {
+        Self {
+            id,
+            version,
+            wrapped,
+            cells,
+            spill,
+        }
+    }
+    /// How many cells the row has: a history row keeps the width it had.
+    pub fn len(&self) -> usize {
+        self.cells.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+    /// The cell at column `col`.
+    pub fn cell(&self, col: usize) -> Option<CellRef<'a>> {
+        let spill = self.spill;
+        self.cells.get(col).map(|cell| CellRef::new(cell, spill))
+    }
+    /// The row's cells, left to right.
+    pub fn cells(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = CellRef<'a>> + ExactSizeIterator + Clone + use<'a> {
+        let spill = self.spill;
+        self.cells.iter().map(move |cell| CellRef::new(cell, spill))
+    }
 }
 
 /// Input/resource errors. Failing size changes leave the old screen intact.
@@ -116,11 +156,11 @@ impl<'a> Window<'a> {
         }
         self.grid.row_at(self.start.checked_add(usize::from(row))?)
     }
-    pub fn cell(&self, row: u16, col: u16) -> Option<&'a Cell> {
+    pub fn cell(&self, row: u16, col: u16) -> Option<CellRef<'a>> {
         if col >= self.cols {
             return None;
         }
-        let cell = self.row(row)?.cells.get(usize::from(col))?;
+        let cell = self.row(row)?.cell(usize::from(col))?;
         // A wide glyph in the window's last column is clipped.
         if cell.is_wide() && col.checked_add(1).is_none_or(|next| next >= self.cols) {
             None
@@ -144,7 +184,7 @@ impl<'a> Window<'a> {
             if y >= self.rows || x >= self.cols {
                 return Err(Error::InvalidRange);
             }
-            let x = if self.cell(y, x).is_some_and(Cell::is_wide_continuation) {
+            let x = if self.cell(y, x).is_some_and(|c| c.is_wide_continuation()) {
                 x.saturating_sub(1)
             } else {
                 x

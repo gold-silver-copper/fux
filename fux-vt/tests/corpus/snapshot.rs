@@ -43,8 +43,8 @@ pub fn cell(
 pub fn screen(s: &Screen) -> String {
     let attrs = s.attributes();
     let a = attributes(
-        attrs.foreground,
-        attrs.background,
+        attrs.foreground(),
+        attrs.background(),
         flags(
             attrs.bold(),
             attrs.dim(),
@@ -71,7 +71,7 @@ pub fn screen(s: &Screen) -> String {
     for (index, from_bottom) in (0..rows).rev().enumerate() {
         if let Some(row) = s.row_from_bottom(from_bottom) {
             let _ = writeln!(out, "row={index} wrapped={}", row.wrapped);
-            for (i, c) in row.cells.iter().enumerate() {
+            for (i, c) in row.cells().enumerate() {
                 cell(
                     &mut out,
                     i,

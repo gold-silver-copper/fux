@@ -1,6 +1,7 @@
+use crate::unicode::Cluster;
 use crate::{
-    Attributes, Blink, Cell, Color, Error, Mark, Options, Reply, Row, RowId, Window, grid::Grid,
-    parser::Parameters,
+    Attributes, Blink, Cell, CellRef, Color, Error, Mark, Options, Reply, Row, RowId, Window,
+    grid::Grid, parser::Parameters,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -107,91 +108,11 @@ pub struct Screen {
     primary_keyboard: KeyboardStack,
     alternate_keyboard: KeyboardStack,
     modify_other_keys: Option<u8>,
-    /// The cell the last glyph was printed in, while the cursor has not
-    /// moved nor the row been edited since: a character that continues its
-    /// grapheme cluster joins it rather than taking a cell of its own.
-    last_print: Option<(u16, u16)>,
-}
-
-/// Whether `c` continues the last grapheme cluster of `previous`, by UAX #29
-/// extended grapheme cluster rules, asking only about the one new boundary.
-/// A Prepend character (U+0600 ARABIC NUMBER SIGN and others) joins what
-/// follows it under UAX #29, which would swallow a letter or a space into its
-/// cell; terminals keep them apart, so a cluster never grows past one.
-fn clusters_with(previous: &str, c: char) -> bool {
-    let Some(last) = previous.chars().next_back() else {
-        return false;
-    };
-    !is_prepend(last) && !starts_cluster(last, c) && joins_by_tables(previous, c)
-}
-
-/// Whether the UAX #29 segmentation tables put no boundary between
-/// `previous` and `c`.
-fn joins_by_tables(previous: &str, c: char) -> bool {
-    use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
-    let mut encoded = [0; 4];
-    let next = c.encode_utf8(&mut encoded);
-    let Some(end) = previous.len().checked_add(next.len()) else {
-        return false;
-    };
-    let mut cursor = GraphemeCursor::new(previous.len(), end, true);
-    // Each round either answers or takes more of `previous` as context,
-    // which it asks for from its start: a cell holds at most 25 bytes.
-    for _ in 0..=Cell::CONTENTS_CAPACITY {
-        match cursor.is_boundary(next, previous.len()) {
-            Ok(boundary) => return !boundary,
-            Err(GraphemeIncomplete::PreContext(at)) => match previous.get(..at) {
-                Some(context) => cursor.provide_context(context, 0),
-                None => return false,
-            },
-            // Both chunks cover the string and the cursor is at the start of
-            // `next`, so no other answer comes; if one did, no cluster.
-            Err(_) => return false,
-        }
-    }
-    false
-}
-
-/// Whether `c` certainly begins a new cluster after `last`, told without the
-/// segmentation tables: the letters and wide characters most text is made
-/// of, which UAX #29 joins to nothing before them unless that ends in a
-/// zero-width character (a joiner, GB11, or an Indic virama, GB9c) or a
-/// Hangul leading jamo (GB6). Emoji modifiers and the two wide spacing marks
-/// are wide yet extend what precedes them. A `false` answer decides nothing;
-/// the tables do. The screen tests check every scalar value against them.
-fn starts_cluster(last: char, c: char) -> bool {
-    if last.width() == Some(0) || matches!(u32::from(last), 0x1100..=0x115F | 0xA960..=0xA97F) {
-        return false;
-    }
-    let letter = matches!(
-        u32::from(c),
-        0x00A0..=0x02FF | 0x0370..=0x0482 | 0x048A..=0x052F
-    );
-    let wide =
-        c.width() == Some(2) && !matches!(u32::from(c), 0x1F3FB..=0x1F3FF | 0x16FF0..=0x16FF1);
-    letter || wide
-}
-
-/// Grapheme_Cluster_Break=Prepend (Unicode 16).
-fn is_prepend(c: char) -> bool {
-    matches!(
-        u32::from(c),
-        0x0600..=0x0605
-            | 0x06DD
-            | 0x070F
-            | 0x0890..=0x0891
-            | 0x08E2
-            | 0x0D4E
-            | 0x110BD
-            | 0x110CD
-            | 0x111C2..=0x111C3
-            | 0x1193F
-            | 0x11941
-            | 0x11A3A
-            | 0x11A84..=0x11A89
-            | 0x11D46
-            | 0x11F02
-    )
+    /// The cell the last glyph was printed in, and the state of its
+    /// grapheme cluster, while the cursor has not moved nor the row been
+    /// edited since: a character that continues the cluster joins its cell
+    /// rather than taking one of its own.
+    last_print: Option<((u16, u16), Cluster)>,
 }
 
 #[cfg(test)]
@@ -379,12 +300,12 @@ impl Screen {
         self.attributes
     }
     pub fn bgcolor(&self) -> Color {
-        self.attributes.background
+        self.attributes.background()
     }
     pub fn inverse(&self) -> bool {
         self.attributes.inverse()
     }
-    pub fn cell(&self, row: u16, col: u16) -> Option<&Cell> {
+    pub fn cell(&self, row: u16, col: u16) -> Option<CellRef<'_>> {
         self.grid().cell(row, col)
     }
     pub fn row_wrapped(&self, row: u16) -> bool {
@@ -575,18 +496,12 @@ impl Screen {
                 None
             };
             if let Some((row, mut col)) = previous {
-                if g.cell(row, col).is_some_and(Cell::is_wide_continuation) {
+                if g.cell(row, col).is_some_and(|c| c.is_wide_continuation()) {
                     col = col.saturating_sub(1);
                 }
+                // A cell already holding all it can takes no more.
                 self.with_grid(|g, _, v| {
-                    g.mutate_row(row, v, |cells| {
-                        // A cell already holding all it can takes no more.
-                        cells.get_mut(usize::from(col)).is_some_and(|cell| {
-                            let before = *cell;
-                            cell.append(c);
-                            *cell != before
-                        })
-                    })
+                    g.mutate_line(row, v, |line| line.append(usize::from(col), c))
                 });
             }
             return Ok(());
@@ -637,19 +552,20 @@ impl Screen {
             // Past the glyph; at the right edge it waits there to wrap.
             g.cursor.1 = g.cursor.1.saturating_add(width).min(g.cols.get());
         });
-        self.last_print = Some((row, col));
+        self.last_print = Some(((row, col), Cluster::start(c)));
         Ok(())
     }
 
     /// Joins `c` to the cell printed last, if the cursor is just past it and
-    /// `c` continues its grapheme cluster: a spacing vowel sign, a variation
-    /// selector, a ZWJ sequence, a flag's second regional indicator. Programs
-    /// laid out with unicode-width give a cluster one cell of its string
-    /// width, so a narrow cell whose cluster becomes two columns wide is
-    /// widened, the cell under the cursor becoming its second half, as
-    /// kitty and Ghostty (mode 2027) do. A zero-width mark joins the cell
-    /// before the cursor even after a cursor move, as it always has. Whether
-    /// `c` was taken, joined or, when the cell is full, dropped.
+    /// `c` continues its grapheme cluster (UAX #29, see `unicode.rs`): a
+    /// spacing vowel sign, a variation selector, a ZWJ sequence, a flag's
+    /// second regional indicator. Programs laid out with unicode-width give a
+    /// cluster one cell of its string width, so a narrow cell whose cluster
+    /// becomes two columns wide is widened, the cell under the cursor
+    /// becoming its second half, as kitty and Ghostty (mode 2027) do. A
+    /// zero-width mark joins the cell before the cursor even after a cursor
+    /// move, as it always has. Whether `c` was taken: joined, or dropped
+    /// because the cluster is full, which never splits it.
     fn extend_cluster(&mut self, c: char) -> bool {
         let g = self.grid();
         let (row, col) = g.cursor;
@@ -661,9 +577,11 @@ impl Screen {
             if g.cell(row, left)?.is_wide_continuation() {
                 left = left.checked_sub(1)?;
             }
-            Some((row, left))
+            // Its cluster's state, from its text.
+            let cluster = Cluster::of(g.cell(row, left)?.contents());
+            Some(((row, left), cluster))
         });
-        let Some((anchor_row, anchor_col)) = anchor else {
+        let Some(((anchor_row, anchor_col), mut cluster)) = anchor else {
             return false;
         };
         let Some(cell) = g.cell(anchor_row, anchor_col) else {
@@ -675,50 +593,44 @@ impl Screen {
             || next != Some(col)
             || !cell.has_contents()
             || cell.is_wide_continuation()
+            || !cluster.push(c)
         {
             return false;
         }
-        if !cell.can_append(c) {
-            // A full cell takes no more marks; a spacing character starts a
-            // cell of its own rather than joining a cut-short cluster.
-            self.last_print = None;
-            return c.width() == Some(0);
-        }
-        if !clusters_with(cell.contents(), c) {
-            return false;
-        }
-        let mut joined = *cell;
-        joined.append(c);
-        // Width is kept once wide; the last column has no room to widen.
-        let widen = narrow && joined.contents().width() >= 2 && col < g.cols.get();
-        if widen {
-            joined.widen();
-        }
+        let at = usize::from(anchor_col);
+        let cursor = usize::from(col);
+        let fits = col < g.cols.get();
+        let mut widened = false;
         self.with_grid(|g, _, v| {
-            g.mutate_row(row, v, |cells| {
-                if let Some(cell) = cells.get_mut(usize::from(anchor_col)) {
-                    *cell = joined;
+            g.mutate_line(row, v, |line| {
+                if !line.append(at, c) {
+                    return false;
                 }
-                if widen {
-                    let at = usize::from(col);
+                // Width is kept once wide; the last column has no room to widen.
+                if narrow && fits && line.text(at).width() >= 2 {
+                    if let Some(cell) = line.cells.get_mut(at) {
+                        cell.widen();
+                    }
                     // The cell under the cursor becomes the second half; if
                     // it led a wide glyph, that glyph's half is left blank.
-                    if cells.get(at).is_some_and(Cell::is_wide)
-                        && let Some(orphan) = at.checked_add(1).and_then(|i| cells.get_mut(i))
+                    if line.cells.get(cursor).is_some_and(Cell::is_wide)
+                        && let Some(orphan) =
+                            cursor.checked_add(1).and_then(|i| line.cells.get_mut(i))
                     {
                         *orphan = Cell::default();
                     }
-                    if let Some(cell) = cells.get_mut(at) {
+                    if let Some(cell) = line.cells.get_mut(cursor) {
                         *cell = Cell::continuation();
                     }
+                    widened = true;
                 }
                 true
             });
-            if widen {
+            if widened {
                 g.cursor.1 = g.cursor.1.saturating_add(1).min(g.cols.get());
             }
         });
-        self.last_print = Some((anchor_row, anchor_col));
+        self.last_print = Some(((anchor_row, anchor_col), cluster));
         true
     }
 
@@ -782,7 +694,10 @@ impl Screen {
                 g.cursor.1 = end;
             });
             // The run's last glyph, which a mark or selector may join.
-            self.last_print = end.checked_sub(1).map(|last| (row, last));
+            self.last_print = end
+                .checked_sub(1)
+                .zip(run.last())
+                .map(|(last, &byte)| ((row, last), Cluster::start(char::from(byte))));
             bytes = bytes.get(usize::from(count)..).unwrap_or_default();
         }
         Ok(())
@@ -1186,17 +1101,17 @@ impl Screen {
                 [27] => self.attributes.flags &= !Attributes::INVERSE,
                 [28] => self.attributes.flags &= !Attributes::HIDDEN,
                 [29] => self.attributes.flags &= !Attributes::STRIKEOUT,
-                [39] => self.attributes.foreground = Color::Default,
-                [49] => self.attributes.background = Color::Default,
-                [59] => self.attributes.underline_color = Color::Default,
+                [39] => self.attributes = self.attributes.with_foreground(Color::Default),
+                [49] => self.attributes = self.attributes.with_background(Color::Default),
+                [59] => self.attributes = self.attributes.with_underline_color(Color::Default),
                 [n @ (30..=37 | 90..=97)] => {
                     if let Some(color) = palette(*n) {
-                        self.attributes.foreground = color;
+                        self.attributes = self.attributes.with_foreground(color);
                     }
                 }
                 [n @ (40..=47 | 100..=107)] => {
                     if let Some(color) = palette(*n) {
-                        self.attributes.background = color;
+                        self.attributes = self.attributes.with_background(color);
                     }
                 }
                 // Foreground, background and underline colour share their forms.
@@ -1244,9 +1159,9 @@ impl Screen {
                         return;
                     };
                     match selector {
-                        38 => self.attributes.foreground = colour,
-                        48 => self.attributes.background = colour,
-                        _ => self.attributes.underline_color = colour,
+                        38 => self.attributes = self.attributes.with_foreground(colour),
+                        48 => self.attributes = self.attributes.with_background(colour),
+                        _ => self.attributes = self.attributes.with_underline_color(colour),
                     }
                 }
                 _ => {}

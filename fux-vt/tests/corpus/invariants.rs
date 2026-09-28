@@ -1,5 +1,9 @@
 //! Shared independent invariants for deterministic tests and cargo-fuzz.
 use fux_vt::{Cell, Parser};
+
+fn cells(row: fux_vt::Row<'_>) -> Vec<fux_vt::CellRef<'_>> {
+    row.cells().collect()
+}
 use std::collections::HashSet;
 
 pub fn check(p: &Parser) {
@@ -22,22 +26,22 @@ pub fn check(p: &Parser) {
             return;
         };
         assert!(ids.insert(row.id), "row identities alias");
-        assert!(!row.cells.is_empty());
-        for (i, cell) in row.cells.iter().enumerate() {
-            assert!(cell.contents().len() <= Cell::CONTENTS_CAPACITY);
+        assert!(!row.is_empty());
+        for (i, cell) in row.cells().enumerate() {
+            assert!(cell.contents().len() <= Cell::CLUSTER_CAPACITY);
             if cell.is_wide() {
                 assert!(
                     i.checked_add(1)
-                        .and_then(|j| row.cells.get(j))
-                        .is_some_and(Cell::is_wide_continuation),
+                        .and_then(|j| row.cell(j))
+                        .is_some_and(|c| c.is_wide_continuation()),
                     "orphan wide leader at {offset},{i}"
                 );
             }
             if cell.is_wide_continuation() {
                 assert!(
                     i.checked_sub(1)
-                        .and_then(|i| row.cells.get(i))
-                        .is_some_and(Cell::is_wide),
+                        .and_then(|i| row.cell(i))
+                        .is_some_and(|c| c.is_wide()),
                     "orphan continuation at {offset},{i}"
                 );
                 assert!(!cell.has_contents());
@@ -52,7 +56,7 @@ pub fn check(p: &Parser) {
             assert!(w.cols <= cols && w.rows <= rows);
             if let Some(last) = w.cols.checked_sub(1) {
                 for y in 0..w.rows {
-                    assert!(!w.cell(y, last).is_some_and(Cell::is_wide));
+                    assert!(!w.cell(y, last).is_some_and(|c| c.is_wide()));
                 }
             }
         }
@@ -83,7 +87,7 @@ pub fn equal(a: &Parser, b: &Parser) {
         let (Some(a), Some(b)) = (a, b) else {
             return;
         };
-        assert_eq!(a.cells, b.cells, "row from bottom {offset}");
+        assert_eq!(cells(a), cells(b), "row from bottom {offset}");
         assert_eq!(a.wrapped, b.wrapped, "row from bottom {offset}");
     }
 }
