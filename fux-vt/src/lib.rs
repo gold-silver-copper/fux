@@ -5,10 +5,12 @@ mod cell;
 mod grid;
 mod parser;
 mod screen;
+mod unicode;
 
-pub use cell::{Attributes, Cell, Color};
-pub use parser::{Event, OSC_PAYLOAD_LIMIT, Options, Parser, Sink};
+pub use cell::{Attributes, Blink, Cell, CellRef, Cells, Color};
+pub use parser::{Event, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink, Unhandled};
 pub use screen::{MouseProtocolEncoding, MouseProtocolMode, Screen};
+pub use unicode::UNICODE_VERSION;
 
 /// `slice::copy_from_slice`, checked: copies `src` over `dst`, if they are the
 /// same length.
@@ -20,11 +22,21 @@ pub(crate) fn copy_from<T: Copy>(dst: &mut [T], src: &[T]) -> Option<()> {
 }
 
 /// A reply to a query, built where it is kept rather than on the heap: the
-/// longest fux-vt makes, `ESC [ ? 65535 ; 65535 R`, is 15 bytes.
-#[derive(Clone, Copy, Debug, Default)]
+/// longest fux-vt makes, XTVERSION's `DCS > | name version ST` with
+/// [`Identity::MAX_LEN`] bytes of name and version, is 55 bytes.
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Reply {
-    bytes: [u8; 32],
+    bytes: [u8; 64],
     len: usize,
+}
+
+impl Default for Reply {
+    fn default() -> Self {
+        Self {
+            bytes: [0; 64],
+            len: 0,
+        }
+    }
 }
 
 impl Reply {
@@ -64,7 +76,51 @@ pub struct Row<'a> {
     pub id: RowId,
     pub version: u64,
     pub wrapped: bool,
-    pub cells: &'a [Cell],
+    pub(crate) cells: &'a [Cell],
+    pub(crate) spill: &'a cell::Spill,
+}
+
+impl<'a> Row<'a> {
+    pub(crate) fn new(
+        id: RowId,
+        version: u64,
+        wrapped: bool,
+        cells: &'a [Cell],
+        spill: &'a cell::Spill,
+    ) -> Self {
+        Self {
+            id,
+            version,
+            wrapped,
+            cells,
+            spill,
+        }
+    }
+    /// How many cells the row has: a history row keeps the width it had.
+    pub fn len(&self) -> usize {
+        self.cells.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+    /// The cell at column `col`.
+    pub fn cell(&self, col: usize) -> Option<CellRef<'a>> {
+        let spill = self.spill;
+        self.cells.get(col).map(|cell| CellRef::new(cell, spill))
+    }
+    /// Bytes of text the row keeps for clusters too long to hold inline,
+    /// overwritten ones included until the row is compacted: at most
+    /// [`Cells::text_limit`] of its length. For memory diagnostics.
+    pub fn text_len(&self) -> usize {
+        self.spill.len()
+    }
+    /// The row's cells, left to right.
+    pub fn cells(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = CellRef<'a>> + ExactSizeIterator + Clone + use<'a> {
+        let spill = self.spill;
+        self.cells.iter().map(move |cell| CellRef::new(cell, spill))
+    }
 }
 
 /// Input/resource errors. Failing size changes leave the old screen intact.
@@ -106,17 +162,31 @@ impl<'a> Window<'a> {
         }
         self.grid.row_at(self.start.checked_add(usize::from(row))?)
     }
-    pub fn cell(&self, row: u16, col: u16) -> Option<&'a Cell> {
+    pub fn cell(&self, row: u16, col: u16) -> Option<CellRef<'a>> {
         if col >= self.cols {
             return None;
         }
-        let cell = self.row(row)?.cells.get(usize::from(col))?;
+        let cell = self.row(row)?.cell(usize::from(col))?;
         // A wide glyph in the window's last column is clipped.
         if cell.is_wide() && col.checked_add(1).is_none_or(|next| next >= self.cols) {
             None
         } else {
             Some(cell)
         }
+    }
+    /// Whether the cell is the blank a reflow left at the end of a
+    /// soft-wrapped row when the wide glyph after it did not fit: no part of
+    /// the text.
+    fn spacer(&self, row: u16, col: u16) -> bool {
+        col.checked_add(1) == Some(self.cols)
+            && self.row_wrapped(row)
+            && self
+                .cell(row, col)
+                .is_some_and(|c| !c.has_contents() && c.attributes() == Attributes::default())
+            && row
+                .checked_add(1)
+                .and_then(|next| self.cell(next, 0))
+                .is_some_and(|c| c.is_wide())
     }
     pub fn row_wrapped(&self, row: u16) -> bool {
         self.cols == self.grid.cols.get() && self.row(row).is_some_and(|r| r.wrapped)
@@ -134,7 +204,7 @@ impl<'a> Window<'a> {
             if y >= self.rows || x >= self.cols {
                 return Err(Error::InvalidRange);
             }
-            let x = if self.cell(y, x).is_some_and(Cell::is_wide_continuation) {
+            let x = if self.cell(y, x).is_some_and(|c| c.is_wide_continuation()) {
                 x.saturating_sub(1)
             } else {
                 x
@@ -164,7 +234,7 @@ impl<'a> Window<'a> {
                 let Some(cell) = self.cell(y, x) else {
                     continue;
                 };
-                if cell.is_wide_continuation() {
+                if cell.is_wide_continuation() || self.spacer(y, x) {
                     continue;
                 }
                 let text = if cell.has_contents() {
@@ -210,7 +280,7 @@ mod tests {
         assert!(built.write_str("\x1b[0").is_ok() && built.write_str("n").is_ok());
         assert_eq!(built.as_bytes(), b"\x1b[0n");
         // More than it holds is refused, and what it held stays.
-        let long: String = std::iter::repeat_n('x', 40).collect();
+        let long: String = std::iter::repeat_n('x', 70).collect();
         assert!(built.write_str(&long).is_err());
         assert_eq!(built.as_bytes(), b"\x1b[0n");
     }

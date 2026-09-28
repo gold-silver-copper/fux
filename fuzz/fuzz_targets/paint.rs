@@ -4,7 +4,7 @@
 //! writes. Bit 2 of the flags gives the new grid its own size, in the next two
 //! bytes, so that the paint is a full one.
 use fux::render::{Grid, paint};
-use fux_vt::{Attributes, Cell, Color, Parser};
+use fux_vt::{Attributes, Cell, CellRef, Color, Parser};
 use libfuzzer_sys::fuzz_target;
 
 /// A glyph: its text, whether it is wide. `None` is a cell never written.
@@ -73,11 +73,12 @@ fn write(grid: &mut Grid, y: u16, x: u16, kind: u8) {
     let attrs = attributes(kind / 8);
     let at = index(grid, y, x);
     match glyph {
-        None => grid.cells[at] = Cell::default(),
+        None => grid.cells.set_cell(at, Cell::default()),
         Some((text, wide)) => {
-            grid.cells[at] = Cell::new(text, wide, attrs).unwrap_or_default();
+            grid.cells
+                .set_cell(at, Cell::new(text, wide, attrs).unwrap_or_default());
             if wide && x + 1 < grid.cols {
-                grid.cells[at + 1] = Cell::wide_continuation();
+                grid.cells.set_cell(at + 1, Cell::wide_continuation());
             }
         }
     }
@@ -90,12 +91,17 @@ fn repair(grid: &mut Grid) {
     for y in 0..grid.rows {
         for x in 0..grid.cols {
             let at = index(grid, y, x);
-            let cell = grid.cells[at];
+            let cell = |i: usize| {
+                grid.cells
+                    .get(i)
+                    .map_or((false, false), |c| (c.is_wide(), c.is_wide_continuation()))
+            };
+            let (wide, continuation) = cell(at);
             let last = x + 1 == grid.cols;
-            let broken = (cell.is_wide() && !last && !grid.cells[at + 1].is_wide_continuation())
-                || (cell.is_wide_continuation() && (x == 0 || !grid.cells[at - 1].is_wide()));
+            let broken =
+                (wide && !last && !cell(at + 1).1) || (continuation && (x == 0 || !cell(at - 1).0));
             if broken {
-                grid.cells[at] = Cell::default();
+                grid.cells.set_cell(at, Cell::default());
             }
         }
     }
@@ -105,12 +111,12 @@ fn grid(rows: u16, cols: u16) -> Grid {
     Grid::new(rows, cols)
 }
 
-fn text(cell: &Cell) -> &str {
-    if cell.has_contents() {
-        cell.contents()
-    } else {
-        " "
-    }
+/// A cell's width, halves, text and attributes; a blank for no cell.
+fn seen(cell: Option<CellRef<'_>>) -> (bool, bool, &str, Attributes) {
+    cell.map_or((false, false, " ", Attributes::default()), |c| {
+        let text = if c.has_contents() { c.contents() } else { " " };
+        (c.is_wide(), c.is_wide_continuation(), text, c.attributes())
+    })
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -167,20 +173,16 @@ fuzz_target!(|data: &[u8]| {
     let screen = terminal.screen();
     for y in 0..new_rows {
         for x in 0..new_cols {
-            let mut want = new.cells[index(&new, y, x)];
+            let mut want = seen(new.cells.get(index(&new, y, x)));
             // A wide glyph cannot fit the last column: it is painted blank.
-            if want.is_wide() && x + 1 == new_cols {
-                want = Cell::new(" ", false, want.attributes()).unwrap_or_default();
+            if want.0 && x + 1 == new_cols {
+                want = (false, false, " ", want.3);
             }
-            let got = screen.cell(y, x).copied().unwrap_or_default();
-            assert_eq!(
-                (got.is_wide(), got.is_wide_continuation()),
-                (want.is_wide(), want.is_wide_continuation()),
-                "width at {y},{x}"
-            );
-            if !want.is_wide_continuation() {
-                assert_eq!(text(&got), text(&want), "text at {y},{x}");
-                assert_eq!(got.attributes(), want.attributes(), "attributes at {y},{x}");
+            let got = seen(screen.cell(y, x));
+            assert_eq!((got.0, got.1), (want.0, want.1), "width at {y},{x}");
+            if !want.1 {
+                assert_eq!(got.2, want.2, "text at {y},{x}");
+                assert_eq!(got.3, want.3, "attributes at {y},{x}");
             }
         }
     }

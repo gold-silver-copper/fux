@@ -357,7 +357,7 @@ impl Client {
             .map(|y| {
                 let mut line = String::new();
                 if let Some(row) = window.row(y) {
-                    for cell in row.cells {
+                    for cell in row.cells() {
                         if cell.is_wide_continuation() {
                             continue;
                         }
@@ -634,7 +634,7 @@ impl Terminal {
                     .row(y)
                     .map(|r| {
                         let mut line = String::new();
-                        for cell in r.cells {
+                        for cell in r.cells() {
                             if !cell.is_wide_continuation() {
                                 line.push_str(if cell.has_contents() {
                                     cell.contents()

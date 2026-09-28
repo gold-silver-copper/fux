@@ -12,12 +12,29 @@ license = "MIT"
 cargo-fuzz = true
 
 [dependencies]
-libfuzzer-sys = "0.4"
+libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
 fux-vt = { path = ".." }
+# The references the model oracles are built on, as fux-vt's tests use.
+unicode-segmentation = "=1.13.3"
+unicode-width = "0.2"
 
 [[bin]]
 name = "terminal"
 path = "fuzz_targets/terminal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "graphemes"
+path = "fuzz_targets/graphemes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cells"
+path = "fuzz_targets/cells.rs"
 test = false
 doc = false
 bench = false

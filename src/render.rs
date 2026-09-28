@@ -7,7 +7,7 @@ use crate::layout::{Axis, PaneId, Placement, Rect, Separator};
 use crate::overlay::{self, ColumnRow};
 use crate::session::Session;
 use crate::view::{Mode, View};
-use fux_vt::{Attributes, Cell, Color};
+use fux_vt::{Attributes, Cell, CellRef, Cells, Color, Row};
 use std::borrow::Cow;
 use std::io::Write;
 use unicode_width::UnicodeWidthChar;
@@ -16,7 +16,8 @@ use unicode_width::UnicodeWidthChar;
 pub struct Grid {
     pub rows: u16,
     pub cols: u16,
-    pub cells: Vec<Cell>,
+    /// Row after row; clusters too long to hold inline are kept whole.
+    pub cells: Cells,
     /// Where the terminal cursor is shown, if it is.
     pub cursor: Option<(u16, u16)>,
     /// DECSCUSR shape for the cursor; 0 is the terminal's default.
@@ -29,7 +30,7 @@ impl Grid {
             rows,
             cols,
             // Exact: a u16 by a u16 fits even a 32-bit usize.
-            cells: vec![Cell::default(); usize::from(rows).saturating_mul(usize::from(cols))],
+            cells: Cells::new(usize::from(rows).saturating_mul(usize::from(cols))),
             cursor: None,
             cursor_shape: 0,
         }
@@ -40,12 +41,12 @@ impl Grid {
     fn reset(&mut self, rows: u16, cols: u16, blank: bool) {
         if (self.rows, self.cols) == (rows, cols) {
             if blank {
-                self.cells.fill(Cell::default());
+                self.cells.fill(0..self.cells.len(), Cell::default());
             }
         } else {
             self.rows = rows;
             self.cols = cols;
-            self.cells.clear();
+            self.cells.resize(0, Cell::default());
             // Exact: a u16 by a u16 fits even a 32-bit usize.
             let len = usize::from(rows).saturating_mul(usize::from(cols));
             self.cells.resize(len, Cell::default());
@@ -61,35 +62,38 @@ impl Grid {
             .checked_mul(usize::from(self.cols))?
             .checked_add(usize::from(x))
     }
-    pub fn get(&self, y: u16, x: u16) -> Option<&Cell> {
+    pub fn get(&self, y: u16, x: u16) -> Option<CellRef<'_>> {
         self.index(y, x).and_then(|i| self.cells.get(i))
     }
-    fn get_mut(&mut self, y: u16, x: u16) -> Option<&mut Cell> {
-        self.index(y, x).and_then(|i| self.cells.get_mut(i))
-    }
     /// The cells of row `y`; none past the last row.
-    pub fn row(&self, y: u16) -> &[Cell] {
-        if y >= self.rows {
-            return &[];
-        }
+    pub fn row(&self, y: u16) -> impl Iterator<Item = CellRef<'_>> + Clone {
         let cols = usize::from(self.cols);
         // Exact: a u16 by a u16 fits even a 32-bit usize.
         let start = usize::from(y).saturating_mul(cols);
-        self.cells
-            .get(start..start.saturating_add(cols))
-            .unwrap_or_default()
+        let end = if y < self.rows {
+            start.saturating_add(cols)
+        } else {
+            start
+        };
+        self.cells.range(start..end)
     }
-    /// Copies `cells` into row `y` from column `x`, clipped at the grid's
-    /// edge, without `set`'s repairs: for a run of one well-formed row onto
-    /// blank cells, which keeps its wide glyphs whole by itself.
-    fn put_row(&mut self, y: u16, x: u16, cells: &[Cell]) {
+    /// Copies the first `width` cells of `row` into row `y` from column `x`,
+    /// clipped at the grid's edge, without `set`'s repairs: for a run of one
+    /// well-formed row onto blank cells, which keeps its wide glyphs whole
+    /// by itself.
+    fn put_row(&mut self, y: u16, x: u16, row: Row<'_>, width: u16) {
         let Some(start) = self.index(y, x) else {
             return;
         };
-        let room = usize::from(self.cols.saturating_sub(x));
-        let slots = self.cells.iter_mut().skip(start).take(room);
-        for (slot, cell) in slots.zip(cells) {
-            *slot = *cell;
+        let room = usize::from(self.cols.saturating_sub(x).min(width));
+        for (i, cell) in (start..).zip(row.cells().take(room)) {
+            self.cells.set(i, cell);
+        }
+    }
+    /// Sets one cell as it is, without `set`'s repairs.
+    fn put(&mut self, y: u16, x: u16, cell: Cell) {
+        if let Some(i) = self.index(y, x) {
+            self.cells.set_cell(i, cell);
         }
     }
     /// Blanks row `y` from column `from` to `to`, clipped at the grid's edge.
@@ -98,9 +102,8 @@ impl Grid {
             return;
         };
         let count = usize::from(to.min(self.cols).saturating_sub(from));
-        for slot in self.cells.iter_mut().skip(start).take(count) {
-            *slot = Cell::default();
-        }
+        self.cells
+            .fill(start..start.saturating_add(count), Cell::default());
     }
     /// Sets a cell, keeping wide glyphs whole: overwriting either half of
     /// one blanks the other, as a terminal would.
@@ -108,32 +111,31 @@ impl Grid {
         let Some(index) = self.index(y, x) else {
             return;
         };
-        let old = self.cells.get(index).copied().unwrap_or_default();
-        if old.is_wide_continuation()
+        let (was_wide, was_continuation) = self.cells.get(index).map_or((false, false), |old| {
+            (old.is_wide(), old.is_wide_continuation())
+        });
+        if was_continuation
             && !cell.is_wide_continuation()
-            && x > 0
-            && let Some(leader) = index.checked_sub(1).and_then(|i| self.cells.get_mut(i))
-            && leader.is_wide()
+            && let Some(leader) = index.checked_sub(1).filter(|_| x > 0)
+            && self.cells.get(leader).is_some_and(|c| c.is_wide())
         {
-            *leader = Cell::default();
+            self.cells.set_cell(leader, Cell::default());
         }
-        if old.is_wide()
+        if was_wide
             && !cell.is_wide()
-            && let Some(rest) = x
-                .checked_add(1)
-                .and_then(|x| self.index(y, x))
-                .and_then(|i| self.cells.get_mut(i))
-            && rest.is_wide_continuation()
+            && let Some(rest) = x.checked_add(1).and_then(|x| self.index(y, x))
+            && self
+                .cells
+                .get(rest)
+                .is_some_and(|c| c.is_wide_continuation())
         {
-            *rest = Cell::default();
+            self.cells.set_cell(rest, Cell::default());
         }
-        if let Some(slot) = self.cells.get_mut(index) {
-            *slot = cell;
-        }
+        self.cells.set_cell(index, cell);
     }
     /// The text of a row, trailing blanks trimmed: for `capture-client`.
     pub fn row_text(&self, y: u16) -> String {
-        let row = self.row(y).iter().filter(|c| !c.is_wide_continuation());
+        let row = self.row(y).filter(|c| !c.is_wide_continuation());
         row.map(shown).collect::<String>().trim_end().to_owned()
     }
 
@@ -177,7 +179,7 @@ impl Grid {
 }
 
 /// What a cell shows: its text, or a space if it has none.
-pub fn shown(cell: &Cell) -> &str {
+pub fn shown(cell: CellRef<'_>) -> &str {
     if cell.has_contents() {
         cell.contents()
     } else {
@@ -299,31 +301,36 @@ pub fn compose_into(
             };
             // The pane's own row, well formed, goes whole onto cells that
             // are blank, or are blanked after it.
-            let cells = window.row(y).map_or(&[][..], |row| row.cells);
-            let cells = cells.get(..usize::from(width)).unwrap_or(cells);
-            grid.put_row(gy, gx, cells);
+            let row = window.row(y);
+            let len = row.map_or(0, |row| row.len());
+            if let Some(row) = row {
+                grid.put_row(gy, gx, row, width);
+            }
             if tiled {
                 // At most `width`, which is at most the place's width.
-                let end = u16::try_from(cells.len()).unwrap_or(width);
+                let end = u16::try_from(len).unwrap_or(width).min(width);
                 grid.blank(gy, gx.saturating_add(end), gx.saturating_add(rect.w));
             }
             // A wide glyph in the window's last column is cut off, as
             // `Window::cell` has it.
             if let Some(last) = window.cols.checked_sub(1)
                 && last < width
-                && cells.get(usize::from(last)).is_some_and(Cell::is_wide)
-                && let Some(cell) = gx.checked_add(last).and_then(|x| grid.get_mut(gy, x))
+                && row
+                    .and_then(|r| r.cell(usize::from(last)))
+                    .is_some_and(|c| c.is_wide())
+                && let Some(x) = gx.checked_add(last)
             {
-                *cell = Cell::default();
+                grid.put(gy, x, Cell::default());
             }
             let Some(at) = at else { continue };
             for x in 0..width {
                 if at.selected(y, x)
-                    && let Some(cell) = gx.checked_add(x).and_then(|x| grid.get_mut(gy, x))
+                    && let Some(i) = gx.checked_add(x).and_then(|x| grid.index(gy, x))
+                    && let Some(cell) = grid.cells.get(i)
                     && !cell.is_wide_continuation()
                 {
                     let attrs = cell.attributes().with_inverse(!cell.inverse());
-                    *cell = Cell::new(shown(cell), cell.is_wide(), attrs).unwrap_or(*cell);
+                    grid.cells.set_attributes(i, attrs);
                 }
             }
         }
@@ -544,9 +551,11 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
         };
         // A separator's cell is no pane's, so no wide glyph has a half there
         // to repair: it is only ever drawn over.
-        if let Some(cell) = grid.get_mut(y, x) {
-            *cell = Cell::new(glyph, false, style(color, Color::Default)).unwrap_or_default();
-        }
+        grid.put(
+            y,
+            x,
+            Cell::new(glyph, false, style(color, Color::Default)).unwrap_or_default(),
+        );
     };
     // Each line plain, in order, so the last one drawn at a cell is its.
     for s in lines {
@@ -860,8 +869,8 @@ fn sgr(out: &mut Vec<u8>, a: Attributes) {
             let _ = write!(out, ";{};2;{r};{g};{b}", base.saturating_add(8));
         }
     };
-    color(out, a.foreground, 30);
-    color(out, a.background, 40);
+    color(out, a.foreground(), 30);
+    color(out, a.background(), 40);
     out.push(b'm');
 }
 
@@ -887,15 +896,14 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
     }
     let mut current: Option<Attributes> = None;
     for y in 0..new.rows {
-        let row = new.row(y);
-        // What the client shows of the row, unless it is painted whole.
-        let before = old.filter(|_| !full).map(|o| o.row(y));
+        // What the client shows, unless the row is painted whole.
+        let before = old.filter(|_| !full);
         // An unchanged row costs this one comparison.
-        if before == Some(row) {
+        if before.is_some_and(|o| o.row(y).eq(new.row(y))) {
             continue;
         }
-        let cell = |x: u16| row.get(usize::from(x));
-        let changed = |x: u16| before.is_none_or(|o| o.get(usize::from(x)) != cell(x));
+        let cell = |x: u16| new.get(y, x);
+        let changed = |x: u16| before.is_none_or(|o| o.get(y, x) != cell(x));
         let mut x = 0u16;
         while x < new.cols {
             // Moving right stops at the last column, where the loop ends.
@@ -959,7 +967,7 @@ mod tests {
                 let window = screen.window(0, rows, cols);
                 window
                     .row(y)
-                    .map(|r| crate::session::row_text(r.cells))
+                    .map(crate::session::row_text)
                     .unwrap_or_default()
             })
             .collect()
@@ -1106,16 +1114,16 @@ mod tests {
             let top = crate::copy::index_of(screen, copy.top).ok_or("the top row")?;
             for y in 0..rect.h {
                 let row = crate::copy::row_at(screen, top + usize::from(y)).ok_or("a row")?;
-                assert_eq!(grid.row_text(y), crate::session::row_text(row.cells));
+                assert_eq!(grid.row_text(y), crate::session::row_text(row));
             }
             let mut selected = 0;
             for y in 0..rect.h {
                 for x in 0..rect.w {
                     let cell = rect.at(y, x).and_then(|(gy, gx)| grid.get(gy, gx));
-                    let cell = cell.copied().unwrap_or_default();
-                    let expected =
-                        reference_selected(copy, screen, y, x) && !cell.is_wide_continuation();
-                    assert_eq!(cell.inverse(), expected, "{keys:?} at {y},{x}");
+                    let continuation = cell.is_some_and(|c| c.is_wide_continuation());
+                    let expected = reference_selected(copy, screen, y, x) && !continuation;
+                    let inverse = cell.is_some_and(|c| c.inverse());
+                    assert_eq!(inverse, expected, "{keys:?} at {y},{x}");
                     selected += usize::from(expected);
                 }
             }
@@ -1155,7 +1163,7 @@ mod tests {
         let fresh = compose(&s, c).ok_or("a screen")?;
         assert_ne!(before, fresh);
         assert!(before.cursor.is_some() && fresh.cursor.is_none());
-        assert!(fresh.cells.contains(&Cell::default()));
+        assert!(fresh.cells.iter().any(|c| !c.has_contents()));
         // The previous screen, with its cursor and shape.
         let mut used = before;
         assert!(compose_into(&s, c, &mut used, &mut Placement::default()));

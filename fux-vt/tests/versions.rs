@@ -2,7 +2,7 @@
 //! other: after every `process`, a row whose cells or wrap flag differ has a
 //! greater version and is among the dirty rows; and input whose every edit
 //! leaves its row as it was changes no version at all.
-use fux_vt::{Attributes, Cell, Color, Parser, RowId};
+use fux_vt::{Attributes, Blink, CellRef, Cells, Color, Parser, RowId};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -76,14 +76,14 @@ fn piece(r: &mut Rng) -> String {
 }
 
 /// Every retained row by identity: its version, wrap flag and cells.
-fn retained(parser: &Parser) -> HashMap<RowId, (u64, bool, Vec<Cell>)> {
+fn retained(parser: &Parser) -> HashMap<RowId, (u64, bool, Cells)> {
     let screen = parser.screen();
     let retained = screen
         .history_len()
         .saturating_add(usize::from(screen.size().0));
     (0..retained)
         .filter_map(|i| screen.row_from_bottom(i))
-        .map(|row| (row.id, (row.version, row.wrapped, row.cells.to_vec())))
+        .map(|row| (row.id, (row.version, row.wrapped, row.cells().collect())))
         .collect()
 }
 
@@ -96,13 +96,21 @@ fn sgr(attributes: Attributes) -> String {
         (attributes.italic(), "3"),
         (attributes.underline(), "4"),
         (attributes.inverse(), "7"),
+        (attributes.blink() == Blink::Slow, "5"),
+        (attributes.blink() == Blink::Rapid, "6"),
+        (attributes.hidden(), "8"),
+        (attributes.strikeout(), "9"),
     ] {
         if on {
             out.push(';');
             out.push_str(code);
         }
     }
-    for (color, base) in [(attributes.foreground, 38), (attributes.background, 48)] {
+    for (color, base) in [
+        (attributes.foreground(), 38),
+        (attributes.background(), 48),
+        (attributes.underline_color(), 58),
+    ] {
         let _ = match color {
             Color::Default => Ok(()),
             Color::Idx(i) => write!(out, ";{base};5;{i}"),
@@ -130,19 +138,19 @@ fn no_op(parser: &Parser) -> String {
             continue;
         };
         let _ = write!(out, "\x1b[{};1H", u32::from(y).saturating_add(1));
+        let cells: Vec<CellRef<'_>> = row.cells().collect();
         // Where the blank tail starts, if it is one blank in one style.
-        let tail = row
-            .cells
+        let tail = cells
             .iter()
             .rposition(|c| c.has_contents() || c.is_wide_continuation())
             .map_or(0, |i| i.saturating_add(1));
-        let rest = row.cells.get(tail..).unwrap_or_default();
+        let rest = cells.get(tail..).unwrap_or_default();
         let uniform = rest
             .first()
             .filter(|first| rest.iter().all(|c| c == *first))
             .copied();
         let mut x = 0usize;
-        for cell in row.cells.get(..tail).unwrap_or_default() {
+        for cell in cells.get(..tail).unwrap_or_default() {
             let text = cell.contents();
             if cell.is_wide_continuation() {
                 continue;

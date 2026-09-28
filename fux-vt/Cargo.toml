@@ -1,6 +1,6 @@
 [package]
 name = "fux-vt"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
@@ -12,6 +12,10 @@ categories = ["command-line-interface", "parser-implementations"]
 
 [dependencies]
 unicode-width = "0.2"
+
+[dev-dependencies]
+# The reference the generated grapheme tables are tested against.
+unicode-segmentation = "=1.13.3"
 
 [lints.rust]
 unused_must_use = "forbid"
