@@ -54,7 +54,9 @@ panicking calls, then 0.1.3 with the same API again, then 0.1.4, which adds
 pane's output once, then 0.1.5, which replies and starts its screens again
 without allocating, changes a row's version only when an edit changes the
 row, and adds `Screen::dirty_live_rows_since` for readers of the visible
-screen alone. It is the emulator, with no dependency but `unicode-width`,
+screen alone; then 0.2.0, whose cells hold whole grapheme clusters (read
+through `CellRef` and stored in `Cells`), with the keyboard protocol, reflow
+and identity ratty needs as options. It is the emulator, with no dependency but `unicode-width`,
 and koh depends on it. A fux-vt change is allowed as a bug fix with a
 failing test, or as a change inside it or an addition to its API that makes
 fux or koh faster, or fux's code simpler. Either must keep every item koh
@@ -591,8 +593,8 @@ Every key is a letter, in either case, without Ctrl or Alt.
 
 | Crate | Why |
 | --- | --- |
-| `fux-vt` (path, 0.1.5) | Emulator |
-| `fuxix` (path, 0.1.3) | fux's system calls over `libc`, each safe to call: PTYs, processes, poll, sockets, terminal modes; its README says why each is not std's |
+| `fux-vt` (path, 0.2.0) | Emulator |
+| `fuxix` (path, 0.1.4) | fux's system calls over `libc`, each safe to call: PTYs, processes, poll, sockets, terminal modes; its README says why each is not std's |
 | `signal-hook` | Signal → self-pipe (fuxix installs no handlers) |
 | `unicode-width` | Bar and overlay layout (already in the graph through fux-vt) |
 
