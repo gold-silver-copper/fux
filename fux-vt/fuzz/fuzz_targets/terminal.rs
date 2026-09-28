@@ -289,7 +289,7 @@ fuzz_target!(|data: &[u8]| {
                 while !rest.is_empty() {
                     let size = cut % 16 + 2;
                     cut = cut.rotate_right(4) ^ size;
-                    let (piece, tail) = rest.split_at(size.min(rest.len()));
+                    let (piece, tail) = rest.split_at_checked(size).unwrap_or((rest, &[]));
                     assert!(chunked.process_with(piece, &mut c).is_ok());
                     rest = tail;
                 }

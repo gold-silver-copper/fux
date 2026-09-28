@@ -112,7 +112,7 @@ impl Client {
             .map(|y| {
                 let mut line = String::new();
                 if let Some(row) = window.row(y) {
-                    for cell in row.cells {
+                    for cell in row.cells() {
                         if cell.is_wide_continuation() {
                             continue;
                         }
