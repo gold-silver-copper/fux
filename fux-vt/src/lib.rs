@@ -108,6 +108,12 @@ impl<'a> Row<'a> {
         let spill = self.spill;
         self.cells.get(col).map(|cell| CellRef::new(cell, spill))
     }
+    /// Bytes of text the row keeps for clusters too long to hold inline,
+    /// overwritten ones included until the row is compacted: at most
+    /// [`Cells::text_limit`] of its length. For memory diagnostics.
+    pub fn text_len(&self) -> usize {
+        self.spill.len()
+    }
     /// The row's cells, left to right.
     pub fn cells(
         &self,
@@ -168,6 +174,20 @@ impl<'a> Window<'a> {
             Some(cell)
         }
     }
+    /// Whether the cell is the blank a reflow left at the end of a
+    /// soft-wrapped row when the wide glyph after it did not fit: no part of
+    /// the text.
+    fn spacer(&self, row: u16, col: u16) -> bool {
+        col.checked_add(1) == Some(self.cols)
+            && self.row_wrapped(row)
+            && self
+                .cell(row, col)
+                .is_some_and(|c| !c.has_contents() && c.attributes() == Attributes::default())
+            && row
+                .checked_add(1)
+                .and_then(|next| self.cell(next, 0))
+                .is_some_and(|c| c.is_wide())
+    }
     pub fn row_wrapped(&self, row: u16) -> bool {
         self.cols == self.grid.cols.get() && self.row(row).is_some_and(|r| r.wrapped)
     }
@@ -214,7 +234,7 @@ impl<'a> Window<'a> {
                 let Some(cell) = self.cell(y, x) else {
                     continue;
                 };
-                if cell.is_wide_continuation() {
+                if cell.is_wide_continuation() || self.spacer(y, x) {
                     continue;
                 }
                 let text = if cell.has_contents() {

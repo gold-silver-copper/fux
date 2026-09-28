@@ -2,6 +2,8 @@
 use fux_vt::{Cells, Event, Identity, OSC_PAYLOAD_LIMIT, Options, Parser, RowId, Sink, Unhandled};
 use libfuzzer_sys::fuzz_target;
 use std::collections::HashMap;
+#[path = "../../tests/corpus/graphemes.rs"]
+mod graphemes;
 #[path = "../../tests/corpus/invariants.rs"]
 mod invariants;
 
@@ -95,15 +97,16 @@ fuzz_target!(|data: &[u8]| {
     let (Some(&r), Some(&c), Some(&history)) = (data.first(), data.get(1), data.get(2)) else {
         return;
     };
-    // Header bits above the history count opt into events (0x10), extended
-    // replies (0x20), reflow (0x40), and the kitty keyboard protocol with an
-    // identity (0x80), so the opt-in paths are fuzzed alongside the default.
+    // Header bits above the history count opt into events (0x10) and
+    // extended replies (0x20); above the row count, into reflow (0x10), the
+    // kitty keyboard protocol (0x20) and an identity (0x40). Each is fuzzed
+    // alone and with the others, alongside the default.
     let options = Options {
         events: history & 0x10 != 0,
         extended_replies: history & 0x20 != 0,
-        reflow: history & 0x40 != 0,
-        kitty_keyboard: history & 0x80 != 0,
-        identity: (history & 0x80 != 0).then_some(Identity {
+        reflow: r & 0x10 != 0,
+        kitty_keyboard: r & 0x20 != 0,
+        identity: (r & 0x40 != 0).then_some(Identity {
             name: "fuzz",
             version: "1.2.3",
         }),
@@ -174,8 +177,25 @@ fuzz_target!(|data: &[u8]| {
                 assert_eq!(mark, screen.mark());
             }
             operation => {
-                let length = (usize::from(operation) + 1).min(input.len());
-                let bytes = input.get(..length).unwrap_or_default();
+                // 0xfd: a count, then a byte a character, each one of
+                // `graphemes::CHARACTERS`, so clusters of every kind, and
+                // longer than a cell holds inline, are made far more often
+                // than random bytes make them. Otherwise, raw bytes.
+                let mut text = Vec::new();
+                let (length, bytes) = if operation == 0xfd {
+                    let count = input.first().map_or(0, |n| usize::from(n % 64));
+                    let picks = input.get(1..).unwrap_or_default();
+                    for pick in picks.iter().take(count) {
+                        let table = graphemes::CHARACTERS;
+                        let c = table[usize::from(*pick) % table.len()];
+                        let mut buffer = [0; 4];
+                        text.extend_from_slice(c.encode_utf8(&mut buffer).as_bytes());
+                    }
+                    ((count + 1).min(input.len()), &text[..])
+                } else {
+                    let length = (usize::from(operation) + 1).min(input.len());
+                    (length, input.get(..length).unwrap_or_default())
+                };
                 let mut a = Record::default();
                 let mut b = Record::default();
                 let before = rows(&whole);

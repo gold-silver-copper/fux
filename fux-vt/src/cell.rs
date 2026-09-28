@@ -458,7 +458,31 @@ impl Line<'_> {
             }
             return true;
         }
-        self.store(i, cell, joined)
+        if joined.len() <= Cell::INLINE_CAPACITY {
+            return self.store(i, cell, joined);
+        }
+        // Unlike `set`, the cell keeps what it has if the row has no room,
+        // even compacted: an append never loses text.
+        let limit = Spill::limit(self.cells.len());
+        if self.spill.len().saturating_add(joined.len()) > limit {
+            self.compact();
+        }
+        let (Ok(start), Ok(len)) = (u32::try_from(self.spill.len()), u8::try_from(joined.len()))
+        else {
+            return false;
+        };
+        if self.spill.len().saturating_add(joined.len()) > limit {
+            return false;
+        }
+        self.spill.0.extend_from_slice(joined.as_bytes());
+        match self.cells.get_mut(i) {
+            // Compaction may have moved it; its halves and style are as they were.
+            Some(slot) => {
+                *slot = slot.with_spilled(start, len);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Sets cell `i` to `cell`'s halves and attributes holding `text`: inline
@@ -526,6 +550,32 @@ impl Line<'_> {
             self.spill.0.extend_from_slice(text);
             *cell = cell.with_spilled(start, len);
         }
+    }
+
+    /// The text of `cells`, whose text is in `old`, stored again within
+    /// their budget, left to right; `cells` are relocated into it.
+    pub(crate) fn rebuilt(cells: &mut [Cell], old: &Spill) -> Spill {
+        let mut spill = Spill::default();
+        if old.len() == 0 {
+            return spill;
+        }
+        // Every spilled cell blanked first: until stored again, none may
+        // locate text in the new store, which a compaction would misread.
+        let mut spilled = Vec::new();
+        for (i, cell) in cells.iter_mut().enumerate() {
+            if cell.is_spilled() {
+                spilled.push((i, *cell));
+                *cell = Cell::blank(cell.attributes);
+            }
+        }
+        let mut line = Line {
+            cells,
+            spill: &mut spill,
+        };
+        for (i, cell) in spilled {
+            line.set(i, cell, old.text(&cell));
+        }
+        spill
     }
 
     /// Cell `i`'s text.
@@ -642,6 +692,17 @@ pub struct Cells {
 }
 
 impl Cells {
+    /// The most bytes of text `len` cells keep for clusters too long to hold
+    /// inline: 32 a cell and one cluster more, so that even one cell holds
+    /// its longest.
+    pub fn text_limit(len: usize) -> usize {
+        Spill::limit(len)
+    }
+    /// Bytes of text kept for clusters too long to hold inline, overwritten
+    /// ones included until compacted. For memory diagnostics.
+    pub fn text_len(&self) -> usize {
+        self.spill.len()
+    }
     /// `len` blank cells.
     pub fn new(len: usize) -> Self {
         Self {
@@ -728,16 +789,19 @@ impl Cells {
             self.spill.clear();
         }
     }
-    /// Makes the run `len` cells long, new ones `cell`.
+    /// Makes the run `len` cells long, new ones `cell`. A shorter run keeps
+    /// a shorter run's budget: its cells' text is stored again, left to
+    /// right, and what no longer fits is cut to what fits inline.
     pub fn resize(&mut self, len: usize, cell: Cell) {
         let cell = if cell.is_spilled() {
             Cell::blank(cell.attributes)
         } else {
             cell
         };
+        let shorter = len < self.cells.len();
         self.cells.resize(len, cell);
-        if len == 0 {
-            self.spill.clear();
+        if shorter {
+            self.spill = Line::rebuilt(&mut self.cells, &self.spill);
         }
     }
     fn line(&mut self) -> Line<'_> {
@@ -751,10 +815,11 @@ impl Cells {
 /// A copy of the cells, their text with them: `row.cells().collect()`.
 impl<'a> FromIterator<CellRef<'a>> for Cells {
     fn from_iter<I: IntoIterator<Item = CellRef<'a>>>(cells: I) -> Self {
-        let mut copy = Cells::default();
-        for cell in cells {
-            copy.cells.push(Cell::default());
-            let at = copy.cells.len().saturating_sub(1);
+        // All the cells first, so the text is stored within the budget of
+        // the whole run, as it was where it came from.
+        let cells: Vec<CellRef<'a>> = cells.into_iter().collect();
+        let mut copy = Cells::new(cells.len());
+        for (at, cell) in cells.into_iter().enumerate() {
             copy.set(at, cell);
         }
         copy

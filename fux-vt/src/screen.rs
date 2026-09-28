@@ -22,6 +22,26 @@ pub enum MouseProtocolEncoding {
     Sgr,
 }
 
+/// The cell printed last, the state of its grapheme cluster, and whether
+/// the cluster is full: once a character of it is dropped, so is every one
+/// after, so a cell always holds a start of its cluster.
+#[derive(Clone, Copy, Debug)]
+struct Printed {
+    at: (u16, u16),
+    cluster: Cluster,
+    full: bool,
+}
+
+impl Printed {
+    fn new(at: (u16, u16), c: char) -> Self {
+        Self {
+            at,
+            cluster: Cluster::start(c),
+            full: false,
+        }
+    }
+}
+
 /// What a CSI sequence came to.
 pub(crate) enum Dispatch {
     /// Carried out, with nothing to answer.
@@ -112,7 +132,7 @@ pub struct Screen {
     /// grapheme cluster, while the cursor has not moved nor the row been
     /// edited since: a character that continues the cluster joins its cell
     /// rather than taking one of its own.
-    last_print: Option<((u16, u16), Cluster)>,
+    last_print: Option<Printed>,
 }
 
 #[cfg(test)]
@@ -552,7 +572,7 @@ impl Screen {
             // Past the glyph; at the right edge it waits there to wrap.
             g.cursor.1 = g.cursor.1.saturating_add(width).min(g.cols.get());
         });
-        self.last_print = Some(((row, col), Cluster::start(c)));
+        self.last_print = Some(Printed::new((row, col), c));
         Ok(())
     }
 
@@ -579,9 +599,18 @@ impl Screen {
             }
             // Its cluster's state, from its text.
             let cluster = Cluster::of(g.cell(row, left)?.contents());
-            Some(((row, left), cluster))
+            Some(Printed {
+                at: (row, left),
+                cluster,
+                full: false,
+            })
         });
-        let Some(((anchor_row, anchor_col), mut cluster)) = anchor else {
+        let Some(Printed {
+            at: (anchor_row, anchor_col),
+            mut cluster,
+            full,
+        }) = anchor
+        else {
             return false;
         };
         let Some(cell) = g.cell(anchor_row, anchor_col) else {
@@ -601,9 +630,11 @@ impl Screen {
         let cursor = usize::from(col);
         let fits = col < g.cols.get();
         let mut widened = false;
+        let mut kept = !full;
         self.with_grid(|g, _, v| {
             g.mutate_line(row, v, |line| {
-                if !line.append(at, c) {
+                kept = kept && line.append(at, c);
+                if !kept {
                     return false;
                 }
                 // Width is kept once wide; the last column has no room to widen.
@@ -630,7 +661,11 @@ impl Screen {
                 g.cursor.1 = g.cursor.1.saturating_add(1).min(g.cols.get());
             }
         });
-        self.last_print = Some(((anchor_row, anchor_col), cluster));
+        self.last_print = Some(Printed {
+            at: (anchor_row, anchor_col),
+            cluster,
+            full: !kept,
+        });
         true
     }
 
@@ -697,7 +732,7 @@ impl Screen {
             self.last_print = end
                 .checked_sub(1)
                 .zip(run.last())
-                .map(|(last, &byte)| ((row, last), Cluster::start(char::from(byte))));
+                .map(|(last, &byte)| Printed::new((row, last), char::from(byte)));
             bytes = bytes.get(usize::from(count)..).unwrap_or_default();
         }
         Ok(())
