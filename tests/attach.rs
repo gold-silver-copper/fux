@@ -323,9 +323,12 @@ fn focus_events_reach_a_pane_that_asked_and_cursor_shapes_pass_through() -> Outc
             .is_some_and(|l| l == "$")
     })?;
     // One that turns on ?1004 hears focus in and out.
-    client.keys("printf '\\033[?1004h\\033[5 q'; cat -v\r")?;
-    client.wait("cat running", |t| t.lines().last().is_some())?;
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // The marker is printed after ?1004h, so once it shows the pane has
+    // asked; reports sent before cat starts wait in the terminal for it.
+    client.keys("printf '\\033[?1004h\\033[5 q'; echo asked-for-focus; cat -v\r")?;
+    client.wait("focus reporting on", |t| {
+        t.lines().any(|l| l == "asked-for-focus")
+    })?;
     client.send(b"\x1b[I")?;
     client.send(b"\x1b[O")?;
     client.keys("\r")?;
@@ -462,12 +465,15 @@ fn a_panes_shell_has_the_pty_as_its_terminal_and_job_control() -> Outcome {
     })?;
     // C-z stops the foreground job and fg resumes it: the PTY's foreground
     // group is the shell's to hand out.
-    client.keys("sleep 30\r")?;
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // `sleep 37`, a command line no other test runs, so `ps` finds this one.
+    client.keys("sleep 37\r")?;
+    eventually("sleep in the foreground", || job_state("sleep 37", "S+"))?;
     client.keys("\x1a")?;
     client.wait("the stopped job", |t| t.contains("Stopped"))?;
     client.keys("fg\r")?;
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    eventually("sleep in the foreground again", || {
+        job_state("sleep 37", "S+")
+    })?;
     client.keys("\x03")?;
     // The prompt is back once the interrupted job has gone.
     client.wait("the prompt after the job", |t| {
@@ -512,10 +518,7 @@ fn a_program_that_cannot_start_is_reported_as_before() -> Outcome {
 
 #[test]
 fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
-    let dir = std::env::temp_dir()
-        .canonicalize()
-        .map_err(e)?
-        .join(format!("fux-hangup-{}", std::process::id()));
+    let dir = short_temp_dir()?.join(format!("fux-hangup-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(e)?;
     use std::os::unix::fs::PermissionsExt;
@@ -548,9 +551,13 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
     let gone = eventually("the client to go", || {
         Ok(terminal.child.try_wait().map_err(e)?.is_some())
     });
-    // Past the time a stopping server takes to go.
-    std::thread::sleep(std::time::Duration::from_secs(1));
-    let after = ls();
+    // The server answers once it has seen the client go: by then it has
+    // handled whatever reached it with the hang-up, which would have
+    // stopped it.
+    let after = eventually("the server to see the client go", || {
+        let out = ls()?;
+        Ok(out.status.success() && !String::from_utf8_lossy(&out.stdout).contains("client c1"))
+    });
     let _ = std::process::Command::new(FUX)
         .arg("kill-server")
         .env("FUX_SOCKET", &socket)
@@ -559,13 +566,7 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
     let _ = std::fs::remove_dir_all(&dir);
     started?;
     gone?;
-    let after = after?;
-    assert!(
-        after.status.success(),
-        "{}",
-        String::from_utf8_lossy(&after.stderr)
-    );
-    Ok(())
+    after
 }
 
 /// Resizing a terminal signals its client, and a signal can interrupt a
@@ -691,4 +692,20 @@ fn a_descriptor_the_server_inherited_does_not_reach_its_panes() -> Outcome {
         "descriptor {held}, inherited by the server, is open in its pane"
     );
     Ok(())
+}
+
+/// Whether a process running `command` has a `ps` state starting with
+/// `state`: `S+` asleep in its terminal's foreground, `T` stopped.
+fn job_state(command: &str, state: &str) -> Result<bool, String> {
+    let out = std::process::Command::new("ps")
+        .args(["-A", "-o", "stat=,command="])
+        .output()
+        .map_err(e)?;
+    Ok(String::from_utf8_lossy(&out.stdout).lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with(state)
+            && line
+                .split_once(char::is_whitespace)
+                .is_some_and(|(_, c)| c.trim() == command)
+    }))
 }

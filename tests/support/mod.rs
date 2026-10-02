@@ -26,6 +26,20 @@ static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// When a wait that starts now gives up. A time past what an `Instant`
 /// holds gives up at once.
+/// Where test servers make their directories: `/tmp` where it can be
+/// written, as a socket path must stay under 104 bytes and macOS's
+/// `temp_dir()` (`/var/folders/…/T/`) takes half of that; else `temp_dir()`.
+pub fn short_temp_dir() -> Result<PathBuf, String> {
+    let tmp = Path::new("/tmp");
+    let writable = std::fs::metadata(tmp).is_ok_and(|m| m.is_dir() && !m.permissions().readonly());
+    let base = if writable {
+        tmp.to_path_buf()
+    } else {
+        std::env::temp_dir()
+    };
+    base.canonicalize().map_err(e)
+}
+
 pub fn after(wait: Duration) -> Instant {
     let now = Instant::now();
     now.checked_add(wait).unwrap_or(now)
@@ -73,7 +87,7 @@ impl Server {
         open_files: Option<u32>,
         inherit: bool,
     ) -> Result<(Server, Option<i32>), String> {
-        let base = std::env::temp_dir().canonicalize().map_err(e)?;
+        let base = short_temp_dir()?;
         let dir = base.join(format!(
             "fux-t{}-{}",
             std::process::id(),
@@ -431,7 +445,6 @@ impl Client {
     }
 }
 
-/// The CPU time a process has used, in seconds.
 /// A process's resident memory, in MiB, from `ps`.
 pub fn resident_mib(pid: u32) -> Result<f64, String> {
     let out = Command::new("ps")
@@ -445,6 +458,7 @@ pub fn resident_mib(pid: u32) -> Result<f64, String> {
     Ok(kib / 1024.0)
 }
 
+/// The CPU time a process has used, in seconds.
 pub fn cpu_seconds(pid: u32) -> Result<f64, String> {
     if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
         // After the command name, which is in parentheses and may hold

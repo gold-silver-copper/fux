@@ -164,8 +164,13 @@ fn the_pane_holds_still_for_the_copying_client_only() -> Outcome {
     // A line that is exactly 140: the echoed command contains "140" too, and
     // would match before any output.
     watcher.wait("the output's end", |t| t.lines().any(|l| l == "140"))?;
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    copier.pump()?;
+    // A key of the copier's own, after the output: once its effect shows,
+    // the copier's screen is drawn from after the output too.
+    let bar = copier.bar();
+    copier.keys("j")?;
+    copier.wait("the cursor to move", |t| {
+        t.lines().last().is_some_and(|b| b != bar)
+    })?;
     // Forty lines of output would have scrolled "first" away; for the
     // copying client the view is anchored to its rows and does not move.
     let now = copier.lines();
