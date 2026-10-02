@@ -15,7 +15,7 @@ No function retries a call a signal interrupted: it fails with
 
 `pty::open` on macOS is the one function that retries, around two macOS
 kernel bugs that strike when PTYs are allocated and freed quickly, by any
-processes (see [the report for Apple](../docs/apple-feedback-ptmx-eredriveopen.md)):
+processes (see [the report for Apple](https://github.com/gold-silver-copper/fux/blob/main/docs/apple-feedback-ptmx-eredriveopen.md)):
 
 - `posix_openpt` can fail with errno -6, the kernel-private `EREDRIVEOPEN`,
   after the kernel gives up retrying a race between openers. fuxix opens one

@@ -197,7 +197,7 @@ tab and workspace.
 | `fux reload` | run the config file again over the defaults |
 | `fux list-buffers`, `fux show-buffer [-b N]`, `fux paste-buffer [-b N] [-t %N]` | paste buffers, newest `0` |
 | `fux list-keys` | key names, and the current bindings |
-| `fux help`, `fux --version` | usage, and the version |
+| `fux help`, `fux --version` (or `fux version`) | usage, and the version |
 | `fux detach [-c CLIENT]` | detach a client |
 
 These act on one client's screen. From a key or the command prompt they act on
@@ -326,7 +326,7 @@ and the whole interface is the fixed command list above.
 
 One server thread runs a `poll` loop over the socket, every client and every
 pane's PTY; there are no other threads and no async runtime. Each pane has a
-PTY and a [`fux-vt`](fux-vt) terminal emulator. Layout is a tree of weighted
+PTY and a [`fux-vt`](https://github.com/gold-silver-copper/fux/blob/main/fux-vt) terminal emulator. Layout is a tree of weighted
 splits per tab; each client gets its own rectangles for its own size, and a
 PTY's size is the smallest rectangle any client shows it in. A client is a
 dumb pipe: its keystrokes go to the server as raw bytes and are decoded
@@ -336,6 +336,17 @@ client that stops reading gets nothing more queued until it catches up, then
 one full repaint.
 
 The previous, Bevy-based fux is kept at the tag `bevy-final`.
+
+## Development
+
+`cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked
+-- -D warnings` and `cargo test --workspace --locked` are the gates CI runs
+on Linux and macOS. The tests start real servers and shells: they need
+`/bin/sh`, `/bin/dash` and `python3`, and use zsh where it is installed.
+Packages outside the workspace, each with a README: `walk` (scripted runs of
+the real binary), `diff` (fux beside its last release), `fuzz` and
+`fux-vt/fuzz` (libFuzzer targets), `fux-vt/compare` (fux-vt beside other
+terminals). `references/` fetches the specifications fux-vt follows.
 
 ## License
 

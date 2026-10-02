@@ -4,8 +4,7 @@ A bounded terminal emulator for fux, reflowing on resize only when asked. The fi
 representation and inherited sequence semantics were informed by Jesse
 Luehrs's MIT-licensed implementation; its license is retained in `LICENSE`.
 The grid and parser are owned implementations, not wrappers. This document is the
-implementation contract; the verification report distinguishes implemented
-coverage from the remaining end-to-end completion gates.
+implementation contract; "Verification" says how it is checked.
 
 ## Sequence matrix
 
@@ -68,8 +67,8 @@ rest. Parser output never goes through them.
 Upstream does **not** dispatch DECAWM 7; implementing it is a required,
 standards-backed correction, tested independently as well as tracked in the
 differential inventory. IL/DL outside scrolling margins are ignored, unlike
-upstream's accidental row edits there. Both corrections have executed
-XTerm(411) evidence from `../verification/fux-vt-xterm.py`. Upstream dispatches 47/1049 but **not** 1047/1048;
+upstream's accidental row edits there. Both match XTerm(411)
+(`fux-vt/compare`'s xterm engine replays them). Upstream dispatches 47/1049 but **not** 1047/1048;
 the latter remain ignored rather than pretending all alternate-screen aliases
 are equivalent. ESC D/E/H, CSI g, CSI 3J, character-set designation and
 programmable tab stops are not implemented by the baseline and remain ignored
@@ -147,8 +146,7 @@ cluster text each) and 1,048,576 retained rows.
 Storage grows geometrically only to the configured cap as history fills;
 empty history is not eagerly allocated. At capacity, scrolling reuses slots
 without allocating. Resize builds replacement storage before swapping it in,
-so peak storage can include old and new buffers. The final verification
-report must state measured footprints, including metadata and peak resize.
+so peak storage can include old and new buffers.
 
 Windows are immutable views with bounded width/height and history offset.
 They never mutate a global scrollback setting. Copy uses inclusive endpoints,
@@ -171,28 +169,29 @@ visible screen alone uses `dirty_live_rows_since`, which yields the same live
 rows with their places on the screen and reads only the screen's rows. Row caching in fux uses identities/versions, not whole-screen
 revision/width snapshots, and full frames still contain unchanged rows.
 
-## Verification lifecycle
+## Verification
 
-Before migration, temporary differential tests compared cells, attributes,
-wide flags, wrap flags, cursor, modes, history and replies at operation
-boundaries, whole and under split inputs. Passing checkpoint `b8fa0d8` retains
-the recorder, adapters and diagnostic switch in history. The test, feature
-and dependency were removed only after the permanent mapping in
-[`tests/golden/README.md`](tests/golden/README.md) was committed. Unobservable internal upstream
-state is checked by behavioural probes. The corpus adapts the deterministic
-adversarial generator and terminal-edge streams from fux-fuzz at main commit
-9140af1. Seeds and operation sequences remain permanently after the temporary
-oracle dependency is removed; expected values are independently specified,
-not captured from the new implementation.
+- **Tests** (`cargo test -p fux-vt`): each family of the sequence matrix has
+  its permanent tests, named in the table above; `tests/golden` holds the
+  expected screens of the corpus inherited from the vt100-crate baseline
+  ([`tests/golden/README.md`](tests/golden/README.md) maps each to what it
+  covers); `tests/properties.rs` and `tests/invariants.rs` check fux-vt
+  against small independent models and its own invariants over generated
+  input; `tests/versions.rs` the row identities and versions. Expected
+  values are specified independently, never captured from fux-vt.
+- **Fuzzing**: the [`fuzz/` package](https://github.com/gold-silver-copper/fux/blob/main/fux-vt/fuzz/README.md)
+  documents its nightly toolchain and run commands; its targets check
+  parsing in any chunking, resize, windows, copy, history and the
+  invariants, against model oracles. CI replays its corpus nightly.
+- **Other terminals**: [`fux-vt/compare`](https://github.com/gold-silver-copper/fux/blob/main/fux-vt/compare/README.md)
+  runs fux-vt beside nine other engines (Ghostty, alacritty, libvterm, avt,
+  wezterm, vt100, xterm.js, tmux and xterm itself) and fails where they
+  outvote it, field by field; its families record what still differs and
+  why.
+- **The specifications** each behaviour is checked against are listed in
+  [`references/README.md`](https://github.com/gold-silver-copper/fux/blob/main/references/README.md): ECMA-48, DEC
+  STD 070 and the VT520 manual, xterm's ctlseqs, Unicode 17.0. A test
+  cites the section that sets its expected value.
 
-The differential inventory records exact reproductions and permanent test
-mappings. The two known tiny-grid crashes never execute in the oracle; they
-have explicit independent expectations. Any additional mismatch must be
-fixed or narrowly justified with evidence before migration completes.
-
-The independent [`fuzz/` package](fuzz/README.md) documents its exact nightly
-toolchain, seed generation and bounded run command. It exercises parsing, chunking, resize, windows,
-copy, history and invariants. Final completion requires at least 600 seconds
-clean on macOS plus all root/harness gates and trace replay described in
-`../docs/prompt-fux-vt.md`. Passing coverage is not evidence that every input
-is correct. See `../verification/fux-vt.md` for progress and final evidence.
+The differential tests against the vt100 crate that fux-vt replaced live in
+history at `b8fa0d8`.
