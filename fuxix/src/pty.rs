@@ -356,7 +356,18 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn the_macos_master_is_close_on_exec_as_opened() -> std::result::Result<(), String> {
-        let (raw, atomic) = open_master_serialized().map_err(|e| e.to_string())?;
+        // The concurrent-open tests beside this one can take every PTY a
+        // small machine has for a moment (ENXIO): try again for a while.
+        let mut tries = 0u32;
+        let (raw, atomic) = loop {
+            match open_master_serialized() {
+                Err(errno) if errno.raw() == libc::ENXIO && tries < 100 => {
+                    tries = tries.saturating_add(1);
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                other => break other.map_err(|e| e.to_string())?,
+            }
+        };
         // SAFETY: `raw` was just opened, is valid, and nothing else owns it.
         let master = unsafe { OwnedFd::from_raw_fd(raw) };
         eprintln!("posix_openpt took O_CLOEXEC: {atomic}");
