@@ -494,7 +494,7 @@ pub const FAMILIES: &[Family] = &[
         name: "autowrap",
         about: "DECAWM on and off",
         status: Status::Differs(
-            "with DECAWM off, a glyph in the last column leaves a wrap pending in fux-vt (as in Ghostty and alacritty), which fires once DECAWM is set again; libvterm, avt and wezterm leave none, as xterm documents (`replay --engines panel --size 1x2 '\\e[?7lca\\e[?7h '`)",
+            "the panel splits, and fux-vt is right: with DECAWM off, a glyph in the last column leaves a wrap pending, which fires once DECAWM is set again. xterm, xterm.js, Ghostty and alacritty agree with fux-vt; libvterm, avt, wezterm and tmux leave none, so the default panel outvotes fux-vt (`replay --engines all --size 1x2 '\\e[?7lca\\e[?7h '`)",
         ),
         ratty_only: false,
         generate: autowrap,
@@ -609,7 +609,9 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "reset",
         about: "RIS and DECSTR",
-        status: Status::Agree,
+        status: Status::Differs(
+            "DECSTR keeps the pen, DECAWM and DECCKM, where xterm (and VT510) reset them, as do libvterm, wezterm and xterm.js; Ghostty and alacritty keep them as fux-vt does (`replay --engines all --size 2x5 'ab\\e[1m\\e[!pX'`, `--size 1x3 '\\e[?7l\\e[!pabcd'`)",
+        ),
         ratty_only: false,
         generate: reset,
     },

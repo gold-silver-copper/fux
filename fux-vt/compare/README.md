@@ -87,7 +87,11 @@ one-row screen, and wezterm on HTS one past the edge. xterm.js abstains from
 terminals narrower than 2 columns, which it can't be.
 
 **The default panel** is every voter that runs here: ghostty, alacritty,
-libvterm, avt and wezterm. They are all in-process, and fast.
+libvterm, avt and wezterm.
+
+**The panel can be wrong.** xterm decides where it splits. In `autowrap`, it
+outvotes fux-vt even though xterm agrees with fux-vt, so that family is
+marked as differing for that reason (see `--list`). They are all in-process, and fast.
 - **vt100 doesn't vote.** It is fux-vt's ancestor, and its inherited choices
   are what the vote is meant to catch.
 - **xterm.js, tmux and xterm don't vote by default** because they are
@@ -104,13 +108,13 @@ its own file (`src/engines/*.rs`), each with a `replay` command.
 | fux-vt | the subject, by path, set up as ratty sets it up (reflow, an identity, kitty keyboard, events) | — | `--no-reflow`: as fux sets it up |
 | ghostty | libghostty-vt 0.2.1 over Ghostty `7aa95917`, built by Zig 0.16 (see "Setup") | — | mode 2027 on; history kept in bytes |
 | alacritty | alacritty_terminal 0.26.0 | blink | synchronized updates applied at once (no event loop); a wide glyph on one column panics it, which the adapter repairs |
-| libvterm | libvterm 0.3.3 from its release tarball, through a C shim (`src/engines/libvterm_shim.c`) | (see `engines`) | |
+| libvterm | libvterm 0.3.3 from its release tarball, through a C shim (`src/engines/libvterm_shim.c`); modes and pending wrap read from the pinned source's `vterm_internal.h` | dim, underline colour, kitty | the shim guards five crashes, hangs and out-of-bounds reads that random cases reach (found with ASan and UBSan; each listed with a replay in its file) |
 | avt | avt 0.18.0 | underline colour, hidden, keypad, bracketed paste, focus, kitty, title, reports | takes `&str`: the adapter carries split UTF-8 and turns invalid bytes into U+FFFD |
 | wezterm | wezterm-term at `cab25161` (git) | pending wrap | replies come through a writer thread, synced with a paste marker |
 | vt100 | vt100 0.16.2 | underline colour, blink, hidden, strikeout, autowrap, origin, focus, kitty, reports | doesn't vote |
 | xterm.js | @xterm/headless 6.0.0 with addon-unicode-graphemes 0.4.0, `reflowCursorLine` on, one Node process for every terminal (`node/engine.mjs`) | underline colour, kitty | patches a crash in ED 1 (see its file) |
-| tmux | the installed tmux | (see `engines`) | |
-| xterm | the installed xterm, under Xvfb | (see `engines`) | |
+| tmux | the installed tmux (3.7c here): a private server, one session per terminal, read with `capture-pane -p -e -N -F` and `display -p` | kitty | a `sh` pane program copies bytes in raw mode; every step is synced with DA1 (`CSI c`), which no family sends |
+| xterm | the installed xterm (XTerm 411 here) under one Xvfb per run, read by printing every page (`CSI ? 11 i`) through `printerCommand`, modes by DECRQM, resize by `CSI 8 t` | pending wrap, underline colour, kitty | the deciding vote for disputed families; a trailing erased cell's background cannot be read (see its file) |
 
 ## Setup and pins
 
@@ -231,7 +235,7 @@ to end.
 | `build.rs` | compile libvterm and its shim |
 | `src/main.rs` | commands |
 | `src/engine.rs` | the `Engine` trait and its reading rules, `Can`, the engine list |
-| `src/engines/*.rs` | one adapter per engine, each documenting its quirks |
+| `src/engines/*.rs` | one adapter per engine, each documenting its quirks; `pane.rs` is what tmux and xterm share (the pane program, syncing, SGR decoding) |
 | `node/` | the xterm.js server and its pinned packages |
 | `src/case.rs` | running, voting, generating and shrinking cases; reports |
 | `src/families.rs` | the families: generators, statuses and reasons |
