@@ -851,17 +851,23 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
             run_line(session, client, &argv);
         }
         PromptFor::Rename(target) => {
-            let id = match &target {
-                AnyRef::Workspace(r) => match session.resolve_ws(r) {
-                    Ok(w) => w.to_string(),
+            // The command is built, not parsed from words: a name is the
+            // text as typed, `-dev` and `--` included. A workspace is held
+            // by its ID, in case its name changed while the prompt was open.
+            let target = match target {
+                AnyRef::Workspace(r) => match session.resolve_ws(&r) {
+                    Ok(w) => AnyRef::Workspace(WsRef::Id(w)),
                     Err(error) => return session.error_to(client, error.to_string()),
                 },
-                other @ (AnyRef::Pane(_) | AnyRef::Tab(_)) => describe(other),
+                other @ (AnyRef::Pane(_) | AnyRef::Tab(_)) => other,
             };
-            run_line(
+            run_for(
                 session,
                 client,
-                &["rename".into(), "-t".into(), id, prompt.text],
+                &Command::Rename {
+                    target,
+                    name: prompt.text,
+                },
             );
         }
     }
@@ -943,6 +949,28 @@ mod tests {
             .and_then(|v| v.notice.clone())
             .map(|n| n.text)
             .unwrap_or_default()
+    }
+
+    /// A name typed into a rename prompt is the name, whatever it looks
+    /// like: one that starts with `-` is not taken for a flag.
+    #[test]
+    fn a_rename_prompt_takes_any_name() -> Outcome {
+        let (mut session, client) = session()?;
+        for (open, name, read) in [
+            ("rename-prompt -c c1 pane -t %1", "-dev", "%1"),
+            ("rename-prompt -c c1 tab -t @1", "--", "@1"),
+            ("rename-prompt -c c1 workspace -t +1", "-w x", "+1"),
+        ] {
+            run(&mut session, open)?;
+            // Backspace clears what the prompt starts with, the current name.
+            session.input(client, &[0x7f; 16]);
+            session.input(client, name.as_bytes());
+            session.input(client, b"\r");
+            assert_eq!(notice(&session, client), "", "{open}");
+            let target = crate::command::parse_any(read).map_err(|e| e.to_string())?;
+            assert_eq!(session.name_of(&target), name, "{open}");
+        }
+        Ok(())
     }
 
     /// Prompt edits count chars, so none falls inside one: what Ctrl-U,
