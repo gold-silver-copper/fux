@@ -646,7 +646,9 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "insert-mode",
         about: "IRM on and off",
-        status: Status::Agree,
+        status: Status::Differs(
+            "fux-vt inserts as xterm does, and alone with text the family agrees (seeds 1-5); with SGR colon forms it can be outvoted on one-column screens, where libvterm and wezterm wrap inserted glyphs their own way and avt, which does not read the underline style 4:3, sides with them on a cell's underline (`replay --engines all --size 8x1 'a\\e[4h\\e[3D' 'mqqj' '\\e[4:3m\\e[4h\\r' 'mqqj'`; with plain SGR 4, xterm, Ghostty, alacritty and avt agree with fux-vt). 1 case in 200000 across seeds 1-10, with and without reflow",
+        ),
         ratty_only: false,
         generate: insert_mode,
     },
