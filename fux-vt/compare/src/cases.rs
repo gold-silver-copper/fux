@@ -164,6 +164,18 @@ pub const CASES: &[Named] = &[
     ),
     ("rep-repeats-the-last-glyph", "repeat", (1, 8), &["-\\e[4b"]),
     (
+        "rep-after-rep-repeats-nothing",
+        "repeat",
+        (1, 8),
+        &["-\\e[2b\\e[2b"],
+    ),
+    (
+        "rep-after-a-cluster-repeats-its-base",
+        "repeat",
+        (1, 8),
+        &["e\\u{301}\\e[2b"],
+    ),
+    (
         "decstbm-homes-to-the-origin",
         "scroll",
         (5, 5),

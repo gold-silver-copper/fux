@@ -23,6 +23,7 @@ is vt100 0.16.2 plus fux's existing reply callback, not every xterm feature.
 | ESC M / c | Reverse index / full reset; reset clears both buffers and primary history, modes and attributes, but never restarts row identity allocation | `reset`, `scrolling` |
 | CSI ! p | DECSTR, soft reset, as xterm does it: the VT520 manual's table (p. 5-150) and DEC STD 070's Soft Terminal Reset (p. 4-37) show the cursor and reset DECOM, DECCKM, DECKPAM, both screens' scroll regions, the pen, the character sets (ASCII, G0 in GL), and the saved cursor (home, normal attributes); DECAWM goes back to its default, on, as in xterm, where the VT520 table says no autowrap and DEC STD 070 off (see "Departures from the references"). The screen, the cursor and a pending wrap, the alternate screen, bracketed paste, focus reporting, mouse modes and kitty flags stay | `conformance::a_soft_reset_*` |
 | CSI A B C D E F G H d f | Relative up/down/right/left, next/previous line, horizontal absolute, cursor position, vertical absolute, HVP (as CUP); inherited margin clamping and origin semantics | `cursor`, `extended::hvp_*` |
+| CSI b | REP (ECMA-48 8.3.103): the preceding graphic character printed Pn more times (0 or none: once), wrapping, scrolling and taking the character set as printing it again would. ECMA-48 leaves REP undefined after a control function; as in xterm, there is then nothing to repeat: after any control, sequence or string, REP's own included, REP does nothing until a character is printed. After a grapheme cluster it repeats the character that took the cell, without the marks joined to it, as xterm does (see "Departures from the references"). Copies past those that fill the screen and its retained history are skipped a whole row's worth at a time, which leaves everything as printing them would, so one REP prints at most that many | `conformance::rep_*` |
 | CSI @ P X | Insert/delete/erase characters, bounded to the row; no orphan wide halves; the blanks inserted, brought in by a deletion or erased take the pen's foreground and background colours and no other attribute, as xterm's do (`bce`, background colour erase, which `xterm-256color` advertises) | `editing`, `wide_edits`, `conformance::blanks_brought_in_*` |
 | CSI L M S T | Insert/delete lines; scroll up/down within margins; counts bounded to affected region; partial-region operations do not add history. The lines brought in, by these and by LF and RI, take the pen's colours (`bce`, as for CSI @ P X) | `scrolling`, `conformance::blanks_brought_in_*` |
 | CSI J / K, CSI ? J / K | Erase display/line: absent/0 forward, 1 backward, 2 all; erased cells take the pen's colours (`bce`, as for CSI @ P X); no protected cells | `erase`, `conformance::blanks_brought_in_*` |
@@ -234,3 +235,14 @@ verdicts` checks each against xterm.
   (`--size 2x3 '\e[?7l\e[!pabcd'`). `xterm-256color`'s `is2` and `rs2`,
   which `tput init` and `tput reset` send, begin with DECSTR and never set
   DECAWM again, while the entry advertises automatic margins (`am`).
+- **REP after a grapheme cluster** (ECMA-48 8.3.103). The standard repeats
+  the preceding graphic character, which after `e` and U+0301 is the
+  combining mark; xterm repeats `e`, the character that took the cell, and
+  so does fux-vt (`fux-vt-compare replay --engines all --size 1x8
+  'e\u{301}\e[2b'`: Ghostty agrees, the other engines split three ways).
+- **REP after a control function** (ECMA-48 8.3.103 leaves it undefined, so
+  this is no departure but a choice where the standard is silent). xterm
+  repeats nothing until a character is printed again, and so does fux-vt,
+  REP after REP included; xterm.js and tmux agree, and Ghostty, alacritty,
+  libvterm, avt and wezterm repeat the last character again
+  (`fux-vt-compare replay --engines all --size 1x8 '-\e[2b\e[2b'`).

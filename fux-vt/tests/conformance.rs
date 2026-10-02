@@ -354,3 +354,52 @@ fn dec_special_graphics_draw_lines() -> Result {
     assert_eq!(lines(&p), [line]);
     Ok(())
 }
+
+/// REP (ECMA-48 8.3.103, `CSI Pn b`): the preceding graphic character is
+/// printed Pn more times, 0 or none meaning once, wrapping and taking the
+/// character set as printing it again would. ECMA-48 leaves REP undefined
+/// after a control function; xterm then repeats nothing, having forgotten
+/// its last character once a control, a sequence or a string (REP itself
+/// included) came after it, and so does fux-vt. After a cluster, xterm
+/// repeats the character that took the cell, without its marks, where
+/// ECMA-48 would repeat the last mark: fux-vt departs from the standard
+/// with xterm (README, "Departures from the references"). Expected values
+/// are xterm's (`fux-vt-compare replay --engines all --size 2x8`).
+#[test]
+fn rep_repeats_the_preceding_graphic_character() -> Result {
+    assert_eq!(row(8, b"-\x1b[4b")?, "-----");
+    assert_eq!(run(1, 8, b"-\x1b[4b")?.screen().cursor_position(), (0, 5));
+    assert_eq!(row(8, b"-\x1b[b")?, "--");
+    assert_eq!(row(8, b"-\x1b[0b")?, "--");
+    assert_eq!(row(8, "界\x1b[2b".as_bytes())?, "界界界");
+    assert_eq!(row(8, "e\u{301}\x1b[2b".as_bytes())?, "e\u{301}ee");
+    assert_eq!(row(8, b"\x1b(0q\x1b[2b")?, "\u{2500}\u{2500}\u{2500}");
+    assert_eq!(lines(&run(2, 8, b"abcdefg\x1b[3b")?), ["abcdefgg", "gg"]);
+    // Nothing to repeat: at the start, or after a control, a sequence or a
+    // string, REP's own included.
+    assert_eq!(row(8, b"\x1b[2b")?, "");
+    for between in [
+        &b"\x1b[2b"[..],
+        b"\r",
+        b"\x1b[1m",
+        b"\x1b]2;x\x07",
+        b"\x1b7",
+    ] {
+        let p = run(1, 8, &[&b"-\x1b[2b"[..], between, b"\x1b[2b"].concat())?;
+        assert_eq!(lines(&p), ["---"], "{between:?}");
+    }
+    // However many: 65536 in all fill the screen, and the history, ending
+    // in the last column with a wrap pending, as in xterm.
+    let mut p = Parser::new(2, 4, 3)?;
+    p.process(b"x\x1b[65535b")?;
+    assert_eq!(lines(&p), ["xxxx", "xxxx"]);
+    assert_eq!(p.screen().cursor_position(), (1, 3));
+    assert!(p.screen().pending_wrap());
+    assert_eq!(p.screen().history_len(), 3);
+    let window = p.screen().window(3, 2, 4);
+    assert_eq!(window.text((0, 0), (1, 3), 100, 100)?, "xxxxxxxx");
+    let p = run(2, 5, "界\x1b[65533b".as_bytes())?;
+    assert_eq!(lines(&p), ["界界", "界界"]);
+    assert_eq!(p.screen().cursor_position(), (1, 4));
+    Ok(())
+}
