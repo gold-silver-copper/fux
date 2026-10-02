@@ -407,12 +407,8 @@ pub fn compose_into(
         Mode::List(list) => {
             let mut lines: Vec<Line<'_>> =
                 vec![(list.title.as_str().into(), panel().with_bold(true))];
-            let capacity = overlay::list_capacity(view.rows);
-            // The window ends at the selection, or at the last item.
-            let start = list
-                .selected
-                .saturating_sub(capacity.saturating_sub(1))
-                .min(list.items.len().saturating_sub(capacity));
+            let capacity = overlay::list_room(view.rows);
+            let start = overlay::window_start(list.items.len(), list.selected, capacity);
             if start > 0 {
                 lines.push((format!("▲ {start} more").into(), panel().with_dim(true)));
             }
@@ -846,14 +842,8 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
         // At most the number of rows.
         index = index.saturating_add(1);
     }
-    let available = usize::from(view.rows.saturating_sub(1));
-    let heading = available >= 4;
-    // Room less the heading and the two "more" lines, but at least one.
-    let body_room = available
-        .saturating_sub(usize::from(heading).saturating_add(2))
-        .max(1);
-    // The rows scrolled off so the selection is the last shown, if any.
-    let start = selected_row.saturating_add(1).saturating_sub(body_room);
+    let (heading, body_room) = overlay::column_room(view.rows);
+    let start = overlay::window_start(entries.len(), selected_row, body_room);
     let mut lines: Vec<Line<'_>> = Vec::new();
     if heading {
         // Right after the prefix, every command; in a layer, its keys so far

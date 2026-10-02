@@ -550,9 +550,37 @@ fn plain(press: KeyPress) -> Option<Key> {
     (!press.mods.ctrl && !press.mods.alt).then_some(press.key)
 }
 
-/// Rows the list shows at once on a screen of `rows`.
-pub fn list_capacity(rows: u16) -> usize {
-    usize::from(rows.saturating_sub(4)).max(1)
+/// Rows a scrolled panel has for its entries on a screen of `rows`: the
+/// rows above the bar, less `fixed` lines of its own (a title, a help line)
+/// and the two lines that say how many entries lie above and below; at
+/// least one.
+pub fn panel_room(rows: u16, fixed: usize) -> usize {
+    usize::from(rows.saturating_sub(1))
+        .saturating_sub(fixed.saturating_add(2))
+        .max(1)
+}
+
+/// The first of `len` entries a panel with `room` rows for them shows, so
+/// that `selected` is in view: the window ends at the selection, or at the
+/// last entry.
+pub fn window_start(len: usize, selected: usize, room: usize) -> usize {
+    selected
+        .saturating_add(1)
+        .saturating_sub(room)
+        .min(len.saturating_sub(room))
+}
+
+/// Rows a chooser or menu shows its items in: it has a title and a help
+/// line.
+pub fn list_room(rows: u16) -> usize {
+    panel_room(rows, 2)
+}
+
+/// Whether the command column has room for its heading, and the rows it
+/// shows its entries in.
+pub fn column_room(rows: u16) -> (bool, usize) {
+    let heading = rows.saturating_sub(1) >= 4;
+    (heading, panel_room(rows, usize::from(heading)))
 }
 
 /// A key while the command column is open.
@@ -566,7 +594,7 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
     };
     let (path, selected, rows) = (path.clone(), *selected, view.rows);
     let len = column_len(session, &path);
-    let page = list_capacity(rows);
+    let (_, page) = column_room(rows);
     let last = len.saturating_sub(1);
     // The column navigates with keys that are not letters: every letter after
     // the prefix is a binding's.
@@ -706,7 +734,7 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
         return;
     };
     let last = list.items.len().saturating_sub(1);
-    let page = list_capacity(rows);
+    let page = list_room(rows);
     let mut run: Option<Command> = None;
     let mut close = false;
     match plain(press) {
@@ -996,6 +1024,34 @@ mod tests {
         }
     }
 
+    /// A long chooser scrolled to the middle shows its title, both "more"
+    /// lines, its items and its help, all within the screen (41 tabs, the
+    /// cursor at the 31st, on 30 rows lost the title).
+    #[test]
+    fn a_scrolled_list_keeps_its_title() -> Outcome {
+        let (mut s, c) = session()?;
+        for _ in 0..40 {
+            run(&mut s, "new-tab -t +1")?;
+        }
+        run(&mut s, "choose-tab -c c1")?;
+        s.input(c, b"\x1b[H");
+        let downs: Vec<u8> = std::iter::repeat_n(&b"\x1b[B"[..], 30)
+            .flatten()
+            .copied()
+            .collect();
+        s.input(c, &downs);
+        assert_eq!(mode(&s, c).split(' ').next_back(), Some("30"));
+        let title = match s.views.get(&c).map(|v| &v.mode) {
+            Some(Mode::List(list)) => list.title.clone(),
+            _ => return Err("a list".into()),
+        };
+        let text = screen_text(&s, c)?;
+        for shown in [title.as_str(), "▲", "▼", "Enter selects"] {
+            assert!(text.contains(shown), "{shown:?} in\n{text}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn the_column_scrolls_within_its_bindings() -> Outcome {
         let (mut s, c) = session()?;
@@ -1020,7 +1076,7 @@ mod tests {
         s.input(c, b"\x1b[H");
         assert_eq!(mode(&s, c), "column 0");
         // A page down, or to the last entry if that is nearer.
-        let page = list_capacity(30).min(last);
+        let page = column_room(30).1.min(last);
         s.input(c, b"\x1b[6~");
         assert_eq!(mode(&s, c), format!("column {page}"));
         s.input(c, b"\x1b[A\x1b[A\x1b[B");
