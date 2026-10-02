@@ -1,6 +1,6 @@
 [workspace]
 members = ["fux-vt", "fuxix"]
-exclude = ["fux-vt/fuzz", "fux-vt/gen", "fux-vt/ghostty", "fuzz", "walk", "diff"]
+exclude = ["fux-vt/fuzz", "fux-vt/gen", "fux-vt/compare", "fuzz", "walk", "diff"]
 resolver = "3"
 
 [package]

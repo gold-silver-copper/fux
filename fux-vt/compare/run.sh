@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Builds fux-vt-ghostty and runs it with the given arguments; or, as
+# Builds fux-vt-compare and runs it with the given arguments; or, as
 # `run.sh --cargo SUBCOMMAND ARGS...`, runs that cargo subcommand on it
 # (`--cargo test`, `--cargo clippy --all-targets -- -D warnings`) in the
 # same environment.
 #
 # libghostty-vt is built from Ghostty's source by Zig. This script fetches
-# both, once, into a cache ($FUX_VT_GHOSTTY_CACHE, default
-# ~/.cache/fux-vt-ghostty), and pins them:
+# both, once, into a cache ($FUX_VT_COMPARE_CACHE, default
+# ~/.cache/fux-vt-compare), and pins them:
 #
 # - Zig 0.16.0. The bindings' own pin of Ghostty needs Zig 0.15, which
 #   cannot link on macOS 27.
@@ -15,6 +15,14 @@
 #   in the kitty-graphics temporary-file option, which is built out here,
 #   and a new data key.
 #
+# - libvterm 0.3.3, from its release tarball (checked by SHA-256), compiled
+#   by build.rs.
+# - xterm.js: @xterm/headless, by `npm ci` in node/ (its package-lock.json
+#   pins it), when Node is installed.
+#
+# tmux and xterm (with Xvfb) are used if installed; `fux-vt-compare
+# engines` says which engines can run.
+#
 # On macOS 27, Zig's bundled libc++ does not compile against the 27.0 SDK,
 # so the newest older SDK installed is used instead, through an `xcrun`
 # shim (Zig asks `xcrun --sdk macosx --show-sdk-path`, which ignores
@@ -22,7 +30,7 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
-cache=${FUX_VT_GHOSTTY_CACHE:-$HOME/.cache/fux-vt-ghostty}
+cache=${FUX_VT_COMPARE_CACHE:-$HOME/.cache/fux-vt-compare}
 zig_version=0.16.0
 ghostty_commit=7aa9591746ffa4d2eee458960c76554352832595
 mkdir -p "$cache"
@@ -54,6 +62,27 @@ if [[ $(git -C "$ghostty" rev-parse HEAD) != "$ghostty_commit" ]]; then
 fi
 export GHOSTTY_SOURCE_DIR=$ghostty
 
+libvterm_version=0.3.3
+libvterm_sha256=09156f43dd2128bd347cbeebe50d9a571d32c64e0cf18d211197946aff7226e0
+libvterm=$cache/libvterm-$libvterm_version
+if [[ ! -f $libvterm/include/vterm.h ]]; then
+  echo "run.sh: fetching libvterm $libvterm_version" >&2
+  tarball=$cache/libvterm-$libvterm_version.tar.gz
+  curl -sSfL -o "$tarball" "https://www.leonerd.org.uk/code/libvterm/libvterm-$libvterm_version.tar.gz"
+  if [[ $(shasum -a 256 "$tarball" | cut -d' ' -f1) != "$libvterm_sha256" ]]; then
+    echo "run.sh: libvterm tarball does not match its SHA-256" >&2
+    exit 2
+  fi
+  tar -xzf "$tarball" -C "$cache"
+  rm "$tarball"
+fi
+export LIBVTERM_SOURCE_DIR=$libvterm
+
+if command -v npm >/dev/null && [[ -f $here/node/package.json && ! -d $here/node/node_modules ]]; then
+  echo "run.sh: installing @xterm/headless" >&2
+  npm ci --silent --prefix "$here/node"
+fi
+
 if [[ $(uname -s) == Darwin ]] && (( $(sw_vers -productVersion | cut -d. -f1) >= 27 )); then
   sdks=/Library/Developer/CommandLineTools/SDKs
   sdk=$(ls -d "$sdks"/MacOSX2[0-6].[0-9]*.sdk 2>/dev/null | sort -V | tail -1 || true)
@@ -65,12 +94,12 @@ if [[ $(uname -s) == Darwin ]] && (( $(sw_vers -productVersion | cut -d. -f1) >=
   cat > "$cache/bin/xcrun" <<'EOF'
 #!/bin/sh
 for arg in "$@"; do
-  if [ "$arg" = --show-sdk-path ]; then echo "$FUX_VT_GHOSTTY_SDK"; exit 0; fi
+  if [ "$arg" = --show-sdk-path ]; then echo "$FUX_VT_COMPARE_SDK"; exit 0; fi
 done
 exec /usr/bin/xcrun "$@"
 EOF
   chmod +x "$cache/bin/xcrun"
-  export FUX_VT_GHOSTTY_SDK=$sdk PATH=$cache/bin:$PATH
+  export FUX_VT_COMPARE_SDK=$sdk PATH=$cache/bin:$PATH
 fi
 
 if [[ ${1:-} == --cargo ]]; then
@@ -80,4 +109,4 @@ if [[ ${1:-} == --cargo ]]; then
   exec cargo "$sub" --release --locked --manifest-path "$here/Cargo.toml" "$@"
 fi
 cargo build --release --locked --quiet --manifest-path "$here/Cargo.toml"
-exec "$here/target/release/fux-vt-ghostty" "$@"
+exec "$here/target/release/fux-vt-compare" "$@"
