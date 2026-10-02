@@ -662,7 +662,8 @@ fn reflow_does_not_split_wide_glyphs() -> Result {
 #[test]
 fn the_alternate_screen_resizes_without_reflow() -> Result {
     let mut p = with(REFLOW, 3, 10, 100)?;
-    p.process(b"main line\x1b[?1049h0123456789")?;
+    // 1049 keeps the cursor where it was, as xterm does: home it.
+    p.process(b"main line\x1b[?1049h\x1b[H0123456789")?;
     p.resize(3, 5)?;
     assert_eq!(lines(&p), ["01234", "", ""]);
     p.process(b"\x1b[?1049l")?;

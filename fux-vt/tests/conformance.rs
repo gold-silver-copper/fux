@@ -576,3 +576,52 @@ fn insert_mode_moves_what_is_there() -> Result {
     );
     Ok(())
 }
+
+/// Modes 47, 1047 and 1049 (xterm's ctlseqs) switch screens and leave
+/// the cursor where it is: xterm keeps one cursor, with its pending wrap,
+/// origin mode and margins, for both screens, and each screen its own
+/// saved cursor. 1049 saves the cursor as DECSC does before switching,
+/// and restores it as DECRC does after switching back; its clear, like
+/// 1047's on leaving, ends a pending wrap as ED does (DEC STD 070,
+/// Appendix D.6.1) and takes the pen's colours (`bce`). Expected values
+/// are xterm's (`fux-vt-compare cases mode-47-keeps-the-cursor
+/// mode-1049-keeps-the-cursor`, `replay --engines all --size 2x3`).
+#[test]
+fn switching_screens_keeps_the_cursor() -> Result {
+    for mode in ["47", "1047", "1049"] {
+        let p = run(2, 5, format!("ab\x1b[?{mode}hX").as_bytes())?;
+        assert_eq!(lines(&p), ["  X", ""], "{mode}");
+        assert_eq!(p.screen().cursor_position(), (0, 3), "{mode}");
+    }
+    assert_eq!(lines(&run(2, 5, b"ab\x1b[?47hX\x1b[?47lY")?), ["ab Y", ""]);
+    assert_eq!(
+        lines(&run(2, 5, b"ab\x1b[?1049hX\x1b[?1049lY")?),
+        ["abY", ""]
+    );
+    // A pending wrap goes along, but 1049's and 1047's clears end it,
+    // and 1049 restores the one it saved.
+    let p = run(2, 3, b"abc\x1b[?47hc")?;
+    assert_eq!(lines(&p), ["", "c"]);
+    assert_eq!(lines(&run(2, 3, b"abc\x1b[?1049hc")?), ["  c", ""]);
+    assert_eq!(
+        lines(&run(2, 3, b"abc\x1b[?1047h\x1b[?1047lX")?),
+        ["abX", ""]
+    );
+    assert_eq!(
+        lines(&run(2, 3, b"abc\x1b[?1049h\x1b[?1049lX")?),
+        ["abc", "X"]
+    );
+    // Origin mode and the margins go along.
+    let p = run(4, 5, b"\x1b[2;3r\x1b[?6h\x1b[?47h\x1b[1;1HX")?;
+    assert_eq!(lines(&p), ["", "X", "", ""]);
+    assert!(p.screen().origin_mode());
+    assert_eq!(p.screen().scroll_region(), (1, 2));
+    // The cleared screen takes the pen's colours.
+    let p = run(2, 3, b"\x1b[41m\x1b[?1049h")?;
+    let cell = p.screen().cell(1, 2).ok_or("no cell")?;
+    assert_eq!(cell.bgcolor(), Color::Idx(1));
+    // Each screen has its own saved cursor, which a clear keeps.
+    let p = run(1, 2, b"x\x1b[?1049h\x1b[?1049h\x1b[?1048l")?;
+    assert_eq!(p.screen().cursor_position(), (0, 1));
+    Ok(())
+}
