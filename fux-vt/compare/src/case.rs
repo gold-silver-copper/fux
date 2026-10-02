@@ -90,22 +90,26 @@ impl Outcome {
 /// differ from fux-vt each in their own way do not outvote it; a tie does
 /// not. With one engine, wherever it differs.
 pub fn outvoted_on(verdicts: &[Verdict]) -> Vec<String> {
-    let mut dissent: BTreeMap<&str, (Field, BTreeMap<&str, usize>)> = BTreeMap::new();
+    type Dissent<'a> = (Field, Option<(usize, usize)>, BTreeMap<&'a str, usize>);
+    let mut dissent: BTreeMap<&str, Dissent<'_>> = BTreeMap::new();
     for verdict in verdicts {
         for diff in &verdict.differences {
-            let (_, values) = dissent
+            let (_, _, values) = dissent
                 .entry(diff.key.as_str())
-                .or_insert_with(|| (diff.field, BTreeMap::new()));
+                .or_insert_with(|| (diff.field, diff.styled_cell, BTreeMap::new()));
             let count = values.entry(diff.other.as_str()).or_insert(0);
             *count = count.saturating_add(1);
         }
     }
     dissent
         .into_iter()
-        .filter(|(_, (field, values))| {
+        .filter(|(_, (field, cell, values))| {
             let told = verdicts
                 .iter()
-                .filter(|v| ENGINES.get(v.engine).is_some_and(|k| field.told_by(&k.can)))
+                .filter(|v| {
+                    ENGINES.get(v.engine).is_some_and(|k| field.told_by(&k.can))
+                        && cell.is_none_or(|(y, x)| read_style(&v.snapshot, y, x))
+                })
                 .count();
             let differing: usize = values.values().sum();
             let agreeing = told.saturating_sub(differing);
@@ -113,6 +117,15 @@ pub fn outvoted_on(verdicts: &[Verdict]) -> Vec<String> {
         })
         .map(|(key, _)| key.to_owned())
         .collect()
+}
+
+/// Whether an engine read the style of the screen cell at row `y`,
+/// column `x`.
+fn read_style(snapshot: &Snapshot, y: usize, x: usize) -> bool {
+    snapshot
+        .screen
+        .get(y)
+        .is_none_or(|line| line.unread_from.is_none_or(|from| x < from))
 }
 
 fn outvoted(verdicts: &[Verdict]) -> bool {

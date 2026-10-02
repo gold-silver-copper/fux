@@ -326,6 +326,10 @@ type Mode = (&'static str, Field, fn(&Snapshot) -> bool);
 pub struct Diff {
     pub key: String,
     pub field: Field,
+    /// The screen cell, row and column, for a difference in a cell's style:
+    /// an engine that could not read that cell's style does not vote on it
+    /// (`Line::unread_from`).
+    pub styled_cell: Option<(usize, usize)>,
     pub fux: String,
     pub other: String,
 }
@@ -341,11 +345,13 @@ impl Diff {
 /// differs gives one difference for each part of it that differs.
 pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
     let mut out = Vec::new();
+    let styled_cell = std::cell::Cell::new(None);
     let mut field = |key: String, field: Field, a: String, b: String| {
         if a != b {
             out.push(Diff {
                 key,
                 field,
+                styled_cell: styled_cell.get(),
                 fux: a,
                 other: b,
             });
@@ -419,6 +425,7 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
             if ca == cb {
                 continue;
             }
+            styled_cell.set(None);
             let styled = b.unread_from.is_none_or(|from| x < from);
             let at = |part: &str| format!("cell ({y},{x}) {part}");
             field(
@@ -436,6 +443,7 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
             if !styled {
                 continue;
             }
+            styled_cell.set(Some((y, x)));
             let (sa, sb) = (&ca.style, &cb.style);
             for (name, f, va, vb) in [
                 ("fg", Field::Fg, sa.fg, sb.fg),
@@ -463,6 +471,7 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
             }
         }
     }
+    styled_cell.set(None);
     let ha: Vec<_> = fux.history.iter().rev().collect();
     let hb: Vec<_> = other.history.iter().rev().collect();
     if ha.len() > hb.len() {
