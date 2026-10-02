@@ -66,6 +66,11 @@
 //! - Pending scrolls are also flushed before EL 1 and ED 1, whose end of a
 //!   pending wrap otherwise depends on whether the cursor's row waits on a
 //!   jump scroll (see `flushed_before_clearing_left`).
+//! - The harness's own queries between steps are output to xterm, which
+//!   fux-vt never sees. xterm abstains from a case where they matter: a
+//!   step that begins with REP before printing (after the queries xterm
+//!   has nothing to repeat), and a read after output that ends partway
+//!   through a UTF-8 character (the queries would end it, as U+FFFD).
 //! - xterm abstains from a case once its output holds SGR 58: xterm has no
 //!   underline colour, and reads the colour's parameters as attributes
 //!   (`58;5;9` is blink and strikeout), so what it shows says nothing of
@@ -114,6 +119,66 @@ pub const KIND: Kind = Kind {
     available,
     make,
 };
+
+/// The continuation bytes a UTF-8 character still owes after `bytes`,
+/// given `owed` before them.
+fn owed_after(mut owed: u8, bytes: &[u8]) -> u8 {
+    for &b in bytes {
+        owed = match b {
+            0x80..=0xbf if owed > 0 => owed.saturating_sub(1),
+            0xc2..=0xdf => 1,
+            0xe0..=0xef => 2,
+            0xf0..=0xf4 => 3,
+            _ => 0,
+        };
+    }
+    owed
+}
+
+/// Whether `bytes` hold a REP (`CSI Pn b`) before any graphic character:
+/// one xterm takes as following the harness's own queries, after which it
+/// has nothing to repeat, where fux-vt, which never sees them, repeats the
+/// character printed before them (`'ab' '\e[3b'` as two steps, against
+/// `'ab\e[3b'` as one).
+fn repeats_before_printing(bytes: &[u8]) -> bool {
+    let mut i = 0usize;
+    while let Some(&b) = bytes.get(i) {
+        i = i.saturating_add(1);
+        match b {
+            0x1b => match bytes.get(i) {
+                Some(b'[') => {
+                    let body = bytes.get(i.saturating_add(1)..).unwrap_or_default();
+                    let len = body
+                        .iter()
+                        .position(|b| !(0x20..=0x3f).contains(b))
+                        .unwrap_or(body.len());
+                    let intermediates = body
+                        .get(..len)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|b| (0x20..=0x2f).contains(b));
+                    if body.get(len) == Some(&b'b') && !intermediates {
+                        return true;
+                    }
+                    i = i.saturating_add(len).saturating_add(2);
+                }
+                Some(b']' | b'P' | b'_' | b'^' | b'X') => {
+                    let end = bytes
+                        .get(i..)
+                        .unwrap_or_default()
+                        .iter()
+                        .position(|&b| b == 0x07 || b == 0x9c || b == b'\\')
+                        .unwrap_or(bytes.len());
+                    i = i.saturating_add(end).saturating_add(1);
+                }
+                _ => i = i.saturating_add(1),
+            },
+            0x00..=0x1f | 0x7f => {}
+            _ => return false,
+        }
+    }
+    false
+}
 
 /// Flushes pending scrolls (`CSI ? 4 h`, `CSI ? 4 l`) before each EL 1 and
 /// ED 1 (`CSI 1 K`, `CSI 1 J`, and their `?` forms). xterm's `ClearLeft`
@@ -320,6 +385,11 @@ pub struct Xterm {
     cols: u16,
     /// History as last read on the primary screen.
     history: Vec<(String, bool)>,
+    /// Whether the harness has sent xterm its own queries (a read or a
+    /// resize) since the last output.
+    asked: bool,
+    /// Continuation bytes the last output still owed a UTF-8 character.
+    owed: u8,
 }
 
 fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
@@ -333,6 +403,8 @@ fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
         rows: setup.rows,
         cols: setup.cols,
         history: Vec::new(),
+        asked: false,
+        owed: 0,
     };
     // An xterm that could not open the display exits: start another, on a
     // new Xvfb if that one has gone.
@@ -550,10 +622,16 @@ impl Engine for Xterm {
         if sets_underline_colour(bytes) {
             return Err("xterm has no SGR 58, and reads its colour as attributes".into());
         }
+        if self.asked && repeats_before_printing(bytes) {
+            return Err("the harness's queries came between a character and REP".into());
+        }
+        self.asked = false;
+        self.owed = owed_after(self.owed, bytes);
         self.pane.output(&flushed_before_clearing_left(bytes))
     }
 
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
+        self.asked = true;
         self.pane
             .ask(format!("\x1b[?4h\x1b[?4l\x1b[8;{rows};{cols}t").as_bytes())?;
         let deadline = Instant::now()
@@ -578,6 +656,10 @@ impl Engine for Xterm {
     }
 
     fn snapshot(&mut self, history_rows: usize) -> Result<Snapshot, String> {
+        if self.owed > 0 {
+            return Err("the harness's queries would split a UTF-8 character".into());
+        }
+        self.asked = true;
         self.read(history_rows)
     }
 
@@ -606,7 +688,27 @@ impl Drop for Xterm {
 
 #[cfg(test)]
 mod tests {
-    use super::{flushed_before_clearing_left, sets_underline_colour};
+    use super::{
+        flushed_before_clearing_left, owed_after, repeats_before_printing, sets_underline_colour,
+    };
+
+    #[test]
+    fn a_split_character_and_a_leading_rep_are_found() {
+        assert_eq!(owed_after(0, b"a\xc3"), 1);
+        assert_eq!(owed_after(1, b"\xa9"), 0);
+        assert_eq!(owed_after(0, b"\xe2\x94"), 1);
+        assert_eq!(owed_after(0, b"\xe2\x94\x80"), 0);
+        for (bytes, found) in [
+            (&b"\x1b[3b"[..], true),
+            (b"\r\x1b[1m\x1b[b", true),
+            (b"\x1b]2;t\x07\x1b[2b", true),
+            (b"x\x1b[3b", false),
+            (b"\x1b[3 b", false),
+            (b"\x1b[3m", false),
+        ] {
+            assert_eq!(repeats_before_printing(bytes), found, "{bytes:?}");
+        }
+    }
 
     #[test]
     fn pending_scrolls_are_flushed_before_clearing_left() {
