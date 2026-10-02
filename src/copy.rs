@@ -677,13 +677,9 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
     };
     // Keys are letters, in either case; a letter with Ctrl or Alt is no
     // key's. The arrows, paging keys, Home, End, Enter and Esc also work.
-    let letter = if let Key::Char(c) = press.key
-        && !press.mods.ctrl
-        && !press.mods.alt
-    {
-        Some(c.to_ascii_lowercase())
-    } else {
-        None
+    let letter = match press.plain_key() {
+        Some(Key::Char(c)) => Some(c),
+        _ => None,
     };
     let mut target: Option<(usize, u16)> = None;
     let mut scroll: Option<Scroll> = None;
