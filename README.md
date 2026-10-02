@@ -202,13 +202,15 @@ tab and workspace.
 These act on one client's screen. From a key or the command prompt they act on
 yours; from the command line they need `-c CLIENT`:
 `command-column`, `command-prompt`, `copy-mode`, `zoom`,
-`choose-tab [--move]`, `choose-workspace [--move]`, `choose-pane [-t %N]`
-(swap), `menu pane|tab|workspace [-t TARGET]`,
+`choose-tab [-t %N] [--move]`, `choose-workspace [-t %N] [--move]` (with a
+pane, a chooser to move it), `choose-pane [-t %N]` (swap),
+`menu pane|tab|workspace [-t TARGET]`,
 `rename-prompt [pane|tab|workspace] [-t TARGET]`,
 `confirm-close [pane|tab|workspace] [-t TARGET]`,
 `select-pane -t %N|--next|--previous|--last|-L|-R|-U|-D`,
 `select-tab -t @N|--next|--previous`, `select-workspace -t WS|--next|--previous`,
-`capture-client [--json]`.
+`capture-client [--json]`. Each takes only the flags shown: `zoom` and
+`copy-mode` act on the client's focused pane, and refuse `-t`.
 
 Exit status: 0 done; 1 the command failed, with the reason on stderr; 2 a
 usage error.

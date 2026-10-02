@@ -804,13 +804,25 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
         "command-column" | "command-prompt" | "copy-mode" | "zoom" | "choose-tab"
         | "choose-workspace" | "choose-pane" | "menu" | "rename-prompt" | "confirm-close"
         | "select-pane" | "select-tab" | "select-workspace" => {
-            // The target is kept as given, and parsed once every flag and
-            // the kind are known.
-            let f = a.flags("-c -t --next --previous --last --move -L -R -U -D", Ok)?;
+            // Each takes only the flags it uses, so none is accepted and
+            // then ignored. The target is kept as given, and parsed once
+            // every flag and the kind are known.
+            let takes = match name {
+                "choose-tab" | "choose-workspace" => "-c -t --move",
+                "choose-pane" | "menu" | "rename-prompt" | "confirm-close" => "-c -t",
+                "select-pane" => "-c -t --next --previous --last -L -R -U -D",
+                "select-tab" | "select-workspace" => "-c -t --next --previous",
+                _ => "-c",
+            };
+            let f = a.flags(takes, Ok)?;
             let (client, target, pick, direction) = (f.client, f.target, f.pick, f.direction);
-            let kind = match a.positional.pop() {
-                Some(k) => Some(parse_kind(k).ok_or_else(|| a.not_kind(k))?),
-                None => None,
+            // Only these name a kind: pane, tab or workspace.
+            let kind = match name {
+                "menu" | "rename-prompt" | "confirm-close" => match a.positional.pop() {
+                    Some(k) => Some(parse_kind(k).ok_or_else(|| a.not_kind(k))?),
+                    None => None,
+                },
+                _ => None,
             };
             a.no_positional()?;
             let any = target.map(parse_any).transpose()?;
@@ -1165,6 +1177,24 @@ mod tests {
                 "confirm-close thing",
                 r#"confirm-close: "thing" is not pane, tab or workspace"#,
             ),
+            // A screen command takes only the flags it uses: none is
+            // accepted and then ignored.
+            ("zoom -t %1", "zoom: unknown flag -t"),
+            ("copy-mode -c c1 -t %1", "copy-mode: unknown flag -t"),
+            (
+                "command-prompt --move",
+                "command-prompt: unknown flag --move",
+            ),
+            ("command-column -L", "command-column: unknown flag -L"),
+            ("choose-pane --move", "choose-pane: unknown flag --move"),
+            ("menu pane --next", "menu: unknown flag --next"),
+            ("select-tab -L", "select-tab: unknown flag -L"),
+            (
+                "select-workspace --last",
+                "select-workspace: unknown flag --last",
+            ),
+            ("zoom pane", r#"zoom: unexpected argument "pane""#),
+            ("choose-tab tab", r#"choose-tab: unexpected argument "tab""#),
         ] {
             let usage = cmd(line).err().map(|u| u.to_string());
             assert_eq!(usage.as_deref(), Some(message), "{line:?}");
