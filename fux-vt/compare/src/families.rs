@@ -572,9 +572,7 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "charset",
         about: "DEC special graphics: designating G0 and G1, SO and SI, line-drawing letters",
-        status: Status::Differs(
-            "DEC special graphics are not implemented, though TERM=xterm-256color advertises them (F3)",
-        ),
+        status: Status::Agree,
         ratty_only: false,
         generate: charset,
     },
