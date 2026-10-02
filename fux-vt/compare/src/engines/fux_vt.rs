@@ -105,6 +105,7 @@ impl Engine for Vt {
         let pending_wrap = s.pending_wrap();
         let screen = (0..rows)
             .map(|y| Line {
+                unread_from: None,
                 cells: (0..cols)
                     .map(|x| {
                         s.cell(y, x).map_or_else(
@@ -121,6 +122,7 @@ impl Engine for Vt {
             .filter_map(|back| {
                 let row = s.row_from_bottom(usize::from(rows).checked_add(back)?)?;
                 let line = Line {
+                    unread_from: None,
                     cells: row.cells().map(|c| cell(&c)).collect(),
                     wrapped: row.wrapped,
                 };

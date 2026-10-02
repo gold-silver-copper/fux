@@ -229,6 +229,7 @@ impl Engine for Libvterm {
         let cols = int("columns", s.cols)?;
         let screen = (0..rows)
             .map(|y| Line {
+                unread_from: None,
                 cells: (0..cols)
                     .map(|x| t.cell(y, x).map_or_else(blank, |c| cell(&c)))
                     .collect(),
@@ -239,6 +240,7 @@ impl Engine for Libvterm {
         let history = (kept.saturating_sub(history_rows)..kept)
             .map(|i| {
                 let line = Line {
+                    unread_from: None,
                     cells: (0..t.history_cols(i))
                         .filter_map(|x| t.history_cell(i, x).map(|c| cell(&c)))
                         .collect(),

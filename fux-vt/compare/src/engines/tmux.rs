@@ -310,6 +310,7 @@ impl Tmux {
         for (i, (wrapped, text)) in captured.iter().enumerate() {
             let cells = reader.row(text, info.cols, &tab);
             let line = Line {
+                unread_from: None,
                 cells,
                 wrapped: *wrapped,
             };
@@ -326,6 +327,7 @@ impl Tmux {
             let mut plain = Reader::new(Glyphs::Tmux);
             for (wrapped, text) in primary.iter().take(kept) {
                 let line = Line {
+                    unread_from: None,
                     cells: plain.row(text, info.cols, &tab),
                     wrapped: *wrapped,
                 };

@@ -236,6 +236,7 @@ fn line(row: &wezterm_term::Line, cols: usize) -> Line {
         }
     }
     Line {
+        unread_from: None,
         cells,
         wrapped: row.last_cell_was_wrapped(),
     }
@@ -392,6 +393,7 @@ impl Engine for Wezterm {
         screen.resize(
             rows,
             Line {
+                unread_from: None,
                 cells: vec![Cell::new("", Width::Narrow, Style::default()); cols],
                 wrapped: false,
             },

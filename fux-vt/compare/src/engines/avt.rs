@@ -144,6 +144,7 @@ fn line(l: &avt::Line, cols: usize) -> Line {
     let mut cells: Vec<Cell> = l.cells().iter().take(cols).map(cell).collect();
     cells.resize(cols, Cell::new("", Width::Narrow, Style::default()));
     Line {
+        unread_from: None,
         cells,
         wrapped: format!("{l:?}") != format!("{:?}", l.text()),
     }
