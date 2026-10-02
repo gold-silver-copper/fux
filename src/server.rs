@@ -392,6 +392,15 @@ impl Server {
             if !render::compose_into(&self.session, client, &mut conn.spare, &mut conn.placement) {
                 continue;
             }
+            // The same screen as the client shows: nothing to send, not even
+            // the envelope, whose cursor hide and show would restart a
+            // blinking cursor.
+            if conn.painted && conn.spare == conn.shown {
+                if let Some(view) = self.session.views.get_mut(&client) {
+                    view.dirty = false;
+                }
+                continue;
+            }
             self.paint_buffer.clear();
             let shown = conn.painted.then_some(&conn.shown);
             render::paint_into(shown, &conn.spare, &mut self.paint_buffer);

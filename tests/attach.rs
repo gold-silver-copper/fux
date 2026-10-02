@@ -90,6 +90,29 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
     Ok(())
 }
 
+/// A screen that did not change is not painted again: a command that
+/// changes nothing a client shows sends it nothing, not even an empty paint.
+#[test]
+fn an_unchanged_screen_is_not_painted_again() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(10, 40)?;
+    client.wait_for("$")?;
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    client.pump()?;
+    let before = client.painted.len();
+    // Selecting the pane already selected changes nothing on screen.
+    server.ok(&["select-pane", "-c", "c1", "-t", "%1"])?;
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    client.pump()?;
+    assert_eq!(
+        client.painted.len(),
+        before,
+        "painted {:?}",
+        String::from_utf8_lossy(client.painted.get(before..).unwrap_or_default())
+    );
+    Ok(())
+}
+
 #[test]
 fn a_resize_reaches_the_program() -> Outcome {
     let server = Server::start("")?;
