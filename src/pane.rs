@@ -236,10 +236,7 @@ impl Pane {
         cols: u16,
         history: usize,
     ) -> Result<Pane, Error> {
-        let options = fux_vt::Options {
-            events: true,
-            ..fux_vt::Options::default()
-        };
+        let options = fux_vt::Options::new().with_events(true);
         let parser = fux_vt::Parser::with_options(rows.max(1), cols.max(1), history, options)
             .map_err(|source| Error::Terminal {
                 rows,

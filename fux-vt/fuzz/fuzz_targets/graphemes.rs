@@ -112,10 +112,7 @@ fuzz_target!(|input: Input| {
         }
     }
 
-    let options = Options {
-        reflow: true,
-        ..Options::default()
-    };
+    let options = Options::new().with_reflow(true);
     let Ok(mut parser) = Parser::with_options(rows, cols, 1_000, options) else {
         return;
     };

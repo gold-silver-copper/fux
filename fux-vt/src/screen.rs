@@ -6,20 +6,33 @@ use crate::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+/// The mouse reporting a program asked for, the latest set winning
+/// (`CSI ? 9 / 1000 / 1002 / 1003 h`). State only: fux-vt reports nothing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MouseProtocolMode {
+    /// No reporting.
     #[default]
     None,
+    /// Mode 9, X10: button presses.
     Press,
+    /// Mode 1000: presses and releases.
     PressRelease,
+    /// Mode 1002: also motion while a button is down.
     ButtonMotion,
+    /// Mode 1003: also motion with no button down.
     AnyMotion,
 }
+/// How mouse reports are to be encoded (`CSI ? 1005 / 1006 h`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MouseProtocolEncoding {
+    /// The legacy encoding: coordinates as single bytes.
     #[default]
     Default,
+    /// Mode 1005: coordinates in UTF-8.
     Utf8,
+    /// Mode 1006, SGR: `CSI < b ; x ; y M`, or `m` for a release.
     Sgr,
 }
 
@@ -380,6 +393,7 @@ impl Screen {
             .ok_or(Error::IdentityExhausted)?;
         Ok(())
     }
+    /// The screen's rows and columns.
     pub fn size(&self) -> (u16, u16) {
         (self.grid().rows.get(), self.grid().cols.get())
     }
@@ -396,9 +410,12 @@ impl Screen {
     pub fn pending_wrap(&self) -> bool {
         self.grid().pending_wrap
     }
+    /// Whether the program hid the cursor (DECTCEM, `CSI ? 25 l`).
     pub fn hide_cursor(&self) -> bool {
         self.hide_cursor
     }
+    /// DECCKM (`CSI ? 1 h`): whether cursor keys are to send their
+    /// application sequences. State only: fux-vt encodes no keys.
     pub fn application_cursor(&self) -> bool {
         self.application_cursor
     }
@@ -407,6 +424,7 @@ impl Screen {
     pub fn application_keypad(&self) -> bool {
         self.application_keypad
     }
+    /// Whether pastes are to be bracketed (`CSI ? 2004 h`).
     pub fn bracketed_paste(&self) -> bool {
         self.bracketed_paste
     }
@@ -420,9 +438,11 @@ impl Screen {
     pub fn cursor_shape(&self) -> u16 {
         self.cursor_shape
     }
+    /// Whether the alternate screen is shown (`CSI ? 47`, `1047`, `1049`).
     pub fn alternate_screen(&self) -> bool {
         self.alternate_active
     }
+    /// DECAWM (`CSI ? 7`): whether a glyph past the last column wraps.
     pub fn autowrap(&self) -> bool {
         self.autowrap
     }
@@ -431,15 +451,19 @@ impl Screen {
     pub fn insert_mode(&self) -> bool {
         self.insert
     }
+    /// DECOM (`CSI ? 6`): whether lines are addressed from the top margin.
     pub fn origin_mode(&self) -> bool {
         self.grid().origin
     }
+    /// The top and bottom margins (DECSTBM), zero-based and inclusive.
     pub fn scroll_region(&self) -> (u16, u16) {
         (self.grid().top, self.grid().bottom)
     }
+    /// The mouse reporting the program asked for.
     pub fn mouse_protocol_mode(&self) -> MouseProtocolMode {
         self.mouse
     }
+    /// How the program asked for mouse reports to be encoded.
     pub fn mouse_protocol_encoding(&self) -> MouseProtocolEncoding {
         self.encoding
     }
@@ -482,24 +506,32 @@ impl Screen {
         };
         (u32::from(g.cursor.0) + 1, u32::from(col) + 1)
     }
+    /// The pen: the colours and rendition of the next glyph printed.
     pub fn attributes(&self) -> Attributes {
         self.attributes
     }
+    /// The pen's background colour.
     pub fn bgcolor(&self) -> Color {
         self.attributes.background()
     }
+    /// Whether the pen is inverse.
     pub fn inverse(&self) -> bool {
         self.attributes.inverse()
     }
+    /// The cell at `row`, `col` of the screen.
     pub fn cell(&self, row: u16, col: u16) -> Option<CellRef<'_>> {
         self.grid().cell(row, col)
     }
+    /// Whether row `row` of the screen is soft-wrapped: its line goes on in
+    /// the next row.
     pub fn row_wrapped(&self, row: u16) -> bool {
         self.grid().live_row(row).is_some_and(|r| r.wrapped)
     }
+    /// How many rows of history the screen keeps now.
     pub fn history_len(&self) -> usize {
         self.grid().history_len()
     }
+    /// The retained row with identity `id`, if it is still kept.
     pub fn row_by_id(&self, id: RowId) -> Option<Row<'_>> {
         self.grid().row_by_id(id)
     }
@@ -516,6 +548,8 @@ impl Screen {
             .history_len()
             .checked_sub(self.grid().index_of(id)?)
     }
+    /// A window of `rows` by `cols` cells (at most the screen's), `offset`
+    /// rows up into history (at most all of it).
     pub fn window(&self, offset: usize, rows: u16, cols: u16) -> Window<'_> {
         let grid = self.grid();
         let history = grid.history_len();
@@ -529,12 +563,17 @@ impl Screen {
             offset,
         }
     }
+    /// A mark of the screen as it is now, to ask later what changed.
     pub fn mark(&self) -> Mark {
         Mark(self.version)
     }
+    /// Whether anything a reader sees changed since `mark`.
     pub fn changed_since(&self, mark: Mark) -> bool {
         mark.0 != self.version
     }
+    /// Whether a reader of `mark` must read every row again: something
+    /// structural changed since (a scroll, resize, reset, switch of screens,
+    /// or rows leaving history).
     pub fn full_refresh_since(&self, mark: Mark) -> bool {
         mark.0 < self.structural || mark.0 > self.version
     }

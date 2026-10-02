@@ -32,9 +32,9 @@ fn window_lines(parser: &Parser, offset: usize) -> Vec<String> {
     let screen = parser.screen();
     let (rows, cols) = screen.size();
     let window = screen.window(offset, rows, cols);
-    (0..window.rows)
+    (0..window.rows())
         .map(|y| {
-            (0..window.cols)
+            (0..window.cols())
                 .filter_map(|x| window.cell(y, x))
                 .filter(|c| !c.is_wide_continuation())
                 .map(|c| if c.has_contents() { c.contents() } else { " " })
@@ -103,20 +103,8 @@ fn with(
     Parser::with_options(rows, cols, history, options)
 }
 
-const KEYBOARD: Options = Options {
-    events: false,
-    extended_replies: false,
-    kitty_keyboard: true,
-    reflow: false,
-    identity: None,
-};
-const REFLOW: Options = Options {
-    events: false,
-    extended_replies: false,
-    kitty_keyboard: false,
-    reflow: true,
-    identity: None,
-};
+const KEYBOARD: Options = Options::new().with_kitty_keyboard(true);
+const REFLOW: Options = Options::new().with_reflow(true);
 const RATTY: Identity = Identity {
     name: "ratty",
     version: "0.5.0",
@@ -407,10 +395,7 @@ fn sequences_fux_vt_does_not_implement_reach_the_sink() -> Result {
 
 #[test]
 fn an_identity_answers_device_attributes_and_version_queries() -> Result {
-    let options = Options {
-        identity: Some(RATTY),
-        ..Options::default()
-    };
+    let options = Options::new().with_identity(Some(RATTY));
     let mut p = with(options, 5, 20, 0)?;
     let record = run(&mut p, b"\x1b[c\x1b[>c\x1b[>0q\x1b[>q\x1b[5n")?;
     assert_eq!(
@@ -444,10 +429,7 @@ fn identity_versions_encode_like_xterm_and_long_names_go_unanswered() -> Result 
         ("7", 7),
         ("x.y", 0),
     ] {
-        let options = Options {
-            identity: Some(Identity { name: "t", version }),
-            ..Options::default()
-        };
+        let options = Options::new().with_identity(Some(Identity { name: "t", version }));
         let mut p = with(options, 2, 2, 0)?;
         let record = run(&mut p, b"\x1b[>c")?;
         assert_eq!(
@@ -457,13 +439,10 @@ fn identity_versions_encode_like_xterm_and_long_names_go_unanswered() -> Result 
         );
     }
     let long: &'static str = "a-terminal-name-that-is-far-too-long-for-a-reply";
-    let options = Options {
-        identity: Some(Identity {
-            name: long,
-            version: "1.0.0",
-        }),
-        ..Options::default()
-    };
+    let options = Options::new().with_identity(Some(Identity {
+        name: long,
+        version: "1.0.0",
+    }));
     let mut p = with(options, 2, 2, 0)?;
     let record = run(&mut p, b"\x1b[>q")?;
     assert!(record.replies.is_empty());
@@ -703,15 +682,15 @@ fn the_alternate_screen_resizes_without_reflow() -> Result {
 fn reflowed_rows_keep_their_lines_identities() -> Result {
     let mut p = with(REFLOW, 3, 10, 100)?;
     p.process(b"first\r\nsecond")?;
-    let first = p.screen().row_from_bottom(2).map(|r| r.id);
-    let second = p.screen().row_from_bottom(1).map(|r| r.id);
+    let first = p.screen().row_from_bottom(2).map(|r| r.id());
+    let second = p.screen().row_from_bottom(1).map(|r| r.id());
     let mark = p.screen().mark();
     p.resize(3, 3)?;
     // "fir" keeps the first line's identity, "sec" the second's.
     assert_eq!(lines(&p), ["st", "sec", "ond"]);
     assert_eq!(window_lines(&p, 1).first().map(String::as_str), Some("fir"));
-    assert_eq!(p.screen().row_from_bottom(3).map(|r| r.id), first);
-    assert_eq!(p.screen().row_from_bottom(1).map(|r| r.id), second);
+    assert_eq!(p.screen().row_from_bottom(3).map(|r| r.id()), first);
+    assert_eq!(p.screen().row_from_bottom(1).map(|r| r.id()), second);
     assert!(p.screen().full_refresh_since(mark));
     Ok(())
 }
@@ -744,13 +723,12 @@ fn degenerate_reflows_keep_every_invariant() -> Result {
 /// invariant holds after each step.
 #[test]
 fn the_adversarial_corpus_with_every_option_is_chunk_invariant() -> Result {
-    let options = Options {
-        events: true,
-        extended_replies: true,
-        kitty_keyboard: true,
-        reflow: true,
-        identity: Some(RATTY),
-    };
+    let options = Options::new()
+        .with_events(true)
+        .with_extended_replies(true)
+        .with_kitty_keyboard(true)
+        .with_reflow(true)
+        .with_identity(Some(RATTY));
     for (rows, cols) in [(1, 1), (2, 2), (4, 12), (24, 80)] {
         for seed in 0..20u64 {
             let mut whole = with(options, rows, cols, 8)?;

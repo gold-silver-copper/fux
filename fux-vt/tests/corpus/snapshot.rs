@@ -70,7 +70,7 @@ pub fn screen(s: &Screen) -> String {
     // Oldest first.
     for (index, from_bottom) in (0..rows).rev().enumerate() {
         if let Some(row) = s.row_from_bottom(from_bottom) {
-            let _ = writeln!(out, "row={index} wrapped={}", row.wrapped);
+            let _ = writeln!(out, "row={index} wrapped={}", row.wrapped());
             for (i, c) in row.cells().enumerate() {
                 cell(
                     &mut out,

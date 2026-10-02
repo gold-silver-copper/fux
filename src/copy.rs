@@ -88,7 +88,7 @@ pub fn index_of(screen: &Screen, id: RowId) -> Option<usize> {
     }
     let rows = usize::from(screen.size().0);
     (0..rows).find_map(|i| {
-        if screen.row_from_bottom(i)?.id != id {
+        if screen.row_from_bottom(i)?.id() != id {
             return None;
         }
         retained(screen).checked_sub(1)?.checked_sub(i)
@@ -534,7 +534,7 @@ pub fn text(
                 break;
             }
         }
-        let joined = kind != Select::Block && row.wrapped && index < end.0;
+        let joined = kind != Select::Block && row.wrapped() && index < end.0;
         if joined {
             out.push_str(&line);
         } else {
@@ -560,8 +560,8 @@ pub fn enter(session: &mut Session, client: ClientId) -> Result<String, Error> {
         .checked_add(usize::from(cy))
         .and_then(|i| row_at(screen, i))
         .ok_or(Error::NoRows)?
-        .id;
-    let top = row_at(screen, history).ok_or(Error::NoRows)?.id;
+        .id();
+    let top = row_at(screen, history).ok_or(Error::NoRows)?.id();
     let copy = Copy {
         pane,
         top,
@@ -758,7 +758,7 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
         let row = scroll.from(row, last_row);
         let scrolled = scroll.from(top, screen.history_len());
         if let Some(r) = row_at(screen, scrolled) {
-            copy.top = r.id;
+            copy.top = r.id();
             top = scrolled;
         }
         target = Some((row, col));
@@ -779,7 +779,7 @@ fn move_to(copy: &mut Copy, screen: &Screen, height: u16, top: usize, (row, col)
         {
             col = col.saturating_sub(1);
         }
-        copy.cursor = (r.id, col);
+        copy.cursor = (r.id(), col);
     }
     let height = usize::from(height).max(1);
     // Scroll just enough that the row shows; `height` is at least 1.
@@ -791,7 +791,7 @@ fn move_to(copy: &mut Copy, screen: &Screen, height: u16, top: usize, (row, col)
         top
     };
     if let Some(r) = row_at(screen, new_top.min(screen.history_len())) {
-        copy.top = r.id;
+        copy.top = r.id();
     }
 }
 
@@ -902,7 +902,7 @@ mod tests {
         assert_eq!(text(0), Some("one".into()));
         assert_eq!(text(3), Some("four".into()));
         for i in 0..4 {
-            let id = row_at(s, i).map(|r| r.id);
+            let id = row_at(s, i).map(|r| r.id());
             assert_eq!(id.and_then(|id| index_of(s, id)), Some(i));
         }
         Ok(())

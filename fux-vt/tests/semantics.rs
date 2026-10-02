@@ -1,3 +1,5 @@
+//! The sequence matrix's behaviour, family by family, with expected values
+//! from the vt100-crate baseline and its corrections.
 use fux_vt::{CellRef, Color, Error, MouseProtocolEncoding, MouseProtocolMode, Parser};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
@@ -152,13 +154,13 @@ fn history_ids_survive_scrolling_and_recycled_slots_do_not_alias() -> Result {
         .window(0, 3, 8)
         .row(0)
         .ok_or(Error::InvalidRange)?
-        .id;
+        .id();
     let mark = p.screen().mark();
     p.process(b"\r\nfour\r\nfive")?;
     assert_eq!(p.screen().history_len(), 2);
     assert_eq!(p.screen().offset_for_row(id), Some(2));
     let w = p.screen().window(usize::MAX, 3, 8);
-    assert_eq!(w.offset, 2);
+    assert_eq!(w.offset(), 2);
     assert_eq!(w.text((0, 0), (2, 7), 100, 100)?, "one\ntwo\nthree");
     assert_eq!(
         p.screen()
@@ -173,7 +175,10 @@ fn history_ids_survive_scrolling_and_recycled_slots_do_not_alias() -> Result {
     assert_eq!(p.screen().dirty_rows_since(mark).count(), 5);
     assert_eq!(p.screen().dirty_rows_since(mark).count(), 5);
     assert_eq!(
-        p.screen().row_from_bottom(4).ok_or(Error::InvalidRange)?.id,
+        p.screen()
+            .row_from_bottom(4)
+            .ok_or(Error::InvalidRange)?
+            .id(),
         id
     );
     assert!(p.screen().row_from_bottom(usize::MAX).is_none());
@@ -411,7 +416,7 @@ fn regions_origin_and_reset_have_explicit_history_semantics() -> Result {
         .window(0, 4, 4)
         .row(0)
         .ok_or(Error::InvalidRange)?
-        .id;
+        .id();
     p.process(b"\x1bc")?;
     assert_eq!(lines(&p), ["", "", "", ""]);
     assert!(!p.screen().origin_mode());

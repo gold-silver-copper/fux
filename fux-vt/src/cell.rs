@@ -5,20 +5,29 @@
 
 /// A default, indexed, or true-colour terminal colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Color {
+    /// The terminal's default colour, foreground or background as it is used.
     #[default]
     Default,
+    /// An indexed colour: 0 to 7 the standard colours, 8 to 15 their bright
+    /// forms, 16 to 255 xterm's 256-colour palette.
     Idx(u8),
+    /// A direct colour: red, green and blue.
     Rgb(u8, u8, u8),
 }
 
 /// How a cell blinks: SGR 5 (slow) and 6 (rapid) replace one another, and
 /// SGR 25 stops either.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Blink {
+    /// Not blinking.
     #[default]
     None,
+    /// Blinking slowly (SGR 5).
     Slow,
+    /// Blinking rapidly (SGR 6).
     Rapid,
 }
 
@@ -88,6 +97,7 @@ impl Attributes {
             flags: 0,
         }
     }
+    /// The foreground colour.
     pub const fn foreground(self) -> Color {
         self.foreground.get()
     }
@@ -102,6 +112,7 @@ impl Attributes {
             flags: 0,
         }
     }
+    /// The background colour.
     pub const fn background(self) -> Color {
         self.background.get()
     }
@@ -109,11 +120,13 @@ impl Attributes {
     pub const fn underline_color(self) -> Color {
         self.underline_color.get()
     }
+    /// These attributes with `color` as the foreground.
     #[must_use]
     pub const fn with_foreground(mut self, color: Color) -> Self {
         self.foreground = Packed::new(color);
         self
     }
+    /// These attributes with `color` as the background.
     #[must_use]
     pub const fn with_background(mut self, color: Color) -> Self {
         self.background = Packed::new(color);
@@ -127,26 +140,32 @@ impl Attributes {
         };
         self
     }
+    /// These attributes with bold (SGR 1) on or off.
     #[must_use]
     pub const fn with_bold(self, on: bool) -> Self {
         self.with_flag(Self::BOLD, on)
     }
+    /// These attributes with dim (SGR 2) on or off.
     #[must_use]
     pub const fn with_dim(self, on: bool) -> Self {
         self.with_flag(Self::DIM, on)
     }
+    /// These attributes with italic (SGR 3) on or off.
     #[must_use]
     pub const fn with_italic(self, on: bool) -> Self {
         self.with_flag(Self::ITALIC, on)
     }
+    /// These attributes with underline (SGR 4) on or off.
     #[must_use]
     pub const fn with_underline(self, on: bool) -> Self {
         self.with_flag(Self::UNDERLINE, on)
     }
+    /// These attributes with inverse (SGR 7) on or off.
     #[must_use]
     pub const fn with_inverse(self, on: bool) -> Self {
         self.with_flag(Self::INVERSE, on)
     }
+    /// These attributes blinking as `blink` says (SGR 5, 6 and 25).
     #[must_use]
     pub const fn with_blink(self, blink: Blink) -> Self {
         let bit = match blink {
@@ -156,34 +175,43 @@ impl Attributes {
         };
         self.with_flag(Self::BLINK, false).with_flag(bit, true)
     }
+    /// These attributes with hidden (SGR 8) on or off.
     #[must_use]
     pub const fn with_hidden(self, on: bool) -> Self {
         self.with_flag(Self::HIDDEN, on)
     }
+    /// These attributes with strikeout (SGR 9) on or off.
     #[must_use]
     pub const fn with_strikeout(self, on: bool) -> Self {
         self.with_flag(Self::STRIKEOUT, on)
     }
+    /// These attributes with `color` as the underline colour (SGR 58).
     #[must_use]
     pub const fn with_underline_color(mut self, color: Color) -> Self {
         self.underline_color = Packed::new(color);
         self
     }
+    /// Whether bold (SGR 1) is on.
     pub fn bold(self) -> bool {
         self.flags & Self::BOLD != 0
     }
+    /// Whether dim (SGR 2) is on.
     pub fn dim(self) -> bool {
         self.flags & Self::DIM != 0
     }
+    /// Whether italic (SGR 3) is on.
     pub fn italic(self) -> bool {
         self.flags & Self::ITALIC != 0
     }
+    /// Whether underline (SGR 4, or 21, or a style of 4) is on.
     pub fn underline(self) -> bool {
         self.flags & Self::UNDERLINE != 0
     }
+    /// Whether inverse (SGR 7) is on.
     pub fn inverse(self) -> bool {
         self.flags & Self::INVERSE != 0
     }
+    /// How the text blinks.
     pub fn blink(self) -> Blink {
         if self.flags & Self::SLOW_BLINK != 0 {
             Blink::Slow
@@ -193,9 +221,11 @@ impl Attributes {
             Blink::None
         }
     }
+    /// Whether hidden (SGR 8) is on.
     pub fn hidden(self) -> bool {
         self.flags & Self::HIDDEN != 0
     }
+    /// Whether strikeout (SGR 9) is on.
     pub fn strikeout(self) -> bool {
         self.flags & Self::STRIKEOUT != 0
     }
@@ -256,15 +286,21 @@ impl Cell {
     pub fn wide_continuation() -> Self {
         Self::continuation()
     }
+    /// Whether the cell holds text: neither blank nor the second half of a
+    /// wide glyph.
     pub fn has_contents(&self) -> bool {
         self.length & (Self::LENGTH | Self::SPILLED) != 0
     }
+    /// Whether the cell holds a glyph two columns wide, the next cell being
+    /// its second half.
     pub fn is_wide(&self) -> bool {
         self.length & Self::WIDE != 0
     }
+    /// Whether the cell is the second half of the wide glyph before it.
     pub fn is_wide_continuation(&self) -> bool {
         self.length & Self::CONTINUATION != 0
     }
+    /// The cell's colours and rendition.
     pub fn attributes(&self) -> Attributes {
         self.attributes
     }
@@ -624,48 +660,65 @@ impl<'a> CellRef<'a> {
     pub fn contents(&self) -> &'a str {
         self.spill.text(self.cell)
     }
+    /// Whether the cell holds text: neither blank nor the second half of a
+    /// wide glyph.
     pub fn has_contents(&self) -> bool {
         self.cell.has_contents()
     }
+    /// Whether the cell holds a glyph two columns wide, the next cell being
+    /// its second half.
     pub fn is_wide(&self) -> bool {
         self.cell.is_wide()
     }
+    /// Whether the cell is the second half of the wide glyph before it.
     pub fn is_wide_continuation(&self) -> bool {
         self.cell.is_wide_continuation()
     }
+    /// The cell's colours and rendition.
     pub fn attributes(&self) -> Attributes {
         self.cell.attributes
     }
+    /// The foreground colour.
     pub fn fgcolor(&self) -> Color {
         self.cell.attributes.foreground()
     }
+    /// The background colour.
     pub fn bgcolor(&self) -> Color {
         self.cell.attributes.background()
     }
+    /// The underline colour (SGR 58).
     pub fn underline_color(&self) -> Color {
         self.cell.attributes.underline_color()
     }
+    /// Whether bold (SGR 1) is on.
     pub fn bold(&self) -> bool {
         self.cell.attributes.bold()
     }
+    /// Whether dim (SGR 2) is on.
     pub fn dim(&self) -> bool {
         self.cell.attributes.dim()
     }
+    /// Whether italic (SGR 3) is on.
     pub fn italic(&self) -> bool {
         self.cell.attributes.italic()
     }
+    /// Whether underline (SGR 4, or 21, or a style of 4) is on.
     pub fn underline(&self) -> bool {
         self.cell.attributes.underline()
     }
+    /// Whether inverse (SGR 7) is on.
     pub fn inverse(&self) -> bool {
         self.cell.attributes.inverse()
     }
+    /// How the text blinks.
     pub fn blink(&self) -> Blink {
         self.cell.attributes.blink()
     }
+    /// Whether hidden (SGR 8) is on.
     pub fn hidden(&self) -> bool {
         self.cell.attributes.hidden()
     }
+    /// Whether strikeout (SGR 9) is on.
     pub fn strikeout(&self) -> bool {
         self.cell.attributes.strikeout()
     }
@@ -721,12 +774,15 @@ impl Cells {
             spill: Spill::default(),
         }
     }
+    /// How many cells there are.
     pub fn len(&self) -> usize {
         self.cells.len()
     }
+    /// Whether there are no cells.
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
     }
+    /// The cell at `i`.
     pub fn get(&self, i: usize) -> Option<CellRef<'_>> {
         self.cells
             .get(i)

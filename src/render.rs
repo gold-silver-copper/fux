@@ -285,8 +285,8 @@ pub fn compose_into(
         let offset = at.map_or(0, |at| at.offset(screen));
         let (rows, cols) = screen.size();
         let window = screen.window(offset, rows, cols);
-        let width = rect.w.min(window.cols);
-        let screen_rows = rect.h.min(window.rows);
+        let width = rect.w.min(window.cols());
+        let screen_rows = rect.h.min(window.rows());
         // What the pane's screen does not cover of its place is blank.
         for (gy, gx) in (screen_rows..rect.h)
             .filter_map(|y| rect.at(y, 0))
@@ -313,7 +313,7 @@ pub fn compose_into(
             }
             // A wide glyph in the window's last column is cut off, as
             // `Window::cell` has it.
-            if let Some(last) = window.cols.checked_sub(1)
+            if let Some(last) = window.cols().checked_sub(1)
                 && last < width
                 && row
                     .and_then(|r| r.cell(usize::from(last)))
@@ -890,10 +890,11 @@ fn sgr(out: &mut Vec<u8>, a: Attributes) {
     if a.underline() {
         out.extend_from_slice(b";4");
     }
+    // A kind of blink fux-vt does not know yet is drawn as none.
     match a.blink() {
-        fux_vt::Blink::None => {}
         fux_vt::Blink::Slow => out.extend_from_slice(b";5"),
         fux_vt::Blink::Rapid => out.extend_from_slice(b";6"),
+        fux_vt::Blink::None | _ => {}
     }
     if a.inverse() {
         out.extend_from_slice(b";7");
@@ -909,17 +910,17 @@ fn sgr(out: &mut Vec<u8>, a: Attributes) {
     // the whole parameter, where in the semicolon form it would take the
     // colour's numbers for attributes of their own (`58;2;…` would be dim).
     match a.underline_color() {
-        Color::Default => {}
         Color::Idx(n) => {
             let _ = write!(out, ";58:5:{n}");
         }
         Color::Rgb(r, g, b) => {
             let _ = write!(out, ";58:2::{r}:{g}:{b}");
         }
+        // A kind of colour fux-vt does not know yet is drawn as the default.
+        Color::Default | _ => {}
     }
     // `base` is 30 or 40, so no code comes near 255: every sum is exact.
     let color = |out: &mut Vec<u8>, c: Color, base: u8| match c {
-        Color::Default => {}
         Color::Idx(n) if n < 8 => {
             let _ = write!(out, ";{}", base.saturating_add(n));
         }
@@ -933,6 +934,7 @@ fn sgr(out: &mut Vec<u8>, a: Attributes) {
         Color::Rgb(r, g, b) => {
             let _ = write!(out, ";{};2;{r};{g};{b}", base.saturating_add(8));
         }
+        Color::Default | _ => {}
     };
     color(out, a.foreground(), 30);
     color(out, a.background(), 40);

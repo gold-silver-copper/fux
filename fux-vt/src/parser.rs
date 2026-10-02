@@ -98,6 +98,7 @@ pub const OSC_PAYLOAD_LIMIT: usize = 64 * 1024;
 /// and primary DA are answered, keyboard protocol requests are ignored, and a
 /// resize does not reflow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Options {
     /// Deliver OSC 0/1/2 (icon name / window title), OSC 52 (clipboard) and BEL
     /// as [`Event`]s. OSC payloads are buffered up to [`OSC_PAYLOAD_LIMIT`].
@@ -118,6 +119,45 @@ pub struct Options {
     pub reflow: bool,
     /// Answer as this terminal rather than as a bare VT100: see [`Identity`].
     pub identity: Option<Identity>,
+}
+
+impl Options {
+    /// Everything off, as [`Options::default`]; the `with_` methods turn
+    /// each on, in a `const` too.
+    pub const fn new() -> Self {
+        Self {
+            events: false,
+            extended_replies: false,
+            kitty_keyboard: false,
+            reflow: false,
+            identity: None,
+        }
+    }
+    /// These options with [`Options::events`] as `on` says.
+    pub const fn with_events(mut self, on: bool) -> Self {
+        self.events = on;
+        self
+    }
+    /// These options with [`Options::extended_replies`] as `on` says.
+    pub const fn with_extended_replies(mut self, on: bool) -> Self {
+        self.extended_replies = on;
+        self
+    }
+    /// These options with [`Options::kitty_keyboard`] as `on` says.
+    pub const fn with_kitty_keyboard(mut self, on: bool) -> Self {
+        self.kitty_keyboard = on;
+        self
+    }
+    /// These options with [`Options::reflow`] as `on` says.
+    pub const fn with_reflow(mut self, on: bool) -> Self {
+        self.reflow = on;
+        self
+    }
+    /// These options answering as `identity`, or as a bare VT100 if `None`.
+    pub const fn with_identity(mut self, identity: Option<Identity>) -> Self {
+        self.identity = identity;
+        self
+    }
 }
 
 /// Who the terminal says it is. With [`Options::identity`] set, primary DA
@@ -163,9 +203,13 @@ pub enum Event<'a> {
     IconName(&'a [u8]),
     /// BEL executed outside a control string.
     Bell,
-    /// OSC 52 set request. `data` is the payload as sent (normally base64);
-    /// a `?` query is not an event.
-    Clipboard { selection: &'a [u8], data: &'a [u8] },
+    /// OSC 52 set request; a `?` query is not an event.
+    Clipboard {
+        /// The selection parameter, `Pc`: `c`, `p`, `s` and so on, or empty.
+        selection: &'a [u8],
+        /// The data, `Pd`, as sent (normally base64).
+        data: &'a [u8],
+    },
 }
 
 /// A complete sequence fux-vt parsed but does not implement, so a host can
@@ -176,12 +220,20 @@ pub enum Event<'a> {
 pub enum Unhandled<'a> {
     /// `CSI`, its private marker and intermediates, parameters and final byte.
     Csi {
+        /// Its parameters.
         params: Params<'a>,
+        /// Its private marker and intermediate bytes.
         intermediates: &'a [u8],
+        /// Its final byte.
         action: u8,
     },
     /// `ESC`, its intermediates and final byte.
-    Escape { intermediates: &'a [u8], action: u8 },
+    Escape {
+        /// Its intermediate bytes.
+        intermediates: &'a [u8],
+        /// Its final byte.
+        action: u8,
+    },
 }
 
 /// A CSI sequence's parameters.
@@ -200,8 +252,11 @@ impl<'a> Params<'a> {
 /// sequences fux-vt does not implement. All default to discarding, so an
 /// implementation handles only what it needs.
 pub trait Sink {
+    /// A reply to a query, to send back to the program.
     fn reply(&mut self, _bytes: &[u8]) {}
+    /// An event, with [`Options::events`].
     fn event(&mut self, _event: Event<'_>) {}
+    /// A complete sequence fux-vt does not implement.
     fn unhandled(&mut self, _sequence: Unhandled<'_>) {}
 }
 
@@ -235,9 +290,14 @@ pub struct Parser {
 mod tests;
 
 impl Parser {
+    /// A parser with a `rows` by `cols` screen keeping up to `history_lines`
+    /// rows of history, and [`Options::default`]: see [`Parser::with_options`].
     pub fn new(rows: u16, cols: u16, history_lines: usize) -> Result<Self, Error> {
         Self::with_options(rows, cols, history_lines, Options::default())
     }
+    /// A parser with a `rows` by `cols` screen keeping up to `history_lines`
+    /// rows of history (none on the alternate screen), with `options`.
+    /// Zero rows or columns, or more cells than a grid may hold, are refused.
     pub fn with_options(
         rows: u16,
         cols: u16,
@@ -259,6 +319,7 @@ impl Parser {
             utf8_need: 0,
         })
     }
+    /// The terminal's state: what the screen shows, the cursor and the modes.
     pub fn screen(&self) -> &Screen {
         &self.screen
     }
@@ -267,6 +328,7 @@ impl Parser {
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error> {
         self.screen.resize(rows, cols, self.options.reflow)
     }
+    /// The options the parser was made with.
     pub fn options(&self) -> Options {
         self.options
     }
@@ -274,6 +336,7 @@ impl Parser {
     pub fn process(&mut self, bytes: &[u8]) -> Result<(), Error> {
         self.process_with_replies(bytes, |_| {})
     }
+    /// Process output, delivering query replies to `reply`.
     pub fn process_with_replies(
         &mut self,
         bytes: &[u8],
