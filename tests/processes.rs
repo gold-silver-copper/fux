@@ -48,6 +48,17 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
         let (job, kept) = (pid_in(&job)?, pid_in(&kept)?);
         reap.0.extend([job, kept]);
         assert!(alive(job) && alive(kept));
+        // `$!` is written once the shell forks; nohup ignores SIGHUP only
+        // after that, before it runs sleep. Until then a hang-up ends it.
+        eventually("the nohup job to run sleep", || {
+            let out = std::process::Command::new("ps")
+                .args(["-o", "comm=", "-p", &kept.to_string()])
+                .output()
+                .map_err(e)?;
+            Ok(String::from_utf8_lossy(&out.stdout)
+                .trim_end()
+                .ends_with("sleep"))
+        })?;
         match how {
             "kill-pane" => {
                 server.ok(&["kill-pane", "-t", &pane])?;
