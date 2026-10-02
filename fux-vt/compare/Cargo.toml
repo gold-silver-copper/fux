@@ -40,7 +40,7 @@ overflow-checks = true
 [lints.rust]
 unused_must_use = "forbid"
 unconditional_recursion = "forbid"
-unsafe_code = "forbid"
+unsafe_code = "deny"
 
 [lints.clippy]
 suspicious = { level = "forbid", priority = -1 }
