@@ -199,14 +199,17 @@ fn zombies_of(pid: u32) -> Result<Vec<String>, String> {
 
 /// A command line too long to type into a new pane's shell is refused
 /// before the shell starts, so no process is left behind. Quoting makes
-/// each `'` four bytes, so this argument fits a frame but not a pane's
+/// each `'` four bytes, so these arguments fit a frame but not a pane's
 /// input queue.
 #[test]
 fn a_line_too_long_to_type_leaves_no_process_behind() -> Outcome {
     let server = Server::start("")?;
     let pid = server.pid().ok_or("the server's pid")?;
-    let quotes: String = std::iter::repeat_n('\'', 300_000).collect();
-    let out = server.fux(&["split", "-h", "-t", "%1", "--", "echo", &quotes])?;
+    // In many arguments: Linux takes at most 128 KiB in one.
+    let quotes: String = std::iter::repeat_n('\'', 100).collect();
+    let mut argv = vec!["split", "-h", "-t", "%1", "--", "echo"];
+    argv.extend(std::iter::repeat_n(quotes.as_str(), 3000));
+    let out = server.fux(&argv)?;
     assert_ne!(out.status, 0, "the split was refused");
     assert!(out.stderr.contains("too long"), "{}", out.stderr);
     // Any child it made would have exited by now, unreaped.

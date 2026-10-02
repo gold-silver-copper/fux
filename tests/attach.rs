@@ -467,19 +467,20 @@ fn a_panes_shell_has_the_pty_as_its_terminal_and_job_control() -> Outcome {
     // group is the shell's to hand out.
     // `sleep 37`, a command line no other test runs, so `ps` finds this one.
     client.keys("sleep 37\r")?;
-    eventually("sleep in the foreground", || job_state("sleep 37", "S+"))?;
+    eventually("sleep in the foreground", || {
+        job_state("sleep 37", foreground)
+    })?;
     client.keys("\x1a")?;
     client.wait("the stopped job", |t| t.contains("Stopped"))?;
     client.keys("fg\r")?;
     eventually("sleep in the foreground again", || {
-        job_state("sleep 37", "S+")
+        job_state("sleep 37", foreground)
     })?;
     client.keys("\x03")?;
-    // The prompt is back once the interrupted job has gone.
-    client.wait("the prompt after the job", |t| {
-        let mut lines = t.lines().rev().filter(|l| !l.trim().is_empty());
-        lines.nth(1).is_some_and(|l| l.trim_end() == "$")
-    })?;
+    // The prompt is back once the interrupted job has gone: typed sooner,
+    // the next line would be echoed before it (dash prints no newline
+    // after ^C).
+    at_prompt(&mut client, "the prompt after the job")?;
     client.keys("jobs; echo after-fg\r")?;
     client.wait("the prompt after fg", |t| {
         t.lines().any(|l| l == "after-fg")
@@ -694,18 +695,36 @@ fn a_descriptor_the_server_inherited_does_not_reach_its_panes() -> Outcome {
     Ok(())
 }
 
-/// Whether a process running `command` has a `ps` state starting with
-/// `state`: `S+` asleep in its terminal's foreground, `T` stopped.
-fn job_state(command: &str, state: &str) -> Result<bool, String> {
+/// Whether a process running `command` has a `ps` state that `test` takes.
+fn job_state(command: &str, test: fn(&str) -> bool) -> Result<bool, String> {
     let out = std::process::Command::new("ps")
         .args(["-A", "-o", "stat=,command="])
         .output()
         .map_err(e)?;
     Ok(String::from_utf8_lossy(&out.stdout).lines().any(|line| {
-        let line = line.trim_start();
-        line.starts_with(state)
-            && line
-                .split_once(char::is_whitespace)
-                .is_some_and(|(_, c)| c.trim() == command)
+        line.trim_start()
+            .split_once(char::is_whitespace)
+            .is_some_and(|(stat, c)| c.trim() == command && test(stat))
     }))
+}
+
+/// A `ps` state of a process running in its terminal's foreground group:
+/// running or asleep (`R`, `S`), with `+`, whatever other flags it has
+/// (`N` on a runner that lowers its priority).
+fn foreground(stat: &str) -> bool {
+    stat.starts_with(['R', 'S']) && stat.contains('+')
+}
+
+/// Waits until the shell waits at a fresh prompt: the cursor just after a
+/// `$ ` alone on its line.
+fn at_prompt(client: &mut Client, what: &str) -> Outcome {
+    eventually(what, || {
+        client.pump()?;
+        let (row, col) = client.terminal.screen().cursor_position();
+        let lines = client.lines();
+        Ok(col == 2
+            && lines
+                .get(usize::from(row))
+                .is_some_and(|l| l.trim_end() == "$"))
+    })
 }
