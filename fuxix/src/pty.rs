@@ -182,19 +182,24 @@ fn replace_with_null(raw: libc::c_int) -> bool {
     replaced >= 0
 }
 
-/// A new PTY master, close-on-exec: atomically where the system allows,
-/// and on macOS, which has no flag for it, straight after.
+/// A new PTY master, close-on-exec: atomically, with `O_CLOEXEC`, so that
+/// no process another thread starts meanwhile inherits it (and holds the
+/// slave's hang-up back for as long as it lives). macOS takes the flag (27
+/// does; older releases may refuse it with `EINVAL`, and then the flag is
+/// set straight after the open).
 fn open_master() -> crate::Result<OwnedFd> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     // SAFETY: posix_openpt takes flags and touches no memory.
     let raw =
         check(unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) })?;
     #[cfg(target_os = "macos")]
-    let raw = open_master_serialized()?;
+    let (raw, atomic) = open_master_serialized()?;
     // SAFETY: `raw` was just opened, is valid, and nothing else owns it.
     let master = unsafe { OwnedFd::from_raw_fd(raw) };
     #[cfg(target_os = "macos")]
-    crate::io::set_cloexec(&master)?;
+    if !atomic {
+        crate::io::set_cloexec(&master)?;
+    }
     Ok(master)
 }
 
@@ -205,18 +210,29 @@ fn open_master() -> crate::Result<OwnedFd> {
 /// kernel's retry loop, whose sleeps made single opens take over 400 ms. It is
 /// held through the retries' own sleeps too: while one opener is losing to
 /// another process, this process's other threads would only join the race.
+///
+/// It asks for `O_CLOEXEC`, and, if the system refuses the flag, opens
+/// without it; the second value says whether the flag was taken.
 #[cfg(target_os = "macos")]
-fn open_master_serialized() -> crate::Result<libc::c_int> {
+fn open_master_serialized() -> crate::Result<(libc::c_int, bool)> {
     static OPENING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     // A poisoned lock only means an opener panicked; there is nothing to repair.
     let _one = OPENING
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    redrive(
-        // SAFETY: posix_openpt takes flags and touches no memory.
-        || check(unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) }),
-        std::thread::sleep,
-    )
+    let open = |flags: libc::c_int| {
+        redrive(
+            // SAFETY: posix_openpt takes flags and touches no memory.
+            || check(unsafe { libc::posix_openpt(flags) }),
+            std::thread::sleep,
+        )
+    };
+    match open(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) {
+        Err(errno) if errno == Errno::INVAL => {
+            open(libc::O_RDWR | libc::O_NOCTTY).map(|raw| (raw, false))
+        }
+        other => other.map(|raw| (raw, true)),
+    }
 }
 
 /// How many times `redrive` calls `open`: sleeping 1, 2, … 7 ms between
@@ -316,6 +332,20 @@ mod tests {
         assert_eq!(crate::io::write(&slave, b"out"), Ok(3));
         assert_eq!(crate::io::read(&master, &mut buffer), Ok(3));
         assert_eq!(buffer.get(..3), Some(&b"out"[..]));
+        Ok(())
+    }
+
+    /// On macOS the master is close-on-exec from its opening, where the
+    /// system takes `O_CLOEXEC`: as `posix_openpt` gave it, before anything
+    /// else could set the flag.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_macos_master_is_close_on_exec_as_opened() -> std::result::Result<(), String> {
+        let (raw, atomic) = open_master_serialized().map_err(|e| e.to_string())?;
+        // SAFETY: `raw` was just opened, is valid, and nothing else owns it.
+        let master = unsafe { OwnedFd::from_raw_fd(raw) };
+        eprintln!("posix_openpt took O_CLOEXEC: {atomic}");
+        assert!(!atomic || is_cloexec(&master));
         Ok(())
     }
 
