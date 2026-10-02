@@ -48,8 +48,16 @@ pub(crate) struct Grid {
     pub rows: Extent,
     pub cols: Extent,
     pub history_limit: usize,
+    /// Always on the grid: a glyph that reaches the last column leaves the
+    /// cursor there with `pending_wrap` set.
     pub cursor: (u16, u16),
+    /// DEC STD 070's Last Column Flag (Appendix D.6.1): a glyph went into
+    /// the last column, so the next one, with autowrap on, first moves to
+    /// the start of the next line.
+    pub pending_wrap: bool,
     pub saved_cursor: (u16, u16),
+    /// The flag DECSC saved with the cursor, which DECRC restores.
+    pub saved_pending_wrap: bool,
     pub origin: bool,
     pub saved_origin: bool,
     pub top: u16,
@@ -96,7 +104,9 @@ impl Grid {
             cols,
             history_limit,
             cursor: (0, 0),
+            pending_wrap: false,
             saved_cursor: (0, 0),
+            saved_pending_wrap: false,
             origin: false,
             saved_origin: false,
             top: 0,
@@ -316,7 +326,10 @@ impl Grid {
         }
     }
 
+    /// ICH and DCH, at the cursor, which they leave where it is; they end
+    /// a pending wrap (DEC STD 070, Appendix D.6.1).
     pub fn edit_cells(&mut self, count: u16, insert: bool, version: u64) {
+        self.pending_wrap = false;
         let (row, col) = self.cursor;
         // At most the cells from the cursor to the edge.
         let count = usize::from(count.min(self.cols.get().saturating_sub(col)));
@@ -545,11 +558,15 @@ impl Grid {
             rows,
             cols,
             history_limit: self.history_limit,
-            cursor: (shifted(self.cursor.0), self.cursor.1.min(cols.last())),
+            // A pending wrap is dropped: the cursor goes one past where it
+            // waited, as far as the new width allows.
+            cursor: (shifted(self.cursor.0), self.next_column().min(cols.last())),
+            pending_wrap: false,
             saved_cursor: (
                 shifted(self.saved_cursor.0),
-                self.saved_cursor.1.min(cols.last()),
+                past(self.saved_cursor.1, self.saved_pending_wrap).min(cols.last()),
             ),
+            saved_pending_wrap: false,
             origin: self.origin,
             saved_origin: self.saved_origin,
             top: self.top,
@@ -638,10 +655,11 @@ impl Grid {
         version: u64,
     ) -> Result<Self, Error> {
         let (rows, cols) = Self::check_size(rows, cols, self.history_limit)?;
+        // A cursor waiting to wrap is laid out one past its glyph.
         let cursor = self
             .history_len()
             .checked_add(usize::from(self.cursor.0))
-            .map(|row| (row, usize::from(self.cursor.1)));
+            .map(|row| (row, usize::from(self.next_column())));
         let layout = self.reflow(usize::from(cols.get()), cursor, &mut Layout)?;
         // Blank lines below the cursor are dropped before any line scrolls
         // into history: a mostly empty screen keeps its text on screen.
@@ -659,6 +677,8 @@ impl Grid {
             .saturating_sub(base)
             .checked_add(screen)
             .ok_or(Error::Capacity)?;
+        // One past the last column is the last column, waiting to wrap.
+        let cursor_col = u16::try_from(cursor_col).map_or(cols.get(), |col| col.min(cols.get()));
         let mut replacement = Self {
             cells: Vec::new(),
             meta: Vec::new(),
@@ -673,12 +693,14 @@ impl Grid {
             cursor: (
                 u16::try_from(cursor_row.saturating_sub(live_top))
                     .map_or(rows.last(), |row| row.min(rows.last())),
-                u16::try_from(cursor_col).map_or(cols.get(), |col| col.min(cols.get())),
+                cursor_col.min(cols.last()),
             ),
+            pending_wrap: cursor_col >= cols.get(),
             saved_cursor: (
                 self.saved_cursor.0.min(rows.last()),
                 self.saved_cursor.1.min(cols.last()),
             ),
+            saved_pending_wrap: false,
             origin: self.origin,
             saved_origin: self.saved_origin,
             top: 0,
@@ -901,7 +923,9 @@ impl Grid {
             }
         }
         self.cursor = (0, 0);
+        self.pending_wrap = false;
         self.saved_cursor = (0, 0);
+        self.saved_pending_wrap = false;
         self.origin = false;
         self.saved_origin = false;
         self.top = 0;
@@ -912,7 +936,21 @@ impl Grid {
     pub fn in_region(&self) -> bool {
         (self.top..=self.bottom).contains(&self.cursor.0)
     }
+    /// Where the next glyph goes, before any wrap: the cursor's column, or
+    /// one past the last column while a wrap is pending.
+    pub fn next_column(&self) -> u16 {
+        past(self.cursor.1, self.pending_wrap)
+    }
+    /// Puts the cursor in column `col` of its row; one past the last
+    /// column is the last column with a wrap pending.
+    pub fn advance_to(&mut self, col: u16) {
+        self.pending_wrap = col >= self.cols.get();
+        self.cursor.1 = col.min(self.cols.last());
+    }
+    /// CUP: moves the cursor, within the margins in origin mode. Like every
+    /// cursor movement, it ends a pending wrap.
     pub fn position(&mut self, row: u16, col: u16) {
+        self.pending_wrap = false;
         self.cursor = if self.origin {
             (
                 row.saturating_add(self.top).min(self.bottom).max(self.top),
@@ -922,6 +960,11 @@ impl Grid {
             (row.min(self.rows.last()), col.min(self.cols.last()))
         };
     }
+}
+
+/// The column one past `col` if a wrap is pending there, else `col`.
+fn past(col: u16, pending_wrap: bool) -> u16 {
+    col.saturating_add(u16::from(pending_wrap))
 }
 
 /// Where a reflow's rows go: `Layout` only counts them; `Copy` writes the

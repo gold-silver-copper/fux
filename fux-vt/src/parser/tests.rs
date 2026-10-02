@@ -89,6 +89,7 @@ fn ascii_run_path_equals_scalar_dispatch_on_the_permanent_corpus() -> Result<(),
                 assert_eq!(a, b);
                 let (a, b) = (fast.screen(), scalar.screen());
                 assert_eq!(a.cursor_position(), b.cursor_position());
+                assert_eq!(a.pending_wrap(), b.pending_wrap());
                 assert_eq!(a.attributes(), b.attributes());
                 assert_eq!(a.history_len(), b.history_len());
                 for offset in 0..usize::from(rows) + a.history_len() {
@@ -128,6 +129,7 @@ fn ascii_run_path_equals_scalar_dispatch_around_grapheme_clusters() -> Result<()
         }
         let (a, b) = (fast.screen(), scalar.screen());
         assert_eq!(a.cursor_position(), b.cursor_position(), "{cols} columns");
+        assert_eq!(a.pending_wrap(), b.pending_wrap(), "{cols} columns");
         for offset in 0..6 + a.history_len() {
             assert_eq!(
                 a.row_from_bottom(offset).map(|r| r.cells),

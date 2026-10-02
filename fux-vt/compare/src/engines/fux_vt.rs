@@ -101,10 +101,8 @@ impl Engine for Vt {
     fn snapshot(&mut self, _: usize) -> Result<Snapshot, String> {
         let s = self.parser.screen();
         let (rows, cols) = s.size();
-        let (row, col) = s.cursor_position();
-        // A cursor waiting to wrap is kept one past the last column.
-        let pending_wrap = col >= cols;
-        let cursor = (row, col.min(cols.saturating_sub(1)));
+        let cursor = s.cursor_position();
+        let pending_wrap = s.pending_wrap();
         let screen = (0..rows)
             .map(|y| Line {
                 cells: (0..cols)

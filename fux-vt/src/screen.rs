@@ -232,10 +232,18 @@ impl Screen {
     pub fn size(&self) -> (u16, u16) {
         (self.grid().rows.get(), self.grid().cols.get())
     }
-    /// The column may equal width while autowrap is pending, matching fux's
-    /// existing hidden-at-right-edge cursor contract.
+    /// The cursor's row and column, always on the screen. A glyph printed
+    /// in the last column leaves the cursor on it, with
+    /// [`pending_wrap`](Self::pending_wrap) set, as xterm does.
     pub fn cursor_position(&self) -> (u16, u16) {
         self.grid().cursor
+    }
+    /// DEC STD 070's Last Column Flag: a glyph went into the last column,
+    /// and the next one, with autowrap on, first moves to the start of the
+    /// next line. Cursor movements, line feeds and edits end it; DECSC and
+    /// SCOSC save it with the cursor.
+    pub fn pending_wrap(&self) -> bool {
+        self.grid().pending_wrap
     }
     pub fn hide_cursor(&self) -> bool {
         self.hide_cursor
@@ -306,15 +314,17 @@ impl Screen {
         }
     }
     /// The one-based cursor position a DSR 6n or DECXCPR reports. A cursor
-    /// waiting to wrap is one past the last column; with an identity it is
-    /// reported at the last column, as xterm does.
+    /// waiting to wrap is reported one past the last column, as the vt100
+    /// crate did; with an identity it is reported at the last column, as
+    /// xterm does.
     pub(crate) fn reported_cursor(&self, options: &Options) -> (u32, u32) {
         let g = self.grid();
-        let (row, mut col) = g.cursor;
-        if options.identity.is_some() {
-            col = col.min(g.cols.last());
-        }
-        (u32::from(row) + 1, u32::from(col) + 1)
+        let col = if options.identity.is_some() {
+            g.cursor.1
+        } else {
+            g.next_column()
+        };
+        (u32::from(g.cursor.0) + 1, u32::from(col) + 1)
     }
     pub fn attributes(&self) -> Attributes {
         self.attributes
@@ -440,6 +450,7 @@ impl Screen {
         })
     }
     fn linefeed(&mut self) -> Result<(), Error> {
+        self.grid_mut().pending_wrap = false;
         let g = self.grid();
         if g.cursor.0 == g.bottom {
             self.scroll(g.top, g.bottom, 1, true, true)?;
@@ -451,6 +462,7 @@ impl Screen {
         Ok(())
     }
     fn reverse_index(&mut self) -> Result<(), Error> {
+        self.grid_mut().pending_wrap = false;
         let g = self.grid();
         if g.cursor.0 == g.top {
             self.scroll(g.top, g.bottom, 1, false, false)?;
@@ -459,6 +471,11 @@ impl Screen {
         }
         Ok(())
     }
+    /// Makes room for a glyph `width` wide at the cursor, which is left
+    /// where it goes, with no wrap pending: a pending wrap, or a glyph too
+    /// wide for what is left of the row, moves it to the start of the next
+    /// line with autowrap on (DEC STD 070, Appendix D.6.1), and back to the
+    /// last column it fits in with autowrap off.
     fn wrap_for(&mut self, width: u16) -> Result<(), Error> {
         let g = self.grid();
         // The last column a glyph this wide can start in; a wider glyph is
@@ -466,12 +483,14 @@ impl Screen {
         let Some(room) = g.cols.get().checked_sub(width) else {
             return Ok(());
         };
-        if g.cursor.1 <= room {
+        if g.next_column() <= room {
             return Ok(());
         }
         let wrap = self.autowrap;
         if !wrap {
-            self.grid_mut().cursor.1 = room;
+            let g = self.grid_mut();
+            g.cursor.1 = room;
+            g.pending_wrap = false;
             return Ok(());
         }
         let row = g.cursor.0;
@@ -504,7 +523,7 @@ impl Screen {
         }
         if width == 0 {
             let g = self.grid();
-            let (row, col) = g.cursor;
+            let (row, col) = (g.cursor.0, g.next_column());
             let above = row.checked_sub(1);
             let previous = if let Some(left) = col.checked_sub(1) {
                 Some((row, left))
@@ -569,8 +588,8 @@ impl Screen {
                 }
                 true
             });
-            // Past the glyph; at the right edge it waits there to wrap.
-            g.cursor.1 = g.cursor.1.saturating_add(width).min(g.cols.get());
+            // Past the glyph; in the last column it waits there to wrap.
+            g.advance_to(col.saturating_add(width));
         });
         self.last_print = Some(Printed::new((row, col), c));
         Ok(())
@@ -588,7 +607,7 @@ impl Screen {
     /// because the cluster is full, which never splits it.
     fn extend_cluster(&mut self, c: char) -> bool {
         let g = self.grid();
-        let (row, col) = g.cursor;
+        let (row, col) = (g.cursor.0, g.next_column());
         let anchor = self.last_print.or_else(|| {
             if c.width() != Some(0) {
                 return None;
@@ -658,7 +677,7 @@ impl Screen {
                 true
             });
             if widened {
-                g.cursor.1 = g.cursor.1.saturating_add(1).min(g.cols.get());
+                g.advance_to(col.saturating_add(1));
             }
         });
         self.last_print = Some(Printed {
@@ -726,7 +745,7 @@ impl Screen {
                     }
                     true
                 });
-                g.cursor.1 = end;
+                g.advance_to(end);
             });
             // The run's last glyph, which a mark or selector may join.
             self.last_print = end
@@ -743,6 +762,12 @@ impl Screen {
             self.break_cluster();
         }
         let g = self.grid_mut();
+        // BS, LF, VT, FF and CR end a pending wrap (DEC STD 070, Appendix
+        // D.6.1). HT does not: it leaves a cursor in the last column where
+        // it is, still waiting to wrap, as xterm does.
+        if matches!(byte, 8 | 13) {
+            g.pending_wrap = false;
+        }
         match byte {
             8 => g.cursor.1 = g.cursor.1.saturating_sub(1),
             // The next multiple of eight, stopping at the last column.
@@ -758,15 +783,19 @@ impl Screen {
         }
         Ok(())
     }
+    /// DECSC: the cursor, with its pending wrap (DEC STD 070, Appendix
+    /// D.6.1), origin mode and the drawing attributes.
     fn save(&mut self) {
         let g = self.grid_mut();
         g.saved_cursor = g.cursor;
+        g.saved_pending_wrap = g.pending_wrap;
         g.saved_origin = g.origin;
         self.saved_attributes = self.attributes;
     }
     fn restore(&mut self) {
         let g = self.grid_mut();
         g.cursor = g.saved_cursor;
+        g.pending_wrap = g.saved_pending_wrap;
         g.origin = g.saved_origin;
         self.attributes = self.saved_attributes;
     }
@@ -1000,6 +1029,13 @@ impl Screen {
         }
         let n = p.first(0, 1);
         let (row, col) = self.grid().cursor;
+        // Every cursor movement, erase and edit ends a pending wrap (DEC STD
+        // 070, Appendix D.6.1, which lists them), as xterm does; ED, EL, IL
+        // and DL below, once they are carried out. SU and SD are not among
+        // them: the cursor stays waiting to wrap, as in xterm.
+        if matches!(byte, b'A'..=b'H' | b'X' | b'd' | b'f' | b'r') {
+            self.grid_mut().pending_wrap = false;
+        }
         match byte {
             b'A' | b'B' | b'E' | b'F' => {
                 let g = self.grid_mut();
@@ -1051,6 +1087,7 @@ impl Screen {
                     return Ok(Dispatch::Unhandled);
                 }
                 self.with_grid(|g, _, v| {
+                    g.pending_wrap = false;
                     let cols = g.cols.get();
                     if byte == b'J' {
                         for y in 0..g.rows.get() {
@@ -1070,6 +1107,8 @@ impl Screen {
             b'L' | b'M' => {
                 let g = self.grid();
                 if g.in_region() {
+                    self.grid_mut().pending_wrap = false;
+                    let g = self.grid();
                     self.scroll(row, g.bottom, n, byte == b'M', false)?;
                 }
             }

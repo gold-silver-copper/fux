@@ -144,16 +144,28 @@ fuzz_target!(|input: Input| {
             .sum()
     });
     if !lines.is_empty() {
-        assert_eq!(usize::from(parser.screen().cursor_position().1), last);
+        // A line that fills the row leaves the cursor in the last column,
+        // waiting to wrap: one past it.
+        let screen = parser.screen();
+        let at = usize::from(screen.cursor_position().1)
+            .saturating_add(usize::from(screen.pending_wrap()));
+        assert_eq!(at, last);
     }
 
     // Narrower and back: every line as it was, the cursor on it.
     if let Some(width) = input.reflow_to {
-        let cursor = parser.screen().cursor_position();
+        let cursor = (
+            parser.screen().cursor_position(),
+            parser.screen().pending_wrap(),
+        );
         let narrow = u16::from(width).clamp(2, cols);
         assert!(parser.resize(rows, narrow).is_ok());
         assert!(parser.resize(rows, cols).is_ok());
         check(&parser);
-        assert_eq!(parser.screen().cursor_position(), cursor);
+        let after = (
+            parser.screen().cursor_position(),
+            parser.screen().pending_wrap(),
+        );
+        assert_eq!(after, cursor);
     }
 });

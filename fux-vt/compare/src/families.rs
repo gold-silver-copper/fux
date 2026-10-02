@@ -434,7 +434,9 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "controls",
         about: "CR, LF, VT, FF, BS, HT and BEL",
-        status: Status::Differs("LF, VT, FF, BS and HT leave a pending wrap set (audit F1)"),
+        status: Status::Differs(
+            "the panel splits on a line feed (LF, VT, FF) that scrolls while a wrap is pending: xterm, Ghostty, wezterm and xterm.js end the wrap, as DEC STD 070 (Appendix D.6.1) says and fux-vt does; alacritty, libvterm and avt keep it, and outvote fux-vt (`replay --engines all --size 2x3 'abcdef\\nX'`)",
+        ),
         ratty_only: false,
         generate: controls,
     },
@@ -442,7 +444,7 @@ pub const FAMILIES: &[Family] = &[
         name: "cursor",
         about: "CUU CUD CUF CUB CNL CPL CHA VPA HPA HPR VPR, CUP and HVP",
         status: Status::Differs(
-            "cursor movement leaves a pending wrap set (F1); HPR (CSI a) and VPR (CSI e) are not implemented",
+            "HPA (CSI `), HPR (CSI a) and VPR (CSI e) are not implemented (F8)",
         ),
         ratty_only: false,
         generate: cursor,
@@ -451,7 +453,7 @@ pub const FAMILIES: &[Family] = &[
         name: "erase",
         about: "ED, EL and ECH",
         status: Status::Differs(
-            "ED, EL and ECH leave a pending wrap set, so the last column is not erased (F1)",
+            "the panel splits: ED, EL and ECH end a pending wrap, as DEC STD 070 (Appendix D.6.1) says and xterm, Ghostty and fux-vt do; alacritty, libvterm and avt keep it, and outvote fux-vt (`replay --engines all --size 1x5 'abcde\\e[KX'`)",
         ),
         ratty_only: false,
         generate: erase,
@@ -460,7 +462,7 @@ pub const FAMILIES: &[Family] = &[
         name: "edit",
         about: "ICH, DCH, IL and DL",
         status: Status::Differs(
-            "ICH, DCH, IL and DL leave a pending wrap set (F1); IL and DL keep the cursor's column (F8); inserted lines take the default background, not the current one (no BCE)",
+            "IL and DL keep the cursor's column (F8); inserted lines take the default background, not the current one (no BCE); and the panel splits on ICH and DCH, which end a pending wrap in xterm and Ghostty, as DEC STD 070 (Appendix D.6.1) says and fux-vt does, where alacritty and libvterm keep it (`replay --engines all --size 1x5 'abcde\\e[@X'`)",
         ),
         ratty_only: false,
         generate: edit,
@@ -503,7 +505,7 @@ pub const FAMILIES: &[Family] = &[
         name: "pending-wrap",
         about: "a glyph in the last column, then a control, movement or edit while the wrap is pending",
         status: Status::Differs(
-            "a cursor waiting to wrap is kept one past the last column, and nothing but printing and CR handles it (F1)",
+            "the panel splits: EL, ECH, ICH, DCH and a line feed that scrolls end a pending wrap in xterm and Ghostty, as DEC STD 070 (Appendix D.6.1) says and fux-vt does; alacritty, libvterm and avt keep it, and outvote fux-vt (`replay --engines all --size 1x5 'abcde\\e[KX'`). Also a wide glyph that wraps does not mark its row soft-wrapped (F5), and IL and DL keep the cursor's column (F8)",
         ),
         ratty_only: false,
         generate: pending_wrap,
@@ -538,7 +540,9 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "save",
         about: "DECSC, DECRC, SCOSC and SCORC",
-        status: Status::Differs("DECSC and SCOSC do not keep a pending wrap (F1)"),
+        status: Status::Differs(
+            "a glyph that wraps from a row whose last column is blank, as one does after DECRC restores a pending wrap, does not mark the row soft-wrapped (F5)",
+        ),
         ratty_only: false,
         generate: save,
     },

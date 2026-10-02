@@ -24,14 +24,21 @@ fn cell(parser: &Parser, row: u16, col: u16) -> std::result::Result<CellRef<'_>,
 fn text_controls_cursor_and_pending_wrap() -> Result {
     let mut p = Parser::new(3, 5, 2)?;
     p.process(b"abcde")?;
-    assert_eq!(p.screen().cursor_position(), (0, 5));
+    // The cursor stays on the last column, waiting to wrap (DEC STD 070,
+    // Appendix D.6.1, the Last Column Flag).
+    assert_eq!(p.screen().cursor_position(), (0, 4));
+    assert!(p.screen().pending_wrap());
     assert!(!p.screen().row_wrapped(0));
     p.process(b"fgh\r\nijk")?;
     assert_eq!(lines(&p), ["abcde", "fgh", "ijk"]);
     assert!(p.screen().row_wrapped(0));
     assert_eq!(p.screen().cursor_position(), (2, 3));
+    assert!(!p.screen().pending_wrap());
+    // BS ends the pending wrap and moves back from the last column, so Y
+    // lands before Z, as in xterm (`tab-then-print-in-last-column`). This
+    // used to pin "abcdY", the vt100 crate's cursor one past the edge.
     p.process(b"\x1b[H\tZ\x08Y")?;
-    assert_eq!(lines(&p), ["abcdY", "fgh", "ijk"]);
+    assert_eq!(lines(&p), ["abcYZ", "fgh", "ijk"]);
     p.process(b"\x1b[999;999H")?;
     assert_eq!(p.screen().cursor_position(), (2, 4));
     p.process(b"\x1b[2A\x1b[2D")?;
@@ -54,7 +61,9 @@ fn tiny_grids_wrap_and_drop_wide_glyphs_without_underflow() -> Result {
         }
         p.process(b"\x1bc")?;
         p.process(&vec![b'x'; usize::from(rows) * usize::from(cols) + 1])?;
-        assert_eq!(p.screen().cursor_position(), (rows - 1, 1));
+        // One column wide, the last x fills the row and waits to wrap.
+        assert_eq!(p.screen().cursor_position(), (rows - 1, 1.min(cols - 1)));
+        assert_eq!(p.screen().pending_wrap(), cols == 1);
         assert_eq!(p.screen().history_len(), 1);
         p.process(b"\x1b[999S\x1b[999T\x1b[999L\x1b[999M")?;
     }

@@ -12,8 +12,13 @@ pub fn check(p: &Parser) {
     assert!(rows > 0 && cols > 0);
     let (row, col) = s.cursor_position();
     assert!(
-        row < rows && col <= cols,
+        row < rows && col < cols,
         "cursor {row},{col} outside {rows}x{cols}"
+    );
+    // A wrap waits only in the last column.
+    assert!(
+        !s.pending_wrap() || col.checked_add(1) == Some(cols),
+        "wrap pending at {row},{col} of {rows}x{cols}"
     );
     let (top, bottom) = s.scroll_region();
     assert!(top <= bottom && bottom < rows);
@@ -88,6 +93,7 @@ pub fn equal(a: &Parser, b: &Parser) {
     let (a, b) = (a.screen(), b.screen());
     assert_eq!(a.size(), b.size());
     assert_eq!(a.cursor_position(), b.cursor_position());
+    assert_eq!(a.pending_wrap(), b.pending_wrap());
     assert_eq!(a.attributes(), b.attributes());
     assert_eq!(a.autowrap(), b.autowrap());
     assert_eq!(a.origin_mode(), b.origin_mode());

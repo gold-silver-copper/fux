@@ -259,7 +259,8 @@ fn widening_needs_room_and_clears_what_it_covers() -> Result {
     p.process("ab\u{2764}\u{fe0f}".as_bytes())?;
     assert_eq!(cell(&p, 0, 2)?.contents(), "\u{2764}\u{fe0f}");
     assert!(!cell(&p, 0, 2)?.is_wide());
-    assert_eq!(p.screen().cursor_position(), (0, 3));
+    assert_eq!(p.screen().cursor_position(), (0, 2));
+    assert!(p.screen().pending_wrap());
     // Widening over the first half of a wide glyph blanks its second half.
     let mut p = Parser::new(2, 6, 0)?;
     p.process("a\u{4f60}\x1b[1G\u{2764}".as_bytes())?;
