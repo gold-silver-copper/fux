@@ -259,3 +259,40 @@ fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
     received(&out, &expected)?;
     Ok(())
 }
+
+/// A program that closes its terminal but keeps running leaves its PTY
+/// hung up: the master reports the end on every poll until the program
+/// exits. The server stops polling it rather than spin, and closes the
+/// pane when the program exits.
+///
+/// On Linux, closing the last descriptor on the terminal is enough. On
+/// macOS the session's controlling terminal keeps it open after a plain
+/// shell's `exec`, but not after zsh's, the login shell there, so the pane
+/// runs zsh where there is one.
+#[test]
+fn a_program_that_closes_its_terminal_does_not_make_the_server_spin() -> Outcome {
+    let zsh = std::path::Path::new("/bin/zsh").exists();
+    let server = Server::start(if zsh { "set shell /bin/zsh" } else { "" })?;
+    let pid = server.pid().ok_or("the server's pid")?;
+    eventually("a prompt", || {
+        let screen = server.ok(&["capture-pane", "-t", "%1"])?;
+        Ok(screen.contains('$') || screen.contains('%'))
+    })?;
+    server.ok(&["split", "-h", "-t", "%1"])?;
+    eventually("a prompt in %2", || {
+        let screen = server.ok(&["capture-pane", "-t", "%2"])?;
+        Ok(screen.contains('$') || screen.contains('%'))
+    })?;
+    server.ok(&["send-keys", "-t", "%2", "-l", "exec sleep 2 <&- >&- 2>&-"])?;
+    server.ok(&["send-keys", "-t", "%2", "Enter"])?;
+    // Let the shell exec, then measure a second of the server's CPU.
+    std::thread::sleep(Duration::from_millis(300));
+    let before = cpu_seconds(pid)?;
+    std::thread::sleep(Duration::from_secs(1));
+    let cpu = cpu_seconds(pid)? - before;
+    assert!(cpu < 0.2, "{cpu:.2} s of server CPU in one second");
+    eventually("%2 to close when sleep exits", || {
+        Ok(!server.ok(&["ls"])?.contains("%2 "))
+    })?;
+    Ok(())
+}

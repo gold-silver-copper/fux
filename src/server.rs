@@ -303,6 +303,9 @@ impl Server {
             slots.push(Slot::Conn(i));
         }
         for (id, pane) in &self.session.panes {
+            if pane.hung_up {
+                continue;
+            }
             if let Some(child) = &pane.child {
                 let mut flags = PollFlags::IN;
                 if !pane.input.is_empty() {
@@ -788,8 +791,12 @@ impl Server {
         }
         if ended {
             self.reap();
-            // A pane whose master reports the end but whose leader has not
-            // exited stays; its hangup will come with the exit.
+            // A pane whose master reports the end but whose program has not
+            // exited stays until it does, unpolled: its master would report
+            // the end on every poll, and the loop would spin.
+            if let Some(pane) = self.session.panes.get_mut(&id) {
+                pane.hung_up = true;
+            }
         }
     }
 
