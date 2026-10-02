@@ -125,7 +125,10 @@ lowest number.
 
 `C-b c` puts a keyboard cursor on the focused pane, starting at its text
 cursor. For your terminal the pane holds still while you look, even as output
-continues (other terminals see it live). In place of the tabs, the bar shows
+continues (other terminals see it live). Only history's own limit moves it:
+if output pushes the rows copy mode holds (the top of its view, its cursor,
+or where the selection starts) out of the history, copy mode ends, and the
+bar says why. In place of the tabs, the bar shows
 `COPY` (`COPY select`, `lines` or `block` while selecting, or the search being
 typed) and the keys that act now, and on the right the cursor's line in the
 history.
