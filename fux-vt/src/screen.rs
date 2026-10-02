@@ -881,6 +881,34 @@ impl Screen {
         Ok(true)
     }
 
+    /// DECSTR (`CSI ! p`), as xterm does it: the modes a program sets go
+    /// back to their defaults, as the VT520 manual's table (p. 5-150) and
+    /// DEC STD 070's Soft Terminal Reset (p. 4-37) list them: the cursor
+    /// shown, DECOM, DECCKM and DECKPAM off, the scroll region the whole
+    /// screen, the pen and the saved cursor's attributes normal, and the
+    /// saved cursor home. DECAWM goes back to its default, which both
+    /// leave to the terminal's setting (xterm's: on). The screen, the
+    /// cursor, a pending wrap, the alternate screen, bracketed paste, focus
+    /// reporting, mouse modes and kitty keyboard flags stay as they are,
+    /// as in xterm.
+    fn soft_reset(&mut self) {
+        self.hide_cursor = false;
+        self.autowrap = true;
+        self.application_cursor = false;
+        self.application_keypad = false;
+        self.attributes = Attributes::default();
+        self.saved_attributes = Attributes::default();
+        for g in [&mut self.primary, &mut self.alternate] {
+            g.origin = false;
+            g.top = 0;
+            g.bottom = g.rows.last();
+        }
+        let g = self.grid_mut();
+        g.saved_cursor = (0, 0);
+        g.saved_pending_wrap = false;
+        g.saved_origin = false;
+    }
+
     /// DECRQM status for a DEC private mode: 1 set, 2 reset, 0 not recognized.
     pub(crate) fn private_mode_status(&self, n: u16) -> u8 {
         let set = match n {
@@ -1009,6 +1037,10 @@ impl Screen {
             && let Some(dispatch) = self.keyboard_protocol(p, intermediates, byte)
         {
             return Ok(dispatch);
+        }
+        if intermediates == b"!" && byte == b'p' {
+            self.soft_reset();
+            return Ok(Dispatch::Done);
         }
         if !intermediates.is_empty() && !private {
             return Ok(Dispatch::Unhandled);
@@ -1175,23 +1207,25 @@ impl Screen {
     }
 
     fn sgr(&mut self, p: &Parameters) {
-        const WEIGHT: u16 = Attributes::BOLD | Attributes::DIM;
         let mut groups = p.groups().peekable();
         while let Some(group) = groups.next() {
             match group {
                 [0] => self.attributes = Attributes::default(),
-                // Bold and dim replace one another.
-                [1] => self.attributes.flags = self.attributes.flags & !WEIGHT | Attributes::BOLD,
-                [2] => self.attributes.flags = self.attributes.flags & !WEIGHT | Attributes::DIM,
+                // Bold and dim are kept apart, and both can be on, as in
+                // xterm; 22 ends both (ECMA-48 8.3.117).
+                [1] => self.attributes.flags |= Attributes::BOLD,
+                [2] => self.attributes.flags |= Attributes::DIM,
                 [3] => self.attributes.flags |= Attributes::ITALIC,
-                [4] => self.attributes.flags |= Attributes::UNDERLINE,
+                // 21 is doubly underlined (ECMA-48 8.3.117, xterm's
+                // ctlseqs): fux-vt keeps no underline style.
+                [4 | 21] => self.attributes.flags |= Attributes::UNDERLINE,
                 // Slow and rapid blink replace one another.
                 [5] => self.attributes = self.attributes.with_blink(Blink::Slow),
                 [6] => self.attributes = self.attributes.with_blink(Blink::Rapid),
                 [7] => self.attributes.flags |= Attributes::INVERSE,
                 [8] => self.attributes.flags |= Attributes::HIDDEN,
                 [9] => self.attributes.flags |= Attributes::STRIKEOUT,
-                [22] => self.attributes.flags &= !WEIGHT,
+                [22] => self.attributes.flags &= !(Attributes::BOLD | Attributes::DIM),
                 [23] => self.attributes.flags &= !Attributes::ITALIC,
                 [24] => self.attributes.flags &= !Attributes::UNDERLINE,
                 [25] => self.attributes.flags &= !Attributes::BLINK,

@@ -203,3 +203,58 @@ fn underline_styles_set_and_end_underline() -> Result {
     styled("\x1b[4:1m", |c| assert!(c.underline()))?;
     Ok(())
 }
+
+/// ECMA-48 8.3.117 lists 21 as doubly underlined, and xterm's ctlseqs
+/// does too; fux-vt keeps no underline style, so it is underline, as in
+/// xterm, Ghostty, libvterm, wezterm, xterm.js and tmux. Bold (1) and
+/// faint (2) are separate renditions, each ended by 22: xterm keeps both
+/// (`fux-vt-compare replay --engines all --size 1x3 '\e[1;2mX'`), where
+/// the vt100 crate let each replace the other.
+#[test]
+fn sgr_21_underlines_and_bold_and_dim_are_kept_apart() -> Result {
+    styled("\x1b[21m", |c| assert!(c.underline()))?;
+    styled("\x1b[21;24m", |c| assert!(!c.underline()))?;
+    styled("\x1b[1;2m", |c| assert!(c.bold() && c.dim()))?;
+    styled("\x1b[2;1m", |c| assert!(c.bold() && c.dim()))?;
+    styled("\x1b[1;2;22m", |c| assert!(!c.bold() && !c.dim()))?;
+    Ok(())
+}
+
+/// DECSTR (`CSI ! p`): the VT520 manual's table (p. 5-150) and DEC STD
+/// 070's Soft Terminal Reset (p. 4-37) reset the cursor's visibility,
+/// DECOM, DECCKM, the keypad, the margins, the rendition and the saved
+/// cursor (home, normal rendition), and leave the screen and the cursor.
+/// Both set DECAWM to the terminal's setting, which for xterm, and
+/// fux-vt, is on. Expected values are xterm's (`fux-vt-compare replay
+/// --engines all`): it resets these and keeps bracketed paste and focus
+/// reporting.
+#[test]
+fn a_soft_reset_restores_the_modes_and_keeps_the_screen() -> Result {
+    let p = run(2, 5, b"ab\x1b[1m\x1b[!pX")?;
+    assert_eq!(lines(&p), ["abX", ""]);
+    assert!(!p.screen().cell(0, 2).ok_or("no cell")?.bold());
+    // Autowrap is on again.
+    let p = run(1, 3, b"\x1b[?7l\x1b[!pabcd")?;
+    assert_eq!(lines(&p), ["d"]);
+    assert!(p.screen().autowrap());
+    let p = run(
+        3,
+        5,
+        b"\x1b[?25l\x1b[?6h\x1b[?1h\x1b=\x1b[2;3r\x1b[?2004h\x1b[?1004h\x1b[!p",
+    )?;
+    let screen = p.screen();
+    assert!(!screen.hide_cursor());
+    assert!(!screen.origin_mode());
+    assert!(!screen.application_cursor());
+    assert!(!screen.application_keypad());
+    assert_eq!(screen.scroll_region(), (0, 2));
+    assert!(screen.bracketed_paste() && screen.focus_reporting());
+    // The saved cursor goes home, with the normal rendition.
+    let p = run(3, 5, b"\x1b[2;2H\x1b[1m\x1b7\x1b[m\x1b[!p\x1b[3;3H\x1b8X")?;
+    assert_eq!(lines(&p), ["X", "", ""]);
+    assert!(!p.screen().cell(0, 0).ok_or("no cell")?.bold());
+    // A wrap waiting at the last column still waits.
+    let p = run(2, 5, b"abcde\x1b[!pX")?;
+    assert_eq!(lines(&p), ["abcde", "X"]);
+    Ok(())
+}

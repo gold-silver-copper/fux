@@ -514,7 +514,7 @@ pub const FAMILIES: &[Family] = &[
         name: "sgr",
         about: "SGR in semicolon form: every attribute, its reset, 16, 256 and RGB colours, underline colour",
         status: Status::Differs(
-            "bold and dim exclude each other in fux-vt (from the vt100 crate), not in xterm or Ghostty; SGR 21 (double underline) is ignored; lines scrolled in take the default background (no BCE)",
+            "lines scrolled in take the default background (no BCE)",
         ),
         ratty_only: false,
         generate: sgr,
@@ -614,7 +614,7 @@ pub const FAMILIES: &[Family] = &[
         name: "reset",
         about: "RIS and DECSTR",
         status: Status::Differs(
-            "DECSTR keeps the pen, DECAWM and DECCKM, where xterm (and VT510) reset them, as do libvterm, wezterm and xterm.js; Ghostty and alacritty keep them as fux-vt does (`replay --engines all --size 2x5 'ab\\e[1m\\e[!pX'`, `--size 1x3 '\\e[?7l\\e[!pabcd'`)",
+            "the panel splits on what DECSTR resets, and fux-vt resets what xterm resets (VT520 manual p. 5-150): cursor visibility (xterm, libvterm, avt and xterm.js reset it; Ghostty, alacritty, wezterm and tmux keep it) and DECCKM (xterm, libvterm, wezterm and xterm.js reset it; Ghostty, alacritty, avt and tmux keep it), so once `modes` has set them the default panel outvotes fux-vt (`replay --engines all --size 1x1 '\\e[?25l\\e[!p'`). Alone, with text, it agrees",
         ),
         ratty_only: false,
         generate: reset,
