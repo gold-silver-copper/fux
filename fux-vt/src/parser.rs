@@ -359,7 +359,10 @@ impl Parser {
                 self.reset_sequence();
                 self.state = State::Escape;
             }
-            0x00..=0x1f | 0x7f => self.control(byte, sink)?,
+            0x00..=0x1f | 0x7f => {
+                self.control(byte, sink)?;
+                self.screen.forget_repeat();
+            }
             0x20..=0x7e => self.screen.print(char::from(byte))?,
             0xc2..=0xf4 => {
                 self.utf8_need = if byte < 0xe0 {
@@ -395,6 +398,7 @@ impl Parser {
         // also begins ST, so it completes a pending OSC string.
         if matches!(byte, 0x18 | 0x1a) {
             self.state = State::Ground;
+            self.screen.forget_repeat();
             return Ok(());
         }
         if byte == 0x1b {
@@ -556,6 +560,11 @@ impl Parser {
                     _ => {}
                 }
             }
+        }
+        // A sequence or string ended, REP's included: there is no character
+        // for REP to repeat until one is printed.
+        if self.state == State::Ground {
+            self.screen.forget_repeat();
         }
         Ok(())
     }

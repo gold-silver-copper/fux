@@ -178,6 +178,9 @@ pub struct Screen {
     /// edited since: a character that continues the cluster joins its cell
     /// rather than taking one of its own.
     last_print: Option<Printed>,
+    /// The character REP (`CSI b`) repeats: the last one printed that took
+    /// a cell of its own, as long as nothing but printing came after it.
+    repeat: Option<char>,
 }
 
 #[cfg(test)]
@@ -266,6 +269,7 @@ impl Screen {
             alternate_keyboard: KeyboardStack::default(),
             modify_other_keys: None,
             last_print: None,
+            repeat: None,
         })
     }
     fn grid(&self) -> &Grid {
@@ -580,11 +584,11 @@ impl Screen {
         self.linefeed()
     }
 
-    pub(crate) fn print(&mut self, c: char) -> Result<(), Error> {
+    pub(crate) fn print(&mut self, raw: char) -> Result<(), Error> {
         let c = if self.charsets.graphics() {
-            special_graphics(c)
+            special_graphics(raw)
         } else {
-            c
+            raw
         };
         if c == '\u{fffd}' || ('\u{80}'..'\u{a0}').contains(&c) {
             return Ok(());
@@ -602,6 +606,9 @@ impl Screen {
         }
         if self.extend_cluster(c) {
             return Ok(());
+        }
+        if width != 0 {
+            self.repeat = Some(raw);
         }
         if width == 0 {
             let g = self.grid();
@@ -776,6 +783,64 @@ impl Screen {
         self.last_print = None;
     }
 
+    /// Forgets the character REP repeats. The parser calls it for every
+    /// control in ground state and every sequence or string it ends, as
+    /// xterm forgets its last character whenever its parser returns to the
+    /// ground state without printing.
+    pub(crate) fn forget_repeat(&mut self) {
+        self.repeat = None;
+    }
+
+    /// REP (ECMA-48 8.3.103): the preceding graphic character printed
+    /// `count` more times, as if it had been sent again. Nothing if anything
+    /// but printing came after that character, where ECMA-48 leaves REP
+    /// undefined, as in xterm.
+    ///
+    /// Once the copies have filled the screen and every row of history the
+    /// grid keeps, each further row's worth leaves all of it as it was, so
+    /// whole rows' worth past that are skipped: no more than a screen and
+    /// its history's worth is ever printed, and what shows is exactly what
+    /// printing them all would show. An ASCII character is printed in runs,
+    /// as text is.
+    fn repeat(&mut self, count: u16) -> Result<(), Error> {
+        let Some(c) = self.repeat else {
+            return Ok(());
+        };
+        let g = self.grid();
+        let width = c.width().unwrap_or(1).max(1);
+        // Copies to a row: a wide glyph leaves an odd last column blank.
+        let Some(per_row) = usize::from(g.cols.get())
+            .checked_div(width)
+            .filter(|n| *n > 0)
+        else {
+            return Ok(());
+        };
+        let lines = usize::from(g.rows.get())
+            .saturating_add(g.history_limit)
+            .saturating_add(1);
+        let full = lines.saturating_mul(per_row);
+        let mut count = usize::from(count);
+        if let Some(beyond) = count.checked_sub(full) {
+            count = full.saturating_add(beyond.checked_rem(per_row).unwrap_or(0));
+        }
+        if let Ok(byte) = u8::try_from(c)
+            && (0x20..=0x7e).contains(&byte)
+        {
+            const RUN: usize = 128;
+            let run = [byte; RUN];
+            while count > 0 {
+                let n = count.min(RUN);
+                self.ascii(run.get(..n).unwrap_or_default())?;
+                count = count.saturating_sub(n);
+            }
+        } else {
+            for _ in 0..count {
+                self.print(c)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Copy an ASCII run directly to cells until a wide-cell collision or right
     /// margin requires the general glyph path. Never enters parser dispatch.
     pub(crate) fn ascii(&mut self, mut bytes: &[u8]) -> Result<(), Error> {
@@ -836,11 +901,15 @@ impl Screen {
                 });
                 g.advance_to(end);
             });
-            // The run's last glyph, which a mark or selector may join.
+            // The run's last glyph, which a mark or selector may join, and
+            // REP repeats.
             self.last_print = end
                 .checked_sub(1)
                 .zip(run.last())
                 .map(|(last, &byte)| Printed::new((row, last), char::from(byte)));
+            if let Some(&last) = run.last() {
+                self.repeat = Some(char::from(last));
+            }
             bytes = bytes.get(usize::from(count)..).unwrap_or_default();
         }
         Ok(())
@@ -1271,6 +1340,7 @@ impl Screen {
                 g.cursor = (g.top, 0);
             }
             b'm' => self.sgr(p),
+            b'b' => self.repeat(n)?,
             b'n' => match p.first(0, 0) {
                 5 => return Ok(Dispatch::Reply(Reply::of(format_args!("\x1b[0n")))),
                 6 => {

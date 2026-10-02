@@ -587,7 +587,9 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "repeat",
         about: "REP (CSI b) after a glyph",
-        status: Status::Differs("REP (CSI b) is not implemented (F7)"),
+        status: Status::Differs(
+            "the panel splits on a REP right after another: ECMA-48 (8.3.103) leaves REP undefined after a control function, and xterm, xterm.js and tmux repeat nothing then, as fux-vt does, where Ghostty, alacritty, libvterm, avt and wezterm repeat the glyph again and outvote fux-vt (`replay --engines all --size 1x8 '-\\e[2b\\e[2b'`). Also the one-column split of `wide`",
+        ),
         ratty_only: false,
         generate: repeat,
     },
