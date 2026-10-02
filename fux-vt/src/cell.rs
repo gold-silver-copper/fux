@@ -91,6 +91,17 @@ impl Attributes {
     pub const fn foreground(self) -> Color {
         self.foreground.get()
     }
+    /// What an erase, a scroll or an insertion fills cells with while these
+    /// attributes are the pen: its colours alone, as xterm fills them (the
+    /// `bce` terminfo capability, background colour erase).
+    pub(crate) const fn erased(self) -> Self {
+        Self {
+            foreground: self.foreground,
+            background: self.background,
+            underline_color: Packed([0; 4]),
+            flags: 0,
+        }
+    }
     pub const fn background(self) -> Color {
         self.background.get()
     }
