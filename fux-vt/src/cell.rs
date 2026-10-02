@@ -31,6 +31,9 @@ pub enum Blink {
     Rapid,
 }
 
+/// Every ASCII character, in order: the text of a cell holding one.
+const ASCII: &str = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20\x21\x22\x23\x24\x25\x26\x27\x28\x29\x2a\x2b\x2c\x2d\x2e\x2f\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x3a\x3b\x3c\x3d\x3e\x3f\x40\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50\x51\x52\x53\x54\x55\x56\x57\x58\x59\x5a\x5b\x5c\x5d\x5e\x5f\x60\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6a\x6b\x6c\x6d\x6e\x6f\x70\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7a\x7b\x7c\x7d\x7e\x7f";
+
 /// A colour as stored: a tag (0 default, 1 indexed, 2 RGB) and its bytes,
 /// all of them always set, so attributes compare, copy and clear as plain
 /// bytes.
@@ -370,6 +373,19 @@ impl Cell {
     }
     /// The inline text; empty for a spilled cell.
     fn inline(&self) -> &str {
+        // One ASCII byte, as most cells hold: its text without validating
+        // it, which readers that walk every cell (copy, search) would pay
+        // on each.
+        if self.length & (Self::LENGTH | Self::SPILLED) == 1
+            && let Some(&byte) = self.text.first()
+            && byte.is_ascii()
+        {
+            let at = usize::from(byte);
+            return at
+                .checked_add(1)
+                .and_then(|end| ASCII.get(at..end))
+                .unwrap_or("");
+        }
         // Every write is whole UTF-8, and length always ends on a boundary.
         self.text
             .get(..usize::from(self.length & Self::LENGTH))
@@ -392,6 +408,26 @@ impl Cell {
         let mut cell =
             Self::new(text, false, self.attributes).unwrap_or(Self::blank(self.attributes));
         cell.length |= self.length & Self::HALVES;
+        cell
+    }
+    /// The cell, keeping its halves and attributes, holding `head` then
+    /// `tail` inline: whole UTF-8 together, and at most
+    /// [`Cell::INLINE_CAPACITY`] bytes, or the cell is left blank.
+    fn with_inline_parts(self, head: &[u8], tail: &[u8]) -> Self {
+        let mut cell = Self::blank(self.attributes);
+        let Some(len) = head.len().checked_add(tail.len()) else {
+            return cell;
+        };
+        let written = cell
+            .text
+            .get_mut(..len)
+            .and_then(|text| text.split_at_mut_checked(head.len()))
+            .and_then(|(a, b)| crate::copy_from(a, head).and_then(|()| crate::copy_from(b, tail)));
+        if written.is_some()
+            && let Ok(len) = u8::try_from(len)
+        {
+            cell.length = len | (self.length & Self::HALVES);
+        }
         cell
     }
     /// The cell, keeping its halves and attributes, locating `len` bytes of
@@ -463,7 +499,6 @@ impl Line<'_> {
         let Some(&cell) = self.cells.get(i) else {
             return false;
         };
-        let mut buffer = [0u8; Cell::CLUSTER_CAPACITY];
         let current = if cell.has_contents() {
             self.spill.text(&cell)
         } else {
@@ -476,11 +511,20 @@ impl Line<'_> {
         else {
             return false;
         };
+        let mut encoded = [0; 4];
+        let encoded = c.encode_utf8(&mut encoded).as_bytes();
+        // A cluster that still fits inline goes straight into the cell:
+        // whole UTF-8 then a character's encoding is whole UTF-8.
+        if end <= Cell::INLINE_CAPACITY {
+            if let Some(slot) = self.cells.get_mut(i) {
+                *slot = cell.with_inline_parts(current.as_bytes(), encoded);
+            }
+            return true;
+        }
+        let mut buffer = [0u8; Cell::CLUSTER_CAPACITY];
         let Some(joined) = buffer.get_mut(..end) else {
             return false;
         };
-        let mut encoded = [0; 4];
-        let encoded = c.encode_utf8(&mut encoded).as_bytes();
         let (head, tail) = joined
             .split_at_mut_checked(current.len())
             .unwrap_or_default();

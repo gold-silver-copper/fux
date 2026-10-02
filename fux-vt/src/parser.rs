@@ -37,11 +37,25 @@ impl Parameters {
         let Some(len) = self.len.checked_add(1).filter(|n| *n <= self.values.len()) else {
             return false;
         };
+        // The new parameter starts empty: `clear` left what a sequence
+        // before put there.
         if let Some(sub) = self.sub.get_mut(self.len) {
             *sub = colon;
         }
+        if let Some(value) = self.values.get_mut(self.len) {
+            *value = 0;
+        }
         self.len = len;
         true
+    }
+    /// Back to one empty parameter, touching only what `separator` and
+    /// `digit` read: a sequence is begun on every ESC, so this is kept to
+    /// two stores rather than rewriting all the parameters.
+    fn clear(&mut self) {
+        self.len = 1;
+        if let Some(value) = self.values.first_mut() {
+            *value = 0;
+        }
     }
     pub fn groups(&self) -> impl Iterator<Item = &[u16]> + use<'_> {
         let mut start = 0;
@@ -67,6 +81,37 @@ impl Parameters {
             .unwrap_or(0);
         if value == 0 { default } else { value }
     }
+}
+
+/// The non-ASCII character a valid UTF-8 sequence at the start of `bytes`
+/// encodes, and its length; `None` for ASCII, and for a sequence invalid or
+/// cut short, which the byte-by-byte path reads. The checks are the ones
+/// `Parser::ground` makes: no overlong forms, surrogates or code points
+/// past U+10FFFF.
+fn decode(bytes: &[u8]) -> Option<(char, usize)> {
+    let &first = bytes.first()?;
+    let (length, mut code) = match first {
+        0xc2..=0xdf => (2, u32::from(first & 0x1f)),
+        0xe0..=0xef => (3, u32::from(first & 0x0f)),
+        0xf0..=0xf4 => (4, u32::from(first & 0x07)),
+        _ => return None,
+    };
+    let (low, high) = match first {
+        0xe0 => (0xa0, 0xbf),
+        0xed => (0x80, 0x9f),
+        0xf0 => (0x90, 0xbf),
+        0xf4 => (0x80, 0x8f),
+        _ => (0x80, 0xbf),
+    };
+    let continuation = bytes.get(1..length)?;
+    for (i, &byte) in continuation.iter().enumerate() {
+        let (low, high) = if i == 0 { (low, high) } else { (0x80, 0xbf) };
+        if !(low..=high).contains(&byte) {
+            return None;
+        }
+        code = code.checked_shl(6)? | u32::from(byte & 0x3f);
+    }
+    Some((char::from_u32(code)?, length))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -352,13 +397,19 @@ impl Parser {
         self.screen.begin()?;
         let mut remaining = bytes;
         while let Some((&byte, tail)) = remaining.split_first() {
-            if self.state == State::Ground && self.utf8_len == 0 && (0x20..=0x7e).contains(&byte) {
+            let ground = self.state == State::Ground && self.utf8_len == 0;
+            if ground && (0x20..=0x7e).contains(&byte) {
                 let length = remaining
                     .iter()
                     .take_while(|b| (0x20..=0x7e).contains(*b))
                     .count();
                 self.screen
                     .ascii(remaining.get(..length).unwrap_or_default())?;
+                remaining = remaining.get(length..).unwrap_or_default();
+            } else if ground
+                && byte >= 0x80
+                && let Some(length) = self.text(remaining)?
+            {
                 remaining = remaining.get(length..).unwrap_or_default();
             } else {
                 self.byte(byte, sink)?;
@@ -367,8 +418,20 @@ impl Parser {
         }
         Ok(())
     }
+    /// Prints the run of valid non-ASCII UTF-8 `bytes` begins with, decoded
+    /// at once rather than byte by byte, and says how many
+    /// bytes it took; `None`, with nothing done, if `bytes` begins with
+    /// invalid or incomplete UTF-8, which the byte-by-byte path handles.
+    fn text(&mut self, bytes: &[u8]) -> Result<Option<usize>, Error> {
+        let mut taken = 0usize;
+        while let Some((c, length)) = bytes.get(taken..).and_then(decode) {
+            self.screen.print(c)?;
+            taken = taken.saturating_add(length);
+        }
+        Ok((taken > 0).then_some(taken))
+    }
     fn reset_sequence(&mut self) {
-        self.params = Parameters::default();
+        self.params.clear();
         self.intermediate_len = 0;
         self.ignoring = false;
     }
