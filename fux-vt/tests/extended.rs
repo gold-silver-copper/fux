@@ -591,6 +591,34 @@ fn reflow_keeps_the_cursor_on_its_character() -> Result {
     Ok(())
 }
 
+/// The saved cursor moves with its character as the cursor does, so a
+/// program that saved it (vim's 1049) finds it where it left it: after
+/// the prompt, not inside the wrapped text above (`fux-vt-compare cases
+/// reflow-moves-the-saved-cursor`: wezterm and xterm.js agree; xterm
+/// does not reflow).
+#[test]
+fn reflow_moves_the_saved_cursor_with_its_character() -> Result {
+    let mut p = with(REFLOW, 8, 20, 10000)?;
+    p.process(b"aaaaaaaaaaaaaaaaaa\r\nbbbbbbbbbbbbbbbbbb\r\n$ \x1b[?1049h")?;
+    p.resize(8, 10)?;
+    p.process(b"\x1b[?1049l")?;
+    assert_eq!(p.screen().cursor_position(), (4, 2));
+    assert_eq!(lines(&p).get(4).map(String::as_str), Some("$"));
+    // So does DECSC's, and one waiting to wrap still waits.
+    let mut p = with(REFLOW, 5, 10, 100)?;
+    p.process(b"abcdefghij\x1b[1;7H\x1b7\x1b[3;1H")?;
+    p.resize(5, 4)?;
+    p.process(b"\x1b8")?;
+    assert_eq!(p.screen().cursor_position(), (1, 2));
+    assert_eq!(cell(&p, 1, 2)?.contents(), "g");
+    let mut p = with(REFLOW, 3, 10, 100)?;
+    p.process(b"abcd\x1b7\r\n")?;
+    p.resize(3, 4)?;
+    p.process(b"\x1b8X")?;
+    assert_eq!(lines(&p), ["abcd", "X", ""]);
+    Ok(())
+}
+
 #[test]
 fn reflow_pushes_overflow_into_history_and_pulls_it_back() -> Result {
     let mut p = with(REFLOW, 3, 12, 100)?;

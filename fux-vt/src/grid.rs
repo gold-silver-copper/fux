@@ -701,16 +701,22 @@ impl Grid {
         version: u64,
     ) -> Result<Self, Error> {
         let (rows, cols) = Self::check_size(rows, cols, self.history_limit)?;
-        // A cursor waiting to wrap is laid out one past its glyph.
-        let cursor = self
-            .history_len()
-            .checked_add(usize::from(self.cursor.0))
-            .map(|row| (row, usize::from(self.next_column())));
-        let layout = self.reflow(usize::from(cols.get()), cursor, &mut Layout)?;
+        // The cursor and the saved cursor go with their characters; one
+        // waiting to wrap is laid out one past its glyph.
+        let at = |(row, col): (u16, u16), pending: bool| {
+            self.history_len()
+                .checked_add(usize::from(row))
+                .map(|row| (row, usize::from(past(col, pending))))
+        };
+        let marks = [
+            at(self.cursor, self.pending_wrap),
+            at(self.saved_cursor, self.saved_pending_wrap),
+        ];
+        let layout = self.reflow(usize::from(cols.get()), marks, &mut Layout)?;
         // Blank lines below the cursor are dropped before any line scrolls
         // into history: a mostly empty screen keeps its text on screen.
         let screen = usize::from(rows.get());
-        let (cursor_row, cursor_col) = layout.cursor;
+        let [(cursor_row, cursor_col), (saved_row, saved_col)] = layout.marks;
         let drop = layout
             .trailing_blank
             .min(layout.rows.saturating_sub(screen))
@@ -724,7 +730,13 @@ impl Grid {
             .checked_add(screen)
             .ok_or(Error::Capacity)?;
         // One past the last column is the last column, waiting to wrap.
-        let cursor_col = u16::try_from(cursor_col).map_or(cols.get(), |col| col.min(cols.get()));
+        let column = |col: usize| u16::try_from(col).map_or(cols.get(), |col| col.min(cols.get()));
+        let (cursor_col, saved_col) = (column(cursor_col), column(saved_col));
+        // A row on the screen, the first if above it, the last if below.
+        let row = |row: usize| {
+            u16::try_from(row.saturating_sub(live_top))
+                .map_or(rows.last(), |row| row.min(rows.last()))
+        };
         let mut replacement = Self {
             cells: Vec::new(),
             meta: Vec::new(),
@@ -736,17 +748,12 @@ impl Grid {
             history_limit: self.history_limit,
             // The cursor's row is on screen: `live_top` is at most its row,
             // and the screen reaches past it.
-            cursor: (
-                u16::try_from(cursor_row.saturating_sub(live_top))
-                    .map_or(rows.last(), |row| row.min(rows.last())),
-                cursor_col.min(cols.last()),
-            ),
+            cursor: (row(cursor_row), cursor_col.min(cols.last())),
             pending_wrap: cursor_col >= cols.get(),
-            saved_cursor: (
-                self.saved_cursor.0.min(rows.last()),
-                self.saved_cursor.1.min(cols.last()),
-            ),
-            saved_pending_wrap: false,
+            // The saved cursor moves with its character as the cursor
+            // does, so DECRC (as 1049 leaves the alternate screen) finds it.
+            saved_cursor: (row(saved_row), saved_col.min(cols.last())),
+            saved_pending_wrap: saved_col >= cols.get(),
             origin: self.origin,
             saved_origin: self.saved_origin,
             top: 0,
@@ -764,7 +771,7 @@ impl Grid {
             next,
             version,
         };
-        self.reflow(usize::from(cols.get()), cursor, &mut copy)?;
+        self.reflow(usize::from(cols.get()), marks, &mut copy)?;
         // Blank rows under the last line, if the lines do not fill the screen.
         while replacement.order.len() < keep_total {
             let slot = replacement.meta.len();
@@ -781,11 +788,12 @@ impl Grid {
 
     /// Lays every retained row out again at `width` columns, one logical
     /// line after another, giving each cell and each finished row to
-    /// `target`. `cursor` is the retained row and column of the cursor.
+    /// `target`. `marks` are retained rows and columns, the cursor's and
+    /// the saved cursor's, each laid out as the cursor is.
     fn reflow(
         &self,
         width: usize,
-        cursor: Option<(usize, usize)>,
+        marks: [Option<(usize, usize)>; 2],
         target: &mut impl Reflow,
     ) -> Result<Reflowed, Error> {
         let retained = self.retained_len();
@@ -794,10 +802,10 @@ impl Grid {
         let pad = CellRef::new(&blank, &no_text);
         let mut out = Reflowed {
             rows: 0,
-            cursor: (0, 0),
+            marks: [(0, 0); 2],
             trailing_blank: 0,
         };
-        let mut found = false;
+        let mut found = [false; 2];
         let mut start = 0;
         while start < retained {
             // A line runs through its wrapped rows to the row that ends it.
@@ -812,13 +820,15 @@ impl Grid {
             // and the spacers in it: the blank a reflow left at the end of a
             // row when a wide glyph did not fit, which is no part of the text.
             let mut length = 0usize;
-            let mut offset = None;
+            let mut offsets = [None; 2];
             let mut spacers = Vec::new();
             for (i, row) in (start..=end).zip(line.clone()) {
-                if let Some((row_index, col)) = cursor
-                    && row_index == i
-                {
-                    offset = length.checked_add(col);
+                for (offset, mark) in offsets.iter_mut().zip(marks) {
+                    if let Some((row_index, col)) = mark
+                        && row_index == i
+                    {
+                        *offset = length.checked_add(col);
+                    }
                 }
                 if i != end
                     && row.cells.last().is_some_and(|c| c.same(&blank))
@@ -848,14 +858,16 @@ impl Grid {
             }
             let first = out.rows;
             let mut used = 0usize;
-            let mut placed = false;
+            let mut placed = [false; 2];
             let ids = line.clone().map(|r| r.id);
             let mut ids = ids.fuse();
             for (n, cell) in line.flat_map(|r| r.cells()).take(length).enumerate() {
                 if spacers.contains(&n) {
                     // A cursor on a spacer goes with the glyph after it.
-                    if offset == Some(n) {
-                        offset = n.checked_add(1);
+                    for offset in &mut offsets {
+                        if *offset == Some(n) {
+                            *offset = n.checked_add(1);
+                        }
                     }
                     continue;
                 }
@@ -873,23 +885,34 @@ impl Grid {
                     out.rows = out.rows.saturating_add(1);
                     used = 0;
                 }
-                if offset == Some(n) {
-                    out.cursor = (out.rows, used);
-                    placed = true;
+                for ((offset, mark), placed) in offsets.iter().zip(&mut out.marks).zip(&mut placed)
+                {
+                    if *offset == Some(n) {
+                        *mark = (out.rows, used);
+                        *placed = true;
+                    }
                 }
                 target.cell(out.rows, used, cell);
                 used = used.saturating_add(1);
             }
-            if let Some(offset) = offset
-                && !placed
+            for (((offset, mark), placed), found) in offsets
+                .iter()
+                .zip(&mut out.marks)
+                .zip(&mut placed)
+                .zip(&mut found)
             {
-                // At or past the end of the line's text: as far past it on
-                // the last row, at most waiting to wrap after the last column.
-                let past = offset.saturating_sub(length);
-                out.cursor = (out.rows, used.saturating_add(past).min(width));
-                placed = true;
+                if let Some(offset) = offset
+                    && !*placed
+                {
+                    // At or past the end of the line's text: as far past it
+                    // on the last row, at most waiting to wrap after the
+                    // last column.
+                    let past = offset.saturating_sub(length);
+                    *mark = (out.rows, used.saturating_add(past).min(width));
+                    *placed = true;
+                }
+                *found |= *placed;
             }
-            found |= placed;
             target.row(out.rows, false, ids.next())?;
             out.rows = out.rows.saturating_add(1);
             out.trailing_blank = if length == 0 {
@@ -900,8 +923,10 @@ impl Grid {
             };
             start = end.saturating_add(1);
         }
-        if !found {
-            out.cursor = (out.rows.saturating_sub(1), 0);
+        for (mark, found) in out.marks.iter_mut().zip(found) {
+            if !found {
+                *mark = (out.rows.saturating_sub(1), 0);
+            }
         }
         Ok(out)
     }
@@ -1059,11 +1084,11 @@ trait Reflow {
     fn row(&mut self, row: usize, wrapped: bool, id: Option<RowId>) -> Result<(), Error>;
 }
 
-/// The shape of a reflow: how many rows, where the cursor is, and how many
-/// rows at the end hold blank lines.
+/// The shape of a reflow: how many rows, where the cursor and the saved
+/// cursor are, and how many rows at the end hold blank lines.
 struct Reflowed {
     rows: usize,
-    cursor: (usize, usize),
+    marks: [(usize, usize); 2],
     trailing_blank: usize,
 }
 
