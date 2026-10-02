@@ -63,6 +63,7 @@ impl Session {
         if inputs.is_empty() {
             return;
         }
+        let changes = self.changes();
         for input in inputs {
             if !self.views.contains_key(&client) {
                 break;
@@ -76,7 +77,14 @@ impl Session {
                 }
             }
         }
-        self.touch();
+        // A command the input ran repainted every client already; else only
+        // this client's screen changed: its mode, notice or overlay. A key
+        // a pane's program reads shows when its output does.
+        if self.changes() == changes
+            && let Some(view) = self.views.get_mut(&client)
+        {
+            view.dirty = true;
+        }
         self.settle();
     }
 
