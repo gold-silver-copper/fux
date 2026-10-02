@@ -849,8 +849,32 @@ fn sgr(out: &mut Vec<u8>, a: Attributes) {
     if a.underline() {
         out.extend_from_slice(b";4");
     }
+    match a.blink() {
+        fux_vt::Blink::None => {}
+        fux_vt::Blink::Slow => out.extend_from_slice(b";5"),
+        fux_vt::Blink::Rapid => out.extend_from_slice(b";6"),
+    }
     if a.inverse() {
         out.extend_from_slice(b";7");
+    }
+    if a.hidden() {
+        out.extend_from_slice(b";8");
+    }
+    if a.strikeout() {
+        out.extend_from_slice(b";9");
+    }
+    // The underline colour in ITU-T T.416's colon form (§13.1.8), with its
+    // empty colour-space slot: a terminal that does not know SGR 58 skips
+    // the whole parameter, where in the semicolon form it would take the
+    // colour's numbers for attributes of their own (`58;2;…` would be dim).
+    match a.underline_color() {
+        Color::Default => {}
+        Color::Idx(n) => {
+            let _ = write!(out, ";58:5:{n}");
+        }
+        Color::Rgb(r, g, b) => {
+            let _ = write!(out, ";58:2::{r}:{g}:{b}");
+        }
     }
     // `base` is 30 or 40, so no code comes near 255: every sum is exact.
     let color = |out: &mut Vec<u8>, c: Color, base: u8| match c {
@@ -1288,6 +1312,55 @@ mod tests {
         // Nothing changed: no row is written; painted whole, every row is.
         assert_eq!(rows_written(&paint(Some(&c), &c)), Vec::<u16>::new());
         assert_eq!(rows_written(&paint(None, &c)), [0, 1, 2, 3, 4, 5]);
+        Ok(())
+    }
+
+    /// Every attribute fux-vt keeps reaches the client: blink, hidden text
+    /// (which must stay hidden), strikeout and the underline colour, beside
+    /// those painted before.
+    #[test]
+    fn every_attribute_is_painted() -> Result<(), String> {
+        let attributes = [
+            Attributes::default().with_blink(fux_vt::Blink::Slow),
+            Attributes::default().with_blink(fux_vt::Blink::Rapid),
+            Attributes::default().with_hidden(true),
+            Attributes::default().with_strikeout(true),
+            Attributes::default()
+                .with_underline(true)
+                .with_underline_color(Color::Idx(9)),
+            Attributes::default()
+                .with_underline(true)
+                .with_underline_color(Color::Rgb(1, 2, 3)),
+            Attributes::default()
+                .with_bold(true)
+                .with_italic(true)
+                .with_inverse(true),
+        ];
+        let mut grid = Grid::new(1, 12);
+        for (x, a) in attributes.iter().enumerate() {
+            let x = u16::try_from(x).map_err(|e| e.to_string())?;
+            grid.text(0, x, "x", *a, 12);
+        }
+        let bytes = paint(None, &grid);
+        let text = String::from_utf8_lossy(&bytes);
+        for sgr in [
+            "\x1b[0;5m",
+            "\x1b[0;6m",
+            "\x1b[0;8m",
+            "\x1b[0;9m",
+            "\x1b[0;4;58:5:9m",
+            "\x1b[0;4;58:2::1:2:3m",
+        ] {
+            assert!(text.contains(sgr), "{sgr:?} in {text:?}");
+        }
+        // Read back by a terminal, each cell has what it was painted with.
+        let mut parser = fux_vt::Parser::new(1, 12, 0).map_err(|e| e.to_string())?;
+        parser.process(&bytes).map_err(|e| e.to_string())?;
+        for (x, a) in attributes.iter().enumerate().take(5) {
+            let x = u16::try_from(x).map_err(|e| e.to_string())?;
+            let cell = parser.screen().cell(0, x).ok_or("a cell")?;
+            assert_eq!(cell.attributes(), *a, "cell {x}");
+        }
         Ok(())
     }
 
