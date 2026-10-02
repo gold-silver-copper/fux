@@ -43,6 +43,47 @@ impl Printed {
     }
 }
 
+/// The character sets a program designates and shifts between (ECMA-35;
+/// DEC STD 070, ch. 3; the VT520 manual's SCS): G0 and G1, each ASCII or
+/// DEC Special Graphics, and which of them is in GL, G1 after SO and G0
+/// after SI. G2, G3 and the national sets are not kept: a set other than
+/// Special Graphics is ASCII, as xterm reads one in UTF-8.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Charsets {
+    g0_graphics: bool,
+    g1_graphics: bool,
+    shifted: bool,
+}
+
+impl Charsets {
+    /// Whether printable ASCII prints as DEC Special Graphics.
+    fn graphics(self) -> bool {
+        if self.shifted {
+            self.g1_graphics
+        } else {
+            self.g0_graphics
+        }
+    }
+}
+
+/// The DEC Special Graphics character for `c`, as xterm draws it: 0x5f to
+/// 0x7e are a blank, a diamond, a checkerboard, control pictures, degree
+/// and plus-minus, line drawing, scan lines, comparisons, pi, not-equal,
+/// pound and a middle dot (VT520 manual, Special Graphics set; xterm,
+/// `fux-vt-compare replay --engines xterm` of `ESC ( 0` and the bytes 0x5f to 0x7e).
+fn special_graphics(c: char) -> char {
+    const GRAPHICS: [char; 32] = [
+        ' ', '◆', '▒', '␉', '␌', '␍', '␊', '°', '±', '␤', '␋', '┘', '┐', '┌', '└', '┼', '⎺', '⎻',
+        '─', '⎼', '⎽', '├', '┤', '┴', '┬', '│', '≤', '≥', 'π', '≠', '£', '·',
+    ];
+    u32::from(c)
+        .checked_sub(0x5f)
+        .and_then(|i| usize::try_from(i).ok())
+        .and_then(|i| GRAPHICS.get(i))
+        .copied()
+        .unwrap_or(c)
+}
+
 /// What a CSI sequence came to.
 pub(crate) enum Dispatch {
     /// Carried out, with nothing to answer.
@@ -117,6 +158,9 @@ pub struct Screen {
     alternate_active: bool,
     attributes: Attributes,
     saved_attributes: Attributes,
+    charsets: Charsets,
+    /// The character sets DECSC saved, which DECRC restores.
+    saved_charsets: Charsets,
     autowrap: bool,
     application_cursor: bool,
     application_keypad: bool,
@@ -207,6 +251,8 @@ impl Screen {
             alternate_active: false,
             attributes: Attributes::default(),
             saved_attributes: Attributes::default(),
+            charsets: Charsets::default(),
+            saved_charsets: Charsets::default(),
             autowrap: true,
             application_cursor: false,
             application_keypad: false,
@@ -535,6 +581,11 @@ impl Screen {
     }
 
     pub(crate) fn print(&mut self, c: char) -> Result<(), Error> {
+        let c = if self.charsets.graphics() {
+            special_graphics(c)
+        } else {
+            c
+        };
         if c == '\u{fffd}' || ('\u{80}'..'\u{a0}').contains(&c) {
             return Ok(());
         }
@@ -728,6 +779,13 @@ impl Screen {
     /// Copy an ASCII run directly to cells until a wide-cell collision or right
     /// margin requires the general glyph path. Never enters parser dispatch.
     pub(crate) fn ascii(&mut self, mut bytes: &[u8]) -> Result<(), Error> {
+        // DEC Special Graphics print other characters, one at a time.
+        if self.charsets.graphics() {
+            for &byte in bytes {
+                self.print(char::from(byte))?;
+            }
+            return Ok(());
+        }
         while let Some((&first, tail)) = bytes.split_first() {
             self.wrap_for(1)?;
             let (row, col) = self.grid().cursor;
@@ -810,6 +868,9 @@ impl Screen {
             }
             10..=12 => self.linefeed()?,
             13 => g.cursor.1 = 0,
+            // SO puts G1 in GL, SI G0.
+            14 => self.charsets.shifted = true,
+            15 => self.charsets.shifted = false,
             _ => {}
         }
         Ok(())
@@ -822,6 +883,7 @@ impl Screen {
         g.saved_pending_wrap = g.pending_wrap;
         g.saved_origin = g.origin;
         self.saved_attributes = self.attributes;
+        self.saved_charsets = self.charsets;
     }
     fn restore(&mut self) {
         let g = self.grid_mut();
@@ -829,11 +891,20 @@ impl Screen {
         g.pending_wrap = g.saved_pending_wrap;
         g.origin = g.saved_origin;
         self.attributes = self.saved_attributes;
+        self.charsets = self.saved_charsets;
     }
     /// Carries out an escape sequence; whether fux-vt implements it.
     pub(crate) fn escape(&mut self, intermediates: &[u8], byte: u8) -> Result<bool, Error> {
+        // SCS: ESC ( F designates G0 and ESC ) F G1; F `0` is DEC Special
+        // Graphics, and any other set is ASCII here.
+        match intermediates {
+            b"(" => self.charsets.g0_graphics = byte == b'0',
+            b")" => self.charsets.g1_graphics = byte == b'0',
+            [] => {}
+            _ => return Ok(false),
+        }
         if !intermediates.is_empty() {
-            return Ok(false);
+            return Ok(true);
         }
         if matches!(byte, b'7' | b'8' | b'M' | b'c') {
             self.break_cluster();
@@ -870,6 +941,8 @@ impl Screen {
                 self.alternate_active = false;
                 self.attributes = Attributes::default();
                 self.saved_attributes = Attributes::default();
+                self.charsets = Charsets::default();
+                self.saved_charsets = Charsets::default();
                 self.autowrap = true;
                 self.application_cursor = false;
                 self.application_keypad = false;
@@ -893,8 +966,8 @@ impl Screen {
     /// back to their defaults, as the VT520 manual's table (p. 5-150) and
     /// DEC STD 070's Soft Terminal Reset (p. 4-37) list them: the cursor
     /// shown, DECOM, DECCKM and DECKPAM off, the scroll region the whole
-    /// screen, the pen and the saved cursor's attributes normal, and the
-    /// saved cursor home. DECAWM goes back to its default, which both
+    /// screen, the pen and the saved cursor's attributes normal, the
+    /// character sets ASCII with G0 in GL, and the saved cursor home. DECAWM goes back to its default, which both
     /// leave to the terminal's setting (xterm's: on). The screen, the
     /// cursor, a pending wrap, the alternate screen, bracketed paste, focus
     /// reporting, mouse modes and kitty keyboard flags stay as they are,
@@ -906,6 +979,8 @@ impl Screen {
         self.application_keypad = false;
         self.attributes = Attributes::default();
         self.saved_attributes = Attributes::default();
+        self.charsets = Charsets::default();
+        self.saved_charsets = Charsets::default();
         for g in [&mut self.primary, &mut self.alternate] {
             g.origin = false;
             g.top = 0;

@@ -303,3 +303,54 @@ fn blanks_brought_in_take_the_pens_colours() -> Result {
     assert!(blank_in_colours(&edit("\x1b[2J")?, 0, 0..5), "ED");
     Ok(())
 }
+
+/// The first row's text, `bytes` printed on a screen one row high.
+fn row(cols: u16, bytes: &[u8]) -> std::result::Result<String, Box<dyn std::error::Error>> {
+    let p = run(1, cols, bytes)?;
+    Ok(lines(&p).into_iter().next().unwrap_or_default())
+}
+
+/// SCS (VT520 manual, Table 5-13 and 5-14; ECMA-35): `ESC ( 0` designates
+/// DEC Special Graphics as G0, `ESC ) 0` as G1, `ESC ( B` ASCII; SO puts
+/// G1 in GL and SI G0. `TERM=xterm-256color` draws boxes with them
+/// (`smacs=\E(0`, `rmacs=\E(B`). The glyphs are xterm's (`fux-vt-compare
+/// replay --engines xterm`), 0x5f a blank; DECSC saves the sets and the
+/// shift with the cursor (DEC STD 070's cursor save buffer), DECSTR and
+/// RIS designate ASCII again, and a set xterm does not draw in UTF-8 (the
+/// U.K. set, `A`) is ASCII.
+#[test]
+fn dec_special_graphics_draw_lines() -> Result {
+    assert_eq!(
+        row(6, b"\x1b(0lqqk\x1b(Bx")?,
+        "\u{250c}\u{2500}\u{2500}\u{2510}x"
+    );
+    assert_eq!(row(6, b"\x1b)0\x0elqk\x0fq")?, "\u{250c}\u{2500}\u{2510}q");
+    let all = row(40, b"x\x1b(0_`abcdefghijklmnopqrstuvwxyz{|}~^AZ")?;
+    assert_eq!(
+        all,
+        "x \u{25c6}\u{2592}\u{2409}\u{240c}\u{240d}\u{240a}\u{b0}\u{b1}\u{2424}\u{240b}\u{2518}\u{2510}\u{250c}\u{2514}\u{253c}\u{23ba}\u{23bb}\u{2500}\u{23bc}\u{23bd}\u{251c}\u{2524}\u{2534}\u{252c}\u{2502}\u{2264}\u{2265}\u{3c0}\u{2260}\u{a3}\u{b7}^AZ"
+    );
+    // Only printable ASCII is drawn otherwise.
+    assert_eq!(row(4, "\x1b(0é".as_bytes())?, "é");
+    // SO with G1 still ASCII changes nothing.
+    assert_eq!(row(4, b"\x1b(0\x0eq")?, "q");
+    // Saved and restored with the cursor, the shift too.
+    assert_eq!(row(4, b"\x1b(0\x1b7\x1b(Bq\x1b8q")?, "\u{2500}");
+    assert_eq!(row(4, b"\x1b)0\x0e\x1b7\x0f\x1b8q")?, "\u{2500}");
+    for reset in [&b"\x1b[!p"[..], b"\x1bc", b"\x1b(A"] {
+        assert_eq!(
+            row(4, &[&b"\x1b(0"[..], reset, b"q"].concat())?,
+            "q",
+            "{reset:?}"
+        );
+    }
+    // A long run, whatever the chunks it comes in.
+    let mut p = Parser::new(1, 80, 0)?;
+    p.process(b"\x1b(0")?;
+    for chunk in [&b"qqqq"[..], b"q", b"qqqqqqqqqqqqqqq"] {
+        p.process(chunk)?;
+    }
+    let line: String = std::iter::repeat_n('\u{2500}', 20).collect();
+    assert_eq!(lines(&p), [line]);
+    Ok(())
+}

@@ -380,7 +380,7 @@ fn sequences_fux_vt_does_not_implement_reach_the_sink() -> Result {
     let mut p = Parser::new(5, 20, 0)?;
     let record = run(
         &mut p,
-        b"\x1b[3J\x1b[>1;2m\x1b[4h\x1b[?1u\x1b(B\x1bD\x1b[2;3:4Z\x1b[H\x1b[?25l\x1b[1m\x1b7",
+        b"\x1b[3J\x1b[>1;2m\x1b[4h\x1b[?1u\x1b*B\x1bD\x1b[2;3:4Z\x1b[H\x1b[?25l\x1b[1m\x1b7",
     )?;
     assert_eq!(
         record.unhandled,
@@ -389,7 +389,8 @@ fn sequences_fux_vt_does_not_implement_reach_the_sink() -> Result {
             "CSI >1;2m",
             "CSI 4h",
             "CSI ?1u",
-            "ESC (B",
+            // G2 is not kept: only G0 and G1 are designated.
+            "ESC *B",
             "ESC D",
             "CSI 2;3:4Z"
         ]
