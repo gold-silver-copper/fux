@@ -523,7 +523,7 @@ pub const FAMILIES: &[Family] = &[
         name: "sgr-colon",
         about: "SGR in colon form: colours with and without a colour space, underline styles",
         status: Status::Differs(
-            "38/48/58 with a colour-space slot (38:2::r:g:b) are ignored, and 4:0 does not end underline (F2)",
+            "lines scrolled in take the default background (no BCE), which a colour set in colon form shows",
         ),
         ratty_only: false,
         generate: sgr_colon,
@@ -532,7 +532,7 @@ pub const FAMILIES: &[Family] = &[
         name: "sgr-invalid",
         about: "SGR with an invalid or short colour, then more attributes",
         status: Status::Differs(
-            "an invalid colour drops the rest of the SGR, where Ghostty skips just the colour (F2); Ghostty takes 38;5;300 as index 44",
+            "the panel splits on invalid colours, and fux-vt reads them as xterm does: 38;5;300 and 38;2;256;0;0 are no colour in xterm, alacritty and tmux, but index 44 and black in Ghostty, libvterm, avt and xterm.js; 48;5 and 38;2;1;2, cut short, are index 0 and (1, 2, 0) in xterm and xterm.js, no colour in the rest (`replay --engines all --size 1x3 '\\e[38;5;300;1mX'`); wezterm drops the rest of the SGR",
         ),
         ratty_only: false,
         generate: sgr_invalid,

@@ -152,6 +152,27 @@ fn palette(n: u16) -> Option<Color> {
     Some(Color::Idx(index.checked_add(bright)?))
 }
 
+/// The colour of 38, 48 or 58 in their colon form, `rest` being what
+/// follows the selector: `5:index`, `2:r:g:b`, or ITU-T T.416's
+/// `2:space:r:g:b`, its colour space ignored and empty, as xterm reads it,
+/// with anything after the blue ignored. `None` if the colour is out of
+/// range or of another kind.
+fn colour_of(rest: &[u16]) -> Option<Color> {
+    match rest {
+        [5, index, ..] => u8::try_from(*index).ok().map(Color::Idx),
+        [2, r, g, b] | [2, _, r, g, b, ..] => rgb(*r, *g, *b),
+        _ => None,
+    }
+}
+
+fn rgb(r: u16, g: u16, b: u16) -> Option<Color> {
+    Some(Color::Rgb(
+        u8::try_from(r).ok()?,
+        u8::try_from(g).ok()?,
+        u8::try_from(b).ok()?,
+    ))
+}
+
 /// Whether `cells` are already the ASCII `run` in `attributes`. Kept out of
 /// line, so that the write that usually follows compiles as if it were not
 /// there.
@@ -1155,7 +1176,7 @@ impl Screen {
 
     fn sgr(&mut self, p: &Parameters) {
         const WEIGHT: u16 = Attributes::BOLD | Attributes::DIM;
-        let mut groups = p.groups();
+        let mut groups = p.groups().peekable();
         while let Some(group) = groups.next() {
             match group {
                 [0] => self.attributes = Attributes::default(),
@@ -1190,58 +1211,68 @@ impl Screen {
                         self.attributes = self.attributes.with_background(color);
                     }
                 }
-                // Foreground, background and underline colour share their forms.
+                // Underline styles (kitty's, which every engine in
+                // `compare/` reads but xterm): fux-vt keeps no style, so
+                // 4:0 ends underline and the styles 1 to 5 set it.
+                [4, 0, ..] => self.attributes.flags &= !Attributes::UNDERLINE,
+                [4, 1..=5, ..] => self.attributes.flags |= Attributes::UNDERLINE,
+                // Foreground, background and underline colour share their
+                // forms (ITU-T T.416, 13.1.8, and xterm's ctlseqs). An
+                // invalid colour is skipped, and the rest of the SGR goes on.
+                [selector @ (38 | 48 | 58)] => {
+                    if let Some(colour) = Self::colour_after(&mut groups) {
+                        self.set_colour(*selector, colour);
+                    }
+                }
                 [selector @ (38 | 48 | 58), rest @ ..] => {
-                    let mut parts = [0u16; 4];
-                    let count = if rest.is_empty() {
-                        let Some([kind]) = groups.next() else {
-                            return;
-                        };
-                        let count = match kind {
-                            2 => 4,
-                            5 => 2,
-                            _ => return,
-                        };
-                        if let Some(first) = parts.first_mut() {
-                            *first = *kind;
-                        }
-                        for slot in parts.iter_mut().take(count).skip(1) {
-                            let Some([n]) = groups.next() else {
-                                return;
-                            };
-                            *slot = *n;
-                        }
-                        count
-                    } else {
-                        // All of them, if they fit.
-                        let Some(()) = parts
-                            .get_mut(..rest.len())
-                            .and_then(|start| crate::copy_from(start, rest))
-                        else {
-                            continue;
-                        };
-                        rest.len()
-                    };
-                    let colour = match parts.get(..count) {
-                        Some([5, index]) => u8::try_from(*index).ok().map(Color::Idx),
-                        Some([2, r, g, b]) => u8::try_from(*r)
-                            .ok()
-                            .zip(u8::try_from(*g).ok())
-                            .zip(u8::try_from(*b).ok())
-                            .map(|((r, g), b)| Color::Rgb(r, g, b)),
-                        _ => None,
-                    };
-                    let Some(colour) = colour else {
-                        return;
-                    };
-                    match selector {
-                        38 => self.attributes = self.attributes.with_foreground(colour),
-                        48 => self.attributes = self.attributes.with_background(colour),
-                        _ => self.attributes = self.attributes.with_underline_color(colour),
+                    if let Some(colour) = colour_of(rest) {
+                        self.set_colour(*selector, colour);
                     }
                 }
                 _ => {}
             }
+        }
+    }
+
+    fn set_colour(&mut self, selector: u16, colour: Color) {
+        self.attributes = match selector {
+            38 => self.attributes.with_foreground(colour),
+            48 => self.attributes.with_background(colour),
+            _ => self.attributes.with_underline_color(colour),
+        };
+    }
+
+    /// The colour of 38, 48 or 58 in their semicolon form, taken from the
+    /// parameters after it, as xterm reads it: `5;index` or `2;r;g;b`, a
+    /// value the list ends before being 0. Another kind takes only itself.
+    /// `None`, with what it named taken all the same, if the colour is out
+    /// of range.
+    fn colour_after<'a>(
+        groups: &mut std::iter::Peekable<impl Iterator<Item = &'a [u16]>>,
+    ) -> Option<Color> {
+        let kind = match groups.peek() {
+            Some([kind]) => *kind,
+            _ => return None,
+        };
+        groups.next();
+        let count = match kind {
+            2 => 3,
+            5 => 1,
+            _ => return None,
+        };
+        let mut values = [0u16; 3];
+        for value in values.iter_mut().take(count) {
+            let Some([n]) = groups.peek() else {
+                break;
+            };
+            *value = *n;
+            groups.next();
+        }
+        let [a, b, c] = values;
+        if kind == 5 {
+            u8::try_from(a).ok().map(Color::Idx)
+        } else {
+            rgb(a, b, c)
         }
     }
 }
