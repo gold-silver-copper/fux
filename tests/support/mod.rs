@@ -432,6 +432,19 @@ impl Client {
 }
 
 /// The CPU time a process has used, in seconds.
+/// A process's resident memory, in MiB, from `ps`.
+pub fn resident_mib(pid: u32) -> Result<f64, String> {
+    let out = Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .map_err(e)?;
+    let kib: f64 = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .map_err(|error| format!("ps rss: {error}"))?;
+    Ok(kib / 1024.0)
+}
+
 pub fn cpu_seconds(pid: u32) -> Result<f64, String> {
     if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
         // After the command name, which is in parentheses and may hold

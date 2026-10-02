@@ -682,6 +682,11 @@ pub fn send_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let Some(p) = session.panes.get_mut(&pane) else {
         return;
     };
+    // Refused already, and said so: the key goes no further. A client
+    // typing into a program that has stopped reading costs nothing per key.
+    if p.input.refusing() {
+        return;
+    }
     let application = p.screen().application_cursor();
     if let Err(error) = p
         .input

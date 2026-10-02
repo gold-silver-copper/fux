@@ -20,6 +20,12 @@ const PAINT: Duration = Duration::from_millis(16);
 const OUTPUT_CAP: usize = 4 << 20;
 /// Output read from one pane per tick, so one busy pane cannot starve others.
 const PANE_READ: usize = 64 * 1024;
+/// Bytes read from one client per tick, so one client cannot hold up the
+/// others: a frame larger than this is read over several ticks.
+const CONN_READ: usize = 256 * 1024;
+/// What a connection's buffers keep once they empty; beyond it, the memory
+/// a large frame or paint took is given back.
+const CONN_KEEP: usize = 64 * 1024;
 /// How long a stopping server waits for its clients and processes.
 const STOP_WAIT: Duration = Duration::from_millis(500);
 /// A condition that persists is logged once, then at most this often.
@@ -566,6 +572,7 @@ impl Server {
                 }
             }
         }
+        conn.out.shrink(CONN_KEEP);
         if conn.dead
             && let Some(client) = conn.client.take()
         {
@@ -573,11 +580,13 @@ impl Server {
         }
     }
 
-    /// Reads what a client sent until it has sent no more, or 256 whole
-    /// frames, or a bad one; then handles each whole frame, in order.
+    /// Reads what a client sent until it has sent no more, or `CONN_READ`
+    /// bytes, or 256 whole frames, or a bad one; then handles each whole
+    /// frame, in order.
     fn read_conn(&mut self, index: usize, now: Instant) {
         // The frames read and checked, and where they end in the decoder.
         let (mut end, mut frames, mut closed) = (0usize, 0usize, false);
+        let mut read = 0usize;
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
@@ -588,6 +597,7 @@ impl Server {
                     break;
                 }
                 Ok(n) => {
+                    read = read.saturating_add(n);
                     conn.decoder
                         .push(self.read_buffer.get(..n).unwrap_or_default());
                     let checked = conn.decoder.check(end);
@@ -597,7 +607,7 @@ impl Server {
                         closed = true;
                         break;
                     }
-                    if frames > 256 {
+                    if frames > 256 || read >= CONN_READ {
                         break;
                     }
                 }
@@ -630,10 +640,13 @@ impl Server {
             };
             self.frame(index, frame);
         }
-        if closed && let Some(conn) = self.conns.get_mut(index) {
-            conn.dead = true;
-            if let Some(client) = conn.client.take() {
-                self.session.detach(client);
+        if let Some(conn) = self.conns.get_mut(index) {
+            conn.decoder.shrink(CONN_KEEP);
+            if closed {
+                conn.dead = true;
+                if let Some(client) = conn.client.take() {
+                    self.session.detach(client);
+                }
             }
         }
     }
