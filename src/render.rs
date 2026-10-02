@@ -442,9 +442,14 @@ pub fn compose_into(
             surface(grid, view, &lines);
         }
         Mode::Prompt(prompt) => {
+            // The panel's border takes a cell each side.
+            let room = view.cols.saturating_sub(2);
             let lines: [Line<'_>; 3] = [
                 (prompt.title.as_str().into(), panel().with_bold(true)),
-                (with_cursor(&prompt.text, prompt.cursor).into(), panel()),
+                (
+                    prompt_line(&prompt.text, prompt.cursor, room).into(),
+                    panel(),
+                ),
                 ("Enter accepts · Esc cancels".into(), panel().with_dim(true)),
             ];
             surface(grid, view, &lines);
@@ -462,6 +467,52 @@ pub fn compose_into(
         Mode::Normal | Mode::Copy(_) | Mode::Repeat { .. } => {}
     }
     true
+}
+
+/// A prompt's text with its cursor bar, in at most `room` cells: when it is
+/// wider, the line scrolls so the bar shows, with a few cells of what
+/// follows it, and an ellipsis marks each side cut off.
+fn prompt_line(text: &str, cursor: usize, room: u16) -> String {
+    let line = with_cursor(text, cursor);
+    if width(&line) <= room {
+        return line;
+    }
+    let chars: Vec<char> = line.chars().filter(|c| !c.is_control()).collect();
+    // Where `with_cursor` put the bar.
+    let bar = cursor.min(text.chars().filter(|c| !c.is_control()).count());
+    // An ellipsis each side, at most.
+    let inner = room.saturating_sub(2);
+    let ahead = inner / 4;
+    let (mut start, mut end) = (bar, bar.saturating_add(1));
+    let mut used: u16 = 1;
+    let fits = |used: u16, c: Option<&char>| {
+        c.and_then(|c| used.checked_add(cells(*c)))
+            .filter(|n| *n <= inner)
+    };
+    // A little of what follows, then what comes before, then the rest after.
+    while let Some(n) = fits(used, chars.get(end)).filter(|n| *n <= ahead.saturating_add(1)) {
+        used = n;
+        end = end.saturating_add(1);
+    }
+    while let Some(previous) = start.checked_sub(1)
+        && let Some(n) = fits(used, chars.get(previous))
+    {
+        used = n;
+        start = previous;
+    }
+    while let Some(n) = fits(used, chars.get(end)) {
+        used = n;
+        end = end.saturating_add(1);
+    }
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.extend(chars.get(start..end).unwrap_or_default());
+    if end < chars.len() {
+        out.push('…');
+    }
+    out
 }
 
 /// A prompt's text with a bar at `cursor`, counted in chars; past the end
@@ -1244,6 +1295,25 @@ mod tests {
         ] {
             assert_eq!(with_cursor(text, cursor), shown, "{text:?} at {cursor}");
         }
+    }
+
+    /// A prompt wider than its panel scrolls to keep the cursor in view,
+    /// with an ellipsis on each side cut off, never wider than the room.
+    #[test]
+    fn a_long_prompt_scrolls_to_its_cursor() {
+        let text = "split -v -- echo aaaaaaaaaaaaaaaaaaaaTAIL";
+        let end = text.chars().count();
+        for (cursor, starts, ends) in [(end, "…", "TAIL▏"), (0, "▏spl", "…"), (20, "…", "…")]
+        {
+            let shown = prompt_line(text, cursor, 12);
+            assert!(width(&shown) <= 12, "{shown:?} fits");
+            assert!(shown.contains('▏'), "{shown:?} shows the cursor");
+            assert!(shown.starts_with(starts), "{shown:?} starts {starts:?}");
+            assert!(shown.ends_with(ends), "{shown:?} ends {ends:?}");
+        }
+        // Wide chars count two cells; short text is as it was.
+        assert!(width(&prompt_line("界界界界界界界界", 8, 7)) <= 7);
+        assert_eq!(prompt_line("ls", 2, 12), "ls▏");
     }
 
     fn grid_lines(g: &Grid) -> Vec<String> {
