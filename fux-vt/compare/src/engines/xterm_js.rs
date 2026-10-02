@@ -43,7 +43,8 @@
 //! `run`, `matrix` and the named cases:
 //!
 //! - It is never narrower than two columns: asked for one, it has two, and
-//!   says so (`replay --size 1x1`). Every case one column wide differs.
+//!   says so (`replay --size 1x1`). So it refuses a terminal or a resize
+//!   narrower than that, and abstains from the case.
 //! - A cursor report while a wrap is pending gives the column one past the
 //!   last (`replay --size 1x5 'abcde\e[6n'`: `CSI 1;6R`).
 //! - Erasing a whole row that continues another (EL 2, ED, or ED 1 over
@@ -261,7 +262,15 @@ pub struct XtermJs {
     id: u64,
 }
 
+/// xterm.js is never narrower than two columns (it reports its real
+/// size), so it abstains from a narrower terminal rather than differ on
+/// its size.
+const MIN_COLS: u16 = 2;
+
 fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
+    if setup.cols < MIN_COLS {
+        return Err(format!("never narrower than {MIN_COLS} columns"));
+    }
     let id = with_node(|node| {
         let id = node.next;
         node.next = id.checked_add(1).ok_or("too many terminals")?;
@@ -439,6 +448,9 @@ impl Engine for XtermJs {
     }
 
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
+        if cols < MIN_COLS {
+            return Err(format!("never narrower than {MIN_COLS} columns"));
+        }
         let id = self.id;
         with_node(|node| {
             node.ask(&format!(
