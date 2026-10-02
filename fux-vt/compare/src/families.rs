@@ -462,7 +462,7 @@ pub const FAMILIES: &[Family] = &[
         name: "edit",
         about: "ICH, DCH, IL and DL",
         status: Status::Differs(
-            "IL and DL keep the cursor's column (F8); inserted lines take the default background, not the current one (no BCE); and the panel splits on ICH and DCH, which end a pending wrap in xterm and Ghostty, as DEC STD 070 (Appendix D.6.1) says and fux-vt does, where alacritty and libvterm keep it (`replay --engines all --size 1x5 'abcde\\e[@X'`)",
+            "IL and DL keep the cursor's column (F8); and the panel splits on ICH and DCH, which end a pending wrap in xterm and Ghostty, as DEC STD 070 (Appendix D.6.1) says and fux-vt does, where alacritty and libvterm keep it (`replay --engines all --size 1x5 'abcde\\e[@X'`)",
         ),
         ratty_only: false,
         generate: edit,
@@ -471,7 +471,7 @@ pub const FAMILIES: &[Family] = &[
         name: "scroll",
         about: "SU, SD, DECSTBM and RI",
         status: Status::Differs(
-            "DECSTBM homes to the top margin with DECOM off, and resets an invalid region instead of ignoring it (F8); lines scrolled in take the default background (no BCE); SD keeps a moved row's soft-wrap flag, Ghostty clears it",
+            "DECSTBM homes to the top margin with DECOM off, and resets an invalid region instead of ignoring it (F8); SD keeps a moved row's soft-wrap flag, Ghostty clears it",
         ),
         ratty_only: false,
         generate: scroll,
@@ -514,7 +514,7 @@ pub const FAMILIES: &[Family] = &[
         name: "sgr",
         about: "SGR in semicolon form: every attribute, its reset, 16, 256 and RGB colours, underline colour",
         status: Status::Differs(
-            "lines scrolled in take the default background (no BCE)",
+            "the panel splits where SGR 21 or 2 follows bold, and fux-vt does as xterm does: xterm, Ghostty, libvterm, xterm.js and tmux keep bold beside the underline (21) and dim (2); alacritty and avt take 21 as bold off, and avt and wezterm let dim replace bold, so together they outvote fux-vt (`replay --engines all --size 1x3 '\\e[1m\\e[21;2mX'`)",
         ),
         ratty_only: false,
         generate: sgr,
@@ -522,9 +522,7 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "sgr-colon",
         about: "SGR in colon form: colours with and without a colour space, underline styles",
-        status: Status::Differs(
-            "lines scrolled in take the default background (no BCE), which a colour set in colon form shows",
-        ),
+        status: Status::Agree,
         ratty_only: false,
         generate: sgr_colon,
     },

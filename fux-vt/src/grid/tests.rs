@@ -1,5 +1,8 @@
 use super::*;
 
+/// Up, the departing rows going into history.
+const UP: Scroll = Scroll::Up { history: true };
+
 /// Heap bytes; a Vec's allocation cannot exceed `isize::MAX`, so no product
 /// saturates.
 fn heap(grid: &Grid) -> [usize; 3] {
@@ -17,11 +20,11 @@ fn measured_storage_plateau_and_transactional_resize_peak_include_metadata() -> 
     let initial_primary = heap(&primary);
     let initial_alternate = heap(&alternate);
     for version in 1..=10_000 {
-        primary.scroll((0, 23), 1, true, true, &mut next, version)?;
+        primary.scroll((0, 23), 1, UP, Attributes::default(), &mut next, version)?;
     }
     let plateau = heap(&primary);
     for version in 10_001..=20_000 {
-        primary.scroll((0, 23), 1, true, true, &mut next, version)?;
+        primary.scroll((0, 23), 1, UP, Attributes::default(), &mut next, version)?;
     }
     assert_eq!(heap(&primary), plateau);
     assert_eq!(primary.history_len(), 10_000);
@@ -65,7 +68,7 @@ fn moving_a_row_is_a_removal_then_an_insertion() -> Result<(), Error> {
     let contiguous = Grid::new(5, 1, 0, &mut next, 0)?;
     let mut wrapped = Grid::new(5, 1, 4, &mut next, 0)?;
     for version in 1..=11 {
-        wrapped.scroll((0, 4), 1, true, true, &mut next, version)?;
+        wrapped.scroll((0, 4), 1, UP, Attributes::default(), &mut next, version)?;
     }
     let (front, back) = wrapped.order.as_slices();
     assert!(!front.is_empty() && !back.is_empty(), "the deque wraps");

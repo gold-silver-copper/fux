@@ -64,6 +64,14 @@ pub(crate) struct Grid {
     pub bottom: u16,
 }
 
+/// Which way a scroll moves rows: up, the rows leaving the top going into
+/// history if `history` (and the region is the whole screen), or down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Scroll {
+    Up { history: bool },
+    Down,
+}
+
 pub(crate) fn next_id(next: &mut u64) -> Result<RowId, Error> {
     let id = *next;
     *next = next.checked_add(1).ok_or(Error::IdentityExhausted)?;
@@ -327,8 +335,9 @@ impl Grid {
     }
 
     /// ICH and DCH, at the cursor, which they leave where it is; they end
-    /// a pending wrap (DEC STD 070, Appendix D.6.1).
-    pub fn edit_cells(&mut self, count: u16, insert: bool, version: u64) {
+    /// a pending wrap (DEC STD 070, Appendix D.6.1). The cells they bring
+    /// in are blank in `blank`.
+    pub fn edit_cells(&mut self, count: u16, insert: bool, blank: Attributes, version: u64) {
         self.pending_wrap = false;
         let (row, col) = self.cursor;
         // At most the cells from the cursor to the edge.
@@ -340,7 +349,7 @@ impl Grid {
             let col = usize::from(col);
             let len = cells.len();
             // Where the cells shifted out start, and so where blanks go.
-            let (Some(shifted), Some(blank)) = (
+            let (Some(shifted), Some(fill)) = (
                 if insert {
                     len.checked_sub(count)
                 } else {
@@ -378,8 +387,8 @@ impl Grid {
                     tail.rotate_left(count);
                 }
             }
-            if let Some(cells) = cells.get_mut(blank) {
-                cells.fill(Cell::default());
+            if let Some(cells) = cells.get_mut(fill) {
+                cells.fill(Cell::blank(blank));
             }
             repair_wide(cells);
             // Inserting and deleting always count as a change.
@@ -388,6 +397,7 @@ impl Grid {
         self.wrap(row, false, version);
     }
 
+    /// Gives a slot a new row: `id`, unwrapped, every cell blank.
     fn recycle(&mut self, slot: usize, id: RowId, version: u64) {
         if let Some(m) = self.meta.get_mut(slot) {
             *m = Meta {
@@ -403,16 +413,32 @@ impl Grid {
         }
     }
 
-    /// Moves slots, not cells. Only whole-screen upward scrolling enters history.
+    /// Gives the blank cells of a row brought in the attributes `blank`,
+    /// the pen's colours. They are blanked first in the default attributes,
+    /// all zeros, which compiles to a memset, much faster than storing any
+    /// other cell; this goes over them again only for another pen, and is
+    /// kept out of line so the two are never fused into one slower loop.
+    #[inline(never)]
+    fn colour(&mut self, slot: usize, blank: Attributes) {
+        if blank != Attributes::default() {
+            for cell in self.slice_mut(slot) {
+                cell.attributes = blank;
+            }
+        }
+    }
+
+    /// Moves slots, not cells. Only whole-screen upward scrolling enters
+    /// history. The rows brought in are blank in `blank`.
     pub fn scroll(
         &mut self,
         (top, bottom): (u16, u16),
         count: u16,
-        up: bool,
-        history: bool,
+        direction: Scroll,
+        blank: Attributes,
         next: &mut u64,
         version: u64,
     ) -> Result<(), Error> {
+        let up = direction != Scroll::Down;
         if bottom >= self.rows.get() {
             return Ok(());
         }
@@ -421,14 +447,20 @@ impl Grid {
         };
         let count = count.min(height);
         for _ in 0..count {
-            if up && history && top == 0 && bottom == self.rows.last() && self.history_limit > 0 {
+            if direction == (Scroll::Up { history: true })
+                && top == 0
+                && bottom == self.rows.last()
+                && self.history_limit > 0
+            {
                 if self.history_len() < self.history_limit {
                     let slot = self.allocate(next, version)?;
+                    self.colour(slot, blank);
                     self.order.push_back(slot);
                 } else {
                     let id = next_id(next)?;
                     if let Some(slot) = self.order.pop_front() {
                         self.recycle(slot, id, version);
+                        self.colour(slot, blank);
                         self.order.push_back(slot);
                     }
                 }
@@ -440,6 +472,7 @@ impl Grid {
                 };
                 if let Some(slot) = self.move_row(from, to) {
                     self.recycle(slot, id, version);
+                    self.colour(slot, blank);
                 }
                 if !up {
                     self.wrap(bottom, false, version);

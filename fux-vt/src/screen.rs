@@ -1,7 +1,8 @@
 use crate::unicode::Cluster;
 use crate::{
     Attributes, Blink, Cell, CellRef, Color, Error, Mark, Options, Reply, Row, RowId, Window,
-    grid::Grid, parser::Parameters,
+    grid::{Grid, Scroll},
+    parser::Parameters,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -466,8 +467,15 @@ impl Screen {
         // (allocation/identity exhaustion). Even that partial result must
         // invalidate every reader's window, not just its newly blank rows.
         self.structural = self.version;
+        // The rows brought in take the pen's colours (`bce`), as in xterm.
+        let blank = self.attributes.erased();
         self.with_grid(|g, next, version| {
-            g.scroll((top, bottom), count, up, history, next, version)
+            let direction = if up {
+                Scroll::Up { history }
+            } else {
+                Scroll::Down
+            };
+            g.scroll((top, bottom), count, direction, blank, next, version)
         })
     }
     fn linefeed(&mut self) -> Result<(), Error> {
@@ -1130,14 +1138,18 @@ impl Screen {
                 let g = self.grid_mut();
                 g.cursor.0 = n.saturating_sub(1).min(g.rows.last());
             }
-            b'@' | b'P' => self.with_grid(|g, _, v| g.edit_cells(n, byte == b'@', v)),
+            b'@' | b'P' => {
+                let blank = self.attributes.erased();
+                self.with_grid(|g, _, v| g.edit_cells(n, byte == b'@', blank, v));
+            }
+            // Erased cells take the pen's colours alone, as xterm's do.
             b'X' => {
-                let a = self.attributes;
+                let a = self.attributes.erased();
                 self.with_grid(|g, _, v| g.erase(row, col, col.saturating_add(n), a, v));
             }
             b'J' | b'K' => {
                 let mode = p.first(0, 0);
-                let a = self.attributes;
+                let a = self.attributes.erased();
                 if mode > 2 {
                     return Ok(Dispatch::Unhandled);
                 }

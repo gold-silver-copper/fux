@@ -258,3 +258,48 @@ fn a_soft_reset_restores_the_modes_and_keeps_the_screen() -> Result {
     assert_eq!(lines(&p), ["abcde", "X"]);
     Ok(())
 }
+
+/// Whether every cell of row `y` from `cols` is blank in the pen's
+/// colours alone: green on red, no bold or underline.
+fn blank_in_colours(p: &Parser, y: u16, cols: std::ops::Range<u16>) -> bool {
+    cols.into_iter().all(|x| {
+        p.screen().cell(y, x).is_some_and(|c| {
+            !c.has_contents()
+                && c.fgcolor() == Color::Idx(2)
+                && c.bgcolor() == Color::Idx(1)
+                && !c.bold()
+                && !c.underline()
+        })
+    })
+}
+
+/// Background colour erase: `TERM=xterm-256color` advertises `bce`
+/// (terminfo.src), so the blanks an erase, a scroll or an insertion brings
+/// take the pen's colours, as DEC STD 070, ch. 5, erases and scrolls with
+/// the current rendition. xterm fills them with the foreground and
+/// background colours and no other attribute (`fux-vt-compare replay
+/// --engines all --size 2x5 '\e[1;4;32;41mab\r\n\n\e[m\e[2;5HZ'`),
+/// and so does fux-vt: LF at the bottom (with history or none), RI, SU, SD,
+/// IL, DL, ICH, DCH, and ED, EL and ECH.
+#[test]
+fn blanks_brought_in_take_the_pens_colours() -> Result {
+    let pen = "\x1b[1;4;32;41m";
+    for history in [0, 10] {
+        let mut p = Parser::new(2, 5, history)?;
+        p.process(format!("{pen}ab\r\n\n").as_bytes())?;
+        assert!(blank_in_colours(&p, 1, 0..5), "LF, history {history}");
+    }
+    for (then, row) in [("\x1bM", 0), ("\x1b[S", 1), ("\x1b[T", 0), ("\x1b[L", 0)] {
+        let p = run(2, 5, format!("{pen}{then}").as_bytes())?;
+        assert!(blank_in_colours(&p, row, 0..5), "{then:?}");
+    }
+    let p = run(2, 5, format!("{pen}\x1b[M").as_bytes())?;
+    assert!(blank_in_colours(&p, 1, 0..5), "DL");
+    let edit = |then: &str| run(1, 5, format!("abcde\x1b[1G{pen}{then}").as_bytes());
+    assert!(blank_in_colours(&edit("\x1b[2@")?, 0, 0..2), "ICH");
+    assert!(blank_in_colours(&edit("\x1b[2P")?, 0, 3..5), "DCH");
+    assert!(blank_in_colours(&edit("\x1b[2X")?, 0, 0..2), "ECH");
+    assert!(blank_in_colours(&edit("\x1b[K")?, 0, 0..5), "EL");
+    assert!(blank_in_colours(&edit("\x1b[2J")?, 0, 0..5), "ED");
+    Ok(())
+}
