@@ -7,16 +7,14 @@ use fux_vt::{Blink, CellRef, Event, Identity, Options, Parser, Sink};
 /// kitty keyboard protocol), with events on so titles can be compared; or,
 /// with `reflow` off, as fux does.
 pub fn options(reflow: bool) -> Options {
-    Options {
-        events: true,
-        extended_replies: false,
-        kitty_keyboard: reflow,
-        reflow,
-        identity: reflow.then_some(Identity {
+    Options::new()
+        .with_events(true)
+        .with_kitty_keyboard(reflow)
+        .with_reflow(reflow)
+        .with_identity(reflow.then_some(Identity {
             name: "fux-vt-ghostty",
             version: "0.0.0",
-        }),
-    }
+        }))
 }
 
 #[derive(Default)]
@@ -43,9 +41,10 @@ pub struct Vt {
 
 fn color(c: fux_vt::Color) -> Color {
     match c {
-        fux_vt::Color::Default => Color::Default,
         fux_vt::Color::Idx(n) => Color::Idx(n),
         fux_vt::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+        // A kind fux-vt adds later reads as the default until named here.
+        fux_vt::Color::Default | _ => Color::Default,
     }
 }
 
@@ -124,9 +123,9 @@ impl Engine for Vt {
                 let line = Line {
                     unread_from: None,
                     cells: row.cells().map(|c| cell(&c)).collect(),
-                    wrapped: row.wrapped,
+                    wrapped: row.wrapped(),
                 };
-                Some((line.text(), row.wrapped))
+                Some((line.text(), row.wrapped()))
             })
             .collect();
         Ok(Snapshot {

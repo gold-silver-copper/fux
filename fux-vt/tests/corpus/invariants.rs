@@ -30,7 +30,7 @@ pub fn check(p: &Parser) {
         let Some(row) = row else {
             return;
         };
-        assert!(ids.insert(row.id), "row identities alias");
+        assert!(ids.insert(row.id()), "row identities alias");
         assert!(!row.is_empty());
         // The row's text stays within its budget.
         assert!(
@@ -77,10 +77,10 @@ pub fn check(p: &Parser) {
     for offset in [0, 1, usize::MAX] {
         for width in [0, 1, cols.saturating_sub(1), cols, u16::MAX] {
             let w = s.window(offset, rows, width);
-            assert!(w.offset <= s.history_len());
-            assert!(w.cols <= cols && w.rows <= rows);
-            if let Some(last) = w.cols.checked_sub(1) {
-                for y in 0..w.rows {
+            assert!(w.offset() <= s.history_len());
+            assert!(w.cols() <= cols && w.rows() <= rows);
+            if let Some(last) = w.cols().checked_sub(1) {
+                for y in 0..w.rows() {
                     assert!(!w.cell(y, last).is_some_and(|c| c.is_wide()));
                 }
             }
@@ -114,6 +114,6 @@ pub fn equal(a: &Parser, b: &Parser) {
             return;
         };
         assert_eq!(cells(a), cells(b), "row from bottom {offset}");
-        assert_eq!(a.wrapped, b.wrapped, "row from bottom {offset}");
+        assert_eq!(a.wrapped(), b.wrapped(), "row from bottom {offset}");
     }
 }

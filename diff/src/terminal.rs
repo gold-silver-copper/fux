@@ -149,8 +149,9 @@ macro_rules! stack {
         $name:ident,
         $vt:ident,
         |$row:ident| $cells:expr,
-        |$attrs:ident| $colors:expr
-        $(, $rest:tt)?
+        |$attrs:ident| $colors:expr,
+        |$meta:ident| $identity:expr,
+        |$events:ident, $extended:ident| $options:expr
     ) => {
         mod $name {
             use std::fmt::Write;
@@ -192,6 +193,12 @@ macro_rules! stack {
                 out
             }
 
+            /// A row's identity, version and soft wrap, through what each
+            /// side has: fields in 0.2, accessors since.
+            fn identity($meta: Row<'_>) -> ($vt::RowId, u64, bool) {
+                $identity
+            }
+
             #[derive(Default)]
             struct Heard(String);
 
@@ -211,10 +218,9 @@ macro_rules! stack {
 
             impl Terminal {
                 pub fn new(rows: u16, cols: u16, history: usize, events: bool, extended: bool) -> Result<Terminal, String> {
-                    let options = Options {
-                        events,
-                        extended_replies: extended,
-                        $(..$rest)?
+                    let options = {
+                        let ($events, $extended) = (events, extended);
+                        $options
                     };
                     let parser = Parser::with_options(rows, cols, history, options).map_err(|e| format!("{e:?}"))?;
                     let mark = parser.screen().mark();
@@ -260,13 +266,14 @@ macro_rules! stack {
                     let retained = s.history_len().saturating_add(usize::from(rows));
                     for offset in (0..retained).rev() {
                         if let Some(row) = s.row_from_bottom(offset) {
+                            let (id, version, wrapped) = identity(row);
                             let _ = writeln!(
                                 out,
                                 "{:?} v{} wrapped {} at {:?} {}",
-                                row.id,
-                                row.version,
-                                row.wrapped,
-                                s.offset_for_row(row.id),
+                                id,
+                                version,
+                                wrapped,
+                                s.offset_for_row(id),
                                 cells(row)
                             );
                         }
@@ -276,8 +283,8 @@ macro_rules! stack {
                         "changed {} refresh {} dirty {:?} live {:?}",
                         s.changed_since(self.mark),
                         s.full_refresh_since(self.mark),
-                        s.dirty_rows_since(self.mark).map(|row| row.id).collect::<Vec<_>>(),
-                        s.dirty_live_rows_since(self.mark).map(|(y, row)| (y, row.id)).collect::<Vec<_>>()
+                        s.dirty_rows_since(self.mark).map(|row| identity(row).0).collect::<Vec<_>>(),
+                        s.dirty_live_rows_since(self.mark).map(|(y, row)| (y, identity(row).0)).collect::<Vec<_>>()
                     );
                     self.mark = s.mark();
                     out
@@ -295,14 +302,22 @@ stack!(
     baseline_vt,
     |row| row.cells(),
     |a| (a.foreground(), a.background()),
-    (Options::default())
+    |row| (row.id, row.version, row.wrapped),
+    |events, extended| Options {
+        events,
+        extended_replies: extended,
+        ..Options::default()
+    }
 );
 stack!(
     cur,
     fux_vt,
     |row| row.cells(),
     |a| (a.foreground(), a.background()),
-    (Options::default())
+    |row| (row.id(), row.version(), row.wrapped()),
+    |events, extended| Options::new()
+        .with_events(events)
+        .with_extended_replies(extended)
 );
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
