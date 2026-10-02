@@ -537,10 +537,21 @@ impl Session {
             .cloned()
             .unwrap_or_else(|| "/bin/sh".into());
         let fish = basename(&shell_program) == "fish";
-        let line = if cmd.is_empty() {
+        // The line to type is measured before anything is made: a line too
+        // long to type must not leave a process behind.
+        let typed = if cmd.is_empty() {
             None
         } else {
-            Some(crate::words::shell_line(cmd, fish)?)
+            let mut typed = crate::words::shell_line(cmd, fish)?.into_bytes();
+            typed.push(b'\r');
+            if typed
+                .len()
+                .checked_add(crate::pane::ENTRY_COST)
+                .is_none_or(|cost| cost > crate::pane::INPUT_BYTES)
+            {
+                return Err(Error::LineTooLong);
+            }
+            Some(typed)
         };
         let id = PaneId(self.next_pane);
         let mut next_pane = self.next_pane;
@@ -570,16 +581,7 @@ impl Session {
                 size.1,
             )?);
         }
-        if let Some(line) = line {
-            let mut typed = line.into_bytes();
-            typed.push(b'\r');
-            if typed
-                .len()
-                .checked_add(crate::pane::ENTRY_COST)
-                .is_none_or(|cost| cost > crate::pane::INPUT_BYTES)
-            {
-                return Err(Error::LineTooLong);
-            }
+        if let Some(typed) = typed {
             pane.typed = Some(crate::pane::Typed {
                 line: typed,
                 deadline: crate::after(Instant::now(), TYPE_WAIT),
