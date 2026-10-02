@@ -5,6 +5,7 @@ pub mod avt;
 pub mod fux_vt;
 pub mod ghostty;
 pub mod libvterm;
+pub mod pane;
 pub mod tmux;
 pub mod vt100;
 pub mod wezterm;
