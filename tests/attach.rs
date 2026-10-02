@@ -44,6 +44,52 @@ fn detach_and_reattach_keep_the_shell_and_its_screen() -> Outcome {
     Ok(())
 }
 
+/// However a connection ends, its client goes with it: a client that breaks
+/// the protocol (a second Attach, a Hello) is dropped and detached, and so
+/// is one that detaches and attaches again in one batch.
+#[test]
+fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
+    use fux::protocol::{Frame, PROTOCOL, Role};
+    let server = Server::start("")?;
+    let clients = || -> Result<usize, String> {
+        Ok(server
+            .ok(&["ls"])?
+            .lines()
+            .filter(|l| l.starts_with("client "))
+            .count())
+    };
+    let mut keep = server.attach(10, 40)?;
+    keep.wait_for("$")?;
+    let attach = Frame::Attach {
+        rows: 5,
+        cols: 20,
+        workspace: None,
+    };
+    let hello = Frame::Hello {
+        protocol: PROTOCOL,
+        version: "test".into(),
+        role: Role::Attach,
+    };
+    for broken in [&attach, &hello] {
+        let mut client = server.attach(5, 20)?;
+        client.wait_for("$")?;
+        eventually("two clients", || Ok(clients()? == 2))?;
+        client.frame(broken)?;
+        eventually("the broken client to go", || Ok(clients()? == 1))?;
+    }
+    // Detach and Attach together: the Attach comes after the end.
+    let mut client = server.attach(5, 20)?;
+    client.wait_for("$")?;
+    client.detach()?;
+    client.frame(&attach)?;
+    assert_eq!(client.wait_exit()?, "detached");
+    eventually("only the first client", || Ok(clients()? == 1))?;
+    // The one left still sizes its pane alone.
+    keep.keys("stty size\r")?;
+    keep.wait("its size", |t| t.lines().any(|l| l == "9 40"))?;
+    Ok(())
+}
+
 #[test]
 fn a_resize_reaches_the_program() -> Outcome {
     let server = Server::start("")?;

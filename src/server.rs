@@ -226,9 +226,22 @@ impl Server {
             self.escapes(now);
             self.session.type_due(now);
             self.finish_dying(false);
-            self.conns
-                .retain(|c| !(c.dead || c.closing && c.out.is_empty()));
+            self.close_conns();
         }
+    }
+
+    /// Drops every connection that is dead, or closing with nothing left to
+    /// send, detaching its client first: however a connection ends, its
+    /// view goes with it.
+    fn close_conns(&mut self) {
+        let session = &mut self.session;
+        self.conns.retain_mut(|conn| {
+            let gone = conn.dead || conn.closing && conn.out.is_empty();
+            if gone && let Some(client) = conn.client.take() {
+                session.detach(client);
+            }
+            !gone
+        });
     }
 
     /// A lone Escape becomes a key once `ESCAPE_DELAY` passes with no byte
@@ -628,6 +641,11 @@ impl Server {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
+        // A connection that is ending has had its last word: a frame after
+        // a Detach, a Command, a refused Hello or a bad frame is ignored.
+        if conn.closing || conn.dead {
+            return;
+        }
         let Some(role) = conn.role else {
             let Frame::Hello { protocol, role, .. } = frame else {
                 conn.dead = true;
