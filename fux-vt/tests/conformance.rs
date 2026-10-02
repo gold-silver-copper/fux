@@ -403,3 +403,69 @@ fn rep_repeats_the_preceding_graphic_character() -> Result {
     assert_eq!(p.screen().cursor_position(), (1, 4));
     Ok(())
 }
+
+/// DECSTBM (DEC STD 070, 5-25): margins with the top above the bottom
+/// are set and the cursor goes home, obeying DECOM: the first line with
+/// DECOM reset, the top margin with it set (note 1); other margins are
+/// ignored (note 2). A bottom past the screen is ignored too (note 3),
+/// but xterm takes it as the last line, and fux-vt follows xterm
+/// (README, "Departures from the references"). Expected values are
+/// xterm's (`fux-vt-compare replay --engines all --size 5x5`).
+#[test]
+fn decstbm_homes_the_cursor_and_ignores_a_region_it_cannot_set() -> Result {
+    let p = run(5, 5, b"abc\x1b[3;5rX")?;
+    assert_eq!(lines(&p), ["Xbc", "", "", "", ""]);
+    assert_eq!(p.screen().scroll_region(), (2, 4));
+    let p = run(5, 5, b"\x1b[?6h\x1b[3;5rX")?;
+    assert_eq!(lines(&p), ["", "", "X", "", ""]);
+    for invalid in [&b"\x1b[4;2r"[..], b"\x1b[3;3r", b"\x1b[9;99r"] {
+        let p = run(5, 5, &[&b"\x1b[2;4r\x1b[3;3H"[..], invalid, b"X"].concat())?;
+        assert_eq!(lines(&p), ["", "", "  X", "", ""], "{invalid:?}");
+        assert_eq!(p.screen().scroll_region(), (1, 3), "{invalid:?}");
+    }
+    let p = run(5, 5, b"\x1b[3;3H\x1b[2;99rX")?;
+    assert_eq!(p.screen().scroll_region(), (1, 4));
+    assert_eq!(lines(&p), ["X", "", "", "", ""]);
+    // An ignored DECSTBM leaves a pending wrap waiting.
+    let p = run(2, 5, b"abcde\x1b[2;2rX")?;
+    assert_eq!(lines(&p), ["abcde", "X"]);
+    Ok(())
+}
+
+/// VPA and VPR (VT520 manual, 5-208) and HPA and HPR (5-181) address the
+/// active position as CUP does: under DECOM, from the top margin and
+/// never past the margins (DEC STD 070, DECOM: "the Active position
+/// cannot be moved above the Top Margin"), as xterm does for all four;
+/// otherwise anywhere on the screen, stopping at its last line or column.
+/// VPR therefore passes the bottom margin with DECOM reset, where CUD
+/// stops. IL and DL leave the cursor in the first column (DEC STD 070,
+/// IL and DL, note 2), and do nothing outside the margins. Expected
+/// values are xterm's (`fux-vt-compare replay --engines all --size 5x5`,
+/// `fux-vt-compare cases vpa-honours-origin-mode il-moves-to-column-zero
+/// dl-moves-to-column-zero`).
+#[test]
+fn line_and_column_addressing_obeys_origin_mode() -> Result {
+    let p = run(5, 5, b"\x1b[2;4r\x1b[?6h\x1b[2dX")?;
+    assert_eq!(lines(&p), ["", "", "X", "", ""]);
+    let p = run(5, 5, b"\x1b[2;4r\x1b[?6h\x1b[9dX")?;
+    assert_eq!(lines(&p), ["", "", "", "X", ""]);
+    let p = run(5, 5, b"\x1b[2;4r\x1b[2;2H\x1b[5eX")?;
+    assert_eq!(lines(&p), ["", "", "", "", " X"]);
+    let p = run(5, 5, b"\x1b[2;4r\x1b[?6h\x1b[1;2H\x1b[5eX")?;
+    assert_eq!(lines(&p), ["", "", "", " X", ""]);
+    assert_eq!(row(8, b"\x1b[3`X\x1b[2aY")?, "  X  Y");
+    assert_eq!(row(8, b"\x1b[99`X")?, "       X");
+    assert_eq!(row(8, b"\x1b[0`X\x1b[0aY")?, "X Y");
+    // Each ends a pending wrap.
+    for movement in [&b"\x1b[1`"[..], b"\x1b[a", b"\x1b[1d", b"\x1b[e"] {
+        let p = run(2, 5, &[&b"abcde"[..], movement].concat())?;
+        assert!(!p.screen().pending_wrap(), "{movement:?}");
+    }
+    let p = run(3, 5, b"ab\x1b[LX")?;
+    assert_eq!(lines(&p), ["X", "ab", ""]);
+    let p = run(3, 5, b"ab\r\ncd\x1b[AX\x1b[MY")?;
+    assert_eq!(lines(&p), ["Yd", "", ""]);
+    let p = run(5, 5, b"\x1b[2;3r\x1b[5;3H\x1b[LX")?;
+    assert_eq!(lines(&p), ["", "", "", "", "  X"]);
+    Ok(())
+}

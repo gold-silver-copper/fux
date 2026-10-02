@@ -980,6 +980,15 @@ impl Grid {
         self.pending_wrap = col >= self.cols.get();
         self.cursor.1 = col.min(self.cols.last());
     }
+    /// The cursor's line as CUP addresses it: from the top margin in
+    /// origin mode.
+    pub fn cursor_line(&self) -> u16 {
+        if self.origin {
+            self.cursor.0.saturating_sub(self.top)
+        } else {
+            self.cursor.0
+        }
+    }
     /// CUP: moves the cursor, within the margins in origin mode. Like every
     /// cursor movement, it ends a pending wrap.
     pub fn position(&mut self, row: u16, col: u16) {

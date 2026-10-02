@@ -1223,7 +1223,10 @@ impl Screen {
                 | b'T'
                 | b'X'
                 | b'@'
+                | b'`'
+                | b'a'
                 | b'd'
+                | b'e'
                 | b'f'
                 | b'r'
                 | b's'
@@ -1237,10 +1240,10 @@ impl Screen {
         let n = p.first(0, 1);
         let (row, col) = self.grid().cursor;
         // Every cursor movement, erase and edit ends a pending wrap (DEC STD
-        // 070, Appendix D.6.1, which lists them), as xterm does; ED, EL, IL
-        // and DL below, once they are carried out. SU and SD are not among
-        // them: the cursor stays waiting to wrap, as in xterm.
-        if matches!(byte, b'A'..=b'H' | b'X' | b'd' | b'f' | b'r') {
+        // 070, Appendix D.6.1, which lists them), as xterm does; ED, EL, IL,
+        // DL and DECSTBM below, once they are carried out. SU and SD are not
+        // among them: the cursor stays waiting to wrap, as in xterm.
+        if matches!(byte, b'A'..=b'H' | b'X' | b'`' | b'a' | b'd' | b'e' | b'f') {
             self.grid_mut().pending_wrap = false;
         }
         match byte {
@@ -1260,13 +1263,16 @@ impl Screen {
                     g.cursor.1 = 0;
                 }
             }
-            b'C' => {
+            // CUF, and HPR, which with no right margin to stop at is the
+            // same: both stop at the last column (VT520 manual, HPR).
+            b'C' | b'a' => {
                 let g = self.grid_mut();
                 g.cursor.1 = col.saturating_add(n).min(g.cols.last());
             }
             b'D' => self.grid_mut().cursor.1 = col.saturating_sub(n),
-            // Coordinates are one-based, and 0 means 1.
-            b'G' => {
+            // CHA, and HPA, the same with no left margin. Coordinates are
+            // one-based, and 0 means 1.
+            b'G' | b'`' => {
                 let g = self.grid_mut();
                 g.cursor.1 = n.saturating_sub(1).min(g.cols.last());
             }
@@ -1278,9 +1284,20 @@ impl Screen {
             // restore the attributes with the position.
             b's' => self.save(),
             b'u' => self.restore(),
-            b'd' => {
+            // VPA and VPR address lines as CUP does, from the top margin in
+            // origin mode, within the margins there and the screen
+            // otherwise (DEC STD 070, DECOM: in displaced mode the active
+            // position cannot leave the margins), as xterm does. VPR
+            // counts from the cursor's line, so unlike CUD it passes the
+            // bottom margin with DECOM reset.
+            b'd' | b'e' => {
                 let g = self.grid_mut();
-                g.cursor.0 = n.saturating_sub(1).min(g.rows.last());
+                let line = if byte == b'd' {
+                    n.saturating_sub(1)
+                } else {
+                    g.cursor_line().saturating_add(n)
+                };
+                g.position(line, col);
             }
             b'@' | b'P' => {
                 let blank = self.attributes.erased();
@@ -1315,29 +1332,35 @@ impl Screen {
                     g.erase(row, start, end, a, v);
                 });
             }
+            // IL and DL, ignored outside the margins, leave the cursor in
+            // the first column (DEC STD 070, IL and DL, note 2).
             b'L' | b'M' => {
                 let g = self.grid();
                 if g.in_region() {
-                    self.grid_mut().pending_wrap = false;
-                    let g = self.grid();
-                    self.scroll(row, g.bottom, n, byte == b'M', false)?;
+                    let g = self.grid_mut();
+                    g.pending_wrap = false;
+                    g.cursor.1 = 0;
+                    let bottom = g.bottom;
+                    self.scroll(row, bottom, n, byte == b'M', false)?;
                 }
             }
             b'S' | b'T' => {
                 let g = self.grid();
                 self.scroll(g.top, g.bottom, n, byte == b'S', true)?;
             }
+            // DECSTBM (DEC STD 070, 5-25): margins with the top above the
+            // bottom are set, and the cursor goes home, obeying DECOM;
+            // others are ignored. A bottom past the screen is the last
+            // line, as xterm reads it, where DEC STD 070 ignores it.
             b'r' => {
                 let rows = self.grid().rows;
                 let bottom = p.first(1, rows.get()).saturating_sub(1).min(rows.last());
                 let top = n.saturating_sub(1);
-                let g = self.grid_mut();
-                (g.top, g.bottom) = if top < bottom {
-                    (top, bottom)
-                } else {
-                    (0, rows.last())
-                };
-                g.cursor = (g.top, 0);
+                if top < bottom {
+                    let g = self.grid_mut();
+                    (g.top, g.bottom) = (top, bottom);
+                    g.position(0, 0);
+                }
             }
             b'm' => self.sgr(p),
             b'b' => self.repeat(n)?,

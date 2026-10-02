@@ -182,6 +182,18 @@ pub const CASES: &[Named] = &[
         &["abc\\e[3;5rX"],
     ),
     (
+        "decstbm-ignores-an-invalid-region",
+        "scroll",
+        (5, 5),
+        &["\\e[2;4r\\e[3;3H\\e[4;2rX"],
+    ),
+    (
+        "hpa-hpr-and-vpr",
+        "cursor",
+        (5, 8),
+        &["\\e[2;4r\\e[2;2H\\e[5eX\\e[3`Y\\e[2aZ"],
+    ),
+    (
         "vpa-honours-origin-mode",
         "origin",
         (5, 5),
