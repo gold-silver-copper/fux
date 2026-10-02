@@ -69,6 +69,37 @@ jobs:
           cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/clippy.log"
           cargo test --workspace --locked 2>&1 | tee "$CI_LOGS/test.log"
 
+      - name: Minimum Rust version
+        # Every manifest says rust-version = "1.95"; the pinned toolchain is
+        # newer, so nothing else would notice a newer feature creeping in.
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.95 --profile minimal
+          cargo +1.95 check --workspace --all-targets --locked 2>&1 | tee "$CI_LOGS/msrv.log"
+
+      - name: Excluded packages
+        # walk and the fuzz targets use fux and fux-vt by path, so an API
+        # change that breaks them breaks nothing in the workspace.
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          for package in walk fuzz fux-vt/fuzz fux-vt/gen; do
+            cargo fmt --manifest-path "$package/Cargo.toml" --all --check
+            cargo clippy --manifest-path "$package/Cargo.toml" --all-targets --locked -- -D warnings
+            cargo test --manifest-path "$package/Cargo.toml" --locked
+          done 2>&1 | tee "$CI_LOGS/excluded.log"
+
+      - name: fux-diff builds
+        # It builds the last release beside this code, so a deliberate API
+        # change can break it until its baseline is bumped (diff/README.md).
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path diff/Cargo.toml --all --check
+          cargo clippy --manifest-path diff/Cargo.toml --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/diff.log"
+
       - name: Socket cleanup where inode numbers are reused
         # Only a filesystem that gives a freed inode number to the next file
         # tests the guarantee (bevy-final finding 014); ubuntu's /tmp is

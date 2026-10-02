@@ -1,0 +1,36 @@
+name: fux-vt beside other terminals
+
+# fux-vt/compare on Linux, on request: it builds Ghostty with Zig,
+# wezterm-term from git and libvterm, and drives xterm.js, tmux and xterm,
+# too much for every push. run.sh checks Zig and libvterm by SHA-256.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: tmux, xterm and Xvfb
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q tmux xterm xvfb
+
+      - name: The named cases, beside every engine
+        run: fux-vt/compare/run.sh cases
+
+      - name: The families expected to agree, beside the voting panel
+        run: fux-vt/compare/run.sh --cases 20000

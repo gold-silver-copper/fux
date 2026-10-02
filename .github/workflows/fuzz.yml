@@ -1,0 +1,51 @@
+name: Fuzz corpora
+
+# Replays every fuzz target's corpus, regressions included, nightly and on
+# request: `cargo test` does not run them, and a fuzz run is too long for
+# every push.
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Nightly and cargo-fuzz
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked --version 0.13.2
+
+      - name: fux's targets, over their corpora
+        env:
+          # session frees millions of small allocations (fuzz/README.md).
+          ASAN_OPTIONS: quarantine_size_mb=16
+        run: |
+          set -euo pipefail
+          for target in protocol keys paint layout config session; do
+            cargo +nightly fuzz run "$target" --fuzz-dir fuzz "fuzz/corpus/$target" -- -runs=0 -rss_limit_mb=2048 -timeout=25
+          done
+
+      - name: fux-vt's targets
+        run: |
+          set -euo pipefail
+          cargo +nightly fuzz run terminal --fuzz-dir fux-vt/fuzz fux-vt/fuzz/corpus/terminal -- -runs=0 -rss_limit_mb=2048 -timeout=25
+          # graphemes and cells keep no corpus: a short run of each.
+          for target in graphemes cells; do
+            cargo +nightly fuzz run "$target" --fuzz-dir fux-vt/fuzz -- -max_total_time=60 -rss_limit_mb=2048 -timeout=25
+          done
