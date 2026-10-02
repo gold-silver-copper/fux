@@ -24,7 +24,7 @@ libghostty-vt = { version = "=0.2.1", default-features = false }
 alacritty_terminal = "=0.26.0"
 avt = "=0.18.0"
 vt100 = "=0.16.2"
-wezterm-term = { git = "https://github.com/wezterm/wezterm", package = "wezterm-term" }
+wezterm-term = { git = "https://github.com/wezterm/wezterm", rev = "cab25161054c50fd6c705db4ceefef0f1e5a9575", package = "wezterm-term" }
 # Reading the engines that run as their own processes.
 serde_json = "1"
 unicode-width = "0.2"

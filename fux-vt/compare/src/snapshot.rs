@@ -47,40 +47,6 @@ impl Default for Style {
     }
 }
 
-impl Style {
-    fn describe(&self) -> String {
-        let mut out = String::new();
-        for (on, name) in [
-            (self.bold, "bold"),
-            (self.dim, "dim"),
-            (self.italic, "italic"),
-            (self.underline, "underline"),
-            (self.blink, "blink"),
-            (self.inverse, "inverse"),
-            (self.hidden, "hidden"),
-            (self.strikeout, "strikeout"),
-        ] {
-            if on {
-                let _ = write!(out, " {name}");
-            }
-        }
-        for (color, name) in [
-            (self.fg, "fg"),
-            (self.bg, "bg"),
-            (self.underline_color, "ul"),
-        ] {
-            if color != Color::Default {
-                let _ = write!(out, " {name}={color:?}");
-            }
-        }
-        if out.is_empty() {
-            " plain".to_owned()
-        } else {
-            out
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Width {
     Narrow,
@@ -117,15 +83,6 @@ impl Cell {
                 style,
             },
         }
-    }
-
-    fn describe(&self) -> String {
-        let width = match self.width {
-            Width::Narrow => "",
-            Width::Wide => " wide",
-            Width::Tail => " tail",
-        };
-        format!("{:?}{width}{}", self.text, self.style.describe())
     }
 }
 
@@ -283,44 +240,150 @@ pub fn reports(bytes: &[u8]) -> Vec<String> {
     out
 }
 
-/// A mode both track, by name, and how to read it.
-type Flag = (&'static str, fn(&Snapshot) -> bool);
+/// What a difference is about, so the vote counts only the engines that
+/// can tell it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Field {
+    Size,
+    Cursor,
+    PendingWrap,
+    CursorVisible,
+    Autowrap,
+    Origin,
+    Alternate,
+    ApplicationCursor,
+    ApplicationKeypad,
+    BracketedPaste,
+    FocusReporting,
+    Kitty,
+    Title,
+    Reports,
+    Wrapped,
+    Text,
+    Width,
+    Fg,
+    Bg,
+    UnderlineColor,
+    Bold,
+    Dim,
+    Italic,
+    Underline,
+    Blink,
+    Inverse,
+    Hidden,
+    Strikeout,
+    History,
+    HistoryWrapped,
+}
 
-/// The differences between fux-vt's snapshot and another engine's, at
-/// most `limit` of them, each a line; empty when they agree.
-pub fn differences(fux: &Snapshot, other: &Snapshot, engine: &str, limit: usize) -> Vec<String> {
+impl Field {
+    /// Whether an engine that can do `can` tells this field.
+    pub fn told_by(self, can: &Can) -> bool {
+        match self {
+            Field::Size | Field::Text => true,
+            Field::Cursor => can.cursor,
+            Field::PendingWrap => can.pending_wrap,
+            Field::CursorVisible => can.cursor_visible,
+            Field::Autowrap => can.autowrap,
+            Field::Origin => can.origin,
+            Field::Alternate => can.alternate,
+            Field::ApplicationCursor => can.application_cursor,
+            Field::ApplicationKeypad => can.application_keypad,
+            Field::BracketedPaste => can.bracketed_paste,
+            Field::FocusReporting => can.focus_reporting,
+            Field::Kitty => can.kitty_keyboard_flags,
+            Field::Title => can.title,
+            Field::Reports => can.reports,
+            Field::Wrapped => can.wrapped,
+            Field::Width => can.widths,
+            Field::Fg => can.fg,
+            Field::Bg => can.bg,
+            Field::UnderlineColor => can.underline_color,
+            Field::Bold => can.bold,
+            Field::Dim => can.dim,
+            Field::Italic => can.italic,
+            Field::Underline => can.underline,
+            Field::Blink => can.blink,
+            Field::Inverse => can.inverse,
+            Field::Hidden => can.hidden,
+            Field::Strikeout => can.strikeout,
+            Field::History => can.history,
+            Field::HistoryWrapped => can.history && can.wrapped,
+        }
+    }
+}
+
+/// A mode, by name, what it is, and how to read it.
+type Mode = (&'static str, Field, fn(&Snapshot) -> bool);
+
+/// One difference: where (`key`, the same for every engine), what it is
+/// about, and the two values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Diff {
+    pub key: String,
+    pub field: Field,
+    pub fux: String,
+    pub other: String,
+}
+
+impl Diff {
+    pub fn line(&self, engine: &str) -> String {
+        format!("{}: fux-vt {}, {engine} {}", self.key, self.fux, self.other)
+    }
+}
+
+/// The differences between fux-vt's snapshot and another engine's, both
+/// masked to what the engine can tell; empty when they agree. A cell that
+/// differs gives one difference for each part of it that differs.
+pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
     let mut out = Vec::new();
-    let mut field = |name: &str, a: String, b: String| {
+    let mut field = |key: String, field: Field, a: String, b: String| {
         if a != b {
-            out.push(format!("{name}: fux-vt {a}, {engine} {b}"));
+            out.push(Diff {
+                key,
+                field,
+                fux: a,
+                other: b,
+            });
         }
     };
     field(
-        "size",
+        "size".into(),
+        Field::Size,
         format!("{}x{}", fux.rows, fux.cols),
         format!("{}x{}", other.rows, other.cols),
     );
     field(
-        "cursor",
+        "cursor".into(),
+        Field::Cursor,
         format!("{:?}", fux.cursor),
         format!("{:?}", other.cursor),
     );
-    let flags: [Flag; 9] = [
-        ("pending wrap", |s| s.pending_wrap),
-        ("cursor visible", |s| s.cursor_visible),
-        ("autowrap", |s| s.autowrap),
-        ("origin mode", |s| s.origin),
-        ("alternate screen", |s| s.alternate),
-        ("application cursor", |s| s.application_cursor),
-        ("application keypad", |s| s.application_keypad),
-        ("bracketed paste", |s| s.bracketed_paste),
-        ("focus reporting", |s| s.focus_reporting),
+    let flags: [Mode; 9] = [
+        ("pending wrap", Field::PendingWrap, |s| s.pending_wrap),
+        ("cursor visible", Field::CursorVisible, |s| s.cursor_visible),
+        ("autowrap", Field::Autowrap, |s| s.autowrap),
+        ("origin mode", Field::Origin, |s| s.origin),
+        ("alternate screen", Field::Alternate, |s| s.alternate),
+        ("application cursor", Field::ApplicationCursor, |s| {
+            s.application_cursor
+        }),
+        ("application keypad", Field::ApplicationKeypad, |s| {
+            s.application_keypad
+        }),
+        ("bracketed paste", Field::BracketedPaste, |s| {
+            s.bracketed_paste
+        }),
+        ("focus reporting", Field::FocusReporting, |s| {
+            s.focus_reporting
+        }),
     ];
-    for (name, get) in flags {
-        field(name, get(fux).to_string(), get(other).to_string());
+    for (name, f, get) in flags {
+        field(name.into(), f, get(fux).to_string(), get(other).to_string());
     }
     field(
-        "kitty keyboard flags",
+        "kitty keyboard flags".into(),
+        Field::Kitty,
         fux.kitty_keyboard_flags.to_string(),
         other.kitty_keyboard_flags.to_string(),
     );
@@ -329,58 +392,92 @@ pub fn differences(fux: &Snapshot, other: &Snapshot, engine: &str, limit: usize)
     // the other engine's side is not compared.
     if !other.title.is_empty() {
         field(
-            "title",
+            "title".into(),
+            Field::Title,
             format!("{:?}", fux.title),
             format!("{:?}", other.title),
         );
     }
     field(
-        "reports",
+        "reports".into(),
+        Field::Reports,
         format!("{:?}", fux.reports),
         format!("{:?}", other.reports),
     );
     for (y, (a, b)) in fux.screen.iter().zip(&other.screen).enumerate() {
-        if a.wrapped != b.wrapped {
-            out.push(format!(
-                "row {y} soft-wrapped: fux-vt {}, {engine} {}",
-                a.wrapped, b.wrapped
-            ));
-        }
+        field(
+            format!("row {y} soft-wrapped"),
+            Field::Wrapped,
+            a.wrapped.to_string(),
+            b.wrapped.to_string(),
+        );
         for (x, (ca, cb)) in a.cells.iter().zip(&b.cells).enumerate() {
-            if ca != cb {
-                out.push(format!(
-                    "cell ({y},{x}): fux-vt {}, {engine} {}",
-                    ca.describe(),
-                    cb.describe()
-                ));
+            if ca == cb {
+                continue;
+            }
+            let at = |part: &str| format!("cell ({y},{x}) {part}");
+            field(
+                at("text"),
+                Field::Text,
+                format!("{:?}", ca.text),
+                format!("{:?}", cb.text),
+            );
+            field(
+                at("width"),
+                Field::Width,
+                format!("{:?}", ca.width),
+                format!("{:?}", cb.width),
+            );
+            let (sa, sb) = (&ca.style, &cb.style);
+            for (name, f, va, vb) in [
+                ("fg", Field::Fg, sa.fg, sb.fg),
+                ("bg", Field::Bg, sa.bg, sb.bg),
+                (
+                    "underline colour",
+                    Field::UnderlineColor,
+                    sa.underline_color,
+                    sb.underline_color,
+                ),
+            ] {
+                field(at(name), f, format!("{va:?}"), format!("{vb:?}"));
+            }
+            for (name, f, va, vb) in [
+                ("bold", Field::Bold, sa.bold, sb.bold),
+                ("dim", Field::Dim, sa.dim, sb.dim),
+                ("italic", Field::Italic, sa.italic, sb.italic),
+                ("underline", Field::Underline, sa.underline, sb.underline),
+                ("blink", Field::Blink, sa.blink, sb.blink),
+                ("inverse", Field::Inverse, sa.inverse, sb.inverse),
+                ("hidden", Field::Hidden, sa.hidden, sb.hidden),
+                ("strikeout", Field::Strikeout, sa.strikeout, sb.strikeout),
+            ] {
+                field(at(name), f, va.to_string(), vb.to_string());
             }
         }
     }
     let ha: Vec<_> = fux.history.iter().rev().collect();
     let hb: Vec<_> = other.history.iter().rev().collect();
     if ha.len() > hb.len() {
-        out.push(format!(
-            "history: fux-vt keeps {} rows, {engine} {}",
-            ha.len(),
-            hb.len()
-        ));
+        field(
+            "history rows kept".into(),
+            Field::History,
+            ha.len().to_string(),
+            hb.len().to_string(),
+        );
     }
     for (back, (a, b)) in ha.iter().zip(&hb).enumerate() {
-        if a != b {
-            out.push(format!(
-                "history row {} from the newest: fux-vt {:?}{}, {engine} {:?}{}",
-                back,
-                a.0,
-                if a.1 { " (wrapped)" } else { "" },
-                b.0,
-                if b.1 { " (wrapped)" } else { "" },
-            ));
-        }
-    }
-    let total = out.len();
-    if total > limit {
-        out = out.into_iter().take(limit).collect();
-        out.push(format!("... and {} more", total.saturating_sub(limit)));
+        field(
+            format!("history row {back} from the newest"),
+            Field::History,
+            format!("{:?}", a.0),
+            format!("{:?}", b.0),
+        );
+        field(
+            format!("history row {back} from the newest soft-wrapped"),
+            Field::HistoryWrapped,
+            a.1.to_string(),
+            b.1.to_string(),
+        );
     }
     out
 }
