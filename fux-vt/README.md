@@ -14,7 +14,7 @@ is vt100 0.16.2 plus fux's existing reply callback, not every xterm feature.
 
 | Family | Contract/default/reset | Permanent test family |
 | --- | --- | --- |
-| Printable ASCII / UTF-8 | Printable runs bypass state dispatch in ground state; unicode-width 0.2 supplies widths; incomplete UTF-8 survives calls; invalid input and U+FFFD are discarded like the baseline | `text`, `chunking` |
+| Printable ASCII / UTF-8 | Printable runs bypass state dispatch in ground state; unicode-width 0.2 supplies widths; incomplete UTF-8 survives calls. Invalid UTF-8 prints U+FFFD, one column wide, as xterm prints it: one for a sequence that breaks off (its maximal subpart, the Unicode Standard, 3.9), the byte that broke it off then read again, and one for a byte that starts no sequence (0xc0, 0xc1, 0xf5 to 0xff). A continuation byte alone is read as Latin-1, as xterm reads it: 0x80 to 0x9f are C1 controls, ignored, and 0xa0 to 0xbf print U+00A0 to U+00BF (see "Departures from the references"). xterm reads some overlong and surrogate forms otherwise, which no real output has; fux-vt does not follow it there. U+FFFD itself prints. UTF-8-encoded C1 characters are ignored | `text`, `chunking`, `conformance::invalid_utf8_*` |
 | Grapheme clusters | A character that continues the extended grapheme cluster of the cell printed just before the cursor joins that cell: spacing marks, variation selectors, ZWJ sequences, flags, Indic conjuncts. Boundaries follow UAX #29 (Unicode 17) as a state machine fed one character at a time, from tables `gen/` generates, never from the text a cell stores; the one departure is that nothing joins after a Prepend character. A narrow cell whose cluster's string width becomes two is widened, the cell under the cursor becoming its second half; in the last column it stays narrow. Anything that moves the cursor or edits a row ends the cluster; SGR, modes and queries do not. A cluster is never split: past `Cell::CLUSTER_CAPACITY` (128) bytes, or past its row's text budget, the rest of it is dropped (a cell always holds a start of its cluster), and what follows lands where UAX #29 puts it | `unicode::tests` (all 766 conformance cases, every assigned code point against unicode-segmentation), `properties::printed_text_is_segmented_as_the_model_says`, `extended::grapheme_*`, `extended::long_clusters_*`, `extended::a_full_cluster_*`, fuzz operation `fd` |
 | C0 | BS subtracts a column; HT advances to the next tab stop, or the last column if none is left (see ESC H and CSI g); LF/VT/FF advance/scroll without CR; CR goes to column zero; SO puts G1 in GL and SI G0 (see ESC ( / ESC )); BEL and other unhandled C0 have no visible effect. BS, LF, VT, FF and CR end a pending wrap; HT keeps it (see CSI ? 7) | `controls`, `conformance::a_pending_wrap_*` |
 | ESC 7 / 8, CSI s / u | Save/restore position with its pending wrap (DEC STD 070, Appendix D.6.1), origin, drawing attributes, and the character sets with the shift between them, as xterm does; SCOSC/SCORC (`CSI s` / `CSI u`) share DECSC's slot; saved cursor is clamped after resize | `saved_cursor`, `extended::scosc_*`, `conformance::a_pending_wrap_is_saved_*` |
@@ -47,7 +47,7 @@ is vt100 0.16.2 plus fux's existing reply callback, not every xterm feature.
 | CSI ? 1005 / 1006 h/l | UTF-8 / SGR encoding state, latest set wins and matching reset restores legacy; fux still emits legacy bytes for non-SGR, not a new UTF-8 encoder | `mouse` |
 | CSI m | 0/reset; 1/bold and 2/dim, kept apart (both can be on, as in xterm; 22 ends both); 3/italic, 4/underline, 21/doubly underlined (an underline: no style is kept), 5/slow and 6/rapid blink (mutually exclusive), 7/inverse, 8/hidden, 9/strikeout; resets 22/23/24/25/27/28/29; 30–37/40–47, 90–97/100–107; 39/49/59 defaults; 38/48/58 (foreground, background, underline colour): `5;n` and `2;r;g;b` read as xterm reads them (values the list ends before are 0; another kind takes only itself), and ITU-T T.416's (13.1.8) colon forms `5:n`, `2:r:g:b` and `2:space:r:g:b`, the colour space ignored, as in xterm; a colour out of range is skipped and the rest of the SGR applies. `4:0` ends underline and `4:1` to `4:5` (kitty's underline styles) set it: xterm ignores them, every other engine in `compare/` reads them, and fux-vt keeps no style | `sgr`, `extended::blink_*`, `conformance::sgr_*`, `conformance::an_invalid_sgr_*`, `conformance::underline_styles_*` |
 | CSI 5n / 6n / 0c | Replies `ESC[0n`, absolute one-based cursor report, `ESC[?1;2c`; missing DA parameter is zero; preserve baseline reply coordinates, reporting a cursor waiting to wrap one past the last column; no replies for intermediates/private variants. `Options::identity` changes the DA answer and the column a cursor waiting to wrap is reported at (see "Opt-in outputs") | `replies` |
-| OSC / DCS / APC / PM / SOS | Consume without storing payload or drawing it; OSC accepts BEL or ST, others ST; cancellation/recovery follows parser state rules. With `Options::events` only, OSC payloads are buffered (see "Opt-in outputs") | `ignored_strings` |
+| OSC / DCS / APC / PM / SOS | Consume without storing payload or drawing it; OSC accepts BEL or ST, others ST, as ESC `\` (ECMA-48 8.3.143): the byte 0x9c, 8-bit ST, is part of a UTF-8 character in a payload (`\u{271c}` is e2 9c 9c) and ends nothing, as in xterm; cancellation/recovery follows parser state rules. With `Options::events` only, OSC payloads are buffered (see "Opt-in outputs") | `ignored_strings` |
 | Other sequences | Safely parse and ignore; recognized C0 inside CSI still executes; no leakage of ignored string payloads. A complete CSI or escape sequence fux-vt does not implement is given to `Sink::unhandled` (default: discarded): unknown final bytes, intermediates or private markers, ED/EL modes above 2, DSR other than 5/6. Unknown DEC private mode numbers are consumed quietly, and sequences cut short by parser bounds are not reported | `ignored_sequences`, `parser_bounds`, `extended::sequences_*` |
 
 ## Opt-in outputs
@@ -104,7 +104,8 @@ The owned parser follows Paul Williams's DEC ANSI transition model:
 https://vt100.net/emu/dec_ansi_parser . Implementation is direct; no parser
 crate is used. The UTF-8 terminal policy overrides the historical eight-bit
 control interpretation in ground state: raw C1 bytes are invalid UTF-8 and
-are discarded, and UTF-8-encoded C1 characters are ignored. Seven-bit ESC
+print U+FFFD, and UTF-8-encoded C1 characters are ignored; in control
+strings the 8-bit ST (0x9c) is a byte of a character, not a terminator. Seven-bit ESC
 forms remain recognized. Each state documents cancellation, ESC re-entry,
 parameter/intermediate overflow and string termination. Parameters saturate
 at u16::MAX; at most 32 numeric fields and two intermediates are retained;
@@ -267,6 +268,12 @@ verdicts` checks each against xterm.
   it; Ghostty, alacritty, libvterm, avt, wezterm and tmux move back and
   end the wrap (`fux-vt-compare replay --engines all --size 2x10
   'abcdefghij\e[ZX'`).
+- **A UTF-8 continuation byte alone** (the Unicode Standard, 3.9,
+  recommends U+FFFD). xterm reads it as Latin-1, so Latin-1 text keeps
+  its `£`, `°` and `©` and a raw C1 control is ignored; so does fux-vt.
+  Ghostty, libvterm, avt and tmux print U+FFFD; alacritty, wezterm and
+  xterm.js drop it (`fux-vt-compare replay --engines all --size 1x12
+  'price \xa35'`).
 - **REP after a control function** (ECMA-48 8.3.103 leaves it undefined, so
   this is no departure but a choice where the standard is silent). xterm
   repeats nothing until a character is printed again, and so does fux-vt,

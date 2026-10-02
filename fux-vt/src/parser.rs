@@ -351,8 +351,11 @@ impl Parser {
                 }
                 return Ok(());
             }
-            // Discard the invalid prefix, then reprocess this byte; it can be ESC.
+            // An invalid sequence: what came of it is one U+FFFD (Unicode
+            // 17, 3.9, "U+FFFD Substitution of Maximal Subparts"), as in
+            // xterm. Then this byte is read again; it can be ESC.
             self.utf8_len = 0;
+            self.screen.print(char::REPLACEMENT_CHARACTER)?;
         }
         match byte {
             0x1b => {
@@ -377,7 +380,12 @@ impl Parser {
                 }
                 self.utf8_len = 1;
             }
-            _ => {}
+            // A continuation byte alone is read as Latin-1, as xterm reads
+            // it: a raw C1 control, 0x80 to 0x9f, is ignored, and 0xa0 to
+            // 0xbf print U+00A0 to U+00BF.
+            0x80..=0xbf => self.screen.print(char::from(byte))?,
+            // A byte that starts no UTF-8 sequence: U+FFFD.
+            _ => self.screen.print(char::REPLACEMENT_CHARACTER)?,
         }
         Ok(())
     }
@@ -424,12 +432,10 @@ impl Parser {
                     }
                 }
             }
-            State::DcsString => {
-                if byte == 0x9c {
-                    self.state = State::Ground;
-                }
-            }
-            State::SosPmApcString | State::DcsIgnore => {}
+            // In UTF-8 a string ends only at ESC (ST is ESC \, ECMA-48
+            // 8.3.143): the byte 0x9c, 8-bit ST, is part of a character
+            // there, as in `\u{271c}` (e2 9c 9c).
+            State::DcsString | State::SosPmApcString | State::DcsIgnore => {}
             State::Escape | State::EscapeIntermediate => match byte {
                 0x00..=0x1f => self.control(byte, sink)?,
                 0x20..=0x2f => {

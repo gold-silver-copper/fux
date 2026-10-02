@@ -25,10 +25,7 @@ pub fn prepend(c: char) -> bool {
 /// one character unicode-width makes three columns wide, is left to its own
 /// test (`a_three_column_character_*`).
 pub fn printable(c: char) -> bool {
-    !c.is_control()
-        && c != '\u{FFFD}'
-        && c.width().is_some_and(|w| w <= 2)
-        && (c.width() != Some(0) || extends(c))
+    !c.is_control() && c.width().is_some_and(|w| w <= 2) && (c.width() != Some(0) || extends(c))
 }
 
 /// The clusters fux-vt makes of `text`: UAX #29's, broken after a Prepend

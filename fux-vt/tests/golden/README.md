@@ -8,7 +8,10 @@ expectations have since been corrected to xterm's behaviour: in `sgr.snap`, SGR
 line, not the top margin (cursor (0, 0) after operation 1; DEC STD 070,
 DECSTBM); in `alternate.snap`, 1049 and 47 keep the cursor where it was
 rather than homing it (`ALT` at row 3, column 4), and 1049 clears the
-alternate screen in the pen's colours (red blanks, `bce`). They were
+alternate screen in the pen's colours (red blanks, `bce`); in
+`strings-invalid.snap`, invalid UTF-8 prints U+FFFD, where vt100 dropped
+it: for `c0`, and for `f0 9f` cut off by the next ESC; the `80` alone is a
+C1 control read as Latin-1, as xterm reads it, and is ignored. They were
 not generated from fux-vt. The temporary recorder's source is preserved in
 that phase's commit history. `FUX_VT_CAPTURE_ORACLE=1 cargo test -p fux-vt
 --test differential permanent_fixtures --locked` was the capture command;
