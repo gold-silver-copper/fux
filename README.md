@@ -103,7 +103,8 @@ own.
 
 **Choosers** (`t g`, `w g`) list each tab or workspace with its panes, the
 current one marked. Enter selects, `r` renames, `x` closes (after asking), Esc
-or `q` cancels; Up/Down, `j`/`k`, PageUp/PageDown and Home/End move.
+or `q` cancels; Up/Down, `j`/`k`, PageUp/PageDown and Home/End move. Their
+letters, like a confirmation's `y`/`n`/`q`, work in either case.
 
 **Action menus** (`a`, `t a`, `w a`) hold what has no key of its own: rename,
 close, terminate the running command, swap, move to another or a new tab or

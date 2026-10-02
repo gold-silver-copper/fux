@@ -546,10 +546,6 @@ fn run_binding(session: &mut Session, client: ClientId, keys: &[KeyPress]) -> bo
     true
 }
 
-fn plain(press: KeyPress) -> Option<Key> {
-    (!press.mods.ctrl && !press.mods.alt).then_some(press.key)
-}
-
 /// Rows a scrolled panel has for its entries on a screen of `rows`: the
 /// rows above the bar, less `fixed` lines of its own (a title, a help line)
 /// and the two lines that say how many entries lie above and below; at
@@ -648,7 +644,7 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
 /// or, unbound, leaves the column open, saying so.
 fn follow(session: &mut Session, client: ClientId, path: &[KeyPress], press: KeyPress) {
     let mut keys = path.to_vec();
-    keys.push(crate::config::folded(press));
+    keys.push(press.folded());
     if run_binding(session, client, &keys) {
         return;
     }
@@ -686,12 +682,12 @@ pub fn repeat_key(session: &mut Session, client: ClientId, press: KeyPress) {
         );
         return;
     }
-    if matches!(plain(press), Some(Key::Escape | Key::Enter)) {
+    if matches!(press.plain_key(), Some(Key::Escape | Key::Enter)) {
         session.set_mode(client, Mode::Normal);
         return;
     }
     let mut keys = path.clone();
-    keys.push(crate::config::folded(press));
+    keys.push(press.folded());
     if !run_binding(session, client, &keys) {
         let title = layer_title(session, &path).unwrap_or_default().to_owned();
         session.set_mode(client, Mode::Normal);
@@ -737,7 +733,7 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let page = list_room(rows);
     let mut run: Option<Command> = None;
     let mut close = false;
-    match plain(press) {
+    match press.plain_key() {
         Some(Key::Arrow(Direction::Up)) | Some(Key::Char('k')) => {
             list.selected = list.selected.saturating_sub(1)
         }
@@ -910,13 +906,13 @@ pub fn confirm_key(session: &mut Session, client: ClientId, press: KeyPress) {
         return;
     };
     view.dirty = true;
-    match plain(press) {
-        Some(Key::Char('y')) | Some(Key::Char('Y')) => {
+    match press.plain_key() {
+        Some(Key::Char('y')) => {
             let command = confirm.command.clone();
             view.mode = Mode::Normal;
             run_for(session, client, &command);
         }
-        Some(Key::Char('n')) | Some(Key::Char('N')) | Some(Key::Escape) | Some(Key::Char('q')) => {
+        Some(Key::Char('n')) | Some(Key::Escape) | Some(Key::Char('q')) => {
             view.mode = Mode::Normal;
         }
         _ => {}
@@ -1022,6 +1018,33 @@ mod tests {
                 "{at} {remove} {insert:?}"
             );
         }
+    }
+
+    /// Like the keys after the prefix and copy mode's, a chooser's and a
+    /// confirmation's letter keys work in either case: Caps Lock changes
+    /// nothing.
+    #[test]
+    fn list_and_confirm_keys_ignore_case() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "new-tab -t +1")?;
+        run(&mut s, "choose-tab -c c1")?;
+        s.input(c, b"\x1b[H");
+        s.input(c, b"J");
+        assert!(mode(&s, c).ends_with(" 1"), "J moves down: {}", mode(&s, c));
+        s.input(c, b"K");
+        assert!(mode(&s, c).ends_with(" 0"), "K moves up: {}", mode(&s, c));
+        s.input(c, b"Q");
+        assert_eq!(mode(&s, c), "normal", "Q closes");
+        run(&mut s, "confirm-close -c c1 tab -t @2")?;
+        s.input(c, b"Q");
+        assert_eq!(mode(&s, c), "normal", "Q cancels");
+        run(&mut s, "confirm-close -c c1 tab -t @2")?;
+        s.input(c, b"Y");
+        assert!(
+            !s.exists(&AnyRef::Tab(crate::command::TabId(2))),
+            "Y confirms"
+        );
+        Ok(())
     }
 
     /// A long chooser scrolled to the middle shows its title, both "more"

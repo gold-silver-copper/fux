@@ -94,6 +94,25 @@ impl KeyPress {
     pub fn char(c: char) -> Self {
         Self::plain(Key::Char(c))
     }
+    /// The key as fux matches letter keys everywhere -- bindings, choosers,
+    /// menus, confirmations, copy mode: a letter in lower case, whatever
+    /// Shift and Caps Lock did. A letter with Ctrl or Alt is left as it is,
+    /// and matches no letter key.
+    pub fn folded(self) -> Self {
+        if let Key::Char(c) = self.key
+            && c.is_ascii_alphabetic()
+            && !self.mods.ctrl
+            && !self.mods.alt
+        {
+            return Self::char(c.to_ascii_lowercase());
+        }
+        self
+    }
+    /// The folded key, unless Ctrl or Alt is held: what overlays and copy
+    /// mode act on.
+    pub fn plain_key(self) -> Option<Key> {
+        (!self.mods.ctrl && !self.mods.alt).then_some(self.folded().key)
+    }
 }
 
 const NAMED: &[(&str, Key)] = &[
