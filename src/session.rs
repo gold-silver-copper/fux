@@ -328,6 +328,29 @@ pub struct Session {
     next_tab: u32,
     next_ws: u32,
     next_client: u32,
+    /// Commands run that may change what any client shows; input that runs
+    /// one repaints every client, input that runs none only its own.
+    changes: u64,
+}
+
+/// Whether a command leaves every client's screen as it was: it reads the
+/// state, or hands a pane's program something whose effect, if any, comes
+/// back as output.
+fn shows_nothing_new(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Ls { .. }
+            | Command::ListKeys
+            | Command::ListBuffers
+            | Command::ShowBuffer { .. }
+            | Command::CapturePane { .. }
+            | Command::SendKeys { .. }
+            | Command::Terminate { .. }
+            | Command::Client {
+                action: ClientAction::Capture { .. },
+                ..
+            }
+    )
 }
 
 fn basename(program: &str) -> String {
@@ -356,6 +379,7 @@ impl Session {
             next_tab: 1,
             next_ws: 1,
             next_client: 1,
+            changes: 0,
         }
     }
 
@@ -1200,8 +1224,8 @@ impl Session {
     pub fn run(&mut self, argv: &[String], ctx: &Ctx) -> Outcome {
         match command::parse(argv) {
             Ok(command) => self.run_command(&command, ctx),
+            // Nothing ran, so nothing shows anything new.
             Err(usage) => {
-                self.touch();
                 self.settle();
                 Outcome {
                     status: 2,
@@ -1226,9 +1250,17 @@ impl Session {
                 stderr: error.to_string(),
             },
         };
-        self.touch();
+        if !shows_nothing_new(command) {
+            self.changes = self.changes.wrapping_add(1);
+            self.touch();
+        }
         self.settle();
         outcome
+    }
+
+    /// How many commands have run that may change what clients show.
+    pub fn changes(&self) -> u64 {
+        self.changes
     }
 
     /// Why a command cannot run now, if it cannot: menus and the command
@@ -2298,6 +2330,65 @@ mod tests {
         let moved = run(&mut s, "move-pane -t %1 --to new-workspace")?;
         assert_eq!(moved.status, 1, "{}", moved.stderr);
         assert_eq!(s.next_ws, ws);
+        Ok(())
+    }
+
+    /// Only screens that may have changed are repainted: keys typed into a
+    /// pane repaint the typist's screen alone (the program's output
+    /// repaints its viewers when it comes), commands that only read repaint
+    /// none, and a command that changes the layout repaints every client.
+    #[test]
+    fn only_screens_that_may_change_are_marked_for_painting()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = Config {
+            shell: vec!["/bin/sh".into()],
+            ..Config::default()
+        };
+        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
+        s.start()?;
+        let (one, two) = (s.attach(10, 40, None)?, s.attach(10, 40, None)?);
+        let clean = |s: &mut Session| {
+            for view in s.views.values_mut() {
+                view.dirty = false;
+            }
+        };
+        let dirty = |s: &Session, c: ClientId| s.views.get(&c).is_some_and(|v| v.dirty);
+        let run = |s: &mut Session, line: &str| -> Result<(), String> {
+            let words = crate::words::split(line).map_err(|e| e.to_string())?;
+            let outcome = s.run(&words, &Ctx::default());
+            (outcome.status == 0).then_some(()).ok_or(outcome.stderr)
+        };
+        clean(&mut s);
+        s.input(one, b"ls");
+        assert!(
+            dirty(&s, one) && !dirty(&s, two),
+            "typing repaints the typist alone"
+        );
+        clean(&mut s);
+        for line in ["ls", "capture-pane -t %1", "list-keys", "send-keys -t %1 x"] {
+            run(&mut s, line)?;
+        }
+        assert!(
+            !dirty(&s, one) && !dirty(&s, two),
+            "reading repaints no one"
+        );
+        assert!(s.run(&["nope".into()], &Ctx::default()).status != 0);
+        assert!(
+            !dirty(&s, one) && !dirty(&s, two),
+            "a usage error repaints no one"
+        );
+        run(&mut s, "split -h -t %1")?;
+        assert!(
+            dirty(&s, one) && dirty(&s, two),
+            "a split repaints every client"
+        );
+        clean(&mut s);
+        // A binding that splits, typed by one client, repaints both.
+        s.input(one, b"\x02v");
+        assert!(
+            dirty(&s, one) && dirty(&s, two),
+            "a bound split repaints every client"
+        );
         Ok(())
     }
 
