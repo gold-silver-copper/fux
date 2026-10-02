@@ -452,7 +452,7 @@ pub const FAMILIES: &[Family] = &[
         name: "cursor",
         about: "CUU CUD CUF CUB CNL CPL CHA VPA HPA HPR VPR, CUP and HVP",
         status: Status::Differs(
-            "HPA (CSI `), HPR (CSI a) and VPR (CSI e) are not implemented (F8)",
+            "fux-vt does what xterm does (0 of 1200 cases differ with xterm alone voting), and the panel splits only where a soft-wrapped row is written over again once the cursor moves back into it, as in `save`: xterm, libvterm, avt and xterm.js keep the row soft-wrapped, as fux-vt does; Ghostty, alacritty, wezterm and tmux end the wrap, and outvote fux-vt (`replay --engines all --size 4x5 '\\e[0e long-line-\\e[;99Habcabc~!@#a'`)",
         ),
         ratty_only: false,
         generate: cursor,
@@ -470,7 +470,7 @@ pub const FAMILIES: &[Family] = &[
         name: "edit",
         about: "ICH, DCH, IL and DL",
         status: Status::Differs(
-            "IL and DL keep the cursor's column (F8); and the panel splits on ICH and DCH, which end a pending wrap in xterm and Ghostty, as DEC STD 070 (Appendix D.6.1) says and fux-vt does, where alacritty and libvterm keep it (`replay --engines all --size 1x5 'abcde\\e[@X'`)",
+            "the panel splits: IL and DL leave the cursor in the first column (DEC STD 070, IL and DL, note 2) in xterm, Ghostty and xterm.js, as in fux-vt, where alacritty, libvterm, avt, wezterm and tmux keep its column (`replay --engines all --size 3x5 'ab\\e[LX'`); and ICH, DCH, IL and DL end a pending wrap in xterm, Ghostty and xterm.js, as DEC STD 070 (Appendix D.6.1) says and fux-vt does, where alacritty, libvterm, avt and tmux keep it (`replay --engines all --size 2x5 'abcde\\e[L'`)",
         ),
         ratty_only: false,
         generate: edit,
@@ -479,7 +479,7 @@ pub const FAMILIES: &[Family] = &[
         name: "scroll",
         about: "SU, SD, DECSTBM and RI",
         status: Status::Differs(
-            "DECSTBM homes to the top margin with DECOM off, and resets an invalid region instead of ignoring it (F8); SD keeps a moved row's soft-wrap flag, Ghostty clears it",
+            "the panel splits where fux-vt does what DEC STD 070 and xterm do: an invalid DECSTBM (5-25, note 2) is ignored in xterm, Ghostty, wezterm, xterm.js and tmux, while alacritty, libvterm and avt home the cursor and outvote fux-vt (`replay --engines all --size 1x2 'x\\e[4;5r'`); RI ends a pending wrap (Appendix D.6.1) in xterm, wezterm and xterm.js, Ghostty, alacritty, libvterm and avt keep it (`replay --engines all --size 1x7 'abcdefg\\eM'`). Two differences from xterm remain, outside the audit's items: `CSI 0 T` scrolls a line, where xterm (reading it as mouse tracking), Ghostty, alacritty and libvterm do nothing, and fux-vt's parameters do not tell 0 from empty (`replay --engines all --size 2x1 '\\e[2;4r' '-\\e[0T'`); SD in a region clears the soft-wrap flag of the row it moves to the bottom margin, which xterm, alacritty and wezterm keep (`replay --engines all --size 6x1 '~!@#\\e[3;5r\\e[10H\\e[2T'`)",
         ),
         ratty_only: false,
         generate: scroll,
@@ -495,7 +495,7 @@ pub const FAMILIES: &[Family] = &[
         name: "origin",
         about: "DECOM with a scroll region, then cursor movement",
         status: Status::Differs(
-            "VPA ignores origin mode (F8), and DECSTBM's differences (see scroll)",
+            "fux-vt addresses lines in origin mode as DEC STD 070 (DECOM) and xterm do, and the panel splits on an invalid DECSTBM (see scroll) and on one-column screens, where Ghostty and alacritty wrap after HPA (`replay --engines all --size 11x1 '\\e[10;99r\\e[?6h\\e[2`o'`). Ghostty, alacritty and xterm.js count VPR in origin mode from the top margin twice, outvoted by xterm, libvterm, avt and wezterm (`replay --engines all --size 6x5 '\\e[2;6r\\e[?6h\\e[3eX'`). Against xterm alone, what differs is history: xterm, Ghostty and alacritty keep the lines that scroll off a region whose top is the screen's, and fux-vt keeps only those of whole-screen scrolls (documented)",
         ),
         ratty_only: false,
         generate: origin,
@@ -513,7 +513,7 @@ pub const FAMILIES: &[Family] = &[
         name: "pending-wrap",
         about: "a glyph in the last column, then a control, movement or edit while the wrap is pending",
         status: Status::Differs(
-            "the panel splits: EL, ECH, ICH, DCH and a line feed that scrolls end a pending wrap in xterm and Ghostty, as DEC STD 070 (Appendix D.6.1) says and fux-vt does; alacritty, libvterm and avt keep it, and outvote fux-vt (`replay --engines all --size 1x5 'abcde\\e[KX'`). Also IL and DL keep the cursor's column (F8), and the one-column split of `wide`",
+            "the panel splits: EL, ECH, ICH, DCH, IL, DL and a line feed that scrolls end a pending wrap in xterm and Ghostty, as DEC STD 070 (Appendix D.6.1) says and fux-vt does; alacritty, libvterm and avt keep it, and outvote fux-vt (`replay --engines all --size 1x5 'abcde\\e[KX'`). Also the one-column split of `wide`",
         ),
         ratty_only: false,
         generate: pending_wrap,
