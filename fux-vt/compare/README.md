@@ -31,6 +31,7 @@ below records which.
 fux-vt/compare/run.sh                       # families expected to agree, 20000 cases, beside the panel
 fux-vt/compare/run.sh engines               # which engines run here, which vote, what each cannot tell
 fux-vt/compare/run.sh cases                 # the named cases beside every engine, with each engine's mark
+fux-vt/compare/run.sh verdicts              # the families with a recorded verdict, beside xterm alone
 fux-vt/compare/run.sh matrix                # family by engine: % of cases each engine differs from fux-vt
 fux-vt/compare/run.sh bench                 # MB/s for every engine on every workload
 fux-vt/compare/run.sh --list                # the families, their status and reasons
@@ -114,7 +115,7 @@ its own file (`src/engines/*.rs`), each with a `replay` command.
 | vt100 | vt100 0.16.2 | underline colour, blink, hidden, strikeout, autowrap, origin, focus, kitty, reports | doesn't vote |
 | xterm.js | @xterm/headless 6.0.0 with addon-unicode-graphemes 0.4.0, `reflowCursorLine` on, one Node process for every terminal (`node/engine.mjs`) | underline colour, kitty | patches a crash in ED 1 (see its file) |
 | tmux | the installed tmux (3.7c here): a private server, one session per terminal, read with `capture-pane -p -e -N -F` and `display -p` | kitty | a `sh` pane program copies bytes in raw mode; every step is synced with DA1 (`CSI c`), which no family sends |
-| xterm | the installed xterm (XTerm 411 here) under one Xvfb per run, read by printing every page (`CSI ? 11 i`) through `printerCommand`, modes by DECRQM, resize by `CSI 8 t` | pending wrap, underline colour, kitty | the deciding vote for disputed families; a trailing erased cell's background cannot be read (see its file) |
+| xterm | the installed xterm (XTerm 411 here) under one Xvfb per run, read by printing every page (`CSI ? 11 i`) through `printerCommand`, modes by DECRQM, resize by `CSI 8 t` | pending wrap, underline colour, kitty | the deciding vote for disputed families (`verdicts`); the style of a row's blank cells after its last drawn cell cannot be read, and xterm abstains from a case with SGR 58, which it lacks (see its file) |
 
 ## Setup and pins
 
@@ -190,8 +191,22 @@ What is normalized away, and why:
 ## Families
 
 `--list` prints them with their current status. A family **agrees** when no
-seed tried finds a case where the panel outvotes fux-vt. Otherwise it
-**differs**, with a recorded reason, which is one of:
+seed tried finds a case where the panel outvotes fux-vt.
+
+A family is **decided** (`Status::Decided`, a recorded verdict) when the
+engines split and fux-vt follows a recorded choice: what the references say
+(`references/README.md` says which settles what), or what xterm does where
+xterm departs from them (listed in fux-vt's README, "Departures from the
+references") or they are silent. A vote can't judge such a family: on these
+points the default panel's majority is often the side fux-vt has chosen
+against. So the default run leaves it out, and `verdicts` checks it beside
+xterm alone: its named cases (each pins one point of the verdict), then
+random cases from it with plain text, where any field xterm can tell must
+equal xterm's. `cases` fails a named case in a decided family where xterm
+differs. The reason says which reference and choice, where the engines
+stand, and a `replay --engines all` that shows it.
+
+Otherwise a family **differs**, with a recorded reason, which is one of:
 - a fux-vt defect still to fix (most are from the audit of fux-vt 0.2.0,
   numbered F1–F10 in the reasons);
 - a documented fux-vt choice;

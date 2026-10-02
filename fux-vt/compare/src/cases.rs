@@ -13,6 +13,69 @@ pub type Named = (
 );
 
 pub const CASES: &[Named] = &[
+    // Recorded verdicts (families with `Status::Decided`): each pins one
+    // point, and `verdicts` checks it beside xterm.
+    (
+        "tab-keeps-a-pending-wrap",
+        "controls",
+        (2, 5),
+        &["abcde\\tX"],
+    ),
+    (
+        "a-line-feed-that-scrolls-ends-a-pending-wrap",
+        "controls",
+        (2, 3),
+        &["abcdef\\nX"],
+    ),
+    ("ed-ends-a-pending-wrap", "erase", (2, 5), &["abcde\\e[JX"]),
+    (
+        "resetting-autowrap-keeps-a-pending-wrap",
+        "autowrap",
+        (2, 5),
+        &["abcde\\e[?7l\\e[?7hX"],
+    ),
+    (
+        "a-wrap-is-left-pending-with-autowrap-off",
+        "autowrap",
+        (2, 2),
+        &["\\e[?7lca\\e[?7hX"],
+    ),
+    (
+        "bold-and-faint-together",
+        "sgr",
+        (1, 3),
+        &["\\e[1m\\e[2mX\\e[22mY"],
+    ),
+    (
+        "sgr-21-underlines-beside-bold",
+        "sgr",
+        (1, 3),
+        &["\\e[1m\\e[21mX\\e[24mY"],
+    ),
+    (
+        "sgr-colour-cut-short",
+        "sgr-invalid",
+        (1, 3),
+        &["\\e[48;5mX\\e[0;38;2;1;2mY"],
+    ),
+    (
+        "a-row-rewritten-after-decrc-stays-soft-wrapped",
+        "save",
+        (4, 9),
+        &["a", "abcx0123456789~!@#  \\e[s   ~!@#\\e[uabcabc"],
+    ),
+    (
+        "decstr-turns-autowrap-on",
+        "reset",
+        (2, 3),
+        &["\\e[?7l\\e[!pabcd"],
+    ),
+    (
+        "decstr-shows-the-cursor-and-resets-cursor-keys",
+        "reset",
+        (1, 1),
+        &["\\e[?25l\\e[?1h\\e[!p"],
+    ),
     (
         "backspace-while-wrap-pending",
         "pending-wrap",

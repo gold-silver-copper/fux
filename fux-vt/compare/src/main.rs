@@ -29,6 +29,8 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
        fux-vt-compare survey [--seed N] [--cases N] [--engines LIST] [--no-reflow]
        fux-vt-compare matrix [--seed N] [--cases N] [--engines LIST] [--no-reflow]
        fux-vt-compare cases [--engines LIST] [--no-reflow] [NAME...]
+       fux-vt-compare verdicts [--seed N] [--cases N] [--family NAME]... [--engines LIST]
+                               [--no-reflow]
        fux-vt-compare replay [--engines LIST] [--size RxC] [--history N] [--no-reflow]
                              [--newline-before-resize] STEP...
        fux-vt-compare bench [--engines LIST] [--mb N] [WORKLOAD...]
@@ -44,7 +46,12 @@ survey   each family alone (with plain text), counting the cases that
 matrix   each family alone beside each engine alone, and beside the whole
          panel: the share of cases that differ, as a table.
 cases    the named cases (default: all), beside every engine that can run
-         here. Exit 1 if a case in a family expected to agree fails.
+         here. Exit 1 if a case in a family expected to agree fails, or
+         xterm differs on one in a family with a recorded verdict.
+verdicts the families with a recorded verdict (or those named), beside
+         xterm alone (default): their named cases, then random cases from
+         each with plain text (100 each with a verdict, by default). Exit 1
+         if xterm differs on any.
 replay   one case: STEP is output, written as `run` prints it ('\\e[1mX'),
          or resize:RxC. Prints each engine's verdict after every step, and
          the screens.
@@ -55,8 +62,8 @@ engines  every engine: whether it can run here, whether it votes, and what
 
 LIST is engine names joined by commas, or `panel` (the default for run,
 survey, matrix and replay: the voters that can run here), `all` (every
-engine that can run here, the default for cases and bench) or
-`in-process`.
+engine that can run here, the default for cases and bench), `in-process`
+or `xterm` (the default for verdicts).
 
 fux-vt is set up as ratty sets it up (reflow, an identity, the kitty
 keyboard protocol); --no-reflow sets it up as fux does, which leaves out
@@ -102,7 +109,7 @@ fn parse() -> Result<Args, String> {
     let mut words = std::env::args().skip(1).peekable();
     if let Some(first) = words.peek()
         && [
-            "run", "survey", "matrix", "cases", "replay", "bench", "engines",
+            "run", "survey", "matrix", "cases", "verdicts", "replay", "bench", "engines",
         ]
         .contains(&first.as_str())
     {
@@ -194,6 +201,7 @@ fn list() {
     for f in FAMILIES {
         let status = match f.status {
             Status::Agree => "agree".to_owned(),
+            Status::Decided(why) => format!("DECIDED: {why}"),
             Status::Differs(why) => format!("DIFFER: {why}"),
         };
         let ratty = if f.ratty_only { " [needs reflow]" } else { "" };
@@ -312,6 +320,7 @@ fn survey(args: &Args) -> Result<bool, String> {
         let set: Vec<usize> = if i == text { vec![i] } else { vec![i, text] };
         let status = match f.status {
             Status::Agree => "agree",
+            Status::Decided(_) => "decided",
             Status::Differs(_) => "differs",
         };
         println!("== {} (expected: {status})", f.name);
@@ -417,10 +426,26 @@ fn cases(args: &Args) -> Result<bool, String> {
             steps,
         };
         let outcome = case.run_until(&panel, false)?;
-        let expected = FAMILIES
-            .get(index)
-            .is_some_and(|f| f.status == Status::Agree);
+        let status = FAMILIES.get(index).map(|f| f.status);
         let marks = marks(&outcome);
+        if matches!(status, Some(Status::Decided(_))) {
+            match xterm_agrees(&outcome) {
+                Some(true) | None => {
+                    agree = agree.saturating_add(1);
+                    println!("ok       {name} (family {family}: xterm decides)   {marks}");
+                }
+                Some(false) => {
+                    ok = false;
+                    differ = differ.saturating_add(1);
+                    println!(
+                        "FAIL     {name} (family {family}: xterm decides, and differs)   {marks}"
+                    );
+                    print!("{}", case::report(&case, &panel, &outcome));
+                }
+            }
+            continue;
+        }
+        let expected = status == Some(Status::Agree);
         match (outcome.agrees(), expected) {
             (true, true) => {
                 agree = agree.saturating_add(1);
@@ -443,8 +468,101 @@ fn cases(args: &Args) -> Result<bool, String> {
         }
     }
     println!(
-        "{agree} agree in families expected to agree, {fixed} agree in families that differ elsewhere, {differ} fail"
+        "{agree} agree in families expected to agree or decided, {fixed} agree in families that differ elsewhere, {differ} fail"
     );
+    Ok(ok)
+}
+
+/// Whether xterm agrees with fux-vt in `outcome`; none if it did not run
+/// or abstained.
+fn xterm_agrees(outcome: &case::Outcome) -> Option<bool> {
+    let xterm = engine::find("xterm")?;
+    outcome
+        .verdicts
+        .iter()
+        .find(|v| v.engine == xterm)
+        .map(|v| v.differences.is_empty())
+}
+
+/// The families with a recorded verdict, beside xterm (or `--engines`):
+/// their named cases at the end of each, then random cases from each with
+/// plain text, where xterm outvotes fux-vt wherever it differs.
+fn verdicts(args: &Args) -> Result<bool, String> {
+    let panel = panel(args, "xterm")?;
+    let text = families::find("text").ok_or("no text family")?;
+    let chosen: Vec<usize> = if args.families.is_empty() {
+        (0..FAMILIES.len())
+            .filter(|&i| {
+                usable(i, args.reflow)
+                    && FAMILIES
+                        .get(i)
+                        .is_some_and(|f| matches!(f.status, Status::Decided(_)))
+            })
+            .collect()
+    } else {
+        chosen_families(args)?
+    };
+    println!("engines: {}", names(&panel));
+    let count = args.cases.unwrap_or(100);
+    let mut ok = true;
+    for &i in &chosen {
+        let f = FAMILIES.get(i).ok_or("no such family")?;
+        println!("== {}", f.name);
+        for &(name, family, (rows, cols), words) in cases::CASES {
+            if family != f.name {
+                continue;
+            }
+            let words: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
+            let steps = steps(&words, i)?;
+            let resizes = steps.iter().any(|s| matches!(s, Step::Resize(..)));
+            let case = Case {
+                rows,
+                cols,
+                history: if resizes { case::RESIZE_HISTORY } else { 0 },
+                reflow: args.reflow,
+                newline_before_resize: false,
+                steps,
+            };
+            let outcome = case.run_until(&panel, false)?;
+            let marks = marks(&outcome);
+            if outcome.agrees() {
+                println!("   ok    {name}   {marks}");
+            } else {
+                ok = false;
+                println!("   FAIL  {name}   {marks}");
+                print!("{}", case::report(&case, &panel, &outcome));
+            }
+        }
+        let set: Vec<usize> = if i == text { vec![i] } else { vec![i, text] };
+        let mut r = Rng::new(args.seed);
+        let (mut judged, mut failed, mut unheard) = (0usize, 0usize, 0usize);
+        let mut shown = false;
+        // Cases xterm abstains from (SGR 58) are drawn again, up to ten
+        // times as many as asked for.
+        while judged < count && judged.saturating_add(unheard) < count.saturating_mul(10) {
+            let case = case::random(&mut r, &set, args.reflow);
+            let outcome = case.run(&panel)?;
+            if outcome.verdicts.is_empty() {
+                unheard = unheard.saturating_add(1);
+                continue;
+            }
+            judged = judged.saturating_add(1);
+            if outcome.agrees() {
+                continue;
+            }
+            failed = failed.saturating_add(1);
+            if !shown {
+                shown = true;
+                let small = case.shrink(&panel, 4000);
+                print!("{}", case::report(&small, &panel, &small.run(&panel)?));
+            }
+        }
+        ok &= failed == 0 && judged > 0;
+        println!(
+            "   {failed} of {judged} random cases failed (seed {}); {unheard} more had no verdict",
+            args.seed
+        );
+    }
     Ok(ok)
 }
 
@@ -500,6 +618,7 @@ fn main() -> ExitCode {
         "survey" => survey(&args),
         "matrix" => matrix(&args),
         "cases" => cases(&args),
+        "verdicts" => verdicts(&args),
         "replay" => replay(&args),
         "bench" => bench::run(&panel(&args, "all")?, &args.rest, args.mb),
         _ => run(&args),

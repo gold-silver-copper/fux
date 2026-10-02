@@ -34,3 +34,6 @@ jobs:
 
       - name: The families expected to agree, beside the voting panel
         run: fux-vt/compare/run.sh --cases 20000
+
+      - name: The families with a recorded verdict, beside xterm
+        run: fux-vt/compare/run.sh verdicts

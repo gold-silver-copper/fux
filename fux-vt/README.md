@@ -21,7 +21,7 @@ is vt100 0.16.2 plus fux's existing reply callback, not every xterm feature.
 | ESC = / > | DECKPAM / DECKPNM set and clear `application_keypad()` (default off; reset clears it). State only: fux-vt encodes no keypad input | `opt_in::keypad_mode_is_tracked_and_reset` |
 | ESC ( F / ESC ) F | SCS (VT520 manual, Tables 5-13 and 5-14; ECMA-35): designate G0 / G1, `0` DEC Special Graphics and any other set ASCII, as xterm reads them in UTF-8 (the national sets draw nothing different there). While GL holds Special Graphics, printable 0x5f to 0x7e print as xterm draws them: a blank, ◆▒␉␌␍␊°±␤␋┘┐┌└┼⎺⎻─⎼⎽├┤┴┬│≤≥π≠£·; other characters are unchanged. `TERM=xterm-256color`'s `smacs`/`rmacs` are `ESC ( 0` / `ESC ( B`. G2, G3 (`ESC *`, `ESC +`), the 96-character sets and single and locking shifts beyond SO/SI are unhandled. RIS and DECSTR designate ASCII into both, G0 in GL | `conformance::dec_special_graphics_draw_lines` |
 | ESC M / c | Reverse index / full reset; reset clears both buffers and primary history, modes and attributes, but never restarts row identity allocation | `reset`, `scrolling` |
-| CSI ! p | DECSTR, soft reset, as xterm does it: the VT520 manual's table (p. 5-150) and DEC STD 070's Soft Terminal Reset (p. 4-37) show the cursor and reset DECOM, DECCKM, DECKPAM, both screens' scroll regions, the pen, the character sets (ASCII, G0 in GL), and the saved cursor (home, normal attributes); DECAWM goes back to its default, on, which both leave to the terminal's setting. The screen, the cursor and a pending wrap, the alternate screen, bracketed paste, focus reporting, mouse modes and kitty flags stay | `conformance::a_soft_reset_*` |
+| CSI ! p | DECSTR, soft reset, as xterm does it: the VT520 manual's table (p. 5-150) and DEC STD 070's Soft Terminal Reset (p. 4-37) show the cursor and reset DECOM, DECCKM, DECKPAM, both screens' scroll regions, the pen, the character sets (ASCII, G0 in GL), and the saved cursor (home, normal attributes); DECAWM goes back to its default, on, as in xterm, where the VT520 table says no autowrap and DEC STD 070 off (see "Departures from the references"). The screen, the cursor and a pending wrap, the alternate screen, bracketed paste, focus reporting, mouse modes and kitty flags stay | `conformance::a_soft_reset_*` |
 | CSI A B C D E F G H d f | Relative up/down/right/left, next/previous line, horizontal absolute, cursor position, vertical absolute, HVP (as CUP); inherited margin clamping and origin semantics | `cursor`, `extended::hvp_*` |
 | CSI @ P X | Insert/delete/erase characters, bounded to the row; no orphan wide halves; the blanks inserted, brought in by a deletion or erased take the pen's foreground and background colours and no other attribute, as xterm's do (`bce`, background colour erase, which `xterm-256color` advertises) | `editing`, `wide_edits`, `conformance::blanks_brought_in_*` |
 | CSI L M S T | Insert/delete lines; scroll up/down within margins; counts bounded to affected region; partial-region operations do not add history. The lines brought in, by these and by LF and RI, take the pen's colours (`bce`, as for CSI @ P X) | `scrolling`, `conformance::blanks_brought_in_*` |
@@ -189,7 +189,9 @@ revision/width snapshots, and full frames still contain unchanged rows.
   runs fux-vt beside nine other engines (Ghostty, alacritty, libvterm, avt,
   wezterm, vt100, xterm.js, tmux and xterm itself) and fails where they
   outvote it, field by field; its families record what still differs and
-  why.
+  why. Where the engines split and fux-vt follows a recorded choice (the
+  departures below among them), `run.sh verdicts` checks that family
+  against xterm alone.
 - **The specifications** each behaviour is checked against are listed in
   [`references/README.md`](https://github.com/gold-silver-copper/fux/blob/main/references/README.md): ECMA-48, DEC
   STD 070 and the VT520 manual, xterm's ctlseqs, Unicode 17.0. A test
@@ -197,3 +199,38 @@ revision/width snapshots, and full frames still contain unchanged rows.
 
 The differential tests against the vt100 crate that fux-vt replaced live in
 history at `b8fa0d8`.
+
+## Departures from the references
+
+The references (ECMA-48, DEC STD 070, the VT520 manual, ITU-T T.416, listed
+in [`references/README.md`](https://github.com/gold-silver-copper/fux/blob/main/references/README.md))
+decide what fux-vt does wherever they speak, except here, where xterm
+departs from them and fux-vt follows xterm: fux sets `TERM=xterm-256color`,
+and programs are written and tested against xterm. The engine verdicts are
+from `compare/run.sh replay --engines all` with the case given; `run.sh
+verdicts` checks each against xterm.
+
+- **HT keeps a pending wrap.** DEC STD 070, Appendix D.6.1, lists HT among
+  the functions that clear the Last Column Flag. xterm, Ghostty, alacritty,
+  libvterm, wezterm, xterm.js and tmux keep it; avt clears it
+  (`--size 2x5 'abcde\tX'`).
+- **Resetting DECAWM keeps a pending wrap.** Appendix D.6.1 lists
+  RESET_MODE(AUTO_WRAP) among them. Every engine in `compare/` keeps it
+  (`--size 2x5 'abcde\e[?7l\e[?7hX'`).
+- **With DECAWM off, a glyph in the last column still leaves a wrap
+  pending,** which a glyph printed after DECAWM is set again carries out.
+  Appendix D.6.1 sets the flag only while Auto Wrap is on. xterm, Ghostty,
+  alacritty and xterm.js set it; libvterm, avt, wezterm and tmux do not
+  (`--size 2x2 '\e[?7lca\e[?7hX'`).
+- **Bold (SGR 1) and faint (SGR 2) can both be on.** ECMA-48 (8.3.117)
+  makes them one attribute, intensity, which 22 sets back to "neither bold
+  nor faint", so each would replace the other. xterm, Ghostty, alacritty,
+  libvterm, xterm.js and tmux keep both; avt and wezterm let faint replace
+  bold (`--size 1x3 '\e[1m\e[2mX'`).
+- **DECSTR turns autowrap on.** The VT520 manual (DECSTR, Table 5–6) says
+  "No autowrap", and DEC STD 070 (Soft Terminal Reset, p. 4-37) "Auto Wrap
+  Off (NVM if present)". xterm, libvterm, wezterm and xterm.js turn it on;
+  Ghostty, alacritty, avt and tmux leave it as it was
+  (`--size 2x3 '\e[?7l\e[!pabcd'`). `xterm-256color`'s `is2` and `rs2`,
+  which `tput init` and `tput reset` send, begin with DECSTR and never set
+  DECAWM again, while the entry advertises automatic margins (`am`).
