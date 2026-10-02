@@ -1,12 +1,12 @@
 //! A case: a terminal's size and history, and the output and resizes given
-//! to both terminals. Running one compares them after every step;
-//! shrinking one keeps it differing while taking away all it can.
+//! to fux-vt and to a panel of other engines. Running one compares fux-vt
+//! with each after every step, and fux-vt fails where most of them differ
+//! from it; shrinking one keeps it failing while taking away all it can.
+use crate::engine::{ENGINES, Engine, SUBJECT, Setup};
 use crate::escape;
 use crate::families::{self, FAMILIES};
-use crate::ghostty::Ghostty;
 use crate::rng::Rng;
 use crate::snapshot::{self, Snapshot};
-use crate::vt::Vt;
 use std::fmt::Write;
 
 /// A piece of output, from one family.
@@ -48,50 +48,128 @@ pub struct Case {
     pub steps: Vec<Step>,
 }
 
-/// How a case went: the step after which the terminals first differed
-/// (none: they never did), what differed, and both snapshots then.
+/// What one engine made of a step, beside fux-vt.
+pub struct Verdict {
+    pub engine: usize,
+    /// What differs, compared on the fields the engine can tell; empty when
+    /// it agrees with fux-vt.
+    pub differences: Vec<String>,
+    pub snapshot: Snapshot,
+}
+
+/// How a case went: the step after which fux-vt was first outvoted (none:
+/// it never was), and fux-vt's snapshot and every engine's verdict then,
+/// or at the end.
 pub struct Outcome {
     pub step: Option<usize>,
-    pub differences: Vec<String>,
     pub fux: Snapshot,
-    pub ghostty: Snapshot,
+    pub verdicts: Vec<Verdict>,
 }
 
 impl Outcome {
     pub fn agrees(&self) -> bool {
         self.step.is_none()
     }
+
+    /// How many engines differ from fux-vt.
+    pub fn differing(&self) -> usize {
+        self.verdicts
+            .iter()
+            .filter(|v| !v.differences.is_empty())
+            .count()
+    }
 }
 
-fn compare(vt: &Vt, ghostty: &Ghostty) -> Result<(Vec<String>, Snapshot, Snapshot), String> {
-    let a = vt.snapshot();
-    let b = ghostty.snapshot(a.history.len())?;
-    Ok((snapshot::differences(&a, &b, 24), a, b))
+/// Whether fux-vt is outvoted: more than half the engines differ from it.
+/// With one engine, whether it differs.
+fn outvoted(verdicts: &[Verdict]) -> bool {
+    let differing = verdicts
+        .iter()
+        .filter(|v| !v.differences.is_empty())
+        .count();
+    differing.saturating_mul(2) > verdicts.len()
+}
+
+struct Running {
+    fux: Box<dyn Engine>,
+    engines: Vec<(usize, Box<dyn Engine>)>,
+}
+
+impl Running {
+    fn each(&mut self, f: impl Fn(&mut dyn Engine) -> Result<(), String>) -> Result<(), String> {
+        f(self.fux.as_mut())?;
+        for (index, engine) in &mut self.engines {
+            let name = ENGINES.get(*index).map_or("?", |k| k.name);
+            f(engine.as_mut()).map_err(|e| format!("{name}: {e}"))?;
+        }
+        Ok(())
+    }
+
+    fn compare(&mut self) -> Result<(Snapshot, Vec<Verdict>), String> {
+        let fux = self.fux.snapshot(0)?;
+        let mut verdicts = Vec::with_capacity(self.engines.len());
+        for (index, engine) in &mut self.engines {
+            let kind = ENGINES.get(*index).ok_or("no such engine")?;
+            let snapshot = engine
+                .snapshot(fux.history.len())
+                .map_err(|e| format!("{}: {e}", kind.name))?;
+            let differences = snapshot::differences(
+                &fux.masked(&kind.can),
+                &snapshot.masked(&kind.can),
+                kind.name,
+                24,
+            );
+            verdicts.push(Verdict {
+                engine: *index,
+                differences,
+                snapshot,
+            });
+        }
+        Ok((fux, verdicts))
+    }
 }
 
 impl Case {
-    /// Runs the case, comparing after creation and after every step. An
-    /// error means a terminal refused something (a size, say), not that
-    /// they differed.
-    pub fn run(&self) -> Result<Outcome, String> {
-        self.run_until(true)
+    fn setup(&self) -> Setup {
+        Setup {
+            rows: self.rows,
+            cols: self.cols,
+            history: self.history,
+            reflow: self.reflow,
+        }
     }
 
-    /// Runs the case, stopping at the first difference if `stop`, else
-    /// running every step and giving the snapshots at the end.
-    pub fn run_until(&self, stop: bool) -> Result<Outcome, String> {
-        let mut vt = Vt::new(self.rows, self.cols, self.history, self.reflow)?;
-        let mut ghostty = Ghostty::new(self.rows, self.cols)?;
-        let (differences, fux, gh) = compare(&vt, &ghostty)?;
-        if !differences.is_empty() {
+    /// Runs the case beside the `panel` (indices into [`ENGINES`]),
+    /// comparing after creation and after every step, and stopping where
+    /// fux-vt is first outvoted. An error means an engine refused or
+    /// failed something, not that they differed.
+    pub fn run(&self, panel: &[usize]) -> Result<Outcome, String> {
+        self.run_until(panel, true)
+    }
+
+    /// Runs the case, stopping where fux-vt is first outvoted if `stop`,
+    /// else running every step and giving the verdicts at the end.
+    pub fn run_until(&self, panel: &[usize], stop: bool) -> Result<Outcome, String> {
+        let setup = self.setup();
+        let mut running = Running {
+            fux: (SUBJECT.make)(&setup)?,
+            engines: panel
+                .iter()
+                .map(|&index| {
+                    let kind = ENGINES.get(index).ok_or("no such engine")?;
+                    (kind.make)(&setup).map(|engine| (index, engine))
+                })
+                .collect::<Result<_, String>>()?,
+        };
+        let (fux, verdicts) = running.compare()?;
+        if outvoted(&verdicts) && (stop || self.steps.is_empty()) {
             return Ok(Outcome {
                 step: Some(0),
-                differences,
                 fux,
-                ghostty: gh,
+                verdicts,
             });
         }
-        let mut last = (fux, gh);
+        let mut last = (fux, verdicts);
         for (i, step) in self.steps.iter().enumerate() {
             match step {
                 Step::Output(snippets) => {
@@ -99,39 +177,35 @@ impl Case {
                         .iter()
                         .flat_map(|s| s.bytes.iter().copied())
                         .collect();
-                    vt.process(&bytes)?;
-                    ghostty.process(&bytes);
+                    running.each(|e| e.process(&bytes))?;
                 }
                 Step::Resize(rows, cols) => {
                     if self.newline_before_resize {
-                        vt.process(SETTLE)?;
-                        ghostty.process(SETTLE);
+                        running.each(|e| e.process(SETTLE))?;
                     }
-                    vt.resize(*rows, *cols)?;
-                    ghostty.resize(*rows, *cols)?;
+                    running.each(|e| e.resize(*rows, *cols))?;
                 }
             }
-            let (differences, fux, gh) = compare(&vt, &ghostty)?;
-            if !differences.is_empty() && (stop || i.saturating_add(1) == self.steps.len()) {
+            let (fux, verdicts) = running.compare()?;
+            let at_end = i.saturating_add(1) == self.steps.len();
+            if outvoted(&verdicts) && (stop || at_end) {
                 return Ok(Outcome {
                     step: Some(i.saturating_add(1)),
-                    differences,
                     fux,
-                    ghostty: gh,
+                    verdicts,
                 });
             }
-            last = (fux, gh);
+            last = (fux, verdicts);
         }
         Ok(Outcome {
             step: None,
-            differences: Vec::new(),
             fux: last.0,
-            ghostty: last.1,
+            verdicts: last.1,
         })
     }
 
-    fn differs(&self) -> bool {
-        self.run().is_ok_and(|o| !o.agrees())
+    fn differs(&self, panel: &[usize]) -> bool {
+        self.run(panel).is_ok_and(|o| !o.agrees())
     }
 
     /// The families the case's output comes from, by name, each once.
@@ -154,11 +228,18 @@ impl Case {
         names
     }
 
-    /// The command that replays the case.
-    pub fn command(&self) -> String {
+    /// The command that replays the case beside `panel`.
+    pub fn command(&self, panel: &[usize]) -> String {
+        let names: Vec<&str> = panel
+            .iter()
+            .filter_map(|&i| ENGINES.get(i).map(|k| k.name))
+            .collect();
         let mut out = format!(
-            "fux-vt-ghostty replay --size {}x{} --history {}",
-            self.rows, self.cols, self.history
+            "fux-vt-compare replay --engines {} --size {}x{} --history {}",
+            names.join(","),
+            self.rows,
+            self.cols,
+            self.history
         );
         if !self.reflow {
             out.push_str(" --no-reflow");
@@ -186,7 +267,7 @@ impl Case {
     /// The smallest case found that still differs, by taking away steps,
     /// then snippets, then bytes, and making the screen smaller, as long as
     /// it keeps differing; at most `budget` runs.
-    pub fn shrink(&self, budget: usize) -> Case {
+    pub fn shrink(&self, panel: &[usize], budget: usize) -> Case {
         let mut best = self.clone();
         let runs = std::cell::Cell::new(0usize);
         let try_it = |candidate: Case, best: &mut Case| -> bool {
@@ -194,7 +275,7 @@ impl Case {
                 return false;
             }
             runs.set(runs.get().saturating_add(1));
-            if candidate.differs() {
+            if candidate.differs(panel) {
                 *best = candidate;
                 true
             } else {
@@ -405,24 +486,56 @@ pub fn random(r: &mut Rng, families: &[usize], reflow: bool) -> Case {
     }
 }
 
-/// The report for a case that differs: what led to it, the command that
-/// replays it, what differed and both screens.
-pub fn report(case: &Case, outcome: &Outcome) -> String {
+/// The report for a case: what led to it, the command that replays it,
+/// each engine's verdict and what it found different, and fux-vt's screen
+/// beside the first engine that differs.
+pub fn report(case: &Case, panel: &[usize], outcome: &Outcome) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "  families: {}", case.families().join(", "));
-    let _ = writeln!(out, "  replay:   {}", case.command());
+    let _ = writeln!(out, "  replay:   {}", case.command(panel));
+    let total = outcome.verdicts.len();
     match outcome.step {
-        Some(0) => out.push_str("  differs from the start:\n"),
-        Some(step) => {
-            let _ = writeln!(out, "  differs after step {step}:");
+        Some(0) => {
+            let _ = writeln!(
+                out,
+                "  from the start, {} of {total} engines differ:",
+                outcome.differing()
+            );
         }
-        None => out.push_str("  agrees\n"),
+        Some(step) => {
+            let _ = writeln!(
+                out,
+                "  after step {step}, {} of {total} engines differ:",
+                outcome.differing()
+            );
+        }
+        None => {
+            let _ = writeln!(
+                out,
+                "  fux-vt is not outvoted; {} of {total} engines differ:",
+                outcome.differing()
+            );
+        }
     }
-    for line in &outcome.differences {
-        let _ = writeln!(out, "    {line}");
+    for verdict in &outcome.verdicts {
+        let name = ENGINES.get(verdict.engine).map_or("?", |k| k.name);
+        if verdict.differences.is_empty() {
+            let _ = writeln!(out, "    {name}: agrees");
+            continue;
+        }
+        let _ = writeln!(out, "    {name}: differs");
+        for line in verdict.differences.iter().take(8) {
+            let _ = writeln!(out, "      {line}");
+        }
+        if verdict.differences.len() > 8 {
+            let _ = writeln!(out, "      ...");
+        }
     }
-    for line in snapshot::side_by_side(&outcome.fux, &outcome.ghostty).lines() {
-        let _ = writeln!(out, "    {line}");
+    if let Some(verdict) = outcome.verdicts.iter().find(|v| !v.differences.is_empty()) {
+        let name = ENGINES.get(verdict.engine).map_or("?", |k| k.name);
+        for line in snapshot::side_by_side(&outcome.fux, &verdict.snapshot, name).lines() {
+            let _ = writeln!(out, "    {line}");
+        }
     }
     out
 }

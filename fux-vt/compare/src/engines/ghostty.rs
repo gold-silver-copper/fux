@@ -1,4 +1,5 @@
-//! Ghostty's terminal core, read into a snapshot.
+//! Ghostty's terminal core (libghostty-vt), read into a snapshot.
+use crate::engine::{Can, Engine, Kind, Setup, always};
 use crate::snapshot::{self, Cell, Color, Line, Snapshot, Style, Width};
 use libghostty_vt::screen::{CellContentTag, CellWide, GridRef};
 use libghostty_vt::style::{StyleColor, Underline};
@@ -85,8 +86,22 @@ fn cell(at: &GridRef<'_>) -> Result<Cell, String> {
     Ok(Cell::new(&text, width, style))
 }
 
+pub const KIND: Kind = Kind {
+    name: "ghostty",
+    about: "Ghostty's terminal core, libghostty-vt, built from source by Zig",
+    can: Can::ALL,
+    panel: true,
+    in_process: true,
+    available: always,
+    make,
+};
+
+fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
+    Ok(Box::new(Ghostty::new(setup.rows, setup.cols)?))
+}
+
 impl Ghostty {
-    pub fn new(rows: u16, cols: u16) -> Result<Ghostty, String> {
+    fn new(rows: u16, cols: u16) -> Result<Ghostty, String> {
         let mut terminal = Terminal::new(TerminalOptions {
             cols,
             rows,
@@ -106,16 +121,6 @@ impl Ghostty {
         Ok(Ghostty { terminal, replies })
     }
 
-    pub fn process(&mut self, bytes: &[u8]) {
-        self.terminal.vt_write(bytes);
-    }
-
-    pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
-        self.terminal
-            .resize(cols, rows, 8, 16)
-            .map_err(err("resize"))
-    }
-
     fn line(&self, point: impl Fn(u16) -> Point, cols: u16) -> Result<Line, String> {
         let mut cells = Vec::with_capacity(usize::from(cols));
         let mut wrapped = false;
@@ -129,8 +134,7 @@ impl Ghostty {
         Ok(Line { cells, wrapped })
     }
 
-    /// The snapshot, with as many history rows as fux-vt keeps.
-    pub fn snapshot(&self, history_rows: usize) -> Result<Snapshot, String> {
+    fn read(&self, history_rows: usize) -> Result<Snapshot, String> {
         let t = &self.terminal;
         let rows = t.rows().map_err(err("rows"))?;
         let cols = t.cols().map_err(err("cols"))?;
@@ -173,5 +177,22 @@ impl Ghostty {
             screen,
             history,
         })
+    }
+}
+
+impl Engine for Ghostty {
+    fn process(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.terminal.vt_write(bytes);
+        Ok(())
+    }
+
+    fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
+        self.terminal
+            .resize(cols, rows, 8, 16)
+            .map_err(err("resize"))
+    }
+
+    fn snapshot(&mut self, history_rows: usize) -> Result<Snapshot, String> {
+        self.read(history_rows)
     }
 }

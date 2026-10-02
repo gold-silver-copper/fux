@@ -1,4 +1,5 @@
-//! fux-vt, read into a snapshot.
+//! fux-vt, the subject, read into a snapshot.
+use crate::engine::{Engine, Setup};
 use crate::snapshot::{self, Cell, Color, Line, Snapshot, Style, Width};
 use fux_vt::{Blink, CellRef, Event, Identity, Options, Parser, Sink};
 
@@ -73,29 +74,31 @@ fn cell(c: &CellRef<'_>) -> Cell {
     Cell::new(text, width, style)
 }
 
-impl Vt {
-    pub fn new(rows: u16, cols: u16, history: usize, reflow: bool) -> Result<Vt, String> {
-        let parser = Parser::with_options(rows, cols, history, options(reflow))
-            .map_err(|e| format!("fux-vt: {e}"))?;
-        Ok(Vt {
-            parser,
-            heard: Heard::default(),
-        })
-    }
+pub fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
+    let parser = Parser::with_options(setup.rows, setup.cols, setup.history, options(setup.reflow))
+        .map_err(|e| format!("fux-vt: {e}"))?;
+    Ok(Box::new(Vt {
+        parser,
+        heard: Heard::default(),
+    }))
+}
 
-    pub fn process(&mut self, bytes: &[u8]) -> Result<(), String> {
+impl Engine for Vt {
+    fn process(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.parser
             .process_with(bytes, &mut self.heard)
             .map_err(|e| format!("fux-vt: {e}"))
     }
 
-    pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
+    fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
         self.parser
             .resize(rows, cols)
             .map_err(|e| format!("fux-vt: {e}"))
     }
 
-    pub fn snapshot(&self) -> Snapshot {
+    /// Its whole history, whatever is asked: the other engines are asked
+    /// for as many rows as it keeps.
+    fn snapshot(&mut self, _: usize) -> Result<Snapshot, String> {
         let s = self.parser.screen();
         let (rows, cols) = s.size();
         let (row, col) = s.cursor_position();
@@ -126,7 +129,7 @@ impl Vt {
                 Some((line.text(), row.wrapped))
             })
             .collect();
-        Snapshot {
+        Ok(Snapshot {
             rows,
             cols,
             cursor,
@@ -144,6 +147,6 @@ impl Vt {
             reports: snapshot::reports(&self.heard.replies),
             screen,
             history,
-        }
+        })
     }
 }

@@ -1,7 +1,7 @@
 [workspace]
 
 [package]
-name = "fux-vt-ghostty"
+name = "fux-vt-compare"
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -9,7 +9,7 @@ rust-version = "1.95"
 license = "MIT"
 
 [[bin]]
-name = "fux-vt-ghostty"
+name = "fux-vt-compare"
 path = "src/main.rs"
 doc = false
 bench = false
@@ -20,6 +20,18 @@ fux-vt = { path = ".." }
 # The reference: Ghostty's terminal core, built from source by Zig. `run.sh`
 # pins the Ghostty commit and the Zig toolchain it is built with.
 libghostty-vt = { version = "=0.2.1", default-features = false }
+# The other engines run in this process.
+alacritty_terminal = "=0.26.0"
+avt = "=0.18.0"
+vt100 = "=0.16.2"
+wezterm-term = { git = "https://github.com/wezterm/wezterm", package = "wezterm-term" }
+# Reading the engines that run as their own processes.
+serde_json = "1"
+unicode-width = "0.2"
+
+[build-dependencies]
+# libvterm, compiled from its release source (run.sh fetches it).
+cc = "1"
 
 [profile.release]
 # Overflow is an error here, as in a debug build.

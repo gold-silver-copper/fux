@@ -2,6 +2,7 @@
 //! field: the visible screen cell by cell, the cursor, the modes both
 //! track, the title, cursor and status reports, and the text of the most
 //! recent history rows.
+use crate::engine::Can;
 use std::fmt::Write;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +150,76 @@ impl Line {
     }
 }
 
+impl Snapshot {
+    /// The snapshot with what an engine cannot tell left at its default,
+    /// so comparing two masked snapshots compares only what it can.
+    pub fn masked(&self, can: &Can) -> Snapshot {
+        let mut s = self.clone();
+        for line in &mut s.screen {
+            line.wrapped &= can.wrapped;
+            for cell in &mut line.cells {
+                let st = &mut cell.style;
+                for (keep, color) in [
+                    (can.fg, &mut st.fg),
+                    (can.bg, &mut st.bg),
+                    (can.underline_color, &mut st.underline_color),
+                ] {
+                    if !keep {
+                        *color = Color::Default;
+                    }
+                }
+                for (keep, flag) in [
+                    (can.bold, &mut st.bold),
+                    (can.dim, &mut st.dim),
+                    (can.italic, &mut st.italic),
+                    (can.underline, &mut st.underline),
+                    (can.blink, &mut st.blink),
+                    (can.inverse, &mut st.inverse),
+                    (can.hidden, &mut st.hidden),
+                    (can.strikeout, &mut st.strikeout),
+                ] {
+                    *flag &= keep;
+                }
+                if !can.widths && cell.width == Width::Wide {
+                    cell.width = Width::Narrow;
+                }
+            }
+        }
+        if !can.cursor {
+            s.cursor = (0, 0);
+        }
+        for (keep, flag) in [
+            (can.pending_wrap, &mut s.pending_wrap),
+            (can.cursor_visible, &mut s.cursor_visible),
+            (can.autowrap, &mut s.autowrap),
+            (can.origin, &mut s.origin),
+            (can.alternate, &mut s.alternate),
+            (can.application_cursor, &mut s.application_cursor),
+            (can.application_keypad, &mut s.application_keypad),
+            (can.bracketed_paste, &mut s.bracketed_paste),
+            (can.focus_reporting, &mut s.focus_reporting),
+        ] {
+            *flag &= keep;
+        }
+        if !can.kitty_keyboard_flags {
+            s.kitty_keyboard_flags = 0;
+        }
+        if !can.title {
+            s.title.clear();
+        }
+        if !can.reports {
+            s.reports.clear();
+        }
+        if !can.history {
+            s.history.clear();
+        }
+        for (_, wrapped) in &mut s.history {
+            *wrapped &= can.wrapped;
+        }
+        s
+    }
+}
+
 /// Everything compared, read from one terminal.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {
@@ -215,24 +286,24 @@ pub fn reports(bytes: &[u8]) -> Vec<String> {
 /// A mode both track, by name, and how to read it.
 type Flag = (&'static str, fn(&Snapshot) -> bool);
 
-/// The differences between fux-vt's snapshot and Ghostty's, at most
-/// `limit` of them, each a line; empty when they agree.
-pub fn differences(fux: &Snapshot, ghostty: &Snapshot, limit: usize) -> Vec<String> {
+/// The differences between fux-vt's snapshot and another engine's, at
+/// most `limit` of them, each a line; empty when they agree.
+pub fn differences(fux: &Snapshot, other: &Snapshot, engine: &str, limit: usize) -> Vec<String> {
     let mut out = Vec::new();
     let mut field = |name: &str, a: String, b: String| {
         if a != b {
-            out.push(format!("{name}: fux-vt {a}, ghostty {b}"));
+            out.push(format!("{name}: fux-vt {a}, {engine} {b}"));
         }
     };
     field(
         "size",
         format!("{}x{}", fux.rows, fux.cols),
-        format!("{}x{}", ghostty.rows, ghostty.cols),
+        format!("{}x{}", other.rows, other.cols),
     );
     field(
         "cursor",
         format!("{:?}", fux.cursor),
-        format!("{:?}", ghostty.cursor),
+        format!("{:?}", other.cursor),
     );
     let flags: [Flag; 9] = [
         ("pending wrap", |s| s.pending_wrap),
@@ -246,39 +317,39 @@ pub fn differences(fux: &Snapshot, ghostty: &Snapshot, limit: usize) -> Vec<Stri
         ("focus reporting", |s| s.focus_reporting),
     ];
     for (name, get) in flags {
-        field(name, get(fux).to_string(), get(ghostty).to_string());
+        field(name, get(fux).to_string(), get(other).to_string());
     }
     field(
         "kitty keyboard flags",
         fux.kitty_keyboard_flags.to_string(),
-        ghostty.kitty_keyboard_flags.to_string(),
+        other.kitty_keyboard_flags.to_string(),
     );
     // fux-vt reports titles as they are set and keeps none, so a reset
     // cannot clear one; Ghostty's RIS clears its title. An empty title on
-    // Ghostty's side is not compared.
-    if !ghostty.title.is_empty() {
+    // the other engine's side is not compared.
+    if !other.title.is_empty() {
         field(
             "title",
             format!("{:?}", fux.title),
-            format!("{:?}", ghostty.title),
+            format!("{:?}", other.title),
         );
     }
     field(
         "reports",
         format!("{:?}", fux.reports),
-        format!("{:?}", ghostty.reports),
+        format!("{:?}", other.reports),
     );
-    for (y, (a, b)) in fux.screen.iter().zip(&ghostty.screen).enumerate() {
+    for (y, (a, b)) in fux.screen.iter().zip(&other.screen).enumerate() {
         if a.wrapped != b.wrapped {
             out.push(format!(
-                "row {y} soft-wrapped: fux-vt {}, ghostty {}",
+                "row {y} soft-wrapped: fux-vt {}, {engine} {}",
                 a.wrapped, b.wrapped
             ));
         }
         for (x, (ca, cb)) in a.cells.iter().zip(&b.cells).enumerate() {
             if ca != cb {
                 out.push(format!(
-                    "cell ({y},{x}): fux-vt {}, ghostty {}",
+                    "cell ({y},{x}): fux-vt {}, {engine} {}",
                     ca.describe(),
                     cb.describe()
                 ));
@@ -286,10 +357,10 @@ pub fn differences(fux: &Snapshot, ghostty: &Snapshot, limit: usize) -> Vec<Stri
         }
     }
     let ha: Vec<_> = fux.history.iter().rev().collect();
-    let hb: Vec<_> = ghostty.history.iter().rev().collect();
+    let hb: Vec<_> = other.history.iter().rev().collect();
     if ha.len() > hb.len() {
         out.push(format!(
-            "history: fux-vt keeps {} rows, ghostty {}",
+            "history: fux-vt keeps {} rows, {engine} {}",
             ha.len(),
             hb.len()
         ));
@@ -297,7 +368,7 @@ pub fn differences(fux: &Snapshot, ghostty: &Snapshot, limit: usize) -> Vec<Stri
     for (back, (a, b)) in ha.iter().zip(&hb).enumerate() {
         if a != b {
             out.push(format!(
-                "history row {} from the newest: fux-vt {:?}{}, ghostty {:?}{}",
+                "history row {} from the newest: fux-vt {:?}{}, {engine} {:?}{}",
                 back,
                 a.0,
                 if a.1 { " (wrapped)" } else { "" },
@@ -316,10 +387,10 @@ pub fn differences(fux: &Snapshot, ghostty: &Snapshot, limit: usize) -> Vec<Stri
 
 /// Both screens side by side, as text, with the cursor marked and each
 /// soft-wrapped row flagged.
-pub fn side_by_side(fux: &Snapshot, ghostty: &Snapshot) -> String {
-    let width = usize::from(fux.cols.max(ghostty.cols)).max(6);
-    let mut out = format!("  {:<width$}   {}\n", "fux-vt", "ghostty");
-    let lines = fux.screen.len().max(ghostty.screen.len());
+pub fn side_by_side(fux: &Snapshot, other: &Snapshot, engine: &str) -> String {
+    let width = usize::from(fux.cols.max(other.cols)).max(6);
+    let mut out = format!("  {:<width$}   {engine}\n", "fux-vt");
+    let lines = fux.screen.len().max(other.screen.len());
     for y in 0..lines {
         let side = |s: &Snapshot| -> String {
             let Some(line) = s.screen.get(y) else {
@@ -342,7 +413,7 @@ pub fn side_by_side(fux: &Snapshot, ghostty: &Snapshot) -> String {
             }
             text
         };
-        let (a, b) = (side(fux), side(ghostty));
+        let (a, b) = (side(fux), side(other));
         let pad = width.saturating_sub(a.chars().count());
         let mark = if a == b { ' ' } else { '≠' };
         let _ = writeln!(out, "{mark} {a}{:pad$}   {b}", "");
