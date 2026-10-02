@@ -1175,6 +1175,48 @@ impl Screen {
         g.saved_origin = false;
     }
 
+    /// Clears the alternate screen, its blanks in the pen's colours
+    /// (`bce`), as xterm clears it for 1047 and 1049. The cursor, origin
+    /// mode, the margins and the screen's saved cursor stay, and a pending
+    /// wrap ends, as ED's does (DEC STD 070, Appendix D.6.1).
+    fn clear_alternate(&mut self) -> Result<(), Error> {
+        let kept = self.alternate.clone_cursor();
+        self.alternate.clear(&mut self.next_id, self.version)?;
+        let blank = self.attributes.erased();
+        let g = &mut self.alternate;
+        g.set_cursor(kept);
+        g.pending_wrap = false;
+        if blank != Attributes::default() {
+            let cols = g.cols.get();
+            for y in 0..g.rows.get() {
+                g.erase(y, 0, cols, blank, self.version);
+            }
+        }
+        Ok(())
+    }
+
+    /// Shows the alternate screen, or the primary. The cursor, with its
+    /// pending wrap, origin mode and the margins go along, as in xterm,
+    /// where they are the terminal's rather than either screen's: a
+    /// program that switches finds the cursor where it left it. Each
+    /// screen keeps its own saved cursor, as each of xterm's does.
+    fn switch_screen(&mut self, alternate: bool) {
+        if self.alternate_active != alternate {
+            let (from, to) = if alternate {
+                (&self.primary, &mut self.alternate)
+            } else {
+                (&self.alternate, &mut self.primary)
+            };
+            to.cursor = from.cursor;
+            to.pending_wrap = from.pending_wrap;
+            to.origin = from.origin;
+            to.top = from.top;
+            to.bottom = from.bottom;
+        }
+        self.alternate_active = alternate;
+        self.structural = self.version;
+    }
+
     /// DECRQM status for a DEC private mode: 1 set, 2 reset, 0 not recognized.
     pub(crate) fn private_mode_status(&self, n: u16) -> u8 {
         let set = match n {
@@ -1207,18 +1249,14 @@ impl Screen {
             25 => self.hide_cursor = !set,
             2004 => self.bracketed_paste = set,
             1004 => self.focus_reporting = set,
-            47 => {
-                self.alternate_active = set;
-                self.structural = self.version;
-            }
+            47 => self.switch_screen(set),
             // 1047: the alternate screen, cleared on leaving it (xterm's
             // ctlseqs). 1048: DECSC and DECRC.
             1047 => {
                 if !set && self.alternate_active {
-                    self.alternate.clear(&mut self.next_id, self.version)?;
+                    self.clear_alternate()?;
                 }
-                self.alternate_active = set;
-                self.structural = self.version;
+                self.switch_screen(set);
             }
             1048 => {
                 if set {
@@ -1227,16 +1265,17 @@ impl Screen {
                     self.restore();
                 }
             }
+            // 1049: DECSC, then the alternate screen, cleared first; and
+            // back, then DECRC.
             1049 => {
                 if set {
                     self.save();
-                    self.alternate.clear(&mut self.next_id, self.version)?;
-                    self.alternate_active = true;
+                    self.switch_screen(true);
+                    self.clear_alternate()?;
                 } else {
-                    self.alternate_active = false;
+                    self.switch_screen(false);
                     self.restore();
                 }
-                self.structural = self.version;
             }
             9 | 1000 | 1002 | 1003 => {
                 let mode = match n {

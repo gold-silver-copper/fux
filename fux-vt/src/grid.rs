@@ -64,6 +64,16 @@ pub(crate) struct Grid {
     pub bottom: u16,
 }
 
+/// A grid's cursor and what goes with it (`Grid::clone_cursor`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CursorState {
+    cursor: (u16, u16),
+    pending_wrap: bool,
+    origin: bool,
+    margins: (u16, u16),
+    saved: ((u16, u16), bool, bool),
+}
+
 /// Which way a scroll moves rows: up, the rows leaving the top going into
 /// history if `history` (and the region is the whole screen), or down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -969,6 +979,33 @@ impl Grid {
         Ok(())
     }
 
+    /// The cursor and what goes with it: pending wrap, origin mode, the
+    /// margins and the saved cursor.
+    pub fn clone_cursor(&self) -> CursorState {
+        CursorState {
+            cursor: self.cursor,
+            pending_wrap: self.pending_wrap,
+            origin: self.origin,
+            margins: (self.top, self.bottom),
+            saved: (
+                self.saved_cursor,
+                self.saved_pending_wrap,
+                self.saved_origin,
+            ),
+        }
+    }
+    /// Puts back what `clone_cursor` took, on a grid of the same size.
+    pub fn set_cursor(&mut self, state: CursorState) {
+        self.cursor = state.cursor;
+        self.pending_wrap = state.pending_wrap;
+        self.origin = state.origin;
+        (self.top, self.bottom) = state.margins;
+        (
+            self.saved_cursor,
+            self.saved_pending_wrap,
+            self.saved_origin,
+        ) = state.saved;
+    }
     pub fn in_region(&self) -> bool {
         (self.top..=self.bottom).contains(&self.cursor.0)
     }

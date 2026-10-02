@@ -557,7 +557,9 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "alternate",
         about: "modes 47, 1047, 1048 and 1049",
-        status: Status::Differs("47 and 1049 home the cursor instead of keeping it (F10)"),
+        status: Status::Differs(
+            "fux-vt switches screens as xterm does (its ctlseqs; against xterm alone it differs only where xterm's jump scroll drops a line scrolled in the same write as a switch), and the panel splits: 1049's clear ends a pending wrap in xterm and wezterm, as ED's does (DEC STD 070, Appendix D.6.1) and fux-vt's does, where Ghostty, alacritty, libvterm, avt, xterm.js and tmux keep it (`replay --engines all --size 2x3 'abc' '\\e[?1049hc'`); alacritty does not implement 47 or 1047, nor libvterm 47 (`cases mode-1047-and-1048`; `replay --engines all --size 4x5 '\\e[2;3r\\e[?6h\\e[?47h\\e[1;1HX'`)",
+        ),
         ratty_only: false,
         generate: alternate,
     },
