@@ -8,6 +8,9 @@ use crate::session::Session;
 use crate::view::Mode;
 use std::time::Instant;
 
+/// How much of a client's input is decoded and dispatched at once.
+const INPUT_PIECE: usize = 4096;
+
 impl Session {
     /// Raw bytes from a client's terminal, now.
     pub fn input(&mut self, client: ClientId, bytes: &[u8]) {
@@ -16,16 +19,26 @@ impl Session {
 
     /// Raw bytes from a client's terminal, read at `now`: an Escape they
     /// leave waiting is due `ESCAPE_DELAY` after it.
+    ///
+    /// The bytes are decoded and dispatched `INPUT_PIECE` at a time, so a
+    /// large frame of input never becomes a key for every byte at once.
     pub fn input_at(&mut self, client: ClientId, bytes: &[u8], now: Instant) {
         let mut inputs = Vec::new();
-        match self.views.get_mut(&client) {
-            Some(view) => {
-                view.decoder.bytes(bytes, &mut inputs);
-                view.decoder.mark(now);
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let (piece, later) = rest
+                .split_at_checked(INPUT_PIECE.min(rest.len()))
+                .unwrap_or((rest, &[]));
+            rest = later;
+            match self.views.get_mut(&client) {
+                Some(view) => {
+                    view.decoder.bytes(piece, &mut inputs);
+                    view.decoder.mark(now);
+                }
+                None => return,
             }
-            None => return,
+            self.dispatch(client, std::mem::take(&mut inputs));
         }
-        self.dispatch(client, inputs);
     }
 
     /// The first client, in their order, whose Escape was due by `now`.
@@ -50,6 +63,7 @@ impl Session {
         if inputs.is_empty() {
             return;
         }
+        let changes = self.changes();
         for input in inputs {
             if !self.views.contains_key(&client) {
                 break;
@@ -63,7 +77,14 @@ impl Session {
                 }
             }
         }
-        self.touch();
+        // A command the input ran repainted every client already; else only
+        // this client's screen changed: its mode, notice or overlay. A key
+        // a pane's program reads shows when its output does.
+        if self.changes() == changes
+            && let Some(view) = self.views.get_mut(&client)
+        {
+            view.dirty = true;
+        }
         self.settle();
     }
 

@@ -54,7 +54,7 @@ const CONFIG: &[&str] = &[
 ];
 
 macro_rules! stack {
-    ($name:ident, $fux:ident) => {
+    ($name:ident, $fux:ident, $folded:expr) => {
         mod $name {
             use $fux::config::Config;
             use $fux::keys::KeyPress;
@@ -80,7 +80,7 @@ macro_rules! stack {
                         .as_ref()
                         .map(ToString::to_string)
                         .map_err(ToString::to_string),
-                    press.as_ref().map(|p| $fux::config::folded(*p).to_string())
+                    press.as_ref().map(|p| ($folded)(*p).to_string())
                 )
             }
 
@@ -141,8 +141,10 @@ macro_rules! stack {
     };
 }
 
-stack!(base, baseline);
-stack!(cur, fux);
+// How each folds a key typed after the prefix: 0.17 and before with
+// config::folded, the current fux with KeyPress::folded.
+stack!(base, baseline, baseline::config::folded);
+stack!(cur, fux, |p: fux::keys::KeyPress| p.folded());
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
     let mut lines = 0u64;

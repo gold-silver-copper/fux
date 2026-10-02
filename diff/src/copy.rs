@@ -25,7 +25,7 @@ const QUERIES: &[&str] = &[
 ];
 
 macro_rules! stack {
-    ($name:ident, $fux:ident, $vt:ident) => {
+    ($name:ident, $fux:ident, $vt:ident, |$row:ident| $id:expr) => {
         mod $name {
             use $fux::command::ClientId;
             use $fux::config::Config;
@@ -71,7 +71,7 @@ macro_rules! stack {
                         )
                     })
                     .collect();
-                let row = copy::row_at(p.screen(), from.0).map(|row| row.id);
+                let row = copy::row_at(p.screen(), from.0).map(|$row| $id);
                 format!(
                     "{found:?} {texts:?} {row:?} {:?}",
                     row.and_then(|id| copy::index_of(p.screen(), id))
@@ -149,8 +149,9 @@ macro_rules! stack {
     };
 }
 
-stack!(base, baseline, baseline_vt);
-stack!(cur, fux, fux_vt);
+// fux-vt 0.2's rows have fields where later ones have accessors.
+stack!(base, baseline, baseline_vt, |row| row.id);
+stack!(cur, fux, fux_vt, |row| row.id());
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
     let (mut searches, mut found) = (0u64, 0u64);

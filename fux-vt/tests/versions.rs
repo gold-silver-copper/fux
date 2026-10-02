@@ -83,7 +83,12 @@ fn retained(parser: &Parser) -> HashMap<RowId, (u64, bool, Cells)> {
         .saturating_add(usize::from(screen.size().0));
     (0..retained)
         .filter_map(|i| screen.row_from_bottom(i))
-        .map(|row| (row.id, (row.version, row.wrapped, row.cells().collect())))
+        .map(|row| {
+            (
+                row.id(),
+                (row.version(), row.wrapped(), row.cells().collect()),
+            )
+        })
         .collect()
 }
 
@@ -112,9 +117,9 @@ fn sgr(attributes: Attributes) -> String {
         (attributes.underline_color(), 58),
     ] {
         let _ = match color {
-            Color::Default => Ok(()),
             Color::Idx(i) => write!(out, ";{base};5;{i}"),
             Color::Rgb(r, g, b) => write!(out, ";{base};2;{r};{g};{b}"),
+            Color::Default | _ => Ok(()),
         };
     }
     out.push('m');
@@ -125,7 +130,9 @@ fn sgr(attributes: Attributes) -> String {
 /// written again where they are, with their own attributes, stepping over
 /// blanks, wide glyphs' second halves and cells with combining marks (which
 /// take two edits to write), and a tail already blank in one style erased
-/// again.
+/// again, unless the row is soft-wrapped: erasing to its end would end the
+/// wrap. A wide glyph that does not fit wraps from a row whose last column
+/// is blank.
 fn no_op(parser: &Parser) -> String {
     let screen = parser.screen();
     let (rows, cols) = screen.size();
@@ -167,6 +174,7 @@ fn no_op(parser: &Parser) -> String {
         }
         if let Some(blank) = uniform
             && tail < usize::from(cols)
+            && !row.wrapped()
         {
             let _ = write!(out, "\x1b[{}G", tail.saturating_add(1));
             out.push_str(&sgr(blank.attributes()));
@@ -197,7 +205,7 @@ fn a_version_changes_with_its_row_and_only_then() -> Result {
             parser.process(bytes.as_bytes())?;
             let after = retained(&parser);
             let screen = parser.screen();
-            let dirty: Vec<RowId> = screen.dirty_rows_since(mark).map(|r| r.id).collect();
+            let dirty: Vec<RowId> = screen.dirty_rows_since(mark).map(|r| r.id()).collect();
             let full = screen.full_refresh_since(mark);
             for (id, (version, wrapped, cells)) in &after {
                 let Some((was, was_wrapped, was_cells)) = before.get(id) else {
@@ -261,16 +269,16 @@ fn dirty_live_rows_are_the_live_dirty_rows() -> Result {
             let live: HashMap<RowId, u16> = (0..height)
                 .filter_map(|y| {
                     let from_bottom = usize::from(height.saturating_sub(y).saturating_sub(1));
-                    screen.row_from_bottom(from_bottom).map(|row| (row.id, y))
+                    screen.row_from_bottom(from_bottom).map(|row| (row.id(), y))
                 })
                 .collect();
             let expected: Vec<(u16, RowId)> = screen
                 .dirty_rows_since(mark)
-                .filter_map(|row| live.get(&row.id).map(|y| (*y, row.id)))
+                .filter_map(|row| live.get(&row.id()).map(|y| (*y, row.id())))
                 .collect();
             let got: Vec<(u16, RowId)> = screen
                 .dirty_live_rows_since(mark)
-                .map(|(y, row)| (y, row.id))
+                .map(|(y, row)| (y, row.id()))
                 .collect();
             assert_eq!(got, expected, "{bytes:?}");
             // Top to bottom.
@@ -296,7 +304,7 @@ fn the_common_redraw_changes_no_version() -> Result {
     parser.process(redraw.as_bytes())?;
     let versions = |p: &Parser| -> Vec<u64> {
         (0..5)
-            .filter_map(|i| p.screen().row_from_bottom(i).map(|r| r.version))
+            .filter_map(|i| p.screen().row_from_bottom(i).map(|r| r.version()))
             .collect()
     };
     let before = versions(&parser);

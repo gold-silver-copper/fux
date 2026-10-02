@@ -182,7 +182,7 @@ fn lines(parser: &Parser) -> Vec<String> {
         let last = row.len().saturating_sub(1);
         let mut line = out.pop().unwrap_or_default();
         for (col, cell) in row.cells().enumerate() {
-            let spacer = row.wrapped && col == last && next_wide && !cell.has_contents();
+            let spacer = row.wrapped() && col == last && next_wide && !cell.has_contents();
             if cell.is_wide_continuation() || spacer {
                 continue;
             }
@@ -193,7 +193,7 @@ fn lines(parser: &Parser) -> Vec<String> {
             });
         }
         out.push(line);
-        if !row.wrapped {
+        if !row.wrapped() {
             out.push(String::new());
         }
     }
@@ -208,10 +208,7 @@ fn lines(parser: &Parser) -> Vec<String> {
 /// cursor where it was; so does reflowing to the narrower width alone.
 #[test]
 fn reflow_narrower_and_back_keeps_every_line() -> Result {
-    let options = Options {
-        reflow: true,
-        ..Options::default()
-    };
+    let options = Options::new().with_reflow(true);
     let mut r = Rng(0x0ef1_0000_0000_0002);
     for case in 0..4_000 {
         let rows = u16::try_from(r.below(10).saturating_add(3))?;
@@ -312,10 +309,7 @@ fn cells_agree_with_a_plain_list_of_cells() -> Result {
 /// plain stacks, one a screen, of at most 32 flag sets.
 #[test]
 fn kitty_keyboard_flags_agree_with_two_plain_stacks() -> Result {
-    let options = Options {
-        kitty_keyboard: true,
-        ..Options::default()
-    };
+    let options = Options::new().with_kitty_keyboard(true);
     let mut r = Rng(0x0c17_7700_0000_0004);
     for case in 0..300 {
         let mut parser = Parser::with_options(4, 10, 0, options)?;

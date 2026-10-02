@@ -212,20 +212,6 @@ fn letter(command: &'static str, word: &str) -> Result<KeyPress, Error> {
     }
 }
 
-/// A key typed after the prefix, as bindings are matched: a letter in lower
-/// case. Anything else, and a letter with Ctrl or Alt, is left as it is and
-/// matches no binding.
-pub fn folded(press: KeyPress) -> KeyPress {
-    if let crate::keys::Key::Char(c) = press.key
-        && c.is_ascii_alphabetic()
-        && !press.mods.ctrl
-        && !press.mods.alt
-    {
-        return KeyPress::char(c.to_ascii_lowercase());
-    }
-    press
-}
-
 /// Keys as they are written: `t n`.
 pub fn keys_text(keys: &[KeyPress]) -> String {
     keys.iter()

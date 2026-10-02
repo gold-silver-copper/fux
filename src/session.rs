@@ -328,6 +328,32 @@ pub struct Session {
     next_tab: u32,
     next_ws: u32,
     next_client: u32,
+    /// Commands run that may change what any client shows; input that runs
+    /// one repaints every client, input that runs none only its own.
+    changes: u64,
+    /// Output changed a pane a client's copy mode holds rows of: the next
+    /// `settle_if_needed` repairs the views, to end copy mode if they went.
+    unsettled: bool,
+}
+
+/// Whether a command leaves every client's screen as it was: it reads the
+/// state, or hands a pane's program something whose effect, if any, comes
+/// back as output.
+fn shows_nothing_new(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Ls { .. }
+            | Command::ListKeys
+            | Command::ListBuffers
+            | Command::ShowBuffer { .. }
+            | Command::CapturePane { .. }
+            | Command::SendKeys { .. }
+            | Command::Terminate { .. }
+            | Command::Client {
+                action: ClientAction::Capture { .. },
+                ..
+            }
+    )
 }
 
 fn basename(program: &str) -> String {
@@ -356,6 +382,8 @@ impl Session {
             next_tab: 1,
             next_ws: 1,
             next_client: 1,
+            changes: 0,
+            unsettled: false,
         }
     }
 
@@ -529,7 +557,13 @@ impl Session {
     }
 
     /// A new pane running the shell, with `cmd` typed into it if given.
-    fn new_pane(&mut self, cmd: &[String], cwd: &Path, size: (u16, u16)) -> Result<PaneId, Error> {
+    fn new_pane(
+        &mut self,
+        ids: &mut Ids,
+        cmd: &[String],
+        cwd: &Path,
+        size: (u16, u16),
+    ) -> Result<PaneId, Error> {
         let shell_program = self
             .config
             .shell
@@ -537,14 +571,23 @@ impl Session {
             .cloned()
             .unwrap_or_else(|| "/bin/sh".into());
         let fish = basename(&shell_program) == "fish";
-        let line = if cmd.is_empty() {
+        // The line to type is measured before anything is made: a line too
+        // long to type must not leave a process behind.
+        let typed = if cmd.is_empty() {
             None
         } else {
-            Some(crate::words::shell_line(cmd, fish)?)
+            let mut typed = crate::words::shell_line(cmd, fish)?.into_bytes();
+            typed.push(b'\r');
+            if typed
+                .len()
+                .checked_add(crate::pane::ENTRY_COST)
+                .is_none_or(|cost| cost > crate::pane::INPUT_BYTES)
+            {
+                return Err(Error::LineTooLong);
+            }
+            Some(typed)
         };
-        let id = PaneId(self.next_pane);
-        let mut next_pane = self.next_pane;
-        advance(&mut next_pane, "pane")?;
+        let id = ids.pane()?;
         let name = cmd
             .first()
             .map(|c| basename(c))
@@ -570,16 +613,7 @@ impl Session {
                 size.1,
             )?);
         }
-        if let Some(line) = line {
-            let mut typed = line.into_bytes();
-            typed.push(b'\r');
-            if typed
-                .len()
-                .checked_add(crate::pane::ENTRY_COST)
-                .is_none_or(|cost| cost > crate::pane::INPUT_BYTES)
-            {
-                return Err(Error::LineTooLong);
-            }
+        if let Some(typed) = typed {
             pane.typed = Some(crate::pane::Typed {
                 line: typed,
                 deadline: crate::after(Instant::now(), TYPE_WAIT),
@@ -589,13 +623,54 @@ impl Session {
                 pane.type_now();
             }
         }
-        self.next_pane = next_pane;
         self.panes.insert(id, pane);
         Ok(id)
     }
 
-    fn new_tab_id(&mut self) -> Result<TabId, Error> {
-        advance(&mut self.next_tab, "tab").map(TabId)
+    /// The IDs to take for something being made; see [`Ids`].
+    fn ids(&self) -> Ids {
+        Ids {
+            pane: self.next_pane,
+            tab: self.next_tab,
+            workspace: self.next_ws,
+        }
+    }
+
+    /// The IDs taken for something now made are used up.
+    fn commit(&mut self, ids: Ids) {
+        self.next_pane = ids.pane;
+        self.next_tab = ids.tab;
+        self.next_ws = ids.workspace;
+    }
+
+    /// Refuses a workspace name another workspace has, `except` the one
+    /// being renamed: a workspace is found by its name.
+    fn check_workspace_name(&self, name: &str, except: Option<WsId>) -> Result<(), Error> {
+        self.check_name(name)?;
+        if self
+            .workspaces
+            .iter()
+            .any(|ws| ws.name == name && Some(ws.id) != except)
+        {
+            return Err(Error::NameTaken(name.to_owned()));
+        }
+        Ok(())
+    }
+
+    /// The name a workspace gets when none is given: `workspace-N` after
+    /// its ID, or the next number up that no workspace is named.
+    fn workspace_name(&self, id: WsId) -> String {
+        let mut n = id.0;
+        loop {
+            let name = format!("workspace-{n}");
+            if !self.workspaces.iter().any(|ws| ws.name == name) {
+                return name;
+            }
+            match n.checked_add(1) {
+                Some(next) => n = next,
+                None => return name,
+            }
+        }
     }
 
     /// Adds a tab to a workspace, named after its place if no name is given.
@@ -621,14 +696,17 @@ impl Session {
     ) -> Result<WsId, Error> {
         let default_ctx = Ctx::default();
         let cwd = self.cwd_for(ctx.unwrap_or(&default_ctx), None);
+        if let Some(name) = &name {
+            self.check_workspace_name(name, None)?;
+        }
         // The IDs are taken before the pane starts, so that none can run out
         // after, and are committed once it has.
-        let (mut next_ws, mut next_tab) = (self.next_ws, self.next_tab);
-        let id = WsId(advance(&mut next_ws, "workspace")?);
-        let tab = TabId(advance(&mut next_tab, "tab")?);
-        let pane = self.new_pane(cmd, &cwd, DEFAULT_SIZE)?;
-        (self.next_ws, self.next_tab) = (next_ws, next_tab);
-        let name = name.unwrap_or_else(|| format!("workspace-{}", id.0));
+        let mut ids = self.ids();
+        let id = ids.workspace()?;
+        let tab = ids.tab()?;
+        let pane = self.new_pane(&mut ids, cmd, &cwd, DEFAULT_SIZE)?;
+        self.commit(ids);
+        let name = name.unwrap_or_else(|| self.workspace_name(id));
         self.workspaces.push(Workspace {
             id,
             name,
@@ -781,6 +859,7 @@ impl Session {
     /// Brings every view back to something that exists, then sizes the PTYs:
     /// run after every event.
     pub fn settle(&mut self) {
+        self.unsettled = false;
         let first_ws = self.workspaces.first().map(|w| w.id);
         // Each client after the one before: repairing a view changes no
         // other, and adds or removes none.
@@ -997,6 +1076,14 @@ impl Session {
     /// panes out stays.
     pub fn close_pane(&mut self, id: PaneId, why: Option<String>) {
         let place = self.locate(id);
+        // Who sees the pane is known before its tab can go: a tab its
+        // closing empties takes its viewers elsewhere.
+        let viewers: Vec<ClientId> = self
+            .views
+            .iter()
+            .filter(|(_, view)| place.is_some_and(|(_, t)| view.tab() == Some(t)))
+            .map(|(client, _)| *client)
+            .collect();
         if let Some((_, tab)) = place
             && let Some(t) = self.tab_mut(tab)
         {
@@ -1007,10 +1094,8 @@ impl Session {
         }
         if let Some(pane) = self.panes.remove(&id) {
             if let Some(why) = why {
-                for view in self.views.values_mut() {
-                    if place.is_some_and(|(_, t)| view.tab() == Some(t)) {
-                        view.info(format!("{id} {} {why}", pane.label()));
-                    }
+                for client in &viewers {
+                    self.info_to(*client, format!("{id} {} {why}", pane.label()));
                 }
             }
             self.end(pane);
@@ -1092,6 +1177,20 @@ impl Session {
         self.close_pane(id, Some(format!("exited with status {status}")));
     }
 
+    /// Settles, if anything since the last settle needs it. Every change to
+    /// workspaces, tabs, panes and views settles as it is made; output does
+    /// not change them, but can drop history rows a copy mode holds.
+    pub fn settle_if_needed(&mut self) {
+        if self.unsettled {
+            self.settle();
+        }
+    }
+
+    /// Whether a settle is pending.
+    pub fn unsettled(&self) -> bool {
+        self.unsettled
+    }
+
     /// Output from a pane's program.
     pub fn output(&mut self, id: PaneId, bytes: &[u8]) {
         let Some(pane) = self.panes.get_mut(&id) else {
@@ -1099,6 +1198,10 @@ impl Session {
         };
         let dropped = pane.output(bytes);
         let place = self.locate(id);
+        self.unsettled |= self
+            .views
+            .values()
+            .any(|view| matches!(&view.mode, Mode::Copy(copy) if copy.pane == id));
         for view in self.views.values_mut() {
             if place.is_some_and(|(_, t)| view.tab() == Some(t)) {
                 view.dirty = true;
@@ -1144,8 +1247,8 @@ impl Session {
     pub fn run(&mut self, argv: &[String], ctx: &Ctx) -> Outcome {
         match command::parse(argv) {
             Ok(command) => self.run_command(&command, ctx),
+            // Nothing ran, so nothing shows anything new.
             Err(usage) => {
-                self.touch();
                 self.settle();
                 Outcome {
                     status: 2,
@@ -1170,9 +1273,17 @@ impl Session {
                 stderr: error.to_string(),
             },
         };
-        self.touch();
+        if !shows_nothing_new(command) {
+            self.changes = self.changes.wrapping_add(1);
+            self.touch();
+        }
         self.settle();
         outcome
+    }
+
+    /// How many commands have run that may change what clients show.
+    pub fn changes(&self) -> u64 {
+        self.changes
     }
 
     /// Why a command cannot run now, if it cannot: menus and the command
@@ -1258,9 +1369,6 @@ impl Session {
                 Ok(out)
             }
             Command::NewWorkspace { name, cmd } => {
-                if let Some(name) = &name {
-                    self.check_name(name)?;
-                }
                 let ws = self.create_workspace(name.clone(), cmd, Some(ctx))?;
                 if let Some(view) = ctx.client.and_then(|c| self.views.get_mut(&c)) {
                     view.workspace = ws;
@@ -1275,10 +1383,10 @@ impl Session {
                 }
                 let cwd = self.cwd_for(ctx, None);
                 // As for a workspace: the ID first, committed after the pane.
-                let mut next_tab = self.next_tab;
-                let id = TabId(advance(&mut next_tab, "tab")?);
-                let pane = self.new_pane(cmd, &cwd, DEFAULT_SIZE)?;
-                self.next_tab = next_tab;
+                let mut ids = self.ids();
+                let id = ids.tab()?;
+                let pane = self.new_pane(&mut ids, cmd, &cwd, DEFAULT_SIZE)?;
+                self.commit(ids);
                 self.add_tab(ws, id, name.clone(), Some(Node::Pane(pane)))?;
                 if let Some(view) = ctx.client.and_then(|c| self.views.get_mut(&c)) {
                     view.workspace = ws;
@@ -1296,7 +1404,9 @@ impl Session {
                 let (_, tab) = self.locate(target).ok_or(Error::NotInTab)?;
                 let size = self.panes.get(&target).map_or(DEFAULT_SIZE, |p| p.size);
                 let cwd = self.cwd_for(ctx, Some(target));
-                let pane = self.new_pane(cmd, &cwd, size)?;
+                let mut ids = self.ids();
+                let pane = self.new_pane(&mut ids, cmd, &cwd, size)?;
+                self.commit(ids);
                 if let Some(t) = self.tab_mut(tab) {
                     layout::split(&mut t.root, target, pane, axis, Side::After);
                 }
@@ -1597,13 +1707,7 @@ impl Session {
             }
             AnyRef::Workspace(w) => {
                 let id = self.resolve_ws(w)?;
-                if self
-                    .workspaces
-                    .iter()
-                    .any(|ws| ws.name == name && ws.id != id)
-                {
-                    return Err(Error::NameTaken(name));
-                }
+                self.check_workspace_name(&name, Some(id))?;
                 self.workspace_mut(id).ok_or(Error::NoSuchWorkspace)?.name = name;
             }
         }
@@ -1673,24 +1777,32 @@ impl Session {
                 let tab = match first {
                     Some(tab) => tab,
                     None => {
-                        let id = self.new_tab_id()?;
+                        let mut ids = self.ids();
+                        let id = ids.tab()?;
                         self.add_tab(ws, id, Some("main".into()), None)?;
+                        self.commit(ids);
                         id
                     }
                 };
                 (ws, tab)
             }
             MoveTo::NewTab => {
-                let id = self.new_tab_id()?;
+                let mut ids = self.ids();
+                let id = ids.tab()?;
                 self.add_tab(source_ws, id, None, None)?;
+                self.commit(ids);
                 (source_ws, id)
             }
             MoveTo::NewWorkspace => {
-                let id = WsId(advance(&mut self.next_ws, "workspace")?);
-                let tab = self.new_tab_id()?;
+                // Both IDs or neither: one taken alone would be lost.
+                let mut ids = self.ids();
+                let id = ids.workspace()?;
+                let tab = ids.tab()?;
+                self.commit(ids);
+                let name = self.workspace_name(id);
                 self.workspaces.push(Workspace {
                     id,
-                    name: format!("workspace-{}", id.0),
+                    name,
                     tabs: vec![Tab {
                         id: tab,
                         name: "main".into(),
@@ -2013,6 +2125,29 @@ pub fn describe(target: &AnyRef) -> String {
     }
 }
 
+/// The IDs taken for something being made: a pane, a tab and its pane, a
+/// workspace and its first tab and pane. They are taken from a copy of the
+/// counters and committed with `Session::commit` once it is made, so a
+/// failure part way uses none of them up.
+#[derive(Clone, Copy)]
+struct Ids {
+    pane: u32,
+    tab: u32,
+    workspace: u32,
+}
+
+impl Ids {
+    fn pane(&mut self) -> Result<PaneId, Error> {
+        advance(&mut self.pane, "pane").map(PaneId)
+    }
+    fn tab(&mut self) -> Result<TabId, Error> {
+        advance(&mut self.tab, "tab").map(TabId)
+    }
+    fn workspace(&mut self) -> Result<WsId, Error> {
+        advance(&mut self.workspace, "workspace").map(WsId)
+    }
+}
+
 /// Takes the next ID from `counter`. IDs are never reused, so one that
 /// would wrap round is an error instead.
 fn advance(counter: &mut u32, what: &'static str) -> Result<u32, Error> {
@@ -2155,6 +2290,165 @@ mod tests {
         Ok(())
     }
 
+    /// A pane's exit status reaches those who saw it, whether or not its
+    /// tab closes with it.
+    #[test]
+    fn an_exit_is_told_even_when_it_closes_the_tab() -> Result<(), Box<dyn std::error::Error>> {
+        let config = Config {
+            shell: vec!["/bin/sh".into()],
+            ..Config::default()
+        };
+        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
+        s.start()?;
+        let client = s.attach(10, 40, None)?;
+        let words = |line: &str| crate::words::split(line).map_err(|e| e.to_string());
+        let notice = |s: &Session| {
+            s.views
+                .get(&client)
+                .and_then(|v| v.notice.as_ref())
+                .map(|n| n.text.clone())
+        };
+        // Two panes: the tab stays.
+        assert_eq!(s.run(&words("split -h -t %1")?, &Ctx::default()).status, 0);
+        s.exited(PaneId(2), 3);
+        assert_eq!(notice(&s).as_deref(), Some("%2 sh exited with status 3"));
+        // A second tab, shown; its only pane exits, and the tab with it.
+        assert_eq!(s.run(&words("new-tab -t +1")?, &Ctx::default()).status, 0);
+        assert_eq!(
+            s.run(&words("select-tab -c c1 -t @2")?, &Ctx::default())
+                .status,
+            0
+        );
+        s.exited(PaneId(3), 7);
+        assert_eq!(notice(&s).as_deref(), Some("%3 sh exited with status 7"));
+        Ok(())
+    }
+
+    /// Workspaces are found by name, so no two share one: a name given is
+    /// refused if taken, and a name made up skips those taken. Making one
+    /// that fails part way uses up none of the IDs it took.
+    #[test]
+    fn workspace_names_stay_unique_and_failures_use_no_ids()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = Config {
+            shell: vec!["/bin/sh".into()],
+            ..Config::default()
+        };
+        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
+        s.start()?;
+        let run = |s: &mut Session, line: &str| -> Result<Outcome, String> {
+            let words = crate::words::split(line).map_err(|e| e.to_string())?;
+            Ok(s.run(&words, &Ctx::default()))
+        };
+        assert_eq!(run(&mut s, "new-workspace -n main")?.status, 1);
+        assert_eq!(run(&mut s, "new-workspace -n workspace-3")?.stdout, "+2\n");
+        // +3 would be workspace-3, which is taken.
+        assert_eq!(run(&mut s, "new-workspace")?.stdout, "+3\n");
+        let names: Vec<&str> = s.workspaces.iter().map(|w| w.name.as_str()).collect();
+        assert_eq!(names, ["main", "workspace-3", "workspace-4"]);
+        // A move to a new workspace with no tab ID left takes no workspace
+        // ID either.
+        s.next_tab = u32::MAX;
+        let ws = s.next_ws;
+        let moved = run(&mut s, "move-pane -t %1 --to new-workspace")?;
+        assert_eq!(moved.status, 1, "{}", moved.stderr);
+        assert_eq!(s.next_ws, ws);
+        Ok(())
+    }
+
+    /// Only screens that may have changed are repainted: keys typed into a
+    /// pane repaint the typist's screen alone (the program's output
+    /// repaints its viewers when it comes), commands that only read repaint
+    /// none, and a command that changes the layout repaints every client.
+    #[test]
+    fn only_screens_that_may_change_are_marked_for_painting()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = Config {
+            shell: vec!["/bin/sh".into()],
+            ..Config::default()
+        };
+        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
+        s.start()?;
+        let (one, two) = (s.attach(10, 40, None)?, s.attach(10, 40, None)?);
+        let clean = |s: &mut Session| {
+            for view in s.views.values_mut() {
+                view.dirty = false;
+            }
+        };
+        let dirty = |s: &Session, c: ClientId| s.views.get(&c).is_some_and(|v| v.dirty);
+        let run = |s: &mut Session, line: &str| -> Result<(), String> {
+            let words = crate::words::split(line).map_err(|e| e.to_string())?;
+            let outcome = s.run(&words, &Ctx::default());
+            (outcome.status == 0).then_some(()).ok_or(outcome.stderr)
+        };
+        clean(&mut s);
+        s.input(one, b"ls");
+        assert!(
+            dirty(&s, one) && !dirty(&s, two),
+            "typing repaints the typist alone"
+        );
+        clean(&mut s);
+        for line in ["ls", "capture-pane -t %1", "list-keys", "send-keys -t %1 x"] {
+            run(&mut s, line)?;
+        }
+        assert!(
+            !dirty(&s, one) && !dirty(&s, two),
+            "reading repaints no one"
+        );
+        assert!(s.run(&["nope".into()], &Ctx::default()).status != 0);
+        assert!(
+            !dirty(&s, one) && !dirty(&s, two),
+            "a usage error repaints no one"
+        );
+        run(&mut s, "split -h -t %1")?;
+        assert!(
+            dirty(&s, one) && dirty(&s, two),
+            "a split repaints every client"
+        );
+        clean(&mut s);
+        // A binding that splits, typed by one client, repaints both.
+        s.input(one, b"\x02v");
+        assert!(
+            dirty(&s, one) && dirty(&s, two),
+            "a bound split repaints every client"
+        );
+        Ok(())
+    }
+
+    /// Output asks for a settle only where it can change a view: in a pane
+    /// a copy mode holds rows of, whose history it may drop. There, the
+    /// settle that follows ends copy mode when the rows go.
+    #[test]
+    fn output_asks_for_a_settle_only_under_copy_mode() -> Result<(), Box<dyn std::error::Error>> {
+        let config = Config {
+            shell: vec!["/bin/sh".into()],
+            history_lines: 2,
+            ..Config::default()
+        };
+        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
+        s.start()?;
+        let client = s.attach(6, 20, None)?;
+        s.output(PaneId(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
+        assert!(!s.unsettled(), "no copy mode: nothing to repair");
+        let words = |line: &str| crate::words::split(line).map_err(|e| e.to_string());
+        assert_eq!(s.run(&words("copy-mode -c c1")?, &Ctx::default()).status, 0);
+        // To the oldest row, which the next lines of output push out.
+        s.input(client, b"g");
+        s.output(PaneId(1), b"g\r\nh\r\ni\r\nj\r\n");
+        assert!(s.unsettled());
+        s.settle_if_needed();
+        assert!(!s.unsettled());
+        let view = s.views.get(&client).ok_or("the view")?;
+        assert!(matches!(view.mode, Mode::Normal), "copy mode ended");
+        assert!(
+            view.notice
+                .as_ref()
+                .is_some_and(|n| n.text.contains("dropped the rows")),
+            "and said why"
+        );
+        Ok(())
+    }
+
     /// A failing command says what it said as a string, word for word:
     /// each line, run in turn on one session, and its status and message,
     /// as they were before commands failed with `Error`.
@@ -2250,7 +2544,11 @@ mod tests {
             ("confirm-close -c c1 pane -t %99", 1, "no pane %99"),
             ("rename-prompt -c c1 tab -t @99", 1, "no tab @99"),
             ("choose-tab -c c1 -t %99", 1, "no pane %99"),
-            ("new-workspace -n main", 0, ""),
+            (
+                "new-workspace -n main",
+                1,
+                r#"another workspace is named "main""#,
+            ),
             ("new-workspace -n two", 0, ""),
             (
                 "rename -t +2 main",

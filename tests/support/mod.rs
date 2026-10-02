@@ -26,6 +26,20 @@ static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// When a wait that starts now gives up. A time past what an `Instant`
 /// holds gives up at once.
+/// Where test servers make their directories: `/tmp` where it can be
+/// written, as a socket path must stay under 104 bytes and macOS's
+/// `temp_dir()` (`/var/folders/…/T/`) takes half of that; else `temp_dir()`.
+pub fn short_temp_dir() -> Result<PathBuf, String> {
+    let tmp = Path::new("/tmp");
+    let writable = std::fs::metadata(tmp).is_ok_and(|m| m.is_dir() && !m.permissions().readonly());
+    let base = if writable {
+        tmp.to_path_buf()
+    } else {
+        std::env::temp_dir()
+    };
+    base.canonicalize().map_err(e)
+}
+
 pub fn after(wait: Duration) -> Instant {
     let now = Instant::now();
     now.checked_add(wait).unwrap_or(now)
@@ -73,7 +87,7 @@ impl Server {
         open_files: Option<u32>,
         inherit: bool,
     ) -> Result<(Server, Option<i32>), String> {
-        let base = std::env::temp_dir().canonicalize().map_err(e)?;
+        let base = short_temp_dir()?;
         let dir = base.join(format!(
             "fux-t{}-{}",
             std::process::id(),
@@ -301,6 +315,18 @@ impl Client {
         result
     }
 
+    /// Sends any frame, as a client that does not follow the protocol
+    /// might.
+    pub fn frame(&mut self, frame: &Frame) -> Outcome {
+        self.stream.set_nonblocking(false).map_err(e)?;
+        let result = self
+            .stream
+            .write_all(&frame.encode().map_err(e)?)
+            .map_err(e);
+        self.stream.set_nonblocking(true).map_err(e)?;
+        result
+    }
+
     pub fn detach(&mut self) -> Outcome {
         self.stream.set_nonblocking(false).map_err(e)?;
         let result = self
@@ -417,6 +443,19 @@ impl Client {
     pub fn bar(&self) -> String {
         self.lines().last().cloned().unwrap_or_default()
     }
+}
+
+/// A process's resident memory, in MiB, from `ps`.
+pub fn resident_mib(pid: u32) -> Result<f64, String> {
+    let out = Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .map_err(e)?;
+    let kib: f64 = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .map_err(|error| format!("ps rss: {error}"))?;
+    Ok(kib / 1024.0)
 }
 
 /// The CPU time a process has used, in seconds.

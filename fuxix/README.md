@@ -15,7 +15,7 @@ No function retries a call a signal interrupted: it fails with
 
 `pty::open` on macOS is the one function that retries, around two macOS
 kernel bugs that strike when PTYs are allocated and freed quickly, by any
-processes (see [the report for Apple](../docs/apple-feedback-ptmx-eredriveopen.md)):
+processes (see [the report for Apple](https://github.com/gold-silver-copper/fux/blob/main/docs/apple-feedback-ptmx-eredriveopen.md)):
 
 - `posix_openpt` can fail with errno -6, the kernel-private `EREDRIVEOPEN`,
   after the kernel gives up retrying a race between openers. fuxix opens one
@@ -41,7 +41,7 @@ processes (see [the report for Apple](../docs/apple-feedback-ptmx-eredriveopen.m
 | `process::reap` | `waitpid(WNOHANG)` | the same | for a pid, not a `Child` |
 | `process::processes` | `/proc` | `proc_listallpids` | not offered |
 | `process::cwd` | `/proc/PID/cwd` | `proc_pidinfo(PROC_PIDVNODEPATHINFO)` | not offered |
-| `pty::open` | `posix_openpt(O_CLOEXEC)`, `grantpt`, `unlockpt`, `ptsname_r` | `posix_openpt` (one at a time, retried on -6), then close-on-exec, `TIOCPTYGNAME` and a check of the replica, `grantpt` under a watchdog, `unlockpt` | not offered |
+| `pty::open` | `posix_openpt(O_CLOEXEC)`, `grantpt`, `unlockpt`, `ptsname_r` | `posix_openpt(O_CLOEXEC)` (one at a time, retried on -6; a release that refuses the flag is marked close-on-exec after), `TIOCPTYGNAME` and a check of the replica, `grantpt` under a watchdog, `unlockpt` | not offered |
 | `terminal::attributes`, `set_attributes`, `Termios::make_raw` | `tcgetattr`, `tcsetattr`, `cfmakeraw` | the same | not offered |
 | `terminal::window_size`, `set_window_size` | `TIOCGWINSZ`, `TIOCSWINSZ` | the same | not offered |
 | `terminal::foreground_group`, `make_controlling` | `tcgetpgrp`, `TIOCSCTTY` | the same | not offered |
@@ -55,8 +55,8 @@ used for the rest. Where rustix did not serve:
 - `tcgetpgrp` and `getsid` built a process ID from their result unchecked
   on macOS, where 0 is undefined behaviour;
 - `getsid` panicked on Linux for kernel threads, whose session is 0;
-- `posix_openpt` and `socket` could not be close-on-exec on macOS without a
-  second call, which it left to the caller;
+- `socket` cannot be close-on-exec on macOS without a second call, which it
+  left to the caller (`posix_openpt` takes `O_CLOEXEC` there now);
 - nothing marked every inherited descriptor close-on-exec.
 
 On any other platform the crate does not build, and neither does fux.

@@ -37,11 +37,25 @@ impl Parameters {
         let Some(len) = self.len.checked_add(1).filter(|n| *n <= self.values.len()) else {
             return false;
         };
+        // The new parameter starts empty: `clear` left what a sequence
+        // before put there.
         if let Some(sub) = self.sub.get_mut(self.len) {
             *sub = colon;
         }
+        if let Some(value) = self.values.get_mut(self.len) {
+            *value = 0;
+        }
         self.len = len;
         true
+    }
+    /// Back to one empty parameter, touching only what `separator` and
+    /// `digit` read: a sequence is begun on every ESC, so this is kept to
+    /// two stores rather than rewriting all the parameters.
+    fn clear(&mut self) {
+        self.len = 1;
+        if let Some(value) = self.values.first_mut() {
+            *value = 0;
+        }
     }
     pub fn groups(&self) -> impl Iterator<Item = &[u16]> + use<'_> {
         let mut start = 0;
@@ -67,6 +81,37 @@ impl Parameters {
             .unwrap_or(0);
         if value == 0 { default } else { value }
     }
+}
+
+/// The non-ASCII character a valid UTF-8 sequence at the start of `bytes`
+/// encodes, and its length; `None` for ASCII, and for a sequence invalid or
+/// cut short, which the byte-by-byte path reads. The checks are the ones
+/// `Parser::ground` makes: no overlong forms, surrogates or code points
+/// past U+10FFFF.
+fn decode(bytes: &[u8]) -> Option<(char, usize)> {
+    let &first = bytes.first()?;
+    let (length, mut code) = match first {
+        0xc2..=0xdf => (2, u32::from(first & 0x1f)),
+        0xe0..=0xef => (3, u32::from(first & 0x0f)),
+        0xf0..=0xf4 => (4, u32::from(first & 0x07)),
+        _ => return None,
+    };
+    let (low, high) = match first {
+        0xe0 => (0xa0, 0xbf),
+        0xed => (0x80, 0x9f),
+        0xf0 => (0x90, 0xbf),
+        0xf4 => (0x80, 0x8f),
+        _ => (0x80, 0xbf),
+    };
+    let continuation = bytes.get(1..length)?;
+    for (i, &byte) in continuation.iter().enumerate() {
+        let (low, high) = if i == 0 { (low, high) } else { (0x80, 0xbf) };
+        if !(low..=high).contains(&byte) {
+            return None;
+        }
+        code = code.checked_shl(6)? | u32::from(byte & 0x3f);
+    }
+    Some((char::from_u32(code)?, length))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -98,6 +143,7 @@ pub const OSC_PAYLOAD_LIMIT: usize = 64 * 1024;
 /// and primary DA are answered, keyboard protocol requests are ignored, and a
 /// resize does not reflow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Options {
     /// Deliver OSC 0/1/2 (icon name / window title), OSC 52 (clipboard) and BEL
     /// as [`Event`]s. OSC payloads are buffered up to [`OSC_PAYLOAD_LIMIT`].
@@ -118,6 +164,45 @@ pub struct Options {
     pub reflow: bool,
     /// Answer as this terminal rather than as a bare VT100: see [`Identity`].
     pub identity: Option<Identity>,
+}
+
+impl Options {
+    /// Everything off, as [`Options::default`]; the `with_` methods turn
+    /// each on, in a `const` too.
+    pub const fn new() -> Self {
+        Self {
+            events: false,
+            extended_replies: false,
+            kitty_keyboard: false,
+            reflow: false,
+            identity: None,
+        }
+    }
+    /// These options with [`Options::events`] as `on` says.
+    pub const fn with_events(mut self, on: bool) -> Self {
+        self.events = on;
+        self
+    }
+    /// These options with [`Options::extended_replies`] as `on` says.
+    pub const fn with_extended_replies(mut self, on: bool) -> Self {
+        self.extended_replies = on;
+        self
+    }
+    /// These options with [`Options::kitty_keyboard`] as `on` says.
+    pub const fn with_kitty_keyboard(mut self, on: bool) -> Self {
+        self.kitty_keyboard = on;
+        self
+    }
+    /// These options with [`Options::reflow`] as `on` says.
+    pub const fn with_reflow(mut self, on: bool) -> Self {
+        self.reflow = on;
+        self
+    }
+    /// These options answering as `identity`, or as a bare VT100 if `None`.
+    pub const fn with_identity(mut self, identity: Option<Identity>) -> Self {
+        self.identity = identity;
+        self
+    }
 }
 
 /// Who the terminal says it is. With [`Options::identity`] set, primary DA
@@ -163,9 +248,13 @@ pub enum Event<'a> {
     IconName(&'a [u8]),
     /// BEL executed outside a control string.
     Bell,
-    /// OSC 52 set request. `data` is the payload as sent (normally base64);
-    /// a `?` query is not an event.
-    Clipboard { selection: &'a [u8], data: &'a [u8] },
+    /// OSC 52 set request; a `?` query is not an event.
+    Clipboard {
+        /// The selection parameter, `Pc`: `c`, `p`, `s` and so on, or empty.
+        selection: &'a [u8],
+        /// The data, `Pd`, as sent (normally base64).
+        data: &'a [u8],
+    },
 }
 
 /// A complete sequence fux-vt parsed but does not implement, so a host can
@@ -176,12 +265,20 @@ pub enum Event<'a> {
 pub enum Unhandled<'a> {
     /// `CSI`, its private marker and intermediates, parameters and final byte.
     Csi {
+        /// Its parameters.
         params: Params<'a>,
+        /// Its private marker and intermediate bytes.
         intermediates: &'a [u8],
+        /// Its final byte.
         action: u8,
     },
     /// `ESC`, its intermediates and final byte.
-    Escape { intermediates: &'a [u8], action: u8 },
+    Escape {
+        /// Its intermediate bytes.
+        intermediates: &'a [u8],
+        /// Its final byte.
+        action: u8,
+    },
 }
 
 /// A CSI sequence's parameters.
@@ -200,8 +297,11 @@ impl<'a> Params<'a> {
 /// sequences fux-vt does not implement. All default to discarding, so an
 /// implementation handles only what it needs.
 pub trait Sink {
+    /// A reply to a query, to send back to the program.
     fn reply(&mut self, _bytes: &[u8]) {}
+    /// An event, with [`Options::events`].
     fn event(&mut self, _event: Event<'_>) {}
+    /// A complete sequence fux-vt does not implement.
     fn unhandled(&mut self, _sequence: Unhandled<'_>) {}
 }
 
@@ -235,9 +335,14 @@ pub struct Parser {
 mod tests;
 
 impl Parser {
+    /// A parser with a `rows` by `cols` screen keeping up to `history_lines`
+    /// rows of history, and [`Options::default`]: see [`Parser::with_options`].
     pub fn new(rows: u16, cols: u16, history_lines: usize) -> Result<Self, Error> {
         Self::with_options(rows, cols, history_lines, Options::default())
     }
+    /// A parser with a `rows` by `cols` screen keeping up to `history_lines`
+    /// rows of history (none on the alternate screen), with `options`.
+    /// Zero rows or columns, or more cells than a grid may hold, are refused.
     pub fn with_options(
         rows: u16,
         cols: u16,
@@ -259,6 +364,7 @@ impl Parser {
             utf8_need: 0,
         })
     }
+    /// The terminal's state: what the screen shows, the cursor and the modes.
     pub fn screen(&self) -> &Screen {
         &self.screen
     }
@@ -267,6 +373,7 @@ impl Parser {
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error> {
         self.screen.resize(rows, cols, self.options.reflow)
     }
+    /// The options the parser was made with.
     pub fn options(&self) -> Options {
         self.options
     }
@@ -274,6 +381,7 @@ impl Parser {
     pub fn process(&mut self, bytes: &[u8]) -> Result<(), Error> {
         self.process_with_replies(bytes, |_| {})
     }
+    /// Process output, delivering query replies to `reply`.
     pub fn process_with_replies(
         &mut self,
         bytes: &[u8],
@@ -289,13 +397,19 @@ impl Parser {
         self.screen.begin()?;
         let mut remaining = bytes;
         while let Some((&byte, tail)) = remaining.split_first() {
-            if self.state == State::Ground && self.utf8_len == 0 && (0x20..=0x7e).contains(&byte) {
+            let ground = self.state == State::Ground && self.utf8_len == 0;
+            if ground && (0x20..=0x7e).contains(&byte) {
                 let length = remaining
                     .iter()
                     .take_while(|b| (0x20..=0x7e).contains(*b))
                     .count();
                 self.screen
                     .ascii(remaining.get(..length).unwrap_or_default())?;
+                remaining = remaining.get(length..).unwrap_or_default();
+            } else if ground
+                && byte >= 0x80
+                && let Some(length) = self.text(remaining)?
+            {
                 remaining = remaining.get(length..).unwrap_or_default();
             } else {
                 self.byte(byte, sink)?;
@@ -304,8 +418,20 @@ impl Parser {
         }
         Ok(())
     }
+    /// Prints the run of valid non-ASCII UTF-8 `bytes` begins with, decoded
+    /// at once rather than byte by byte, and says how many
+    /// bytes it took; `None`, with nothing done, if `bytes` begins with
+    /// invalid or incomplete UTF-8, which the byte-by-byte path handles.
+    fn text(&mut self, bytes: &[u8]) -> Result<Option<usize>, Error> {
+        let mut taken = 0usize;
+        while let Some((c, length)) = bytes.get(taken..).and_then(decode) {
+            self.screen.print(c)?;
+            taken = taken.saturating_add(length);
+        }
+        Ok((taken > 0).then_some(taken))
+    }
     fn reset_sequence(&mut self) {
-        self.params = Parameters::default();
+        self.params.clear();
         self.intermediate_len = 0;
         self.ignoring = false;
     }
@@ -351,15 +477,21 @@ impl Parser {
                 }
                 return Ok(());
             }
-            // Discard the invalid prefix, then reprocess this byte; it can be ESC.
+            // An invalid sequence: what came of it is one U+FFFD (Unicode
+            // 17, 3.9, "U+FFFD Substitution of Maximal Subparts"), as in
+            // xterm. Then this byte is read again; it can be ESC.
             self.utf8_len = 0;
+            self.screen.print(char::REPLACEMENT_CHARACTER)?;
         }
         match byte {
             0x1b => {
                 self.reset_sequence();
                 self.state = State::Escape;
             }
-            0x00..=0x1f | 0x7f => self.control(byte, sink)?,
+            0x00..=0x1f | 0x7f => {
+                self.control(byte, sink)?;
+                self.screen.forget_repeat();
+            }
             0x20..=0x7e => self.screen.print(char::from(byte))?,
             0xc2..=0xf4 => {
                 self.utf8_need = if byte < 0xe0 {
@@ -374,7 +506,12 @@ impl Parser {
                 }
                 self.utf8_len = 1;
             }
-            _ => {}
+            // A continuation byte alone is read as Latin-1, as xterm reads
+            // it: a raw C1 control, 0x80 to 0x9f, is ignored, and 0xa0 to
+            // 0xbf print U+00A0 to U+00BF.
+            0x80..=0xbf => self.screen.print(char::from(byte))?,
+            // A byte that starts no UTF-8 sequence: U+FFFD.
+            _ => self.screen.print(char::REPLACEMENT_CHARACTER)?,
         }
         Ok(())
     }
@@ -395,6 +532,7 @@ impl Parser {
         // also begins ST, so it completes a pending OSC string.
         if matches!(byte, 0x18 | 0x1a) {
             self.state = State::Ground;
+            self.screen.forget_repeat();
             return Ok(());
         }
         if byte == 0x1b {
@@ -420,12 +558,10 @@ impl Parser {
                     }
                 }
             }
-            State::DcsString => {
-                if byte == 0x9c {
-                    self.state = State::Ground;
-                }
-            }
-            State::SosPmApcString | State::DcsIgnore => {}
+            // In UTF-8 a string ends only at ESC (ST is ESC \, ECMA-48
+            // 8.3.143): the byte 0x9c, 8-bit ST, is part of a character
+            // there, as in `\u{271c}` (e2 9c 9c).
+            State::DcsString | State::SosPmApcString | State::DcsIgnore => {}
             State::Escape | State::EscapeIntermediate => match byte {
                 0x00..=0x1f => self.control(byte, sink)?,
                 0x20..=0x2f => {
@@ -557,6 +693,11 @@ impl Parser {
                 }
             }
         }
+        // A sequence or string ended, REP's included: there is no character
+        // for REP to repeat until one is printed.
+        if self.state == State::Ground {
+            self.screen.forget_repeat();
+        }
         Ok(())
     }
 
@@ -633,7 +774,15 @@ impl Parser {
                 let status = self.screen.private_mode_status(n);
                 Some(Reply::of(format_args!("\x1b[?{n};{status}$y")))
             }
-            (b"$", b'p') if extended => Some(Reply::of(format_args!("\x1b[{n};0$y"))),
+            (b"$", b'p') if extended => {
+                // IRM alone of the ANSI modes is known.
+                let status = match n {
+                    4 if self.screen.insert_mode() => 1,
+                    4 => 2,
+                    _ => 0,
+                };
+                Some(Reply::of(format_args!("\x1b[{n};{status}$y")))
+            }
             _ => None,
         }
     }

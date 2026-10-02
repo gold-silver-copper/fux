@@ -285,8 +285,8 @@ pub fn compose_into(
         let offset = at.map_or(0, |at| at.offset(screen));
         let (rows, cols) = screen.size();
         let window = screen.window(offset, rows, cols);
-        let width = rect.w.min(window.cols);
-        let screen_rows = rect.h.min(window.rows);
+        let width = rect.w.min(window.cols());
+        let screen_rows = rect.h.min(window.rows());
         // What the pane's screen does not cover of its place is blank.
         for (gy, gx) in (screen_rows..rect.h)
             .filter_map(|y| rect.at(y, 0))
@@ -313,7 +313,7 @@ pub fn compose_into(
             }
             // A wide glyph in the window's last column is cut off, as
             // `Window::cell` has it.
-            if let Some(last) = window.cols.checked_sub(1)
+            if let Some(last) = window.cols().checked_sub(1)
                 && last < width
                 && row
                     .and_then(|r| r.cell(usize::from(last)))
@@ -407,12 +407,8 @@ pub fn compose_into(
         Mode::List(list) => {
             let mut lines: Vec<Line<'_>> =
                 vec![(list.title.as_str().into(), panel().with_bold(true))];
-            let capacity = overlay::list_capacity(view.rows);
-            // The window ends at the selection, or at the last item.
-            let start = list
-                .selected
-                .saturating_sub(capacity.saturating_sub(1))
-                .min(list.items.len().saturating_sub(capacity));
+            let capacity = overlay::list_room(view.rows);
+            let start = overlay::window_start(list.items.len(), list.selected, capacity);
             if start > 0 {
                 lines.push((format!("▲ {start} more").into(), panel().with_dim(true)));
             }
@@ -442,9 +438,14 @@ pub fn compose_into(
             surface(grid, view, &lines);
         }
         Mode::Prompt(prompt) => {
+            // The panel's border takes a cell each side.
+            let room = view.cols.saturating_sub(2);
             let lines: [Line<'_>; 3] = [
                 (prompt.title.as_str().into(), panel().with_bold(true)),
-                (with_cursor(&prompt.text, prompt.cursor).into(), panel()),
+                (
+                    prompt_line(&prompt.text, prompt.cursor, room).into(),
+                    panel(),
+                ),
                 ("Enter accepts · Esc cancels".into(), panel().with_dim(true)),
             ];
             surface(grid, view, &lines);
@@ -462,6 +463,52 @@ pub fn compose_into(
         Mode::Normal | Mode::Copy(_) | Mode::Repeat { .. } => {}
     }
     true
+}
+
+/// A prompt's text with its cursor bar, in at most `room` cells: when it is
+/// wider, the line scrolls so the bar shows, with a few cells of what
+/// follows it, and an ellipsis marks each side cut off.
+fn prompt_line(text: &str, cursor: usize, room: u16) -> String {
+    let line = with_cursor(text, cursor);
+    if width(&line) <= room {
+        return line;
+    }
+    let chars: Vec<char> = line.chars().filter(|c| !c.is_control()).collect();
+    // Where `with_cursor` put the bar.
+    let bar = cursor.min(text.chars().filter(|c| !c.is_control()).count());
+    // An ellipsis each side, at most.
+    let inner = room.saturating_sub(2);
+    let ahead = inner / 4;
+    let (mut start, mut end) = (bar, bar.saturating_add(1));
+    let mut used: u16 = 1;
+    let fits = |used: u16, c: Option<&char>| {
+        c.and_then(|c| used.checked_add(cells(*c)))
+            .filter(|n| *n <= inner)
+    };
+    // A little of what follows, then what comes before, then the rest after.
+    while let Some(n) = fits(used, chars.get(end)).filter(|n| *n <= ahead.saturating_add(1)) {
+        used = n;
+        end = end.saturating_add(1);
+    }
+    while let Some(previous) = start.checked_sub(1)
+        && let Some(n) = fits(used, chars.get(previous))
+    {
+        used = n;
+        start = previous;
+    }
+    while let Some(n) = fits(used, chars.get(end)) {
+        used = n;
+        end = end.saturating_add(1);
+    }
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.extend(chars.get(start..end).unwrap_or_default());
+    if end < chars.len() {
+        out.push('…');
+    }
+    out
 }
 
 /// A prompt's text with a bar at `cursor`, counted in chars; past the end
@@ -795,14 +842,8 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
         // At most the number of rows.
         index = index.saturating_add(1);
     }
-    let available = usize::from(view.rows.saturating_sub(1));
-    let heading = available >= 4;
-    // Room less the heading and the two "more" lines, but at least one.
-    let body_room = available
-        .saturating_sub(usize::from(heading).saturating_add(2))
-        .max(1);
-    // The rows scrolled off so the selection is the last shown, if any.
-    let start = selected_row.saturating_add(1).saturating_sub(body_room);
+    let (heading, body_room) = overlay::column_room(view.rows);
+    let start = overlay::window_start(entries.len(), selected_row, body_room);
     let mut lines: Vec<Line<'_>> = Vec::new();
     if heading {
         // Right after the prefix, every command; in a layer, its keys so far
@@ -849,12 +890,37 @@ fn sgr(out: &mut Vec<u8>, a: Attributes) {
     if a.underline() {
         out.extend_from_slice(b";4");
     }
+    // A kind of blink fux-vt does not know yet is drawn as none.
+    match a.blink() {
+        fux_vt::Blink::Slow => out.extend_from_slice(b";5"),
+        fux_vt::Blink::Rapid => out.extend_from_slice(b";6"),
+        fux_vt::Blink::None | _ => {}
+    }
     if a.inverse() {
         out.extend_from_slice(b";7");
     }
+    if a.hidden() {
+        out.extend_from_slice(b";8");
+    }
+    if a.strikeout() {
+        out.extend_from_slice(b";9");
+    }
+    // The underline colour in ITU-T T.416's colon form (§13.1.8), with its
+    // empty colour-space slot: a terminal that does not know SGR 58 skips
+    // the whole parameter, where in the semicolon form it would take the
+    // colour's numbers for attributes of their own (`58;2;…` would be dim).
+    match a.underline_color() {
+        Color::Idx(n) => {
+            let _ = write!(out, ";58:5:{n}");
+        }
+        Color::Rgb(r, g, b) => {
+            let _ = write!(out, ";58:2::{r}:{g}:{b}");
+        }
+        // A kind of colour fux-vt does not know yet is drawn as the default.
+        Color::Default | _ => {}
+    }
     // `base` is 30 or 40, so no code comes near 255: every sum is exact.
     let color = |out: &mut Vec<u8>, c: Color, base: u8| match c {
-        Color::Default => {}
         Color::Idx(n) if n < 8 => {
             let _ = write!(out, ";{}", base.saturating_add(n));
         }
@@ -868,6 +934,7 @@ fn sgr(out: &mut Vec<u8>, a: Attributes) {
         Color::Rgb(r, g, b) => {
             let _ = write!(out, ";{};2;{r};{g};{b}", base.saturating_add(8));
         }
+        Color::Default | _ => {}
     };
     color(out, a.foreground(), 30);
     color(out, a.background(), 40);
@@ -1222,6 +1289,25 @@ mod tests {
         }
     }
 
+    /// A prompt wider than its panel scrolls to keep the cursor in view,
+    /// with an ellipsis on each side cut off, never wider than the room.
+    #[test]
+    fn a_long_prompt_scrolls_to_its_cursor() {
+        let text = "split -v -- echo aaaaaaaaaaaaaaaaaaaaTAIL";
+        let end = text.chars().count();
+        for (cursor, starts, ends) in [(end, "…", "TAIL▏"), (0, "▏spl", "…"), (20, "…", "…")]
+        {
+            let shown = prompt_line(text, cursor, 12);
+            assert!(width(&shown) <= 12, "{shown:?} fits");
+            assert!(shown.contains('▏'), "{shown:?} shows the cursor");
+            assert!(shown.starts_with(starts), "{shown:?} starts {starts:?}");
+            assert!(shown.ends_with(ends), "{shown:?} ends {ends:?}");
+        }
+        // Wide chars count two cells; short text is as it was.
+        assert!(width(&prompt_line("界界界界界界界界", 8, 7)) <= 7);
+        assert_eq!(prompt_line("ls", 2, 12), "ls▏");
+    }
+
     fn grid_lines(g: &Grid) -> Vec<String> {
         (0..g.rows).map(|y| g.row_text(y)).collect()
     }
@@ -1288,6 +1374,55 @@ mod tests {
         // Nothing changed: no row is written; painted whole, every row is.
         assert_eq!(rows_written(&paint(Some(&c), &c)), Vec::<u16>::new());
         assert_eq!(rows_written(&paint(None, &c)), [0, 1, 2, 3, 4, 5]);
+        Ok(())
+    }
+
+    /// Every attribute fux-vt keeps reaches the client: blink, hidden text
+    /// (which must stay hidden), strikeout and the underline colour, beside
+    /// those painted before.
+    #[test]
+    fn every_attribute_is_painted() -> Result<(), String> {
+        let attributes = [
+            Attributes::default().with_blink(fux_vt::Blink::Slow),
+            Attributes::default().with_blink(fux_vt::Blink::Rapid),
+            Attributes::default().with_hidden(true),
+            Attributes::default().with_strikeout(true),
+            Attributes::default()
+                .with_underline(true)
+                .with_underline_color(Color::Idx(9)),
+            Attributes::default()
+                .with_underline(true)
+                .with_underline_color(Color::Rgb(1, 2, 3)),
+            Attributes::default()
+                .with_bold(true)
+                .with_italic(true)
+                .with_inverse(true),
+        ];
+        let mut grid = Grid::new(1, 12);
+        for (x, a) in attributes.iter().enumerate() {
+            let x = u16::try_from(x).map_err(|e| e.to_string())?;
+            grid.text(0, x, "x", *a, 12);
+        }
+        let bytes = paint(None, &grid);
+        let text = String::from_utf8_lossy(&bytes);
+        for sgr in [
+            "\x1b[0;5m",
+            "\x1b[0;6m",
+            "\x1b[0;8m",
+            "\x1b[0;9m",
+            "\x1b[0;4;58:5:9m",
+            "\x1b[0;4;58:2::1:2:3m",
+        ] {
+            assert!(text.contains(sgr), "{sgr:?} in {text:?}");
+        }
+        // Read back by a terminal, each cell has what it was painted with.
+        let mut parser = fux_vt::Parser::new(1, 12, 0).map_err(|e| e.to_string())?;
+        parser.process(&bytes).map_err(|e| e.to_string())?;
+        for (x, a) in attributes.iter().enumerate().take(5) {
+            let x = u16::try_from(x).map_err(|e| e.to_string())?;
+            let cell = parser.screen().cell(0, x).ok_or("a cell")?;
+            assert_eq!(cell.attributes(), *a, "cell {x}");
+        }
         Ok(())
     }
 

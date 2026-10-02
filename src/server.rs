@@ -20,6 +20,12 @@ const PAINT: Duration = Duration::from_millis(16);
 const OUTPUT_CAP: usize = 4 << 20;
 /// Output read from one pane per tick, so one busy pane cannot starve others.
 const PANE_READ: usize = 64 * 1024;
+/// Bytes read from one client per tick, so one client cannot hold up the
+/// others: a frame larger than this is read over several ticks.
+const CONN_READ: usize = 256 * 1024;
+/// What a connection's buffers keep once they empty; beyond it, the memory
+/// a large frame or paint took is given back.
+const CONN_KEEP: usize = 64 * 1024;
 /// How long a stopping server waits for its clients and processes.
 const STOP_WAIT: Duration = Duration::from_millis(500);
 /// A condition that persists is logged once, then at most this often.
@@ -191,7 +197,9 @@ enum Slot {
 impl Server {
     fn run(&mut self) {
         loop {
-            self.session.settle();
+            // Each change settles as it is made; this catches output that
+            // dropped rows a copy mode held.
+            self.session.settle_if_needed();
             self.flush_outbox();
             let now = Instant::now();
             if let Some((since, _)) = &self.stopping
@@ -226,9 +234,22 @@ impl Server {
             self.escapes(now);
             self.session.type_due(now);
             self.finish_dying(false);
-            self.conns
-                .retain(|c| !(c.dead || c.closing && c.out.is_empty()));
+            self.close_conns();
         }
+    }
+
+    /// Drops every connection that is dead, or closing with nothing left to
+    /// send, detaching its client first: however a connection ends, its
+    /// view goes with it.
+    fn close_conns(&mut self) {
+        let session = &mut self.session;
+        self.conns.retain_mut(|conn| {
+            let gone = conn.dead || conn.closing && conn.out.is_empty();
+            if gone && let Some(client) = conn.client.take() {
+                session.detach(client);
+            }
+            !gone
+        });
     }
 
     /// A lone Escape becomes a key once `ESCAPE_DELAY` passes with no byte
@@ -290,6 +311,9 @@ impl Server {
             slots.push(Slot::Conn(i));
         }
         for (id, pane) in &self.session.panes {
+            if pane.hung_up {
+                continue;
+            }
             if let Some(child) = &pane.child {
                 let mut flags = PollFlags::IN;
                 if !pane.input.is_empty() {
@@ -368,6 +392,15 @@ impl Server {
                 continue;
             }
             if !render::compose_into(&self.session, client, &mut conn.spare, &mut conn.placement) {
+                continue;
+            }
+            // The same screen as the client shows: nothing to send, not even
+            // the envelope, whose cursor hide and show would restart a
+            // blinking cursor.
+            if conn.painted && conn.spare == conn.shown {
+                if let Some(view) = self.session.views.get_mut(&client) {
+                    view.dirty = false;
+                }
                 continue;
             }
             self.paint_buffer.clear();
@@ -550,6 +583,7 @@ impl Server {
                 }
             }
         }
+        conn.out.shrink(CONN_KEEP);
         if conn.dead
             && let Some(client) = conn.client.take()
         {
@@ -557,11 +591,13 @@ impl Server {
         }
     }
 
-    /// Reads what a client sent until it has sent no more, or 256 whole
-    /// frames, or a bad one; then handles each whole frame, in order.
+    /// Reads what a client sent until it has sent no more, or `CONN_READ`
+    /// bytes, or 256 whole frames, or a bad one; then handles each whole
+    /// frame, in order.
     fn read_conn(&mut self, index: usize, now: Instant) {
         // The frames read and checked, and where they end in the decoder.
         let (mut end, mut frames, mut closed) = (0usize, 0usize, false);
+        let mut read = 0usize;
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
@@ -572,6 +608,7 @@ impl Server {
                     break;
                 }
                 Ok(n) => {
+                    read = read.saturating_add(n);
                     conn.decoder
                         .push(self.read_buffer.get(..n).unwrap_or_default());
                     let checked = conn.decoder.check(end);
@@ -581,7 +618,7 @@ impl Server {
                         closed = true;
                         break;
                     }
-                    if frames > 256 {
+                    if frames > 256 || read >= CONN_READ {
                         break;
                     }
                 }
@@ -614,10 +651,13 @@ impl Server {
             };
             self.frame(index, frame);
         }
-        if closed && let Some(conn) = self.conns.get_mut(index) {
-            conn.dead = true;
-            if let Some(client) = conn.client.take() {
-                self.session.detach(client);
+        if let Some(conn) = self.conns.get_mut(index) {
+            conn.decoder.shrink(CONN_KEEP);
+            if closed {
+                conn.dead = true;
+                if let Some(client) = conn.client.take() {
+                    self.session.detach(client);
+                }
             }
         }
     }
@@ -628,6 +668,11 @@ impl Server {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
+        // A connection that is ending has had its last word: a frame after
+        // a Detach, a Command, a refused Hello or a bad frame is ignored.
+        if conn.closing || conn.dead {
+            return;
+        }
         let Some(role) = conn.role else {
             let Frame::Hello { protocol, role, .. } = frame else {
                 conn.dead = true;
@@ -770,8 +815,12 @@ impl Server {
         }
         if ended {
             self.reap();
-            // A pane whose master reports the end but whose leader has not
-            // exited stays; its hangup will come with the exit.
+            // A pane whose master reports the end but whose program has not
+            // exited stays until it does, unpolled: its master would report
+            // the end on every poll, and the loop would spin.
+            if let Some(pane) = self.session.panes.get_mut(&id) {
+                pane.hung_up = true;
+            }
         }
     }
 

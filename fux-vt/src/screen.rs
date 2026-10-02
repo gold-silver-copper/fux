@@ -1,24 +1,38 @@
 use crate::unicode::Cluster;
 use crate::{
     Attributes, Blink, Cell, CellRef, Color, Error, Mark, Options, Reply, Row, RowId, Window,
-    grid::Grid, parser::Parameters,
+    grid::{Grid, Scroll},
+    parser::Parameters,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+/// The mouse reporting a program asked for, the latest set winning
+/// (`CSI ? 9 / 1000 / 1002 / 1003 h`). State only: fux-vt reports nothing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MouseProtocolMode {
+    /// No reporting.
     #[default]
     None,
+    /// Mode 9, X10: button presses.
     Press,
+    /// Mode 1000: presses and releases.
     PressRelease,
+    /// Mode 1002: also motion while a button is down.
     ButtonMotion,
+    /// Mode 1003: also motion with no button down.
     AnyMotion,
 }
+/// How mouse reports are to be encoded (`CSI ? 1005 / 1006 h`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MouseProtocolEncoding {
+    /// The legacy encoding: coordinates as single bytes.
     #[default]
     Default,
+    /// Mode 1005: coordinates in UTF-8.
     Utf8,
+    /// Mode 1006, SGR: `CSI < b ; x ; y M`, or `m` for a release.
     Sgr,
 }
 
@@ -39,6 +53,120 @@ impl Printed {
             cluster: Cluster::start(c),
             full: false,
         }
+    }
+}
+
+/// The character sets a program designates and shifts between (ECMA-35;
+/// DEC STD 070, ch. 3; the VT520 manual's SCS): G0 and G1, each ASCII or
+/// DEC Special Graphics, and which of them is in GL, G1 after SO and G0
+/// after SI. G2, G3 and the national sets are not kept: a set other than
+/// Special Graphics is ASCII, as xterm reads one in UTF-8.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Charsets {
+    g0_graphics: bool,
+    g1_graphics: bool,
+    shifted: bool,
+}
+
+impl Charsets {
+    /// Whether printable ASCII prints as DEC Special Graphics.
+    fn graphics(self) -> bool {
+        if self.shifted {
+            self.g1_graphics
+        } else {
+            self.g0_graphics
+        }
+    }
+}
+
+/// The DEC Special Graphics character for `c`, as xterm draws it: 0x5f to
+/// 0x7e are a blank, a diamond, a checkerboard, control pictures, degree
+/// and plus-minus, line drawing, scan lines, comparisons, pi, not-equal,
+/// pound and a middle dot (VT520 manual, Special Graphics set; xterm,
+/// `fux-vt-compare replay --engines xterm` of `ESC ( 0` and the bytes 0x5f to 0x7e).
+fn special_graphics(c: char) -> char {
+    const GRAPHICS: [char; 32] = [
+        ' ', '◆', '▒', '␉', '␌', '␍', '␊', '°', '±', '␤', '␋', '┘', '┐', '┌', '└', '┼', '⎺', '⎻',
+        '─', '⎼', '⎽', '├', '┤', '┴', '┬', '│', '≤', '≥', 'π', '≠', '£', '·',
+    ];
+    u32::from(c)
+        .checked_sub(0x5f)
+        .and_then(|i| usize::try_from(i).ok())
+        .and_then(|i| GRAPHICS.get(i))
+        .copied()
+        .unwrap_or(c)
+}
+
+/// The tab stops (ECMA-48: HTS sets one, TBC clears; HT, CHT and CBT move
+/// to them), one set for both screens, as in xterm: one every eight
+/// columns at first and after RIS. Kept for every column the terminal has
+/// had, so a resize keeps them, as xterm keeps them; past those, a column
+/// is a stop if it is a multiple of eight and no TBC 3 came since the last
+/// reset.
+#[derive(Clone, Debug)]
+struct TabStops {
+    stops: Vec<bool>,
+    /// Whether the columns past `stops` have the stops of a reset.
+    beyond: bool,
+}
+
+impl Default for TabStops {
+    fn default() -> Self {
+        Self {
+            stops: Vec::new(),
+            beyond: true,
+        }
+    }
+}
+
+impl TabStops {
+    fn is_stop(&self, col: u16) -> bool {
+        match self.stops.get(usize::from(col)) {
+            Some(stop) => *stop,
+            None => self.beyond && col.is_multiple_of(8),
+        }
+    }
+    fn set(&mut self, col: u16, stop: bool) {
+        let col = usize::from(col);
+        while self.stops.len() <= col {
+            let at = self.stops.len();
+            self.stops.push(self.beyond && at.is_multiple_of(8));
+        }
+        if let Some(slot) = self.stops.get_mut(col) {
+            *slot = stop;
+        }
+    }
+    /// TBC 3: no stops anywhere.
+    fn clear(&mut self) {
+        self.stops.clear();
+        self.beyond = false;
+    }
+    /// The first stop after `col`, or `last`, the last column, if none
+    /// comes before it.
+    fn next(&self, col: u16, last: u16) -> u16 {
+        if self.stops.is_empty() && self.beyond {
+            // A stop every eight columns.
+            return (col / 8).saturating_add(1).saturating_mul(8).min(last);
+        }
+        let mut at = col;
+        while at < last {
+            at = at.saturating_add(1);
+            if self.is_stop(at) {
+                return at;
+            }
+        }
+        last
+    }
+    /// The last stop before `col`, or the first column.
+    fn previous(&self, col: u16) -> u16 {
+        let mut at = col;
+        while at > 0 {
+            at = at.saturating_sub(1);
+            if self.is_stop(at) {
+                return at;
+            }
+        }
+        0
     }
 }
 
@@ -116,7 +244,14 @@ pub struct Screen {
     alternate_active: bool,
     attributes: Attributes,
     saved_attributes: Attributes,
+    charsets: Charsets,
+    /// The character sets DECSC saved, which DECRC restores.
+    saved_charsets: Charsets,
     autowrap: bool,
+    /// IRM (ECMA-48 7.2.10, `CSI 4 h`): a glyph printed moves what is at
+    /// and after the cursor right, rather than writing over it.
+    insert: bool,
+    tabs: TabStops,
     application_cursor: bool,
     application_keypad: bool,
     hide_cursor: bool,
@@ -133,6 +268,9 @@ pub struct Screen {
     /// edited since: a character that continues the cluster joins its cell
     /// rather than taking one of its own.
     last_print: Option<Printed>,
+    /// The character REP (`CSI b`) repeats: the last one printed that took
+    /// a cell of its own, as long as nothing but printing came after it.
+    repeat: Option<char>,
 }
 
 #[cfg(test)]
@@ -150,6 +288,27 @@ fn palette(n: u16) -> Option<Color> {
     };
     let index = u8::try_from(n.checked_sub(base)?).ok()?;
     Some(Color::Idx(index.checked_add(bright)?))
+}
+
+/// The colour of 38, 48 or 58 in their colon form, `rest` being what
+/// follows the selector: `5:index`, `2:r:g:b`, or ITU-T T.416's
+/// `2:space:r:g:b`, its colour space ignored and empty, as xterm reads it,
+/// with anything after the blue ignored. `None` if the colour is out of
+/// range or of another kind.
+fn colour_of(rest: &[u16]) -> Option<Color> {
+    match rest {
+        [5, index, ..] => u8::try_from(*index).ok().map(Color::Idx),
+        [2, r, g, b] | [2, _, r, g, b, ..] => rgb(*r, *g, *b),
+        _ => None,
+    }
+}
+
+fn rgb(r: u16, g: u16, b: u16) -> Option<Color> {
+    Some(Color::Rgb(
+        u8::try_from(r).ok()?,
+        u8::try_from(g).ok()?,
+        u8::try_from(b).ok()?,
+    ))
 }
 
 /// Whether `cells` are already the ASCII `run` in `attributes`. Kept out of
@@ -185,7 +344,11 @@ impl Screen {
             alternate_active: false,
             attributes: Attributes::default(),
             saved_attributes: Attributes::default(),
+            charsets: Charsets::default(),
+            saved_charsets: Charsets::default(),
             autowrap: true,
+            insert: false,
+            tabs: TabStops::default(),
             application_cursor: false,
             application_keypad: false,
             hide_cursor: false,
@@ -198,6 +361,7 @@ impl Screen {
             alternate_keyboard: KeyboardStack::default(),
             modify_other_keys: None,
             last_print: None,
+            repeat: None,
         })
     }
     fn grid(&self) -> &Grid {
@@ -229,17 +393,29 @@ impl Screen {
             .ok_or(Error::IdentityExhausted)?;
         Ok(())
     }
+    /// The screen's rows and columns.
     pub fn size(&self) -> (u16, u16) {
         (self.grid().rows.get(), self.grid().cols.get())
     }
-    /// The column may equal width while autowrap is pending, matching fux's
-    /// existing hidden-at-right-edge cursor contract.
+    /// The cursor's row and column, always on the screen. A glyph printed
+    /// in the last column leaves the cursor on it, with
+    /// [`pending_wrap`](Self::pending_wrap) set, as xterm does.
     pub fn cursor_position(&self) -> (u16, u16) {
         self.grid().cursor
     }
+    /// DEC STD 070's Last Column Flag: a glyph went into the last column,
+    /// and the next one, with autowrap on, first moves to the start of the
+    /// next line. Cursor movements, line feeds and edits end it; DECSC and
+    /// SCOSC save it with the cursor.
+    pub fn pending_wrap(&self) -> bool {
+        self.grid().pending_wrap
+    }
+    /// Whether the program hid the cursor (DECTCEM, `CSI ? 25 l`).
     pub fn hide_cursor(&self) -> bool {
         self.hide_cursor
     }
+    /// DECCKM (`CSI ? 1 h`): whether cursor keys are to send their
+    /// application sequences. State only: fux-vt encodes no keys.
     pub fn application_cursor(&self) -> bool {
         self.application_cursor
     }
@@ -248,6 +424,7 @@ impl Screen {
     pub fn application_keypad(&self) -> bool {
         self.application_keypad
     }
+    /// Whether pastes are to be bracketed (`CSI ? 2004 h`).
     pub fn bracketed_paste(&self) -> bool {
         self.bracketed_paste
     }
@@ -261,21 +438,32 @@ impl Screen {
     pub fn cursor_shape(&self) -> u16 {
         self.cursor_shape
     }
+    /// Whether the alternate screen is shown (`CSI ? 47`, `1047`, `1049`).
     pub fn alternate_screen(&self) -> bool {
         self.alternate_active
     }
+    /// DECAWM (`CSI ? 7`): whether a glyph past the last column wraps.
     pub fn autowrap(&self) -> bool {
         self.autowrap
     }
+    /// IRM (`CSI 4 h` / `l`): whether printing inserts rather than
+    /// replaces. Off by default, and after RIS and DECSTR.
+    pub fn insert_mode(&self) -> bool {
+        self.insert
+    }
+    /// DECOM (`CSI ? 6`): whether lines are addressed from the top margin.
     pub fn origin_mode(&self) -> bool {
         self.grid().origin
     }
+    /// The top and bottom margins (DECSTBM), zero-based and inclusive.
     pub fn scroll_region(&self) -> (u16, u16) {
         (self.grid().top, self.grid().bottom)
     }
+    /// The mouse reporting the program asked for.
     pub fn mouse_protocol_mode(&self) -> MouseProtocolMode {
         self.mouse
     }
+    /// How the program asked for mouse reports to be encoded.
     pub fn mouse_protocol_encoding(&self) -> MouseProtocolEncoding {
         self.encoding
     }
@@ -306,34 +494,44 @@ impl Screen {
         }
     }
     /// The one-based cursor position a DSR 6n or DECXCPR reports. A cursor
-    /// waiting to wrap is one past the last column; with an identity it is
-    /// reported at the last column, as xterm does.
+    /// waiting to wrap is reported one past the last column, as the vt100
+    /// crate did; with an identity it is reported at the last column, as
+    /// xterm does.
     pub(crate) fn reported_cursor(&self, options: &Options) -> (u32, u32) {
         let g = self.grid();
-        let (row, mut col) = g.cursor;
-        if options.identity.is_some() {
-            col = col.min(g.cols.last());
-        }
-        (u32::from(row) + 1, u32::from(col) + 1)
+        let col = if options.identity.is_some() {
+            g.cursor.1
+        } else {
+            g.next_column()
+        };
+        (u32::from(g.cursor.0) + 1, u32::from(col) + 1)
     }
+    /// The pen: the colours and rendition of the next glyph printed.
     pub fn attributes(&self) -> Attributes {
         self.attributes
     }
+    /// The pen's background colour.
     pub fn bgcolor(&self) -> Color {
         self.attributes.background()
     }
+    /// Whether the pen is inverse.
     pub fn inverse(&self) -> bool {
         self.attributes.inverse()
     }
+    /// The cell at `row`, `col` of the screen.
     pub fn cell(&self, row: u16, col: u16) -> Option<CellRef<'_>> {
         self.grid().cell(row, col)
     }
+    /// Whether row `row` of the screen is soft-wrapped: its line goes on in
+    /// the next row.
     pub fn row_wrapped(&self, row: u16) -> bool {
         self.grid().live_row(row).is_some_and(|r| r.wrapped)
     }
+    /// How many rows of history the screen keeps now.
     pub fn history_len(&self) -> usize {
         self.grid().history_len()
     }
+    /// The retained row with identity `id`, if it is still kept.
     pub fn row_by_id(&self, id: RowId) -> Option<Row<'_>> {
         self.grid().row_by_id(id)
     }
@@ -350,6 +548,8 @@ impl Screen {
             .history_len()
             .checked_sub(self.grid().index_of(id)?)
     }
+    /// A window of `rows` by `cols` cells (at most the screen's), `offset`
+    /// rows up into history (at most all of it).
     pub fn window(&self, offset: usize, rows: u16, cols: u16) -> Window<'_> {
         let grid = self.grid();
         let history = grid.history_len();
@@ -363,12 +563,17 @@ impl Screen {
             offset,
         }
     }
+    /// A mark of the screen as it is now, to ask later what changed.
     pub fn mark(&self) -> Mark {
         Mark(self.version)
     }
+    /// Whether anything a reader sees changed since `mark`.
     pub fn changed_since(&self, mark: Mark) -> bool {
         mark.0 != self.version
     }
+    /// Whether a reader of `mark` must read every row again: something
+    /// structural changed since (a scroll, resize, reset, switch of screens,
+    /// or rows leaving history).
     pub fn full_refresh_since(&self, mark: Mark) -> bool {
         mark.0 < self.structural || mark.0 > self.version
     }
@@ -435,11 +640,19 @@ impl Screen {
         // (allocation/identity exhaustion). Even that partial result must
         // invalidate every reader's window, not just its newly blank rows.
         self.structural = self.version;
+        // The rows brought in take the pen's colours (`bce`), as in xterm.
+        let blank = self.attributes.erased();
         self.with_grid(|g, next, version| {
-            g.scroll((top, bottom), count, up, history, next, version)
+            let direction = if up {
+                Scroll::Up { history }
+            } else {
+                Scroll::Down
+            };
+            g.scroll((top, bottom), count, direction, blank, next, version)
         })
     }
     fn linefeed(&mut self) -> Result<(), Error> {
+        self.grid_mut().pending_wrap = false;
         let g = self.grid();
         if g.cursor.0 == g.bottom {
             self.scroll(g.top, g.bottom, 1, true, true)?;
@@ -451,6 +664,7 @@ impl Screen {
         Ok(())
     }
     fn reverse_index(&mut self) -> Result<(), Error> {
+        self.grid_mut().pending_wrap = false;
         let g = self.grid();
         if g.cursor.0 == g.top {
             self.scroll(g.top, g.bottom, 1, false, false)?;
@@ -459,6 +673,11 @@ impl Screen {
         }
         Ok(())
     }
+    /// Makes room for a glyph `width` wide at the cursor, which is left
+    /// where it goes, with no wrap pending: a pending wrap, or a glyph too
+    /// wide for what is left of the row, moves it to the start of the next
+    /// line with autowrap on (DEC STD 070, Appendix D.6.1), and back to the
+    /// last column it fits in with autowrap off.
     fn wrap_for(&mut self, width: u16) -> Result<(), Error> {
         let g = self.grid();
         // The last column a glyph this wide can start in; a wider glyph is
@@ -466,26 +685,35 @@ impl Screen {
         let Some(room) = g.cols.get().checked_sub(width) else {
             return Ok(());
         };
-        if g.cursor.1 <= room {
+        if g.next_column() <= room {
             return Ok(());
         }
         let wrap = self.autowrap;
         if !wrap {
-            self.grid_mut().cursor.1 = room;
+            let g = self.grid_mut();
+            g.cursor.1 = room;
+            g.pending_wrap = false;
             return Ok(());
         }
         let row = g.cursor.0;
-        let wrapped = (row < g.rows.last() || row == g.bottom)
-            && g.cell(row, g.cols.last())
-                .is_some_and(|c| c.has_contents() || c.is_wide_continuation());
+        // The glyph goes on to the next line, so this row is soft-wrapped,
+        // whatever its last column holds: blank when a wide glyph did not
+        // fit, or after an erase the wrap outlived. Only on the last row,
+        // below the scroll region, does the glyph stay on the same row.
+        let wrapped = row < g.rows.last() || row == g.bottom;
         // Set before scrolling so a departing row carries its soft-wrap into history.
         self.with_grid(|g, _, v| g.wrap(row, wrapped, v));
         self.grid_mut().cursor.1 = 0;
         self.linefeed()
     }
 
-    pub(crate) fn print(&mut self, c: char) -> Result<(), Error> {
-        if c == '\u{fffd}' || ('\u{80}'..'\u{a0}').contains(&c) {
+    pub(crate) fn print(&mut self, raw: char) -> Result<(), Error> {
+        let c = if self.charsets.graphics() {
+            special_graphics(raw)
+        } else {
+            raw
+        };
+        if ('\u{80}'..'\u{a0}').contains(&c) {
             return Ok(());
         }
         let width = c.width();
@@ -502,9 +730,12 @@ impl Screen {
         if self.extend_cluster(c) {
             return Ok(());
         }
+        if width != 0 {
+            self.repeat = Some(raw);
+        }
         if width == 0 {
             let g = self.grid();
-            let (row, col) = g.cursor;
+            let (row, col) = (g.cursor.0, g.next_column());
             let above = row.checked_sub(1);
             let previous = if let Some(left) = col.checked_sub(1) {
                 Some((row, left))
@@ -520,17 +751,23 @@ impl Screen {
                     col = col.saturating_sub(1);
                 }
                 // A cell already holding all it can takes no more.
+                let end = col.saturating_add(1);
                 self.with_grid(|g, _, v| {
-                    g.mutate_line(row, v, |line| line.append(usize::from(col), c))
+                    g.mutate_line(row, v, end, |line| line.append(usize::from(col), c))
                 });
             }
             return Ok(());
         }
         self.wrap_for(width)?;
+        if self.insert {
+            // Room for the glyph, what was there moving right (ICH).
+            let blank = self.attributes.erased();
+            self.with_grid(|g, _, v| g.edit_cells(width, true, blank, v));
+        }
         let (row, col) = self.grid().cursor;
         let attributes = self.attributes;
         self.with_grid(|g, _, version| {
-            g.mutate_row(row, version, |cells| {
+            g.mutate_row(row, version, col.saturating_add(width), |cells| {
                 let i = usize::from(col);
                 let glyph = Cell::glyph(c, usize::from(width), attributes);
                 // Already this glyph, whole, as a redraw finds it: the row is
@@ -569,8 +806,8 @@ impl Screen {
                 }
                 true
             });
-            // Past the glyph; at the right edge it waits there to wrap.
-            g.cursor.1 = g.cursor.1.saturating_add(width).min(g.cols.get());
+            // Past the glyph; in the last column it waits there to wrap.
+            g.advance_to(col.saturating_add(width));
         });
         self.last_print = Some(Printed::new((row, col), c));
         Ok(())
@@ -588,7 +825,7 @@ impl Screen {
     /// because the cluster is full, which never splits it.
     fn extend_cluster(&mut self, c: char) -> bool {
         let g = self.grid();
-        let (row, col) = g.cursor;
+        let (row, col) = (g.cursor.0, g.next_column());
         let anchor = self.last_print.or_else(|| {
             if c.width() != Some(0) {
                 return None;
@@ -632,7 +869,7 @@ impl Screen {
         let mut widened = false;
         let mut kept = !full;
         self.with_grid(|g, _, v| {
-            g.mutate_line(row, v, |line| {
+            g.mutate_line(row, v, col.saturating_add(1), |line| {
                 kept = kept && line.append(at, c);
                 if !kept {
                     return false;
@@ -658,7 +895,7 @@ impl Screen {
                 true
             });
             if widened {
-                g.cursor.1 = g.cursor.1.saturating_add(1).min(g.cols.get());
+                g.advance_to(col.saturating_add(1));
             }
         });
         self.last_print = Some(Printed {
@@ -675,9 +912,75 @@ impl Screen {
         self.last_print = None;
     }
 
+    /// Forgets the character REP repeats. The parser calls it for every
+    /// control in ground state and every sequence or string it ends, as
+    /// xterm forgets its last character whenever its parser returns to the
+    /// ground state without printing.
+    pub(crate) fn forget_repeat(&mut self) {
+        self.repeat = None;
+    }
+
+    /// REP (ECMA-48 8.3.103): the preceding graphic character printed
+    /// `count` more times, as if it had been sent again. Nothing if anything
+    /// but printing came after that character, where ECMA-48 leaves REP
+    /// undefined, as in xterm.
+    ///
+    /// Once the copies have filled the screen and every row of history the
+    /// grid keeps, each further row's worth leaves all of it as it was, so
+    /// whole rows' worth past that are skipped: no more than a screen and
+    /// its history's worth is ever printed, and what shows is exactly what
+    /// printing them all would show. An ASCII character is printed in runs,
+    /// as text is.
+    fn repeat(&mut self, count: u16) -> Result<(), Error> {
+        let Some(c) = self.repeat else {
+            return Ok(());
+        };
+        let g = self.grid();
+        let width = c.width().unwrap_or(1).max(1);
+        // Copies to a row: a wide glyph leaves an odd last column blank.
+        let Some(per_row) = usize::from(g.cols.get())
+            .checked_div(width)
+            .filter(|n| *n > 0)
+        else {
+            return Ok(());
+        };
+        let lines = usize::from(g.rows.get())
+            .saturating_add(g.history_limit)
+            .saturating_add(1);
+        let full = lines.saturating_mul(per_row);
+        let mut count = usize::from(count);
+        if let Some(beyond) = count.checked_sub(full) {
+            count = full.saturating_add(beyond.checked_rem(per_row).unwrap_or(0));
+        }
+        if let Ok(byte) = u8::try_from(c)
+            && (0x20..=0x7e).contains(&byte)
+        {
+            const RUN: usize = 128;
+            let run = [byte; RUN];
+            while count > 0 {
+                let n = count.min(RUN);
+                self.ascii(run.get(..n).unwrap_or_default())?;
+                count = count.saturating_sub(n);
+            }
+        } else {
+            for _ in 0..count {
+                self.print(c)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Copy an ASCII run directly to cells until a wide-cell collision or right
     /// margin requires the general glyph path. Never enters parser dispatch.
     pub(crate) fn ascii(&mut self, mut bytes: &[u8]) -> Result<(), Error> {
+        // DEC Special Graphics print other characters, and insert mode
+        // moves what is there, one glyph at a time.
+        if self.charsets.graphics() || self.insert {
+            for &byte in bytes {
+                self.print(char::from(byte))?;
+            }
+            return Ok(());
+        }
         while let Some((&first, tail)) = bytes.split_first() {
             self.wrap_for(1)?;
             let (row, col) = self.grid().cursor;
@@ -709,7 +1012,7 @@ impl Screen {
             let attributes = self.attributes;
             let run = bytes.get(..usize::from(count)).unwrap_or_default();
             self.with_grid(|g, _, v| {
-                g.mutate_row(row, v, |cells| {
+                g.mutate_row(row, v, end, |cells| {
                     let Some(dst) = cells.get_mut(span) else {
                         return false;
                     };
@@ -726,13 +1029,17 @@ impl Screen {
                     }
                     true
                 });
-                g.cursor.1 = end;
+                g.advance_to(end);
             });
-            // The run's last glyph, which a mark or selector may join.
+            // The run's last glyph, which a mark or selector may join, and
+            // REP repeats.
             self.last_print = end
                 .checked_sub(1)
                 .zip(run.last())
                 .map(|(last, &byte)| Printed::new((row, last), char::from(byte)));
+            if let Some(&last) = run.last() {
+                self.repeat = Some(char::from(last));
+            }
             bytes = bytes.get(usize::from(count)..).unwrap_or_default();
         }
         Ok(())
@@ -743,39 +1050,70 @@ impl Screen {
             self.break_cluster();
         }
         let g = self.grid_mut();
+        // BS, LF, VT, FF and CR end a pending wrap (DEC STD 070, Appendix
+        // D.6.1). HT does not: it leaves a cursor in the last column where
+        // it is, still waiting to wrap, as xterm does.
+        if matches!(byte, 8 | 13) {
+            g.pending_wrap = false;
+        }
         match byte {
             8 => g.cursor.1 = g.cursor.1.saturating_sub(1),
-            // The next multiple of eight, stopping at the last column.
-            9 => {
-                g.cursor.1 = (g.cursor.1 / 8)
-                    .saturating_add(1)
-                    .saturating_mul(8)
-                    .min(g.cols.last())
-            }
+            9 => self.tab(1, true),
             10..=12 => self.linefeed()?,
             13 => g.cursor.1 = 0,
+            // SO puts G1 in GL, SI G0.
+            14 => self.charsets.shifted = true,
+            15 => self.charsets.shifted = false,
             _ => {}
         }
         Ok(())
     }
+    /// Moves the cursor `count` tab stops forward, stopping at the last
+    /// column, or back, stopping at the first.
+    fn tab(&mut self, count: u16, forward: bool) {
+        let g = self.grid();
+        let (mut col, last) = (g.cursor.1, g.cols.last());
+        for _ in 0..count {
+            col = if forward {
+                self.tabs.next(col, last)
+            } else {
+                self.tabs.previous(col)
+            };
+        }
+        self.grid_mut().cursor.1 = col;
+    }
+    /// DECSC: the cursor, with its pending wrap (DEC STD 070, Appendix
+    /// D.6.1), origin mode and the drawing attributes.
     fn save(&mut self) {
         let g = self.grid_mut();
         g.saved_cursor = g.cursor;
+        g.saved_pending_wrap = g.pending_wrap;
         g.saved_origin = g.origin;
         self.saved_attributes = self.attributes;
+        self.saved_charsets = self.charsets;
     }
     fn restore(&mut self) {
         let g = self.grid_mut();
         g.cursor = g.saved_cursor;
+        g.pending_wrap = g.saved_pending_wrap;
         g.origin = g.saved_origin;
         self.attributes = self.saved_attributes;
+        self.charsets = self.saved_charsets;
     }
     /// Carries out an escape sequence; whether fux-vt implements it.
     pub(crate) fn escape(&mut self, intermediates: &[u8], byte: u8) -> Result<bool, Error> {
-        if !intermediates.is_empty() {
-            return Ok(false);
+        // SCS: ESC ( F designates G0 and ESC ) F G1; F `0` is DEC Special
+        // Graphics, and any other set is ASCII here.
+        match intermediates {
+            b"(" => self.charsets.g0_graphics = byte == b'0',
+            b")" => self.charsets.g1_graphics = byte == b'0',
+            [] => {}
+            _ => return Ok(false),
         }
-        if matches!(byte, b'7' | b'8' | b'M' | b'c') {
+        if !intermediates.is_empty() {
+            return Ok(true);
+        }
+        if matches!(byte, b'7' | b'8' | b'D' | b'E' | b'M' | b'c') {
             self.break_cluster();
         }
         match byte {
@@ -783,6 +1121,19 @@ impl Screen {
             b'8' => self.restore(),
             b'=' => self.application_keypad = true,
             b'>' => self.application_keypad = false,
+            // IND (DEC STD 070; xterm's ctlseqs): a line feed, scrolling
+            // at the bottom margin. NEL (ECMA-48 8.3.86): the same, to the
+            // first column.
+            b'D' => self.linefeed()?,
+            b'E' => {
+                self.grid_mut().cursor.1 = 0;
+                self.linefeed()?;
+            }
+            // HTS (ECMA-48 8.3.62): a tab stop at the cursor's column.
+            b'H' => {
+                let col = self.grid().cursor.1;
+                self.tabs.set(col, true);
+            }
             b'M' => self.reverse_index()?,
             b'c' => {
                 let (rows, cols) = self.size();
@@ -810,7 +1161,11 @@ impl Screen {
                 self.alternate_active = false;
                 self.attributes = Attributes::default();
                 self.saved_attributes = Attributes::default();
+                self.charsets = Charsets::default();
+                self.saved_charsets = Charsets::default();
                 self.autowrap = true;
+                self.insert = false;
+                self.tabs = TabStops::default();
                 self.application_cursor = false;
                 self.application_keypad = false;
                 self.hide_cursor = false;
@@ -829,6 +1184,79 @@ impl Screen {
         Ok(true)
     }
 
+    /// DECSTR (`CSI ! p`), as xterm does it: the modes a program sets go
+    /// back to their defaults, as the VT520 manual's table (p. 5-150) and
+    /// DEC STD 070's Soft Terminal Reset (p. 4-37) list them: the cursor
+    /// shown, DECOM, DECCKM and DECKPAM off, the scroll region the whole
+    /// screen, the pen and the saved cursor's attributes normal, the
+    /// character sets ASCII with G0 in GL, and the saved cursor home. DECAWM goes back to its default, which both
+    /// leave to the terminal's setting (xterm's: on). The screen, the
+    /// cursor, a pending wrap, the alternate screen, bracketed paste, focus
+    /// reporting, mouse modes and kitty keyboard flags stay as they are,
+    /// as in xterm.
+    fn soft_reset(&mut self) {
+        self.hide_cursor = false;
+        self.autowrap = true;
+        self.insert = false;
+        self.application_cursor = false;
+        self.application_keypad = false;
+        self.attributes = Attributes::default();
+        self.saved_attributes = Attributes::default();
+        self.charsets = Charsets::default();
+        self.saved_charsets = Charsets::default();
+        for g in [&mut self.primary, &mut self.alternate] {
+            g.origin = false;
+            g.top = 0;
+            g.bottom = g.rows.last();
+        }
+        let g = self.grid_mut();
+        g.saved_cursor = (0, 0);
+        g.saved_pending_wrap = false;
+        g.saved_origin = false;
+    }
+
+    /// Clears the alternate screen, its blanks in the pen's colours
+    /// (`bce`), as xterm clears it for 1047 and 1049. The cursor, origin
+    /// mode, the margins and the screen's saved cursor stay, and a pending
+    /// wrap ends, as ED's does (DEC STD 070, Appendix D.6.1).
+    fn clear_alternate(&mut self) -> Result<(), Error> {
+        let kept = self.alternate.clone_cursor();
+        self.alternate.clear(&mut self.next_id, self.version)?;
+        let blank = self.attributes.erased();
+        let g = &mut self.alternate;
+        g.set_cursor(kept);
+        g.pending_wrap = false;
+        if blank != Attributes::default() {
+            let cols = g.cols.get();
+            for y in 0..g.rows.get() {
+                g.erase(y, 0, cols, blank, self.version);
+            }
+        }
+        Ok(())
+    }
+
+    /// Shows the alternate screen, or the primary. The cursor, with its
+    /// pending wrap, origin mode and the margins go along, as in xterm,
+    /// where they are the terminal's rather than either screen's: a
+    /// program that switches finds the cursor where it left it. Each
+    /// screen keeps its own saved cursor, as each of xterm's does.
+    fn switch_screen(&mut self, alternate: bool) {
+        if self.alternate_active != alternate {
+            let (from, to) = if alternate {
+                (&self.primary, &mut self.alternate)
+            } else {
+                (&self.alternate, &mut self.primary)
+            };
+            to.cursor = from.cursor;
+            to.pending_wrap = from.pending_wrap;
+            to.origin = from.origin;
+            to.top = from.top;
+            to.bottom = from.bottom;
+        }
+        self.alternate_active = alternate;
+        self.structural = self.version;
+    }
+
     /// DECRQM status for a DEC private mode: 1 set, 2 reset, 0 not recognized.
     pub(crate) fn private_mode_status(&self, n: u16) -> u8 {
         let set = match n {
@@ -836,7 +1264,7 @@ impl Screen {
             6 => self.grid().origin,
             7 => self.autowrap,
             25 => !self.hide_cursor,
-            47 | 1049 => self.alternate_active,
+            47 | 1047 | 1049 => self.alternate_active,
             9 => self.mouse == MouseProtocolMode::Press,
             1000 => self.mouse == MouseProtocolMode::PressRelease,
             1002 => self.mouse == MouseProtocolMode::ButtonMotion,
@@ -861,20 +1289,33 @@ impl Screen {
             25 => self.hide_cursor = !set,
             2004 => self.bracketed_paste = set,
             1004 => self.focus_reporting = set,
-            47 => {
-                self.alternate_active = set;
-                self.structural = self.version;
+            47 => self.switch_screen(set),
+            // 1047: the alternate screen, cleared on leaving it (xterm's
+            // ctlseqs). 1048: DECSC and DECRC.
+            1047 => {
+                if !set && self.alternate_active {
+                    self.clear_alternate()?;
+                }
+                self.switch_screen(set);
             }
+            1048 => {
+                if set {
+                    self.save();
+                } else {
+                    self.restore();
+                }
+            }
+            // 1049: DECSC, then the alternate screen, cleared first; and
+            // back, then DECRC.
             1049 => {
                 if set {
                     self.save();
-                    self.alternate.clear(&mut self.next_id, self.version)?;
-                    self.alternate_active = true;
+                    self.switch_screen(true);
+                    self.clear_alternate()?;
                 } else {
-                    self.alternate_active = false;
+                    self.switch_screen(false);
                     self.restore();
                 }
-                self.structural = self.version;
             }
             9 | 1000 | 1002 | 1003 => {
                 let mode = match n {
@@ -958,6 +1399,10 @@ impl Screen {
         {
             return Ok(dispatch);
         }
+        if intermediates == b"!" && byte == b'p' {
+            self.soft_reset();
+            return Ok(Dispatch::Done);
+        }
         if !intermediates.is_empty() && !private {
             return Ok(Dispatch::Unhandled);
         }
@@ -965,13 +1410,28 @@ impl Screen {
             for group in p.groups() {
                 if let [n] = group {
                     // A switch of screens leaves the printed cell behind.
-                    if matches!(n, 47 | 1049) {
+                    if matches!(n, 47 | 1047 | 1049) {
                         self.break_cluster();
                     }
                     self.mode(*n, byte == b'h')?;
                 }
             }
             return Ok(Dispatch::Done);
+        }
+        // SM and RM: IRM (4) alone of the ANSI modes.
+        if !private && matches!(byte, b'h' | b'l') {
+            let mut handled = false;
+            for group in p.groups() {
+                if group == [4] {
+                    self.insert = byte == b'h';
+                    handled = true;
+                }
+            }
+            return Ok(if handled {
+                Dispatch::Done
+            } else {
+                Dispatch::Unhandled
+            });
         }
         // Every sequence that moves the cursor or edits a row; not SGR,
         // modes or queries.
@@ -987,7 +1447,12 @@ impl Screen {
                 | b'T'
                 | b'X'
                 | b'@'
+                | b'I'
+                | b'Z'
+                | b'`'
+                | b'a'
                 | b'd'
+                | b'e'
                 | b'f'
                 | b'r'
                 | b's'
@@ -1000,6 +1465,13 @@ impl Screen {
         }
         let n = p.first(0, 1);
         let (row, col) = self.grid().cursor;
+        // Every cursor movement, erase and edit ends a pending wrap (DEC STD
+        // 070, Appendix D.6.1, which lists them), as xterm does; ED, EL, IL,
+        // DL and DECSTBM below, once they are carried out. SU and SD are not
+        // among them: the cursor stays waiting to wrap, as in xterm.
+        if matches!(byte, b'A'..=b'H' | b'X' | b'`' | b'a' | b'd' | b'e' | b'f') {
+            self.grid_mut().pending_wrap = false;
+        }
         match byte {
             b'A' | b'B' | b'E' | b'F' => {
                 let g = self.grid_mut();
@@ -1017,13 +1489,16 @@ impl Screen {
                     g.cursor.1 = 0;
                 }
             }
-            b'C' => {
+            // CUF, and HPR, which with no right margin to stop at is the
+            // same: both stop at the last column (VT520 manual, HPR).
+            b'C' | b'a' => {
                 let g = self.grid_mut();
                 g.cursor.1 = col.saturating_add(n).min(g.cols.last());
             }
             b'D' => self.grid_mut().cursor.1 = col.saturating_sub(n),
-            // Coordinates are one-based, and 0 means 1.
-            b'G' => {
+            // CHA, and HPA, the same with no left margin. Coordinates are
+            // one-based, and 0 means 1.
+            b'G' | b'`' => {
                 let g = self.grid_mut();
                 g.cursor.1 = n.saturating_sub(1).min(g.cols.last());
             }
@@ -1035,22 +1510,38 @@ impl Screen {
             // restore the attributes with the position.
             b's' => self.save(),
             b'u' => self.restore(),
-            b'd' => {
+            // VPA and VPR address lines as CUP does, from the top margin in
+            // origin mode, within the margins there and the screen
+            // otherwise (DEC STD 070, DECOM: in displaced mode the active
+            // position cannot leave the margins), as xterm does. VPR
+            // counts from the cursor's line, so unlike CUD it passes the
+            // bottom margin with DECOM reset.
+            b'd' | b'e' => {
                 let g = self.grid_mut();
-                g.cursor.0 = n.saturating_sub(1).min(g.rows.last());
+                let line = if byte == b'd' {
+                    n.saturating_sub(1)
+                } else {
+                    g.cursor_line().saturating_add(n)
+                };
+                g.position(line, col);
             }
-            b'@' | b'P' => self.with_grid(|g, _, v| g.edit_cells(n, byte == b'@', v)),
+            b'@' | b'P' => {
+                let blank = self.attributes.erased();
+                self.with_grid(|g, _, v| g.edit_cells(n, byte == b'@', blank, v));
+            }
+            // Erased cells take the pen's colours alone, as xterm's do.
             b'X' => {
-                let a = self.attributes;
+                let a = self.attributes.erased();
                 self.with_grid(|g, _, v| g.erase(row, col, col.saturating_add(n), a, v));
             }
             b'J' | b'K' => {
                 let mode = p.first(0, 0);
-                let a = self.attributes;
+                let a = self.attributes.erased();
                 if mode > 2 {
                     return Ok(Dispatch::Unhandled);
                 }
                 self.with_grid(|g, _, v| {
+                    g.pending_wrap = false;
                     let cols = g.cols.get();
                     if byte == b'J' {
                         for y in 0..g.rows.get() {
@@ -1067,29 +1558,58 @@ impl Screen {
                     g.erase(row, start, end, a, v);
                 });
             }
+            // IL and DL, ignored outside the margins, leave the cursor in
+            // the first column (DEC STD 070, IL and DL, note 2).
             b'L' | b'M' => {
                 let g = self.grid();
                 if g.in_region() {
-                    self.scroll(row, g.bottom, n, byte == b'M', false)?;
+                    let g = self.grid_mut();
+                    g.pending_wrap = false;
+                    g.cursor.1 = 0;
+                    let bottom = g.bottom;
+                    self.scroll(row, bottom, n, byte == b'M', false)?;
                 }
             }
             b'S' | b'T' => {
                 let g = self.grid();
                 self.scroll(g.top, g.bottom, n, byte == b'S', true)?;
             }
+            // DECSTBM (DEC STD 070, 5-25): margins with the top above the
+            // bottom are set, and the cursor goes home, obeying DECOM;
+            // others are ignored. A bottom past the screen is the last
+            // line, as xterm reads it, where DEC STD 070 ignores it.
             b'r' => {
                 let rows = self.grid().rows;
                 let bottom = p.first(1, rows.get()).saturating_sub(1).min(rows.last());
                 let top = n.saturating_sub(1);
-                let g = self.grid_mut();
-                (g.top, g.bottom) = if top < bottom {
-                    (top, bottom)
-                } else {
-                    (0, rows.last())
-                };
-                g.cursor = (g.top, 0);
+                if top < bottom {
+                    let g = self.grid_mut();
+                    (g.top, g.bottom) = (top, bottom);
+                    g.position(0, 0);
+                }
             }
             b'm' => self.sgr(p),
+            b'b' => self.repeat(n)?,
+            // CHT (ECMA-48 8.3.10): HT n times. Like HT, it leaves a
+            // pending wrap waiting in the last column.
+            b'I' => self.tab(n, true),
+            // CBT (ECMA-48 8.3.7): back n tab stops, or to the first
+            // column. With a wrap pending it does nothing, as in xterm.
+            b'Z' => {
+                if !self.grid().pending_wrap {
+                    self.tab(n, false);
+                }
+            }
+            // TBC (ECMA-48 8.3.154): 0 clears the stop at the cursor, 3
+            // every stop; xterm ignores the others, and so does fux-vt.
+            b'g' => match p.first(0, 0) {
+                0 => {
+                    let col = self.grid().cursor.1;
+                    self.tabs.set(col, false);
+                }
+                3 => self.tabs.clear(),
+                _ => {}
+            },
             b'n' => match p.first(0, 0) {
                 5 => return Ok(Dispatch::Reply(Reply::of(format_args!("\x1b[0n")))),
                 6 => {
@@ -1113,23 +1633,25 @@ impl Screen {
     }
 
     fn sgr(&mut self, p: &Parameters) {
-        const WEIGHT: u16 = Attributes::BOLD | Attributes::DIM;
-        let mut groups = p.groups();
+        let mut groups = p.groups().peekable();
         while let Some(group) = groups.next() {
             match group {
                 [0] => self.attributes = Attributes::default(),
-                // Bold and dim replace one another.
-                [1] => self.attributes.flags = self.attributes.flags & !WEIGHT | Attributes::BOLD,
-                [2] => self.attributes.flags = self.attributes.flags & !WEIGHT | Attributes::DIM,
+                // Bold and dim are kept apart, and both can be on, as in
+                // xterm; 22 ends both (ECMA-48 8.3.117).
+                [1] => self.attributes.flags |= Attributes::BOLD,
+                [2] => self.attributes.flags |= Attributes::DIM,
                 [3] => self.attributes.flags |= Attributes::ITALIC,
-                [4] => self.attributes.flags |= Attributes::UNDERLINE,
+                // 21 is doubly underlined (ECMA-48 8.3.117, xterm's
+                // ctlseqs): fux-vt keeps no underline style.
+                [4 | 21] => self.attributes.flags |= Attributes::UNDERLINE,
                 // Slow and rapid blink replace one another.
                 [5] => self.attributes = self.attributes.with_blink(Blink::Slow),
                 [6] => self.attributes = self.attributes.with_blink(Blink::Rapid),
                 [7] => self.attributes.flags |= Attributes::INVERSE,
                 [8] => self.attributes.flags |= Attributes::HIDDEN,
                 [9] => self.attributes.flags |= Attributes::STRIKEOUT,
-                [22] => self.attributes.flags &= !WEIGHT,
+                [22] => self.attributes.flags &= !(Attributes::BOLD | Attributes::DIM),
                 [23] => self.attributes.flags &= !Attributes::ITALIC,
                 [24] => self.attributes.flags &= !Attributes::UNDERLINE,
                 [25] => self.attributes.flags &= !Attributes::BLINK,
@@ -1149,58 +1671,68 @@ impl Screen {
                         self.attributes = self.attributes.with_background(color);
                     }
                 }
-                // Foreground, background and underline colour share their forms.
+                // Underline styles (kitty's, which every engine in
+                // `compare/` reads but xterm): fux-vt keeps no style, so
+                // 4:0 ends underline and the styles 1 to 5 set it.
+                [4, 0, ..] => self.attributes.flags &= !Attributes::UNDERLINE,
+                [4, 1..=5, ..] => self.attributes.flags |= Attributes::UNDERLINE,
+                // Foreground, background and underline colour share their
+                // forms (ITU-T T.416, 13.1.8, and xterm's ctlseqs). An
+                // invalid colour is skipped, and the rest of the SGR goes on.
+                [selector @ (38 | 48 | 58)] => {
+                    if let Some(colour) = Self::colour_after(&mut groups) {
+                        self.set_colour(*selector, colour);
+                    }
+                }
                 [selector @ (38 | 48 | 58), rest @ ..] => {
-                    let mut parts = [0u16; 4];
-                    let count = if rest.is_empty() {
-                        let Some([kind]) = groups.next() else {
-                            return;
-                        };
-                        let count = match kind {
-                            2 => 4,
-                            5 => 2,
-                            _ => return,
-                        };
-                        if let Some(first) = parts.first_mut() {
-                            *first = *kind;
-                        }
-                        for slot in parts.iter_mut().take(count).skip(1) {
-                            let Some([n]) = groups.next() else {
-                                return;
-                            };
-                            *slot = *n;
-                        }
-                        count
-                    } else {
-                        // All of them, if they fit.
-                        let Some(()) = parts
-                            .get_mut(..rest.len())
-                            .and_then(|start| crate::copy_from(start, rest))
-                        else {
-                            continue;
-                        };
-                        rest.len()
-                    };
-                    let colour = match parts.get(..count) {
-                        Some([5, index]) => u8::try_from(*index).ok().map(Color::Idx),
-                        Some([2, r, g, b]) => u8::try_from(*r)
-                            .ok()
-                            .zip(u8::try_from(*g).ok())
-                            .zip(u8::try_from(*b).ok())
-                            .map(|((r, g), b)| Color::Rgb(r, g, b)),
-                        _ => None,
-                    };
-                    let Some(colour) = colour else {
-                        return;
-                    };
-                    match selector {
-                        38 => self.attributes = self.attributes.with_foreground(colour),
-                        48 => self.attributes = self.attributes.with_background(colour),
-                        _ => self.attributes = self.attributes.with_underline_color(colour),
+                    if let Some(colour) = colour_of(rest) {
+                        self.set_colour(*selector, colour);
                     }
                 }
                 _ => {}
             }
+        }
+    }
+
+    fn set_colour(&mut self, selector: u16, colour: Color) {
+        self.attributes = match selector {
+            38 => self.attributes.with_foreground(colour),
+            48 => self.attributes.with_background(colour),
+            _ => self.attributes.with_underline_color(colour),
+        };
+    }
+
+    /// The colour of 38, 48 or 58 in their semicolon form, taken from the
+    /// parameters after it, as xterm reads it: `5;index` or `2;r;g;b`, a
+    /// value the list ends before being 0. Another kind takes only itself.
+    /// `None`, with what it named taken all the same, if the colour is out
+    /// of range.
+    fn colour_after<'a>(
+        groups: &mut std::iter::Peekable<impl Iterator<Item = &'a [u16]>>,
+    ) -> Option<Color> {
+        let kind = match groups.peek() {
+            Some([kind]) => *kind,
+            _ => return None,
+        };
+        groups.next();
+        let count = match kind {
+            2 => 3,
+            5 => 1,
+            _ => return None,
+        };
+        let mut values = [0u16; 3];
+        for value in values.iter_mut().take(count) {
+            let Some([n]) = groups.peek() else {
+                break;
+            };
+            *value = *n;
+            groups.next();
+        }
+        let [a, b, c] = values;
+        if kind == 5 {
+            u8::try_from(a).ok().map(Color::Idx)
+        } else {
+            rgb(a, b, c)
         }
     }
 }

@@ -546,13 +546,37 @@ fn run_binding(session: &mut Session, client: ClientId, keys: &[KeyPress]) -> bo
     true
 }
 
-fn plain(press: KeyPress) -> Option<Key> {
-    (!press.mods.ctrl && !press.mods.alt).then_some(press.key)
+/// Rows a scrolled panel has for its entries on a screen of `rows`: the
+/// rows above the bar, less `fixed` lines of its own (a title, a help line)
+/// and the two lines that say how many entries lie above and below; at
+/// least one.
+pub fn panel_room(rows: u16, fixed: usize) -> usize {
+    usize::from(rows.saturating_sub(1))
+        .saturating_sub(fixed.saturating_add(2))
+        .max(1)
 }
 
-/// Rows the list shows at once on a screen of `rows`.
-pub fn list_capacity(rows: u16) -> usize {
-    usize::from(rows.saturating_sub(4)).max(1)
+/// The first of `len` entries a panel with `room` rows for them shows, so
+/// that `selected` is in view: the window ends at the selection, or at the
+/// last entry.
+pub fn window_start(len: usize, selected: usize, room: usize) -> usize {
+    selected
+        .saturating_add(1)
+        .saturating_sub(room)
+        .min(len.saturating_sub(room))
+}
+
+/// Rows a chooser or menu shows its items in: it has a title and a help
+/// line.
+pub fn list_room(rows: u16) -> usize {
+    panel_room(rows, 2)
+}
+
+/// Whether the command column has room for its heading, and the rows it
+/// shows its entries in.
+pub fn column_room(rows: u16) -> (bool, usize) {
+    let heading = rows.saturating_sub(1) >= 4;
+    (heading, panel_room(rows, usize::from(heading)))
 }
 
 /// A key while the command column is open.
@@ -566,7 +590,7 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
     };
     let (path, selected, rows) = (path.clone(), *selected, view.rows);
     let len = column_len(session, &path);
-    let page = list_capacity(rows);
+    let (_, page) = column_room(rows);
     let last = len.saturating_sub(1);
     // The column navigates with keys that are not letters: every letter after
     // the prefix is a binding's.
@@ -620,7 +644,7 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
 /// or, unbound, leaves the column open, saying so.
 fn follow(session: &mut Session, client: ClientId, path: &[KeyPress], press: KeyPress) {
     let mut keys = path.to_vec();
-    keys.push(crate::config::folded(press));
+    keys.push(press.folded());
     if run_binding(session, client, &keys) {
         return;
     }
@@ -658,12 +682,12 @@ pub fn repeat_key(session: &mut Session, client: ClientId, press: KeyPress) {
         );
         return;
     }
-    if matches!(plain(press), Some(Key::Escape | Key::Enter)) {
+    if matches!(press.plain_key(), Some(Key::Escape | Key::Enter)) {
         session.set_mode(client, Mode::Normal);
         return;
     }
     let mut keys = path.clone();
-    keys.push(crate::config::folded(press));
+    keys.push(press.folded());
     if !run_binding(session, client, &keys) {
         let title = layer_title(session, &path).unwrap_or_default().to_owned();
         session.set_mode(client, Mode::Normal);
@@ -682,6 +706,11 @@ pub fn send_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let Some(p) = session.panes.get_mut(&pane) else {
         return;
     };
+    // Refused already, and said so: the key goes no further. A client
+    // typing into a program that has stopped reading costs nothing per key.
+    if p.input.refusing() {
+        return;
+    }
     let application = p.screen().application_cursor();
     if let Err(error) = p
         .input
@@ -701,10 +730,10 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
         return;
     };
     let last = list.items.len().saturating_sub(1);
-    let page = list_capacity(rows);
+    let page = list_room(rows);
     let mut run: Option<Command> = None;
     let mut close = false;
-    match plain(press) {
+    match press.plain_key() {
         Some(Key::Arrow(Direction::Up)) | Some(Key::Char('k')) => {
             list.selected = list.selected.saturating_sub(1)
         }
@@ -846,17 +875,23 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
             run_line(session, client, &argv);
         }
         PromptFor::Rename(target) => {
-            let id = match &target {
-                AnyRef::Workspace(r) => match session.resolve_ws(r) {
-                    Ok(w) => w.to_string(),
+            // The command is built, not parsed from words: a name is the
+            // text as typed, `-dev` and `--` included. A workspace is held
+            // by its ID, in case its name changed while the prompt was open.
+            let target = match target {
+                AnyRef::Workspace(r) => match session.resolve_ws(&r) {
+                    Ok(w) => AnyRef::Workspace(WsRef::Id(w)),
                     Err(error) => return session.error_to(client, error.to_string()),
                 },
-                other @ (AnyRef::Pane(_) | AnyRef::Tab(_)) => describe(other),
+                other @ (AnyRef::Pane(_) | AnyRef::Tab(_)) => other,
             };
-            run_line(
+            run_for(
                 session,
                 client,
-                &["rename".into(), "-t".into(), id, prompt.text],
+                &Command::Rename {
+                    target,
+                    name: prompt.text,
+                },
             );
         }
     }
@@ -871,13 +906,13 @@ pub fn confirm_key(session: &mut Session, client: ClientId, press: KeyPress) {
         return;
     };
     view.dirty = true;
-    match plain(press) {
-        Some(Key::Char('y')) | Some(Key::Char('Y')) => {
+    match press.plain_key() {
+        Some(Key::Char('y')) => {
             let command = confirm.command.clone();
             view.mode = Mode::Normal;
             run_for(session, client, &command);
         }
-        Some(Key::Char('n')) | Some(Key::Char('N')) | Some(Key::Escape) | Some(Key::Char('q')) => {
+        Some(Key::Char('n')) | Some(Key::Escape) | Some(Key::Char('q')) => {
             view.mode = Mode::Normal;
         }
         _ => {}
@@ -940,6 +975,28 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// A name typed into a rename prompt is the name, whatever it looks
+    /// like: one that starts with `-` is not taken for a flag.
+    #[test]
+    fn a_rename_prompt_takes_any_name() -> Outcome {
+        let (mut session, client) = session()?;
+        for (open, name, read) in [
+            ("rename-prompt -c c1 pane -t %1", "-dev", "%1"),
+            ("rename-prompt -c c1 tab -t @1", "--", "@1"),
+            ("rename-prompt -c c1 workspace -t +1", "-w x", "+1"),
+        ] {
+            run(&mut session, open)?;
+            // Backspace clears what the prompt starts with, the current name.
+            session.input(client, &[0x7f; 16]);
+            session.input(client, name.as_bytes());
+            session.input(client, b"\r");
+            assert_eq!(notice(&session, client), "", "{open}");
+            let target = crate::command::parse_any(read).map_err(|e| e.to_string())?;
+            assert_eq!(session.name_of(&target), name, "{open}");
+        }
+        Ok(())
+    }
+
     /// Prompt edits count chars, so none falls inside one: what Ctrl-U,
     /// Backspace, Delete, typing and a paste do, on text with wide chars.
     #[test]
@@ -961,6 +1018,61 @@ mod tests {
                 "{at} {remove} {insert:?}"
             );
         }
+    }
+
+    /// Like the keys after the prefix and copy mode's, a chooser's and a
+    /// confirmation's letter keys work in either case: Caps Lock changes
+    /// nothing.
+    #[test]
+    fn list_and_confirm_keys_ignore_case() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "new-tab -t +1")?;
+        run(&mut s, "choose-tab -c c1")?;
+        s.input(c, b"\x1b[H");
+        s.input(c, b"J");
+        assert!(mode(&s, c).ends_with(" 1"), "J moves down: {}", mode(&s, c));
+        s.input(c, b"K");
+        assert!(mode(&s, c).ends_with(" 0"), "K moves up: {}", mode(&s, c));
+        s.input(c, b"Q");
+        assert_eq!(mode(&s, c), "normal", "Q closes");
+        run(&mut s, "confirm-close -c c1 tab -t @2")?;
+        s.input(c, b"Q");
+        assert_eq!(mode(&s, c), "normal", "Q cancels");
+        run(&mut s, "confirm-close -c c1 tab -t @2")?;
+        s.input(c, b"Y");
+        assert!(
+            !s.exists(&AnyRef::Tab(crate::command::TabId(2))),
+            "Y confirms"
+        );
+        Ok(())
+    }
+
+    /// A long chooser scrolled to the middle shows its title, both "more"
+    /// lines, its items and its help, all within the screen (41 tabs, the
+    /// cursor at the 31st, on 30 rows lost the title).
+    #[test]
+    fn a_scrolled_list_keeps_its_title() -> Outcome {
+        let (mut s, c) = session()?;
+        for _ in 0..40 {
+            run(&mut s, "new-tab -t +1")?;
+        }
+        run(&mut s, "choose-tab -c c1")?;
+        s.input(c, b"\x1b[H");
+        let downs: Vec<u8> = std::iter::repeat_n(&b"\x1b[B"[..], 30)
+            .flatten()
+            .copied()
+            .collect();
+        s.input(c, &downs);
+        assert_eq!(mode(&s, c).split(' ').next_back(), Some("30"));
+        let title = match s.views.get(&c).map(|v| &v.mode) {
+            Some(Mode::List(list)) => list.title.clone(),
+            _ => return Err("a list".into()),
+        };
+        let text = screen_text(&s, c)?;
+        for shown in [title.as_str(), "▲", "▼", "Enter selects"] {
+            assert!(text.contains(shown), "{shown:?} in\n{text}");
+        }
+        Ok(())
     }
 
     #[test]
@@ -987,7 +1099,7 @@ mod tests {
         s.input(c, b"\x1b[H");
         assert_eq!(mode(&s, c), "column 0");
         // A page down, or to the last entry if that is nearer.
-        let page = list_capacity(30).min(last);
+        let page = column_room(30).1.min(last);
         s.input(c, b"\x1b[6~");
         assert_eq!(mode(&s, c), format!("column {page}"));
         s.input(c, b"\x1b[A\x1b[A\x1b[B");

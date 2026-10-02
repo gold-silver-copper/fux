@@ -1,9 +1,10 @@
 # fux without Bevy: design
 
-Status: agreed with the user on 2026-09-23, and being implemented on the
-branch `rewrite`. This is the specification; `docs/prompt-rewrite-without-bevy.md`
-is how to build it. Where the code had to depart from the first version of
-this document, the change is made here and its commit says why.
+Status: **historical**. Agreed on 2026-09-23 and built on the branch
+`rewrite`, which has merged; README.md and the code describe fux as it is,
+and where they differ from this document, they are right. Fuzzing, which
+this document leaves for later, exists (`fuzz/`, `fux-vt/fuzz/`), as does a
+comparison with other terminals (`fux-vt/compare/`).
 
 **Scope of the first version (decided 2026-09-24): functionality only.** It
 builds everything below that a user sees and uses: panes, tabs, workspaces,

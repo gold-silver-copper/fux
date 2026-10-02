@@ -62,6 +62,21 @@ impl ByteQueue {
             self.taken = 0;
         }
     }
+    /// Gives back the buffer's memory beyond `keep` bytes, once no more than
+    /// that is queued: a queue that once held a large frame or paint does
+    /// not keep its size for the life of the connection.
+    pub fn shrink(&mut self, keep: usize) {
+        if self.len() > keep || self.bytes.capacity() <= keep {
+            return;
+        }
+        let end = self.bytes.len();
+        if self.taken > 0 && copy_within(&mut self.bytes, self.taken..end, 0).is_some() {
+            let left = end.saturating_sub(self.taken);
+            self.bytes.truncate(left);
+            self.taken = 0;
+        }
+        self.bytes.shrink_to(keep);
+    }
     /// Takes `n` bytes from the front, or all there are.
     pub fn take(&mut self, n: usize) {
         self.taken = self.taken.saturating_add(n).min(self.bytes.len());
@@ -82,6 +97,21 @@ impl ByteQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_queue_gives_back_what_a_large_frame_took() {
+        let mut queue = ByteQueue::default();
+        queue.push(&vec![7u8; 1 << 20]);
+        queue.take((1 << 20) - 10);
+        // More than `keep` queued: nothing is given back.
+        queue.shrink(4);
+        assert!(queue.bytes.capacity() >= 1 << 20);
+        // Little enough: the rest moves to the front and the memory goes.
+        queue.shrink(64);
+        assert_eq!(queue.as_slice(), &[7u8; 10]);
+        assert!(queue.bytes.capacity() < 1 << 20);
+        assert_eq!(queue.taken, 0);
+    }
 
     #[test]
     fn bytes_leave_in_the_order_they_came() {

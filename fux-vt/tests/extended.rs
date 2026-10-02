@@ -32,9 +32,9 @@ fn window_lines(parser: &Parser, offset: usize) -> Vec<String> {
     let screen = parser.screen();
     let (rows, cols) = screen.size();
     let window = screen.window(offset, rows, cols);
-    (0..window.rows)
+    (0..window.rows())
         .map(|y| {
-            (0..window.cols)
+            (0..window.cols())
                 .filter_map(|x| window.cell(y, x))
                 .filter(|c| !c.is_wide_continuation())
                 .map(|c| if c.has_contents() { c.contents() } else { " " })
@@ -103,20 +103,8 @@ fn with(
     Parser::with_options(rows, cols, history, options)
 }
 
-const KEYBOARD: Options = Options {
-    events: false,
-    extended_replies: false,
-    kitty_keyboard: true,
-    reflow: false,
-    identity: None,
-};
-const REFLOW: Options = Options {
-    events: false,
-    extended_replies: false,
-    kitty_keyboard: false,
-    reflow: true,
-    identity: None,
-};
+const KEYBOARD: Options = Options::new().with_kitty_keyboard(true);
+const REFLOW: Options = Options::new().with_reflow(true);
 const RATTY: Identity = Identity {
     name: "ratty",
     version: "0.5.0",
@@ -259,7 +247,8 @@ fn widening_needs_room_and_clears_what_it_covers() -> Result {
     p.process("ab\u{2764}\u{fe0f}".as_bytes())?;
     assert_eq!(cell(&p, 0, 2)?.contents(), "\u{2764}\u{fe0f}");
     assert!(!cell(&p, 0, 2)?.is_wide());
-    assert_eq!(p.screen().cursor_position(), (0, 3));
+    assert_eq!(p.screen().cursor_position(), (0, 2));
+    assert!(p.screen().pending_wrap());
     // Widening over the first half of a wide glyph blanks its second half.
     let mut p = Parser::new(2, 6, 0)?;
     p.process("a\u{4f60}\x1b[1G\u{2764}".as_bytes())?;
@@ -379,18 +368,19 @@ fn sequences_fux_vt_does_not_implement_reach_the_sink() -> Result {
     let mut p = Parser::new(5, 20, 0)?;
     let record = run(
         &mut p,
-        b"\x1b[3J\x1b[>1;2m\x1b[4h\x1b[?1u\x1b(B\x1bD\x1b[2;3:4Z\x1b[H\x1b[?25l\x1b[1m\x1b7",
+        b"\x1b[3J\x1b[>1;2m\x1b[20h\x1b[?1u\x1b*B\x1bn\x1b[2;3:4^\x1b[H\x1b[?25l\x1b[1m\x1b7",
     )?;
     assert_eq!(
         record.unhandled,
         [
             "CSI 3J",
             "CSI >1;2m",
-            "CSI 4h",
+            "CSI 20h",
             "CSI ?1u",
-            "ESC (B",
-            "ESC D",
-            "CSI 2;3:4Z"
+            // G2 is not kept: only G0 and G1 are designated.
+            "ESC *B",
+            "ESC n",
+            "CSI 2;3:4^"
         ]
     );
     assert!(record.replies.is_empty());
@@ -405,10 +395,7 @@ fn sequences_fux_vt_does_not_implement_reach_the_sink() -> Result {
 
 #[test]
 fn an_identity_answers_device_attributes_and_version_queries() -> Result {
-    let options = Options {
-        identity: Some(RATTY),
-        ..Options::default()
-    };
+    let options = Options::new().with_identity(Some(RATTY));
     let mut p = with(options, 5, 20, 0)?;
     let record = run(&mut p, b"\x1b[c\x1b[>c\x1b[>0q\x1b[>q\x1b[5n")?;
     assert_eq!(
@@ -442,10 +429,7 @@ fn identity_versions_encode_like_xterm_and_long_names_go_unanswered() -> Result 
         ("7", 7),
         ("x.y", 0),
     ] {
-        let options = Options {
-            identity: Some(Identity { name: "t", version }),
-            ..Options::default()
-        };
+        let options = Options::new().with_identity(Some(Identity { name: "t", version }));
         let mut p = with(options, 2, 2, 0)?;
         let record = run(&mut p, b"\x1b[>c")?;
         assert_eq!(
@@ -455,13 +439,10 @@ fn identity_versions_encode_like_xterm_and_long_names_go_unanswered() -> Result 
         );
     }
     let long: &'static str = "a-terminal-name-that-is-far-too-long-for-a-reply";
-    let options = Options {
-        identity: Some(Identity {
-            name: long,
-            version: "1.0.0",
-        }),
-        ..Options::default()
-    };
+    let options = Options::new().with_identity(Some(Identity {
+        name: long,
+        version: "1.0.0",
+    }));
     let mut p = with(options, 2, 2, 0)?;
     let record = run(&mut p, b"\x1b[>q")?;
     assert!(record.replies.is_empty());
@@ -589,6 +570,34 @@ fn reflow_keeps_the_cursor_on_its_character() -> Result {
     Ok(())
 }
 
+/// The saved cursor moves with its character as the cursor does, so a
+/// program that saved it (vim's 1049) finds it where it left it: after
+/// the prompt, not inside the wrapped text above (`fux-vt-compare cases
+/// reflow-moves-the-saved-cursor`: wezterm and xterm.js agree; xterm
+/// does not reflow).
+#[test]
+fn reflow_moves_the_saved_cursor_with_its_character() -> Result {
+    let mut p = with(REFLOW, 8, 20, 10000)?;
+    p.process(b"aaaaaaaaaaaaaaaaaa\r\nbbbbbbbbbbbbbbbbbb\r\n$ \x1b[?1049h")?;
+    p.resize(8, 10)?;
+    p.process(b"\x1b[?1049l")?;
+    assert_eq!(p.screen().cursor_position(), (4, 2));
+    assert_eq!(lines(&p).get(4).map(String::as_str), Some("$"));
+    // So does DECSC's, and one waiting to wrap still waits.
+    let mut p = with(REFLOW, 5, 10, 100)?;
+    p.process(b"abcdefghij\x1b[1;7H\x1b7\x1b[3;1H")?;
+    p.resize(5, 4)?;
+    p.process(b"\x1b8")?;
+    assert_eq!(p.screen().cursor_position(), (1, 2));
+    assert_eq!(cell(&p, 1, 2)?.contents(), "g");
+    let mut p = with(REFLOW, 3, 10, 100)?;
+    p.process(b"abcd\x1b7\r\n")?;
+    p.resize(3, 4)?;
+    p.process(b"\x1b8X")?;
+    assert_eq!(lines(&p), ["abcd", "X", ""]);
+    Ok(())
+}
+
 #[test]
 fn reflow_pushes_overflow_into_history_and_pulls_it_back() -> Result {
     let mut p = with(REFLOW, 3, 12, 100)?;
@@ -660,7 +669,8 @@ fn reflow_does_not_split_wide_glyphs() -> Result {
 #[test]
 fn the_alternate_screen_resizes_without_reflow() -> Result {
     let mut p = with(REFLOW, 3, 10, 100)?;
-    p.process(b"main line\x1b[?1049h0123456789")?;
+    // 1049 keeps the cursor where it was, as xterm does: home it.
+    p.process(b"main line\x1b[?1049h\x1b[H0123456789")?;
     p.resize(3, 5)?;
     assert_eq!(lines(&p), ["01234", "", ""]);
     p.process(b"\x1b[?1049l")?;
@@ -672,15 +682,15 @@ fn the_alternate_screen_resizes_without_reflow() -> Result {
 fn reflowed_rows_keep_their_lines_identities() -> Result {
     let mut p = with(REFLOW, 3, 10, 100)?;
     p.process(b"first\r\nsecond")?;
-    let first = p.screen().row_from_bottom(2).map(|r| r.id);
-    let second = p.screen().row_from_bottom(1).map(|r| r.id);
+    let first = p.screen().row_from_bottom(2).map(|r| r.id());
+    let second = p.screen().row_from_bottom(1).map(|r| r.id());
     let mark = p.screen().mark();
     p.resize(3, 3)?;
     // "fir" keeps the first line's identity, "sec" the second's.
     assert_eq!(lines(&p), ["st", "sec", "ond"]);
     assert_eq!(window_lines(&p, 1).first().map(String::as_str), Some("fir"));
-    assert_eq!(p.screen().row_from_bottom(3).map(|r| r.id), first);
-    assert_eq!(p.screen().row_from_bottom(1).map(|r| r.id), second);
+    assert_eq!(p.screen().row_from_bottom(3).map(|r| r.id()), first);
+    assert_eq!(p.screen().row_from_bottom(1).map(|r| r.id()), second);
     assert!(p.screen().full_refresh_since(mark));
     Ok(())
 }
@@ -713,13 +723,12 @@ fn degenerate_reflows_keep_every_invariant() -> Result {
 /// invariant holds after each step.
 #[test]
 fn the_adversarial_corpus_with_every_option_is_chunk_invariant() -> Result {
-    let options = Options {
-        events: true,
-        extended_replies: true,
-        kitty_keyboard: true,
-        reflow: true,
-        identity: Some(RATTY),
-    };
+    let options = Options::new()
+        .with_events(true)
+        .with_extended_replies(true)
+        .with_kitty_keyboard(true)
+        .with_reflow(true)
+        .with_identity(Some(RATTY));
     for (rows, cols) in [(1, 1), (2, 2), (4, 12), (24, 80)] {
         for seed in 0..20u64 {
             let mut whole = with(options, rows, cols, 8)?;

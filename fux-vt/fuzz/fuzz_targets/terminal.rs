@@ -73,9 +73,10 @@ impl Sink for Record {
 /// A colour as a number, for hashing.
 fn color(c: Color) -> u32 {
     match c {
-        Color::Default => 0,
         Color::Idx(i) => 0x100 | u32::from(i),
         Color::Rgb(r, g, b) => 0x0100_0000 | u32::from_be_bytes([0, r, g, b]),
+        // A kind fux-vt adds later hashes as the default until named here.
+        Color::Default | _ => 0,
     }
 }
 
@@ -131,7 +132,7 @@ fn rows(p: &Parser) -> Vec<(RowId, u64, bool, u64)> {
     let retained = screen.history_len() + usize::from(screen.size().0);
     let mut rows: Vec<_> = (0..retained)
         .filter_map(|i| screen.row_from_bottom(i))
-        .map(|row| (row.id, row.version, row.wrapped, cells_hash(row)))
+        .map(|row| (row.id(), row.version(), row.wrapped(), cells_hash(row)))
         .collect();
     rows.sort_unstable_by_key(|r| r.0);
     rows
@@ -158,16 +159,15 @@ fuzz_target!(|data: &[u8]| {
     // extended replies (0x20); above the row count, into reflow (0x10), the
     // kitty keyboard protocol (0x20) and an identity (0x40). Each is fuzzed
     // alone and with the others, alongside the default.
-    let options = Options {
-        events: history & 0x10 != 0,
-        extended_replies: history & 0x20 != 0,
-        reflow: r & 0x10 != 0,
-        kitty_keyboard: r & 0x20 != 0,
-        identity: (r & 0x40 != 0).then_some(Identity {
+    let options = Options::new()
+        .with_events(history & 0x10 != 0)
+        .with_extended_replies(history & 0x20 != 0)
+        .with_reflow(r & 0x10 != 0)
+        .with_kitty_keyboard(r & 0x20 != 0)
+        .with_identity((r & 0x40 != 0).then_some(Identity {
             name: "fuzz",
             version: "1.2.3",
-        }),
-    };
+        }));
     let Ok(mut whole) = Parser::with_options(
         1 + u16::from(r % 16),
         1 + u16::from(c % 24),
