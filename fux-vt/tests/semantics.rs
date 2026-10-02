@@ -429,8 +429,7 @@ fn ignored_sequences_cancel_and_recover_without_payload_leakage() -> Result {
         b"\x1b_apc\x1b\\",
         b"\x1b^pm\x1b\\",
         b"\x1bXsos\x1b\\",
-        b"\x1b[?1047h",
-        b"\x1b[?1048h",
+        b"\x1b[?12345h",
         b"\x1b[999z",
         b"\x1b(0",
     ] {

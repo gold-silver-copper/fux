@@ -487,7 +487,9 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "index",
         about: "IND (ESC D) and NEL (ESC E)",
-        status: Status::Differs("IND (ESC D) and NEL (ESC E) are not implemented"),
+        status: Status::Differs(
+            "the panel splits as it does on LF in `controls`: IND that scrolls while a wrap is pending ends the wrap in xterm, Ghostty, wezterm and xterm.js, as DEC STD 070 (Appendix D.6.1) says and fux-vt does; alacritty, libvterm and avt keep it, and outvote fux-vt (`replay --engines all --size 1x3 'abc\\eD'`). With xterm alone voting, 0 of 1000 cases differ",
+        ),
         ratty_only: false,
         generate: index,
     },
@@ -555,9 +557,7 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "alternate",
         about: "modes 47, 1047, 1048 and 1049",
-        status: Status::Differs(
-            "1047 and 1048 are not implemented (documented), and 47 and 1049 home the cursor instead of keeping it (F10)",
-        ),
+        status: Status::Differs("47 and 1049 home the cursor instead of keeping it (F10)"),
         ratty_only: false,
         generate: alternate,
     },
@@ -572,7 +572,7 @@ pub const FAMILIES: &[Family] = &[
         name: "tabs",
         about: "HT, HTS, TBC, CHT and CBT",
         status: Status::Differs(
-            "tab stops are fixed every eight columns: HTS, TBC, CHT and CBT are not implemented (documented)",
+            "the panel splits on CBT with a wrap pending: ECMA-48 (8.3.7) moves back a tab stop; xterm moves its cursor but keeps the wrap pending, so the next glyph wraps, and xterm.js leaves the cursor; fux-vt leaves the cursor in the last column, so text lands where xterm puts it (a recorded departure), while Ghostty, alacritty, libvterm, avt and wezterm move back and outvote fux-vt (`replay --engines all --size 2x10 'abcdefghij\\e[ZX'`)",
         ),
         ratty_only: false,
         generate: tabs,
@@ -644,9 +644,7 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "insert-mode",
         about: "IRM on and off",
-        status: Status::Differs(
-            "IRM (CSI 4 h) is not implemented: printing overwrites instead of inserting",
-        ),
+        status: Status::Agree,
         ratty_only: false,
         generate: insert_mode,
     },

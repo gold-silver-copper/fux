@@ -336,7 +336,8 @@ impl Grid {
 
     /// ICH and DCH, at the cursor, which they leave where it is; they end
     /// a pending wrap (DEC STD 070, Appendix D.6.1). The cells they bring
-    /// in are blank in `blank`.
+    /// in are blank in `blank`. DCH ends the row's soft wrap; ICH, and the
+    /// insertion IRM makes, keep it, as xterm does.
     pub fn edit_cells(&mut self, count: u16, insert: bool, blank: Attributes, version: u64) {
         self.pending_wrap = false;
         let (row, col) = self.cursor;
@@ -394,7 +395,9 @@ impl Grid {
             // Inserting and deleting always count as a change.
             true
         });
-        self.wrap(row, false, version);
+        if !insert {
+            self.wrap(row, false, version);
+        }
     }
 
     /// Gives a slot a new row: `id`, unwrapped, every cell blank.
