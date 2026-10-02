@@ -434,7 +434,7 @@ pub const FAMILIES: &[Family] = &[
         name: "clusters",
         about: "grapheme clusters: combining marks, emoji modifiers and ZWJ sequences, flags, VS16, jamo, conjuncts",
         status: Status::Differs(
-            "edge-case widths differ: a lone regional indicator or emoji modifier, a cluster widened in the last column (fux-vt keeps it narrow there, Ghostty wraps it), a zero-width jamo after another script; to look into",
+            "the panel splits on fux-vt's documented choices, no defect among them: a cluster whose width becomes two (an emoji presentation sequence, `\\u{2764}\\u{fe0f}`; UTS #51, and UAX #11's note on variation sequences) is widened as Ghostty (mode 2027), xterm.js and tmux do, where xterm, alacritty, libvterm and avt keep it narrow (`replay --engines all --size 1x4 '\\u{2764}\\u{fe0f}x'`), and in the last column it stays narrow where Ghostty wraps it; a lone regional indicator is one column, as in xterm, alacritty, libvterm, xterm.js and tmux, where Ghostty, avt and wezterm make it two (`replay --engines all --size 1x3 '\\u{1f1fa}\\u{301}'`); and the one-column split of `wide`. The rest (an emoji modifier alone, a zero-width jamo after another script) no program sends",
         ),
         ratty_only: false,
         generate: clusters,
