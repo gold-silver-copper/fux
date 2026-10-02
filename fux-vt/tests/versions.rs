@@ -125,7 +125,9 @@ fn sgr(attributes: Attributes) -> String {
 /// written again where they are, with their own attributes, stepping over
 /// blanks, wide glyphs' second halves and cells with combining marks (which
 /// take two edits to write), and a tail already blank in one style erased
-/// again.
+/// again, unless the row is soft-wrapped: erasing to its end would end the
+/// wrap. A wide glyph that does not fit wraps from a row whose last column
+/// is blank.
 fn no_op(parser: &Parser) -> String {
     let screen = parser.screen();
     let (rows, cols) = screen.size();
@@ -167,6 +169,7 @@ fn no_op(parser: &Parser) -> String {
         }
         if let Some(blank) = uniform
             && tail < usize::from(cols)
+            && !row.wrapped
         {
             let _ = write!(out, "\x1b[{}G", tail.saturating_add(1));
             out.push_str(&sgr(blank.attributes()));

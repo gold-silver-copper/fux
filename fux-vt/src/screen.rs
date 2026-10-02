@@ -494,9 +494,11 @@ impl Screen {
             return Ok(());
         }
         let row = g.cursor.0;
-        let wrapped = (row < g.rows.last() || row == g.bottom)
-            && g.cell(row, g.cols.last())
-                .is_some_and(|c| c.has_contents() || c.is_wide_continuation());
+        // The glyph goes on to the next line, so this row is soft-wrapped,
+        // whatever its last column holds: blank when a wide glyph did not
+        // fit, or after an erase the wrap outlived. Only on the last row,
+        // below the scroll region, does the glyph stay on the same row.
+        let wrapped = row < g.rows.last() || row == g.bottom;
         // Set before scrolling so a departing row carries its soft-wrap into history.
         self.with_grid(|g, _, v| g.wrap(row, wrapped, v));
         self.grid_mut().cursor.1 = 0;

@@ -91,3 +91,27 @@ fn a_pending_wrap_is_saved_with_the_cursor_and_kept_by_what_does_not_move_it() -
     assert_eq!(lines(&p), ["", "X"]);
     Ok(())
 }
+
+/// DEC STD 070, Appendix D.6.1: with autowrap on, a glyph that does not fit
+/// in what is left of the line moves to the start of the next one, so the
+/// line goes on there: the row it leaves is soft-wrapped, however its last
+/// column ends, as xterm marks it (`fux-vt-compare cases
+/// wide-glyph-wrapping-marks-the-row wide-glyph-wrapping-at-four-columns`),
+/// and a copy joins the rows.
+#[test]
+fn a_glyph_that_wraps_marks_its_row_soft_wrapped() -> Result {
+    let p = run(2, 5, "あいう".as_bytes())?;
+    assert_eq!(lines(&p), ["あい", "う"]);
+    assert!(p.screen().row_wrapped(0));
+    let window = p.screen().window(0, 2, 5);
+    assert_eq!(window.text((0, 0), (1, 1), 100, 100)?, "あいう");
+    let p = run(2, 4, "abc界x".as_bytes())?;
+    assert_eq!(lines(&p), ["abc", "界x"]);
+    assert!(p.screen().row_wrapped(0));
+    // A wrap left pending past an SU, which blanks the row: xterm marks it
+    // all the same (`replay --engines all --size 2x5 'abcde\e[SX'`).
+    let p = run(2, 5, b"abcde\x1b[SX")?;
+    assert_eq!(lines(&p), ["", "X"]);
+    assert!(p.screen().row_wrapped(0));
+    Ok(())
+}

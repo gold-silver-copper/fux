@@ -417,7 +417,7 @@ pub const FAMILIES: &[Family] = &[
         name: "wide",
         about: "wide (CJK) and halfwidth characters, at and across the right edge",
         status: Status::Differs(
-            "fux-vt does not mark a row soft-wrapped when a wide glyph wraps from it, leaving its last column empty (audit F5)",
+            "on a one-column screen a wide glyph is dropped without moving the cursor, as xterm and tmux do and fux-vt's README says; Ghostty, alacritty, libvterm, avt and wezterm draw it or wrap it, and outvote fux-vt (`replay --engines all --size 2x1 '\\u{754c}X'`)",
         ),
         ratty_only: false,
         generate: wide,
@@ -505,7 +505,7 @@ pub const FAMILIES: &[Family] = &[
         name: "pending-wrap",
         about: "a glyph in the last column, then a control, movement or edit while the wrap is pending",
         status: Status::Differs(
-            "the panel splits: EL, ECH, ICH, DCH and a line feed that scrolls end a pending wrap in xterm and Ghostty, as DEC STD 070 (Appendix D.6.1) says and fux-vt does; alacritty, libvterm and avt keep it, and outvote fux-vt (`replay --engines all --size 1x5 'abcde\\e[KX'`). Also a wide glyph that wraps does not mark its row soft-wrapped (F5), and IL and DL keep the cursor's column (F8)",
+            "the panel splits: EL, ECH, ICH, DCH and a line feed that scrolls end a pending wrap in xterm and Ghostty, as DEC STD 070 (Appendix D.6.1) says and fux-vt does; alacritty, libvterm and avt keep it, and outvote fux-vt (`replay --engines all --size 1x5 'abcde\\e[KX'`). Also IL and DL keep the cursor's column (F8), and the one-column split of `wide`",
         ),
         ratty_only: false,
         generate: pending_wrap,
@@ -541,7 +541,7 @@ pub const FAMILIES: &[Family] = &[
         name: "save",
         about: "DECSC, DECRC, SCOSC and SCORC",
         status: Status::Differs(
-            "a glyph that wraps from a row whose last column is blank, as one does after DECRC restores a pending wrap, does not mark the row soft-wrapped (F5)",
+            "the panel splits on a soft-wrapped row written over again once DECRC or SCORC moves the cursor back into it: xterm, Ghostty, avt, xterm.js and tmux keep the row soft-wrapped, as fux-vt does; alacritty, wezterm and libvterm end the wrap, and outvote fux-vt (`replay --engines all --size 4x9 'a' 'abcx0123456789~!@#  \\e[s   ~!@#\\e[uabcabc'`)",
         ),
         ratty_only: false,
         generate: save,
