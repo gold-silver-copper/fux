@@ -493,7 +493,9 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "autowrap",
         about: "DECAWM on and off",
-        status: Status::Agree,
+        status: Status::Differs(
+            "with DECAWM off, a glyph in the last column leaves a wrap pending in fux-vt (as in Ghostty and alacritty), which fires once DECAWM is set again; libvterm, avt and wezterm leave none, as xterm documents (`replay --engines panel --size 1x2 '\\e[?7lca\\e[?7h '`)",
+        ),
         ratty_only: false,
         generate: autowrap,
     },
