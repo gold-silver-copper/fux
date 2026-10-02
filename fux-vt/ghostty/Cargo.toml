@@ -1,39 +1,29 @@
 [workspace]
-members = ["fux-vt", "fuxix"]
-exclude = ["fux-vt/fuzz", "fux-vt/gen", "fux-vt/ghostty", "fuzz", "walk", "diff"]
-resolver = "3"
 
 [package]
-name = "fux"
-version = "0.17.0"
+name = "fux-vt-ghostty"
+version = "0.0.0"
+publish = false
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "A small terminal multiplexer: workspaces, tabs and split panes, driven by keys and a CLI"
-repository = "https://github.com/gold-silver-copper/fux"
-readme = "README.md"
-keywords = ["terminal", "multiplexer", "pty", "tmux"]
-categories = ["command-line-utilities"]
-include = ["/src/**", "/tests/**", "/README.md", "/LICENSE"]
+
+[[bin]]
+name = "fux-vt-ghostty"
+path = "src/main.rs"
+doc = false
+bench = false
 
 [dependencies]
-fux-vt = { path = "fux-vt", version = "0.2.0" }
-signal-hook = "0.3"
-unicode-width = "0.2"
-fuxix = { path = "fuxix", version = "0.1.4" }
-
-[profile.dev]
-debug = 0
-
-# fux-vt's grapheme tables are tested against unicode-segmentation for every
-# code point; optimized, that takes seconds rather than half a minute.
-[profile.dev.package.unicode-segmentation]
-opt-level = 3
+# The code under test.
+fux-vt = { path = ".." }
+# The reference: Ghostty's terminal core, built from source by Zig. `run.sh`
+# pins the Ghostty commit and the Zig toolchain it is built with.
+libghostty-vt = { version = "=0.2.1", default-features = false }
 
 [profile.release]
-strip = true
-lto = "thin"
-codegen-units = 1
+# Overflow is an error here, as in a debug build.
+overflow-checks = true
 
 [lints.rust]
 unused_must_use = "forbid"
