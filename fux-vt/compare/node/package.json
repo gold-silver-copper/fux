@@ -1,0 +1,12 @@
+{
+  "name": "fux-vt-compare-xterm-js",
+  "version": "0.0.0",
+  "private": true,
+  "description": "xterm.js, as @xterm/headless, served to fux-vt-compare over stdin and stdout",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@xterm/addon-unicode-graphemes": "0.4.0",
+    "@xterm/headless": "6.0.0"
+  }
+}
