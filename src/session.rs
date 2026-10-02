@@ -999,6 +999,14 @@ impl Session {
     /// panes out stays.
     pub fn close_pane(&mut self, id: PaneId, why: Option<String>) {
         let place = self.locate(id);
+        // Who sees the pane is known before its tab can go: a tab its
+        // closing empties takes its viewers elsewhere.
+        let viewers: Vec<ClientId> = self
+            .views
+            .iter()
+            .filter(|(_, view)| place.is_some_and(|(_, t)| view.tab() == Some(t)))
+            .map(|(client, _)| *client)
+            .collect();
         if let Some((_, tab)) = place
             && let Some(t) = self.tab_mut(tab)
         {
@@ -1009,10 +1017,8 @@ impl Session {
         }
         if let Some(pane) = self.panes.remove(&id) {
             if let Some(why) = why {
-                for view in self.views.values_mut() {
-                    if place.is_some_and(|(_, t)| view.tab() == Some(t)) {
-                        view.info(format!("{id} {} {why}", pane.label()));
-                    }
+                for client in &viewers {
+                    self.info_to(*client, format!("{id} {} {why}", pane.label()));
                 }
             }
             self.end(pane);
@@ -2154,6 +2160,40 @@ mod tests {
                 "\n"
             )
         );
+        Ok(())
+    }
+
+    /// A pane's exit status reaches those who saw it, whether or not its
+    /// tab closes with it.
+    #[test]
+    fn an_exit_is_told_even_when_it_closes_the_tab() -> Result<(), Box<dyn std::error::Error>> {
+        let config = Config {
+            shell: vec!["/bin/sh".into()],
+            ..Config::default()
+        };
+        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
+        s.start()?;
+        let client = s.attach(10, 40, None)?;
+        let words = |line: &str| crate::words::split(line).map_err(|e| e.to_string());
+        let notice = |s: &Session| {
+            s.views
+                .get(&client)
+                .and_then(|v| v.notice.as_ref())
+                .map(|n| n.text.clone())
+        };
+        // Two panes: the tab stays.
+        assert_eq!(s.run(&words("split -h -t %1")?, &Ctx::default()).status, 0);
+        s.exited(PaneId(2), 3);
+        assert_eq!(notice(&s).as_deref(), Some("%2 sh exited with status 3"));
+        // A second tab, shown; its only pane exits, and the tab with it.
+        assert_eq!(s.run(&words("new-tab -t +1")?, &Ctx::default()).status, 0);
+        assert_eq!(
+            s.run(&words("select-tab -c c1 -t @2")?, &Ctx::default())
+                .status,
+            0
+        );
+        s.exited(PaneId(3), 7);
+        assert_eq!(notice(&s).as_deref(), Some("%3 sh exited with status 7"));
         Ok(())
     }
 
