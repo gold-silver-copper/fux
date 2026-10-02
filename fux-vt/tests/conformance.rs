@@ -469,3 +469,110 @@ fn line_and_column_addressing_obeys_origin_mode() -> Result {
     assert_eq!(lines(&p), ["", "", "", "", "  X"]);
     Ok(())
 }
+
+/// IND (`ESC D`; DEC STD 070, xterm's ctlseqs; ECMA-48 withdrew it) is a
+/// line feed, scrolling at the bottom margin; NEL (`ESC E`, ECMA-48
+/// 8.3.86) is the same to the first column. Both end a pending wrap, as
+/// LF does (DEC STD 070, Appendix D.6.1). Expected values are xterm's
+/// (`fux-vt-compare cases ind-and-nel`).
+#[test]
+fn ind_and_nel_feed_a_line() -> Result {
+    assert_eq!(lines(&run(3, 5, b"ab\x1bDX\x1bEY")?), ["ab", "  X", "Y"]);
+    assert_eq!(lines(&run(2, 3, b"a\r\nb\x1bDc")?), ["b", " c"]);
+    let p = run(2, 5, b"abcde\x1bDX")?;
+    assert_eq!(lines(&p), ["abcde", "    X"]);
+    assert!(!p.screen().row_wrapped(0));
+    let p = run(2, 5, b"abcde\x1bEX")?;
+    assert_eq!(lines(&p), ["abcde", "X"]);
+    assert!(!p.screen().row_wrapped(0));
+    Ok(())
+}
+
+/// Tab stops (ECMA-48 8.3.62 HTS, 8.3.154 TBC, 8.3.10 CHT, 8.3.7 CBT),
+/// one set for both screens, as in xterm: every eight columns at first
+/// and after RIS, kept by DECSTR (the VT520 manual's table, p. 5-150,
+/// does not list them) and by a resize, as xterm keeps them. HT and CHT
+/// stop at the last column when no stop is left, CBT at the first. TBC
+/// 0 clears the stop at the cursor and 3 every stop; xterm ignores the
+/// others, which ECMA-48 defines for stops kept line by line, and so does
+/// fux-vt. With a wrap pending, CBT leaves the next glyph to wrap, as in
+/// xterm, where ECMA-48 moves back (README, "Departures from the
+/// references"). Expected values are xterm's (`fux-vt-compare replay
+/// --engines all --size 1x20`, `cases hts-and-tbc cht-and-cbt`).
+#[test]
+fn tab_stops_are_set_cleared_and_kept() -> Result {
+    assert_eq!(row(20, b"\x1b[3g\x1b[5G\x1bH\rX\tY")?, "X   Y");
+    assert_eq!(row(20, b"\x1b[9G\x1b[g\r\tX")?, "                X");
+    assert_eq!(row(20, b"\x1b[2IX\x1b[ZY")?, "                Y");
+    assert_eq!(row(10, b"\x1b[3g\tX")?, "         X");
+    assert_eq!(row(10, b"abc\x1b[5ZX")?, "Xbc");
+    assert_eq!(row(20, b"\x1b[3g\x1bc\tX")?, "        X");
+    assert_eq!(row(20, b"\x1b[3g\x1b[!p\tX")?, "                   X");
+    assert_eq!(row(20, b"\x1b[3g\x1b[5G\x1bH\x1b[2g\x1b[5g\r\tX")?, "    X");
+    let p = run(1, 20, b"\x1b[3g\x1b[5G\x1bH\x1b[?1049h\r\tX")?;
+    assert_eq!(lines(&p), ["    X"]);
+    // A resize keeps them, and the columns it adds have a reset's.
+    let mut p = Parser::new(1, 10, 0)?;
+    p.process(b"\x1b[3g\x1b[5G\x1bH")?;
+    p.resize(1, 30)?;
+    p.process(b"\r\t\tX")?;
+    assert_eq!(p.screen().cursor_position(), (0, 29));
+    let mut p = Parser::new(1, 10, 0)?;
+    p.process(b"\x1b[5G\x1bH")?;
+    p.resize(1, 30)?;
+    p.process(b"\r\t\t\tX")?;
+    assert_eq!(lines(&p), ["                X"]);
+    // CBT with a wrap pending: the next glyph still wraps.
+    let p = run(2, 10, b"abcdefghij\x1b[ZX")?;
+    assert_eq!(lines(&p), ["abcdefghij", "X"]);
+    Ok(())
+}
+
+/// Modes 1047 and 1048 (xterm's ctlseqs): 1047 switches to the alternate
+/// screen and back, clearing it on the way back; 1048 saves and restores
+/// the cursor as DECSC and DECRC do. Expected values are xterm's
+/// (`fux-vt-compare cases mode-1047-and-1048`).
+#[test]
+fn modes_1047_and_1048() -> Result {
+    let mut p = run(2, 5, b"ab\x1b[?1048h\x1b[?1047hX")?;
+    assert!(p.screen().alternate_screen());
+    p.process(b"\x1b[?1047l\x1b[?1048lY")?;
+    assert!(!p.screen().alternate_screen());
+    assert_eq!(lines(&p), ["abY", ""]);
+    p.process(b"\x1b[?1047h")?;
+    assert_eq!(lines(&p), ["", ""]);
+    Ok(())
+}
+
+/// IRM (ECMA-48 7.2.10, `CSI 4 h`; `TERM=xterm-256color`'s `smir`): a
+/// glyph printed moves what is at and after the cursor right, as ICH
+/// does, what passes the last column being lost; RIS and DECSTR end it
+/// (VT520 manual, p. 5-150). The insertion keeps the row's soft wrap, as
+/// ICH does in xterm, where DCH ends it. Expected values are xterm's
+/// (`fux-vt-compare cases insert-mode`, `replay --engines all --size 2x5
+/// 'abcdefgh\e[1;1H\e[@'`).
+#[test]
+fn insert_mode_moves_what_is_there() -> Result {
+    assert_eq!(row(6, b"abc\r\x1b[4hX\x1b[4lY")?, "XYbc");
+    assert_eq!(row(5, b"abcde\r\x1b[4hXY")?, "XYabc");
+    assert_eq!(row(5, "ab\r\x1b[4h界".as_bytes())?, "界ab");
+    let p = run(2, 5, b"abcdefgh\x1b[4h\x1b[1;1Hx")?;
+    assert_eq!(lines(&p), ["xabcd", "fgh"]);
+    assert!(p.screen().row_wrapped(0));
+    assert!(p.screen().insert_mode());
+    for reset in [&b"\x1b[!p"[..], b"\x1bc"] {
+        let p = run(1, 5, &[&b"\x1b[4h"[..], reset].concat())?;
+        assert!(!p.screen().insert_mode(), "{reset:?}");
+    }
+    assert!(
+        run(2, 5, b"abcdefgh\x1b[1;1H\x1b[@")?
+            .screen()
+            .row_wrapped(0)
+    );
+    assert!(
+        !run(2, 5, b"abcdefgh\x1b[1;1H\x1b[P")?
+            .screen()
+            .row_wrapped(0)
+    );
+    Ok(())
+}

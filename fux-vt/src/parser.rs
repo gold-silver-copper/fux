@@ -642,7 +642,15 @@ impl Parser {
                 let status = self.screen.private_mode_status(n);
                 Some(Reply::of(format_args!("\x1b[?{n};{status}$y")))
             }
-            (b"$", b'p') if extended => Some(Reply::of(format_args!("\x1b[{n};0$y"))),
+            (b"$", b'p') if extended => {
+                // IRM alone of the ANSI modes is known.
+                let status = match n {
+                    4 if self.screen.insert_mode() => 1,
+                    4 => 2,
+                    _ => 0,
+                };
+                Some(Reply::of(format_args!("\x1b[{n};{status}$y")))
+            }
             _ => None,
         }
     }

@@ -84,6 +84,79 @@ fn special_graphics(c: char) -> char {
         .unwrap_or(c)
 }
 
+/// The tab stops (ECMA-48: HTS sets one, TBC clears; HT, CHT and CBT move
+/// to them), one set for both screens, as in xterm: one every eight
+/// columns at first and after RIS. Kept for every column the terminal has
+/// had, so a resize keeps them, as xterm keeps them; past those, a column
+/// is a stop if it is a multiple of eight and no TBC 3 came since the last
+/// reset.
+#[derive(Clone, Debug)]
+struct TabStops {
+    stops: Vec<bool>,
+    /// Whether the columns past `stops` have the stops of a reset.
+    beyond: bool,
+}
+
+impl Default for TabStops {
+    fn default() -> Self {
+        Self {
+            stops: Vec::new(),
+            beyond: true,
+        }
+    }
+}
+
+impl TabStops {
+    fn is_stop(&self, col: u16) -> bool {
+        match self.stops.get(usize::from(col)) {
+            Some(stop) => *stop,
+            None => self.beyond && col.is_multiple_of(8),
+        }
+    }
+    fn set(&mut self, col: u16, stop: bool) {
+        let col = usize::from(col);
+        while self.stops.len() <= col {
+            let at = self.stops.len();
+            self.stops.push(self.beyond && at.is_multiple_of(8));
+        }
+        if let Some(slot) = self.stops.get_mut(col) {
+            *slot = stop;
+        }
+    }
+    /// TBC 3: no stops anywhere.
+    fn clear(&mut self) {
+        self.stops.clear();
+        self.beyond = false;
+    }
+    /// The first stop after `col`, or `last`, the last column, if none
+    /// comes before it.
+    fn next(&self, col: u16, last: u16) -> u16 {
+        if self.stops.is_empty() && self.beyond {
+            // A stop every eight columns.
+            return (col / 8).saturating_add(1).saturating_mul(8).min(last);
+        }
+        let mut at = col;
+        while at < last {
+            at = at.saturating_add(1);
+            if self.is_stop(at) {
+                return at;
+            }
+        }
+        last
+    }
+    /// The last stop before `col`, or the first column.
+    fn previous(&self, col: u16) -> u16 {
+        let mut at = col;
+        while at > 0 {
+            at = at.saturating_sub(1);
+            if self.is_stop(at) {
+                return at;
+            }
+        }
+        0
+    }
+}
+
 /// What a CSI sequence came to.
 pub(crate) enum Dispatch {
     /// Carried out, with nothing to answer.
@@ -162,6 +235,10 @@ pub struct Screen {
     /// The character sets DECSC saved, which DECRC restores.
     saved_charsets: Charsets,
     autowrap: bool,
+    /// IRM (ECMA-48 7.2.10, `CSI 4 h`): a glyph printed moves what is at
+    /// and after the cursor right, rather than writing over it.
+    insert: bool,
+    tabs: TabStops,
     application_cursor: bool,
     application_keypad: bool,
     hide_cursor: bool,
@@ -257,6 +334,8 @@ impl Screen {
             charsets: Charsets::default(),
             saved_charsets: Charsets::default(),
             autowrap: true,
+            insert: false,
+            tabs: TabStops::default(),
             application_cursor: false,
             application_keypad: false,
             hide_cursor: false,
@@ -346,6 +425,11 @@ impl Screen {
     }
     pub fn autowrap(&self) -> bool {
         self.autowrap
+    }
+    /// IRM (`CSI 4 h` / `l`): whether printing inserts rather than
+    /// replaces. Off by default, and after RIS and DECSTR.
+    pub fn insert_mode(&self) -> bool {
+        self.insert
     }
     pub fn origin_mode(&self) -> bool {
         self.grid().origin
@@ -635,6 +719,11 @@ impl Screen {
             return Ok(());
         }
         self.wrap_for(width)?;
+        if self.insert {
+            // Room for the glyph, what was there moving right (ICH).
+            let blank = self.attributes.erased();
+            self.with_grid(|g, _, v| g.edit_cells(width, true, blank, v));
+        }
         let (row, col) = self.grid().cursor;
         let attributes = self.attributes;
         self.with_grid(|g, _, version| {
@@ -844,8 +933,9 @@ impl Screen {
     /// Copy an ASCII run directly to cells until a wide-cell collision or right
     /// margin requires the general glyph path. Never enters parser dispatch.
     pub(crate) fn ascii(&mut self, mut bytes: &[u8]) -> Result<(), Error> {
-        // DEC Special Graphics print other characters, one at a time.
-        if self.charsets.graphics() {
+        // DEC Special Graphics print other characters, and insert mode
+        // moves what is there, one glyph at a time.
+        if self.charsets.graphics() || self.insert {
             for &byte in bytes {
                 self.print(char::from(byte))?;
             }
@@ -928,13 +1018,7 @@ impl Screen {
         }
         match byte {
             8 => g.cursor.1 = g.cursor.1.saturating_sub(1),
-            // The next multiple of eight, stopping at the last column.
-            9 => {
-                g.cursor.1 = (g.cursor.1 / 8)
-                    .saturating_add(1)
-                    .saturating_mul(8)
-                    .min(g.cols.last())
-            }
+            9 => self.tab(1, true),
             10..=12 => self.linefeed()?,
             13 => g.cursor.1 = 0,
             // SO puts G1 in GL, SI G0.
@@ -943,6 +1027,20 @@ impl Screen {
             _ => {}
         }
         Ok(())
+    }
+    /// Moves the cursor `count` tab stops forward, stopping at the last
+    /// column, or back, stopping at the first.
+    fn tab(&mut self, count: u16, forward: bool) {
+        let g = self.grid();
+        let (mut col, last) = (g.cursor.1, g.cols.last());
+        for _ in 0..count {
+            col = if forward {
+                self.tabs.next(col, last)
+            } else {
+                self.tabs.previous(col)
+            };
+        }
+        self.grid_mut().cursor.1 = col;
     }
     /// DECSC: the cursor, with its pending wrap (DEC STD 070, Appendix
     /// D.6.1), origin mode and the drawing attributes.
@@ -975,7 +1073,7 @@ impl Screen {
         if !intermediates.is_empty() {
             return Ok(true);
         }
-        if matches!(byte, b'7' | b'8' | b'M' | b'c') {
+        if matches!(byte, b'7' | b'8' | b'D' | b'E' | b'M' | b'c') {
             self.break_cluster();
         }
         match byte {
@@ -983,6 +1081,19 @@ impl Screen {
             b'8' => self.restore(),
             b'=' => self.application_keypad = true,
             b'>' => self.application_keypad = false,
+            // IND (DEC STD 070; xterm's ctlseqs): a line feed, scrolling
+            // at the bottom margin. NEL (ECMA-48 8.3.86): the same, to the
+            // first column.
+            b'D' => self.linefeed()?,
+            b'E' => {
+                self.grid_mut().cursor.1 = 0;
+                self.linefeed()?;
+            }
+            // HTS (ECMA-48 8.3.62): a tab stop at the cursor's column.
+            b'H' => {
+                let col = self.grid().cursor.1;
+                self.tabs.set(col, true);
+            }
             b'M' => self.reverse_index()?,
             b'c' => {
                 let (rows, cols) = self.size();
@@ -1013,6 +1124,8 @@ impl Screen {
                 self.charsets = Charsets::default();
                 self.saved_charsets = Charsets::default();
                 self.autowrap = true;
+                self.insert = false;
+                self.tabs = TabStops::default();
                 self.application_cursor = false;
                 self.application_keypad = false;
                 self.hide_cursor = false;
@@ -1044,6 +1157,7 @@ impl Screen {
     fn soft_reset(&mut self) {
         self.hide_cursor = false;
         self.autowrap = true;
+        self.insert = false;
         self.application_cursor = false;
         self.application_keypad = false;
         self.attributes = Attributes::default();
@@ -1068,7 +1182,7 @@ impl Screen {
             6 => self.grid().origin,
             7 => self.autowrap,
             25 => !self.hide_cursor,
-            47 | 1049 => self.alternate_active,
+            47 | 1047 | 1049 => self.alternate_active,
             9 => self.mouse == MouseProtocolMode::Press,
             1000 => self.mouse == MouseProtocolMode::PressRelease,
             1002 => self.mouse == MouseProtocolMode::ButtonMotion,
@@ -1096,6 +1210,22 @@ impl Screen {
             47 => {
                 self.alternate_active = set;
                 self.structural = self.version;
+            }
+            // 1047: the alternate screen, cleared on leaving it (xterm's
+            // ctlseqs). 1048: DECSC and DECRC.
+            1047 => {
+                if !set && self.alternate_active {
+                    self.alternate.clear(&mut self.next_id, self.version)?;
+                }
+                self.alternate_active = set;
+                self.structural = self.version;
+            }
+            1048 => {
+                if set {
+                    self.save();
+                } else {
+                    self.restore();
+                }
             }
             1049 => {
                 if set {
@@ -1201,13 +1331,28 @@ impl Screen {
             for group in p.groups() {
                 if let [n] = group {
                     // A switch of screens leaves the printed cell behind.
-                    if matches!(n, 47 | 1049) {
+                    if matches!(n, 47 | 1047 | 1049) {
                         self.break_cluster();
                     }
                     self.mode(*n, byte == b'h')?;
                 }
             }
             return Ok(Dispatch::Done);
+        }
+        // SM and RM: IRM (4) alone of the ANSI modes.
+        if !private && matches!(byte, b'h' | b'l') {
+            let mut handled = false;
+            for group in p.groups() {
+                if group == [4] {
+                    self.insert = byte == b'h';
+                    handled = true;
+                }
+            }
+            return Ok(if handled {
+                Dispatch::Done
+            } else {
+                Dispatch::Unhandled
+            });
         }
         // Every sequence that moves the cursor or edits a row; not SGR,
         // modes or queries.
@@ -1223,6 +1368,8 @@ impl Screen {
                 | b'T'
                 | b'X'
                 | b'@'
+                | b'I'
+                | b'Z'
                 | b'`'
                 | b'a'
                 | b'd'
@@ -1364,6 +1511,26 @@ impl Screen {
             }
             b'm' => self.sgr(p),
             b'b' => self.repeat(n)?,
+            // CHT (ECMA-48 8.3.10): HT n times. Like HT, it leaves a
+            // pending wrap waiting in the last column.
+            b'I' => self.tab(n, true),
+            // CBT (ECMA-48 8.3.7): back n tab stops, or to the first
+            // column. With a wrap pending it does nothing, as in xterm.
+            b'Z' => {
+                if !self.grid().pending_wrap {
+                    self.tab(n, false);
+                }
+            }
+            // TBC (ECMA-48 8.3.154): 0 clears the stop at the cursor, 3
+            // every stop; xterm ignores the others, and so does fux-vt.
+            b'g' => match p.first(0, 0) {
+                0 => {
+                    let col = self.grid().cursor.1;
+                    self.tabs.set(col, false);
+                }
+                3 => self.tabs.clear(),
+                _ => {}
+            },
             b'n' => match p.first(0, 0) {
                 5 => return Ok(Dispatch::Reply(Reply::of(format_args!("\x1b[0n")))),
                 6 => {

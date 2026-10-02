@@ -140,9 +140,9 @@ fn extended_replies_answer_decrqm_decxcpr_and_secondary_da() -> Result {
     let record = run(
         REPLIES,
         b"\x1b[3;4H\x1b[?6n\x1b[>c\x1b[>0c\x1b[?1$p\x1b[?1h\x1b[?1$p\x1b[?2004h\x1b[?2004$p\
-          \x1b[?25$p\x1b[?1000h\x1b[?1000$p\x1b[?1002$p\x1b[?4242$p\x1b[4$p",
+          \x1b[?25$p\x1b[?1000h\x1b[?1000$p\x1b[?1002$p\x1b[?4242$p\x1b[4$p\x1b[4h\x1b[4$p\x1b[20$p",
     )?;
-    let expected: [&[u8]; 11] = [
+    let expected: [&[u8]; 13] = [
         b"\x1b[?3;4R",
         b"\x1b[>1;10;0c",
         b"\x1b[>1;10;0c",
@@ -153,7 +153,10 @@ fn extended_replies_answer_decrqm_decxcpr_and_secondary_da() -> Result {
         b"\x1b[?1000;1$y",
         b"\x1b[?1002;2$y",
         b"\x1b[?4242;0$y",
-        b"\x1b[4;0$y",
+        // IRM, the one ANSI mode fux-vt keeps.
+        b"\x1b[4;2$y",
+        b"\x1b[4;1$y",
+        b"\x1b[20;0$y",
     ];
     assert_eq!(record.replies, expected.map(<[u8]>::to_vec));
     assert!(record.events.is_empty(), "replies do not imply events");
