@@ -613,7 +613,7 @@ pub const FAMILIES: &[Family] = &[
         name: "strings-c1",
         about: "DCS, APC, PM and SOS strings whose UTF-8 payload holds the byte 0x9c (8-bit ST)",
         status: Status::Differs(
-            "fux-vt ends a DCS string at the byte (F6); Ghostty ends DCS, SOS, PM and APC strings at it and prints U+FFFD for the rest of the character. In a UTF-8 terminal neither should",
+            "the panel splits: in UTF-8 a string ends at ESC \\ alone (ECMA-48 8.3.143), so 0x9c in a payload's character ends nothing in xterm, libvterm, avt, xterm.js and tmux, as in fux-vt; Ghostty ends DCS, SOS, PM and APC strings at it and prints U+FFFD for the rest of the character, alacritty and wezterm end DCS strings at it, and together they outvote fux-vt on the cursor (`replay --engines all --size 1x4 '\\ePa\\u{271c}b\\e\\\\ll'`)",
         ),
         ratty_only: false,
         generate: strings_c1,
@@ -654,7 +654,7 @@ pub const FAMILIES: &[Family] = &[
         name: "invalid-utf8",
         about: "invalid and truncated UTF-8, and U+FFFD itself",
         status: Status::Differs(
-            "invalid UTF-8 and U+FFFD are dropped; Ghostty, xterm and VTE print U+FFFD (F9)",
+            "the panel splits on a continuation byte alone: xterm reads it as Latin-1 (0x80 to 0x9f ignored as C1 controls, 0xa0 to 0xbf printed), and so does fux-vt, a recorded departure from the Unicode Standard's U+FFFD; Ghostty, libvterm, avt and tmux print U+FFFD, alacritty, wezterm and xterm.js drop it (`replay --engines all --size 1x12 'price \\xa35'`). A sequence that breaks off prints U+FFFD in every engine but wezterm, vt100 and xterm.js, as in fux-vt (`cases invalid-utf8-prints-a-replacement`)",
         ),
         ratty_only: false,
         generate: invalid_utf8,

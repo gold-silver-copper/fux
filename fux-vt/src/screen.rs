@@ -674,7 +674,7 @@ impl Screen {
         } else {
             raw
         };
-        if c == '\u{fffd}' || ('\u{80}'..'\u{a0}').contains(&c) {
+        if ('\u{80}'..'\u{a0}').contains(&c) {
             return Ok(());
         }
         let width = c.width();

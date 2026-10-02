@@ -625,3 +625,49 @@ fn switching_screens_keeps_the_cursor() -> Result {
     assert_eq!(p.screen().cursor_position(), (0, 1));
     Ok(())
 }
+
+/// Invalid UTF-8 prints U+FFFD, one column wide, for each maximal subpart
+/// (the Unicode Standard, 3.9, "U+FFFD Substitution of Maximal
+/// Subparts"), as xterm prints it for what real output holds: a Latin-1
+/// byte among UTF-8, a sequence cut off by a control, ESC or the input
+/// that follows (`fux-vt-compare cases invalid-utf8-prints-a-replacement`).
+/// A continuation byte alone xterm reads as Latin-1, and so does fux-vt:
+/// a raw C1 control is ignored, and 0xa0 to 0xbf print, so Latin-1 text
+/// keeps its `£` (`fux-vt-compare replay --engines all --size 1x12
+/// 'price \xa35'`), where the Unicode Standard would print U+FFFD (see
+/// the README's "Departures from the references"). U+FFFD itself prints.
+#[test]
+fn invalid_utf8_prints_a_replacement_character() -> Result {
+    assert_eq!(row(12, b"caf\xe9 ok")?, "caf\u{fffd} ok");
+    assert_eq!(row(12, b"a\xffb")?, "a\u{fffd}b");
+    assert_eq!(row(12, b"a\xe7\x95b")?, "a\u{fffd}b");
+    assert_eq!(row(12, b"a\xf0\x9f\rb")?, "b\u{fffd}");
+    assert_eq!(row(12, b"a\x80b")?, "ab");
+    assert_eq!(row(12, b"price \xa35")?, "price \u{a3}5");
+    assert_eq!(row(12, "a\u{fffd}b".as_bytes())?, "a\u{fffd}b");
+    // Cut off by ESC, which still begins its sequence.
+    let p = run(1, 12, b"a\xe7\x1b[1mb")?;
+    assert_eq!(lines(&p), ["a\u{fffd}b"]);
+    assert!(p.screen().cell(0, 2).ok_or("no cell")?.bold());
+    // Across writes: a sequence completed later is one character, one
+    // cut off later is U+FFFD.
+    let mut p = Parser::new(1, 12, 0)?;
+    p.process(b"a\xc3")?;
+    p.process(b"\xa9b\xc3")?;
+    p.process(b"c")?;
+    assert_eq!(lines(&p), ["a\u{e9}b\u{fffd}c"]);
+    Ok(())
+}
+
+/// In UTF-8 a control string ends at ST, ESC `\` (ECMA-48 8.3.143; 5.6):
+/// the byte 0x9c, ST's 8-bit form, is part of a character there
+/// (`\u{271c}` is e2 9c 9c), and ends nothing, as in xterm
+/// (`fux-vt-compare cases dcs-payload-holding-0x9c`).
+#[test]
+fn a_control_string_ends_at_esc_backslash_alone() -> Result {
+    for open in ["\x1bP1$r", "\x1b_", "\x1b^", "\x1bX"] {
+        let text = format!("{open}\u{271c} leaked\x1b\\ok");
+        assert_eq!(row(12, text.as_bytes())?, "ok", "{open:?}");
+    }
+    Ok(())
+}
