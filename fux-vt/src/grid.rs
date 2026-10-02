@@ -35,6 +35,11 @@ struct Meta {
     version: u64,
     width: u16,
     wrapped: bool,
+    /// How far into the row a cell may differ from `Cell::default()`:
+    /// every cell from here to `width` is blank, so recycling the slot
+    /// clears only the cells before it. A short line scrolled away costs a
+    /// few cells, not a row of cold memory.
+    used: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -185,6 +190,7 @@ impl Grid {
             version,
             width: self.cols.get(),
             wrapped: false,
+            used: 0,
         });
         self.spill.push(Spill::default());
         Ok(slot)
@@ -268,23 +274,38 @@ impl Grid {
     }
     /// Edits a live row's cells with `f`, which says whether it changed any
     /// of them; only then does the row take `version`. An edit that leaves
-    /// the row as it was leaves its version alone.
-    pub fn mutate_row(&mut self, row: u16, version: u64, f: impl FnOnce(&mut [Cell]) -> bool) {
+    /// the row as it was leaves its version alone. A blank cell `f` makes
+    /// anything else is before `end`.
+    pub fn mutate_row(
+        &mut self,
+        row: u16,
+        version: u64,
+        end: u16,
+        f: impl FnOnce(&mut [Cell]) -> bool,
+    ) {
         if let Some(slot) = self.slot(row)
             && f(self.slice_mut(slot))
             && let Some(m) = self.meta.get_mut(slot)
         {
             m.version = version;
+            m.used = m.used.max(end.min(m.width));
         }
     }
     /// `mutate_row` with the row's text too, for edits that store clusters.
-    pub fn mutate_line(&mut self, row: u16, version: u64, f: impl FnOnce(&mut Line<'_>) -> bool) {
+    pub fn mutate_line(
+        &mut self,
+        row: u16,
+        version: u64,
+        end: u16,
+        f: impl FnOnce(&mut Line<'_>) -> bool,
+    ) {
         if let Some(slot) = self.slot(row)
             && let Some(mut line) = self.line(slot)
             && f(&mut line)
             && let Some(m) = self.meta.get_mut(slot)
         {
             m.version = version;
+            m.used = m.used.max(end.min(m.width));
         }
     }
     pub fn wrap(&mut self, row: u16, wrapped: bool, version: u64) {
@@ -299,7 +320,14 @@ impl Grid {
     pub fn erase(&mut self, row: u16, start: u16, end: u16, attributes: Attributes, version: u64) {
         let (cols, last) = (self.cols.get(), self.cols.last());
         let mut clears_edge = end >= cols;
-        self.mutate_row(row, version, |cells| {
+        // Blanks in the default attributes are what a recycled row holds;
+        // others count as written.
+        let written = if attributes == Attributes::default() {
+            0
+        } else {
+            end
+        };
+        self.mutate_row(row, version, written, |cells| {
             let span = usize::from(start)..usize::from(end.min(cols));
             // Already blank in this style, as erasing an erased tail finds
             // it: the row is as it was. A blank is never half a wide glyph,
@@ -356,7 +384,8 @@ impl Grid {
         if count == 0 {
             return;
         }
-        self.mutate_row(row, version, |cells| {
+        let cols = self.cols.get();
+        self.mutate_row(row, version, cols, |cells| {
             let col = usize::from(col);
             let len = cells.len();
             // Where the cells shifted out start, and so where blanks go.
@@ -410,17 +439,25 @@ impl Grid {
         }
     }
 
-    /// Gives a slot a new row: `id`, unwrapped, every cell blank.
+    /// Gives a slot a new row: `id`, unwrapped, every cell blank. Only the
+    /// cells that may not be blank already are cleared.
     fn recycle(&mut self, slot: usize, id: RowId, version: u64) {
+        let mut used = usize::from(self.cols.get());
         if let Some(m) = self.meta.get_mut(slot) {
+            used = usize::from(m.used);
             *m = Meta {
                 id,
                 version,
                 width: self.cols.get(),
                 wrapped: false,
+                used: 0,
             };
         }
-        self.slice_mut(slot).fill(Cell::default());
+        let cells = self.slice_mut(slot);
+        let used = used.min(cells.len());
+        if let Some(cells) = cells.get_mut(..used) {
+            cells.fill(Cell::default());
+        }
         if let Some(spill) = self.spill.get_mut(slot) {
             spill.clear();
         }
@@ -436,6 +473,9 @@ impl Grid {
         if blank != Attributes::default() {
             for cell in self.slice_mut(slot) {
                 cell.attributes = blank;
+            }
+            if let Some(m) = self.meta.get_mut(slot) {
+                m.used = m.width;
             }
         }
     }
@@ -654,6 +694,7 @@ impl Grid {
                 },
                 width,
                 wrapped,
+                used: width,
             });
             replacement.spill.push(Spill::default());
             replacement.order.push_back(p);
@@ -780,6 +821,7 @@ impl Grid {
                 version,
                 width: cols.get(),
                 wrapped: false,
+                used: 0,
             });
             replacement.order.push_back(slot);
         }
@@ -1031,6 +1073,17 @@ impl Grid {
             self.saved_origin,
         ) = state.saved;
     }
+    /// Whether every slot's cells from `used` to its width are blank, as
+    /// recycling relies on.
+    #[cfg(test)]
+    pub fn blank_past_used(&self) -> bool {
+        (0..self.meta.len()).all(|slot| {
+            let used = self.meta.get(slot).map_or(0, |m| usize::from(m.used));
+            self.slice(slot)
+                .get(used..)
+                .is_some_and(|tail| tail.iter().all(|c| *c == Cell::default()))
+        })
+    }
     pub fn in_region(&self) -> bool {
         (self.top..=self.bottom).contains(&self.cursor.0)
     }
@@ -1152,6 +1205,7 @@ impl Reflow for Copy<'_> {
             version: self.version,
             width: self.grid.cols.get(),
             wrapped,
+            used: self.grid.cols.get(),
         });
         self.grid.order.push_back(slot);
         repair_wide(self.grid.slice_mut(slot));

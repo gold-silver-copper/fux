@@ -751,8 +751,9 @@ impl Screen {
                     col = col.saturating_sub(1);
                 }
                 // A cell already holding all it can takes no more.
+                let end = col.saturating_add(1);
                 self.with_grid(|g, _, v| {
-                    g.mutate_line(row, v, |line| line.append(usize::from(col), c))
+                    g.mutate_line(row, v, end, |line| line.append(usize::from(col), c))
                 });
             }
             return Ok(());
@@ -766,7 +767,7 @@ impl Screen {
         let (row, col) = self.grid().cursor;
         let attributes = self.attributes;
         self.with_grid(|g, _, version| {
-            g.mutate_row(row, version, |cells| {
+            g.mutate_row(row, version, col.saturating_add(width), |cells| {
                 let i = usize::from(col);
                 let glyph = Cell::glyph(c, usize::from(width), attributes);
                 // Already this glyph, whole, as a redraw finds it: the row is
@@ -868,7 +869,7 @@ impl Screen {
         let mut widened = false;
         let mut kept = !full;
         self.with_grid(|g, _, v| {
-            g.mutate_line(row, v, |line| {
+            g.mutate_line(row, v, col.saturating_add(1), |line| {
                 kept = kept && line.append(at, c);
                 if !kept {
                     return false;
@@ -1011,7 +1012,7 @@ impl Screen {
             let attributes = self.attributes;
             let run = bytes.get(..usize::from(count)).unwrap_or_default();
             self.with_grid(|g, _, v| {
-                g.mutate_row(row, v, |cells| {
+                g.mutate_row(row, v, end, |cells| {
                     let Some(dst) = cells.get_mut(span) else {
                         return false;
                     };

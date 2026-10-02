@@ -187,3 +187,16 @@ fn owned_cells_copy_text_from_wherever_it_is_and_compare_by_it() {
     assert_eq!(b, Cells::new(4));
     assert_eq!(b.range(2..9).len(), 2);
 }
+
+#[test]
+fn a_one_byte_cell_reads_its_ascii_character() {
+    let spill = Spill::default();
+    for byte in 0..=0x7fu8 {
+        let text = char::from(byte).to_string();
+        let cell = Cell::new(&text, false, Attributes::default()).unwrap_or_default();
+        assert_eq!(CellRef::new(&cell, &spill).contents(), text, "{byte}");
+    }
+    let cell = Cell::new("é", false, Attributes::default()).unwrap_or_default();
+    assert_eq!(CellRef::new(&cell, &spill).contents(), "é");
+    assert_eq!(CellRef::new(&Cell::default(), &spill).contents(), "");
+}
