@@ -183,6 +183,10 @@ pub struct Pane {
     pub input: InputQueue,
     /// Whether a reply was dropped because the queue was full; noticed once.
     pub reply_dropped: bool,
+    /// Whether the PTY hung up while the program lives on: it closed the
+    /// terminal but has not exited. Its master reports the end on every
+    /// poll, so it is no longer polled; its exit, by SIGCHLD, ends the pane.
+    pub hung_up: bool,
     /// The shell's program, to quote a typed command for it.
     pub shell: String,
     /// A command line waiting to be typed into the shell.
@@ -248,6 +252,7 @@ impl Pane {
             child: None,
             input: InputQueue::default(),
             reply_dropped: false,
+            hung_up: false,
             shell,
             typed: None,
         })
