@@ -167,3 +167,40 @@ fn a_job_stopped_in_a_pane_leaves_the_pane_running() -> Outcome {
     server.ok(&["kill-pane", "-t", &pane])?;
     gone(job, "a stopped job, after kill-pane")
 }
+
+/// The server's children that have exited but were never reaped.
+fn zombies_of(pid: u32) -> Result<Vec<String>, String> {
+    let out = std::process::Command::new("ps")
+        .args(["-A", "-o", "ppid=,pid=,stat=,comm="])
+        .output()
+        .map_err(e)?;
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|line| {
+            let mut fields = line.split_whitespace();
+            fields.next() == Some(&pid.to_string())
+                && fields.nth(1).is_some_and(|stat| stat.starts_with('Z'))
+        })
+        .map(str::to_owned)
+        .collect())
+}
+
+/// A command line too long to type into a new pane's shell is refused
+/// before the shell starts, so no process is left behind. Quoting makes
+/// each `'` four bytes, so this argument fits a frame but not a pane's
+/// input queue.
+#[test]
+fn a_line_too_long_to_type_leaves_no_process_behind() -> Outcome {
+    let server = Server::start("")?;
+    let pid = server.pid().ok_or("the server's pid")?;
+    let quotes: String = std::iter::repeat_n('\'', 300_000).collect();
+    let out = server.fux(&["split", "-h", "-t", "%1", "--", "echo", &quotes])?;
+    assert_ne!(out.status, 0, "the split was refused");
+    assert!(out.stderr.contains("too long"), "{}", out.stderr);
+    // Any child it made would have exited by now, unreaped.
+    std::thread::sleep(Duration::from_millis(500));
+    let zombies = zombies_of(pid)?;
+    assert!(zombies.is_empty(), "unreaped children: {zombies:?}");
+    assert!(!server.ok(&["ls"])?.contains("%2"), "no pane was made");
+    Ok(())
+}
