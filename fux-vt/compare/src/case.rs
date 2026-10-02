@@ -59,11 +59,13 @@ pub struct Verdict {
 
 /// How a case went: the step after which fux-vt was first outvoted (none:
 /// it never was), and fux-vt's snapshot and every engine's verdict then,
-/// or at the end.
+/// or at the end. An engine that failed or panicked abstains from then on,
+/// and is listed with what went wrong.
 pub struct Outcome {
     pub step: Option<usize>,
     pub fux: Snapshot,
     pub verdicts: Vec<Verdict>,
+    pub abstained: Vec<(usize, String)>,
 }
 
 impl Outcome {
@@ -80,8 +82,8 @@ impl Outcome {
     }
 }
 
-/// Whether fux-vt is outvoted: more than half the engines differ from it.
-/// With one engine, whether it differs.
+/// Whether fux-vt is outvoted: more than half the engines still voting
+/// differ from it. With one engine, whether it differs.
 fn outvoted(verdicts: &[Verdict]) -> bool {
     let differing = verdicts
         .iter()
@@ -90,41 +92,69 @@ fn outvoted(verdicts: &[Verdict]) -> bool {
     differing.saturating_mul(2) > verdicts.len()
 }
 
+/// What a panic said, from its payload.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic".to_owned())
+}
+
+/// Calls into an engine, turning a panic into an error, so one engine's
+/// crash costs its vote, not the run.
+fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        .unwrap_or_else(|payload| Err(format!("panicked: {}", panic_message(payload.as_ref()))))
+}
+
 struct Running {
     fux: Box<dyn Engine>,
     engines: Vec<(usize, Box<dyn Engine>)>,
+    abstained: Vec<(usize, String)>,
 }
 
 impl Running {
+    /// Applies `f` to fux-vt, whose errors end the case, and to every
+    /// engine, whose errors make it abstain.
     fn each(&mut self, f: impl Fn(&mut dyn Engine) -> Result<(), String>) -> Result<(), String> {
-        f(self.fux.as_mut())?;
-        for (index, engine) in &mut self.engines {
-            let name = ENGINES.get(*index).map_or("?", |k| k.name);
-            f(engine.as_mut()).map_err(|e| format!("{name}: {e}"))?;
+        guarded(|| f(self.fux.as_mut())).map_err(|e| format!("fux-vt: {e}"))?;
+        let mut kept = Vec::with_capacity(self.engines.len());
+        for (index, mut engine) in std::mem::take(&mut self.engines) {
+            match guarded(|| f(engine.as_mut())) {
+                Ok(()) => kept.push((index, engine)),
+                Err(e) => self.abstained.push((index, e)),
+            }
         }
+        self.engines = kept;
         Ok(())
     }
 
     fn compare(&mut self) -> Result<(Snapshot, Vec<Verdict>), String> {
-        let fux = self.fux.snapshot(0)?;
+        let fux = guarded(|| self.fux.snapshot(0)).map_err(|e| format!("fux-vt: {e}"))?;
         let mut verdicts = Vec::with_capacity(self.engines.len());
-        for (index, engine) in &mut self.engines {
-            let kind = ENGINES.get(*index).ok_or("no such engine")?;
-            let snapshot = engine
-                .snapshot(fux.history.len())
-                .map_err(|e| format!("{}: {e}", kind.name))?;
-            let differences = snapshot::differences(
-                &fux.masked(&kind.can),
-                &snapshot.masked(&kind.can),
-                kind.name,
-                24,
-            );
-            verdicts.push(Verdict {
-                engine: *index,
-                differences,
-                snapshot,
-            });
+        let mut kept = Vec::with_capacity(self.engines.len());
+        for (index, mut engine) in std::mem::take(&mut self.engines) {
+            let kind = ENGINES.get(index).ok_or("no such engine")?;
+            match guarded(|| engine.snapshot(fux.history.len())) {
+                Ok(snapshot) => {
+                    let differences = snapshot::differences(
+                        &fux.masked(&kind.can),
+                        &snapshot.masked(&kind.can),
+                        kind.name,
+                        24,
+                    );
+                    verdicts.push(Verdict {
+                        engine: index,
+                        differences,
+                        snapshot,
+                    });
+                    kept.push((index, engine));
+                }
+                Err(e) => self.abstained.push((index, e)),
+            }
         }
+        self.engines = kept;
         Ok((fux, verdicts))
     }
 }
@@ -153,20 +183,23 @@ impl Case {
         let setup = self.setup();
         let mut running = Running {
             fux: (SUBJECT.make)(&setup)?,
-            engines: panel
-                .iter()
-                .map(|&index| {
-                    let kind = ENGINES.get(index).ok_or("no such engine")?;
-                    (kind.make)(&setup).map(|engine| (index, engine))
-                })
-                .collect::<Result<_, String>>()?,
+            engines: Vec::with_capacity(panel.len()),
+            abstained: Vec::new(),
         };
+        for &index in panel {
+            let kind = ENGINES.get(index).ok_or("no such engine")?;
+            match guarded(|| (kind.make)(&setup)) {
+                Ok(engine) => running.engines.push((index, engine)),
+                Err(e) => running.abstained.push((index, e)),
+            }
+        }
         let (fux, verdicts) = running.compare()?;
         if outvoted(&verdicts) && (stop || self.steps.is_empty()) {
             return Ok(Outcome {
                 step: Some(0),
                 fux,
                 verdicts,
+                abstained: running.abstained,
             });
         }
         let mut last = (fux, verdicts);
@@ -193,6 +226,7 @@ impl Case {
                     step: Some(i.saturating_add(1)),
                     fux,
                     verdicts,
+                    abstained: running.abstained,
                 });
             }
             last = (fux, verdicts);
@@ -201,6 +235,7 @@ impl Case {
             step: None,
             fux: last.0,
             verdicts: last.1,
+            abstained: running.abstained,
         })
     }
 
@@ -530,6 +565,10 @@ pub fn report(case: &Case, panel: &[usize], outcome: &Outcome) -> String {
         if verdict.differences.len() > 8 {
             let _ = writeln!(out, "      ...");
         }
+    }
+    for (index, why) in &outcome.abstained {
+        let name = ENGINES.get(*index).map_or("?", |k| k.name);
+        let _ = writeln!(out, "    {name}: abstains: {why}");
     }
     if let Some(verdict) = outcome.verdicts.iter().find(|v| !v.differences.is_empty()) {
         let name = ENGINES.get(verdict.engine).map_or("?", |k| k.name);

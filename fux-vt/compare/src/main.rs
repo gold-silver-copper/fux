@@ -371,7 +371,8 @@ fn steps(words: &[String], family: usize) -> Result<Vec<Step>, String> {
         .collect()
 }
 
-/// Each engine's verdict, as a line of marks: `+` agrees, `-` differs.
+/// Each engine's verdict, as a line of marks: `+` agrees, `-` differs, `!`
+/// abstains (it failed or panicked).
 fn marks(outcome: &case::Outcome) -> String {
     outcome
         .verdicts
@@ -381,6 +382,12 @@ fn marks(outcome: &case::Outcome) -> String {
             let mark = if v.differences.is_empty() { '+' } else { '-' };
             format!("{mark}{name}")
         })
+        .chain(
+            outcome
+                .abstained
+                .iter()
+                .map(|(index, _)| format!("!{}", ENGINES.get(*index).map_or("?", |k| k.name))),
+        )
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -474,6 +481,9 @@ fn replay(args: &Args) -> Result<bool, String> {
 }
 
 fn main() -> ExitCode {
+    // An engine's panic is caught and costs it its vote (`case::guarded`),
+    // and reported there; the default hook would print each one again.
+    std::panic::set_hook(Box::new(|_| {}));
     let result = parse().and_then(|args| match args.command.as_str() {
         "list" => {
             list();
