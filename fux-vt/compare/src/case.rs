@@ -6,7 +6,8 @@ use crate::engine::{ENGINES, Engine, SUBJECT, Setup};
 use crate::escape;
 use crate::families::{self, FAMILIES};
 use crate::rng::Rng;
-use crate::snapshot::{self, Snapshot};
+use crate::snapshot::{self, Diff, Field, Snapshot};
+use std::collections::BTreeMap;
 use std::fmt::Write;
 
 /// A piece of output, from one family.
@@ -53,7 +54,7 @@ pub struct Verdict {
     pub engine: usize,
     /// What differs, compared on the fields the engine can tell; empty when
     /// it agrees with fux-vt.
-    pub differences: Vec<String>,
+    pub differences: Vec<Diff>,
     pub snapshot: Snapshot,
 }
 
@@ -82,14 +83,40 @@ impl Outcome {
     }
 }
 
-/// Whether fux-vt is outvoted: more than half the engines still voting
-/// differ from it. With one engine, whether it differs.
+/// Where fux-vt is outvoted, field by field: for each place some engine
+/// differs (a cell's text, one attribute, the cursor, a mode), the engines
+/// that can tell that field vote, and fux-vt is outvoted there when more
+/// of them share one other value than agree with fux-vt. Engines that
+/// differ from fux-vt each in their own way do not outvote it; a tie does
+/// not. With one engine, wherever it differs.
+pub fn outvoted_on(verdicts: &[Verdict]) -> Vec<String> {
+    let mut dissent: BTreeMap<&str, (Field, BTreeMap<&str, usize>)> = BTreeMap::new();
+    for verdict in verdicts {
+        for diff in &verdict.differences {
+            let (_, values) = dissent
+                .entry(diff.key.as_str())
+                .or_insert_with(|| (diff.field, BTreeMap::new()));
+            let count = values.entry(diff.other.as_str()).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+    }
+    dissent
+        .into_iter()
+        .filter(|(_, (field, values))| {
+            let told = verdicts
+                .iter()
+                .filter(|v| ENGINES.get(v.engine).is_some_and(|k| field.told_by(&k.can)))
+                .count();
+            let differing: usize = values.values().sum();
+            let agreeing = told.saturating_sub(differing);
+            values.values().any(|&n| n > agreeing)
+        })
+        .map(|(key, _)| key.to_owned())
+        .collect()
+}
+
 fn outvoted(verdicts: &[Verdict]) -> bool {
-    let differing = verdicts
-        .iter()
-        .filter(|v| !v.differences.is_empty())
-        .count();
-    differing.saturating_mul(2) > verdicts.len()
+    !outvoted_on(verdicts).is_empty()
 }
 
 /// What a panic said, from its payload.
@@ -103,7 +130,7 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 
 /// Calls into an engine, turning a panic into an error, so one engine's
 /// crash costs its vote, not the run.
-fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+pub fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
         .unwrap_or_else(|payload| Err(format!("panicked: {}", panic_message(payload.as_ref()))))
 }
@@ -138,12 +165,8 @@ impl Running {
             let kind = ENGINES.get(index).ok_or("no such engine")?;
             match guarded(|| engine.snapshot(fux.history.len())) {
                 Ok(snapshot) => {
-                    let differences = snapshot::differences(
-                        &fux.masked(&kind.can),
-                        &snapshot.masked(&kind.can),
-                        kind.name,
-                        24,
-                    );
+                    let differences =
+                        snapshot::differences(&fux.masked(&kind.can), &snapshot.masked(&kind.can));
                     verdicts.push(Verdict {
                         engine: index,
                         differences,
@@ -529,6 +552,12 @@ pub fn report(case: &Case, panel: &[usize], outcome: &Outcome) -> String {
     let _ = writeln!(out, "  families: {}", case.families().join(", "));
     let _ = writeln!(out, "  replay:   {}", case.command(panel));
     let total = outcome.verdicts.len();
+    let keys = outvoted_on(&outcome.verdicts);
+    if !keys.is_empty() {
+        let shown: Vec<&str> = keys.iter().take(6).map(String::as_str).collect();
+        let more = if keys.len() > 6 { ", ..." } else { "" };
+        let _ = writeln!(out, "  outvoted on: {}{more}", shown.join(", "));
+    }
     match outcome.step {
         Some(0) => {
             let _ = writeln!(
@@ -559,8 +588,8 @@ pub fn report(case: &Case, panel: &[usize], outcome: &Outcome) -> String {
             continue;
         }
         let _ = writeln!(out, "    {name}: differs");
-        for line in verdict.differences.iter().take(8) {
-            let _ = writeln!(out, "      {line}");
+        for diff in verdict.differences.iter().take(8) {
+            let _ = writeln!(out, "      {}", diff.line(name));
         }
         if verdict.differences.len() > 8 {
             let _ = writeln!(out, "      ...");

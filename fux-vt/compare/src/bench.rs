@@ -192,10 +192,13 @@ fn time(kind: &Kind, bytes: &[u8]) -> Result<Duration, String> {
     };
     let mut best = Duration::MAX;
     for _ in 0..RUNS {
-        let mut engine = (kind.make)(&setup)?;
-        let started = Instant::now();
-        engine.feed(bytes, CHUNK)?;
-        best = best.min(started.elapsed());
+        let took = crate::case::guarded(|| {
+            let mut engine = (kind.make)(&setup)?;
+            let started = Instant::now();
+            engine.feed(bytes, CHUNK)?;
+            Ok(started.elapsed())
+        })?;
+        best = best.min(took);
     }
     Ok(best)
 }

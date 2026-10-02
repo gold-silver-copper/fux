@@ -24,9 +24,8 @@
 //! when a line wraps on a one-row screen (`grid.rs`, `col_wrap`), and on
 //! a wide glyph on a one-column screen (`screen.rs`, `text`). With
 //! overflow checks, as this harness builds, both panic; without them, the
-//! first still panics, at an `unwrap` just after. The adapter
-//! catches the panic, without printing it, and from then on vt100 has no
-//! screen: it reads as 0×0, with nothing on it, so it differs from fux-vt
+//! first still panics, at an `unwrap` just after. The harness catches the
+//! panic, and vt100 abstains for the rest of the case
 //! (`replay --engines vt100,ghostty --size 1x1 'ab'`, `--size 2x1
 //! '\u{754c}'`).
 //!
@@ -84,7 +83,6 @@ fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
             SCROLLBACK,
             Heard::default(),
         ),
-        crashed: false,
     }))
 }
 
@@ -101,8 +99,6 @@ impl vt100::Callbacks for Heard {
 
 pub struct Vt100 {
     parser: vt100::Parser<Heard>,
-    /// Whether vt100 has panicked.
-    crashed: bool,
 }
 
 fn color(c: vt100::Color) -> Color {
@@ -190,37 +186,18 @@ fn read(parser: &mut vt100::Parser<Heard>, history_rows: usize) -> Snapshot {
     }
 }
 
-impl Vt100 {
-    /// Runs `f` on the parser, unless vt100 has panicked before; a panic
-    /// is caught, unprinted, and leaves it crashed.
-    fn guard<T>(&mut self, f: impl FnOnce(&mut vt100::Parser<Heard>) -> T) -> Option<T> {
-        if self.crashed {
-            return None;
-        }
-        let parser = &mut self.parser;
-        // Quietly: the default hook would print every panic.
-        let hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(parser)));
-        std::panic::set_hook(hook);
-        self.crashed = out.is_err();
-        out.ok()
-    }
-}
-
 impl Engine for Vt100 {
     fn process(&mut self, bytes: &[u8]) -> Result<(), String> {
-        self.guard(|p| p.process(bytes));
+        self.parser.process(bytes);
         Ok(())
     }
 
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
-        self.guard(|p| p.screen_mut().set_size(rows, cols));
+        self.parser.screen_mut().set_size(rows, cols);
         Ok(())
     }
 
-    /// After a panic, a screen of no size with nothing on it.
     fn snapshot(&mut self, history_rows: usize) -> Result<Snapshot, String> {
-        Ok(self.guard(|p| read(p, history_rows)).unwrap_or_default())
+        Ok(read(&mut self.parser, history_rows))
     }
 }

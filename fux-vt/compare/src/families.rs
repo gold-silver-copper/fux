@@ -359,10 +359,13 @@ fn kitty(r: &mut Rng) -> Vec<u8> {
     match r.below(3) {
         0 => format!("\x1b[>{}u", pick(r, &["1", "3", "31"])),
         1 => format!("\x1b[<{}u", pick(r, &["", "1", "2"])),
+        // No empty mode: wezterm drops a CSI whose last parameter is
+        // empty (`replay --engines wezterm '\e[=1;u'`), where the kitty
+        // protocol reads it as 1.
         _ => format!(
             "\x1b[={};{}u",
             pick(r, &["1", "4", "8"]),
-            pick(r, &["", "1", "2", "3"])
+            pick(r, &["1", "2", "3"])
         ),
     }
     .into_bytes()
