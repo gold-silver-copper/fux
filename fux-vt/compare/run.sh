@@ -35,19 +35,27 @@ zig_version=0.16.0
 ghostty_commit=7aa9591746ffa4d2eee458960c76554352832595
 mkdir -p "$cache"
 
+# Each Zig tarball's SHA-256, from ziglang.org/download/index.json.
 case "$(uname -s)-$(uname -m)" in
-  Darwin-arm64) zig_target=aarch64-macos ;;
-  Darwin-x86_64) zig_target=x86_64-macos ;;
-  Linux-x86_64) zig_target=x86_64-linux ;;
-  Linux-aarch64) zig_target=aarch64-linux ;;
+  Darwin-arm64) zig_target=aarch64-macos zig_sha256=b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489 ;;
+  Darwin-x86_64) zig_target=x86_64-macos zig_sha256=0387557ed1877bc6a2e1802c8391953baddba76081876301c522f52977b52ba7 ;;
+  Linux-x86_64) zig_target=x86_64-linux zig_sha256=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00 ;;
+  Linux-aarch64) zig_target=aarch64-linux zig_sha256=ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17 ;;
   *) echo "run.sh: no Zig build for $(uname -s) $(uname -m)" >&2; exit 2 ;;
 esac
 
 zig_dir=$cache/zig-$zig_target-$zig_version
 if [[ ! -x $zig_dir/zig ]]; then
   echo "run.sh: fetching Zig $zig_version" >&2
-  curl -sSfL "https://ziglang.org/download/$zig_version/zig-$zig_target-$zig_version.tar.xz" \
-    | tar -xJ -C "$cache"
+  zig_tarball=$cache/zig-$zig_target-$zig_version.tar.xz
+  curl -sSfL -o "$zig_tarball" "https://ziglang.org/download/$zig_version/zig-$zig_target-$zig_version.tar.xz"
+  if [[ $(shasum -a 256 "$zig_tarball" | cut -d' ' -f1) != "$zig_sha256" ]]; then
+    echo "run.sh: the Zig tarball does not match its SHA-256" >&2
+    rm -f "$zig_tarball"
+    exit 2
+  fi
+  tar -xJf "$zig_tarball" -C "$cache"
+  rm "$zig_tarball"
 fi
 export PATH=$zig_dir:$PATH
 
