@@ -178,7 +178,7 @@ tab and workspace.
 | `fux server [--socket PATH] [--config FILE]` | run a server in the foreground |
 | `fux kill-server` | stop the server (hangs up every pane) |
 | `fux ls [--json]` | workspaces, tabs, panes and clients |
-| `fux new-workspace [-n NAME] [-- CMD…]` | a workspace with a shell, CMD typed into it |
+| `fux new-workspace [-n NAME] [-- CMD…]` | a workspace with a shell, CMD typed into it; workspaces are found by name, so no two share one |
 | `fux new-tab [-t WS] [-n NAME] [-- CMD…]` | a tab with a shell, CMD typed into it |
 | `fux split -h\|-v [-t %N] [-- CMD…]` | split a pane: `-h` side by side, `-v` stacked |
 | `fux kill-pane\|kill-tab\|kill-workspace [-t …]` | close, without asking |
