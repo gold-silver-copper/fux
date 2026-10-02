@@ -2,7 +2,7 @@
 //! each test citing the section that sets its expected values. Where xterm
 //! departs from the specification, the test says so and follows xterm.
 
-use fux_vt::Parser;
+use fux_vt::{CellRef, Color, Parser};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 fn lines(parser: &Parser) -> Vec<String> {
@@ -113,5 +113,93 @@ fn a_glyph_that_wraps_marks_its_row_soft_wrapped() -> Result {
     let p = run(2, 5, b"abcde\x1b[SX")?;
     assert_eq!(lines(&p), ["", "X"]);
     assert!(p.screen().row_wrapped(0));
+    Ok(())
+}
+
+/// The attributes of the glyph `sgr` then X print in the first cell.
+fn styled(sgr: &str, check: impl FnOnce(CellRef<'_>)) -> Result {
+    let p = run(1, 3, format!("{sgr}X").as_bytes())?;
+    let cell = p.screen().cell(0, 0).ok_or("no cell")?;
+    check(cell);
+    Ok(())
+}
+
+/// ITU-T T.416, 13.1.8: 38 and 48 take a substring of colon-separated
+/// elements, `2:space:r:g:b` for direct colour, the second a colour space
+/// identifier, empty when defaulted; xterm's ctlseqs ignores the colour
+/// space, and also takes `2:r:g:b`; 58 (underline colour) has the same
+/// forms. Expected values are xterm's (`fux-vt-compare replay --engines
+/// all`), but for 58, which xterm does not show: Ghostty's, alacritty's,
+/// wezterm's and tmux's.
+#[test]
+fn sgr_colours_take_the_colon_forms_with_a_colour_space() -> Result {
+    let red = Color::Rgb(255, 0, 0);
+    styled("\x1b[38:2::255:0:0m", |c| assert_eq!(c.fgcolor(), red))?;
+    styled("\x1b[48:2::0:255:0m", |c| {
+        assert_eq!(c.bgcolor(), Color::Rgb(0, 255, 0));
+    })?;
+    styled("\x1b[58:2::9:8:7m", |c| {
+        assert_eq!(c.underline_color(), Color::Rgb(9, 8, 7));
+    })?;
+    // The colour space is ignored, whatever it is; so is all after blue.
+    styled("\x1b[38:2:9:1:2:3m", |c| {
+        assert_eq!(c.fgcolor(), Color::Rgb(1, 2, 3));
+    })?;
+    styled("\x1b[38:2:1:2:3:4:5:6m", |c| {
+        assert_eq!(c.fgcolor(), Color::Rgb(2, 3, 4));
+    })?;
+    styled("\x1b[38:2:1:2:3m", |c| {
+        assert_eq!(c.fgcolor(), Color::Rgb(1, 2, 3));
+    })?;
+    // Too few elements: no colour.
+    styled("\x1b[38:2:1:2m", |c| {
+        assert_eq!(c.fgcolor(), Color::Default)
+    })?;
+    styled("\x1b[38:5m", |c| assert_eq!(c.fgcolor(), Color::Default))?;
+    styled("\x1b[1;38:2::10:20:30;4m", |c| {
+        assert_eq!(c.fgcolor(), Color::Rgb(10, 20, 30));
+        assert!(c.bold() && c.underline());
+    })?;
+    Ok(())
+}
+
+/// ECMA-48 8.3.117 and xterm: SGR's parameters apply one after another,
+/// so an invalid colour is skipped and the rest still applies. As xterm
+/// reads the semicolon form: an index or component past 255 is no
+/// colour, though its parameters are taken; another kind than 2 or 5
+/// takes only itself; values the list ends before are 0.
+#[test]
+fn an_invalid_sgr_colour_skips_only_itself() -> Result {
+    styled("\x1b[38;5;300;1m", |c| {
+        assert_eq!(c.fgcolor(), Color::Default);
+        assert!(c.bold());
+    })?;
+    styled("\x1b[38:5:300;1m", |c| {
+        assert_eq!(c.fgcolor(), Color::Default);
+        assert!(c.bold());
+    })?;
+    styled("\x1b[38;2;256;0;0;3m", |c| {
+        assert_eq!(c.fgcolor(), Color::Default);
+        assert!(c.italic());
+    })?;
+    styled("\x1b[38;9;1m", |c| assert!(c.bold() && !c.strikeout()))?;
+    styled("\x1b[38;2;1;2m", |c| {
+        assert_eq!(c.fgcolor(), Color::Rgb(1, 2, 0));
+    })?;
+    styled("\x1b[48;5m", |c| assert_eq!(c.bgcolor(), Color::Idx(0)))?;
+    Ok(())
+}
+
+/// Underline styles, `4:n`, are kitty's extension, which no reference
+/// defines and xterm ignores: Ghostty, alacritty, libvterm, wezterm,
+/// xterm.js and tmux read `4:0` as no underline and `4:1` to `4:5` as
+/// one style or another. fux-vt keeps no style, and follows them, on
+/// purpose departing from xterm, so that a program's curly underline
+/// stays an underline.
+#[test]
+fn underline_styles_set_and_end_underline() -> Result {
+    styled("\x1b[4m\x1b[4:0m", |c| assert!(!c.underline()))?;
+    styled("\x1b[4:3m", |c| assert!(c.underline()))?;
+    styled("\x1b[4:1m", |c| assert!(c.underline()))?;
     Ok(())
 }
