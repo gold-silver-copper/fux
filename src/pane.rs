@@ -109,6 +109,10 @@ impl InputQueue {
     pub fn is_empty(&self) -> bool {
         self.pieces.is_empty()
     }
+    /// Whether input is refused until the program reads.
+    pub fn refusing(&self) -> bool {
+        self.refusing
+    }
     /// The bytes to write next: every piece queued.
     pub fn front(&self) -> Option<&[u8]> {
         (!self.bytes.is_empty()).then(|| self.bytes.as_slice())
