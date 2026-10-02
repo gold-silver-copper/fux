@@ -1,0 +1,5 @@
+# Fetched by fetch.sh; only the index and the script are committed.
+*
+!.gitignore
+!README.md
+!fetch.sh
