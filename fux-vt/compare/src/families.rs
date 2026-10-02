@@ -451,7 +451,7 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "cursor",
         about: "CUU CUD CUF CUB CNL CPL CHA VPA HPA HPR VPR, CUP and HVP",
-        status: Status::Differs(
+        status: Status::Decided(
             "fux-vt does what xterm does (0 of 1200 cases differ with xterm alone voting), and the panel splits only where a soft-wrapped row is written over again once the cursor moves back into it, as in `save`: xterm, libvterm, avt and xterm.js keep the row soft-wrapped, as fux-vt does; Ghostty, alacritty, wezterm and tmux end the wrap, and outvote fux-vt (`replay --engines all --size 4x5 '\\e[0e long-line-\\e[;99Habcabc~!@#a'`)",
         ),
         ratty_only: false,
@@ -487,7 +487,7 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "index",
         about: "IND (ESC D) and NEL (ESC E)",
-        status: Status::Differs(
+        status: Status::Decided(
             "the panel splits as it does on LF in `controls`: IND that scrolls while a wrap is pending ends the wrap in xterm, Ghostty, wezterm and xterm.js, as DEC STD 070 (Appendix D.6.1) says and fux-vt does; alacritty, libvterm and avt keep it, and outvote fux-vt (`replay --engines all --size 1x3 'abc\\eD'`). With xterm alone voting, 0 of 1000 cases differ",
         ),
         ratty_only: false,
@@ -612,7 +612,7 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "strings-c1",
         about: "DCS, APC, PM and SOS strings whose UTF-8 payload holds the byte 0x9c (8-bit ST)",
-        status: Status::Differs(
+        status: Status::Decided(
             "the panel splits: in UTF-8 a string ends at ESC \\ alone (ECMA-48 8.3.143), so 0x9c in a payload's character ends nothing in xterm, libvterm, avt, xterm.js and tmux, as in fux-vt; Ghostty ends DCS, SOS, PM and APC strings at it and prints U+FFFD for the rest of the character, alacritty and wezterm end DCS strings at it, and together they outvote fux-vt on the cursor (`replay --engines all --size 1x4 '\\ePa\\u{271c}b\\e\\\\ll'`)",
         ),
         ratty_only: false,
@@ -655,7 +655,7 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "invalid-utf8",
         about: "invalid and truncated UTF-8, and U+FFFD itself",
-        status: Status::Differs(
+        status: Status::Decided(
             "the panel splits on a continuation byte alone: xterm reads it as Latin-1 (0x80 to 0x9f ignored as C1 controls, 0xa0 to 0xbf printed), and so does fux-vt, a recorded departure from the Unicode Standard's U+FFFD; Ghostty, libvterm, avt and tmux print U+FFFD, alacritty, wezterm and xterm.js drop it (`replay --engines all --size 1x12 'price \\xa35'`). A sequence that breaks off prints U+FFFD in every engine but wezterm, vt100 and xterm.js, as in fux-vt (`cases invalid-utf8-prints-a-replacement`)",
         ),
         ratty_only: false,
