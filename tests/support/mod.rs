@@ -301,6 +301,18 @@ impl Client {
         result
     }
 
+    /// Sends any frame, as a client that does not follow the protocol
+    /// might.
+    pub fn frame(&mut self, frame: &Frame) -> Outcome {
+        self.stream.set_nonblocking(false).map_err(e)?;
+        let result = self
+            .stream
+            .write_all(&frame.encode().map_err(e)?)
+            .map_err(e);
+        self.stream.set_nonblocking(true).map_err(e)?;
+        result
+    }
+
     pub fn detach(&mut self) -> Outcome {
         self.stream.set_nonblocking(false).map_err(e)?;
         let result = self
