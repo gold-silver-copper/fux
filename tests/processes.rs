@@ -109,7 +109,19 @@ fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
         Ok(server.ok(&["capture-pane", "-t", &pane])?.contains('$'))
     })?;
     signal(leader, Signal::Stop);
-    std::thread::sleep(Duration::from_secs(1));
+    // Stopped, the kernel has sent the server SIGCHLD; two round trips
+    // through its loop later, it has handled it.
+    eventually("the shell stopped", || {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &leader.to_string()])
+            .output()
+            .map_err(e)?;
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .trim_start()
+            .starts_with('T'))
+    })?;
+    server.ok(&["ls"])?;
+    server.ok(&["ls"])?;
     assert!(alive(leader), "the stopped shell is gone");
     assert!(
         server.panes()?.iter().any(|(id, _)| *id == pane),

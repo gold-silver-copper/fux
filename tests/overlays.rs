@@ -108,7 +108,11 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
     server.ok(&["kill-pane", "-t", "%3"])?;
     bar_has(&mut client, "%3 is gone")?;
     client.keys("y")?;
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    // Something that shows, typed after the y: once it shows, the y has
+    // been handled.
+    client.keys(&format!("{PREFIX}e"))?;
+    client.wait_for("Enter accepts")?;
+    client.keys("\x1b")?;
     assert_eq!(panes(&server)?, ["%1"], "a late y closes nothing");
     Ok(())
 }

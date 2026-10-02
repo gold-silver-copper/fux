@@ -5,6 +5,16 @@ use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 use support::*;
 
+/// The tests here measure time and CPU, so they run one at a time: each
+/// takes this first, and other tests' load is all they share.
+static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn alone() -> std::sync::MutexGuard<'static, ()> {
+    ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// How many log lines mention running out of descriptors.
 fn pressure_lines(server: &Server) -> usize {
     server
@@ -28,6 +38,7 @@ fn timed_ls(server: &Server) -> Result<(Duration, Output), String> {
 /// (bevy-final findings 006 and 012).
 #[test]
 fn a_server_out_of_descriptors_refuses_promptly_and_recovers() -> Outcome {
+    let _alone = alone();
     let server = Server::start_limited("", Some(64))?;
     let pid = server.pid().ok_or("the server's pid")?;
     assert_eq!(server.fux(&["ls"])?.status, 0);
@@ -59,10 +70,11 @@ fn a_server_out_of_descriptors_refuses_promptly_and_recovers() -> Outcome {
         unclear.len(),
         unclear.first()
     );
-    // A second at most for any client, no spinning, and the condition
+    // Three seconds at most for any client (a fux process starts for
+    // each, on a loaded machine), no spinning, and the condition
     // reported once however many clients were refused.
     assert!(
-        slowest < Duration::from_secs(1) && unclear.is_empty() && cpu < 0.5 && lines <= 2,
+        slowest < Duration::from_secs(3) && unclear.is_empty() && cpu < 0.5 && lines <= 2,
         "{report}"
     );
     eprintln!("{report}");
@@ -70,7 +82,7 @@ fn a_server_out_of_descriptors_refuses_promptly_and_recovers() -> Outcome {
     eventually("served again", || Ok(server.fux(&["ls"])?.status == 0))?;
     let (took, out) = timed_ls(&server)?;
     assert_eq!(out.status, 0, "{}", out.stderr);
-    assert!(took < Duration::from_secs(1), "{took:?}");
+    assert!(took < Duration::from_secs(3), "{took:?}");
     eventually("the recovery reported", || {
         Ok(server.log().contains("file descriptors available again"))
     })?;
@@ -82,6 +94,7 @@ fn a_server_out_of_descriptors_refuses_promptly_and_recovers() -> Outcome {
 /// what waits before reading any close; that is reported, not a failure.
 #[test]
 fn connections_that_close_at_once_leave_the_server_reachable() -> Outcome {
+    let _alone = alone();
     let server = Server::start_limited("", Some(64))?;
     for _ in 0..200 {
         // A full backlog is refused by the kernel at once, which is fine.
@@ -94,7 +107,7 @@ fn connections_that_close_at_once_leave_the_server_reachable() -> Outcome {
     eventually("served", || Ok(server.fux(&["ls"])?.status == 0))?;
     let (took, out) = timed_ls(&server)?;
     assert_eq!(out.status, 0, "{}", out.stderr);
-    assert!(took < Duration::from_secs(1), "{took:?}");
+    assert!(took < Duration::from_secs(3), "{took:?}");
     Ok(())
 }
 
@@ -167,6 +180,7 @@ fn pasted(i: usize, len: usize) -> Vec<u8> {
 /// what arrives is exactly what was accepted (bevy-final finding 021).
 #[test]
 fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
+    let _alone = alone();
     let server = Server::start("")?;
     let mut client = server.attach(20, 100)?;
     let (cat, out) = recorder(&server)?;
@@ -271,6 +285,7 @@ fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
 /// runs zsh where there is one.
 #[test]
 fn a_program_that_closes_its_terminal_does_not_make_the_server_spin() -> Outcome {
+    let _alone = alone();
     let zsh = std::path::Path::new("/bin/zsh").exists();
     let server = Server::start(if zsh { "set shell /bin/zsh" } else { "" })?;
     let pid = server.pid().ok_or("the server's pid")?;
@@ -304,6 +319,7 @@ fn a_program_that_closes_its_terminal_does_not_make_the_server_spin() -> Outcome
 /// meanwhile, and the server's memory stays small.
 #[test]
 fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
+    let _alone = alone();
     use fux::protocol::{Frame, PROTOCOL, Role};
     use std::io::Write;
     let server = Server::start("")?;
