@@ -394,18 +394,13 @@ fn word_back(screen: &Screen, row: usize, col: u16) -> (usize, u16) {
     (p.row, w.at(p).0)
 }
 
-/// A row's characters and the column of each.
-fn row_chars(screen: &Screen, index: usize) -> Vec<(char, u16)> {
-    glyphs(screen, index)
-        .flat_map(|(col, cell)| shown(cell).chars().map(move |c| (c, col)))
-        .collect()
-}
-
 fn fold(c: char, ignore_case: bool) -> char {
-    if ignore_case {
-        c.to_lowercase().next().unwrap_or(c)
-    } else {
+    if !ignore_case {
         c
+    } else if c.is_ascii() {
+        c.to_ascii_lowercase()
+    } else {
+        c.to_lowercase().next().unwrap_or(c)
     }
 }
 
@@ -417,18 +412,37 @@ pub fn find(screen: &Screen, query: &str, from: (usize, u16), seek: Seek) -> Opt
     if needle.is_empty() {
         return None;
     }
+    let &first = needle.first()?;
     let total = retained(screen);
-    let matches_in = |index: usize| -> Vec<u16> {
-        let chars = row_chars(screen, index);
-        let folded: Vec<char> = chars.iter().map(|(c, _)| fold(*c, ignore_case)).collect();
-        (0..folded.len())
-            .filter(|at| {
-                folded
+    // One row's folded characters and their columns, and its matches,
+    // reused row after row: a search over a long history allocates nothing
+    // per row, and tries the needle only where its first character is.
+    let (mut folded, mut cols) = (Vec::new(), Vec::new());
+    let mut matches_in = |index: usize, cols: &mut Vec<u16>| {
+        cols.clear();
+        folded.clear();
+        folded.extend(
+            glyphs(screen, index)
+                .flat_map(|(_, cell)| shown(cell).chars().map(|c| fold(c, ignore_case))),
+        );
+        if folded.len() < needle.len() {
+            return;
+        }
+        let mut found = folded.iter().enumerate().filter(|(at, c)| {
+            **c == first
+                && folded
                     .get(*at..)
                     .is_some_and(|rest| rest.starts_with(&needle))
-            })
-            .filter_map(|at| chars.get(at).map(|(_, col)| *col))
-            .collect()
+        });
+        let Some((at, _)) = found.next() else {
+            return;
+        };
+        // A match: the columns of this row, then, and of each match in it.
+        let starts: Vec<usize> = std::iter::once(at).chain(found.map(|(at, _)| at)).collect();
+        let columns: Vec<u16> = glyphs(screen, index)
+            .flat_map(|(col, cell)| shown(cell).chars().map(move |_| col))
+            .collect();
+        cols.extend(starts.iter().filter_map(|at| columns.get(*at).copied()));
     };
     // Whether a column is past the cursor, the way the search goes.
     let past = |col: u16| match seek {
@@ -448,14 +462,15 @@ pub fn find(screen: &Screen, query: &str, from: (usize, u16), seek: Seek) -> Opt
                     % rows
             }
         };
-        let mut cols = matches_in(index);
+        matches_in(index, &mut cols);
         if seek == Seek::Backward {
             cols.reverse();
         }
         // On the cursor's row, what is past it; back at that row after
         // going round, the rest of it.
         let hit = cols
-            .into_iter()
+            .iter()
+            .copied()
             .find(|col| (step != 0 || past(*col)) && (step != total || !past(*col)));
         if let Some(col) = hit {
             return Some((index, col));
@@ -927,6 +942,22 @@ mod tests {
             "literal, not a regex"
         );
         assert_eq!(find(s, "zzz", (0, 0), Seek::Forward), None);
+        Ok(())
+    }
+
+    /// Several matches in a row are found in turn, each at its glyph's
+    /// column: a wide glyph before a match counts two columns, a combining
+    /// mark none, and a match may start with a wide glyph.
+    #[test]
+    fn search_finds_each_match_in_a_row_at_its_column() -> Result<(), String> {
+        let p = screen("ab 界ab e\u{301}ab 界x".as_bytes(), 1, 20)?;
+        let s = p.screen();
+        assert_eq!(find(s, "ab", (0, 0), Seek::Forward), Some((0, 5)));
+        assert_eq!(find(s, "ab", (0, 5), Seek::Forward), Some((0, 9)));
+        assert_eq!(find(s, "ab", (0, 9), Seek::Forward), Some((0, 0)), "wraps");
+        assert_eq!(find(s, "ab", (0, 9), Seek::Backward), Some((0, 5)));
+        assert_eq!(find(s, "界x", (0, 0), Seek::Forward), Some((0, 12)));
+        assert_eq!(find(s, "AB", (0, 0), Seek::Forward), None, "smart case");
         Ok(())
     }
 
