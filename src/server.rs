@@ -197,7 +197,9 @@ enum Slot {
 impl Server {
     fn run(&mut self) {
         loop {
-            self.session.settle();
+            // Each change settles as it is made; this catches output that
+            // dropped rows a copy mode held.
+            self.session.settle_if_needed();
             self.flush_outbox();
             let now = Instant::now();
             if let Some((since, _)) = &self.stopping
