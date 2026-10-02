@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 
 use fux::command::ClientId;
-use fux::config::{Binding, Config, folded};
+use fux::config::{Binding, Config};
 use fux::copy::MAX_CLIPBOARD;
 use fux::decode::{Decoder, Input};
 use fux::keys::KeyPress;
@@ -246,7 +246,7 @@ impl Run {
             return None;
         };
         let mut keys = path.clone();
-        keys.push(folded(*press));
+        keys.push(press.folded());
         let writes = self.s.config.bindings.iter().any(|b| {
             b.keys == keys
                 && b.command
