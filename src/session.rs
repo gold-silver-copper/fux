@@ -529,7 +529,13 @@ impl Session {
     }
 
     /// A new pane running the shell, with `cmd` typed into it if given.
-    fn new_pane(&mut self, cmd: &[String], cwd: &Path, size: (u16, u16)) -> Result<PaneId, Error> {
+    fn new_pane(
+        &mut self,
+        ids: &mut Ids,
+        cmd: &[String],
+        cwd: &Path,
+        size: (u16, u16),
+    ) -> Result<PaneId, Error> {
         let shell_program = self
             .config
             .shell
@@ -553,9 +559,7 @@ impl Session {
             }
             Some(typed)
         };
-        let id = PaneId(self.next_pane);
-        let mut next_pane = self.next_pane;
-        advance(&mut next_pane, "pane")?;
+        let id = ids.pane()?;
         let name = cmd
             .first()
             .map(|c| basename(c))
@@ -591,13 +595,54 @@ impl Session {
                 pane.type_now();
             }
         }
-        self.next_pane = next_pane;
         self.panes.insert(id, pane);
         Ok(id)
     }
 
-    fn new_tab_id(&mut self) -> Result<TabId, Error> {
-        advance(&mut self.next_tab, "tab").map(TabId)
+    /// The IDs to take for something being made; see [`Ids`].
+    fn ids(&self) -> Ids {
+        Ids {
+            pane: self.next_pane,
+            tab: self.next_tab,
+            workspace: self.next_ws,
+        }
+    }
+
+    /// The IDs taken for something now made are used up.
+    fn commit(&mut self, ids: Ids) {
+        self.next_pane = ids.pane;
+        self.next_tab = ids.tab;
+        self.next_ws = ids.workspace;
+    }
+
+    /// Refuses a workspace name another workspace has, `except` the one
+    /// being renamed: a workspace is found by its name.
+    fn check_workspace_name(&self, name: &str, except: Option<WsId>) -> Result<(), Error> {
+        self.check_name(name)?;
+        if self
+            .workspaces
+            .iter()
+            .any(|ws| ws.name == name && Some(ws.id) != except)
+        {
+            return Err(Error::NameTaken(name.to_owned()));
+        }
+        Ok(())
+    }
+
+    /// The name a workspace gets when none is given: `workspace-N` after
+    /// its ID, or the next number up that no workspace is named.
+    fn workspace_name(&self, id: WsId) -> String {
+        let mut n = id.0;
+        loop {
+            let name = format!("workspace-{n}");
+            if !self.workspaces.iter().any(|ws| ws.name == name) {
+                return name;
+            }
+            match n.checked_add(1) {
+                Some(next) => n = next,
+                None => return name,
+            }
+        }
     }
 
     /// Adds a tab to a workspace, named after its place if no name is given.
@@ -623,14 +668,17 @@ impl Session {
     ) -> Result<WsId, Error> {
         let default_ctx = Ctx::default();
         let cwd = self.cwd_for(ctx.unwrap_or(&default_ctx), None);
+        if let Some(name) = &name {
+            self.check_workspace_name(name, None)?;
+        }
         // The IDs are taken before the pane starts, so that none can run out
         // after, and are committed once it has.
-        let (mut next_ws, mut next_tab) = (self.next_ws, self.next_tab);
-        let id = WsId(advance(&mut next_ws, "workspace")?);
-        let tab = TabId(advance(&mut next_tab, "tab")?);
-        let pane = self.new_pane(cmd, &cwd, DEFAULT_SIZE)?;
-        (self.next_ws, self.next_tab) = (next_ws, next_tab);
-        let name = name.unwrap_or_else(|| format!("workspace-{}", id.0));
+        let mut ids = self.ids();
+        let id = ids.workspace()?;
+        let tab = ids.tab()?;
+        let pane = self.new_pane(&mut ids, cmd, &cwd, DEFAULT_SIZE)?;
+        self.commit(ids);
+        let name = name.unwrap_or_else(|| self.workspace_name(id));
         self.workspaces.push(Workspace {
             id,
             name,
@@ -1266,9 +1314,6 @@ impl Session {
                 Ok(out)
             }
             Command::NewWorkspace { name, cmd } => {
-                if let Some(name) = &name {
-                    self.check_name(name)?;
-                }
                 let ws = self.create_workspace(name.clone(), cmd, Some(ctx))?;
                 if let Some(view) = ctx.client.and_then(|c| self.views.get_mut(&c)) {
                     view.workspace = ws;
@@ -1283,10 +1328,10 @@ impl Session {
                 }
                 let cwd = self.cwd_for(ctx, None);
                 // As for a workspace: the ID first, committed after the pane.
-                let mut next_tab = self.next_tab;
-                let id = TabId(advance(&mut next_tab, "tab")?);
-                let pane = self.new_pane(cmd, &cwd, DEFAULT_SIZE)?;
-                self.next_tab = next_tab;
+                let mut ids = self.ids();
+                let id = ids.tab()?;
+                let pane = self.new_pane(&mut ids, cmd, &cwd, DEFAULT_SIZE)?;
+                self.commit(ids);
                 self.add_tab(ws, id, name.clone(), Some(Node::Pane(pane)))?;
                 if let Some(view) = ctx.client.and_then(|c| self.views.get_mut(&c)) {
                     view.workspace = ws;
@@ -1304,7 +1349,9 @@ impl Session {
                 let (_, tab) = self.locate(target).ok_or(Error::NotInTab)?;
                 let size = self.panes.get(&target).map_or(DEFAULT_SIZE, |p| p.size);
                 let cwd = self.cwd_for(ctx, Some(target));
-                let pane = self.new_pane(cmd, &cwd, size)?;
+                let mut ids = self.ids();
+                let pane = self.new_pane(&mut ids, cmd, &cwd, size)?;
+                self.commit(ids);
                 if let Some(t) = self.tab_mut(tab) {
                     layout::split(&mut t.root, target, pane, axis, Side::After);
                 }
@@ -1605,13 +1652,7 @@ impl Session {
             }
             AnyRef::Workspace(w) => {
                 let id = self.resolve_ws(w)?;
-                if self
-                    .workspaces
-                    .iter()
-                    .any(|ws| ws.name == name && ws.id != id)
-                {
-                    return Err(Error::NameTaken(name));
-                }
+                self.check_workspace_name(&name, Some(id))?;
                 self.workspace_mut(id).ok_or(Error::NoSuchWorkspace)?.name = name;
             }
         }
@@ -1681,24 +1722,32 @@ impl Session {
                 let tab = match first {
                     Some(tab) => tab,
                     None => {
-                        let id = self.new_tab_id()?;
+                        let mut ids = self.ids();
+                        let id = ids.tab()?;
                         self.add_tab(ws, id, Some("main".into()), None)?;
+                        self.commit(ids);
                         id
                     }
                 };
                 (ws, tab)
             }
             MoveTo::NewTab => {
-                let id = self.new_tab_id()?;
+                let mut ids = self.ids();
+                let id = ids.tab()?;
                 self.add_tab(source_ws, id, None, None)?;
+                self.commit(ids);
                 (source_ws, id)
             }
             MoveTo::NewWorkspace => {
-                let id = WsId(advance(&mut self.next_ws, "workspace")?);
-                let tab = self.new_tab_id()?;
+                // Both IDs or neither: one taken alone would be lost.
+                let mut ids = self.ids();
+                let id = ids.workspace()?;
+                let tab = ids.tab()?;
+                self.commit(ids);
+                let name = self.workspace_name(id);
                 self.workspaces.push(Workspace {
                     id,
-                    name: format!("workspace-{}", id.0),
+                    name,
                     tabs: vec![Tab {
                         id: tab,
                         name: "main".into(),
@@ -2021,6 +2070,29 @@ pub fn describe(target: &AnyRef) -> String {
     }
 }
 
+/// The IDs taken for something being made: a pane, a tab and its pane, a
+/// workspace and its first tab and pane. They are taken from a copy of the
+/// counters and committed with `Session::commit` once it is made, so a
+/// failure part way uses none of them up.
+#[derive(Clone, Copy)]
+struct Ids {
+    pane: u32,
+    tab: u32,
+    workspace: u32,
+}
+
+impl Ids {
+    fn pane(&mut self) -> Result<PaneId, Error> {
+        advance(&mut self.pane, "pane").map(PaneId)
+    }
+    fn tab(&mut self) -> Result<TabId, Error> {
+        advance(&mut self.tab, "tab").map(TabId)
+    }
+    fn workspace(&mut self) -> Result<WsId, Error> {
+        advance(&mut self.workspace, "workspace").map(WsId)
+    }
+}
+
 /// Takes the next ID from `counter`. IDs are never reused, so one that
 /// would wrap round is an error instead.
 fn advance(counter: &mut u32, what: &'static str) -> Result<u32, Error> {
@@ -2197,6 +2269,38 @@ mod tests {
         Ok(())
     }
 
+    /// Workspaces are found by name, so no two share one: a name given is
+    /// refused if taken, and a name made up skips those taken. Making one
+    /// that fails part way uses up none of the IDs it took.
+    #[test]
+    fn workspace_names_stay_unique_and_failures_use_no_ids()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = Config {
+            shell: vec!["/bin/sh".into()],
+            ..Config::default()
+        };
+        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
+        s.start()?;
+        let run = |s: &mut Session, line: &str| -> Result<Outcome, String> {
+            let words = crate::words::split(line).map_err(|e| e.to_string())?;
+            Ok(s.run(&words, &Ctx::default()))
+        };
+        assert_eq!(run(&mut s, "new-workspace -n main")?.status, 1);
+        assert_eq!(run(&mut s, "new-workspace -n workspace-3")?.stdout, "+2\n");
+        // +3 would be workspace-3, which is taken.
+        assert_eq!(run(&mut s, "new-workspace")?.stdout, "+3\n");
+        let names: Vec<&str> = s.workspaces.iter().map(|w| w.name.as_str()).collect();
+        assert_eq!(names, ["main", "workspace-3", "workspace-4"]);
+        // A move to a new workspace with no tab ID left takes no workspace
+        // ID either.
+        s.next_tab = u32::MAX;
+        let ws = s.next_ws;
+        let moved = run(&mut s, "move-pane -t %1 --to new-workspace")?;
+        assert_eq!(moved.status, 1, "{}", moved.stderr);
+        assert_eq!(s.next_ws, ws);
+        Ok(())
+    }
+
     /// A failing command says what it said as a string, word for word:
     /// each line, run in turn on one session, and its status and message,
     /// as they were before commands failed with `Error`.
@@ -2292,7 +2396,11 @@ mod tests {
             ("confirm-close -c c1 pane -t %99", 1, "no pane %99"),
             ("rename-prompt -c c1 tab -t @99", 1, "no tab @99"),
             ("choose-tab -c c1 -t %99", 1, "no pane %99"),
-            ("new-workspace -n main", 0, ""),
+            (
+                "new-workspace -n main",
+                1,
+                r#"another workspace is named "main""#,
+            ),
             ("new-workspace -n two", 0, ""),
             (
                 "rename -t +2 main",
