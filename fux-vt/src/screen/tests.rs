@@ -60,3 +60,58 @@ fn identity_and_mark_exhaustion_never_alias_old_rows() -> Result<(), Error> {
     }
     Ok(())
 }
+
+/// Recycling a slot clears only the cells before its `used` mark, so every
+/// edit must keep the cells past it blank: printing, wide glyphs and
+/// clusters, erasing in the pen's colours or not, inserting and deleting,
+/// scrolling in and out of regions, resizing.
+#[test]
+fn cells_past_a_rows_used_mark_stay_blank() -> Result<(), Error> {
+    let pieces: [&[u8]; 24] = [
+        b"hello",
+        b"\r\n",
+        b"\n",
+        "\u{754c}x".as_bytes(),
+        "e\u{301}".as_bytes(),
+        "\u{1f44d}\u{1f3fd}".as_bytes(),
+        b"\x1b[41m",
+        b"\x1b[m",
+        b"\x1b[K",
+        b"\x1b[1K",
+        b"\x1b[2J",
+        b"\x1b[3X",
+        b"\x1b[2@",
+        b"\x1b[2P",
+        b"\x1b[L",
+        b"\x1b[M",
+        b"\x1b[2;4r",
+        b"\x1b[r",
+        b"\x1bM",
+        b"\x1b[S",
+        b"\x1b[T",
+        b"\x1b[4h",
+        b"\x1b[4l",
+        b"\x1b[9;3H",
+    ];
+    let mut state = 0x5eed_u64;
+    for reflow in [false, true] {
+        let options = crate::Options::new().with_reflow(reflow);
+        let mut p = crate::Parser::with_options(6, 10, 4, options)?;
+        for step in 0..3_000u32 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let pick = usize::try_from(state >> 59).unwrap_or(0);
+            if step % 500 == 499 {
+                let cols = if step % 1000 == 999 { 10 } else { 7 };
+                p.resize(6, cols)?;
+            } else if let Some(piece) = pieces.get(pick % pieces.len()) {
+                p.process(piece)?;
+            }
+            let s = p.screen();
+            assert!(s.primary.blank_past_used(), "step {step}");
+            assert!(s.alternate.blank_past_used(), "step {step}");
+        }
+    }
+    Ok(())
+}

@@ -579,13 +579,31 @@ pub fn neighbor(placement: &Placement, from: PaneId, direction: Direction) -> Op
 
 /// Resizes `pane` by `amount` cells in `direction`, as placed in `area`:
 /// the nearest split along the direction's axis that has a sibling on that
-/// side moves the border between them. Weights become the new cell sizes.
+/// side moves the border between them, growing the pane's side. Only when
+/// no split has one does the nearest split along the axis shrink the pane
+/// from its far side instead, moving that border the same way. Weights
+/// become the new cell sizes.
 pub fn resize(
     node: &mut Node,
     area: Rect,
     pane: PaneId,
     direction: Direction,
     amount: u16,
+) -> bool {
+    resize_by(node, area, pane, direction, amount, true)
+        || resize_by(node, area, pane, direction, amount, false)
+}
+
+/// `resize`, at one split and those below it: with `toward`, only a split
+/// with a sibling on the direction's side acts; without, the nearest along
+/// the axis does, from whichever side it can.
+fn resize_by(
+    node: &mut Node,
+    area: Rect,
+    pane: PaneId,
+    direction: Direction,
+    amount: u16,
+    toward: bool,
 ) -> bool {
     let Node::Split { axis, children } = node else {
         return false;
@@ -600,7 +618,7 @@ pub fn resize(
     }
     let child_area = child_rects(*axis, children, area, &placement);
     if let (Some((_, child)), Some(inner)) = (children.get_mut(index), child_area.get(index))
-        && resize(child, *inner, pane, direction, amount)
+        && resize_by(child, *inner, pane, direction, amount, toward)
     {
         return true;
     }
@@ -619,6 +637,10 @@ pub fn resize(
     // shrink from the far side, moving the other border the same way.
     let before = index.checked_sub(1);
     let after = index.checked_add(1).filter(|i| *i < children.len());
+    let neighbour = if toward_start { before } else { after };
+    if toward && neighbour.is_none() {
+        return false;
+    }
     let (grow, shrink) = match (toward_start, before, after) {
         (true, Some(before), _) => (index, before),
         (true, None, Some(after)) => (after, index),
@@ -893,6 +915,36 @@ mod tests {
         assert_eq!(place(node, a).rect(p(0)).map(|r| r.w), Some(MIN));
         // No split along the vertical axis: nothing to move.
         assert!(!resize(node, a, p(0), Direction::Up, 1));
+    }
+
+    /// In nested splits the border that moves is the nearest one on the
+    /// side asked for, however deep the pane is: `0 | (1 / (2 | 3))`,
+    /// left from 2 moves the border between 0 and the rest, not 2's own
+    /// right border (which would shrink 2 while 0 stood still).
+    #[test]
+    fn resizing_in_nested_splits_moves_the_border_on_that_side() {
+        let mut root = tree();
+        split(&mut root, p(1), p(2), Axis::Vertical, Side::After);
+        split(&mut root, p(2), p(3), Axis::Horizontal, Side::After);
+        let Some(node) = &mut root else { return };
+        let a = area(81, 24);
+        let before = place(node, a);
+        let width = |placed: &Placement, n| placed.rect(p(n)).map(|r| r.w);
+        assert!(resize(node, a, p(2), Direction::Left, 5));
+        let after = place(node, a);
+        assert_eq!(width(&after, 0), width(&before, 0).map(|w| w - 5));
+        assert_eq!(width(&after, 1), width(&before, 1).map(|w| w + 5));
+        assert_eq!(
+            after.rect(p(2)).map(|r| r.x),
+            before.rect(p(2)).map(|r| r.x - 5)
+        );
+        // Right from 3, at the right edge: no split has a sibling there, so
+        // 3 shrinks from its left, the nearest border along the axis.
+        let before = after;
+        assert!(resize(node, a, p(3), Direction::Right, 2));
+        let after = place(node, a);
+        assert_eq!(width(&after, 3), width(&before, 3).map(|w| w - 2));
+        assert_eq!(width(&after, 0), width(&before, 0));
     }
 
     #[test]

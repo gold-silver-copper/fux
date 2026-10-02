@@ -21,6 +21,7 @@ unicode-segmentation = "=1.13.3"
 unused_must_use = "forbid"
 unconditional_recursion = "forbid"
 unsafe_code = "forbid"
+missing_docs = "forbid"
 
 [lints.clippy]
 suspicious = { level = "forbid", priority = -1 }

@@ -1,0 +1,75 @@
+[workspace]
+
+[package]
+name = "fux-vt-compare"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+
+[[bin]]
+name = "fux-vt-compare"
+path = "src/main.rs"
+doc = false
+bench = false
+
+[dependencies]
+# The code under test.
+fux-vt = { path = ".." }
+# The reference: Ghostty's terminal core, built from source by Zig. `run.sh`
+# pins the Ghostty commit and the Zig toolchain it is built with.
+libghostty-vt = { version = "=0.2.1", default-features = false }
+# The other engines run in this process.
+alacritty_terminal = "=0.26.0"
+avt = "=0.18.0"
+vt100 = "=0.16.2"
+wezterm-term = { git = "https://github.com/wezterm/wezterm", rev = "cab25161054c50fd6c705db4ceefef0f1e5a9575", package = "wezterm-term" }
+# Reading the engines that run as their own processes.
+serde_json = "1"
+unicode-width = "0.2"
+
+[build-dependencies]
+# libvterm, compiled from its release source (run.sh fetches it).
+cc = "1"
+
+[profile.release]
+# Overflow is an error here, as in a debug build.
+overflow-checks = true
+
+[lints.rust]
+unused_must_use = "forbid"
+unconditional_recursion = "forbid"
+unsafe_code = "deny"
+
+[lints.clippy]
+suspicious = { level = "forbid", priority = -1 }
+unwrap_used = "forbid"
+expect_used = "forbid"
+panic = "forbid"
+unreachable = "forbid"
+todo = "forbid"
+unimplemented = "forbid"
+indexing_slicing = "forbid"
+exit = "forbid"
+infinite_loop = "forbid"
+large_stack_frames = "forbid"
+unchecked_time_subtraction = "forbid"
+read_zero_byte_vec = "forbid"
+unused_result_ok = "forbid"
+debug_assert_with_mut_call = "forbid"
+allow_attributes = "forbid"
+undocumented_unsafe_blocks = "forbid"
+significant_drop_in_scrutinee = "forbid"
+significant_drop_tightening = "forbid"
+cast_lossless = "forbid"
+string_slice = "forbid"
+mem_forget = "forbid"
+large_stack_arrays = "forbid"
+allow_attributes_without_reason = "forbid"
+wildcard_enum_match_arm = "forbid"
+cast_possible_truncation = "forbid"
+cast_possible_wrap = "forbid"
+cast_sign_loss = "forbid"
+arithmetic_side_effects = "forbid"
+disallowed_methods = "forbid"

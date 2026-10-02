@@ -103,7 +103,8 @@ own.
 
 **Choosers** (`t g`, `w g`) list each tab or workspace with its panes, the
 current one marked. Enter selects, `r` renames, `x` closes (after asking), Esc
-or `q` cancels; Up/Down, `j`/`k`, PageUp/PageDown and Home/End move.
+or `q` cancels; Up/Down, `j`/`k`, PageUp/PageDown and Home/End move. Their
+letters, like a confirmation's `y`/`n`/`q`, work in either case.
 
 **Action menus** (`a`, `t a`, `w a`) hold what has no key of its own: rename,
 close, terminate the running command, swap, move to another or a new tab or
@@ -124,7 +125,10 @@ lowest number.
 
 `C-b c` puts a keyboard cursor on the focused pane, starting at its text
 cursor. For your terminal the pane holds still while you look, even as output
-continues (other terminals see it live). In place of the tabs, the bar shows
+continues (other terminals see it live). Only history's own limit moves it:
+if output pushes the rows copy mode holds (the top of its view, its cursor,
+or where the selection starts) out of the history, copy mode ends, and the
+bar says why. In place of the tabs, the bar shows
 `COPY` (`COPY select`, `lines` or `block` while selecting, or the search being
 typed) and the keys that act now, and on the right the cursor's line in the
 history.
@@ -178,7 +182,7 @@ tab and workspace.
 | `fux server [--socket PATH] [--config FILE]` | run a server in the foreground |
 | `fux kill-server` | stop the server (hangs up every pane) |
 | `fux ls [--json]` | workspaces, tabs, panes and clients |
-| `fux new-workspace [-n NAME] [-- CMD…]` | a workspace with a shell, CMD typed into it |
+| `fux new-workspace [-n NAME] [-- CMD…]` | a workspace with a shell, CMD typed into it; workspaces are found by name, so no two share one |
 | `fux new-tab [-t WS] [-n NAME] [-- CMD…]` | a tab with a shell, CMD typed into it |
 | `fux split -h\|-v [-t %N] [-- CMD…]` | split a pane: `-h` side by side, `-v` stacked |
 | `fux kill-pane\|kill-tab\|kill-workspace [-t …]` | close, without asking |
@@ -196,19 +200,21 @@ tab and workspace.
 | `fux reload` | run the config file again over the defaults |
 | `fux list-buffers`, `fux show-buffer [-b N]`, `fux paste-buffer [-b N] [-t %N]` | paste buffers, newest `0` |
 | `fux list-keys` | key names, and the current bindings |
-| `fux help`, `fux --version` | usage, and the version |
+| `fux help`, `fux --version` (or `fux version`) | usage, and the version |
 | `fux detach [-c CLIENT]` | detach a client |
 
 These act on one client's screen. From a key or the command prompt they act on
 yours; from the command line they need `-c CLIENT`:
 `command-column`, `command-prompt`, `copy-mode`, `zoom`,
-`choose-tab [--move]`, `choose-workspace [--move]`, `choose-pane [-t %N]`
-(swap), `menu pane|tab|workspace [-t TARGET]`,
+`choose-tab [-t %N] [--move]`, `choose-workspace [-t %N] [--move]` (with a
+pane, a chooser to move it), `choose-pane [-t %N]` (swap),
+`menu pane|tab|workspace [-t TARGET]`,
 `rename-prompt [pane|tab|workspace] [-t TARGET]`,
 `confirm-close [pane|tab|workspace] [-t TARGET]`,
 `select-pane -t %N|--next|--previous|--last|-L|-R|-U|-D`,
 `select-tab -t @N|--next|--previous`, `select-workspace -t WS|--next|--previous`,
-`capture-client [--json]`.
+`capture-client [--json]`. Each takes only the flags shown: `zoom` and
+`copy-mode` act on the client's focused pane, and refuse `-t`.
 
 Exit status: 0 done; 1 the command failed, with the reason on stderr; 2 a
 usage error.
@@ -323,7 +329,7 @@ and the whole interface is the fixed command list above.
 
 One server thread runs a `poll` loop over the socket, every client and every
 pane's PTY; there are no other threads and no async runtime. Each pane has a
-PTY and a [`fux-vt`](fux-vt) terminal emulator. Layout is a tree of weighted
+PTY and a [`fux-vt`](https://github.com/gold-silver-copper/fux/blob/main/fux-vt) terminal emulator. Layout is a tree of weighted
 splits per tab; each client gets its own rectangles for its own size, and a
 PTY's size is the smallest rectangle any client shows it in. A client is a
 dumb pipe: its keystrokes go to the server as raw bytes and are decoded
@@ -333,6 +339,17 @@ client that stops reading gets nothing more queued until it catches up, then
 one full repaint.
 
 The previous, Bevy-based fux is kept at the tag `bevy-final`.
+
+## Development
+
+`cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked
+-- -D warnings` and `cargo test --workspace --locked` are the gates CI runs
+on Linux and macOS. The tests start real servers and shells: they need
+`/bin/sh`, `/bin/dash` and `python3`, and use zsh where it is installed.
+Packages outside the workspace, each with a README: `walk` (scripted runs of
+the real binary), `diff` (fux beside its last release), `fuzz` and
+`fux-vt/fuzz` (libFuzzer targets), `fux-vt/compare` (fux-vt beside other
+terminals). `references/` fetches the specifications fux-vt follows.
 
 ## License
 

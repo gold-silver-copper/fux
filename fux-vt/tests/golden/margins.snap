@@ -9,7 +9,7 @@ cell=0 text="c" wide=false continuation=false attrs=Default/Default/0
 row=3 wrapped=false
 cell=0 text="d" wide=false continuation=false attrs=Default/Default/0
 operation=1 replies=[]
-size=(4, 12) cursor=(1, 0) modes=(false, false, false, false) mouse=None encoding=Default attrs=Default/Default/0
+size=(4, 12) cursor=(0, 0) modes=(false, false, false, false) mouse=None encoding=Default attrs=Default/Default/0
 row=0 wrapped=false
 cell=0 text="a" wide=false continuation=false attrs=Default/Default/0
 row=1 wrapped=false

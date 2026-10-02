@@ -108,7 +108,11 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
     server.ok(&["kill-pane", "-t", "%3"])?;
     bar_has(&mut client, "%3 is gone")?;
     client.keys("y")?;
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    // Something that shows, typed after the y: once it shows, the y has
+    // been handled.
+    client.keys(&format!("{PREFIX}e"))?;
+    client.wait_for("Enter accepts")?;
+    client.keys("\x1b")?;
     assert_eq!(panes(&server)?, ["%1"], "a late y closes nothing");
     Ok(())
 }
@@ -239,6 +243,27 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     client.keys("\r")?;
     eventually("renamed by the pasted line", || {
         Ok(server.ok(&["ls"])?.contains("%1 pasted"))
+    })?;
+    Ok(())
+}
+
+/// A line longer than the prompt's panel scrolls to keep the cursor in
+/// view: what is typed last, and the cursor, stay on screen.
+#[test]
+fn a_long_prompt_keeps_its_cursor_in_view() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(10, 30)?;
+    client.wait_for("$")?;
+    client.keys(PREFIX)?;
+    client.keys("e")?;
+    client.keys("split -v -- echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaTAIL")?;
+    client.wait("the end of the line and the cursor", |t| {
+        t.lines().any(|l| l.contains("TAIL▏"))
+    })?;
+    // Back at the start, the start shows.
+    client.keys("\x1b[H")?;
+    client.wait("the start of the line", |t| {
+        t.lines().any(|l| l.contains("▏split"))
     })?;
     Ok(())
 }

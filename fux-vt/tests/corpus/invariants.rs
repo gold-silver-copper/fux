@@ -12,8 +12,13 @@ pub fn check(p: &Parser) {
     assert!(rows > 0 && cols > 0);
     let (row, col) = s.cursor_position();
     assert!(
-        row < rows && col <= cols,
+        row < rows && col < cols,
         "cursor {row},{col} outside {rows}x{cols}"
+    );
+    // A wrap waits only in the last column.
+    assert!(
+        !s.pending_wrap() || col.checked_add(1) == Some(cols),
+        "wrap pending at {row},{col} of {rows}x{cols}"
     );
     let (top, bottom) = s.scroll_region();
     assert!(top <= bottom && bottom < rows);
@@ -25,7 +30,7 @@ pub fn check(p: &Parser) {
         let Some(row) = row else {
             return;
         };
-        assert!(ids.insert(row.id), "row identities alias");
+        assert!(ids.insert(row.id()), "row identities alias");
         assert!(!row.is_empty());
         // The row's text stays within its budget.
         assert!(
@@ -72,10 +77,10 @@ pub fn check(p: &Parser) {
     for offset in [0, 1, usize::MAX] {
         for width in [0, 1, cols.saturating_sub(1), cols, u16::MAX] {
             let w = s.window(offset, rows, width);
-            assert!(w.offset <= s.history_len());
-            assert!(w.cols <= cols && w.rows <= rows);
-            if let Some(last) = w.cols.checked_sub(1) {
-                for y in 0..w.rows {
+            assert!(w.offset() <= s.history_len());
+            assert!(w.cols() <= cols && w.rows() <= rows);
+            if let Some(last) = w.cols().checked_sub(1) {
+                for y in 0..w.rows() {
                     assert!(!w.cell(y, last).is_some_and(|c| c.is_wide()));
                 }
             }
@@ -88,6 +93,7 @@ pub fn equal(a: &Parser, b: &Parser) {
     let (a, b) = (a.screen(), b.screen());
     assert_eq!(a.size(), b.size());
     assert_eq!(a.cursor_position(), b.cursor_position());
+    assert_eq!(a.pending_wrap(), b.pending_wrap());
     assert_eq!(a.attributes(), b.attributes());
     assert_eq!(a.autowrap(), b.autowrap());
     assert_eq!(a.origin_mode(), b.origin_mode());
@@ -108,6 +114,6 @@ pub fn equal(a: &Parser, b: &Parser) {
             return;
         };
         assert_eq!(cells(a), cells(b), "row from bottom {offset}");
-        assert_eq!(a.wrapped, b.wrapped, "row from bottom {offset}");
+        assert_eq!(a.wrapped(), b.wrapped(), "row from bottom {offset}");
     }
 }

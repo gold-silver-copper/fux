@@ -1,3 +1,5 @@
+//! The sequence matrix's behaviour, family by family, with expected values
+//! from the vt100-crate baseline and its corrections.
 use fux_vt::{CellRef, Color, Error, MouseProtocolEncoding, MouseProtocolMode, Parser};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
@@ -24,14 +26,21 @@ fn cell(parser: &Parser, row: u16, col: u16) -> std::result::Result<CellRef<'_>,
 fn text_controls_cursor_and_pending_wrap() -> Result {
     let mut p = Parser::new(3, 5, 2)?;
     p.process(b"abcde")?;
-    assert_eq!(p.screen().cursor_position(), (0, 5));
+    // The cursor stays on the last column, waiting to wrap (DEC STD 070,
+    // Appendix D.6.1, the Last Column Flag).
+    assert_eq!(p.screen().cursor_position(), (0, 4));
+    assert!(p.screen().pending_wrap());
     assert!(!p.screen().row_wrapped(0));
     p.process(b"fgh\r\nijk")?;
     assert_eq!(lines(&p), ["abcde", "fgh", "ijk"]);
     assert!(p.screen().row_wrapped(0));
     assert_eq!(p.screen().cursor_position(), (2, 3));
+    assert!(!p.screen().pending_wrap());
+    // BS ends the pending wrap and moves back from the last column, so Y
+    // lands before Z, as in xterm (`tab-then-print-in-last-column`). This
+    // used to pin "abcdY", the vt100 crate's cursor one past the edge.
     p.process(b"\x1b[H\tZ\x08Y")?;
-    assert_eq!(lines(&p), ["abcdY", "fgh", "ijk"]);
+    assert_eq!(lines(&p), ["abcYZ", "fgh", "ijk"]);
     p.process(b"\x1b[999;999H")?;
     assert_eq!(p.screen().cursor_position(), (2, 4));
     p.process(b"\x1b[2A\x1b[2D")?;
@@ -54,7 +63,9 @@ fn tiny_grids_wrap_and_drop_wide_glyphs_without_underflow() -> Result {
         }
         p.process(b"\x1bc")?;
         p.process(&vec![b'x'; usize::from(rows) * usize::from(cols) + 1])?;
-        assert_eq!(p.screen().cursor_position(), (rows - 1, 1));
+        // One column wide, the last x fills the row and waits to wrap.
+        assert_eq!(p.screen().cursor_position(), (rows - 1, 1.min(cols - 1)));
+        assert_eq!(p.screen().pending_wrap(), cols == 1);
         assert_eq!(p.screen().history_len(), 1);
         p.process(b"\x1b[999S\x1b[999T\x1b[999L\x1b[999M")?;
     }
@@ -122,7 +133,9 @@ fn sgr_defaults_resets_and_colour_parameter_forms() -> Result {
     assert!(a.bold() && a.italic() && a.underline() && a.inverse());
     assert_eq!(a.fgcolor(), Color::Idx(9));
     assert_eq!(a.bgcolor(), Color::Idx(12));
-    assert!(cell(&p, 0, 1)?.dim() && !cell(&p, 0, 1)?.bold());
+    // Dim joins bold, as in xterm (`fux-vt-compare replay --engines all
+    // '\e[1;2mX'`); this used to pin the vt100 crate's dim replacing bold.
+    assert!(cell(&p, 0, 1)?.dim() && cell(&p, 0, 1)?.bold());
     assert_eq!(cell(&p, 0, 2)?.attributes(), Default::default());
     assert_eq!(cell(&p, 0, 3)?.fgcolor(), Color::Rgb(1, 2, 3));
     assert_eq!(cell(&p, 0, 3)?.bgcolor(), Color::Idx(200));
@@ -141,13 +154,13 @@ fn history_ids_survive_scrolling_and_recycled_slots_do_not_alias() -> Result {
         .window(0, 3, 8)
         .row(0)
         .ok_or(Error::InvalidRange)?
-        .id;
+        .id();
     let mark = p.screen().mark();
     p.process(b"\r\nfour\r\nfive")?;
     assert_eq!(p.screen().history_len(), 2);
     assert_eq!(p.screen().offset_for_row(id), Some(2));
     let w = p.screen().window(usize::MAX, 3, 8);
-    assert_eq!(w.offset, 2);
+    assert_eq!(w.offset(), 2);
     assert_eq!(w.text((0, 0), (2, 7), 100, 100)?, "one\ntwo\nthree");
     assert_eq!(
         p.screen()
@@ -162,7 +175,10 @@ fn history_ids_survive_scrolling_and_recycled_slots_do_not_alias() -> Result {
     assert_eq!(p.screen().dirty_rows_since(mark).count(), 5);
     assert_eq!(p.screen().dirty_rows_since(mark).count(), 5);
     assert_eq!(
-        p.screen().row_from_bottom(4).ok_or(Error::InvalidRange)?.id,
+        p.screen()
+            .row_from_bottom(4)
+            .ok_or(Error::InvalidRange)?
+            .id(),
         id
     );
     assert!(p.screen().row_from_bottom(usize::MAX).is_none());
@@ -400,7 +416,7 @@ fn regions_origin_and_reset_have_explicit_history_semantics() -> Result {
         .window(0, 4, 4)
         .row(0)
         .ok_or(Error::InvalidRange)?
-        .id;
+        .id();
     p.process(b"\x1bc")?;
     assert_eq!(lines(&p), ["", "", "", ""]);
     assert!(!p.screen().origin_mode());
@@ -418,8 +434,7 @@ fn ignored_sequences_cancel_and_recover_without_payload_leakage() -> Result {
         b"\x1b_apc\x1b\\",
         b"\x1b^pm\x1b\\",
         b"\x1bXsos\x1b\\",
-        b"\x1b[?1047h",
-        b"\x1b[?1048h",
+        b"\x1b[?12345h",
         b"\x1b[999z",
         b"\x1b(0",
     ] {

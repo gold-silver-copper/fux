@@ -5,22 +5,34 @@
 
 /// A default, indexed, or true-colour terminal colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Color {
+    /// The terminal's default colour, foreground or background as it is used.
     #[default]
     Default,
+    /// An indexed colour: 0 to 7 the standard colours, 8 to 15 their bright
+    /// forms, 16 to 255 xterm's 256-colour palette.
     Idx(u8),
+    /// A direct colour: red, green and blue.
     Rgb(u8, u8, u8),
 }
 
 /// How a cell blinks: SGR 5 (slow) and 6 (rapid) replace one another, and
 /// SGR 25 stops either.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Blink {
+    /// Not blinking.
     #[default]
     None,
+    /// Blinking slowly (SGR 5).
     Slow,
+    /// Blinking rapidly (SGR 6).
     Rapid,
 }
+
+/// Every ASCII character, in order: the text of a cell holding one.
+const ASCII: &str = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20\x21\x22\x23\x24\x25\x26\x27\x28\x29\x2a\x2b\x2c\x2d\x2e\x2f\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x3a\x3b\x3c\x3d\x3e\x3f\x40\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50\x51\x52\x53\x54\x55\x56\x57\x58\x59\x5a\x5b\x5c\x5d\x5e\x5f\x60\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6a\x6b\x6c\x6d\x6e\x6f\x70\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7a\x7b\x7c\x7d\x7e\x7f";
 
 /// A colour as stored: a tag (0 default, 1 indexed, 2 RGB) and its bytes,
 /// all of them always set, so attributes compare, copy and clear as plain
@@ -88,9 +100,22 @@ impl Attributes {
             flags: 0,
         }
     }
+    /// The foreground colour.
     pub const fn foreground(self) -> Color {
         self.foreground.get()
     }
+    /// What an erase, a scroll or an insertion fills cells with while these
+    /// attributes are the pen: its colours alone, as xterm fills them (the
+    /// `bce` terminfo capability, background colour erase).
+    pub(crate) const fn erased(self) -> Self {
+        Self {
+            foreground: self.foreground,
+            background: self.background,
+            underline_color: Packed([0; 4]),
+            flags: 0,
+        }
+    }
+    /// The background colour.
     pub const fn background(self) -> Color {
         self.background.get()
     }
@@ -98,11 +123,13 @@ impl Attributes {
     pub const fn underline_color(self) -> Color {
         self.underline_color.get()
     }
+    /// These attributes with `color` as the foreground.
     #[must_use]
     pub const fn with_foreground(mut self, color: Color) -> Self {
         self.foreground = Packed::new(color);
         self
     }
+    /// These attributes with `color` as the background.
     #[must_use]
     pub const fn with_background(mut self, color: Color) -> Self {
         self.background = Packed::new(color);
@@ -116,26 +143,32 @@ impl Attributes {
         };
         self
     }
+    /// These attributes with bold (SGR 1) on or off.
     #[must_use]
     pub const fn with_bold(self, on: bool) -> Self {
         self.with_flag(Self::BOLD, on)
     }
+    /// These attributes with dim (SGR 2) on or off.
     #[must_use]
     pub const fn with_dim(self, on: bool) -> Self {
         self.with_flag(Self::DIM, on)
     }
+    /// These attributes with italic (SGR 3) on or off.
     #[must_use]
     pub const fn with_italic(self, on: bool) -> Self {
         self.with_flag(Self::ITALIC, on)
     }
+    /// These attributes with underline (SGR 4) on or off.
     #[must_use]
     pub const fn with_underline(self, on: bool) -> Self {
         self.with_flag(Self::UNDERLINE, on)
     }
+    /// These attributes with inverse (SGR 7) on or off.
     #[must_use]
     pub const fn with_inverse(self, on: bool) -> Self {
         self.with_flag(Self::INVERSE, on)
     }
+    /// These attributes blinking as `blink` says (SGR 5, 6 and 25).
     #[must_use]
     pub const fn with_blink(self, blink: Blink) -> Self {
         let bit = match blink {
@@ -145,34 +178,43 @@ impl Attributes {
         };
         self.with_flag(Self::BLINK, false).with_flag(bit, true)
     }
+    /// These attributes with hidden (SGR 8) on or off.
     #[must_use]
     pub const fn with_hidden(self, on: bool) -> Self {
         self.with_flag(Self::HIDDEN, on)
     }
+    /// These attributes with strikeout (SGR 9) on or off.
     #[must_use]
     pub const fn with_strikeout(self, on: bool) -> Self {
         self.with_flag(Self::STRIKEOUT, on)
     }
+    /// These attributes with `color` as the underline colour (SGR 58).
     #[must_use]
     pub const fn with_underline_color(mut self, color: Color) -> Self {
         self.underline_color = Packed::new(color);
         self
     }
+    /// Whether bold (SGR 1) is on.
     pub fn bold(self) -> bool {
         self.flags & Self::BOLD != 0
     }
+    /// Whether dim (SGR 2) is on.
     pub fn dim(self) -> bool {
         self.flags & Self::DIM != 0
     }
+    /// Whether italic (SGR 3) is on.
     pub fn italic(self) -> bool {
         self.flags & Self::ITALIC != 0
     }
+    /// Whether underline (SGR 4, or 21, or a style of 4) is on.
     pub fn underline(self) -> bool {
         self.flags & Self::UNDERLINE != 0
     }
+    /// Whether inverse (SGR 7) is on.
     pub fn inverse(self) -> bool {
         self.flags & Self::INVERSE != 0
     }
+    /// How the text blinks.
     pub fn blink(self) -> Blink {
         if self.flags & Self::SLOW_BLINK != 0 {
             Blink::Slow
@@ -182,9 +224,11 @@ impl Attributes {
             Blink::None
         }
     }
+    /// Whether hidden (SGR 8) is on.
     pub fn hidden(self) -> bool {
         self.flags & Self::HIDDEN != 0
     }
+    /// Whether strikeout (SGR 9) is on.
     pub fn strikeout(self) -> bool {
         self.flags & Self::STRIKEOUT != 0
     }
@@ -245,15 +289,21 @@ impl Cell {
     pub fn wide_continuation() -> Self {
         Self::continuation()
     }
+    /// Whether the cell holds text: neither blank nor the second half of a
+    /// wide glyph.
     pub fn has_contents(&self) -> bool {
         self.length & (Self::LENGTH | Self::SPILLED) != 0
     }
+    /// Whether the cell holds a glyph two columns wide, the next cell being
+    /// its second half.
     pub fn is_wide(&self) -> bool {
         self.length & Self::WIDE != 0
     }
+    /// Whether the cell is the second half of the wide glyph before it.
     pub fn is_wide_continuation(&self) -> bool {
         self.length & Self::CONTINUATION != 0
     }
+    /// The cell's colours and rendition.
     pub fn attributes(&self) -> Attributes {
         self.attributes
     }
@@ -323,6 +373,19 @@ impl Cell {
     }
     /// The inline text; empty for a spilled cell.
     fn inline(&self) -> &str {
+        // One ASCII byte, as most cells hold: its text without validating
+        // it, which readers that walk every cell (copy, search) would pay
+        // on each.
+        if self.length & (Self::LENGTH | Self::SPILLED) == 1
+            && let Some(&byte) = self.text.first()
+            && byte.is_ascii()
+        {
+            let at = usize::from(byte);
+            return at
+                .checked_add(1)
+                .and_then(|end| ASCII.get(at..end))
+                .unwrap_or("");
+        }
         // Every write is whole UTF-8, and length always ends on a boundary.
         self.text
             .get(..usize::from(self.length & Self::LENGTH))
@@ -345,6 +408,26 @@ impl Cell {
         let mut cell =
             Self::new(text, false, self.attributes).unwrap_or(Self::blank(self.attributes));
         cell.length |= self.length & Self::HALVES;
+        cell
+    }
+    /// The cell, keeping its halves and attributes, holding `head` then
+    /// `tail` inline: whole UTF-8 together, and at most
+    /// [`Cell::INLINE_CAPACITY`] bytes, or the cell is left blank.
+    fn with_inline_parts(self, head: &[u8], tail: &[u8]) -> Self {
+        let mut cell = Self::blank(self.attributes);
+        let Some(len) = head.len().checked_add(tail.len()) else {
+            return cell;
+        };
+        let written = cell
+            .text
+            .get_mut(..len)
+            .and_then(|text| text.split_at_mut_checked(head.len()))
+            .and_then(|(a, b)| crate::copy_from(a, head).and_then(|()| crate::copy_from(b, tail)));
+        if written.is_some()
+            && let Ok(len) = u8::try_from(len)
+        {
+            cell.length = len | (self.length & Self::HALVES);
+        }
         cell
     }
     /// The cell, keeping its halves and attributes, locating `len` bytes of
@@ -416,7 +499,6 @@ impl Line<'_> {
         let Some(&cell) = self.cells.get(i) else {
             return false;
         };
-        let mut buffer = [0u8; Cell::CLUSTER_CAPACITY];
         let current = if cell.has_contents() {
             self.spill.text(&cell)
         } else {
@@ -429,11 +511,20 @@ impl Line<'_> {
         else {
             return false;
         };
+        let mut encoded = [0; 4];
+        let encoded = c.encode_utf8(&mut encoded).as_bytes();
+        // A cluster that still fits inline goes straight into the cell:
+        // whole UTF-8 then a character's encoding is whole UTF-8.
+        if end <= Cell::INLINE_CAPACITY {
+            if let Some(slot) = self.cells.get_mut(i) {
+                *slot = cell.with_inline_parts(current.as_bytes(), encoded);
+            }
+            return true;
+        }
+        let mut buffer = [0u8; Cell::CLUSTER_CAPACITY];
         let Some(joined) = buffer.get_mut(..end) else {
             return false;
         };
-        let mut encoded = [0; 4];
-        let encoded = c.encode_utf8(&mut encoded).as_bytes();
         let (head, tail) = joined
             .split_at_mut_checked(current.len())
             .unwrap_or_default();
@@ -613,48 +704,65 @@ impl<'a> CellRef<'a> {
     pub fn contents(&self) -> &'a str {
         self.spill.text(self.cell)
     }
+    /// Whether the cell holds text: neither blank nor the second half of a
+    /// wide glyph.
     pub fn has_contents(&self) -> bool {
         self.cell.has_contents()
     }
+    /// Whether the cell holds a glyph two columns wide, the next cell being
+    /// its second half.
     pub fn is_wide(&self) -> bool {
         self.cell.is_wide()
     }
+    /// Whether the cell is the second half of the wide glyph before it.
     pub fn is_wide_continuation(&self) -> bool {
         self.cell.is_wide_continuation()
     }
+    /// The cell's colours and rendition.
     pub fn attributes(&self) -> Attributes {
         self.cell.attributes
     }
+    /// The foreground colour.
     pub fn fgcolor(&self) -> Color {
         self.cell.attributes.foreground()
     }
+    /// The background colour.
     pub fn bgcolor(&self) -> Color {
         self.cell.attributes.background()
     }
+    /// The underline colour (SGR 58).
     pub fn underline_color(&self) -> Color {
         self.cell.attributes.underline_color()
     }
+    /// Whether bold (SGR 1) is on.
     pub fn bold(&self) -> bool {
         self.cell.attributes.bold()
     }
+    /// Whether dim (SGR 2) is on.
     pub fn dim(&self) -> bool {
         self.cell.attributes.dim()
     }
+    /// Whether italic (SGR 3) is on.
     pub fn italic(&self) -> bool {
         self.cell.attributes.italic()
     }
+    /// Whether underline (SGR 4, or 21, or a style of 4) is on.
     pub fn underline(&self) -> bool {
         self.cell.attributes.underline()
     }
+    /// Whether inverse (SGR 7) is on.
     pub fn inverse(&self) -> bool {
         self.cell.attributes.inverse()
     }
+    /// How the text blinks.
     pub fn blink(&self) -> Blink {
         self.cell.attributes.blink()
     }
+    /// Whether hidden (SGR 8) is on.
     pub fn hidden(&self) -> bool {
         self.cell.attributes.hidden()
     }
+    /// Whether strikeout (SGR 9) is on.
     pub fn strikeout(&self) -> bool {
         self.cell.attributes.strikeout()
     }
@@ -710,12 +818,15 @@ impl Cells {
             spill: Spill::default(),
         }
     }
+    /// How many cells there are.
     pub fn len(&self) -> usize {
         self.cells.len()
     }
+    /// Whether there are no cells.
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
     }
+    /// The cell at `i`.
     pub fn get(&self, i: usize) -> Option<CellRef<'_>> {
         self.cells
             .get(i)

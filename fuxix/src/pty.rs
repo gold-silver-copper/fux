@@ -118,16 +118,34 @@ enum Watched<T> {
 /// returned within `limit`, a watchdog thread replaces `fd` with `/dev/null`, so
 /// the call, which the kernel keeps restarting, fails with `/dev/null`'s error
 /// and returns. The descriptor stays open throughout, as the caller holds it;
-/// only the file behind it changes. If the watchdog cannot be started, `call`
-/// runs unwatched.
+/// only the file behind it changes.
+///
+/// `/dev/null` is opened before the call: a process out of descriptors, as
+/// one whose PTY allocation stalls may be, could not open it after. If it
+/// cannot be opened, or the watchdog cannot be started, `call` runs
+/// unwatched.
 #[cfg(any(target_os = "macos", test))]
 fn watched<T>(
     fd: std::os::fd::BorrowedFd<'_>,
     limit: std::time::Duration,
     call: impl FnOnce() -> T,
 ) -> Watched<T> {
+    watched_with(fd, limit, || std::fs::File::open("/dev/null"), call)
+}
+
+/// `watched`, with `/dev/null` opened by `null`, before `call` runs.
+#[cfg(any(target_os = "macos", test))]
+fn watched_with<T>(
+    fd: std::os::fd::BorrowedFd<'_>,
+    limit: std::time::Duration,
+    null: impl FnOnce() -> std::io::Result<std::fs::File>,
+    call: impl FnOnce() -> T,
+) -> Watched<T> {
     use std::sync::{Arc, Condvar, Mutex, PoisonError};
     let raw = fd.as_raw_fd();
+    let Ok(null) = null() else {
+        return Watched::Done(call());
+    };
     // (the call returned, fd was replaced), and the watchdog's wake-up.
     let shared = Arc::new((Mutex::new((false, false)), Condvar::new()));
     let watchdog_shared = Arc::clone(&shared);
@@ -146,7 +164,7 @@ fn watched<T>(
             // The lock is held until the replacement is recorded, so the caller
             // sees either a call that returned first or a replaced descriptor.
             if !state.0 {
-                state.1 = replace_with_null(raw);
+                state.1 = replace_with_null(raw, &null);
             }
             drop(state);
         });
@@ -168,13 +186,10 @@ fn watched<T>(
     }
 }
 
-/// Makes the descriptor `raw` refer to `/dev/null`, closing what it referred
-/// to; whether it did.
+/// Makes the descriptor `raw` refer to `null`, `/dev/null` opened already,
+/// closing what it referred to; whether it did.
 #[cfg(any(target_os = "macos", test))]
-fn replace_with_null(raw: libc::c_int) -> bool {
-    let Ok(null) = std::fs::File::open("/dev/null") else {
-        return false;
-    };
+fn replace_with_null(raw: libc::c_int, null: &std::fs::File) -> bool {
     // SAFETY: dup2 takes two descriptor numbers and touches no memory. `raw`
     // is open: `watched`'s caller holds it, and closes it only after `watched`
     // returns, which is after this thread has finished.
@@ -182,19 +197,24 @@ fn replace_with_null(raw: libc::c_int) -> bool {
     replaced >= 0
 }
 
-/// A new PTY master, close-on-exec: atomically where the system allows,
-/// and on macOS, which has no flag for it, straight after.
+/// A new PTY master, close-on-exec: atomically, with `O_CLOEXEC`, so that
+/// no process another thread starts meanwhile inherits it (and holds the
+/// slave's hang-up back for as long as it lives). macOS takes the flag (27
+/// does; older releases may refuse it with `EINVAL`, and then the flag is
+/// set straight after the open).
 fn open_master() -> crate::Result<OwnedFd> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     // SAFETY: posix_openpt takes flags and touches no memory.
     let raw =
         check(unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) })?;
     #[cfg(target_os = "macos")]
-    let raw = open_master_serialized()?;
+    let (raw, atomic) = open_master_serialized()?;
     // SAFETY: `raw` was just opened, is valid, and nothing else owns it.
     let master = unsafe { OwnedFd::from_raw_fd(raw) };
     #[cfg(target_os = "macos")]
-    crate::io::set_cloexec(&master)?;
+    if !atomic {
+        crate::io::set_cloexec(&master)?;
+    }
     Ok(master)
 }
 
@@ -205,18 +225,29 @@ fn open_master() -> crate::Result<OwnedFd> {
 /// kernel's retry loop, whose sleeps made single opens take over 400 ms. It is
 /// held through the retries' own sleeps too: while one opener is losing to
 /// another process, this process's other threads would only join the race.
+///
+/// It asks for `O_CLOEXEC`, and, if the system refuses the flag, opens
+/// without it; the second value says whether the flag was taken.
 #[cfg(target_os = "macos")]
-fn open_master_serialized() -> crate::Result<libc::c_int> {
+fn open_master_serialized() -> crate::Result<(libc::c_int, bool)> {
     static OPENING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     // A poisoned lock only means an opener panicked; there is nothing to repair.
     let _one = OPENING
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    redrive(
-        // SAFETY: posix_openpt takes flags and touches no memory.
-        || check(unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) }),
-        std::thread::sleep,
-    )
+    let open = |flags: libc::c_int| {
+        redrive(
+            // SAFETY: posix_openpt takes flags and touches no memory.
+            || check(unsafe { libc::posix_openpt(flags) }),
+            std::thread::sleep,
+        )
+    };
+    match open(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) {
+        Err(errno) if errno == Errno::INVAL => {
+            open(libc::O_RDWR | libc::O_NOCTTY).map(|raw| (raw, false))
+        }
+        other => other.map(|raw| (raw, true)),
+    }
 }
 
 /// How many times `redrive` calls `open`: sleeping 1, 2, … 7 ms between
@@ -319,6 +350,31 @@ mod tests {
         Ok(())
     }
 
+    /// On macOS the master is close-on-exec from its opening, where the
+    /// system takes `O_CLOEXEC`: as `posix_openpt` gave it, before anything
+    /// else could set the flag.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_macos_master_is_close_on_exec_as_opened() -> std::result::Result<(), String> {
+        // The concurrent-open tests beside this one can take every PTY a
+        // small machine has for a moment (ENXIO): try again for a while.
+        let mut tries = 0u32;
+        let (raw, atomic) = loop {
+            match open_master_serialized() {
+                Err(errno) if errno.raw() == libc::ENXIO && tries < 100 => {
+                    tries = tries.saturating_add(1);
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                other => break other.map_err(|e| e.to_string())?,
+            }
+        };
+        // SAFETY: `raw` was just opened, is valid, and nothing else owns it.
+        let master = unsafe { OwnedFd::from_raw_fd(raw) };
+        eprintln!("posix_openpt took O_CLOEXEC: {atomic}");
+        assert!(!atomic || is_cloexec(&master));
+        Ok(())
+    }
+
     /// `redrive` over a scripted sequence of results: what it returned, how
     /// many times it called the open, and the sleeps it asked for.
     fn redrive_script(
@@ -397,6 +453,38 @@ mod tests {
         assert!(matches!(seen, Watched::Done(42)));
         assert_eq!(behind(reader.as_fd())?, before);
         assert_ne!(before, dev_null()?);
+        Ok(())
+    }
+
+    /// `/dev/null` is open before the watched call starts: replacing a
+    /// stalled descriptor needs no new one, so a process out of descriptors
+    /// can still be rescued.
+    #[test]
+    fn dev_null_is_opened_before_the_call() -> std::result::Result<(), String> {
+        let (reader, _writer) = std::io::pipe().map_err(|e| e.to_string())?;
+        let order = std::cell::RefCell::new(Vec::new());
+        let seen = watched_with(
+            reader.as_fd(),
+            std::time::Duration::from_millis(20),
+            || {
+                order.borrow_mut().push("open /dev/null");
+                std::fs::File::open("/dev/null")
+            },
+            || {
+                order.borrow_mut().push("call");
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            },
+        );
+        assert!(matches!(seen, Watched::Stalled));
+        assert_eq!(*order.borrow(), ["open /dev/null", "call"]);
+        // Unable to open it, the call runs unwatched.
+        let seen = watched_with(
+            reader.as_fd(),
+            std::time::Duration::from_millis(20),
+            || Err(std::io::Error::from_raw_os_error(libc::EMFILE)),
+            || 7,
+        );
+        assert!(matches!(seen, Watched::Done(7)));
         Ok(())
     }
 

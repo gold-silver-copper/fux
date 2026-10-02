@@ -73,9 +73,9 @@ pub struct Mark(pub(crate) u64);
 /// A retained row. Attributes and text are immutable through this view.
 #[derive(Clone, Copy, Debug)]
 pub struct Row<'a> {
-    pub id: RowId,
-    pub version: u64,
-    pub wrapped: bool,
+    pub(crate) id: RowId,
+    pub(crate) version: u64,
+    pub(crate) wrapped: bool,
     pub(crate) cells: &'a [Cell],
     pub(crate) spill: &'a cell::Spill,
 }
@@ -96,10 +96,25 @@ impl<'a> Row<'a> {
             spill,
         }
     }
+    /// The row's identity, which it keeps as long as it is retained, edits
+    /// and scrolls included, and which no later row takes.
+    pub fn id(&self) -> RowId {
+        self.id
+    }
+    /// The row's version: it changes with every edit that changes the
+    /// row's cells or its soft wrap, and with nothing else.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+    /// Whether the row is soft-wrapped: its line goes on in the next row.
+    pub fn wrapped(&self) -> bool {
+        self.wrapped
+    }
     /// How many cells the row has: a history row keeps the width it had.
     pub fn len(&self) -> usize {
         self.cells.len()
     }
+    /// Whether the row has no cells.
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
     }
@@ -125,11 +140,17 @@ impl<'a> Row<'a> {
 
 /// Input/resource errors. Failing size changes leave the old screen intact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Error {
+    /// A size with no rows or no columns.
     ZeroSize,
+    /// More rows or cells than a grid may hold, or an allocation that failed.
     Capacity,
+    /// Row identities or versions ran out: they are never reused.
     IdentityExhausted,
+    /// A copy longer than its cell or byte limit.
     CopyLimit,
+    /// A copy endpoint outside the window.
     InvalidRange,
 }
 impl std::fmt::Display for Error {
@@ -151,17 +172,34 @@ impl std::error::Error for Error {}
 pub struct Window<'a> {
     grid: &'a grid::Grid,
     start: usize,
-    pub rows: u16,
-    pub cols: u16,
-    pub offset: usize,
+    pub(crate) rows: u16,
+    pub(crate) cols: u16,
+    pub(crate) offset: usize,
 }
 impl<'a> Window<'a> {
+    /// How many rows the window has: at most the screen's.
+    pub fn rows(&self) -> u16 {
+        self.rows
+    }
+    /// How many columns the window has: at most the screen's.
+    pub fn cols(&self) -> u16 {
+        self.cols
+    }
+    /// How many rows up into history the window starts, clamped to the
+    /// history there is.
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+    /// Row `row` of the window, as it is retained: a history row keeps its
+    /// own width.
     pub fn row(&self, row: u16) -> Option<Row<'a>> {
         if row >= self.rows {
             return None;
         }
         self.grid.row_at(self.start.checked_add(usize::from(row))?)
     }
+    /// The cell at `row`, `col` of the window; `None` past its edges, and for
+    /// a wide glyph whose second half the window's last column cuts off.
     pub fn cell(&self, row: u16, col: u16) -> Option<CellRef<'a>> {
         if col >= self.cols {
             return None;
@@ -188,6 +226,8 @@ impl<'a> Window<'a> {
                 .and_then(|next| self.cell(next, 0))
                 .is_some_and(|c| c.is_wide())
     }
+    /// Whether row `row` of the window is soft-wrapped, its line going on in
+    /// the next row. Only a window as wide as the screen says so.
     pub fn row_wrapped(&self, row: u16) -> bool {
         self.cols == self.grid.cols.get() && self.row(row).is_some_and(|r| r.wrapped)
     }

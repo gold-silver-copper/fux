@@ -1,3 +1,5 @@
+//! Structural invariants of fux-vt's grid, checked after every operation
+//! of the permanent corpora and of generated input.
 mod corpus;
 #[path = "corpus/fixtures.rs"]
 mod fixtures;

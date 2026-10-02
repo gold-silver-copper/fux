@@ -44,6 +44,75 @@ fn detach_and_reattach_keep_the_shell_and_its_screen() -> Outcome {
     Ok(())
 }
 
+/// However a connection ends, its client goes with it: a client that breaks
+/// the protocol (a second Attach, a Hello) is dropped and detached, and so
+/// is one that detaches and attaches again in one batch.
+#[test]
+fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
+    use fux::protocol::{Frame, PROTOCOL, Role};
+    let server = Server::start("")?;
+    let clients = || -> Result<usize, String> {
+        Ok(server
+            .ok(&["ls"])?
+            .lines()
+            .filter(|l| l.starts_with("client "))
+            .count())
+    };
+    let mut keep = server.attach(10, 40)?;
+    keep.wait_for("$")?;
+    let attach = Frame::Attach {
+        rows: 5,
+        cols: 20,
+        workspace: None,
+    };
+    let hello = Frame::Hello {
+        protocol: PROTOCOL,
+        version: "test".into(),
+        role: Role::Attach,
+    };
+    for broken in [&attach, &hello] {
+        let mut client = server.attach(5, 20)?;
+        client.wait_for("$")?;
+        eventually("two clients", || Ok(clients()? == 2))?;
+        client.frame(broken)?;
+        eventually("the broken client to go", || Ok(clients()? == 1))?;
+    }
+    // Detach and Attach together: the Attach comes after the end.
+    let mut client = server.attach(5, 20)?;
+    client.wait_for("$")?;
+    client.detach()?;
+    client.frame(&attach)?;
+    assert_eq!(client.wait_exit()?, "detached");
+    eventually("only the first client", || Ok(clients()? == 1))?;
+    // The one left still sizes its pane alone.
+    keep.keys("stty size\r")?;
+    keep.wait("its size", |t| t.lines().any(|l| l == "9 40"))?;
+    Ok(())
+}
+
+/// A screen that did not change is not painted again: a command that
+/// changes nothing a client shows sends it nothing, not even an empty paint.
+#[test]
+fn an_unchanged_screen_is_not_painted_again() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(10, 40)?;
+    client.wait_for("$")?;
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    client.pump()?;
+    let before = client.painted.len();
+    // Selecting the pane already selected changes nothing on screen.
+    server.ok(&["select-pane", "-c", "c1", "-t", "%1"])?;
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    client.pump()?;
+    assert_eq!(
+        client.painted.len(),
+        before,
+        "painted {:?}",
+        String::from_utf8_lossy(client.painted.get(before..).unwrap_or_default())
+    );
+    Ok(())
+}
+
 #[test]
 fn a_resize_reaches_the_program() -> Outcome {
     let server = Server::start("")?;
@@ -254,9 +323,12 @@ fn focus_events_reach_a_pane_that_asked_and_cursor_shapes_pass_through() -> Outc
             .is_some_and(|l| l == "$")
     })?;
     // One that turns on ?1004 hears focus in and out.
-    client.keys("printf '\\033[?1004h\\033[5 q'; cat -v\r")?;
-    client.wait("cat running", |t| t.lines().last().is_some())?;
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // The marker is printed after ?1004h, so once it shows the pane has
+    // asked; reports sent before cat starts wait in the terminal for it.
+    client.keys("printf '\\033[?1004h\\033[5 q'; echo asked-for-focus; cat -v\r")?;
+    client.wait("focus reporting on", |t| {
+        t.lines().any(|l| l == "asked-for-focus")
+    })?;
     client.send(b"\x1b[I")?;
     client.send(b"\x1b[O")?;
     client.keys("\r")?;
@@ -393,18 +465,22 @@ fn a_panes_shell_has_the_pty_as_its_terminal_and_job_control() -> Outcome {
     })?;
     // C-z stops the foreground job and fg resumes it: the PTY's foreground
     // group is the shell's to hand out.
-    client.keys("sleep 30\r")?;
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // `sleep 37`, a command line no other test runs, so `ps` finds this one.
+    client.keys("sleep 37\r")?;
+    eventually("sleep in the foreground", || {
+        job_state("sleep 37", foreground)
+    })?;
     client.keys("\x1a")?;
     client.wait("the stopped job", |t| t.contains("Stopped"))?;
     client.keys("fg\r")?;
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    client.keys("\x03")?;
-    // The prompt is back once the interrupted job has gone.
-    client.wait("the prompt after the job", |t| {
-        let mut lines = t.lines().rev().filter(|l| !l.trim().is_empty());
-        lines.nth(1).is_some_and(|l| l.trim_end() == "$")
+    eventually("sleep in the foreground again", || {
+        job_state("sleep 37", foreground)
     })?;
+    client.keys("\x03")?;
+    // The prompt is back once the interrupted job has gone: typed sooner,
+    // the next line would be echoed before it (dash prints no newline
+    // after ^C).
+    at_prompt(&mut client, "the prompt after the job")?;
     client.keys("jobs; echo after-fg\r")?;
     client.wait("the prompt after fg", |t| {
         t.lines().any(|l| l == "after-fg")
@@ -443,10 +519,7 @@ fn a_program_that_cannot_start_is_reported_as_before() -> Outcome {
 
 #[test]
 fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
-    let dir = std::env::temp_dir()
-        .canonicalize()
-        .map_err(e)?
-        .join(format!("fux-hangup-{}", std::process::id()));
+    let dir = short_temp_dir()?.join(format!("fux-hangup-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(e)?;
     use std::os::unix::fs::PermissionsExt;
@@ -479,9 +552,13 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
     let gone = eventually("the client to go", || {
         Ok(terminal.child.try_wait().map_err(e)?.is_some())
     });
-    // Past the time a stopping server takes to go.
-    std::thread::sleep(std::time::Duration::from_secs(1));
-    let after = ls();
+    // The server answers once it has seen the client go: by then it has
+    // handled whatever reached it with the hang-up, which would have
+    // stopped it.
+    let after = eventually("the server to see the client go", || {
+        let out = ls()?;
+        Ok(out.status.success() && !String::from_utf8_lossy(&out.stdout).contains("client c1"))
+    });
     let _ = std::process::Command::new(FUX)
         .arg("kill-server")
         .env("FUX_SOCKET", &socket)
@@ -490,13 +567,7 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
     let _ = std::fs::remove_dir_all(&dir);
     started?;
     gone?;
-    let after = after?;
-    assert!(
-        after.status.success(),
-        "{}",
-        String::from_utf8_lossy(&after.stderr)
-    );
-    Ok(())
+    after
 }
 
 /// Resizing a terminal signals its client, and a signal can interrupt a
@@ -622,4 +693,38 @@ fn a_descriptor_the_server_inherited_does_not_reach_its_panes() -> Outcome {
         "descriptor {held}, inherited by the server, is open in its pane"
     );
     Ok(())
+}
+
+/// Whether a process running `command` has a `ps` state that `test` takes.
+fn job_state(command: &str, test: fn(&str) -> bool) -> Result<bool, String> {
+    let out = std::process::Command::new("ps")
+        .args(["-A", "-o", "stat=,command="])
+        .output()
+        .map_err(e)?;
+    Ok(String::from_utf8_lossy(&out.stdout).lines().any(|line| {
+        line.trim_start()
+            .split_once(char::is_whitespace)
+            .is_some_and(|(stat, c)| c.trim() == command && test(stat))
+    }))
+}
+
+/// A `ps` state of a process running in its terminal's foreground group:
+/// running or asleep (`R`, `S`), with `+`, whatever other flags it has
+/// (`N` on a runner that lowers its priority).
+fn foreground(stat: &str) -> bool {
+    stat.starts_with(['R', 'S']) && stat.contains('+')
+}
+
+/// Waits until the shell waits at a fresh prompt: the cursor just after a
+/// `$ ` alone on its line.
+fn at_prompt(client: &mut Client, what: &str) -> Outcome {
+    eventually(what, || {
+        client.pump()?;
+        let (row, col) = client.terminal.screen().cursor_position();
+        let lines = client.lines();
+        Ok(col == 2
+            && lines
+                .get(usize::from(row))
+                .is_some_and(|l| l.trim_end() == "$"))
+    })
 }

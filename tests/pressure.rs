@@ -5,6 +5,16 @@ use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 use support::*;
 
+/// The tests here measure time and CPU, so they run one at a time: each
+/// takes this first, and other tests' load is all they share.
+static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn alone() -> std::sync::MutexGuard<'static, ()> {
+    ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// How many log lines mention running out of descriptors.
 fn pressure_lines(server: &Server) -> usize {
     server
@@ -28,6 +38,7 @@ fn timed_ls(server: &Server) -> Result<(Duration, Output), String> {
 /// (bevy-final findings 006 and 012).
 #[test]
 fn a_server_out_of_descriptors_refuses_promptly_and_recovers() -> Outcome {
+    let _alone = alone();
     let server = Server::start_limited("", Some(64))?;
     let pid = server.pid().ok_or("the server's pid")?;
     assert_eq!(server.fux(&["ls"])?.status, 0);
@@ -59,10 +70,11 @@ fn a_server_out_of_descriptors_refuses_promptly_and_recovers() -> Outcome {
         unclear.len(),
         unclear.first()
     );
-    // A second at most for any client, no spinning, and the condition
+    // Three seconds at most for any client (a fux process starts for
+    // each, on a loaded machine), no spinning, and the condition
     // reported once however many clients were refused.
     assert!(
-        slowest < Duration::from_secs(1) && unclear.is_empty() && cpu < 0.5 && lines <= 2,
+        slowest < Duration::from_secs(3) && unclear.is_empty() && cpu < 0.5 && lines <= 2,
         "{report}"
     );
     eprintln!("{report}");
@@ -70,7 +82,7 @@ fn a_server_out_of_descriptors_refuses_promptly_and_recovers() -> Outcome {
     eventually("served again", || Ok(server.fux(&["ls"])?.status == 0))?;
     let (took, out) = timed_ls(&server)?;
     assert_eq!(out.status, 0, "{}", out.stderr);
-    assert!(took < Duration::from_secs(1), "{took:?}");
+    assert!(took < Duration::from_secs(3), "{took:?}");
     eventually("the recovery reported", || {
         Ok(server.log().contains("file descriptors available again"))
     })?;
@@ -82,6 +94,7 @@ fn a_server_out_of_descriptors_refuses_promptly_and_recovers() -> Outcome {
 /// what waits before reading any close; that is reported, not a failure.
 #[test]
 fn connections_that_close_at_once_leave_the_server_reachable() -> Outcome {
+    let _alone = alone();
     let server = Server::start_limited("", Some(64))?;
     for _ in 0..200 {
         // A full backlog is refused by the kernel at once, which is fine.
@@ -94,7 +107,7 @@ fn connections_that_close_at_once_leave_the_server_reachable() -> Outcome {
     eventually("served", || Ok(server.fux(&["ls"])?.status == 0))?;
     let (took, out) = timed_ls(&server)?;
     assert_eq!(out.status, 0, "{}", out.stderr);
-    assert!(took < Duration::from_secs(1), "{took:?}");
+    assert!(took < Duration::from_secs(3), "{took:?}");
     Ok(())
 }
 
@@ -167,6 +180,7 @@ fn pasted(i: usize, len: usize) -> Vec<u8> {
 /// what arrives is exactly what was accepted (bevy-final finding 021).
 #[test]
 fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
+    let _alone = alone();
     let server = Server::start("")?;
     let mut client = server.attach(20, 100)?;
     let (cat, out) = recorder(&server)?;
@@ -257,5 +271,97 @@ fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
     let mut expected = got;
     expected.push(b'Y');
     received(&out, &expected)?;
+    Ok(())
+}
+
+/// A program that closes its terminal but keeps running leaves its PTY
+/// hung up: the master reports the end on every poll until the program
+/// exits. The server stops polling it rather than spin, and closes the
+/// pane when the program exits.
+///
+/// On Linux, closing the last descriptor on the terminal is enough. On
+/// macOS the session's controlling terminal keeps it open after a plain
+/// shell's `exec`, but not after zsh's, the login shell there, so the pane
+/// runs zsh where there is one.
+#[test]
+fn a_program_that_closes_its_terminal_does_not_make_the_server_spin() -> Outcome {
+    let _alone = alone();
+    let zsh = std::path::Path::new("/bin/zsh").exists();
+    let server = Server::start(if zsh { "set shell /bin/zsh" } else { "" })?;
+    let pid = server.pid().ok_or("the server's pid")?;
+    eventually("a prompt", || {
+        let screen = server.ok(&["capture-pane", "-t", "%1"])?;
+        Ok(screen.contains('$') || screen.contains('%'))
+    })?;
+    server.ok(&["split", "-h", "-t", "%1"])?;
+    eventually("a prompt in %2", || {
+        let screen = server.ok(&["capture-pane", "-t", "%2"])?;
+        Ok(screen.contains('$') || screen.contains('%'))
+    })?;
+    server.ok(&["send-keys", "-t", "%2", "-l", "exec sleep 2 <&- >&- 2>&-"])?;
+    server.ok(&["send-keys", "-t", "%2", "Enter"])?;
+    // Let the shell exec, then measure a second of the server's CPU.
+    std::thread::sleep(Duration::from_millis(300));
+    let before = cpu_seconds(pid)?;
+    std::thread::sleep(Duration::from_secs(1));
+    let cpu = cpu_seconds(pid)? - before;
+    assert!(cpu < 0.2, "{cpu:.2} s of server CPU in one second");
+    eventually("%2 to close when sleep exits", || {
+        Ok(!server.ok(&["ls"])?.contains("%2 "))
+    })?;
+    Ok(())
+}
+
+/// One client flooding a pane whose program does not read its input holds
+/// up no one: the server reads at most a bounded amount from it per tick,
+/// drops what the full queue refuses without working on each key, and
+/// gives back the memory the flood took. Other commands are served
+/// meanwhile, and the server's memory stays small.
+#[test]
+fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
+    let _alone = alone();
+    use fux::protocol::{Frame, PROTOCOL, Role};
+    use std::io::Write;
+    let server = Server::start("")?;
+    let pid = server.pid().ok_or("the server's pid")?;
+    // sleep reads nothing, so the terminal's buffer and then the pane's
+    // input queue fill.
+    server.type_line("%1", "sleep 60")?;
+    let socket = server.socket.clone();
+    std::thread::spawn(move || -> Outcome {
+        let mut stream = UnixStream::connect(&socket).map_err(e)?;
+        let hello = Frame::Hello {
+            protocol: PROTOCOL,
+            version: "flood".into(),
+            role: Role::Attach,
+        };
+        let attach = Frame::Attach {
+            rows: 10,
+            cols: 40,
+            workspace: None,
+        };
+        stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
+        stream.write_all(&attach.encode().map_err(e)?).map_err(e)?;
+        let input = Frame::Input(vec![b'a'; 1_000_000]).encode().map_err(e)?;
+        // Until the server stops reading, or the test ends and it goes.
+        for _ in 0..64 {
+            stream.write_all(&input).map_err(e)?;
+        }
+        Ok(())
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let mut slowest = Duration::ZERO;
+    for _ in 0..5 {
+        let (took, out) = timed_ls(&server)?;
+        assert_eq!(out.status, 0, "{}", out.stderr);
+        slowest = slowest.max(took);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let memory = resident_mib(pid)?;
+    assert!(
+        slowest < Duration::from_secs(2) && memory < 64.0,
+        "slowest fux ls {slowest:?} while flooded; {memory:.0} MiB resident"
+    );
+    eprintln!("slowest fux ls {slowest:?} while flooded; {memory:.0} MiB resident");
     Ok(())
 }

@@ -109,6 +109,10 @@ impl InputQueue {
     pub fn is_empty(&self) -> bool {
         self.pieces.is_empty()
     }
+    /// Whether input is refused until the program reads.
+    pub fn refusing(&self) -> bool {
+        self.refusing
+    }
     /// The bytes to write next: every piece queued.
     pub fn front(&self) -> Option<&[u8]> {
         (!self.bytes.is_empty()).then(|| self.bytes.as_slice())
@@ -183,6 +187,10 @@ pub struct Pane {
     pub input: InputQueue,
     /// Whether a reply was dropped because the queue was full; noticed once.
     pub reply_dropped: bool,
+    /// Whether the PTY hung up while the program lives on: it closed the
+    /// terminal but has not exited. Its master reports the end on every
+    /// poll, so it is no longer polled; its exit, by SIGCHLD, ends the pane.
+    pub hung_up: bool,
     /// The shell's program, to quote a typed command for it.
     pub shell: String,
     /// A command line waiting to be typed into the shell.
@@ -228,10 +236,7 @@ impl Pane {
         cols: u16,
         history: usize,
     ) -> Result<Pane, Error> {
-        let options = fux_vt::Options {
-            events: true,
-            ..fux_vt::Options::default()
-        };
+        let options = fux_vt::Options::new().with_events(true);
         let parser = fux_vt::Parser::with_options(rows.max(1), cols.max(1), history, options)
             .map_err(|source| Error::Terminal {
                 rows,
@@ -248,6 +253,7 @@ impl Pane {
             child: None,
             input: InputQueue::default(),
             reply_dropped: false,
+            hung_up: false,
             shell,
             typed: None,
         })

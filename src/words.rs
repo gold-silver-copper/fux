@@ -102,9 +102,12 @@ pub fn split(line: &str) -> Result<Vec<String>, Error> {
     Ok(words)
 }
 
-/// Whether a word needs no quoting for `split` or a shell.
+/// Whether a word needs no quoting for `split` or a shell. A leading `=`
+/// does: zsh expands `=ls` to the path of `ls` (its EQUALS option), though
+/// `a=b` stays as it is.
 fn bare(word: &str) -> bool {
     !word.is_empty()
+        && !word.starts_with('=')
         && word
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c))
@@ -237,5 +240,10 @@ mod tests {
                 .unwrap_or_default();
             assert!(error.contains("control character"), "{bad:?}: {error}");
         }
+        // A leading `=` is quoted, as zsh expands `=ls`; `a=b` is left bare.
+        assert_eq!(
+            shell_line(&argv(&["echo", "=ls", "a=b"]), false).ok(),
+            Some("echo '=ls' a=b".to_owned())
+        );
     }
 }

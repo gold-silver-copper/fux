@@ -425,6 +425,11 @@ impl Decoder {
         self.buffer.push(bytes);
     }
 
+    /// Gives back memory beyond `keep` bytes once no more is pending.
+    pub fn shrink(&mut self, keep: usize) {
+        self.buffer.shrink(keep);
+    }
+
     /// The next whole frame, `Ok(None)` if more bytes are needed, or an error
     /// for a frame that is oversized or malformed; the stream is then unusable.
     pub fn frame(&mut self) -> Result<Option<Frame>, Error> {
