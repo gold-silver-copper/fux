@@ -280,6 +280,7 @@ impl Alacritty {
         let row = &self.term.grid()[index::Line(y)];
         let cells: &[cell::Cell] = &row[..];
         Line {
+            unread_from: None,
             cells: cells.iter().map(cell).collect(),
             wrapped: cells
                 .last()

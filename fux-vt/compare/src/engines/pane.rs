@@ -401,6 +401,13 @@ pub enum Glyphs {
     /// xterm prints a cell's character, then the combining characters it
     /// holds, and the second half of a wide character as U+FFFF (with
     /// `printRawChars`), so widths are xterm's own.
+    ///
+    /// Its SGR before a cell is whole (`0;…`), and is printed before every
+    /// cell with an attribute or a colour, and before no other cell after
+    /// one: `printLine` compares each cell with no attributes, not with the
+    /// cell before (`IAttr attr = 0` inside its loop, xterm 411 `print.c`).
+    /// So `\e[7ma\e[mb` prints as `\e[0;7mab`, and a cell with no SGR
+    /// before it is plain, whatever came before.
     Xterm,
 }
 
@@ -628,6 +635,8 @@ fn low(n: u16) -> u8 {
 
 /// Reads printed rows back into cells, keeping the style from row to row.
 pub struct Reader {
+    /// How many cells the last row printed, before padding.
+    pub printed: usize,
     style: Style,
     shifted: bool,
     glyphs: Glyphs,
@@ -636,9 +645,18 @@ pub struct Reader {
 impl Reader {
     pub fn new(glyphs: Glyphs) -> Reader {
         Reader {
+            printed: 0,
             style: Style::default(),
             shifted: false,
             glyphs,
+        }
+    }
+
+    /// After a cell, xterm's next cell is plain unless an SGR comes first
+    /// (see [`Glyphs::Xterm`]).
+    fn unstyle(&mut self) {
+        if self.glyphs == Glyphs::Xterm {
+            self.style = Style::default();
         }
     }
 
@@ -694,13 +712,19 @@ impl Reader {
                     let at = pieces.iter().map(|p| self.width(p)).sum();
                     pieces.push(Piece::Blanks(tab(at).max(1), self.style));
                 }
-                '\u{ffff}' => pieces.push(Piece::Tail),
+                '\u{ffff}' => {
+                    pieces.push(Piece::Tail);
+                    self.unstyle();
+                }
                 c if c.is_control() => {}
                 c => {
                     let c = if self.shifted { dec_graphics(c) } else { c };
                     match pieces.last_mut() {
                         Some(Piece::Glyph(prev, _)) if joins(prev, c, self.glyphs) => prev.push(c),
-                        _ => pieces.push(Piece::Glyph(c.to_string(), self.style)),
+                        _ => {
+                            pieces.push(Piece::Glyph(c.to_string(), self.style));
+                            self.unstyle();
+                        }
                     }
                 }
             }
@@ -736,6 +760,7 @@ impl Reader {
             }
         }
         cells.truncate(cols);
+        self.printed = cells.len();
         while cells.len() < cols {
             cells.push(Cell::new("", Width::Narrow, Style::default()));
         }
@@ -785,6 +810,32 @@ mod tests {
                 Width::Tail,
                 Width::Narrow,
                 Width::Narrow
+            ]
+        );
+    }
+
+    /// xterm prints an SGR before every cell with an attribute, and none
+    /// before a plain cell that follows one.
+    #[test]
+    fn an_xterm_cell_with_no_sgr_before_it_is_plain() {
+        let mut xterm = Reader::new(Glyphs::Xterm);
+        let cells = xterm.row(
+            "\x1b[0m\x1b[0;7ma\x1b[0;7me\u{301}x\x1b[0;44m \x1b[0my".as_bytes(),
+            5,
+            &|_| 1,
+        );
+        let read: Vec<(&str, bool, Color)> = cells
+            .iter()
+            .map(|c| (c.text.as_str(), c.style.inverse, c.style.bg))
+            .collect();
+        assert_eq!(
+            read,
+            [
+                ("a", true, Color::Default),
+                ("e\u{301}", true, Color::Default),
+                ("x", false, Color::Default),
+                ("", false, Color::Idx(4)),
+                ("y", false, Color::Default),
             ]
         );
     }

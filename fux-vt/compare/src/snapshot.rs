@@ -90,6 +90,10 @@ impl Cell {
 pub struct Line {
     pub cells: Vec<Cell>,
     pub wrapped: bool,
+    /// The first cell whose style the engine could not read, if any: from
+    /// there on, only the text and width are compared (an xterm print stops
+    /// at a row's last drawn cell).
+    pub unread_from: Option<usize>,
 }
 
 impl Line {
@@ -415,6 +419,7 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
             if ca == cb {
                 continue;
             }
+            let styled = b.unread_from.is_none_or(|from| x < from);
             let at = |part: &str| format!("cell ({y},{x}) {part}");
             field(
                 at("text"),
@@ -428,6 +433,9 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
                 format!("{:?}", ca.width),
                 format!("{:?}", cb.width),
             );
+            if !styled {
+                continue;
+            }
             let (sa, sb) = (&ca.style, &cb.style);
             for (name, f, va, vb) in [
                 ("fg", Field::Fg, sa.fg, sb.fg),

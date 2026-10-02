@@ -57,11 +57,19 @@
 //! - Pending wrap cannot be read: a cursor report gives the last column
 //!   either way.
 //! - xterm has no underline colour, and no kitty keyboard protocol.
-//! - A row prints up to its last drawn cell, so blank cells after it read
-//!   as default blanks: the background of cells erased at the end of a row
-//!   is lost, an adapter limit and not xterm's choice (`'\e[44m\e[K'` reads
-//!   plain). The background is compared all the same, as it is read
-//!   everywhere else.
+//! - A row prints up to its last drawn cell, so the style of the blank
+//!   cells after it cannot be read: the background of cells erased at the
+//!   end of a row is lost (`'\e[44m\e[K'`). Those cells' text is compared,
+//!   and their style is not (`Line::unread_from`).
+//! - The print gives an SGR before a cell with attributes and none before
+//!   a plain cell after it, which reads as plain (see `pane::Glyphs::Xterm`).
+//! - Pending scrolls are also flushed before EL 1 and ED 1, whose end of a
+//!   pending wrap otherwise depends on whether the cursor's row waits on a
+//!   jump scroll (see `flushed_before_clearing_left`).
+//! - xterm abstains from a case once its output holds SGR 58: xterm has no
+//!   underline colour, and reads the colour's parameters as attributes
+//!   (`58;5;9` is blink and strikeout), so what it shows says nothing of
+//!   the rest of the SGR.
 //!
 //! # Quirks
 //!
@@ -106,6 +114,88 @@ pub const KIND: Kind = Kind {
     available,
     make,
 };
+
+/// Flushes pending scrolls (`CSI ? 4 h`, `CSI ? 4 l`) before each EL 1 and
+/// ED 1 (`CSI 1 K`, `CSI 1 J`, and their `?` forms). xterm's `ClearLeft`
+/// ends a pending wrap only while the cursor's row is not waiting for a
+/// jump scroll to be drawn (`AddToVisible`, xterm 411 `util.c`); otherwise
+/// the wrap stays, so which bytes arrive together would decide it
+/// (`replay --engines xterm,ghostty --size 2x4 'abcdefghijkl\e[1KX'`).
+/// The flush itself keeps a pending wrap, in every engine.
+fn flushed_before_clearing_left(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut rest = bytes;
+    while let Some(start) = rest.iter().position(|&b| b == 0x1b) {
+        let (before, from) = rest.split_at_checked(start).unwrap_or((rest, &[]));
+        out.extend_from_slice(before);
+        let body = from.get(2..).unwrap_or_default();
+        let len = body
+            .iter()
+            .position(|b| !(0x30..=0x3f).contains(b))
+            .unwrap_or(body.len());
+        let params = body.get(..len).unwrap_or_default();
+        let clears_left = from.get(1) == Some(&b'[')
+            && matches!(body.get(len), Some(b'J' | b'K'))
+            && params.strip_prefix(b"?").unwrap_or(params) == b"1";
+        if clears_left {
+            out.extend_from_slice(b"\x1b[?4h\x1b[?4l");
+        }
+        out.push(0x1b);
+        rest = from.get(1..).unwrap_or_default();
+    }
+    out.extend_from_slice(rest);
+    out
+}
+
+/// Whether `bytes` hold an SGR (`CSI … m`) with a parameter 58, in either
+/// form (`58;5;9`, `58:5:9`), not counting a colour's own parameters
+/// (`38;5;58`).
+fn sets_underline_colour(bytes: &[u8]) -> bool {
+    let mut rest = bytes;
+    while let Some(start) = rest.iter().position(|&b| b == 0x1b) {
+        let after = rest.get(start.saturating_add(1)..).unwrap_or_default();
+        let Some(body) = after.strip_prefix(b"[") else {
+            rest = after;
+            continue;
+        };
+        let len = body
+            .iter()
+            .position(|b| !(0x30..=0x3f).contains(b))
+            .unwrap_or(body.len());
+        let (params, after) = body.split_at_checked(len).unwrap_or((body, &[]));
+        if after.first() == Some(&b'm') && sgr_has_58(params) {
+            return true;
+        }
+        rest = after;
+    }
+    false
+}
+
+fn sgr_has_58(params: &[u8]) -> bool {
+    // Each group's code, and whether it holds its own parameters (`:`).
+    let codes: Vec<(Option<u16>, bool)> = params
+        .split(|&b| b == b';')
+        .map(|group| {
+            let code = group.split(|&b| b == b':').next().unwrap_or_default();
+            let code = std::str::from_utf8(code).ok().and_then(|c| c.parse().ok());
+            (code, group.contains(&b':'))
+        })
+        .collect();
+    let mut i = 0usize;
+    while let Some(&code) = codes.get(i) {
+        i = i.saturating_add(1);
+        match code {
+            (Some(58), _) => return true,
+            (Some(38 | 48), false) => match codes.get(i) {
+                Some((Some(5), _)) => i = i.saturating_add(2),
+                Some((Some(2), _)) => i = i.saturating_add(4),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    false
+}
 
 /// How long an xterm may take to start its pane program, and a print or a
 /// resize to arrive.
@@ -411,9 +501,12 @@ impl Xterm {
         let mut screen = Vec::new();
         let mut history = Vec::new();
         for (i, (text, wrapped)) in rows.iter().enumerate() {
+            let cells = reader.row(text, self.cols, &|_| 1);
             let line = Line {
-                cells: reader.row(text, self.cols, &|_| 1),
+                cells,
                 wrapped: *wrapped,
+                // The print stops at the row's last drawn cell.
+                unread_from: Some(reader.printed),
             };
             if i < first_screen {
                 history.push((line.text(), line.wrapped));
@@ -454,7 +547,10 @@ impl Xterm {
 
 impl Engine for Xterm {
     fn process(&mut self, bytes: &[u8]) -> Result<(), String> {
-        self.pane.output(bytes)
+        if sets_underline_colour(bytes) {
+            return Err("xterm has no SGR 58, and reads its colour as attributes".into());
+        }
+        self.pane.output(&flushed_before_clearing_left(bytes))
     }
 
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
@@ -505,5 +601,34 @@ impl Drop for Xterm {
         let _ = self.child.wait();
         let _ = fs::remove_file(&self.print);
         pane::tidy();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{flushed_before_clearing_left, sets_underline_colour};
+
+    #[test]
+    fn pending_scrolls_are_flushed_before_clearing_left() {
+        assert_eq!(
+            flushed_before_clearing_left(b"ab\x1b[1Kc\x1b[?1J\x1b[K\x1b[11K\x1b"),
+            b"ab\x1b[?4h\x1b[?4l\x1b[1Kc\x1b[?4h\x1b[?4l\x1b[?1J\x1b[K\x1b[11K\x1b"
+        );
+    }
+
+    #[test]
+    fn sgr_58_is_found_in_either_form() {
+        for (bytes, found) in [
+            (&b"\x1b[4;58;5;9mX"[..], true),
+            (b"a\x1b[58:2::1:2:3m", true),
+            (b"\x1b[1m\x1b[4;058m", true),
+            (b"\x1b[38;5;58m\x1b[59m", false),
+            (b"\x1b[38;2;1;58;3m", false),
+            (b"\x1b[38:5:9;2;58m", true),
+            (b"\x1b[58H", false),
+            (b"\x1b[?58m", false),
+        ] {
+            assert_eq!(sets_underline_colour(bytes), found, "{bytes:?}");
+        }
     }
 }

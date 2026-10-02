@@ -131,7 +131,11 @@ impl Ghostty {
             }
             cells.push(cell(&at)?);
         }
-        Ok(Line { cells, wrapped })
+        Ok(Line {
+            cells,
+            wrapped,
+            unread_from: None,
+        })
     }
 
     fn read(&self, history_rows: usize) -> Result<Snapshot, String> {

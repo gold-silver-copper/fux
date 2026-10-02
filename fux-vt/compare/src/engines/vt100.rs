@@ -136,6 +136,7 @@ fn cell(c: &vt100::Cell) -> Cell {
 /// Row `y` of the view.
 fn line(s: &vt100::Screen, y: u16, cols: u16) -> Line {
     Line {
+        unread_from: None,
         cells: (0..cols)
             .map(|x| {
                 s.cell(y, x)

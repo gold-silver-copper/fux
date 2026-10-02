@@ -375,6 +375,7 @@ fn line(v: &Value) -> Result<Line, String> {
         .map(cell)
         .collect::<Result<_, _>>()?;
     Ok(Line {
+        unread_from: None,
         cells,
         wrapped: flag(v, "w")?,
     })
