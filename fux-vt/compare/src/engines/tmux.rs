@@ -73,7 +73,7 @@
 //! - SGR 0 ends the open hyperlink (`--size 1x4 '\e]8;;u\e\\a\e[mb'`), and
 //!   DECRC restores the one DECSC saved
 //!   (`--size 1x4 '\e]8;;u\e\\a\e7\e]8;;\e\\\e8d'`).
-use crate::engine::{Can, Engine, Kind, Setup};
+use crate::engine::{Blanks, Can, Engine, Kind, Setup};
 use crate::engines::pane::{self, Glyphs, Pane, Reader};
 use crate::snapshot::{Line, Snapshot};
 use std::fs;
@@ -91,6 +91,10 @@ pub const KIND: Kind = Kind {
         in_band_resize: false,
         link_group: false,
         ..Can::ALL
+    },
+    blanks: Blanks {
+        fg: false,
+        ..Blanks::XTERM
     },
     panel: false,
     in_process: false,

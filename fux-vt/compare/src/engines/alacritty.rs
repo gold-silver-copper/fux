@@ -82,7 +82,7 @@
 //! clears its wrap flag (`--size 4x3 'abcd\e[H\e[2K'`). Raw bytes 0x80–0x9F
 //! are taken as C1 controls (vte), where Ghostty prints U+FFFD
 //! (`--size 1x4 'a\x90b'`).
-use crate::engine::{Can, Engine, Kind, Setup, always};
+use crate::engine::{Blanks, Can, Engine, Kind, Setup, always};
 use crate::snapshot::{self, Cell, Color, Line, Snapshot, Style, Width};
 use alacritty_terminal::Term;
 use alacritty_terminal::event::{Event, EventListener};
@@ -108,6 +108,10 @@ pub const KIND: Kind = Kind {
         in_band_resize: false,
         prompt: false,
         ..Can::ALL
+    },
+    blanks: Blanks {
+        fg: false,
+        ..Blanks::XTERM
     },
     panel: true,
     in_process: true,

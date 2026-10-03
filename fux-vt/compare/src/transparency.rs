@@ -1663,6 +1663,7 @@ mod tests {
             key: format!("cell (0,{x}) fg"),
             field: Field::Fg,
             styled_cell: Some((0, x)),
+            fux_blank: x > 0,
             fux: "Default".into(),
             other: "Idx(0)".into(),
         };

@@ -127,13 +127,11 @@
 //!   (`5` blink, `9` strikeout): `--size 1x3 '\e[58;5;9mX'`. In the colon
 //!   form of direct colour, the colour-space slot is read as red:
 //!   `--size 1x3 '\e[38:2::255:0:0mX'`.
-//! - An erased cell takes the pen's foreground as well as its background,
-//!   on a line scrolled in too: `--size 1x2 'a\e[30m  '`.
 //! - ESC in a string not followed by `\` ends the string and is dropped,
 //!   and what follows is printed: `--size 1x8 '\e]2;he\e]2;llo\x07'`.
 //! - A C1 control written as UTF-8 is a glyph of width -1, which moves the
 //!   cursor left: `--size 1x4 'a\xc2\x85b'`.
-use crate::engine::{Can, Engine, Kind, Setup, always};
+use crate::engine::{Blanks, Can, Engine, Kind, Setup, always};
 use crate::snapshot::{self, Cell, Color, Line, Snapshot, Style, Width};
 
 /// Rows of history kept: far more than a case can write, so the rows
@@ -154,6 +152,7 @@ pub const KIND: Kind = Kind {
         prompt: false,
         ..Can::ALL
     },
+    blanks: Blanks::XTERM,
     panel: true,
     in_process: true,
     available: always,

@@ -101,6 +101,12 @@ impl Cell {
         }
     }
 
+    /// Whether the cell is a blank: no text, and not the second half of a
+    /// wide glyph.
+    pub fn is_blank(&self) -> bool {
+        self.text.is_empty() && self.width != Width::Tail
+    }
+
     /// The cell with a hyperlink: `uri`, and the engine's own name for the
     /// link (see [`Link::group`]). The second half of a wide glyph has
     /// none of its own, as it has no style.
@@ -384,6 +390,11 @@ pub struct Diff {
     /// an engine that could not read that cell's style does not vote on it
     /// (`Line::unread_from`).
     pub styled_cell: Option<(usize, usize)>,
+    /// For a difference in a cell's style, whether fux-vt's cell is a
+    /// blank: an engine whose cell is a blank too, and which makes that
+    /// part of its blanks otherwise than xterm, does not vote on it
+    /// (`engine::Blanks`).
+    pub fux_blank: bool,
     pub fux: String,
     pub other: String,
 }
@@ -400,12 +411,14 @@ impl Diff {
 pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
     let mut out = Vec::new();
     let styled_cell = std::cell::Cell::new(None);
+    let fux_blank = std::cell::Cell::new(false);
     let mut field = |key: String, field: Field, a: String, b: String| {
         if a != b {
             out.push(Diff {
                 key,
                 field,
                 styled_cell: styled_cell.get(),
+                fux_blank: fux_blank.get(),
                 fux: a,
                 other: b,
             });
@@ -503,6 +516,7 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
                 continue;
             }
             styled_cell.set(None);
+            fux_blank.set(false);
             let styled = b.unread_from.is_none_or(|from| x < from);
             let at = |part: &str| format!("cell ({y},{x}) {part}");
             field(
@@ -536,6 +550,7 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
                 continue;
             }
             styled_cell.set(Some((y, x)));
+            fux_blank.set(ca.is_blank());
             let (sa, sb) = (&ca.style, &cb.style);
             for (name, f, va, vb) in [
                 ("fg", Field::Fg, sa.fg, sb.fg),
@@ -564,6 +579,7 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
         }
     }
     styled_cell.set(None);
+    fux_blank.set(false);
     let ha: Vec<_> = fux.history.iter().rev().collect();
     let hb: Vec<_> = other.history.iter().rev().collect();
     if ha.len() > hb.len() {

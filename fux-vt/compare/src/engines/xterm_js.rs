@@ -86,7 +86,7 @@
 //!   before erasing the rows above, and its write never ends.
 //!   `engine.mjs` gives it a stand-in line to clear there, so it does all
 //!   it means to (`replay --size 2x3 'xyzabc\e[1J'`).
-use crate::engine::{Can, Engine, Kind, Setup};
+use crate::engine::{Blanks, Can, Engine, Kind, Setup};
 use crate::snapshot::{self, Cell, Color, Line, Snapshot, Style, Width};
 use serde_json::Value;
 use std::cell::RefCell;
@@ -108,6 +108,10 @@ pub const KIND: Kind = Kind {
         in_band_resize: false,
         prompt: false,
         ..Can::ALL
+    },
+    blanks: Blanks {
+        fg: false,
+        ..Blanks::XTERM
     },
     panel: false,
     in_process: false,

@@ -1,5 +1,5 @@
 //! Ghostty's terminal core (libghostty-vt), read into a snapshot.
-use crate::engine::{Can, Engine, Kind, Setup, always};
+use crate::engine::{Blanks, Can, Engine, Kind, Setup, always};
 use crate::snapshot::{self, Cell, Color, Line, Snapshot, Style, Width};
 use libghostty_vt::screen::{CellContentTag, CellWide, GridRef, RowSemanticPrompt};
 use libghostty_vt::style::{StyleColor, Underline};
@@ -108,6 +108,10 @@ pub const KIND: Kind = Kind {
     can: Can {
         link_group: false,
         ..Can::ALL
+    },
+    blanks: Blanks {
+        fg: false,
+        ..Blanks::XTERM
     },
     panel: true,
     in_process: true,
