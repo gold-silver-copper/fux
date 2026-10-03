@@ -336,13 +336,16 @@ impl Pane {
     ) -> Result<Pane, Error> {
         // DECRQM answered: programs ask it whether synchronized output is
         // known before they use it. Hyperlinks kept, to paint them.
-        // Colour-scheme reports: the session sends them (`outer`).
+        // Colour-scheme reports: the session sends them (`outer`). The kitty
+        // keyboard protocol and modifyOtherKeys: keys are encoded as each
+        // screen asks (`encode::key_bytes`).
         let options = fux_vt::Options::new()
             .with_events(true)
             .with_mode_reports(true)
             .with_in_band_resize(true)
             .with_size_reports(true)
             .with_color_scheme_updates(true)
+            .with_kitty_keyboard(true)
             .with_hyperlinks(true)
             .with_prompt_marks(true);
         let parser = fux_vt::Parser::with_options(rows.max(1), cols.max(1), history, options)

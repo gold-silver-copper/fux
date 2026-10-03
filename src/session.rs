@@ -1532,12 +1532,12 @@ impl Session {
                 };
                 // Each argument is a key name (`C-c`, `Enter`, `a`), or, as in
                 // tmux, text sent as it is; `-l` makes every argument text.
-                let application = p.screen().application_cursor();
+                let mode = crate::encode::KeyMode::of(p.screen());
                 p.input.push_with(|out| {
                     for key in keys {
                         match key.parse::<KeyPress>() {
                             Ok(press) if !literal => {
-                                crate::encode::key_bytes(press, application, out)
+                                crate::encode::key_bytes(press.into(), mode, out)
                             }
                             _ => out.extend_from_slice(key.as_bytes()),
                         }

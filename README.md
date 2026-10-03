@@ -233,8 +233,16 @@ Key names, for `send-keys` and the prefix, are tmux's: `C-x`, `M-x`,
 `Left`, `Right`, `Home`, `End`, `PageUp`, `PageDown`, `Insert`, `Delete`,
 `F1`–`F12` (also `PgUp`, `PgDn`, `NPage`, `PPage`, `IC`, `DC`), plus any single
 character. A character carries its own shift (`T`, not `S-t`). `fux list-keys`
-prints them, with the bindings. The Kitty keyboard protocol is not
-supported: keys use xterm encodings.
+prints them, with the bindings.
+
+If your terminal speaks the kitty keyboard protocol (Ghostty, kitty,
+WezTerm, foot, iTerm2), fux turns it on while attached, so it can tell keys
+apart that a terminal otherwise sends alike (Shift-Enter and Enter, Ctrl-I
+and Tab, Ctrl-[ and Escape), and Escape needs no wait. Each pane's program
+gets its keys as it asked for them: in the kitty protocol (helix and
+Claude Code), xterm's modifyOtherKeys (vim), or xterm's plain encodings,
+the same as before. Key names, the prefix and bindings mean the same with
+the protocol or without it.
 
 The keys of `bind` and `unbind` are the keys after the prefix: one or more
 letters, `a`–`z` in either case, as separate words before the command.

@@ -61,11 +61,8 @@ fn a_panes_colour_query_gets_the_client_terminals_colours() -> Outcome {
     let mut client = server.attach(10, 100)?;
     client.wait_for("$")?;
     // The server asked: mode 2031, the colours, and DA1 last.
-    wait_painted(
-        &mut client,
-        "\x1b[?2031$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[c",
-        1,
-    )?;
+    wait_painted(&mut client, "\x1b[?2031$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\", 1)?;
+    wait_painted(&mut client, "\x1b[c", 1)?;
     client.send(GHOSTTY_ANSWERS)?;
     // 2031 is known: reports on, and the scheme asked for.
     wait_painted(&mut client, "\x1b[?2031h\x1b[?996n", 1)?;
@@ -120,7 +117,8 @@ fn a_change_of_scheme_reaches_the_programs_that_asked_for_it() -> Outcome {
     client.wait_for("ready")?;
     client.send(b"\x1b[?997;2n")?;
     // Asked again: the colours, and DA1.
-    wait_painted(&mut client, "\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[c", 2)?;
+    wait_painted(&mut client, "\x1b]10;?\x1b\\\x1b]11;?\x1b\\", 2)?;
+    wait_painted(&mut client, "\x1b[c", 2)?;
     client.send(b"\x1b]10;rgb:0000/0000/0000\x1b\\\x1b]11;rgb:ffff/ffff/f0f0\x1b\\\x1b[?62c")?;
     client.wait_for("answer:ESC[?997;2n")?;
     probe(&server, r"\x1b]11;?\x1b\\\x1b[?996n", "n")?;
