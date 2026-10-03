@@ -356,6 +356,16 @@ no identity), as the recordings were made, with fux's 10000 rows of history.
   colour, pending wrap, the kitty flags), and every field once xterm
   abstains (from SGR 58 on). fux-vt fails there where the panel outvotes
   it, as in `run`.
+- **A resize is judged by the program's answer to it.** A step that
+  resized is two steps of the case, the resize and the program's output
+  after it, compared after both; only the second is judged. Right after
+  the resize each engine shows its own way of resizing (whether it
+  reflows, what comes back from history, where the cursor lands), which
+  they choose differently on purpose, as `run` avoids by settling the
+  cursor before each resize; fux's panes do not reflow. What the program
+  leaves as the resize left it (a shell's earlier lines) stays as each
+  engine resized it, and a recording where that differs says so in its
+  status.
 - A field the panel outvotes fux-vt on where xterm agrees with fux-vt is
   shown in the marks (`-alacritty`), not failed. In `delta-diff`, delta
   draws its wrap marker in the last column and then sends EL 0 with the
