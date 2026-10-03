@@ -48,7 +48,7 @@ use fux::render::{self, Grid};
 use fux::session::{Outgoing, Session};
 use std::fmt::Write as _;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -947,13 +947,16 @@ mouse_mode false
 ";
 
 /// A multiplexer's client on a PTY, what it writes read by a thread here
-/// into a terminal of the reference engine's kind.
+/// into a terminal of the reference engine's kind, which answers it as a
+/// terminal does: its replies are written back up the PTY.
 struct Client {
     child: std::process::Child,
     from: mpsc::Receiver<Vec<u8>>,
     terminal: Box<dyn Engine>,
-    /// The PTY's master, kept open while the client runs.
-    _master: OwnedFd,
+    /// The PTY's master, kept open while the client runs, and how much of
+    /// the terminal's replies has been written to it.
+    master: File,
+    answered: usize,
     /// The server's files: tmux's socket, zellij's directories.
     dir: PathBuf,
     mux: Mux,
@@ -1069,20 +1072,45 @@ impl Client {
             child,
             from,
             terminal: terminal(kind, client_rows, cols)?,
-            _master: master,
+            master: File::from(master),
+            answered: 0,
             dir,
             mux,
             env,
         })
     }
 
-    /// Reads what the client writes into its terminal until it has been
-    /// quiet for `quiet`, or `limit` has passed.
+    /// What the client wrote, into its terminal; and the terminal's new
+    /// replies to the client.
+    fn take(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.terminal.process(bytes)?;
+        let replies = self.terminal.replies();
+        if let Some(new) = replies.get(self.answered..)
+            && !new.is_empty()
+        {
+            self.master
+                .write_all(new)
+                .map_err(|e| format!("answering {}: {e}", self.mux.name()))?;
+            self.answered = replies.len();
+        }
+        Ok(())
+    }
+
+    /// Takes what the client has written so far, without waiting.
+    fn pump(&mut self) -> Result<(), String> {
+        while let Ok(bytes) = self.from.try_recv() {
+            self.take(&bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Takes what the client writes until it has been quiet for `quiet`,
+    /// or `limit` has passed.
     fn settle(&mut self, quiet: Duration, limit: Duration) -> Result<(), String> {
         let started = Instant::now();
         while started.elapsed() < limit {
             match self.from.recv_timeout(quiet) {
-                Ok(bytes) => self.terminal.process(&bytes)?,
+                Ok(bytes) => self.take(&bytes)?,
                 Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
                     return Ok(());
                 }
@@ -1174,7 +1202,10 @@ fn through_mux(mux: Mux, kind: &Kind, recording: &Recording) -> Result<Score, St
     let mut at = 0usize;
     for (step, (_, bytes)) in recording.steps.iter().enumerate() {
         direct.process(bytes)?;
-        replayer.output(bytes)?;
+        // The multiplexer may ask the client's terminal something before
+        // it goes on (zellij forwards a pane's colour and size queries),
+        // so the client is read, and answered, while the pane syncs.
+        replayer.output_while(bytes, Some(&mut || client.pump()))?;
         client.settle(QUIET, STEP_LIMIT)?;
         at = at.saturating_add(bytes.len());
         let d = direct.snapshot(0)?;

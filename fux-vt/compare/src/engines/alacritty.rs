@@ -416,4 +416,8 @@ impl Engine for Alacritty {
     fn snapshot(&mut self, history_rows: usize) -> Result<Snapshot, String> {
         self.read(history_rows)
     }
+
+    fn replies(&self) -> Vec<u8> {
+        self.heard.borrow().replies.clone()
+    }
 }
