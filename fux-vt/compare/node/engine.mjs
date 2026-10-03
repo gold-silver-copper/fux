@@ -77,16 +77,32 @@ function wrapped(buffer, y) {
   return next !== undefined && next.isWrapped;
 }
 
+// A cell's hyperlink (OSC 8), as [uri, link id], or null. Not in the public
+// API: the cell's ExtendedAttrs hold the link's number (`urlId`, 0 for
+// none), and the core's OscLinkService its URI. The service numbers each
+// OSC 8 without an id anew, and gives one with an id and a URI it has seen
+// the same number, so cells with the same number are one link. A cell
+// loaded without extended attributes keeps the last one's, so the flag is
+// asked first.
+function link(term, c) {
+  if (!c.hasExtendedAttrs()) return null;
+  const id = c.extended.urlId;
+  if (!id) return null;
+  const data = term._core._oscLinkService.getLinkData(id);
+  if (data === undefined) throw new Error(`no link data for link ${id}`);
+  return [data.uri, id];
+}
+
 // A row as cells: [text, width (xterm.js's: 0 for the second half of a wide
-// glyph), fg, bg, flags].
-function cells(line, cols, cell) {
+// glyph), fg, bg, flags, link].
+function cells(term, line, cols, cell) {
   const out = [];
   for (let x = 0; x < cols; x++) {
     const c = line === undefined ? undefined : line.getCell(x, cell);
     if (c === undefined) {
-      out.push(['', 1, -1, -1, 0]);
+      out.push(['', 1, -1, -1, 0, null]);
     } else {
-      out.push([c.getChars(), c.getWidth(), fg(c), bg(c), flags(c)]);
+      out.push([c.getChars(), c.getWidth(), fg(c), bg(c), flags(c), link(term, c)]);
     }
   }
   return out;
@@ -169,7 +185,7 @@ function snapshot(t, req) {
   for (let y = 0; y < term.rows; y++) {
     screen.push({
       w: wrapped(buffer, base + y),
-      c: cells(buffer.getLine(base + y), term.cols, cell),
+      c: cells(term, buffer.getLine(base + y), term.cols, cell),
     });
   }
   const history = [];

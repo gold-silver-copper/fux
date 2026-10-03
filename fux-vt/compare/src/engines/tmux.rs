@@ -21,7 +21,10 @@
 //!
 //! - Cells: `capture-pane -p -e -N -F`, decoded by `pane::Reader` (see
 //!   `pane::Glyphs::Tmux` for how cells and widths are worked out). `-F`
-//!   prints each row's flags, `W` for a soft-wrapped row. `-N` prints a
+//!   prints each row's flags, `W` for a soft-wrapped row and `P` for one
+//!   marked as a prompt (OSC 133 ; A). `-e` prints hyperlinks as OSC 8,
+//!   with the program's id if it gave one, so a cell's URI is read, not
+//!   which cells share a link. `-N` prints a
 //!   row's cells up to its allocated size, and the rest are blank.
 //! - History: the same capture from `-S -N` (the rows before the screen),
 //!   or, on the alternate screen, which has no history, a second capture
@@ -63,6 +66,13 @@
 //!   (`--size 1x5 'क\u{94d}षZ'`).
 //! - The primary screen is not reflowed while the alternate screen is
 //!   shown (the named case `reflow-moves-the-saved-cursor`).
+//! - OSC 133 ; A marks the cursor's row without the fresh line the
+//!   semantic prompts proposal asks for (`--size 3x10 'x\e]133;A\x07$ '`),
+//!   and EL 2, or ED from a row's first column, unmarks the row
+//!   (`--size 3x10 '\e]133;A\e\\$ ab\e[2K'`).
+//! - SGR 0 ends the open hyperlink (`--size 1x4 '\e]8;;u\e\\a\e[mb'`), and
+//!   DECRC restores the one DECSC saved
+//!   (`--size 1x4 '\e]8;;u\e\\a\e7\e]8;;\e\\\e8d'`).
 use crate::engine::{Can, Engine, Kind, Setup};
 use crate::engines::pane::{self, Glyphs, Pane, Reader};
 use crate::snapshot::{Line, Snapshot};
@@ -79,6 +89,7 @@ pub const KIND: Kind = Kind {
         kitty_keyboard_flags: false,
         synchronized_output: false,
         in_band_resize: false,
+        link_group: false,
         ..Can::ALL
     },
     panel: false,
@@ -268,8 +279,9 @@ impl Tmux {
         })
     }
 
-    /// The rows of a capture, each with its wrap flag.
-    fn capture(&self, extra: &[&str], from: usize) -> Result<Vec<(bool, Vec<u8>)>, String> {
+    /// The rows of a capture, each with its wrap flag (`W`) and whether
+    /// a prompt starts on it (`P`).
+    fn capture(&self, extra: &[&str], from: usize) -> Result<Vec<(bool, bool, Vec<u8>)>, String> {
         let start = format!("-{from}");
         let mut args = vec!["capture-pane", "-p", "-N", "-F"];
         args.extend_from_slice(extra);
@@ -283,6 +295,7 @@ impl Tmux {
                 let (flags, rest) = line.split_at_checked(at).unwrap_or((line, &[]));
                 (
                     flags.contains(&b'W'),
+                    flags.contains(&b'P'),
                     rest.strip_prefix(b" ").unwrap_or(rest).to_vec(),
                 )
             })
@@ -309,10 +322,11 @@ impl Tmux {
         let screen_from = if info.alternate { 0 } else { history_rows };
         let captured = self.capture(&["-e"], screen_from)?;
         let first_screen = captured.len().saturating_sub(rows);
-        for (i, (wrapped, text)) in captured.iter().enumerate() {
+        for (i, (wrapped, prompt, text)) in captured.iter().enumerate() {
             let cells = reader.row(text, info.cols, &tab);
             let line = Line {
                 unread_from: None,
+                prompt: *prompt,
                 cells,
                 wrapped: *wrapped,
             };
@@ -327,9 +341,10 @@ impl Tmux {
             let primary = self.capture(&["-a"], history_rows)?;
             let kept = primary.len().saturating_sub(rows);
             let mut plain = Reader::new(Glyphs::Tmux);
-            for (wrapped, text) in primary.iter().take(kept) {
+            for (wrapped, _, text) in primary.iter().take(kept) {
                 let line = Line {
                     unread_from: None,
+                    prompt: false,
                     cells: plain.row(text, info.cols, &tab),
                     wrapped: *wrapped,
                 };

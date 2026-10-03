@@ -112,16 +112,16 @@ its own file (`src/engines/*.rs`), each with a `replay` command.
 
 | Engine | What, and pins | Cannot tell | Notes |
 | --- | --- | --- | --- |
-| fux-vt | the subject, by path, set up as ratty sets it up (reflow, an identity, kitty keyboard, events), with the DECRQM answers and in-band resize fux's panes have | — | `--no-reflow`: as fux sets it up |
-| ghostty | libghostty-vt 0.2.1 over Ghostty `7aa95917`, built by Zig 0.16 (see "Setup") | — | mode 2027 on; history kept in bytes |
-| alacritty | alacritty_terminal 0.26.0 | blink | synchronized updates applied at once (no event loop); a wide glyph on one column panics it, which the adapter repairs |
-| libvterm | libvterm 0.3.3 from its release tarball, through a C shim (`src/engines/libvterm_shim.c`); modes and pending wrap read from the pinned source's `vterm_internal.h` | dim, underline colour, kitty | the shim guards five crashes, hangs and out-of-bounds reads that random cases reach (found with ASan and UBSan; each listed with a replay in its file) |
-| avt | avt 0.18.0 | underline colour, hidden, keypad, bracketed paste, focus, kitty, title, reports | takes `&str`: the adapter carries split UTF-8 and turns invalid bytes into U+FFFD |
-| wezterm | wezterm-term at `cab25161` (git) | pending wrap | replies come through a writer thread, synced with a paste marker |
-| vt100 | vt100 0.16.2 | underline colour, blink, hidden, strikeout, autowrap, origin, focus, kitty, reports | doesn't vote |
-| xterm.js | @xterm/headless 6.0.0 with addon-unicode-graphemes 0.4.0, `reflowCursorLine` on, one Node process for every terminal (`node/engine.mjs`) | underline colour, kitty | patches a crash in ED 1 (see its file) |
-| tmux | the installed tmux (3.7c here): a private server, one session per terminal, read with `capture-pane -p -e -N -F` and `display -p` | kitty | a `sh` pane program copies bytes in raw mode; every step is synced with DA1 (`CSI c`), which no family sends; a sync waits for a reply to each DA1 request in the output too (real programs send them) |
-| xterm | the installed xterm (XTerm 411 here) under one Xvfb per run, read by printing every page (`CSI ? 11 i`) through `printerCommand`, modes by DECRQM, resize by `CSI 8 t` | pending wrap, underline colour, kitty | the deciding vote for disputed families (`verdicts`); the style of a row's blank cells after its last drawn cell cannot be read, and xterm abstains from a case with SGR 58, which it lacks (see its file) |
+| fux-vt | the subject, by path, set up as ratty sets it up (reflow, an identity, kitty keyboard, events), with the DECRQM answers, in-band resize, hyperlinks and prompt marks fux's panes have | — | `--no-reflow`: as fux sets it up |
+| ghostty | libghostty-vt 0.2.1 over Ghostty `7aa95917`, built by Zig 0.16 (see "Setup") | link groups | mode 2027 on; history kept in bytes; a link's URI only (`GridRef::hyperlink_uri`), a row's mark from `Row::semantic_prompt` (a primary prompt's row, not a continuation's) |
+| alacritty | alacritty_terminal 0.26.0 | blink, 2026, 2048, prompt marks | synchronized updates applied at once (no event loop); a wide glyph on one column panics it, which the adapter repairs |
+| libvterm | libvterm 0.3.3 from its release tarball, through a C shim (`src/engines/libvterm_shim.c`); modes and pending wrap read from the pinned source's `vterm_internal.h` | dim, underline colour, kitty, 2026, 2048, links, prompt marks | the shim guards five crashes, hangs and out-of-bounds reads that random cases reach (found with ASan and UBSan; each listed with a replay in its file) |
+| avt | avt 0.18.0 | underline colour, hidden, keypad, bracketed paste, focus, kitty, 2026, 2048, links, prompt marks, title, reports | takes `&str`: the adapter carries split UTF-8 and turns invalid bytes into U+FFFD |
+| wezterm | wezterm-term at `cab25161` (git) | pending wrap, 2026, 2048, link groups, prompt marks | replies come through a writer thread, synced with a paste marker; links without an id to one URI are one link |
+| vt100 | vt100 0.16.2 | underline colour, blink, hidden, strikeout, autowrap, origin, focus, kitty, 2026, 2048, links, prompt marks, reports | doesn't vote |
+| xterm.js | @xterm/headless 6.0.0 with addon-unicode-graphemes 0.4.0, `reflowCursorLine` on, one Node process for every terminal (`node/engine.mjs`) | underline colour, kitty, 2048, prompt marks | patches a crash in ED 1 (see its file); links read from its core, not the public API (`urlId`, `OscLinkService`) |
+| tmux | the installed tmux (3.7c here): a private server, one session per terminal, read with `capture-pane -p -e -N -F` and `display -p` | kitty, 2026, 2048, link groups | links from the OSC 8 `-e` prints, prompt marks from `-F`'s `P`; a `sh` pane program copies bytes in raw mode; every step is synced with DA1 (`CSI c`), which no family sends; a sync waits for a reply to each DA1 request in the output too (real programs send them) |
+| xterm | the installed xterm (XTerm 411 here) under one Xvfb per run, read by printing every page (`CSI ? 11 i`) through `printerCommand`, modes by DECRQM, resize by `CSI 8 t` | pending wrap, underline colour, kitty, 2026, 2048, links, prompt marks | the deciding vote for most disputed families (`verdicts`); the style of a row's blank cells after its last drawn cell cannot be read, and xterm abstains from a case with SGR 58, which it lacks (see its file) |
 
 ## Setup and pins
 
@@ -147,10 +147,15 @@ After creation and after every step, each engine is read into one
 `src/engine.rs`:
 
 - every visible cell: its text (the whole grapheme cluster), width (narrow,
-  wide, wide tail) and style (foreground, background and underline colour;
+  wide, wide tail), style (foreground, background and underline colour;
   bold, dim, italic, underline of any style, blink of either speed, inverse,
-  hidden, strikeout);
-- each row's soft-wrap flag;
+  hidden, strikeout) and hyperlink (OSC 8): its URI (fux-vt, Ghostty,
+  alacritty, wezterm, xterm.js and tmux can tell), and which cells share a
+  link (fux-vt, alacritty and xterm.js). Engines name links their own ways,
+  so the names are not compared: among the cells both engines link to the
+  same URI, each cell's link is named by the first of them that has it;
+- each row's soft-wrap flag, and whether a prompt starts on it (OSC 133 A:
+  fux-vt, Ghostty and tmux can tell);
 - the cursor, and whether a wrap is pending (a cursor waiting to wrap is in
   the last column with `pending_wrap` set);
 - cursor visibility, DECAWM, DECOM, the alternate screen, DECCKM, DECKPAM,
@@ -166,7 +171,7 @@ What is normalized away, and why:
 
 - **A printed space and an empty cell are both blank.** Engines store spaces
   differently.
-- **The cell after a wide glyph has no text or style of its own.**
+- **The cell after a wide glyph has no text, style or link of its own.**
 - **A spacer at the end of a row is a blank.** That is where a wide glyph
   that didn't fit would have started.
 - **Underline style and blink speed count only as on or off.** fux-vt keeps
@@ -194,7 +199,12 @@ What is normalized away, and why:
 - **Some generators avoid an engine's parsing quirk:**
   - no empty SGR parameter within a list, which Ghostty ignores where xterm
     reads it as 0;
-  - no empty kitty `CSI =` mode, which wezterm drops.
+  - no empty kitty `CSI =` mode, which wezterm drops;
+  - in `links` and `prompts`, erasing, editing and scrolling only after CR
+    or CUB, so no wrap is pending (see `erase` and `edit`), and no SD
+    (which moves soft-wrap flags its own way in each engine);
+  - in `prompts`, no IL, DL, or ED 2 but from the home position: Ghostty
+    handles marks its own way there (the family's reason).
 
 ## Families
 
