@@ -486,11 +486,12 @@ pub enum Glyphs {
 
 /// A piece of a printed row.
 enum Piece {
-    Glyph(String, Style),
+    /// A glyph, its style and its hyperlink's URI.
+    Glyph(String, Style, Option<String>),
     /// The second half of a wide glyph (xterm).
     Tail,
     /// Blank cells (a tmux tab).
-    Blanks(usize, Style),
+    Blanks(usize, Style, Option<String>),
 }
 
 fn is_modifier(c: char) -> bool {
@@ -706,11 +707,15 @@ fn low(n: u16) -> u8 {
     u8::try_from(n).unwrap_or(0)
 }
 
-/// Reads printed rows back into cells, keeping the style from row to row.
+/// Reads printed rows back into cells, keeping the style (and the
+/// hyperlink) from row to row.
 pub struct Reader {
     /// How many cells the last row printed, before padding.
     pub printed: usize,
     style: Style,
+    /// The URI of the hyperlink an `OSC 8` in the print opened, until
+    /// one closes it (tmux's `-e`).
+    link: Option<String>,
     shifted: bool,
     glyphs: Glyphs,
 }
@@ -720,6 +725,7 @@ impl Reader {
         Reader {
             printed: 0,
             style: Style::default(),
+            link: None,
             shifted: false,
             glyphs,
         }
@@ -735,12 +741,12 @@ impl Reader {
 
     fn width(&self, piece: &Piece) -> usize {
         match piece {
-            Piece::Glyph(text, _) => match self.glyphs {
+            Piece::Glyph(text, ..) => match self.glyphs {
                 Glyphs::Tmux => tmux_width(text),
                 Glyphs::Xterm => 1,
             },
             Piece::Tail => 1,
-            Piece::Blanks(n, _) => *n,
+            Piece::Blanks(n, ..) => *n,
         }
     }
 
@@ -768,10 +774,18 @@ impl Reader {
                         }
                     }
                     Some(']') => {
+                        let mut body = String::new();
                         while let Some(d) = chars.next() {
                             if d == '\x07' || (d == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
                                 break;
                             }
+                            body.push(d);
+                        }
+                        // OSC 8 ; params ; URI: an empty URI closes the link.
+                        if let Some((_, uri)) =
+                            body.strip_prefix("8;").and_then(|r| r.split_once(';'))
+                        {
+                            self.link = (!uri.is_empty()).then(|| uri.to_owned());
                         }
                     }
                     Some('#' | '(' | ')' | '*' | '+') => {
@@ -783,7 +797,7 @@ impl Reader {
                 '\x0f' => self.shifted = false,
                 '\t' => {
                     let at = pieces.iter().map(|p| self.width(p)).sum();
-                    pieces.push(Piece::Blanks(tab(at).max(1), self.style));
+                    pieces.push(Piece::Blanks(tab(at).max(1), self.style, self.link.clone()));
                 }
                 '\u{ffff}' => {
                     pieces.push(Piece::Tail);
@@ -793,9 +807,9 @@ impl Reader {
                 c => {
                     let c = if self.shifted { dec_graphics(c) } else { c };
                     match pieces.last_mut() {
-                        Some(Piece::Glyph(prev, _)) if joins(prev, c, self.glyphs) => prev.push(c),
+                        Some(Piece::Glyph(prev, ..)) if joins(prev, c, self.glyphs) => prev.push(c),
                         _ => {
-                            pieces.push(Piece::Glyph(c.to_string(), self.style));
+                            pieces.push(Piece::Glyph(c.to_string(), self.style, self.link.clone()));
                             self.unstyle();
                         }
                     }
@@ -806,13 +820,12 @@ impl Reader {
         let mut cells: Vec<Cell> = Vec::with_capacity(cols);
         for piece in &pieces {
             match piece {
-                Piece::Glyph(text, style) => {
+                Piece::Glyph(text, style, link) => {
                     let wide = self.width(piece) == 2;
-                    cells.push(Cell::new(
-                        text,
-                        if wide { Width::Wide } else { Width::Narrow },
-                        *style,
-                    ));
+                    cells.push(
+                        Cell::new(text, if wide { Width::Wide } else { Width::Narrow }, *style)
+                            .linked(link.clone().map(|uri| (uri, String::new()))),
+                    );
                     if wide {
                         cells.push(Cell::new("", Width::Tail, Style::default()));
                     }
@@ -825,9 +838,12 @@ impl Reader {
                     }
                     cells.push(Cell::new("", Width::Tail, Style::default()));
                 }
-                Piece::Blanks(n, style) => {
+                Piece::Blanks(n, style, link) => {
                     for _ in 0..*n {
-                        cells.push(Cell::new("", Width::Narrow, *style));
+                        cells.push(
+                            Cell::new("", Width::Narrow, *style)
+                                .linked(link.clone().map(|uri| (uri, String::new()))),
+                        );
                     }
                 }
             }
@@ -878,6 +894,29 @@ mod tests {
         sgr("0;91;58;2;4;5;6", &mut style);
         assert_eq!(style.fg, Color::Idx(9));
         assert_eq!(style.underline_color, Color::Rgb(4, 5, 6));
+    }
+
+    /// tmux's `-e` prints a hyperlink as OSC 8 before its cells and closes
+    /// it after; a link left open goes on into the next row.
+    #[test]
+    fn hyperlinks_are_read_from_osc_8() {
+        let mut tmux = Reader::new(Glyphs::Tmux);
+        let uris = |cells: &[Cell]| -> Vec<Option<String>> {
+            cells
+                .iter()
+                .map(|c| c.link.as_ref().map(|l| l.uri.clone()))
+                .collect()
+        };
+        let cells = tmux.row(
+            "a\x1b]8;;http://a\x1b\\b\x1b]8;;\x1b\\c\x1b]8;id=1;http://b\x07\t".as_bytes(),
+            6,
+            &|_| 2,
+        );
+        let a = Some("http://a".to_owned());
+        let b = Some("http://b".to_owned());
+        assert_eq!(uris(&cells), [None, a, None, b.clone(), b.clone(), None]);
+        let cells = tmux.row(b"d", 2, &|_| 1);
+        assert_eq!(uris(&cells), [b, None]);
     }
 
     #[test]

@@ -38,10 +38,17 @@
 //!   Cursor visibility is not in the public API: it is the core's own flag,
 //!   `coreService.isCursorHidden`.
 //!
+//! - Hyperlinks are not in the public API: a cell's ExtendedAttrs hold its
+//!   link's number (`urlId`), and the core's OscLinkService the URI
+//!   (`getLinkData`). It numbers each OSC 8 without an id anew, and one
+//!   with an id and a URI it has seen as before, so the number tells links
+//!   apart.
+//!
 //! What it cannot tell: underline colour, which the public API does not
 //! give. The core keeps one only on an underlined cell (it drops `58` on
-//! plain text) and reads SGR 59 back as white, not as no colour. And kitty
-//! keyboard flags: xterm.js 6.0 does not implement the protocol.
+//! plain text) and reads SGR 59 back as white, not as no colour. Kitty
+//! keyboard flags: xterm.js 6.0 does not implement the protocol. In-band
+//! resize and prompt marks, which it does not implement either.
 //!
 //! Its quirks, beside fux-vt where Ghostty agrees with fux-vt, as found by
 //! `run`, `matrix` and the named cases:
@@ -99,6 +106,7 @@ pub const KIND: Kind = Kind {
         underline_color: false,
         kitty_keyboard_flags: false,
         in_band_resize: false,
+        prompt: false,
         ..Can::ALL
     },
     panel: false,
@@ -338,8 +346,9 @@ fn color(v: Option<&Value>) -> Result<Color, String> {
     Ok(Color::Rgb(r, g, b))
 }
 
-/// A cell as engine.mjs gives it: `[text, width, fg, bg, flags]`, its
-/// width xterm.js's own (0 for the second half of a wide glyph).
+/// A cell as engine.mjs gives it: `[text, width, fg, bg, flags, link]`,
+/// its width xterm.js's own (0 for the second half of a wide glyph), its
+/// link `[uri, number]` or null.
 fn cell(v: &Value) -> Result<Cell, String> {
     let fields = v.as_array().ok_or("snapshot: a cell is not an array")?;
     let at = |i: usize| fields.get(i);
@@ -369,7 +378,18 @@ fn cell(v: &Value) -> Result<Cell, String> {
         hidden: on(64),
         strikeout: on(128),
     };
-    Ok(Cell::new(text, width, style))
+    let link = match at(5) {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let uri = v.get(0).and_then(Value::as_str);
+            let number = v.get(1).and_then(Value::as_u64);
+            let (Some(uri), Some(number)) = (uri, number) else {
+                return Err("snapshot: a cell's link is not [uri, number]".into());
+            };
+            Some((uri.to_owned(), number.to_string()))
+        }
+    };
+    Ok(Cell::new(text, width, style).linked(link))
 }
 
 fn line(v: &Value) -> Result<Line, String> {
@@ -381,6 +401,7 @@ fn line(v: &Value) -> Result<Line, String> {
         .collect::<Result<_, _>>()?;
     Ok(Line {
         unread_from: None,
+        prompt: false,
         cells,
         wrapped: flag(v, "w")?,
     })

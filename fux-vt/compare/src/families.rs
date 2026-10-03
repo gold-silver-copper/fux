@@ -352,6 +352,126 @@ fn repeat(r: &mut Rng) -> Vec<u8> {
     format!("{}{}", pick(r, &["-", "=", "界", ""]), csi(r, &["b"])).into_bytes()
 }
 
+/// Hyperlinks (OSC 8) as programs print them: a word inside a link, with an
+/// id or without (`ls --hyperlink`, gcc, delta, Claude Code), the same id
+/// again, a link left open and closed, ended by ST or BEL; and linked text
+/// erased, overwritten, edited (ICH, DCH) and scrolled into history. Each
+/// edit starts with CR, so no wrap is pending: the engines split on
+/// pending wraps as `erase` and `edit` record, links or not. SD is left
+/// out: a soft-wrapped row it moves keeps its flag in fux-vt, xterm,
+/// libvterm and avt, and loses it in Ghostty, alacritty, wezterm and tmux,
+/// which outvote fux-vt, links or not (`replay --engines all --size 3x16
+/// 'hello  long-line-\r\e[T~!@# xhello abca'`). What the engines split
+/// on, which no program sends, is in `link-edges`.
+fn links(r: &mut Rng) -> Vec<u8> {
+    let st = pick(r, &["\x1b\\", "\x07"]);
+    let uri = pick(
+        r,
+        &[
+            "http://a.example/",
+            "file://localhost/tmp/a.txt",
+            "https://b.example/x?y=1;z=2",
+        ],
+    );
+    let open = if r.chance(50) {
+        format!("\x1b]8;;{uri}{st}")
+    } else {
+        let params = pick(r, &["id=1", "id=x", "id=fux1-7", "foo=bar:id=1"]);
+        format!("\x1b]8;{params};{uri}{st}")
+    };
+    let word = pick(r, &["a", "name", "src/main.rs:3:7", "x y"]);
+    match r.below(6) {
+        0 | 1 => format!("{open}{word}\x1b]8;;{st}"),
+        2 => open,
+        3 => format!("\x1b]8;;{st}"),
+        // SGR 0 first: the blanks ICH, DCH and ECH leave take the pen's
+        // foreground in fux-vt, as in xterm, and not in Ghostty, alacritty,
+        // wezterm, xterm.js or tmux, links or not
+        // (`replay --engines all --size 1x4 'abcd\e[31m\r\e[2P'`).
+        4 => format!(
+            "\r\x1b[m\x1b[{}C{}",
+            pick(r, &["0", "1", "2", "5"]),
+            pick(
+                r,
+                &[
+                    "\x1b[K", "\x1b[1K", "\x1b[2K", "\x1b[X", "\x1b[2X", "\x1b[@", "\x1b[2P", "x"
+                ]
+            )
+        ),
+        _ => pick(
+            r,
+            &["\r\n", "\r\n\r\n", "\r\x1b[S", "\r\x1b[J", "\r\x1b[2J"],
+        ),
+    }
+    .into_bytes()
+}
+
+/// What the engines that keep links split on, and no program sends (see
+/// the family's reason): bytes outside printable ASCII in a URI, a URI or
+/// an id past fux-vt's limits, an empty id, an OSC 8 with parameters and
+/// no URI, a wide glyph that does not fit at a row's end, and DECSC,
+/// DECRC, DECSTR and SGR 0 with a link open.
+fn link_edges(r: &mut Rng) -> Vec<u8> {
+    match r.below(10) {
+        0 => "\x1b]8;;http://\u{e4}.example/\u{e9}\x1b\\".to_owned(),
+        1 => format!(
+            "\x1b]8;;http://a.example/{}\x1b\\",
+            std::iter::repeat_n('x', 2100).collect::<String>()
+        ),
+        2 => format!(
+            "\x1b]8;id={};http://a.example/\x1b\\",
+            std::iter::repeat_n('i', 260).collect::<String>()
+        ),
+        3 => "\x1b]8;id=;http://a.example/\x1b\\".to_owned(),
+        4 => "\x1b]8;id=1;\x1b\\".to_owned(),
+        5 => "\x1b]8;;http://a.example/\x1b\\\u{754c}".to_owned(),
+        6 => "\x1b]8;;http://a.example/\x1b\\".to_owned(),
+        _ => pick(r, &["\x1b7", "\x1b8", "\x1b[!p", "\x1b[m"]),
+    }
+    .into_bytes()
+}
+
+/// Prompt marks (OSC 133) as a shell with prompt integration sends them
+/// (fish itself; zsh and bash through a terminal's scripts): A, with or
+/// without options, then the prompt; B and the command typed; Enter, then
+/// C and the output; D, with or without a status; L alone; a continuation
+/// prompt on a new line (P;k=s); and ED, EL and scrolling over marked
+/// rows. Left out, as no shell sends them where Ghostty and fux-vt split
+/// (see the family's reason): N, P;k=i on a row of its own, C on a
+/// prompt's row, IL, DL, and ED 2 but from the home position.
+fn prompts(r: &mut Rng) -> Vec<u8> {
+    let st = pick(r, &["\x1b\\", "\x07"]);
+    match r.below(8) {
+        0 => format!(
+            "\x1b]133;A{}{st}{}",
+            pick(r, &["", ";aid=1", ";cl=line", ";redraw=last;cl=line;aid=7"]),
+            pick(r, &["$ ", "> ", "", "~/src % "])
+        ),
+        1 => format!("\x1b]133;B{st}{}", pick(r, &["ls", "", "make test"])),
+        2 => format!("\r\n\x1b]133;C{st}{}", pick(r, &["out", "", "a\r\nb"])),
+        3 => format!("\x1b]133;D{}{st}", pick(r, &["", ";0", ";1"])),
+        4 => format!("\x1b]133;L{st}"),
+        5 => format!("\r\n\x1b]133;P;k=s{st}> "),
+        // A CR or CUB first, so no wrap is pending: Ghostty ends it at ED
+        // and EL, wezterm keeps it (see `erase`).
+        6 => pick(
+            r,
+            &[
+                "\x1b[H\x1b[J",
+                "\x1b[H\x1b[J\x1b]133;A\x1b\\$ ",
+                "\x1b[D\x1b[J",
+                "\x1b[D\x1b[1J",
+                "\x1b[D\x1b[K",
+                "\x1b[D\x1b[1K",
+                "\x1b[D\x1b[2K",
+                "\r\x1b[K",
+            ],
+        ),
+        _ => pick(r, &["\r\n", "\r\n\r\n", "\r\x1b[S", "\r\x1b[2S", "\r\x1bD"]),
+    }
+    .into_bytes()
+}
+
 fn titles(r: &mut Rng) -> Vec<u8> {
     pick(
         r,
@@ -645,6 +765,32 @@ pub const FAMILIES: &[Family] = &[
         status: Status::Agree,
         ratty_only: false,
         generate: titles,
+    },
+    Family {
+        name: "links",
+        about: "hyperlinks (OSC 8): linked words with and without ids, links left open and closed, then erased, overwritten, edited and scrolled",
+        status: Status::Agree,
+        ratty_only: false,
+        generate: links,
+    },
+    Family {
+        name: "link-edges",
+        about: "hyperlinks (OSC 8) no program sends: non-ASCII and over-long URIs, long and empty ids, parameters without a URI, a wide glyph at a row's end, DECSC, DECRC, DECSTR and SGR 0 over an open link",
+        status: Status::Differs(
+            "the engines that keep links split where the spec (references/modern/osc8_hyperlinks.md) is silent or leaves it undefined. A URI with bytes outside printable ASCII (\"Encodings\": undefined) opens no link in fux-vt and is kept by Ghostty, alacritty, wezterm, xterm.js and tmux, which outvote it (`replay --engines all --size 1x4 '\\e]8;;http://\\u{e4}.example/\\e\\\\ab'`); so is a URI past 2083 bytes or an id past 250 (\"Length limits\": VTE's and iTerm2's), though Ghostty opens none for a URI of 2077 bytes either. An empty id is no id in fux-vt and xterm.js, as the spec says; alacritty makes every `id=` link to one URI one link (`replay --engines all --size 1x4 '\\e]8;id=;u\\e\\\\a\\e]8;id=;u\\e\\\\b'`). OSC 8 with parameters and no URI closes the link in fux-vt, alacritty and tmux, leaves it open in Ghostty and xterm.js, and opens a link to nothing in wezterm. The blank a wide glyph that does not fit leaves at a row's end has no link in fux-vt (a blank has none) or tmux, and the link in Ghostty, alacritty and xterm.js, which outvote it (`replay --engines all --size 2x3 '\\e]8;;u\\e\\\\ab\\u{754c}'`). DECRC restores the link DECSC saved in alacritty, wezterm and tmux, not in fux-vt, Ghostty or xterm.js (`replay --engines all --size 1x4 '\\e]8;;u\\e\\\\a\\e7\\e]8;;\\e\\\\\\e8d'`); DECSTR ends the link in wezterm and xterm.js, and SGR 0 in tmux, not in the rest",
+        ),
+        ratty_only: false,
+        generate: link_edges,
+    },
+    Family {
+        name: "prompts",
+        about: "prompt marks (OSC 133): A, B, C, D, L and continuation prompts as shells send them, then ED, EL and scrolling",
+        status: Status::Decided {
+            why: "A and L do a fresh line first, as the semantic prompts proposal says (references/modern/osc133_semantic_prompts.md, \"Commands\") and Ghostty and wezterm do, as fux-vt does; xterm, alacritty, libvterm, avt, xterm.js and tmux, which do not, print on and outvote fux-vt in the default panel (`replay --engines all --size 3x10 'x\\e]133;A\\x07$ '`). Of the engines, Ghostty and tmux tell where a prompt starts; tmux marks A's row without the fresh line, and unmarks a row EL 2 or ED from its first column erases, where Ghostty and fux-vt keep the mark (`replay --engines all --size 3x10 '\\e]133;A\\e\\\\$ ab\\e[2K'`). Left out of the generator, as no shell sends them where Ghostty and fux-vt split: N, which the proposal makes the same as A and Ghostty and wezterm take as A, and fux-vt ignores (`replay --engines all --size 3x10 'x\\e]133;N\\e\\\\$ '`); P;k=i on a row A did not mark, which Ghostty marks (`--size 3x10 'x\\r\\n\\e]133;P;k=i\\e\\\\> '`); C in the first column of the prompt's row, which unmarks it in Ghostty, its heuristic for fish (`--size 3x10 '\\e]133;A\\e\\\\\\e]133;C\\e\\\\out'`); DL, after which Ghostty leaves the mark of the row it deleted on the blank row it brings in (`--size 3x4 '\\e]133;A\\e\\\\$ \\r\\e[M'`); IL, which moves a marked row below the cursor, where Ghostty marks the row prompt text wraps into as a continuation, dropping its mark (`--size 2x8 '\\e]133;A\\e\\\\~/src % \\r\\e[Lc  ~!@#ab'`); and ED 2 while the screen's last row with text is a prompt's, which Ghostty turns into scrolling the screen into history first, moving the cursor with it (Ghostty #905; `--size 2x2 '\\r\\n\\e]133;C\\x07out\\e]133;A\\x07' '\\r\\e[2J\\e]133;A\\e\\\\$ '`). Erasing starts with CR or CUB, as wezterm keeps a pending wrap at ED and EL (see `erase`), and SD is left out (see `links`)",
+            by: &["ghostty", "wezterm"],
+        },
+        ratty_only: false,
+        generate: prompts,
     },
     Family {
         name: "strings",

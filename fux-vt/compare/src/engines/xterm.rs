@@ -114,6 +114,9 @@ pub const KIND: Kind = Kind {
         kitty_keyboard_flags: false,
         synchronized_output: false,
         in_band_resize: false,
+        link_uri: false,
+        link_group: false,
+        prompt: false,
         ..Can::ALL
     },
     panel: false,
@@ -581,6 +584,7 @@ impl Xterm {
                 wrapped: *wrapped,
                 // The print stops at the row's last drawn cell.
                 unread_from: Some(reader.printed),
+                prompt: false,
             };
             if i < first_screen {
                 history.push((line.text(), line.wrapped));

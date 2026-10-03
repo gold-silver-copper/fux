@@ -106,6 +106,7 @@ pub const KIND: Kind = Kind {
         blink: false,
         synchronized_output: false,
         in_band_resize: false,
+        prompt: false,
         ..Can::ALL
     },
     panel: true,
@@ -248,13 +249,18 @@ fn cell(c: &cell::Cell) -> Cell {
     } else {
         Width::Narrow
     };
+    // A link is one by its id and URI (`Hyperlink`'s equality); a link
+    // without an id is given one of its own, `<n>_alacritty`.
+    let link = c
+        .hyperlink()
+        .map(|l| (l.uri().to_owned(), format!("{}\n{}", l.id(), l.uri())));
     if f.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
-        return Cell::new("", Width::Narrow, style);
+        return Cell::new("", Width::Narrow, style).linked(link);
     }
     let mut text = String::new();
     text.push(if c.c == '\t' { ' ' } else { c.c });
     text.extend(c.zerowidth().unwrap_or_default());
-    Cell::new(&text, width, style)
+    Cell::new(&text, width, style).linked(link)
 }
 
 fn err(what: &str) -> impl Fn(std::num::TryFromIntError) -> String + '_ {
@@ -283,6 +289,7 @@ impl Alacritty {
         let cells: &[cell::Cell] = &row[..];
         Line {
             unread_from: None,
+            prompt: false,
             cells: cells.iter().map(cell).collect(),
             wrapped: cells
                 .last()

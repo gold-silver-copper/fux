@@ -94,9 +94,9 @@ engine that can run here, the default for cases and bench), `in-process`
 or `xterm`.
 
 fux-vt is set up as ratty sets it up (reflow, an identity, the kitty
-keyboard protocol), with the DECRQM answers and in-band resize fux's panes
-have; --no-reflow sets it up as fux does, which leaves out
-the families that need ratty's setup.";
+keyboard protocol), with the DECRQM answers, in-band resize, hyperlinks and
+prompt marks fux's panes have; --no-reflow sets it up as fux does, which
+leaves out the families that need ratty's setup.";
 
 struct Args {
     command: String,
@@ -506,17 +506,20 @@ fn cases(args: &Args) -> Result<bool, String> {
         let status = FAMILIES.get(index).map(|f| f.status);
         let marks = marks(&outcome);
         if let Some(Status::Decided { by, .. }) = status {
-            let deciders = by.join(", ");
+            let deciders = match by {
+                [one] => format!("{one} decides"),
+                _ => format!("{} decide", by.join(", ")),
+            };
             match deciders_agree(&outcome, by) {
                 Some(true) | None => {
                     agree = agree.saturating_add(1);
-                    println!("ok       {name} (family {family}: {deciders} decide)   {marks}");
+                    println!("ok       {name} (family {family}: {deciders})   {marks}");
                 }
                 Some(false) => {
                     ok = false;
                     differ = differ.saturating_add(1);
                     println!(
-                        "FAIL     {name} (family {family}: {deciders} decide, and outvote fux-vt)   {marks}"
+                        "FAIL     {name} (family {family}: {deciders}, against fux-vt)   {marks}"
                     );
                     print!("{}", case::report(&case, &panel, &outcome));
                 }

@@ -22,8 +22,91 @@ pub const CASES: &[Named] = &[
         (1, 4),
         &["\\e[?2026h", "\\e[!p"],
     ),
+    // Hyperlinks (OSC 8, references/modern/osc8_hyperlinks.md): a link
+    // closed; a link without an id is a link of its own, so two runs to one
+    // URI are two links (VTE's way, which the spec asks multiplexers to
+    // take); the same id and URI again are one link; a wide glyph keeps its
+    // link. wezterm merges the two runs, and tells no links apart.
+    (
+        "a-link-printed-and-closed",
+        "links",
+        (1, 6),
+        &["\\e]8;;http://a.example/\\e\\\\ab\\e]8;;\\e\\\\c"],
+    ),
+    (
+        "two-links-without-an-id-to-one-uri-are-two",
+        "links",
+        (1, 6),
+        &[
+            "\\e]8;;http://a.example/\\e\\\\ab\\e]8;;\\e\\\\ \\e]8;;http://a.example/\\e\\\\cd\\e]8;;\\e\\\\",
+        ],
+    ),
+    (
+        "the-same-id-twice-is-one-link",
+        "links",
+        (1, 6),
+        &[
+            "\\e]8;id=1;http://a.example/\\e\\\\ab\\e]8;;\\e\\\\ \\e]8;id=1;http://a.example/\\e\\\\cd",
+        ],
+    ),
+    (
+        "a-wide-glyph-keeps-its-link",
+        "links",
+        (1, 4),
+        &["\\e]8;;http://a.example/\\e\\\\\\u{754c}x"],
+    ),
+    // Where the engines that keep links split (the family's reason).
+    (
+        "a-uri-outside-printable-ascii-opens-no-link",
+        "link-edges",
+        (1, 4),
+        &["\\e]8;;http://\\u{e4}.example/\\e\\\\ab"],
+    ),
+    (
+        "an-empty-id-is-no-id",
+        "link-edges",
+        (1, 4),
+        &["\\e]8;id=;u\\e\\\\a\\e]8;id=;u\\e\\\\b"],
+    ),
+    (
+        "the-blank-before-a-wide-glyph-that-wraps-has-no-link",
+        "link-edges",
+        (2, 3),
+        &["\\e]8;;u\\e\\\\ab\\u{754c}"],
+    ),
+    (
+        "decrc-restores-no-link",
+        "link-edges",
+        (1, 4),
+        &["\\e]8;;u\\e\\\\a\\e7\\e]8;;\\e\\\\\\e8d"],
+    ),
     // Recorded verdicts (families with `Status::Decided`): each pins one
-    // point, and `verdicts` checks it beside xterm.
+    // point, and `verdicts` checks it beside the family's deciding engines
+    // (xterm, but for `prompts`).
+    //
+    // Prompt marks (OSC 133): A does a fresh line, then marks the row; L
+    // does the fresh line alone; ED 2 erases the marks with the rows.
+    (
+        "a-prompt-mark-starts-a-fresh-line",
+        "prompts",
+        (3, 6),
+        &["out\\e]133;A\\e\\\\$ "],
+    ),
+    (
+        "l-starts-a-fresh-line",
+        "prompts",
+        (3, 6),
+        &["out\\e]133;L\\e\\\\x"],
+    ),
+    (
+        "ed-2-clears-prompt-marks",
+        "prompts",
+        (3, 6),
+        &[
+            "\\e]133;A\\e\\\\$ ls\\r\\n\\e]133;C\\e\\\\out\\r\\n\\e]133;D;0\\e\\\\\\e]133;A\\e\\\\$ ",
+            "\\e[H\\e[2J",
+        ],
+    ),
     (
         "tab-keeps-a-pending-wrap",
         "controls",
