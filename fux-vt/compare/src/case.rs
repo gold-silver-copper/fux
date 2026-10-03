@@ -216,6 +216,17 @@ impl Case {
     /// Runs the case, stopping where fux-vt is first outvoted if `stop`,
     /// else running every step and giving the verdicts at the end.
     pub fn run_until(&self, panel: &[usize], stop: bool) -> Result<Outcome, String> {
+        self.run_judged(panel, stop, outvoted)
+    }
+
+    /// Runs the case as [`Case::run_until`] does, with `fails` saying, from
+    /// the verdicts after a step, whether fux-vt fails there.
+    pub fn run_judged(
+        &self,
+        panel: &[usize],
+        stop: bool,
+        fails: impl Fn(&[Verdict]) -> bool,
+    ) -> Result<Outcome, String> {
         let setup = self.setup();
         let mut running = Running {
             fux: (SUBJECT.make)(&setup)?,
@@ -230,7 +241,7 @@ impl Case {
             }
         }
         let (fux, verdicts) = running.compare()?;
-        if outvoted(&verdicts) && (stop || self.steps.is_empty()) {
+        if fails(&verdicts) && (stop || self.steps.is_empty()) {
             return Ok(Outcome {
                 step: Some(0),
                 fux,
@@ -257,7 +268,7 @@ impl Case {
             }
             let (fux, verdicts) = running.compare()?;
             let at_end = i.saturating_add(1) == self.steps.len();
-            if outvoted(&verdicts) && (stop || at_end) {
+            if fails(&verdicts) && (stop || at_end) {
                 return Ok(Outcome {
                     step: Some(i.saturating_add(1)),
                     fux,

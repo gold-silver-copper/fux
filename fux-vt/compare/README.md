@@ -41,6 +41,8 @@ fux-vt/compare/run.sh run --family sgr --family text --cases 2000 --seed 7
 fux-vt/compare/run.sh run --engines ghostty,libvterm,xterm   # any panel
 fux-vt/compare/run.sh replay --engines all --size 1x5 'abcde\x08X'
 fux-vt/compare/run.sh --no-reflow           # fux-vt set up as fux sets it up
+fux-vt/compare/run.sh corpus                # the recordings beside xterm and the panel; exit 1 if one regresses
+fux-vt/compare/run.sh corpus --show vim     # one recording, and fux-vt's screen at its end
 fux-vt/compare/corpus/record.sh [NAME...]   # record the corpus again (see "The corpus")
 fux-vt/compare/run.sh --cargo test          # any cargo subcommand, in the same environment
 fux-vt/compare/run.sh --cargo clippy --all-targets -- -D warnings
@@ -305,6 +307,34 @@ logged in.
 
 Not installed here, so not recorded: neovim, htop, btop, lazygit, fish.
 
+### Replaying
+
+`corpus` replays each recording through fux-vt and the engines (default:
+xterm and the panel), as a case of the recording's size with a step for
+each step recorded, and compares them after every step as `run` does. fux-vt
+is set up as fux sets up a pane (no reflow, no kitty keyboard, no
+identity), as the recordings were made, with fux's 10000 rows of history.
+
+- **xterm decides what it can tell.** A field xterm tells that differs
+  from fux-vt fails the step.
+- **The panel decides the rest**: the fields xterm cannot tell (underline
+  colour, pending wrap, the kitty flags), and every field once xterm
+  abstains (from SGR 58 on). fux-vt fails there where the panel outvotes
+  it, as in `run`.
+- A field the panel outvotes fux-vt on where xterm agrees with fux-vt is
+  shown in the marks (`-alacritty`), not failed. In `delta-diff`, delta
+  draws its wrap marker in the last column and then sends EL 0 with the
+  wrap pending; xterm, Ghostty, libvterm and fux-vt erase the marker,
+  alacritty, avt and wezterm keep it.
+
+Each recording has a status, as a family has (`STATUSES` in
+`src/corpus.rs`): expected to agree, or differing for a recorded reason.
+`corpus` exits 1 if one expected to agree fails, or one has no status. It
+takes about five seconds. Today twelve agree; the three of Claude Code
+differ, all at the end, where it sets an empty title and xterm shows its
+default one, `xterm` (and `claude-ghostty` from its first step, on the kitty
+keyboard flags fux does not keep).
+
 ## Files
 
 | File | What |
@@ -323,4 +353,5 @@ Not installed here, so not recorded: neovim, htop, btop, lazygit, fish.
 | `src/escape.rs` | bytes as replayable text, and back |
 | `src/rng.rs` | splitmix64, as in `diff/` |
 | `src/record.rs` | `record`: a program on a PTY, its output recorded, fux-vt answering its queries |
+| `src/corpus.rs` | the recordings: loading, replaying beside the engines, their statuses |
 | `corpus/` | the recordings, their keys, `record.sh` that makes them, and the man page one shows |
