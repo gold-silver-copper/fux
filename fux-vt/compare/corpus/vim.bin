@@ -1,4 +1,4 @@
-[?1049h[>4;2m[?1h=[?2004h[?1004h[1;40r[?12h[?12l[22;2t[22;1t[27m[23m[29m[m[H[2J[?25l[40;1H"src/parser.rs" 972L, 39239B[2;1H▽[6n[2;1H  [3;1HPzz\[0%m[6n[3;1H           [1;1H[>c]11;?]10;?[1;1H[38;5;130m  1 [m[35m//! Direct DEC ANSI transition parser, based on Paul Williams's transition[m
+[?1049h[>4;2m[?1h=[?2004h[?1004h[1;40r[?12h[?12l[22;2t[22;1t[27m[23m[29m[m[H[2J[?25l[40;1H"src/parser.rs" 977L, 39278B[2;1H▽[6n[2;1H  [3;1HPzz\[0%m[6n[3;1H           [1;1H[>c]11;?]10;?[1;1H[38;5;130m  1 [m[35m//! Direct DEC ANSI transition parser, based on Paul Williams's transition[m
 [38;5;130m  2 [m[35m//! model (reference and attribution in the crate README), with UTF-8 ground decoding.[m[2;91H[K[3;1H[38;5;130m  3 [m[35m//! Ignored control strings retain no payload. No parser dependency is used.[m[3;81H[K[4;1H[38;5;130m  4 
   5 use[m [35mcrate[m[35m::[m{Error, Reply, Screen, [35mscreen[m[35m::[mDispatch};
 [38;5;130m  6 
@@ -72,7 +72,7 @@
 [93m 36 [m    [93mfn[m [1m[96mseparator[m([38;5;121m&mut[m [95mself[m, colon: [38;5;121mbool[m) [93m->[m [38;5;121mbool[m {
 [93m 37 [m[8C[93mlet[m [95mSome[m(len) [93m=[m [95mself[m.len.[1m[96mchecked_add[m([95m1[m).[1m[96mfilter[m([93m|[mn[93m|[m [38;5;121m*[mn [93m<=[m [95mself[m.values.[1m[96mlen[m()) [93melse[m {
 [93m 38 [m[12C[93mreturn[m [95mfalse[m;
-[1m[7msrc/parser.rs                                                                                         1,1            Top[m[40;1H"src/parser.rs" 972L, 39239B[1;5H[?25h[?25l[40;110Hj[1;5H[40;110H [2;5H[39;103H[1m[7m2,[2;5H[?25h[?25l[m[40;110Hj[2;5H[40;110H [3;5H[39;103H[1m[7m3,[3;5H[?25h[?25l[m[40;110H5j[3;5H[40;110H  [8;5H[39;103H[1m[7m8,[8;5H[?25h[?25l[m[40;110H^D[8;5H[40;110H  [8;5H[1;38r[1;1H[19M[1;40r[20;1H[93m 39 [m[8C};
+[1m[7msrc/parser.rs                                                                                         1,1            Top[m[40;1H"src/parser.rs" 977L, 39278B[1;5H[?25h[?25l[40;110Hj[1;5H[40;110H [2;5H[39;103H[1m[7m2,[2;5H[?25h[?25l[m[40;110Hj[2;5H[40;110H [3;5H[39;103H[1m[7m3,[3;5H[?25h[?25l[m[40;110H5j[3;5H[40;110H  [8;5H[39;103H[1m[7m8,[8;5H[?25h[?25l[m[40;110H^D[8;5H[40;110H  [8;5H[1;38r[1;1H[19M[1;40r[20;1H[93m 39 [m[8C};
 [93m 40 [m[8C[96m// The new parameter starts empty: `clear` left what a sequence[m
 [93m 41 [m[8C[96m// before put there.[m
 [93m 42 [m[8C[93mif[m [93mlet[m [95mSome[m(sub) [93m=[m [95mself[m.sub.[1m[96mget_mut[m([95mself[m.len) {
@@ -126,29 +126,29 @@
 [93m 35 [m    }
 [93m 36 [m    [93mfn[m [1m[96mseparator[m([38;5;121m&mut[m [95mself[m, colon: [38;5;121mbool[m) [93m->[m [38;5;121mbool[m {
 [93m 37 [m[8C[93mlet[m [95mSome[m(len) [93m=[m [95mself[m.len.[1m[96mchecked_add[m([95m1[m).[1m[96mfilter[m([93m|[mn[93m|[m [38;5;121m*[mn [93m<=[m [95mself[m.values.[1m[96mlen[m()) [93melse[m {
-[93m 38 [m[12C[93mreturn[m [95mfalse[m;[39;103H[1m[7m27,1  [10C2%[8;5H[?25h[?25l[m[40;110HG[8;5H[40;110H [38;5H[1;1H[93m935[m[9C    ([95mb">"[m, [95mb'c'[m) [93mif[m n [93m==[m [95m0[m [93m=>[m [93mmatch[m identity {
-[93m936[m[13C    [95mSome[m(identity) [93m=>[m {
-[93m937[m[13C        [93mlet[m version [93m=[m identity.[1m[96mencoded_version[m();
-[93m938[m[13C        [95mSome[m([38;5;81mReply[m[38;5;224m::[m[1m[96mof[m([38;5;81mformat_args![m([95m"[m[38;5;224m\x1b[m[95m[>1;{version};0c"[m)))
-[93m939[m[9C [7C}
-[93m940[m[5C [11C[95mNone[m [93mif[m extended [93m=>[m [95mSome[m([38;5;81mReply[m[38;5;224m::[m[1m[96mof[m([38;5;81mformat_args![m([95m"[m[38;5;224m\x1b[m[95m[>1;10;0c"[m))),
-[93m941[m[1C [15C[95mNone[m [93m=>[m [95mNone[m,
-[93m942[m[1C            },[8;19H[K[9;1H[93m943[m[5C        ([95mb">"[m, [95mb'q'[m) [93mif[m n [93m==[m [95m0[m [93m=>[m {
-[93m944[m[9C        [93mlet[m identity [93m=[m identity[38;5;224m?[m;[10;46H[K[11;1H[93m945[m[9C        [93mlet[m length [93m=[m identity.name.[1m[96mlen[m().[1m[96mchecked_add[m(identity.version.[1m[96mlen[m())[38;5;224m?[m;
-[93m946[m[13C    [93mif[m length [93m>[m [38;5;81mIdentity[m[38;5;224m::[mMAX_LEN {[12;52H[K[13;1H[93m947[m[9C [11C[93mreturn[m [95mNone[m;
-[93m948[m[13C    }[14;22H[K[15;1H[93m949[m[9C [7C[93mlet[m (name, version) [93m=[m (identity.name, identity.version);
-[93m950[m[5C [11C[95mSome[m([38;5;81mReply[m[38;5;224m::[m[1m[96mof[m([38;5;81mformat_args![m([95m"[m[38;5;224m\x1b[m[95mP>|{name} {version}[m[38;5;224m\x1b\\[m[95m"[m)))
-[93m951[m[5C        }[17;18H[K[18;1H[93m952[m[9C    ([95mb"?$"[m, [95mb'p'[m) [93mif[m modes [93m=>[m {[18;44H[K[19;1H[93m953[m[13C    [93mlet[m status [93m=[m [93mmatch[m n {
-[93m954[m[9C  [10C[95m2048[m [93mif[m [93m![m[95mself[m.options.in_band_resize [93m=>[m [95m0[m,
-[93m955[m[9C            [95m2031[m [93mif[m [93m![m[95mself[m.options.color_scheme_updates [93m=>[m [95m0[m,[21;73H[K[22;1H[93m956[m[9C            _ [93m=>[m [95mself[m.screen.[1m[96mprivate_mode_status[m(n),
-[93m957[m[9C        };[23;23H[K[24;1H[93m958[m[13C    [95mSome[m([38;5;81mReply[m[38;5;224m::[m[1m[96mof[m([38;5;81mformat_args![m([95m"[m[38;5;224m\x1b[m[95m[?{n};{status}$y"[m)))
-[93m959[m[9C    }
-[93m960[m[9C    ([95mb"$"[m, [95mb'p'[m) [93mif[m modes [93m=>[m {[26;43H[K[27;1H[93m961[m[13C    [96m// IRM alone of the ANSI modes is known.[m
-[93m962[m[9C [7C[93mlet[m status [93m=[m [93mmatch[m n {
-[93m963[m[9C            [95m4[m [93mif[m [95mself[m.screen.[1m[96minsert_mode[m() [93m=>[m [95m1[m,
-[93m964[m[9C    [8C[95m4[m [93m=>[m [95m2[m,
-[93m965[m[5C [15C_ [93m=>[m [95m0[m,
-[93m966[m[5C            };[32;23H[K[33;1H[93m967[m[5C            [95mSome[m([38;5;81mReply[m[38;5;224m::[m[1m[96mof[m([38;5;81mformat_args![m([95m"[m[38;5;224m\x1b[m[95m[{n};{status}$y"[m)))[33;73H[K[34;1H[93m968[m[5C        }[34;18H[K[35;1H[93m969[m[5C        _ [93m=>[m [95mNone[m,[35;27H[K[36;1H[93m970[m[9C}[36;14H[K[37;1H[93m971[m[5C}[37;13H[K[38;1H[93m972[m[1C}[38;17H[K[39;103H[1m[7m972,1[10CBot[38;5H[?25h[?25l[m[40;110Hgg[38;5H[40;110H  [1;5H[93m  1[m[1C[38;5;224m//! Direct DEC ANSI transition parser, based on Paul Williams's transition[m
+[93m 38 [m[12C[93mreturn[m [95mfalse[m;[39;103H[1m[7m27,1  [10C2%[8;5H[?25h[?25l[m[40;110HG[8;5H[40;110H [38;5H[1;1H[93m94[m[10C    ([95mb">"[m, [95mb'c'[m) [93mif[m n [93m==[m [95m0[m [93m=>[m [93mmatch[m identity {
+[93m94[m[14C    [95mSome[m(identity) [93m=>[m {
+[93m94[m[14C        [93mlet[m version [93m=[m identity.[1m[96mencoded_version[m();
+[93m94[m[14C        [95mSome[m([38;5;81mReply[m[38;5;224m::[m[1m[96mof[m([38;5;81mformat_args![m([95m"[m[38;5;224m\x1b[m[95m[>1;{version};0c"[m)))
+[93m94[m[10C [7C}
+[93m94[m[6C [11C[95mNone[m [93mif[m extended [93m=>[m [95mSome[m([38;5;81mReply[m[38;5;224m::[m[1m[96mof[m([38;5;81mformat_args![m([95m"[m[38;5;224m\x1b[m[95m[>1;10;0c"[m))),
+[93m94[m[2C [15C[95mNone[m [93m=>[m [95mNone[m,
+[93m94[m[2C            },[8;19H[K[9;1H[93m94[m[6C        ([95mb">"[m, [95mb'q'[m) [93mif[m n [93m==[m [95m0[m [93m=>[m {
+[93m94[m[10C        [93mlet[m identity [93m=[m identity[38;5;224m?[m;[10;46H[K[11;1H[93m95[m[10C        [93mlet[m length [93m=[m identity.name.[1m[96mlen[m().[1m[96mchecked_add[m(identity.version.[1m[96mlen[m())[38;5;224m?[m;
+[93m95[m[14C    [93mif[m length [93m>[m [38;5;81mIdentity[m[38;5;224m::[mMAX_LEN {[12;52H[K[13;1H[93m95[m[10C [11C[93mreturn[m [95mNone[m;
+[93m95[m[14C    }[14;22H[K[15;1H[93m95[m[10C [7C[93mlet[m (name, version) [93m=[m (identity.name, identity.version);
+[93m95[m[6C [11C[95mSome[m([38;5;81mReply[m[38;5;224m::[m[1m[96mof[m([38;5;81mformat_args![m([95m"[m[38;5;224m\x1b[m[95mP>|{name} {version}[m[38;5;224m\x1b\\[m[95m"[m)))
+[93m95[m[6C        }[17;18H[K[18;1H[93m95[m[10C    ([95mb"?$"[m, [95mb'p'[m) [93mif[m modes [93m=>[m {[18;44H[K[19;1H[93m95[m[14C    [93mlet[m status [93m=[m [93mmatch[m n {
+[93m95[m[10C  [10C[95m2048[m [93mif[m [93m![m[95mself[m.options.in_band_resize [93m=>[m [95m0[m,
+[93m96[m[10C            [95m2031[m [93mif[m [93m![m[95mself[m.options.color_scheme_updates [93m=>[m [95m0[m,[21;73H[K[22;1H[93m96[m[10C            _ [93m=>[m [95mself[m.screen.[1m[96mprivate_mode_status[m(n),
+[93m96[m[10C        };[23;23H[K[24;1H[93m96[m[14C    [95mSome[m([38;5;81mReply[m[38;5;224m::[m[1m[96mof[m([38;5;81mformat_args![m([95m"[m[38;5;224m\x1b[m[95m[?{n};{status}$y"[m)))
+[93m96[m[10C    }
+[93m96[m[10C    ([95mb"$"[m, [95mb'p'[m) [93mif[m modes [93m=>[m {[26;43H[K[27;1H[93m96[m[14C    [96m// IRM alone of the ANSI modes is known.[m
+[93m96[m[10C [7C[93mlet[m status [93m=[m [93mmatch[m n {
+[93m96[m[10C            [95m4[m [93mif[m [95mself[m.screen.[1m[96minsert_mode[m() [93m=>[m [95m1[m,
+[93m96[m[10C    [8C[95m4[m [93m=>[m [95m2[m,
+[93m97[m[6C [15C_ [93m=>[m [95m0[m,
+[93m97[m[6C            };[32;23H[K[33;1H[93m97[m[6C            [95mSome[m([38;5;81mReply[m[38;5;224m::[m[1m[96mof[m([38;5;81mformat_args![m([95m"[m[38;5;224m\x1b[m[95m[{n};{status}$y"[m)))[33;73H[K[34;1H[93m97[m[6C        }[34;18H[K[35;1H[93m97[m[6C        _ [93m=>[m [95mNone[m,[35;27H[K[36;1H[93m97[m[10C}[36;14H[K[37;1H[93m97[m[6C}[37;13H[K[38;1H[93m97[m[2C}[38;17H[K[39;103H[1m[7m977,1[10CBot[38;5H[?25h[?25l[m[40;110Hgg[38;5H[40;110H  [1;5H[93m  1[m[1C[38;5;224m//! Direct DEC ANSI transition parser, based on Paul Williams's transition[m
 [93m  2[m[1C[38;5;224m//! model (reference and attribution in the crate README), with UTF-8 ground decoding.[m
 [93m  3[m[1C[38;5;224m//! Ignored control strings retain no payload. No parser dependency is used.[m
 [93m  4[m[4;25H[K[5;1H[93m  5[m[1C[93muse[m [38;5;81mcrate[m[38;5;224m::[m{Error, Reply, Screen, [38;5;81mscreen[m[38;5;224m::[mDispatch};

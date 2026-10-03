@@ -1,6 +1,6 @@
 # What the corpus's programs send
 
-Made by `fux-vt-compare inventory` from the recordings in this directory (see the harness README, "The corpus"). Each sequence is normalized: numbers that only place the cursor or pick a colour are `n`, a mode or an SGR attribute is a row of its own, and an XTGETTCAP request shows the capabilities it asks for. "Count" counts every time it was sent, in all the recordings. "fux-vt" is what a fux pane's parser does with it, as fux sets it up (`Options::new().with_events(true).with_mode_reports(true).with_in_band_resize(true).with_color_scheme_updates(true).with_hyperlinks(true).with_prompt_marks(true)`), with what fux itself answers.
+Made by `fux-vt-compare inventory` from the recordings in this directory (see the harness README, "The corpus"). Each sequence is normalized: numbers that only place the cursor or pick a colour are `n`, a mode or an SGR attribute is a row of its own, and an XTGETTCAP request shows the capabilities it asks for. "Count" counts every time it was sent, in all the recordings. "fux-vt" is what a fux pane's parser does with it, as fux sets it up (`Options::new().with_events(true).with_mode_reports(true).with_in_band_resize(true).with_color_scheme_updates(true).with_kitty_keyboard(true).with_hyperlinks(true).with_prompt_marks(true)`), with what fux itself answers.
 
 Recordings:
 
@@ -13,7 +13,7 @@ Recordings:
 - `fzf-height`: fzf-height, fzf 0.65.2 (brew) (7 steps, 12983 bytes)
 - `fzf`: fzf, fzf 0.65.2 (brew) (9 steps, 24510 bytes)
 - `gls`: gls, ls (GNU coreutils) 9.12 (1 steps, 1821 bytes)
-- `helix`: helix, helix 25.07.1 (a05c151b) (16 steps, 63966 bytes)
+- `helix`: helix, helix 25.07.1 (a05c151b) (16 steps, 63811 bytes)
 - `less`: less, less 668 (POSIX regular expressions) (12 steps, 24348 bytes)
 - `man`: man, man (macOS), mandoc (8 steps, 8431 bytes)
 - `tmux`: tmux, tmux 3.7c (21 steps, 15838 bytes)
@@ -33,7 +33,7 @@ Recordings:
 | XTGETTCAP (DCS + q) | not sent by any | |
 | DECRQSS (DCS $ q) | not sent by any | |
 | DECRQM (CSI ? n $ p, CSI n $ p) | not sent by any | |
-| kitty keyboard (CSI ? u, CSI > n u, CSI < u, CSI = n u) | `CSI < u` ×3, `CSI > 5 u` ×2, `CSI ? u` ×4 | claude, claude-ghostty, claude-main, helix |
+| kitty keyboard (CSI ? u, CSI > n u, CSI < u, CSI = n u) | `CSI < 1 u` ×1, `CSI < u` ×3, `CSI > 5 u` ×3, `CSI ? u` ×4 | claude, claude-ghostty, claude-main, helix |
 | modifyOtherKeys (CSI > 4 ; n m, CSI ? 4 m) | `CSI > 4 m` ×3, `CSI > 4; m` ×2, `CSI > 4;2 m` ×3, `CSI ? 4 m` ×1 | claude, claude-ghostty, claude-main, vim |
 | colour queries (OSC 4/10/11/12 ?) | `OSC 10 ?` ×4, `OSC 11 ?` ×4 | delta-diff, delta-log, tmux, vim |
 | XTVERSION, DA2 (CSI > q, CSI > c) | `CSI > 0 q` ×3, `CSI > c` ×2, `CSI > q` ×1 | claude, claude-ghostty, claude-main, tmux, vim |
@@ -46,16 +46,10 @@ Recordings:
 | Sequence | What | Count | Programs | fux-vt |
 | --- | --- | ---: | --- | --- |
 | `CSI ? 12 l` | steady cursor (att610) | 30 | helix, tmux, vim | not implemented: a mode fux-vt does not keep, consumed quietly |
-| `CSI ? u` | kitty keyboard: query flags | 4 | claude, claude-ghostty, claude-main, helix | not implemented: reported as unhandled |
-| `CSI < u` | kitty keyboard: pop flags | 3 | claude-ghostty | not implemented: reported as unhandled |
 | `CSI > 0 q` | XTVERSION | 3 | claude, claude-ghostty, claude-main | not implemented: reported as unhandled |
-| `CSI > 4 m` | XTMODKEYS: modifyOtherKeys reset | 3 | claude, claude-ghostty, claude-main | not implemented: reported as unhandled |
-| `CSI > 4;2 m` | XTMODKEYS: modifyOtherKeys 2 | 3 | claude-ghostty, vim | not implemented: reported as unhandled |
 | `CSI ? 1016 l` | reset: mouse: SGR pixel encoding | 3 | claude, claude-ghostty, claude-main | not implemented: a mode fux-vt does not keep, consumed quietly |
 | `CSI 22;n t` | XTWINOPS: push title | 2 | vim | not implemented: reported as unhandled |
 | `CSI 23;n t` | XTWINOPS: pop title | 2 | vim | not implemented: reported as unhandled |
-| `CSI > 4; m` | XTMODKEYS: modifyOtherKeys reset | 2 | vim | not implemented: reported as unhandled |
-| `CSI > 5 u` | kitty keyboard: push flags 5 | 2 | claude-ghostty | not implemented: reported as unhandled |
 | `CSI > c` | DA2, secondary device attributes | 2 | tmux, vim | not implemented: reported as unhandled |
 | `CSI 0 % m` |  | 1 | vim | not implemented: reported as unhandled |
 | `CSI 14 t` | XTWINOPS: window size in pixels? | 1 | tmux | not implemented: reported as unhandled |
@@ -76,9 +70,9 @@ Recordings:
 | Sequence | What | Count | Programs | fux-vt |
 | --- | --- | ---: | --- | --- |
 | `SGR 0` |  | 4573 | delta-diff, delta-log, fzf, fzf-height, gls, helix, man, tmux, vim, zsh | implemented |
-| `SGR 38;2;n;n;n` |  | 3191 | claude, claude-ghostty, claude-main, delta-diff, delta-log, helix | implemented |
-| `CSI n;n H` | CUP | 1693 | delta-diff, delta-log, helix, less, man, tmux, vim | implemented |
-| `SGR 48;2;n;n;n` |  | 1405 | claude, claude-ghostty, claude-main, delta-diff, delta-log, helix | implemented |
+| `SGR 38;2;n;n;n` |  | 3188 | claude, claude-ghostty, claude-main, delta-diff, delta-log, helix | implemented |
+| `CSI n;n H` | CUP | 1690 | delta-diff, delta-log, helix, less, man, tmux, vim | implemented |
+| `SGR 48;2;n;n;n` |  | 1401 | claude, claude-ghostty, claude-main, delta-diff, delta-log, helix | implemented |
 | `CSI K` | EL | 1070 | bash, claude-ghostty, claude-main, delta-diff, delta-log, fzf, fzf-height, less, man, tmux, vim, zsh | implemented |
 | `SGR 30-37` |  | 809 | delta-diff, delta-log, gls, tmux, vim | implemented |
 | `SGR 90-97` |  | 752 | vim | implemented |
@@ -86,7 +80,7 @@ Recordings:
 | `CSI n C` |  | 508 | claude, claude-ghostty, claude-main, fzf, fzf-height, tmux, vim, zsh | implemented |
 | `CSI n G` |  | 429 | claude, claude-ghostty, claude-main | implemented |
 | `SGR 1` |  | 384 | claude, claude-ghostty, claude-main, fzf, fzf-height, gls, man, vim, zsh | implemented |
-| `SGR 39` |  | 321 | claude, claude-ghostty, claude-main, helix, tmux | implemented |
+| `SGR 39` |  | 320 | claude, claude-ghostty, claude-main, helix, tmux | implemented |
 | `CSI n B` |  | 231 | claude, claude-ghostty, claude-main, fzf, fzf-height, tmux, zsh | implemented |
 | `CSI H` | CUP, home | 203 | claude, delta-diff, less, man, tmux, vim | implemented |
 | `SGR 48;5;n` |  | 198 | fzf, fzf-height, vim | implemented |
@@ -146,16 +140,23 @@ Recordings:
 | `CSI 6 n` | DSR, cursor position report | 4 | fzf-height, vim | answers (first with `\e[1;1R`) |
 | `CSI ? 2031 h` | colour-scheme change reports | 4 | claude, claude-ghostty, claude-main, tmux | implemented |
 | `CSI ? 2031 l` | reset: colour-scheme change reports | 4 | claude, claude-ghostty, claude-main, tmux | implemented |
+| `CSI ? u` | kitty keyboard: query flags | 4 | claude, claude-ghostty, claude-main, helix | answers (first with `\e[?5u`) |
 | `CSI n M` | DL | 4 | vim | implemented |
 | `OSC 10 ?` | foreground colour query | 4 | delta-diff, delta-log, tmux, vim | implemented: a ColorQuery event; fux answers with its client terminal's colour (src/outer.rs) |
 | `OSC 11 ?` | background colour query | 4 | delta-diff, delta-log, tmux, vim | implemented: a ColorQuery event; fux answers with its client terminal's colour (src/outer.rs) |
+| `CSI < u` | kitty keyboard: pop flags | 3 | claude-ghostty | implemented: kept per screen; fux encodes keys as it says (src/encode.rs) |
+| `CSI > 4 m` | XTMODKEYS: modifyOtherKeys reset | 3 | claude, claude-ghostty, claude-main | implemented: kept per screen; fux encodes keys as it says (src/encode.rs) |
+| `CSI > 4;2 m` | XTMODKEYS: modifyOtherKeys 2 | 3 | claude-ghostty, vim | implemented: kept per screen; fux encodes keys as it says (src/encode.rs) |
+| `CSI > 5 u` | kitty keyboard: push flags 5 | 3 | claude-ghostty, helix | implemented: kept per screen; fux encodes keys as it says (src/encode.rs) |
 | `CSI ? 1000 h` | mouse: press and release | 3 | fzf, fzf-height, helix | implemented |
 | `CSI ? 1002 h` | mouse: button motion | 3 | fzf, fzf-height, helix | implemented |
 | `CSI ? 1006 h` | mouse: SGR encoding | 3 | fzf, fzf-height, helix | implemented |
 | `CSI n d` |  | 3 | tmux | implemented |
+| `CSI > 4; m` | XTMODKEYS: modifyOtherKeys reset | 2 | vim | implemented: kept per screen; fux encodes keys as it says (src/encode.rs) |
 | `CSI ? 1005 l` | reset: mouse: UTF-8 encoding | 2 | tmux | implemented |
 | `SGR 23` |  | 2 | vim | implemented |
 | `SGR 29` |  | 2 | vim | implemented |
+| `CSI < 1 u` | kitty keyboard: pop flags | 1 | helix | implemented: kept per screen; fux encodes keys as it says (src/encode.rs) |
 | `CSI ? 1003 h` | mouse: any motion | 1 | helix | implemented |
 | `CSI ? 996 n` | colour-scheme query | 1 | tmux | implemented: reported as unhandled; fux answers with its client terminal's scheme (src/outer.rs) |
 | `CSI n L` | IL | 1 | vim | implemented |

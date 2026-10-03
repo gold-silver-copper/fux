@@ -5,6 +5,10 @@
 //! reads the output beside the PTY, and its replies to the program's
 //! queries are written back, as fux writes them, so a program that waits
 //! for an answer (DA1, a cursor report) gets the one it would get in fux.
+//! The keys are typed as fux gives them to a pane: read as fux reads a
+//! legacy terminal's bytes, and written in the key mode the program asked
+//! for (the kitty keyboard protocol's flags, modifyOtherKeys, cursor keys),
+//! with fux's own decoder and encoder.
 //!
 //! A recording is two files: `NAME.bin`, the bytes, and `NAME.json`, what
 //! was run and typed (see [`Manifest`]). Step 0 is the program starting;
@@ -302,6 +306,31 @@ fn end(child: &mut std::process::Child, session: &mut Session) {
     }
 }
 
+/// The bytes fux gives a pane for `keys`, a legacy terminal's bytes, in
+/// the key mode `screen` is in: decoded by fux's decoder, the Escape
+/// deadline passing at the end, and encoded by its encoder.
+fn typed(keys: &[u8], screen: &fux_vt::Screen) -> Vec<u8> {
+    let mut decoder = fux::decode::Decoder::default();
+    let mut inputs = Vec::new();
+    decoder.bytes(keys, &mut inputs);
+    decoder.timeout(&mut inputs);
+    let mode = fux::encode::KeyMode::of(screen);
+    let mut out = Vec::with_capacity(keys.len());
+    for input in inputs {
+        match input {
+            fux::decode::Input::Key(stroke) => fux::encode::key_bytes(stroke, mode, &mut out),
+            fux::decode::Input::Paste(text) => {
+                fux::encode::paste(&text, screen.bracketed_paste(), &mut out);
+            }
+            fux::decode::Input::PasteTooLong
+            | fux::decode::Input::FocusIn
+            | fux::decode::Input::FocusOut
+            | fux::decode::Input::Reply(_) => {}
+        }
+    }
+    out
+}
+
 /// Records the program: see the module documentation.
 pub fn record(request: &Request) -> Result<Recorded, String> {
     let text = std::fs::read_to_string(&request.keys)
@@ -314,6 +343,7 @@ pub fn record(request: &Request) -> Result<Recorded, String> {
         .with_in_band_resize(true)
         .with_size_reports(true)
         .with_color_scheme_updates(true)
+        .with_kitty_keyboard(true)
         .with_hyperlinks(true)
         .with_prompt_marks(true);
     let parser = fux_vt::Parser::with_options(request.rows, request.cols, 10_000, options)
@@ -332,9 +362,10 @@ pub fn record(request: &Request) -> Result<Recorded, String> {
         ends.push((Vec::new(), session.output.len()));
         for step in &steps {
             if !step.keys.is_empty() && !session.closed {
+                let typed = typed(&step.keys, session.parser.screen());
                 session
                     .master
-                    .write_all(&step.keys)
+                    .write_all(&typed)
                     .map_err(|e| format!("typing: {e}"))?;
             }
             session.settle(step.quiet, STEP_LIMIT)?;
@@ -423,6 +454,27 @@ pub fn launched(argv: &[String]) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    /// Keys reach the program as fux gives them to a pane, in the key mode
+    /// it asked for (fux's src/encode.rs).
+    #[test]
+    fn keys_are_typed_in_the_programs_key_mode() -> Result<(), fux_vt::Error> {
+        let options = fux_vt::Options::new().with_kitty_keyboard(true);
+        let mut parser = fux_vt::Parser::with_options(4, 20, 0, options)?;
+        let keys = b"\x04:q\r\x1b";
+        assert_eq!(super::typed(keys, parser.screen()), keys);
+        parser.process(b"\x1b[>4;2m")?;
+        assert_eq!(
+            super::typed(keys, parser.screen()),
+            b"\x1b[27;5;100~:q\r\x1b"
+        );
+        parser.process(b"\x1b[>1u")?;
+        assert_eq!(
+            super::typed(keys, parser.screen()),
+            b"\x1b[100;5u:q\r\x1b[27u"
+        );
+        Ok(())
+    }
 
     #[test]
     fn scrubbing_replaces_every_match() {

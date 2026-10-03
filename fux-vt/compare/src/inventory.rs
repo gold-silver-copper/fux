@@ -354,6 +354,7 @@ fn name(key: &str) -> String {
         ("CSI > 4;2 m", "XTMODKEYS: modifyOtherKeys 2"),
         ("CSI > 4; m", "XTMODKEYS: modifyOtherKeys reset"),
         ("CSI > 5 u", "kitty keyboard: push flags 5"),
+        ("CSI < 1 u", "kitty keyboard: pop flags"),
         ("CSI ? 7 h", "DECAWM, autowrap"),
         ("CSI ? 12 h", "blinking cursor (att610)"),
         ("CSI ? 12 l", "steady cursor (att610)"),
@@ -511,6 +512,11 @@ fn csi(params: &[u8], intermediates: &[u8], action: u8, heard: &Heard) -> Vec<(S
         (None, 'q', " ") => vec![(
             format!("CSI {}{tail}", spaced(&numbers_as_n(rest))),
             Does::Implemented("the cursor style is kept"),
+        )],
+        // The kitty keyboard protocol and modifyOtherKeys, their numbers kept.
+        (Some('<' | '>' | '='), 'u', "") | (Some('>'), 'm', "") => vec![(
+            format!("CSI {lead}{}{tail}", spaced(rest)),
+            Does::Implemented("tracked; fux encodes keys as it asks (src/encode.rs)"),
         )],
         _ => vec![(
             format!("CSI {lead}{}{tail}", spaced(&numbers_as_n(rest))),
@@ -705,6 +711,7 @@ fn tally(recordings: &[Recording]) -> Result<BTreeMap<String, Row>, String> {
             .with_in_band_resize(true)
             .with_size_reports(true)
             .with_color_scheme_updates(true)
+            .with_kitty_keyboard(true)
             .with_hyperlinks(true)
             .with_prompt_marks(true);
         let mut parser = fux_vt::Parser::with_options(r.rows, r.cols, 10_000, options)
@@ -802,8 +809,8 @@ pub fn run(names: &[String]) -> Result<bool, String> {
          capabilities it asks for. \"Count\" counts every time it was sent, in all the \
          recordings. \"fux-vt\" is what a fux pane's parser does with it, as fux sets \
          it up (`Options::new().with_events(true).with_mode_reports(true).with_in_band_resize(true)\
-         .with_color_scheme_updates(true).with_hyperlinks(true).with_prompt_marks(true)`), with \
-         what fux itself answers.\n"
+         .with_color_scheme_updates(true).with_kitty_keyboard(true).with_hyperlinks(true)\
+         .with_prompt_marks(true)`), with what fux itself answers.\n"
     );
     let _ = writeln!(out, "Recordings:\n");
     for r in &recordings {

@@ -12,7 +12,7 @@
   ],
   "note": "onboarding done and the directory trusted, in HOME's .claude.json",
   "program": "claude-ghostty",
-  "replies": "\\e[?1;2c",
+  "replies": "\\e[?5u\\e[?1;2c",
   "scrubbed": [],
   "size": [
     40,

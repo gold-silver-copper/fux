@@ -596,6 +596,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fux"
+version = "0.17.0"
+dependencies = [
+ "fux-vt",
+ "fuxix",
+ "signal-hook 0.3.18",
+ "unicode-width 0.2.2",
+]
+
+[[package]]
 name = "fux-vt"
 version = "0.2.0"
 dependencies = [
@@ -609,6 +619,7 @@ dependencies = [
  "alacritty_terminal",
  "avt",
  "cc",
+ "fux",
  "fux-vt",
  "fuxix",
  "libghostty-vt",
