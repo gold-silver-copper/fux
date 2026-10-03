@@ -210,34 +210,58 @@ fn xterm_bits(mods: Modifiers) -> u8 {
 }
 
 /// xterm's modifyOtherKeys bytes for a key, `CSI 27 ; mods ; code ~`
-/// (formatOtherKeys 0, xterm's default), if the key is an ordinary one
-/// (a character, Enter, Tab, Escape, Backspace) and `level` applies to it;
-/// else nothing, and false, for the legacy bytes. As ctlseqs says ("Alt and
-/// Meta Keys"):
-/// - level 1: "the usual shift- and control-modifiers work as expected,
-///   but other modifiers (such as alt- and meta-modifiers) cause ordinary
-///   keys to be encoded as if they were function-keys": a key with Alt;
-/// - level 2: "all of the modifiers apply" (Shift-Tab is `CSI 27 ; 2 ; 9 ~`):
-///   a key with any modifier, except a character with Shift alone, which is
-///   its text. That is fux's one departure, and xterm's own: its input.c
-///   sends `!` for Shift-1, and fux cannot tell Shift from Caps Lock on a
-///   typed letter, which the client's terminal sends as text either way;
-/// - level 3, which xterm extends to unmodified keys, is taken as 2.
+/// (formatOtherKeys 0, xterm's default), if the key is an ordinary one (a
+/// character, Enter, Tab, Escape, Backspace) and xterm sends it so at
+/// `level`; else nothing, and false, for the legacy bytes.
 ///
-/// The code is the character typed: Ctrl-Shift-a is 65, as xterm sends the
-/// key's symbol.
+/// ctlseqs ("Alt and Meta Keys") gives the outline: at level 1 "the usual
+/// shift- and control-modifiers work as expected", at level 2 "all of the
+/// modifiers apply". The details are xterm's `input.c` (patch 412), which
+/// this follows: `ModifyOtherKeys` decides whether a key is sent so
+/// (`modified`), and `allowedCharModifiers` with `filterAltMeta` which
+/// modifiers it carries (`allowed`). xterm is taken as X keyboards set it
+/// up: the Alt key is xterm's Meta modifier (`mod1` holds `Alt_L` and
+/// `Meta_L`; ctlseqs: "Common keyboard configurations assign the Meta
+/// modifier to an 'Alt' key"), metaSendsEscape is off, the backarrow key
+/// sends DEL, as fux's Backspace does, and Shift-Tab is Tab with Shift.
+/// So, at level 1:
+/// - Alt alone leaves a key its legacy bytes, Escape and all ("A bare
+///   meta-modifier is independent of modifyOtherKeys"): emacs, which sets
+///   level 1, reads `M-x` as `ESC x`. ctlseqs's alt-Tab example is of an
+///   Alt key that is not Meta;
+/// - so do Ctrl, Shift, or both, on a key that Ctrl makes a control (a
+///   letter, Space, `2`, `/`, Escape), Shift on a key that types text, and
+///   Shift-Tab; Ctrl-Alt on a letter, and Alt with Ctrl on Enter and Tab,
+///   are legacy too, which emacs reads as `ESC C-x`; Alt with Shift drops
+///   Alt on Enter and Tab;
+/// - any other modifiers apply: Ctrl-1, Ctrl-Alt-Space, Shift-Enter,
+///   Ctrl-Tab; Backspace's never.
+///
+/// At level 2 every modifier applies, but Ctrl alone on Backspace and Shift
+/// alone on a character other than Space, which types its text. xterm sends
+/// Shift-1 as `!` too, but Shift-a as `CSI 27 ; 2 ; 65 ~`: fux's one
+/// departure, as it cannot tell Shift from Caps Lock on a letter, which the
+/// client's terminal sends as text either way. Level 3, which xterm extends
+/// to unmodified keys, is taken as 2.
+///
+/// The code is the key's character, Shift applied (Ctrl-Shift-a is 65), as
+/// xterm sends the keysym; Backspace's is 127, or 8 with Ctrl, which the
+/// backarrow toggle leaves BS.
 fn other_keys(stroke: Keystroke, level: u8, out: &mut Vec<u8>) -> bool {
     let KeyPress { key, mods } = stroke.press;
     let kitty_shift = stroke.kitty.is_some_and(|k| k.mods & 1 != 0);
     let shift = mods.shift || kitty_shift || matches!(key, Key::Char(c) if c.is_ascii_uppercase());
-    let bits = xterm_bits(Modifiers { shift, ..mods });
-    let code = match key {
-        Key::Enter => 13,
-        Key::Tab => 9,
-        Key::Escape => 27,
-        Key::Backspace => 127,
-        Key::Char(c) if shift => u32::from(c.to_ascii_uppercase()),
-        Key::Char(c) => u32::from(c),
+    let state = Modifiers { shift, ..mods };
+    let (sym, code) = match key {
+        Key::Enter => (Sym::Return, 13),
+        Key::Tab => (Sym::Tab, 9),
+        Key::Escape => (Sym::Escape, 27),
+        Key::Backspace if mods.ctrl => (Sym::BackSpace, 8),
+        Key::Backspace => (Sym::Delete, 127),
+        Key::Char(c) => {
+            let c = if shift { c.to_ascii_uppercase() } else { c };
+            (Sym::Char(c), u32::from(c))
+        }
         Key::Delete
         | Key::Insert
         | Key::Arrow(_)
@@ -247,15 +271,142 @@ fn other_keys(stroke: Keystroke, level: u8, out: &mut Vec<u8>) -> bool {
         | Key::PageDown
         | Key::F(_) => return false,
     };
-    let text = matches!(key, Key::Char(_)) && !mods.ctrl && !mods.alt;
-    let applies = match level {
-        1 => mods.alt,
-        _ => bits != 0 && !text,
-    };
-    if applies {
-        let _ = write!(out, "\x1b[27;{};{code}~", u16::from(bits).saturating_add(1));
+    if !modified(sym, state, level) {
+        return false;
     }
-    applies
+    let sent = if level > 1 {
+        state
+    } else {
+        allowed(sym, state)
+    };
+    let text = matches!(sym, Sym::Char(c) if c != ' ') && sent == SHIFT;
+    if sent.is_empty() || level > 1 && text {
+        return false;
+    }
+    let mods = u16::from(xterm_bits(sent)).saturating_add(1);
+    let _ = write!(out, "\x1b[27;{mods};{code}~");
+    true
+}
+
+const SHIFT: Modifiers = Modifiers {
+    shift: true,
+    ..Modifiers::NONE
+};
+const CTRL: Modifiers = Modifiers {
+    ctrl: true,
+    ..Modifiers::NONE
+};
+
+/// An ordinary key as xterm's `input.c` sees it: by its keysym. Backspace
+/// is `BackSpace` with Ctrl and `Delete` without, as xterm's backarrow
+/// toggle (`IsBackarrowToggle`) makes it when the key sends DEL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sym {
+    Char(char),
+    Return,
+    Tab,
+    Escape,
+    BackSpace,
+    Delete,
+}
+
+impl Sym {
+    /// `IsControlInput`: a character that Ctrl makes a control of, `@` to
+    /// DEL.
+    fn control_input(self) -> bool {
+        matches!(self, Sym::Char('\u{40}'..='\u{7f}'))
+    }
+
+    /// `IsControlOutput`: a control character itself.
+    fn control_output(self) -> bool {
+        matches!(self, Sym::Char('\0'..='\u{1f}' | '\u{7f}'..='\u{9f}'))
+    }
+
+    /// `IsControlAlias`: the key's one byte, as X looks it up with the
+    /// modifiers held, is a control. With Ctrl, `@` to `~`, Space, `2` to
+    /// `8` and `/` are (Xlib's control mapping); Enter, Tab, Escape and
+    /// Backspace always are.
+    fn control_alias(self, ctrl: bool) -> bool {
+        match self {
+            Sym::Char(c) => {
+                ctrl && matches!(c, '@'..='~' | ' ' | '2'..='8' | '/')
+                    || matches!(c, '\0'..='\u{1f}' | '\u{7f}')
+            }
+            Sym::Return | Sym::Tab | Sym::Escape | Sym::BackSpace | Sym::Delete => true,
+        }
+    }
+}
+
+/// Whether xterm sends `sym` with `state` as a modifyOtherKeys sequence at
+/// `level`: `input.c`'s `ModifyOtherKeys`, and its `Input`'s Shift-Tab,
+/// which at level 1 becomes `ISO_Left_Tab`, a function key, `CSI Z`.
+fn modified(sym: Sym, state: Modifiers, level: u8) -> bool {
+    if state.is_empty() || level == 1 && sym == Sym::Tab && state == SHIFT {
+        return false;
+    }
+    // A character's modifiers are filtered first, a predefined key's not.
+    let st = match sym {
+        Sym::Char(_) if level == 1 => allowed(sym, state),
+        Sym::Char(_) | Sym::Return | Sym::Tab | Sym::Escape | Sym::BackSpace | Sym::Delete => state,
+    };
+    let without_ctrl = Modifiers { ctrl: false, ..st };
+    if st.is_empty() {
+        return false;
+    }
+    if level == 1 {
+        return match sym {
+            Sym::BackSpace | Sym::Delete => false,
+            Sym::Return | Sym::Tab => true,
+            Sym::Char(_) | Sym::Escape if sym.control_input() => st != CTRL && st != SHIFT,
+            Sym::Char(_) | Sym::Escape if sym.control_alias(state.ctrl) => {
+                st != SHIFT && !without_ctrl.is_empty()
+            }
+            Sym::Char(_) | Sym::Escape => true,
+        };
+    }
+    match sym {
+        Sym::BackSpace => !without_ctrl.is_empty(),
+        Sym::Delete | Sym::Escape | Sym::Return | Sym::Tab => true,
+        Sym::Char(c) => {
+            sym.control_input()
+                || st == SHIFT && c == ' '
+                || !Modifiers { shift: false, ..st }.is_empty()
+        }
+    }
+}
+
+/// The modifiers xterm sends with `sym` at level 1: `input.c`'s
+/// `allowedCharModifiers`, and its `filterAltMeta` for the Alt key as Meta.
+fn allowed(sym: Sym, state: Modifiers) -> Modifiers {
+    let mut m = state;
+    let text = matches!(sym, Sym::Char(_)) && !sym.control_output();
+    if sym.control_input() && !m.shift && !m.alt {
+        // Ctrl makes these a control already, which it is left to.
+    } else if matches!(sym, Sym::Return | Sym::Tab) {
+        // Enter and Tab keep Ctrl and Shift.
+    } else if sym.control_alias(state.ctrl) {
+        // Ctrl and Shift on a control are its own.
+        if !m.alt {
+            m = Modifiers::NONE;
+        }
+    } else if text && !m.ctrl {
+        // "Printable keys are already associated with the shift-key".
+        m.shift = false;
+    }
+    if m.alt {
+        // "A bare meta-modifier is independent of modifyOtherKeys."
+        if !m.ctrl && !m.shift {
+            m.alt = false;
+        }
+        // "special cases of control+meta which are used by some
+        // applications, e.g., emacs", and Enter and Tab.
+        let control = (sym.control_input() || sym.control_output()) && m.ctrl;
+        if control || matches!(sym, Sym::Return | Sym::Tab) {
+            m.alt = false;
+            m.ctrl = false;
+        }
+    }
+    m
 }
 
 /// Legacy xterm bytes for a key, as fux has always sent them. Every key has
@@ -510,47 +661,140 @@ mod tests {
         }
     }
 
-    /// modifyOtherKeys, as ctlseqs's "Alt and Meta Keys" says: at level 1
-    /// Alt makes an ordinary key `CSI 27 ; mods ; code ~` (alt-Tab is
-    /// `CSI 27 ; 3 ; 9 ~`) and Shift and Ctrl work as usual; at level 2 every
-    /// modifier does (shift-Tab is `CSI 27 ; 2 ; 9 ~`), but a character with
-    /// Shift alone is its text. Other keys keep their legacy bytes, and the
-    /// kitty flags, when set, win.
-    #[test]
-    fn modify_other_keys_follows_ctlseqs() {
-        let level = |n| KeyMode {
+    fn other_keys_level(n: u8) -> KeyMode {
+        KeyMode {
             other_keys: Some(n),
             ..KeyMode::default()
-        };
+        }
+    }
+
+    /// modifyOtherKeys level 1, as xterm's input.c (patch 412) sends it with
+    /// the Alt key as its Meta modifier. Alone, Alt leaves a key its legacy
+    /// bytes (`filterAltMeta`: "A bare meta-modifier is independent of
+    /// modifyOtherKeys"), as do Ctrl-Alt on a letter and Alt on Enter and
+    /// Tab with Ctrl ("special cases of control+meta ... e.g., emacs"), Ctrl
+    /// and Shift on a key Ctrl makes a control (`allowedCharModifiers`,
+    /// `IsControlAlias`), Shift on a key that types text, Shift-Tab
+    /// (`ISO_Left_Tab`), and Backspace (`ModifyOtherKeys`, `mokUser`).
+    #[test]
+    fn modify_other_keys_level_1_follows_xterm() {
+        for name in [
+            "M-x",
+            "M-v",
+            "M-X",
+            "M-1",
+            "M-<",
+            "M-Space",
+            "M-Escape",
+            "M-Tab",
+            "M-Enter",
+            "M-BSpace",
+            "C-M-x",
+            "C-M-a",
+            "C-M-Enter",
+            "C-M-Tab",
+            "C-a",
+            "C-Space",
+            "C-2",
+            "C-/",
+            "C-Escape",
+            "S-Escape",
+            "C-S-Escape",
+            "BTab",
+            "a",
+            "A",
+            "!",
+            "Enter",
+            "Tab",
+            "Escape",
+            "BSpace",
+            "C-BSpace",
+            "S-BSpace",
+            "C-Up",
+            "F5",
+        ] {
+            let legacy = String::from_utf8_lossy(&encoded(
+                name.parse().unwrap_or(KeyPress::char('?')),
+                false,
+            ))
+            .into_owned();
+            assert_eq!(named(name, other_keys_level(1)), legacy, "{name}");
+        }
+        assert_eq!(named("M-x", other_keys_level(1)), "\x1bx");
+        assert_eq!(named("C-M-x", other_keys_level(1)), "\x1b\x18");
+        for (name, bytes) in [
+            ("C-1", "\x1b[27;5;49~"),
+            ("C-M-1", "\x1b[27;7;49~"),
+            ("C-M-Space", "\x1b[27;7;32~"),
+            ("C-M-/", "\x1b[27;7;47~"),
+            ("C-M-%", "\x1b[27;7;37~"),
+            ("C-M-Escape", "\x1b[27;7;27~"),
+            ("M-S-Escape", "\x1b[27;4;27~"),
+            ("S-Enter", "\x1b[27;2;13~"),
+            ("C-Enter", "\x1b[27;5;13~"),
+            ("C-S-Enter", "\x1b[27;6;13~"),
+            ("M-S-Enter", "\x1b[27;2;13~"),
+            ("C-Tab", "\x1b[27;5;9~"),
+            ("C-BTab", "\x1b[27;6;9~"),
+            ("M-BTab", "\x1b[27;2;9~"),
+        ] {
+            assert_eq!(named(name, other_keys_level(1)), bytes, "{name}");
+        }
+        // Ctrl-Shift-a, which only a kitty-protocol terminal tells from
+        // Ctrl-a, is a control too.
+        let ctrl_shift_a = reported("C-a", 97, Some(65), None, 5);
+        assert_eq!(stroke(ctrl_shift_a, other_keys_level(1)), "\x01");
+    }
+
+    /// modifyOtherKeys level 2, as xterm's input.c sends it: every modifier
+    /// applies (`ModifyOtherKeys`, case 2), and the Alt key is filtered no
+    /// more; but Ctrl alone on Backspace, which xterm's backarrow toggle
+    /// makes BS, and Shift alone on a character that types text, which is
+    /// its text: xterm's for `!`, fux's departure for a letter. Shift-Tab is
+    /// `CSI 27 ; 2 ; 9 ~`, as ctlseqs says. Other keys keep their legacy
+    /// bytes, level 3 is taken as 2, and the kitty flags, when set, win.
+    #[test]
+    fn modify_other_keys_level_2_follows_xterm() {
         for (n, name, bytes) in [
-            (1, "M-Tab", "\x1b[27;3;9~"),
-            (1, "M-a", "\x1b[27;3;97~"),
-            (1, "C-a", "\x01"),
-            (1, "BTab", "\x1b[Z"),
-            (1, "S-Enter", "\r"),
-            (1, "a", "a"),
-            (2, "BTab", "\x1b[27;2;9~"),
-            (2, "S-Enter", "\x1b[27;2;13~"),
-            (2, "C-Enter", "\x1b[27;5;13~"),
-            (2, "M-Escape", "\x1b[27;3;27~"),
-            (2, "C-BSpace", "\x1b[27;5;127~"),
+            (2, "M-x", "\x1b[27;3;120~"),
+            (2, "M-X", "\x1b[27;4;88~"),
+            (2, "C-M-x", "\x1b[27;7;120~"),
+            (2, "M-1", "\x1b[27;3;49~"),
+            (2, "C-1", "\x1b[27;5;49~"),
             (2, "C-a", "\x1b[27;5;97~"),
             (2, "C-i", "\x1b[27;5;105~"),
-            (2, "M-x", "\x1b[27;3;120~"),
-            (2, "M-A", "\x1b[27;4;65~"),
             (2, "C-Space", "\x1b[27;5;32~"),
+            (2, "BTab", "\x1b[27;2;9~"),
+            (2, "M-Tab", "\x1b[27;3;9~"),
+            (2, "S-Enter", "\x1b[27;2;13~"),
+            (2, "C-Enter", "\x1b[27;5;13~"),
+            (2, "M-Enter", "\x1b[27;3;13~"),
+            (2, "M-Escape", "\x1b[27;3;27~"),
+            (2, "S-Escape", "\x1b[27;2;27~"),
+            (2, "M-BSpace", "\x1b[27;3;127~"),
+            (2, "S-BSpace", "\x1b[27;2;127~"),
+            (2, "C-S-BSpace", "\x1b[27;6;8~"),
+            (2, "C-M-BSpace", "\x1b[27;7;8~"),
+            (2, "C-BSpace", "\x7f"),
             (2, "a", "a"),
             (2, "A", "A"),
+            (2, "!", "!"),
             (2, "Enter", "\r"),
             (2, "Escape", "\x1b"),
             (2, "C-Up", "\x1b[1;5A"),
             (2, "F5", "\x1b[15~"),
             (3, "C-a", "\x1b[27;5;97~"),
+            (3, "M-x", "\x1b[27;3;120~"),
         ] {
-            assert_eq!(named(name, level(n)), bytes, "level {n} {name}");
+            assert_eq!(named(name, other_keys_level(n)), bytes, "level {n} {name}");
         }
         let ctrl_shift_a = reported("C-a", 97, Some(65), None, 5);
-        assert_eq!(stroke(ctrl_shift_a, level(2)), "\x1b[27;6;65~");
+        assert_eq!(stroke(ctrl_shift_a, other_keys_level(2)), "\x1b[27;6;65~");
+        // Shift-Space, which only a kitty-protocol terminal tells from
+        // Space, is xterm's one character modified by Shift alone.
+        let shift_space = reported("Space", 32, None, None, 1);
+        assert_eq!(stroke(shift_space, other_keys_level(2)), "\x1b[27;2;32~");
+        assert_eq!(stroke(shift_space, other_keys_level(1)), " ");
         let both = KeyMode {
             kitty: 1,
             other_keys: Some(2),

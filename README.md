@@ -242,7 +242,7 @@ WezTerm, foot, iTerm2), fux turns it on while attached, so it can tell keys
 apart that a terminal otherwise sends alike (Shift-Enter and Enter, Ctrl-I
 and Tab, Ctrl-[ and Escape), and Escape needs no wait. Each pane's program
 gets its keys as it asked for them: in the kitty protocol (helix and
-Claude Code), xterm's modifyOtherKeys (vim), or xterm's plain encodings,
+Claude Code), xterm's modifyOtherKeys (vim and emacs), or xterm's plain encodings,
 the same as before. Key names, the prefix and bindings mean the same with
 the protocol or without it.
 
