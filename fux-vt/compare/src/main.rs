@@ -18,6 +18,7 @@ mod inventory;
 mod record;
 mod rng;
 mod snapshot;
+mod transparency;
 
 use case::{Case, Snippet, Step};
 use engine::ENGINES;
@@ -42,6 +43,8 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
                              [--scrub OLD=NEW]... [--note TEXT] -- PROGRAM ARGS...
        fux-vt-compare corpus [--engines LIST] [--show] [NAME...]
        fux-vt-compare inventory [NAME...]
+       fux-vt-compare transparency [--engines LIST] [--chunk N] [--json FILE]
+                                   [--multiplexers] [NAME... | --size RxC STEP...]
        fux-vt-compare engines
        fux-vt-compare --list
 
@@ -84,6 +87,17 @@ corpus   the recordings in corpus/ (default: all), each replayed through
 inventory every sequence the recordings (default: all) send, normalized,
          with how often, from which programs, and what fux-vt does with
          it, as Markdown (corpus/INVENTORY.md is its output).
+transparency
+         each recording (default: all) directly and through fux, used as
+         a library as its server runs one client showing one pane, both
+         read by one engine (default: ghostty; any in process): the pane's
+         rectangle of the client's screen against the direct screen,
+         after each step and at each frame of synchronized output
+         (--chunk N: every N bytes too). Exit 1 if any differs but as
+         recorded. --size: one replay of the STEPs, as replay takes them.
+         --multiplexers: the same through tmux and zellij (if installed),
+         each a server of its own with a client on a PTY, as a score.
+         --json writes the results to FILE.
 engines  every engine: whether it can run here, whether it votes, and what
          it cannot tell.
 --list   the families, what each covers, and its status.
@@ -723,6 +737,19 @@ fn main() -> ExitCode {
         let error = record::launched(rest).err().unwrap_or_default();
         eprintln!("fux-vt-compare: {error}");
         return ExitCode::from(127);
+    }
+    if let Some((first, rest)) = argv.split_first()
+        && first == "transparency"
+    {
+        // Its options are its own (see `transparency::run`).
+        return match transparency::run(rest) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("fux-vt-compare: {e}\n\n{USAGE}");
+                ExitCode::from(2)
+            }
+        };
     }
     let result = parse().and_then(|args| match args.command.as_str() {
         "list" => {
