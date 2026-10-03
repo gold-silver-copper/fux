@@ -610,17 +610,32 @@ recording still fails:
 | `delta-diff` | alacritty, avt, wezterm | the wrap marker delta erases with EL 0 while a wrap is pending: these keep it, fux-vt (as xterm, Ghostty and libvterm) erases it |
 | every | ghostty, alacritty, libvterm, wezterm | these reflow on a resize and fux's panes do not, so a line the program does not draw again stays as each resized it, and a shell redraws its prompt on other rows (`zsh-resize`). Covered is only a field whose value directly is fux-vt's own when it reflows, and through fux fux-vt's when it does not, given the same output and resizes (two fux-vt parsers beside the comparison, for a recording that resizes) |
 
-Today 14 recordings are identical beside Ghostty and the tmux recording
-differs as recorded: 171 points compared, in half a second (0.3 s of
-CPU; 1.5 s through `run.sh`, with its build check). With
-`--chunk 13` the recordings but `tmux` stay identical at 19837 points (a
-minute). `--chunk` with libvterm finds only libvterm's own handling of
-UTF-8 split between writes. `cargo test` keeps every recording
-transparent beside Ghostty (`every_recording_is_transparent`).
+Today, of the 113 recordings, 77 are identical beside Ghostty and 32 differ
+as recorded (31 by a blank's foreground, `zsh-resize` by the reflow), at
+1538 points in 4 seconds through `run.sh`. The four fish recordings differ
+otherwise, at every point and only on which rows start a prompt: fish
+sends OSC 133, and fux does not yet pass prompt marks on to its client's
+terminal (`transparency --size 3x10 '\e]133;A\x07$ '`), work under way;
+until it lands they fail `transparency` and `every_recording_is_transparent`.
+On the first 15 recordings, `--chunk 13` found nothing more at 19837
+points (a minute); `--chunk` with libvterm finds only libvterm's own
+handling of UTF-8 split between writes. `run.sh --cargo test` checks
+every recording beside Ghostty (`every_recording_is_transparent`).
 
-**Found:** fux does not pass prompt marks (OSC 133) on to its client's
-terminal, so a prompt's row is marked directly and not through fux:
-`transparency --size 3x10 '\e]133;A\x07$ '`. No recording sends them yet.
+**Found and fixed in fux** (each with a test in `render` and one here):
+
+- micro-small: micro places an emoji's skin-tone modifier after it with a
+  cursor move. fux-vt keeps it a cell of its own; Ghostty joins it to the
+  emoji and does not advance. fux painted the row in one run, so every
+  glyph after it landed two columns left. A glyph that would continue the
+  cluster before it is now placed by a cursor move, and so is the next
+  (`fux_vt::continues_cluster`).
+- less-small: with autowrap off (fux's client), Ghostty puts zero-width
+  characters on the last column's cell if the cursor is there and the cell
+  holds anything, a space included, though the glyph they follow ended
+  just before it. A cluster with marks ending one column short of the edge
+  is now painted with autowrap on (`replay --engines ghostty --size 1x4
+  '\e[?7l    \e[1;1Hxxa\u{301}'` shows Ghostty's choice).
 
 ### Other multiplexers
 
