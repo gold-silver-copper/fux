@@ -1,6 +1,6 @@
 # What the corpus's programs send
 
-Made by `fux-vt-compare inventory` from the recordings in this directory (see the harness README, "The corpus"). Each sequence is normalized: numbers that only place the cursor or pick a colour are `n`, a mode or an SGR attribute is a row of its own, and an XTGETTCAP request shows the capabilities it asks for. "Count" counts every time it was sent, in all the recordings. "fux-vt" is what a fux pane's parser does with it, as fux sets it up (`Options::new().with_events(true).with_mode_reports(true).with_in_band_resize(true)`).
+Made by `fux-vt-compare inventory` from the recordings in this directory (see the harness README, "The corpus"). Each sequence is normalized: numbers that only place the cursor or pick a colour are `n`, a mode or an SGR attribute is a row of its own, and an XTGETTCAP request shows the capabilities it asks for. "Count" counts every time it was sent, in all the recordings. "fux-vt" is what a fux pane's parser does with it, as fux sets it up (`Options::new().with_events(true).with_mode_reports(true).with_in_band_resize(true).with_hyperlinks(true).with_prompt_marks(true)`).
 
 Recordings:
 
@@ -46,8 +46,6 @@ Recordings:
 | Sequence | What | Count | Programs | fux-vt |
 | --- | --- | ---: | --- | --- |
 | `CSI ? 12 l` | steady cursor (att610) | 30 | helix, tmux, vim | not implemented: a mode fux-vt does not keep, consumed quietly |
-| `OSC 8 (close)` | hyperlink: end | 23 | claude-ghostty, gls | not implemented: dropped (Parser::dispatch_osc) |
-| `OSC 8 (open)` | hyperlink: start | 23 | claude-ghostty, gls | not implemented: dropped (Parser::dispatch_osc) |
 | `CSI ? 2031 h` | colour-scheme change reports | 4 | claude, claude-ghostty, claude-main, tmux | not implemented: a mode fux-vt does not keep, consumed quietly |
 | `CSI ? 2031 l` | reset: colour-scheme change reports | 4 | claude, claude-ghostty, claude-main, tmux | not implemented: a mode fux-vt does not keep, consumed quietly |
 | `CSI ? u` | kitty keyboard: query flags | 4 | claude, claude-ghostty, claude-main, helix | not implemented: reported as unhandled |
@@ -114,6 +112,8 @@ Recordings:
 | `CSI ? 7 h` | DECAWM, autowrap | 28 | fzf, fzf-height | implemented |
 | `CSI ? 7 l` | reset: DECAWM, autowrap | 28 | fzf, fzf-height | implemented |
 | `CSI n D` |  | 27 | claude, claude-ghostty, claude-main, zsh | implemented |
+| `OSC 8 (close)` | hyperlink: end | 23 | claude-ghostty, gls | implemented: ends the open hyperlink |
+| `OSC 8 (open)` | hyperlink: start | 23 | claude-ghostty, gls | implemented: opens a hyperlink, which the cells printed keep (Row::link) |
 | `SGR 22` |  | 21 | claude, claude-ghostty, claude-main, helix | implemented |
 | `CSI ? 2004 h` | bracketed paste | 19 | bash, claude, claude-ghostty, claude-main, fzf, fzf-height, helix, tmux, vim, zsh | implemented |
 | `CSI G` |  | 19 | claude-ghostty, claude-main, fzf, fzf-height | implemented |
