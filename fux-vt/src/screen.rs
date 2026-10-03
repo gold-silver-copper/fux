@@ -99,6 +99,41 @@ fn special_graphics(c: char) -> char {
         .unwrap_or(c)
 }
 
+/// What a cell adds to a DECRQCRA checksum (`Screen::rectangle_checksum`),
+/// as xterm counts it by default (`xtermCheckRect`, `xtermCharSetDec`):
+/// its character, a DEC Special Graphics glyph as the code it was drawn
+/// with (0x60 to 0x7e), any other past Latin-1 or below a space as ESC; its
+/// combining marks as they are; and its VT100 attributes.
+fn checksum_of(cell: &CellRef<'_>) -> u16 {
+    const ESC: u16 = 0x1b;
+    let mut chars = cell.contents().chars();
+    let base = match chars.next() {
+        None if cell.is_wide_continuation() => ESC,
+        None => 0x20,
+        Some(c) => match u16::try_from(u32::from(c)) {
+            Ok(code @ 0x20..=0xff) => code,
+            _ => (0x60u16..=0x7e)
+                .find(|&code| char::from_u32(u32::from(code)).map(special_graphics) == Some(c))
+                .unwrap_or(ESC),
+        },
+    };
+    let marks = chars.fold(0u16, |sum, c| {
+        sum.wrapping_add(u16::try_from(u32::from(c) & 0xffff).unwrap_or(0))
+    });
+    let a = cell.attributes();
+    let rendition = [
+        (a.hidden(), 0x08),
+        (a.underline(), 0x10),
+        (a.inverse(), 0x20),
+        (a.blink() != Blink::None, 0x40),
+        (a.bold(), 0x80),
+    ]
+    .iter()
+    .filter(|(on, _)| *on)
+    .fold(0u16, |sum, (_, bit)| sum | bit);
+    base.wrapping_add(marks).wrapping_add(rendition)
+}
+
 /// The tab stops (ECMA-48: HTS sets one, TBC clears; HT, CHT and CBT move
 /// to them), one set for both screens, as in xterm: one every eight
 /// columns at first and after RIS. Kept for every column the terminal has
@@ -1460,6 +1495,58 @@ impl Screen {
         }
         self.alternate_active = alternate;
         self.structural = self.version;
+    }
+
+    /// DECRQCRA (`CSI Pi ; Pp ; Pt ; Pl ; Pb ; Pr * y`, VT420 and up), with
+    /// [`Options::rectangle_checksums`]: the checksum of the rectangle's
+    /// cells, as DECCKSR (`DCS Pi ! ~ xxxx ST`, four upper-case hex
+    /// digits). DEC's manuals leave the sum to the terminal; this is
+    /// xterm's default, which matches the VT520's (`xtermCheckRect`, ctlseqs'
+    /// XTCHECKSUM): each cell's character, plus 0x08 hidden, 0x10
+    /// underlined, 0x20 inverse, 0x40 blinking and 0x80 bold, summed in 16
+    /// bits and negated. A character past Latin-1 or below a space, and a
+    /// wide glyph's second half, count as ESC (0x1b), and a cluster's
+    /// combining marks are added as they are, as xterm counts them. An
+    /// empty cell counts as a space: on DEC's terminals an erased cell holds
+    /// one; xterm skips cells nothing was ever written to, a difference
+    /// esctest allows. The page `Pp` is ignored, as xterm ignores it (DEC
+    /// has 0 mean all pages): there is one. The rectangle's coordinates are
+    /// one-based and relative to the margins in origin mode, clamped to the
+    /// screen (to the margins in origin mode), with absent or 0 meaning
+    /// its whole extent; one whose top is below its bottom, or left past
+    /// its right, sums nothing.
+    pub(crate) fn rectangle_checksum(&self, p: &Parameters) -> Reply {
+        let g = self.grid();
+        let (first_row, last_row) = if g.origin {
+            (g.top, g.bottom)
+        } else {
+            (0, g.rows.last())
+        };
+        let offset = if g.origin { g.top } else { 0 };
+        let row = |index: usize, default: u16| match p.first(index, 0) {
+            0 => default,
+            n => n
+                .saturating_sub(1)
+                .saturating_add(offset)
+                .clamp(first_row, last_row),
+        };
+        let col = |index: usize, default: u16| match p.first(index, 0) {
+            0 => default,
+            n => n.saturating_sub(1).min(g.cols.last()),
+        };
+        let (top, left) = (row(2, first_row), col(3, 0));
+        let (bottom, right) = (row(4, last_row), col(5, g.cols.last()));
+        let mut sum = 0u16;
+        for y in top..=bottom {
+            for x in left..=right {
+                if let Some(cell) = g.cell(y, x) {
+                    sum = sum.wrapping_add(checksum_of(&cell));
+                }
+            }
+        }
+        let id = p.first(0, 0);
+        let checksum = sum.wrapping_neg();
+        Reply::of(format_args!("\x1bP{id}!~{checksum:04X}\x1b\\"))
     }
 
     /// DECRQM status for a DEC private mode: 1 set, 2 reset, 0 not recognized.

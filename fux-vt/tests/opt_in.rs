@@ -425,3 +425,64 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
     assert!(!attributes.with_bold(true).with_bold(false).bold());
     Ok(())
 }
+
+/// DECRQCRA (VT520 manual, 5-104; DEC STD 070, 5-180), with
+/// `Options::rectangle_checksums`: DECCKSR, `DCS Pi ! ~ xxxx ST`, gives the
+/// checksum of the rectangle's cells as xterm and the VT520 sum them
+/// (`xtermCheckRect`; ctlseqs, XTCHECKSUM): each character, plus 0x10
+/// underlined, 0x20 inverse, 0x40 blinking and 0x80 bold, summed in 16 bits
+/// and negated, four upper-case hex digits. An empty cell is a space; a
+/// character past Latin-1 is ESC; a DEC Special Graphics glyph, the code it
+/// was drawn with. The page is ignored, as in xterm; the rectangle defaults
+/// to the whole screen, and is relative to the margins in origin mode.
+/// Without the option, nothing is answered.
+#[test]
+fn rectangle_checksums_sum_the_cells() -> Result {
+    let checksum = |sum: u16| format!("{:04X}", sum.wrapping_neg());
+    let options = Options::new().with_rectangle_checksums(true);
+    let mut p = Parser::with_options(3, 4, 0, options)?;
+    let mut record = Record::default();
+    // Row 1: a, b, bold c, underlined and inverse d. Row 2: é, a wide
+    // glyph, a line-drawing glyph.
+    p.process("ab\x1b[1mc\x1b[0;4;7md\x1b[m\r\né中\x1b(0q\x1b(B".as_bytes())?;
+    let mut input = String::new();
+    for (id, rect) in [
+        (1, "1;1;1;1"),
+        (2, "1;1;1;2"),
+        (3, "1;3;1;3"),
+        (4, "1;4;1;4"),
+        (5, "2;1;2;1"),
+        (6, "2;2;2;3"),
+        (7, "2;4;2;4"),
+        (8, "3;1;3;1"),
+        (9, ""),
+        (10, "2;2;1;1"),
+    ] {
+        input.push_str(&format!("\x1b[{id};0;{rect}*y"));
+    }
+    p.process_with(input.as_bytes(), &mut record)?;
+    // Origin mode: row 1 is the top margin, row 3.
+    p.process_with(b"\x1b[3;3r\x1b[?6hz\x1b[11;0;1;1;1;1*y", &mut record)?;
+    let whole: u16 = 0x61 + 0x62 + 0x63 + 0x80 + 0x64 + 0x30 + 0xe9 + 0x1b * 2 + 0x71 + 0x20 * 4;
+    let expected = [
+        (1, checksum(0x61)),
+        (2, checksum(0x61 + 0x62)),
+        (3, checksum(0x63 + 0x80)),
+        (4, checksum(0x64 + 0x10 + 0x20)),
+        (5, checksum(0xe9)),
+        (6, checksum(0x1b * 2)),
+        (7, checksum(0x71)),
+        (8, checksum(0x20)),
+        (9, checksum(whole)),
+        (10, "0000".to_owned()),
+        (11, checksum(0x7a)),
+    ]
+    .map(|(id, sum)| format!("\x1bP{id}!~{sum}\x1b\\").into_bytes());
+    assert_eq!(record.replies, expected);
+    assert!(
+        run(Options::new(), b"\x1b[1;0;1;1;1;1*y")?
+            .replies
+            .is_empty()
+    );
+    Ok(())
+}
