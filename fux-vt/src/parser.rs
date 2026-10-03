@@ -138,16 +138,15 @@ enum State {
 /// nothing beyond this is ever buffered.
 pub const OSC_PAYLOAD_LIMIT: usize = 64 * 1024;
 
-/// The most OSC payload bytes retained without [`Options::events`] or
-/// [`Options::hyperlinks`]: enough to tell a prompt mark, `133;A`.
+/// The most OSC payload bytes retained with [`Options::prompt_marks`] alone:
+/// enough to tell a prompt mark, `133;A`.
 const OSC_PREFIX: usize = 8;
 
 /// Opt-in behaviour that needs the host's cooperation. The default
 /// (everything off) is fux's policy: child output causes no title, bell or
-/// clipboard side effects, OSC payloads are never retained (but for the
-/// few bytes that tell a prompt mark), only DSR 5n/6n and primary DA are
-/// answered, keyboard protocol requests are ignored, hyperlinks are
-/// ignored, and a resize does not reflow.
+/// clipboard side effects, OSC payloads are never retained, only DSR 5n/6n
+/// and primary DA are answered, keyboard protocol requests are ignored,
+/// hyperlinks and prompt marks are ignored, and a resize does not reflow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Options {
@@ -185,6 +184,11 @@ pub struct Options {
     /// kept, so OSC 8 payloads are buffered, up to [`OSC_PAYLOAD_LIMIT`],
     /// and each screen holds up to 4 MiB of links. Off, OSC 8 is ignored.
     pub hyperlinks: bool,
+    /// Keep prompt marks (`OSC 133 ; A`, semantic prompts): the row a prompt
+    /// starts on is marked, read with [`crate::Row::starts_prompt`], and `A`
+    /// and `L` start a fresh line. An OSC string's first bytes are kept to
+    /// tell one. Off, OSC 133 is ignored.
+    pub prompt_marks: bool,
     /// Answer as this terminal rather than as a bare VT100: see [`Identity`].
     pub identity: Option<Identity>,
 }
@@ -201,6 +205,7 @@ impl Options {
             kitty_keyboard: false,
             reflow: false,
             hyperlinks: false,
+            prompt_marks: false,
             identity: None,
         }
     }
@@ -232,6 +237,11 @@ impl Options {
     /// These options with [`Options::reflow`] as `on` says.
     pub const fn with_reflow(mut self, on: bool) -> Self {
         self.reflow = on;
+        self
+    }
+    /// These options with [`Options::prompt_marks`] as `on` says.
+    pub const fn with_prompt_marks(mut self, on: bool) -> Self {
+        self.prompt_marks = on;
         self
     }
     /// These options with [`Options::hyperlinks`] as `on` says.
@@ -401,8 +411,10 @@ impl Parser {
             osc: Vec::new(),
             osc_limit: if options.events || options.hyperlinks {
                 OSC_PAYLOAD_LIMIT
-            } else {
+            } else if options.prompt_marks {
                 OSC_PREFIX
+            } else {
+                0
             },
             osc_overflow: false,
             frame_begun: false,
@@ -796,8 +808,8 @@ impl Parser {
         Ok(())
     }
 
-    /// Carries out the completed OSC string: 133 (prompt marks) always, from
-    /// its first bytes; 8 (hyperlinks) with [`Options::hyperlinks`]; 0, 1,
+    /// Carries out the completed OSC string: 133 (prompt marks), from its
+    /// first bytes, with [`Options::prompt_marks`]; 8 (hyperlinks) with [`Options::hyperlinks`]; 0, 1,
     /// 2 and 52 delivered as events with [`Options::events`]. An overflowed
     /// string is no event, and closes any link; others are dropped.
     ///
@@ -826,7 +838,7 @@ impl Parser {
             None => (payload, &[][..]),
         };
         match command {
-            b"133" => return self.screen.prompt_osc(rest),
+            b"133" if self.options.prompt_marks => return self.screen.prompt_osc(rest),
             // A link too long to keep is no link: what follows is printed
             // without one.
             b"8" if self.options.hyperlinks => {
