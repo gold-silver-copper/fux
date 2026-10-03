@@ -187,7 +187,9 @@ pub const IDENTITY: fux_vt::Identity = fux_vt::Identity {
 /// keyboard protocol (fux encodes keys as each pane asks), hyperlinks,
 /// prompt marks, DECRQSS (neovim asks it whether the terminal keeps
 /// underline styles: a pane keeps them, and each client is painted them as
-/// far as its terminal draws them, `render::sgr`) and fux's identity.
+/// far as its terminal draws them, `render::sgr`), reflow (a resized pane's
+/// lines re-wrap at its new width, its history with them, as in the
+/// terminals fux runs in) and fux's identity.
 pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
     .with_events(true)
     .with_mode_reports(true)
@@ -198,6 +200,7 @@ pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
     .with_hyperlinks(true)
     .with_prompt_marks(true)
     .with_setting_reports(true)
+    .with_reflow(true)
     .with_identity(Some(IDENTITY));
 
 /// The most titles a pane's program can push (`CSI 22 t`): xterm's bound.
@@ -798,9 +801,14 @@ mod tests {
         assert!(first_row(&pane).ends_with('z'), "past it, read");
         assert_eq!(pane.frame_deadline(), None);
         pane.output(b"\x1b[2J\x1b[H\x1b[?2026hw");
-        // Fewer columns, the same rows: growing would bring history back.
         pane.resize(3, 20);
-        assert_eq!(first_row(&pane), "w", "a resize reads it first");
+        // The cursor's row: a reflow may bring history down above it.
+        let (y, _) = pane.screen().cursor_position();
+        let row: String = (0..20)
+            .filter_map(|x| pane.screen().cell(y, x))
+            .map(|c| c.contents().chars().next().unwrap_or(' '))
+            .collect();
+        assert_eq!(row.trim_end(), "w", "a resize reads it first");
         Ok(())
     }
 
