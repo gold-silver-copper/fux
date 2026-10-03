@@ -34,7 +34,8 @@ fux-vt/compare/run.sh engines               # which engines run here, which vote
 fux-vt/compare/run.sh cases                 # the named cases beside every engine, with each engine's mark
 fux-vt/compare/run.sh verdicts              # the families with a recorded verdict, beside xterm alone
 fux-vt/compare/run.sh matrix                # family by engine: % of cases each engine differs from fux-vt
-fux-vt/compare/run.sh bench                 # MB/s for every engine on every workload
+fux-vt/compare/run.sh bench                 # MB/s for every engine on every workload, and the corpus
+fux-vt/compare/run.sh bench --engines ghostty corpus   # each recording alone too
 fux-vt/compare/run.sh --list                # the families, their status and reasons
 fux-vt/compare/run.sh survey                # each family alone: how often it fails, and the smallest failure
 fux-vt/compare/run.sh run --family sgr --family text --cases 2000 --seed 7
@@ -241,6 +242,11 @@ short is a different sequence that belongs to no family.
 screen with 10000 rows of history. It prints MB/s, the best of three runs.
 The workloads are modelled on alacritty's vtebench: ascii, dense-cells,
 medium-cells, cursor-motion, scrolling, scroll-region and unicode.
+
+Beside them, real traffic: `corpus` is every recording in turn, over and
+over to the same size, at 40×120, the size they were recorded at. `bench
+corpus` adds each recording alone (`corpus:vim` and so on); a run without
+names leaves those out, to stay a few minutes.
 
 An engine linked in is timed on parsing and applying alone. An engine in its
 own process also pays for the pipe to it, so its figure (marked `*`) is end
