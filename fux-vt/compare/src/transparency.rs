@@ -876,10 +876,13 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
 
 // ------------------------------------------------------------ multiplexers
 
-/// How long a multiplexer's client must stay quiet after a step for its
-/// screen to be taken as drawn, and the longest a step may take.
+/// How long zellij's client must stay quiet after a step for its screen
+/// to be taken as drawn, and the longest a step may take.
 const QUIET: Duration = Duration::from_millis(200);
 const STEP_LIMIT: Duration = Duration::from_secs(10);
+/// How long tmux's client must stay quiet once it shows a mark (see
+/// [`Client::marked`]).
+const AFTER_MARK: Duration = Duration::from_millis(20);
 /// How long a multiplexer may take to start its pane's program.
 const START: Duration = Duration::from_secs(15);
 
@@ -961,6 +964,8 @@ struct Client {
     dir: PathBuf,
     mux: Mux,
     env: Vec<(String, String)>,
+    /// The client's rows.
+    rows: u16,
 }
 
 impl Client {
@@ -1077,6 +1082,7 @@ impl Client {
             dir,
             mux,
             env,
+            rows: client_rows,
         })
     }
 
@@ -1117,6 +1123,65 @@ impl Client {
             }
         }
         Ok(())
+    }
+
+    /// Takes what the client writes until it has drawn what the pane's
+    /// output so far makes it draw: tmux's, until it shows a mark
+    /// ([`Client::marked`]); zellij's, until it has been quiet for
+    /// [`QUIET`].
+    fn drawn(&mut self) -> Result<(), String> {
+        match self.mux {
+            Mux::Tmux => self.marked(),
+            Mux::Zellij => self.settle(QUIET, STEP_LIMIT),
+        }
+    }
+
+    /// Renames tmux's session to a mark, which its status line shows
+    /// (`[NAME]` at its start), and takes what the client writes until the
+    /// mark shows, then until the client is quiet for [`AFTER_MARK`].
+    ///
+    /// The pane's output has been read (its sync's DA1 answered), and tmux
+    /// has written what it draws as it reads, or marked the pane to be
+    /// drawn again. It draws its status line in the same pass as the panes
+    /// so marked, after them, and puts the whole pass off while its output
+    /// to the client has not drained or is blocked
+    /// (`server_client_check_redraw`, `tty_block_maybe`), so once the mark
+    /// shows, every pane is drawn. The quiet is for the rest of that pass,
+    /// written with it: the cursor and the modes, set back after the
+    /// status line.
+    ///
+    /// A rename redraws the status line alone, as its clock does. A message
+    /// would not do: while one shows, tmux draws nothing of the panes and
+    /// hides the cursor (`status_message_set`, `TTY_FREEZE`).
+    fn marked(&mut self) -> Result<(), String> {
+        let name = format!("m{}", pane::serial());
+        self.command(&["rename-session", &name]);
+        let mark = format!("[{name}]");
+        let status = usize::from(self.rows).saturating_sub(1);
+        let deadline = Instant::now()
+            .checked_add(STEP_LIMIT)
+            .ok_or("a deadline out of range")?;
+        loop {
+            let shown = self.terminal.snapshot(0)?;
+            if shown
+                .screen
+                .get(status)
+                .is_some_and(|line| line.text().contains(&mark))
+            {
+                break;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.from.recv_timeout(left) {
+                Ok(bytes) => self.take(&bytes)?,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    return Err(format!("tmux did not show its mark in {STEP_LIMIT:?}"));
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("tmux's client is gone".into());
+                }
+            }
+        }
+        self.settle(AFTER_MARK, STEP_LIMIT)
     }
 
     /// Runs one of the multiplexer's own commands on its server.
@@ -1193,7 +1258,7 @@ fn through_mux(mux: Mux, kind: &Kind, recording: &Recording) -> Result<Score, St
             return Err(format!("{} did not start its pane", mux.name()));
         }
     }
-    client.settle(QUIET, STEP_LIMIT)?;
+    client.drawn()?;
     let mut score = Score {
         steps: 0,
         same: 0,
@@ -1206,7 +1271,7 @@ fn through_mux(mux: Mux, kind: &Kind, recording: &Recording) -> Result<Score, St
         // it goes on (zellij forwards a pane's colour and size queries),
         // so the client is read, and answered, while the pane syncs.
         replayer.output_while(bytes, Some(&mut || client.pump()))?;
-        client.settle(QUIET, STEP_LIMIT)?;
+        client.drawn()?;
         at = at.saturating_add(bytes.len());
         let d = direct.snapshot(0)?;
         let t = crop(&client.terminal.snapshot(0)?, rect);
