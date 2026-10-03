@@ -1168,7 +1168,24 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
                     open = link;
                 }
                 let width = if wide { 2 } else { 1 };
+                // Zero-width characters after a glyph that leaves the cursor
+                // in the last column. With autowrap off, as fux's client has
+                // it, Ghostty puts them on the cell under the cursor if it
+                // holds anything, a space included (`Terminal.print`, for a
+                // glyph printed in the last column, where the cursor stays);
+                // with autowrap on, on the glyph before, as everywhere else.
+                // So autowrap is on just for them: the glyph ends a column
+                // short of the edge, and nothing printed wraps.
+                let marks_at_the_edge = cx.saturating_add(width).saturating_add(1) == new.cols
+                    && text.chars().nth(1).is_some()
+                    && text.chars().skip(1).all(|c| cells(c) == 0);
+                if marks_at_the_edge {
+                    out.extend_from_slice(b"\x1b[?7h");
+                }
                 out.extend_from_slice(text.as_bytes());
+                if marks_at_the_edge {
+                    out.extend_from_slice(b"\x1b[?7l");
+                }
                 cx = cx.saturating_add(width);
             }
             x = cx.max(x.saturating_add(1));
@@ -1463,6 +1480,41 @@ mod tests {
         plain.text(0, 2, "\u{1F44D}\u{1F680}x", Attributes::default(), 12);
         let text = String::from_utf8_lossy(&paint(None, &plain)).into_owned();
         assert!(text.contains("\u{1F44D}\u{1F680}x"), "{text:?}");
+        Ok(())
+    }
+
+    /// Zero-width characters after a glyph that leaves the cursor in the
+    /// last column are painted with autowrap on, so that Ghostty puts them
+    /// on that glyph and not on the last column's; anywhere else, and in
+    /// the last column itself, a cluster is painted as it is.
+    #[test]
+    fn marks_short_of_the_edge_are_painted_with_autowrap() -> Result<(), String> {
+        let marked = |text| Cell::new(text, false, Attributes::default()).unwrap_or_default();
+        let painted = |x: u16, text| {
+            let mut grid = Grid::new(1, 6);
+            grid.fill(0, 0, 6, Attributes::default());
+            grid.set(0, x, marked(text));
+            (
+                String::from_utf8_lossy(&paint(None, &grid)).into_owned(),
+                grid,
+            )
+        };
+        let (text, grid) = painted(4, "a\u{301}\u{356}");
+        assert!(
+            text.contains("\x1b[?7ha\u{301}\u{356}\x1b[?7l "),
+            "{text:?}"
+        );
+        let mut parser = fux_vt::Parser::new(1, 6, 0).map_err(|e| e.to_string())?;
+        assert_eq!(apply(text.as_bytes(), 1, 6, &mut parser), grid_lines(&grid));
+        for (x, cluster) in [
+            (3, "a\u{301}"),
+            (5, "a\u{301}"),
+            (4, "a"),
+            (4, "\u{1F44D}\u{1F3FD}"),
+        ] {
+            let (text, _) = painted(x, cluster);
+            assert!(!text.contains("\x1b[?7h"), "{x} {cluster:?}: {text:?}");
+        }
         Ok(())
     }
 
