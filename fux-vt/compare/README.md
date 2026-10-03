@@ -37,7 +37,7 @@ runs alone.
 | Command | When | Budget | What |
 | --- | --- | --- | --- |
 | `run.sh quick` | before a commit | 1 minute (40 s here) | the corpus beside xterm and the panel; transparency through fux on every recording; 2,000 random cases; the named cases beside every engine |
-| `run.sh full` | before a PR | 10 minutes | `quick`; 20,000 random cases as ratty and as fux set fux-vt up; esctest directly; instructions against main (`bench/`) |
+| `run.sh full` | before a PR | 10 minutes | `quick`; 20,000 random cases with reflow, as fux and ratty set fux-vt up, and without; esctest directly; instructions against main (`bench/`) |
 | `run.sh deep` | before a release, or when hunting | none; it prints its estimate | `full`; `verdicts` beside xterm, seeds 1–20 (`FUX_DEEP_SEEDS`); esctest in a fux pane; transparency through tmux and zellij; `fux-bench feel` and `info`; 10 minutes of fuzzing |
 | `run.sh fuzz [MINUTES]` | by hand | MINUTES (10) | every fuzz target in turn, from its stored corpus and what earlier runs here found; a crash is minimized (`cargo fuzz tmin`) and listed, to be made a test |
 | `run.sh scoreboard` | after any of them | seconds | the last runs' numbers, as `scoreboard.json` and `scoreboard.md` |
@@ -64,7 +64,7 @@ fux-vt/compare/run.sh survey                # each family alone: how often it fa
 fux-vt/compare/run.sh run --family sgr --family text --cases 2000 --seed 7
 fux-vt/compare/run.sh run --engines ghostty,libvterm,xterm   # any panel
 fux-vt/compare/run.sh replay --engines all --size 1x5 'abcde\x08X'
-fux-vt/compare/run.sh --no-reflow           # fux-vt set up as fux sets it up
+fux-vt/compare/run.sh --no-reflow           # fux-vt without reflow, its default
 fux-vt/compare/run.sh corpus                # the recordings beside xterm and the panel; exit 1 if one regresses
 fux-vt/compare/run.sh corpus --show vim     # one recording, and fux-vt's screen at its end
 fux-vt/compare/run.sh inventory > fux-vt/compare/corpus/INVENTORY.md   # what the recordings send
@@ -135,7 +135,7 @@ its own file (`src/engines/*.rs`), each with a `replay` command.
 
 | Engine | What, and pins | Cannot tell | Notes |
 | --- | --- | --- | --- |
-| fux-vt | the subject, by path, set up as ratty sets it up (reflow, an identity, events), with the DECRQM answers, in-band resize, colour-scheme reports, kitty keyboard, hyperlinks and prompt marks fux's panes have | — | `--no-reflow`: as fux sets it up |
+| fux-vt | the subject, by path, set up as fux and ratty set it up (reflow, an identity, events), with the DECRQM answers, in-band resize, colour-scheme reports, kitty keyboard, hyperlinks and prompt marks fux's panes have | — | `--no-reflow`: without reflow, fux-vt's default |
 | ghostty | libghostty-vt 0.2.1 over Ghostty `7aa95917`, built by Zig 0.16 (see "Setup") | link groups | mode 2027 on; history kept in bytes; a link's URI only (`GridRef::hyperlink_uri`), a row's mark from `Row::semantic_prompt` (a primary prompt's row, not a continuation's) |
 | alacritty | alacritty_terminal 0.26.0 | blink, 2026, 2048, prompt marks | synchronized updates applied at once (no event loop); a wide glyph on one column panics it, which the adapter repairs |
 | libvterm | libvterm 0.3.3 from its release tarball, through a C shim (`src/engines/libvterm_shim.c`); modes and pending wrap read from the pinned source's `vterm_internal.h` | dim, underline colour, kitty, 2026, 2048, links, prompt marks | the shim guards five crashes, hangs and out-of-bounds reads that random cases reach (found with ASan and UBSan; each listed with a replay in its file) |
@@ -502,7 +502,7 @@ not installed.
 xterm and the panel), as a case of the recording's size with a step for
 each step recorded (and a resize before the output of a step that
 resized), and compares them after every step as `run` does. fux-vt
-is set up as fux sets up a pane (no reflow, the kitty keyboard protocol,
+is set up as fux sets up a pane (reflow, the kitty keyboard protocol,
 no identity), as the recordings were made, with fux's 10000 rows of history.
 
 - **xterm decides what it can tell.** A field xterm tells that differs
@@ -517,7 +517,8 @@ no identity), as the recordings were made, with fux's 10000 rows of history.
   the resize each engine shows its own way of resizing (whether it
   reflows, what comes back from history, where the cursor lands), which
   they choose differently on purpose, as `run` avoids by settling the
-  cursor before each resize; fux's panes do not reflow. What the program
+  cursor before each resize; fux's panes reflow, as Ghostty, wezterm and
+  libvterm do, and xterm does not. What the program
   leaves as the resize left it (a shell's earlier lines) stays as each
   engine resized it, and a recording where that differs says so in its
   status.
@@ -542,7 +543,8 @@ point its reason says:
   `helix-unicode`, `micro-small`, `less-small`): fux-vt joins them into one
   wide cell as Ghostty and wezterm do (the `clusters` family's choice),
   xterm keeps a cell for each code point;
-- `zsh-resize`: the shell's earlier lines, which fux's panes do not reflow;
+- `zsh-resize`: the shell's line typed before a shrink, which fux's panes
+  reflow as Ghostty, wezterm and libvterm do, and xterm does not;
 - `tmux-resize`: where xterm puts the cursor on leaving an alternate screen
   that shrank and grew (a replay in the reason).
 
@@ -615,7 +617,10 @@ timeout passes, and painted.
 server's output cap) does not happen; the client's terminal's answers to
 the server's queries are not sent back (they say how to read keys and
 which colours to answer a pane's colour queries with, and the recording's
-output is fixed). The recordings have no resizes.
+output is fixed). A recording's resize is made on both sides (the
+client's terminal and the session, which resizes the pane) and painted;
+it is compared once the program has answered it, at the step's points.
+fux's panes reflow on a resize, as Ghostty does.
 
 **A difference is fux's, or where fux-vt and the engine read the program's
 bytes apart.** Both sides are read by one engine, so it is never the
@@ -631,9 +636,9 @@ recording still fails:
 | every | ghostty, alacritty | a cell erased while a foreground is set (ECH, EL, ED, IL, a scroll's new row) keeps it in fux-vt, as in xterm, and only the background in Ghostty and alacritty: tmux pads its status line with ECH in black on green; neovim, htop, mc, ncdu, ranger and tig clear in their own colours. Only a foreground on a cell blank on both sides is covered: a blank's foreground is not drawn |
 | `delta-diff` | alacritty, avt, wezterm | the wrap marker delta erases with EL 0 while a wrap is pending: these keep it, fux-vt (as xterm, Ghostty and libvterm) erases it |
 
-Today, of the 113 recordings, 77 are identical beside Ghostty and 32 differ
-as recorded (31 by a blank's foreground, `zsh-resize` by the reflow), at
-1538 points in 4 seconds through `run.sh`. The four fish recordings differ
+Today, of the 113 recordings, 78 are identical beside Ghostty and 31 differ
+as recorded, by a blank's foreground, at 1545 points in 4 seconds through
+`run.sh`. The four fish recordings differ
 otherwise, at every point and only on which rows start a prompt: fish
 sends OSC 133, and fux does not yet pass prompt marks on to its client's
 terminal (`transparency --size 3x10 '\e]133;A\x07$ '`), work under way;

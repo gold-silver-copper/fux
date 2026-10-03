@@ -4,7 +4,7 @@
 //!
 //! A recording is replayed as a case of its own size, one step for each
 //! step recorded: the program starting, then the output after each line
-//! of keys. fux-vt is set up as fux sets up a pane (no reflow, the kitty
+//! of keys. fux-vt is set up as fux sets up a pane (reflow, the kitty
 //! keyboard protocol, no identity), as the program was recorded, with
 //! fux's 10000 rows of history. After each step the engines are compared
 //! with fux-vt field by field, as in `run`.
@@ -23,7 +23,7 @@
 //! redrawn, each engine shows its own way of resizing (whether it reflows,
 //! what comes back from history, where the cursor lands), which they choose
 //! differently on purpose, as `run` avoids by settling the cursor before
-//! each resize; fux's panes do not reflow (fux-vt's README). What the
+//! each resize; fux's panes reflow, as the panel does and xterm does not. What the
 //! program draws for its new size is what is judged. What it leaves as the
 //! resize left it (a shell's earlier lines, history) stays as each engine
 //! resized it, and a recording where that differs has the reason in its
@@ -63,10 +63,11 @@ const CLUSTERS: &str = "An emoji sequence (a modifier, a ZWJ sequence, a flag, V
     `corpus --engines xterm,ghostty,wezterm vim-unicode` shows it.";
 
 /// The reason zsh-resize differs.
-const NO_REFLOW: &str = "zsh's earlier lines stay as each engine resized them: fux's panes \
-    do not reflow (fux-vt's README, \"Without Options::reflow\"), where xterm and the panel \
-    rewrap them. The step after the shrink to 24x80 fails on history rows alone; every step \
-    before agrees. `corpus zsh-resize` shows it.";
+const REFLOW: &str = "fux's panes reflow (fux::pane::OPTIONS), as Ghostty, wezterm and \
+    libvterm do: at the shrink to 20x60, zsh's line typed before it is rewrapped onto two \
+    rows with the cursor on the second, and zsh redraws its prompt from there, so the line \
+    shows twice, as in those three. xterm, alacritty and avt, as run here, cut the line \
+    instead. Every step before the shrink agrees. `corpus zsh-resize` shows it.";
 
 /// The reason tmux-resize differs.
 const ALTERNATE_RESIZE: &str = "Leaving the alternate screen after it shrank, with the cursor \
@@ -190,7 +191,7 @@ pub const STATUSES: &[(&str, Status)] = &[
     ("zsh", Status::Agree),
     ("zsh-history", Status::Agree),
     ("zsh-menu", Status::Agree),
-    ("zsh-resize", Status::Differs(NO_REFLOW)),
+    ("zsh-resize", Status::Differs(REFLOW)),
     ("zsh-small", Status::Agree),
 ];
 
@@ -263,7 +264,7 @@ impl Recording {
             rows: self.rows,
             cols: self.cols,
             history: 10_000,
-            reflow: false,
+            reflow: fux::pane::OPTIONS.reflow,
             newline_before_resize: false,
             steps: self
                 .steps

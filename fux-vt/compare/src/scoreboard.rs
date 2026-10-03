@@ -336,7 +336,7 @@ const CHECKS: &[&str] = &[
     "random",
     "cases",
     "random-wide",
-    "random-fux",
+    "random-no-reflow",
     "esctest",
     "against",
     "verdicts-1",
