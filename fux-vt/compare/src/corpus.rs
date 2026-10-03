@@ -519,7 +519,12 @@ fn status(name: &str) -> Option<Status> {
 /// Replays the recordings named (all if none) beside `panel`, and says how
 /// each went. False if one expected to agree fails, or has no status.
 /// `show` prints fux-vt's screen at the end of each.
-pub fn run(panel: &[usize], names: &[String], show: bool) -> Result<bool, String> {
+pub fn run(
+    panel: &[usize],
+    names: &[String],
+    show: bool,
+    json: Option<&str>,
+) -> Result<bool, String> {
     let recordings = recordings(names)?;
     let names_of: Vec<&str> = panel
         .iter()
@@ -529,6 +534,7 @@ pub fn run(panel: &[usize], names: &[String], show: bool) -> Result<bool, String
     let started = Instant::now();
     let mut ok = true;
     let (mut agree, mut differ) = (0usize, 0usize);
+    let mut results = Vec::new();
     for recording in &recordings {
         let case = recording.case();
         // `run_judged` judges once before the steps and once after each.
@@ -546,6 +552,14 @@ pub fn run(panel: &[usize], names: &[String], show: bool) -> Result<bool, String
             recording.steps.len(),
             recording.bytes().len()
         );
+        results.push(serde_json::json!({
+            "recording": recording.name,
+            "agrees": outcome.agrees(),
+            "recorded": match &expected {
+                Some(Status::Differs(why) | Status::Decided { why, .. }) => Some(why.to_string()),
+                _ => None,
+            },
+        }));
         match (outcome.agrees(), expected) {
             (true, Some(Status::Agree)) => {
                 agree = agree.saturating_add(1);
@@ -592,10 +606,24 @@ pub fn run(panel: &[usize], names: &[String], show: bool) -> Result<bool, String
             }
         }
     }
-    println!(
-        "{agree} recordings agree, {differ} differ ({:.1}s)",
-        started.elapsed().as_secs_f64()
-    );
+    let seconds = started.elapsed().as_secs_f64();
+    println!("{agree} recordings agree, {differ} differ ({seconds:.1}s)");
+    if let Some(path) = json {
+        let value = serde_json::json!({
+            "check": "corpus",
+            "engines": names_of,
+            "recordings": recordings.len(),
+            "agree": agree,
+            "differ": differ,
+            "seconds": seconds,
+            "ok": ok,
+            "results": results,
+        });
+        let mut text =
+            serde_json::to_string_pretty(&value).map_err(|e| format!("the results: {e}"))?;
+        text.push('\n');
+        std::fs::write(path, text).map_err(|e| format!("{path}: {e}"))?;
+    }
     Ok(ok)
 }
 

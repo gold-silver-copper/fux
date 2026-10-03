@@ -42,7 +42,7 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
        fux-vt-compare record --keys FILE --out PREFIX [--size RxC] [--program NAME]
                              [--version TEXT] [--env KEY=VALUE]... [--dir DIR]
                              [--scrub OLD=NEW]... [--note TEXT] -- PROGRAM ARGS...
-       fux-vt-compare corpus [--engines LIST] [--show] [NAME...]
+       fux-vt-compare corpus [--engines LIST] [--show] [--json FILE] [NAME...]
        fux-vt-compare inventory [NAME...]
        fux-vt-compare transparency [--engines LIST] [--chunk N] [--json FILE]
                                    [--multiplexers] [NAME... | --size RxC STEP...]
@@ -86,7 +86,7 @@ corpus   the recordings in corpus/ (default: all), each replayed through
          compared after every step. xterm decides the fields it can tell;
          the panel's vote the rest, and all once xterm abstains. Exit 1 if
          a recording expected to agree does not. --show prints fux-vt's
-         screen at the end of each.
+         screen at the end of each; --json writes the results to FILE.
 inventory every sequence the recordings (default: all) send, normalized,
          with how often, from which programs, and what fux-vt does with
          it, as Markdown (corpus/INVENTORY.md is its output).
@@ -143,6 +143,8 @@ struct Args {
     dir: Option<String>,
     scrub: Vec<String>,
     note: String,
+    /// Where `corpus` writes its results.
+    json: Option<String>,
     rest: Vec<String>,
 }
 
@@ -176,6 +178,7 @@ fn parse() -> Result<Args, String> {
         dir: None,
         scrub: Vec::new(),
         note: String::new(),
+        json: None,
         rest: Vec::new(),
     };
     let mut words = std::env::args().skip(1).peekable();
@@ -223,6 +226,7 @@ fn parse() -> Result<Args, String> {
             "--dir" => args.dir = Some(value("--dir")?),
             "--scrub" => args.scrub.push(value("--scrub")?),
             "--note" => args.note = value("--note")?,
+            "--json" => args.json = Some(value("--json")?),
             "--" => {
                 args.rest.extend(words.by_ref());
                 break;
@@ -790,7 +794,12 @@ fn main() -> ExitCode {
         "replay" => replay(&args),
         "record" => record(&args),
         "inventory" => inventory::run(&args.rest),
-        "corpus" => corpus::run(&panel(&args, "xterm,panel")?, &args.rest, args.show),
+        "corpus" => corpus::run(
+            &panel(&args, "xterm,panel")?,
+            &args.rest,
+            args.show,
+            args.json.as_deref(),
+        ),
         "bench" => bench::run(&panel(&args, "all")?, &args.rest, args.mb),
         _ => run(&args),
     });
