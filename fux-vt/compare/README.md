@@ -715,12 +715,15 @@ recording: `engine`, `recording`, `steps`, `bytes`, `points`, `held`,
 `step_ends_identical`, `identical`, `recorded` (the reason, or null),
 `paints`, `painted_bytes` and `first_difference` (`step`, `offset`, `at`,
 and each difference's `key`, `directly` and `through`), or null.
-`--multiplexers` writes `{"check": "transparency-multiplexers",
+`--multiplexers` writes `{"check": "transparency-multiplexers", "ok",
 "results": [...]}`, a result for each engine and multiplexer (fux first):
 `engine`, `multiplexer`, `version`, `recordings`, `recordings_identical`,
 `steps`, `steps_identical`, `seconds`, and for tmux and zellij `each`
 recording's `steps`, `steps_identical`, `identical` and
-`first_difference`; or `skipped` and why.
+`first_difference`; or `skipped` and why (not installed); or, for one
+that could not be run through a recording, `error` (the recording and
+why), `seconds` and `each` recording run before it, and no score. The run
+goes on to the next multiplexer, and exits 1 (`ok` false) at its end.
 ## esctest
 
 `esctest` runs esctest2 (`references/xterm/esctest2`, which

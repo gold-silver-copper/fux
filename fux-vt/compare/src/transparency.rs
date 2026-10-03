@@ -1245,7 +1245,9 @@ fn percent(part: usize, whole: usize) -> String {
 
 /// `transparency --multiplexers`: tmux's and zellij's transparency scores
 /// (of those installed), beside fux's own at the ends of the same steps. A
-/// difference is scored, not failed.
+/// difference is scored, not failed. A multiplexer that cannot be run
+/// through a recording is reported with why, and the run goes on to the
+/// next; false if one could not be.
 fn multiplexers(options: &Options) -> Result<bool, String> {
     let kinds = kinds(options.engines.as_deref())?;
     // Recordings that resize are left out: a multiplexer's client would
@@ -1260,6 +1262,7 @@ fn multiplexers(options: &Options) -> Result<bool, String> {
         );
     }
     let mut results = Vec::new();
+    let mut ok = true;
     for kind in &kinds {
         println!(
             "transparency through each multiplexer, at the end of each step, read by {}",
@@ -1306,8 +1309,15 @@ fn multiplexers(options: &Options) -> Result<bool, String> {
             let started = Instant::now();
             let (mut same, mut steps, mut steps_same) = (0usize, 0usize, 0usize);
             let mut each = Vec::new();
+            let mut failed = None;
             for recording in &recordings {
-                let score = through_mux(mux, kind, recording)?;
+                let score = match crate::case::guarded(|| through_mux(mux, kind, recording)) {
+                    Ok(score) => score,
+                    Err(why) => {
+                        failed = Some(format!("{}: {why}", recording.name));
+                        break;
+                    }
+                };
                 steps = steps.saturating_add(score.steps);
                 steps_same = steps_same.saturating_add(score.same);
                 let first_json = match &score.first {
@@ -1342,6 +1352,25 @@ fn multiplexers(options: &Options) -> Result<bool, String> {
                 }));
             }
             let seconds = started.elapsed().as_secs_f64();
+            if let Some(error) = failed {
+                // No score: one made of the recordings before the error
+                // would not be comparable with fux's.
+                ok = false;
+                println!(
+                    "{version}: error, not scored ({} of {} recordings run before it, {seconds:.1}s): {error}",
+                    each.len(),
+                    recordings.len(),
+                );
+                results.push(serde_json::json!({
+                    "engine": kind.name,
+                    "multiplexer": mux.name(),
+                    "version": version,
+                    "error": error,
+                    "seconds": seconds,
+                    "each": each,
+                }));
+                continue;
+            }
             println!(
                 "{version}: {same} of {} recordings identical ({}%), {steps_same} of {steps} steps ({}%), {seconds:.1}s",
                 recordings.len(),
@@ -1367,11 +1396,12 @@ fn multiplexers(options: &Options) -> Result<bool, String> {
             path,
             &serde_json::json!({
                 "check": "transparency-multiplexers",
+                "ok": ok,
                 "results": results,
             }),
         )?;
     }
-    Ok(true)
+    Ok(ok)
 }
 
 #[cfg(test)]

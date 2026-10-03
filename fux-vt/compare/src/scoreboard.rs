@@ -129,6 +129,7 @@ fn multiplexer(dir: &Path, rows: &mut Vec<Row>) {
                     let name = r.get("multiplexer").and_then(Value::as_str).unwrap_or("?");
                     match (count(r, "/recordings_identical"), count(r, "/recordings")) {
                         (Some(same), Some(all)) => format!("{name} {}", percent(same, all)),
+                        _ if r.get("error").is_some() => format!("{name} failed to run"),
                         _ => format!("{name} skipped"),
                     }
                 })
