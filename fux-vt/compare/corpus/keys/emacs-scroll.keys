@@ -1,18 +1,13 @@
 # emacs -nw on a Rust file: pages, back, incremental search, the end,
 # the start, quit.
-# Meta keys are typed as Escape and then the key, each a step of its
-# own: fux gives Alt-v to a program that set modifyOtherKeys 1 (as emacs
-# does) as CSI 27 ; 3 ; 118 ~, where xterm sends ESC v, and emacs does
-# not know it.
+# Meta keys are Alt keys: emacs sets modifyOtherKeys 1, where fux gives
+# Alt-v as ESC v, as xterm does.
 !start 2000
 \x16
 \x16
-\e
-v
+\ev
 \x13fn \x13
 \r
-\e
->
-\e
-<
+\e>
+\e<
 \x18\x03
