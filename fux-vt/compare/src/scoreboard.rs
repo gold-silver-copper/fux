@@ -51,13 +51,17 @@ fn conformance(dir: &Path, rows: &mut Vec<Row>) {
         rows.push(row("Conformance", "esctest2 pass rate", MISSING, ""));
         return;
     };
-    let rate = |place: &str| {
-        let passed = count(&esctest, &format!("/{place}/passed"))?;
-        let failed = count(&esctest, &format!("/{place}/failed"))?;
+    let rate = |results: &Value, place: &str| {
+        let passed = count(results, &format!("/{place}/passed"))?;
+        let failed = count(results, &format!("/{place}/failed"))?;
         Some(percent(passed, passed.saturating_add(failed)))
     };
-    let fux = rate("direct").unwrap_or_else(|| MISSING.into());
-    let beside = rate("in_fux").map_or_else(String::new, |r| format!("in a fux pane: {r}"));
+    let fux = rate(&esctest, "direct").unwrap_or_else(|| MISSING.into());
+    // `deep`'s run in a fux pane has a file of its own, which `full`'s
+    // direct run leaves alone.
+    let beside = load(dir, "esctest-in-fux.json")
+        .and_then(|in_fux| rate(&in_fux, "in_fux"))
+        .map_or_else(String::new, |r| format!("in a fux pane: {r}"));
     rows.push(row(
         "Conformance",
         "esctest2 pass rate, fux-vt",
