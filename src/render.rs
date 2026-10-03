@@ -1052,6 +1052,26 @@ fn hyperlink(out: &mut Vec<u8>, link: Option<(PaneId, u64, &str)>) {
     }
 }
 
+/// Whether `text`, painted at (`y`, `x`) right after the glyph before it,
+/// would continue that glyph's grapheme cluster in a terminal that joins
+/// clusters as fux-vt does.
+fn joins_the_glyph_before(grid: &Grid, y: u16, x: u16, text: &str) -> bool {
+    let Some(first) = text.chars().next() else {
+        return false;
+    };
+    let Some(mut before) = x.checked_sub(1) else {
+        return false;
+    };
+    if grid
+        .get(y, before)
+        .is_some_and(|c| c.is_wide_continuation())
+    {
+        before = before.saturating_sub(1);
+    }
+    grid.get(y, before)
+        .is_some_and(|glyph| fux_vt::continues_cluster(shown(glyph), first))
+}
+
 /// A row or column as the terminal counts it, from 1; exact in a u32.
 fn one_based(n: u16) -> u32 {
     u32::from(n).saturating_add(1)
@@ -1103,8 +1123,11 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
             if cell(start).is_some_and(|c| c.is_wide_continuation()) {
                 start = start.saturating_sub(1);
             }
-            let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(start));
             let mut cx = start;
+            // Whether the client's cursor is where the next glyph goes: a
+            // run is placed at its start, and again after a glyph the
+            // client's terminal may have joined to the one before it.
+            let mut placed = false;
             while cx < new.cols
                 && (cx == start
                     || changed(cx)
@@ -1115,6 +1138,25 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
                     cx = cx.saturating_add(1);
                     continue;
                 }
+                let wide = cell.is_wide();
+                // A wide glyph cannot fit in the last column.
+                let text = if wide && cx.saturating_add(1) >= new.cols {
+                    " "
+                } else {
+                    shown(cell)
+                };
+                // A glyph that continues the cluster of the one before it
+                // (an emoji modifier a program put after an emoji with a
+                // cursor move of its own, as micro and vim do) is placed by
+                // a cursor move, and so is what follows it: the client's
+                // terminal joins it to the glyph before, or not, as it does
+                // when the program writes it directly, and the next glyph is
+                // where fux-vt has it either way.
+                let joins = joins_the_glyph_before(new, y, cx, text);
+                if !placed || joins {
+                    let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(cx));
+                }
+                placed = !joins;
                 let attrs = cell.attributes();
                 if current != Some(attrs) {
                     sgr(out, attrs);
@@ -1125,13 +1167,9 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
                     hyperlink(out, new.numbered(link));
                     open = link;
                 }
-                if cell.is_wide() && cx.saturating_add(1) >= new.cols {
-                    // A wide glyph cannot fit in the last column.
-                    out.push(b' ');
-                } else {
-                    out.extend_from_slice(shown(cell).as_bytes());
-                }
-                cx = cx.saturating_add(if cell.is_wide() { 2 } else { 1 });
+                let width = if wide { 2 } else { 1 };
+                out.extend_from_slice(text.as_bytes());
+                cx = cx.saturating_add(width);
             }
             x = cx.max(x.saturating_add(1));
         }
@@ -1399,6 +1437,33 @@ mod tests {
         // The glyph is painted as a blank, and moving past it stops the run.
         let bytes = paint(None, &grid);
         assert!(bytes.ends_with(b"\x1b[?2026l"));
+    }
+
+    /// A glyph that continues the cluster of the one before it (an emoji
+    /// modifier micro puts after an emoji with a cursor move of its own) is
+    /// placed by a cursor move, and so is the glyph after it: Ghostty joins
+    /// the modifier to the emoji, as it does when micro writes it directly,
+    /// and the next glyph still lands where fux-vt has it.
+    #[test]
+    fn a_glyph_that_would_join_the_one_before_is_placed() -> Result<(), String> {
+        let mut grid = Grid::new(1, 12);
+        grid.text(0, 2, "\u{1F44D}", Attributes::default(), 12);
+        grid.text(0, 4, "\u{1F3FD}", Attributes::default(), 12);
+        grid.text(0, 6, "x", Attributes::default(), 12);
+        let bytes = paint(None, &grid);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("\u{1F44D}\x1b[1;5H\u{1F3FD}\x1b[1;7Hx"),
+            "{text:?}"
+        );
+        let mut parser = fux_vt::Parser::new(1, 12, 0).map_err(|e| e.to_string())?;
+        assert_eq!(apply(&bytes, 1, 12, &mut parser), grid_lines(&grid));
+        // Glyphs that do not join are painted in one run.
+        let mut plain = Grid::new(1, 12);
+        plain.text(0, 2, "\u{1F44D}\u{1F680}x", Attributes::default(), 12);
+        let text = String::from_utf8_lossy(&paint(None, &plain)).into_owned();
+        assert!(text.contains("\u{1F44D}\u{1F680}x"), "{text:?}");
+        Ok(())
     }
 
     #[test]

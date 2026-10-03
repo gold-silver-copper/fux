@@ -1534,6 +1534,16 @@ mod tests {
         Ok(())
     }
 
+    /// An emoji modifier a program places after its emoji with a cursor
+    /// move of its own (micro-small) is joined to the emoji by Ghostty both
+    /// ways, and what follows stays where the program put it.
+    #[test]
+    fn a_modifier_placed_after_its_emoji_moves_nothing() -> Result<(), String> {
+        let placed = "\x1b[1;3H\u{1F44D}\x1b[1;5H\u{1F3FD}\x1b[1;7Hx \u{1F469}";
+        assert_eq!(differences(2, 12, placed.as_bytes())?, []);
+        Ok(())
+    }
+
     /// Text, styles, a wide glyph, a link and the cursor look the same
     /// through fux; and a difference is found where there is one.
     #[test]
