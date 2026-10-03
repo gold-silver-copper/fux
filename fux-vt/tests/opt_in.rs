@@ -282,6 +282,23 @@ fn in_band_resize_reports_the_size() -> Result {
     Ok(())
 }
 
+/// `Options::size_reports` answers xterm's text-area size query, `CSI 18 t`,
+/// with the screen's size in characters; not the pixel query, `CSI 14 t`;
+/// and nothing without the option.
+#[test]
+fn size_reports_answer_the_text_area_in_characters() -> Result {
+    let options = Options::new().with_size_reports(true);
+    let mut p = Parser::with_options(24, 80, 0, options)?;
+    let mut record = Record::default();
+    p.process_with(b"\x1b[18t\x1b[14t", &mut record)?;
+    p.resize(30, 100)?;
+    p.process_with(b"\x1b[18t", &mut record)?;
+    let expected: [&[u8]; 2] = [b"\x1b[8;24;80t", b"\x1b[8;30;100t"];
+    assert_eq!(record.replies, expected.map(<[u8]>::to_vec));
+    assert!(run(Options::new(), b"\x1b[18t")?.replies.is_empty());
+    Ok(())
+}
+
 #[test]
 fn keypad_mode_is_tracked_and_reset() -> Result {
     let mut parser = Parser::new(2, 4, 0)?;
