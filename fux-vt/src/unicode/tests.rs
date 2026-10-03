@@ -138,3 +138,35 @@ fn a_cluster_rebuilt_from_its_text_continues_as_it_would_have() {
         assert_eq!(Cluster::of(text).push(next), joins, "{text:?} {next:?}");
     }
 }
+
+/// `continues_cluster` is the state machine's answer, the fast path for
+/// printable ASCII included.
+#[test]
+fn continues_cluster_answers_as_the_state_machine() {
+    let clusters = [
+        "",
+        "a",
+        " ",
+        "\u{1F44D}",
+        "\u{1F469}\u{200D}",
+        "\u{1F1EF}",
+        "\u{915}\u{94D}",
+        "\u{600}",
+        "\u{1100}",
+        "\r",
+        "\u{e4}\u{356}",
+    ];
+    let nexts = ('\0'..='\u{7f}').chain(['\u{1F3FD}', '\u{301}', '\u{200D}', '\u{FE0F}']);
+    for next in nexts {
+        for cluster in clusters {
+            assert_eq!(
+                continues_cluster(cluster, next),
+                Cluster::of(cluster).push(next),
+                "{cluster:?} {next:?}"
+            );
+        }
+    }
+    assert!(continues_cluster("\u{1F44D}", '\u{1F3FD}'));
+    assert!(continues_cluster("a", '\u{301}'));
+    assert!(!continues_cluster("\u{1F44D}", 'x'));
+}
