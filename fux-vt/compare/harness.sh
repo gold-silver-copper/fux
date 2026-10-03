@@ -176,8 +176,10 @@ fuzz() {
   echo "fuzz: $minutes minutes"
 }
 
+# The scoreboard, kept in the repository too (scoreboard/): the page for
+# this commit, and a line of history for it.
 scoreboard() {
-  "$compare" scoreboard "$out"
+  "$compare" scoreboard "$out" --keep "$here/scoreboard" "$commit" "$(date -u +%Y-%m-%d)"
 }
 
 # The summary: each check that ran, and the command's time beside its budget.

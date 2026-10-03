@@ -347,9 +347,23 @@ const CHECKS: &[&str] = &[
     "info",
 ];
 
+/// `scoreboard DIR [--keep KEPT COMMIT DATE]`: with `--keep`, the
+/// scoreboard is also kept in the repository, in KEPT: `SCOREBOARD.md`, the
+/// last, and `history.jsonl`, a line per commit (a commit's line is
+/// replaced if it is the last).
 pub fn run(rest: &[String]) -> Result<bool, String> {
-    let [dir] = rest else {
-        return Err("scoreboard takes one directory, where run.sh left its results".into());
+    let (dir, keep) = match rest {
+        [dir] => (dir, None),
+        [dir, flag, kept, commit, date] if flag == "--keep" => {
+            (dir, Some((Path::new(kept), commit.as_str(), date.as_str())))
+        }
+        _ => {
+            return Err(
+                "scoreboard takes the directory where run.sh left its results, and \
+                 --keep DIR COMMIT DATE"
+                    .into(),
+            );
+        }
     };
     let dir = Path::new(dir);
     let mut rows = Vec::new();
@@ -391,8 +405,44 @@ pub fn run(rest: &[String]) -> Result<bool, String> {
     };
     write("scoreboard.json", &text)?;
     write("scoreboard.md", &md)?;
+    if let Some((kept, commit, date)) = keep {
+        save(kept, commit, date, &md, &json)?;
+    }
     print!("{md}");
     Ok(true)
+}
+
+/// Keeps the scoreboard in `kept`: the Markdown as `SCOREBOARD.md`, and
+/// the rows as a line of `history.jsonl`, replacing the last line if it is
+/// the same commit's.
+fn save(kept: &Path, commit: &str, date: &str, md: &str, json: &Value) -> Result<(), String> {
+    std::fs::create_dir_all(kept).map_err(|e| format!("{}: {e}", kept.display()))?;
+    let at = |name: &str| kept.join(name);
+    let page = format!(
+        "{}\nFor {commit}, {date}, from `fux-vt/compare/run.sh scoreboard`; \
+         `history.jsonl` beside it has a line for each commit it was kept for.\n\n{}",
+        md.lines().next().unwrap_or_default(),
+        md.split_once("\n\n").map_or(md, |(_, rest)| rest),
+    );
+    std::fs::write(at("SCOREBOARD.md"), page)
+        .map_err(|e| format!("{}: {e}", at("SCOREBOARD.md").display()))?;
+    let line = json!({"commit": commit, "date": date, "rows": json.get("rows")});
+    let history = std::fs::read_to_string(at("history.jsonl")).unwrap_or_default();
+    let mut lines: Vec<&str> = history.lines().collect();
+    let same = lines.last().is_some_and(|last| {
+        serde_json::from_str::<Value>(last)
+            .ok()
+            .is_some_and(|v| v.get("commit").and_then(Value::as_str) == Some(commit))
+    });
+    if same {
+        lines.pop();
+    }
+    let line = line.to_string();
+    lines.push(&line);
+    let mut text = lines.join("\n");
+    text.push('\n');
+    std::fs::write(at("history.jsonl"), text)
+        .map_err(|e| format!("{}: {e}", at("history.jsonl").display()))
 }
 
 #[cfg(test)]
@@ -425,6 +475,43 @@ mod tests {
             assert!(md.contains(&format!("| {axis} |")), "{axis} missing:\n{md}");
         }
         assert!(md.contains(super::MISSING));
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// Kept, the scoreboard's page is the last one, and its history has a
+    /// line for each commit, the last commit's replaced.
+    #[test]
+    fn kept_history_has_a_line_a_commit() -> Result<(), String> {
+        let dir = dir("keep")?;
+        let kept = dir.join("kept");
+        let args = |commit: &str| {
+            [
+                dir.to_string_lossy().into_owned(),
+                "--keep".into(),
+                kept.to_string_lossy().into_owned(),
+                commit.into(),
+                "2026-10-03".into(),
+            ]
+        };
+        for commit in ["a1", "b2", "b2"] {
+            assert!(super::run(&args(commit))?);
+        }
+        let history =
+            std::fs::read_to_string(kept.join("history.jsonl")).map_err(|e| e.to_string())?;
+        let commits: Vec<String> = history
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter_map(|v| v.get("commit")?.as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(commits, ["a1", "b2"]);
+        let page =
+            std::fs::read_to_string(kept.join("SCOREBOARD.md")).map_err(|e| e.to_string())?;
+        assert!(
+            page.starts_with("# fux scoreboard\nFor b2, 2026-10-03"),
+            "{page}"
+        );
+        assert!(page.contains("| Conformance |"), "{page}");
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
