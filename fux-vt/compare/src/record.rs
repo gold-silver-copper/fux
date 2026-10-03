@@ -277,7 +277,11 @@ pub fn record(request: &Request) -> Result<Recorded, String> {
     let text = std::fs::read_to_string(&request.keys)
         .map_err(|e| format!("{}: {e}", request.keys.display()))?;
     let (start, steps) = steps(&text)?;
-    let options = fux_vt::Options::new().with_events(true);
+    // As fux's panes are set up (src/pane.rs).
+    let options = fux_vt::Options::new()
+        .with_events(true)
+        .with_mode_reports(true)
+        .with_in_band_resize(true);
     let parser = fux_vt::Parser::with_options(request.rows, request.cols, 10_000, options)
         .map_err(|e| format!("fux-vt: {e}"))?;
     let (master, mut child) = spawn(request)?;
