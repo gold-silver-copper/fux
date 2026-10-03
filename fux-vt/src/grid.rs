@@ -45,10 +45,12 @@ struct Meta {
     used: u16,
     /// Whether the row has an array of links in `Grid::linked`.
     linked: bool,
+    /// Whether a prompt starts on the row (OSC 133 ; A).
+    prompt: bool,
 }
 
-// The flag fits where the struct had padding: a row without links costs no
-// more than it did before links.
+// The two flags fit where the struct had padding: a row without links costs
+// no more than it did before links.
 const _: () = assert!(std::mem::size_of::<Meta>() == 24);
 
 impl Meta {
@@ -60,6 +62,7 @@ impl Meta {
             wrapped,
             used,
             linked: false,
+            prompt: false,
         }
     }
 }
@@ -270,6 +273,7 @@ impl Grid {
             id: m.id,
             version: m.version,
             wrapped: m.wrapped,
+            prompt: m.prompt,
             cells: self.slice(slot),
             spill: self.spill.get(slot)?,
             links,
@@ -482,6 +486,24 @@ impl Grid {
             }
         }
         self.links.free_unused(&[]);
+    }
+
+    /// Marks live row `row` as where a prompt starts (OSC 133 ; A).
+    pub fn mark_prompt(&mut self, row: u16) {
+        if let Some(slot) = self.slot(row)
+            && let Some(m) = self.meta.get_mut(slot)
+        {
+            m.prompt = true;
+        }
+    }
+
+    /// Unmarks live row `row` as where a prompt starts: ED erased it.
+    pub fn clear_prompt(&mut self, row: u16) {
+        if let Some(slot) = self.slot(row)
+            && let Some(m) = self.meta.get_mut(slot)
+        {
+            m.prompt = false;
+        }
     }
 
     pub fn wrap(&mut self, row: u16, wrapped: bool, version: u64) {
@@ -866,6 +888,7 @@ impl Grid {
                 version
             };
             let mut meta = Meta::new(id, row_version, width, wrapped, width);
+            meta.prompt = old.is_some_and(|r| r.prompt);
             // As much of the old row's links as fits, as of its cells.
             if let Some(links) = old.and_then(|r| r.links) {
                 let mut kept = vec![0; usize::from(width)];
@@ -1043,7 +1066,13 @@ impl Grid {
             let mut length = 0usize;
             let mut offsets = [None; 2];
             let mut spacers = Vec::new();
+            // Where each row a prompt starts on begins in the line: the row
+            // its first cell goes to is where the prompt starts after.
+            let mut prompts = Vec::new();
             for (i, row) in (start..=end).zip(line.clone()) {
+                if row.prompt {
+                    prompts.push(length);
+                }
                 for (offset, mark) in offsets.iter_mut().zip(marks) {
                     if let Some((row_index, col)) = mark
                         && row_index == i
@@ -1082,6 +1111,9 @@ impl Grid {
             let mut placed = [false; 2];
             let ids = line.clone().map(|r| r.id);
             let mut ids = ids.fuse();
+            // A prompt starts on the row being laid out, or on the row the
+            // next cell placed goes to.
+            let (mut prompt, mut pending) = (false, false);
             let cells = line.flat_map(|r| {
                 let links = r.links;
                 r.cells().enumerate().map(move |(i, cell)| {
@@ -1090,6 +1122,7 @@ impl Grid {
                 })
             });
             for (n, (cell, link)) in cells.take(length).enumerate() {
+                pending |= prompts.contains(&n);
                 if spacers.contains(&n) {
                     // A cursor on a spacer goes with the glyph after it.
                     for offset in &mut offsets {
@@ -1109,9 +1142,10 @@ impl Grid {
                     if padded {
                         target.cell(out.rows, used, pad, 0);
                     }
-                    target.row(out.rows, true, ids.next())?;
+                    target.row(out.rows, true, ids.next(), prompt)?;
                     out.rows = out.rows.saturating_add(1);
                     used = 0;
+                    prompt = false;
                 }
                 for ((offset, mark), placed) in offsets.iter().zip(&mut out.marks).zip(&mut placed)
                 {
@@ -1120,9 +1154,13 @@ impl Grid {
                         *placed = true;
                     }
                 }
+                prompt |= pending;
+                pending = false;
                 target.cell(out.rows, used, cell, link);
                 used = used.saturating_add(1);
             }
+            // A prompt starting past the line's text starts on its last row.
+            prompt |= pending || prompts.iter().any(|at| *at >= length);
             for (((offset, mark), placed), found) in offsets
                 .iter()
                 .zip(&mut out.marks)
@@ -1141,7 +1179,7 @@ impl Grid {
                 }
                 *found |= *placed;
             }
-            target.row(out.rows, false, ids.next())?;
+            target.row(out.rows, false, ids.next(), prompt)?;
             out.rows = out.rows.saturating_add(1);
             out.trailing_blank = if length == 0 {
                 out.trailing_blank
@@ -1322,9 +1360,16 @@ fn past(col: u16, pending_wrap: bool) -> u16 {
 trait Reflow {
     /// `cell`, with link `link`, is at `col` of reflowed row `row`.
     fn cell(&mut self, row: usize, col: usize, cell: CellRef<'_>, link: u16);
-    /// Reflowed row `row` is finished; `wrapped` if its line goes on, and
-    /// the identity of its line's row in the same place before, if any.
-    fn row(&mut self, row: usize, wrapped: bool, id: Option<RowId>) -> Result<(), Error>;
+    /// Reflowed row `row` is finished; `wrapped` if its line goes on, the
+    /// identity of its line's row in the same place before, if any, and
+    /// whether a prompt starts on it.
+    fn row(
+        &mut self,
+        row: usize,
+        wrapped: bool,
+        id: Option<RowId>,
+        prompt: bool,
+    ) -> Result<(), Error>;
 }
 
 /// The shape of a reflow: how many rows, where the cursor and the saved
@@ -1338,7 +1383,7 @@ struct Reflowed {
 struct Layout;
 impl Reflow for Layout {
     fn cell(&mut self, _: usize, _: usize, _: CellRef<'_>, _: u16) {}
-    fn row(&mut self, _: usize, _: bool, _: Option<RowId>) -> Result<(), Error> {
+    fn row(&mut self, _: usize, _: bool, _: Option<RowId>, _: bool) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -1391,7 +1436,13 @@ impl Reflow for Copy<'_> {
             Line { cells, spill }.set(col, stored, cell.contents());
         }
     }
-    fn row(&mut self, row: usize, wrapped: bool, id: Option<RowId>) -> Result<(), Error> {
+    fn row(
+        &mut self,
+        row: usize,
+        wrapped: bool,
+        id: Option<RowId>,
+        prompt: bool,
+    ) -> Result<(), Error> {
         if !self.rows.contains(&row) {
             return Ok(());
         }
@@ -1402,6 +1453,7 @@ impl Reflow for Copy<'_> {
         let slot = self.grid.meta.len();
         let cols = self.grid.cols.get();
         let mut meta = Meta::new(id, self.version, cols, wrapped, cols);
+        meta.prompt = prompt;
         meta.linked = self.grid.linked.contains_key(&slot);
         self.grid.meta.push(meta);
         self.grid.order.push_back(slot);

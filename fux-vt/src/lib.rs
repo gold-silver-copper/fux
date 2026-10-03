@@ -78,6 +78,8 @@ pub struct Row<'a> {
     pub(crate) id: RowId,
     pub(crate) version: u64,
     pub(crate) wrapped: bool,
+    /// Whether a prompt starts on the row (OSC 133 ; A).
+    pub(crate) prompt: bool,
     pub(crate) cells: &'a [Cell],
     pub(crate) spill: &'a cell::Spill,
     /// Each cell's link, if any cell of the row has had one (`link.rs`).
@@ -132,6 +134,12 @@ impl<'a> Row<'a> {
     /// [`Row::link`] is `None` for every cell, and need not be asked.
     pub fn has_links(&self) -> bool {
         self.links.is_some()
+    }
+    /// Whether a prompt starts on the row: a shell marked it, with
+    /// `OSC 133 ; A` while the cursor was on it. The mark goes with the row
+    /// as it scrolls and reflows; ED, erasing the row whole, removes it.
+    pub fn starts_prompt(&self) -> bool {
+        self.prompt
     }
     /// Bytes of text the row keeps for clusters too long to hold inline,
     /// overwritten ones included until the row is compacted: at most
