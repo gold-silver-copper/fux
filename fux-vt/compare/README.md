@@ -604,7 +604,7 @@ recording still fails:
 
 | Recording | Engines | Why |
 | --- | --- | --- |
-| `tmux` | ghostty, alacritty | tmux pads its status line with ECH in black on green; fux-vt's erased cells keep the foreground, as xterm's do, Ghostty's and alacritty's only the background. A blank's foreground is not drawn |
+| every | ghostty, alacritty | a cell erased while a foreground is set (ECH, EL, ED, IL, a scroll's new row) keeps it in fux-vt, as in xterm, and only the background in Ghostty and alacritty: tmux pads its status line with ECH in black on green; neovim, htop, mc, ncdu, ranger and tig clear in their own colours. Only a foreground on a cell blank on both sides is covered: a blank's foreground is not drawn |
 | `delta-diff` | alacritty, avt, wezterm | the wrap marker delta erases with EL 0 while a wrap is pending: these keep it, fux-vt (as xterm, Ghostty and libvterm) erases it |
 
 Today 14 recordings are identical beside Ghostty and the tmux recording
