@@ -5,7 +5,7 @@ use crate::command::{
     AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, Pick, Sibling, SwapWith, WsRef,
 };
 use crate::config::Binding;
-use crate::keys::{Direction, Key, KeyPress};
+use crate::keys::{Direction, Key, KeyPress, Keystroke};
 use crate::layout::{Node, PaneId};
 use crate::session::{Ctx, Error, Session, describe};
 use crate::view::{Confirm, Item, List, Mode, Prompt, PromptFor};
@@ -599,7 +599,7 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
         _ if press == prefix => {
             // The prefix, at any depth, sends it to the pane.
             session.set_mode(client, Mode::Normal);
-            send_key(session, client, prefix);
+            send_key(session, client, prefix.into());
             return;
         }
         Some(Key::Arrow(Direction::Up)) => selected.saturating_sub(1),
@@ -698,8 +698,8 @@ pub fn repeat_key(session: &mut Session, client: ClientId, press: KeyPress) {
     }
 }
 
-/// Sends a key to the client's focused pane.
-pub fn send_key(session: &mut Session, client: ClientId, press: KeyPress) {
+/// Sends a key to the client's focused pane, encoded as its program asked.
+pub fn send_key(session: &mut Session, client: ClientId, stroke: Keystroke) {
     let Some(pane) = session.views.get(&client).and_then(|v| v.focus()) else {
         return;
     };
@@ -712,10 +712,10 @@ pub fn send_key(session: &mut Session, client: ClientId, press: KeyPress) {
     if p.input.refusing() {
         return;
     }
-    let application = p.screen().application_cursor();
+    let mode = crate::encode::KeyMode::of(p.screen());
     if let Err(error) = p
         .input
-        .push_with(|out| crate::encode::key_bytes(press, application, out))
+        .push_with(|out| crate::encode::key_bytes(stroke, mode, out))
     {
         session.error_to(client, error.to_string());
     }

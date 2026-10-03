@@ -1,8 +1,24 @@
 //! What fux knows of each client's own terminal, learned by asking it: its
 //! colours (OSC 10 and 11) and colour scheme (dark or light, `CSI ? 996 n`),
-//! and whether it reports changes to the scheme (mode 2031). Programs in
-//! panes ask the same of their terminal, which is fux, and are answered
-//! from what the client terminal said.
+//! whether it reports changes to the scheme (mode 2031), and whether it
+//! speaks the kitty keyboard protocol (`CSI ? u`). Programs in panes ask
+//! the same of their terminal, which is fux, and are answered from what the
+//! client terminal said.
+//!
+//! A terminal that speaks the kitty protocol gets disambiguate (1) and
+//! alternate keys (4) pushed (`CSI > 5 u`), so that fux reads keys as
+//! exactly as the terminal can tell them (`decode`): disambiguate tells
+//! apart what legacy bytes do not (Shift-Enter, Ctrl-I and Tab, Escape and
+//! Alt-[), and alternate keys give the shifted key, so that Alt-Shift-1 is
+//! `M-!` as from a legacy terminal, and the base-layout key, so that Ctrl
+//! on a Cyrillic layout is Ctrl and a Latin letter. Not report all keys as
+//! escapes (8), and with it associated text (16): then every key, plain
+//! text and Enter included, would come as an escape, and if fux died
+//! without popping them the shell would be left unusable, which is why the
+//! spec keeps Enter, Tab and Backspace legacy under disambiguate; and fux
+//! would have to rebuild text from key codes and layouts the terminal
+//! already knows. Not event types (2): fux uses no repeats or releases.
+//! The client pops the flags as it leaves (`client::LEAVE`).
 //!
 //! The client is a dumb pipe, so the server asks in the client's paint
 //! stream, as tmux asks its own terminal, and the answers come back in the
@@ -25,11 +41,15 @@ use crate::session::{Outgoing, Session};
 use std::time::Instant;
 
 /// What the server asks a client's terminal when the client attaches:
-/// whether it knows mode 2031 (DECRQM), its foreground and background, and
-/// last the primary device attributes, which every terminal answers: once
-/// that answer is in, any other the terminal will give is in too
-/// (terminals answer in order), so the decoder stops waiting for them.
-pub const QUERIES: &[u8] = b"\x1b[?2031$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[c";
+/// whether it knows mode 2031 (DECRQM), its foreground and background, its
+/// kitty keyboard flags, and last the primary device attributes, which
+/// every terminal answers: once that answer is in, any other the terminal
+/// will give is in too (terminals answer in order), so the decoder stops
+/// waiting for them. The kitty spec detects the protocol so: an answer to
+/// `CSI ? u` before DA1's.
+pub const QUERIES: &[u8] = b"\x1b[?2031$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[?u\x1b[c";
+/// Pushes disambiguate and alternate keys (see the module documentation).
+const KITTY_PUSH: &[u8] = b"\x1b[>5u";
 /// Asked again after the terminal reports that its scheme changed.
 const COLOUR_QUERIES: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[c";
 /// Turns on the terminal's scheme reports and asks for the scheme now. The
@@ -132,6 +152,8 @@ pub struct Terminal {
     /// have been asked again, so that a program that asks at the report
     /// gets the new ones.
     change: Option<Scheme>,
+    /// Whether the kitty keyboard flags were pushed.
+    pub kitty: bool,
 }
 
 impl Session {
@@ -199,6 +221,13 @@ impl Session {
             // DA1, the last answer to every round of questions: a change
             // waiting on colours the terminal did not give is told now.
             Reply::Attributes => self.tell_change(client),
+            // The terminal speaks the kitty protocol: its keys are read
+            // exactly from now on.
+            Reply::KittyFlags(_) if !terminal.kitty => {
+                terminal.kitty = true;
+                self.outbox
+                    .push(Outgoing::Bytes(client, KITTY_PUSH.to_vec()));
+            }
             Reply::Mode { .. } | Reply::KittyFlags(_) => {}
         }
     }

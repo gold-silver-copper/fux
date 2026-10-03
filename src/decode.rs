@@ -8,6 +8,18 @@
 //! `timeout` at the `deadline` the decoder reports. Mouse sequences, which a
 //! correctly configured outer terminal never sends, are dropped.
 //!
+//! A terminal that speaks the kitty keyboard protocol has disambiguate and
+//! alternate keys pushed (`outer`): it sends Escape, and keys with Ctrl or
+//! Alt, as `CSI code:shifted:base ; mods u`, and its functional keys in
+//! their kitty forms. Each decodes to the `KeyPress` a legacy terminal's
+//! bytes for the same key decode to, wherever legacy bytes can tell the key
+//! (Alt-Shift-1 is `M-!`, from the shifted key; Ctrl with a key off ASCII
+//! is the base-layout key, as legacy terminals send it), so bindings match
+//! alike; keys legacy bytes cannot tell apart stay apart (Shift-Enter,
+//! Ctrl-I and Tab, Ctrl-[ and Escape). What the press leaves out (the
+//! shifted and base-layout keys, Super, Hyper, Meta, the locks) the
+//! keystroke keeps, for a pane in the protocol.
+//!
 //! The terminal's answers are told from keys by their form, which no key
 //! has: a CSI with `?` (`CSI ? 997 ; 1 n`, `CSI ? 2031 ; 2 $ y`, DA1), or an
 //! OSC string (`OSC 11 ; rgb:… ST`). An answer cut short waits
@@ -18,7 +30,7 @@
 //! it is an answer begun. How input is split never changes what it decodes
 //! to; only how long a wait lasts.
 use crate::bytes::ByteQueue;
-use crate::keys::{Direction, Key, KeyPress, Modifiers};
+use crate::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
 use crate::outer::{Rgb, Scheme};
 use std::time::{Duration, Instant};
 
@@ -39,7 +51,7 @@ pub const PASTE_LIMIT: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
-    Key(KeyPress),
+    Key(Keystroke),
     Paste(String),
     /// A paste longer than `PASTE_LIMIT`, dropped whole.
     PasteTooLong,
@@ -231,7 +243,7 @@ impl Decoder {
 }
 
 fn press(key: Key, mods: Modifiers) -> Option<Input> {
-    Some(Input::Key(KeyPress::new(key, mods)))
+    Some(Input::Key(KeyPress::new(key, mods).into()))
 }
 
 /// Modifiers from an xterm modifier parameter (`1 + bits`).
@@ -322,7 +334,8 @@ fn decode(bytes: &[u8], flush: bool) -> Step {
         0x1b => Step::Done(1, press(Key::Escape, Modifiers::NONE)),
         _ => match single(bytes.get(1..).unwrap_or_default(), flush) {
             // The Escape and what followed it; within `bytes`, so exact.
-            Step::Done(n, Some(Input::Key(KeyPress { key, mods }))) => {
+            Step::Done(n, Some(Input::Key(stroke))) => {
+                let KeyPress { key, mods } = stroke.press;
                 let mods = Modifiers { alt: true, ..mods };
                 Step::Done(n.saturating_add(1), press(key, mods))
             }
@@ -478,13 +491,23 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
         // Answers fux does not use are dropped.
         return Step::Done(consumed, csi_reply(params, last).map(Input::Reply));
     }
-    let numbers: Vec<u32> = std::str::from_utf8(params)
+    // Each parameter with its colon-separated parts; an empty part is none.
+    let groups: Vec<Vec<Option<u32>>> = std::str::from_utf8(params)
         .unwrap_or("")
         .split(';')
-        .map(|p| p.split(':').next().unwrap_or("").parse().unwrap_or(0))
+        .map(|p| p.split(':').map(|n| n.parse().ok()).collect())
         .collect();
-    let first = numbers.first().copied().unwrap_or(0);
-    let mods = modifiers(numbers.get(1).copied().unwrap_or(1));
+    let part = |group: usize, i: usize| groups.get(group)?.get(i).copied().flatten();
+    let first = part(0, 0).unwrap_or(0);
+    let modifier = part(1, 0).unwrap_or(1);
+    // The kitty protocol's event type: a release is not a key press. fux
+    // asks for none (`outer`), but a terminal may send them anyway.
+    if part(1, 1) == Some(3) {
+        return Step::Done(consumed, None);
+    }
+    let mods = modifiers(modifier);
+    // Every modifier bit, the kitty protocol's beyond xterm's three too.
+    let bits = u8::try_from(modifier.saturating_sub(1)).unwrap_or(u8::MAX);
     // `CSI n ~` numbers the function keys with gaps: F1 is `first - base`.
     let function = |base: u32| {
         let n = u8::try_from(first.checked_sub(base)?).ok()?;
@@ -513,23 +536,111 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
             17..=21 => function(11),
             23 | 24 => function(12),
             // xterm modifyOtherKeys: `CSI 27 ; mod ; code ~`.
-            27 => numbers
-                .get(2)
-                .and_then(|code| char::from_u32(*code))
+            27 => part(2, 0)
+                .and_then(char::from_u32)
                 .and_then(|c| press(Key::Char(c), mods)),
             _ => None,
         },
-        // `CSI code ; mod u`.
-        b'u' => char::from_u32(first).and_then(|c| match c {
-            '\r' => press(Key::Enter, mods),
-            '\t' => press(Key::Tab, mods),
-            '\x1b' => press(Key::Escape, mods),
-            '\x7f' => press(Key::Backspace, mods),
-            c => press(Key::Char(c), mods),
-        }),
+        // `CSI code ; mod u`: xterm's formatOtherKeys, and the kitty
+        // protocol's form, `CSI code:shifted:base ; mods u`.
+        b'u' => {
+            let kitty = Kitty {
+                code: Some(first),
+                shifted: part(0, 1),
+                base: part(0, 2),
+                mods: bits,
+            };
+            let key = match first {
+                13 => Some(Key::Enter),
+                9 => Some(Key::Tab),
+                27 => Some(Key::Escape),
+                127 => Some(Key::Backspace),
+                // The Unicode Private Use Area: the kitty protocol's
+                // functional keys.
+                0xe000..=0xf8ff => functional(first),
+                _ => char::from_u32(first).map(|c| Key::Char(typed(c, &kitty))),
+            };
+            let stroke = key.map(|key| Keystroke {
+                press: KeyPress::new(key, mods),
+                kitty: Some(kitty),
+            });
+            return Step::Done(consumed, stroke.map(Input::Key));
+        }
         _ => None,
     };
+    // Modifiers beyond xterm's three (Super, Hyper, Meta, the locks) are
+    // kept for a pane in the kitty protocol.
+    let input = match input {
+        Some(Input::Key(stroke)) if bits & !7 != 0 => Some(Input::Key(Keystroke {
+            kitty: Some(Kitty {
+                code: None,
+                shifted: None,
+                base: None,
+                mods: bits,
+            }),
+            ..stroke
+        })),
+        other => other,
+    };
     Step::Done(consumed, input)
+}
+
+/// The character a legacy terminal sends for the kitty-protocol key `c`,
+/// so that both decode alike: with Ctrl or Alt, a key off ASCII is its
+/// base-layout key, if that is ASCII (Ctrl and С on a Cyrillic layout is
+/// `C-c`); with Shift, the shifted key, else a letter's capital (Alt-Shift-1
+/// is `M-!`, Alt-Shift-a `M-A`), as with Caps Lock.
+fn typed(c: char, kitty: &Kitty) -> char {
+    let base = kitty
+        .base
+        .and_then(char::from_u32)
+        .filter(char::is_ascii)
+        .filter(|_| kitty.mods & 6 != 0 && !c.is_ascii());
+    let shift = kitty.mods & 1 != 0;
+    // Caps Lock capitalizes a letter, as in a legacy terminal's bytes.
+    let caps = kitty.mods & 64 != 0;
+    let letter = |c: char| {
+        if shift != caps {
+            c.to_ascii_uppercase()
+        } else {
+            c
+        }
+    };
+    match base {
+        Some(base) => letter(base),
+        None if shift => kitty.shifted.and_then(char::from_u32).unwrap_or(letter(c)),
+        None => letter(c),
+    }
+}
+
+/// A kitty functional key, numbered in the Private Use Area, as the key
+/// fux knows it by: a keypad key is the key it copies, as legacy terminals
+/// send it. Keys fux has no name for (F13 to F35, the media, lock and
+/// modifier keys) are none, and dropped.
+fn functional(code: u32) -> Option<Key> {
+    let key = match code {
+        57399..=57408 => return char::from_digit(code.checked_sub(57399)?, 10).map(Key::Char),
+        57409 => Key::Char('.'),
+        57410 => Key::Char('/'),
+        57411 => Key::Char('*'),
+        57412 => Key::Char('-'),
+        57413 => Key::Char('+'),
+        57414 => Key::Enter,
+        57415 => Key::Char('='),
+        57416 => Key::Char(','),
+        57417 => Key::Arrow(Direction::Left),
+        57418 => Key::Arrow(Direction::Right),
+        57419 => Key::Arrow(Direction::Up),
+        57420 => Key::Arrow(Direction::Down),
+        57421 => Key::PageUp,
+        57422 => Key::PageDown,
+        57423 => Key::Home,
+        57424 => Key::End,
+        57425 => Key::Insert,
+        57426 => Key::Delete,
+        _ => return None,
+    };
+    Some(key)
 }
 
 #[cfg(test)]
@@ -545,7 +656,21 @@ mod tests {
         out
     }
     fn key(name: &str) -> Input {
-        Input::Key(name.parse().unwrap_or(KeyPress::char('?')))
+        Input::Key(name.parse().unwrap_or(KeyPress::char('?')).into())
+    }
+    /// The presses among `inputs`, what fux matches.
+    fn presses(inputs: Vec<Input>) -> Vec<Option<KeyPress>> {
+        inputs
+            .into_iter()
+            .map(|input| match input {
+                Input::Key(stroke) => Some(stroke.press),
+                Input::Paste(_)
+                | Input::PasteTooLong
+                | Input::FocusIn
+                | Input::FocusOut
+                | Input::Reply(_) => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -589,10 +714,14 @@ mod tests {
             (b"\x1b\x02", "C-M-b"),
             (b"\xe7\x95\x8c", "\u{754c}"),
             (b"\x1b[27;5;105~", "C-i"),
-            (b"\x1b[105;5u", "C-i"),
         ] {
             assert_eq!(all(bytes), vec![key(name)], "{bytes:?}");
         }
+        assert_eq!(presses(all(b"\x1b[105;5u")), vec![name_press("C-i")]);
+    }
+
+    fn name_press(name: &str) -> Option<KeyPress> {
+        name.parse().ok()
     }
 
     /// The deadline runs from when decoding began waiting, through bytes
@@ -684,6 +813,148 @@ mod tests {
             number,
             rgb: Rgb { r, g, b },
         })
+    }
+
+    /// The kitty protocol's forms, as a terminal sends them with
+    /// disambiguate and alternate keys pushed (the spec's "Disambiguate
+    /// escape codes", "Key codes", "Modifiers", "Event types" and
+    /// "Functional key definitions"), decode to the press a legacy
+    /// terminal's bytes for the same key do, where those can tell the key:
+    /// Ctrl-Shift-a is `C-a` as 0x01 is, Alt-Shift-1 `M-!` as `ESC !` is,
+    /// Ctrl and a Cyrillic С `C-c`, Caps Lock with Alt and a `M-A`; and to
+    /// the key itself where they cannot (Shift-Enter, Ctrl-I, Ctrl-[).
+    #[test]
+    fn kitty_forms_decode_to_the_presses_legacy_bytes_do() {
+        for (bytes, name) in [
+            (&b"\x1b[27u"[..], "Escape"),
+            (b"\x1b[27;3u", "M-Escape"),
+            (b"\x1b[13;2u", "S-Enter"),
+            (b"\x1b[9;2u", "BTab"),
+            (b"\x1b[127;5u", "C-BSpace"),
+            (b"\x1b[98;5u", "C-b"),
+            (b"\x1b[105;5u", "C-i"),
+            (b"\x1b[91;5u", "C-["),
+            (b"\x1b[97:65;6u", "C-a"),
+            (b"\x1b[97:65;4u", "M-A"),
+            (b"\x1b[97;4u", "M-A"),
+            (b"\x1b[49:33;4u", "M-!"),
+            (b"\x1b[1089::99;5u", "C-c"),
+            (b"\x1b[1089:1057:99;6u", "C-c"),
+            (b"\x1b[1089::99;3u", "M-c"),
+            (b"\x1b[97;69u", "C-a"),
+            (b"\x1b[97;67u", "M-A"),
+            (b"\x1b[97;9u", "a"),
+            (b"\x1b[32;5u", "C-Space"),
+            (b"\x1b[120;7u", "C-M-x"),
+            (b"\x1b[1;65A", "Up"),
+            (b"\x1b[1;5D", "C-Left"),
+            (b"\x1b[P", "F1"),
+            (b"\x1b[13~", "F3"),
+            (b"\x1b[1;5S", "C-F4"),
+            (b"\x1b[57414u", "Enter"),
+            (b"\x1b[57399;5u", "C-0"),
+            (b"\x1b[57419u", "Up"),
+            (b"\x1b[97;5:2u", "C-a"),
+        ] {
+            assert_eq!(presses(all(bytes)), vec![name_press(name)], "{bytes:?}");
+        }
+        // A release is not a press, nor a key fux has no name for (a media
+        // key, a modifier alone, F13).
+        for bytes in [
+            &b"\x1b[97;5:3u"[..],
+            b"\x1b[1;1:3A",
+            b"\x1b[57428u",
+            b"\x1b[57441;2u",
+            b"\x1b[57376u",
+        ] {
+            assert_eq!(all(bytes), vec![], "{bytes:?}");
+        }
+        // What the press leaves out, the stroke keeps, for a pane in the
+        // protocol.
+        assert_eq!(
+            all(b"\x1b[97:65;6u"),
+            vec![Input::Key(Keystroke {
+                press: name_press("C-a").unwrap_or(KeyPress::char('?')),
+                kitty: Some(Kitty {
+                    code: Some(97),
+                    shifted: Some(65),
+                    base: None,
+                    mods: 5,
+                }),
+            })]
+        );
+        assert_eq!(
+            all(b"\x1b[1;9A"),
+            vec![Input::Key(Keystroke {
+                press: KeyPress::plain(Key::Arrow(Direction::Up)),
+                kitty: Some(Kitty {
+                    code: None,
+                    shifted: None,
+                    base: None,
+                    mods: 8,
+                }),
+            })]
+        );
+        // Escape is whole at once: no wait for the rest of a sequence.
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.bytes(b"\x1b[27u", &mut out);
+        assert!(!d.waiting());
+        assert_eq!(presses(out), vec![name_press("Escape")]);
+        // Split anywhere, among pastes and focus changes, alike.
+        let stream: &[u8] = b"\x1b[98;5ud\x1b[200~p\x1b[201~\x1b[I\x1b[13;2u\x1b[27u";
+        let whole = all(stream);
+        assert_eq!(whole.len(), 6);
+        for split in 1..stream.len() {
+            let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
+            let mut d = Decoder::default();
+            let mut out = Vec::new();
+            d.bytes(a, &mut out);
+            d.bytes(b, &mut out);
+            d.timeout(&mut out);
+            assert_eq!(out, whole, "split at {split}");
+        }
+    }
+
+    /// fux's prefix, bindings, overlays and copy mode match decoded presses,
+    /// which send-keys names name: every key that legacy bytes can tell
+    /// decodes to the same press from the kitty protocol's bytes, with the
+    /// flags fux pushes (disambiguate and alternate keys). The kitty bytes
+    /// are the spec's for the key, as fux writes them for a pane with those
+    /// flags (`encode::tests`).
+    #[test]
+    fn every_key_decodes_alike_with_and_without_the_kitty_protocol() {
+        use crate::encode::{KeyMode, key_bytes};
+        let mut names = crate::keys::all_names();
+        names.extend(
+            (' '..='~')
+                .filter(|c| !c.is_ascii_uppercase())
+                .map(String::from),
+        );
+        let mut compared = 0;
+        for name in &names {
+            for prefix in ["", "C-", "M-", "S-", "C-M-", "C-S-", "M-S-", "C-M-S-"] {
+                let Ok(press) = format!("{prefix}{name}").parse::<KeyPress>() else {
+                    continue;
+                };
+                let decoded = |mode: KeyMode| {
+                    let mut bytes = Vec::new();
+                    key_bytes(press.into(), mode, &mut bytes);
+                    presses(all(&bytes))
+                };
+                if decoded(KeyMode::default()) != vec![Some(press)] {
+                    // Legacy bytes cannot tell this key (S-Enter is Enter).
+                    continue;
+                }
+                let kitty = KeyMode {
+                    kitty: 5,
+                    ..KeyMode::default()
+                };
+                assert_eq!(decoded(kitty), vec![Some(press)], "{prefix}{name}");
+                compared += 1;
+            }
+        }
+        assert!(compared > 500, "{compared}");
     }
 
     /// Each answer fux asks for (`outer`), in the forms terminals give
