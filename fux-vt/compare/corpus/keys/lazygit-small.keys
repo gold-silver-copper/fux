@@ -1,0 +1,8 @@
+# lazygit at 24x80: the commits, a commit's files, back, quit.
+!start 3000
+!quiet 800
+4
+j
+\r
+\e
+q

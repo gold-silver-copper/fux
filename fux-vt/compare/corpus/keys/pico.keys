@@ -1,0 +1,7 @@
+# pico (macOS's nano): next page, search, cut a line, exit without
+# saving.
+\x16
+\x17reflow\r
+\x0b
+\x18
+n

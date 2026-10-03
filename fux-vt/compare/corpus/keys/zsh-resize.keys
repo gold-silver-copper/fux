@@ -1,0 +1,10 @@
+# zsh resized at its prompt with a long line typed, then after output.
+!start 1500
+echo a line long enough to wrap when the terminal is narrow, typed before the resize
+!resize 20x60
+\x05
+!resize 40x120
+\r
+seq 1 50\r
+!resize 24x80
+exit\r

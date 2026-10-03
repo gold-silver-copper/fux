@@ -1,0 +1,5 @@
+# btop at 24x80 for a few seconds, then quit.
+!start 2000
+!quiet 2500
+!wait
+q

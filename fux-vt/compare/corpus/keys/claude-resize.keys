@@ -1,0 +1,8 @@
+# Claude Code starting up in an empty project, resized smaller and
+# larger, then quitting with Ctrl-C twice; no prompt is sent.
+!start 6000
+!quiet 1000
+!resize 30x90
+!resize 50x160
+\x03
+\x03

@@ -1,0 +1,6 @@
+# git show through delta with line numbers, paged by less: pages,
+# quit.
+!start 1500
+\x20
+\x20
+q

@@ -1,0 +1,10 @@
+# tig's tree view: into a directory, a file, back, quit.
+!start 1500
+t
+j
+\r
+j
+\r
+q
+q
+q

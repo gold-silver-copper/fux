@@ -1,0 +1,12 @@
+# ranger on a tree of files: move, into a directory, its preview,
+# back, hidden files, quit.
+!start 2500
+j
+j
+j
+l
+j
+h
+zh
+j
+q

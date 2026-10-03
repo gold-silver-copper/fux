@@ -1,0 +1,16 @@
+# zsh with menu selection, descriptions, colours and a right prompt:
+# complete files and move in the menu, complete git's commands, a
+# command that fails (the right prompt shows its status), exit.
+!start 1500
+ls src/\t
+\t
+\e[B
+\r
+\x15
+git ch\t
+\t
+\x03
+cd sr\t\r
+false\r
+cd ..\r
+exit\r

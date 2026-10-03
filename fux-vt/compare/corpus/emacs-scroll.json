@@ -1,0 +1,74 @@
+{
+  "command": [
+    "emacs",
+    "-nw",
+    "-Q",
+    "src/parser.rs"
+  ],
+  "env": [
+    "PATH=/tmp/fux-corpus/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "HOME=/tmp/fux-corpus/home",
+    "LANG=en_US.UTF-8",
+    "COLORTERM=truecolor",
+    "TZ=UTC"
+  ],
+  "note": "",
+  "program": "emacs-scroll",
+  "replies": "\\e[>1;1700;0c\\e]11;rgb:0000/0000/0000\\e\\\\\\e]10;rgb:ffff/ffff/ffff\\e\\\\\\e[?62;22c\\eP>|fux 0.17.0\\e\\\\",
+  "scrubbed": [],
+  "size": [
+    40,
+    120
+  ],
+  "steps": [
+    {
+      "end": 7385,
+      "keys": ""
+    },
+    {
+      "end": 10911,
+      "keys": "\\x16"
+    },
+    {
+      "end": 14368,
+      "keys": "\\x16"
+    },
+    {
+      "end": 14445,
+      "keys": "\\e"
+    },
+    {
+      "end": 17797,
+      "keys": "v"
+    },
+    {
+      "end": 22504,
+      "keys": "\\x13fn \\x13"
+    },
+    {
+      "end": 22937,
+      "keys": "\\r"
+    },
+    {
+      "end": 23048,
+      "keys": "\\e"
+    },
+    {
+      "end": 26829,
+      "keys": ">"
+    },
+    {
+      "end": 26916,
+      "keys": "\\e"
+    },
+    {
+      "end": 30752,
+      "keys": "<"
+    },
+    {
+      "end": 30817,
+      "keys": "\\x18\\x03"
+    }
+  ],
+  "version": "GNU Emacs 31.1"
+}

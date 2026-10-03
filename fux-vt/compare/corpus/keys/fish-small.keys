@@ -1,0 +1,6 @@
+# fish at 10x40: a command line longer than the terminal, run, exit.
+!start 2000
+echo the quick brown fox jumps over the lazy dog and keeps running past the edge
+\r
+ls\r
+exit\r

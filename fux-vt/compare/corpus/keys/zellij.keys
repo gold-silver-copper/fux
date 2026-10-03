@@ -1,0 +1,11 @@
+# zellij with a session of its own: a new pane, a command, a pane
+# below, a new tab, back to the first, quit.
+!start 8000
+!quiet 1500
+\x10n
+echo inside zellij\r
+\x10d
+seq 1 20\r
+\x14n
+\x14h
+\x11

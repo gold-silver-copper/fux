@@ -1,0 +1,10 @@
+# neovim's terminal: a shell in it, a command, exit, quit.
+!start 2000
+:terminal\r
+i
+echo inside nvim\r
+seq 1 50\r
+ls -F\r
+exit\r
+\r
+:q!\r

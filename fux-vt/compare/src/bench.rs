@@ -208,8 +208,9 @@ fn repeated(bytes: &[u8], total: usize) -> Vec<u8> {
 }
 
 /// The corpus's workloads: every recording alone, and all of them in
-/// turn, each `total` bytes or a little more. All are 40x120; one of
-/// another size runs at its own.
+/// turn, each `total` bytes or a little more. Each alone runs at the size
+/// it was recorded at, without its resizes; all of them in turn run at the
+/// first's size (40x120, as most are).
 fn corpus_loads(total: usize) -> Result<Vec<Load>, String> {
     let recordings = crate::corpus::recordings(&[])?;
     let mut each = Vec::new();

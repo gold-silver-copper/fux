@@ -1,0 +1,12 @@
+# tmux at 24x80: a command, a second window, a split, the next window,
+# then every shell exits.
+!start 1500
+echo small\r
+\x02c
+\x02"
+ls\r
+\x02n
+exit\r
+\x02n
+exit\r
+exit\r

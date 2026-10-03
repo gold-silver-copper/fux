@@ -1,0 +1,13 @@
+# helix on text of other widths and scripts: move, delete, undo, quit.
+!start 2000
+j
+j
+j
+j
+gl
+gh
+w
+w
+d
+u
+:q!\r

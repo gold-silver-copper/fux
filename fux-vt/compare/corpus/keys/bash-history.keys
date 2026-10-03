@@ -1,0 +1,12 @@
+# bash's history: up, up, Ctrl-R search, abort, the history list, an
+# event designator, exit.
+!start 1500
+\e[A
+\e[A
+\x15
+\x12cargo
+\x07
+\x15
+history\r
+!ec\r
+exit\r

@@ -261,9 +261,11 @@ The workloads are modelled on alacritty's vtebench: ascii, dense-cells,
 medium-cells, cursor-motion, scrolling, scroll-region and unicode.
 
 Beside them, real traffic: `corpus` is every recording in turn, over and
-over to the same size, at 40×120, the size they were recorded at. `bench
-corpus` adds each recording alone (`corpus:vim` and so on); a run without
-names leaves those out, to stay a few minutes.
+over to the same size, at 40×120, the size most were recorded at (those
+recorded at another size are replayed at 40×120 there too). `bench corpus`
+adds each recording alone (`corpus:vim` and so on), at the size it was
+recorded at, without its resizes; a run without names leaves those out, to
+stay a few minutes.
 
 An engine linked in is timed on parsing and applying alone. An engine in its
 own process also pays for the pipe to it, so its figure (marked `*`) is end
@@ -301,45 +303,174 @@ for a program that asked for it); the manifest gives that step's new size
 (`resize`). After the last step the program has two seconds to exit, then
 gets SIGHUP and SIGKILL; what it writes meanwhile belongs to the last step.
 
-`corpus/record.sh` records every scenario again, or those named. Each runs
-in a directory of its own, `/tmp/fux-corpus`: a HOME with a minimal rc file
-for each program (no prompt shows a user or host name), and a work
-directory of copies of files from this repository and generated text (a man
-page written for the purpose, `corpus/fux-corpus.1`; a small cargo project
-with mistakes, for helix's diagnostics). The environment is only what the
-manifest lists, and `TERM`. `git` runs on this repository, with a log
-format that leaves out authors. GNU ls puts the host name in its `file://`
-URIs, so it is replaced by `localhost` (`--scrub`, recorded in the
-manifest). Before a recording is committed, `record.sh` says how to check
-that it holds nothing private.
+`corpus/record.sh` records every scenario again, or those named, and is
+run by hand only. Each runs in a directory of its own, `/tmp/fux-corpus`:
 
-| Recording | Program | Steps | Bytes | What |
-| --- | --- | ---: | ---: | --- |
-| `vim` | VIM 9.1 | 24 | 25213 | a Rust file, syntax on: move, scroll, search, `*`, visual mode, `:split`, `:set spell`, quit |
-| `helix` | helix 25.07.1 | 16 | 63811 | a cargo project with errors; rust-analyzer's diagnostics after a save; move, search, select, split |
-| `less` | less 668 | 12 | 24348 | this README: lines, pages, search, the end, the start |
-| `fzf` | fzf 0.65.2 | 9 | 24510 | full screen, filtering files as a query is typed, moving, accepting |
-| `fzf-height` | fzf 0.65.2 | 7 | 12983 | `--height=40% --layout=reverse --border`, below the prompt |
-| `gls` | GNU ls 9.12 | 1 | 1821 | `--color=always --hyperlink=always -F` on two directories |
-| `man` | man (macOS, mandoc) | 8 | 8431 | `corpus/fux-corpus.1`, paged by less: lines, a page, search |
-| `delta-log` | delta 0.19.2, git 2.51 | 8 | 34377 | `git log -p -n 3` through delta, paged by less |
-| `delta-diff` | delta 0.19.2, git 2.51 | 5 | 45384 | `git diff` through delta `--side-by-side`, paged by less |
-| `zsh` | zsh 5.9 | 17 | 1549 | ZLE: type, move, fix a word, run, Tab completion, history, Ctrl-R |
-| `bash` | bash 5.3 | 17 | 877 | readline: the same keys |
-| `tmux` | tmux 3.7c | 21 | 15838 | a server of its own (`-L`, `-f /dev/null`): splits, zoom, copy mode, a second window |
-| `claude` | Claude Code 2.1.288 | 3 | 10616 | a first start (no settings: the theme is asked for), Ctrl-C twice |
-| `claude-main` | Claude Code 2.1.288 | 3 | 2848 | a later start (onboarding done, the directory trusted): the main screen, Ctrl-C twice |
-| `claude-ghostty` | Claude Code 2.1.288 | 3 | 3049 | as `claude-main`, with `TERM_PROGRAM=ghostty`, as fux passes on from Ghostty |
+- a HOME with a minimal rc file for each program: no prompt shows a user or
+  host name; neovim, micro, htop, btop, lazygit, mc, ranger, fish and zellij
+  have a config of their own there; times are shown in UTC;
+- a work directory of copies of files from this repository and generated
+  text: man pages written for the purpose (`corpus/fux-corpus.1`,
+  `fux-corpus-tables.1` with tables, `fux-corpus-long.7` to page and
+  search), text in many scripts and widths, two versions of a file for the
+  editors' diff modes, a tree of files for the file managers and ncdu, a
+  cargo project with mistakes and a workspace of path crates (fux-vt among
+  them) that builds offline, a C file with mistakes, an npm package
+  installed from the directory beside it;
+- a git repository made there, with a made-up author (`Corpus Author
+  <corpus@example.com>`), fixed dates, two branches, a merge, a tag and
+  changes not committed, for lazygit, tig, `git log --graph`, `git add -p`,
+  delta and bat. `delta-log` and `delta-diff` run on this repository, with a
+  log format that leaves out authors.
+
+The environment is only what the manifest lists, and `TERM`. What the setup
+cannot keep out is scrubbed (`--scrub`, the new text recorded in the
+manifest): GNU ls, fish and mc put the host name in `file://` URIs (it
+becomes `localhost`), and ranger shows each file's owner (the login becomes
+as many `x`s, so its columns stay where they were). The monitors show only
+what is generated: htop and top only the three processes the scenario
+starts, btop no process list, disks or battery. Every recording is checked
+for the login and host names, `$HOME`, and git's user name and email and the
+account in this repository's remote; one that holds any is moved to
+`/tmp/fux-corpus/dropped` and the run fails. At the end the inventory is made
+again and its changed rows printed, for a person to review. Recording all
+113 scenarios takes about 11 minutes.
+
+The programs as installed here (Homebrew's, and macOS's vim, less, man, zsh,
+pico, top and clang):
+
+| Recording | Program | Size | Steps | Bytes | What |
+| --- | --- | --- | ---: | ---: | --- |
+| `bash` | bash 5.3.3 | 40x120 | 17 | 877 | bash's line editor (readline), emacs keys: type, move, fix a word, run; complete with Tab; history up; Ctrl-R search; Ctrl-U; exit. |
+| `bash-complete` | bash 5.3.3 | 40x120 | 9 | 452 | bash's completion: list a directory's files, complete one, run it, complete a directory, back, complete a command, exit. |
+| `bash-history` | bash 5.3.3 | 40x120 | 10 | 786 | bash's history: up, up, Ctrl-R search, abort, the history list, an event designator, exit. |
+| `bash-small` | bash 5.3.3 | 10x40 | 7 | 302 | bash at 10x40: a command line longer than the terminal, moved through by words and run, exit. |
+| `bat-diff` | bat 0.26.1 | 40x120 | 3 | 5665 | bat --diff on a changed file, paged by less: a page, quit. |
+| `bat-markdown` | bat 0.26.1 | 24x80 | 1 | 14675 | bat on Markdown at 24x80, not paged: it prints and exits, no keys. |
+| `bat-page` | bat 0.26.1 | 40x120 | 6 | 63913 | bat on a Rust file, paged by less: a page, search, next, the end, quit. |
+| `btop` | btop 1.4.7 | 40x120 | 3 | 196379 | btop (CPU, memory and network boxes) for a few seconds: an update, hide the memory box, quit. |
+| `btop-small` | btop 1.4.7 | 24x80 | 3 | 95526 | btop at 24x80 for a few seconds, then quit. |
+| `cargo-build` | cargo 1.98.1 | 40x120 | 1 | 1515 | cargo build of a workspace of path crates (fux-vt among them): its progress, then it exits, no keys. |
+| `cargo-errors` | cargo 1.98.1 | 40x120 | 1 | 2206 | cargo build of a crate with errors: its diagnostics, then it exits, no keys. |
+| `cargo-test` | cargo 1.98.1 | 40x120 | 1 | 3978 | cargo test of a workspace, one test failing: its progress and output, then it exits, no keys. |
+| `clang-errors` | clang 21.0.0 | 40x120 | 1 | 702 | clang on a C file with errors: its diagnostics, then it exits, no keys. |
+| `claude` | Claude Code 2.1.288 | 40x120 | 3 | 10793 | Claude Code starting up in an empty project, then quitting with Ctrl-C twice; no prompt is sent. |
+| `claude-ghostty` | Claude Code 2.1.288 | 40x120 | 3 | 3110 | Claude Code starting up in an empty project, then quitting with Ctrl-C twice; no prompt is sent. |
+| `claude-main` | Claude Code 2.1.288 | 40x120 | 3 | 3025 | Claude Code starting up in an empty project, then quitting with Ctrl-C twice; no prompt is sent. |
+| `claude-resize` | Claude Code 2.1.288 | 40x120 → 30x90 → 50x160 | 5 | 8087 | Claude Code starting up in an empty project, resized smaller and larger, then quitting with Ctrl-C twice; no prompt is sent. |
+| `claude-small` | Claude Code 2.1.288 | 24x80 | 3 | 3336 | Claude Code starting up at 24x80 in an empty project, then quitting with Ctrl-C twice; no prompt is sent. |
+| `delta-diff` | delta 0.19.2, git 2.51.0 | 40x120 | 5 | 45384 | git diff through delta, side by side, paged by less: pages, quit. |
+| `delta-log` | delta 0.19.2, git 2.51.0 | 40x120 | 8 | 34377 | git log -p through delta, paged by less: lines, pages, search, quit. |
+| `delta-show` | delta 0.19.2, git 2.51.0 | 40x120 | 4 | 5921 | git show through delta with line numbers, paged by less: pages, quit. |
+| `delta-wide` | delta 0.19.2, git 2.51.0 | 50x200 | 3 | 12517 | git diff through delta side by side at 50x200: a page, quit. |
+| `emacs-dired` | GNU Emacs 31.1 | 40x120 | 8 | 24730 | emacs -nw's dired on a directory (ls-lisp, no owners): move, open a file, back, up a directory, quit. |
+| `emacs-mx` | GNU Emacs 31.1 | 40x120 | 10 | 19958 | emacs -nw: M-x with completion (the *Completions* window), cancel, the buffer list, quit. |
+| `emacs-resize` | GNU Emacs 31.1 | 40x120 → 24x80 → 50x200 → 40x120 | 7 | 45279 | emacs -nw resized while it runs: smaller, larger with a split, back. |
+| `emacs-scroll` | GNU Emacs 31.1 | 40x120 | 12 | 30817 | emacs -nw on a Rust file: pages, back, incremental search, the end, the start, quit. |
+| `emacs-split` | GNU Emacs 31.1 | 40x120 | 8 | 19302 | emacs -nw's windows: split below, beside, move, scroll, one window, quit. |
+| `fish` | fish 4.9.3 | 40x120 | 9 | 2727 | fish (OSC 133 prompt marks of its own): an autosuggestion from history, accepted; completion; into a directory and back; exit. |
+| `fish-complete` | fish 4.9.3 | 40x120 | 10 | 3782 | fish's completion pager: options with descriptions, cycle, cancel; files; exit. |
+| `fish-history` | fish 4.9.3 | 40x120 | 10 | 1884 | fish's history: up and down, a prefix search, run it, the history, exit. |
+| `fish-small` | fish 4.9.3 | 10x40 | 5 | 2160 | fish at 10x40: a command line longer than the terminal, run, exit. |
+| `fzf` | fzf 0.65.2 | 40x120 | 9 | 29408 | fzf, full screen, filtering a list of files as a query is typed, moving the selection, then accepting it. |
+| `fzf-height` | fzf 0.65.2 | 40x120 | 7 | 15185 | fzf below the prompt (--height 40%, reversed, with a border): filter, move, accept. |
+| `fzf-multi` | fzf 0.65.2 | 40x120 | 8 | 17005 | fzf -m below the prompt: mark three, filter, mark one more, accept. |
+| `fzf-preview` | fzf 0.65.2, bat 0.26.1 | 40x120 | 8 | 72463 | fzf with a preview by bat: filter, move, delete, accept. |
+| `fzf-small` | fzf 0.65.2 | 10x40 | 5 | 4538 | fzf at 10x40: filter, move, accept. |
+| `git-add-p` | git 2.51.0 | 40x120 | 5 | 1961 | git add -p: stage a hunk, skip one, the help, quit. |
+| `git-diff` | git 2.51.0 | 40x120 | 4 | 5701 | git diff --stat -p with colours, paged by less: a page, search, quit. |
+| `git-graph` | git 2.51.0 | 40x120 | 3 | 942 | git log --graph --all with colours, paged by less: a page, quit. |
+| `gls` | GNU ls 9.12 | 40x120 | 1 | 1900 | GNU ls with colours and hyperlinks: it lists and exits, no keys. |
+| `gls-long` | GNU ls 9.12 | 40x120 | 1 | 1511 | GNU ls -l (no owner, no group) with colours and hyperlinks: it lists and exits, no keys. |
+| `gls-wide` | GNU ls 9.12 | 50x200 | 1 | 5064 | GNU ls -R in columns at 50x200 with colours and hyperlinks: it lists and exits, no keys. |
+| `helix` | helix 25.07.1 | 40x120 | 16 | 63873 | helix on a Rust file of a small cargo project with errors, so rust-analyzer's diagnostics show: wait for it to start, save (cargo check runs), wait for the diagnostics, then move, search, select, split, quit. |
+| `helix-picker` | helix 25.07.1 | 40x120 | 7 | 77362 | helix on a directory: its file picker, filter, move, open, quit. |
+| `helix-resize` | helix 25.07.1 | 40x120 → 24x80 → 50x200 → 40x120 | 8 | 204497 | helix resized while it runs: smaller, larger with a split, back. |
+| `helix-select` | helix 25.07.1 | 40x120 | 14 | 114947 | helix's selections: all, split on a regex (many cursors), keep one, lines, copy the cursor down, quit. |
+| `helix-small` | helix 25.07.1 | 24x80 | 6 | 32379 | helix at 24x80 on a man page source: scroll, search, quit. |
+| `helix-unicode` | helix 25.07.1 | 40x120 | 12 | 30510 | helix on text of other widths and scripts: move, delete, undo, quit. |
+| `htop` | htop 3.5.3 | 40x120 | 8 | 9639 | htop on three processes for a few seconds: wait for updates, sort by CPU, by memory, move, the help, quit. |
+| `htop-small` | htop 3.5.3 | 24x80 | 3 | 2691 | htop at 24x80 for a few seconds, then quit. |
+| `htop-tree` | htop 3.5.3 | 40x120 | 5 | 3962 | htop on three processes: the tree view, move, the list again, quit. |
+| `lazygit` | lazygit 0.65.1 | 40x120 | 12 | 32909 | lazygit on a generated repository: the commits, a commit's files, back, the branches, the files, quit. |
+| `lazygit-small` | lazygit 0.65.1 | 24x80 | 6 | 14991 | lazygit at 24x80: the commits, a commit's files, back, quit. |
+| `lazygit-stage` | lazygit 0.65.1 | 40x120 | 12 | 29201 | lazygit staging: the files, stage one, the next one's lines, stage a hunk, back, commit with a message, the commits, quit. |
+| `less` | less 668 | 40x120 | 12 | 26267 | less paging a Markdown file: lines, pages, search, the end, the start. |
+| `less-chop` | less 668 | 40x120 | 8 | 11424 | less -S -N on a Rust file: scroll right, left, search, next, the end, quit. |
+| `less-color` | less 668 | 40x120 | 5 | 17967 | less -R on text with colours: a page, back, search, quit. |
+| `less-small` | less 668 | 10x40 | 7 | 1871 | less at 10x40 on text of other widths: lines, a page, the end, the start, quit. |
+| `man` | man, mandoc | 40x120 | 8 | 8431 | man on a page written for the purpose: lines, a page, search, quit. |
+| `man-long` | man, mandoc | 40x120 | 9 | 22623 | man on a long page: pages, search, next, the end, the start, quit. |
+| `man-small` | man, mandoc | 10x40 | 7 | 2216 | man at 10x40: lines, pages, search, quit. |
+| `man-tables` | man, mandoc | 24x80 | 6 | 9351 | man at 24x80 on a page with tables: pages, search, the start, quit. |
+| `man-wide` | man, mandoc | 50x200 | 5 | 20203 | man at 50x200 on a long page: a page, search, next, quit. |
+| `mc` | mc 4.8.33 | 40x120 | 13 | 19325 | Midnight Commander (no subshell) on a tree of files: move, into a directory, view a file, a page, out of the viewer, the other panel, quit. |
+| `mc-small` | mc 4.8.33 | 24x80 | 6 | 4536 | Midnight Commander at 24x80: move, the other panel, quit. |
+| `micro-edit` | micro 2.0.15 | 40x120 | 9 | 103721 | micro: find, find the next, move, type, undo, quit. |
+| `micro-small` | micro 2.0.15 | 24x80 | 7 | 14682 | micro at 24x80 on text of other widths and scripts: move, quit. |
+| `micro-split` | micro 2.0.15 | 40x120 | 9 | 86086 | micro's splits: a vertical split with another file, move between them, a horizontal split, quit each. |
+| `ncdu` | ncdu 2.9.2 | 40x120 | 11 | 5916 | ncdu on a tree of files: move, into a directory, back, the item's information, sort by name and by size, quit. |
+| `nnn` | nnn 5.3 | 40x120 | 8 | 1394 | nnn on a tree of files: move, into a directory, back, hidden files, quit. |
+| `nnn-detail` | nnn 5.3 | 40x120 | 7 | 2283 | nnn in detail mode with hidden files: move, into a directory, back, quit. |
+| `npm-install` | npm 11.19.1, node v26.10.0 | 40x120 | 1 | 50 | npm install of a package from a directory beside it, offline: then it exits, no keys. |
+| `nvim-diagnostics` | neovim 0.12.5 | 40x120 | 9 | 58700 | neovim's diagnostics without a language server: :Diag (in init.lua) sets warnings and errors on the file; jump to them, the float, the location list, quit. |
+| `nvim-diff` | neovim 0.12.5 | 40x120 | 8 | 49321 | nvim -d on two versions of a file: changes, take one, switch, quit. |
+| `nvim-help` | neovim 0.12.5 | 40x120 | 7 | 28828 | neovim's help: scroll, search, follow a tag, back, quit. |
+| `nvim-insert` | neovim 0.12.5 | 40x120 | 13 | 47232 | neovim inserting: open a line, type, complete with Ctrl-N (the popup menu), a cursor line, undo, quit without saving. |
+| `nvim-netrw` | neovim 0.12.5 | 40x120 | 8 | 19749 | neovim on a directory (netrw): move, open a file, back up, quit. |
+| `nvim-resize` | neovim 0.12.5 | 40x120 → 24x80 → 50x200 → 10x40 → 40x120 | 9 | 108397 | neovim resized while it runs: smaller, larger, split, tiny, back. |
+| `nvim-scroll` | neovim 0.12.5 | 40x120 | 10 | 81610 | neovim on a Rust file: half pages, the end, the start, lines. |
+| `nvim-search` | neovim 0.12.5 | 40x120 | 10 | 55817 | neovim searching: a pattern, next, previous, the word under the cursor, a substitution, undo, quit. |
+| `nvim-small` | neovim 0.12.5 | 10x40 | 8 | 10809 | neovim at 10x40: scroll, search, a vertical split, quit. |
+| `nvim-split` | neovim 0.12.5 | 40x120 | 9 | 49320 | neovim's windows: split, vertical split with another file, move between them, equal sizes, only one, quit. |
+| `nvim-tabs` | neovim 0.12.5 | 40x120 | 7 | 57941 | neovim with three files in tabs: next, previous, a new tab, close it. |
+| `nvim-terminal` | neovim 0.12.5 | 40x120 | 9 | 29394 | neovim's terminal: a shell in it, a command, exit, quit. |
+| `nvim-unicode` | neovim 0.12.5 | 40x120 | 12 | 18006 | neovim on text of other widths and scripts: move, delete a wide glyph, show tabs and ends, quit. |
+| `nvim-visual` | neovim 0.12.5 | 40x120 | 18 | 33580 | neovim's visual modes: lines, characters, a block; indent, yank, put, delete, undo. |
+| `nvim-wide` | neovim 0.12.5 | 50x200 | 6 | 91044 | neovim at 50x200 with two files side by side: scroll each, a cursor line, quit. |
+| `pico` | UW PICO 5.09 | 24x80 | 6 | 7379 | pico (macOS's nano): next page, search, cut a line, exit without saving. |
+| `ranger` | ranger 1.9.4 | 40x120 | 10 | 5733 | ranger on a tree of files: move, into a directory, its preview, back, hidden files, quit. |
+| `tig` | tig 2.6.1 | 40x120 | 8 | 4733 | tig --all on a generated repository: move, a commit's diff, scroll it, close it, quit. |
+| `tig-blame` | tig 2.6.1 | 40x120 | 7 | 20700 | tig blame on a file: move, a page, a line's commit, back, quit. |
+| `tig-tree` | tig 2.6.1 | 40x120 | 9 | 3791 | tig's tree view: into a directory, a file, back, quit. |
+| `tmux` | tmux 3.7c | 40x120 | 21 | 16112 | tmux inside the recorder, with a server of its own: commands, a split each way, zoom, copy mode, a second window, then every shell exits. |
+| `tmux-copy` | tmux 3.7c | 40x120 | 10 | 5763 | tmux's copy mode over history: a page up, a search back, the next, out; then the shell exits. |
+| `tmux-resize` | tmux 3.7c | 40x120 → 24x80 → 50x200 → 10x40 → 40x120 | 12 | 11276 | tmux with a split, resized while it runs: smaller, another split, larger, tiny, back; then every shell exits. |
+| `tmux-small` | tmux 3.7c | 24x80 | 10 | 4975 | tmux at 24x80: a command, a second window, a split, the next window, then every shell exits. |
+| `tmux-vim` | tmux 3.7c | 40x120 | 12 | 34482 | vim in two tmux panes (TERM=tmux-256color inside): edit, switch, quit both, then the shells exit. |
+| `top` | top | 40x120 | 3 | 1423 | macOS top on three processes for a few seconds, then quit. |
+| `vim` | vim 9.1 | 40x120 | 24 | 25352 | vim on a Rust file, syntax on: move, scroll, search, visual mode, a split, spell checking (undercurl), quit. |
+| `vim-diff` | vim 9.1 | 40x120 | 8 | 18648 | vimdiff of two versions of a file: next and previous change, take a change, switch windows, quit. |
+| `vim-help` | vim 9.1 | 40x120 | 7 | 12130 | vim's help: scroll, search, follow a tag, back, quit. |
+| `vim-insert` | vim 9.1 | 40x120 | 12 | 12340 | vim inserting: open a line, type, complete a word with Ctrl-N (the popup menu), undo, quit without saving. |
+| `vim-resize` | vim 9.1 | 40x120 → 24x80 → 50x200 → 10x40 → 40x120 | 9 | 25174 | vim resized while it runs: smaller, larger, split, tiny, back. |
+| `vim-small` | vim 9.1 | 24x80 | 7 | 11390 | vim at 24x80: pages, search, quit. |
+| `vim-terminal` | vim 9.1 | 40x120 | 6 | 17696 | vim's own terminal (:terminal), a shell in it, then quit. |
+| `vim-unicode` | vim 9.1 | 40x120 | 12 | 11488 | vim on text of other widths and scripts: move through it, delete a wide glyph, show tabs and line ends, quit. |
+| `zellij` | zellij 0.44.3 | 40x120 | 8 | 120004 | zellij with a session of its own: a new pane, a command, a pane below, a new tab, back to the first, quit. |
+| `zellij-small` | zellij 0.44.3 | 24x80 | 4 | 26305 | zellij at 24x80: a command, a new pane, quit. |
+| `zsh` | zsh 5.9 | 40x120 | 17 | 1549 | zsh's line editor (ZLE), emacs keys: type, move, fix a word, run; complete with Tab; history up; Ctrl-R search; Ctrl-U; exit. |
+| `zsh-history` | zsh 5.9 | 40x120 | 10 | 1577 | zsh's history: up and down, Ctrl-R search, run it, !! expansion, fc -l, exit. |
+| `zsh-menu` | zsh 5.9 | 40x120 | 13 | 3629 | zsh with menu selection, descriptions, colours and a right prompt: complete files and move in the menu, complete git's commands, a command that fails (the right prompt shows its status), exit. |
+| `zsh-resize` | zsh 5.9 | 40x120 → 20x60 → 40x120 → 24x80 | 9 | 1533 | zsh resized at its prompt with a long line typed, then after output. |
+| `zsh-small` | zsh 5.9 | 10x40 | 7 | 972 | zsh at 10x40: a command line longer than the terminal, moved through and run, a listing, exit. |
 
 `claude-ghostty` is there because fux passes its own environment on to its
 panes: a program in a pane of fux started from Ghostty sees
 `TERM_PROGRAM=ghostty`, and Claude Code goes by it. With it, Claude Code
 sends synchronized output (2026), OSC 8 and the kitty keyboard protocol;
 without it, none of them. helix sends the same either way (tried), so it
-has one recording. Claude Code's screens hold no account: it starts not
-logged in.
+has one set of recordings. Claude Code's screens hold no account: it starts
+not logged in, and no prompt is ever sent.
 
-Not installed here, so not recorded: neovim, htop, btop, lazygit, fish.
+The emacs scenarios type a Meta key as Escape and then the key: emacs sets
+modifyOtherKeys 1, and fux gives Alt-v to it as `CSI 27 ; 3 ; 118 ~` (where
+xterm sends `ESC v`, its input.c leaving a bare Meta out of modifyOtherKeys
+at that level), which emacs does not know and inserts in part.
+
+Not recorded: ssh to localhost (Remote Login is off here, and turning it on
+changes the system), pip and Python TUIs (rich, textual), bubbletea, pnpm:
+not installed.
 
 ### Replaying
 
@@ -375,9 +506,21 @@ no identity), as the recordings were made, with fux's 10000 rows of history.
 Each recording has a status, as a family has (`STATUSES` in
 `src/corpus.rs`): expected to agree, or differing for a recorded reason.
 `corpus` exits 1 if one expected to agree fails, or one has no status. It
-takes about five seconds. Today twelve agree; the three of Claude Code
-differ, all at the end, where it sets an empty title and xterm shows its
-default one, `xterm`.
+takes 25 to 50 seconds beside xterm here, depending on the machine's load
+(xterm is most of it), and about 8 with the in-process engines alone
+(`--engines panel`), where `delta-diff` fails, the panel outvoting fux-vt
+where xterm decides for it. Today 101 agree and 12 differ, each at the
+point its reason says:
+
+- the five of Claude Code, at the end, where it sets an empty title and
+  xterm shows its default one, `xterm`;
+- five with emoji sequences (`vim-unicode`, `nvim-unicode`,
+  `helix-unicode`, `micro-small`, `less-small`): fux-vt joins them into one
+  wide cell as Ghostty and wezterm do (the `clusters` family's choice),
+  xterm keeps a cell for each code point;
+- `zsh-resize`: the shell's earlier lines, which fux's panes do not reflow;
+- `tmux-resize`: where xterm puts the cursor on leaving an alternate screen
+  that shrank and grew (a replay in the reason).
 
 ### The inventory
 

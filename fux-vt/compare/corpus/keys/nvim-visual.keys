@@ -1,0 +1,20 @@
+# neovim's visual modes: lines, characters, a block; indent, yank, put,
+# delete, undo.
+!start 2000
+V
+j
+j
+>
+v
+e
+e
+y
+P
+\x16
+j
+j
+l
+l
+d
+u
+:q!\r
