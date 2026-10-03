@@ -279,7 +279,6 @@ SUTests.test_SU_BigScrollLeftRightAndTopBottomScrollRegion  not-implemented: lef
 SUTests.test_SU_LeftRightAndTopBottomScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 SUTests.test_SU_OutsideLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 SUTests.test_SU_RespectsLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-VPATests.test_VPA_IgnoresOriginMode  bug: DSR 6n and DECXCPR report the cursor's line from the screen's top in origin mode, where xterm reports it from the top margin (charproc.c, CASE_CPR), as esctest expects: after '\e[6;11r\e[?6h\e[2d' a DSR 6n gets '\e[7;1R' from fux-vt, '\e[2;1R' from xterm; replay: run.sh esctest VPATests.test_VPA_IgnoresOriginMode
 VPRTests.test_VPR_IgnoresOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 VTTests.test_VT_MovesDoesNotScrollOutsideLeftRight  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 XtermSaveTests.test_XtermSave_SaveResetState  not-implemented: XTSAVE and XTRESTORE (CSI ? Pm s, CSI ? Pm r), xterm's saved private modes; no program in the corpus sends them
