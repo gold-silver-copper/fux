@@ -134,8 +134,8 @@ typed) and the keys that act now, and on the right the cursor's line in the
 history.
 
 Like the keys after the prefix, copy mode's keys are letters, in either case,
-without Ctrl or Alt; the arrows, PageUp/PageDown, Home, End, Enter and Esc
-also work.
+and the brackets, without Ctrl or Alt; the arrows, PageUp/PageDown, Home, End,
+Enter and Esc also work.
 
 | Keys | Do |
 | --- | --- |
@@ -145,13 +145,17 @@ also work.
 | `u` / `d`, PageUp / PageDown | half a page / a page, up or down |
 | `t` / `z` | top of the history / the live bottom |
 | `f` / `r`, then `n` / `p` | search forward / back; the next match, the previous |
+| `[` / `]` | the previous / next prompt, at the top of the view with its output below |
 | `v` / `s` / `x` | select characters / lines / a block; again to clear |
 | `o` | swap the selection's ends |
 | `y` or Enter | copy and leave |
 | `q` or Esc | leave without copying |
 
 Search is literal (not a regular expression) over the whole history, and
-ignores case unless the query has a capital letter. A selection keeps wide
+ignores case unless the query has a capital letter. `[` and `]` find the
+prompts a shell marks with `OSC 133 ; A`: fish does, and zsh and bash do
+with a terminal's shell integration script (Ghostty's, kitty's, WezTerm's
+or iTerm2's). A selection keeps wide
 characters and combining marks whole, joins soft-wrapped lines without an
 invented newline, and trims trailing blanks. One copy is at most 262,144
 cells.

@@ -575,6 +575,11 @@ impl Screen {
     pub fn hyperlink(&self) -> Option<(&str, Option<&str>)> {
         self.link.as_ref().map(|pen| (&*pen.uri, pen.id.as_deref()))
     }
+    /// Whether row `row` of the screen is where a prompt starts (see
+    /// [`Row::starts_prompt`]).
+    pub fn starts_prompt(&self, row: u16) -> bool {
+        self.grid().live_row(row).is_some_and(|r| r.starts_prompt())
+    }
 
     /// OSC 8: opens the link `payload` names, or closes the open one
     /// (`link::parse`). A link without an `id` is a link of its own each
@@ -627,6 +632,28 @@ impl Screen {
                 n.unwrap_or(0)
             }
         }
+    }
+
+    /// OSC 133, semantic prompts (`references/modern/osc133_*`): `A`
+    /// marks the row a prompt starts on, after a fresh line, and `L` is the
+    /// fresh line alone: a new line unless the cursor is in the first
+    /// column, as the semantic prompt proposal and Ghostty have it. The
+    /// other commands (`B`, `C`, `D`, `P` and the rest) change nothing.
+    pub(crate) fn prompt_osc(&mut self, payload: &[u8]) -> Result<(), Error> {
+        let command = payload.split(|b| *b == b';').next().unwrap_or_default();
+        if !matches!(command, b"A" | b"L") {
+            return Ok(());
+        }
+        // CR, then IND, as Ghostty does it.
+        if self.grid().cursor.1 != 0 {
+            self.control(b'\r')?;
+            self.linefeed()?;
+        }
+        if command == b"A" {
+            let row = self.grid().cursor.0;
+            self.grid_mut().mark_prompt(row);
+        }
+        Ok(())
     }
     /// Whether row `row` of the screen is soft-wrapped: its line goes on in
     /// the next row.
@@ -1719,6 +1746,11 @@ impl Screen {
                         for y in 0..g.rows.get() {
                             if (mode == 0 && y > row) || (mode == 1 && y < row) || mode == 2 {
                                 g.erase(y, 0, cols, a, v);
+                                // A row ED erases whole is no prompt's, as in
+                                // Ghostty; EL, and ED's part of the cursor's
+                                // row, leave the mark (a shell redrawing its
+                                // prompt erases from it).
+                                g.clear_prompt(y);
                             }
                         }
                     }

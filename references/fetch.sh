@@ -14,13 +14,14 @@ force=${1:-}
 ua='Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15'
 failed=()
 
+# A file, with a browser's user agent unless a third argument gives another.
 get() {
-  local path=$here/$1 url=$2
+  local path=$here/$1 url=$2 agent=${3:-$ua}
   if [[ -s $path && $force != --force ]]; then
     return
   fi
   mkdir -p "$(dirname "$path")"
-  if curl -sSfL -A "$ua" --retry 2 --max-time 300 -o "$path.part" "$url"; then
+  if curl -sSfL -A "$agent" --retry 2 --max-time 300 -o "$path.part" "$url"; then
     mv "$path.part" "$path"
     echo "fetched $1"
   else
@@ -123,6 +124,15 @@ get modern/mode_2026_synchronized_output.md \
 get modern/mode_2027_grapheme_clusters.tex \
   https://raw.githubusercontent.com/contour-terminal/terminal-unicode-core/master/spec/terminal-unicode-core.tex
 get modern/mode_2048_in_band_resize.md https://gist.github.com/rockorager/e695fb2924d36b2bcf1fff4a3704bd83/raw
+get modern/kitty_underlines.html https://sw.kovidgoyal.net/kitty/underlines/
+# Semantic prompts, OSC 133: FinalTerm's sequences as iTerm2 documents them
+# ("Shell Integration/FinalTerm"), and Per Bothner's proposal, which extends
+# them and which Ghostty, kitty and WezTerm follow. freedesktop.org's GitLab
+# answers a browser's user agent with a bot check, and curl's with the file.
+get modern/osc133_iterm2_escape_codes.html https://iterm2.com/documentation-escape-codes.html
+get modern/osc133_semantic_prompts.md \
+  https://gitlab.freedesktop.org/Per_Bothner/specifications/-/raw/master/proposals/semantic-prompts.md \
+  curl/8
 
 if (( ${#failed[@]} )); then
   printf 'could not fetch:\n' >&2

@@ -138,11 +138,16 @@ enum State {
 /// nothing beyond this is ever buffered.
 pub const OSC_PAYLOAD_LIMIT: usize = 64 * 1024;
 
+/// The most OSC payload bytes retained without [`Options::events`] or
+/// [`Options::hyperlinks`]: enough to tell a prompt mark, `133;A`.
+const OSC_PREFIX: usize = 8;
+
 /// Opt-in behaviour that needs the host's cooperation. The default
 /// (everything off) is fux's policy: child output causes no title, bell or
-/// clipboard side effects, OSC payloads are never retained, only DSR 5n/6n
-/// and primary DA are answered, keyboard protocol requests are ignored,
-/// hyperlinks are ignored, and a resize does not reflow.
+/// clipboard side effects, OSC payloads are never retained (but for the
+/// few bytes that tell a prompt mark), only DSR 5n/6n and primary DA are
+/// answered, keyboard protocol requests are ignored, hyperlinks are
+/// ignored, and a resize does not reflow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Options {
@@ -354,9 +359,11 @@ impl<F: FnMut(&[u8])> Sink for Replies<F> {
 pub struct Parser {
     screen: Screen,
     options: Options,
-    /// OSC payload, collected only with `options.events`, at most
-    /// `OSC_PAYLOAD_LIMIT` bytes.
+    /// OSC payload, at most `osc_limit` bytes.
     osc: Vec<u8>,
+    /// `OSC_PAYLOAD_LIMIT` with `options.events` or `options.hyperlinks`,
+    /// else `OSC_PREFIX`: set once, as it is asked for every byte of an OSC.
+    osc_limit: usize,
     osc_overflow: bool,
     /// Whether the last sequence dispatched set synchronized output, for
     /// `Parser::process_until_frame`.
@@ -392,6 +399,11 @@ impl Parser {
             screen: Screen::new(rows, cols, history_lines)?,
             options,
             osc: Vec::new(),
+            osc_limit: if options.events || options.hyperlinks {
+                OSC_PAYLOAD_LIMIT
+            } else {
+                OSC_PREFIX
+            },
             osc_overflow: false,
             frame_begun: false,
             state: State::Ground,
@@ -616,7 +628,7 @@ impl Parser {
         }
         if byte == 0x1b {
             if self.state == State::OscString {
-                self.dispatch_osc(sink);
+                self.dispatch_osc(sink)?;
             }
             self.reset_sequence();
             self.state = State::Escape;
@@ -626,14 +638,15 @@ impl Parser {
             State::Ground => self.ground(byte, sink)?,
             State::OscString => {
                 if byte == 7 {
-                    self.dispatch_osc(sink);
+                    self.dispatch_osc(sink)?;
                     self.state = State::Ground;
-                } else if (self.options.events || self.options.hyperlinks) && !self.osc_overflow {
-                    if self.osc.len() < OSC_PAYLOAD_LIMIT {
+                } else if !self.osc_overflow {
+                    if self.osc.len() < self.osc_limit {
                         self.osc.push(byte);
                     } else {
-                        // What came first stays: an OSC 8 too long to keep
-                        // is told by it, and closes the link.
+                        // What came first stays: a prompt mark, and an OSC
+                        // 8 too long to keep, which closes the link, are
+                        // told by it.
                         self.osc_overflow = true;
                     }
                 }
@@ -783,24 +796,25 @@ impl Parser {
         Ok(())
     }
 
-    /// Carries out the completed OSC string: 8 (hyperlinks) with
-    /// [`Options::hyperlinks`]; 0, 1, 2 and 52 delivered as events with
-    /// [`Options::events`]. An overflowed string is no event, and closes any
-    /// link; others are dropped.
+    /// Carries out the completed OSC string: 133 (prompt marks) always, from
+    /// its first bytes; 8 (hyperlinks) with [`Options::hyperlinks`]; 0, 1,
+    /// 2 and 52 delivered as events with [`Options::events`]. An overflowed
+    /// string is no event, and closes any link; others are dropped.
     ///
     /// Kept out of line: inlined into `byte`, with the screen's OSC
     /// handling, it made `byte` too large to inline into the parser's loop,
     /// and escape-heavy output slower.
     #[inline(never)]
-    fn dispatch_osc(&mut self, sink: &mut impl Sink) {
+    fn dispatch_osc(&mut self, sink: &mut impl Sink) -> Result<(), Error> {
         let payload = std::mem::take(&mut self.osc);
-        self.osc_command(&payload, sink);
+        let result = self.osc_command(&payload, sink);
         // Reuse the allocation for the next OSC string.
         self.osc = payload;
         self.osc.clear();
+        result
     }
 
-    fn osc_command(&mut self, payload: &[u8], sink: &mut impl Sink) {
+    fn osc_command(&mut self, payload: &[u8], sink: &mut impl Sink) -> Result<(), Error> {
         let (command, rest) = match payload.iter().position(|b| *b == b';') {
             Some(i) => (
                 payload.get(..i).unwrap_or_default(),
@@ -811,15 +825,19 @@ impl Parser {
             ),
             None => (payload, &[][..]),
         };
-        // A link too long to keep is no link: what follows is printed
-        // without one.
-        if command == b"8" && self.options.hyperlinks {
-            let whole = if self.osc_overflow { &[][..] } else { rest };
-            self.screen.hyperlink_osc(whole);
-            return;
+        match command {
+            b"133" => return self.screen.prompt_osc(rest),
+            // A link too long to keep is no link: what follows is printed
+            // without one.
+            b"8" if self.options.hyperlinks => {
+                let whole = if self.osc_overflow { &[][..] } else { rest };
+                self.screen.hyperlink_osc(whole);
+                return Ok(());
+            }
+            _ => {}
         }
         if !self.options.events || self.osc_overflow {
-            return;
+            return Ok(());
         }
         match command {
             b"0" => {
@@ -839,6 +857,7 @@ impl Parser {
             }
             _ => {}
         }
+        Ok(())
     }
 
     /// Replies enabled by [`Options::extended_replies`] and

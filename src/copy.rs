@@ -224,6 +224,7 @@ impl Copy {
                     ("u d", "half page"),
                     ("t z", "top bottom"),
                     ("a e", "line"),
+                    ("[ ]", "prompts"),
                 ]);
                 ("COPY", hints)
             }
@@ -479,6 +480,16 @@ pub fn find(screen: &Screen, query: &str, from: (usize, u16), seek: Seek) -> Opt
     None
 }
 
+/// The nearest row before `from`, or after it, where a prompt starts: one a
+/// shell marked with `OSC 133 ; A` (fux-vt's `Row::starts_prompt`).
+pub fn prompt(screen: &Screen, from: usize, seek: Seek) -> Option<usize> {
+    let starts = |index: &usize| row_at(screen, *index).is_some_and(|r| r.starts_prompt());
+    match seek {
+        Seek::Backward => (0..from).rev().find(starts),
+        Seek::Forward => (from.saturating_add(1)..retained(screen)).find(starts),
+    }
+}
+
 /// The selected text. Wide glyphs and combining marks stay whole; a
 /// soft-wrapped row joins the next without a newline; trailing blanks are
 /// trimmed; a block is a rectangle, one line per row.
@@ -675,8 +686,9 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
             .find(|(_, k)| *k != 0)
             .map_or(0, |(c, _)| *c)
     };
-    // Keys are letters, in either case; a letter with Ctrl or Alt is no
-    // key's. The arrows, paging keys, Home, End, Enter and Esc also work.
+    // Keys are letters, in either case, and the brackets; one with Ctrl or
+    // Alt is no key's. The arrows, paging keys, Home, End, Enter and Esc
+    // also work.
     let letter = match press.plain_key() {
         Some(Key::Char(c)) => Some(c),
         _ => None,
@@ -735,6 +747,28 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
                 None => view.error("no search yet: f or r starts one"),
             }
             return;
+        }
+        (Some(key @ ('[' | ']')), _) => {
+            let seek = if key == '[' {
+                Seek::Backward
+            } else {
+                Seek::Forward
+            };
+            match prompt(screen, row, seek) {
+                // The prompt at the top of the view, what came of it below.
+                Some(found) => {
+                    top = found.min(screen.history_len());
+                    if let Some(r) = row_at(screen, top) {
+                        copy.top = r.id();
+                    }
+                    target = Some((found, 0));
+                }
+                None => {
+                    let which = if key == '[' { "earlier" } else { "later" };
+                    view.error(format!("no {which} prompt (shells mark them with OSC 133)"));
+                    return;
+                }
+            }
         }
         (Some('v'), _) => toggle(copy, Select::Char),
         (Some('s'), _) => toggle(copy, Select::Line),
@@ -891,6 +925,74 @@ mod tests {
         assert_eq!(Scroll::Down(usize::MAX).from(5, 10), 10);
         // A row past the end, as after output shrank history, comes back.
         assert_eq!(Scroll::Up(1).from(20, 10), 10);
+    }
+
+    /// `[` and `]` go to the previous and next prompt a shell marked (OSC
+    /// 133 ; A), each put at the top of the view, its output below; past
+    /// the last one there is none to go to, and the bar says so.
+    #[test]
+    fn brackets_jump_between_prompts() -> Result<(), Box<dyn std::error::Error>> {
+        let mut s = Session::new(
+            crate::config::Config::default(),
+            "/nonexistent/fux.sock".into(),
+            false,
+        );
+        s.start()?;
+        let c = s.attach(6, 30, None)?;
+        let pane = PaneId(1);
+        let mut output = String::new();
+        for command in ["one", "two", "three"] {
+            output.push_str(&format!("\x1b]133;A\x07$ {command}\r\n"));
+            for line in 0..4 {
+                output.push_str(&format!("{command} {line}\r\n"));
+            }
+        }
+        output.push_str("\x1b]133;A\x07$ ");
+        s.output(pane, output.as_bytes());
+        let screen = |s: &Session| s.panes.get(&pane).map(|p| p.screen().clone());
+        let first = screen(&s).ok_or("the pane")?;
+        let starts: Vec<usize> = (0..retained(&first))
+            .filter(|i| row_at(&first, *i).is_some_and(|r| r.starts_prompt()))
+            .collect();
+        assert_eq!(starts, [0, 5, 10, 15]);
+        assert_eq!(prompt(&first, 15, Seek::Backward), Some(10));
+        assert_eq!(prompt(&first, 7, Seek::Forward), Some(10));
+        assert_eq!(prompt(&first, 15, Seek::Forward), None);
+        assert_eq!(prompt(&first, 0, Seek::Backward), None);
+        // In copy mode, from the cursor on the last prompt.
+        s.input(c, b"\x02c");
+        let at = |s: &Session| -> Option<(usize, u16, usize)> {
+            let view = s.views.get(&c)?;
+            let Mode::Copy(copy) = &view.mode else {
+                return None;
+            };
+            let screen = s.panes.get(&pane)?.screen();
+            let r = copy.resolve(screen);
+            Some((r.cursor?.0, r.cursor?.1, r.top?))
+        };
+        assert_eq!(at(&s).map(|(row, _, _)| row), Some(15));
+        s.input(c, b"[");
+        assert_eq!(at(&s), Some((10, 0, 10)));
+        s.input(c, b"[[");
+        assert_eq!(at(&s), Some((0, 0, 0)));
+        s.input(c, b"[");
+        assert_eq!(at(&s), Some((0, 0, 0)), "none before the first");
+        let notice = s
+            .views
+            .get(&c)
+            .and_then(|v| v.notice.as_ref())
+            .map(|n| n.text.clone());
+        assert_eq!(
+            notice.as_deref(),
+            Some("no earlier prompt (shells mark them with OSC 133)")
+        );
+        s.input(c, b"]");
+        assert_eq!(at(&s), Some((5, 0, 5)));
+        // The last prompt is on the screen: the view goes no lower than it.
+        s.input(c, b"]]");
+        let history = first.history_len();
+        assert_eq!(at(&s), Some((15, 0, history)));
+        Ok(())
     }
 
     #[test]

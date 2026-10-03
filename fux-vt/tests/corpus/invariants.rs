@@ -133,6 +133,11 @@ pub fn equal(a: &Parser, b: &Parser) {
         assert_eq!(cells(a), cells(b), "row from bottom {offset}");
         assert_eq!(a.wrapped(), b.wrapped(), "row from bottom {offset}");
         assert_eq!(links(a), links(b), "row from bottom {offset}");
+        assert_eq!(
+            a.starts_prompt(),
+            b.starts_prompt(),
+            "row from bottom {offset}"
+        );
     }
     assert_eq!(a.hyperlink(), b.hyperlink());
 }
