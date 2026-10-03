@@ -446,7 +446,26 @@ pub const KNOWN: &[Known] = &[
             has it, without the marker.",
         covers: erased_at_the_last_column,
     },
+    Known {
+        recordings: Recordings::Every,
+        engines: &["ghostty"],
+        why: "a shell's prompt marks (OSC 133: fish sends them) mark its rows in the pane, \
+            and fux does not pass them on to its client's terminal, the user's decision: \
+            the client is on the alternate screen, where Ghostty keeps no scrollback and \
+            jumps to no prompt (Terminal.zig: the alternate screen's max_scrollback is 0; \
+            PageList.scrollPrompt; cursorIsAtPrompt is false there), so a mark would give \
+            no jump, and would tag every cell fux paints after it as prompt, which changes \
+            Ghostty's selection, and start its command timer. fux's copy mode jumps \
+            between the pane's prompts (`[`, `]`). Only a row a prompt starts directly and \
+            not through fux is covered.",
+        covers: prompt_not_passed_on,
+    },
 ];
+
+/// A row a prompt starts directly, and not through the multiplexer.
+fn prompt_not_passed_on(d: &Diff, _: &Snapshot, _: &Snapshot) -> bool {
+    d.field == Field::Prompt && d.fux == "true" && d.other == "false"
+}
 
 /// The cell a difference's key names, `cell (Y,X) ...`.
 fn cell_of(key: &str) -> Option<(usize, usize)> {

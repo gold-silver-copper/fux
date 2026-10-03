@@ -635,14 +635,16 @@ recording still fails:
 | --- | --- | --- |
 | every | ghostty, alacritty | a cell erased while a foreground is set (ECH, EL, ED, IL, a scroll's new row) keeps it in fux-vt, as in xterm, and only the background in Ghostty and alacritty: tmux pads its status line with ECH in black on green; neovim, htop, mc, ncdu, ranger and tig clear in their own colours. Only a foreground on a cell blank on both sides is covered: a blank's foreground is not drawn |
 | `delta-diff` | alacritty, avt, wezterm | the wrap marker delta erases with EL 0 while a wrap is pending: these keep it, fux-vt (as xterm, Ghostty and libvterm) erases it |
+| every | ghostty | a shell's prompt marks (OSC 133, fish's) mark rows in the pane and are not passed on to the client's terminal (the user's decision: on the alternate screen, where fux's client is, no terminal jumps to a prompt, and Ghostty would tag what fux paints as prompt). Only a row a prompt starts directly and not through fux is covered |
 
-Today, of the 113 recordings, 78 are identical beside Ghostty and 31 differ
-as recorded, by a blank's foreground, at 1545 points in 4 seconds through
-`run.sh`. The four fish recordings differ
-otherwise, at every point and only on which rows start a prompt: fish
-sends OSC 133, and fux does not yet pass prompt marks on to its client's
-terminal (`transparency --size 3x10 '\e]133;A\x07$ '`), work under way;
-until it lands they fail `transparency` and `every_recording_is_transparent`.
+Today, of the 113 recordings, 78 are identical beside Ghostty and 35 differ
+as recorded, at 1545 points in 4 seconds through `run.sh`: 31 by a blank's
+foreground, and the four fish recordings by which rows start a prompt.
+fish sends OSC 133, and fux keeps the marks in its panes (copy mode's `[`
+and `]` jump between them) but does not pass them on to its client's
+terminal, the user's decision: the client is on the alternate screen,
+where no terminal jumps to a prompt, and Ghostty would tag every cell
+painted after a mark as prompt.
 On the first 15 recordings, `--chunk 13` found nothing more at 19837
 points (a minute); `--chunk` with libvterm finds only libvterm's own
 handling of UTF-8 split between writes. `run.sh --cargo test` checks

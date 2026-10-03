@@ -155,7 +155,10 @@ Search is literal (not a regular expression) over the whole history, and
 ignores case unless the query has a capital letter. `[` and `]` find the
 prompts a shell marks with `OSC 133 ; A`: fish does, and zsh and bash do
 with a terminal's shell integration script (Ghostty's, kitty's, WezTerm's
-or iTerm2's). A selection keeps wide
+or iTerm2's). Your terminal's own jump to a prompt does not work inside
+fux, which shows its panes on the alternate screen, where terminals keep
+no scrollback to jump in; fux does not pass the marks on, and its `[` and
+`]` are the way. A selection keeps wide
 characters and combining marks whole, joins soft-wrapped lines without an
 invented newline, and trims trailing blanks. One copy is at most 262,144
 cells.
