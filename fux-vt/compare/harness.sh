@@ -118,7 +118,7 @@ deep() {
   done
   echo "deep: esctest in a fux pane; tmux and zellij; feel; MB/s (each alone)"
   ran+=(esctest-in-fux multiplexers feel info)
-  step esctest-in-fux "$compare" esctest --in-fux --json "$out/esctest.json"
+  step esctest-in-fux "$compare" esctest --in-fux --json "$out/esctest-in-fux.json"
   step multiplexers "$compare" transparency --multiplexers --json "$out/multiplexers.json"
   step feel "$bench" feel --json "$out/feel.json"
   step info "$bench" info --json "$out/info.json"
