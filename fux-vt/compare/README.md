@@ -710,14 +710,18 @@ DA1 too, until the terminal answers or 500 ms pass. Unanswered, the 260
 queries zellij itself sends at its start (zellij-small, zellij) held the
 sync for over two minutes.
 
-Today, beside Ghostty (about 40 s for tmux and 50 s for zellij, 90 s in all;
-the same scores in two runs):
+Today, beside Ghostty, over the 106 recordings that do not resize (the 7
+that do are left out; about 4 s for fux, 40 s for tmux and 220 s for
+zellij, 265 s in all; the same results in three runs):
 
 | Multiplexer | Recordings identical | Steps identical |
 | --- | ---: | ---: |
-| fux 0.17.0 | 14 of 15 (93.3%) | 134 of 154 (87.0%) |
-| tmux 3.7c | 9 of 15 (60.0%) | 127 of 154 (82.4%) |
-| zellij 0.44.3 | 12 of 15 (80.0%) | 127 of 154 (82.4%) |
+| fux 0.17.0 | 73 of 106 (68.8%) | 543 of 819 (66.3%) |
+| tmux 3.7c | 52 of 106 (49.0%) | 491 of 820 (59.8%) |
+| zellij 0.44.3 | 69 of 106 (65.0%) | 576 of 820 (70.2%) |
+
+fux's steps are one fewer: a step whose end is in a frame of synchronized
+output that fux holds is not compared.
 
 tmux leaves out hyperlinks (its `hyperlinks` feature is off for `xterm*`),
 keeps delta's erased wrap marker, and draws blanks with the default
