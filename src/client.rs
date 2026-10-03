@@ -14,8 +14,14 @@ use std::time::{Duration, Instant};
 /// screen, normal cursor and keypad keys, bracketed paste, focus events, no
 /// autowrap; never mouse reporting.
 const ENTER: &str = "\x1b[?1049h\x1b[?1l\x1b>\x1b[?2004h\x1b[?1004h\x1b[?7l\x1b[H\x1b[2J";
-/// And turns them off again.
-const LEAVE: &str = "\x1b[?2026l\x1b[?1004l\x1b[?2004l\x1b[?7h\x1b[0m\x1b[0 q\x1b[?25h\x1b[?1049l";
+/// And turns them off again, with what the server may have turned on in
+/// its paints (`outer`): colour-scheme reports (mode 2031), and the kitty
+/// keyboard flags it pushed, popped on the alternate screen they were
+/// pushed on, as the kitty spec says to leave. The client sends this
+/// however the attachment ends, the server gone or not; a terminal that
+/// never had them ignores both, and a pop of a stack the server pushed
+/// nothing on, the alternate screen's own, empties it.
+const LEAVE: &str = "\x1b[?2026l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[?7h\x1b[0m\x1b[0 q\x1b[?25h\x1b[?1049l";
 
 /// Why a client could not reach the server, start one, or go on.
 #[derive(Debug)]

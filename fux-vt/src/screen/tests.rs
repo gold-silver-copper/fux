@@ -116,6 +116,106 @@ fn cells_past_a_rows_used_mark_stay_blank() -> Result<(), Error> {
     Ok(())
 }
 
+/// An erase bounded by the row's `used` mark, which it may lower, leaves
+/// every row as erasing every cell of the span does (`erase_reference`):
+/// the same cells, text, links, wrap flags and versions, so a row takes a
+/// new version exactly when the old erase gave it one. Checked for random
+/// spans, in the default attributes and in colours, on both screens of a
+/// parser driven through printing (wide glyphs, long clusters, links),
+/// colours, every erase, insertion and deletion, scrolling and resizes;
+/// and every cell past a mark the erases lowered stays blank.
+#[test]
+fn an_erase_within_the_used_mark_is_the_erase_of_every_cell() -> Result<(), Error> {
+    let pieces: [&[u8]; 30] = [
+        b"hello",
+        b"\r\n",
+        b"\n",
+        "\u{754c}x\u{754c}".as_bytes(),
+        "e\u{301}\u{302}\u{303}\u{304}\u{305}\u{306}\u{307}\u{308}".as_bytes(),
+        "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}".as_bytes(),
+        b"\x1b[41m",
+        b"\x1b[32;44m",
+        b"\x1b[m",
+        b"\x1b[K",
+        b"\x1b[1K",
+        b"\x1b[2K",
+        b"\x1b[J",
+        b"\x1b[1J",
+        b"\x1b[2J",
+        b"\x1b[3X",
+        b"\x1b[2@",
+        b"\x1b[2P",
+        b"\x1b[L",
+        b"\x1b[M",
+        b"\x1b[S",
+        b"\x1b[T",
+        b"\x1b[2;4r",
+        b"\x1b[r",
+        b"\x1b[9;3H",
+        b"\x1b[7G",
+        b"\x1b]8;;https://a\x1b\\link\x1b]8;;\x1b\\",
+        b"\x1b[?1049h",
+        b"\x1b[?1049l",
+        b"\x1b[4h\x1b[2;2Hin\x1b[4l",
+    ];
+    let colours = [
+        Attributes::default(),
+        Attributes::new(Color::Default, Color::Idx(1)),
+        Attributes::new(Color::Idx(2), Color::Rgb(1, 2, 3)),
+    ];
+    // A number below `n`, or 0 for no `n`.
+    let mut state = 0x00e7_a5e0_u64;
+    let mut below = |n: usize| {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        usize::try_from(state >> 33)
+            .unwrap_or(0)
+            .checked_rem(n)
+            .unwrap_or(0)
+    };
+    for reflow in [false, true] {
+        let options = crate::Options::new()
+            .with_reflow(reflow)
+            .with_hyperlinks(true);
+        let mut p = crate::Parser::with_options(6, 10, 4, options)?;
+        for step in 0..3_000u32 {
+            if step % 500 == 499 {
+                let cols = if step % 1000 == 999 { 10 } else { 7 };
+                p.resize(6, cols)?;
+            } else if let Some(piece) = pieces.get(below(pieces.len())) {
+                p.process(piece)?;
+            }
+            let s = p.screen();
+            let version = s.version.saturating_add(1);
+            for grid in [&s.primary, &s.alternate] {
+                assert!(grid.blank_past_used(), "step {step}");
+                let (rows, cols) = (grid.rows.get(), usize::from(grid.cols.get()));
+                for _ in 0..4 {
+                    let row = u16::try_from(below(usize::from(rows))).unwrap_or(0);
+                    // From any column or the edge, to as far as past it.
+                    let start = u16::try_from(below(cols.saturating_add(1))).unwrap_or(0);
+                    let length = u16::try_from(below(cols.saturating_add(3))).unwrap_or(0);
+                    let end = start.saturating_add(length);
+                    let attributes = colours
+                        .get(below(colours.len()))
+                        .copied()
+                        .unwrap_or_default();
+                    let (mut bounded, mut every) = (grid.clone(), grid.clone());
+                    bounded.erase(row, start, end, attributes, version);
+                    every.erase_reference(row, start, end, attributes, version);
+                    assert!(
+                        bounded.seen() == every.seen(),
+                        "step {step}: erase {row} {start}..{end} in {attributes:?}"
+                    );
+                    assert!(bounded.blank_past_used(), "step {step}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The links each grid counts are those its rows have, whatever the rows
 /// went through: printing over links, inserting and deleting characters,
 /// erasing, scrolling into and out of history, both screens, resizes with

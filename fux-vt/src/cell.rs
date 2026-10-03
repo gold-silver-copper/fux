@@ -345,6 +345,13 @@ impl Cell {
             && self.attributes == other.attributes
             && self.text.get(..used) == other.text.get(..used)
     }
+    /// Whether the cell is `blank(attributes)`, as `same` would say: no
+    /// text, neither half of a wide glyph, and those attributes. A cell's
+    /// length says all that, as its text past its length is zero; there is
+    /// no text to compare.
+    pub(crate) fn is_blank(&self, attributes: Attributes) -> bool {
+        self.length == 0 && self.attributes == attributes
+    }
     /// How many bytes of `text` are in use.
     fn used(&self) -> usize {
         if self.is_spilled() {

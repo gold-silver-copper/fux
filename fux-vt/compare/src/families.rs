@@ -34,8 +34,7 @@ pub struct Family {
     pub about: &'static str,
     pub status: Status,
     /// Whether the family needs a parser set up as ratty sets it up
-    /// (reflow, kitty keyboard, an identity): without it, fux-vt differs by
-    /// design.
+    /// (reflow, an identity): without it, fux-vt differs by design.
     pub ratty_only: bool,
     pub generate: fn(&mut Rng) -> Vec<u8>,
 }
@@ -829,7 +828,7 @@ pub const FAMILIES: &[Family] = &[
         name: "kitty",
         about: "kitty keyboard flags: push, pop and set",
         status: Status::Agree,
-        ratty_only: true,
+        ratty_only: false,
         generate: kitty,
     },
     Family {

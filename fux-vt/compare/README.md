@@ -112,7 +112,7 @@ its own file (`src/engines/*.rs`), each with a `replay` command.
 
 | Engine | What, and pins | Cannot tell | Notes |
 | --- | --- | --- | --- |
-| fux-vt | the subject, by path, set up as ratty sets it up (reflow, an identity, kitty keyboard, events), with the DECRQM answers, in-band resize, hyperlinks and prompt marks fux's panes have | — | `--no-reflow`: as fux sets it up |
+| fux-vt | the subject, by path, set up as ratty sets it up (reflow, an identity, events), with the DECRQM answers, in-band resize, colour-scheme reports, kitty keyboard, hyperlinks and prompt marks fux's panes have | — | `--no-reflow`: as fux sets it up |
 | ghostty | libghostty-vt 0.2.1 over Ghostty `7aa95917`, built by Zig 0.16 (see "Setup") | link groups | mode 2027 on; history kept in bytes; a link's URI only (`GridRef::hyperlink_uri`), a row's mark from `Row::semantic_prompt` (a primary prompt's row, not a continuation's) |
 | alacritty | alacritty_terminal 0.26.0 | blink, 2026, 2048, prompt marks | synchronized updates applied at once (no event loop); a wide glyph on one column panics it, which the adapter repairs |
 | libvterm | libvterm 0.3.3 from its release tarball, through a C shim (`src/engines/libvterm_shim.c`); modes and pending wrap read from the pinned source's `vterm_internal.h` | dim, underline colour, kitty, 2026, 2048, links, prompt marks | the shim guards five crashes, hangs and out-of-bounds reads that random cases reach (found with ASan and UBSan; each listed with a replay in its file) |
@@ -281,11 +281,18 @@ output ends). The keys typed are in `corpus/keys/NAME.keys`.
 
 `record` runs a program on a PTY of 40×120 with `TERM=xterm-256color`, as
 fux runs a pane. A fux-vt parser, set up as fux sets up a pane's (events,
-DECRQM answers, in-band resize, hyperlinks and prompt marks: `src/pane.rs`),
-reads the output beside the PTY, and its replies are written back as fux
-writes them, so a program that asks (DA1, DECRQM, a cursor report) gets
-fux's answer, and one that asks what fux does not answer (DA2, a colour)
-gets nothing, as in fux. Step 0 is the
+DECRQM answers, in-band resize, colour-scheme reports, hyperlinks and
+prompt marks: `src/pane.rs`), reads the output beside the PTY, and its
+replies are written back as fux writes them, so a program that asks (DA1,
+DECRQM, a cursor report) gets fux's answer, and one that asks what fux does
+not answer (DA2) gets nothing, as in fux. fux answers the colour queries
+(OSC 10 and 11, `CSI ? 996 n`) with its client terminal's colours
+(`src/outer.rs`); the recorder answers as a fixed terminal would, white
+on black, dark (`src/record.rs`), not as whoever records. The keys are
+typed as fux gives them to a pane: read by fux's decoder as from a legacy
+terminal, and written by its encoder in the key mode the program asked
+for (the kitty keyboard protocol, modifyOtherKeys, cursor keys), so helix
+gets Escape as `CSI 27 u` and vim Ctrl-D as `CSI 27 ; 5 ; 100 ~`. Step 0 is the
 program starting; each line of keys is a step, typed at once, and the step
 ends when the program has been quiet for a while (400 ms, or as the keys
 file says). After the last step the program has two seconds to exit, then
@@ -305,8 +312,8 @@ that it holds nothing private.
 
 | Recording | Program | Steps | Bytes | What |
 | --- | --- | ---: | ---: | --- |
-| `vim` | VIM 9.1 | 24 | 23326 | a Rust file, syntax on: move, scroll, search, `*`, visual mode, `:split`, `:set spell`, quit |
-| `helix` | helix 25.07.1 | 16 | 63966 | a cargo project with errors; rust-analyzer's diagnostics after a save; move, search, select, split |
+| `vim` | VIM 9.1 | 24 | 25213 | a Rust file, syntax on: move, scroll, search, `*`, visual mode, `:split`, `:set spell`, quit |
+| `helix` | helix 25.07.1 | 16 | 63811 | a cargo project with errors; rust-analyzer's diagnostics after a save; move, search, select, split |
 | `less` | less 668 | 12 | 24348 | this README: lines, pages, search, the end, the start |
 | `fzf` | fzf 0.65.2 | 9 | 24510 | full screen, filtering files as a query is typed, moving, accepting |
 | `fzf-height` | fzf 0.65.2 | 7 | 12983 | `--height=40% --layout=reverse --border`, below the prompt |
@@ -336,8 +343,8 @@ Not installed here, so not recorded: neovim, htop, btop, lazygit, fish.
 `corpus` replays each recording through fux-vt and the engines (default:
 xterm and the panel), as a case of the recording's size with a step for
 each step recorded, and compares them after every step as `run` does. fux-vt
-is set up as fux sets up a pane (no reflow, no kitty keyboard, no
-identity), as the recordings were made, with fux's 10000 rows of history.
+is set up as fux sets up a pane (no reflow, the kitty keyboard protocol,
+no identity), as the recordings were made, with fux's 10000 rows of history.
 
 - **xterm decides what it can tell.** A field xterm tells that differs
   from fux-vt fails the step.
@@ -356,8 +363,7 @@ Each recording has a status, as a family has (`STATUSES` in
 `corpus` exits 1 if one expected to agree fails, or one has no status. It
 takes about five seconds. Today twelve agree; the three of Claude Code
 differ, all at the end, where it sets an empty title and xterm shows its
-default one, `xterm` (and `claude-ghostty` from its first step, on the kitty
-keyboard flags fux does not keep).
+default one, `xterm`.
 
 ### The inventory
 

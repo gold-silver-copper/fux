@@ -115,6 +115,39 @@ impl KeyPress {
     }
 }
 
+/// A key as the client's terminal sent it: the press fux matches (bindings,
+/// overlays, copy mode), and, from a terminal speaking the kitty keyboard
+/// protocol, what it said beyond the press, which a pane whose program
+/// speaks the protocol is given back (`encode::key_bytes`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Keystroke {
+    pub press: KeyPress,
+    pub kitty: Option<Kitty>,
+}
+
+/// What a terminal speaking the kitty keyboard protocol said of a key
+/// beyond its `KeyPress` (`references/modern/kitty_keyboard_protocol.html`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Kitty {
+    /// The number of a key sent as `CSI number u`: its unshifted code
+    /// point, or a functional key's (keypad keys from 57399); none for a
+    /// key sent as `CSI 1 ; m A` or `CSI n ~`.
+    pub code: Option<u32>,
+    /// The shifted key and the base-layout key, as reported (alternate
+    /// keys).
+    pub shifted: Option<u32>,
+    pub base: Option<u32>,
+    /// The modifier bits: Shift 1, Alt 2, Ctrl 4, Super 8, Hyper 16, Meta
+    /// 32, Caps Lock 64, Num Lock 128. A `KeyPress` keeps the first three.
+    pub mods: u8,
+}
+
+impl From<KeyPress> for Keystroke {
+    fn from(press: KeyPress) -> Keystroke {
+        Keystroke { press, kitty: None }
+    }
+}
+
 const NAMED: &[(&str, Key)] = &[
     ("Enter", Key::Enter),
     ("Tab", Key::Tab),

@@ -100,3 +100,88 @@ fn moves_are_removals_then_insertions(grid: &Grid) {
     assert_eq!(untouched.move_row(len, 1), None);
     assert_eq!(untouched.order, grid.order);
 }
+
+/// What a reader sees of a row: its identity, version, wrap and prompt
+/// flags, and each cell as stored, with its text and its link's number.
+pub(crate) type Seen = (RowId, u64, bool, bool, Vec<(Cell, String, u16)>);
+
+impl Grid {
+    /// `erase` as it was before the `used` mark bounded it: every cell of
+    /// the span compared, then every cell written, with the halves of wide
+    /// glyphs it splits; the oracle `erase` is checked against.
+    pub(crate) fn erase_reference(
+        &mut self,
+        row: u16,
+        start: u16,
+        end: u16,
+        attributes: Attributes,
+        version: u64,
+    ) {
+        let (cols, last) = (self.cols.get(), self.cols.last());
+        let mut clears_edge = end >= cols;
+        let written = if attributes == Attributes::default() {
+            0
+        } else {
+            end
+        };
+        self.mutate_row(row, version, written, |cells| {
+            let span = usize::from(start)..usize::from(end.min(cols));
+            let blank = Cell::blank(attributes);
+            if cells
+                .get(span.clone())
+                .is_none_or(|run| run.iter().all(|c| c.same(&blank)))
+            {
+                return false;
+            }
+            for col in span {
+                if let Some(cell) = cells.get(col).copied() {
+                    if cell.is_wide() {
+                        let next = col.checked_add(1);
+                        if let Some(other) = next.and_then(|i| cells.get_mut(i)) {
+                            *other = Cell::blank(other.attributes);
+                        }
+                        clears_edge |= next == Some(usize::from(last));
+                    } else if cell.is_wide_continuation()
+                        && let Some(other) = col.checked_sub(1).and_then(|i| cells.get_mut(i))
+                    {
+                        *other = Cell::blank(other.attributes);
+                    }
+                    if let Some(cell) = cells.get_mut(col) {
+                        *cell = blank;
+                    }
+                }
+            }
+            true
+        });
+        if clears_edge {
+            self.wrap(row, false, version);
+        }
+        if start == 0
+            && end >= cols
+            && let Some(slot) = self.slot(row)
+        {
+            if let Some(spill) = self.spill.get_mut(slot) {
+                spill.clear();
+            }
+            self.unlink(slot);
+        }
+    }
+
+    /// What a reader sees of every retained row, in order.
+    pub(crate) fn seen(&self) -> Vec<Seen> {
+        (0..self.retained_len())
+            .filter_map(|i| self.row_at(i))
+            .map(|row| {
+                let cells = row
+                    .cells()
+                    .enumerate()
+                    .map(|(col, c)| {
+                        let link = row.links.and_then(|l| l.get(col)).copied().unwrap_or(0);
+                        (*c.stored(), c.contents().to_owned(), link)
+                    })
+                    .collect();
+                (row.id, row.version, row.wrapped, row.prompt, cells)
+            })
+            .collect()
+    }
+}

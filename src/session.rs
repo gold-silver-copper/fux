@@ -320,6 +320,12 @@ pub struct Session {
     pub launch: bool,
     pub outbox: Vec<Outgoing>,
     pub dying: Vec<Dying>,
+    /// Per tab, the client that last typed into it, whose terminal answers
+    /// its panes' colour queries (`outer`).
+    pub typists: BTreeMap<TabId, ClientId>,
+    /// The colours a client's terminal last said, for panes no attached
+    /// client answers for (`outer`).
+    pub last_colours: crate::outer::Colours,
     /// Where `size_panes` gathers the rectangles each pane is shown in, and
     /// lays out each view to find them; reused by every settle.
     shown_sizes: Vec<(PaneId, (u16, u16))>,
@@ -376,6 +382,8 @@ impl Session {
             launch,
             outbox: Vec::new(),
             dying: Vec::new(),
+            typists: BTreeMap::new(),
+            last_colours: crate::outer::Colours::default(),
             shown_sizes: Vec::new(),
             placed: Placement::default(),
             next_pane: 1,
@@ -756,6 +764,7 @@ impl Session {
             view.error(format!("config: {shown}"));
         }
         self.views.insert(id, view);
+        self.ask_terminal(id);
         self.settle();
         Ok(id)
     }
@@ -1116,6 +1125,7 @@ impl Session {
         let ws_id = ws.id;
         // Tab IDs are unique: this removes the tab at `t`.
         ws.tabs.retain(|other| other.id != tab);
+        self.typists.remove(&tab);
         // Views on the closed tab select its neighbour.
         let neighbour = ws
             .tabs
@@ -1193,11 +1203,14 @@ impl Session {
 
     /// Output from a pane's program.
     pub fn output(&mut self, id: PaneId, bytes: &[u8]) {
+        let place = self.locate(id);
+        let colours = self.colours_for(place.map(|(_, t)| t));
         let Some(pane) = self.panes.get_mut(&id) else {
             return;
         };
+        pane.colours = colours;
         let dropped = pane.output(bytes);
-        self.read_into(id, dropped);
+        self.read_into(id, place, dropped);
     }
 
     /// Reads the frames held past their timeout (see `Pane::output`).
@@ -1209,9 +1222,12 @@ impl Session {
             .map(|p| p.id)
             .collect();
         for id in due {
+            let place = self.locate(id);
+            let colours = self.colours_for(place.map(|(_, t)| t));
             if let Some(pane) = self.panes.get_mut(&id) {
+                pane.colours = colours;
                 let dropped = pane.release_frame();
-                self.read_into(id, dropped);
+                self.read_into(id, place, dropped);
             }
         }
     }
@@ -1224,10 +1240,9 @@ impl Session {
             .min()
     }
 
-    /// After output was read into pane `id`'s screen: the views showing it
-    /// repaint, and are told if a reply was `dropped`.
-    fn read_into(&mut self, id: PaneId, dropped: bool) {
-        let place = self.locate(id);
+    /// After output was read into pane `id`'s screen, which is at `place`:
+    /// the views showing it repaint, and are told if a reply was `dropped`.
+    fn read_into(&mut self, id: PaneId, place: Option<(WsId, TabId)>, dropped: bool) {
         self.unsettled |= self
             .views
             .values()
@@ -1517,12 +1532,12 @@ impl Session {
                 };
                 // Each argument is a key name (`C-c`, `Enter`, `a`), or, as in
                 // tmux, text sent as it is; `-l` makes every argument text.
-                let application = p.screen().application_cursor();
+                let mode = crate::encode::KeyMode::of(p.screen());
                 p.input.push_with(|out| {
                     for key in keys {
                         match key.parse::<KeyPress>() {
                             Ok(press) if !literal => {
-                                crate::encode::key_bytes(press, application, out)
+                                crate::encode::key_bytes(press.into(), mode, out)
                             }
                             _ => out.extend_from_slice(key.as_bytes()),
                         }

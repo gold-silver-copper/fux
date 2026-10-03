@@ -89,8 +89,12 @@ fn key(r: &mut Rng) -> String {
     name
 }
 
+/// `$name` decodes and encodes with `$fux`; `$key_bytes` encodes a press
+/// in a cursor mode, and `$shown` shows a decoded input, both as each
+/// version takes them: the current fux's keys carry what a kitty-protocol
+/// terminal said beyond the press, and its encoder the pane's key mode.
 macro_rules! stack {
-    ($name:ident, $fux:ident) => {
+    ($name:ident, $fux:ident, $key_bytes:expr, $shown:expr) => {
         mod $name {
             use std::time::Instant;
             use $fux::decode::Decoder;
@@ -117,8 +121,11 @@ macro_rules! stack {
                 }
 
                 fn waits(&self, inputs: Vec<$fux::decode::Input>, start: Instant) -> String {
+                    let shown: fn(&$fux::decode::Input) -> String = $shown;
+                    let inputs: Vec<String> = inputs.iter().map(shown).collect();
                     format!(
-                        "{inputs:?} waiting {} until {:?}",
+                        "[{}] waiting {} until {:?}",
+                        inputs.join(", "),
                         self.0.waiting(),
                         self.0
                             .deadline()
@@ -132,8 +139,9 @@ macro_rules! stack {
                 let press = name.parse::<KeyPress>();
                 let bytes = press.as_ref().ok().map(|press| {
                     let (mut normal, mut application) = (Vec::new(), Vec::new());
-                    $fux::encode::key_bytes(*press, false, &mut normal);
-                    $fux::encode::key_bytes(*press, true, &mut application);
+                    let key_bytes: fn(KeyPress, bool, &mut Vec<u8>) = $key_bytes;
+                    key_bytes(*press, false, &mut normal);
+                    key_bytes(*press, true, &mut application);
                     (normal, application)
                 });
                 format!(
@@ -199,8 +207,30 @@ macro_rules! stack {
     };
 }
 
-stack!(base, baseline);
-stack!(cur, fux);
+stack!(
+    base,
+    baseline,
+    baseline::encode::key_bytes,
+    |input| format!("{input:?}")
+);
+stack!(
+    cur,
+    fux,
+    |press, application, out| fux::encode::key_bytes(
+        press.into(),
+        fux::encode::KeyMode::legacy(application),
+        out
+    ),
+    |input| {
+        // A key shows as its press, as the baseline's: what a kitty-protocol
+        // terminal said beyond the press, which no baseline key has, is
+        // fux's own tests' to check (`decode::tests`).
+        if let fux::decode::Input::Key(stroke) = input {
+            return format!("Key({:?})", stroke.press);
+        }
+        format!("{input:?}")
+    }
+);
 
 fn decoding(r: &mut Rng, cases: usize) -> Result<(u64, u64), String> {
     let (mut streams, mut timeouts) = (0u64, 0u64);

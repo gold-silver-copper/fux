@@ -189,6 +189,27 @@ In `xnu-12377.1.9`:
 - Bound the `ERESTART` loop in `_devfs_setattr`: after a few restarts, fail `grantpt` with an errno
   instead of spinning.
 
+## Bug 3: `posix_openpt` fails with `ENXIO` while another process closes a PTY
+
+Seen once in fux's CI on macOS 15 (16 processes opening and closing PTYs at once: one open
+in 24,000 failed with "Device not configured"). Not reproduced on macOS 27 under four times that
+contention. From the source (`bsd/kern/tty_ptmx.c`, `apple-oss-distributions/xnu` main):
+
+- `ptmx_clone` scans the minor table for a free slot and, finding none, returns the index one
+  past its end. Its own comment flags the race: "if we did this twice at the same time, we
+  could return the same minor to two callers".
+- `ptmx_get_ioctl(minor, PF_OPEN_M)` grows the table only when `pis_free == 0`. If another
+  process closed a PTY between the clone and this check, a slot is free, the table is not
+  grown, and the minor is out of range: it returns `NULL` ("minor number %d was out of
+  range"), and `ptcopen` (`bsd/kern/tty_dev.c`) turns that into `ENXIO`.
+
+The same `ENXIO` is what reaching `kern.tty.ptmx_max` gives, so a caller can't tell a lost race
+from exhaustion but by trying again.
+
+### Expected
+
+The open is retried with the same number re-picked, or the table grown, as for `EREDRIVEOPEN`.
+
 ## Attachments to add when filing
 
 - The output of each reproducer, and the kernel log for bug 1:
@@ -200,7 +221,7 @@ In `xnu-12377.1.9`:
 ## How fuxix works around it
 
 fuxix (`fuxix::pty::open`, in https://github.com/gold-silver-copper/fux) opens one primary at a time
-per process and retries -6. It names the replica and checks its node before `grantpt`, and watches
+per process and retries -6, and `ENXIO` (bug 3) within the same bound. It names the replica and checks its node before `grantpt`, and watches
 `grantpt` with a 1 s watchdog that replaces a stuck primary with `/dev/null`. A PTY without a
 replica is dropped and another opened in its place.
 

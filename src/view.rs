@@ -93,6 +93,8 @@ pub struct View {
     pub mode: Mode,
     pub notice: Option<Notice>,
     pub decoder: Decoder,
+    /// What the client's terminal said of itself (`outer`).
+    pub terminal: crate::outer::Terminal,
     /// Something this view shows may have changed since its last paint.
     pub dirty: bool,
 }
@@ -111,6 +113,7 @@ impl View {
             mode: Mode::Normal,
             notice: None,
             decoder: Decoder::default(),
+            terminal: crate::outer::Terminal::default(),
             dirty: true,
         }
     }

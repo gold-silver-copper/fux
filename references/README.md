@@ -73,6 +73,7 @@ A fux-vt test cites the section that sets its expected value.
 | `mode_2026_synchronized_output.md` | synchronized output, mode 2026 (contour's vt-extensions) |
 | `mode_2027_grapheme_clusters.tex` | grapheme cluster processing, mode 2027 (contour's terminal-unicode-core) |
 | `mode_2048_in_band_resize.md` | in-band resize reports, mode 2048 |
+| `mode_2031_color_scheme_updates.md` | colour-scheme (dark or light) reports, mode 2031: `CSI ? 996 n` asks, `CSI ? 997 ; 1 n` (dark) or `; 2 n` (light) answers and reports a change (contour's vt-extensions) |
 | `osc8_hyperlinks.md` | hyperlinks, OSC 8 |
 | `kitty_underlines.html` | kitty's underline styles (`4:0` to `4:5`) and underline colour (SGR 58, 59) |
 | `osc133_iterm2_escape_codes.html` | iTerm2's escape codes; its "Shell Integration/FinalTerm" section documents FinalTerm's semantic prompt marks, OSC 133 `A` (prompt), `B` (command), `C` (output) and `D` (finished) |

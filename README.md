@@ -177,7 +177,9 @@ is avoided because the shell would expand it). A client is `cN`.
 Inside a pane, `TERM` is `xterm-256color`, `TERM_PROGRAM` is `fux` and
 `TERM_PROGRAM_VERSION` fux's version, whatever the terminal fux runs in sets
 (programs read `TERM_PROGRAM` to guess which terminal they talk to, as they
-would in tmux, which sets its own).
+would in tmux, which sets its own). Asked, fux says the same: XTVERSION
+(`CSI > q`) answers `fux` and its version, secondary device attributes
+(`CSI > c`) the version, and primary ones (`CSI c`) a VT220-class terminal.
 
 Inside a pane, `FUX_PANE` names it and `FUX_SOCKET` names the server, so
 commands there target that pane without `-t`. A command that needs a target
@@ -233,8 +235,16 @@ Key names, for `send-keys` and the prefix, are tmux's: `C-x`, `M-x`,
 `Left`, `Right`, `Home`, `End`, `PageUp`, `PageDown`, `Insert`, `Delete`,
 `F1`–`F12` (also `PgUp`, `PgDn`, `NPage`, `PPage`, `IC`, `DC`), plus any single
 character. A character carries its own shift (`T`, not `S-t`). `fux list-keys`
-prints them, with the bindings. The Kitty keyboard protocol is not
-supported: keys use xterm encodings.
+prints them, with the bindings.
+
+If your terminal speaks the kitty keyboard protocol (Ghostty, kitty,
+WezTerm, foot, iTerm2), fux turns it on while attached, so it can tell keys
+apart that a terminal otherwise sends alike (Shift-Enter and Enter, Ctrl-I
+and Tab, Ctrl-[ and Escape), and Escape needs no wait. Each pane's program
+gets its keys as it asked for them: in the kitty protocol (helix and
+Claude Code), xterm's modifyOtherKeys (vim), or xterm's plain encodings,
+the same as before. Key names, the prefix and bindings mean the same with
+the protocol or without it.
 
 The keys of `bind` and `unbind` are the keys after the prefix: one or more
 letters, `a`–`z` in either case, as separate words before the command.
@@ -355,6 +365,16 @@ the program knows it may. A frame is shown anyway after a second, or past
 program that asks for in-band resize reports (`CSI ? 2048 h`) gets
 `CSI 48 ; rows ; cols ; 0 ; 0 t` whenever its pane's size changes, once its
 terminal has the new size.
+
+A program that asks its terminal's colours (OSC 10 and 11: vim, delta,
+tmux, to choose a dark or light theme) is told your terminal's: the server
+asks each client's terminal as it attaches, and answers a pane with the
+colours of the client that last typed into its tab, else of one showing
+it, else the last any terminal gave. A terminal that does not answer is
+not asked again, and the program gets no answer, as before. If your
+terminal reports changes between dark and light (mode 2031: Ghostty,
+kitty, contour), fux turns that on while attached, and passes a change on
+to each program that asked for it (`CSI ? 2031 h`: Claude Code, tmux).
 
 Hyperlinks a program prints (OSC 8: `ls --hyperlink`, gcc, delta, Claude
 Code) reach your terminal as links, each with an id of its pane's, so two

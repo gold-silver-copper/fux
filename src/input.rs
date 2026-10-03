@@ -2,7 +2,7 @@
 //! column, or its focused pane.
 use crate::command::ClientId;
 use crate::decode::Input;
-use crate::keys::KeyPress;
+use crate::keys::Keystroke;
 use crate::overlay;
 use crate::session::Session;
 use crate::view::Mode;
@@ -32,6 +32,7 @@ impl Session {
             rest = later;
             match self.views.get_mut(&client) {
                 Some(view) => {
+                    view.decoder.expire(now);
                     view.decoder.bytes(piece, &mut inputs);
                     view.decoder.mark(now);
                 }
@@ -69,12 +70,13 @@ impl Session {
                 break;
             }
             match input {
-                Input::Key(press) => self.key(client, press),
+                Input::Key(stroke) => self.key(client, stroke),
                 Input::Paste(text) => self.paste(client, &text),
                 Input::PasteTooLong => self.error_to(client, "paste exceeds 64 KiB; discarded"),
                 Input::FocusIn | Input::FocusOut => {
                     self.focus_event(client, input == Input::FocusIn)
                 }
+                Input::Reply(reply) => self.terminal_reply(client, reply),
             }
         }
         // A command the input ran repainted every client already; else only
@@ -88,7 +90,9 @@ impl Session {
         self.settle();
     }
 
-    fn key(&mut self, client: ClientId, press: KeyPress) {
+    /// A key: matched as its press, and given to a pane as it was typed.
+    fn key(&mut self, client: ClientId, stroke: Keystroke) {
+        let press = stroke.press;
         let Some(view) = self.views.get_mut(&client) else {
             return;
         };
@@ -109,7 +113,7 @@ impl Session {
                         selected: 0,
                     };
                 } else {
-                    overlay::send_key(self, client, press);
+                    overlay::send_key(self, client, stroke);
                 }
             }
         }
@@ -128,6 +132,7 @@ impl Session {
         }
         view.notice = None;
         let Some(pane) = view.focus() else { return };
+        self.typed(client);
         let Some(p) = self.panes.get_mut(&pane) else {
             return;
         };
