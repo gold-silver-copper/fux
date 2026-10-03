@@ -69,8 +69,9 @@ bench    each engine's speed on the same workloads, in MB/s (default: the
          synthetic ones and the corpus all together; `corpus` adds each
          recording alone).
 record   runs PROGRAM on a PTY (--size, else 40x120) as a pane of fux
-         runs it, types each line of keys in FILE, and keeps every byte it
-         writes (PREFIX.bin) and what was run and typed (PREFIX.json).
+         runs it, types each line of keys in FILE (a line `!resize RxC`
+         resizes it instead), and keeps every byte it writes (PREFIX.bin)
+         and what was run and typed (PREFIX.json).
          fux-vt answers its queries as fux does. Its environment is TERM
          and the --env pairs alone (and PATH, if they have none). --scrub
          replaces OLD in the output before it is saved, for what the setup
