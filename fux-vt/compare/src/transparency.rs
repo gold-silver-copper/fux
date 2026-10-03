@@ -1534,6 +1534,16 @@ mod tests {
         Ok(())
     }
 
+    /// Combining marks on a glyph a column short of the edge stay on it
+    /// through fux (less-small): with autowrap off, Ghostty put them on the
+    /// last column's cell, where fux had painted a space.
+    #[test]
+    fn marks_short_of_the_edge_stay_on_their_glyph() -> Result<(), String> {
+        let marked = "xxxxxxxx\u{e4}\u{356}\u{32d}\u{308}\u{307}";
+        assert_eq!(differences(3, 10, marked.as_bytes())?, []);
+        Ok(())
+    }
+
     /// An emoji modifier a program places after its emoji with a cursor
     /// move of its own (micro-small) is joined to the emoji by Ghostty both
     /// ways, and what follows stays where the program put it.
