@@ -7,7 +7,7 @@ use crate::layout::{Axis, PaneId, Placement, Rect, Separator};
 use crate::overlay::{self, ColumnRow};
 use crate::session::Session;
 use crate::view::{Mode, View};
-use fux_vt::{Attributes, Cell, CellRef, Cells, Color, Row};
+use fux_vt::{Attributes, Cell, CellRef, Cells, Color, Row, UnderlineStyle};
 use std::borrow::Cow;
 use std::io::Write;
 use unicode_width::UnicodeWidthChar;
@@ -29,6 +29,9 @@ pub struct Grid {
     pub cursor: Option<(u16, u16)>,
     /// DECSCUSR shape for the cursor; 0 is the terminal's default.
     pub cursor_shape: u16,
+    /// Whether the client's terminal draws underline styles (`outer`):
+    /// painted as they are, else as plain underlines (`sgr`).
+    pub underline_styles: bool,
 }
 
 /// A hyperlink of a pane's cells (OSC 8): the pane, the link's key there
@@ -53,6 +56,7 @@ impl Grid {
             uris: String::new(),
             cursor: None,
             cursor_shape: 0,
+            underline_styles: false,
         }
     }
     /// The hyperlink of the cell at `y`, `x`: the pane whose it is, its key
@@ -360,6 +364,7 @@ pub fn compose_into(
         .fold(0u32, u32::saturating_add);
     let tiled = covered == u32::from(area.w).saturating_mul(u32::from(area.h));
     grid.reset(view.rows, view.cols, !tiled);
+    grid.underline_styles = view.terminal.underline_styles;
     let focus = view.focus();
     // Copy mode and its positions, their rows found once for the paint.
     let copy = if let Mode::Copy(copy) = &view.mode {
@@ -971,7 +976,13 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
 
 // ------------------------------------------------------------------ paint
 
-fn sgr(out: &mut Vec<u8>, a: Attributes) {
+/// The SGR that sets `a` from nothing: an underline style (kitty's `4:n`)
+/// as it is if the client's terminal draws them (`styles`, `outer::STYLES`),
+/// else a plain underline, as a terminal that does not know `4:3` draws no
+/// underline at all (xterm, avt) or reads the colon as a semicolon,
+/// underline and italic, and one that does not know 21 may read it as bold
+/// off (alacritty, avt). The underline colour goes either way: see below.
+fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
     out.extend_from_slice(b"\x1b[0");
     if a.bold() {
         out.extend_from_slice(b";1");
@@ -982,8 +993,19 @@ fn sgr(out: &mut Vec<u8>, a: Attributes) {
     if a.italic() {
         out.extend_from_slice(b";3");
     }
-    if a.underline() {
-        out.extend_from_slice(b";4");
+    match a.underline_style() {
+        UnderlineStyle::None => {}
+        style @ (UnderlineStyle::Double
+        | UnderlineStyle::Curly
+        | UnderlineStyle::Dotted
+        | UnderlineStyle::Dashed)
+            if styles =>
+        {
+            let _ = write!(out, ";4:{}", style.number());
+        }
+        // Single, a style the terminal does not draw, or one fux-vt does
+        // not know yet: a plain underline.
+        UnderlineStyle::Single | _ => out.extend_from_slice(b";4"),
     }
     // A kind of blink fux-vt does not know yet is drawn as none.
     match a.blink() {
@@ -1004,6 +1026,10 @@ fn sgr(out: &mut Vec<u8>, a: Attributes) {
     // empty colour-space slot: a terminal that does not know SGR 58 skips
     // the whole parameter, where in the semicolon form it would take the
     // colour's numbers for attributes of their own (`58;2;…` would be dim).
+    // So it goes to every terminal, styles or not: each engine in
+    // `fux-vt/compare` reads `58:5:9` and `58:2::1:2:3` beside 4 and 1 as
+    // 4 and 1 alone, xterm, which has no SGR 58, included (xterm 411
+    // skips an SGR parameter with subparameters other than 38's and 48's).
     match a.underline_color() {
         Color::Idx(n) => {
             let _ = write!(out, ";58:5:{n}");
@@ -1132,7 +1158,11 @@ pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
 /// into `new` to `out`.
 pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
     out.extend_from_slice(b"\x1b[?2026h\x1b[?25l");
-    let full = old.is_none_or(|o| o.rows != new.rows || o.cols != new.cols);
+    // Learning that the terminal draws underline styles repaints it whole,
+    // so that what it shows takes them.
+    let full = old.is_none_or(|o| {
+        o.rows != new.rows || o.cols != new.cols || o.underline_styles != new.underline_styles
+    });
     if full {
         out.extend_from_slice(b"\x1b[0m\x1b[H\x1b[2J");
     }
@@ -1191,7 +1221,7 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
                 };
                 let attrs = cell.attributes();
                 if current != Some(attrs) {
-                    sgr(out, attrs);
+                    sgr(out, attrs, new.underline_styles);
                     current = Some(attrs);
                 }
                 let link = new.number_at(y, cx);
@@ -1691,6 +1721,73 @@ mod tests {
             assert_eq!(cell.attributes(), *a, "cell {x}");
         }
         Ok(())
+    }
+
+    /// Underline styles reach a client whose terminal draws them as kitty's
+    /// `4:n` (`references/modern/kitty_underlines.html`): double, curly,
+    /// dotted and dashed, with their colour; a plain underline is 4. Any
+    /// other terminal is painted a plain underline for each, with the
+    /// colour still. Learning that the terminal draws them repaints it
+    /// whole, so what it showed plain takes its style.
+    #[test]
+    fn underline_styles_are_painted_as_the_terminal_draws_them() -> Result<(), String> {
+        use fux_vt::UnderlineStyle::{Curly, Dashed, Dotted, Double, Single};
+        let styles = [Single, Double, Curly, Dotted, Dashed];
+        let mut grid = Grid::new(1, 6);
+        for (x, style) in styles.iter().enumerate() {
+            let x = u16::try_from(x).map_err(|e| e.to_string())?;
+            let a = Attributes::default()
+                .with_underline_style(*style)
+                .with_underline_color(Color::Rgb(255, 0, 0));
+            grid.text(0, x, "x", a, 6);
+        }
+        let painted = |grid: &Grid| String::from_utf8_lossy(&paint(None, grid)).into_owned();
+        let plain = painted(&grid);
+        assert_eq!(plain.matches("\x1b[0;4;58:2::255:0:0mx").count(), 5);
+        assert!(!plain.contains("4:"), "{plain:?}");
+        let mut styled = grid.clone();
+        styled.underline_styles = true;
+        let text = painted(&styled);
+        for sgr in [
+            "\x1b[0;4;58:2::255:0:0mx",
+            "\x1b[0;4:2;58:2::255:0:0mx",
+            "\x1b[0;4:3;58:2::255:0:0mx",
+            "\x1b[0;4:4;58:2::255:0:0mx",
+            "\x1b[0;4:5;58:2::255:0:0mx",
+        ] {
+            assert!(text.contains(sgr), "{sgr:?} in {text:?}");
+        }
+        // Read back by a terminal that keeps styles, each cell has its own;
+        // painted plain, each is a plain underline.
+        for (grid, keeps) in [(&styled, true), (&grid, false)] {
+            let mut parser = fux_vt::Parser::new(1, 6, 0).map_err(|e| e.to_string())?;
+            parser
+                .process(&paint(None, grid))
+                .map_err(|e| e.to_string())?;
+            for (x, style) in styles_of(keeps).iter().enumerate() {
+                let x = u16::try_from(x).map_err(|e| e.to_string())?;
+                let cell = parser.screen().cell(0, x).ok_or("a cell")?;
+                assert_eq!(cell.underline_style(), *style, "cell {x}");
+                assert_eq!(cell.underline_color(), Color::Rgb(255, 0, 0));
+            }
+        }
+        // The terminal turns out to draw styles: the screen is painted again
+        // whole, not as a diff of nothing.
+        let again = paint(Some(&grid), &styled);
+        assert!(String::from_utf8_lossy(&again).contains("\x1b[2J"));
+        assert!(!String::from_utf8_lossy(&paint(Some(&styled), &styled)).contains("\x1b[2J"));
+        Ok(())
+    }
+
+    /// What `underline_styles_are_painted_as_the_terminal_draws_them`
+    /// expects a terminal to keep: each style, or plain underlines.
+    fn styles_of(keeps: bool) -> [fux_vt::UnderlineStyle; 5] {
+        use fux_vt::UnderlineStyle::{Curly, Dashed, Dotted, Double, Single};
+        if keeps {
+            [Single, Double, Curly, Dotted, Dashed]
+        } else {
+            [Single; 5]
+        }
     }
 
     /// A pane's hyperlinks reach the client: OSC 8 before the linked cells,
