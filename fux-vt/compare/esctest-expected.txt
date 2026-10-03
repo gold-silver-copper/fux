@@ -182,17 +182,14 @@ DECRQMTests.test_DECRQM_DEC_DECXRLM  xterm-too: esctest's known xterm bug (Not s
 DECRQSSTests.test_DECRQSS_DECELF  xterm-too: esctest's known xterm bug (Not implemented.)
 DECRQSSTests.test_DECRQSS_DECLFKC  xterm-too: esctest's known xterm bug (Not implemented.)
 DECRQSSTests.test_DECRQSS_DECSACE  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECRQSSTests.test_DECRQSS_DECSASD  not-implemented: DECRQSS (DCS $ q); vim asks DECSCUSR by it (corpus: DCS $ q SP q), a candidate for a later PR
+DECRQSSTests.test_DECRQSS_DECSASD  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the margins (r), what neovim and vim ask (corpus); fux-vt keeps no other setting it reports
 DECRQSSTests.test_DECRQSS_DECSCA  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
 DECRQSSTests.test_DECRQSS_DECSCL  not-implemented: conformance levels (DECSCL, CSI Pl ; Pc " p); no program in the corpus sends it
-DECRQSSTests.test_DECRQSS_DECSCUSR  not-implemented: DECRQSS (DCS $ q); vim asks DECSCUSR by it (corpus: DCS $ q SP q), a candidate for a later PR
-DECRQSSTests.test_DECRQSS_DECSLPP  not-implemented: DECRQSS (DCS $ q); vim asks DECSCUSR by it (corpus: DCS $ q SP q), a candidate for a later PR
+DECRQSSTests.test_DECRQSS_DECSLPP  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the margins (r), what neovim and vim ask (corpus); fux-vt keeps no other setting it reports
 DECRQSSTests.test_DECRQSS_DECSLRM  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 DECRQSSTests.test_DECRQSS_DECSMKR  xterm-too: esctest's known xterm bug (Not implemented.)
-DECRQSSTests.test_DECRQSS_DECSNLS  not-implemented: DECRQSS (DCS $ q); vim asks DECSCUSR by it (corpus: DCS $ q SP q), a candidate for a later PR
-DECRQSSTests.test_DECRQSS_DECSSDT  not-implemented: DECRQSS (DCS $ q); vim asks DECSCUSR by it (corpus: DCS $ q SP q), a candidate for a later PR
-DECRQSSTests.test_DECRQSS_DECSTBM  not-implemented: DECRQSS (DCS $ q); vim asks DECSCUSR by it (corpus: DCS $ q SP q), a candidate for a later PR
-DECRQSSTests.test_DECRQSS_SGR  not-implemented: DECRQSS (DCS $ q); vim asks DECSCUSR by it (corpus: DCS $ q SP q), a candidate for a later PR
+DECRQSSTests.test_DECRQSS_DECSNLS  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the margins (r), what neovim and vim ask (corpus); fux-vt keeps no other setting it reports
+DECRQSSTests.test_DECRQSS_DECSSDT  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the margins (r), what neovim and vim ask (corpus); fux-vt keeps no other setting it reports
 DECSCLTests.test_DECSCL_Level2DoesntSupportDECRQM  not-implemented: conformance levels (DECSCL, CSI Pl ; Pc " p); no program in the corpus sends it
 DECSCLTests.test_DECSCL_Level4_SupportsDECSLRMDoesntSupportDECNCSM  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
 DECSEDTests.test_DECSED_0_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
