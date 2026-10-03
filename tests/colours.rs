@@ -73,7 +73,7 @@ fn a_panes_colour_query_gets_the_client_terminals_colours() -> Outcome {
         "c",
     )?;
     client.wait_for(
-        "answer:ESC]11;rgb:1e1e/1e1e/2020BELESC]10;rgb:ffff/ffff/ffffESC\\ESC[?997;1nESC[?1;2c",
+        "answer:ESC]11;rgb:1e1e/1e1e/2020BELESC]10;rgb:ffff/ffff/ffffESC\\ESC[?997;1nESC[?62;22c",
     )?;
     // The answers were never keys: what is typed now arrives as typed.
     client.keys("echo typed-after\r")?;
@@ -95,7 +95,7 @@ fn a_terminal_that_answers_nothing_leaves_keys_working() -> Outcome {
     // A pane's question goes unanswered, as before; DA1 after it is
     // answered, by the pane itself.
     probe(&server, r"\x1b]11;?\x07\x1b[c", "c")?;
-    client.wait_for("answer:ESC[?1;2c")?;
+    client.wait_for("answer:ESC[?62;22c")?;
     // Nothing turned on that the terminal did not say it knows.
     assert!(!painted(&client).contains("\x1b[?2031h"));
     Ok(())

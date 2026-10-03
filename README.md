@@ -177,7 +177,9 @@ is avoided because the shell would expand it). A client is `cN`.
 Inside a pane, `TERM` is `xterm-256color`, `TERM_PROGRAM` is `fux` and
 `TERM_PROGRAM_VERSION` fux's version, whatever the terminal fux runs in sets
 (programs read `TERM_PROGRAM` to guess which terminal they talk to, as they
-would in tmux, which sets its own).
+would in tmux, which sets its own). Asked, fux says the same: XTVERSION
+(`CSI > q`) answers `fux` and its version, secondary device attributes
+(`CSI > c`) the version, and primary ones (`CSI c`) a VT220-class terminal.
 
 Inside a pane, `FUX_PANE` names it and `FUX_SOCKET` names the server, so
 commands there target that pane without `-t`. A command that needs a target

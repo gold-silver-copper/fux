@@ -9,9 +9,9 @@
     "COLORTERM=truecolor",
     "DISABLE_AUTOUPDATER=1"
   ],
-  "note": "",
+  "note": "a first start: HOME has no Claude Code settings",
   "program": "claude",
-  "replies": "\\e[?1;2c",
+  "replies": "\\eP>|fux 0.17.0\\e\\\\\\e[?0u\\e[?62;22c\\e[?2026;2$y\\e[?1016;0$y\\e[?62;22c",
   "scrubbed": [],
   "size": [
     40,
@@ -19,15 +19,15 @@
   ],
   "steps": [
     {
-      "end": 3240,
+      "end": 3333,
       "keys": ""
     },
     {
-      "end": 6868,
+      "end": 7009,
       "keys": "\\x03"
     },
     {
-      "end": 10616,
+      "end": 10793,
       "keys": "\\x03"
     }
   ],

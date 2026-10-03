@@ -173,6 +173,30 @@ fn end_of(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     }
 }
 
+/// What fux tells programs it is: XTVERSION answers `fux` and its version,
+/// DA2 the version (`CSI > 1 ; Pv ; 0 c`), and DA1 a VT220-class terminal
+/// (`CSI ? 62 ; 22 c`). The user's decision, on the corpus's evidence:
+/// told it is fux, Claude Code asks for and uses synchronized output.
+pub const IDENTITY: fux_vt::Identity = fux_vt::Identity {
+    name: "fux",
+    version: env!("CARGO_PKG_VERSION"),
+};
+
+/// How every pane's terminal is set up: events (titles, colour queries),
+/// DECRQM, in-band resize, the size query, colour-scheme reports, the kitty
+/// keyboard protocol (fux encodes keys as each pane asks), hyperlinks,
+/// prompt marks and fux's identity.
+pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
+    .with_events(true)
+    .with_mode_reports(true)
+    .with_in_band_resize(true)
+    .with_size_reports(true)
+    .with_color_scheme_updates(true)
+    .with_kitty_keyboard(true)
+    .with_hyperlinks(true)
+    .with_prompt_marks(true)
+    .with_identity(Some(IDENTITY));
+
 /// The most titles a pane's program can push (`CSI 22 t`): xterm's bound.
 const TITLE_STACK: usize = 10;
 
@@ -235,7 +259,11 @@ impl fux_vt::Sink for Sink<'_> {
                 self.titles.push(TitleOp::Set(text));
             }
             fux_vt::Event::ColorQuery { number, bel } => self.colour_query(number, bel),
-            _ => {}
+            // fux's clipboard policy: a program's OSC 52 is not taken.
+            fux_vt::Event::IconName(_)
+            | fux_vt::Event::Bell
+            | fux_vt::Event::Clipboard { .. }
+            | _ => {}
         }
     }
     /// xterm's title stack (ctlseqs, window manipulation): `CSI 22 ; Ps t`
@@ -338,16 +366,8 @@ impl Pane {
         // known before they use it. Hyperlinks kept, to paint them.
         // Colour-scheme reports: the session sends them (`outer`). The kitty
         // keyboard protocol and modifyOtherKeys: keys are encoded as each
-        // screen asks (`encode::key_bytes`).
-        let options = fux_vt::Options::new()
-            .with_events(true)
-            .with_mode_reports(true)
-            .with_in_band_resize(true)
-            .with_size_reports(true)
-            .with_color_scheme_updates(true)
-            .with_kitty_keyboard(true)
-            .with_hyperlinks(true)
-            .with_prompt_marks(true);
+        // screen asks (`encode::key_bytes`). See `OPTIONS`.
+        let options = OPTIONS;
         let parser = fux_vt::Parser::with_options(rows.max(1), cols.max(1), history, options)
             .map_err(|source| Error::Terminal {
                 rows,
@@ -681,7 +701,7 @@ mod tests {
         use crate::outer::{Colours, Rgb, Scheme};
         let mut pane = pane()?;
         pane.output(b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b[?996n\x1b[c");
-        assert_eq!(pane.input.drain_all(), b"\x1b[?1;2c", "nothing known");
+        assert_eq!(pane.input.drain_all(), b"\x1b[?62;22c", "nothing known");
         pane.colours = Colours {
             foreground: Some(Rgb {
                 r: 0xc0c0,
@@ -698,7 +718,7 @@ mod tests {
         pane.output(b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b[?996n\x1b[c\x1b]12;?\x07");
         assert_eq!(
             pane.input.drain_all(),
-            b"\x1b]11;rgb:0000/1010/ffff\x07\x1b]10;rgb:c0c0/c0c0/c0c0\x1b\\\x1b[?997;2n\x1b[?1;2c"
+            b"\x1b]11;rgb:0000/1010/ffff\x07\x1b]10;rgb:c0c0/c0c0/c0c0\x1b\\\x1b[?997;2n\x1b[?62;22c"
         );
         // DECRQM knows mode 2031, which the program sets.
         pane.output(b"\x1b[?2031h\x1b[?2031$p");

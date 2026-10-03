@@ -24,10 +24,28 @@ const MODES: &[u16] = &[
 
 /// Sequences fux-vt reports as unhandled that fux answers itself, from
 /// what it knows as the host, and how.
-const HOST_ANSWERS: &[(&str, &str)] = &[(
-    "CSI ? 996 n",
-    "reported as unhandled; fux answers with its client terminal's scheme (src/outer.rs)",
-)];
+const HOST_ANSWERS: &[(&str, &str)] = &[
+    (
+        "CSI ? 996 n",
+        "reported as unhandled; fux answers with its client terminal's scheme (src/outer.rs)",
+    ),
+    (
+        "CSI 22;n t",
+        "reported as unhandled; fux's pane pushes its title (src/pane.rs)",
+    ),
+    (
+        "CSI 22;n;n t",
+        "reported as unhandled; fux's pane pushes its title (src/pane.rs)",
+    ),
+    (
+        "CSI 23;n t",
+        "reported as unhandled; fux's pane pops its title (src/pane.rs)",
+    ),
+    (
+        "CSI 23;n;n t",
+        "reported as unhandled; fux's pane pops its title (src/pane.rs)",
+    ),
+];
 
 /// What fux-vt does with a sequence.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -704,16 +722,8 @@ struct Row {
 fn tally(recordings: &[Recording]) -> Result<BTreeMap<String, Row>, String> {
     let mut rows: BTreeMap<String, Row> = BTreeMap::new();
     for r in recordings {
-        // As fux's panes are set up (src/pane.rs).
-        let options = fux_vt::Options::new()
-            .with_events(true)
-            .with_mode_reports(true)
-            .with_in_band_resize(true)
-            .with_size_reports(true)
-            .with_color_scheme_updates(true)
-            .with_kitty_keyboard(true)
-            .with_hyperlinks(true)
-            .with_prompt_marks(true);
+        // As fux's panes are set up.
+        let options = fux::pane::OPTIONS;
         let mut parser = fux_vt::Parser::with_options(r.rows, r.cols, 10_000, options)
             .map_err(|e| format!("fux-vt: {e}"))?;
         let bytes = r.bytes();
@@ -808,9 +818,9 @@ pub fn run(names: &[String]) -> Result<bool, String> {
          SGR attribute is a row of its own, and an XTGETTCAP request shows the \
          capabilities it asks for. \"Count\" counts every time it was sent, in all the \
          recordings. \"fux-vt\" is what a fux pane's parser does with it, as fux sets \
-         it up (`Options::new().with_events(true).with_mode_reports(true).with_in_band_resize(true)\
-         .with_color_scheme_updates(true).with_kitty_keyboard(true).with_hyperlinks(true)\
-         .with_prompt_marks(true)`), with what fux itself answers.\n"
+         it up (`fux::pane::OPTIONS`: events, DECRQM, in-band resize, the size query, \
+         colour-scheme reports, the kitty keyboard protocol, hyperlinks, prompt marks and \
+         fux's identity), with what fux itself answers.\n"
     );
     let _ = writeln!(out, "Recordings:\n");
     for r in &recordings {
