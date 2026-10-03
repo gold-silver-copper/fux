@@ -634,7 +634,9 @@ fn string(kind: u8, body: &[u8]) -> (String, Does) {
     let does = if kind == b'P' && matches!(key.as_str(), "DCS $ q m" | "DCS $ q r") {
         Does::Implemented("answered (Options::setting_reports)")
     } else if kind == b'P' && key == "DCS $ q  q" {
-        Does::Partly("answered once the program set a cursor shape; the terminal's own is not known")
+        Does::Partly(
+            "answered once the program set a cursor shape; the terminal's own is not known",
+        )
     } else if kind == b'P' && key.starts_with("DCS $ q") {
         Does::Implemented("answered as invalid, as xterm answers it")
     } else if kind == b'P' && key.starts_with("DCS + q") {

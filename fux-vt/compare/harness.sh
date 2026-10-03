@@ -72,11 +72,11 @@ build_bench() {
 
 full() {
   quick
-  echo "full: 20,000 random cases in both setups, esctest"
-  ran+=(random-wide random-fux esctest)
+  echo "full: 20,000 random cases with reflow and without, esctest"
+  ran+=(random-wide random-no-reflow esctest)
   together \
     "random-wide $compare run --cases 20000" \
-    "random-fux $compare run --cases 20000 --no-reflow" \
+    "random-no-reflow $compare run --cases 20000 --no-reflow" \
     "esctest $compare esctest --json $out/esctest.json"
   echo "full: instructions against main (alone)"
   ran+=(against)

@@ -119,10 +119,10 @@ survey, matrix and replay: the voters that can run here), `all` (every
 engine that can run here, the default for cases and bench), `in-process`
 or `xterm`.
 
-fux-vt is set up as ratty sets it up (reflow, an identity), with the DECRQM
-answers, in-band resize, colour-scheme reports, the kitty keyboard
-protocol, hyperlinks and prompt marks fux's panes have; --no-reflow sets it
-up as fux does, which leaves out the families that need ratty's setup.";
+fux-vt is set up as fux and ratty set it up (reflow, an identity), with the
+DECRQM answers, in-band resize, colour-scheme reports, the kitty keyboard
+protocol, hyperlinks and prompt marks fux's panes have; --no-reflow without
+reflow, fux-vt's default, which leaves out the families that need reflow.";
 
 struct Args {
     command: String,
