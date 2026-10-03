@@ -392,7 +392,9 @@ on Linux and macOS. The tests start real servers and shells: they need
 Packages outside the workspace, each with a README: `walk` (scripted runs of
 the real binary), `diff` (fux beside its last release), `fuzz` and
 `fux-vt/fuzz` (libFuzzer targets), `fux-vt/compare` (fux-vt beside other
-terminals). `references/` fetches the specifications fux-vt follows.
+terminals), `bench` (speed against `main`, in instructions retired; and
+latency, throughput and footprint beside tmux and zellij).
+`references/` fetches the specifications fux-vt follows.
 
 ## License
 
