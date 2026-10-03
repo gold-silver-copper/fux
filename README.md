@@ -356,6 +356,16 @@ program that asks for in-band resize reports (`CSI ? 2048 h`) gets
 `CSI 48 ; rows ; cols ; 0 ; 0 t` whenever its pane's size changes, once its
 terminal has the new size.
 
+A program that asks its terminal's colours (OSC 10 and 11: vim, delta,
+tmux, to choose a dark or light theme) is told your terminal's: the server
+asks each client's terminal as it attaches, and answers a pane with the
+colours of the client that last typed into its tab, else of one showing
+it, else the last any terminal gave. A terminal that does not answer is
+not asked again, and the program gets no answer, as before. If your
+terminal reports changes between dark and light (mode 2031: Ghostty,
+kitty, contour), fux turns that on while attached, and passes a change on
+to each program that asked for it (`CSI ? 2031 h`: Claude Code, tmux).
+
 Hyperlinks a program prints (OSC 8: `ls --hyperlink`, gcc, delta, Claude
 Code) reach your terminal as links, each with an id of its pane's, so two
 panes' links never merge into one; a terminal that does not know OSC 8

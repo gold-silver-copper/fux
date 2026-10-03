@@ -55,8 +55,9 @@ cargo +nightly cov -- report fux-vt/fuzz/target/*/coverage/*/release/terminal \
 
 Input: three header bytes choose 1–16 rows, 1–24 columns and 0–15 history
 rows. The history byte's bits 0x10 and 0x20 turn on `Options::events` and
-`extended_replies`; the rows byte's bits 0x10, 0x20 and 0x40 turn on
-`reflow`, `kitty_keyboard` and an `identity`, each alone or together.
+`extended_replies`; the rows byte's bits 0x10, 0x20, 0x40 and 0x80 turn on
+`reflow`, `kitty_keyboard`, an `identity` and `color_scheme_updates`, each
+alone or together.
 `ff rows cols` resizes; `fe` followed by eight bytes selects window
 offset/height/width, both copy endpoints and cell/byte budgets; `fd n`
 followed by n (at most 63) bytes prints a character of

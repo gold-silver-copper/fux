@@ -703,6 +703,7 @@ pub fn send_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let Some(pane) = session.views.get(&client).and_then(|v| v.focus()) else {
         return;
     };
+    session.typed(client);
     let Some(p) = session.panes.get_mut(&pane) else {
         return;
     };

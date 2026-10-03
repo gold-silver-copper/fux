@@ -26,6 +26,11 @@ impl Sink for Record {
                 entry.extend_from_slice(t);
             }
             Event::Bell => entry.push(b'B'),
+            Event::ColorQuery { number, bel } => {
+                entry.push(b'Q');
+                entry.push(number);
+                entry.push(u8::from(bel));
+            }
             Event::Clipboard { selection, data } => {
                 assert!(selection.len() + data.len() < OSC_PAYLOAD_LIMIT);
                 entry.push(b'C');
@@ -163,7 +168,8 @@ fuzz_target!(|data: &[u8]| {
     // Header bits above the history count opt into events (0x10), extended
     // replies (0x20), hyperlinks (0x40) and prompt marks (0x80); above the
     // row count, into reflow
-    // (0x10), the kitty keyboard protocol (0x20) and an identity (0x40).
+    // (0x10), the kitty keyboard protocol (0x20), an identity (0x40) and
+    // colour-scheme updates (0x80).
     // Each is fuzzed alone and with the others, alongside the default.
     let options = Options::new()
         .with_events(history & 0x10 != 0)
@@ -175,7 +181,8 @@ fuzz_target!(|data: &[u8]| {
         .with_identity((r & 0x40 != 0).then_some(Identity {
             name: "fuzz",
             version: "1.2.3",
-        }));
+        }))
+        .with_color_scheme_updates(r & 0x80 != 0);
     let Ok(mut whole) = Parser::with_options(
         1 + u16::from(r % 16),
         1 + u16::from(c % 24),

@@ -1,17 +1,39 @@
-//! Decoding a client's raw terminal input into keys, pastes and focus
-//! changes. The client is a dumb pipe; this is the only decoder.
+//! Decoding a client's raw terminal input into keys, pastes, focus changes
+//! and the terminal's answers to fux's questions (`outer`). The client is a
+//! dumb pipe; this is the only decoder.
 //!
 //! The outer terminal is in normal (not application) cursor and keypad mode,
 //! so each key has one xterm encoding. A lone Escape is only known to be one
 //! when no more bytes follow within `ESCAPE_DELAY`; the server calls
 //! `timeout` at the `deadline` the decoder reports. Mouse sequences, which a
 //! correctly configured outer terminal never sends, are dropped.
+//!
+//! The terminal's answers are told from keys by their form, which no key
+//! has: a CSI with `?` (`CSI ? 997 ; 1 n`, `CSI ? 2031 ; 2 $ y`, DA1), or an
+//! OSC string (`OSC 11 ; rgb:… ST`). An answer cut short waits
+//! `REPLY_DELAY` for its end, as a slow link may split one, and is then
+//! dropped, never typed. `ESC ]` with nothing after it waits, as `ESC [`
+//! and `ESC O` do, `ESCAPE_DELAY`, or `REPLY_DELAY` while an answer is
+//! expected (`Decoder::expect`), and is then Alt-]; with a digit after it,
+//! it is an answer begun. How input is split never changes what it decodes
+//! to; only how long a wait lasts.
 use crate::bytes::ByteQueue;
 use crate::keys::{Direction, Key, KeyPress, Modifiers};
+use crate::outer::{Rgb, Scheme};
 use std::time::{Duration, Instant};
 
 /// How long a lone Escape waits for the rest of a sequence.
 pub const ESCAPE_DELAY: Duration = Duration::from_millis(35);
+/// How long an answer from the terminal that has begun waits for the rest
+/// of it. Answers are not typed, so the wait delays no key; it only keeps a
+/// split one from being taken for keys.
+pub const REPLY_DELAY: Duration = Duration::from_secs(1);
+/// How long after fux asks the terminal a bare `ESC ]` is taken for the
+/// start of an answer, unless the answer to DA1, asked last, comes first.
+pub const REPLY_WINDOW: Duration = Duration::from_secs(1);
+/// The longest OSC answer kept: `OSC 11 ; rgb:RRRR/GGGG/BBBB ST` is 29
+/// bytes. A longer string is dropped.
+const OSC_LIMIT: usize = 128;
 /// The largest paste delivered; a longer one is refused whole.
 pub const PASTE_LIMIT: usize = 64 * 1024;
 
@@ -23,6 +45,24 @@ pub enum Input {
     PasteTooLong,
     FocusIn,
     FocusOut,
+    /// An answer from the terminal, or a report it sends unasked.
+    Reply(Reply),
+}
+
+/// What the terminal answers fux (`outer`), told from keys by its form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reply {
+    /// `OSC 10 ; rgb:… ST` (foreground) or `OSC 11 ; …` (background).
+    Colour { number: u8, rgb: Rgb },
+    /// `CSI ? 997 ; 1 n` (dark) or `; 2 n` (light): the answer to
+    /// `CSI ? 996 n`, or a report of a change.
+    Scheme(Scheme),
+    /// DECRQM's answer for a DEC private mode: `CSI ? mode ; status $ y`.
+    Mode { mode: u16, status: u8 },
+    /// The kitty keyboard protocol's flags: `CSI ? flags u`.
+    KittyFlags(u8),
+    /// Primary device attributes, `CSI ? … c`.
+    Attributes,
 }
 
 #[derive(Default)]
@@ -35,6 +75,10 @@ pub struct Decoder {
     marker: usize,
     /// When decoding began waiting on a timeout, as `mark` found it.
     since: Option<Instant>,
+    /// Rounds of questions asked of the terminal whose last answer, DA1's,
+    /// has not come, and until when they are waited for.
+    expected: u8,
+    expected_until: Option<Instant>,
 }
 
 const PASTE_END: &[u8] = b"\x1b[201~";
@@ -64,10 +108,36 @@ impl Decoder {
     }
 
     /// When `timeout` is due: `ESCAPE_DELAY` after decoding began waiting,
-    /// as marked; none while it is not waiting.
+    /// as marked, or `REPLY_DELAY` if what waits is an answer begun, or a
+    /// bare `ESC ]` while an answer is expected; none while it is not
+    /// waiting.
     pub fn deadline(&self) -> Option<Instant> {
         let since = self.since.filter(|_| self.waiting())?;
-        Some(crate::after(since, ESCAPE_DELAY))
+        let pending = self.pending.as_slice();
+        let reply = match pending {
+            b"\x1b]" => self.expected > 0,
+            _ => pending.starts_with(b"\x1b]") || pending.starts_with(b"\x1b[?"),
+        };
+        Some(crate::after(
+            since,
+            if reply { REPLY_DELAY } else { ESCAPE_DELAY },
+        ))
+    }
+
+    /// Fux has asked the terminal questions, ending with DA1, at `now`: until
+    /// DA1's answer comes, or `REPLY_WINDOW` passes, a bare `ESC ]` waits as
+    /// long as an answer begun.
+    pub fn expect(&mut self, now: Instant) {
+        self.expected = self.expected.saturating_add(1);
+        self.expected_until = Some(crate::after(now, REPLY_WINDOW));
+    }
+
+    /// Forgets the answers expected if their window has passed by `now`.
+    pub fn expire(&mut self, now: Instant) {
+        if self.expected_until.is_some_and(|until| now >= until) {
+            self.expected = 0;
+            self.expected_until = None;
+        }
     }
 
     pub fn bytes(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
@@ -79,7 +149,7 @@ impl Decoder {
     }
 
     fn feed(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
-        for &byte in bytes {
+        for (i, &byte) in bytes.iter().enumerate() {
             if let Some(paste) = &mut self.paste {
                 // Match the end marker incrementally; a partial marker that
                 // breaks off is paste text after all.
@@ -113,8 +183,12 @@ impl Decoder {
                 self.marker = usize::from(byte == 0x1b);
                 continue;
             }
-            self.pending.push(&[byte]);
+            // Outside a paste, the rest at once: a sequence is decoded with
+            // what came with it, so `ESC ]` and a digit are an answer begun,
+            // not Alt-] and a key. A paste it starts takes what follows.
+            self.pending.push(bytes.get(i..).unwrap_or_default());
             self.drain(out, false);
+            return;
         }
     }
 
@@ -135,6 +209,9 @@ impl Decoder {
                     // Nearly always the whole sequence; else what follows it
                     // stays, without moving.
                     self.pending.take(n);
+                    if input == Some(Input::Reply(Reply::Attributes)) {
+                        self.expected = self.expected.saturating_sub(1);
+                    }
                     if let Some(input) = input {
                         out.push(input);
                     }
@@ -217,6 +294,8 @@ fn single(bytes: &[u8], flush: bool) -> Step {
     Step::Done(1, input)
 }
 
+/// One input from the start of `bytes`; `flush` once the deadline has
+/// passed.
 fn decode(bytes: &[u8], flush: bool) -> Step {
     let Some(&first) = bytes.first() else {
         return Step::Incomplete;
@@ -233,6 +312,7 @@ fn decode(bytes: &[u8], flush: bool) -> Step {
     };
     match second {
         b'[' => csi(bytes, flush),
+        b']' => osc(bytes, flush),
         b'O' => match bytes.get(2) {
             None if !flush => Step::Incomplete,
             None => Step::Done(2, press(Key::Char('O'), alt())),
@@ -278,6 +358,79 @@ fn ss3(last: u8, mods: Modifiers) -> Option<Input> {
     press(key, mods)
 }
 
+/// `ESC ]`: an OSC string, an answer from the terminal, if a digit follows
+/// it (no key sends one); else Alt-], once the deadline has passed if
+/// nothing follows yet. The string ends with BEL or ST (`ESC \`); a colour
+/// answer becomes a `Reply`, and anything else, or anything cut short at
+/// the deadline or past `OSC_LIMIT`, is dropped.
+fn osc(bytes: &[u8], flush: bool) -> Step {
+    let alt_bracket = || Step::Done(2, press(Key::Char(']'), alt()));
+    let body = bytes.get(2..).unwrap_or_default();
+    match body.first() {
+        None if !flush => return Step::Incomplete,
+        Some(first) if first.is_ascii_digit() => {}
+        _ => return alt_bracket(),
+    }
+    let end = body.iter().position(|b| matches!(b, 0x07 | 0x1b));
+    let (payload, consumed) = match end.map(|i| (i, body.get(i).copied())) {
+        Some((i, Some(0x07))) => (body.get(..i), i.checked_add(3)),
+        Some((i, _)) => match body.get(i.saturating_add(1)) {
+            Some(b'\\') => (body.get(..i), i.checked_add(4)),
+            // ESC and something else: the string ends there, unfinished,
+            // and the ESC begins what comes next.
+            Some(_) => return Step::Done(i.saturating_add(2), None),
+            None if flush => return Step::Done(bytes.len(), None),
+            None => return Step::Incomplete,
+        },
+        // Longer than any answer, or cut short: dropped.
+        None if flush || body.len() > OSC_LIMIT => return Step::Done(bytes.len(), None),
+        None => return Step::Incomplete,
+    };
+    // Within `bytes`: the string, its two-byte opening and its end.
+    let consumed = consumed.unwrap_or(bytes.len()).min(bytes.len());
+    let reply = payload.and_then(colour_reply).map(Input::Reply);
+    Step::Done(consumed, reply)
+}
+
+/// `10 ; rgb:…` or `11 ; rgb:…`: the terminal's foreground or background.
+fn colour_reply(payload: &[u8]) -> Option<Reply> {
+    let split = payload.iter().position(|b| *b == b';')?;
+    let (number, spec) = payload.split_at_checked(split)?;
+    let number = match number {
+        b"10" => 10,
+        b"11" => 11,
+        _ => return None,
+    };
+    let rgb = Rgb::parse(spec.get(1..)?)?;
+    Some(Reply::Colour { number, rgb })
+}
+
+/// A CSI answer from the terminal, `params` from its `?` on, ending with
+/// `last`.
+fn csi_reply(params: &[u8], last: u8) -> Option<Reply> {
+    let text = std::str::from_utf8(params.get(1..)?).ok()?;
+    match last {
+        b'c' => Some(Reply::Attributes),
+        b'u' => {
+            let flags = text.parse::<u32>().ok()?;
+            Some(Reply::KittyFlags(u8::try_from(flags).unwrap_or(u8::MAX)))
+        }
+        b'n' => match text {
+            "997;1" => Some(Reply::Scheme(Scheme::Dark)),
+            "997;2" => Some(Reply::Scheme(Scheme::Light)),
+            _ => None,
+        },
+        b'y' => {
+            let (mode, status) = text.strip_suffix('$')?.split_once(';')?;
+            Some(Reply::Mode {
+                mode: mode.parse().ok()?,
+                status: status.parse().ok()?,
+            })
+        }
+        _ => None,
+    }
+}
+
 /// A CSI sequence: `ESC [ params final`. Too long a sequence is dropped.
 fn csi(bytes: &[u8], flush: bool) -> Step {
     let body = bytes.get(2..).unwrap_or_default();
@@ -291,25 +444,39 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
             Step::Incomplete
         };
     }
-    let Some(end) = body.iter().position(|b| (0x40..=0x7e).contains(b)) else {
-        if body.len() > 32 || flush {
-            // Not a sequence fux can use: an Escape and `[` were typed, or it
-            // is garbage. At a timeout, treat it as Alt-[ and the rest.
-            return if body.len() > 32 {
-                Step::Done(bytes.len(), None)
-            } else {
-                Step::Done(2, press(Key::Char('['), alt()))
-            };
+    // An answer from the terminal (`?`) may be longer than any key's.
+    let answer = body.first() == Some(&b'?');
+    let limit = if answer { 64 } else { 32 };
+    // A sequence with no final byte within the limit is dropped as far as
+    // one byte past it, whatever follows.
+    let window = body.get(..=limit).unwrap_or(body);
+    let Some(end) = window.iter().position(|b| (0x40..=0x7e).contains(b)) else {
+        if window.len() > limit {
+            // Not a sequence fux can use: garbage.
+            return Step::Done(window.len().saturating_add(2), None);
         }
-        return Step::Incomplete;
+        if !flush {
+            return Step::Incomplete;
+        }
+        // At a timeout, an answer begun is dropped, never typed; anything
+        // else was an Escape and `[` typed: Alt-[ and the rest.
+        return if answer {
+            Step::Done(bytes.len(), None)
+        } else {
+            Step::Done(2, press(Key::Char('['), alt()))
+        };
     };
     // `ESC [`, the parameters and the final byte; within `bytes`, so exact.
     let consumed = end.saturating_add(3);
     let params = body.get(..end).unwrap_or_default();
     let last = body.get(end).copied().unwrap_or(0);
-    if params.first() == Some(&b'<') || params.first() == Some(&b'?') {
-        // SGR mouse reports and private replies are dropped.
+    if params.first() == Some(&b'<') {
+        // SGR mouse reports are dropped.
         return Step::Done(consumed, None);
+    }
+    if params.first() == Some(&b'?') {
+        // Answers fux does not use are dropped.
+        return Step::Done(consumed, csi_reply(params, last).map(Input::Reply));
     }
     let numbers: Vec<u32> = std::str::from_utf8(params)
         .unwrap_or("")
@@ -368,6 +535,7 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outer::{Rgb, Scheme};
 
     fn all(bytes: &[u8]) -> Vec<Input> {
         let mut d = Decoder::default();
@@ -509,6 +677,134 @@ mod tests {
             d.timeout(&mut out);
             assert_eq!(out, whole, "split at {split}");
         }
+    }
+
+    fn colour(number: u8, r: u16, g: u16, b: u16) -> Input {
+        Input::Reply(Reply::Colour {
+            number,
+            rgb: Rgb { r, g, b },
+        })
+    }
+
+    /// Each answer fux asks for (`outer`), in the forms terminals give
+    /// (ctlseqs: OSC 10/11 answered `rgb:RRRR/GGGG/BBBB`, ended as asked;
+    /// DECRQM `CSI ? Ps ; Pm $ y`; DA1 `CSI ? … c`; the kitty flags
+    /// `CSI ? flags u`; contour's `CSI ? 997 ; 1|2 n`), among keys, whole
+    /// and split at every byte, with an answer expected or not.
+    #[test]
+    fn answers_are_told_from_keys_however_they_arrive() {
+        let stream: &[u8] = b"a\x1b]10;rgb:ffff/ffff/ffff\x1b\\b\x1b]11;rgb:1e/1e/20\x07\
+            \x1b[?2031;2$y\x1b[?997;1nc\x1b[?997;2n\x1b[?5u\x1b[?62;22;52c\x1b[Ad";
+        let expected = vec![
+            key("a"),
+            colour(10, 0xffff, 0xffff, 0xffff),
+            key("b"),
+            colour(11, 0x1e1e, 0x1e1e, 0x2020),
+            Input::Reply(Reply::Mode {
+                mode: 2031,
+                status: 2,
+            }),
+            Input::Reply(Reply::Scheme(Scheme::Dark)),
+            key("c"),
+            Input::Reply(Reply::Scheme(Scheme::Light)),
+            Input::Reply(Reply::KittyFlags(5)),
+            Input::Reply(Reply::Attributes),
+            key("Up"),
+            key("d"),
+        ];
+        assert_eq!(all(stream), expected);
+        for expecting in [false, true] {
+            for split in 1..stream.len() {
+                let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
+                let mut d = Decoder::default();
+                if expecting {
+                    d.expect(Instant::now());
+                }
+                let mut out = Vec::new();
+                d.bytes(a, &mut out);
+                d.bytes(b, &mut out);
+                d.timeout(&mut out);
+                assert_eq!(out, expected, "split at {split}, expecting {expecting}");
+            }
+        }
+        // Colours fux does not ask for or cannot read are dropped; answers
+        // it does not use reach the session, which ignores them: no keys.
+        assert_eq!(
+            all(b"\x1b[?1;2c\x1b]12;rgb:0/0/0\x07\x1b]11;#000\x07\x1b[?6;1$yx"),
+            vec![
+                Input::Reply(Reply::Attributes),
+                Input::Reply(Reply::Mode { mode: 6, status: 1 }),
+                key("x")
+            ]
+        );
+    }
+
+    /// An answer cut short waits `REPLY_DELAY`, not `ESCAPE_DELAY`, for the
+    /// rest, and at the deadline is dropped, never typed; a lone Escape
+    /// still waits `ESCAPE_DELAY` and is a key.
+    #[test]
+    fn an_answer_cut_short_is_dropped_not_typed() {
+        let t0 = Instant::now();
+        for part in [&b"\x1b]11;rgb:1e1e/"[..], b"\x1b[?99", b"\x1b[?", b"\x1b]1"] {
+            let mut d = Decoder::default();
+            let mut out = Vec::new();
+            d.bytes(part, &mut out);
+            d.mark(t0);
+            assert_eq!(d.deadline(), Some(t0 + REPLY_DELAY), "{part:?}");
+            d.timeout(&mut out);
+            assert!(out.is_empty(), "{part:?}: {out:?}");
+            d.bytes(b"k", &mut out);
+            assert_eq!(out, vec![key("k")]);
+        }
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.bytes(b"\x1b", &mut out);
+        d.mark(t0);
+        assert_eq!(d.deadline(), Some(t0 + ESCAPE_DELAY));
+        // An OSC string longer than any answer is dropped as it arrives.
+        let mut long = b"\x1b]11;".to_vec();
+        long.extend(std::iter::repeat_n(b'x', 200));
+        long.extend_from_slice(b"\x07y");
+        assert_eq!(all(&long), vec![key("y")]);
+    }
+
+    /// `ESC ]` alone is Alt-] once `ESCAPE_DELAY` passes, as `ESC [` is
+    /// Alt-[, or `REPLY_DELAY` while an answer is expected; with anything but
+    /// a digit after it, at once. The answer to DA1, asked last, ends the
+    /// expecting; so does `REPLY_WINDOW` passing.
+    #[test]
+    fn escape_bracket_waits_longer_while_an_answer_is_expected() {
+        let alt_bracket = key("M-]");
+        assert_eq!(all(b"\x1b]"), vec![alt_bracket.clone()]);
+        assert_eq!(all(b"\x1b]x"), vec![alt_bracket.clone(), key("x")]);
+        let t0 = Instant::now();
+        let waits = |d: &mut Decoder, bytes: &[u8], out: &mut Vec<Input>| {
+            d.bytes(bytes, out);
+            d.mark(t0);
+            d.deadline().map(|at| at.duration_since(t0))
+        };
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        assert_eq!(waits(&mut d, b"\x1b]", &mut out), Some(ESCAPE_DELAY));
+        d.timeout(&mut out);
+        assert_eq!(out, vec![alt_bracket.clone()]);
+        let mut d = Decoder::default();
+        d.expect(t0);
+        let mut out = Vec::new();
+        assert_eq!(waits(&mut d, b"\x1b]", &mut out), Some(REPLY_DELAY));
+        d.timeout(&mut out);
+        assert_eq!(out, vec![alt_bracket.clone()]);
+        // DA1's answer: no more answers to wait for.
+        out.clear();
+        assert_eq!(
+            waits(&mut d, b"\x1b[?1;2c\x1b]", &mut out),
+            Some(ESCAPE_DELAY)
+        );
+        assert_eq!(out, vec![Input::Reply(Reply::Attributes)]);
+        let mut d = Decoder::default();
+        d.expect(t0);
+        d.expire(t0 + REPLY_WINDOW);
+        assert_eq!(waits(&mut d, b"\x1b]", &mut out), Some(ESCAPE_DELAY));
     }
 
     #[test]

@@ -124,6 +124,9 @@ get modern/mode_2026_synchronized_output.md \
 get modern/mode_2027_grapheme_clusters.tex \
   https://raw.githubusercontent.com/contour-terminal/terminal-unicode-core/master/spec/terminal-unicode-core.tex
 get modern/mode_2048_in_band_resize.md https://gist.github.com/rockorager/e695fb2924d36b2bcf1fff4a3704bd83/raw
+# Colour-scheme reports: mode 2031, `CSI ? 996 n` and `CSI ? 997 ; 1|2 n`.
+get modern/mode_2031_color_scheme_updates.md \
+  https://raw.githubusercontent.com/contour-terminal/contour/master/docs/vt-extensions/color-palette-update-notifications.md
 get modern/kitty_underlines.html https://sw.kovidgoyal.net/kitty/underlines/
 # Semantic prompts, OSC 133: FinalTerm's sequences as iTerm2 documents them
 # ("Shell Integration/FinalTerm"), and Per Bothner's proposal, which extends

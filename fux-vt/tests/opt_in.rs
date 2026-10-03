@@ -26,6 +26,9 @@ impl Sink for Record {
             Event::Clipboard { selection, data } => {
                 format!("clipboard:{}:{}", text(selection), text(data))
             }
+            Event::ColorQuery { number, bel } => {
+                format!("color:{number}:{}", if bel { "bel" } else { "st" })
+            }
             _ => "unknown".to_owned(),
         });
     }
@@ -296,6 +299,81 @@ fn size_reports_answer_the_text_area_in_characters() -> Result {
     let expected: [&[u8]; 2] = [b"\x1b[8;24;80t", b"\x1b[8;30;100t"];
     assert_eq!(record.replies, expected.map(<[u8]>::to_vec));
     assert!(run(Options::new(), b"\x1b[18t")?.replies.is_empty());
+    Ok(())
+}
+
+/// xterm's dynamic colour queries (ctlseqs, "Operating System Commands",
+/// OSC 10 to 19): each `?` asks for the next colour from the one the OSC
+/// names, an event each, with how the query ended so the host answers in
+/// kind. Setting a colour and other OSC numbers are no query; nor is
+/// anything without `Options::events`.
+#[test]
+fn colour_queries_are_events() -> Result {
+    let input = b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b]10;?;?\x07\x1b]12;red;?\x07\
+        \x1b]10;#ffffff\x07\x1b]4;1;?\x07\x1b]19;?;?\x07\x1b]110;?\x07";
+    let record = run(EVENTS, input)?;
+    assert_eq!(
+        record.events,
+        [
+            "color:11:bel",
+            "color:10:st",
+            "color:10:bel",
+            "color:11:bel",
+            "color:13:bel",
+            "color:19:bel",
+        ]
+    );
+    assert!(record.replies.is_empty(), "the host answers");
+    for size in [1, 2, 5] {
+        let mut parser = Parser::with_options(24, 80, 0, EVENTS)?;
+        let mut pieces_record = Record::default();
+        for chunk in pieces::pieces(input, size) {
+            parser.process_with(chunk, &mut pieces_record)?;
+        }
+        assert_eq!(pieces_record, record, "chunk size {size}");
+    }
+    assert_eq!(run(Options::default(), input)?, Record::default());
+    Ok(())
+}
+
+/// Colour-scheme change reports
+/// (`references/modern/mode_2031_color_scheme_updates.md`): with
+/// `Options::color_scheme_updates`, mode 2031 is tracked and DECRQM reports
+/// it; RIS ends it. `CSI ? 996 n`, the scheme asked for, is the host's to
+/// answer. Without the option the mode is not recognized.
+#[test]
+fn colour_scheme_updates_are_tracked() -> Result {
+    #[derive(Default)]
+    struct Said(Vec<String>);
+    impl Sink for Said {
+        fn reply(&mut self, bytes: &[u8]) {
+            self.0.push(String::from_utf8_lossy(bytes).into_owned());
+        }
+        fn unhandled(&mut self, sequence: fux_vt::Unhandled<'_>) {
+            self.0.push(format!("unhandled {sequence:?}"));
+        }
+    }
+    let options = Options::new()
+        .with_mode_reports(true)
+        .with_color_scheme_updates(true);
+    let mut p = Parser::with_options(24, 80, 0, options)?;
+    let mut said = Said::default();
+    p.process_with(b"\x1b[?2031$p\x1b[?2031h\x1b[?2031$p", &mut said)?;
+    assert!(p.screen().color_scheme_updates());
+    assert_eq!(said.0, ["\x1b[?2031;2$y", "\x1b[?2031;1$y"]);
+    p.process(b"\x1b[?2031l")?;
+    assert!(!p.screen().color_scheme_updates());
+    p.process(b"\x1b[?2031h\x1bc")?;
+    assert!(!p.screen().color_scheme_updates(), "RIS");
+    let mut said = Said::default();
+    p.process_with(b"\x1b[?996n", &mut said)?;
+    assert_eq!(said.0.len(), 1);
+    assert!(said.0.iter().all(|s| s.starts_with("unhandled Csi")));
+    let mut p = Parser::with_options(24, 80, 0, Options::new().with_mode_reports(true))?;
+    let mut said = Said::default();
+    p.process_with(b"\x1b[?2031h\x1b[?2031$p", &mut said)?;
+    assert!(!p.screen().color_scheme_updates());
+    assert_eq!(said.0, ["\x1b[?2031;0$y"]);
     Ok(())
 }
 

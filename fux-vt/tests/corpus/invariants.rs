@@ -123,6 +123,7 @@ pub fn equal(a: &Parser, b: &Parser) {
     assert_eq!(a.mouse_protocol_encoding(), b.mouse_protocol_encoding());
     assert_eq!(a.kitty_keyboard_flags(), b.kitty_keyboard_flags());
     assert_eq!(a.modify_other_keys(), b.modify_other_keys());
+    assert_eq!(a.color_scheme_updates(), b.color_scheme_updates());
     assert_eq!(a.history_len(), b.history_len());
     for offset in 0..usize::from(a.size().0).saturating_add(a.history_len()) {
         let (a, b) = (a.row_from_bottom(offset), b.row_from_bottom(offset));

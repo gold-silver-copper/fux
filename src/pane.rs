@@ -186,6 +186,31 @@ enum TitleOp {
 struct Sink<'a> {
     replies: &'a mut Vec<u8>,
     titles: &'a mut Vec<TitleOp>,
+    /// What colour queries are answered with (`outer`).
+    colours: &'a crate::outer::Colours,
+}
+
+impl Sink<'_> {
+    /// A colour query (OSC 10, 11), answered if the colour is known.
+    fn colour_query(&mut self, number: u8, bel: bool) {
+        if let Some(answer) = self.colours.answer(number, bel) {
+            fux_vt::Sink::reply(self, &answer);
+        }
+    }
+
+    /// `CSI ? 996 n`, the colour scheme asked for: answered if known.
+    fn scheme_query(&mut self, sequence: &fux_vt::Unhandled<'_>) {
+        if let fux_vt::Unhandled::Csi {
+            params,
+            intermediates: b"?",
+            action: b'n',
+        } = sequence
+            && params.groups().eq([&[996][..]])
+            && let Some(scheme) = self.colours.scheme
+        {
+            fux_vt::Sink::reply(self, scheme.report());
+        }
+    }
 }
 
 impl fux_vt::Sink for Sink<'_> {
@@ -200,20 +225,26 @@ impl fux_vt::Sink for Sink<'_> {
         }
     }
     fn event(&mut self, event: fux_vt::Event<'_>) {
-        if let fux_vt::Event::Title(title) = event {
-            let text: String = String::from_utf8_lossy(title)
-                .chars()
-                .filter(|c| !c.is_control())
-                .take(256)
-                .collect();
-            self.titles.push(TitleOp::Set(text));
+        match event {
+            fux_vt::Event::Title(title) => {
+                let text: String = String::from_utf8_lossy(title)
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(256)
+                    .collect();
+                self.titles.push(TitleOp::Set(text));
+            }
+            fux_vt::Event::ColorQuery { number, bel } => self.colour_query(number, bel),
+            _ => {}
         }
     }
     /// xterm's title stack (ctlseqs, window manipulation): `CSI 22 ; Ps t`
     /// pushes the title, `CSI 23 ; Ps t` pops it, for Ps 0 (icon and
     /// title, which are one here) or 2 (title); Ps 1, the icon alone, is
-    /// not a title. vim and tmux push on starting and pop on leaving.
+    /// not a title. vim and tmux push on starting and pop on leaving. And
+    /// `CSI ? 996 n`, the colour scheme asked for.
     fn unhandled(&mut self, sequence: fux_vt::Unhandled<'_>) {
+        self.scheme_query(&sequence);
         let fux_vt::Unhandled::Csi {
             params,
             intermediates: b"",
@@ -259,6 +290,9 @@ pub struct Pane {
     /// The output of a frame the program is drawing in synchronized output,
     /// from BSU on, and since when; see [`Pane::output`].
     frame: Option<(Vec<u8>, Instant)>,
+    /// What the program's colour queries are answered with, as the session
+    /// finds them before each read of output (`outer`).
+    pub colours: crate::outer::Colours,
 }
 
 /// After the shell's output has been quiet this long, it is taken to be
@@ -302,11 +336,13 @@ impl Pane {
     ) -> Result<Pane, Error> {
         // DECRQM answered: programs ask it whether synchronized output is
         // known before they use it. Hyperlinks kept, to paint them.
+        // Colour-scheme reports: the session sends them (`outer`).
         let options = fux_vt::Options::new()
             .with_events(true)
             .with_mode_reports(true)
             .with_in_band_resize(true)
             .with_size_reports(true)
+            .with_color_scheme_updates(true)
             .with_hyperlinks(true)
             .with_prompt_marks(true);
         let parser = fux_vt::Parser::with_options(rows.max(1), cols.max(1), history, options)
@@ -330,6 +366,7 @@ impl Pane {
             typed: None,
             frame: None,
             title_stack: VecDeque::new(),
+            colours: crate::outer::Colours::default(),
         })
     }
 
@@ -406,6 +443,7 @@ impl Pane {
         let mut sink = Sink {
             replies: &mut replies,
             titles: &mut titles,
+            colours: &self.colours,
         };
         // The parser refuses only allocations beyond its limits; the screen
         // stays as it was and output continues.
@@ -627,6 +665,42 @@ mod tests {
         pane.resize(3, 10);
         assert_eq!(pane.size, (3, 10));
         assert_eq!(pane.screen().size(), (3, 10));
+        Ok(())
+    }
+
+    /// A program's colour queries are answered with the colours the session
+    /// set, in the form asked (ctlseqs: `OSC 11 ; rgb:RRRR/GGGG/BBBB`, BEL or
+    /// ST as the query ended), in order with the other replies, so that
+    /// DA1 sent after a query as a sentinel comes after its answer; so is
+    /// `CSI ? 996 n`, with the scheme. What is not known is not answered.
+    #[test]
+    fn colour_queries_are_answered_from_the_session_s_colours() -> Result<(), Error> {
+        use crate::outer::{Colours, Rgb, Scheme};
+        let mut pane = pane()?;
+        pane.output(b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b[?996n\x1b[c");
+        assert_eq!(pane.input.drain_all(), b"\x1b[?1;2c", "nothing known");
+        pane.colours = Colours {
+            foreground: Some(Rgb {
+                r: 0xc0c0,
+                g: 0xc0c0,
+                b: 0xc0c0,
+            }),
+            background: Some(Rgb {
+                r: 0,
+                g: 0x1010,
+                b: 0xffff,
+            }),
+            scheme: Some(Scheme::Light),
+        };
+        pane.output(b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b[?996n\x1b[c\x1b]12;?\x07");
+        assert_eq!(
+            pane.input.drain_all(),
+            b"\x1b]11;rgb:0000/1010/ffff\x07\x1b]10;rgb:c0c0/c0c0/c0c0\x1b\\\x1b[?997;2n\x1b[?1;2c"
+        );
+        // DECRQM knows mode 2031, which the program sets.
+        pane.output(b"\x1b[?2031h\x1b[?2031$p");
+        assert!(pane.screen().color_scheme_updates());
+        assert_eq!(pane.input.drain_all(), b"\x1b[?2031;1$y");
         Ok(())
     }
 
