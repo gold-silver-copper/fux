@@ -16,6 +16,19 @@
 //! vote of the other engines, as in `run`. A difference the other engines
 //! outvote fux-vt on, where xterm agrees with fux-vt, is shown, not failed.
 //!
+//! **A resize is judged by the program's answer to it.** A step that
+//! resized the terminal is two steps of the case: the resize, and what the
+//! program wrote after it. The engines are compared after both, but only
+//! the second is judged. Right after the resize, before the program has
+//! redrawn, each engine shows its own way of resizing (whether it reflows,
+//! what comes back from history, where the cursor lands), which they choose
+//! differently on purpose, as `run` avoids by settling the cursor before
+//! each resize; fux's panes do not reflow (fux-vt's README). What the
+//! program draws for its new size is what is judged. What it leaves as the
+//! resize left it (a shell's earlier lines, history) stays as each engine
+//! resized it, and a recording where that differs has the reason in its
+//! status.
+//!
 //! Each recording has a status, like a family's: expected to agree, or
 //! differing for a recorded reason. `corpus` fails if one expected to
 //! agree does not.
@@ -106,6 +119,19 @@ impl Recording {
             }
         }
         None
+    }
+
+    /// Whether each comparison the case makes is judged, in order: one
+    /// before any step, then one after each. All are but those right after
+    /// a resize, before the program's answer to it (see the module
+    /// documentation).
+    pub fn judged(&self) -> Vec<bool> {
+        std::iter::once(true)
+            .chain((0..self.steps.len()).flat_map(|i| {
+                let resized = self.resize_at(i).map(|_| false);
+                resized.into_iter().chain([true])
+            }))
+            .collect()
     }
 
     /// The recording as a case: one step for each step recorded, and a
@@ -383,7 +409,14 @@ pub fn run(panel: &[usize], names: &[String], show: bool) -> Result<bool, String
     let (mut agree, mut differ) = (0usize, 0usize);
     for recording in &recordings {
         let case = recording.case();
-        let outcome = case.run_judged(panel, true, |v| !failures(v).is_empty())?;
+        // `run_judged` judges once before the steps and once after each.
+        let judged = recording.judged();
+        let at = std::cell::Cell::new(0usize);
+        let outcome = case.run_judged(panel, true, |v| {
+            let i = at.get();
+            at.set(i.saturating_add(1));
+            judged.get(i).copied().unwrap_or(true) && !failures(v).is_empty()
+        })?;
         let expected = status(&recording.name);
         let label = format!(
             "{} ({} steps, {} bytes)",
@@ -486,5 +519,7 @@ mod tests {
         assert_eq!(case.steps.get(2), Some(&crate::case::Step::Resize(3, 8)));
         let recorded: Vec<Option<usize>> = (0..=5).map(|s| recording.recorded_step(s)).collect();
         assert_eq!(recorded, [None, Some(0), Some(1), Some(2), Some(2), Some(3)]);
+        // Judged: before any step, after each but the resize itself.
+        assert_eq!(recording.judged(), [true, true, true, false, true, true]);
     }
 }
