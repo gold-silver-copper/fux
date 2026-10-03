@@ -147,6 +147,8 @@ pub const KIND: Kind = Kind {
         dim: false,
         underline_color: false,
         kitty_keyboard_flags: false,
+        synchronized_output: false,
+        in_band_resize: false,
         ..Can::ALL
     },
     panel: true,
@@ -264,6 +266,8 @@ impl Engine for Libvterm {
             application_cursor: s.application_cursor != 0,
             application_keypad: s.application_keypad != 0,
             bracketed_paste: s.bracketed_paste != 0,
+            synchronized_output: false,
+            in_band_resize: false,
             focus_reporting: s.focus_reporting != 0,
             kitty_keyboard_flags: 0,
             title: String::from_utf8_lossy(t.title()).into_owned(),

@@ -94,6 +94,7 @@ pub const KIND: Kind = Kind {
     can: Can {
         underline_color: false,
         kitty_keyboard_flags: false,
+        in_band_resize: false,
         ..Can::ALL
     },
     panel: false,
@@ -416,6 +417,8 @@ fn read(v: &Value) -> Result<Snapshot, String> {
         application_cursor: flag(v, "application_cursor")?,
         application_keypad: flag(v, "application_keypad")?,
         bracketed_paste: flag(v, "bracketed_paste")?,
+        synchronized_output: flag(v, "synchronized_output")?,
+        in_band_resize: false,
         focus_reporting: flag(v, "focus_reporting")?,
         kitty_keyboard_flags: 0,
         title: text(v, "title")?.to_owned(),

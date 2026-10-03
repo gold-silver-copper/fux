@@ -159,6 +159,8 @@ impl Snapshot {
             (can.application_keypad, &mut s.application_keypad),
             (can.bracketed_paste, &mut s.bracketed_paste),
             (can.focus_reporting, &mut s.focus_reporting),
+            (can.synchronized_output, &mut s.synchronized_output),
+            (can.in_band_resize, &mut s.in_band_resize),
         ] {
             *flag &= keep;
         }
@@ -198,6 +200,10 @@ pub struct Snapshot {
     pub application_keypad: bool,
     pub bracketed_paste: bool,
     pub focus_reporting: bool,
+    /// Synchronized output, mode 2026.
+    pub synchronized_output: bool,
+    /// In-band resize reports, mode 2048.
+    pub in_band_resize: bool,
     pub kitty_keyboard_flags: u8,
     pub title: String,
     /// Cursor position and status reports, in order: the replies both
@@ -259,6 +265,8 @@ pub enum Field {
     ApplicationKeypad,
     BracketedPaste,
     FocusReporting,
+    SynchronizedOutput,
+    InBandResize,
     Kitty,
     Title,
     Reports,
@@ -295,6 +303,8 @@ impl Field {
             Field::ApplicationKeypad => can.application_keypad,
             Field::BracketedPaste => can.bracketed_paste,
             Field::FocusReporting => can.focus_reporting,
+            Field::SynchronizedOutput => can.synchronized_output,
+            Field::InBandResize => can.in_band_resize,
             Field::Kitty => can.kitty_keyboard_flags,
             Field::Title => can.title,
             Field::Reports => can.reports,
@@ -369,7 +379,7 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
         format!("{:?}", fux.cursor),
         format!("{:?}", other.cursor),
     );
-    let flags: [Mode; 9] = [
+    let flags: [Mode; 11] = [
         ("pending wrap", Field::PendingWrap, |s| s.pending_wrap),
         ("cursor visible", Field::CursorVisible, |s| s.cursor_visible),
         ("autowrap", Field::Autowrap, |s| s.autowrap),
@@ -387,6 +397,10 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
         ("focus reporting", Field::FocusReporting, |s| {
             s.focus_reporting
         }),
+        ("synchronized output", Field::SynchronizedOutput, |s| {
+            s.synchronized_output
+        }),
+        ("in-band resize", Field::InBandResize, |s| s.in_band_resize),
     ];
     for (name, f, get) in flags {
         field(name.into(), f, get(fux).to_string(), get(other).to_string());

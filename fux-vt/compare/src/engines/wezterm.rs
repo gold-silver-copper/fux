@@ -283,6 +283,8 @@ pub const KIND: Kind = Kind {
     about: "WezTerm's terminal model, wezterm-term, from git",
     can: Can {
         pending_wrap: false,
+        synchronized_output: false,
+        in_band_resize: false,
         ..Can::ALL
     },
     panel: true,
@@ -429,6 +431,8 @@ impl Engine for Wezterm {
             application_cursor: t.application_cursor_keys_enabled(),
             application_keypad: t.application_keypad_enabled(),
             bracketed_paste: t.bracketed_paste_enabled(),
+            synchronized_output: false,
+            in_band_resize: false,
             focus_reporting: t.focus_tracking_enabled(),
             kitty_keyboard_flags: kitty_flags(t)?,
             title,

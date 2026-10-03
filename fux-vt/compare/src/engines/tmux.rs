@@ -77,6 +77,8 @@ pub const KIND: Kind = Kind {
     about: "tmux, a server of its own, read with capture-pane",
     can: Can {
         kitty_keyboard_flags: false,
+        synchronized_output: false,
+        in_band_resize: false,
         ..Can::ALL
     },
     panel: false,
@@ -346,6 +348,8 @@ impl Tmux {
             application_cursor: info.application_cursor,
             application_keypad: info.application_keypad,
             bracketed_paste: info.bracketed_paste,
+            synchronized_output: false,
+            in_band_resize: false,
             focus_reporting: focus,
             kitty_keyboard_flags: 0,
             title: info.title,

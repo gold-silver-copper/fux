@@ -7,8 +7,11 @@ use fux_vt::{Blink, CellRef, Event, Identity, Options, Parser, Sink};
 /// kitty keyboard protocol), with events on so titles can be compared; or,
 /// with `reflow` off, as fux does.
 pub fn options(reflow: bool) -> Options {
+    // DECRQM and in-band resize as fux's panes have them (src/pane.rs).
     Options::new()
         .with_events(true)
+        .with_mode_reports(true)
+        .with_in_band_resize(true)
         .with_kitty_keyboard(reflow)
         .with_reflow(reflow)
         .with_identity(reflow.then_some(Identity {
@@ -140,6 +143,8 @@ impl Engine for Vt {
             application_cursor: s.application_cursor(),
             application_keypad: s.application_keypad(),
             bracketed_paste: s.bracketed_paste(),
+            synchronized_output: s.synchronized_output(),
+            in_band_resize: s.in_band_resize(),
             focus_reporting: s.focus_reporting(),
             kitty_keyboard_flags: s.kitty_keyboard_flags(),
             title: self.heard.title.clone().unwrap_or_default(),

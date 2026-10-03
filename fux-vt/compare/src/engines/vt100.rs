@@ -67,6 +67,8 @@ pub const KIND: Kind = Kind {
         focus_reporting: false,
         kitty_keyboard_flags: false,
         reports: false,
+        synchronized_output: false,
+        in_band_resize: false,
         ..Can::ALL
     },
     panel: false,
@@ -178,6 +180,8 @@ fn read(parser: &mut vt100::Parser<Heard>, history_rows: usize) -> Snapshot {
         application_cursor: s.application_cursor(),
         application_keypad: s.application_keypad(),
         bracketed_paste: s.bracketed_paste(),
+        synchronized_output: false,
+        in_band_resize: false,
         focus_reporting: false,
         kitty_keyboard_flags: 0,
         title,

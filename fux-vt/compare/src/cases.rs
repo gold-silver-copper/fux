@@ -13,6 +13,15 @@ pub type Named = (
 );
 
 pub const CASES: &[Named] = &[
+    // Synchronized output ends with DECSTR in fux-vt and xterm.js, so that
+    // `tput init` and `tput reset` never leave a frame waiting; Ghostty
+    // keeps it. The spec is silent.
+    (
+        "decstr-ends-synchronized-output",
+        "sync",
+        (1, 4),
+        &["\\e[?2026h", "\\e[!p"],
+    ),
     // Recorded verdicts (families with `Status::Decided`): each pins one
     // point, and `verdicts` checks it beside xterm.
     (

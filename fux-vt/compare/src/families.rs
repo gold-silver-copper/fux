@@ -300,6 +300,26 @@ fn modes(r: &mut Rng) -> Vec<u8> {
     .into_bytes()
 }
 
+/// Synchronized output (2026) and in-band resize (2048): set and reset,
+/// alone or together, a whole frame of text, and RIS, which ends both.
+/// DECSTR is left to `reset` and a named case: the engines that can tell
+/// split on it (Ghostty keeps 2026, xterm.js ends it, as fux-vt does).
+fn sync_modes(r: &mut Rng) -> Vec<u8> {
+    match r.below(4) {
+        0 => format!(
+            "\x1b[?2026h{}\x1b[?2026l",
+            pick(r, &["frame", "a\r\nb", ""])
+        ),
+        1 => "\x1bc".to_owned(),
+        _ => format!(
+            "\x1b[?{}{}",
+            pick(r, &["2026", "2048", "2048;2026"]),
+            pick(r, &["h", "l"])
+        ),
+    }
+    .into_bytes()
+}
+
 fn tabs(r: &mut Rng) -> Vec<u8> {
     match r.below(4) {
         0 => pick(r, &["\x1bH", "\x1b[g", "\x1b[0g", "\x1b[3g"]),
@@ -562,6 +582,13 @@ pub const FAMILIES: &[Family] = &[
         ),
         ratty_only: false,
         generate: alternate,
+    },
+    Family {
+        name: "sync",
+        about: "synchronized output (2026) and in-band resize (2048): set, reset, whole frames, RIS and DECSTR",
+        status: Status::Agree,
+        ratty_only: false,
+        generate: sync_modes,
     },
     Family {
         name: "modes",
