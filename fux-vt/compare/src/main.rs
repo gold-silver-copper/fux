@@ -48,7 +48,7 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
        fux-vt-compare transparency [--engines LIST] [--chunk N] [--json FILE]
                                    [--multiplexers] [NAME... | --size RxC STEP...]
        fux-vt-compare esctest [--in-fux] [--subset] [FILTER] (esctest --help: the rest)
-       fux-vt-compare scoreboard DIR
+       fux-vt-compare scoreboard DIR [--keep KEPT COMMIT DATE]
        fux-vt-compare engines
        fux-vt-compare --list
 
@@ -200,7 +200,6 @@ fn parse() -> Result<Args, String> {
             "record",
             "corpus",
             "inventory",
-            "scoreboard",
         ]
         .contains(&first.as_str())
     {
@@ -775,6 +774,19 @@ fn main() -> ExitCode {
             }
         };
     }
+    // `scoreboard` takes its own arguments (`--keep`).
+    if let Some((first, rest)) = argv.split_first()
+        && first == "scoreboard"
+    {
+        return match scoreboard::run(rest) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("fux-vt-compare scoreboard: {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
     if let Some((first, rest)) = argv.split_first()
         && first == "esctest"
     {
@@ -807,7 +819,6 @@ fn main() -> ExitCode {
         "replay" => replay(&args),
         "record" => record(&args),
         "inventory" => inventory::run(&args.rest),
-        "scoreboard" => scoreboard::run(&args.rest),
         "corpus" => corpus::run(
             &panel(&args, "xterm,panel")?,
             &args.rest,
