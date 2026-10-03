@@ -9,6 +9,7 @@
 mod bench;
 mod case;
 mod cases;
+mod corpus;
 mod engine;
 mod engines;
 mod escape;
@@ -38,6 +39,7 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
        fux-vt-compare record --keys FILE --out PREFIX [--size RxC] [--program NAME]
                              [--version TEXT] [--env KEY=VALUE]... [--dir DIR]
                              [--scrub OLD=NEW]... [--note TEXT] -- PROGRAM ARGS...
+       fux-vt-compare corpus [--engines LIST] [--show] [NAME...]
        fux-vt-compare engines
        fux-vt-compare --list
 
@@ -67,6 +69,12 @@ record   runs PROGRAM on a PTY (--size, else 40x120) as a pane of fux
          and the --env pairs alone (and PATH, if they have none). --scrub
          replaces OLD in the output before it is saved, for what the setup
          cannot keep out (a host name).
+corpus   the recordings in corpus/ (default: all), each replayed through
+         fux-vt beside the engines (default: xterm and the panel),
+         compared after every step. xterm decides the fields it can tell;
+         the panel's vote the rest, and all once xterm abstains. Exit 1 if
+         a recording expected to agree does not. --show prints fux-vt's
+         screen at the end of each.
 engines  every engine: whether it can run here, whether it votes, and what
          it cannot tell.
 --list   the families, what each covers, and its status.
@@ -92,6 +100,7 @@ struct Args {
     history: usize,
     newline_before_resize: bool,
     mb: usize,
+    show: bool,
     /// Whether `--size` was given.
     sized: bool,
     /// `record`'s own options.
@@ -126,6 +135,7 @@ fn parse() -> Result<Args, String> {
         history: 0,
         newline_before_resize: false,
         mb: 8,
+        show: false,
         sized: false,
         out: None,
         keys: None,
@@ -141,6 +151,7 @@ fn parse() -> Result<Args, String> {
     if let Some(first) = words.peek()
         && [
             "run", "survey", "matrix", "cases", "verdicts", "replay", "bench", "engines", "record",
+            "corpus",
         ]
         .contains(&first.as_str())
     {
@@ -154,6 +165,7 @@ fn parse() -> Result<Args, String> {
             "--cases" => args.cases = Some(number("--cases", &value("--cases")?)?),
             "--family" => args.families.push(value("--family")?),
             "--all" => args.all = true,
+            "--show" => args.show = true,
             "--engines" => args.engines = Some(value("--engines")?),
             "--no-reflow" => args.reflow = false,
             "--newline-before-resize" => args.newline_before_resize = true,
@@ -702,6 +714,7 @@ fn main() -> ExitCode {
         "verdicts" => verdicts(&args),
         "replay" => replay(&args),
         "record" => record(&args),
+        "corpus" => corpus::run(&panel(&args, "xterm,panel")?, &args.rest, args.show),
         "bench" => bench::run(&panel(&args, "all")?, &args.rest, args.mb),
         _ => run(&args),
     });
