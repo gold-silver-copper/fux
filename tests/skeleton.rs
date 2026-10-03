@@ -111,3 +111,21 @@ fn a_bad_config_starts_on_the_defaults_and_a_reload_is_all_or_nothing() -> Outco
     );
     Ok(())
 }
+
+/// A pane's program is told it runs in fux, whatever terminal fux runs in:
+/// `TERM_PROGRAM` is `fux`, and `TERM_PROGRAM_VERSION` fux's version.
+#[test]
+fn a_pane_is_told_it_runs_in_fux() -> Outcome {
+    let server = Server::start("")?;
+    server.type_line(
+        "%1",
+        "echo \"is-$TERM_PROGRAM-$TERM_PROGRAM_VERSION-$TERM\"",
+    )?;
+    let expected = format!("is-fux-{}-xterm-256color", env!("CARGO_PKG_VERSION"));
+    eventually("the pane's environment", || {
+        Ok(server
+            .ok(&["capture-pane", "-t", "%1"])?
+            .lines()
+            .any(|l| l == expected))
+    })
+}
