@@ -365,7 +365,7 @@ pub fn run(panel: &[usize], names: &[String], show: bool) -> Result<bool, String
                     marks(&outcome)
                 );
             }
-            (false, Some(Status::Differs(why) | Status::Decided(why))) => {
+            (false, Some(Status::Differs(why) | Status::Decided { why, .. })) => {
                 differ = differ.saturating_add(1);
                 println!("differs  {label}: {why}   {}", marks(&outcome));
                 if !names.is_empty() {

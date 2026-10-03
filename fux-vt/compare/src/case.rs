@@ -50,6 +50,7 @@ pub struct Case {
 }
 
 /// What one engine made of a step, beside fux-vt.
+#[derive(Clone)]
 pub struct Verdict {
     pub engine: usize,
     /// What differs, compared on the fields the engine can tell; empty when

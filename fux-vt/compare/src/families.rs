@@ -3,7 +3,7 @@
 //! draws only from families expected to agree, so any difference it finds
 //! is a regression; `--family` and `--all` add the others. A family where
 //! the panel splits and fux-vt follows a recorded choice is checked by
-//! `verdicts`, beside xterm alone.
+//! `verdicts`, beside the engines that decide it (xterm, for most).
 use crate::rng::Rng;
 
 /// Whether fux-vt and the panel are expected to agree on a family.
@@ -13,12 +13,21 @@ pub enum Status {
     /// A recorded verdict: the panel splits, and fux-vt does what the
     /// references say, or what xterm does where xterm departs from them
     /// (fux-vt's README lists those departures) or they are silent. Says
-    /// which, and where the engines stand. Left out of a random run, and
-    /// checked beside xterm alone by `verdicts`.
-    Decided(&'static str),
+    /// which, and where the engines stand (`why`), and which engines
+    /// decide (`by`): xterm, for what xterm implements; for a feature it
+    /// lacks, the engines that do what the feature's spec says. Left out
+    /// of a random run, and checked beside the deciding engines by
+    /// `verdicts`.
+    Decided {
+        why: &'static str,
+        by: &'static [&'static str],
+    },
     /// They differ, and why: a fux-vt defect to fix, or a documented choice.
     Differs(&'static str),
 }
+
+/// The deciding engine of the families xterm decides.
+pub const XTERM: &[&str] = &["xterm"];
 
 pub struct Family {
     pub name: &'static str,
@@ -462,27 +471,30 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "controls",
         about: "CR, LF, VT, FF, BS, HT and BEL",
-        status: Status::Decided(
-            "LF, VT and FF end a pending wrap, as DEC STD 070 (Appendix D.6.1) says and xterm does; HT keeps it, as xterm and every engine but avt do, though the appendix lists HT (a departure: fux-vt/README.md). The panel splits on a line feed that scrolls while a wrap is pending: xterm, Ghostty, wezterm and xterm.js end the wrap, alacritty, libvterm and avt keep it and outvote fux-vt (`replay --engines all --size 2x3 'abcdef\\nX'`)",
-        ),
+        status: Status::Decided {
+            why: "LF, VT and FF end a pending wrap, as DEC STD 070 (Appendix D.6.1) says and xterm does; HT keeps it, as xterm and every engine but avt do, though the appendix lists HT (a departure: fux-vt/README.md). The panel splits on a line feed that scrolls while a wrap is pending: xterm, Ghostty, wezterm and xterm.js end the wrap, alacritty, libvterm and avt keep it and outvote fux-vt (`replay --engines all --size 2x3 'abcdef\\nX'`)",
+            by: XTERM,
+        },
         ratty_only: false,
         generate: controls,
     },
     Family {
         name: "cursor",
         about: "CUU CUD CUF CUB CNL CPL CHA VPA HPA HPR VPR, CUP and HVP",
-        status: Status::Decided(
-            "fux-vt does what xterm does (0 of 1200 cases differ with xterm alone voting), and the panel splits only where a soft-wrapped row is written over again once the cursor moves back into it, as in `save`: xterm, libvterm, avt and xterm.js keep the row soft-wrapped, as fux-vt does; Ghostty, alacritty, wezterm and tmux end the wrap, and outvote fux-vt (`replay --engines all --size 4x5 '\\e[0e long-line-\\e[;99Habcabc~!@#a'`)",
-        ),
+        status: Status::Decided {
+            why: "fux-vt does what xterm does (0 of 1200 cases differ with xterm alone voting), and the panel splits only where a soft-wrapped row is written over again once the cursor moves back into it, as in `save`: xterm, libvterm, avt and xterm.js keep the row soft-wrapped, as fux-vt does; Ghostty, alacritty, wezterm and tmux end the wrap, and outvote fux-vt (`replay --engines all --size 4x5 '\\e[0e long-line-\\e[;99Habcabc~!@#a'`)",
+            by: XTERM,
+        },
         ratty_only: false,
         generate: cursor,
     },
     Family {
         name: "erase",
         about: "ED, EL and ECH",
-        status: Status::Decided(
-            "ED, EL and ECH end a pending wrap, as DEC STD 070 (Appendix D.6.1) says and xterm and Ghostty do; alacritty, libvterm, avt, wezterm and tmux keep it, as xterm.js does but on ECH, and outvote fux-vt (`replay --engines all --size 2x4 'abcd\\e[KX'`)",
-        ),
+        status: Status::Decided {
+            why: "ED, EL and ECH end a pending wrap, as DEC STD 070 (Appendix D.6.1) says and xterm and Ghostty do; alacritty, libvterm, avt, wezterm and tmux keep it, as xterm.js does but on ECH, and outvote fux-vt (`replay --engines all --size 2x4 'abcd\\e[KX'`)",
+            by: XTERM,
+        },
         ratty_only: false,
         generate: erase,
     },
@@ -507,9 +519,10 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "index",
         about: "IND (ESC D) and NEL (ESC E)",
-        status: Status::Decided(
-            "the panel splits as it does on LF in `controls`: IND that scrolls while a wrap is pending ends the wrap in xterm, Ghostty, wezterm and xterm.js, as DEC STD 070 (Appendix D.6.1) says and fux-vt does; alacritty, libvterm and avt keep it, and outvote fux-vt (`replay --engines all --size 1x3 'abc\\eD'`). With xterm alone voting, 0 of 1000 cases differ",
-        ),
+        status: Status::Decided {
+            why: "the panel splits as it does on LF in `controls`: IND that scrolls while a wrap is pending ends the wrap in xterm, Ghostty, wezterm and xterm.js, as DEC STD 070 (Appendix D.6.1) says and fux-vt does; alacritty, libvterm and avt keep it, and outvote fux-vt (`replay --engines all --size 1x3 'abc\\eD'`). With xterm alone voting, 0 of 1000 cases differ",
+            by: XTERM,
+        },
         ratty_only: false,
         generate: index,
     },
@@ -525,9 +538,10 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "autowrap",
         about: "DECAWM on and off",
-        status: Status::Decided(
-            "with DECAWM off a glyph in the last column leaves a wrap pending, which DEC STD 070 (Appendix D.6.1) does not, and resetting DECAWM keeps one, though the appendix lists it among what clears it: fux-vt follows xterm in both (departures: fux-vt/README.md). xterm, Ghostty, alacritty and xterm.js leave the wrap pending with DECAWM off; libvterm, avt, wezterm and tmux do not, and outvote fux-vt in the default panel (`replay --engines all --size 2x2 '\\e[?7lca\\e[?7hX'`)",
-        ),
+        status: Status::Decided {
+            why: "with DECAWM off a glyph in the last column leaves a wrap pending, which DEC STD 070 (Appendix D.6.1) does not, and resetting DECAWM keeps one, though the appendix lists it among what clears it: fux-vt follows xterm in both (departures: fux-vt/README.md). xterm, Ghostty, alacritty and xterm.js leave the wrap pending with DECAWM off; libvterm, avt, wezterm and tmux do not, and outvote fux-vt in the default panel (`replay --engines all --size 2x2 '\\e[?7lca\\e[?7hX'`)",
+            by: XTERM,
+        },
         ratty_only: false,
         generate: autowrap,
     },
@@ -543,9 +557,10 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "sgr",
         about: "SGR in semicolon form: every attribute, its reset, 16, 256 and RGB colours, underline colour",
-        status: Status::Decided(
-            "SGR 21 is doubly underlined (ECMA-48, 8.3.117): an underline beside bold, as xterm, Ghostty, libvterm, xterm.js and tmux read it, where alacritty and avt take it as bold off. Bold and faint can both be on, as in xterm, though ECMA-48 makes them one attribute (a departure: fux-vt/README.md); avt and wezterm let faint replace bold. Together they outvote fux-vt (`replay --engines all --size 1x3 '\\e[1m\\e[21;2mX'`). xterm has no SGR 58, and abstains from a case that uses it",
-        ),
+        status: Status::Decided {
+            why: "SGR 21 is doubly underlined (ECMA-48, 8.3.117): an underline beside bold, as xterm, Ghostty, libvterm, xterm.js and tmux read it, where alacritty and avt take it as bold off. Bold and faint can both be on, as in xterm, though ECMA-48 makes them one attribute (a departure: fux-vt/README.md); avt and wezterm let faint replace bold. Together they outvote fux-vt (`replay --engines all --size 1x3 '\\e[1m\\e[21;2mX'`). xterm has no SGR 58, and abstains from a case that uses it",
+            by: XTERM,
+        },
         ratty_only: false,
         generate: sgr,
     },
@@ -559,18 +574,20 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "sgr-invalid",
         about: "SGR with an invalid or short colour, then more attributes",
-        status: Status::Decided(
-            "an invalid or short colour, which ITU-T T.416 (13.1.8) does not settle, reads as xterm reads it: 38;5;300 and 38;2;256;0;0 are no colour in xterm, alacritty and tmux, but index 44 and black in Ghostty, libvterm, avt and xterm.js; 48;5 and 38;2;1;2, cut short, are index 0 and (1, 2, 0) in xterm and xterm.js, no colour in the rest (`replay --engines all --size 1x3 '\\e[38;5;300;1mX'`); wezterm drops the rest of the SGR",
-        ),
+        status: Status::Decided {
+            why: "an invalid or short colour, which ITU-T T.416 (13.1.8) does not settle, reads as xterm reads it: 38;5;300 and 38;2;256;0;0 are no colour in xterm, alacritty and tmux, but index 44 and black in Ghostty, libvterm, avt and xterm.js; 48;5 and 38;2;1;2, cut short, are index 0 and (1, 2, 0) in xterm and xterm.js, no colour in the rest (`replay --engines all --size 1x3 '\\e[38;5;300;1mX'`); wezterm drops the rest of the SGR",
+            by: XTERM,
+        },
         ratty_only: false,
         generate: sgr_invalid,
     },
     Family {
         name: "save",
         about: "DECSC, DECRC, SCOSC and SCORC",
-        status: Status::Decided(
-            "a soft-wrapped row written over again once DECRC or SCORC moves the cursor back into it stays soft-wrapped, as in xterm (the references know no soft wrap): xterm, Ghostty, avt, xterm.js and tmux keep it; alacritty, wezterm and libvterm end the wrap, and outvote fux-vt (`replay --engines all --size 4x9 'a' 'abcx0123456789~!@#  \\e[s   ~!@#\\e[uabcabc'`)",
-        ),
+        status: Status::Decided {
+            why: "a soft-wrapped row written over again once DECRC or SCORC moves the cursor back into it stays soft-wrapped, as in xterm (the references know no soft wrap): xterm, Ghostty, avt, xterm.js and tmux keep it; alacritty, wezterm and libvterm end the wrap, and outvote fux-vt (`replay --engines all --size 4x9 'a' 'abcx0123456789~!@#  \\e[s   ~!@#\\e[uabcabc'`)",
+            by: XTERM,
+        },
         ratty_only: false,
         generate: save,
     },
@@ -639,18 +656,20 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "strings-c1",
         about: "DCS, APC, PM and SOS strings whose UTF-8 payload holds the byte 0x9c (8-bit ST)",
-        status: Status::Decided(
-            "the panel splits: in UTF-8 a string ends at ESC \\ alone (ECMA-48 8.3.143), so 0x9c in a payload's character ends nothing in xterm, libvterm, avt, xterm.js and tmux, as in fux-vt; Ghostty ends DCS, SOS, PM and APC strings at it and prints U+FFFD for the rest of the character, alacritty and wezterm end DCS strings at it, and together they outvote fux-vt on the cursor (`replay --engines all --size 1x4 '\\ePa\\u{271c}b\\e\\\\ll'`)",
-        ),
+        status: Status::Decided {
+            why: "the panel splits: in UTF-8 a string ends at ESC \\ alone (ECMA-48 8.3.143), so 0x9c in a payload's character ends nothing in xterm, libvterm, avt, xterm.js and tmux, as in fux-vt; Ghostty ends DCS, SOS, PM and APC strings at it and prints U+FFFD for the rest of the character, alacritty and wezterm end DCS strings at it, and together they outvote fux-vt on the cursor (`replay --engines all --size 1x4 '\\ePa\\u{271c}b\\e\\\\ll'`)",
+            by: XTERM,
+        },
         ratty_only: false,
         generate: strings_c1,
     },
     Family {
         name: "reset",
         about: "RIS and DECSTR",
-        status: Status::Decided(
-            "DECSTR shows the cursor and resets DECCKM, as the VT520 manual (DECSTR, Table 5-6) and DEC STD 070 (p. 4-37) say and xterm does, and turns autowrap on, as xterm does where both say off (a departure: fux-vt/README.md). The panel splits on each: cursor visibility (xterm, libvterm, avt and xterm.js reset it; Ghostty, alacritty, wezterm and tmux keep it), DECCKM (xterm, libvterm, wezterm and xterm.js reset it; Ghostty, alacritty, avt and tmux keep it) and autowrap (xterm, libvterm, wezterm and xterm.js turn it on; Ghostty, alacritty, avt and tmux keep it off), so once `modes` or `autowrap` has set them the default panel outvotes fux-vt (`replay --engines all --size 1x1 '\\e[?25l\\e[!p'`)",
-        ),
+        status: Status::Decided {
+            why: "DECSTR shows the cursor and resets DECCKM, as the VT520 manual (DECSTR, Table 5-6) and DEC STD 070 (p. 4-37) say and xterm does, and turns autowrap on, as xterm does where both say off (a departure: fux-vt/README.md). The panel splits on each: cursor visibility (xterm, libvterm, avt and xterm.js reset it; Ghostty, alacritty, wezterm and tmux keep it), DECCKM (xterm, libvterm, wezterm and xterm.js reset it; Ghostty, alacritty, avt and tmux keep it) and autowrap (xterm, libvterm, wezterm and xterm.js turn it on; Ghostty, alacritty, avt and tmux keep it off), so once `modes` or `autowrap` has set them the default panel outvotes fux-vt (`replay --engines all --size 1x1 '\\e[?25l\\e[!p'`)",
+            by: XTERM,
+        },
         ratty_only: false,
         generate: reset,
     },
@@ -682,9 +701,10 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "invalid-utf8",
         about: "invalid and truncated UTF-8, and U+FFFD itself",
-        status: Status::Decided(
-            "the panel splits on a continuation byte alone: xterm reads it as Latin-1 (0x80 to 0x9f ignored as C1 controls, 0xa0 to 0xbf printed), and so does fux-vt, a recorded departure from the Unicode Standard's U+FFFD; Ghostty, libvterm, avt and tmux print U+FFFD, alacritty, wezterm and xterm.js drop it (`replay --engines all --size 1x12 'price \\xa35'`). A sequence that breaks off prints U+FFFD in every engine but wezterm, vt100 and xterm.js, as in fux-vt (`cases invalid-utf8-prints-a-replacement`)",
-        ),
+        status: Status::Decided {
+            why: "the panel splits on a continuation byte alone: xterm reads it as Latin-1 (0x80 to 0x9f ignored as C1 controls, 0xa0 to 0xbf printed), and so does fux-vt, a recorded departure from the Unicode Standard's U+FFFD; Ghostty, libvterm, avt and tmux print U+FFFD, alacritty, wezterm and xterm.js drop it (`replay --engines all --size 1x12 'price \\xa35'`). A sequence that breaks off prints U+FFFD in every engine but wezterm, vt100 and xterm.js, as in fux-vt (`cases invalid-utf8-prints-a-replacement`)",
+            by: XTERM,
+        },
         ratty_only: false,
         generate: invalid_utf8,
     },
