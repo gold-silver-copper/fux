@@ -436,14 +436,16 @@ fn link_edges(r: &mut Rng) -> Vec<u8> {
 /// without options, then the prompt; B and the command typed; Enter, then
 /// C and the output; D, with or without a status; L alone; a continuation
 /// prompt on a new line (P;k=s); and ED, EL and scrolling over marked
-/// rows. Left out, as no shell sends them where Ghostty and fux-vt split
-/// (see the family's reason): N, P;k=i on a row of its own, C on a
-/// prompt's row, IL, DL, and ED 2 but from the home position.
+/// rows; N, which is A; and P;k=i on a row of its own, which Ghostty's
+/// bash integration sends in A's place under ble.sh. Left out, as no shell
+/// sends them where Ghostty and fux-vt split (see the family's reason): C
+/// on a prompt's row, IL, DL, and ED 2 but from the home position.
 fn prompts(r: &mut Rng) -> Vec<u8> {
     let st = pick(r, &["\x1b\\", "\x07"]);
     match r.below(8) {
         0 => format!(
-            "\x1b]133;A{}{st}{}",
+            "\x1b]133;{}{}{st}{}",
+            pick(r, &["A", "A", "N"]),
             pick(r, &["", ";aid=1", ";cl=line", ";redraw=last;cl=line;aid=7"]),
             pick(r, &["$ ", "> ", "", "~/src % "])
         ),
@@ -451,7 +453,11 @@ fn prompts(r: &mut Rng) -> Vec<u8> {
         2 => format!("\r\n\x1b]133;C{st}{}", pick(r, &["out", "", "a\r\nb"])),
         3 => format!("\x1b]133;D{}{st}", pick(r, &["", ";0", ";1"])),
         4 => format!("\x1b]133;L{st}"),
-        5 => format!("\r\n\x1b]133;P;k=s{st}> "),
+        5 => format!(
+            "\r\n\x1b]133;P;k={}{st}{}",
+            pick(r, &["s", "i"]),
+            pick(r, &["> ", "$ "])
+        ),
         // A CR or CUB first, so no wrap is pending: Ghostty ends it at ED
         // and EL, wezterm keeps it (see `erase`).
         6 => pick(
@@ -786,7 +792,7 @@ pub const FAMILIES: &[Family] = &[
         name: "prompts",
         about: "prompt marks (OSC 133): A, B, C, D, L and continuation prompts as shells send them, then ED, EL and scrolling",
         status: Status::Decided {
-            why: "A and L do a fresh line first, as the semantic prompts proposal says (references/modern/osc133_semantic_prompts.md, \"Commands\") and Ghostty and wezterm do, as fux-vt does; xterm, alacritty, libvterm, avt, xterm.js and tmux, which do not, print on and outvote fux-vt in the default panel (`replay --engines all --size 3x10 'x\\e]133;A\\x07$ '`). Of the engines, Ghostty and tmux tell where a prompt starts; tmux marks A's row without the fresh line, and unmarks a row EL 2 or ED from its first column erases, where Ghostty and fux-vt keep the mark (`replay --engines all --size 3x10 '\\e]133;A\\e\\\\$ ab\\e[2K'`). Left out of the generator, as no shell sends them where Ghostty and fux-vt split: N, which the proposal makes the same as A and Ghostty and wezterm take as A, and fux-vt ignores (`replay --engines all --size 3x10 'x\\e]133;N\\e\\\\$ '`); P;k=i on a row A did not mark, which Ghostty marks (`--size 3x10 'x\\r\\n\\e]133;P;k=i\\e\\\\> '`); C in the first column of the prompt's row, which unmarks it in Ghostty, its heuristic for fish (`--size 3x10 '\\e]133;A\\e\\\\\\e]133;C\\e\\\\out'`); DL, after which Ghostty leaves the mark of the row it deleted on the blank row it brings in (`--size 3x4 '\\e]133;A\\e\\\\$ \\r\\e[M'`); IL, which moves a marked row below the cursor, where Ghostty marks the row prompt text wraps into as a continuation, dropping its mark (`--size 2x8 '\\e]133;A\\e\\\\~/src % \\r\\e[Lc  ~!@#ab'`); and ED 2 while the screen's last row with text is a prompt's, which Ghostty turns into scrolling the screen into history first, moving the cursor with it (Ghostty #905; `--size 2x2 '\\r\\n\\e]133;C\\x07out\\e]133;A\\x07' '\\r\\e[2J\\e]133;A\\e\\\\$ '`). Erasing starts with CR or CUB, as wezterm keeps a pending wrap at ED and EL (see `erase`), and SD is left out (see `links`)",
+            why: "A and L do a fresh line first, as the semantic prompts proposal says (references/modern/osc133_semantic_prompts.md, \"Commands\") and Ghostty and wezterm do, as fux-vt does; xterm, alacritty, libvterm, avt, xterm.js and tmux, which do not, print on and outvote fux-vt in the default panel (`replay --engines all --size 3x10 'x\\e]133;A\\x07$ '`). Of the engines, Ghostty and tmux tell where a prompt starts; tmux marks A's row without the fresh line, and unmarks a row EL 2 or ED from its first column erases, where Ghostty and fux-vt keep the mark (`replay --engines all --size 3x10 '\\e]133;A\\e\\\\$ ab\\e[2K'`). N, which the proposal makes the same as A, and P;k=i on a row A did not mark are in the generator: Ghostty and fux-vt take N as A and mark P;k=i's row. Left out of the generator, as no shell sends them where Ghostty and fux-vt split: C in the first column of the prompt's row, which unmarks it in Ghostty, its heuristic for fish (`--size 3x10 '\\e]133;A\\e\\\\\\e]133;C\\e\\\\out'`); DL, after which Ghostty leaves the mark of the row it deleted on the blank row it brings in (`--size 3x4 '\\e]133;A\\e\\\\$ \\r\\e[M'`); IL, which moves a marked row below the cursor, where Ghostty marks the row prompt text wraps into as a continuation, dropping its mark (`--size 2x8 '\\e]133;A\\e\\\\~/src % \\r\\e[Lc  ~!@#ab'`); and ED 2 while the screen's last row with text is a prompt's, which Ghostty turns into scrolling the screen into history first, moving the cursor with it (Ghostty #905; `--size 2x2 '\\r\\n\\e]133;C\\x07out\\e]133;A\\x07' '\\r\\e[2J\\e]133;A\\e\\\\$ '`). Erasing starts with CR or CUB, as wezterm keeps a pending wrap at ED and EL (see `erase`), and SD is left out (see `links`)",
             by: &["ghostty", "wezterm"],
         },
         ratty_only: false,
