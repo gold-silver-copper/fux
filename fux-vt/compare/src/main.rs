@@ -55,11 +55,13 @@ matrix   each family alone beside each engine alone, and beside the whole
          panel: the share of cases that differ, as a table.
 cases    the named cases (default: all), beside every engine that can run
          here. Exit 1 if a case in a family expected to agree fails, or
-         xterm differs on one in a family with a recorded verdict.
-verdicts the families with a recorded verdict (or those named), beside
-         xterm alone (default): their named cases, then random cases from
-         each with plain text (100 each with a verdict, by default). Exit 1
-         if xterm differs on any.
+         the engines that decide a family with a recorded verdict (xterm,
+         for most) outvote fux-vt on one of its cases.
+verdicts the families with a recorded verdict (or those named), each
+         beside the engines that decide it (default; --list names them):
+         their named cases, then random cases from each with plain text
+         (100 each with a verdict, by default). Exit 1 if they outvote
+         fux-vt on any.
 replay   one case: STEP is output, written as `run` prints it ('\\e[1mX'),
          or resize:RxC. Prints each engine's verdict after every step, and
          the screens.
@@ -89,7 +91,7 @@ engines  every engine: whether it can run here, whether it votes, and what
 LIST is engine names joined by commas, or `panel` (the default for run,
 survey, matrix and replay: the voters that can run here), `all` (every
 engine that can run here, the default for cases and bench), `in-process`
-or `xterm` (the default for verdicts).
+or `xterm`.
 
 fux-vt is set up as ratty sets it up (reflow, an identity, the kitty
 keyboard protocol), with the DECRQM answers and in-band resize fux's panes
@@ -276,7 +278,7 @@ fn list() {
     for f in FAMILIES {
         let status = match f.status {
             Status::Agree => "agree".to_owned(),
-            Status::Decided(why) => format!("DECIDED: {why}"),
+            Status::Decided { why, by } => format!("DECIDED by {}: {why}", by.join(", ")),
             Status::Differs(why) => format!("DIFFER: {why}"),
         };
         let ratty = if f.ratty_only { " [needs reflow]" } else { "" };
@@ -395,7 +397,7 @@ fn survey(args: &Args) -> Result<bool, String> {
         let set: Vec<usize> = if i == text { vec![i] } else { vec![i, text] };
         let status = match f.status {
             Status::Agree => "agree",
-            Status::Decided(_) => "decided",
+            Status::Decided { .. } => "decided",
             Status::Differs(_) => "differs",
         };
         println!("== {} (expected: {status})", f.name);
@@ -503,17 +505,18 @@ fn cases(args: &Args) -> Result<bool, String> {
         let outcome = case.run_until(&panel, false)?;
         let status = FAMILIES.get(index).map(|f| f.status);
         let marks = marks(&outcome);
-        if matches!(status, Some(Status::Decided(_))) {
-            match xterm_agrees(&outcome) {
+        if let Some(Status::Decided { by, .. }) = status {
+            let deciders = by.join(", ");
+            match deciders_agree(&outcome, by) {
                 Some(true) | None => {
                     agree = agree.saturating_add(1);
-                    println!("ok       {name} (family {family}: xterm decides)   {marks}");
+                    println!("ok       {name} (family {family}: {deciders} decide)   {marks}");
                 }
                 Some(false) => {
                     ok = false;
                     differ = differ.saturating_add(1);
                     println!(
-                        "FAIL     {name} (family {family}: xterm decides, and differs)   {marks}"
+                        "FAIL     {name} (family {family}: {deciders} decide, and outvote fux-vt)   {marks}"
                     );
                     print!("{}", case::report(&case, &panel, &outcome));
                 }
@@ -548,22 +551,24 @@ fn cases(args: &Args) -> Result<bool, String> {
     Ok(ok)
 }
 
-/// Whether xterm agrees with fux-vt in `outcome`; none if it did not run
-/// or abstained.
-fn xterm_agrees(outcome: &case::Outcome) -> Option<bool> {
-    let xterm = engine::find("xterm")?;
-    outcome
+/// Whether the engines named in `by` agree with fux-vt in `outcome`, by
+/// their vote alone (one engine alone outvotes fux-vt wherever it differs);
+/// none if none of them ran or all abstained.
+fn deciders_agree(outcome: &case::Outcome, by: &[&str]) -> Option<bool> {
+    let deciders: Vec<case::Verdict> = outcome
         .verdicts
         .iter()
-        .find(|v| v.engine == xterm)
-        .map(|v| v.differences.is_empty())
+        .filter(|v| ENGINES.get(v.engine).is_some_and(|k| by.contains(&k.name)))
+        .cloned()
+        .collect();
+    (!deciders.is_empty()).then(|| case::outvoted_on(&deciders).is_empty())
 }
 
-/// The families with a recorded verdict, beside xterm (or `--engines`):
-/// their named cases at the end of each, then random cases from each with
-/// plain text, where xterm outvotes fux-vt wherever it differs.
+/// The families with a recorded verdict, each beside the engines that
+/// decide it (or `--engines`): their named cases at the end of each, then
+/// random cases from each with plain text, where the deciding engines' vote
+/// decides (xterm alone outvotes fux-vt wherever it differs).
 fn verdicts(args: &Args) -> Result<bool, String> {
-    let panel = panel(args, "xterm")?;
     let text = families::find("text").ok_or("no text family")?;
     let chosen: Vec<usize> = if args.families.is_empty() {
         (0..FAMILIES.len())
@@ -571,18 +576,22 @@ fn verdicts(args: &Args) -> Result<bool, String> {
                 usable(i, args.reflow)
                     && FAMILIES
                         .get(i)
-                        .is_some_and(|f| matches!(f.status, Status::Decided(_)))
+                        .is_some_and(|f| matches!(f.status, Status::Decided { .. }))
             })
             .collect()
     } else {
         chosen_families(args)?
     };
-    println!("engines: {}", names(&panel));
     let count = args.cases.unwrap_or(100);
     let mut ok = true;
     for &i in &chosen {
         let f = FAMILIES.get(i).ok_or("no such family")?;
-        println!("== {}", f.name);
+        let panel = match (args.engines.as_deref(), f.status) {
+            (Some(list), _) => engines(list)?,
+            (None, Status::Decided { by, .. }) => engines(&by.join(","))?,
+            (None, Status::Agree | Status::Differs(_)) => engines("xterm")?,
+        };
+        println!("== {} (beside {})", f.name, names(&panel));
         for &(name, family, (rows, cols), words) in cases::CASES {
             if family != f.name {
                 continue;

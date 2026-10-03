@@ -32,7 +32,7 @@ below records which.
 fux-vt/compare/run.sh                       # families expected to agree, 20000 cases, beside the panel
 fux-vt/compare/run.sh engines               # which engines run here, which vote, what each cannot tell
 fux-vt/compare/run.sh cases                 # the named cases beside every engine, with each engine's mark
-fux-vt/compare/run.sh verdicts              # the families with a recorded verdict, beside xterm alone
+fux-vt/compare/run.sh verdicts              # the families with a recorded verdict, beside the engines that decide each
 fux-vt/compare/run.sh matrix                # family by engine: % of cases each engine differs from fux-vt
 fux-vt/compare/run.sh bench                 # MB/s for every engine on every workload, and the corpus
 fux-vt/compare/run.sh bench --engines ghostty corpus   # each recording alone too
@@ -208,11 +208,15 @@ xterm departs from them (listed in fux-vt's README, "Departures from the
 references") or they are silent. A vote can't judge such a family: on these
 points the default panel's majority is often the side fux-vt has chosen
 against. So the default run leaves it out, and `verdicts` checks it beside
-xterm alone: its named cases (each pins one point of the verdict), then
-random cases from it with plain text, where any field xterm can tell must
-equal xterm's. `cases` fails a named case in a decided family where xterm
-differs. The reason says which reference and choice, where the engines
-stand, and a `replay --engines all` that shows it.
+the engines that decide it (`by`, which `--list` prints): its named cases
+(each pins one point of the verdict), then random cases from it with plain
+text, where those engines vote as the panel does in `run`. For the VT
+families that is xterm alone, so any field xterm can tell must equal
+xterm's. For a feature xterm does not implement (OSC 133), it is the
+engines that do what the feature's spec says. `cases` fails a named case
+in a decided family where its deciding engines outvote fux-vt. The reason
+says which reference and choice, where the engines stand, and a `replay
+--engines all` that shows it.
 
 Otherwise a family **differs**, with a recorded reason, which is one of:
 - a fux-vt defect still to fix (most are from the audit of fux-vt 0.2.0,
