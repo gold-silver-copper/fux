@@ -13,6 +13,7 @@ mod corpus;
 mod engine;
 mod engines;
 mod escape;
+mod esctest;
 mod families;
 mod inventory;
 mod record;
@@ -45,6 +46,7 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
        fux-vt-compare inventory [NAME...]
        fux-vt-compare transparency [--engines LIST] [--chunk N] [--json FILE]
                                    [--multiplexers] [NAME... | --size RxC STEP...]
+       fux-vt-compare esctest [--in-fux] [--subset] [FILTER] (esctest --help: the rest)
        fux-vt-compare engines
        fux-vt-compare --list
 
@@ -98,6 +100,10 @@ transparency
          --multiplexers: the same through tmux and zellij (if installed),
          each a server of its own with a client on a PTY, as a score.
          --json writes the results to FILE.
+esctest  xterm's conformance suite, esctest2, against fux-vt set up as fux's
+         panes are, and with --in-fux in a real fux pane too. Exit 1 if a
+         test fails that esctest-expected.txt does not list, or one listed
+         passes.
 engines  every engine: whether it can run here, whether it votes, and what
          it cannot tell.
 --list   the families, what each covers, and its status.
@@ -747,6 +753,18 @@ fn main() -> ExitCode {
             Ok(false) => ExitCode::FAILURE,
             Err(e) => {
                 eprintln!("fux-vt-compare: {e}\n\n{USAGE}");
+                ExitCode::from(2)
+            }
+        };
+    }
+    if let Some((first, rest)) = argv.split_first()
+        && first == "esctest"
+    {
+        return match esctest::run(rest) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("fux-vt-compare esctest: {e}");
                 ExitCode::from(2)
             }
         };

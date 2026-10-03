@@ -295,7 +295,7 @@ static XVFB: Mutex<Option<Xvfb>> = Mutex::new(None);
 /// The display of this process's Xvfb, started if it is not running, or
 /// started again if its socket has gone (the Xvfb of another process that
 /// had the same display can remove it as it exits).
-fn display() -> Result<u32, String> {
+pub fn display() -> Result<u32, String> {
     let mut xvfb = XVFB.lock().map_err(|_| "the Xvfb handle is poisoned")?;
     let running = xvfb.as_mut().and_then(|x| {
         let socket = PathBuf::from(format!("/tmp/.X11-unix/X{}", x.display));

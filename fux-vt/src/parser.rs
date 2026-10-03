@@ -202,6 +202,15 @@ pub struct Options {
     /// and `L` start a fresh line. An OSC string's first bytes are kept to
     /// tell one. Off, OSC 133 is ignored.
     pub prompt_marks: bool,
+    /// Answer DECRQCRA (`CSI Pi ; Pp ; Pt ; Pl ; Pb ; Pr * y`), a checksum
+    /// of a rectangle of the screen, with DECCKSR (`DCS Pi ! ~ xxxx ST`):
+    /// each cell's character and VT100 attributes, summed and negated as
+    /// xterm and the VT520 sum them (the README's "Opt-in outputs"). It is
+    /// how esctest reads the screen back. With it a program can read what
+    /// its screen shows, so xterm refuses it by default
+    /// (`disallowedWindowOps`); no program in fux's corpus asks for it, and
+    /// fux's panes leave it off.
+    pub rectangle_checksums: bool,
     /// Answer as this terminal rather than as a bare VT100: see [`Identity`].
     pub identity: Option<Identity>,
 }
@@ -221,6 +230,7 @@ impl Options {
             reflow: false,
             hyperlinks: false,
             prompt_marks: false,
+            rectangle_checksums: false,
             identity: None,
         }
     }
@@ -272,6 +282,11 @@ impl Options {
     /// These options with [`Options::hyperlinks`] as `on` says.
     pub const fn with_hyperlinks(mut self, on: bool) -> Self {
         self.hyperlinks = on;
+        self
+    }
+    /// These options with [`Options::rectangle_checksums`] as `on` says.
+    pub const fn with_rectangle_checksums(mut self, on: bool) -> Self {
+        self.rectangle_checksums = on;
         self
     }
     /// These options answering as `identity`, or as a bare VT100 if `None`.
@@ -968,6 +983,9 @@ impl Parser {
             (b"", b't') if n == 18 && self.options.size_reports => {
                 let (rows, cols) = self.screen.size();
                 Some(Reply::of(format_args!("\x1b[8;{rows};{cols}t")))
+            }
+            (b"*", b'y') if self.options.rectangle_checksums => {
+                Some(self.screen.rectangle_checksum(&self.params))
             }
             (b"?$", b'p') if modes => {
                 let status = match n {

@@ -513,6 +513,111 @@ and each difference's `key`, `directly` and `through`), or null.
 `steps`, `steps_identical`, `seconds`, and for tmux and zellij `each`
 recording's `steps`, `steps_identical`, `identical` and
 `first_difference`; or `skipped` and why.
+## esctest
+
+`esctest` runs esctest2 (`references/xterm/esctest2`, which
+`references/fetch.sh` clones), xterm's conformance suite by George Nachman
+and Thomas E. Dickey: 567 tests in 76 areas (a test class, one file of
+`esctest/tests/`), each writing to its terminal and reading the terminal's
+reports back: the cells by DECRQCRA rectangle checksums, the cursor by DSR,
+modes by DECRQM, settings by DECRQSS.
+
+```sh
+fux-vt/compare/run.sh esctest                    # every test against fux-vt; exit 1 on a mismatch with the list
+fux-vt/compare/run.sh esctest DECSTBM            # the tests whose name contains it (a Python regex)
+fux-vt/compare/run.sh esctest --show --replays CUP   # each failure's message, and its bytes as a replay
+fux-vt/compare/run.sh esctest --in-fux --xterm   # also in a real fux pane, and in a real xterm
+fux-vt/compare/run.sh esctest --json FILE --logs DIR   # every result, and esctest's own logs
+```
+
+- **Directly** (`src/esctest.rs`): each area is one esctest process (Python
+  3) on a PTY of 25×80, the size esctest resizes to before every test,
+  which fux-vt does not do, as it refuses window operations. Its terminal is
+  a fux-vt parser set up as fux's panes are (`fux::pane::OPTIONS`), with
+  two reports panes leave off: rectangle checksums (`Options::
+  rectangle_checksums`, added for esctest: no program in the corpus asks
+  for it, and with it a program can read its screen back, which is why xterm
+  refuses it by default) and `extended_replies` (DECXCPR). It reads what
+  esctest writes, and its replies are written back. Every area starts on a
+  fresh terminal; within one, tests run in esctest's order, as they would
+  in a terminal. Each read esctest makes waits `--timeout` (esctest's own,
+  1 second) for its reply, so a report fux-vt does not give fails that
+  test alone; an area running past `--limit` (120 s) is stopped, and its
+  unfinished tests fail. Areas run as many at a time as there are CPUs.
+- **Options.** `--expected-terminal=xterm`: esctest bends its
+  expectations to the terminal it is told it runs in, xterm or iTerm2, and
+  fux-vt follows xterm (blanks are spaces, checksums DEC's, xterm's own
+  known bugs expected to fail). `--max-vt-level=4`, a VT420: xterm's
+  default (`decTerminalID`) and the level esctest's README runs a vanilla
+  xterm at; it is the level with DECRQCRA, without which no cell is read.
+  The 17 VT520 tests are skipped, as are the one esctest does not try in
+  xterm. No `--options`: fux-vt is UTF-8 (so not `disableWideChars`) and does
+  no window operations (so not `xtermWinopsEnabled`), like a default xterm.
+- **The list**, `esctest-expected.txt`: every failing test, with its
+  reason, one of `departure`, `spec`, `not-implemented`, `xterm-too` or
+  `bug` (the file's header says what each means). The run fails on a
+  failure that is not listed, and on a listed test that passes, so the list
+  never goes stale. A test that passes where esctest expects xterm to fail
+  ("Should have failed") passes.
+- **In fux** (`--in-fux`, for `deep`): fux is built (`cargo build --release
+  --bin fux`) and each area runs in the only pane of a fux server of its
+  own (a directory and socket under `/tmp/fux-esctest-*`, as fux's tests
+  start one; never the user's), whose shell is esctest. A client is
+  attached on a PTY of 26×80, so the pane is 25×80 beside the bar; its
+  terminal is a fux-vt parser answering what fux asks of a terminal (DA1,
+  DECRQM, the kitty flags, the colours, white on black). fux's panes do not
+  answer DECRQCRA, so the tests that read cells cannot run there: they are
+  counted as skipped. The rest are set beside the direct run's: a test that
+  passes in one and fails in the other is printed, and points at fux (its
+  pane replies, its encoding). A line `[fux]` in the list is a test that
+  fails only in a pane, `[direct]` one that fails only directly.
+- **In xterm** (`--xterm`): each area also runs in a real xterm, under the
+  harness's Xvfb, the reference. It is set up as esctest's README says (80
+  by 25, a VT420), UTF-8 as fux is, with DECRQCRA allowed
+  (`disallowedWindowOps` without `GetChecksum`) and counting a cell nothing
+  was written to as a space (`checksumExtension: 8`), as esctest expects of
+  a DEC terminal: xterm's own default counts such a cell as nothing, and
+  then fails every test that reads one. What passes there and fails against
+  fux-vt is what fux-vt lacks; `--json` lists them.
+
+At this commit (an Apple M2 Max, 12 CPUs, loaded by other work):
+
+| | passed | failed | skipped | time |
+| --- | ---: | ---: | ---: | ---: |
+| directly | 263 (47.9%) | 286 | 18 | 31 s |
+| in fux | 125 (39.7% of 315 run) | 190 | 252 | 31 s |
+| in xterm 411 | 427 (77.8%) | 122 | 18 | 38 s |
+
+The 286 failures by reason: 223 `not-implemented` (left and right margins
+77, the colour palette 47, DECRQM of modes fux-vt does not keep 24,
+protected cells and selective erase 17, rectangle operations 13 and more),
+32 `departure` (window operations), 26 `xterm-too`, 4 `spec` (fux says it
+is a VT220 and fux), 1 `bug` (a cursor report in origin mode). In fux, the
+only difference is DECXCPR, which panes leave off.
+
+`--json FILE` writes, for the scoreboard:
+
+```json
+{
+  "suite": "esctest2", "expected_terminal": "xterm", "max_vt_level": "4",
+  "timeout": 1.0, "filter": null, "tests": 567,
+  "direct": {
+    "passed": 263, "passed_beyond_xterm": 2, "failed": 286, "skipped": 18,
+    "pass_rate": 47.9, "seconds": 30.6,
+    "areas": {"CUPTests": {"passed": 5, "failed": 1, "skipped": 0, "pass_rate": 83.3, "...": 0}},
+    "tests": {"CUPTests.test_CUP_RespectsOriginMode": {"outcome": "fail", "message": "...", "listed": "not-implemented: ..."}}
+  },
+  "in_fux": {"...": "as direct"},
+  "xterm": {"...": "as direct"},
+  "differences_in_fux": ["NAME: directly passes, in fux fails (...)"],
+  "differences_xterm": ["..."],
+  "mismatches": []
+}
+```
+
+`pass_rate` is passed over passed and failed, in percent; `in_fux` and
+`xterm` are there with `--in-fux` and `--xterm`; `mismatches` are what
+failed the run.
 
 ## Files
 
