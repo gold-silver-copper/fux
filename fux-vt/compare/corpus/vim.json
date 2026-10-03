@@ -7,7 +7,8 @@
     "PATH=/tmp/fux-corpus/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
     "HOME=/tmp/fux-corpus/home",
     "LANG=en_US.UTF-8",
-    "COLORTERM=truecolor"
+    "COLORTERM=truecolor",
+    "TZ=UTC"
   ],
   "note": "",
   "program": "vim",
@@ -19,99 +20,99 @@
   ],
   "steps": [
     {
-      "end": 6125,
+      "end": 6203,
       "keys": ""
     },
     {
-      "end": 6194,
+      "end": 6272,
       "keys": "j"
     },
     {
-      "end": 6266,
+      "end": 6344,
       "keys": "j"
     },
     {
-      "end": 6340,
+      "end": 6418,
       "keys": "5j"
     },
     {
-      "end": 7725,
+      "end": 7822,
       "keys": "\\x04"
     },
     {
-      "end": 9300,
+      "end": 9395,
       "keys": "\\x04"
     },
     {
-      "end": 10831,
+      "end": 10945,
       "keys": "\\x15"
     },
     {
-      "end": 14227,
+      "end": 14330,
       "keys": "G"
     },
     {
-      "end": 17423,
+      "end": 17548,
       "keys": "gg"
     },
     {
-      "end": 17521,
+      "end": 17650,
       "keys": "/fn \\r"
     },
     {
-      "end": 17606,
+      "end": 17738,
       "keys": "n"
     },
     {
-      "end": 17691,
+      "end": 17826,
       "keys": "n"
     },
     {
-      "end": 18898,
+      "end": 19052,
       "keys": "*"
     },
     {
-      "end": 19098,
+      "end": 19255,
       "keys": "V"
     },
     {
-      "end": 19323,
+      "end": 19486,
       "keys": "j"
     },
     {
-      "end": 19626,
+      "end": 19795,
       "keys": "j"
     },
     {
-      "end": 20009,
+      "end": 20183,
       "keys": "\\e"
     },
     {
-      "end": 21765,
+      "end": 21940,
       "keys": ":split\\r"
     },
     {
-      "end": 22114,
+      "end": 22292,
       "keys": "\\x17j"
     },
     {
-      "end": 22458,
+      "end": 22639,
       "keys": "\\x17k"
     },
     {
-      "end": 22508,
+      "end": 22690,
       "keys": ":set spell\\r"
     },
     {
-      "end": 23345,
+      "end": 23537,
       "keys": "\\x04"
     },
     {
-      "end": 25234,
+      "end": 25429,
       "keys": ":q\\r"
     },
     {
-      "end": 25352,
+      "end": 25547,
       "keys": ":q!\\r"
     }
   ],

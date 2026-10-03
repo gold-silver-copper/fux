@@ -21,27 +21,27 @@
   ],
   "steps": [
     {
-      "end": 10933,
+      "end": 10943,
       "keys": ""
     },
     {
-      "end": 13917,
+      "end": 13927,
       "keys": ":terminal\\r"
     },
     {
-      "end": 14068,
+      "end": 14078,
       "keys": "echo inside vim\\r"
     },
     {
-      "end": 14502,
+      "end": 14492,
       "keys": "seq 1 30\\r"
     },
     {
-      "end": 17578,
+      "end": 17569,
       "keys": "exit\\r"
     },
     {
-      "end": 17696,
+      "end": 17687,
       "keys": ":q!\\r"
     }
   ],
