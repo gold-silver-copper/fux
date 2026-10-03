@@ -81,7 +81,9 @@ full() {
   echo "full: instructions against main (alone)"
   ran+=(against)
   build_bench
-  step against "$bench" --against main --json "$out/against.json"
+  # Nine repeats, not the bench's five: on a busy machine five left a
+  # workload's spread above the 3% it judges at.
+  step against "$bench" --against main --repeats 9 --json "$out/against.json"
 }
 
 # What `deep` takes beyond `full`, from the last run of each part here if
