@@ -61,7 +61,9 @@ verdicts the families with a recorded verdict (or those named), beside
 replay   one case: STEP is output, written as `run` prints it ('\\e[1mX'),
          or resize:RxC. Prints each engine's verdict after every step, and
          the screens.
-bench    each engine's speed on the same workloads (default: all), in MB/s.
+bench    each engine's speed on the same workloads, in MB/s (default: the
+         synthetic ones and the corpus all together; `corpus` adds each
+         recording alone).
 record   runs PROGRAM on a PTY (--size, else 40x120) as a pane of fux
          runs it, types each line of keys in FILE, and keeps every byte it
          writes (PREFIX.bin) and what was run and typed (PREFIX.json).

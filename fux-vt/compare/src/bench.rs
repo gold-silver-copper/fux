@@ -5,6 +5,12 @@
 //! process is timed on parsing and applying alone; an engine behind a
 //! process of its own also pays for the pipe to it, so its figure is
 //! end to end, and marked so.
+//!
+//! The corpus (`corpus/`) gives workloads of real traffic beside these:
+//! each recording's bytes, replayed as fast as they parse at the size they
+//! were recorded at, over and over to make up the same amount, and all of
+//! them in turn (`corpus`, which a run without names includes; `bench
+//! corpus` gives every recording alone too).
 use crate::engine::{ENGINES, Kind, SUBJECT, Setup};
 use crate::rng::Rng;
 use std::fmt::Write;
@@ -182,14 +188,67 @@ impl std::fmt::Write for Text<'_> {
     }
 }
 
+/// A workload made: its name, what it is, the screen it runs on, and its
+/// bytes.
+struct Load {
+    name: String,
+    about: String,
+    rows: u16,
+    cols: u16,
+    bytes: Vec<u8>,
+}
+
+/// `bytes` over and over, whole, until there are at least `total`.
+fn repeated(bytes: &[u8], total: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(total.saturating_add(bytes.len()));
+    while !bytes.is_empty() && out.len() < total {
+        out.extend_from_slice(bytes);
+    }
+    out
+}
+
+/// The corpus's workloads: every recording alone, and all of them in
+/// turn, each `total` bytes or a little more. All are 40x120; one of
+/// another size runs at its own.
+fn corpus_loads(total: usize) -> Result<Vec<Load>, String> {
+    let recordings = crate::corpus::recordings(&[])?;
+    let mut each = Vec::new();
+    let mut all = Vec::new();
+    for r in &recordings {
+        let bytes = r.bytes();
+        all.extend_from_slice(&bytes);
+        each.push(Load {
+            name: format!("corpus:{}", r.name),
+            about: format!("{}, {} bytes recorded", r.version, bytes.len()),
+            rows: r.rows,
+            cols: r.cols,
+            bytes: repeated(&bytes, total),
+        });
+    }
+    let together = recordings.first().map(|first| Load {
+        name: "corpus".into(),
+        about: format!(
+            "every recording in turn, {} bytes recorded, at {}x{}",
+            all.len(),
+            first.rows,
+            first.cols
+        ),
+        rows: first.rows,
+        cols: first.cols,
+        bytes: repeated(&all, total),
+    });
+    Ok(together.into_iter().chain(each).collect())
+}
+
 /// The best of [`RUNS`] times to feed `bytes` to a fresh engine.
-fn time(kind: &Kind, bytes: &[u8]) -> Result<Duration, String> {
+fn time(kind: &Kind, load: &Load) -> Result<Duration, String> {
     let setup = Setup {
-        rows: ROWS,
-        cols: COLS,
+        rows: load.rows,
+        cols: load.cols,
         history: 10_000,
         reflow: true,
     };
+    let bytes = load.bytes.as_slice();
     let mut best = Duration::MAX;
     for _ in 0..RUNS {
         let took = crate::case::guarded(|| {
@@ -203,42 +262,67 @@ fn time(kind: &Kind, bytes: &[u8]) -> Result<Duration, String> {
     Ok(best)
 }
 
-/// Times fux-vt and `engines` on the named workloads (all if none), each
-/// `mb` MiB, and prints MB/s as a table.
+/// Times fux-vt and `engines` on the named workloads, each `mb` MiB, and
+/// prints MB/s as a table. With none named: the synthetic workloads and
+/// the corpus all together; `corpus` names every corpus workload, each
+/// recording alone too.
 pub fn run(engines: &[usize], names: &[String], mb: usize) -> Result<bool, String> {
-    let chosen: Vec<&Workload> = if names.is_empty() {
-        WORKLOADS.iter().collect()
-    } else {
-        names
+    let bytes = mb.saturating_mul(1 << 20);
+    let synthetic = WORKLOADS.iter().map(|(name, about, make)| Load {
+        name: (*name).to_owned(),
+        about: (*about).to_owned(),
+        rows: ROWS,
+        cols: COLS,
+        bytes: make(&mut Rng::new(1), bytes),
+    });
+    let mut every: Vec<Load> = synthetic.collect();
+    every.extend(corpus_loads(bytes)?);
+    let known = every
+        .iter()
+        .map(|l| l.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    for n in names {
+        if !every
             .iter()
-            .map(|n| {
-                WORKLOADS.iter().find(|w| w.0 == n).ok_or(format!(
-                    "no workload {n:?}; there are: {}",
-                    WORKLOADS.iter().map(|w| w.0).collect::<Vec<_>>().join(" ")
-                ))
-            })
-            .collect::<Result<_, _>>()?
-    };
+            .any(|l| &l.name == n || (n == "corpus" && l.name.starts_with("corpus")))
+        {
+            return Err(format!("no workload {n:?}; there are: {known}"));
+        }
+    }
+    let chosen: Vec<&Load> = every
+        .iter()
+        .filter(|l| {
+            if names.is_empty() {
+                // By default the corpus all together, so a run stays a few
+                // minutes; `corpus` adds each recording alone.
+                !l.name.starts_with("corpus:")
+            } else {
+                names
+                    .iter()
+                    .any(|n| *n == l.name || (n == "corpus" && l.name.starts_with("corpus")))
+            }
+        })
+        .collect();
     let kinds: Vec<&Kind> = std::iter::once(&SUBJECT)
         .chain(engines.iter().filter_map(|&i| ENGINES.get(i)))
         .collect();
-    let bytes = mb.saturating_mul(1 << 20);
     println!(
-        "MB/s, best of {RUNS}, {ROWS}x{COLS}, {CHUNK}-byte chunks, {mb} MiB per workload; * = own process, end to end"
+        "MB/s, best of {RUNS}, {CHUNK}-byte chunks, {mb} MiB per workload, {ROWS}x{COLS} (the corpus at its own size); * = own process, end to end"
     );
-    print!("{:<14}", "");
+    print!("{:<22}", "");
     for kind in &kinds {
         let mark = if kind.in_process { "" } else { "*" };
         print!(" {:>10}", format!("{}{mark}", kind.name));
     }
     println!();
-    for (name, _, make) in chosen {
-        let input = make(&mut Rng::new(1), bytes);
-        print!("{name:<14}");
+    for load in &chosen {
+        let name = &load.name;
+        print!("{name:<22}");
         for kind in &kinds {
-            let cell = match time(kind, &input) {
+            let cell = match time(kind, load) {
                 Ok(took) => {
-                    let mbs = (input.len() as f64) / took.as_secs_f64().max(1e-9) / 1e6;
+                    let mbs = (load.bytes.len() as f64) / took.as_secs_f64().max(1e-9) / 1e6;
                     format!("{mbs:.1}")
                 }
                 Err(e) => {
@@ -251,8 +335,8 @@ pub fn run(engines: &[usize], names: &[String], mb: usize) -> Result<bool, Strin
         println!();
     }
     println!();
-    for (name, about, _) in WORKLOADS {
-        println!("{name:<14} {about}");
+    for load in &chosen {
+        println!("{:<22} {}", load.name, load.about);
     }
     Ok(true)
 }
