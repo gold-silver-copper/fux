@@ -381,6 +381,14 @@ Code) reach your terminal as links, each with an id of its pane's, so two
 panes' links never merge into one; a terminal that does not know OSC 8
 ignores them. Copy mode copies a link's text, not its URI.
 
+Underline styles (curly, dotted, dashed and double, kitty's `4:n`: neovim
+draws its diagnostics curly, in their colour) reach your terminal if it
+draws them. A program learns that fux keeps them as neovim asks, with
+DECRQSS; the server asks each client's terminal as it attaches, through
+XTGETTCAP (`Smulx`: Ghostty, kitty, WezTerm, foot, iTerm2) and the same
+DECRQSS (VTE), and paints a terminal that says neither (Apple's Terminal,
+xterm, alacritty) a plain underline for each style.
+
 The previous, Bevy-based fux is kept at the tag `bevy-final`.
 
 ## Development

@@ -29,6 +29,15 @@
 //! expected (`Decoder::expect`), and is then Alt-]; with a digit after it,
 //! it is an answer begun. How input is split never changes what it decodes
 //! to; only how long a wait lasts.
+//!
+//! A DCS answer (DECRPSS, `DCS 1 $ r … ST`, and XTGETTCAP's, `DCS 1 + r …
+//! ST`) begins `ESC P`, as Alt-P does, so it is one only once it has begun
+//! as fux's answers do, `ESC P`, `0` or `1`, then `$` or `+`; from there it
+//! is an answer begun. While an answer is expected, `ESC P` and `ESC P 1`
+//! wait for the rest, as `ESC ]` does; otherwise they are keys at once, as
+//! before, Alt-P costing no wait: fux's questions are always expected
+//! (`Decoder::expect`), and only one split in its first three bytes and
+//! arriving after the window would be taken for keys.
 use crate::bytes::ByteQueue;
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
 use crate::outer::{Rgb, Scheme};
@@ -46,6 +55,10 @@ pub const REPLY_WINDOW: Duration = Duration::from_secs(1);
 /// The longest OSC answer kept: `OSC 11 ; rgb:RRRR/GGGG/BBBB ST` is 29
 /// bytes. A longer string is dropped.
 const OSC_LIMIT: usize = 128;
+/// The longest DCS answer kept: a DECRPSS of the longest pen,
+/// `DCS 1 $ r 0;1;4:3;6;7;8;2;3;9;38:2::255:255:255;48:2::…;58:2::… m ST`,
+/// is under 90 bytes, and XTGETTCAP's answer for `Smulx` under 50.
+const DCS_LIMIT: usize = 256;
 /// The largest paste delivered; a longer one is refused whole.
 pub const PASTE_LIMIT: usize = 64 * 1024;
 
@@ -75,6 +88,11 @@ pub enum Reply {
     KittyFlags(u8),
     /// Primary device attributes, `CSI ? … c`.
     Attributes,
+    /// The terminal draws underline styles (`outer`): its terminfo has
+    /// `Smulx`, as its XTGETTCAP answer says (`DCS 1 + r 536d756c78 = … ST`,
+    /// `Smulx` in hex), or it kept the curly underline fux set, as its
+    /// DECRPSS of the pen says (`DCS 1 $ r 0 ; 4:3 m ST`).
+    UnderlineStyles,
 }
 
 #[derive(Default)]
@@ -127,8 +145,12 @@ impl Decoder {
         let since = self.since.filter(|_| self.waiting())?;
         let pending = self.pending.as_slice();
         let reply = match pending {
-            b"\x1b]" => self.expected > 0,
-            _ => pending.starts_with(b"\x1b]") || pending.starts_with(b"\x1b[?"),
+            b"\x1b]" | b"\x1bP" | b"\x1bP0" | b"\x1bP1" => self.expected > 0,
+            _ => {
+                pending.starts_with(b"\x1b]")
+                    || pending.starts_with(b"\x1b[?")
+                    || dcs_begun(pending)
+            }
         };
         Some(crate::after(
             since,
@@ -216,7 +238,8 @@ impl Decoder {
 
     fn drain(&mut self, out: &mut Vec<Input>, flush: bool) {
         while !self.pending.is_empty() && self.paste.is_none() {
-            match decode(self.pending.as_slice(), flush) {
+            let answers = self.expected > 0;
+            match decode(self.pending.as_slice(), flush, answers) {
                 Step::Done(n, input) => {
                     // Nearly always the whole sequence; else what follows it
                     // stays, without moving.
@@ -307,8 +330,8 @@ fn single(bytes: &[u8], flush: bool) -> Step {
 }
 
 /// One input from the start of `bytes`; `flush` once the deadline has
-/// passed.
-fn decode(bytes: &[u8], flush: bool) -> Step {
+/// passed, `answers` while the terminal's answers are expected.
+fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
     let Some(&first) = bytes.first() else {
         return Step::Incomplete;
     };
@@ -332,6 +355,12 @@ fn decode(bytes: &[u8], flush: bool) -> Step {
         },
         // Escape Escape: an Escape, then decode the second one on its own.
         0x1b => Step::Done(1, press(Key::Escape, Modifiers::NONE)),
+        b'P' if dcs_begun(bytes) => dcs(bytes, flush),
+        // What may yet begin an answer waits for the rest while one is
+        // expected.
+        b'P' if answers && !flush && matches!(bytes.get(2..), Some(b"" | b"0" | b"1")) => {
+            Step::Incomplete
+        }
         _ => match single(bytes.get(1..).unwrap_or_default(), flush) {
             // The Escape and what followed it; within `bytes`, so exact.
             Step::Done(n, Some(Input::Key(stroke))) => {
@@ -403,6 +432,55 @@ fn osc(bytes: &[u8], flush: bool) -> Step {
     let consumed = consumed.unwrap_or(bytes.len()).min(bytes.len());
     let reply = payload.and_then(colour_reply).map(Input::Reply);
     Step::Done(consumed, reply)
+}
+
+/// Whether `bytes` begin as fux's DCS answers do: `ESC P`, `0` or `1`, then
+/// `$` (DECRPSS) or `+` (XTGETTCAP).
+fn dcs_begun(bytes: &[u8]) -> bool {
+    matches!(bytes.get(..4), Some([0x1b, b'P', b'0' | b'1', b'$' | b'+']))
+}
+
+/// A DCS answer begun (`dcs_begun`): its string, ended by ST (`ESC \`). An
+/// answer fux uses becomes a `Reply`; anything else, or anything cut short
+/// at the deadline or past `DCS_LIMIT`, is dropped, never typed.
+fn dcs(bytes: &[u8], flush: bool) -> Step {
+    let body = bytes.get(2..).unwrap_or_default();
+    let (payload, consumed) = match body.iter().position(|b| *b == 0x1b) {
+        Some(i) => match body.get(i.saturating_add(1)) {
+            Some(b'\\') => (body.get(..i), i.checked_add(4)),
+            // ESC and something else: the string ends there, unfinished,
+            // and the ESC begins what comes next.
+            Some(_) => return Step::Done(i.saturating_add(2), None),
+            None if flush => return Step::Done(bytes.len(), None),
+            None => return Step::Incomplete,
+        },
+        None if flush || body.len() > DCS_LIMIT => return Step::Done(bytes.len(), None),
+        None => return Step::Incomplete,
+    };
+    // Within `bytes`: the string, its two-byte opening and its end.
+    let consumed = consumed.unwrap_or(bytes.len()).min(bytes.len());
+    let reply = payload.and_then(dcs_reply).map(Input::Reply);
+    Step::Done(consumed, reply)
+}
+
+/// What a DCS answer says that fux uses: that the terminal draws underline
+/// styles, from XTGETTCAP's answer for `Smulx` (`1+r536d756c78=…`, the
+/// name in hex, either case), or from DECRPSS's of the pen holding `4:3`
+/// (`1$r0;4:3m`). Any other answer, an invalid one (`0$r`, `0+r…`) among
+/// them, says nothing.
+fn dcs_reply(payload: &[u8]) -> Option<Reply> {
+    if let Some(pen) = payload
+        .strip_prefix(b"1$r")
+        .and_then(|p| p.strip_suffix(b"m"))
+    {
+        return pen
+            .split(|b| *b == b';')
+            .any(|group| group == b"4:3")
+            .then_some(Reply::UnderlineStyles);
+    }
+    let name = payload.strip_prefix(b"1+r")?.split(|b| *b == b'=').next()?;
+    name.eq_ignore_ascii_case(b"536d756c78")
+        .then_some(Reply::UnderlineStyles)
 }
 
 /// `10 ; rgb:…` or `11 ; rgb:…`: the terminal's foreground or background.
@@ -1076,6 +1154,106 @@ mod tests {
         d.expect(t0);
         d.expire(t0 + REPLY_WINDOW);
         assert_eq!(waits(&mut d, b"\x1b]", &mut out), Some(ESCAPE_DELAY));
+    }
+
+    /// The DCS answers fux asks for (`outer::STYLES`), in the forms
+    /// terminals give them: XTGETTCAP's (ctlseqs: `DCS 1 + r Pt ST`, the
+    /// name in hex, `=` and the value in hex; `DCS 0 + r Pt ST` for a name
+    /// the terminal does not have) and DECRPSS's (`DCS 1 $ r Pt ST`, the
+    /// pen as the SGR that sets it). Either says the terminal draws styles,
+    /// `Smulx` known or `4:3` kept; anything else says nothing and is
+    /// dropped. Among keys, whole and split at every byte while expected,
+    /// and whole when not.
+    #[test]
+    fn dcs_answers_are_told_from_keys_however_they_arrive() {
+        let stream: &[u8] = b"a\x1bP1+r536d756c78=5c455b343a25703125646d\x1b\\b\
+            \x1bP1$r0;4m\x1b\\\x1bP1$r0;4:3m\x1b\\c\x1bP0+r536D756C78\x1b\\\
+            \x1bP1+r536D756C78\x1b\\\x1bP0$r\x1b\\\x1bP1+r5463\x1b\\\x1bP1$r4:3m\x1b\\d";
+        let styles = || Input::Reply(Reply::UnderlineStyles);
+        let expected = vec![
+            key("a"),
+            styles(),
+            key("b"),
+            styles(),
+            key("c"),
+            styles(),
+            styles(),
+            key("d"),
+        ];
+        assert_eq!(all(stream), expected);
+        for split in 1..stream.len() {
+            let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
+            let mut d = Decoder::default();
+            d.expect(Instant::now());
+            let mut out = Vec::new();
+            d.bytes(a, &mut out);
+            d.bytes(b, &mut out);
+            d.timeout(&mut out);
+            assert_eq!(out, expected, "split at {split}");
+        }
+        // Begun as an answer, each is one whoever expects it, split anywhere
+        // after its first four bytes.
+        for split in 4..stream.len() {
+            let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
+            if a.ends_with(b"\x1bP") || a.ends_with(b"\x1bP1") || a.ends_with(b"\x1bP0") {
+                continue;
+            }
+            let mut d = Decoder::default();
+            let mut out = Vec::new();
+            d.bytes(a, &mut out);
+            d.bytes(b, &mut out);
+            d.timeout(&mut out);
+            assert_eq!(out, expected, "split at {split}, not expecting");
+        }
+        // An answer cut short waits `REPLY_DELAY`, then is dropped; one past
+        // `DCS_LIMIT` is dropped as it arrives.
+        let t0 = Instant::now();
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.bytes(b"\x1bP1$r0;4", &mut out);
+        d.mark(t0);
+        assert_eq!(d.deadline(), Some(t0 + REPLY_DELAY));
+        d.timeout(&mut out);
+        assert!(out.is_empty(), "{out:?}");
+        let mut long = b"\x1bP1+r".to_vec();
+        long.extend(std::iter::repeat_n(b'5', DCS_LIMIT + 10));
+        long.extend_from_slice(b"\x1b\\y");
+        assert_eq!(all(&long), vec![key("y")]);
+    }
+
+    /// `ESC P` is Alt-P at once, as it always was, unless an answer is
+    /// expected: then it, and `ESC P 1`, wait `REPLY_DELAY` for the rest of
+    /// one, and are Alt-P and the key after, if it does not come. What
+    /// does not begin as an answer is keys at once.
+    #[test]
+    fn alt_p_waits_only_while_an_answer_is_expected() {
+        let alt_p = key("M-P");
+        assert_eq!(all(b"\x1bP"), vec![alt_p.clone()]);
+        assert_eq!(all(b"\x1bP1"), vec![alt_p.clone(), key("1")]);
+        assert_eq!(all(b"\x1bPx"), vec![alt_p.clone(), key("x")]);
+        assert_eq!(all(b"\x1bP1x"), vec![alt_p.clone(), key("1"), key("x")]);
+        let t0 = Instant::now();
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.bytes(b"\x1bP", &mut out);
+        assert_eq!(out, vec![alt_p.clone()], "not waiting");
+        assert!(!d.waiting());
+        for pending in [&b"\x1bP"[..], b"\x1bP1"] {
+            let mut d = Decoder::default();
+            d.expect(t0);
+            let mut out = Vec::new();
+            d.bytes(pending, &mut out);
+            d.mark(t0);
+            assert!(out.is_empty(), "{pending:?}");
+            assert_eq!(d.deadline(), Some(t0 + REPLY_DELAY), "{pending:?}");
+            d.timeout(&mut out);
+            assert_eq!(out.first(), Some(&alt_p), "{pending:?}");
+        }
+        let mut d = Decoder::default();
+        d.expect(t0);
+        let mut out = Vec::new();
+        d.bytes(b"\x1bPx", &mut out);
+        assert_eq!(out, vec![alt_p, key("x")]);
     }
 
     #[test]
