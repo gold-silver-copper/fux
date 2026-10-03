@@ -21,6 +21,11 @@ processes (see [the report for Apple](https://github.com/gold-silver-copper/fux/
   after the kernel gives up retrying a race between openers. fuxix opens one
   master at a time in the process and retries that code up to 8 times; if it
   persists, the error is `AGAIN`.
+- `posix_openpt` can fail with `ENXIO` when it loses a race with another
+  process's close: the kernel picks a number past the end of its table, a
+  close frees a slot, and the table is not grown (xnu `ptmx_clone` and
+  `ptmx_get_ioctl`). fuxix retries `ENXIO` as it does `EREDRIVEOPEN`; if it
+  persists, as every PTY being in use would, the error stays `ENXIO`.
 - A master can open with no replica node in `/dev`, and `grantpt` on it then
   never returns. fuxix looks the replica up before `grantpt`, and watches
   `grantpt`: after 1 s a watchdog thread replaces the master with `/dev/null`,

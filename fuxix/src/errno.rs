@@ -23,6 +23,11 @@ impl Errno {
     #[cfg(any(target_os = "macos", test))]
     pub(crate) const REDRIVEOPEN: Errno = Errno(-6);
     pub(crate) const NAMETOOLONG: Errno = Errno(libc::ENAMETOOLONG);
+    /// What macOS's `open("/dev/ptmx")` returns when it loses a race with
+    /// another process's close, as well as when every PTY is in use. See
+    /// `pty::open`.
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) const NXIO: Errno = Errno(libc::ENXIO);
 
     /// The number.
     pub fn raw(self) -> i32 {
