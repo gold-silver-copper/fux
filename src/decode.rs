@@ -134,9 +134,11 @@ enum Step {
     Done(usize, Option<Input>),
     /// Consumed this many bytes, the start of a bracketed paste.
     PasteStart(usize),
-    /// Consumed this many bytes of a string past its limit, the rest of
-    /// which is dropped as it comes (BEL ends it too if `true`).
-    Discard(usize, bool),
+    /// Consumed this many bytes of an OSC string past its limit, the rest
+    /// of which is dropped as it comes, to its BEL or ST.
+    DiscardOsc(usize),
+    /// The same of a DCS string, which ends with ST alone.
+    DiscardDcs(usize),
     /// The pending bytes are a prefix of something longer.
     Incomplete,
 }
@@ -202,27 +204,14 @@ impl Decoder {
     }
 
     fn feed(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
+        let bytes = match self.discarding {
+            Some(_) => match self.discard(bytes, out) {
+                Some(rest) => rest,
+                None => return,
+            },
+            None => bytes,
+        };
         for (i, &byte) in bytes.iter().enumerate() {
-            if let Some(string) = &mut self.discarding {
-                if string.escape {
-                    self.discarding = None;
-                    if byte == b'\\' {
-                        continue;
-                    }
-                    // ESC and something else: the string ends there,
-                    // unfinished, and the ESC begins what comes next.
-                    self.pending.push(b"\x1b");
-                    self.pending.push(bytes.get(i..).unwrap_or_default());
-                    self.drain(out, false);
-                    return;
-                }
-                match byte {
-                    0x07 if string.bel => self.discarding = None,
-                    0x1b => string.escape = true,
-                    _ => {}
-                }
-                continue;
-            }
             if let Some(paste) = &mut self.paste {
                 // Match the end marker incrementally; a partial marker that
                 // breaks off is paste text after all.
@@ -265,6 +254,37 @@ impl Decoder {
         }
     }
 
+    /// Drops `bytes` of a string being dropped (`discarding`) to its end;
+    /// what follows it, if it ends within them. An Escape that ends it
+    /// unfinished begins what follows, and is decoded with it here.
+    #[cold]
+    fn discard<'a>(&mut self, bytes: &'a [u8], out: &mut Vec<Input>) -> Option<&'a [u8]> {
+        for (i, &byte) in bytes.iter().enumerate() {
+            let string = self.discarding.as_mut()?;
+            if string.escape {
+                self.discarding = None;
+                if byte == b'\\' {
+                    return bytes.get(i.saturating_add(1)..);
+                }
+                // ESC and something else: the string ends there,
+                // unfinished, and the ESC begins what comes next.
+                self.pending.push(b"\x1b");
+                self.pending.push(bytes.get(i..).unwrap_or_default());
+                self.drain(out, false);
+                return None;
+            }
+            match byte {
+                0x07 if string.bel => {
+                    self.discarding = None;
+                    return bytes.get(i.saturating_add(1)..);
+                }
+                0x1b => string.escape = true,
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// The Escape deadline passed: whatever is pending is complete as it is.
     pub fn timeout(&mut self, out: &mut Vec<Input>) {
         if self.paste.is_none() {
@@ -280,7 +300,8 @@ impl Decoder {
     fn drain(&mut self, out: &mut Vec<Input>, flush: bool) {
         while !self.pending.is_empty() && self.paste.is_none() {
             let answers = self.expected > 0;
-            match decode(self.pending.as_slice(), flush, answers) {
+            let step = decode(self.pending.as_slice(), flush, answers);
+            match step {
                 Step::Done(n, input) => {
                     // Nearly always the whole sequence; else what follows it
                     // stays, without moving.
@@ -300,7 +321,8 @@ impl Decoder {
                     self.feed(rest.as_slice(), out);
                     return;
                 }
-                Step::Discard(n, bel) => {
+                Step::DiscardOsc(n) | Step::DiscardDcs(n) => {
+                    let bel = matches!(step, Step::DiscardOsc(_));
                     self.pending.take(n);
                     self.discarding = Some(Discarding { bel, escape: false });
                 }
@@ -418,7 +440,8 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
             }
             Step::Done(n, other) => Step::Done(n.saturating_add(1), other),
             Step::PasteStart(n) => Step::PasteStart(n.saturating_add(1)),
-            Step::Discard(n, bel) => Step::Discard(n.saturating_add(1), bel),
+            Step::DiscardOsc(n) => Step::DiscardOsc(n.saturating_add(1)),
+            Step::DiscardDcs(n) => Step::DiscardDcs(n.saturating_add(1)),
             Step::Incomplete => Step::Incomplete,
         },
     }
@@ -454,6 +477,7 @@ fn ss3(last: u8, mods: Modifiers) -> Option<Input> {
 /// nothing follows yet. The string ends with BEL or ST (`ESC \`); a colour
 /// answer becomes a `Reply`, and anything else, or anything cut short at
 /// the deadline or past `OSC_LIMIT`, is dropped.
+#[cold]
 fn osc(bytes: &[u8], flush: bool) -> Step {
     let alt_bracket = || Step::Done(2, press(Key::Char(']'), alt()));
     let body = bytes.get(2..).unwrap_or_default();
@@ -476,7 +500,7 @@ fn osc(bytes: &[u8], flush: bool) -> Step {
         // Cut short: dropped.
         None if flush => return Step::Done(bytes.len(), None),
         // Longer than any answer: dropped, the rest of it as it comes.
-        None if body.len() > OSC_LIMIT => return Step::Discard(bytes.len(), true),
+        None if body.len() > OSC_LIMIT => return Step::DiscardOsc(bytes.len()),
         None => return Step::Incomplete,
     };
     // Within `bytes`: the string, its two-byte opening and its end.
@@ -498,6 +522,7 @@ fn dcs_begun(bytes: &[u8]) -> bool {
 /// A DCS answer begun (`dcs_begun`): its string, ended by ST (`ESC \`). An
 /// answer fux uses becomes a `Reply`; anything else, or anything cut short
 /// at the deadline or past `DCS_LIMIT`, is dropped, never typed.
+#[cold]
 fn dcs(bytes: &[u8], flush: bool) -> Step {
     let body = bytes.get(2..).unwrap_or_default();
     let (payload, consumed) = match body.iter().position(|b| *b == 0x1b) {
@@ -510,7 +535,7 @@ fn dcs(bytes: &[u8], flush: bool) -> Step {
             None => return Step::Incomplete,
         },
         None if flush => return Step::Done(bytes.len(), None),
-        None if body.len() > DCS_LIMIT => return Step::Discard(bytes.len(), false),
+        None if body.len() > DCS_LIMIT => return Step::DiscardDcs(bytes.len()),
         None => return Step::Incomplete,
     };
     // Within `bytes`: the string, its two-byte opening and its end.
