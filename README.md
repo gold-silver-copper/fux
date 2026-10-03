@@ -170,6 +170,11 @@ binding, from the command prompt, and, for `set`/`bind`/`unbind`, from the confi
 file. Targets: a pane is `%N`, a tab `@N`, a workspace `+N` or its name (`$N`
 is avoided because the shell would expand it). A client is `cN`.
 
+Inside a pane, `TERM` is `xterm-256color`, `TERM_PROGRAM` is `fux` and
+`TERM_PROGRAM_VERSION` fux's version, whatever the terminal fux runs in sets
+(programs read `TERM_PROGRAM` to guess which terminal they talk to, as they
+would in tmux, which sets its own).
+
 Inside a pane, `FUX_PANE` names it and `FUX_SOCKET` names the server, so
 commands there target that pane without `-t`. A command that needs a target
 and has neither `-t` nor `FUX_PANE` fails with a message naming `-t`; it never
