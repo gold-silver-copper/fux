@@ -536,6 +536,246 @@ and every DCS, APC, PM and SOS string. Those lists are in
 `src/inventory.rs`, and must follow fux-vt. `corpus/INVENTORY.md` is its
 output, made again with the recordings.
 
+## Transparency
+
+A program inside fux should look exactly as it does with no fux in
+between. `transparency` checks that on every recording.
+
+```sh
+fux-vt/compare/run.sh transparency                    # every recording, read by Ghostty; exit 1 on a difference
+fux-vt/compare/run.sh transparency --engines in-process vim   # read by each engine in this process
+fux-vt/compare/run.sh transparency --chunk 64         # compared every 64 bytes too
+fux-vt/compare/run.sh transparency --size 3x10 '\e]133;A\x07$ '   # output given, as `replay` takes it
+fux-vt/compare/run.sh transparency --multiplexers     # tmux's and zellij's scores beside fux's
+fux-vt/compare/run.sh transparency --json FILE        # the results as JSON too
+```
+
+The output goes two ways, to two terminals of one kind (Ghostty unless
+`--engines` names others; they must run in this process):
+
+1. **Directly**, at the recording's size.
+2. **Through fux**, used as a library as its server runs it
+   (`src/transparency.rs`, `Through`). A `Session` with one pane and one
+   client a row taller than the recording, so that the pane, above the
+   bar, is the recording's size (the placement is checked). The output is
+   read into the pane as the server reads it (`Session::output`, 16 KiB at
+   most a read), and the pane's replies are taken as a program reads them.
+   The client's terminal gets what `fux attach` writes to it first
+   (`client::ENTER`: the alternate screen, autowrap off), what the server
+   sends it outside paints (its queries), and every paint, made as
+   `Server::paint` makes it: composed into the spare grid
+   (`render::compose_into`); nothing sent if it is the screen the client
+   shows; else `render::paint_into` from the shown grid, or a full paint
+   the first time, and the grids swap.
+
+Then the pane's rectangle of the client's terminal is compared with the
+direct terminal, field by field (`snapshot::differences`), on what the
+engine can tell (its `Can`) and a screen shows (`SHOWN`): each cell's text,
+width, style and link, the rows where a prompt starts, cursor visibility,
+and where the cursor is when either side shows it. Left out, as nothing on
+the screen shows them and a multiplexer keeps them for the pane: soft-wrap
+flags and a pending wrap (fux places every run it paints, with autowrap
+off), the modes (they say how keys and the mouse are read, which fux does
+for the pane), the title (fux shows it in its bar), reports and history.
+
+**Where it compares:** after each step, and inside one before each BSU and
+after each ESU of synchronized output (2026); `--chunk N` adds a point every
+N bytes. The client is painted at every point. While the pane holds a frame,
+fux shows the screen from before it, by design, so the point is painted but
+not compared; the frame is compared at its end. A frame still held when
+the recording ends is released, as the server releases one when its
+timeout passes, and painted.
+
+**What the mirror leaves out:** paints are made at every point, not spaced
+16 ms apart as the server spaces them; a client that stops reading (the
+server's output cap) does not happen; the client's terminal's answers to
+the server's queries are not sent back (they say how to read keys and
+which colours to answer a pane's colour queries with, and the recording's
+output is fixed). The recordings have no resizes.
+
+**A difference is fux's, or where fux-vt and the engine read the program's
+bytes apart.** Both sides are read by one engine, so it is never the
+engines splitting on fux's paint. Where fux-vt reads the program's own
+output otherwise than the engine, fux paints what fux-vt has, and the two
+sides differ; the corpus shows the same split (`corpus`'s marks). Such a
+difference is recorded (`KNOWN` in `src/transparency.rs`) with its reason
+and the differences it covers, and any other difference in the same
+recording still fails:
+
+| Recording | Engines | Why |
+| --- | --- | --- |
+| `tmux` | ghostty, alacritty | tmux pads its status line with ECH in black on green; fux-vt's erased cells keep the foreground, as xterm's do, Ghostty's and alacritty's only the background. A blank's foreground is not drawn |
+| `delta-diff` | alacritty, avt, wezterm | the wrap marker delta erases with EL 0 while a wrap is pending: these keep it, fux-vt (as xterm, Ghostty and libvterm) erases it |
+
+Today 14 recordings are identical beside Ghostty and the tmux recording
+differs as recorded: 171 points compared, in half a second (0.3 s of
+CPU; 1.5 s through `run.sh`, with its build check). With
+`--chunk 13` the recordings but `tmux` stay identical at 19837 points (a
+minute). `--chunk` with libvterm finds only libvterm's own handling of
+UTF-8 split between writes. `cargo test` keeps every recording
+transparent beside Ghostty (`every_recording_is_transparent`).
+
+**Found:** fux does not pass prompt marks (OSC 133) on to its client's
+terminal, so a prompt's row is marked directly and not through fux:
+`transparency --size 3x10 '\e]133;A\x07$ '`. No recording sends them yet.
+
+### Other multiplexers
+
+`--multiplexers` replays each recording through tmux and zellij (each if
+installed), and scores them: the share of recordings, and of steps, whose
+pane looks the same as the direct screen at the end of each step, beside
+fux's own share at the same points. Their differences are scored, not
+failed. Each runs as a real server of its own, with nothing of the user's:
+
+- **tmux**: `tmux -u -S SOCKET -f /dev/null new-session`, its socket in the
+  harness's directory (`-S`, not `-L`, as for the tmux engine), with its
+  status line under the pane, so its client is a row taller.
+- **zellij**: its own configuration (no pane frames, tips, release notes,
+  session saving or mouse), a layout of one pane and no bars, its own
+  `HOME`, configuration and data directories, and `ZELLIJ_SOCKET_DIR`.
+
+The client runs on a PTY with `TERM=xterm-256color` and
+`COLORTERM=truecolor`, as a modern terminal sets them, and what it writes
+goes to the reference engine. The pane runs the pane program the
+process engines use (`src/engines/pane.rs`): each step's output goes into
+it, synced by DA1, and the screen is read once the client has been quiet
+for 200 ms. The terminal's answers to the client's queries are not sent
+back.
+
+Today, beside Ghostty (about 40 s for tmux and 50 s for zellij, 90 s in all;
+the same scores in two runs):
+
+| Multiplexer | Recordings identical | Steps identical |
+| --- | ---: | ---: |
+| fux 0.17.0 | 14 of 15 (93.3%) | 134 of 154 (87.0%) |
+| tmux 3.7c | 9 of 15 (60.0%) | 127 of 154 (82.4%) |
+| zellij 0.44.3 | 12 of 15 (80.0%) | 127 of 154 (82.4%) |
+
+tmux leaves out hyperlinks (its `hyperlinks` feature is off for `xterm*`),
+keeps delta's erased wrap marker, and draws blanks with the default
+foreground; zellij keeps the wrap marker, makes URLs it finds into links,
+and keeps ECH's foreground as fux-vt does.
+
+**JSON** (`--json FILE`), for the scoreboard: `transparency` writes
+`{"check": "transparency", "multiplexer": "fux", "version", "chunk",
+"seconds", "ok", "results": [...]}`, a result for each engine and
+recording: `engine`, `recording`, `steps`, `bytes`, `points`, `held`,
+`points_differing_as_recorded`, `points_differing`, `step_ends`,
+`step_ends_identical`, `identical`, `recorded` (the reason, or null),
+`paints`, `painted_bytes` and `first_difference` (`step`, `offset`, `at`,
+and each difference's `key`, `directly` and `through`), or null.
+`--multiplexers` writes `{"check": "transparency-multiplexers",
+"results": [...]}`, a result for each engine and multiplexer (fux first):
+`engine`, `multiplexer`, `version`, `recordings`, `recordings_identical`,
+`steps`, `steps_identical`, `seconds`, and for tmux and zellij `each`
+recording's `steps`, `steps_identical`, `identical` and
+`first_difference`; or `skipped` and why.
+## esctest
+
+`esctest` runs esctest2 (`references/xterm/esctest2`, which
+`references/fetch.sh` clones), xterm's conformance suite by George Nachman
+and Thomas E. Dickey: 567 tests in 76 areas (a test class, one file of
+`esctest/tests/`), each writing to its terminal and reading the terminal's
+reports back: the cells by DECRQCRA rectangle checksums, the cursor by DSR,
+modes by DECRQM, settings by DECRQSS.
+
+```sh
+fux-vt/compare/run.sh esctest                    # every test against fux-vt; exit 1 on a mismatch with the list
+fux-vt/compare/run.sh esctest DECSTBM            # the tests whose name contains it (a Python regex)
+fux-vt/compare/run.sh esctest --show --replays CUP   # each failure's message, and its bytes as a replay
+fux-vt/compare/run.sh esctest --in-fux --xterm   # also in a real fux pane, and in a real xterm
+fux-vt/compare/run.sh esctest --json FILE --logs DIR   # every result, and esctest's own logs
+```
+
+- **Directly** (`src/esctest.rs`): each area is one esctest process (Python
+  3) on a PTY of 25×80, the size esctest resizes to before every test,
+  which fux-vt does not do, as it refuses window operations. Its terminal is
+  a fux-vt parser set up as fux's panes are (`fux::pane::OPTIONS`), with
+  two reports panes leave off: rectangle checksums (`Options::
+  rectangle_checksums`, added for esctest: no program in the corpus asks
+  for it, and with it a program can read its screen back, which is why xterm
+  refuses it by default) and `extended_replies` (DECXCPR). It reads what
+  esctest writes, and its replies are written back. Every area starts on a
+  fresh terminal; within one, tests run in esctest's order, as they would
+  in a terminal. Each read esctest makes waits `--timeout` (esctest's own,
+  1 second) for its reply, so a report fux-vt does not give fails that
+  test alone; an area running past `--limit` (120 s) is stopped, and its
+  unfinished tests fail. Areas run as many at a time as there are CPUs.
+- **Options.** `--expected-terminal=xterm`: esctest bends its
+  expectations to the terminal it is told it runs in, xterm or iTerm2, and
+  fux-vt follows xterm (blanks are spaces, checksums DEC's, xterm's own
+  known bugs expected to fail). `--max-vt-level=4`, a VT420: xterm's
+  default (`decTerminalID`) and the level esctest's README runs a vanilla
+  xterm at; it is the level with DECRQCRA, without which no cell is read.
+  The 17 VT520 tests are skipped, as are the one esctest does not try in
+  xterm. No `--options`: fux-vt is UTF-8 (so not `disableWideChars`) and does
+  no window operations (so not `xtermWinopsEnabled`), like a default xterm.
+- **The list**, `esctest-expected.txt`: every failing test, with its
+  reason, one of `departure`, `spec`, `not-implemented`, `xterm-too` or
+  `bug` (the file's header says what each means). The run fails on a
+  failure that is not listed, and on a listed test that passes, so the list
+  never goes stale. A test that passes where esctest expects xterm to fail
+  ("Should have failed") passes.
+- **In fux** (`--in-fux`, for `deep`): fux is built (`cargo build --release
+  --bin fux`) and each area runs in the only pane of a fux server of its
+  own (a directory and socket under `/tmp/fux-esctest-*`, as fux's tests
+  start one; never the user's), whose shell is esctest. A client is
+  attached on a PTY of 26×80, so the pane is 25×80 beside the bar; its
+  terminal is a fux-vt parser answering what fux asks of a terminal (DA1,
+  DECRQM, the kitty flags, the colours, white on black). fux's panes do not
+  answer DECRQCRA, so the tests that read cells cannot run there: they are
+  counted as skipped. The rest are set beside the direct run's: a test that
+  passes in one and fails in the other is printed, and points at fux (its
+  pane replies, its encoding). A line `[fux]` in the list is a test that
+  fails only in a pane, `[direct]` one that fails only directly.
+- **In xterm** (`--xterm`): each area also runs in a real xterm, under the
+  harness's Xvfb, the reference. It is set up as esctest's README says (80
+  by 25, a VT420), UTF-8 as fux is, with DECRQCRA allowed
+  (`disallowedWindowOps` without `GetChecksum`) and counting a cell nothing
+  was written to as a space (`checksumExtension: 8`), as esctest expects of
+  a DEC terminal: xterm's own default counts such a cell as nothing, and
+  then fails every test that reads one. What passes there and fails against
+  fux-vt is what fux-vt lacks; `--json` lists them.
+
+At this commit (an Apple M2 Max, 12 CPUs, loaded by other work):
+
+| | passed | failed | skipped | time |
+| --- | ---: | ---: | ---: | ---: |
+| directly | 263 (47.9%) | 286 | 18 | 31 s |
+| in fux | 125 (39.7% of 315 run) | 190 | 252 | 31 s |
+| in xterm 411 | 427 (77.8%) | 122 | 18 | 38 s |
+
+The 286 failures by reason: 223 `not-implemented` (left and right margins
+77, the colour palette 47, DECRQM of modes fux-vt does not keep 24,
+protected cells and selective erase 17, rectangle operations 13 and more),
+32 `departure` (window operations), 26 `xterm-too`, 4 `spec` (fux says it
+is a VT220 and fux), 1 `bug` (a cursor report in origin mode). In fux, the
+only difference is DECXCPR, which panes leave off.
+
+`--json FILE` writes, for the scoreboard:
+
+```json
+{
+  "suite": "esctest2", "expected_terminal": "xterm", "max_vt_level": "4",
+  "timeout": 1.0, "filter": null, "tests": 567,
+  "direct": {
+    "passed": 263, "passed_beyond_xterm": 2, "failed": 286, "skipped": 18,
+    "pass_rate": 47.9, "seconds": 30.6,
+    "areas": {"CUPTests": {"passed": 5, "failed": 1, "skipped": 0, "pass_rate": 83.3, "...": 0}},
+    "tests": {"CUPTests.test_CUP_RespectsOriginMode": {"outcome": "fail", "message": "...", "listed": "not-implemented: ..."}}
+  },
+  "in_fux": {"...": "as direct"},
+  "xterm": {"...": "as direct"},
+  "differences_in_fux": ["NAME: directly passes, in fux fails (...)"],
+  "differences_xterm": ["..."],
+  "mismatches": []
+}
+```
+
+`pass_rate` is passed over passed and failed, in percent; `in_fux` and
+`xterm` are there with `--in-fux` and `--xterm`; `mismatches` are what
+failed the run.
+
 ## Files
 
 | File | What |
@@ -550,6 +790,7 @@ output, made again with the recordings.
 | `src/families.rs` | the families: generators, statuses and reasons |
 | `src/cases.rs` | the named cases |
 | `src/snapshot.rs` | what is compared, field by field, and the side-by-side view |
+| `src/transparency.rs` | `transparency`: each recording directly and through fux, tmux and zellij |
 | `src/bench.rs` | the workloads and the speed table |
 | `src/escape.rs` | bytes as replayable text, and back |
 | `src/rng.rs` | splitmix64, as in `diff/` |
