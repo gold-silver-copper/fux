@@ -18,10 +18,27 @@ pub struct Grid {
     pub cols: u16,
     /// Row after row; clusters too long to hold inline are kept whole.
     pub cells: Cells,
+    /// Each cell's hyperlink: one more than its place in `links`, 0 for
+    /// none. Empty while no cell has one, as most grids have none.
+    link_of: Vec<u32>,
+    /// The hyperlinks the cells have, each once.
+    links: Vec<Link>,
+    /// Their URIs, one after another.
+    uris: String,
     /// Where the terminal cursor is shown, if it is.
     pub cursor: Option<(u16, u16)>,
     /// DECSCUSR shape for the cursor; 0 is the terminal's default.
     pub cursor_shape: u16,
+}
+
+/// A hyperlink of a pane's cells (OSC 8): the pane, the link's key there
+/// (`fux_vt::Hyperlink::key`, which no other link of the pane has), and
+/// where its URI is in the grid's `uris`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Link {
+    pane: PaneId,
+    key: u64,
+    uri: std::ops::Range<usize>,
 }
 
 impl Grid {
@@ -31,14 +48,64 @@ impl Grid {
             cols,
             // Exact: a u16 by a u16 fits even a 32-bit usize.
             cells: Cells::new(usize::from(rows).saturating_mul(usize::from(cols))),
+            link_of: Vec::new(),
+            links: Vec::new(),
+            uris: String::new(),
             cursor: None,
             cursor_shape: 0,
+        }
+    }
+    /// The hyperlink of the cell at `y`, `x`: the pane whose it is, its key
+    /// there and its URI.
+    pub fn link(&self, y: u16, x: u16) -> Option<(PaneId, u64, &str)> {
+        let n = *self.link_of.get(self.index(y, x)?)?;
+        self.numbered(n)
+    }
+    /// Link `n` of the grid.
+    fn numbered(&self, n: u32) -> Option<(PaneId, u64, &str)> {
+        let link = self.links.get(usize::try_from(n).ok()?.checked_sub(1)?)?;
+        Some((link.pane, link.key, self.uris.get(link.uri.clone())?))
+    }
+    /// The number of pane `pane`'s link `link` in the grid, given one if it
+    /// has none yet.
+    fn number(&mut self, pane: PaneId, link: fux_vt::Hyperlink<'_>) -> u32 {
+        let found = self
+            .links
+            .iter()
+            .rposition(|l| l.pane == pane && l.key == link.key());
+        let at = found.unwrap_or_else(|| {
+            let start = self.uris.len();
+            self.uris.push_str(link.uri());
+            self.links.push(Link {
+                pane,
+                key: link.key(),
+                uri: start..self.uris.len(),
+            });
+            self.links.len().saturating_sub(1)
+        });
+        // A grid has at most a link a cell, far fewer than a u32 counts.
+        u32::try_from(at.saturating_add(1)).unwrap_or(0)
+    }
+    /// The number of the link of the cell at `y`, `x`; 0 for none.
+    fn number_at(&self, y: u16, x: u16) -> u32 {
+        self.index(y, x)
+            .and_then(|i| self.link_of.get(i))
+            .copied()
+            .unwrap_or(0)
+    }
+    /// Cells `range` of the grid have no link.
+    fn unlink(&mut self, range: std::ops::Range<usize>) {
+        if let Some(run) = self.link_of.get_mut(range) {
+            run.fill(0);
         }
     }
     /// Makes the grid `rows` by `cols`, resizing its cells only if the size
     /// changed, so that a grid composed into again allocates nothing; and
     /// blanks it if `blank`, as a resized grid is anyway.
     fn reset(&mut self, rows: u16, cols: u16, blank: bool) {
+        self.link_of.clear();
+        self.links.clear();
+        self.uris.clear();
         if (self.rows, self.cols) == (rows, cols) {
             if blank {
                 self.cells.fill(0..self.cells.len(), Cell::default());
@@ -77,11 +144,11 @@ impl Grid {
         };
         self.cells.range(start..end)
     }
-    /// Copies the first `width` cells of `row` into row `y` from column `x`,
-    /// clipped at the grid's edge, without `set`'s repairs: for a run of one
-    /// well-formed row onto blank cells, which keeps its wide glyphs whole
-    /// by itself.
-    fn put_row(&mut self, y: u16, x: u16, row: Row<'_>, width: u16) {
+    /// Copies the first `width` cells of pane `pane`'s row `row` into row `y`
+    /// from column `x`, with their links, clipped at the grid's edge,
+    /// without `set`'s repairs: for a run of one well-formed row onto blank
+    /// cells, which keeps its wide glyphs whole by itself.
+    fn put_row(&mut self, y: u16, x: u16, pane: PaneId, row: Row<'_>, width: u16) {
         let Some(start) = self.index(y, x) else {
             return;
         };
@@ -89,11 +156,35 @@ impl Grid {
         for (i, cell) in (start..).zip(row.cells().take(room)) {
             self.cells.set(i, cell);
         }
+        if !row.has_links() {
+            return;
+        }
+        let mut last: Option<(u64, u32)> = None;
+        for (i, col) in (start..).zip(0..room) {
+            let n = match row.link(col) {
+                None => 0,
+                Some(link) => match last {
+                    Some((key, n)) if key == link.key() => n,
+                    Some(_) | None => {
+                        let n = self.number(pane, link);
+                        last = Some((link.key(), n));
+                        n
+                    }
+                },
+            };
+            if n != 0 && self.link_of.is_empty() {
+                self.link_of.resize(self.cells.len(), 0);
+            }
+            if let Some(at) = self.link_of.get_mut(i) {
+                *at = n;
+            }
+        }
     }
     /// Sets one cell as it is, without `set`'s repairs.
     fn put(&mut self, y: u16, x: u16, cell: Cell) {
         if let Some(i) = self.index(y, x) {
             self.cells.set_cell(i, cell);
+            self.unlink(i..i.saturating_add(1));
         }
     }
     /// Blanks row `y` from column `from` to `to`, clipped at the grid's edge.
@@ -102,8 +193,9 @@ impl Grid {
             return;
         };
         let count = usize::from(to.min(self.cols).saturating_sub(from));
-        self.cells
-            .fill(start..start.saturating_add(count), Cell::default());
+        let cells = start..start.saturating_add(count);
+        self.cells.fill(cells.clone(), Cell::default());
+        self.unlink(cells);
     }
     /// Sets a cell, keeping wide glyphs whole: overwriting either half of
     /// one blanks the other, as a terminal would.
@@ -120,6 +212,7 @@ impl Grid {
             && self.cells.get(leader).is_some_and(|c| c.is_wide())
         {
             self.cells.set_cell(leader, Cell::default());
+            self.unlink(leader..index);
         }
         if was_wide
             && !cell.is_wide()
@@ -130,8 +223,10 @@ impl Grid {
                 .is_some_and(|c| c.is_wide_continuation())
         {
             self.cells.set_cell(rest, Cell::default());
+            self.unlink(rest..rest.saturating_add(1));
         }
         self.cells.set_cell(index, cell);
+        self.unlink(index..index.saturating_add(1));
     }
     /// The text of a row, trailing blanks trimmed: for `capture-client`.
     pub fn row_text(&self, y: u16) -> String {
@@ -304,7 +399,7 @@ pub fn compose_into(
             let row = window.row(y);
             let len = row.map_or(0, |row| row.len());
             if let Some(row) = row {
-                grid.put_row(gy, gx, row, width);
+                grid.put_row(gy, gx, *id, row, width);
             }
             if tiled {
                 // At most `width`, which is at most the place's width.
@@ -941,6 +1036,22 @@ fn sgr(out: &mut Vec<u8>, a: Attributes) {
     out.push(b'm');
 }
 
+/// OSC 8: opens `link` in the client's terminal, or closes the open link.
+/// Its `id` is the pane's and the link's key there, which no other link of
+/// the pane has: no two panes' links are one to the terminal, and a link
+/// painted in pieces, or whose program gave no `id`, is one link, as the
+/// spec asks a multiplexer to make it (`references/modern/osc8_hyperlinks.md`,
+/// "Hover underlining and the `id` parameter"). A terminal that does not
+/// know OSC 8 ignores it.
+fn hyperlink(out: &mut Vec<u8>, link: Option<(PaneId, u64, &str)>) {
+    match link {
+        Some((pane, key, uri)) => {
+            let _ = write!(out, "\x1b]8;id=fux{}-{key};{uri}\x1b\\", pane.0);
+        }
+        None => out.extend_from_slice(b"\x1b]8;;\x1b\\"),
+    }
+}
+
 /// A row or column as the terminal counts it, from 1; exact in a u32.
 fn one_based(n: u16) -> u32 {
     u32::from(n).saturating_add(1)
@@ -962,15 +1073,24 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
         out.extend_from_slice(b"\x1b[0m\x1b[H\x1b[2J");
     }
     let mut current: Option<Attributes> = None;
+    // The hyperlink the client's terminal has open: a number of `new`'s.
+    let mut open = 0u32;
+    // Whether either grid has a link: if neither does, no cell's changed.
+    let links = !new.link_of.is_empty() || old.is_some_and(|o| !o.link_of.is_empty());
     for y in 0..new.rows {
         // What the client shows, unless the row is painted whole.
         let before = old.filter(|_| !full);
         // An unchanged row costs this one comparison.
-        if before.is_some_and(|o| o.row(y).eq(new.row(y))) {
+        if before.is_some_and(|o| {
+            o.row(y).eq(new.row(y))
+                && (!links || (0..new.cols).all(|x| o.link(y, x) == new.link(y, x)))
+        }) {
             continue;
         }
         let cell = |x: u16| new.get(y, x);
-        let changed = |x: u16| before.is_none_or(|o| o.get(y, x) != cell(x));
+        let changed = |x: u16| {
+            before.is_none_or(|o| o.get(y, x) != cell(x) || links && o.link(y, x) != new.link(y, x))
+        };
         let mut x = 0u16;
         while x < new.cols {
             // Moving right stops at the last column, where the loop ends.
@@ -1000,6 +1120,11 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
                     sgr(out, attrs);
                     current = Some(attrs);
                 }
+                let link = new.number_at(y, cx);
+                if link != open {
+                    hyperlink(out, new.numbered(link));
+                    open = link;
+                }
                 if cell.is_wide() && cx.saturating_add(1) >= new.cols {
                     // A wide glyph cannot fit in the last column.
                     out.push(b' ');
@@ -1010,6 +1135,9 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
             }
             x = cx.max(x.saturating_add(1));
         }
+    }
+    if open != 0 {
+        hyperlink(out, None);
     }
     out.extend_from_slice(b"\x1b[0m");
     let shape_changed = old.is_none_or(|o| o.cursor_shape != new.cursor_shape);
@@ -1423,6 +1551,78 @@ mod tests {
             let cell = parser.screen().cell(0, x).ok_or("a cell")?;
             assert_eq!(cell.attributes(), *a, "cell {x}");
         }
+        Ok(())
+    }
+
+    /// A pane's hyperlinks reach the client: OSC 8 before the linked cells,
+    /// with an id made of the pane and the link's key, and an OSC 8 that
+    /// closes it after them. Two panes' links never share an id, though
+    /// each pane's first link has the same key; a terminal reading the
+    /// paint has each cell's link.
+    #[test]
+    fn hyperlinks_are_painted_with_their_panes_ids() -> Result<(), Box<dyn std::error::Error>> {
+        let mut s = Session::new(
+            crate::config::Config::default(),
+            "/nonexistent/fux.sock".into(),
+            false,
+        );
+        s.start()?;
+        let c = s.attach(6, 41, None)?;
+        let outcome = s.run(
+            &["split".to_owned(), "-h".to_owned()],
+            &crate::session::Ctx::client(c),
+        );
+        assert_eq!(outcome.status, 0, "{}", outcome.stderr);
+        let linked = b"a\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\b";
+        s.output(PaneId(1), linked);
+        s.output(PaneId(2), linked);
+        let grid = compose(&s, c).ok_or("a screen")?;
+        let bytes = paint(None, &grid);
+        let text = String::from_utf8_lossy(&bytes);
+        for pane in [1, 2] {
+            let open = format!("\x1b]8;id=fux{pane}-1;http://x\x1b\\link\x1b]8;;\x1b\\");
+            assert!(text.contains(&open), "{open:?} in {text:?}");
+        }
+        // Read back, each linked cell has its link, and only those do.
+        let mut parser =
+            fux_vt::Parser::with_options(6, 41, 0, fux_vt::Options::new().with_hyperlinks(true))?;
+        parser.process(&bytes)?;
+        let screen = parser.screen();
+        let ids: Vec<Option<String>> = (0..41)
+            .map(|x| screen.link(0, x).and_then(|l| l.id()).map(str::to_owned))
+            .collect();
+        let right: u16 = 21;
+        for (x, id) in ids.iter().enumerate() {
+            let expected = match x {
+                1..=4 => Some("fux1-1".to_owned()),
+                x if (usize::from(right) + 1..=usize::from(right) + 4).contains(&x) => {
+                    Some("fux2-1".to_owned())
+                }
+                _ => None,
+            };
+            assert_eq!(*id, expected, "column {x}");
+        }
+        assert_eq!(screen.link(0, 1).map(|l| l.uri()), Some("http://x"));
+        // A link the program takes off its cells is taken off the client's:
+        // only that row is painted again, and nothing more for no change.
+        let mut quiet = s;
+        quiet.output(PaneId(1), b"\r\x1b[Babc");
+        let same = compose(&quiet, c).ok_or("a screen")?;
+        quiet.output(PaneId(1), b"\x1b[A\ra\x1b[0Klink");
+        let unlinked = compose(&quiet, c).ok_or("a screen")?;
+        let diff = paint(Some(&same), &unlinked);
+        assert_eq!(rows_written(&diff), [0]);
+        assert!(!String::from_utf8_lossy(&diff).contains("id="));
+        parser.process(&paint(Some(&grid), &same))?;
+        parser.process(&diff)?;
+        assert_eq!(parser.screen().link(0, 1), None);
+        assert!(parser.screen().link(0, right + 1).is_some());
+        // Unchanged, links and all: no cell is painted, only the cursor.
+        let none = String::from_utf8_lossy(&paint(Some(&unlinked), &unlinked)).into_owned();
+        assert!(
+            !none.contains("link") && !none.contains("\x1b]8"),
+            "{none:?}"
+        );
         Ok(())
     }
 

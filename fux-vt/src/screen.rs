@@ -1,6 +1,8 @@
+use crate::link::{Held, Pen};
 use crate::unicode::Cluster;
 use crate::{
-    Attributes, Blink, Cell, CellRef, Color, Error, Mark, Options, Reply, Row, RowId, Window,
+    Attributes, Blink, Cell, CellRef, Color, Error, Hyperlink, Mark, Options, Reply, Row, RowId,
+    Window,
     grid::{Grid, Scroll},
     parser::Parameters,
 };
@@ -276,6 +278,14 @@ pub struct Screen {
     /// The character REP (`CSI b`) repeats: the last one printed that took
     /// a cell of its own, as long as nothing but printing came after it.
     repeat: Option<char>,
+    /// The hyperlink the program opened (OSC 8), which glyphs printed take.
+    link: Option<Pen>,
+    /// Whether a link was opened since the screen was made or reset: until
+    /// one is, no row has links, and printing, which asks this alone,
+    /// leaves the links be.
+    links_seen: bool,
+    /// The key the next link opened takes (`Hyperlink::key`).
+    next_link: u64,
 }
 
 #[cfg(test)]
@@ -370,6 +380,9 @@ impl Screen {
             modify_other_keys: None,
             last_print: None,
             repeat: None,
+            link: None,
+            links_seen: false,
+            next_link: 1,
         })
     }
     fn grid(&self) -> &Grid {
@@ -552,6 +565,69 @@ impl Screen {
     pub fn cell(&self, row: u16, col: u16) -> Option<CellRef<'_>> {
         self.grid().cell(row, col)
     }
+    /// The hyperlink of the cell at `row`, `col` of the screen (see
+    /// [`Row::link`]). Always `None` without [`Options::hyperlinks`].
+    pub fn link(&self, row: u16, col: u16) -> Option<Hyperlink<'_>> {
+        self.grid().live_row(row)?.link(usize::from(col))
+    }
+    /// The hyperlink the program has open (`OSC 8 ; params ; URI ST`), which
+    /// glyphs printed now take: its URI and `id`.
+    pub fn hyperlink(&self) -> Option<(&str, Option<&str>)> {
+        self.link.as_ref().map(|pen| (&*pen.uri, pen.id.as_deref()))
+    }
+
+    /// OSC 8: opens the link `payload` names, or closes the open one
+    /// (`link::parse`). A link without an `id` is a link of its own each
+    /// time it is opened, as VTE makes it (the spec's "Hover underlining and
+    /// the `id` parameter").
+    pub(crate) fn hyperlink_osc(&mut self, payload: &[u8]) {
+        self.link = crate::link::parse(payload).and_then(|(uri, id)| {
+            let key = self.next_link;
+            // Keys never run out in practice: one a link opened.
+            self.next_link = key.checked_add(1)?;
+            Some(Pen {
+                uri: uri.into(),
+                id: id.map(Into::into),
+                key,
+                held: [Held::Pending; 2],
+            })
+        });
+        self.links_seen |= self.link.is_some();
+    }
+
+    /// Gives the cells `span` of row `row` of the grid shown the open link,
+    /// if `open`, or none: what printing glyphs there does to their links,
+    /// once a link has been opened (`links_seen`). Out of line, so that
+    /// printing, which never needs it until then, stays as it was.
+    #[inline(never)]
+    fn link_cells(&mut self, row: u16, span: std::ops::Range<usize>, open: bool) {
+        let link = if open { self.pen_link() } else { 0 };
+        let version = self.version;
+        self.grid_mut().set_link(row, span, link, version);
+    }
+
+    /// The number the open link has in the grid shown, held there the first
+    /// time a glyph is printed with it; 0 if no link is open, or the grid has
+    /// no room for it.
+    fn pen_link(&mut self) -> u16 {
+        let Some(pen) = &mut self.link else {
+            return 0;
+        };
+        let (grid, held) = if self.alternate_active {
+            (&mut self.alternate, &mut pen.held[1])
+        } else {
+            (&mut self.primary, &mut pen.held[0])
+        };
+        match *held {
+            Held::At(n) => n,
+            Held::Refused => 0,
+            Held::Pending => {
+                let n = grid.intern(&pen.uri, pen.id.as_ref(), pen.key, self.version);
+                *held = n.map_or(Held::Refused, Held::At);
+                n.unwrap_or(0)
+            }
+        }
+    }
     /// Whether row `row` of the screen is soft-wrapped: its line goes on in
     /// the next row.
     pub fn row_wrapped(&self, row: u16) -> bool {
@@ -652,7 +728,11 @@ impl Screen {
         } else {
             self.primary.resized(rows, cols, &mut next, version)?
         };
-        let alternate = self.alternate.resized(rows, cols, &mut next, version)?;
+        let mut alternate = self.alternate.resized(rows, cols, &mut next, version)?;
+        let mut primary = primary;
+        // The cells' links keep their numbers, so the links go along.
+        primary.adopt_links(std::mem::take(&mut self.primary.links));
+        alternate.adopt_links(std::mem::take(&mut self.alternate.links));
         self.primary = primary;
         self.alternate = alternate;
         self.next_id = next;
@@ -783,11 +863,19 @@ impl Screen {
                 if g.cell(row, col).is_some_and(|c| c.is_wide_continuation()) {
                     col = col.saturating_sub(1);
                 }
+                // A blank cell takes a space for the mark to follow, and
+                // with it the open link, as a glyph printed there would.
+                let blank = g.cell(row, col).is_some_and(|c| !c.has_contents());
                 // A cell already holding all it can takes no more.
                 let end = col.saturating_add(1);
                 self.with_grid(|g, _, v| {
                     g.mutate_line(row, v, end, |line| line.append(usize::from(col), c))
                 });
+                // A mark dropped leaves the cell blank, its link unread.
+                if blank && self.links_seen {
+                    let at = usize::from(col);
+                    self.link_cells(row, at..at.saturating_add(1), true);
+                }
             }
             return Ok(());
         }
@@ -799,6 +887,11 @@ impl Screen {
         }
         let (row, col) = self.grid().cursor;
         let attributes = self.attributes;
+        // A narrow glyph over a wide one's first half leaves a space in its
+        // second, which no link printed.
+        let split = self.links_seen
+            && width == 1
+            && self.grid().cell(row, col).is_some_and(|c| c.is_wide());
         self.with_grid(|g, _, version| {
             g.mutate_row(row, version, col.saturating_add(width), |cells| {
                 let i = usize::from(col);
@@ -842,6 +935,15 @@ impl Screen {
             // Past the glyph; in the last column it waits there to wrap.
             g.advance_to(col.saturating_add(width));
         });
+        // The cells' links, after the cells, as `ascii` does them.
+        if self.links_seen {
+            let at = usize::from(col);
+            self.link_cells(row, at..at.saturating_add(usize::from(width)), true);
+            if split {
+                let next = at.saturating_add(1);
+                self.link_cells(row, next..next.saturating_add(1), false);
+            }
+        }
         self.last_print = Some(Printed::new((row, col), c));
         Ok(())
     }
@@ -1030,8 +1132,8 @@ impl Screen {
             let span = usize::from(col)..usize::from(end);
             let simple = self
                 .grid()
-                .live_row(row)
-                .and_then(|r| r.cells.get(span.clone()))
+                .live_cells(row)
+                .get(span.clone())
                 .is_some_and(|cells| {
                     cells
                         .iter()
@@ -1064,6 +1166,11 @@ impl Screen {
                 });
                 g.advance_to(end);
             });
+            // The cells' links, after the cells: before, the call would make
+            // the write above load again what it had in hand.
+            if self.links_seen {
+                self.link_cells(row, usize::from(col)..usize::from(end), true);
+            }
             // The run's last glyph, which a mark or selector may join, and
             // REP repeats.
             self.last_print = end
@@ -1191,6 +1298,11 @@ impl Screen {
                     self.alternate = alternate;
                 }
                 self.next_id = next;
+                // No cell has a link now, and none is open.
+                self.link = None;
+                self.links_seen = false;
+                self.primary.reset_links();
+                self.alternate.reset_links();
                 self.alternate_active = false;
                 self.attributes = Attributes::default();
                 self.saved_attributes = Attributes::default();

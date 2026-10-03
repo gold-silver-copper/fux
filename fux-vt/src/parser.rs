@@ -133,15 +133,16 @@ enum State {
     SosPmApcString,
 }
 
-/// The most OSC payload bytes retained for [`Event`] delivery. A longer OSC
-/// string is consumed without an event; nothing beyond this is ever buffered.
+/// The most OSC payload bytes retained for [`Event`] delivery and
+/// hyperlinks. A longer OSC string is consumed without an event or a link;
+/// nothing beyond this is ever buffered.
 pub const OSC_PAYLOAD_LIMIT: usize = 64 * 1024;
 
 /// Opt-in behaviour that needs the host's cooperation. The default
 /// (everything off) is fux's policy: child output causes no title, bell or
 /// clipboard side effects, OSC payloads are never retained, only DSR 5n/6n
-/// and primary DA are answered, keyboard protocol requests are ignored, and a
-/// resize does not reflow.
+/// and primary DA are answered, keyboard protocol requests are ignored,
+/// hyperlinks are ignored, and a resize does not reflow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Options {
@@ -174,6 +175,11 @@ pub struct Options {
     /// resize, keeping the cursor on its character. The alternate screen is
     /// resized without reflow, as its programs redraw anyway.
     pub reflow: bool,
+    /// Keep hyperlinks (`OSC 8 ; params ; URI ST`): each cell printed while
+    /// one is open has it, read with [`crate::Row::link`]. The URIs are
+    /// kept, so OSC 8 payloads are buffered, up to [`OSC_PAYLOAD_LIMIT`],
+    /// and each screen holds up to 4 MiB of links. Off, OSC 8 is ignored.
+    pub hyperlinks: bool,
     /// Answer as this terminal rather than as a bare VT100: see [`Identity`].
     pub identity: Option<Identity>,
 }
@@ -189,6 +195,7 @@ impl Options {
             in_band_resize: false,
             kitty_keyboard: false,
             reflow: false,
+            hyperlinks: false,
             identity: None,
         }
     }
@@ -220,6 +227,11 @@ impl Options {
     /// These options with [`Options::reflow`] as `on` says.
     pub const fn with_reflow(mut self, on: bool) -> Self {
         self.reflow = on;
+        self
+    }
+    /// These options with [`Options::hyperlinks`] as `on` says.
+    pub const fn with_hyperlinks(mut self, on: bool) -> Self {
+        self.hyperlinks = on;
         self
     }
     /// These options answering as `identity`, or as a bare VT100 if `None`.
@@ -616,11 +628,12 @@ impl Parser {
                 if byte == 7 {
                     self.dispatch_osc(sink);
                     self.state = State::Ground;
-                } else if self.options.events && !self.osc_overflow {
+                } else if (self.options.events || self.options.hyperlinks) && !self.osc_overflow {
                     if self.osc.len() < OSC_PAYLOAD_LIMIT {
                         self.osc.push(byte);
                     } else {
-                        self.osc.clear();
+                        // What came first stays: an OSC 8 too long to keep
+                        // is told by it, and closes the link.
                         self.osc_overflow = true;
                     }
                 }
@@ -770,13 +783,24 @@ impl Parser {
         Ok(())
     }
 
-    /// Deliver the completed OSC string as events. Only 0/1/2/52 are recognized;
-    /// an overflowed or unrecognized string is dropped.
+    /// Carries out the completed OSC string: 8 (hyperlinks) with
+    /// [`Options::hyperlinks`]; 0, 1, 2 and 52 delivered as events with
+    /// [`Options::events`]. An overflowed string is no event, and closes any
+    /// link; others are dropped.
+    ///
+    /// Kept out of line: inlined into `byte`, with the screen's OSC
+    /// handling, it made `byte` too large to inline into the parser's loop,
+    /// and escape-heavy output slower.
+    #[inline(never)]
     fn dispatch_osc(&mut self, sink: &mut impl Sink) {
-        if !self.options.events || self.osc_overflow {
-            return;
-        }
         let payload = std::mem::take(&mut self.osc);
+        self.osc_command(&payload, sink);
+        // Reuse the allocation for the next OSC string.
+        self.osc = payload;
+        self.osc.clear();
+    }
+
+    fn osc_command(&mut self, payload: &[u8], sink: &mut impl Sink) {
         let (command, rest) = match payload.iter().position(|b| *b == b';') {
             Some(i) => (
                 payload.get(..i).unwrap_or_default(),
@@ -785,8 +809,18 @@ impl Parser {
                     .and_then(|r| r.get(1..))
                     .unwrap_or_default(),
             ),
-            None => (payload.as_slice(), &[][..]),
+            None => (payload, &[][..]),
         };
+        // A link too long to keep is no link: what follows is printed
+        // without one.
+        if command == b"8" && self.options.hyperlinks {
+            let whole = if self.osc_overflow { &[][..] } else { rest };
+            self.screen.hyperlink_osc(whole);
+            return;
+        }
+        if !self.options.events || self.osc_overflow {
+            return;
+        }
         match command {
             b"0" => {
                 sink.event(Event::IconName(rest));
@@ -805,9 +839,6 @@ impl Parser {
             }
             _ => {}
         }
-        // Reuse the allocation for the next OSC string.
-        self.osc = payload;
-        self.osc.clear();
     }
 
     /// Replies enabled by [`Options::extended_replies`] and

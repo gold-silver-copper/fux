@@ -1,8 +1,11 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::num::NonZeroU16;
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::cell::{Line, Spill};
+use crate::link::Links;
 use crate::{Attributes, Cell, CellRef, Error, Row, RowId};
 
 /// A grid's number of rows or columns. Never zero, so a grid always has a
@@ -40,6 +43,25 @@ struct Meta {
     /// clears only the cells before it. A short line scrolled away costs a
     /// few cells, not a row of cold memory.
     used: u16,
+    /// Whether the row has an array of links in `Grid::linked`.
+    linked: bool,
+}
+
+// The flag fits where the struct had padding: a row without links costs no
+// more than it did before links.
+const _: () = assert!(std::mem::size_of::<Meta>() == 24);
+
+impl Meta {
+    fn new(id: RowId, version: u64, width: u16, wrapped: bool, used: u16) -> Self {
+        Self {
+            id,
+            version,
+            width,
+            wrapped,
+            used,
+            linked: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -48,6 +70,11 @@ pub(crate) struct Grid {
     meta: Vec<Meta>,
     /// Each slot's text too long for its cells to hold inline.
     spill: Vec<Spill>,
+    /// The links the cells point to.
+    pub links: Links,
+    /// The link of each cell of the slots whose `Meta::linked` is set, by
+    /// slot: only rows a link was printed in have one (see `link.rs`).
+    linked: Linked,
     order: VecDeque<usize>,
     stride: usize,
     pub rows: Extent,
@@ -121,6 +148,8 @@ impl Grid {
             cells: Vec::new(),
             meta: Vec::new(),
             spill: Vec::new(),
+            links: Links::default(),
+            linked: Linked::default(),
             order: VecDeque::new(),
             stride: usize::from(cols.get()),
             rows,
@@ -185,13 +214,8 @@ impl Grid {
         }
         let id = next_id(next)?;
         self.cells.resize(end, Cell::default());
-        self.meta.push(Meta {
-            id,
-            version,
-            width: self.cols.get(),
-            wrapped: false,
-            used: 0,
-        });
+        self.meta
+            .push(Meta::new(id, version, self.cols.get(), false, 0));
         self.spill.push(Spill::default());
         Ok(slot)
     }
@@ -237,13 +261,20 @@ impl Grid {
     pub fn row_at(&self, index: usize) -> Option<Row<'_>> {
         let slot = *self.order.get(index)?;
         let m = self.meta.get(slot)?;
-        Some(Row::new(
-            m.id,
-            m.version,
-            m.wrapped,
-            self.slice(slot),
-            self.spill.get(slot)?,
-        ))
+        let links = if m.linked {
+            self.linked.get(&slot).map(|links| &**links)
+        } else {
+            None
+        };
+        Some(Row {
+            id: m.id,
+            version: m.version,
+            wrapped: m.wrapped,
+            cells: self.slice(slot),
+            spill: self.spill.get(slot)?,
+            links,
+            table: &self.links,
+        })
     }
     pub fn row_by_id(&self, id: RowId) -> Option<Row<'_>> {
         self.order
@@ -269,8 +300,16 @@ impl Grid {
     fn slot(&self, row: u16) -> Option<usize> {
         self.order.get(self.index(row)?).copied()
     }
+    /// A live row's cell, found without making its `Row`: printing asks
+    /// for cells on its way, and a `Row` carries the row's links.
     pub fn cell(&self, row: u16, col: u16) -> Option<CellRef<'_>> {
-        self.live_row(row)?.cell(usize::from(col))
+        let slot = self.slot(row)?;
+        let cell = self.slice(slot).get(usize::from(col))?;
+        Some(CellRef::new(cell, self.spill.get(slot)?))
+    }
+    /// A live row's cells, as `cell` finds them.
+    pub fn live_cells(&self, row: u16) -> &[Cell] {
+        self.slot(row).map_or(&[], |slot| self.slice(slot))
     }
     /// Edits a live row's cells with `f`, which says whether it changed any
     /// of them; only then does the row take `version`. An edit that leaves
@@ -308,6 +347,143 @@ impl Grid {
             m.used = m.used.max(end.min(m.width));
         }
     }
+    /// Gives the cells `span` of live row `row` link `link`, 0 for none, as
+    /// printing them does. A row gets its array of links only when given a
+    /// link; it takes `version` if a cell's link changed.
+    pub fn set_link(&mut self, row: u16, span: Range<usize>, link: u16, version: u64) {
+        let Some(slot) = self.slot(row) else {
+            return;
+        };
+        let Some(m) = self.meta.get_mut(slot) else {
+            return;
+        };
+        if !m.linked {
+            if link == 0 {
+                return;
+            }
+            let none = vec![0; usize::from(m.width)];
+            // The links of the row the slot held before, which recycling it
+            // left, are let go now.
+            if let Some(old) = self.linked.insert(slot, none.into_boxed_slice()) {
+                self.links.release_all(&old);
+            }
+            m.linked = true;
+        }
+        if let Some(run) = self.linked.get_mut(&slot).and_then(|l| l.get_mut(span))
+            && run.iter().any(|n| *n != link)
+        {
+            self.links.release_all(run);
+            self.links
+                .hold(link, u32::try_from(run.len()).unwrap_or(u32::MAX));
+            run.fill(link);
+            m.version = version;
+        }
+    }
+
+    /// Forgets slot `slot`'s links; whether it had any.
+    fn unlink(&mut self, slot: usize) -> bool {
+        match self.meta.get_mut(slot) {
+            Some(m) if m.linked => {
+                m.linked = false;
+                forget(&mut self.linked, &mut self.links, slot);
+                true
+            }
+            Some(_) | None => false,
+        }
+    }
+
+    /// The cells the grid counts for each link, and those a count of its
+    /// rows' links finds; and whether every number a row has is a link's.
+    #[cfg(test)]
+    pub fn link_counts(&self) -> (Vec<u32>, Vec<u32>, bool) {
+        let mut fresh = self.links.clone();
+        fresh.recount(self.linked.values().map(|row| &**row));
+        let held = self
+            .linked
+            .values()
+            .flat_map(|row| row.iter())
+            .all(|n| *n == 0 || self.links.get(*n).is_some());
+        (self.links.counts(), fresh.counts(), held)
+    }
+
+    /// Forgets every link: RIS.
+    pub fn reset_links(&mut self) {
+        self.linked.clear();
+        self.links = Links::default();
+    }
+
+    /// Takes `links` as the grid's links, counting their cells: those of a
+    /// grid that this one replaces in a resize, which copied its rows.
+    pub fn adopt_links(&mut self, links: Links) {
+        self.links = links;
+        self.links.recount(self.linked.values().map(|row| &**row));
+    }
+
+    /// The number of the link of `uri` and `id`, held as a new link with
+    /// `key` if it is not held yet. With no room for it, room is made
+    /// (`make_room`), at most once in a while after that fails; `None` if
+    /// there is still none.
+    pub fn intern(
+        &mut self,
+        uri: &Arc<str>,
+        id: Option<&Arc<str>>,
+        key: u64,
+        version: u64,
+    ) -> Option<u16> {
+        if let Some(id) = id
+            && let Some(n) = self.links.find(uri, id)
+        {
+            return Some(n);
+        }
+        let id_text = id.map(|id| &**id);
+        if !self.links.fits(uri, id_text) {
+            if !self.links.may_make_room() {
+                return None;
+            }
+            self.make_room(version);
+            if !self.links.fits(uri, id_text) {
+                self.links.stall();
+                return None;
+            }
+        }
+        self.links.insert(uri, id, key)
+    }
+
+    /// Frees the links no row has. If more than half the bounds are still
+    /// in use, the oldest history rows lose their links, taking `version`,
+    /// until the links rows have are at most half, and the links only they
+    /// had are freed: history loses links before text, and the screen's
+    /// rows never do. The links are counted (`link.rs`), so this walks the
+    /// links and the history rows that lose theirs, never every cell.
+    fn make_room(&mut self, version: u64) {
+        // The links of rows recycled since, which no row has now.
+        let left: Vec<usize> = self
+            .linked
+            .keys()
+            .filter(|slot| !self.meta.get(**slot).is_some_and(|m| m.linked))
+            .copied()
+            .collect();
+        for slot in left {
+            forget(&mut self.linked, &mut self.links, slot);
+        }
+        self.links.free_unused(&[]);
+        if self.links.used_within_half() {
+            return;
+        }
+        for index in 0..self.history_len() {
+            if self.links.used_within_half() {
+                break;
+            }
+            if let Some(&slot) = self.order.get(index)
+                && self.unlink(slot)
+                && let Some(m) = self.meta.get_mut(slot)
+            {
+                m.version = version;
+            }
+        }
+        self.links.free_unused(&[]);
+    }
+
     pub fn wrap(&mut self, row: u16, wrapped: bool, version: u64) {
         if let Some(slot) = self.slot(row)
             && let Some(m) = self.meta.get_mut(slot)
@@ -363,12 +539,16 @@ impl Grid {
         if clears_edge {
             self.wrap(row, false, version);
         }
-        // A whole row erased keeps no text.
+        // A whole row erased keeps no text, and no links: its blank cells
+        // would never read them.
         if start == 0
             && end >= cols
-            && let Some(spill) = self.slot(row).and_then(|slot| self.spill.get_mut(slot))
+            && let Some(slot) = self.slot(row)
         {
-            spill.clear();
+            if let Some(spill) = self.spill.get_mut(slot) {
+                spill.clear();
+            }
+            self.unlink(slot);
         }
     }
 
@@ -388,19 +568,13 @@ impl Grid {
         self.mutate_row(row, version, cols, |cells| {
             let col = usize::from(col);
             let len = cells.len();
-            // Where the cells shifted out start, and so where blanks go.
-            let (Some(shifted), Some(fill)) = (
-                if insert {
-                    len.checked_sub(count)
-                } else {
-                    col.checked_add(count)
-                },
-                if insert {
-                    col.checked_add(count).map(|end| col..end)
-                } else {
-                    len.checked_sub(count).map(|start| start..len)
-                },
-            ) else {
+            // Where the cells shifted out start.
+            let shifted = if insert {
+                len.checked_sub(count)
+            } else {
+                col.checked_add(count)
+            };
+            let Some(shifted) = shifted.filter(|_| count <= len) else {
                 // Nothing was edited.
                 return false;
             };
@@ -415,43 +589,42 @@ impl Grid {
                     }
                 }
             }
-            // The tail rotates `count` cells right to insert, left to delete.
-            // `rotate_*` panics past the end of what it turns: the clamp is
-            // the reason it is allowed here (clippy.toml), and costs nothing,
-            // as `count` is at most the cells from the cursor to the edge.
-            if let Some(tail) = cells.get_mut(col..) {
-                let count = count.min(tail.len());
-                if insert {
-                    tail.rotate_right(count);
-                } else {
-                    tail.rotate_left(count);
-                }
-            }
-            if let Some(cells) = cells.get_mut(fill) {
-                cells.fill(Cell::blank(blank));
-            }
+            shift(cells, col, count, insert, Cell::blank(blank));
             repair_wide(cells);
             // Inserting and deleting always count as a change.
             true
         });
+        // The cells' links move with them.
+        if let Some(slot) = self.slot(row)
+            && let Some(links) = self.linked.get_mut(&slot)
+        {
+            // The cells shifted out of the row lose their links: the last
+            // `count` to insert, those from the cursor to delete.
+            let col = usize::from(col);
+            let gone = if insert {
+                links.len().saturating_sub(count)..links.len()
+            } else {
+                col..col.saturating_add(count)
+            };
+            self.links.release_all(links.get(gone).unwrap_or_default());
+            shift(links, col, count, insert, 0);
+        }
         if !insert {
             self.wrap(row, false, version);
         }
     }
 
     /// Gives a slot a new row: `id`, unwrapped, every cell blank. Only the
-    /// cells that may not be blank already are cleared.
+    /// cells that may not be blank already are cleared. The old row's
+    /// links, if it had any, are left in `linked` for `set_link` or
+    /// `make_room` to let go (`Meta::linked` says they are no row's): a
+    /// scroll costs what it did before links.
+    #[inline]
     fn recycle(&mut self, slot: usize, id: RowId, version: u64) {
         let mut used = usize::from(self.cols.get());
         if let Some(m) = self.meta.get_mut(slot) {
             used = usize::from(m.used);
-            *m = Meta {
-                id,
-                version,
-                width: self.cols.get(),
-                wrapped: false,
-                used: 0,
-            };
+            *m = Meta::new(id, version, self.cols.get(), false, 0);
         }
         let cells = self.slice_mut(slot);
         let used = used.min(cells.len());
@@ -639,6 +812,8 @@ impl Grid {
             cells: Vec::new(),
             meta: Vec::new(),
             spill: Vec::new(),
+            links: Links::default(),
+            linked: Linked::default(),
             order: VecDeque::new(),
             stride,
             rows,
@@ -685,17 +860,23 @@ impl Grid {
             let row_end = start.checked_add(stride).ok_or(Error::Capacity)?;
             replacement.cells.resize(row_end, Cell::default());
             let wrapped = old.is_some_and(|r| r.wrapped) && is_history;
-            replacement.meta.push(Meta {
-                id,
-                version: if is_history {
-                    old.map_or(version, |r| r.version)
-                } else {
-                    version
-                },
-                width,
-                wrapped,
-                used: width,
-            });
+            let row_version = if is_history {
+                old.map_or(version, |r| r.version)
+            } else {
+                version
+            };
+            let mut meta = Meta::new(id, row_version, width, wrapped, width);
+            // As much of the old row's links as fits, as of its cells.
+            if let Some(links) = old.and_then(|r| r.links) {
+                let mut kept = vec![0; usize::from(width)];
+                let len = kept.len().min(links.len());
+                if let (Some(dst), Some(src)) = (kept.get_mut(..len), links.get(..len)) {
+                    crate::copy_from(dst, src);
+                }
+                replacement.linked.insert(p, kept.into_boxed_slice());
+                meta.linked = true;
+            }
+            replacement.meta.push(meta);
             replacement.spill.push(Spill::default());
             replacement.order.push_back(p);
             if let Some(old) = old {
@@ -782,6 +963,8 @@ impl Grid {
             cells: Vec::new(),
             meta: Vec::new(),
             spill: Vec::new(),
+            links: Links::default(),
+            linked: Linked::default(),
             order: VecDeque::new(),
             stride: usize::from(cols.get()),
             rows,
@@ -816,13 +999,9 @@ impl Grid {
         // Blank rows under the last line, if the lines do not fill the screen.
         while replacement.order.len() < keep_total {
             let slot = replacement.meta.len();
-            replacement.meta.push(Meta {
-                id: next_id(next)?,
-                version,
-                width: cols.get(),
-                wrapped: false,
-                used: 0,
-            });
+            replacement
+                .meta
+                .push(Meta::new(next_id(next)?, version, cols.get(), false, 0));
             replacement.order.push_back(slot);
         }
         Ok(replacement)
@@ -903,7 +1082,14 @@ impl Grid {
             let mut placed = [false; 2];
             let ids = line.clone().map(|r| r.id);
             let mut ids = ids.fuse();
-            for (n, cell) in line.flat_map(|r| r.cells()).take(length).enumerate() {
+            let cells = line.flat_map(|r| {
+                let links = r.links;
+                r.cells().enumerate().map(move |(i, cell)| {
+                    let link = links.and_then(|l| l.get(i)).copied().unwrap_or(0);
+                    (cell, link)
+                })
+            });
+            for (n, (cell, link)) in cells.take(length).enumerate() {
                 if spacers.contains(&n) {
                     // A cursor on a spacer goes with the glyph after it.
                     for offset in &mut offsets {
@@ -921,7 +1107,7 @@ impl Grid {
                 let padded = !full && cell.is_wide() && used.saturating_add(1) == width;
                 if full || padded {
                     if padded {
-                        target.cell(out.rows, used, pad);
+                        target.cell(out.rows, used, pad, 0);
                     }
                     target.row(out.rows, true, ids.next())?;
                     out.rows = out.rows.saturating_add(1);
@@ -934,7 +1120,7 @@ impl Grid {
                         *placed = true;
                     }
                 }
-                target.cell(out.rows, used, cell);
+                target.cell(out.rows, used, cell, link);
                 used = used.saturating_add(1);
             }
             for (((offset, mark), placed), found) in offsets
@@ -995,13 +1181,17 @@ impl Grid {
     /// blanked and given new identities, top to bottom, as `new` gives them.
     pub fn clear(&mut self, next: &mut u64, version: u64) -> Result<(), Error> {
         if !self.recyclable() {
-            *self = Self::new(
+            // The links are kept, as a link the program has open keeps its
+            // number (`Screen::pen_link`).
+            let mut grid = Self::new(
                 self.rows.get(),
                 self.cols.get(),
                 self.history_limit,
                 next,
                 version,
             )?;
+            grid.adopt_links(std::mem::take(&mut self.links));
+            *self = grid;
             return Ok(());
         }
         // `new` would run out of identities partway, having taken those
@@ -1130,8 +1320,8 @@ fn past(col: u16, pending_wrap: bool) -> u16 {
 /// Where a reflow's rows go: `Layout` only counts them; `Copy` writes the
 /// ones kept into the replacement grid.
 trait Reflow {
-    /// `cell` is at `col` of reflowed row `row`.
-    fn cell(&mut self, row: usize, col: usize, cell: CellRef<'_>);
+    /// `cell`, with link `link`, is at `col` of reflowed row `row`.
+    fn cell(&mut self, row: usize, col: usize, cell: CellRef<'_>, link: u16);
     /// Reflowed row `row` is finished; `wrapped` if its line goes on, and
     /// the identity of its line's row in the same place before, if any.
     fn row(&mut self, row: usize, wrapped: bool, id: Option<RowId>) -> Result<(), Error>;
@@ -1147,7 +1337,7 @@ struct Reflowed {
 
 struct Layout;
 impl Reflow for Layout {
-    fn cell(&mut self, _: usize, _: usize, _: CellRef<'_>) {}
+    fn cell(&mut self, _: usize, _: usize, _: CellRef<'_>, _: u16) {}
     fn row(&mut self, _: usize, _: bool, _: Option<RowId>) -> Result<(), Error> {
         Ok(())
     }
@@ -1163,7 +1353,7 @@ struct Copy<'a> {
     version: u64,
 }
 impl Reflow for Copy<'_> {
-    fn cell(&mut self, row: usize, col: usize, cell: CellRef<'_>) {
+    fn cell(&mut self, row: usize, col: usize, cell: CellRef<'_>, link: u16) {
         let stride = self.grid.stride;
         if !self.rows.contains(&row) || col >= stride {
             return;
@@ -1174,6 +1364,16 @@ impl Reflow for Copy<'_> {
         let Some(start) = slot.checked_mul(stride) else {
             return;
         };
+        if link != 0
+            && let Some(at) = self
+                .grid
+                .linked
+                .entry(slot)
+                .or_insert_with(|| vec![0; stride].into_boxed_slice())
+                .get_mut(col)
+        {
+            *at = link;
+        }
         let stored = *cell.stored();
         if !stored.is_spilled() {
             if let Some(target) = start
@@ -1200,16 +1400,72 @@ impl Reflow for Copy<'_> {
             None => next_id(self.next)?,
         };
         let slot = self.grid.meta.len();
-        self.grid.meta.push(Meta {
-            id,
-            version: self.version,
-            width: self.grid.cols.get(),
-            wrapped,
-            used: self.grid.cols.get(),
-        });
+        let cols = self.grid.cols.get();
+        let mut meta = Meta::new(id, self.version, cols, wrapped, cols);
+        meta.linked = self.grid.linked.contains_key(&slot);
+        self.grid.meta.push(meta);
         self.grid.order.push_back(slot);
         repair_wide(self.grid.slice_mut(slot));
         Ok(())
+    }
+}
+
+/// The rows' links, by slot.
+pub(crate) type Linked = HashMap<usize, Box<[u16]>, BuildHasherDefault<SlotHasher>>;
+
+/// Hashes a slot, a small number, by one multiplication (Fibonacci
+/// hashing), rather than by SipHash, which the default hasher spends on
+/// every lookup: a slot is no input a program chooses.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SlotHasher(u64);
+
+impl Hasher for SlotHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(byte);
+        }
+        self.0 = self.0.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+    fn write_usize(&mut self, n: usize) {
+        let n = u64::try_from(n).unwrap_or(u64::MAX);
+        self.0 = (self.0 ^ n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
+/// Drops slot `slot`'s links, which its cells no longer have. Out of line,
+/// so that the paths that recycle and erase rows, which only call it for a
+/// row with links, stay as small as they were before links.
+#[cold]
+#[inline(never)]
+fn forget(linked: &mut Linked, links: &mut Links, slot: usize) {
+    if let Some(row) = linked.remove(&slot) {
+        links.release_all(&row);
+    }
+}
+
+/// ICH and DCH on a row's cells, or on their links: what is at and after
+/// `col` turns `count` places right to insert, left to delete, and the
+/// places it leaves are `blank`.
+fn shift<T: std::marker::Copy>(cells: &mut [T], col: usize, count: usize, insert: bool, blank: T) {
+    let Some(tail) = cells.get_mut(col..) else {
+        return;
+    };
+    // `rotate_*` panics past the end of what it turns: the clamp is the
+    // reason it is allowed here (clippy.toml), and costs nothing, as
+    // `count` is at most the cells from the cursor to the edge.
+    let count = count.min(tail.len());
+    let fill = if insert {
+        tail.rotate_right(count);
+        0..count
+    } else {
+        tail.rotate_left(count);
+        tail.len().saturating_sub(count)..tail.len()
+    };
+    if let Some(run) = tail.get_mut(fill) {
+        run.fill(blank);
     }
 }
 
