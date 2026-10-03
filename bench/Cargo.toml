@@ -1,35 +1,30 @@
 [workspace]
-members = ["fux-vt", "fuxix"]
-exclude = ["fux-vt/fuzz", "fux-vt/gen", "fux-vt/compare", "fuzz", "walk", "diff", "bench"]
-resolver = "3"
 
 [package]
-name = "fux"
-version = "0.17.0"
+name = "fux-bench"
+version = "0.0.0"
+publish = false
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "A small terminal multiplexer: workspaces, tabs and split panes, driven by keys and a CLI"
-repository = "https://github.com/gold-silver-copper/fux"
-readme = "README.md"
-keywords = ["terminal", "multiplexer", "pty", "tmux"]
-categories = ["command-line-utilities"]
-include = ["/src/**", "/tests/**", "/README.md", "/LICENSE"]
+
+[[bin]]
+name = "fux-bench"
+path = "src/main.rs"
+doc = false
+bench = false
 
 [dependencies]
-fux-vt = { path = "fux-vt", version = "0.2.0" }
-signal-hook = "0.3"
-unicode-width = "0.2"
-fuxix = { path = "fuxix", version = "0.1.4" }
+# The code under test, by path: the working tree's, or REF's in the
+# worktree `--against` builds this crate in.
+fux = { path = ".." }
+fux-vt = { path = "../fux-vt" }
+fuxix = { path = "../fuxix" }
+# Reads the corpus's manifests, and writes the results.
+serde_json = "1"
 
-[profile.dev]
-debug = 0
-
-# fux-vt's grapheme tables are tested against unicode-segmentation for every
-# code point; optimized, that takes seconds rather than half a minute.
-[profile.dev.package.unicode-segmentation]
-opt-level = 3
-
+# fux's own release profile. With other LTO or codegen units, inlining
+# differs from fux's build, and the instruction counts with it (PR #78).
 [profile.release]
 strip = true
 lto = "thin"
