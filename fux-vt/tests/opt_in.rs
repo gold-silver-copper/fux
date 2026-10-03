@@ -240,6 +240,48 @@ fn process_until_frame_stops_after_the_sequence_that_sets_2026() -> Result {
     Ok(())
 }
 
+/// In-band resize (`references/modern/mode_2048_in_band_resize.md`): with
+/// `Options::in_band_resize`, setting mode 2048 reports the size at once,
+/// every time it is set; DECRQM reports the mode; `Parser::resize_report`
+/// gives the report for the new size after a resize while it is set; RIS
+/// ends it. Without the option the mode is not recognized, as DECRQM says.
+#[test]
+fn in_band_resize_reports_the_size() -> Result {
+    let options = Options::new()
+        .with_mode_reports(true)
+        .with_in_band_resize(true);
+    let mut p = Parser::with_options(24, 80, 0, options)?;
+    let mut record = Record::default();
+    p.process_with(
+        b"\x1b[?2048$p\x1b[?2048h\x1b[?2048$p\x1b[?2048h\x1b[?2048;25h",
+        &mut record,
+    )?;
+    let expected: [&[u8]; 5] = [
+        b"\x1b[?2048;2$y",
+        b"\x1b[48;24;80;0;0t",
+        b"\x1b[?2048;1$y",
+        b"\x1b[48;24;80;0;0t",
+        b"\x1b[48;24;80;0;0t",
+    ];
+    assert_eq!(record.replies, expected.map(<[u8]>::to_vec));
+    p.resize(30, 100)?;
+    assert_eq!(
+        p.resize_report().as_deref(),
+        Some(&b"\x1b[48;30;100;0;0t"[..])
+    );
+    p.process(b"\x1b[?2048l")?;
+    assert_eq!(p.resize_report(), None, "reset");
+    p.process(b"\x1b[?2048h\x1bc")?;
+    assert_eq!(p.resize_report(), None, "RIS");
+    // Without the option: not recognized, no report.
+    let mut p = Parser::with_options(24, 80, 0, Options::new().with_mode_reports(true))?;
+    let mut record = Record::default();
+    p.process_with(b"\x1b[?2048h\x1b[?2048$p", &mut record)?;
+    assert_eq!(record.replies, [b"\x1b[?2048;0$y".to_vec()]);
+    assert_eq!(p.resize_report(), None);
+    Ok(())
+}
+
 #[test]
 fn keypad_mode_is_tracked_and_reset() -> Result {
     let mut parser = Parser::new(2, 4, 0)?;

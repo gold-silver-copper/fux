@@ -269,7 +269,8 @@ impl Pane {
         // known before they use it.
         let options = fux_vt::Options::new()
             .with_events(true)
-            .with_mode_reports(true);
+            .with_mode_reports(true)
+            .with_in_band_resize(true);
         let parser = fux_vt::Parser::with_options(rows.max(1), cols.max(1), history, options)
             .map_err(|source| Error::Terminal {
                 rows,
@@ -415,6 +416,12 @@ impl Pane {
             self.size = (rows, cols);
             if let Some(child) = &self.child {
                 crate::process::resize(&child.master, rows, cols);
+            }
+            // In-band resize: the report follows the PTY's new size, never
+            // precedes it (references/modern/mode_2048_in_band_resize.md).
+            // A program that does not read its input loses it, as a reply.
+            if let Some(report) = self.parser.resize_report() {
+                let _ = self.input.push(report);
             }
         }
     }
@@ -642,6 +649,22 @@ mod tests {
         // Fewer columns, the same rows: growing would bring history back.
         pane.resize(3, 20);
         assert_eq!(first_row(&pane), "w", "a resize reads it first");
+        Ok(())
+    }
+
+    /// A program that set in-band resize is told its new size after a
+    /// resize, and on setting it; one that did not is told nothing.
+    #[test]
+    fn a_resize_reports_the_size_in_band_when_asked() -> Result<(), Error> {
+        let mut pane = pane()?;
+        pane.resize(4, 20);
+        assert!(pane.input.drain_all().is_empty(), "not asked");
+        pane.output(b"\x1b[?2048h");
+        assert_eq!(pane.input.drain_all(), b"\x1b[48;4;20;0;0t");
+        pane.resize(6, 25);
+        assert_eq!(pane.input.drain_all(), b"\x1b[48;6;25;0;0t");
+        pane.resize(6, 25);
+        assert!(pane.input.drain_all().is_empty(), "the same size");
         Ok(())
     }
 

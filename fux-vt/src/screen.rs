@@ -257,6 +257,7 @@ pub struct Screen {
     hide_cursor: bool,
     bracketed_paste: bool,
     synchronized_output: bool,
+    in_band_resize: bool,
     /// How many times synchronized output has been set, for
     /// `Parser::process_until_frame`.
     frames_begun: u64,
@@ -358,6 +359,7 @@ impl Screen {
             hide_cursor: false,
             bracketed_paste: false,
             synchronized_output: false,
+            in_band_resize: false,
             frames_begun: 0,
             focus_reporting: false,
             cursor_shape: 0,
@@ -441,6 +443,17 @@ impl Screen {
     /// end it, as a resize does in Ghostty.
     pub fn synchronized_output(&self) -> bool {
         self.synchronized_output
+    }
+    /// In-band resize (`CSI ? 2048 h` / `l`), with
+    /// `Options::in_band_resize`: whether the program wants a size report
+    /// whenever the size changes. RIS ends it.
+    pub fn in_band_resize(&self) -> bool {
+        self.in_band_resize
+    }
+    /// The in-band resize report of the current size, pixels unknown.
+    pub(crate) fn size_report(&self) -> Reply {
+        let (rows, cols) = self.size();
+        Reply::of(format_args!("\x1b[48;{rows};{cols};0;0t"))
     }
     pub(crate) fn frames_begun(&self) -> u64 {
         self.frames_begun
@@ -1191,6 +1204,7 @@ impl Screen {
                 self.hide_cursor = false;
                 self.bracketed_paste = false;
                 self.synchronized_output = false;
+                self.in_band_resize = false;
                 self.focus_reporting = false;
                 self.cursor_shape = 0;
                 self.mouse = MouseProtocolMode::None;
@@ -1297,6 +1311,7 @@ impl Screen {
             1006 => self.encoding == MouseProtocolEncoding::Sgr,
             2004 => self.bracketed_paste,
             2026 => self.synchronized_output,
+            2048 => self.in_band_resize,
             _ => return 0,
         };
         if set { 1 } else { 2 }
@@ -1438,8 +1453,18 @@ impl Screen {
             return Ok(Dispatch::Unhandled);
         }
         if private && matches!(byte, b'h' | b'l') {
+            let mut report = false;
             for group in p.groups() {
                 if let [n] = group {
+                    // In-band resize, which sets off a report however often
+                    // it is set (references/modern/mode_2048_in_band_resize.md).
+                    if *n == 2048 {
+                        if options.in_band_resize {
+                            self.in_band_resize = byte == b'h';
+                            report |= byte == b'h';
+                        }
+                        continue;
+                    }
                     // A switch of screens leaves the printed cell behind.
                     if matches!(n, 47 | 1047 | 1049) {
                         self.break_cluster();
@@ -1447,7 +1472,11 @@ impl Screen {
                     self.mode(*n, byte == b'h')?;
                 }
             }
-            return Ok(Dispatch::Done);
+            return Ok(if report {
+                Dispatch::Reply(self.size_report())
+            } else {
+                Dispatch::Done
+            });
         }
         // SM and RM: IRM (4) alone of the ANSI modes.
         if !private && matches!(byte, b'h' | b'l') {
