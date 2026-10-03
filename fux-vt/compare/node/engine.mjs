@@ -45,12 +45,24 @@ function bg(c) {
   return c.isBgRGB() ? 0x1000000 + c.getBgColor() : c.getBgColor();
 }
 
+// A cell with a hyperlink (OSC 8) reads as underlined, dashed, whatever its
+// SGR says: xterm.js draws links so (its ExtendedAttrs' `underlineStyle` is
+// 5 while `urlId` is set). Its SGR underline is then read from the core's
+// own flag, which SGR 4, 4:n, 24 and 0 set and clear as `isUnderline`
+// reads them on a cell without a link (not in the public API).
+const FG_UNDERLINE = 0x10000000;
+
+function underlined(c) {
+  if (c.hasExtendedAttrs() && c.extended.urlId !== 0) return (c.fg & FG_UNDERLINE) !== 0;
+  return Boolean(c.isUnderline());
+}
+
 function flags(c) {
   return (
     (c.isBold() ? 1 : 0) |
     (c.isDim() ? 2 : 0) |
     (c.isItalic() ? 4 : 0) |
-    (c.isUnderline() ? 8 : 0) |
+    (underlined(c) ? 8 : 0) |
     (c.isBlink() ? 16 : 0) |
     (c.isInverse() ? 32 : 0) |
     (c.isInvisible() ? 64 : 0) |
