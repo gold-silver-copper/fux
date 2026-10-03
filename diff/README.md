@@ -77,6 +77,7 @@ diff/target/release/fux-diff --speed
   integration tests cover them.
 - **Performance.** The areas compare only what fux does. `fux-diff --speed`
   times fux-vt beside its last release instead: five streams of output
-  (ASCII, SGR, CJK, emoji, cursor movement), each parsed in turn by both,
-  best of nine, by the CPU time of the thread, so a busy machine slows
-  neither. `--scale` lengthens the streams.
+  (ASCII, SGR, CJK, emoji, cursor movement), and real programs' output
+  (`corpus`: the recordings in `fux-vt/compare/corpus/`), each parsed in
+  turn by both, best of nine, by the CPU time of the thread, so a busy
+  machine slows neither. `--scale` lengthens the streams.
