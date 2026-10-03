@@ -117,4 +117,8 @@ if [[ ${1:-} == --cargo ]]; then
   exec cargo "$sub" --release --locked --manifest-path "$here/Cargo.toml" "$@"
 fi
 cargo build --release --locked --quiet --manifest-path "$here/Cargo.toml"
+case ${1:-} in
+  # The harness's commands (harness.sh says what each runs).
+  quick | full | deep | fuzz | scoreboard) exec "$here/harness.sh" "$@" ;;
+esac
 exec "$here/target/release/fux-vt-compare" "$@"

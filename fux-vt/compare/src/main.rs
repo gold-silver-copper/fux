@@ -18,6 +18,7 @@ mod families;
 mod inventory;
 mod record;
 mod rng;
+mod scoreboard;
 mod snapshot;
 mod transparency;
 
@@ -47,6 +48,7 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
        fux-vt-compare transparency [--engines LIST] [--chunk N] [--json FILE]
                                    [--multiplexers] [NAME... | --size RxC STEP...]
        fux-vt-compare esctest [--in-fux] [--subset] [FILTER] (esctest --help: the rest)
+       fux-vt-compare scoreboard DIR
        fux-vt-compare engines
        fux-vt-compare --list
 
@@ -105,6 +107,9 @@ esctest  xterm's conformance suite, esctest2, against fux-vt set up as fux's
          panes are, and with --in-fux in a real fux pane too. Exit 1 if a
          test fails that esctest-expected.txt does not list, or one listed
          passes.
+scoreboard
+         the results run.sh quick, full, deep and fuzz left in DIR,
+         gathered into DIR/scoreboard.json and DIR/scoreboard.md.
 engines  every engine: whether it can run here, whether it votes, and what
          it cannot tell.
 --list   the families, what each covers, and its status.
@@ -195,6 +200,7 @@ fn parse() -> Result<Args, String> {
             "record",
             "corpus",
             "inventory",
+            "scoreboard",
         ]
         .contains(&first.as_str())
     {
@@ -794,6 +800,7 @@ fn main() -> ExitCode {
         "replay" => replay(&args),
         "record" => record(&args),
         "inventory" => inventory::run(&args.rest),
+        "scoreboard" => scoreboard::run(&args.rest),
         "corpus" => corpus::run(
             &panel(&args, "xterm,panel")?,
             &args.rest,
