@@ -1227,7 +1227,7 @@ impl Grid {
                 if padded {
                     target.cell(out.rows, used, pad, 0);
                 }
-                target.row(out.rows, true, ids.next(), prompt)?;
+                target.row(out.rows, used, true, ids.next(), prompt)?;
                 out.rows = out.rows.saturating_add(1);
                 used = 0;
                 prompt = false;
@@ -1263,7 +1263,7 @@ impl Grid {
             }
             *found |= *placed;
         }
-        target.row(out.rows, false, ids.next(), prompt)?;
+        target.row(out.rows, used, false, ids.next(), prompt)?;
         out.rows = out.rows.saturating_add(1);
         out.trailing_blank = if length == 0 {
             out.trailing_blank
@@ -1351,7 +1351,8 @@ impl Grid {
             *found |= *placed;
         }
         let id = self.id_at(line.next, end);
-        pass.target.row(out.rows, false, id, line.prompt)?;
+        pass.target
+            .row(out.rows, line.used, false, id, line.prompt)?;
         out.rows = out.rows.saturating_add(1);
         out.trailing_blank = if length == 0 {
             out.trailing_blank
@@ -1405,7 +1406,8 @@ impl Grid {
     fn end_row(&self, line: &mut Run, pass: &mut Pass<'_, impl Reflow>) -> Result<(), Error> {
         let id = self.id_at(line.next, line.end);
         line.next = line.next.saturating_add(1);
-        pass.target.row(pass.out.rows, true, id, line.prompt)?;
+        pass.target
+            .row(pass.out.rows, line.used, true, id, line.prompt)?;
         pass.out.rows = pass.out.rows.saturating_add(1);
         line.used = 0;
         line.prompt = false;
@@ -1641,12 +1643,13 @@ trait Reflow {
     /// many as it has, the rest none), are at `col` on of reflowed row
     /// `row`, where they fit.
     fn run(&mut self, row: usize, col: usize, cells: &[Cell], spill: &Spill, links: &[u16]);
-    /// Reflowed row `row` is finished; `wrapped` if its line goes on, the
-    /// identity of its line's row in the same place before, if any, and
-    /// whether a prompt starts on it.
+    /// Reflowed row `row` is finished, its cells from `used` on blank;
+    /// `wrapped` if its line goes on, the identity of its line's row in the
+    /// same place before, if any, and whether a prompt starts on it.
     fn row(
         &mut self,
         row: usize,
+        used: usize,
         wrapped: bool,
         id: Option<RowId>,
         prompt: bool,
@@ -1750,7 +1753,7 @@ struct Layout;
 impl Reflow for Layout {
     fn cell(&mut self, _: usize, _: usize, _: CellRef<'_>, _: u16) {}
     fn run(&mut self, _: usize, _: usize, _: &[Cell], _: &Spill, _: &[u16]) {}
-    fn row(&mut self, _: usize, _: bool, _: Option<RowId>, _: bool) -> Result<(), Error> {
+    fn row(&mut self, _: usize, _: usize, _: bool, _: Option<RowId>, _: bool) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -1863,6 +1866,7 @@ impl Reflow for Copy<'_> {
     fn row(
         &mut self,
         row: usize,
+        used: usize,
         wrapped: bool,
         id: Option<RowId>,
         prompt: bool,
@@ -1876,12 +1880,18 @@ impl Reflow for Copy<'_> {
         };
         let slot = self.grid.meta.len();
         let cols = self.grid.cols.get();
-        let mut meta = Meta::new(id, self.version, cols, wrapped, cols);
+        // The row's `used` mark is where its cells laid out end, so the
+        // next reflow finds its text, and recycling clears it, from there.
+        let used = u16::try_from(used).map_or(cols, |used| used.min(cols));
+        let mut meta = Meta::new(id, self.version, cols, wrapped, used);
         meta.prompt = prompt;
         meta.linked = self.grid.linked.contains_key(&slot);
         self.grid.meta.push(meta);
         self.grid.order.push_back(slot);
-        repair_wide(self.grid.slice_mut(slot));
+        // Past the mark, every cell is blank: no half of a wide glyph.
+        if let Some(cells) = self.grid.slice_mut(slot).get_mut(..usize::from(used)) {
+            repair_wide(cells);
+        }
         Ok(())
     }
 }
