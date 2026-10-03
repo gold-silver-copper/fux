@@ -44,6 +44,7 @@ fux-vt/compare/run.sh replay --engines all --size 1x5 'abcde\x08X'
 fux-vt/compare/run.sh --no-reflow           # fux-vt set up as fux sets it up
 fux-vt/compare/run.sh corpus                # the recordings beside xterm and the panel; exit 1 if one regresses
 fux-vt/compare/run.sh corpus --show vim     # one recording, and fux-vt's screen at its end
+fux-vt/compare/run.sh inventory > fux-vt/compare/corpus/INVENTORY.md   # what the recordings send
 fux-vt/compare/corpus/record.sh [NAME...]   # record the corpus again (see "The corpus")
 fux-vt/compare/run.sh --cargo test          # any cargo subcommand, in the same environment
 fux-vt/compare/run.sh --cargo clippy --all-targets -- -D warnings
@@ -341,6 +342,20 @@ differ, all at the end, where it sets an empty title and xterm shows its
 default one, `xterm` (and `claude-ghostty` from its first step, on the kitty
 keyboard flags fux does not keep).
 
+### The inventory
+
+`inventory` lists every sequence the recordings send, normalized (numbers
+that only place the cursor or pick a colour are `n`; each mode and each SGR
+attribute a row of its own), with how often, which programs sent it, and
+what fux-vt does with it. A fux-vt parser set up as fux's reads each
+sequence in turn: what it reports through `Sink::unhandled`, or answers, it
+is seen doing. What it consumes without a word is named from its source:
+private modes `Screen::mode` does not keep, SGR parameters `Screen::sgr`
+passes over or reads in part, the OSC numbers `Parser::dispatch_osc` drops,
+and every DCS, APC, PM and SOS string. Those lists are in
+`src/inventory.rs`, and must follow fux-vt. `corpus/INVENTORY.md` is its
+output, made again with the recordings.
+
 ## Files
 
 | File | What |
@@ -360,4 +375,5 @@ keyboard flags fux does not keep).
 | `src/rng.rs` | splitmix64, as in `diff/` |
 | `src/record.rs` | `record`: a program on a PTY, its output recorded, fux-vt answering its queries |
 | `src/corpus.rs` | the recordings: loading, replaying beside the engines, their statuses |
+| `src/inventory.rs` | what the recordings send, and what fux-vt does with it |
 | `corpus/` | the recordings, their keys, `record.sh` that makes them, and the man page one shows |

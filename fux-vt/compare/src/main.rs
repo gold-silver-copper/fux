@@ -14,6 +14,7 @@ mod engine;
 mod engines;
 mod escape;
 mod families;
+mod inventory;
 mod record;
 mod rng;
 mod snapshot;
@@ -40,6 +41,7 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
                              [--version TEXT] [--env KEY=VALUE]... [--dir DIR]
                              [--scrub OLD=NEW]... [--note TEXT] -- PROGRAM ARGS...
        fux-vt-compare corpus [--engines LIST] [--show] [NAME...]
+       fux-vt-compare inventory [NAME...]
        fux-vt-compare engines
        fux-vt-compare --list
 
@@ -77,6 +79,9 @@ corpus   the recordings in corpus/ (default: all), each replayed through
          the panel's vote the rest, and all once xterm abstains. Exit 1 if
          a recording expected to agree does not. --show prints fux-vt's
          screen at the end of each.
+inventory every sequence the recordings (default: all) send, normalized,
+         with how often, from which programs, and what fux-vt does with
+         it, as Markdown (corpus/INVENTORY.md is its output).
 engines  every engine: whether it can run here, whether it votes, and what
          it cannot tell.
 --list   the families, what each covers, and its status.
@@ -152,8 +157,17 @@ fn parse() -> Result<Args, String> {
     let mut words = std::env::args().skip(1).peekable();
     if let Some(first) = words.peek()
         && [
-            "run", "survey", "matrix", "cases", "verdicts", "replay", "bench", "engines", "record",
+            "run",
+            "survey",
+            "matrix",
+            "cases",
+            "verdicts",
+            "replay",
+            "bench",
+            "engines",
+            "record",
             "corpus",
+            "inventory",
         ]
         .contains(&first.as_str())
     {
@@ -716,6 +730,7 @@ fn main() -> ExitCode {
         "verdicts" => verdicts(&args),
         "replay" => replay(&args),
         "record" => record(&args),
+        "inventory" => inventory::run(&args.rest),
         "corpus" => corpus::run(&panel(&args, "xterm,panel")?, &args.rest, args.show),
         "bench" => bench::run(&panel(&args, "all")?, &args.rest, args.mb),
         _ => run(&args),
