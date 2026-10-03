@@ -1,13 +1,17 @@
 //! `fux-bench`: fux's speed against another commit, in instructions
 //! retired, on fixed workloads run in this process (`workloads`), each
 //! counted in a child process of its own (`count`), REF's built in a
-//! temporary worktree (`against`).
+//! temporary worktree (`against`); and what a person feels through real
+//! servers beside tmux and zellij (`feel`).
 mod against;
 mod corpus;
 mod count;
+mod feel;
+mod helpers;
 mod info;
 mod rng;
 mod synthetic;
+mod terminal;
 mod workloads;
 
 use std::path::{Path, PathBuf};
@@ -20,6 +24,7 @@ usage: fux-bench [--against REF] [--repeats N] [--jobs N] [--threshold PERCENT]
        fux-bench run WORKLOAD [--baseline] [--corpus DIR]
        fux-bench time [--corpus DIR] [WORKLOAD...]
        fux-bench info [--json FILE]
+       fux-bench feel [--muxes LIST] [--parts LIST] [--keys N] [--json FILE]
 
 (default)  every workload on REF (default main), built in a temporary
            worktree, and on the working tree, alternating, in instructions
@@ -33,9 +38,15 @@ run        one workload once (or its baseline), as `--against` counts it.
 time       each workload's thread CPU time here, best of 3, and MB/s.
 info       MB/s beside Ghostty and alacritty (fux-vt/compare's `run.sh
            bench`) and fux-diff's --speed: informational, not compared.
+feel       real servers on sockets of their own, each with a client on a
+           PTY: keystroke latency idle and beside a flooding pane, throughput
+           to the final screen and the bytes sent, idle CPU and memory.
+           LIST is joined by commas: muxes direct,fux,tmux,zellij (those
+           installed), parts latency,throughput,footprint; N keys per
+           latency run (default 2000). Wall time; reported, not gated.
 
 The JSON goes to FILE, by default bench/target/fux-bench/against.json
-(info.json for info).";
+(info.json for info, feel.json for feel).";
 
 /// Where results go unless `--json` says.
 pub fn results(name: &str) -> PathBuf {
@@ -74,9 +85,20 @@ fn main() -> ExitCode {
 }
 
 fn run(argv: Vec<String>) -> Result<bool, String> {
+    // The programs `feel` runs, with arguments of their own.
+    if let Some((first, rest)) = argv.split_first() {
+        match first.as_str() {
+            "__launch" => return helpers::launch(rest),
+            "__echo" => return helpers::echo(),
+            "__flood" => return helpers::flood(),
+            "__fill" => return helpers::fill(rest),
+            "__serve" => return helpers::serve(rest),
+            _ => {}
+        }
+    }
     let mut args = argv.into_iter().peekable();
     let command = match args.peek().map(String::as_str) {
-        Some(c @ ("list" | "run" | "time" | "info")) => {
+        Some(c @ ("list" | "run" | "time" | "info" | "feel")) => {
             let c = c.to_owned();
             args.next();
             c
@@ -90,12 +112,23 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
         jobs: std::thread::available_parallelism().map_or(4, usize::from),
         threshold: 3.0,
         only: Vec::new(),
-        json: results(if command == "info" {
-            "info.json"
-        } else {
-            "against.json"
+        json: results(match command.as_str() {
+            "info" => "info.json",
+            "feel" => "feel.json",
+            _ => "against.json",
         }),
     };
+    let mut feel = feel::Options {
+        muxes: ["direct", "fux", "tmux", "zellij"]
+            .map(str::to_owned)
+            .to_vec(),
+        parts: ["latency", "throughput", "footprint"]
+            .map(str::to_owned)
+            .to_vec(),
+        keys: 2000,
+        json: options.json.clone(),
+    };
+    let list = |text: String| text.split(',').map(str::to_owned).collect::<Vec<_>>();
     let mut baseline = false;
     let mut names = Vec::new();
     while let Some(arg) = args.next() {
@@ -108,6 +141,9 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
             "--json" => options.json = value(&mut args, &arg)?.into(),
             "--corpus" => corpus = value(&mut args, &arg)?.into(),
             "--baseline" => baseline = true,
+            "--muxes" => feel.muxes = list(value(&mut args, &arg)?),
+            "--parts" => feel.parts = list(value(&mut args, &arg)?),
+            "--keys" => feel.keys = number(&value(&mut args, &arg)?, &arg)?,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(true);
@@ -133,6 +169,10 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
         }
         "time" => time(&corpus, &names),
         "info" => info::run(&options.json),
+        "feel" => {
+            feel.json = options.json;
+            feel::run(&feel)
+        }
         _ => {
             if !names.is_empty() {
                 return Err(format!("unexpected {names:?}\n{USAGE}"));
