@@ -137,21 +137,33 @@ pub struct Done {
 /// Runs the named workload once, or its baseline, on the recordings in
 /// `dir`.
 pub fn run(name: &str, dir: &Path, baseline: bool) -> Result<Done, String> {
+    run_shrunk(name, dir, baseline, 1)
+}
+
+/// [`run`], every size divided by `shrink`: for the tests, in a debug
+/// build.
+fn run_shrunk(name: &str, dir: &Path, baseline: bool, shrink: usize) -> Result<Done, String> {
+    let size = |n: usize| n.checked_div(shrink).unwrap_or(n);
     let recordings = corpus::recordings(dir)?;
     if let Some(rest) = name.strip_prefix("vt/") {
-        let loads = loads(rest, &recordings, RECORDING)?;
+        let loads = loads(rest, &recordings, size(RECORDING), shrink)?;
         return Ok(vt(&loads, baseline));
     }
     if let Some(rest) = name.strip_prefix("pane/") {
-        let loads = loads(rest, &recordings, 0)?;
+        let loads = loads(rest, &recordings, 0, shrink)?;
         return pane(&loads, baseline);
     }
     match name {
-        "paint/corpus" => paint(&recordings, false, baseline),
-        "paint/split" => paint(&recordings, true, baseline),
-        "decode/legacy" => decode(&keys(&recordings, None), baseline),
-        "decode/kitty" => decode(&keys(&recordings, Some(KITTY_CLIENT)), baseline),
-        "encode/legacy" => encode(&recordings, fux::encode::KeyMode::legacy(false), baseline),
+        "paint/corpus" => paint(&recordings, false, baseline, size(CORPUS)),
+        "paint/split" => paint(&recordings, true, baseline, size(CORPUS)),
+        "decode/legacy" => decode(&keys(&recordings, None), baseline, size(KEYS)),
+        "decode/kitty" => decode(&keys(&recordings, Some(KITTY_CLIENT)), baseline, size(KEYS)),
+        "encode/legacy" => encode(
+            &recordings,
+            fux::encode::KeyMode::legacy(false),
+            baseline,
+            size(STROKES),
+        ),
         "encode/kitty" => encode(
             &recordings,
             fux::encode::KeyMode {
@@ -160,6 +172,7 @@ pub fn run(name: &str, dir: &Path, baseline: bool) -> Result<Done, String> {
                 other_keys: None,
             },
             baseline,
+            size(STROKES),
         ),
         _ => Err(format!("no workload {name:?}; `list` lists them")),
     }
@@ -182,9 +195,16 @@ fn repeated(bytes: &[u8], total: usize) -> Vec<u8> {
 }
 
 /// The loads of a `vt/` or `pane/` workload: a synthetic one, every
-/// recording in turn, or one recording (if `each` is not 0, to that size).
-fn loads(name: &str, recordings: &[Recording], each: usize) -> Result<Vec<Load>, String> {
-    if let Some(bytes) = synthetic::make(name, SYNTHETIC) {
+/// recording in turn, or one recording (if `each` is not 0, to that size),
+/// the first two divided by `shrink`.
+fn loads(
+    name: &str,
+    recordings: &[Recording],
+    each: usize,
+    shrink: usize,
+) -> Result<Vec<Load>, String> {
+    let size = |n: usize| n.checked_div(shrink).unwrap_or(n);
+    if let Some(bytes) = synthetic::make(name, size(SYNTHETIC)) {
         return Ok(vec![Load {
             rows: synthetic::ROWS,
             cols: synthetic::COLS,
@@ -195,7 +215,7 @@ fn loads(name: &str, recordings: &[Recording], each: usize) -> Result<Vec<Load>,
         let total: usize = recordings.iter().map(|r| r.bytes().len()).sum();
         let mut out = Vec::new();
         let mut made = 0usize;
-        while total > 0 && made < CORPUS {
+        while total > 0 && made < size(CORPUS) {
             for r in recordings {
                 let bytes = r.bytes();
                 made = made.saturating_add(bytes.len());
@@ -316,7 +336,12 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
 
 /// Every recording in turn to the client of a session, as the server would
 /// give it, composed and painted after each read unless `baseline`.
-fn paint(recordings: &[Recording], split: bool, baseline: bool) -> Result<Done, String> {
+fn paint(
+    recordings: &[Recording],
+    split: bool,
+    baseline: bool,
+    total: usize,
+) -> Result<Done, String> {
     use fux::layout::PaneId;
     let config = fux::config::Config {
         history_lines: HISTORY,
@@ -340,7 +365,7 @@ fn paint(recordings: &[Recording], split: bool, baseline: bool) -> Result<Done, 
     let mut placement = fux::layout::Placement::default();
     let mut buffer = Vec::new();
     let (mut painted, mut frames, mut units, mut have) = (0usize, 0usize, 0usize, false);
-    while units < CORPUS {
+    while units < total {
         for r in recordings {
             s.resize(c, r.rows.saturating_add(1), r.cols);
             for (_, output) in &r.steps {
@@ -426,14 +451,14 @@ fn strokes(keys: &[u8]) -> Vec<fux::keys::Keystroke> {
         .collect()
 }
 
-fn decode(steps: &[Vec<u8>], baseline: bool) -> Result<Done, String> {
+fn decode(steps: &[Vec<u8>], baseline: bool, total: usize) -> Result<Done, String> {
     if steps.iter().all(Vec::is_empty) {
         return Err("no keys in the recordings".into());
     }
     let mut units = 0usize;
     let mut inputs = Vec::new();
     let mut decoder = fux::decode::Decoder::default();
-    while units < KEYS {
+    while units < total {
         for keys in steps {
             units = units.saturating_add(keys.len());
             if baseline {
@@ -459,6 +484,7 @@ fn encode(
     recordings: &[Recording],
     mode: fux::encode::KeyMode,
     baseline: bool,
+    total: usize,
 ) -> Result<Done, String> {
     let all: Vec<fux::keys::Keystroke> = keys(recordings, None)
         .iter()
@@ -469,7 +495,7 @@ fn encode(
     }
     let mut units = 0usize;
     let mut out = Vec::new();
-    while units < STROKES {
+    while units < total {
         for &stroke in &all {
             units = units.saturating_add(1);
             if baseline {
@@ -507,7 +533,7 @@ mod tests {
             !s.name.starts_with("vt/corpus:") || s.name.ends_with(":vim")
         }) {
             for baseline in [true, false] {
-                let done = super::run(&spec.name, &dir(), baseline);
+                let done = super::run_shrunk(&spec.name, &dir(), baseline, 64);
                 assert!(
                     done.as_ref().is_ok_and(|d| d.units > 0),
                     "{} {baseline}: {:?}",
@@ -522,9 +548,9 @@ mod tests {
     /// paints none.
     #[test]
     fn the_paint_workload_paints() {
-        let done = super::run("paint/corpus", &dir(), false);
+        let done = super::run_shrunk("paint/corpus", &dir(), false, 16);
         assert!(done.is_ok_and(|d| d.frames > 100 && d.painted > d.frames));
-        let base = super::run("paint/corpus", &dir(), true);
+        let base = super::run_shrunk("paint/corpus", &dir(), true, 16);
         assert!(base.is_ok_and(|d| d.frames == 0));
     }
 
