@@ -161,13 +161,15 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     // Header bits above the history count opt into events (0x10), extended
-    // replies (0x20) and hyperlinks (0x40); above the row count, into reflow
+    // replies (0x20), hyperlinks (0x40) and prompt marks (0x80); above the
+    // row count, into reflow
     // (0x10), the kitty keyboard protocol (0x20) and an identity (0x40).
     // Each is fuzzed alone and with the others, alongside the default.
     let options = Options::new()
         .with_events(history & 0x10 != 0)
         .with_extended_replies(history & 0x20 != 0)
         .with_hyperlinks(history & 0x40 != 0)
+        .with_prompt_marks(history & 0x80 != 0)
         .with_reflow(r & 0x10 != 0)
         .with_kitty_keyboard(r & 0x20 != 0)
         .with_identity((r & 0x40 != 0).then_some(Identity {

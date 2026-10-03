@@ -271,7 +271,8 @@ impl Pane {
             .with_events(true)
             .with_mode_reports(true)
             .with_in_band_resize(true)
-            .with_hyperlinks(true);
+            .with_hyperlinks(true)
+            .with_prompt_marks(true);
         let parser = fux_vt::Parser::with_options(rows.max(1), cols.max(1), history, options)
             .map_err(|source| Error::Terminal {
                 rows,
