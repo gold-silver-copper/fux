@@ -12,8 +12,9 @@ use std::time::{Duration, Instant};
 
 /// Modes the attach client sets on the outer terminal: the alternate
 /// screen, normal cursor and keypad keys, bracketed paste, focus events, no
-/// autowrap; never mouse reporting.
-const ENTER: &str = "\x1b[?1049h\x1b[?1l\x1b>\x1b[?2004h\x1b[?1004h\x1b[?7l\x1b[H\x1b[2J";
+/// autowrap; never mouse reporting. Public for fux-vt-compare's
+/// `transparency`, which writes it to its terminal as this client does.
+pub const ENTER: &str = "\x1b[?1049h\x1b[?1l\x1b>\x1b[?2004h\x1b[?1004h\x1b[?7l\x1b[H\x1b[2J";
 /// And turns them off again, with what the server may have turned on in
 /// its paints (`outer`): colour-scheme reports (mode 2031), and the kitty
 /// keyboard flags it pushed, popped on the alternate screen they were
