@@ -111,6 +111,30 @@ where fux-vt is outvoted on any field. So:
   it.
 - A tie doesn't outvote it.
 
+**A blank's style is a split the engines make by choice.** The blanks an
+engine makes (erasing, inserting, deleting, scrolling a line in) take what
+it chooses of the pen:
+
+- xterm and libvterm take its colours alone, as fux-vt does (fux-vt's
+  README, CSI J / K). DEC STD 070 gives an erased cell the empty rendition
+  (ED, EL), ECMA-48 applies SGR to text alone, and xterm's `ClearCells`
+  keeps only the colour flags (`bce`).
+- Ghostty, alacritty, xterm.js and tmux take its background alone.
+- avt, wezterm and vt100 take its attributes too (wezterm's ICH takes none
+  of it).
+
+So on a cell blank in fux-vt and in an engine, the engine votes only on the
+parts of the style it makes as xterm does (`Blanks` in `src/engine.rs`;
+`engines` lists the rest). The foreground is voted on by libvterm and avt,
+the attributes by Ghostty, alacritty and libvterm, and the background by
+every engine. Its differences there are still shown. Before this rule,
+about one random case in 20,000 failed, on either setup. In each one,
+libvterm's own wrapping on one column put a glyph where fux-vt has a blank,
+and it sided with avt's and wezterm's bold blanks, or with Ghostty's and
+alacritty's blanks without a foreground (`replay --engines all --size 8x1
+--history 0 --no-reflow
+'\e]8;;http://a.example/\e\\name\e]8;;\e\\\e[1;38:2::10:20:30;4m\r\e[2Jlqqk'`).
+
 An engine that fails or panics abstains for the rest of that case. The
 report says why, and the run goes on: vt100 panics on wrapping a
 one-row screen, and wezterm on HTS one past the edge. xterm.js abstains from

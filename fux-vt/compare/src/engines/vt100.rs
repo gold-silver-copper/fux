@@ -48,7 +48,7 @@
 //!   and the C1 range, as fux-vt does (`'a\xffb'`).
 //! - A title with a `;` in it is dropped: vt100 takes OSC 0 and 2 only
 //!   with exactly one parameter (`'\e]2;x\x07\e]2;a;b\x07'`).
-use crate::engine::{Can, Engine, Kind, Setup, always};
+use crate::engine::{Blanks, Can, Engine, Kind, Setup, always};
 use crate::snapshot::{Cell, Color, Line, Snapshot, Style, Width};
 
 /// Scrollback vt100 keeps, in rows: far more than a case writes.
@@ -73,6 +73,10 @@ pub const KIND: Kind = Kind {
         link_group: false,
         prompt: false,
         ..Can::ALL
+    },
+    blanks: Blanks {
+        fg: false,
+        attributes: false,
     },
     panel: false,
     in_process: true,

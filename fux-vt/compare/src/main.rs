@@ -340,6 +340,13 @@ fn list_engines() {
         if !missing.is_empty() {
             println!("           cannot tell: {}", missing.join(", "));
         }
+        let unlike = kind.blanks.unlike_xterm();
+        if !unlike.is_empty() {
+            println!(
+                "           blanks unlike xterm's (no vote on a blank's): {}",
+                unlike.join(", ")
+            );
+        }
     }
 }
 
