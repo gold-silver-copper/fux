@@ -239,9 +239,10 @@ impl Run {
     /// The key `inputs` is, if it is one key, typed in a repeat mode, and
     /// not a key of a binding there that writes to a pane.
     fn repeat_key(&self, client: ClientId, inputs: &[Input]) -> Option<KeyPress> {
-        let [Input::Key(press)] = inputs else {
+        let [Input::Key(stroke)] = inputs else {
             return None;
         };
+        let press = &stroke.press;
         let Some(Mode::Repeat { path }) = self.s.views.get(&client).map(|v| &v.mode) else {
             return None;
         };

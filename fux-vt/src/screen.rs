@@ -260,6 +260,9 @@ pub struct Screen {
     bracketed_paste: bool,
     synchronized_output: bool,
     in_band_resize: bool,
+    /// Mode 2031, colour-scheme change reports, with
+    /// `Options::color_scheme_updates`.
+    color_scheme_updates: bool,
     /// How many times synchronized output has been set, for
     /// `Parser::process_until_frame`.
     frames_begun: u64,
@@ -370,6 +373,7 @@ impl Screen {
             bracketed_paste: false,
             synchronized_output: false,
             in_band_resize: false,
+            color_scheme_updates: false,
             frames_begun: 0,
             focus_reporting: false,
             cursor_shape: 0,
@@ -462,6 +466,14 @@ impl Screen {
     /// whenever the size changes. RIS ends it.
     pub fn in_band_resize(&self) -> bool {
         self.in_band_resize
+    }
+    /// Colour-scheme change reports (`CSI ? 2031 h` / `l`), with
+    /// `Options::color_scheme_updates`: whether the program wants to hear
+    /// when the terminal's colours change between dark and light
+    /// (`references/modern/mode_2031_color_scheme_updates.md`). State
+    /// only: the host sends the reports. RIS ends it.
+    pub fn color_scheme_updates(&self) -> bool {
+        self.color_scheme_updates
     }
     /// The in-band resize report of the current size, pixels unknown.
     pub(crate) fn size_report(&self) -> Reply {
@@ -1359,6 +1371,7 @@ impl Screen {
                 self.bracketed_paste = false;
                 self.synchronized_output = false;
                 self.in_band_resize = false;
+                self.color_scheme_updates = false;
                 self.focus_reporting = false;
                 self.cursor_shape = 0;
                 self.mouse = MouseProtocolMode::None;
@@ -1466,6 +1479,7 @@ impl Screen {
             2004 => self.bracketed_paste,
             2026 => self.synchronized_output,
             2048 => self.in_band_resize,
+            2031 => self.color_scheme_updates,
             _ => return 0,
         };
         if set { 1 } else { 2 }
@@ -1616,6 +1630,12 @@ impl Screen {
                         if options.in_band_resize {
                             self.in_band_resize = byte == b'h';
                             report |= byte == b'h';
+                        }
+                        continue;
+                    }
+                    if *n == 2031 {
+                        if options.color_scheme_updates {
+                            self.color_scheme_updates = byte == b'h';
                         }
                         continue;
                     }

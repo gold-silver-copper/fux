@@ -18,7 +18,33 @@ use std::fmt::Write;
 
 /// The private modes `Screen::mode` keeps (fux-vt `src/screen.rs`).
 const MODES: &[u16] = &[
-    1, 6, 7, 9, 25, 47, 1000, 1002, 1003, 1004, 1005, 1006, 1047, 1048, 1049, 2004, 2026, 2048,
+    1, 6, 7, 9, 25, 47, 1000, 1002, 1003, 1004, 1005, 1006, 1047, 1048, 1049, 2004, 2026, 2031,
+    2048,
+];
+
+/// Sequences fux-vt reports as unhandled that fux answers itself, from
+/// what it knows as the host, and how.
+const HOST_ANSWERS: &[(&str, &str)] = &[
+    (
+        "CSI ? 996 n",
+        "reported as unhandled; fux answers with its client terminal's scheme (src/outer.rs)",
+    ),
+    (
+        "CSI 22;n t",
+        "reported as unhandled; fux's pane pushes its title (src/pane.rs)",
+    ),
+    (
+        "CSI 22;n;n t",
+        "reported as unhandled; fux's pane pushes its title (src/pane.rs)",
+    ),
+    (
+        "CSI 23;n t",
+        "reported as unhandled; fux's pane pops its title (src/pane.rs)",
+    ),
+    (
+        "CSI 23;n;n t",
+        "reported as unhandled; fux's pane pops its title (src/pane.rs)",
+    ),
 ];
 
 /// What fux-vt does with a sequence.
@@ -346,6 +372,7 @@ fn name(key: &str) -> String {
         ("CSI > 4;2 m", "XTMODKEYS: modifyOtherKeys 2"),
         ("CSI > 4; m", "XTMODKEYS: modifyOtherKeys reset"),
         ("CSI > 5 u", "kitty keyboard: push flags 5"),
+        ("CSI < 1 u", "kitty keyboard: pop flags"),
         ("CSI ? 7 h", "DECAWM, autowrap"),
         ("CSI ? 12 h", "blinking cursor (att610)"),
         ("CSI ? 12 l", "steady cursor (att610)"),
@@ -473,10 +500,12 @@ fn csi(params: &[u8], intermediates: &[u8], action: u8, heard: &Heard) -> Vec<(S
             (None, 't') => keep_first(rest),
             _ => numbers_as_n(rest),
         };
-        return vec![(
-            format!("CSI {lead}{}{tail}", spaced(&shown)),
-            Does::Unhandled,
-        )];
+        let key = format!("CSI {lead}{}{tail}", spaced(&shown));
+        let does = HOST_ANSWERS
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map_or(Does::Unhandled, |(_, how)| Does::Implemented(how));
+        return vec![(key, does)];
     }
     if !heard.replies.is_empty() {
         return vec![(format!("CSI {lead}{}{tail}", spaced(rest)), answered())];
@@ -501,6 +530,11 @@ fn csi(params: &[u8], intermediates: &[u8], action: u8, heard: &Heard) -> Vec<(S
         (None, 'q', " ") => vec![(
             format!("CSI {}{tail}", spaced(&numbers_as_n(rest))),
             Does::Implemented("the cursor style is kept"),
+        )],
+        // The kitty keyboard protocol and modifyOtherKeys, their numbers kept.
+        (Some('<' | '>' | '='), 'u', "") | (Some('>'), 'm', "") => vec![(
+            format!("CSI {lead}{}{tail}", spaced(rest)),
+            Does::Implemented("tracked; fux encodes keys as it asks (src/encode.rs)"),
         )],
         _ => vec![(
             format!("CSI {lead}{}{tail}", spaced(&numbers_as_n(rest))),
@@ -551,6 +585,9 @@ fn osc(body: &[u8]) -> (String, Does) {
     let does = match number {
         "0" | "1" | "2" => Does::Implemented("an event; fux sets the pane title"),
         "52" if rest.ends_with('?') => Does::Ignored("a query, dropped unanswered"),
+        "10" | "11" if rest == "?" => Does::Implemented(
+            "a ColorQuery event; fux answers with its client terminal's colour (src/outer.rs)",
+        ),
         "52" => Does::Implemented("a clipboard event"),
         "8" if key == "OSC 8 (close)" => Does::Implemented("ends the open hyperlink"),
         "8" => Does::Implemented("opens a hyperlink, which the cells printed keep (Row::link)"),
@@ -685,13 +722,8 @@ struct Row {
 fn tally(recordings: &[Recording]) -> Result<BTreeMap<String, Row>, String> {
     let mut rows: BTreeMap<String, Row> = BTreeMap::new();
     for r in recordings {
-        // As fux's panes are set up (src/pane.rs).
-        let options = fux_vt::Options::new()
-            .with_events(true)
-            .with_mode_reports(true)
-            .with_in_band_resize(true)
-            .with_hyperlinks(true)
-            .with_prompt_marks(true);
+        // As fux's panes are set up.
+        let options = fux::pane::OPTIONS;
         let mut parser = fux_vt::Parser::with_options(r.rows, r.cols, 10_000, options)
             .map_err(|e| format!("fux-vt: {e}"))?;
         let bytes = r.bytes();
@@ -786,8 +818,9 @@ pub fn run(names: &[String]) -> Result<bool, String> {
          SGR attribute is a row of its own, and an XTGETTCAP request shows the \
          capabilities it asks for. \"Count\" counts every time it was sent, in all the \
          recordings. \"fux-vt\" is what a fux pane's parser does with it, as fux sets \
-         it up (`Options::new().with_events(true).with_mode_reports(true).with_in_band_resize(true)\
-         .with_hyperlinks(true).with_prompt_marks(true)`).\n"
+         it up (`fux::pane::OPTIONS`: events, DECRQM, in-band resize, the size query, \
+         colour-scheme reports, the kitty keyboard protocol, hyperlinks, prompt marks and \
+         fux's identity), with what fux itself answers.\n"
     );
     let _ = writeln!(out, "Recordings:\n");
     for r in &recordings {

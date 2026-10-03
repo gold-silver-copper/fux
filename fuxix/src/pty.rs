@@ -38,6 +38,15 @@ fn at(call: &'static str) -> impl FnOnce(Errno) -> Error {
 ///   (errno -6). So the master is opened by one thread of the process at a
 ///   time, and retried on that code; if the retries run out, the error is
 ///   `AGAIN`.
+/// - An open can fail with `ENXIO` while another process closes a PTY. The
+///   clone picks the number one past the end of the kernel's table when no
+///   slot is free (`ptmx_clone`, whose own comment flags the race). If a
+///   close frees a slot before the open goes on, the table is not grown, and
+///   the number is out of range (`ptmx_get_ioctl`, xnu `bsd/kern/tty_ptmx.c`).
+///   The same `ENXIO` is also what every PTY being in use gives, so it is
+///   retried as `EREDRIVEOPEN` is, within the same bound, and if it lasts it
+///   is returned as it is. Seen once in fux's CI: 1 of 16 processes opening
+///   and closing PTYs at once.
 /// - A master can open with no replica node in `/dev`; `grantpt` on it then
 ///   never returns, as the kernel restarts it forever. So the replica is
 ///   looked up first, and `grantpt` is watched: a master without a replica,
@@ -255,10 +264,12 @@ fn open_master_serialized() -> crate::Result<(libc::c_int, bool)> {
 #[cfg(any(target_os = "macos", test))]
 const REDRIVE_TRIES: u32 = 8;
 
-/// `open`, called again while it fails with `EREDRIVEOPEN`, after `sleep`ing
-/// a millisecond longer each time; `AGAIN` if it still fails after
-/// `REDRIVE_TRIES` calls. Every other result, `INTR` included, is returned
-/// at once: this retries only the open the kernel meant to retry itself.
+/// `open`, called again while it fails with `EREDRIVEOPEN` or `ENXIO`, after
+/// `sleep`ing a millisecond longer each time. If it still fails after
+/// `REDRIVE_TRIES` calls: `AGAIN` for `EREDRIVEOPEN`, which no caller should
+/// see, and `ENXIO` as it is, which then means every PTY is in use. Every
+/// other result, `INTR` included, is returned at once: this retries only the
+/// races `open` documents.
 #[cfg(any(target_os = "macos", test))]
 fn redrive<T>(
     mut open: impl FnMut() -> crate::Result<T>,
@@ -267,9 +278,13 @@ fn redrive<T>(
     let mut tries: u32 = 1;
     loop {
         match open() {
-            Err(errno) if errno == Errno::REDRIVEOPEN => {
+            Err(errno) if errno == Errno::REDRIVEOPEN || errno == Errno::NXIO => {
                 if tries >= REDRIVE_TRIES {
-                    return Err(Errno::AGAIN);
+                    return Err(if errno == Errno::NXIO {
+                        Errno::NXIO
+                    } else {
+                        Errno::AGAIN
+                    });
                 }
                 sleep(std::time::Duration::from_millis(u64::from(tries)));
                 tries = tries.saturating_add(1);
@@ -412,6 +427,18 @@ mod tests {
             std::time::Duration::from_millis(28),
             "the documented worst case"
         );
+    }
+
+    /// ENXIO from a lost race with a close is retried; one that lasts, as
+    /// every PTY being in use does, is returned as ENXIO after the bound.
+    #[test]
+    fn an_open_lost_to_a_close_is_tried_again() {
+        let (result, calls, _) = redrive_script(&[Err(Errno::NXIO), Ok(5)]);
+        assert_eq!((result, calls), (Ok(5), 2));
+        let always = vec![Err(Errno::NXIO); usize::try_from(REDRIVE_TRIES).unwrap_or(0)];
+        let (result, calls, _) = redrive_script(&always);
+        assert_eq!(result, Err(Errno::NXIO), "not AGAIN: no PTY is free");
+        assert_eq!(calls, usize::try_from(REDRIVE_TRIES).unwrap_or(0));
     }
 
     #[test]

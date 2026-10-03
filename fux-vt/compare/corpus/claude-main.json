@@ -11,7 +11,7 @@
   ],
   "note": "onboarding done and the directory trusted, in HOME's .claude.json",
   "program": "claude-main",
-  "replies": "\\e[?1;2c",
+  "replies": "\\eP>|fux 0.17.0\\e\\\\\\e[?0u\\e[?62;22c\\e[?2026;2$y\\e[?1016;0$y\\e[?62;22c",
   "scrubbed": [],
   "size": [
     40,
@@ -19,15 +19,15 @@
   ],
   "steps": [
     {
-      "end": 2207,
+      "end": 2284,
       "keys": ""
     },
     {
-      "end": 2453,
+      "end": 2578,
       "keys": "\\x03"
     },
     {
-      "end": 2848,
+      "end": 3025,
       "keys": "\\x03"
     }
   ],

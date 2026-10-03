@@ -173,9 +173,68 @@ fn end_of(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     }
 }
 
+/// What fux tells programs it is: XTVERSION answers `fux` and its version,
+/// DA2 the version (`CSI > 1 ; Pv ; 0 c`), and DA1 a VT220-class terminal
+/// (`CSI ? 62 ; 22 c`). The user's decision, on the corpus's evidence:
+/// told it is fux, Claude Code asks for and uses synchronized output.
+pub const IDENTITY: fux_vt::Identity = fux_vt::Identity {
+    name: "fux",
+    version: env!("CARGO_PKG_VERSION"),
+};
+
+/// How every pane's terminal is set up: events (titles, colour queries),
+/// DECRQM, in-band resize, the size query, colour-scheme reports, the kitty
+/// keyboard protocol (fux encodes keys as each pane asks), hyperlinks,
+/// prompt marks and fux's identity.
+pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
+    .with_events(true)
+    .with_mode_reports(true)
+    .with_in_band_resize(true)
+    .with_size_reports(true)
+    .with_color_scheme_updates(true)
+    .with_kitty_keyboard(true)
+    .with_hyperlinks(true)
+    .with_prompt_marks(true)
+    .with_identity(Some(IDENTITY));
+
+/// The most titles a pane's program can push (`CSI 22 t`): xterm's bound.
+const TITLE_STACK: usize = 10;
+
+/// What a program did to its title, in order: set it, push it, pop it.
+enum TitleOp {
+    Set(String),
+    Push,
+    Pop,
+}
+
 struct Sink<'a> {
     replies: &'a mut Vec<u8>,
-    title: &'a mut Option<String>,
+    titles: &'a mut Vec<TitleOp>,
+    /// What colour queries are answered with (`outer`).
+    colours: &'a crate::outer::Colours,
+}
+
+impl Sink<'_> {
+    /// A colour query (OSC 10, 11), answered if the colour is known.
+    fn colour_query(&mut self, number: u8, bel: bool) {
+        if let Some(answer) = self.colours.answer(number, bel) {
+            fux_vt::Sink::reply(self, &answer);
+        }
+    }
+
+    /// `CSI ? 996 n`, the colour scheme asked for: answered if known.
+    fn scheme_query(&mut self, sequence: &fux_vt::Unhandled<'_>) {
+        if let fux_vt::Unhandled::Csi {
+            params,
+            intermediates: b"?",
+            action: b'n',
+        } = sequence
+            && params.groups().eq([&[996][..]])
+            && let Some(scheme) = self.colours.scheme
+        {
+            fux_vt::Sink::reply(self, scheme.report());
+        }
+    }
 }
 
 impl fux_vt::Sink for Sink<'_> {
@@ -190,13 +249,46 @@ impl fux_vt::Sink for Sink<'_> {
         }
     }
     fn event(&mut self, event: fux_vt::Event<'_>) {
-        if let fux_vt::Event::Title(title) = event {
-            let text: String = String::from_utf8_lossy(title)
-                .chars()
-                .filter(|c| !c.is_control())
-                .take(256)
-                .collect();
-            *self.title = Some(text);
+        match event {
+            fux_vt::Event::Title(title) => {
+                let text: String = String::from_utf8_lossy(title)
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(256)
+                    .collect();
+                self.titles.push(TitleOp::Set(text));
+            }
+            fux_vt::Event::ColorQuery { number, bel } => self.colour_query(number, bel),
+            // fux's clipboard policy: a program's OSC 52 is not taken.
+            fux_vt::Event::IconName(_)
+            | fux_vt::Event::Bell
+            | fux_vt::Event::Clipboard { .. }
+            | _ => {}
+        }
+    }
+    /// xterm's title stack (ctlseqs, window manipulation): `CSI 22 ; Ps t`
+    /// pushes the title, `CSI 23 ; Ps t` pops it, for Ps 0 (icon and
+    /// title, which are one here) or 2 (title); Ps 1, the icon alone, is
+    /// not a title. vim and tmux push on starting and pop on leaving. And
+    /// `CSI ? 996 n`, the colour scheme asked for.
+    fn unhandled(&mut self, sequence: fux_vt::Unhandled<'_>) {
+        self.scheme_query(&sequence);
+        let fux_vt::Unhandled::Csi {
+            params,
+            intermediates: b"",
+            action: b't',
+        } = sequence
+        else {
+            return;
+        };
+        let mut groups = params.groups();
+        let op = match groups.next() {
+            Some([22]) => TitleOp::Push,
+            Some([23]) => TitleOp::Pop,
+            _ => return,
+        };
+        if matches!(groups.next(), None | Some([] | [0] | [2])) {
+            self.titles.push(op);
         }
     }
 }
@@ -221,9 +313,14 @@ pub struct Pane {
     pub shell: String,
     /// A command line waiting to be typed into the shell.
     pub typed: Option<Typed>,
+    /// Titles the program pushed (`CSI 22 t`), to pop (`CSI 23 t`).
+    title_stack: VecDeque<String>,
     /// The output of a frame the program is drawing in synchronized output,
     /// from BSU on, and since when; see [`Pane::output`].
     frame: Option<(Vec<u8>, Instant)>,
+    /// What the program's colour queries are answered with, as the session
+    /// finds them before each read of output (`outer`).
+    pub colours: crate::outer::Colours,
 }
 
 /// After the shell's output has been quiet this long, it is taken to be
@@ -267,12 +364,10 @@ impl Pane {
     ) -> Result<Pane, Error> {
         // DECRQM answered: programs ask it whether synchronized output is
         // known before they use it. Hyperlinks kept, to paint them.
-        let options = fux_vt::Options::new()
-            .with_events(true)
-            .with_mode_reports(true)
-            .with_in_band_resize(true)
-            .with_hyperlinks(true)
-            .with_prompt_marks(true);
+        // Colour-scheme reports: the session sends them (`outer`). The kitty
+        // keyboard protocol and modifyOtherKeys: keys are encoded as each
+        // screen asks (`encode::key_bytes`). See `OPTIONS`.
+        let options = OPTIONS;
         let parser = fux_vt::Parser::with_options(rows.max(1), cols.max(1), history, options)
             .map_err(|source| Error::Terminal {
                 rows,
@@ -293,6 +388,8 @@ impl Pane {
             shell,
             typed: None,
             frame: None,
+            title_stack: VecDeque::new(),
+            colours: crate::outer::Colours::default(),
         })
     }
 
@@ -365,10 +462,11 @@ impl Pane {
     /// read if it stopped.
     fn feed(&mut self, bytes: &[u8], until_frame: bool) -> (bool, Option<usize>) {
         let mut replies = Vec::new();
-        let mut title = None;
+        let mut titles = Vec::new();
         let mut sink = Sink {
             replies: &mut replies,
-            title: &mut title,
+            titles: &mut titles,
+            colours: &self.colours,
         };
         // The parser refuses only allocations beyond its limits; the screen
         // stays as it was and output continues.
@@ -385,8 +483,21 @@ impl Pane {
             }
             rest = rest.get(taken..).unwrap_or_default();
         }
-        if let Some(title) = title {
-            self.title = title;
+        for op in titles {
+            match op {
+                TitleOp::Set(title) => self.title = title,
+                TitleOp::Push => {
+                    if self.title_stack.len() >= TITLE_STACK {
+                        self.title_stack.pop_front();
+                    }
+                    self.title_stack.push_back(self.title.clone());
+                }
+                TitleOp::Pop => {
+                    if let Some(title) = self.title_stack.pop_back() {
+                        self.title = title;
+                    }
+                }
+            }
         }
         if let Some(typed) = &mut self.typed {
             typed.last_output = Some(std::time::Instant::now());
@@ -580,6 +691,42 @@ mod tests {
         Ok(())
     }
 
+    /// A program's colour queries are answered with the colours the session
+    /// set, in the form asked (ctlseqs: `OSC 11 ; rgb:RRRR/GGGG/BBBB`, BEL or
+    /// ST as the query ended), in order with the other replies, so that
+    /// DA1 sent after a query as a sentinel comes after its answer; so is
+    /// `CSI ? 996 n`, with the scheme. What is not known is not answered.
+    #[test]
+    fn colour_queries_are_answered_from_the_session_s_colours() -> Result<(), Error> {
+        use crate::outer::{Colours, Rgb, Scheme};
+        let mut pane = pane()?;
+        pane.output(b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b[?996n\x1b[c");
+        assert_eq!(pane.input.drain_all(), b"\x1b[?62;22c", "nothing known");
+        pane.colours = Colours {
+            foreground: Some(Rgb {
+                r: 0xc0c0,
+                g: 0xc0c0,
+                b: 0xc0c0,
+            }),
+            background: Some(Rgb {
+                r: 0,
+                g: 0x1010,
+                b: 0xffff,
+            }),
+            scheme: Some(Scheme::Light),
+        };
+        pane.output(b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b[?996n\x1b[c\x1b]12;?\x07");
+        assert_eq!(
+            pane.input.drain_all(),
+            b"\x1b]11;rgb:0000/1010/ffff\x07\x1b]10;rgb:c0c0/c0c0/c0c0\x1b\\\x1b[?997;2n\x1b[?62;22c"
+        );
+        // DECRQM knows mode 2031, which the program sets.
+        pane.output(b"\x1b[?2031h\x1b[?2031$p");
+        assert!(pane.screen().color_scheme_updates());
+        assert_eq!(pane.input.drain_all(), b"\x1b[?2031;1$y");
+        Ok(())
+    }
+
     /// The first row's text, blanks as spaces, trimmed.
     fn first_row(pane: &Pane) -> String {
         let (_, cols) = pane.screen().size();
@@ -667,6 +814,31 @@ mod tests {
         assert_eq!(pane.input.drain_all(), b"\x1b[48;6;25;0;0t");
         pane.resize(6, 25);
         assert!(pane.input.drain_all().is_empty(), "the same size");
+        Ok(())
+    }
+
+    /// xterm's title stack: vim and tmux push the title on starting and pop
+    /// it on leaving, so the pane's title comes back. Ps 1 (the icon) is no
+    /// title; the stack keeps at most ten; a pop with none pushed changes
+    /// nothing.
+    #[test]
+    fn a_pushed_title_comes_back_when_popped() -> Result<(), Error> {
+        let mut pane = pane()?;
+        pane.output(b"\x1b]2;shell\x07\x1b[22;0t\x1b]2;vim\x07");
+        assert_eq!(pane.title, "vim");
+        pane.output(b"\x1b[23;0t");
+        assert_eq!(pane.title, "shell");
+        pane.output(b"\x1b[22;2t\x1b]2;tmux\x07\x1b[23;2t\x1b[23;0t");
+        assert_eq!(pane.title, "shell", "a pop with none left changes nothing");
+        pane.output(b"\x1b[22;1t\x1b]2;other\x07\x1b[23;1t");
+        assert_eq!(pane.title, "other", "the icon's stack is not the title's");
+        for n in 0..12 {
+            pane.output(format!("\x1b]2;t{n}\x07\x1b[22t").as_bytes());
+        }
+        for _ in 0..12 {
+            pane.output(b"\x1b[23t");
+        }
+        assert_eq!(pane.title, "t2", "ten kept: the first two pushes dropped");
         Ok(())
     }
 

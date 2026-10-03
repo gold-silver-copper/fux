@@ -12,7 +12,7 @@
   ],
   "note": "onboarding done and the directory trusted, in HOME's .claude.json",
   "program": "claude-ghostty",
-  "replies": "\\e[?1;2c",
+  "replies": "\\eP>|fux 0.17.0\\e\\\\\\e[?5u\\e[?62;22c\\e[?2026;2$y\\e[?1016;0$y\\e[?62;22c",
   "scrubbed": [],
   "size": [
     40,
@@ -20,15 +20,15 @@
   ],
   "steps": [
     {
-      "end": 2308,
+      "end": 2369,
       "keys": ""
     },
     {
-      "end": 2602,
+      "end": 2663,
       "keys": "\\x03"
     },
     {
-      "end": 3049,
+      "end": 3110,
       "keys": "\\x03"
     }
   ],

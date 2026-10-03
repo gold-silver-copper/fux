@@ -3,23 +3,20 @@ use crate::engine::{Engine, Setup};
 use crate::snapshot::{self, Cell, Color, Line, Snapshot, Style, Width};
 use fux_vt::{Blink, CellRef, Event, Identity, Options, Parser, Sink};
 
-/// How the parser is set up: as ratty sets it up (reflow, an identity, the
-/// kitty keyboard protocol), with events on so titles can be compared; or,
-/// with `reflow` off, as fux does.
+/// How the parser is set up: as ratty sets it up (reflow, an identity), with
+/// events on so titles can be compared; or, with `reflow` off, as fux does.
 pub fn options(reflow: bool) -> Options {
-    // DECRQM, in-band resize, hyperlinks and prompt marks as fux's panes
-    // have them (src/pane.rs).
-    Options::new()
-        .with_events(true)
-        .with_mode_reports(true)
-        .with_in_band_resize(true)
-        .with_hyperlinks(true)
-        .with_prompt_marks(true)
-        .with_kitty_keyboard(reflow)
+    // As fux's panes are set up (`fux::pane::OPTIONS`), with ratty's
+    // reflow and identity in its setup.
+    fux::pane::OPTIONS
         .with_reflow(reflow)
-        .with_identity(reflow.then_some(Identity {
-            name: "fux-vt-ghostty",
-            version: "0.0.0",
+        .with_identity(Some(if reflow {
+            Identity {
+                name: "fux-vt-ghostty",
+                version: "0.0.0",
+            }
+        } else {
+            fux::pane::IDENTITY
         }))
 }
 

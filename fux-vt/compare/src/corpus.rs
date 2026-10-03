@@ -4,7 +4,7 @@
 //!
 //! A recording is replayed as a case of its own size, one step for each
 //! step recorded: the program starting, then the output after each line
-//! of keys. fux-vt is set up as fux sets up a pane (no reflow, no kitty
+//! of keys. fux-vt is set up as fux sets up a pane (no reflow, the kitty
 //! keyboard protocol, no identity), as the program was recorded, with
 //! fux's 10000 rows of history. After each step the engines are compared
 //! with fux-vt field by field, as in `run`.
@@ -44,16 +44,7 @@ const CLAUDE_TITLE: &str = "Claude Code sets an empty title as it exits (OSC 0 ;
 pub const STATUSES: &[(&str, Status)] = &[
     ("bash", Status::Agree),
     ("claude", Status::Differs(CLAUDE_TITLE)),
-    (
-        "claude-ghostty",
-        Status::Differs(
-            "fux sets up its panes without the kitty keyboard protocol \
-             (Options::kitty_keyboard off: fux encodes keys itself), so Claude Code's push of \
-             flags 5 (CSI > 5 u, sent because TERM_PROGRAM says Ghostty) leaves fux-vt's \
-             flags at 0, where Ghostty, alacritty and wezterm keep 5 and outvote it; xterm \
-             cannot tell. Then the empty title at the end, as in claude.",
-        ),
-    ),
+    ("claude-ghostty", Status::Differs(CLAUDE_TITLE)),
     ("claude-main", Status::Differs(CLAUDE_TITLE)),
     ("delta-diff", Status::Agree),
     ("delta-log", Status::Agree),
