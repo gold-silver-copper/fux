@@ -640,7 +640,10 @@ mod tests {
         assert_eq!(case.steps.len(), 5);
         assert_eq!(case.steps.get(2), Some(&crate::case::Step::Resize(3, 8)));
         let recorded: Vec<Option<usize>> = (0..=5).map(|s| recording.recorded_step(s)).collect();
-        assert_eq!(recorded, [None, Some(0), Some(1), Some(2), Some(2), Some(3)]);
+        assert_eq!(
+            recorded,
+            [None, Some(0), Some(1), Some(2), Some(2), Some(3)]
+        );
         // Judged: before any step, after each but the resize itself.
         assert_eq!(recording.judged(), [true, true, true, false, true, true]);
     }
