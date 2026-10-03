@@ -266,11 +266,12 @@ impl Pane {
         history: usize,
     ) -> Result<Pane, Error> {
         // DECRQM answered: programs ask it whether synchronized output is
-        // known before they use it.
+        // known before they use it. Hyperlinks kept, to paint them.
         let options = fux_vt::Options::new()
             .with_events(true)
             .with_mode_reports(true)
-            .with_in_band_resize(true);
+            .with_in_band_resize(true)
+            .with_hyperlinks(true);
         let parser = fux_vt::Parser::with_options(rows.max(1), cols.max(1), history, options)
             .map_err(|source| Error::Terminal {
                 rows,

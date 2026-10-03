@@ -352,6 +352,11 @@ program that asks for in-band resize reports (`CSI ? 2048 h`) gets
 `CSI 48 ; rows ; cols ; 0 ; 0 t` whenever its pane's size changes, once its
 terminal has the new size.
 
+Hyperlinks a program prints (OSC 8: `ls --hyperlink`, gcc, delta, Claude
+Code) reach your terminal as links, each with an id of its pane's, so two
+panes' links never merge into one; a terminal that does not know OSC 8
+ignores them. Copy mode copies a link's text, not its URI.
+
 The previous, Bevy-based fux is kept at the tag `bevy-final`.
 
 ## Development
