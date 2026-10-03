@@ -1,6 +1,8 @@
+use crate::link::{Held, Pen};
 use crate::unicode::Cluster;
 use crate::{
-    Attributes, Blink, Cell, CellRef, Color, Error, Mark, Options, Reply, Row, RowId, Window,
+    Attributes, Blink, Cell, CellRef, Color, Error, Hyperlink, Mark, Options, Reply, Row, RowId,
+    Window,
     grid::{Grid, Scroll},
     parser::Parameters,
 };
@@ -256,6 +258,11 @@ pub struct Screen {
     application_keypad: bool,
     hide_cursor: bool,
     bracketed_paste: bool,
+    synchronized_output: bool,
+    in_band_resize: bool,
+    /// How many times synchronized output has been set, for
+    /// `Parser::process_until_frame`.
+    frames_begun: u64,
     focus_reporting: bool,
     cursor_shape: u16,
     mouse: MouseProtocolMode,
@@ -271,6 +278,14 @@ pub struct Screen {
     /// The character REP (`CSI b`) repeats: the last one printed that took
     /// a cell of its own, as long as nothing but printing came after it.
     repeat: Option<char>,
+    /// The hyperlink the program opened (OSC 8), which glyphs printed take.
+    link: Option<Pen>,
+    /// Whether a link was opened since the screen was made or reset: until
+    /// one is, no row has links, and printing, which asks this alone,
+    /// leaves the links be.
+    links_seen: bool,
+    /// The key the next link opened takes (`Hyperlink::key`).
+    next_link: u64,
 }
 
 #[cfg(test)]
@@ -353,6 +368,9 @@ impl Screen {
             application_keypad: false,
             hide_cursor: false,
             bracketed_paste: false,
+            synchronized_output: false,
+            in_band_resize: false,
+            frames_begun: 0,
             focus_reporting: false,
             cursor_shape: 0,
             mouse: MouseProtocolMode::None,
@@ -362,6 +380,9 @@ impl Screen {
             modify_other_keys: None,
             last_print: None,
             repeat: None,
+            link: None,
+            links_seen: false,
+            next_link: 1,
         })
     }
     fn grid(&self) -> &Grid {
@@ -427,6 +448,28 @@ impl Screen {
     /// Whether pastes are to be bracketed (`CSI ? 2004 h`).
     pub fn bracketed_paste(&self) -> bool {
         self.bracketed_paste
+    }
+    /// Synchronized output (`CSI ? 2026 h` / `l`): whether the program is
+    /// drawing a frame it wants shown whole, once it resets the mode
+    /// (`references/modern/mode_2026_synchronized_output.md`). State only:
+    /// holding the display is the host's to do. RIS, DECSTR and a resize
+    /// end it, as a resize does in Ghostty.
+    pub fn synchronized_output(&self) -> bool {
+        self.synchronized_output
+    }
+    /// In-band resize (`CSI ? 2048 h` / `l`), with
+    /// `Options::in_band_resize`: whether the program wants a size report
+    /// whenever the size changes. RIS ends it.
+    pub fn in_band_resize(&self) -> bool {
+        self.in_band_resize
+    }
+    /// The in-band resize report of the current size, pixels unknown.
+    pub(crate) fn size_report(&self) -> Reply {
+        let (rows, cols) = self.size();
+        Reply::of(format_args!("\x1b[48;{rows};{cols};0;0t"))
+    }
+    pub(crate) fn frames_begun(&self) -> u64 {
+        self.frames_begun
     }
     /// `CSI ? 1004 h` / `l` state: whether the program wants focus-in and
     /// focus-out reports. State only: fux-vt sends none.
@@ -522,6 +565,111 @@ impl Screen {
     pub fn cell(&self, row: u16, col: u16) -> Option<CellRef<'_>> {
         self.grid().cell(row, col)
     }
+    /// The hyperlink of the cell at `row`, `col` of the screen (see
+    /// [`Row::link`]). Always `None` without [`Options::hyperlinks`].
+    pub fn link(&self, row: u16, col: u16) -> Option<Hyperlink<'_>> {
+        self.grid().live_row(row)?.link(usize::from(col))
+    }
+    /// The hyperlink the program has open (`OSC 8 ; params ; URI ST`), which
+    /// glyphs printed now take: its URI and `id`.
+    pub fn hyperlink(&self) -> Option<(&str, Option<&str>)> {
+        self.link.as_ref().map(|pen| (&*pen.uri, pen.id.as_deref()))
+    }
+    /// Whether row `row` of the screen is where a prompt starts (see
+    /// [`Row::starts_prompt`]).
+    pub fn starts_prompt(&self, row: u16) -> bool {
+        self.grid().live_row(row).is_some_and(|r| r.starts_prompt())
+    }
+
+    /// OSC 8: opens the link `payload` names, or closes the open one
+    /// (`link::parse`). A link without an `id` is a link of its own each
+    /// time it is opened, as VTE makes it (the spec's "Hover underlining and
+    /// the `id` parameter").
+    pub(crate) fn hyperlink_osc(&mut self, payload: &[u8]) {
+        self.link = crate::link::parse(payload).and_then(|(uri, id)| {
+            let key = self.next_link;
+            // Keys never run out in practice: one a link opened.
+            self.next_link = key.checked_add(1)?;
+            Some(Pen {
+                uri: uri.into(),
+                id: id.map(Into::into),
+                key,
+                held: [Held::Pending; 2],
+            })
+        });
+        self.links_seen |= self.link.is_some();
+    }
+
+    /// Gives the cells `span` of row `row` of the grid shown the open link,
+    /// if `open`, or none: what printing glyphs there does to their links,
+    /// once a link has been opened (`links_seen`). Out of line, so that
+    /// printing, which never needs it until then, stays as it was.
+    #[inline(never)]
+    fn link_cells(&mut self, row: u16, span: std::ops::Range<usize>, open: bool) {
+        let link = if open { self.pen_link() } else { 0 };
+        let version = self.version;
+        self.grid_mut().set_link(row, span, link, version);
+    }
+
+    /// The number the open link has in the grid shown, held there the first
+    /// time a glyph is printed with it; 0 if no link is open, or the grid has
+    /// no room for it.
+    fn pen_link(&mut self) -> u16 {
+        let Some(pen) = &mut self.link else {
+            return 0;
+        };
+        let (grid, held) = if self.alternate_active {
+            (&mut self.alternate, &mut pen.held[1])
+        } else {
+            (&mut self.primary, &mut pen.held[0])
+        };
+        match *held {
+            Held::At(n) => n,
+            Held::Refused => 0,
+            Held::Pending => {
+                let n = grid.intern(&pen.uri, pen.id.as_ref(), pen.key, self.version);
+                *held = n.map_or(Held::Refused, Held::At);
+                n.unwrap_or(0)
+            }
+        }
+    }
+
+    /// OSC 133, semantic prompts (`references/modern/osc133_*`): `A`
+    /// marks the row a prompt starts on, after a fresh line, and `L` is the
+    /// fresh line alone: a new line unless the cursor is in the first
+    /// column, as the semantic prompt proposal and Ghostty have it. The
+    /// other commands (`B`, `C`, `D`, `P` and the rest) change nothing.
+    pub(crate) fn prompt_osc(&mut self, payload: &[u8]) -> Result<(), Error> {
+        let mut parts = payload.split(|b| *b == b';');
+        let command = parts.next().unwrap_or_default();
+        // P (explicit start of prompt) of the primary kind, `k=i` or none,
+        // marks where it is without a fresh line: shells send it in A's
+        // place (Ghostty's bash integration under ble.sh does). Right-side
+        // and continuation prompts (`k=r`, `k=c`, `k=s`) start none.
+        if command == b"P" {
+            let kind = parts.find_map(|option| option.strip_prefix(b"k="));
+            if kind.is_none_or(|k| k == b"i") {
+                let row = self.grid().cursor.0;
+                self.grid_mut().mark_prompt(row);
+            }
+            return Ok(());
+        }
+        // N is A that may first end the previous command, which fux-vt
+        // keeps no record of.
+        if !matches!(command, b"A" | b"N" | b"L") {
+            return Ok(());
+        }
+        // CR, then IND, as Ghostty does it.
+        if self.grid().cursor.1 != 0 {
+            self.control(b'\r')?;
+            self.linefeed()?;
+        }
+        if command != b"L" {
+            let row = self.grid().cursor.0;
+            self.grid_mut().mark_prompt(row);
+        }
+        Ok(())
+    }
     /// Whether row `row` of the screen is soft-wrapped: its line goes on in
     /// the next row.
     pub fn row_wrapped(&self, row: u16) -> bool {
@@ -605,6 +753,9 @@ impl Screen {
     }
 
     pub(crate) fn resize(&mut self, rows: u16, cols: u16, reflow: bool) -> Result<(), Error> {
+        // A frame drawn for the old size is no frame for the new one; as in
+        // Ghostty, any resize ends synchronized output.
+        self.synchronized_output = false;
         if self.size() == (rows, cols) {
             return Ok(());
         }
@@ -619,7 +770,11 @@ impl Screen {
         } else {
             self.primary.resized(rows, cols, &mut next, version)?
         };
-        let alternate = self.alternate.resized(rows, cols, &mut next, version)?;
+        let mut alternate = self.alternate.resized(rows, cols, &mut next, version)?;
+        let mut primary = primary;
+        // The cells' links keep their numbers, so the links go along.
+        primary.adopt_links(std::mem::take(&mut self.primary.links));
+        alternate.adopt_links(std::mem::take(&mut self.alternate.links));
         self.primary = primary;
         self.alternate = alternate;
         self.next_id = next;
@@ -750,11 +905,19 @@ impl Screen {
                 if g.cell(row, col).is_some_and(|c| c.is_wide_continuation()) {
                     col = col.saturating_sub(1);
                 }
+                // A blank cell takes a space for the mark to follow, and
+                // with it the open link, as a glyph printed there would.
+                let blank = g.cell(row, col).is_some_and(|c| !c.has_contents());
                 // A cell already holding all it can takes no more.
                 let end = col.saturating_add(1);
                 self.with_grid(|g, _, v| {
                     g.mutate_line(row, v, end, |line| line.append(usize::from(col), c))
                 });
+                // A mark dropped leaves the cell blank, its link unread.
+                if blank && self.links_seen {
+                    let at = usize::from(col);
+                    self.link_cells(row, at..at.saturating_add(1), true);
+                }
             }
             return Ok(());
         }
@@ -766,6 +929,11 @@ impl Screen {
         }
         let (row, col) = self.grid().cursor;
         let attributes = self.attributes;
+        // A narrow glyph over a wide one's first half leaves a space in its
+        // second, which no link printed.
+        let split = self.links_seen
+            && width == 1
+            && self.grid().cell(row, col).is_some_and(|c| c.is_wide());
         self.with_grid(|g, _, version| {
             g.mutate_row(row, version, col.saturating_add(width), |cells| {
                 let i = usize::from(col);
@@ -809,6 +977,15 @@ impl Screen {
             // Past the glyph; in the last column it waits there to wrap.
             g.advance_to(col.saturating_add(width));
         });
+        // The cells' links, after the cells, as `ascii` does them.
+        if self.links_seen {
+            let at = usize::from(col);
+            self.link_cells(row, at..at.saturating_add(usize::from(width)), true);
+            if split {
+                let next = at.saturating_add(1);
+                self.link_cells(row, next..next.saturating_add(1), false);
+            }
+        }
         self.last_print = Some(Printed::new((row, col), c));
         Ok(())
     }
@@ -997,8 +1174,8 @@ impl Screen {
             let span = usize::from(col)..usize::from(end);
             let simple = self
                 .grid()
-                .live_row(row)
-                .and_then(|r| r.cells.get(span.clone()))
+                .live_cells(row)
+                .get(span.clone())
                 .is_some_and(|cells| {
                     cells
                         .iter()
@@ -1031,6 +1208,11 @@ impl Screen {
                 });
                 g.advance_to(end);
             });
+            // The cells' links, after the cells: before, the call would make
+            // the write above load again what it had in hand.
+            if self.links_seen {
+                self.link_cells(row, usize::from(col)..usize::from(end), true);
+            }
             // The run's last glyph, which a mark or selector may join, and
             // REP repeats.
             self.last_print = end
@@ -1158,6 +1340,11 @@ impl Screen {
                     self.alternate = alternate;
                 }
                 self.next_id = next;
+                // No cell has a link now, and none is open.
+                self.link = None;
+                self.links_seen = false;
+                self.primary.reset_links();
+                self.alternate.reset_links();
                 self.alternate_active = false;
                 self.attributes = Attributes::default();
                 self.saved_attributes = Attributes::default();
@@ -1170,6 +1357,8 @@ impl Screen {
                 self.application_keypad = false;
                 self.hide_cursor = false;
                 self.bracketed_paste = false;
+                self.synchronized_output = false;
+                self.in_band_resize = false;
                 self.focus_reporting = false;
                 self.cursor_shape = 0;
                 self.mouse = MouseProtocolMode::None;
@@ -1196,6 +1385,9 @@ impl Screen {
     /// as in xterm.
     fn soft_reset(&mut self) {
         self.hide_cursor = false;
+        // Not in either table; ended so that `tput init` and `tput reset`,
+        // which send DECSTR, never leave a frame waiting.
+        self.synchronized_output = false;
         self.autowrap = true;
         self.insert = false;
         self.application_cursor = false;
@@ -1272,6 +1464,8 @@ impl Screen {
             1005 => self.encoding == MouseProtocolEncoding::Utf8,
             1006 => self.encoding == MouseProtocolEncoding::Sgr,
             2004 => self.bracketed_paste,
+            2026 => self.synchronized_output,
+            2048 => self.in_band_resize,
             _ => return 0,
         };
         if set { 1 } else { 2 }
@@ -1288,6 +1482,12 @@ impl Screen {
             7 => self.autowrap = set,
             25 => self.hide_cursor = !set,
             2004 => self.bracketed_paste = set,
+            2026 => {
+                self.synchronized_output = set;
+                if set {
+                    self.frames_begun = self.frames_begun.wrapping_add(1);
+                }
+            }
             1004 => self.focus_reporting = set,
             47 => self.switch_screen(set),
             // 1047: the alternate screen, cleared on leaving it (xterm's
@@ -1407,8 +1607,18 @@ impl Screen {
             return Ok(Dispatch::Unhandled);
         }
         if private && matches!(byte, b'h' | b'l') {
+            let mut report = false;
             for group in p.groups() {
                 if let [n] = group {
+                    // In-band resize, which sets off a report however often
+                    // it is set (references/modern/mode_2048_in_band_resize.md).
+                    if *n == 2048 {
+                        if options.in_band_resize {
+                            self.in_band_resize = byte == b'h';
+                            report |= byte == b'h';
+                        }
+                        continue;
+                    }
                     // A switch of screens leaves the printed cell behind.
                     if matches!(n, 47 | 1047 | 1049) {
                         self.break_cluster();
@@ -1416,7 +1626,11 @@ impl Screen {
                     self.mode(*n, byte == b'h')?;
                 }
             }
-            return Ok(Dispatch::Done);
+            return Ok(if report {
+                Dispatch::Reply(self.size_report())
+            } else {
+                Dispatch::Done
+            });
         }
         // SM and RM: IRM (4) alone of the ANSI modes.
         if !private && matches!(byte, b'h' | b'l') {
@@ -1547,6 +1761,11 @@ impl Screen {
                         for y in 0..g.rows.get() {
                             if (mode == 0 && y > row) || (mode == 1 && y < row) || mode == 2 {
                                 g.erase(y, 0, cols, a, v);
+                                // A row ED erases whole is no prompt's, as in
+                                // Ghostty; EL, and ED's part of the cursor's
+                                // row, leave the mark (a shell redrawing its
+                                // prompt erases from it).
+                                g.clear_prompt(y);
                             }
                         }
                     }

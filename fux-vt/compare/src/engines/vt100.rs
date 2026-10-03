@@ -67,6 +67,11 @@ pub const KIND: Kind = Kind {
         focus_reporting: false,
         kitty_keyboard_flags: false,
         reports: false,
+        synchronized_output: false,
+        in_band_resize: false,
+        link_uri: false,
+        link_group: false,
+        prompt: false,
         ..Can::ALL
     },
     panel: false,
@@ -137,6 +142,7 @@ fn cell(c: &vt100::Cell) -> Cell {
 fn line(s: &vt100::Screen, y: u16, cols: u16) -> Line {
     Line {
         unread_from: None,
+        prompt: false,
         cells: (0..cols)
             .map(|x| {
                 s.cell(y, x)
@@ -178,6 +184,8 @@ fn read(parser: &mut vt100::Parser<Heard>, history_rows: usize) -> Snapshot {
         application_cursor: s.application_cursor(),
         application_keypad: s.application_keypad(),
         bracketed_paste: s.bracketed_paste(),
+        synchronized_output: false,
+        in_band_resize: false,
         focus_reporting: false,
         kitty_keyboard_flags: 0,
         title,

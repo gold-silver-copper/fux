@@ -229,7 +229,14 @@ fn line(row: &wezterm_term::Line, cols: usize) -> Line {
         let wide = c.width() > 1;
         if let Some(slot) = cells.get_mut(x) {
             let width = if wide { Width::Wide } else { Width::Narrow };
-            *slot = Cell::new(c.str(), width, style(c.attrs()));
+            // Only the URI: a link is one by its URI and parameters
+            // (`Hyperlink`'s equality), so links without an id that share
+            // a URI are one, and which cells share a link is not read.
+            let link = c
+                .attrs()
+                .hyperlink()
+                .map(|l| (l.uri().to_owned(), String::new()));
+            *slot = Cell::new(c.str(), width, style(c.attrs())).linked(link);
         }
         if wide && let Some(slot) = cells.get_mut(x.saturating_add(1)) {
             *slot = Cell::new("", Width::Tail, Style::default());
@@ -237,6 +244,7 @@ fn line(row: &wezterm_term::Line, cols: usize) -> Line {
     }
     Line {
         unread_from: None,
+        prompt: false,
         cells,
         wrapped: row.last_cell_was_wrapped(),
     }
@@ -283,6 +291,10 @@ pub const KIND: Kind = Kind {
     about: "WezTerm's terminal model, wezterm-term, from git",
     can: Can {
         pending_wrap: false,
+        synchronized_output: false,
+        in_band_resize: false,
+        link_group: false,
+        prompt: false,
         ..Can::ALL
     },
     panel: true,
@@ -394,6 +406,7 @@ impl Engine for Wezterm {
             rows,
             Line {
                 unread_from: None,
+                prompt: false,
                 cells: vec![Cell::new("", Width::Narrow, Style::default()); cols],
                 wrapped: false,
             },
@@ -429,6 +442,8 @@ impl Engine for Wezterm {
             application_cursor: t.application_cursor_keys_enabled(),
             application_keypad: t.application_keypad_enabled(),
             bracketed_paste: t.bracketed_paste_enabled(),
+            synchronized_output: false,
+            in_band_resize: false,
             focus_reporting: t.focus_tracking_enabled(),
             kitty_keyboard_flags: kitty_flags(t)?,
             title,

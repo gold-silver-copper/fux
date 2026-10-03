@@ -3,6 +3,7 @@
 //! track, the title, cursor and status reports, and the text of the most
 //! recent history rows.
 use crate::engine::Can;
+use std::collections::HashMap;
 use std::fmt::Write;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +57,17 @@ pub enum Width {
     Tail,
 }
 
+/// A cell's hyperlink (OSC 8): its URI, and which link it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Link {
+    pub uri: String,
+    /// The engine's own name for the link, the same for every cell of one
+    /// link and for no other; empty if it cannot tell. Engines name links
+    /// their own ways, so names are not compared: which cells share one is
+    /// (see [`differences`]).
+    pub group: String,
+}
+
 /// A cell. A blank holds no text: a printed space reads as a blank, so the
 /// two terminals' ways of storing spaces are not compared.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,6 +75,7 @@ pub struct Cell {
     pub text: String,
     pub width: Width,
     pub style: Style,
+    pub link: Option<Link>,
 }
 
 impl Cell {
@@ -72,6 +85,7 @@ impl Cell {
                 text: String::new(),
                 width,
                 style: Style::default(),
+                link: None,
             },
             Width::Narrow | Width::Wide => Cell {
                 text: if text == " " {
@@ -81,8 +95,19 @@ impl Cell {
                 },
                 width,
                 style,
+                link: None,
             },
         }
+    }
+
+    /// The cell with a hyperlink: `uri`, and the engine's own name for the
+    /// link (see [`Link::group`]). The second half of a wide glyph has
+    /// none of its own, as it has no style.
+    pub fn linked(mut self, link: Option<(String, String)>) -> Cell {
+        if self.width != Width::Tail {
+            self.link = link.map(|(uri, group)| Link { uri, group });
+        }
+        self
     }
 }
 
@@ -90,6 +115,9 @@ impl Cell {
 pub struct Line {
     pub cells: Vec<Cell>,
     pub wrapped: bool,
+    /// Whether a prompt starts on the row: a shell marked it with
+    /// `OSC 133 ; A`.
+    pub prompt: bool,
     /// The first cell whose style the engine could not read, if any: from
     /// there on, only the text and width are compared (an xterm print stops
     /// at a row's last drawn cell).
@@ -118,7 +146,16 @@ impl Snapshot {
         let mut s = self.clone();
         for line in &mut s.screen {
             line.wrapped &= can.wrapped;
+            line.prompt &= can.prompt;
             for cell in &mut line.cells {
+                if !can.link_uri {
+                    cell.link = None;
+                }
+                if let Some(link) = &mut cell.link
+                    && !can.link_group
+                {
+                    link.group.clear();
+                }
                 let st = &mut cell.style;
                 for (keep, color) in [
                     (can.fg, &mut st.fg),
@@ -159,6 +196,8 @@ impl Snapshot {
             (can.application_keypad, &mut s.application_keypad),
             (can.bracketed_paste, &mut s.bracketed_paste),
             (can.focus_reporting, &mut s.focus_reporting),
+            (can.synchronized_output, &mut s.synchronized_output),
+            (can.in_band_resize, &mut s.in_band_resize),
         ] {
             *flag &= keep;
         }
@@ -198,6 +237,10 @@ pub struct Snapshot {
     pub application_keypad: bool,
     pub bracketed_paste: bool,
     pub focus_reporting: bool,
+    /// Synchronized output, mode 2026.
+    pub synchronized_output: bool,
+    /// In-band resize reports, mode 2048.
+    pub in_band_resize: bool,
     pub kitty_keyboard_flags: u8,
     pub title: String,
     /// Cursor position and status reports, in order: the replies both
@@ -259,7 +302,12 @@ pub enum Field {
     ApplicationKeypad,
     BracketedPaste,
     FocusReporting,
+    SynchronizedOutput,
+    InBandResize,
     Kitty,
+    Prompt,
+    LinkUri,
+    LinkGroup,
     Title,
     Reports,
     Wrapped,
@@ -295,7 +343,12 @@ impl Field {
             Field::ApplicationKeypad => can.application_keypad,
             Field::BracketedPaste => can.bracketed_paste,
             Field::FocusReporting => can.focus_reporting,
+            Field::SynchronizedOutput => can.synchronized_output,
+            Field::InBandResize => can.in_band_resize,
             Field::Kitty => can.kitty_keyboard_flags,
+            Field::Prompt => can.prompt,
+            Field::LinkUri => can.link_uri,
+            Field::LinkGroup => can.link_group,
             Field::Title => can.title,
             Field::Reports => can.reports,
             Field::Wrapped => can.wrapped,
@@ -369,7 +422,7 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
         format!("{:?}", fux.cursor),
         format!("{:?}", other.cursor),
     );
-    let flags: [Mode; 9] = [
+    let flags: [Mode; 11] = [
         ("pending wrap", Field::PendingWrap, |s| s.pending_wrap),
         ("cursor visible", Field::CursorVisible, |s| s.cursor_visible),
         ("autowrap", Field::Autowrap, |s| s.autowrap),
@@ -387,6 +440,10 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
         ("focus reporting", Field::FocusReporting, |s| {
             s.focus_reporting
         }),
+        ("synchronized output", Field::SynchronizedOutput, |s| {
+            s.synchronized_output
+        }),
+        ("in-band resize", Field::InBandResize, |s| s.in_band_resize),
     ];
     for (name, f, get) in flags {
         field(name.into(), f, get(fux).to_string(), get(other).to_string());
@@ -414,6 +471,12 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
         format!("{:?}", fux.reports),
         format!("{:?}", other.reports),
     );
+    // Which cells share a link, compared among the cells both give a link
+    // with the same URI (a cell where they differ on it differs on its
+    // URI): each such cell's link is named, in each snapshot, by the first
+    // such cell in reading order that has the same link.
+    let mut fux_firsts: HashMap<&str, (usize, usize)> = HashMap::new();
+    let mut other_firsts: HashMap<&str, (usize, usize)> = HashMap::new();
     for (y, (a, b)) in fux.screen.iter().zip(&other.screen).enumerate() {
         field(
             format!("row {y} soft-wrapped"),
@@ -421,7 +484,20 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
             a.wrapped.to_string(),
             b.wrapped.to_string(),
         );
+        field(
+            format!("row {y} starts a prompt"),
+            Field::Prompt,
+            a.prompt.to_string(),
+            b.prompt.to_string(),
+        );
         for (x, (ca, cb)) in a.cells.iter().zip(&b.cells).enumerate() {
+            let shared = match (&ca.link, &cb.link) {
+                (Some(la), Some(lb)) if la.uri == lb.uri => Some((
+                    *fux_firsts.entry(la.group.as_str()).or_insert((y, x)),
+                    *other_firsts.entry(lb.group.as_str()).or_insert((y, x)),
+                )),
+                _ => None,
+            };
             if ca == cb {
                 continue;
             }
@@ -440,6 +516,21 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
                 format!("{:?}", ca.width),
                 format!("{:?}", cb.width),
             );
+            let (la, lb) = (ca.link.as_ref(), cb.link.as_ref());
+            field(
+                at("link"),
+                Field::LinkUri,
+                format!("{:?}", la.map(|l| &l.uri)),
+                format!("{:?}", lb.map(|l| &l.uri)),
+            );
+            if let Some((fa, fb)) = shared {
+                field(
+                    at("link's first cell"),
+                    Field::LinkGroup,
+                    format!("{fa:?}"),
+                    format!("{fb:?}"),
+                );
+            }
             if !styled {
                 continue;
             }
@@ -537,6 +628,68 @@ pub fn side_by_side(fux: &Snapshot, other: &Snapshot, engine: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{Cell, Field, Line, Snapshot, Style, Width};
+
+    fn row(links: &[Option<(&str, &str)>]) -> Snapshot {
+        let cells = links
+            .iter()
+            .map(|l| {
+                Cell::new("x", Width::Narrow, Style::default())
+                    .linked(l.map(|(uri, name)| (uri.to_owned(), name.to_owned())))
+            })
+            .collect();
+        Snapshot {
+            rows: 1,
+            cols: u16::try_from(links.len()).unwrap_or(0),
+            screen: vec![Line {
+                cells,
+                wrapped: false,
+                prompt: false,
+                unread_from: None,
+            }],
+            ..Snapshot::default()
+        }
+    }
+
+    fn fields(a: &Snapshot, b: &Snapshot) -> Vec<(String, Field)> {
+        super::differences(a, b)
+            .into_iter()
+            .map(|d| (d.key, d.field))
+            .collect()
+    }
+
+    /// Links are told apart by which cells share one, not by the engines'
+    /// names for them, and only among the cells both link to one URI.
+    #[test]
+    fn links_compare_by_the_cells_they_share() {
+        let (u, v) = (Some(("u", "1")), Some(("u", "2")));
+        let fux = row(&[u, u, v, v]);
+        // Other names, the same links.
+        let same = row(&[
+            Some(("u", "a")),
+            Some(("u", "a")),
+            Some(("u", "b")),
+            Some(("u", "b")),
+        ]);
+        assert_eq!(fields(&fux, &same), []);
+        // The two links made one.
+        let merged = row(&[Some(("u", "a")); 4]);
+        assert_eq!(
+            fields(&fux, &merged),
+            [
+                ("cell (0,2) link's first cell".to_owned(), Field::LinkGroup),
+                ("cell (0,3) link's first cell".to_owned(), Field::LinkGroup),
+            ]
+        );
+        // A cell without the link differs on its URI alone: the cells after
+        // it still share their link.
+        let shorter = row(&[None, Some(("u", "a")), Some(("u", "b")), Some(("u", "b"))]);
+        assert_eq!(
+            fields(&fux, &shorter),
+            [("cell (0,0) link".to_owned(), Field::LinkUri)]
+        );
+    }
+
     #[test]
     fn reports_keep_cursor_and_status_replies_only() {
         let bytes = b"\x1b[3;4R\x1b[0n\x1b[?1;2c\x1b[?62;22c\x1b[5;1Rjunk\x1b[3n";

@@ -134,8 +134,8 @@ typed) and the keys that act now, and on the right the cursor's line in the
 history.
 
 Like the keys after the prefix, copy mode's keys are letters, in either case,
-without Ctrl or Alt; the arrows, PageUp/PageDown, Home, End, Enter and Esc
-also work.
+and the brackets, without Ctrl or Alt; the arrows, PageUp/PageDown, Home, End,
+Enter and Esc also work.
 
 | Keys | Do |
 | --- | --- |
@@ -145,13 +145,17 @@ also work.
 | `u` / `d`, PageUp / PageDown | half a page / a page, up or down |
 | `t` / `z` | top of the history / the live bottom |
 | `f` / `r`, then `n` / `p` | search forward / back; the next match, the previous |
+| `[` / `]` | the previous / next prompt, at the top of the view with its output below |
 | `v` / `s` / `x` | select characters / lines / a block; again to clear |
 | `o` | swap the selection's ends |
 | `y` or Enter | copy and leave |
 | `q` or Esc | leave without copying |
 
 Search is literal (not a regular expression) over the whole history, and
-ignores case unless the query has a capital letter. A selection keeps wide
+ignores case unless the query has a capital letter. `[` and `]` find the
+prompts a shell marks with `OSC 133 ; A`: fish does, and zsh and bash do
+with a terminal's shell integration script (Ghostty's, kitty's, WezTerm's
+or iTerm2's). A selection keeps wide
 characters and combining marks whole, joins soft-wrapped lines without an
 invented newline, and trims trailing blanks. One copy is at most 262,144
 cells.
@@ -169,6 +173,11 @@ Every command runs from the command line (`fux COMMAND …`), from a key
 binding, from the command prompt, and, for `set`/`bind`/`unbind`, from the config
 file. Targets: a pane is `%N`, a tab `@N`, a workspace `+N` or its name (`$N`
 is avoided because the shell would expand it). A client is `cN`.
+
+Inside a pane, `TERM` is `xterm-256color`, `TERM_PROGRAM` is `fux` and
+`TERM_PROGRAM_VERSION` fux's version, whatever the terminal fux runs in sets
+(programs read `TERM_PROGRAM` to guess which terminal they talk to, as they
+would in tmux, which sets its own).
 
 Inside a pane, `FUX_PANE` names it and `FUX_SOCKET` names the server, so
 commands there target that pane without `-t`. A command that needs a target
@@ -337,6 +346,20 @@ there, and the server paints each client's screen from a cell grid, sending
 only what changed, at most once per 16 ms, inside synchronized output. A
 client that stops reading gets nothing more queued until it catches up, then
 one full repaint.
+
+A program can draw in synchronized output too (`CSI ? 2026 h` … `l`, which
+neovim, helix and lazygit use): its pane holds the frame's output until the
+frame ends, so clients are never shown half of one, and answers DECRQM so
+the program knows it may. A frame is shown anyway after a second, or past
+2 MiB, so a program that stops mid-frame does not freeze its pane. A
+program that asks for in-band resize reports (`CSI ? 2048 h`) gets
+`CSI 48 ; rows ; cols ; 0 ; 0 t` whenever its pane's size changes, once its
+terminal has the new size.
+
+Hyperlinks a program prints (OSC 8: `ls --hyperlink`, gcc, delta, Claude
+Code) reach your terminal as links, each with an id of its pane's, so two
+panes' links never merge into one; a terminal that does not know OSC 8
+ignores them. Copy mode copies a link's text, not its URI.
 
 The previous, Bevy-based fux is kept at the tag `bevy-final`.
 

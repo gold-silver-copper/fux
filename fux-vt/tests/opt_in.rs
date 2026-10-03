@@ -1,5 +1,6 @@
-//! Opt-in outputs: `Options::events` (OSC 0/1/2/52 and BEL) and
-//! `Options::extended_replies` (DECRQM, DECXCPR, secondary DA). The default must
+//! Opt-in outputs: `Options::events` (OSC 0/1/2/52 and BEL),
+//! `Options::extended_replies` (DECRQM, DECXCPR, secondary DA) and
+//! `Options::mode_reports` (DECRQM alone). The default must
 //! stay fux's policy: no events and the original reply set.
 
 use fux_vt::{Attributes, Cell, Cells, Color, Event, OSC_PAYLOAD_LIMIT, Options, Parser, Sink};
@@ -154,6 +155,130 @@ fn extended_replies_answer_decrqm_decxcpr_and_secondary_da() -> Result {
         record.replies,
         [&b"\x1b[?1;2c"[..], b"\x1b[0n"].map(<[u8]>::to_vec)
     );
+    Ok(())
+}
+
+/// `Options::mode_reports` answers DECRQM, and nothing else the extended
+/// replies would: no DA2, no DECXCPR. Synchronized output (2026) is how
+/// programs use it: they ask whether the terminal knows the mode
+/// (`references/modern/mode_2026_synchronized_output.md`, "Feature
+/// detection") before wrapping frames in it.
+#[test]
+fn mode_reports_answer_decrqm_alone() -> Result {
+    const MODES: Options = Options::new().with_mode_reports(true);
+    let record = run(
+        MODES,
+        b"\x1b[?2026$p\x1b[?2026h\x1b[?2026$p\x1b[?2026l\x1b[?2026$p\x1b[4$p\x1b[>c\x1b[?6n",
+    )?;
+    let expected: [&[u8]; 4] = [
+        b"\x1b[?2026;2$y",
+        b"\x1b[?2026;1$y",
+        b"\x1b[?2026;2$y",
+        b"\x1b[4;2$y",
+    ];
+    assert_eq!(record.replies, expected.map(<[u8]>::to_vec));
+    // Without it, no DECRQM answer.
+    assert!(
+        run(Options::new(), b"\x1b[?2026$p\x1b[4$p")?
+            .replies
+            .is_empty()
+    );
+    Ok(())
+}
+
+/// Synchronized output is state the host reads: set and reset by the
+/// program, and ended by RIS, by DECSTR (so that `tput init` and
+/// `tput reset` never leave a frame waiting) and by any resize, as in
+/// Ghostty.
+#[test]
+fn synchronized_output_is_tracked_and_ended() -> Result {
+    let mut p = Parser::new(4, 10, 0)?;
+    assert!(!p.screen().synchronized_output());
+    p.process(b"\x1b[?2026h")?;
+    assert!(p.screen().synchronized_output());
+    p.process(b"\x1b[?2026l")?;
+    assert!(!p.screen().synchronized_output());
+    for (then, what) in [(&b"\x1bc"[..], "RIS"), (b"\x1b[!p", "DECSTR")] {
+        p.process(b"\x1b[?2026h")?;
+        p.process(then)?;
+        assert!(!p.screen().synchronized_output(), "{what}");
+    }
+    p.process(b"\x1b[?2026h")?;
+    p.resize(4, 10)?;
+    assert!(
+        !p.screen().synchronized_output(),
+        "a resize to the same size"
+    );
+    p.process(b"\x1b[?2026h")?;
+    p.resize(5, 12)?;
+    assert!(!p.screen().synchronized_output(), "a resize");
+    Ok(())
+}
+
+/// `Parser::process_until_frame` stops right after the sequence that sets
+/// synchronized output, wherever it is: alone, beside other modes, or split
+/// across calls; and reads everything when none does.
+#[test]
+fn process_until_frame_stops_after_the_sequence_that_sets_2026() -> Result {
+    let mut p = Parser::new(2, 20, 0)?;
+    let mut sink = Record::default();
+    assert_eq!(
+        p.process_until_frame(b"ab\x1b[?2026hcd", &mut sink)?,
+        Some(10)
+    );
+    assert_eq!(p.process_until_frame(b"\x1b[?2026l", &mut sink)?, None);
+    assert_eq!(
+        p.process_until_frame(b"\x1b[?25;2026h!", &mut sink)?,
+        Some(11)
+    );
+    p.process(b"\x1b[?2026l")?;
+    assert_eq!(p.process_until_frame(b"x\x1b[?20", &mut sink)?, None);
+    assert_eq!(p.process_until_frame(b"26hy", &mut sink)?, Some(3));
+    // Set again while set: each set begins a frame.
+    assert_eq!(p.process_until_frame(b"\x1b[?2026h", &mut sink)?, Some(8));
+    assert_eq!(p.process_until_frame(b"plain text\r\n", &mut sink)?, None);
+    Ok(())
+}
+
+/// In-band resize (`references/modern/mode_2048_in_band_resize.md`): with
+/// `Options::in_band_resize`, setting mode 2048 reports the size at once,
+/// every time it is set; DECRQM reports the mode; `Parser::resize_report`
+/// gives the report for the new size after a resize while it is set; RIS
+/// ends it. Without the option the mode is not recognized, as DECRQM says.
+#[test]
+fn in_band_resize_reports_the_size() -> Result {
+    let options = Options::new()
+        .with_mode_reports(true)
+        .with_in_band_resize(true);
+    let mut p = Parser::with_options(24, 80, 0, options)?;
+    let mut record = Record::default();
+    p.process_with(
+        b"\x1b[?2048$p\x1b[?2048h\x1b[?2048$p\x1b[?2048h\x1b[?2048;25h",
+        &mut record,
+    )?;
+    let expected: [&[u8]; 5] = [
+        b"\x1b[?2048;2$y",
+        b"\x1b[48;24;80;0;0t",
+        b"\x1b[?2048;1$y",
+        b"\x1b[48;24;80;0;0t",
+        b"\x1b[48;24;80;0;0t",
+    ];
+    assert_eq!(record.replies, expected.map(<[u8]>::to_vec));
+    p.resize(30, 100)?;
+    assert_eq!(
+        p.resize_report().as_deref(),
+        Some(&b"\x1b[48;30;100;0;0t"[..])
+    );
+    p.process(b"\x1b[?2048l")?;
+    assert_eq!(p.resize_report(), None, "reset");
+    p.process(b"\x1b[?2048h\x1bc")?;
+    assert_eq!(p.resize_report(), None, "RIS");
+    // Without the option: not recognized, no report.
+    let mut p = Parser::with_options(24, 80, 0, Options::new().with_mode_reports(true))?;
+    let mut record = Record::default();
+    p.process_with(b"\x1b[?2048h\x1b[?2048$p", &mut record)?;
+    assert_eq!(record.replies, [b"\x1b[?2048;0$y".to_vec()]);
+    assert_eq!(p.resize_report(), None);
     Ok(())
 }
 

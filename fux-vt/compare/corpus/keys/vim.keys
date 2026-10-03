@@ -1,0 +1,26 @@
+# vim on a Rust file, syntax on: move, scroll, search, visual mode, a
+# split, spell checking (undercurl), quit.
+!start 1500
+j
+j
+5j
+\x04
+\x04
+\x15
+G
+gg
+/fn \r
+n
+n
+*
+V
+j
+j
+\e
+:split\r
+\x17j
+\x17k
+:set spell\r
+\x04
+:q\r
+:q!\r

@@ -1197,6 +1197,36 @@ impl Session {
             return;
         };
         let dropped = pane.output(bytes);
+        self.read_into(id, dropped);
+    }
+
+    /// Reads the frames held past their timeout (see `Pane::output`).
+    pub fn release_frames(&mut self, now: Instant) {
+        let due: Vec<PaneId> = self
+            .panes
+            .values()
+            .filter(|p| p.frame_deadline().is_some_and(|d| d <= now))
+            .map(|p| p.id)
+            .collect();
+        for id in due {
+            if let Some(pane) = self.panes.get_mut(&id) {
+                let dropped = pane.release_frame();
+                self.read_into(id, dropped);
+            }
+        }
+    }
+
+    /// The next moment a held frame is read anyway, for the poll timeout.
+    pub fn next_frame_release(&self) -> Option<Instant> {
+        self.panes
+            .values()
+            .filter_map(crate::pane::Pane::frame_deadline)
+            .min()
+    }
+
+    /// After output was read into pane `id`'s screen: the views showing it
+    /// repaint, and are told if a reply was `dropped`.
+    fn read_into(&mut self, id: PaneId, dropped: bool) {
         let place = self.locate(id);
         self.unsettled |= self
             .views

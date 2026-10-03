@@ -83,6 +83,11 @@ pub const KIND: Kind = Kind {
         kitty_keyboard_flags: false,
         title: false,
         reports: false,
+        synchronized_output: false,
+        in_band_resize: false,
+        link_uri: false,
+        link_group: false,
+        prompt: false,
         ..Can::ALL
     },
     panel: true,
@@ -145,6 +150,7 @@ fn line(l: &avt::Line, cols: usize) -> Line {
     cells.resize(cols, Cell::new("", Width::Narrow, Style::default()));
     Line {
         unread_from: None,
+        prompt: false,
         cells,
         wrapped: format!("{l:?}") != format!("{:?}", l.text()),
     }
@@ -232,6 +238,8 @@ impl Engine for Avt {
             application_cursor: self.vt.cursor_key_app_mode(),
             application_keypad: false,
             bracketed_paste: false,
+            synchronized_output: false,
+            in_band_resize: false,
             focus_reporting: false,
             kitty_keyboard_flags: 0,
             title: String::new(),

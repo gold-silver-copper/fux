@@ -1,0 +1,19 @@
+# zsh's line editor (ZLE), emacs keys: type, move, fix a word, run;
+# complete with Tab; history up; Ctrl-R search; Ctrl-U; exit.
+!start 1500
+echo hello wrld
+\x02\x02\x02
+o
+\x01
+\x05
+\r
+ls \t
+\t
+\x15
+cat Ca\t
+\r
+\e[A
+\x15
+\x12hello
+\r
+exit\r

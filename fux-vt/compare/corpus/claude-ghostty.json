@@ -1,0 +1,36 @@
+{
+  "command": [
+    "claude"
+  ],
+  "env": [
+    "PATH=/tmp/fux-corpus/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "HOME=/tmp/fux-corpus/home",
+    "LANG=en_US.UTF-8",
+    "COLORTERM=truecolor",
+    "DISABLE_AUTOUPDATER=1",
+    "TERM_PROGRAM=ghostty"
+  ],
+  "note": "onboarding done and the directory trusted, in HOME's .claude.json",
+  "program": "claude-ghostty",
+  "replies": "\\e[?1;2c",
+  "scrubbed": [],
+  "size": [
+    40,
+    120
+  ],
+  "steps": [
+    {
+      "end": 2308,
+      "keys": ""
+    },
+    {
+      "end": 2602,
+      "keys": "\\x03"
+    },
+    {
+      "end": 3049,
+      "keys": "\\x03"
+    }
+  ],
+  "version": "Claude Code 2.1.288 (Claude Code)"
+}

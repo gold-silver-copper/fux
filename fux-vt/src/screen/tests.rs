@@ -115,3 +115,56 @@ fn cells_past_a_rows_used_mark_stay_blank() -> Result<(), Error> {
     }
     Ok(())
 }
+
+/// The links each grid counts are those its rows have, whatever the rows
+/// went through: printing over links, inserting and deleting characters,
+/// erasing, scrolling into and out of history, both screens, resizes with
+/// and without reflow, and making room when the links fill their bounds;
+/// and no row has the number of a link the grid let go.
+#[test]
+fn link_counts_follow_the_rows() -> Result<(), Error> {
+    let check = |p: &crate::Parser, step: &str| {
+        let s = p.screen();
+        for grid in [&s.primary, &s.alternate] {
+            let (kept, counted, held) = grid.link_counts();
+            assert_eq!(kept, counted, "after {step}");
+            assert!(held, "after {step}");
+        }
+    };
+    let long: String = std::iter::repeat_n('u', 2000).collect();
+    for reflow in [false, true] {
+        let options = crate::Options::new()
+            .with_hyperlinks(true)
+            .with_reflow(reflow);
+        let mut p = crate::Parser::with_options(4, 10, 6, options)?;
+        let steps: [&[u8]; 12] = [
+            b"\x1b]8;;a\x07abc\x1b]8;id=x;b\x07de\x1b]8;;\x07f\r\n",
+            b"\x1b]8;;c\x07ghij\x1b[1;2H\x1b[2@\x1b[3P",
+            b"\x1b[1;1Hx\x1b]8;;d\x07yz\x1b[K",
+            b"\x1b[4h\x1b]8;id=x;b\x07ins\x1b[4l\r\n",
+            b"\x1b[2J\x1b[H\x1b]8;;e\x07one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix",
+            b"\x1b]8;;f\x07\x1b[?1049hmore\x1b[?1049l",
+            b"\x1b[2;3r\x1b[2;1H\x1b[L\x1b[M\x1b[r",
+            "界e\u{301}\x1b[C\u{301}".as_bytes(),
+            b"\x1b]8;;\x07plain\r\n\r\n\r\n\r\n\r\n\r\n\r\n",
+            b"\x1b]8;;g\x07wrapping past the edge\r\n",
+            b"\x1b[3;1H\x1b[J",
+            b"\x1bc\x1b]8;;h\x07after",
+        ];
+        for (i, step) in steps.iter().enumerate() {
+            p.process(step)?;
+            check(&p, &format!("step {i}"));
+            p.resize(3, 7)?;
+            check(&p, &format!("step {i}, narrower"));
+            p.resize(4, 10)?;
+            check(&p, &format!("step {i}, back"));
+        }
+        // More links than fit: room is made, history first.
+        for n in 0..2200 {
+            p.process(format!("\x1b]8;;{long}{n}\x07x\x1b]8;;\x07\r\n").as_bytes())?;
+        }
+        check(&p, "filling the links");
+        assert!(p.screen().primary.links.len() < 2200);
+    }
+    Ok(())
+}

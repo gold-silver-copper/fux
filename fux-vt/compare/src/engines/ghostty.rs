@@ -1,7 +1,7 @@
 //! Ghostty's terminal core (libghostty-vt), read into a snapshot.
 use crate::engine::{Can, Engine, Kind, Setup, always};
 use crate::snapshot::{self, Cell, Color, Line, Snapshot, Style, Width};
-use libghostty_vt::screen::{CellContentTag, CellWide, GridRef};
+use libghostty_vt::screen::{CellContentTag, CellWide, GridRef, RowSemanticPrompt};
 use libghostty_vt::style::{StyleColor, Underline};
 use libghostty_vt::terminal::{Mode, Point, PointCoordinate};
 use libghostty_vt::{Terminal, TerminalOptions};
@@ -45,6 +45,22 @@ fn text(at: &GridRef<'_>) -> Result<String, String> {
     Ok(buf.iter().take(len).collect())
 }
 
+/// The URI of the cell's hyperlink, if it has one. Ghostty's C API gives
+/// no link's identity, so which cells share one is not read.
+fn link(at: &GridRef<'_>) -> Result<Option<(String, String)>, String> {
+    let mut buf = vec![0u8; 256];
+    let len = match at.hyperlink_uri(&mut buf) {
+        Ok(len) => len,
+        Err(libghostty_vt::Error::OutOfSpace { required }) => {
+            buf = vec![0u8; required];
+            at.hyperlink_uri(&mut buf).map_err(err("hyperlink"))?
+        }
+        Err(e) => return Err(err("hyperlink")(e)),
+    };
+    let uri = buf.get(..len).ok_or("ghostty: hyperlink: too long")?;
+    Ok((len > 0).then(|| (String::from_utf8_lossy(uri).into_owned(), String::new())))
+}
+
 fn cell(at: &GridRef<'_>) -> Result<Cell, String> {
     let raw = at.cell().map_err(err("cell"))?;
     let width = match raw.wide().map_err(err("wide"))? {
@@ -83,13 +99,16 @@ fn cell(at: &GridRef<'_>) -> Result<Cell, String> {
     } else {
         String::new()
     };
-    Ok(Cell::new(&text, width, style))
+    Ok(Cell::new(&text, width, style).linked(link(at)?))
 }
 
 pub const KIND: Kind = Kind {
     name: "ghostty",
     about: "Ghostty's terminal core, libghostty-vt, built from source by Zig",
-    can: Can::ALL,
+    can: Can {
+        link_group: false,
+        ..Can::ALL
+    },
     panel: true,
     in_process: true,
     available: always,
@@ -124,10 +143,16 @@ impl Ghostty {
     fn line(&self, point: impl Fn(u16) -> Point, cols: u16) -> Result<Line, String> {
         let mut cells = Vec::with_capacity(usize::from(cols));
         let mut wrapped = false;
+        let mut prompt = false;
         for x in 0..cols {
             let at = self.terminal.grid_ref(point(x)).map_err(err("grid ref"))?;
             if x == 0 {
-                wrapped = at.row().and_then(|r| r.is_wrapped()).map_err(err("row"))?;
+                let row = at.row().map_err(err("row"))?;
+                wrapped = row.is_wrapped().map_err(err("row"))?;
+                // A primary prompt's row: a continuation line's (`k=c`,
+                // `k=s`, or a line the prompt wrapped or went on to) is
+                // not where a prompt starts.
+                prompt = row.semantic_prompt().map_err(err("row"))? == RowSemanticPrompt::Prompt;
             }
             cells.push(cell(&at)?);
         }
@@ -135,6 +160,7 @@ impl Ghostty {
             cells,
             wrapped,
             unread_from: None,
+            prompt,
         })
     }
 
@@ -174,6 +200,8 @@ impl Ghostty {
             application_cursor: mode(Mode::DECCKM)?,
             application_keypad: mode(Mode::KEYPAD_KEYS)?,
             bracketed_paste: mode(Mode::BRACKETED_PASTE)?,
+            synchronized_output: mode(Mode::SYNC_OUTPUT)?,
+            in_band_resize: mode(Mode::IN_BAND_RESIZE)?,
             focus_reporting: mode(Mode::FOCUS_EVENT)?,
             kitty_keyboard_flags: t.kitty_keyboard_flags().map_err(err("kitty flags"))?.bits(),
             title: t.title().map_err(err("title"))?.to_owned(),

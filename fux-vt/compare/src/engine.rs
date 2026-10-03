@@ -12,7 +12,12 @@ use crate::snapshot::Snapshot;
 /// - A blank cell has empty text. A printed space reads as a blank
 ///   (`Cell::new` does this).
 /// - The second half of a wide glyph is a `Width::Tail` cell, with no text
-///   and no style of its own (`Cell::new` does this too).
+///   and no style or hyperlink of its own (`Cell::new` and `Cell::linked`
+///   do this too).
+/// - A cell's hyperlink is its URI and the engine's own name for the link
+///   (`Cell::linked`): any text the same for the cells of one link and for
+///   no other, or empty where the engine cannot tell links apart.
+/// - A row's `prompt` says whether a prompt starts on it (OSC 133 ; A).
 /// - An engine's spacer at the end of a row, where a wide glyph that did
 ///   not fit would have started, is a narrow blank.
 /// - Colours: the default is `Color::Default`; palette entries 0–255 are
@@ -77,6 +82,14 @@ pub struct Can {
     pub bracketed_paste: bool,
     pub focus_reporting: bool,
     pub kitty_keyboard_flags: bool,
+    pub synchronized_output: bool,
+    pub in_band_resize: bool,
+    /// A cell's hyperlink (OSC 8): where it points.
+    pub link_uri: bool,
+    /// Which cells share one hyperlink.
+    pub link_group: bool,
+    /// The rows where a prompt starts (OSC 133 ; A).
+    pub prompt: bool,
     pub title: bool,
     pub reports: bool,
     pub history: bool,
@@ -109,6 +122,11 @@ impl Can {
         bracketed_paste: true,
         focus_reporting: true,
         kitty_keyboard_flags: true,
+        synchronized_output: true,
+        in_band_resize: true,
+        link_uri: true,
+        link_group: true,
+        prompt: true,
         title: true,
         reports: true,
         history: true,
@@ -141,6 +159,11 @@ impl Can {
             (self.bracketed_paste, "bracketed paste"),
             (self.focus_reporting, "focus reporting"),
             (self.kitty_keyboard_flags, "kitty keyboard flags"),
+            (self.synchronized_output, "synchronized output"),
+            (self.in_band_resize, "in-band resize"),
+            (self.link_uri, "link URIs"),
+            (self.link_group, "link groups"),
+            (self.prompt, "prompt marks"),
             (self.title, "title"),
             (self.reports, "reports"),
             (self.history, "history"),
