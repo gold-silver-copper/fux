@@ -23,7 +23,11 @@
 //! - Cells through the public buffer API: `getChars` (a cluster whole),
 //!   `getWidth` (0 for the second half of a wide glyph), the colour modes
 //!   and the attribute flags. A wide glyph that did not fit leaves an
-//!   ordinary blank at the end of its row.
+//!   ordinary blank at the end of its row. A cell with a hyperlink (OSC 8)
+//!   reads as underlined through `isUnderline`, whatever its SGR, as
+//!   xterm.js draws links with a dashed underline; its SGR underline is
+//!   then the core's own flag in `fg`, which SGR 4, 24 and 0 set and
+//!   clear (`replay --engines xterm.js --size 1x3 '\e]8;;u\e\\ab'`).
 //! - xterm.js keeps a row's soft-wrap flag on the row that continues it
 //!   (`isWrapped`), so row y is wrapped when row y + 1 is; the newest
 //!   history row is wrapped when the top screen row is.
