@@ -583,10 +583,13 @@ impl Screen {
             &mut self.primary_keyboard
         }
     }
-    /// The one-based cursor position a DSR 6n or DECXCPR reports. A cursor
-    /// waiting to wrap is reported one past the last column, as the vt100
-    /// crate did; with an identity it is reported at the last column, as
-    /// xterm does.
+    /// The one-based cursor position a DSR 6n or DECXCPR reports. The line
+    /// is counted as CUP addresses it: from the top margin with DECOM set
+    /// (DEC STD 070, CPR and DECXCPR, pages 5-53 to 5-56; xterm's
+    /// `CASE_CPR`), and a cursor above the margin, as DECRC can leave one,
+    /// on the first line. A cursor waiting to wrap is reported one past
+    /// the last column, as the vt100 crate did; with an identity it is
+    /// reported at the last column, as xterm does.
     pub(crate) fn reported_cursor(&self, options: &Options) -> (u32, u32) {
         let g = self.grid();
         let col = if options.identity.is_some() {
@@ -594,7 +597,7 @@ impl Screen {
         } else {
             g.next_column()
         };
-        (u32::from(g.cursor.0) + 1, u32::from(col) + 1)
+        (u32::from(g.cursor_line()) + 1, u32::from(col) + 1)
     }
     /// The pen: the colours and rendition of the next glyph printed.
     pub fn attributes(&self) -> Attributes {
