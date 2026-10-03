@@ -1,0 +1,87 @@
+{
+  "command": [
+    "hx",
+    "src/main.rs"
+  ],
+  "env": [
+    "PATH=/tmp/fux-corpus/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "HOME=/tmp/fux-corpus/home",
+    "LANG=en_US.UTF-8",
+    "COLORTERM=truecolor"
+  ],
+  "note": "rust-analyzer rust-analyzer 0.0.0 (21f8445ea5 2025-11-09) gives the diagnostics",
+  "program": "helix",
+  "replies": "\\e[?1;2c",
+  "scrubbed": [],
+  "size": [
+    40,
+    120
+  ],
+  "steps": [
+    {
+      "end": 19562,
+      "keys": ""
+    },
+    {
+      "end": 19562,
+      "keys": ""
+    },
+    {
+      "end": 25025,
+      "keys": ":w\\r"
+    },
+    {
+      "end": 25301,
+      "keys": "j"
+    },
+    {
+      "end": 25575,
+      "keys": "j"
+    },
+    {
+      "end": 25921,
+      "keys": "5j"
+    },
+    {
+      "end": 26080,
+      "keys": "w"
+    },
+    {
+      "end": 26477,
+      "keys": "x"
+    },
+    {
+      "end": 26509,
+      "keys": "\\e"
+    },
+    {
+      "end": 27854,
+      "keys": "/let\\r"
+    },
+    {
+      "end": 28347,
+      "keys": "n"
+    },
+    {
+      "end": 44172,
+      "keys": "\\x17v"
+    },
+    {
+      "end": 51842,
+      "keys": "\\x17w"
+    },
+    {
+      "end": 52129,
+      "keys": "j"
+    },
+    {
+      "end": 59408,
+      "keys": ":q\\r"
+    },
+    {
+      "end": 63966,
+      "keys": ":q!\\r"
+    }
+  ],
+  "version": "helix 25.07.1 (a05c151b)"
+}

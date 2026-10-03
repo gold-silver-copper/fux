@@ -1,0 +1,8 @@
+# man on a page written for the purpose: lines, a page, search, quit.
+j
+j
+\x20
+/scrub\r
+n
+g
+q

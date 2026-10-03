@@ -1,0 +1,12 @@
+# less paging a Markdown file: lines, pages, search, the end, the start.
+j
+j
+\x20
+d
+b
+/reflow\r
+n
+N
+G
+g
+q

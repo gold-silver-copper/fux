@@ -1,0 +1,9 @@
+# fzf below the prompt (--height 40%, reversed, with a border): filter,
+# move, accept.
+!start 1500
+p
+a
+r
+\x0e
+\x10
+\r

@@ -610,11 +610,19 @@ dependencies = [
  "avt",
  "cc",
  "fux-vt",
+ "fuxix",
  "libghostty-vt",
  "serde_json",
  "unicode-width 0.2.2",
  "vt100",
  "wezterm-term",
+]
+
+[[package]]
+name = "fuxix"
+version = "0.1.4"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
