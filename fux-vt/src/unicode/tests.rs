@@ -156,7 +156,9 @@ fn continues_cluster_answers_as_the_state_machine() {
         "\r",
         "\u{e4}\u{356}",
     ];
-    let nexts = ('\0'..='\u{7f}').chain(['\u{1F3FD}', '\u{301}', '\u{200D}', '\u{FE0F}']);
+    // Every character of the planes in use, and the tags and variation
+    // selectors: the shortcuts answer as the state machine does for each.
+    let nexts = ('\0'..='\u{2FFFF}').chain('\u{E0000}'..='\u{E01EF}');
     for next in nexts {
         for cluster in clusters {
             assert_eq!(

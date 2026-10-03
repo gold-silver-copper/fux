@@ -21,7 +21,22 @@ pub use tables::UNICODE_VERSION;
 /// terminal may join a cell to the one before it.
 pub fn continues_cluster(cluster: &str, c: char) -> bool {
     // No printable ASCII character continues a cluster: they are all Other.
-    !(' '..='~').contains(&c) && Cluster::of(cluster).push(c)
+    if (' '..='~').contains(&c) {
+        return false;
+    }
+    // Nor does any character that no rule joins whatever comes before it
+    // (most of what is not ASCII: box drawing, CJK, letters), which needs
+    // no look at the cluster.
+    let next = Properties::of(c);
+    if matches!(
+        next.kind,
+        Break::Other | Break::Prepend | Break::Control | Break::Cr
+    ) && !next.pictographic
+        && next.conjunct != Conjunct::Consonant
+    {
+        return false;
+    }
+    Cluster::of(cluster).push(c)
 }
 
 /// Grapheme_Cluster_Break, numbered as the generated tables store it.
