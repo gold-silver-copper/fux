@@ -14,6 +14,7 @@ use fux::copy::MAX_CLIPBOARD;
 use fux::decode::{Decoder, Input};
 use fux::keys::KeyPress;
 use fux::layout::PaneId;
+use fux::outer;
 use fux::overlay::{column_rows, column_selected};
 use fux::render::{Grid, compose};
 use fux::session::{Ctx, Outgoing, Session};
@@ -164,12 +165,23 @@ impl Run {
         self.s.settle();
         for outgoing in std::mem::take(&mut self.s.outbox) {
             match outgoing {
+                // What fux asks a client's terminal: when it attaches, and
+                // after the terminal's answers.
+                Outgoing::Bytes(_, bytes)
+                    if [
+                        outer::QUERIES,
+                        outer::COLOUR_QUERIES,
+                        outer::REPORTS_ON,
+                        outer::SCHEME_QUERY,
+                        outer::KITTY_PUSH,
+                    ]
+                    .contains(&bytes.as_slice()) => {}
                 Outgoing::Bytes(_, bytes) => {
-                    // OSC 52, with at most MAX_CLIPBOARD bytes of base64.
+                    // Else OSC 52, with at most MAX_CLIPBOARD bytes of base64.
                     let payload = bytes
                         .strip_prefix(b"\x1b]52;c;")
                         .and_then(|b| b.strip_suffix(b"\x07"))
-                        .unwrap_or_else(|| panic!("not OSC 52: {bytes:?}"));
+                        .unwrap_or_else(|| panic!("not a question nor OSC 52: {bytes:?}"));
                     assert!(payload.len() <= MAX_CLIPBOARD, "{} bytes", payload.len());
                     assert!(
                         payload

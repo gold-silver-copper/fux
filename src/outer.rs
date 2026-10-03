@@ -74,14 +74,14 @@ pub const QUERIES: &[u8] = b"\x1b[?2031$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\
 /// waiting for them.
 pub const STYLES: &[u8] = b"\x1bP+q536d756c78\x1b\\\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\\x1b[0m";
 /// Pushes disambiguate and alternate keys (see the module documentation).
-const KITTY_PUSH: &[u8] = b"\x1b[>5u";
+pub const KITTY_PUSH: &[u8] = b"\x1b[>5u";
 /// Asked again after the terminal reports that its scheme changed.
-const COLOUR_QUERIES: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[c";
+pub const COLOUR_QUERIES: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[c";
 /// Turns on the terminal's scheme reports and asks for the scheme now. The
 /// client turns the reports off on every way out (`client::LEAVE`).
-const REPORTS_ON: &[u8] = b"\x1b[?2031h\x1b[?996n";
+pub const REPORTS_ON: &[u8] = b"\x1b[?2031h\x1b[?996n";
 /// Asks for the scheme alone, of a terminal whose reports are always on.
-const SCHEME_QUERY: &[u8] = b"\x1b[?996n";
+pub const SCHEME_QUERY: &[u8] = b"\x1b[?996n";
 
 /// A colour as xterm reports it: 16 bits a channel.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
