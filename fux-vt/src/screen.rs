@@ -640,8 +640,23 @@ impl Screen {
     /// column, as the semantic prompt proposal and Ghostty have it. The
     /// other commands (`B`, `C`, `D`, `P` and the rest) change nothing.
     pub(crate) fn prompt_osc(&mut self, payload: &[u8]) -> Result<(), Error> {
-        let command = payload.split(|b| *b == b';').next().unwrap_or_default();
-        if !matches!(command, b"A" | b"L") {
+        let mut parts = payload.split(|b| *b == b';');
+        let command = parts.next().unwrap_or_default();
+        // P (explicit start of prompt) of the primary kind, `k=i` or none,
+        // marks where it is without a fresh line: shells send it in A's
+        // place (Ghostty's bash integration under ble.sh does). Right-side
+        // and continuation prompts (`k=r`, `k=c`, `k=s`) start none.
+        if command == b"P" {
+            let kind = parts.find_map(|option| option.strip_prefix(b"k="));
+            if kind.is_none_or(|k| k == b"i") {
+                let row = self.grid().cursor.0;
+                self.grid_mut().mark_prompt(row);
+            }
+            return Ok(());
+        }
+        // N is A that may first end the previous command, which fux-vt
+        // keeps no record of.
+        if !matches!(command, b"A" | b"N" | b"L") {
             return Ok(());
         }
         // CR, then IND, as Ghostty does it.
@@ -649,7 +664,7 @@ impl Screen {
             self.control(b'\r')?;
             self.linefeed()?;
         }
-        if command == b"A" {
+        if command != b"L" {
             let row = self.grid().cursor.0;
             self.grid_mut().mark_prompt(row);
         }

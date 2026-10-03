@@ -139,8 +139,8 @@ enum State {
 pub const OSC_PAYLOAD_LIMIT: usize = 64 * 1024;
 
 /// The most OSC payload bytes retained with [`Options::prompt_marks`] alone:
-/// enough to tell a prompt mark, `133;A`.
-const OSC_PREFIX: usize = 8;
+/// enough to tell a prompt mark, `133;A`, or a prompt's kind, `133;P;k=i`.
+const OSC_PREFIX: usize = 16;
 
 /// Opt-in behaviour that needs the host's cooperation. The default
 /// (everything off) is fux's policy: child output causes no title, bell or

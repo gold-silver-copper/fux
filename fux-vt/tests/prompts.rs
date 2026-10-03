@@ -45,9 +45,9 @@ fn a_prompt_marks_its_row_and_the_others_change_nothing() -> Result {
     p.process(SESSION)?;
     assert_eq!(marks(&p), [0, 3, 4]);
     assert!(p.screen().starts_prompt(0) && !p.screen().starts_prompt(1));
-    // B, C, D and the rest move nothing and mark nothing.
+    // B, C, D and a continuation prompt move nothing and mark nothing.
     let mut q = Parser::with_options(8, 10, 10, MARKS)?;
-    q.process(b"ab\x1b]133;B\x07\x1b]133;C\x07\x1b]133;D;1\x07\x1b]133;P;k=i\x07c")?;
+    q.process(b"ab\x1b]133;B\x07\x1b]133;C\x07\x1b]133;D;1\x07\x1b]133;P;k=c\x07c")?;
     assert_eq!(marks(&q), Vec::<usize>::new());
     assert_eq!(text(&q, 0), "abc");
     // The same whatever pieces the output came in, and with every option.
@@ -197,5 +197,22 @@ fn without_the_option_prompt_marks_are_ignored() -> Result {
     p.process(b"ab\x1b]133;A\x07cd")?;
     assert_eq!(marks(&p), Vec::<usize>::new());
     assert_eq!(text(&p, 0), "abcd");
+    Ok(())
+}
+
+/// `N` is `A` (`references/modern/osc133_semantic_prompts.md`): a fresh
+/// line, then the mark. `P` of the primary kind (`k=i`, or none) marks the
+/// cursor's row without a fresh line; right-side and continuation prompts
+/// mark nothing.
+#[test]
+fn n_is_a_and_a_primary_p_marks_its_row() -> Result {
+    let mut p = Parser::with_options(6, 10, 0, MARKS)?;
+    p.process(b"x\x1b]133;N\x07$ ")?;
+    assert_eq!(marks(&p), [1]);
+    p.process(b"\r\n\x1b]133;P;k=c\x07> \x1b]133;P;k=r\x07")?;
+    assert_eq!(marks(&p), [1], "continuation and right prompts");
+    p.process(b"\r\nab\x1b]133;P;k=i\x07$ \r\n\x1b]133;P\x07$ ")?;
+    assert_eq!(marks(&p), [1, 3, 4], "primary prompts, no fresh line");
+    assert_eq!(text(&p, 3), "ab$");
     Ok(())
 }
