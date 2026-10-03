@@ -1,0 +1,7 @@
+# htop on three processes: the tree view, move, the list again, quit.
+!start 2000
+!quiet 2500
+\e[15~
+\e[B
+\e[15~
+q

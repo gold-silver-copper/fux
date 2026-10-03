@@ -1,0 +1,4 @@
+# bat --diff on a changed file, paged by less: a page, quit.
+!start 1500
+\x20
+q

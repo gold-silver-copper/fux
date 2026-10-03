@@ -1,0 +1,3 @@
+# cargo test of a workspace, one test failing: its progress and output,
+# then it exits, no keys.
+!start 5000

@@ -1,0 +1,12 @@
+# neovim's diagnostics without a language server: :Diag (in init.lua)
+# sets warnings and errors on the file; jump to them, the float, the
+# location list, quit.
+!start 2000
+:Diag\r
+]d
+]d
+\x17d
+j
+:lua vim.diagnostic.setloclist()\r
+:lclose\r
+:q!\r

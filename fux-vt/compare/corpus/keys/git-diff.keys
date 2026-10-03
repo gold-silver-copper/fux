@@ -1,0 +1,6 @@
+# git diff --stat -p with colours, paged by less: a page, search,
+# quit.
+!start 1500
+\x20
+/fn\r
+q

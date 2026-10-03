@@ -52,24 +52,146 @@ const CLAUDE_TITLE: &str = "Claude Code sets an empty title as it exits (OSC 0 ;
     fux-vt keeps the empty title. Every step before the last agrees beside xterm. \
     `corpus --engines xterm,panel claude` shows it.";
 
+/// The reason the recordings with emoji sequences differ, from the start.
+const CLUSTERS: &str = "An emoji sequence (a modifier, a ZWJ sequence, a flag, VS16) is one \
+    wide cell in fux-vt, as in Ghostty and wezterm: the `clusters` family's recorded choice. \
+    xterm keeps each code point a cell of its own (and VS16 narrow), and alacritty, libvterm \
+    and avt mostly do. helix and less lay a line out by clusters as fux-vt does (Ghostty and \
+    wezterm agree with fux-vt on helix-unicode and less-small); vim, neovim and micro by code \
+    points, each placed by a cursor move of its own, so their emoji differ in every engine, \
+    Ghostty joining a modifier printed after a cursor move to the cell before it. \
+    `corpus --engines xterm,ghostty,wezterm vim-unicode` shows it.";
+
+/// The reason zsh-resize differs.
+const NO_REFLOW: &str = "zsh's earlier lines stay as each engine resized them: fux's panes \
+    do not reflow (fux-vt's README, \"Without Options::reflow\"), where xterm and the panel \
+    rewrap them. The step after the shrink to 24x80 fails on history rows alone; every step \
+    before agrees. `corpus zsh-resize` shows it.";
+
+/// The reason tmux-resize differs.
+const ALTERNATE_RESIZE: &str = "Leaving the alternate screen after it shrank, with the cursor \
+    low, and grew again, xterm puts the cursor where the alternate screen's moved to, fux-vt \
+    and the panel where 1049 saved it, so tmux's `[exited]` lands on another row: a choice of \
+    xterm's resize (`replay --engines xterm,ghostty,alacritty --size 40x120 --history 10000 \
+    --no-reflow '\\e[?1049h\\e[34;1H' resize:10x40 resize:40x120 '\\e[?1049lX'`). Every step \
+    before the last agrees.";
+
 /// What is expected of each recording; one not listed here is reported as
 /// new, and fails.
 pub const STATUSES: &[(&str, Status)] = &[
     ("bash", Status::Agree),
+    ("bash-complete", Status::Agree),
+    ("bash-history", Status::Agree),
+    ("bash-small", Status::Agree),
+    ("bat-diff", Status::Agree),
+    ("bat-markdown", Status::Agree),
+    ("bat-page", Status::Agree),
+    ("btop", Status::Agree),
+    ("btop-small", Status::Agree),
+    ("cargo-build", Status::Agree),
+    ("cargo-errors", Status::Agree),
+    ("cargo-test", Status::Agree),
+    ("clang-errors", Status::Agree),
     ("claude", Status::Differs(CLAUDE_TITLE)),
     ("claude-ghostty", Status::Differs(CLAUDE_TITLE)),
     ("claude-main", Status::Differs(CLAUDE_TITLE)),
+    ("claude-resize", Status::Differs(CLAUDE_TITLE)),
+    ("claude-small", Status::Differs(CLAUDE_TITLE)),
     ("delta-diff", Status::Agree),
     ("delta-log", Status::Agree),
+    ("delta-show", Status::Agree),
+    ("delta-wide", Status::Agree),
+    ("emacs-dired", Status::Agree),
+    ("emacs-mx", Status::Agree),
+    ("emacs-resize", Status::Agree),
+    ("emacs-scroll", Status::Agree),
+    ("emacs-split", Status::Agree),
+    ("fish", Status::Agree),
+    ("fish-complete", Status::Agree),
+    ("fish-history", Status::Agree),
+    ("fish-small", Status::Agree),
     ("fzf", Status::Agree),
     ("fzf-height", Status::Agree),
+    ("fzf-multi", Status::Agree),
+    ("fzf-preview", Status::Agree),
+    ("fzf-small", Status::Agree),
+    ("git-add-p", Status::Agree),
+    ("git-diff", Status::Agree),
+    ("git-graph", Status::Agree),
     ("gls", Status::Agree),
+    ("gls-long", Status::Agree),
+    ("gls-wide", Status::Agree),
     ("helix", Status::Agree),
+    ("helix-picker", Status::Agree),
+    ("helix-resize", Status::Agree),
+    ("helix-select", Status::Agree),
+    ("helix-small", Status::Agree),
+    ("helix-unicode", Status::Differs(CLUSTERS)),
+    ("htop", Status::Agree),
+    ("htop-small", Status::Agree),
+    ("htop-tree", Status::Agree),
+    ("lazygit", Status::Agree),
+    ("lazygit-small", Status::Agree),
+    ("lazygit-stage", Status::Agree),
     ("less", Status::Agree),
+    ("less-chop", Status::Agree),
+    ("less-color", Status::Agree),
+    ("less-small", Status::Differs(CLUSTERS)),
     ("man", Status::Agree),
+    ("man-long", Status::Agree),
+    ("man-small", Status::Agree),
+    ("man-tables", Status::Agree),
+    ("man-wide", Status::Agree),
+    ("mc", Status::Agree),
+    ("mc-small", Status::Agree),
+    ("micro-edit", Status::Agree),
+    ("micro-small", Status::Differs(CLUSTERS)),
+    ("micro-split", Status::Agree),
+    ("ncdu", Status::Agree),
+    ("nnn", Status::Agree),
+    ("nnn-detail", Status::Agree),
+    ("npm-install", Status::Agree),
+    ("nvim-diagnostics", Status::Agree),
+    ("nvim-diff", Status::Agree),
+    ("nvim-help", Status::Agree),
+    ("nvim-insert", Status::Agree),
+    ("nvim-netrw", Status::Agree),
+    ("nvim-resize", Status::Agree),
+    ("nvim-scroll", Status::Agree),
+    ("nvim-search", Status::Agree),
+    ("nvim-small", Status::Agree),
+    ("nvim-split", Status::Agree),
+    ("nvim-tabs", Status::Agree),
+    ("nvim-terminal", Status::Agree),
+    ("nvim-unicode", Status::Differs(CLUSTERS)),
+    ("nvim-visual", Status::Agree),
+    ("nvim-wide", Status::Agree),
+    ("pico", Status::Agree),
+    ("ranger", Status::Agree),
+    ("tig", Status::Agree),
+    ("tig-blame", Status::Agree),
+    ("tig-tree", Status::Agree),
     ("tmux", Status::Agree),
+    ("tmux-copy", Status::Agree),
+    ("tmux-resize", Status::Differs(ALTERNATE_RESIZE)),
+    ("tmux-small", Status::Agree),
+    ("tmux-vim", Status::Agree),
+    ("top", Status::Agree),
     ("vim", Status::Agree),
+    ("vim-diff", Status::Agree),
+    ("vim-help", Status::Agree),
+    ("vim-insert", Status::Agree),
+    ("vim-resize", Status::Agree),
+    ("vim-small", Status::Agree),
+    ("vim-terminal", Status::Agree),
+    ("vim-unicode", Status::Differs(CLUSTERS)),
+    ("zellij", Status::Agree),
+    ("zellij-small", Status::Agree),
     ("zsh", Status::Agree),
+    ("zsh-history", Status::Agree),
+    ("zsh-menu", Status::Agree),
+    ("zsh-resize", Status::Differs(NO_REFLOW)),
+    ("zsh-small", Status::Agree),
 ];
 
 /// A recording, as `record` saved it.

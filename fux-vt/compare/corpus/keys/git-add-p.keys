@@ -1,0 +1,6 @@
+# git add -p: stage a hunk, skip one, the help, quit.
+!start 1500
+y\r
+n\r
+?\r
+q\r

@@ -1,0 +1,12 @@
+# zsh's history: up and down, Ctrl-R search, run it, !! expansion,
+# fc -l, exit.
+!start 1500
+\e[A
+\e[A
+\e[B
+\x15
+\x12hello
+\r
+echo !!\r
+fc -l\r
+exit\r

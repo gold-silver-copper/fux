@@ -4,175 +4,320 @@ Made by `fux-vt-compare inventory` from the recordings in this directory (see th
 
 Recordings:
 
+- `bash-complete`: bash-complete, GNU bash, version 5.3.3(1)-release (aarch64-apple-darwin24.4.0) (9 steps, 452 bytes)
+- `bash-history`: bash-history, GNU bash, version 5.3.3(1)-release (aarch64-apple-darwin24.4.0) (10 steps, 786 bytes)
+- `bash-small`: bash-small, GNU bash, version 5.3.3(1)-release (aarch64-apple-darwin24.4.0) (7 steps, 302 bytes)
 - `bash`: bash, GNU bash, version 5.3.3(1)-release (aarch64-apple-darwin24.4.0) (17 steps, 877 bytes)
+- `bat-diff`: bat-diff, bat 0.26.1 (3 steps, 5665 bytes)
+- `bat-markdown`: bat-markdown, bat 0.26.1 (1 steps, 14675 bytes)
+- `bat-page`: bat-page, bat 0.26.1 (6 steps, 63913 bytes)
+- `btop-small`: btop-small, btop version: 1.4.7 (3 steps, 95526 bytes)
+- `btop`: btop, btop version: 1.4.7 (3 steps, 196379 bytes)
+- `cargo-build`: cargo-build, cargo 1.98.1 (797e8a9bc 2026-08-05) (1 steps, 1515 bytes)
+- `cargo-errors`: cargo-errors, cargo 1.98.1 (797e8a9bc 2026-08-05) (1 steps, 2206 bytes)
+- `cargo-test`: cargo-test, cargo 1.98.1 (797e8a9bc 2026-08-05) (1 steps, 3978 bytes)
+- `clang-errors`: clang-errors, Apple clang version 21.0.0 (clang-2100.3.34.2) (1 steps, 702 bytes)
 - `claude-ghostty`: claude-ghostty, Claude Code 2.1.288 (Claude Code) (3 steps, 3110 bytes)
 - `claude-main`: claude-main, Claude Code 2.1.288 (Claude Code) (3 steps, 3025 bytes)
+- `claude-resize`: claude-resize, Claude Code 2.1.288 (Claude Code) (5 steps, 8087 bytes)
+- `claude-small`: claude-small, Claude Code 2.1.288 (Claude Code) (3 steps, 3336 bytes)
 - `claude`: claude, Claude Code 2.1.288 (Claude Code) (3 steps, 10793 bytes)
 - `delta-diff`: delta-diff, delta 0.19.2, git version 2.51.0 (5 steps, 45384 bytes)
 - `delta-log`: delta-log, delta 0.19.2, git version 2.51.0 (8 steps, 34377 bytes)
+- `delta-show`: delta-show, delta 0.19.2, git version 2.51.0 (4 steps, 5921 bytes)
+- `delta-wide`: delta-wide, delta 0.19.2, git version 2.51.0 (3 steps, 12517 bytes)
+- `emacs-dired`: emacs-dired, GNU Emacs 31.1 (8 steps, 24730 bytes)
+- `emacs-mx`: emacs-mx, GNU Emacs 31.1 (10 steps, 19958 bytes)
+- `emacs-resize`: emacs-resize, GNU Emacs 31.1 (7 steps, 45279 bytes)
+- `emacs-scroll`: emacs-scroll, GNU Emacs 31.1 (12 steps, 30817 bytes)
+- `emacs-split`: emacs-split, GNU Emacs 31.1 (8 steps, 19302 bytes)
+- `fish-complete`: fish-complete, fish, version 4.9.3 (10 steps, 3782 bytes)
+- `fish-history`: fish-history, fish, version 4.9.3 (10 steps, 1884 bytes)
+- `fish-small`: fish-small, fish, version 4.9.3 (5 steps, 2160 bytes)
+- `fish`: fish, fish, version 4.9.3 (9 steps, 2727 bytes)
 - `fzf-height`: fzf-height, fzf 0.65.2 (brew) (7 steps, 15185 bytes)
+- `fzf-multi`: fzf-multi, fzf 0.65.2 (brew) (8 steps, 17005 bytes)
+- `fzf-preview`: fzf-preview, fzf 0.65.2 (brew), bat 0.26.1 (8 steps, 72463 bytes)
+- `fzf-small`: fzf-small, fzf 0.65.2 (brew) (5 steps, 4538 bytes)
 - `fzf`: fzf, fzf 0.65.2 (brew) (9 steps, 29408 bytes)
+- `git-add-p`: git-add-p, git version 2.51.0 (5 steps, 1961 bytes)
+- `git-diff`: git-diff, git version 2.51.0 (4 steps, 5701 bytes)
+- `git-graph`: git-graph, git version 2.51.0 (3 steps, 942 bytes)
+- `gls-long`: gls-long, ls (GNU coreutils) 9.12 (1 steps, 1511 bytes)
+- `gls-wide`: gls-wide, ls (GNU coreutils) 9.12 (1 steps, 5064 bytes)
 - `gls`: gls, ls (GNU coreutils) 9.12 (1 steps, 1900 bytes)
+- `helix-picker`: helix-picker, helix 25.07.1 (a05c151b) (7 steps, 77362 bytes)
+- `helix-resize`: helix-resize, helix 25.07.1 (a05c151b) (8 steps, 204497 bytes)
+- `helix-select`: helix-select, helix 25.07.1 (a05c151b) (14 steps, 114947 bytes)
+- `helix-small`: helix-small, helix 25.07.1 (a05c151b) (6 steps, 32379 bytes)
+- `helix-unicode`: helix-unicode, helix 25.07.1 (a05c151b) (12 steps, 30510 bytes)
 - `helix`: helix, helix 25.07.1 (a05c151b) (16 steps, 63873 bytes)
+- `htop-small`: htop-small, htop 3.5.3-3.5.3 (3 steps, 2691 bytes)
+- `htop-tree`: htop-tree, htop 3.5.3-3.5.3 (5 steps, 3962 bytes)
+- `htop`: htop, htop 3.5.3-3.5.3 (8 steps, 9639 bytes)
+- `lazygit-small`: lazygit-small, lazygit 0.65.1 (6 steps, 14991 bytes)
+- `lazygit-stage`: lazygit-stage, lazygit 0.65.1 (12 steps, 29201 bytes)
+- `lazygit`: lazygit, lazygit 0.65.1 (12 steps, 32909 bytes)
+- `less-chop`: less-chop, less 668 (POSIX regular expressions) (8 steps, 11424 bytes)
+- `less-color`: less-color, less 668 (POSIX regular expressions) (5 steps, 17967 bytes)
+- `less-small`: less-small, less 668 (POSIX regular expressions) (7 steps, 1871 bytes)
 - `less`: less, less 668 (POSIX regular expressions) (12 steps, 26267 bytes)
+- `man-long`: man-long, man (macOS), mandoc (9 steps, 22623 bytes)
+- `man-small`: man-small, man (macOS), mandoc (7 steps, 2216 bytes)
+- `man-tables`: man-tables, man (macOS), mandoc (6 steps, 9351 bytes)
+- `man-wide`: man-wide, man (macOS), mandoc (5 steps, 20203 bytes)
 - `man`: man, man (macOS), mandoc (8 steps, 8431 bytes)
+- `mc-small`: mc-small, GNU Midnight Commander 4.8.33 (6 steps, 4536 bytes)
+- `mc`: mc, GNU Midnight Commander 4.8.33 (13 steps, 19325 bytes)
+- `micro-edit`: micro-edit, micro 2.0.15 (9 steps, 103721 bytes)
+- `micro-small`: micro-small, micro 2.0.15 (7 steps, 14682 bytes)
+- `micro-split`: micro-split, micro 2.0.15 (9 steps, 86086 bytes)
+- `ncdu`: ncdu, ncdu 2.9.2 (11 steps, 5916 bytes)
+- `nnn-detail`: nnn-detail, nnn 5.3 (7 steps, 2283 bytes)
+- `nnn`: nnn, nnn 5.3 (8 steps, 1394 bytes)
+- `npm-install`: npm-install, npm 11.19.1, node v26.10.0 (1 steps, 50 bytes)
+- `nvim-diagnostics`: nvim-diagnostics, NVIM v0.12.5 (9 steps, 58700 bytes)
+- `nvim-diff`: nvim-diff, NVIM v0.12.5 (8 steps, 49321 bytes)
+- `nvim-help`: nvim-help, NVIM v0.12.5 (7 steps, 28828 bytes)
+- `nvim-insert`: nvim-insert, NVIM v0.12.5 (13 steps, 47232 bytes)
+- `nvim-netrw`: nvim-netrw, NVIM v0.12.5 (8 steps, 19749 bytes)
+- `nvim-resize`: nvim-resize, NVIM v0.12.5 (9 steps, 108397 bytes)
+- `nvim-scroll`: nvim-scroll, NVIM v0.12.5 (10 steps, 81610 bytes)
+- `nvim-search`: nvim-search, NVIM v0.12.5 (10 steps, 55817 bytes)
+- `nvim-small`: nvim-small, NVIM v0.12.5 (8 steps, 10809 bytes)
+- `nvim-split`: nvim-split, NVIM v0.12.5 (9 steps, 49320 bytes)
+- `nvim-tabs`: nvim-tabs, NVIM v0.12.5 (7 steps, 57941 bytes)
+- `nvim-terminal`: nvim-terminal, NVIM v0.12.5 (9 steps, 29394 bytes)
+- `nvim-unicode`: nvim-unicode, NVIM v0.12.5 (12 steps, 18006 bytes)
+- `nvim-visual`: nvim-visual, NVIM v0.12.5 (18 steps, 33580 bytes)
+- `nvim-wide`: nvim-wide, NVIM v0.12.5 (6 steps, 91044 bytes)
+- `pico`: pico, UW PICO 5.09 (/usr/bin/nano) (6 steps, 7379 bytes)
+- `ranger`: ranger, ranger 1.9.4 (10 steps, 5733 bytes)
+- `tig-blame`: tig-blame, tig version 2.6.1 (7 steps, 20700 bytes)
+- `tig-tree`: tig-tree, tig version 2.6.1 (9 steps, 3791 bytes)
+- `tig`: tig, tig version 2.6.1 (8 steps, 4733 bytes)
+- `tmux-copy`: tmux-copy, tmux 3.7c (10 steps, 5763 bytes)
+- `tmux-resize`: tmux-resize, tmux 3.7c (12 steps, 11276 bytes)
+- `tmux-small`: tmux-small, tmux 3.7c (10 steps, 4975 bytes)
+- `tmux-vim`: tmux-vim, tmux 3.7c (12 steps, 34482 bytes)
 - `tmux`: tmux, tmux 3.7c (21 steps, 16112 bytes)
+- `top`: top, top (macOS) (3 steps, 1423 bytes)
+- `vim-diff`: vim-diff, VIM - Vi IMproved 9.1 (2024 Jan 02, compiled Aug  8 2026 16:52:02) (8 steps, 18648 bytes)
+- `vim-help`: vim-help, VIM - Vi IMproved 9.1 (2024 Jan 02, compiled Aug  8 2026 16:52:02) (7 steps, 12130 bytes)
+- `vim-insert`: vim-insert, VIM - Vi IMproved 9.1 (2024 Jan 02, compiled Aug  8 2026 16:52:02) (12 steps, 12340 bytes)
+- `vim-resize`: vim-resize, VIM - Vi IMproved 9.1 (2024 Jan 02, compiled Aug  8 2026 16:52:02) (9 steps, 25174 bytes)
+- `vim-small`: vim-small, VIM - Vi IMproved 9.1 (2024 Jan 02, compiled Aug  8 2026 16:52:02) (7 steps, 11390 bytes)
+- `vim-terminal`: vim-terminal, VIM - Vi IMproved 9.1 (2024 Jan 02, compiled Aug  8 2026 16:52:02) (6 steps, 17696 bytes)
+- `vim-unicode`: vim-unicode, VIM - Vi IMproved 9.1 (2024 Jan 02, compiled Aug  8 2026 16:52:02) (12 steps, 11488 bytes)
 - `vim`: vim, VIM - Vi IMproved 9.1 (2024 Jan 02, compiled Aug  8 2026 16:52:02) (24 steps, 25352 bytes)
+- `zellij-small`: zellij-small, zellij 0.44.3 (4 steps, 26305 bytes)
+- `zellij`: zellij, zellij 0.44.3 (8 steps, 120004 bytes)
+- `zsh-history`: zsh-history, zsh 5.9 (arm64-apple-darwin26.0) (10 steps, 1577 bytes)
+- `zsh-menu`: zsh-menu, zsh 5.9 (arm64-apple-darwin26.0) (13 steps, 3629 bytes)
+- `zsh-resize`: zsh-resize, zsh 5.9 (arm64-apple-darwin26.0) (9 steps, 1533 bytes)
+- `zsh-small`: zsh-small, zsh 5.9 (arm64-apple-darwin26.0) (7 steps, 972 bytes)
 - `zsh`: zsh, zsh 5.9 (arm64-apple-darwin26.0) (17 steps, 1549 bytes)
 
 ## Asked after
 
 | Feature | Sent as | Programs |
 | --- | --- | --- |
-| synchronized output (CSI ? 2026 h/l, and its DECRQM) | `CSI ? 2026 $ p` ×3, `CSI ? 2026 h` ×16, `CSI ? 2026 l` ×16 | claude, claude-ghostty, claude-main |
-| hyperlinks (OSC 8) | `OSC 8 (close)` ×24, `OSC 8 (open)` ×24 | claude-ghostty, gls |
-| underline styles (SGR 4:n, 21) | not sent by any | |
-| underline colour (SGR 58, 59) | `SGR 59` ×66 | helix |
-| semantic prompts (OSC 133) | not sent by any | |
-| in-band resize (CSI ? 2048 h/l) | not sent by any | |
-| XTGETTCAP (DCS + q) | `DCS + q (#2)` ×1, `DCS + q (#4)` ×1, `DCS + q (%i)` ×1, `DCS + q (*7)` ×1, `DCS + q (Co)` ×1, `DCS + q (k1)` ×1, `DCS + q (kd)` ×1, `DCS + q (kl)` ×1, `DCS + q (kr)` ×1, `DCS + q (ku)` ×1 | vim |
-| DECRQSS (DCS $ q) | `DCS $ q  q` ×1 | vim |
-| DECRQM (CSI ? n $ p, CSI n $ p) | `CSI ? 1016 $ p` ×3, `CSI ? 12 $ p` ×1, `CSI ? 2026 $ p` ×3 | claude, claude-ghostty, claude-main, vim |
-| kitty keyboard (CSI ? u, CSI > n u, CSI < u, CSI = n u) | `CSI < 1 u` ×1, `CSI < u` ×9, `CSI > 5 u` ×7, `CSI ? u` ×4 | claude, claude-ghostty, claude-main, helix |
-| modifyOtherKeys (CSI > 4 ; n m, CSI ? 4 m) | `CSI > 4 m` ×3, `CSI > 4; m` ×2, `CSI > 4;2 m` ×7, `CSI ? 4 m` ×1 | claude, claude-ghostty, claude-main, vim |
-| colour queries (OSC 4/10/11/12 ?) | `OSC 10 ?` ×5, `OSC 11 ?` ×5 | delta-diff, delta-log, tmux, vim |
-| XTVERSION, DA2 (CSI > q, CSI > c) | `CSI > 0 q` ×3, `CSI > c` ×2, `CSI > q` ×1 | claude, claude-ghostty, claude-main, tmux, vim |
-| current directory (OSC 7) | not sent by any | |
+| synchronized output (CSI ? 2026 h/l, and its DECRQM) | `CSI ? 2026 $ p` ×22, `CSI ? 2026 h` ×774, `CSI ? 2026 l` ×774 | btop, btop-small, claude, claude-ghostty, claude-main, claude-resize, claude-small, lazygit, lazygit-small, lazygit-stage, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, zellij, zellij-small |
+| hyperlinks (OSC 8) | `OSC 8 (close)` ×1554, `OSC 8 (open)` ×150 | claude-ghostty, gls, gls-long, gls-wide, nvim-help, zellij, zellij-small |
+| underline styles (SGR 4:n, 21) | `SGR 4:3` ×15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide |
+| underline colour (SGR 58, 59) | `SGR 59` ×1061 | helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, zellij, zellij-small |
+| semantic prompts (OSC 133) | `OSC 133 ; A` ×13, `OSC 133 ; B` ×13, `OSC 133 ; C` ×12, `OSC 133 ; D` ×12 | fish, fish-complete, fish-history, fish-small |
+| in-band resize (CSI ? 2048 h/l) | `CSI ? 2048 $ p` ×18, `CSI ? 2048 h` ×18, `CSI ? 2048 l` ×18 | lazygit, lazygit-small, lazygit-stage, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide |
+| XTGETTCAP (DCS + q) | `DCS + q (#2)` ×8, `DCS + q (#4)` ×8, `DCS + q (%i)` ×8, `DCS + q (*7)` ×8, `DCS + q (Co)` ×8, `DCS + q (Ms)` ×15, `DCS + q (indn)` ×4, `DCS + q (k1)` ×8, `DCS + q (kd)` ×8, `DCS + q (kl)` ×8, `DCS + q (kr)` ×8, `DCS + q (ku)` ×8, `DCS + q (query-os-name)` ×4 | fish, fish-complete, fish-history, fish-small, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode |
+| DECRQSS (DCS $ q) | `DCS $ q  q` ×8, `DCS $ q m` ×15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode |
+| DECRQM (CSI ? n $ p, CSI n $ p) | `CSI ? 1000 $ p` ×3, `CSI ? 1006 $ p` ×3, `CSI ? 1016 $ p` ×5, `CSI ? 12 $ p` ×8, `CSI ? 2026 $ p` ×22, `CSI ? 2027 $ p` ×15, `CSI ? 2031 $ p` ×15, `CSI ? 2048 $ p` ×18, `CSI ? 69 $ p` ×15, `CSI ? 9001 $ p` ×3 | claude, claude-ghostty, claude-main, claude-resize, claude-small, lazygit, lazygit-small, lazygit-stage, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small |
+| kitty keyboard (CSI ? u, CSI > n u, CSI < u, CSI = n u) | `CSI < 1 u` ×8, `CSI < u` ×30, `CSI = 0 u` ×23, `CSI = 1 u` ×3, `CSI = 5 u` ×21, `CSI > 1 u` ×2, `CSI > 3 u` ×15, `CSI > 5 u` ×16, `CSI ? u` ×33 | claude, claude-ghostty, claude-main, claude-resize, claude-small, fish, fish-complete, fish-history, fish-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, lazygit, lazygit-small, lazygit-stage, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, zellij, zellij-small |
+| modifyOtherKeys (CSI > 4 ; n m, CSI ? 4 m) | `CSI > 4 m` ×10, `CSI > 4; m` ×16, `CSI > 4;1 m` ×5, `CSI > 4;2 m` ×18, `CSI ? 4 m` ×11 | claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, lazygit, lazygit-small, lazygit-stage, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode |
+| colour queries (OSC 4/10/11/12 ?) | `OSC 10 ?` ×32, `OSC 11 ?` ×79, `OSC 4 ?` ×512 | bat-diff, bat-markdown, bat-page, delta-diff, delta-log, delta-show, delta-wide, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish, fish-complete, fish-history, fish-small, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small |
+| XTVERSION, DA2 (CSI > q, CSI > c) | `CSI > 0 c` ×5, `CSI > 0 q` ×14, `CSI > c` ×13, `CSI > q` ×8 | claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish, fish-complete, fish-history, fish-small, lazygit, lazygit-small, lazygit-stage, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode |
+| current directory (OSC 7) | `OSC 7` ×25 | fish, fish-complete, fish-history, fish-small, mc, mc-small |
 | clipboard (OSC 52) | not sent by any | |
-| kitty graphics (APC G) | `APC G` ×3 | claude, claude-ghostty, claude-main |
+| kitty graphics (APC G) | `APC G` ×5 | claude, claude-ghostty, claude-main, claude-resize, claude-small |
 
 ## Not implemented, or in part
 
 | Sequence | What | Count | Programs | fux-vt |
 | --- | --- | ---: | --- | --- |
-| `CSI ? 12 l` | steady cursor (att610) | 32 | helix, tmux, vim | not implemented: a mode fux-vt does not keep, consumed quietly |
-| `APC G` | kitty graphics | 3 | claude, claude-ghostty, claude-main | not implemented: consumed, dropped |
-| `CSI 16 t` | XTWINOPS: cell size in pixels? | 3 | claude, claude-ghostty, claude-main | not implemented: reported as unhandled |
-| `CSI ? 1016 l` | reset: mouse: SGR pixel encoding | 3 | claude, claude-ghostty, claude-main | not implemented: a mode fux-vt does not keep, consumed quietly |
-| `CSI ? 7727 h` | application escape key (mintty) | 3 | tmux | not implemented: a mode fux-vt does not keep, consumed quietly |
-| `CSI 0 % m` |  | 1 | vim | not implemented: reported as unhandled |
-| `CSI 14 t` | XTWINOPS: window size in pixels? | 1 | tmux | not implemented: reported as unhandled |
-| `CSI ? 1015 h` | mouse: urxvt encoding | 1 | helix | not implemented: a mode fux-vt does not keep, consumed quietly |
-| `CSI ? 1015 l` | reset: mouse: urxvt encoding | 1 | helix | not implemented: a mode fux-vt does not keep, consumed quietly |
-| `CSI ? 12 h` | blinking cursor (att610) | 1 | vim | not implemented: a mode fux-vt does not keep, consumed quietly |
-| `CSI ? 4 m` | XTQMODKEYS, modifyOtherKeys? | 1 | vim | not implemented: reported as unhandled |
-| `CSI ? 7727 l` | reset: application escape key (mintty) | 1 | tmux | not implemented: a mode fux-vt does not keep, consumed quietly |
-| `DCS $ q  q` | DECRQSS | 1 | vim | not implemented: a query, consumed unanswered |
-| `DCS + q (#2)` | XTGETTCAP | 1 | vim | not implemented: a query, consumed unanswered |
-| `DCS + q (#4)` | XTGETTCAP | 1 | vim | not implemented: a query, consumed unanswered |
-| `DCS + q (%i)` | XTGETTCAP | 1 | vim | not implemented: a query, consumed unanswered |
-| `DCS + q (*7)` | XTGETTCAP | 1 | vim | not implemented: a query, consumed unanswered |
-| `DCS + q (Co)` | XTGETTCAP | 1 | vim | not implemented: a query, consumed unanswered |
-| `DCS + q (k1)` | XTGETTCAP | 1 | vim | not implemented: a query, consumed unanswered |
-| `DCS + q (kd)` | XTGETTCAP | 1 | vim | not implemented: a query, consumed unanswered |
-| `DCS + q (kl)` | XTGETTCAP | 1 | vim | not implemented: a query, consumed unanswered |
-| `DCS + q (kr)` | XTGETTCAP | 1 | vim | not implemented: a query, consumed unanswered |
-| `DCS + q (ku)` | XTGETTCAP | 1 | vim | not implemented: a query, consumed unanswered |
-| `DCS z` |  | 1 | vim | not implemented: consumed, dropped |
+| `OSC 4 ?` |  | 512 | zellij, zellij-small | not implemented: a query, dropped unanswered |
+| `CSI ? 12 l` | steady cursor (att610) | 274 | emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, htop, htop-small, htop-tree, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small | not implemented: a mode fux-vt does not keep, consumed quietly |
+| `CSI ? 12 h` | blinking cursor (att610) | 71 | emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a mode fux-vt does not keep, consumed quietly |
+| `OSC 7` | current directory | 25 | fish, fish-complete, fish-history, fish-small, mc, mc-small | not implemented: dropped (Parser::dispatch_osc) |
+| `CSI ? 7727 h` | application escape key (mintty) | 15 | tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim | not implemented: a mode fux-vt does not keep, consumed quietly |
+| `DCS $ q m` | DECRQSS | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | not implemented: a query, consumed unanswered |
+| `DCS + q (Ms)` | XTGETTCAP | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | not implemented: a query, consumed unanswered |
+| `SGR 4:3` |  | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | partly: underline on; the style is not kept |
+| `CSI ? 1016 l` | reset: mouse: SGR pixel encoding | 14 | claude, claude-ghostty, claude-main, claude-resize, claude-small, lazygit, lazygit-small, lazygit-stage | not implemented: a mode fux-vt does not keep, consumed quietly |
+| `OSC 133 ; B` | semantic prompt | 13 | fish, fish-complete, fish-history, fish-small | not implemented: consumed: only A and L are kept (Parser::dispatch_osc) |
+| `OSC 133 ; C` | semantic prompt | 12 | fish, fish-complete, fish-history, fish-small | not implemented: consumed: only A and L are kept (Parser::dispatch_osc) |
+| `OSC 133 ; D` | semantic prompt | 12 | fish, fish-complete, fish-history, fish-small | not implemented: consumed: only A and L are kept (Parser::dispatch_osc) |
+| `CSI ? 4 m` | XTQMODKEYS, modifyOtherKeys? | 11 | lazygit, lazygit-small, lazygit-stage, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: reported as unhandled |
+| `CSI ? 1015 l` | reset: mouse: urxvt encoding | 10 | btop, btop-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, zellij, zellij-small | not implemented: a mode fux-vt does not keep, consumed quietly |
+| `CSI 0 % m` |  | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: reported as unhandled |
+| `CSI ? 1015 h` | mouse: urxvt encoding | 8 | btop, btop-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode | not implemented: a mode fux-vt does not keep, consumed quietly |
+| `DCS $ q  q` | DECRQSS | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
+| `DCS + q (#2)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
+| `DCS + q (#4)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
+| `DCS + q (%i)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
+| `DCS + q (*7)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
+| `DCS + q (Co)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
+| `DCS + q (k1)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
+| `DCS + q (kd)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
+| `DCS + q (kl)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
+| `DCS + q (kr)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
+| `DCS + q (ku)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
+| `DCS z` |  | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: consumed, dropped |
+| `CSI 14 t` | XTWINOPS: window size in pixels? | 7 | tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, zellij, zellij-small | not implemented: reported as unhandled |
+| `CSI 16 t` | XTWINOPS: cell size in pixels? | 7 | claude, claude-ghostty, claude-main, claude-resize, claude-small, zellij, zellij-small | not implemented: reported as unhandled |
+| `APC G` | kitty graphics | 5 | claude, claude-ghostty, claude-main, claude-resize, claude-small | not implemented: consumed, dropped |
+| `CSI ? 7727 l` | reset: application escape key (mintty) | 5 | tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim | not implemented: a mode fux-vt does not keep, consumed quietly |
+| `DCS + q (indn)` | XTGETTCAP | 4 | fish, fish-complete, fish-history, fish-small | not implemented: a query, consumed unanswered |
+| `DCS + q (query-os-name)` | XTGETTCAP | 4 | fish, fish-complete, fish-history, fish-small | not implemented: a query, consumed unanswered |
+| `CSI ? 1001 r` |  | 2 | mc, mc-small | not implemented: reported as unhandled |
+| `CSI ? 1001 s` |  | 2 | mc, mc-small | not implemented: reported as unhandled |
+| `ESC \` |  | 2 | ranger | not implemented: reported as unhandled |
+| `ESC k` |  | 2 | ranger | not implemented: reported as unhandled |
+| `OSC 112` | reset cursor colour | 2 | nvim-terminal | not implemented: dropped (Parser::dispatch_osc) |
+| `OSC 12` |  | 2 | vim-terminal | not implemented: dropped (Parser::dispatch_osc) |
+| `CSI ? 1034 h` |  | 1 | top | not implemented: a mode fux-vt does not keep, consumed quietly |
+| `OSC 9;4` | progress | 1 | nvim-netrw | not implemented: dropped (Parser::dispatch_osc) |
 
 ## Implemented
 
 | Sequence | What | Count | Programs | fux-vt |
 | --- | --- | ---: | --- | --- |
-| `SGR 0` |  | 5179 | delta-diff, delta-log, fzf, fzf-height, gls, helix, man, tmux, vim, zsh | implemented |
-| `SGR 38;2;n;n;n` |  | 3188 | claude, claude-ghostty, claude-main, delta-diff, delta-log, helix | implemented |
-| `CSI n;n H` | CUP | 1709 | delta-diff, delta-log, helix, less, man, tmux, vim | implemented |
-| `SGR 48;2;n;n;n` |  | 1401 | claude, claude-ghostty, claude-main, delta-diff, delta-log, helix | implemented |
-| `CSI K` | EL | 1071 | bash, claude-ghostty, claude-main, delta-diff, delta-log, fzf, fzf-height, less, man, tmux, vim, zsh | implemented |
-| `SGR 30-37` |  | 809 | delta-diff, delta-log, gls, tmux, vim | implemented |
-| `SGR 90-97` |  | 752 | vim | implemented |
-| `SGR 38;5;n` |  | 688 | delta-diff, fzf, fzf-height, vim | implemented |
-| `CSI n C` |  | 552 | claude, claude-ghostty, claude-main, fzf, fzf-height, tmux, vim, zsh | implemented |
-| `CSI n G` |  | 429 | claude, claude-ghostty, claude-main | implemented |
-| `SGR 1` |  | 380 | claude, claude-ghostty, claude-main, fzf, fzf-height, gls, man, vim, zsh | implemented |
-| `SGR 39` |  | 322 | claude, claude-ghostty, claude-main, helix, tmux | implemented |
-| `CSI n B` |  | 239 | claude, claude-ghostty, claude-main, fzf, fzf-height, tmux, zsh | implemented |
-| `SGR 48;5;n` |  | 231 | fzf, fzf-height, vim | implemented |
-| `CSI H` | CUP, home | 203 | claude, delta-diff, less, man, tmux, vim | implemented |
-| `CSI n A` |  | 188 | claude, claude-ghostty, claude-main, fzf, fzf-height, tmux | implemented |
-| `ESC M` | RI | 181 | delta-diff, less, man | implemented |
-| `CSI ? 25 l` | DECTCEM, hide the cursor | 137 | claude, claude-ghostty, claude-main, fzf, fzf-height, helix, tmux, vim | implemented |
-| `CSI 1 K` |  | 116 | tmux | implemented |
-| `CSI ? 25 h` | DECTCEM, show the cursor | 105 | claude, claude-ghostty, claude-main, fzf, fzf-height, helix, tmux, vim | implemented |
-| `CSI 0 K` |  | 90 | delta-diff, delta-log | implemented |
-| `CSI 2 K` |  | 82 | claude, claude-ghostty, claude-main | implemented |
-| `SGR 49` |  | 76 | claude, claude-ghostty, claude-main, helix | implemented |
-| `SGR 24` |  | 75 | helix, man, zsh | implemented |
-| `CSI n X` | ECH | 74 | tmux | implemented |
-| `SGR 7` |  | 74 | bash, claude-ghostty, claude-main, delta-log, helix, less, man, vim, zsh | implemented |
-| `SGR 4` |  | 69 | helix, man, zsh | implemented |
-| `SGR 59` |  | 66 | helix | implemented |
-| `SGR 27` |  | 51 | bash, claude-ghostty, claude-main, delta-log, helix, less, man, vim, zsh | implemented |
-| `ESC ( B` | G0: ASCII | 41 | claude, claude-ghostty, claude-main, tmux | implemented |
-| `CSI ? 7 h` | DECAWM, autowrap | 31 | fzf, fzf-height | implemented |
-| `CSI ? 7 l` | reset: DECAWM, autowrap | 31 | fzf, fzf-height | implemented |
-| `CSI n D` |  | 27 | claude, claude-ghostty, claude-main, zsh | implemented |
-| `OSC 8 (close)` | hyperlink: end | 24 | claude-ghostty, gls | implemented: ends the open hyperlink |
-| `OSC 8 (open)` | hyperlink: start | 24 | claude-ghostty, gls | implemented: opens a hyperlink, which the cells printed keep (Row::link) |
-| `CSI n;n r` | DECSTBM, scrolling region | 21 | tmux, vim | implemented |
-| `SGR 22` |  | 21 | claude, claude-ghostty, claude-main, helix | implemented |
-| `SGR 40-47` |  | 20 | tmux, vim | implemented |
-| `CSI ? 2004 h` | bracketed paste | 19 | bash, claude, claude-ghostty, claude-main, fzf, fzf-height, helix, tmux, vim, zsh | implemented |
-| `CSI G` |  | 19 | claude-ghostty, claude-main, fzf, fzf-height | implemented |
-| `CSI ? 2004 l` | reset: bracketed paste | 17 | bash, claude, claude-ghostty, claude-main, fzf, fzf-height, helix, tmux, vim, zsh | implemented |
-| `CSI ? 1000 l` | reset: mouse: press and release | 16 | claude, claude-ghostty, claude-main, fzf, fzf-height, helix, tmux | implemented |
-| `CSI ? 1002 l` | reset: mouse: button motion | 16 | claude, claude-ghostty, claude-main, fzf, fzf-height, helix, tmux | implemented |
-| `CSI ? 1006 l` | reset: mouse: SGR encoding | 16 | claude, claude-ghostty, claude-main, fzf, fzf-height, helix, tmux | implemented |
-| `CSI ? 2026 h` | synchronized output: begin | 16 | claude, claude-ghostty, claude-main | implemented |
-| `CSI ? 2026 l` | synchronized output: end | 16 | claude, claude-ghostty, claude-main | implemented |
-| `CSI C` |  | 16 | bash | implemented |
-| `CSI ? 1003 l` | reset: mouse: any motion | 14 | claude, claude-ghostty, claude-main, helix, tmux | implemented |
-| `CSI n SP q` | DECSCUSR, cursor style | 14 | helix | implemented: the cursor style is kept |
-| `CSI A` |  | 10 | zsh | implemented |
-| `CSI c` | DA1, primary device attributes | 10 | claude, claude-ghostty, claude-main, delta-diff, delta-log, helix, tmux | answers (first with `\e[?62;22c`) |
-| `CSI < u` | kitty keyboard: pop flags | 9 | claude, claude-ghostty, claude-main | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
-| `CSI J` | ED | 9 | fzf-height, zsh | implemented |
-| `SGR 100-107` |  | 8 | vim | implemented |
-| `SGR 2` |  | 8 | claude, helix | implemented |
-| `CSI 2 J` |  | 7 | helix, less, tmux, vim | implemented |
-| `CSI > 4;2 m` | XTMODKEYS: modifyOtherKeys 2 | 7 | claude, claude-ghostty, claude-main, vim | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
-| `CSI > 5 u` | kitty keyboard: push flags 5 | 7 | claude, claude-ghostty, claude-main, helix | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
-| `CSI ? 1 h` | DECCKM, application cursor keys | 6 | delta-diff, delta-log, less, man, tmux, vim | implemented |
-| `CSI ? 1 l` | reset: DECCKM, application cursor keys | 6 | delta-diff, delta-log, less, man, tmux, vim | implemented |
-| `CSI ? 1004 l` | reset: focus reporting | 6 | claude, claude-ghostty, claude-main, helix, tmux, vim | implemented |
-| `CSI ? 1049 h` | alternate screen, cursor saved | 6 | fzf, helix, less, man, tmux, vim | implemented |
-| `CSI ? 1049 l` | reset: alternate screen, cursor saved | 6 | fzf, helix, less, man, tmux, vim | implemented |
-| `CSI n @` | ICH | 6 | bash | implemented |
-| `CSI r` |  | 6 | claude, claude-ghostty, claude-main | implemented |
-| `ESC 7` | DECSC | 6 | claude, claude-ghostty, claude-main | implemented |
-| `ESC 8` | DECRC | 6 | claude, claude-ghostty, claude-main | implemented |
-| `ESC =` | DECKPAM | 6 | delta-diff, delta-log, less, man, tmux, vim | implemented |
-| `ESC >` | DECKPNM | 6 | delta-diff, delta-log, less, man, tmux, vim | implemented |
-| `CSI ? 1004 h` | focus reporting | 5 | claude, claude-ghostty, claude-main, helix, vim | implemented |
-| `OSC 0` | title and icon name | 5 | claude, claude-ghostty, claude-main | implemented: an event; fux sets the pane title |
-| `OSC 10 ?` | foreground colour query | 5 | delta-diff, delta-log, tmux, vim | implemented: a ColorQuery event; fux answers with its client terminal's colour (src/outer.rs) |
-| `OSC 11 ?` | background colour query | 5 | delta-diff, delta-log, tmux, vim | implemented: a ColorQuery event; fux answers with its client terminal's colour (src/outer.rs) |
-| `CSI 6 n` | DSR, cursor position report | 4 | fzf-height, vim | answers (first with `\e[1;1R`) |
-| `CSI ? 2031 h` | colour-scheme change reports | 4 | claude, claude-ghostty, claude-main, tmux | implemented |
-| `CSI ? 2031 l` | reset: colour-scheme change reports | 4 | claude, claude-ghostty, claude-main, tmux | implemented |
-| `CSI ? u` | kitty keyboard: query flags | 4 | claude, claude-ghostty, claude-main, helix | answers (first with `\e[?5u`) |
-| `CSI n M` | DL | 4 | vim | implemented |
-| `CSI > 0 q` | XTVERSION | 3 | claude, claude-ghostty, claude-main | answers (first with `\eP>\|fux 0.17.0\e\\`) |
-| `CSI > 4 m` | XTMODKEYS: modifyOtherKeys reset | 3 | claude, claude-ghostty, claude-main | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
-| `CSI ? 1000 h` | mouse: press and release | 3 | fzf, fzf-height, helix | implemented |
-| `CSI ? 1002 h` | mouse: button motion | 3 | fzf, fzf-height, helix | implemented |
-| `CSI ? 1006 h` | mouse: SGR encoding | 3 | fzf, fzf-height, helix | implemented |
-| `CSI ? 1016 $ p` |  | 3 | claude, claude-ghostty, claude-main | answers (first with `\e[?1016;0$y`) |
-| `CSI ? 2026 $ p` | DECRQM: synchronized output? | 3 | claude, claude-ghostty, claude-main | answers (first with `\e[?2026;2$y`) |
-| `CSI n d` |  | 3 | tmux | implemented |
-| `CSI 22;n t` | XTWINOPS: push title | 2 | vim | implemented: reported as unhandled; fux's pane pushes its title (src/pane.rs) |
-| `CSI 23;n t` | XTWINOPS: pop title | 2 | vim | implemented: reported as unhandled; fux's pane pops its title (src/pane.rs) |
-| `CSI > 4; m` | XTMODKEYS: modifyOtherKeys reset | 2 | vim | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
-| `CSI > c` | DA2, secondary device attributes | 2 | tmux, vim | answers (first with `\e[>1;1700;0c`) |
-| `CSI ? 1005 l` | reset: mouse: UTF-8 encoding | 2 | tmux | implemented |
-| `SGR 23` |  | 2 | vim | implemented |
-| `SGR 29` |  | 2 | vim | implemented |
-| `CSI 18 t` | XTWINOPS: size in characters? | 1 | tmux | answers (first with `\e[8;40;120t`) |
-| `CSI 22;n;n t` | XTWINOPS: push title | 1 | tmux | implemented: reported as unhandled; fux's pane pushes its title (src/pane.rs) |
-| `CSI 23;n;n t` | XTWINOPS: pop title | 1 | tmux | implemented: reported as unhandled; fux's pane pops its title (src/pane.rs) |
-| `CSI < 1 u` | kitty keyboard: pop flags | 1 | helix | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
-| `CSI > q` | XTVERSION | 1 | tmux | answers (first with `\eP>\|fux 0.17.0\e\\`) |
-| `CSI ? 1003 h` | mouse: any motion | 1 | helix | implemented |
-| `CSI ? 12 $ p` |  | 1 | vim | answers (first with `\e[?12;0$y`) |
-| `CSI ? 996 n` | colour-scheme query | 1 | tmux | implemented: reported as unhandled; fux answers with its client terminal's scheme (src/outer.rs) |
-| `CSI n L` | IL | 1 | vim | implemented |
+| `SGR 38;2;n;n;n` |  | 40414 | bat-diff, bat-markdown, bat-page, btop, btop-small, claude, claude-ghostty, claude-main, claude-resize, claude-small, delta-diff, delta-log, delta-show, delta-wide, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fzf-preview, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, lazygit, lazygit-small, lazygit-stage, micro-edit, micro-small, micro-split, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | implemented |
+| `SGR 0` |  | 40257 | bat-diff, bat-markdown, bat-page, btop, btop-small, cargo-build, cargo-errors, cargo-test, clang-errors, delta-diff, delta-log, delta-show, delta-wide, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish, fish-complete, fish-history, fish-small, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, git-add-p, git-diff, git-graph, gls, gls-long, gls-wide, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, less-chop, less-color, man, man-long, man-small, man-tables, man-wide, mc, mc-small, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, top, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small, zsh, zsh-history, zsh-menu, zsh-resize, zsh-small | implemented |
+| `SGR 48;2;n;n;n` |  | 29591 | btop, btop-small, claude, claude-ghostty, claude-main, claude-resize, claude-small, delta-diff, delta-log, delta-show, delta-wide, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, micro-edit, micro-small, micro-split, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | implemented |
+| `ESC ( B` | G0: ASCII | 17108 | cargo-test, claude, claude-ghostty, claude-main, claude-resize, claude-small, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, mc, mc-small, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, top | implemented |
+| `CSI n;n H` | CUP | 16917 | bat-diff, bat-page, delta-diff, delta-log, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, git-diff, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, less, less-chop, less-color, less-small, man, man-long, man-small, man-tables, man-wide, mc, mc-small, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, pico, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, top, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small | implemented |
+| `CSI n C` |  | 10942 | btop, btop-small, claude, claude-ghostty, claude-main, claude-resize, claude-small, fish, fish-complete, fish-history, fish-small, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, mc, mc-small, nvim-diff, nvim-help, nvim-insert, nvim-search, nvim-small, nvim-terminal, nvim-visual, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zsh, zsh-history, zsh-menu, zsh-resize, zsh-small | implemented |
+| `SGR 1` |  | 5825 | bat-diff, bat-markdown, bat-page, btop, btop-small, cargo-build, cargo-errors, cargo-test, clang-errors, claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish-complete, fish-history, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, git-add-p, git-diff, git-graph, gls, gls-long, gls-wide, helix-picker, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, less-chop, less-color, man, man-long, man-small, man-tables, man-wide, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-visual, nvim-wide, ranger, tig, tig-blame, tig-tree, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small, zsh, zsh-history, zsh-menu, zsh-resize, zsh-small | implemented |
+| `CSI K` | EL | 5303 | bash, bash-complete, bash-history, bat-diff, bat-page, cargo-build, cargo-errors, cargo-test, claude-ghostty, claude-main, claude-resize, claude-small, delta-diff, delta-log, delta-show, delta-wide, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish, fish-complete, fish-history, fish-small, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, git-diff, git-graph, htop, htop-small, htop-tree, less, less-chop, less-color, less-small, man, man-long, man-small, man-tables, man-wide, mc, mc-small, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, pico, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zsh, zsh-history, zsh-menu, zsh-resize, zsh-small | implemented |
+| `SGR 30-37` |  | 4787 | bat-diff, cargo-errors, cargo-test, clang-errors, delta-diff, delta-log, delta-show, delta-wide, fish, fish-complete, fish-history, fish-small, git-add-p, git-diff, git-graph, gls, gls-long, gls-wide, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, less-color, mc, mc-small, ncdu, nnn, nnn-detail, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zsh-history, zsh-menu, zsh-resize, zsh-small | implemented |
+| `SGR 39` |  | 4519 | claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish, fish-complete, fish-history, fish-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, htop, htop-small, htop-tree, mc, mc-small, ncdu, nnn, nnn-detail, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-small, tmux-vim, zellij, zellij-small, zsh-history, zsh-menu, zsh-resize, zsh-small | implemented |
+| `SGR 38;5;n` |  | 3718 | delta-diff, delta-show, delta-wide, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, lazygit, lazygit-small, lazygit-stage, nnn, nnn-detail, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small | implemented |
+| `SGR 49` |  | 2626 | claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish, fish-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, htop, htop-small, htop-tree, mc, mc-small, ncdu, nnn, nnn-detail, ranger, tig, tig-blame, tig-tree, tmux-copy, zellij, zellij-small | implemented |
+| `SGR 90-97` |  | 2430 | cargo-build, cargo-errors, cargo-test, fish, fish-complete, fish-history, htop, htop-small, htop-tree, mc, mc-small, ranger, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented |
+| `SGR 22` |  | 1842 | btop, btop-small, claude, claude-ghostty, claude-main, claude-resize, claude-small, helix, helix-picker, zellij, zellij-small | implemented |
+| `SGR 25` |  | 1770 | zellij, zellij-small | implemented |
+| `OSC 8 (close)` | hyperlink: end | 1554 | claude-ghostty, gls, gls-long, gls-wide, nvim-help, zellij, zellij-small | implemented: ends the open hyperlink |
+| `CSI n;n f` |  | 1484 | btop, btop-small | implemented |
+| `SGR 27` |  | 1385 | bash, bash-history, bat-diff, bat-page, claude-ghostty, claude-main, claude-resize, claude-small, delta-log, delta-wide, fish-complete, git-diff, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, less, less-chop, less-color, less-small, man, man-long, man-small, man-tables, man-wide, pico, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small, zsh, zsh-history, zsh-menu, zsh-resize, zsh-small | implemented |
+| `CSI n B` |  | 1264 | btop, btop-small, claude, claude-ghostty, claude-main, claude-resize, claude-small, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, nvim-diagnostics, nvim-diff, nvim-help, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, tmux, tmux-small, zsh, zsh-history, zsh-menu, zsh-small | implemented |
+| `SGR 24` |  | 1081 | fish, fish-complete, helix, man, man-long, man-small, man-tables, man-wide, zellij, zellij-small, zsh, zsh-history, zsh-menu, zsh-resize, zsh-small | implemented |
+| `SGR 59` |  | 1061 | helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, zellij, zellij-small | implemented |
+| `CSI ? 25 l` | DECTCEM, hide the cursor | 1027 | btop, btop-small, claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, nvim-help, nvim-search, nvim-small, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small | implemented |
+| `CSI n G` |  | 927 | claude, claude-ghostty, claude-main, claude-resize, claude-small, htop, htop-small, htop-tree, ncdu, nnn-detail, npm-install, ranger, tig, tig-blame, tig-tree, top | implemented |
+| `SGR 23` |  | 927 | fish-complete, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small | implemented |
+| `SGR 48;5;n` |  | 908 | fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, vim, vim-diff, vim-terminal, zellij, zellij-small | implemented |
+| `SGR 29` |  | 907 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small | implemented |
+| `SGR 28` |  | 885 | zellij, zellij-small | implemented |
+| `CSI n D` |  | 870 | btop, btop-small, claude, claude-ghostty, claude-main, claude-resize, claude-small, fish, fish-complete, fish-history, tmux-vim, zsh, zsh-history, zsh-menu, zsh-resize, zsh-small | implemented |
+| `SGR 7` |  | 780 | bash, bash-history, bat-diff, bat-page, claude-ghostty, claude-main, claude-resize, claude-small, delta-log, delta-wide, fish-complete, fzf-preview, git-diff, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, less, less-chop, less-color, less-small, man, man-long, man-small, man-tables, man-wide, micro-edit, micro-split, nnn, nnn-detail, pico, ranger, tmux-vim, top, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zsh, zsh-history, zsh-menu, zsh-resize, zsh-small | implemented |
+| `CSI ? 2026 h` | synchronized output: begin | 774 | btop, btop-small, claude, claude-ghostty, claude-main, claude-resize, claude-small, lazygit, lazygit-small, lazygit-stage, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, zellij, zellij-small | implemented |
+| `CSI ? 2026 l` | synchronized output: end | 774 | btop, btop-small, claude, claude-ghostty, claude-main, claude-resize, claude-small, lazygit, lazygit-small, lazygit-stage, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, zellij, zellij-small | implemented |
+| `CSI n X` | ECH | 682 | htop, ncdu, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim | implemented |
+| `SGR 40-47` |  | 677 | htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, mc, mc-small, ncdu, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-insert | implemented |
+| `CSI ? 25 h` | DECTCEM, show the cursor | 656 | btop, btop-small, claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish, fish-complete, fish-history, fish-small, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small | implemented |
+| `CSI H` | CUP, home | 586 | claude, claude-resize, delta-diff, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, less, less-chop, less-color, less-small, man, man-long, man-tables, mc, mc-small, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, top, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented |
+| `CSI n d` |  | 528 | emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, htop, htop-small, htop-tree, ncdu, nnn, nnn-detail, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-small, tmux-vim, top | implemented |
+| `CSI 1 K` |  | 467 | htop, mc, mc-small, ncdu, tig, tmux, tmux-resize, tmux-vim | implemented |
+| `CSI A` |  | 461 | bash-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish-complete, fish-small, nvim-diff, nvim-insert, nvim-terminal, nvim-wide, ranger, tmux-copy, tmux-small, tmux-vim, zsh, zsh-history, zsh-menu, zsh-resize, zsh-small | implemented |
+| `CSI n A` |  | 439 | claude, claude-ghostty, claude-main, claude-resize, claude-small, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, nvim-diff, nvim-netrw, nvim-resize, nvim-small, nvim-split, nvim-unicode, nvim-wide, tmux, tmux-resize, zsh-menu | implemented |
+| `SGR 4` |  | 328 | emacs-mx, fish, fish-complete, helix, lazygit, lazygit-small, lazygit-stage, man, man-long, man-small, man-tables, man-wide, nnn, nnn-detail, nvim-diagnostics, nvim-help, ranger, zsh, zsh-history | implemented |
+| `ESC M` | RI | 292 | delta-diff, less, less-color, less-small, man, man-long, man-tables, nnn | implemented |
+| `CSI n SP q` | DECSCUSR, cursor style | 276 | helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, lazygit-stage, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, vim-terminal, zellij, zellij-small | implemented: the cursor style is kept |
+| `CSI n;n r` | DECSTBM, scrolling region | 170 | emacs-mx, emacs-scroll, emacs-split, htop, htop-small, htop-tree, mc, mc-small, ncdu, nnn, nnn-detail, nvim-help, nvim-insert, nvim-resize, nvim-scroll, pico, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, top, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented |
+| `CSI 2 K` |  | 166 | claude, claude-ghostty, claude-main, claude-resize, claude-small | implemented |
+| `OSC 8 (open)` | hyperlink: start | 150 | claude-ghostty, gls, gls-long, gls-wide, nvim-help | implemented: opens a hyperlink, which the cells printed keep (Row::link) |
+| `ESC ( 0` | G0: DEC special graphics | 147 | ncdu, tig, tig-blame, tig-tree | implemented |
+| `CSI ? 1006 l` | reset: mouse: SGR encoding | 137 | btop, btop-small, claude, claude-ghostty, claude-main, claude-resize, claude-small, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, mc, mc-small, micro-edit, micro-small, micro-split, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, zellij, zellij-small | implemented |
+| `CSI ? 1002 l` | reset: mouse: button motion | 132 | btop, btop-small, claude, claude-ghostty, claude-main, claude-resize, claude-small, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, lazygit, lazygit-small, lazygit-stage, mc, mc-small, micro-edit, micro-small, micro-split, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, zellij, zellij-small | implemented |
+| `CSI ? 2004 l` | reset: bracketed paste | 120 | bash, bash-complete, bash-history, bash-small, claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish, fish-complete, fish-history, fish-small, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, lazygit, lazygit-small, lazygit-stage, mc, mc-small, micro-edit, micro-small, micro-split, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zsh, zsh-history, zsh-menu, zsh-resize, zsh-small | implemented |
+| `CSI ? 2004 h` | bracketed paste | 117 | bash, bash-complete, bash-history, bash-small, claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish, fish-complete, fish-history, fish-small, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, lazygit, lazygit-small, lazygit-stage, mc, mc-small, micro-edit, micro-small, micro-split, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small, zsh, zsh-history, zsh-menu, zsh-resize, zsh-small | implemented |
+| `CSI 2 J` |  | 115 | btop, btop-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, htop, htop-small, htop-tree, less, less-chop, less-small, man-long, man-tables, mc, mc-small, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, top, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small | implemented |
+| `CSI 0 K` |  | 104 | delta-diff, delta-log, delta-show, delta-wide, npm-install | implemented |
+| `CSI J` | ED | 102 | fish-complete, fzf-height, fzf-multi, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, ncdu, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, pico, ranger, tig, tig-blame, tig-tree, zsh, zsh-history, zsh-menu, zsh-resize, zsh-small | implemented |
+| `CSI ? 7 h` | DECAWM, autowrap | 89 | fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, ncdu, nnn, nnn-detail, ranger, tig, tig-blame, tig-tree, top | implemented |
+| `CSI ? 1049 h` | alternate screen, cursor saved | 88 | bat-diff, bat-page, btop, btop-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish, fish-complete, fish-history, fish-small, fzf, fzf-preview, fzf-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, less, less-chop, less-color, less-small, man, man-long, man-small, man-tables, man-wide, mc, mc-small, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, pico, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, top, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small | implemented |
+| `CSI ? 1049 l` | reset: alternate screen, cursor saved | 88 | bat-diff, bat-page, btop, btop-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish, fish-complete, fish-history, fish-small, fzf, fzf-preview, fzf-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, less, less-chop, less-color, less-small, man, man-long, man-small, man-tables, man-wide, mc, mc-small, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, pico, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, top, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small | implemented |
+| `CSI ? 1000 l` | reset: mouse: press and release | 82 | claude, claude-ghostty, claude-main, claude-resize, claude-small, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, micro-edit, micro-small, micro-split, nnn, nnn-detail, ranger, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, zellij, zellij-small | implemented |
+| `CSI c` | DA1, primary device attributes | 81 | bat-diff, bat-markdown, bat-page, claude, claude-ghostty, claude-main, claude-resize, claude-small, delta-diff, delta-log, delta-show, delta-wide, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, lazygit, lazygit-small, lazygit-stage, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim | answers (first with `\e[?62;22c`) |
+| `OSC 11 ?` | background colour query | 79 | bat-diff, bat-markdown, bat-page, delta-diff, delta-log, delta-show, delta-wide, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish, fish-complete, fish-history, fish-small, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small | implemented: a ColorQuery event; fux answers with its client terminal's colour (src/outer.rs) |
+| `CSI ? 1006 h` | mouse: SGR encoding | 78 | btop, btop-small, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, mc, mc-small, micro-edit, micro-small, micro-split, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | implemented |
+| `CSI ? 7 l` | reset: DECAWM, autowrap | 78 | fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, lazygit, lazygit-small, lazygit-stage, ranger | implemented |
+| `CSI ? 1 l` | reset: DECCKM, application cursor keys | 77 | bat-diff, bat-page, delta-diff, delta-log, delta-show, delta-wide, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, git-diff, git-graph, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, less, less-chop, less-color, less-small, man, man-long, man-small, man-tables, man-wide, mc, mc-small, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, top, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small | implemented |
+| `ESC >` | DECKPNM | 75 | bat-diff, bat-page, delta-diff, delta-log, delta-show, delta-wide, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, git-diff, git-graph, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, less, less-chop, less-color, less-small, man, man-long, man-small, man-tables, man-wide, mc, mc-small, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, top, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented |
+| `ESC =` | DECKPAM | 74 | bat-diff, bat-page, delta-diff, delta-log, delta-show, delta-wide, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, git-diff, git-graph, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, less, less-chop, less-color, less-small, man, man-long, man-small, man-tables, man-wide, mc, mc-small, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, top, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small | implemented |
+| `CSI ? 1002 h` | mouse: button motion | 73 | btop, btop-small, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, lazygit, lazygit-small, lazygit-stage, mc, mc-small, micro-edit, micro-small, micro-split, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | implemented |
+| `CSI ? 1 h` | DECCKM, application cursor keys | 72 | bat-diff, bat-page, delta-diff, delta-log, delta-show, delta-wide, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, git-diff, git-graph, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, less, less-chop, less-color, less-small, man, man-long, man-small, man-tables, man-wide, mc, mc-small, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, top, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented |
+| `CSI ? 1003 l` | reset: mouse: any motion | 68 | claude, claude-ghostty, claude-main, claude-resize, claude-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, lazygit, lazygit-small, lazygit-stage, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, zellij, zellij-small | implemented |
+| `CSI C` |  | 51 | bash, bash-small, nvim-diagnostics, nvim-insert, nvim-search, nvim-split, nvim-terminal, nvim-unicode, nvim-wide, ranger, tmux-copy | implemented |
+| `CSI ? 2031 h` | colour-scheme change reports | 48 | claude, claude-ghostty, claude-main, claude-resize, claude-small, fish, fish-complete, fish-history, fish-small, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, zellij, zellij-small | implemented |
+| `CSI ? 1004 l` | reset: focus reporting | 47 | claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, lazygit, lazygit-small, lazygit-stage, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented |
+| `CSI ? 2031 l` | reset: colour-scheme change reports | 47 | claude, claude-ghostty, claude-main, claude-resize, claude-small, fish, fish-complete, fish-history, fish-small, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, zellij, zellij-small | implemented |
+| `CSI G` |  | 45 | claude-ghostty, claude-main, claude-resize, claude-small, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small | implemented |
+| `CSI ? 1004 h` | focus reporting | 42 | claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, lazygit, lazygit-small, lazygit-stage, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented |
+| `OSC 0` | title and icon name | 37 | claude, claude-ghostty, claude-main, claude-resize, claude-small, fish, fish-complete, fish-history, fish-small, zellij, zellij-small | implemented: an event; fux sets the pane title |
+| `SGR 100-107` |  | 34 | fish-history, vim, vim-diff, vim-help, vim-insert, vim-small | implemented |
+| `CSI 6 n` | DSR, cursor position report | 33 | fish, fish-complete, fish-history, fish-small, fzf-height, fzf-multi, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | answers (first with `\e[1;1R`) |
+| `CSI ? u` | kitty keyboard: query flags | 33 | claude, claude-ghostty, claude-main, claude-resize, claude-small, fish, fish-complete, fish-history, fish-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, lazygit, lazygit-small, lazygit-stage, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | answers (first with `\e[?5u`) |
+| `CSI 22;n;n t` | XTWINOPS: push title | 32 | htop, htop-small, htop-tree, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim | implemented: reported as unhandled; fux's pane pushes its title (src/pane.rs) |
+| `CSI 23;n;n t` | XTWINOPS: pop title | 32 | htop, htop-small, htop-tree, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim | implemented: reported as unhandled; fux's pane pops its title (src/pane.rs) |
+| `OSC 10 ?` | foreground colour query | 32 | bat-diff, bat-markdown, bat-page, delta-diff, delta-log, delta-show, delta-wide, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small | implemented: a ColorQuery event; fux answers with its client terminal's colour (src/outer.rs) |
+| `CSI 5 n` | DSR, status | 30 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | answers (first with `\e[0n`) |
+| `CSI < u` | kitty keyboard: pop flags | 30 | claude, claude-ghostty, claude-main, claude-resize, claude-small, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI n @` | ICH | 26 | bash, bash-history, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split | implemented |
+| `SGR 2` |  | 25 | claude, fish, fish-complete, fish-history, fish-small, git-graph, helix | implemented |
+| `CSI ? 1000 h` | mouse: press and release | 24 | fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, micro-edit, micro-small, micro-split, nnn, nnn-detail, ranger | implemented |
+| `CSI r` |  | 24 | claude, claude-ghostty, claude-main, claude-resize, claude-small, nvim-help, nvim-insert, nvim-resize, nvim-scroll, zellij, zellij-small | implemented |
+| `CSI = 0 u` |  | 23 | fish, fish-complete, fish-history, fish-small, lazygit, lazygit-small, lazygit-stage | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI ? 2026 $ p` | DECRQM: synchronized output? | 22 | claude, claude-ghostty, claude-main, claude-resize, claude-small, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, zellij, zellij-small | answers (first with `\e[?2026;2$y`) |
+| `SGR 3` |  | 22 | emacs-mx, fish-complete | implemented |
+| `CSI = 5 u` |  | 21 | fish, fish-complete, fish-history, fish-small | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI n S` | SU | 21 | tmux-copy, tmux-vim | implemented |
+| `CSI 22;n t` | XTWINOPS: push title | 19 | lazygit, lazygit-small, lazygit-stage, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: reported as unhandled; fux's pane pushes its title (src/pane.rs) |
+| `CSI 23;n t` | XTWINOPS: pop title | 19 | lazygit, lazygit-small, lazygit-stage, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: reported as unhandled; fux's pane pops its title (src/pane.rs) |
+| `CSI n M` | DL | 19 | emacs-mx, emacs-scroll, emacs-split, nvim-help, nvim-insert, nvim-resize, nvim-scroll, vim, vim-help, vim-insert, vim-resize, vim-small, vim-terminal | implemented |
+| `CSI > 4;2 m` | XTMODKEYS: modifyOtherKeys 2 | 18 | claude, claude-ghostty, claude-main, claude-resize, claude-small, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI ? 2048 $ p` |  | 18 | lazygit, lazygit-small, lazygit-stage, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | answers (first with `\e[?2048;2$y`) |
+| `CSI ? 2048 h` | in-band resize reports | 18 | lazygit, lazygit-small, lazygit-stage, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | answers (first with `\e[48;24;80;0;0t`) |
+| `CSI ? 2048 l` | reset: in-band resize reports | 18 | lazygit, lazygit-small, lazygit-stage, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | implemented |
+| `CSI 0 c` |  | 17 | fish, fish-complete, fish-history, fish-small | answers (first with `\e[?62;22c`) |
+| `CSI > 4; m` | XTMODKEYS: modifyOtherKeys reset | 16 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI > 5 u` | kitty keyboard: push flags 5 | 16 | claude, claude-ghostty, claude-main, claude-resize, claude-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI > 3 u` |  | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI ? 2027 $ p` | DECRQM: grapheme clusters? | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | answers (first with `\e[?2027;0$y`) |
+| `CSI ? 2031 $ p` |  | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | answers (first with `\e[?2031;2$y`) |
+| `CSI ? 69 $ p` |  | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | answers (first with `\e[?69;0$y`) |
+| `CSI n l` |  | 15 | htop, htop-small, htop-tree, mc, mc-small, ncdu, nnn, nnn-detail, ranger, tig, tig-blame, tig-tree, top | implemented |
+| `CSI > 0 q` | XTVERSION | 14 | claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish, fish-complete, fish-history, fish-small | answers (first with `\eP>\|fux 0.17.0\e\\`) |
+| `CSI > c` | DA2, secondary device attributes | 13 | tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | answers (first with `\e[>1;1700;0c`) |
+| `OSC 133 ; A` | semantic prompt | 13 | fish, fish-complete, fish-history, fish-small | implemented: a fresh line, and the row marked (Row::starts_prompt) |
+| `CSI ? 1005 l` | reset: mouse: UTF-8 encoding | 12 | tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, zellij, zellij-small | implemented |
+| `CSI 18 t` | XTWINOPS: size in characters? | 11 | lazygit, lazygit-small, lazygit-stage, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim | answers (first with `\e[8;24;80t`) |
+| `CSI > 4 m` | XTMODKEYS: modifyOtherKeys reset | 10 | claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `ESC 7` | DECSC | 10 | claude, claude-ghostty, claude-main, claude-resize, claude-small | implemented |
+| `ESC 8` | DECRC | 10 | claude, claude-ghostty, claude-main, claude-resize, claude-small | implemented |
+| `CSI ? 1003 h` | mouse: any motion | 9 | helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, lazygit, lazygit-small, lazygit-stage | implemented |
+| `CSI < 1 u` | kitty keyboard: pop flags | 8 | helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, zellij, zellij-small | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI > q` | XTVERSION | 8 | lazygit, lazygit-small, lazygit-stage, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim | answers (first with `\eP>\|fux 0.17.0\e\\`) |
+| `CSI ? 12 $ p` |  | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | answers (first with `\e[?12;0$y`) |
+| `CSI ? 996 n` | colour-scheme query | 7 | tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, zellij, zellij-small | implemented: reported as unhandled; fux answers with its client terminal's scheme (src/outer.rs) |
+| `CSI > 0 c` |  | 5 | emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split | answers (first with `\e[>1;1700;0c`) |
+| `CSI > 4;1 m` |  | 5 | emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI ? 1016 $ p` |  | 5 | claude, claude-ghostty, claude-main, claude-resize, claude-small | answers (first with `\e[?1016;0$y`) |
+| `CSI M` |  | 5 | nvim-insert, nvim-scroll, top | implemented |
+| `CSI n P` | DCH | 5 | bash-history, emacs-scroll, top | implemented |
+| `CSI n L` | IL | 4 | emacs-mx, nvim-scroll, vim | implemented |
+| `CSI = 1 u` |  | 3 | lazygit, lazygit-small, lazygit-stage | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI ? 1000 $ p` |  | 3 | lazygit, lazygit-small, lazygit-stage | answers (first with `\e[?1000;2$y`) |
+| `CSI ? 1006 $ p` |  | 3 | lazygit, lazygit-small, lazygit-stage | answers (first with `\e[?1006;2$y`) |
+| `CSI ? 9001 $ p` |  | 3 | lazygit, lazygit-small, lazygit-stage | answers (first with `\e[?9001;0$y`) |
+| `ESC ) 0` |  | 3 | lazygit, lazygit-small, lazygit-stage | implemented |
+| `CSI > 1 u` |  | 2 | zellij, zellij-small | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |

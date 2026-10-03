@@ -1,0 +1,9 @@
+# nvim -d on two versions of a file: changes, take one, switch, quit.
+!start 2000
+]c
+]c
+do
+\x17w
+[c
+\x04
+:qa!\r

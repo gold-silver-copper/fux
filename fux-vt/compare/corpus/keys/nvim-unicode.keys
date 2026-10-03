@@ -1,0 +1,14 @@
+# neovim on text of other widths and scripts: move, delete a wide
+# glyph, show tabs and ends, quit.
+!start 2000
+j
+j
+j
+$
+0
+w
+w
+x
+:set list\r
+G
+:q!\r

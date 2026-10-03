@@ -1,0 +1,8 @@
+# neovim's help: scroll, search, follow a tag, back, quit.
+!start 2000
+\x04
+/window\r
+\x1d
+\x0f
+:q\r
+:q\r

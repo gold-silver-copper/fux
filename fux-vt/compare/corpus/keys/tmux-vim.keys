@@ -1,0 +1,14 @@
+# vim in two tmux panes (TERM=tmux-256color inside): edit, switch,
+# quit both, then the shells exit.
+!start 1500
+vim src/link.rs\r
+\x02%
+vim src/grid.rs\r
+\x04
+\x02o
+\x04
+:q\r
+\x02o
+:q\r
+exit\r
+exit\r

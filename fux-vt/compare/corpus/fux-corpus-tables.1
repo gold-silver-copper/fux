@@ -1,0 +1,88 @@
+.\" A man page the corpus's man-tables recording shows, written for the
+.\" purpose: tables (tbl), indented lists, examples and every font.
+.TH FUX-CORPUS-TABLES 1 2026-10-03 "fux-vt-compare" "User Commands"
+.SH NAME
+fux-corpus-tables \- the engines the corpus is replayed through, in tables
+.SH SYNOPSIS
+.B fux-vt-compare corpus
+.RB [ \-\-engines
+.IR list ]
+.RB [ \-\-show ]
+.RI [ name ...]
+.SH DESCRIPTION
+Each recording is replayed through
+.B fux-vt
+and the engines below, and their screens are compared after every step.
+.I xterm
+decides what it can tell; the panel decides the rest.
+.SH ENGINES
+.TS
+box tab(|);
+lb lb lb
+l l l.
+Engine|Kind|Cannot tell
+_
+ghostty|in process|link groups
+alacritty|in process|blink, 2026, 2048, prompt marks
+libvterm|in process|dim, underline colour, kitty
+avt|in process|underline colour, hidden, keypad
+wezterm|in process|pending wrap, 2026, 2048
+vt100|in process|underline colour, blink, hidden
+xterm.js|Node|underline colour, kitty, 2048
+tmux|a server|kitty, 2026, 2048
+xterm|Xvfb|pending wrap, underline colour, kitty
+.TE
+.SH FIELDS
+.TS
+allbox tab(:);
+cb cb
+l lx.
+Field:What is compared
+text:the whole grapheme cluster of each cell, and its width
+style:T{
+foreground, background and underline colour; bold, dim, italic,
+underline, blink, inverse, hidden and strikeout
+T}
+link:the URI of an OSC 8 hyperlink, and which cells share it
+cursor:its row and column, and whether a wrap is pending
+modes:T{
+DECAWM, DECOM, DECCKM, DECKPAM, bracketed paste, focus reports,
+synchronized output, in-band resize and the kitty keyboard flags
+T}
+.TE
+.SH STATUSES
+.IP \(bu 2
+.B Agree:
+every step agrees beside xterm and the panel.
+.IP \(bu 2
+.B Differs:
+a step differs, for a reason recorded beside it, with the command that
+shows it.
+.IP \(bu 2
+.B New:
+a recording with no status, which fails the run until one is given.
+.SH EXAMPLES
+Replay one recording beside xterm and the panel, and show the screen:
+.PP
+.EX
+$ fux-vt/compare/run.sh corpus \-\-show man-tables
+ok       man-tables (9 steps, 6000 bytes)   +xterm +ghostty
+.EE
+.PP
+Record it again:
+.PP
+.EX
+$ fux-vt/compare/corpus/record.sh man-tables
+.EE
+.SH EXIT STATUS
+.TS
+tab(@);
+r l.
+0@every recording expected to agree agrees
+1@one regressed, or has no status
+2@the command line or a recording could not be read
+.TE
+.SH SEE ALSO
+.BR fux-corpus (1),
+.BR fux-corpus-long (7),
+.BR less (1)

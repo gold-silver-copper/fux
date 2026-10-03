@@ -1,0 +1,7 @@
+# helix at 24x80 on a man page source: scroll, search, quit.
+!start 2000
+\x04
+/SH\r
+n
+n
+:q\r

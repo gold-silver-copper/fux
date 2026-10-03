@@ -1,0 +1,5 @@
+# man at 50x200 on a long page: a page, search, next, quit.
+\x20
+/option\r
+n
+q

@@ -1,0 +1,6 @@
+# Claude Code starting up at 24x80 in an empty project, then quitting
+# with Ctrl-C twice; no prompt is sent.
+!start 6000
+!quiet 1000
+\x03
+\x03
