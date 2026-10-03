@@ -11,7 +11,7 @@
   ],
   "note": "rust-analyzer rust-analyzer 0.0.0 (21f8445ea5 2025-11-09) gives the diagnostics",
   "program": "helix",
-  "replies": "\\e[?1;2c",
+  "replies": "\\e[?0u\\e[?1;2c",
   "scrubbed": [],
   "size": [
     40,
@@ -19,67 +19,67 @@
   ],
   "steps": [
     {
-      "end": 19562,
+      "end": 19402,
       "keys": ""
     },
     {
-      "end": 19562,
+      "end": 19402,
       "keys": ""
     },
     {
-      "end": 25025,
+      "end": 24865,
       "keys": ":w\\r"
     },
     {
-      "end": 25301,
+      "end": 25141,
       "keys": "j"
     },
     {
-      "end": 25575,
+      "end": 25415,
       "keys": "j"
     },
     {
-      "end": 25921,
+      "end": 25761,
       "keys": "5j"
     },
     {
-      "end": 26080,
+      "end": 25920,
       "keys": "w"
     },
     {
-      "end": 26477,
+      "end": 26317,
       "keys": "x"
     },
     {
-      "end": 26509,
+      "end": 26349,
       "keys": "\\e"
     },
     {
-      "end": 27854,
+      "end": 27694,
       "keys": "/let\\r"
     },
     {
-      "end": 28347,
+      "end": 28187,
       "keys": "n"
     },
     {
-      "end": 44172,
+      "end": 44012,
       "keys": "\\x17v"
     },
     {
-      "end": 51842,
+      "end": 51682,
       "keys": "\\x17w"
     },
     {
-      "end": 52129,
+      "end": 51969,
       "keys": "j"
     },
     {
-      "end": 59408,
+      "end": 59248,
       "keys": ":q\\r"
     },
     {
-      "end": 63966,
+      "end": 63811,
       "keys": ":q!\\r"
     }
   ],
