@@ -1,6 +1,6 @@
 # What the corpus's programs send
 
-Made by `fux-vt-compare inventory` from the recordings in this directory (see the harness README, "The corpus"). Each sequence is normalized: numbers that only place the cursor or pick a colour are `n`, a mode or an SGR attribute is a row of its own, and an XTGETTCAP request shows the capabilities it asks for. "Count" counts every time it was sent, in all the recordings. "fux-vt" is what a fux pane's parser does with it, as fux sets it up (`fux::pane::OPTIONS`: events, DECRQM, in-band resize, the size query, colour-scheme reports, the kitty keyboard protocol, hyperlinks, prompt marks and fux's identity), with what fux itself answers.
+Made by `fux-vt-compare inventory` from the recordings in this directory (see the harness README, "The corpus"). Each sequence is normalized: numbers that only place the cursor or pick a colour are `n`, a mode or an SGR attribute is a row of its own, and an XTGETTCAP request shows the capabilities it asks for. "Count" counts every time it was sent, in all the recordings. "fux-vt" is what a fux pane's parser does with it, as fux sets it up (`fux::pane::OPTIONS`: events, DECRQM, in-band resize, the size query, colour-scheme reports, the kitty keyboard protocol, hyperlinks, prompt marks, DECRQSS and fux's identity), with what fux itself answers.
 
 Recordings:
 
@@ -148,9 +148,7 @@ Recordings:
 | `CSI ? 12 h` | blinking cursor (att610) | 67 | emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a mode fux-vt does not keep, consumed quietly |
 | `OSC 7` | current directory | 25 | fish, fish-complete, fish-history, fish-small, mc, mc-small | not implemented: dropped (Parser::dispatch_osc) |
 | `CSI ? 7727 h` | application escape key (mintty) | 15 | tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim | not implemented: a mode fux-vt does not keep, consumed quietly |
-| `DCS $ q m` | DECRQSS | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | not implemented: a query, consumed unanswered |
 | `DCS + q (Ms)` | XTGETTCAP | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | not implemented: a query, consumed unanswered |
-| `SGR 4:3` |  | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | partly: underline on; the style is not kept |
 | `CSI ? 1016 l` | reset: mouse: SGR pixel encoding | 14 | claude, claude-ghostty, claude-main, claude-resize, claude-small, lazygit, lazygit-small, lazygit-stage | not implemented: a mode fux-vt does not keep, consumed quietly |
 | `OSC 133 ; B` | semantic prompt | 13 | fish, fish-complete, fish-history, fish-small | not implemented: consumed: only A and L are kept (Parser::dispatch_osc) |
 | `OSC 133 ; C` | semantic prompt | 12 | fish, fish-complete, fish-history, fish-small | not implemented: consumed: only A and L are kept (Parser::dispatch_osc) |
@@ -159,7 +157,7 @@ Recordings:
 | `CSI ? 1015 l` | reset: mouse: urxvt encoding | 10 | btop, btop-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, zellij, zellij-small | not implemented: a mode fux-vt does not keep, consumed quietly |
 | `CSI 0 % m` |  | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: reported as unhandled |
 | `CSI ? 1015 h` | mouse: urxvt encoding | 8 | btop, btop-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode | not implemented: a mode fux-vt does not keep, consumed quietly |
-| `DCS $ q  q` | DECRQSS | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
+| `DCS $ q  q` | DECRQSS | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | partly: answered once the program set a cursor shape; the terminal's own is not known |
 | `DCS + q (#2)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
 | `DCS + q (#4)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
 | `DCS + q (%i)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
@@ -296,6 +294,8 @@ Recordings:
 | `CSI ? 2031 $ p` |  | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | answers (first with `\e[?2031;2$y`) |
 | `CSI ? 69 $ p` |  | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | answers (first with `\e[?69;0$y`) |
 | `CSI n l` |  | 15 | htop, htop-small, htop-tree, mc, mc-small, ncdu, nnn, nnn-detail, ranger, tig, tig-blame, tig-tree, top | implemented |
+| `DCS $ q m` | DECRQSS | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | implemented: answered (Options::setting_reports) |
+| `SGR 4:3` |  | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | implemented: the style kept; painted to terminals that draw it |
 | `CSI > 0 q` | XTVERSION | 14 | claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish, fish-complete, fish-history, fish-small | answers (first with `\eP>\|fux 0.17.0\e\\`) |
 | `CSI > c` | DA2, secondary device attributes | 13 | tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | answers (first with `\e[>1;1700;0c`) |
 | `OSC 133 ; A` | semantic prompt | 13 | fish, fish-complete, fish-history, fish-small | implemented: a fresh line, and the row marked (Row::starts_prompt) |

@@ -198,7 +198,8 @@ What is normalized away, and why:
 - **A spacer at the end of a row is a blank.** That is where a wide glyph
   that didn't fit would have started.
 - **Underline style and blink speed count only as on or off.** fux-vt keeps
-  no underline style, and some engines no blink speed.
+  underline styles, but the snapshot does not yet read each engine's (a
+  follow-up); some engines keep no blink speed.
 - **Device attributes and mode reports are not compared.** They name the
   terminal.
 - **An empty title on the engine's side is not compared.** Some engines

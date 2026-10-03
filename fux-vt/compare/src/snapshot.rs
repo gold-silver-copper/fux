@@ -14,7 +14,8 @@ pub enum Color {
 }
 
 /// What a cell looks like. Underline style and blink speed are reduced to
-/// on or off, as fux-vt keeps no underline style and Ghostty no blink speed.
+/// on or off: the engines' underline styles are not read yet, and Ghostty
+/// keeps no blink speed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Style {
     pub fg: Color,
