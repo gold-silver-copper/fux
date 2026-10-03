@@ -168,6 +168,11 @@ pub struct Options {
     /// which the spec allows a terminal that does not know them. Off, the
     /// mode is not recognized, and DECRQM says so.
     pub in_band_resize: bool,
+    /// Answer xterm's text-area size query (`CSI 18 t`, ctlseqs' window
+    /// manipulation) with `CSI 8 ; rows ; cols t`, the screen's size in
+    /// characters. The pixel query (`CSI 14 t`) stays unanswered: fux-vt
+    /// knows no pixels.
+    pub size_reports: bool,
     /// Track the kitty keyboard protocol's flag stacks (`CSI > u`, `CSI < u`,
     /// `CSI = u`) and xterm's modifyOtherKeys (`CSI > 4 ; Pv m`), and answer
     /// the flag query `CSI ? u`. State only: the host encodes keys, reading
@@ -202,6 +207,7 @@ impl Options {
             extended_replies: false,
             mode_reports: false,
             in_band_resize: false,
+            size_reports: false,
             kitty_keyboard: false,
             reflow: false,
             hyperlinks: false,
@@ -227,6 +233,11 @@ impl Options {
     /// These options with [`Options::in_band_resize`] as `on` says.
     pub const fn with_in_band_resize(mut self, on: bool) -> Self {
         self.in_band_resize = on;
+        self
+    }
+    /// These options with [`Options::size_reports`] as `on` says.
+    pub const fn with_size_reports(mut self, on: bool) -> Self {
+        self.size_reports = on;
         self
     }
     /// These options with [`Options::kitty_keyboard`] as `on` says.
@@ -901,6 +912,10 @@ impl Parser {
                 }
                 let (name, version) = (identity.name, identity.version);
                 Some(Reply::of(format_args!("\x1bP>|{name} {version}\x1b\\")))
+            }
+            (b"", b't') if n == 18 && self.options.size_reports => {
+                let (rows, cols) = self.screen.size();
+                Some(Reply::of(format_args!("\x1b[8;{rows};{cols}t")))
             }
             (b"?$", b'p') if modes => {
                 let status = match n {

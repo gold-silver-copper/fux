@@ -13,6 +13,7 @@ pub fn options(reflow: bool) -> Options {
         .with_events(true)
         .with_mode_reports(true)
         .with_in_band_resize(true)
+        .with_size_reports(true)
         .with_hyperlinks(true)
         .with_prompt_marks(true)
         .with_kitty_keyboard(reflow)

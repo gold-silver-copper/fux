@@ -173,9 +173,19 @@ fn end_of(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     }
 }
 
+/// The most titles a pane's program can push (`CSI 22 t`): xterm's bound.
+const TITLE_STACK: usize = 10;
+
+/// What a program did to its title, in order: set it, push it, pop it.
+enum TitleOp {
+    Set(String),
+    Push,
+    Pop,
+}
+
 struct Sink<'a> {
     replies: &'a mut Vec<u8>,
-    title: &'a mut Option<String>,
+    titles: &'a mut Vec<TitleOp>,
 }
 
 impl fux_vt::Sink for Sink<'_> {
@@ -196,7 +206,30 @@ impl fux_vt::Sink for Sink<'_> {
                 .filter(|c| !c.is_control())
                 .take(256)
                 .collect();
-            *self.title = Some(text);
+            self.titles.push(TitleOp::Set(text));
+        }
+    }
+    /// xterm's title stack (ctlseqs, window manipulation): `CSI 22 ; Ps t`
+    /// pushes the title, `CSI 23 ; Ps t` pops it, for Ps 0 (icon and
+    /// title, which are one here) or 2 (title); Ps 1, the icon alone, is
+    /// not a title. vim and tmux push on starting and pop on leaving.
+    fn unhandled(&mut self, sequence: fux_vt::Unhandled<'_>) {
+        let fux_vt::Unhandled::Csi {
+            params,
+            intermediates: b"",
+            action: b't',
+        } = sequence
+        else {
+            return;
+        };
+        let mut groups = params.groups();
+        let op = match groups.next() {
+            Some([22]) => TitleOp::Push,
+            Some([23]) => TitleOp::Pop,
+            _ => return,
+        };
+        if matches!(groups.next(), None | Some([] | [0] | [2])) {
+            self.titles.push(op);
         }
     }
 }
@@ -221,6 +254,8 @@ pub struct Pane {
     pub shell: String,
     /// A command line waiting to be typed into the shell.
     pub typed: Option<Typed>,
+    /// Titles the program pushed (`CSI 22 t`), to pop (`CSI 23 t`).
+    title_stack: VecDeque<String>,
     /// The output of a frame the program is drawing in synchronized output,
     /// from BSU on, and since when; see [`Pane::output`].
     frame: Option<(Vec<u8>, Instant)>,
@@ -271,6 +306,7 @@ impl Pane {
             .with_events(true)
             .with_mode_reports(true)
             .with_in_band_resize(true)
+            .with_size_reports(true)
             .with_hyperlinks(true)
             .with_prompt_marks(true);
         let parser = fux_vt::Parser::with_options(rows.max(1), cols.max(1), history, options)
@@ -293,6 +329,7 @@ impl Pane {
             shell,
             typed: None,
             frame: None,
+            title_stack: VecDeque::new(),
         })
     }
 
@@ -365,10 +402,10 @@ impl Pane {
     /// read if it stopped.
     fn feed(&mut self, bytes: &[u8], until_frame: bool) -> (bool, Option<usize>) {
         let mut replies = Vec::new();
-        let mut title = None;
+        let mut titles = Vec::new();
         let mut sink = Sink {
             replies: &mut replies,
-            title: &mut title,
+            titles: &mut titles,
         };
         // The parser refuses only allocations beyond its limits; the screen
         // stays as it was and output continues.
@@ -385,8 +422,21 @@ impl Pane {
             }
             rest = rest.get(taken..).unwrap_or_default();
         }
-        if let Some(title) = title {
-            self.title = title;
+        for op in titles {
+            match op {
+                TitleOp::Set(title) => self.title = title,
+                TitleOp::Push => {
+                    if self.title_stack.len() >= TITLE_STACK {
+                        self.title_stack.pop_front();
+                    }
+                    self.title_stack.push_back(self.title.clone());
+                }
+                TitleOp::Pop => {
+                    if let Some(title) = self.title_stack.pop_back() {
+                        self.title = title;
+                    }
+                }
+            }
         }
         if let Some(typed) = &mut self.typed {
             typed.last_output = Some(std::time::Instant::now());
@@ -667,6 +717,31 @@ mod tests {
         assert_eq!(pane.input.drain_all(), b"\x1b[48;6;25;0;0t");
         pane.resize(6, 25);
         assert!(pane.input.drain_all().is_empty(), "the same size");
+        Ok(())
+    }
+
+    /// xterm's title stack: vim and tmux push the title on starting and pop
+    /// it on leaving, so the pane's title comes back. Ps 1 (the icon) is no
+    /// title; the stack keeps at most ten; a pop with none pushed changes
+    /// nothing.
+    #[test]
+    fn a_pushed_title_comes_back_when_popped() -> Result<(), Error> {
+        let mut pane = pane()?;
+        pane.output(b"\x1b]2;shell\x07\x1b[22;0t\x1b]2;vim\x07");
+        assert_eq!(pane.title, "vim");
+        pane.output(b"\x1b[23;0t");
+        assert_eq!(pane.title, "shell");
+        pane.output(b"\x1b[22;2t\x1b]2;tmux\x07\x1b[23;2t\x1b[23;0t");
+        assert_eq!(pane.title, "shell", "a pop with none left changes nothing");
+        pane.output(b"\x1b[22;1t\x1b]2;other\x07\x1b[23;1t");
+        assert_eq!(pane.title, "other", "the icon's stack is not the title's");
+        for n in 0..12 {
+            pane.output(format!("\x1b]2;t{n}\x07\x1b[22t").as_bytes());
+        }
+        for _ in 0..12 {
+            pane.output(b"\x1b[23t");
+        }
+        assert_eq!(pane.title, "t2", "ten kept: the first two pushes dropped");
         Ok(())
     }
 

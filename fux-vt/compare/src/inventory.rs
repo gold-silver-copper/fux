@@ -690,6 +690,7 @@ fn tally(recordings: &[Recording]) -> Result<BTreeMap<String, Row>, String> {
             .with_events(true)
             .with_mode_reports(true)
             .with_in_band_resize(true)
+            .with_size_reports(true)
             .with_hyperlinks(true)
             .with_prompt_marks(true);
         let mut parser = fux_vt::Parser::with_options(r.rows, r.cols, 10_000, options)
