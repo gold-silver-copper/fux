@@ -2,7 +2,7 @@
 //! each test citing the section that sets its expected values. Where xterm
 //! departs from the specification, the test says so and follows xterm.
 
-use fux_vt::{CellRef, Color, Parser};
+use fux_vt::{CellRef, Color, Identity, Options, Parser};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 fn lines(parser: &Parser) -> Vec<String> {
@@ -467,6 +467,70 @@ fn line_and_column_addressing_obeys_origin_mode() -> Result {
     assert_eq!(lines(&p), ["Yd", "", ""]);
     let p = run(5, 5, b"\x1b[2;3r\x1b[5;3H\x1b[LX")?;
     assert_eq!(lines(&p), ["", "", "", "", "  X"]);
+    Ok(())
+}
+
+/// The replies to `bytes` on a `rows` by `cols` screen answering
+/// DECXCPR, with an identity if `identity`.
+fn replies(
+    rows: u16,
+    cols: u16,
+    identity: bool,
+    bytes: &[u8],
+) -> std::result::Result<Vec<String>, fux_vt::Error> {
+    let fux = Identity {
+        name: "fux",
+        version: "1.0.0",
+    };
+    let options = Options::new()
+        .with_extended_replies(true)
+        .with_identity(identity.then_some(fux));
+    let mut parser = Parser::with_options(rows, cols, 0, options)?;
+    let mut replies = Vec::new();
+    parser.process_with_replies(bytes, |r| {
+        replies.push(String::from_utf8_lossy(r).into_owned());
+    })?;
+    Ok(replies)
+}
+
+/// CPR and DECXCPR count the line as CUP addresses it: from the top
+/// margin with DECOM set, "relative to the origin of the current
+/// scrolling region (the Top and Left Margin)", from the screen's top
+/// with it reset (DEC STD 070, CPR and DECXCPR, note 1 and the
+/// algorithms, pages 5-53 to 5-56; the VT100 User Guide, chapter 3, CPR:
+/// "The numbering of lines depends on the state of the Origin Mode";
+/// xterm's charproc.c, `CASE_CPR`). fux-vt has no left margin, so the
+/// column is the screen's. A cursor waiting to wrap keeps its column
+/// rule, one past the last column, or the last with an identity, in
+/// either mode. Expected values are xterm's (`fux-vt-compare replay
+/// --engines all --size 12x10 '\e[6;11r\e[?6h\e[2d\e[6n'`: Ghostty,
+/// WezTerm and avt agree; alacritty, libvterm, xterm.js and tmux report
+/// from the screen's top).
+#[test]
+fn cursor_reports_count_lines_from_the_top_margin_in_origin_mode() -> Result {
+    let report = b"\x1b[6n\x1b[?6n";
+    for (setup, cpr) in [
+        (&b"\x1b[6;11r\x1b[?6h\x1b[2d"[..], "2;1"),
+        (b"\x1b[6;11r\x1b[?6h\x1b[3;4H", "3;4"),
+        (b"\x1b[6;11r\x1b[?6h\x1b[99;4H", "6;4"),
+        (b"\x1b[6;11r\x1b[?6h\x1b[3;4H\x1b[?6l\x1b[3;4H", "3;4"),
+        (b"\x1b[6;11r\x1b[8;4H", "8;4"),
+        (b"\x1b[6;11r\x1b[2d", "2;1"),
+    ] {
+        let expected = [format!("\x1b[{cpr}R"), format!("\x1b[?{cpr}R")];
+        let both = [setup, &report[..]].concat();
+        assert_eq!(replies(24, 80, false, &both)?, expected, "{setup:?}");
+        assert_eq!(replies(24, 80, true, &both)?, expected, "{setup:?}");
+    }
+    // At the last column, waiting to wrap, in the region's second line.
+    let wrap = b"\x1b[6;11r\x1b[?6h\x1b[2;1H0123456789\x1b[6n";
+    assert_eq!(replies(12, 10, false, wrap)?, ["\x1b[2;11R"]);
+    assert_eq!(replies(12, 10, true, wrap)?, ["\x1b[2;10R"]);
+    // DECSC kept the cursor above where the margins now begin: its line
+    // would be negative. xterm's subtraction wraps (it reports 65532),
+    // Ghostty reports the first line, as fux-vt does.
+    let above = b"\x1b[?6h\x1b7\x1b[6;11r\x1b8\x1b[6n";
+    assert_eq!(replies(24, 80, false, above)?, ["\x1b[1;1R"]);
     Ok(())
 }
 
