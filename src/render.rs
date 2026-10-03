@@ -1072,6 +1072,50 @@ fn joins_the_glyph_before(grid: &Grid, y: u16, x: u16, text: &str) -> bool {
         .is_some_and(|glyph| fux_vt::continues_cluster(shown(glyph), first))
 }
 
+/// Paints `text`, a glyph `width` columns wide at (`y`, `x`) in a run of
+/// cells painted one after another, where it is not one byte of ASCII or
+/// follows a glyph that `joined` the one before it; whether it joins the one
+/// before it.
+///
+/// A glyph that continues the cluster of the one before it (an emoji
+/// modifier a program put after an emoji with a cursor move of its own, as
+/// micro and vim do) is placed by a cursor move, and so is what follows it:
+/// the client's terminal joins it to the glyph before, or not, as it does
+/// when the program writes it directly, and the next glyph is where fux-vt
+/// has it either way.
+///
+/// Zero-width characters after a glyph that leaves the cursor in the last
+/// column: with autowrap off, as fux's client has it, Ghostty puts them on
+/// the cell under the cursor if it holds anything, a space included
+/// (`Terminal.print`, for a glyph printed in the last column, where the
+/// cursor stays); with autowrap on, on the glyph before, as everywhere
+/// else. So autowrap is on just for them: the glyph ends a column short of
+/// the edge, and nothing printed wraps.
+fn cluster(
+    out: &mut Vec<u8>,
+    grid: &Grid,
+    (y, x): (u16, u16),
+    width: u16,
+    text: &str,
+    joined: bool,
+) -> bool {
+    let joins = text.len() > 1 && joins_the_glyph_before(grid, y, x, text);
+    if joins || joined {
+        let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(x));
+    }
+    let marks_at_the_edge = x.saturating_add(width).saturating_add(1) == grid.cols
+        && text.chars().nth(1).is_some()
+        && text.chars().skip(1).all(|c| cells(c) == 0);
+    if marks_at_the_edge {
+        out.extend_from_slice(b"\x1b[?7h");
+    }
+    out.extend_from_slice(text.as_bytes());
+    if marks_at_the_edge {
+        out.extend_from_slice(b"\x1b[?7l");
+    }
+    joins
+}
+
 /// A row or column as the terminal counts it, from 1; exact in a u32.
 fn one_based(n: u16) -> u32 {
     u32::from(n).saturating_add(1)
@@ -1123,11 +1167,11 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
             if cell(start).is_some_and(|c| c.is_wide_continuation()) {
                 start = start.saturating_sub(1);
             }
+            let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(start));
             let mut cx = start;
-            // Whether the client's cursor is where the next glyph goes: a
-            // run is placed at its start, and again after a glyph the
-            // client's terminal may have joined to the one before it.
-            let mut placed = false;
+            // Whether the glyph before was one the client's terminal may
+            // have joined to the one before it (see `cluster`).
+            let mut joined = false;
             while cx < new.cols
                 && (cx == start
                     || changed(cx)
@@ -1145,18 +1189,6 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
                 } else {
                     shown(cell)
                 };
-                // A glyph that continues the cluster of the one before it
-                // (an emoji modifier a program put after an emoji with a
-                // cursor move of its own, as micro and vim do) is placed by
-                // a cursor move, and so is what follows it: the client's
-                // terminal joins it to the glyph before, or not, as it does
-                // when the program writes it directly, and the next glyph is
-                // where fux-vt has it either way.
-                let joins = joins_the_glyph_before(new, y, cx, text);
-                if !placed || joins {
-                    let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(cx));
-                }
-                placed = !joins;
                 let attrs = cell.attributes();
                 if current != Some(attrs) {
                     sgr(out, attrs);
@@ -1168,23 +1200,13 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
                     open = link;
                 }
                 let width = if wide { 2 } else { 1 };
-                // Zero-width characters after a glyph that leaves the cursor
-                // in the last column. With autowrap off, as fux's client has
-                // it, Ghostty puts them on the cell under the cursor if it
-                // holds anything, a space included (`Terminal.print`, for a
-                // glyph printed in the last column, where the cursor stays);
-                // with autowrap on, on the glyph before, as everywhere else.
-                // So autowrap is on just for them: the glyph ends a column
-                // short of the edge, and nothing printed wraps.
-                let marks_at_the_edge = cx.saturating_add(width).saturating_add(1) == new.cols
-                    && text.chars().nth(1).is_some()
-                    && text.chars().skip(1).all(|c| cells(c) == 0);
-                if marks_at_the_edge {
-                    out.extend_from_slice(b"\x1b[?7h");
-                }
-                out.extend_from_slice(text.as_bytes());
-                if marks_at_the_edge {
-                    out.extend_from_slice(b"\x1b[?7l");
+                // Most cells hold one byte of ASCII, which neither joins the
+                // glyph before nor carries marks, and follow one that joined
+                // nothing: one test, and the text.
+                if text.len() > 1 || joined {
+                    joined = cluster(out, new, (y, cx), width, text, joined);
+                } else {
+                    out.extend_from_slice(text.as_bytes());
                 }
                 cx = cx.saturating_add(width);
             }
