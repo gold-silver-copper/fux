@@ -233,6 +233,7 @@ impl Server {
             self.ready = ready;
             self.escapes(now);
             self.session.type_due(now);
+            self.session.release_frames(now);
             self.finish_dying(false);
             self.close_conns();
         }
@@ -277,6 +278,7 @@ impl Server {
             .chain(escapes)
             .chain(session.dying.iter().map(|d| d.deadline))
             .chain(session.next_typing())
+            .chain(session.next_frame_release())
             .chain(stop)
             .chain(self.listen_after)
             .min()

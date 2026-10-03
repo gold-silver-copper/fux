@@ -338,6 +338,12 @@ only what changed, at most once per 16 ms, inside synchronized output. A
 client that stops reading gets nothing more queued until it catches up, then
 one full repaint.
 
+A program can draw in synchronized output too (`CSI ? 2026 h` … `l`, which
+neovim, helix and lazygit use): its pane holds the frame's output until the
+frame ends, so clients are never shown half of one, and answers DECRQM so
+the program knows it may. A frame is shown anyway after a second, or past
+2 MiB, so a program that stops mid-frame does not freeze its pane.
+
 The previous, Bevy-based fux is kept at the tag `bevy-final`.
 
 ## Development

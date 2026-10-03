@@ -151,6 +151,11 @@ pub struct Options {
     /// Also answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`), DECXCPR
     /// (`CSI ? 6 n`) and secondary device attributes (`CSI > c`).
     pub extended_replies: bool,
+    /// Answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`) alone, as
+    /// [`Options::extended_replies`] does with the rest: how programs learn
+    /// which modes the terminal knows, synchronized output (2026) among
+    /// them, without what DA2 and DECXCPR say about it.
+    pub mode_reports: bool,
     /// Track the kitty keyboard protocol's flag stacks (`CSI > u`, `CSI < u`,
     /// `CSI = u`) and xterm's modifyOtherKeys (`CSI > 4 ; Pv m`), and answer
     /// the flag query `CSI ? u`. State only: the host encodes keys, reading
@@ -173,6 +178,7 @@ impl Options {
         Self {
             events: false,
             extended_replies: false,
+            mode_reports: false,
             kitty_keyboard: false,
             reflow: false,
             identity: None,
@@ -186,6 +192,11 @@ impl Options {
     /// These options with [`Options::extended_replies`] as `on` says.
     pub const fn with_extended_replies(mut self, on: bool) -> Self {
         self.extended_replies = on;
+        self
+    }
+    /// These options with [`Options::mode_reports`] as `on` says.
+    pub const fn with_mode_reports(mut self, on: bool) -> Self {
+        self.mode_reports = on;
         self
     }
     /// These options with [`Options::kitty_keyboard`] as `on` says.
@@ -322,6 +333,9 @@ pub struct Parser {
     /// `OSC_PAYLOAD_LIMIT` bytes.
     osc: Vec<u8>,
     osc_overflow: bool,
+    /// Whether the last sequence dispatched set synchronized output, for
+    /// `Parser::process_until_frame`.
+    frame_begun: bool,
     state: State,
     params: Parameters,
     intermediates: [u8; 2],
@@ -354,6 +368,7 @@ impl Parser {
             options,
             osc: Vec::new(),
             osc_overflow: false,
+            frame_begun: false,
             state: State::Ground,
             params: Parameters::default(),
             intermediates: [0; 2],
@@ -391,10 +406,35 @@ impl Parser {
     }
     /// Process output, delivering replies and (with [`Options::events`]) events.
     pub fn process_with(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(), Error> {
+        self.run::<false>(bytes, sink).map(|_| ())
+    }
+    /// Process output as [`Parser::process_with`] does, but stop right after
+    /// a sequence that sets synchronized output (`CSI ? 2026 h`, BSU), and
+    /// say how many bytes that took; `None` if no sequence did, and every
+    /// byte was processed. A host that holds a program's frames
+    /// ([`crate::Screen::synchronized_output`]) holds the rest from there, found
+    /// exactly as the parser reads it: split across calls, or set beside
+    /// other modes in one sequence.
+    pub fn process_until_frame(
+        &mut self,
+        bytes: &[u8],
+        sink: &mut impl Sink,
+    ) -> Result<Option<usize>, Error> {
+        self.run::<true>(bytes, sink)
+    }
+    /// Processes `bytes`, stopping after a BSU if `UNTIL_FRAME`; how many
+    /// bytes it took if it stopped. A constant, so that `process_with`
+    /// compiles as it did before frames were looked for.
+    fn run<const UNTIL_FRAME: bool>(
+        &mut self,
+        bytes: &[u8],
+        sink: &mut impl Sink,
+    ) -> Result<Option<usize>, Error> {
         if bytes.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         self.screen.begin()?;
+        self.frame_begun = false;
         let mut remaining = bytes;
         while let Some((&byte, tail)) = remaining.split_first() {
             let ground = self.state == State::Ground && self.utf8_len == 0;
@@ -414,9 +454,14 @@ impl Parser {
             } else {
                 self.byte(byte, sink)?;
                 remaining = tail;
+                // Every BSU ends in `h`: the byte in hand rules out the rest.
+                if UNTIL_FRAME && byte == b'h' && self.frame_begun {
+                    self.frame_begun = false;
+                    return Ok(Some(bytes.len().saturating_sub(remaining.len())));
+                }
             }
         }
-        Ok(())
+        Ok(None)
     }
     /// Prints the run of valid non-ASCII UTF-8 `bytes` begins with, decoded
     /// at once rather than byte by byte, and says how many
@@ -666,12 +711,14 @@ impl Parser {
                                 let intermediates = intermediates
                                     .get(..self.intermediate_len)
                                     .unwrap_or_default();
+                                let begun = self.screen.frames_begun();
                                 let dispatch = self.screen.csi(
                                     &self.params,
                                     intermediates,
                                     byte,
                                     &self.options,
                                 )?;
+                                self.frame_begun = self.screen.frames_begun() != begun;
                                 match dispatch {
                                     Dispatch::Done => {}
                                     Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
@@ -747,6 +794,7 @@ impl Parser {
     fn query_reply(&self, intermediates: &[u8], byte: u8) -> Option<Reply> {
         let n = self.params.first(0, 0);
         let extended = self.options.extended_replies;
+        let modes = extended || self.options.mode_reports;
         let identity = self.options.identity;
         match (intermediates, byte) {
             (b"?", b'n') if n == 6 && extended => {
@@ -770,11 +818,11 @@ impl Parser {
                 let (name, version) = (identity.name, identity.version);
                 Some(Reply::of(format_args!("\x1bP>|{name} {version}\x1b\\")))
             }
-            (b"?$", b'p') if extended => {
+            (b"?$", b'p') if modes => {
                 let status = self.screen.private_mode_status(n);
                 Some(Reply::of(format_args!("\x1b[?{n};{status}$y")))
             }
-            (b"$", b'p') if extended => {
+            (b"$", b'p') if modes => {
                 // IRM alone of the ANSI modes is known.
                 let status = match n {
                     4 if self.screen.insert_mode() => 1,

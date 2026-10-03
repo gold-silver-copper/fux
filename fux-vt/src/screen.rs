@@ -256,6 +256,10 @@ pub struct Screen {
     application_keypad: bool,
     hide_cursor: bool,
     bracketed_paste: bool,
+    synchronized_output: bool,
+    /// How many times synchronized output has been set, for
+    /// `Parser::process_until_frame`.
+    frames_begun: u64,
     focus_reporting: bool,
     cursor_shape: u16,
     mouse: MouseProtocolMode,
@@ -353,6 +357,8 @@ impl Screen {
             application_keypad: false,
             hide_cursor: false,
             bracketed_paste: false,
+            synchronized_output: false,
+            frames_begun: 0,
             focus_reporting: false,
             cursor_shape: 0,
             mouse: MouseProtocolMode::None,
@@ -427,6 +433,17 @@ impl Screen {
     /// Whether pastes are to be bracketed (`CSI ? 2004 h`).
     pub fn bracketed_paste(&self) -> bool {
         self.bracketed_paste
+    }
+    /// Synchronized output (`CSI ? 2026 h` / `l`): whether the program is
+    /// drawing a frame it wants shown whole, once it resets the mode
+    /// (`references/modern/mode_2026_synchronized_output.md`). State only:
+    /// holding the display is the host's to do. RIS, DECSTR and a resize
+    /// end it, as a resize does in Ghostty.
+    pub fn synchronized_output(&self) -> bool {
+        self.synchronized_output
+    }
+    pub(crate) fn frames_begun(&self) -> u64 {
+        self.frames_begun
     }
     /// `CSI ? 1004 h` / `l` state: whether the program wants focus-in and
     /// focus-out reports. State only: fux-vt sends none.
@@ -605,6 +622,9 @@ impl Screen {
     }
 
     pub(crate) fn resize(&mut self, rows: u16, cols: u16, reflow: bool) -> Result<(), Error> {
+        // A frame drawn for the old size is no frame for the new one; as in
+        // Ghostty, any resize ends synchronized output.
+        self.synchronized_output = false;
         if self.size() == (rows, cols) {
             return Ok(());
         }
@@ -1170,6 +1190,7 @@ impl Screen {
                 self.application_keypad = false;
                 self.hide_cursor = false;
                 self.bracketed_paste = false;
+                self.synchronized_output = false;
                 self.focus_reporting = false;
                 self.cursor_shape = 0;
                 self.mouse = MouseProtocolMode::None;
@@ -1196,6 +1217,9 @@ impl Screen {
     /// as in xterm.
     fn soft_reset(&mut self) {
         self.hide_cursor = false;
+        // Not in either table; ended so that `tput init` and `tput reset`,
+        // which send DECSTR, never leave a frame waiting.
+        self.synchronized_output = false;
         self.autowrap = true;
         self.insert = false;
         self.application_cursor = false;
@@ -1272,6 +1296,7 @@ impl Screen {
             1005 => self.encoding == MouseProtocolEncoding::Utf8,
             1006 => self.encoding == MouseProtocolEncoding::Sgr,
             2004 => self.bracketed_paste,
+            2026 => self.synchronized_output,
             _ => return 0,
         };
         if set { 1 } else { 2 }
@@ -1288,6 +1313,12 @@ impl Screen {
             7 => self.autowrap = set,
             25 => self.hide_cursor = !set,
             2004 => self.bracketed_paste = set,
+            2026 => {
+                self.synchronized_output = set;
+                if set {
+                    self.frames_begun = self.frames_begun.wrapping_add(1);
+                }
+            }
             1004 => self.focus_reporting = set,
             47 => self.switch_screen(set),
             // 1047: the alternate screen, cleared on leaving it (xterm's
