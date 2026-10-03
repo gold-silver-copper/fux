@@ -4,7 +4,9 @@ An excluded package with its own lockfile. It runs fixed workloads through
 fux and fux-vt, in process, and counts the instructions each retires, on
 the working tree and on another commit (`main` by default), in the same
 run on the same machine. So no baseline is stored, and other work on the
-machine does not move the figures as it moves times.
+machine does not move the figures as it moves times. `feel` measures
+what a person feels instead, through real servers, beside tmux and zellij:
+keystroke latency, throughput to the final screen, bandwidth and footprint.
 
 It is not built or run by fux's own gates or by CI. It forbids the same
 lints as fux, and builds with fux's release profile (`lto = "thin"`,
@@ -106,3 +108,55 @@ Informational figures, not compared against REF:
   for fux-vt beside Ghostty and alacritty, by wall time, best of 3. The
   first run builds `fux-vt/compare` (Ghostty by Zig: minutes).
 - `fux-diff --speed`: fux-vt's parse time beside its last release.
+
+## `feel`: what a person at the terminal feels
+
+```sh
+cargo run --release --manifest-path bench/Cargo.toml -- feel
+bench/target/release/fux-bench feel --muxes fux,tmux --parts latency --keys 500
+```
+
+Real servers, each beside the others and beside no multiplexer at all
+(`direct`: the pane program on a PTY of this process's own). Each runs on
+a socket of its own, with a configuration of its own, its directories in
+`/tmp/fux-feel-PID` (removed after), and its client on a PTY this process
+holds, as a terminal holds it. The user's own servers are never touched:
+
+- fux: `fux server --socket … --config …` with `HOME` in the scratch
+  directory, and every `fux` command with that `FUX_SOCKET` (a command
+  without one refuses to run);
+- tmux: `tmux -L fux-bench-PID-N -f /dev/null`, `history-limit 10000`;
+- zellij, if installed: a session of its own name, with `--config`,
+  `--config-dir`, `--data-dir`, `HOME` and `ZELLIJ_SOCKET_DIR` in the
+  scratch directory; no plugins and no pane frames, so its pane fills its
+  screen.
+
+`FUX_SOCKET`, `FUX_PANE`, `TMUX`, `TMUX_PANE` and zellij's own variables
+are removed from everything it starts. The client's PTY is 41×120 (the
+pane 40×120, as the corpus was recorded, with fux's bar or tmux's status
+line; zellij's pane has all 41 rows), `TERM=xterm-256color`. The pane
+programs are this binary's (`__echo`, `__flood`, `__serve`, `__fill`).
+Wall time is what this measures; it is reported, never gated on.
+
+| Part | How |
+| --- | --- |
+| latency | `__echo`, in raw mode, answers each key `a`–`z` with a carriage return and its circled letter (ⓐ–ⓩ), which nothing else prints. A key is written to the client's PTY and timed until the read that brings its glyph back: through the client, the server, the pane's PTY, the program, and back in a paint. 2000 keys (`--keys`), 17 to 25 ms apart (past fux's 16 ms paint interval, as a person types), idle, and with `__flood` (lines as fast as they are taken) in a pane beside it. Median, p99, mean, max, keys missed (none in 2 s; ten in a row end the run), bytes and paints per key |
+| throughput | `__serve` writes a workload when asked (its number and Enter, typed at the client), in one write: a reset (RIS), the workload, and six of a glyph no workload has, a different one each time, so that the paint cannot leave them out (PR #78's end-to-end method). Timed from the key to the read that brings the six: when the client has the final screen. Every corpus recording, and every synthetic workload at 16 MiB. The bytes the client was sent, and its paints where they can be counted (fux begins each with `CSI ? 2026 h`) |
+| footprint | Each multiplexer with a shell: the CPU its server and client use in 10 s (all of them at once), its server's resident memory, then with 4 more panes in tabs of their own, then with 4 more whose 10,000 rows of history are full (10,050 lines of 120 columns); and, in a new session, with 50 shells |
+
+It writes `bench/target/fux-bench/feel.json` and prints a summary. The
+whole run took 8 min 40 s here (12 cores, load about 40 from other work):
+latency 7 min (about a minute for each run of 2000 keys), throughput 35 s,
+footprint 27 s. `--keys` and `--parts` make it shorter.
+
+What the figures mean, and what they do not:
+
+- On a busy machine wall times wander; compare multiplexers within one
+  run, not across runs.
+- Throughput for one recording is mostly how its output was split into
+  reads: fux paints at most every 16 ms, so a recording whose last bytes
+  come in a later read than its first is on the screen about 18 ms after
+  the key, and one read whole in under a millisecond. The 16 MiB
+  workloads are throughput proper.
+- tmux and zellij do not begin their paints with `CSI ? 2026 h` to an
+  `xterm-256color` client, so only fux's paints are counted.
