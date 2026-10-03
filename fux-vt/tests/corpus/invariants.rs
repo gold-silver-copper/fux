@@ -71,6 +71,23 @@ pub fn check(p: &Parser) {
                 );
                 assert!(!cell.has_contents());
             }
+            // A link is a glyph's: a blank cell has none, a wide glyph's
+            // halves have one, and it is within the spec's limits.
+            let link = row.link(i);
+            if let Some(link) = link {
+                assert!(row.has_links());
+                assert!(cell.has_contents() || cell.is_wide_continuation());
+                assert!(!link.uri().is_empty() && link.uri().len() <= fux_vt::URI_LIMIT);
+                assert!(
+                    link.id()
+                        .is_none_or(|id| !id.is_empty() && id.len() <= fux_vt::ID_LIMIT)
+                );
+                let printable = |s: &str| s.bytes().all(|b| (0x20..=0x7e).contains(&b));
+                assert!(printable(link.uri()) && link.id().is_none_or(printable));
+            }
+            if cell.is_wide_continuation() {
+                assert_eq!(link, i.checked_sub(1).and_then(|i| row.link(i)));
+            }
         }
     }
     let mark = s.mark();
@@ -115,5 +132,19 @@ pub fn equal(a: &Parser, b: &Parser) {
         };
         assert_eq!(cells(a), cells(b), "row from bottom {offset}");
         assert_eq!(a.wrapped(), b.wrapped(), "row from bottom {offset}");
+        assert_eq!(links(a), links(b), "row from bottom {offset}");
+        assert_eq!(
+            a.starts_prompt(),
+            b.starts_prompt(),
+            "row from bottom {offset}"
+        );
     }
+    assert_eq!(a.hyperlink(), b.hyperlink());
+}
+
+/// Each cell's link: its URI, id and key.
+fn links(row: fux_vt::Row<'_>) -> Vec<Option<(&str, Option<&str>, u64)>> {
+    (0..row.len())
+        .map(|col| row.link(col).map(|l| (l.uri(), l.id(), l.key())))
+        .collect()
 }

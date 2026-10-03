@@ -3,11 +3,13 @@
 
 mod cell;
 mod grid;
+mod link;
 mod parser;
 mod screen;
 mod unicode;
 
 pub use cell::{Attributes, Blink, Cell, CellRef, Cells, Color};
+pub use link::{Hyperlink, ID_LIMIT, URI_LIMIT};
 pub use parser::{Event, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink, Unhandled};
 pub use screen::{MouseProtocolEncoding, MouseProtocolMode, Screen};
 pub use unicode::UNICODE_VERSION;
@@ -76,26 +78,16 @@ pub struct Row<'a> {
     pub(crate) id: RowId,
     pub(crate) version: u64,
     pub(crate) wrapped: bool,
+    /// Whether a prompt starts on the row (OSC 133 ; A).
+    pub(crate) prompt: bool,
     pub(crate) cells: &'a [Cell],
     pub(crate) spill: &'a cell::Spill,
+    /// Each cell's link, if any cell of the row has had one (`link.rs`).
+    pub(crate) links: Option<&'a [u16]>,
+    pub(crate) table: &'a link::Links,
 }
 
 impl<'a> Row<'a> {
-    pub(crate) fn new(
-        id: RowId,
-        version: u64,
-        wrapped: bool,
-        cells: &'a [Cell],
-        spill: &'a cell::Spill,
-    ) -> Self {
-        Self {
-            id,
-            version,
-            wrapped,
-            cells,
-            spill,
-        }
-    }
     /// The row's identity, which it keeps as long as it is retained, edits
     /// and scrolls included, and which no later row takes.
     pub fn id(&self) -> RowId {
@@ -122,6 +114,32 @@ impl<'a> Row<'a> {
     pub fn cell(&self, col: usize) -> Option<CellRef<'a>> {
         let spill = self.spill;
         self.cells.get(col).map(|cell| CellRef::new(cell, spill))
+    }
+    /// The hyperlink (OSC 8) of the cell at column `col`: the link that was
+    /// open when its glyph was printed, if one was. A blank cell has none;
+    /// the second half of a wide glyph has its first half's.
+    pub fn link(&self, col: usize) -> Option<Hyperlink<'a>> {
+        let links = self.links?;
+        let col = if self.cells.get(col)?.is_wide_continuation() {
+            col.checked_sub(1)?
+        } else {
+            col
+        };
+        if !self.cells.get(col)?.has_contents() {
+            return None;
+        }
+        self.table.get(*links.get(col)?)
+    }
+    /// Whether any cell of the row may have a hyperlink: `false` means
+    /// [`Row::link`] is `None` for every cell, and need not be asked.
+    pub fn has_links(&self) -> bool {
+        self.links.is_some()
+    }
+    /// Whether a prompt starts on the row: a shell marked it, with
+    /// `OSC 133 ; A` while the cursor was on it. The mark goes with the row
+    /// as it scrolls and reflows; ED, erasing the row whole, removes it.
+    pub fn starts_prompt(&self) -> bool {
+        self.prompt
     }
     /// Bytes of text the row keeps for clusters too long to hold inline,
     /// overwritten ones included until the row is compacted: at most

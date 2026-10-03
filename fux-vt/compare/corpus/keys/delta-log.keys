@@ -1,0 +1,9 @@
+# git log -p through delta, paged by less: lines, pages, search, quit.
+!start 1500
+j
+j
+\x20
+\x20
+/fn \r
+n
+q

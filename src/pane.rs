@@ -3,6 +3,7 @@ use crate::bytes::ByteQueue;
 use crate::layout::PaneId;
 use crate::process::Child;
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 /// The largest single piece of input: a whole paste and its envelope.
 pub const MAX_INPUT: usize = crate::decode::PASTE_LIMIT + 12;
@@ -11,6 +12,17 @@ pub const MAX_INPUT: usize = crate::decode::PASTE_LIMIT + 12;
 pub const INPUT_BYTES: usize = 16 * MAX_INPUT;
 /// What one queued piece costs beyond its bytes.
 pub const ENTRY_COST: usize = 64;
+/// How long a frame drawn in synchronized output is held before it is
+/// shown anyway: Ghostty's choice. Long enough for a frame sent in pieces
+/// over a slow link; a program that dies mid-frame freezes its pane this
+/// long, once. The spec leaves it open
+/// (`references/modern/mode_2026_synchronized_output.md`, "Timeout").
+pub const FRAME_TIMEOUT: Duration = Duration::from_secs(1);
+/// The most bytes a held frame keeps before it is shown anyway:
+/// alacritty's bound.
+pub const FRAME_LIMIT: usize = 2 << 20;
+/// End synchronized update (ESU). Its beginning, BSU, the parser finds.
+const ESU: &[u8] = b"\x1b[?2026l";
 
 /// Why input is not queued, or a pane cannot be made.
 #[derive(Debug)]
@@ -147,6 +159,20 @@ impl InputQueue {
 }
 
 /// Replies (DSR, DA) and events the parser produces while reading output.
+/// Where `needle` first ends in `hay`, looking from `from`.
+fn end_of(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    let mut i = from;
+    loop {
+        let start = i.checked_add(hay.get(i..)?.iter().position(|&b| b == 0x1b)?)?;
+        let end = start.checked_add(needle.len())?;
+        // Past the end of `hay`: no later match fits either.
+        if hay.get(start..end)? == needle {
+            return Some(end);
+        }
+        i = start.checked_add(1)?;
+    }
+}
+
 struct Sink<'a> {
     replies: &'a mut Vec<u8>,
     title: &'a mut Option<String>,
@@ -195,6 +221,9 @@ pub struct Pane {
     pub shell: String,
     /// A command line waiting to be typed into the shell.
     pub typed: Option<Typed>,
+    /// The output of a frame the program is drawing in synchronized output,
+    /// from BSU on, and since when; see [`Pane::output`].
+    frame: Option<(Vec<u8>, Instant)>,
 }
 
 /// After the shell's output has been quiet this long, it is taken to be
@@ -236,7 +265,14 @@ impl Pane {
         cols: u16,
         history: usize,
     ) -> Result<Pane, Error> {
-        let options = fux_vt::Options::new().with_events(true);
+        // DECRQM answered: programs ask it whether synchronized output is
+        // known before they use it. Hyperlinks kept, to paint them.
+        let options = fux_vt::Options::new()
+            .with_events(true)
+            .with_mode_reports(true)
+            .with_in_band_resize(true)
+            .with_hyperlinks(true)
+            .with_prompt_marks(true);
         let parser = fux_vt::Parser::with_options(rows.max(1), cols.max(1), history, options)
             .map_err(|source| Error::Terminal {
                 rows,
@@ -256,12 +292,78 @@ impl Pane {
             hung_up: false,
             shell,
             typed: None,
+            frame: None,
         })
     }
 
     /// Reads program output into the screen. Returns whether a reply had to
     /// be dropped because the program is not reading its input.
+    ///
+    /// A frame the program draws in synchronized output (from `CSI ? 2026 h`,
+    /// BSU, to `CSI ? 2026 l`, ESU) is held, unread, until it ends, then read
+    /// whole, as alacritty does: the screen is always at the end of a
+    /// frame, so a client is never painted half of one. A frame is read
+    /// anyway once [`FRAME_TIMEOUT`] passes ([`Pane::release_frame`]) or it
+    /// grows past [`FRAME_LIMIT`]; after that the program's output is read as
+    /// it comes until its next BSU.
     pub fn output(&mut self, bytes: &[u8]) -> bool {
+        self.output_at(bytes, Instant::now())
+    }
+
+    /// [`Pane::output`] at `now`.
+    pub fn output_at(&mut self, bytes: &[u8], now: Instant) -> bool {
+        let mut dropped = false;
+        let mut after: Vec<u8>;
+        let mut rest = bytes;
+        loop {
+            if let Some((held, _)) = &mut self.frame {
+                // An ESU may have begun at the end of what is held.
+                let from = held.len().saturating_sub(ESU.len().saturating_sub(1));
+                held.extend_from_slice(rest);
+                let Some(end) = end_of(held, from, ESU) else {
+                    if held.len() > FRAME_LIMIT {
+                        dropped |= self.release_frame();
+                    }
+                    return dropped;
+                };
+                let mut frame = std::mem::take(held);
+                self.frame = None;
+                after = frame.get(end..).unwrap_or_default().to_vec();
+                frame.truncate(end);
+                dropped |= self.feed(&frame, false).0;
+                rest = &after;
+            } else {
+                let (dropped_now, begun) = self.feed(rest, true);
+                dropped |= dropped_now;
+                let Some(end) = begun else {
+                    return dropped;
+                };
+                self.frame = Some((Vec::new(), now));
+                rest = rest.get(end..).unwrap_or_default();
+            }
+        }
+    }
+
+    /// When the held frame is read anyway, if one is held.
+    pub fn frame_deadline(&self) -> Option<Instant> {
+        self.frame
+            .as_ref()
+            .map(|(_, since)| crate::after(*since, FRAME_TIMEOUT))
+    }
+
+    /// Reads the held frame now, ended or not. Returns whether a reply had to
+    /// be dropped.
+    pub fn release_frame(&mut self) -> bool {
+        match self.frame.take() {
+            Some((held, _)) => self.feed(&held, false).0,
+            None => false,
+        }
+    }
+
+    /// Gives `bytes` to the screen, stopping after a BSU if `until_frame`.
+    /// Returns whether a reply had to be dropped, and how many bytes were
+    /// read if it stopped.
+    fn feed(&mut self, bytes: &[u8], until_frame: bool) -> (bool, Option<usize>) {
         let mut replies = Vec::new();
         let mut title = None;
         let mut sink = Sink {
@@ -270,7 +372,19 @@ impl Pane {
         };
         // The parser refuses only allocations beyond its limits; the screen
         // stays as it was and output continues.
-        let _ = self.parser.process_with(bytes, &mut sink);
+        // Only `process_until_frame`, even to read past a BSU: with one way
+        // in, the parser's loop is compiled once and its byte handling is
+        // inlined into it, as it was before frames were held; with two it
+        // was not, and escape-heavy output was a quarter slower.
+        let mut begun = None;
+        let mut rest = bytes;
+        while let Ok(Some(taken)) = self.parser.process_until_frame(rest, &mut sink) {
+            if until_frame {
+                begun = Some(taken);
+                break;
+            }
+            rest = rest.get(taken..).unwrap_or_default();
+        }
         if let Some(title) = title {
             self.title = title;
         }
@@ -279,9 +393,9 @@ impl Pane {
         }
         if !replies.is_empty() && self.input.push(replies).is_err() && !self.reply_dropped {
             self.reply_dropped = true;
-            return true;
+            return (true, begun);
         }
-        false
+        (false, begun)
     }
 
     /// Types a held command line into the shell now.
@@ -292,16 +406,24 @@ impl Pane {
         }
     }
 
-    /// Resizes the screen and the PTY.
+    /// Resizes the screen and the PTY. A held frame is read first: it was
+    /// drawn for the old size.
     pub fn resize(&mut self, rows: u16, cols: u16) {
         let (rows, cols) = (rows.max(1), cols.max(1));
         if self.size == (rows, cols) {
             return;
         }
+        self.release_frame();
         if self.parser.resize(rows, cols).is_ok() {
             self.size = (rows, cols);
             if let Some(child) = &self.child {
                 crate::process::resize(&child.master, rows, cols);
+            }
+            // In-band resize: the report follows the PTY's new size, never
+            // precedes it (references/modern/mode_2048_in_band_resize.md).
+            // A program that does not read its input loses it, as a reply.
+            if let Some(report) = self.parser.resize_report() {
+                let _ = self.input.push(report);
             }
         }
     }
@@ -456,5 +578,104 @@ mod tests {
         assert_eq!(pane.size, (3, 10));
         assert_eq!(pane.screen().size(), (3, 10));
         Ok(())
+    }
+
+    /// The first row's text, blanks as spaces, trimmed.
+    fn first_row(pane: &Pane) -> String {
+        let (_, cols) = pane.screen().size();
+        (0..cols)
+            .filter_map(|x| pane.screen().cell(0, x))
+            .map(|c| c.contents().chars().next().unwrap_or(' '))
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    }
+
+    fn pane() -> Result<Pane, Error> {
+        Pane::new(PaneId(1), "sh".into(), "/bin/sh".into(), 3, 30, 10)
+    }
+
+    /// A frame drawn in synchronized output reaches the screen whole, when
+    /// it ends, however its bytes are split across reads: the BSU, the
+    /// frame and the ESU each in pieces, and several frames in one read.
+    #[test]
+    fn a_synchronized_frame_reaches_the_screen_whole() -> Result<(), Error> {
+        let mut pane = pane()?;
+        pane.output(b"a\x1b[?2026hb");
+        assert_eq!(first_row(&pane), "a", "the frame is held");
+        assert!(pane.screen().synchronized_output());
+        pane.output(b"c\x1b[?20");
+        assert_eq!(first_row(&pane), "a", "an ESU begun is not one");
+        pane.output(b"26ld");
+        assert_eq!(first_row(&pane), "abcd");
+        assert!(!pane.screen().synchronized_output());
+        // A BSU split across reads.
+        pane.output(b"e\x1b[?2");
+        pane.output(b"026hf");
+        assert_eq!(first_row(&pane), "abcde");
+        pane.output(b"\x1b[?2026l");
+        assert_eq!(first_row(&pane), "abcdef");
+        // Frames back to back in one read: the last is held.
+        pane.output(b"\x1b[?2026hg\x1b[?2026l\x1b[?2026hh\x1b[?2026l\x1b[?2026hi");
+        assert_eq!(first_row(&pane), "abcdefgh");
+        assert!(pane.frame_deadline().is_some());
+        Ok(())
+    }
+
+    /// A frame that does not end is read once its timeout passes, or once
+    /// it outgrows the limit; until the next BSU, output is then read as it
+    /// comes. A resize reads it first.
+    #[test]
+    fn a_frame_that_does_not_end_is_read_anyway() -> Result<(), Error> {
+        let mut pane = pane()?;
+        let t0 = Instant::now();
+        pane.output_at(b"\x1b[?2026hx", t0);
+        assert_eq!(pane.frame_deadline(), Some(crate::after(t0, FRAME_TIMEOUT)));
+        assert!(!pane.release_frame(), "no reply dropped");
+        assert_eq!(first_row(&pane), "x");
+        assert_eq!(pane.frame_deadline(), None);
+        pane.output(b"y");
+        assert_eq!(
+            first_row(&pane),
+            "xy",
+            "read as it comes, the mode still set"
+        );
+        pane.output(b"\x1b[?2026l\x1b[?2026h");
+        let big = vec![b'z'; FRAME_LIMIT];
+        pane.output(&big);
+        assert_eq!(first_row(&pane), "xy", "at the limit, still held");
+        pane.output(b"z");
+        assert!(first_row(&pane).ends_with('z'), "past it, read");
+        assert_eq!(pane.frame_deadline(), None);
+        pane.output(b"\x1b[2J\x1b[H\x1b[?2026hw");
+        // Fewer columns, the same rows: growing would bring history back.
+        pane.resize(3, 20);
+        assert_eq!(first_row(&pane), "w", "a resize reads it first");
+        Ok(())
+    }
+
+    /// A program that set in-band resize is told its new size after a
+    /// resize, and on setting it; one that did not is told nothing.
+    #[test]
+    fn a_resize_reports_the_size_in_band_when_asked() -> Result<(), Error> {
+        let mut pane = pane()?;
+        pane.resize(4, 20);
+        assert!(pane.input.drain_all().is_empty(), "not asked");
+        pane.output(b"\x1b[?2048h");
+        assert_eq!(pane.input.drain_all(), b"\x1b[48;4;20;0;0t");
+        pane.resize(6, 25);
+        assert_eq!(pane.input.drain_all(), b"\x1b[48;6;25;0;0t");
+        pane.resize(6, 25);
+        assert!(pane.input.drain_all().is_empty(), "the same size");
+        Ok(())
+    }
+
+    #[test]
+    fn end_of_finds_a_sequence_from_where_it_is_told() {
+        assert_eq!(end_of(b"ab\x1b[?2026lc", 0, ESU), Some(10));
+        assert_eq!(end_of(b"\x1b\x1b[?2026l", 0, ESU), Some(9));
+        assert_eq!(end_of(b"\x1b[?2026l", 1, ESU), None);
+        assert_eq!(end_of(b"\x1b[?2026", 0, ESU), None);
+        assert_eq!(end_of(b"", 0, ESU), None);
     }
 }

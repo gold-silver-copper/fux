@@ -23,7 +23,11 @@
 //! - Cells through the public buffer API: `getChars` (a cluster whole),
 //!   `getWidth` (0 for the second half of a wide glyph), the colour modes
 //!   and the attribute flags. A wide glyph that did not fit leaves an
-//!   ordinary blank at the end of its row.
+//!   ordinary blank at the end of its row. A cell with a hyperlink (OSC 8)
+//!   reads as underlined through `isUnderline`, whatever its SGR, as
+//!   xterm.js draws links with a dashed underline; its SGR underline is
+//!   then the core's own flag in `fg`, which SGR 4, 24 and 0 set and
+//!   clear (`replay --engines xterm.js --size 1x3 '\e]8;;u\e\\ab'`).
 //! - xterm.js keeps a row's soft-wrap flag on the row that continues it
 //!   (`isWrapped`), so row y is wrapped when row y + 1 is; the newest
 //!   history row is wrapped when the top screen row is.
@@ -34,10 +38,17 @@
 //!   Cursor visibility is not in the public API: it is the core's own flag,
 //!   `coreService.isCursorHidden`.
 //!
+//! - Hyperlinks are not in the public API: a cell's ExtendedAttrs hold its
+//!   link's number (`urlId`), and the core's OscLinkService the URI
+//!   (`getLinkData`). It numbers each OSC 8 without an id anew, and one
+//!   with an id and a URI it has seen as before, so the number tells links
+//!   apart.
+//!
 //! What it cannot tell: underline colour, which the public API does not
 //! give. The core keeps one only on an underlined cell (it drops `58` on
-//! plain text) and reads SGR 59 back as white, not as no colour. And kitty
-//! keyboard flags: xterm.js 6.0 does not implement the protocol.
+//! plain text) and reads SGR 59 back as white, not as no colour. Kitty
+//! keyboard flags: xterm.js 6.0 does not implement the protocol. In-band
+//! resize and prompt marks, which it does not implement either.
 //!
 //! Its quirks, beside fux-vt where Ghostty agrees with fux-vt, as found by
 //! `run`, `matrix` and the named cases:
@@ -94,6 +105,8 @@ pub const KIND: Kind = Kind {
     can: Can {
         underline_color: false,
         kitty_keyboard_flags: false,
+        in_band_resize: false,
+        prompt: false,
         ..Can::ALL
     },
     panel: false,
@@ -333,8 +346,9 @@ fn color(v: Option<&Value>) -> Result<Color, String> {
     Ok(Color::Rgb(r, g, b))
 }
 
-/// A cell as engine.mjs gives it: `[text, width, fg, bg, flags]`, its
-/// width xterm.js's own (0 for the second half of a wide glyph).
+/// A cell as engine.mjs gives it: `[text, width, fg, bg, flags, link]`,
+/// its width xterm.js's own (0 for the second half of a wide glyph), its
+/// link `[uri, number]` or null.
 fn cell(v: &Value) -> Result<Cell, String> {
     let fields = v.as_array().ok_or("snapshot: a cell is not an array")?;
     let at = |i: usize| fields.get(i);
@@ -364,7 +378,18 @@ fn cell(v: &Value) -> Result<Cell, String> {
         hidden: on(64),
         strikeout: on(128),
     };
-    Ok(Cell::new(text, width, style))
+    let link = match at(5) {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let uri = v.get(0).and_then(Value::as_str);
+            let number = v.get(1).and_then(Value::as_u64);
+            let (Some(uri), Some(number)) = (uri, number) else {
+                return Err("snapshot: a cell's link is not [uri, number]".into());
+            };
+            Some((uri.to_owned(), number.to_string()))
+        }
+    };
+    Ok(Cell::new(text, width, style).linked(link))
 }
 
 fn line(v: &Value) -> Result<Line, String> {
@@ -376,6 +401,7 @@ fn line(v: &Value) -> Result<Line, String> {
         .collect::<Result<_, _>>()?;
     Ok(Line {
         unread_from: None,
+        prompt: false,
         cells,
         wrapped: flag(v, "w")?,
     })
@@ -416,6 +442,8 @@ fn read(v: &Value) -> Result<Snapshot, String> {
         application_cursor: flag(v, "application_cursor")?,
         application_keypad: flag(v, "application_keypad")?,
         bracketed_paste: flag(v, "bracketed_paste")?,
+        synchronized_output: flag(v, "synchronized_output")?,
+        in_band_resize: false,
         focus_reporting: flag(v, "focus_reporting")?,
         kitty_keyboard_flags: 0,
         title: text(v, "title")?.to_owned(),

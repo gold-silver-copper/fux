@@ -7,8 +7,14 @@ use fux_vt::{Blink, CellRef, Event, Identity, Options, Parser, Sink};
 /// kitty keyboard protocol), with events on so titles can be compared; or,
 /// with `reflow` off, as fux does.
 pub fn options(reflow: bool) -> Options {
+    // DECRQM, in-band resize, hyperlinks and prompt marks as fux's panes
+    // have them (src/pane.rs).
     Options::new()
         .with_events(true)
+        .with_mode_reports(true)
+        .with_in_band_resize(true)
+        .with_hyperlinks(true)
+        .with_prompt_marks(true)
         .with_kitty_keyboard(reflow)
         .with_reflow(reflow)
         .with_identity(reflow.then_some(Identity {
@@ -105,12 +111,18 @@ impl Engine for Vt {
         let screen = (0..rows)
             .map(|y| Line {
                 unread_from: None,
+                prompt: s.starts_prompt(y),
                 cells: (0..cols)
                     .map(|x| {
-                        s.cell(y, x).map_or_else(
-                            || Cell::new("", Width::Narrow, Style::default()),
-                            |c| cell(&c),
-                        )
+                        let link = s
+                            .link(y, x)
+                            .map(|l| (l.uri().to_owned(), l.key().to_string()));
+                        s.cell(y, x)
+                            .map_or_else(
+                                || Cell::new("", Width::Narrow, Style::default()),
+                                |c| cell(&c),
+                            )
+                            .linked(link)
                     })
                     .collect(),
                 wrapped: s.row_wrapped(y),
@@ -122,6 +134,7 @@ impl Engine for Vt {
                 let row = s.row_from_bottom(usize::from(rows).checked_add(back)?)?;
                 let line = Line {
                     unread_from: None,
+                    prompt: false,
                     cells: row.cells().map(|c| cell(&c)).collect(),
                     wrapped: row.wrapped(),
                 };
@@ -140,6 +153,8 @@ impl Engine for Vt {
             application_cursor: s.application_cursor(),
             application_keypad: s.application_keypad(),
             bracketed_paste: s.bracketed_paste(),
+            synchronized_output: s.synchronized_output(),
+            in_band_resize: s.in_band_resize(),
             focus_reporting: s.focus_reporting(),
             kitty_keyboard_flags: s.kitty_keyboard_flags(),
             title: self.heard.title.clone().unwrap_or_default(),

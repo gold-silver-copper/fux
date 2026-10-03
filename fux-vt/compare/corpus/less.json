@@ -1,0 +1,71 @@
+{
+  "command": [
+    "less",
+    "README.md"
+  ],
+  "env": [
+    "PATH=/tmp/fux-corpus/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "HOME=/tmp/fux-corpus/home",
+    "LANG=en_US.UTF-8",
+    "COLORTERM=truecolor"
+  ],
+  "note": "",
+  "program": "less",
+  "replies": "",
+  "scrubbed": [],
+  "size": [
+    40,
+    120
+  ],
+  "steps": [
+    {
+      "end": 2326,
+      "keys": ""
+    },
+    {
+      "end": 2408,
+      "keys": "j"
+    },
+    {
+      "end": 2484,
+      "keys": "j"
+    },
+    {
+      "end": 4412,
+      "keys": " "
+    },
+    {
+      "end": 5474,
+      "keys": "d"
+    },
+    {
+      "end": 8100,
+      "keys": "b"
+    },
+    {
+      "end": 14574,
+      "keys": "/reflow\\r"
+    },
+    {
+      "end": 17770,
+      "keys": "n"
+    },
+    {
+      "end": 19925,
+      "keys": "N"
+    },
+    {
+      "end": 21826,
+      "keys": "G"
+    },
+    {
+      "end": 24329,
+      "keys": "g"
+    },
+    {
+      "end": 24348,
+      "keys": "q"
+    }
+  ],
+  "version": "less 668 (POSIX regular expressions)"
+}

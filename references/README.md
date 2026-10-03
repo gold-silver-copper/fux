@@ -74,6 +74,9 @@ A fux-vt test cites the section that sets its expected value.
 | `mode_2027_grapheme_clusters.tex` | grapheme cluster processing, mode 2027 (contour's terminal-unicode-core) |
 | `mode_2048_in_band_resize.md` | in-band resize reports, mode 2048 |
 | `osc8_hyperlinks.md` | hyperlinks, OSC 8 |
+| `kitty_underlines.html` | kitty's underline styles (`4:0` to `4:5`) and underline colour (SGR 58, 59) |
+| `osc133_iterm2_escape_codes.html` | iTerm2's escape codes; its "Shell Integration/FinalTerm" section documents FinalTerm's semantic prompt marks, OSC 133 `A` (prompt), `B` (command), `C` (output) and `D` (finished) |
+| `osc133_semantic_prompts.md` | Per Bothner's semantic prompts proposal: OSC 133 extended (`L` fresh line, `A` a fresh line then a prompt, `N`, `P`, `I`, options such as `aid`, `k` and `cl`) |
 
 ## Where each audit finding is settled
 

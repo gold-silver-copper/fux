@@ -1,0 +1,89 @@
+.\" The man page the corpus's man recording shows: written for the purpose.
+.TH FUX-CORPUS 1 2026-10-02 "fux-vt-compare" "User Commands"
+.SH NAME
+fux-corpus \- recordings of real programs, replayed through terminal emulators
+.SH SYNOPSIS
+.B fux-vt-compare record
+.B \-\-keys
+.I file
+.B \-\-out
+.I prefix
+.RB [ \-\-size
+.IR rows x cols ]
+.B \-\-
+.I program
+.RI [ args ...]
+.br
+.B fux-vt-compare corpus
+.RB [ \-\-engines
+.IR list ]
+.RI [ name ...]
+.SH DESCRIPTION
+A recording is what a program wrote to its terminal, byte for byte, while
+keys were typed into it, one step at a time.
+.B record
+runs the program on a pseudoterminal as a pane of
+.BR fux (1)
+runs it, with
+.B TERM=xterm-256color
+and an environment of its own, and answers its queries as fux would.
+.PP
+.B corpus
+gives each recording to fux-vt and to other engines, and compares their
+screens after every step, cell by cell.
+.SH OPTIONS
+.TP
+.BI \-\-keys " file"
+One step a line, written as escapes:
+.B \ee
+for ESC,
+.B \er
+for Return,
+.BI \ex NN
+for any other byte.
+A line starting with
+.B #
+is a comment.
+.TP
+.BI \-\-size " rows" x cols
+The terminal's size; 40 by 120 if not given.
+.TP
+.BI \-\-scrub " old" = new
+Replace
+.I old
+in the output, before it is saved.
+.TP
+.BI \-\-engines " list"
+Engine names joined by commas, as
+.B run
+takes them.
+.SH FILES
+.TP
+.I corpus/NAME.bin
+The bytes the program wrote, in order.
+.TP
+.I corpus/NAME.json
+What was run, its version, the size, the environment, and each step's keys
+with where its output ends.
+.SH EXAMPLES
+Record
+.BR less (1)
+paging a file, typing
+.B j
+twice and then
+.BR q :
+.PP
+.RS 4
+.nf
+printf \(aqj\enj\enq\en\(aq > less.keys
+fux-vt-compare record \-\-keys less.keys \-\-out less \-\- less README.md
+.fi
+.RE
+.SH EXIT STATUS
+.B corpus
+exits 0 when every recording expected to agree does,
+1 when one does not, and 2 on a usage error.
+.SH SEE ALSO
+.BR fux (1),
+.BR xterm (1),
+.BR less (1)

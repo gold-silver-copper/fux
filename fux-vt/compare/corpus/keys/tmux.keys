@@ -1,0 +1,23 @@
+# tmux inside the recorder, with a server of its own: commands, a split
+# each way, zoom, copy mode, a second window, then every shell exits.
+!start 1500
+echo inside tmux\r
+ls\r
+\x02"
+echo lower pane\r
+\x02%
+seq 1 60\r
+\x02o
+\x02z
+\x02z
+\x02[
+k
+k
+q
+\x02c
+\x02n
+\x02p
+exit\r
+exit\r
+exit\r
+exit\r

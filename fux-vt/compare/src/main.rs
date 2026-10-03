@@ -9,10 +9,13 @@
 mod bench;
 mod case;
 mod cases;
+mod corpus;
 mod engine;
 mod engines;
 mod escape;
 mod families;
+mod inventory;
+mod record;
 mod rng;
 mod snapshot;
 
@@ -34,6 +37,11 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
        fux-vt-compare replay [--engines LIST] [--size RxC] [--history N] [--no-reflow]
                              [--newline-before-resize] STEP...
        fux-vt-compare bench [--engines LIST] [--mb N] [WORKLOAD...]
+       fux-vt-compare record --keys FILE --out PREFIX [--size RxC] [--program NAME]
+                             [--version TEXT] [--env KEY=VALUE]... [--dir DIR]
+                             [--scrub OLD=NEW]... [--note TEXT] -- PROGRAM ARGS...
+       fux-vt-compare corpus [--engines LIST] [--show] [NAME...]
+       fux-vt-compare inventory [NAME...]
        fux-vt-compare engines
        fux-vt-compare --list
 
@@ -47,15 +55,35 @@ matrix   each family alone beside each engine alone, and beside the whole
          panel: the share of cases that differ, as a table.
 cases    the named cases (default: all), beside every engine that can run
          here. Exit 1 if a case in a family expected to agree fails, or
-         xterm differs on one in a family with a recorded verdict.
-verdicts the families with a recorded verdict (or those named), beside
-         xterm alone (default): their named cases, then random cases from
-         each with plain text (100 each with a verdict, by default). Exit 1
-         if xterm differs on any.
+         the engines that decide a family with a recorded verdict (xterm,
+         for most) outvote fux-vt on one of its cases.
+verdicts the families with a recorded verdict (or those named), each
+         beside the engines that decide it (default; --list names them):
+         their named cases, then random cases from each with plain text
+         (100 each with a verdict, by default). Exit 1 if they outvote
+         fux-vt on any.
 replay   one case: STEP is output, written as `run` prints it ('\\e[1mX'),
          or resize:RxC. Prints each engine's verdict after every step, and
          the screens.
-bench    each engine's speed on the same workloads (default: all), in MB/s.
+bench    each engine's speed on the same workloads, in MB/s (default: the
+         synthetic ones and the corpus all together; `corpus` adds each
+         recording alone).
+record   runs PROGRAM on a PTY (--size, else 40x120) as a pane of fux
+         runs it, types each line of keys in FILE, and keeps every byte it
+         writes (PREFIX.bin) and what was run and typed (PREFIX.json).
+         fux-vt answers its queries as fux does. Its environment is TERM
+         and the --env pairs alone (and PATH, if they have none). --scrub
+         replaces OLD in the output before it is saved, for what the setup
+         cannot keep out (a host name).
+corpus   the recordings in corpus/ (default: all), each replayed through
+         fux-vt beside the engines (default: xterm and the panel),
+         compared after every step. xterm decides the fields it can tell;
+         the panel's vote the rest, and all once xterm abstains. Exit 1 if
+         a recording expected to agree does not. --show prints fux-vt's
+         screen at the end of each.
+inventory every sequence the recordings (default: all) send, normalized,
+         with how often, from which programs, and what fux-vt does with
+         it, as Markdown (corpus/INVENTORY.md is its output).
 engines  every engine: whether it can run here, whether it votes, and what
          it cannot tell.
 --list   the families, what each covers, and its status.
@@ -63,11 +91,12 @@ engines  every engine: whether it can run here, whether it votes, and what
 LIST is engine names joined by commas, or `panel` (the default for run,
 survey, matrix and replay: the voters that can run here), `all` (every
 engine that can run here, the default for cases and bench), `in-process`
-or `xterm` (the default for verdicts).
+or `xterm`.
 
 fux-vt is set up as ratty sets it up (reflow, an identity, the kitty
-keyboard protocol); --no-reflow sets it up as fux does, which leaves out
-the families that need ratty's setup.";
+keyboard protocol), with the DECRQM answers, in-band resize, hyperlinks and
+prompt marks fux's panes have; --no-reflow sets it up as fux does, which
+leaves out the families that need ratty's setup.";
 
 struct Args {
     command: String,
@@ -81,6 +110,18 @@ struct Args {
     history: usize,
     newline_before_resize: bool,
     mb: usize,
+    show: bool,
+    /// Whether `--size` was given.
+    sized: bool,
+    /// `record`'s own options.
+    out: Option<String>,
+    keys: Option<String>,
+    program: Option<String>,
+    version: String,
+    env: Vec<String>,
+    dir: Option<String>,
+    scrub: Vec<String>,
+    note: String,
     rest: Vec<String>,
 }
 
@@ -104,12 +145,32 @@ fn parse() -> Result<Args, String> {
         history: 0,
         newline_before_resize: false,
         mb: 8,
+        show: false,
+        sized: false,
+        out: None,
+        keys: None,
+        program: None,
+        version: String::new(),
+        env: Vec::new(),
+        dir: None,
+        scrub: Vec::new(),
+        note: String::new(),
         rest: Vec::new(),
     };
     let mut words = std::env::args().skip(1).peekable();
     if let Some(first) = words.peek()
         && [
-            "run", "survey", "matrix", "cases", "verdicts", "replay", "bench", "engines",
+            "run",
+            "survey",
+            "matrix",
+            "cases",
+            "verdicts",
+            "replay",
+            "bench",
+            "engines",
+            "record",
+            "corpus",
+            "inventory",
         ]
         .contains(&first.as_str())
     {
@@ -123,12 +184,28 @@ fn parse() -> Result<Args, String> {
             "--cases" => args.cases = Some(number("--cases", &value("--cases")?)?),
             "--family" => args.families.push(value("--family")?),
             "--all" => args.all = true,
+            "--show" => args.show = true,
             "--engines" => args.engines = Some(value("--engines")?),
             "--no-reflow" => args.reflow = false,
             "--newline-before-resize" => args.newline_before_resize = true,
-            "--size" => args.size = dimensions(&value("--size")?)?,
+            "--size" => {
+                args.size = dimensions(&value("--size")?)?;
+                args.sized = true;
+            }
             "--history" => args.history = number("--history", &value("--history")?)?,
             "--mb" => args.mb = number("--mb", &value("--mb")?)?,
+            "--out" => args.out = Some(value("--out")?),
+            "--keys" => args.keys = Some(value("--keys")?),
+            "--program" => args.program = Some(value("--program")?),
+            "--version" => args.version = value("--version")?,
+            "--env" => args.env.push(value("--env")?),
+            "--dir" => args.dir = Some(value("--dir")?),
+            "--scrub" => args.scrub.push(value("--scrub")?),
+            "--note" => args.note = value("--note")?,
+            "--" => {
+                args.rest.extend(words.by_ref());
+                break;
+            }
             "--list" => args.command = "list".into(),
             "-h" | "--help" => args.command = "help".into(),
             other if other.starts_with("--") => return Err(format!("unknown option {other}")),
@@ -201,7 +278,7 @@ fn list() {
     for f in FAMILIES {
         let status = match f.status {
             Status::Agree => "agree".to_owned(),
-            Status::Decided(why) => format!("DECIDED: {why}"),
+            Status::Decided { why, by } => format!("DECIDED by {}: {why}", by.join(", ")),
             Status::Differs(why) => format!("DIFFER: {why}"),
         };
         let ratty = if f.ratty_only { " [needs reflow]" } else { "" };
@@ -320,7 +397,7 @@ fn survey(args: &Args) -> Result<bool, String> {
         let set: Vec<usize> = if i == text { vec![i] } else { vec![i, text] };
         let status = match f.status {
             Status::Agree => "agree",
-            Status::Decided(_) => "decided",
+            Status::Decided { .. } => "decided",
             Status::Differs(_) => "differs",
         };
         println!("== {} (expected: {status})", f.name);
@@ -428,17 +505,21 @@ fn cases(args: &Args) -> Result<bool, String> {
         let outcome = case.run_until(&panel, false)?;
         let status = FAMILIES.get(index).map(|f| f.status);
         let marks = marks(&outcome);
-        if matches!(status, Some(Status::Decided(_))) {
-            match xterm_agrees(&outcome) {
+        if let Some(Status::Decided { by, .. }) = status {
+            let deciders = match by {
+                [one] => format!("{one} decides"),
+                _ => format!("{} decide", by.join(", ")),
+            };
+            match deciders_agree(&outcome, by) {
                 Some(true) | None => {
                     agree = agree.saturating_add(1);
-                    println!("ok       {name} (family {family}: xterm decides)   {marks}");
+                    println!("ok       {name} (family {family}: {deciders})   {marks}");
                 }
                 Some(false) => {
                     ok = false;
                     differ = differ.saturating_add(1);
                     println!(
-                        "FAIL     {name} (family {family}: xterm decides, and differs)   {marks}"
+                        "FAIL     {name} (family {family}: {deciders}, against fux-vt)   {marks}"
                     );
                     print!("{}", case::report(&case, &panel, &outcome));
                 }
@@ -473,22 +554,24 @@ fn cases(args: &Args) -> Result<bool, String> {
     Ok(ok)
 }
 
-/// Whether xterm agrees with fux-vt in `outcome`; none if it did not run
-/// or abstained.
-fn xterm_agrees(outcome: &case::Outcome) -> Option<bool> {
-    let xterm = engine::find("xterm")?;
-    outcome
+/// Whether the engines named in `by` agree with fux-vt in `outcome`, by
+/// their vote alone (one engine alone outvotes fux-vt wherever it differs);
+/// none if none of them ran or all abstained.
+fn deciders_agree(outcome: &case::Outcome, by: &[&str]) -> Option<bool> {
+    let deciders: Vec<case::Verdict> = outcome
         .verdicts
         .iter()
-        .find(|v| v.engine == xterm)
-        .map(|v| v.differences.is_empty())
+        .filter(|v| ENGINES.get(v.engine).is_some_and(|k| by.contains(&k.name)))
+        .cloned()
+        .collect();
+    (!deciders.is_empty()).then(|| case::outvoted_on(&deciders).is_empty())
 }
 
-/// The families with a recorded verdict, beside xterm (or `--engines`):
-/// their named cases at the end of each, then random cases from each with
-/// plain text, where xterm outvotes fux-vt wherever it differs.
+/// The families with a recorded verdict, each beside the engines that
+/// decide it (or `--engines`): their named cases at the end of each, then
+/// random cases from each with plain text, where the deciding engines' vote
+/// decides (xterm alone outvotes fux-vt wherever it differs).
 fn verdicts(args: &Args) -> Result<bool, String> {
-    let panel = panel(args, "xterm")?;
     let text = families::find("text").ok_or("no text family")?;
     let chosen: Vec<usize> = if args.families.is_empty() {
         (0..FAMILIES.len())
@@ -496,18 +579,22 @@ fn verdicts(args: &Args) -> Result<bool, String> {
                 usable(i, args.reflow)
                     && FAMILIES
                         .get(i)
-                        .is_some_and(|f| matches!(f.status, Status::Decided(_)))
+                        .is_some_and(|f| matches!(f.status, Status::Decided { .. }))
             })
             .collect()
     } else {
         chosen_families(args)?
     };
-    println!("engines: {}", names(&panel));
     let count = args.cases.unwrap_or(100);
     let mut ok = true;
     for &i in &chosen {
         let f = FAMILIES.get(i).ok_or("no such family")?;
-        println!("== {}", f.name);
+        let panel = match (args.engines.as_deref(), f.status) {
+            (Some(list), _) => engines(list)?,
+            (None, Status::Decided { by, .. }) => engines(&by.join(","))?,
+            (None, Status::Agree | Status::Differs(_)) => engines("xterm")?,
+        };
+        println!("== {} (beside {})", f.name, names(&panel));
         for &(name, family, (rows, cols), words) in cases::CASES {
             if family != f.name {
                 continue;
@@ -598,10 +685,45 @@ fn replay(args: &Args) -> Result<bool, String> {
     Ok(agrees)
 }
 
+fn record(args: &Args) -> Result<bool, String> {
+    let program = args.rest.first().ok_or("record: no program to run")?;
+    let (rows, cols) = if args.sized { args.size } else { (40, 120) };
+    let request = record::Request {
+        rows,
+        cols,
+        out: args.out.as_ref().ok_or("record needs --out")?.into(),
+        program: args.program.clone().unwrap_or_else(|| program.clone()),
+        version: args.version.clone(),
+        env: args.env.clone(),
+        dir: args.dir.as_ref().map(Into::into),
+        keys: args.keys.as_ref().ok_or("record needs --keys")?.into(),
+        scrub: args.scrub.clone(),
+        note: args.note.clone(),
+        argv: args.rest.clone(),
+    };
+    let done = record::record(&request)?;
+    println!(
+        "{}: {} bytes in {} steps, {} bytes of replies",
+        request.out.display(),
+        done.bytes,
+        done.steps,
+        done.replies
+    );
+    Ok(true)
+}
+
 fn main() -> ExitCode {
     // An engine's panic is caught and costs it its vote (`case::guarded`),
     // and reported there; the default hook would print each one again.
     std::panic::set_hook(Box::new(|_| {}));
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if let Some((first, rest)) = argv.split_first()
+        && first == record::LAUNCH
+    {
+        let error = record::launched(rest).err().unwrap_or_default();
+        eprintln!("fux-vt-compare: {error}");
+        return ExitCode::from(127);
+    }
     let result = parse().and_then(|args| match args.command.as_str() {
         "list" => {
             list();
@@ -620,6 +742,9 @@ fn main() -> ExitCode {
         "cases" => cases(&args),
         "verdicts" => verdicts(&args),
         "replay" => replay(&args),
+        "record" => record(&args),
+        "inventory" => inventory::run(&args.rest),
+        "corpus" => corpus::run(&panel(&args, "xterm,panel")?, &args.rest, args.show),
         "bench" => bench::run(&panel(&args, "all")?, &args.rest, args.mb),
         _ => run(&args),
     });

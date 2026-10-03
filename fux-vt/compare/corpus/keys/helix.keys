@@ -1,0 +1,23 @@
+# helix on a Rust file of a small cargo project with errors, so
+# rust-analyzer's diagnostics show: wait for it to start, save (cargo
+# check runs), wait for the diagnostics, then move, search, select, split,
+# quit.
+!start 2000
+!quiet 8000
+!wait
+!quiet 10000
+:w\r
+!quiet 500
+j
+j
+5j
+w
+x
+\e
+/let\r
+n
+\x17v
+\x17w
+j
+:q\r
+:q!\r

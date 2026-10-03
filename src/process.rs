@@ -74,7 +74,15 @@ pub fn spawn(
     let (master, slave) = open_pty(rows, cols)?;
     let fux = launcher().map_err(Error::Launcher)?;
     let child = launch(&fux, argv, &slave, |command| {
-        command.current_dir(cwd).env("TERM", "xterm-256color");
+        // TERM_PROGRAM is fux's, as tmux sets its own: the outer
+        // terminal's would have programs use features of a terminal they
+        // are not talking to (Claude Code, under Ghostty, pushed kitty
+        // keyboard flags fux does not honour).
+        command
+            .current_dir(cwd)
+            .env("TERM", "xterm-256color")
+            .env("TERM_PROGRAM", "fux")
+            .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
         for (key, value) in env {
             command.env(key, value);
         }

@@ -478,9 +478,17 @@ fn a_panes_shell_has_the_pty_as_its_terminal_and_job_control() -> Outcome {
     })?;
     client.keys("\x03")?;
     // The prompt is back once the interrupted job has gone: typed sooner,
-    // the next line would be echoed before it (dash prints no newline
-    // after ^C).
-    at_prompt(&mut client, "the prompt after the job")?;
+    // the next line would be echoed before it. It is a prompt below the
+    // `^C` echo: the client may still be showing the one after C-z.
+    eventually("the prompt after the job", || {
+        client.pump()?;
+        let (row, col) = client.terminal.screen().cursor_position();
+        let lines = client.lines();
+        let row = usize::from(row);
+        Ok(col == 2
+            && lines.get(row).is_some_and(|l| l.trim_end() == "$")
+            && lines.iter().take(row).any(|l| l.starts_with("^C")))
+    })?;
     client.keys("jobs; echo after-fg\r")?;
     client.wait("the prompt after fg", |t| {
         t.lines().any(|l| l == "after-fg")
@@ -713,18 +721,4 @@ fn job_state(command: &str, test: fn(&str) -> bool) -> Result<bool, String> {
 /// (`N` on a runner that lowers its priority).
 fn foreground(stat: &str) -> bool {
     stat.starts_with(['R', 'S']) && stat.contains('+')
-}
-
-/// Waits until the shell waits at a fresh prompt: the cursor just after a
-/// `$ ` alone on its line.
-fn at_prompt(client: &mut Client, what: &str) -> Outcome {
-    eventually(what, || {
-        client.pump()?;
-        let (row, col) = client.terminal.screen().cursor_position();
-        let lines = client.lines();
-        Ok(col == 2
-            && lines
-                .get(usize::from(row))
-                .is_some_and(|l| l.trim_end() == "$"))
-    })
 }

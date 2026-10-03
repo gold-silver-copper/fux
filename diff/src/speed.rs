@@ -4,6 +4,11 @@
 //! counted. The two run in turn, best of nine each, on a 50 by 200 screen
 //! with 10,000 rows of history. Not a comparison of results, and not run
 //! with the areas.
+//!
+//! A last stream is real traffic: every recording in fux-vt-compare's
+//! corpus (`fux-vt/compare/corpus/*.bin`, all made on a 40 by 120 screen),
+//! one after another, over and over to the length of the ASCII stream, on
+//! a screen of that size.
 use std::time::Duration;
 
 /// What a stream is made of: one line of output, repeated.
@@ -48,8 +53,9 @@ fn cpu() -> Result<Duration, String> {
 }
 
 macro_rules! timed {
-    ($vt:ident, $bytes:expr) => {{
-        let mut parser = $vt::Parser::new(50, 200, 10_000).map_err(|e| format!("{e:?}"))?;
+    ($vt:ident, $bytes:expr, $size:expr) => {{
+        let (rows, cols) = $size;
+        let mut parser = $vt::Parser::new(rows, cols, 10_000).map_err(|e| format!("{e:?}"))?;
         let start = cpu()?;
         for piece in pieces($bytes) {
             parser
@@ -61,6 +67,22 @@ macro_rules! timed {
     }};
 }
 
+/// Every recording in the corpus, one after another, in file name order.
+fn corpus() -> Result<Vec<u8>, String> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fux-vt/compare/corpus");
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "bin"))
+        .collect();
+    paths.sort();
+    let mut out = Vec::new();
+    for path in &paths {
+        out.extend(std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?);
+    }
+    Ok(out)
+}
+
 /// The table: each stream's best time on each side, and their ratio.
 pub fn run(scale: usize) -> Result<String, String> {
     let lines = crate::times(20_000, scale);
@@ -68,13 +90,28 @@ pub fn run(scale: usize) -> Result<String, String> {
         "fux-vt parse time, thread CPU, best of 9, {lines} lines a stream\n{:<8} {:>12} {:>12} {:>7}",
         "stream", "baseline µs", "current µs", "ratio"
     );
-    for (name, line) in STREAMS {
-        let bytes: String = std::iter::repeat_n(*line, lines).collect();
-        let bytes = bytes.as_bytes();
+    let mut streams: Vec<(&str, Vec<u8>, (u16, u16))> = STREAMS
+        .iter()
+        .map(|(name, line)| {
+            let bytes: String = std::iter::repeat_n(*line, lines).collect();
+            (*name, bytes.into_bytes(), (50, 200))
+        })
+        .collect();
+    let recorded = corpus()?;
+    let length = STREAMS
+        .first()
+        .map_or(0, |(_, line)| line.len().saturating_mul(lines));
+    let mut traffic = Vec::with_capacity(length.saturating_add(recorded.len()));
+    while !recorded.is_empty() && traffic.len() < length {
+        traffic.extend_from_slice(&recorded);
+    }
+    streams.push(("corpus", traffic, (40, 120)));
+    for (name, bytes, size) in &streams {
+        let bytes = bytes.as_slice();
         let (mut baseline, mut current) = (Duration::MAX, Duration::MAX);
         for _ in 0..9 {
-            baseline = baseline.min(timed!(baseline_vt, bytes));
-            current = current.min(timed!(fux_vt, bytes));
+            baseline = baseline.min(timed!(baseline_vt, bytes, *size));
+            current = current.min(timed!(fux_vt, bytes, *size));
         }
         let ratio = current.as_secs_f64() / baseline.as_secs_f64().max(f64::MIN_POSITIVE);
         out.push_str(&format!(

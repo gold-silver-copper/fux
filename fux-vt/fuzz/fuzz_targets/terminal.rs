@@ -94,12 +94,17 @@ impl Fnv {
     }
 }
 
-/// A hash of a row's cells: their text, halves and attributes. Checked
-/// after every byte of byte-at-a-time processing, so it hashes rather than
-/// copies: a collision could only hide a change, with odds of 2^-64.
+/// A hash of a row's cells: their text, halves, attributes and links.
+/// Checked after every byte of byte-at-a-time processing, so it hashes
+/// rather than copies: a collision could only hide a change, with odds of
+/// 2^-64.
 fn cells_hash(row: fux_vt::Row<'_>) -> u64 {
     let mut h = Fnv(0xcbf2_9ce4_8422_2325);
-    for cell in row.cells() {
+    for (col, cell) in row.cells().enumerate() {
+        if let Some(link) = row.link(col) {
+            h.bytes(link.uri().as_bytes());
+            h.bytes(&link.key().to_le_bytes());
+        }
         let a = cell.attributes();
         h.bytes(cell.contents().as_bytes());
         h.u32(color(a.foreground()));
@@ -155,13 +160,16 @@ fuzz_target!(|data: &[u8]| {
     let (Some(&r), Some(&c), Some(&history)) = (data.first(), data.get(1), data.get(2)) else {
         return;
     };
-    // Header bits above the history count opt into events (0x10) and
-    // extended replies (0x20); above the row count, into reflow (0x10), the
-    // kitty keyboard protocol (0x20) and an identity (0x40). Each is fuzzed
-    // alone and with the others, alongside the default.
+    // Header bits above the history count opt into events (0x10), extended
+    // replies (0x20), hyperlinks (0x40) and prompt marks (0x80); above the
+    // row count, into reflow
+    // (0x10), the kitty keyboard protocol (0x20) and an identity (0x40).
+    // Each is fuzzed alone and with the others, alongside the default.
     let options = Options::new()
         .with_events(history & 0x10 != 0)
         .with_extended_replies(history & 0x20 != 0)
+        .with_hyperlinks(history & 0x40 != 0)
+        .with_prompt_marks(history & 0x80 != 0)
         .with_reflow(r & 0x10 != 0)
         .with_kitty_keyboard(r & 0x20 != 0)
         .with_identity((r & 0x40 != 0).then_some(Identity {

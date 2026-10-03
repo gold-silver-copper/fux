@@ -133,15 +133,20 @@ enum State {
     SosPmApcString,
 }
 
-/// The most OSC payload bytes retained for [`Event`] delivery. A longer OSC
-/// string is consumed without an event; nothing beyond this is ever buffered.
+/// The most OSC payload bytes retained for [`Event`] delivery and
+/// hyperlinks. A longer OSC string is consumed without an event or a link;
+/// nothing beyond this is ever buffered.
 pub const OSC_PAYLOAD_LIMIT: usize = 64 * 1024;
+
+/// The most OSC payload bytes retained with [`Options::prompt_marks`] alone:
+/// enough to tell a prompt mark, `133;A`, or a prompt's kind, `133;P;k=i`.
+const OSC_PREFIX: usize = 16;
 
 /// Opt-in behaviour that needs the host's cooperation. The default
 /// (everything off) is fux's policy: child output causes no title, bell or
 /// clipboard side effects, OSC payloads are never retained, only DSR 5n/6n
-/// and primary DA are answered, keyboard protocol requests are ignored, and a
-/// resize does not reflow.
+/// and primary DA are answered, keyboard protocol requests are ignored,
+/// hyperlinks and prompt marks are ignored, and a resize does not reflow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Options {
@@ -151,6 +156,18 @@ pub struct Options {
     /// Also answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`), DECXCPR
     /// (`CSI ? 6 n`) and secondary device attributes (`CSI > c`).
     pub extended_replies: bool,
+    /// Answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`) alone, as
+    /// [`Options::extended_replies`] does with the rest: how programs learn
+    /// which modes the terminal knows, synchronized output (2026) among
+    /// them, without what DA2 and DECXCPR say about it.
+    pub mode_reports: bool,
+    /// Mode 2048, in-band resize (`references/modern/mode_2048_in_band_resize.md`):
+    /// track it, report the size as `CSI 48 ; rows ; cols ; 0 ; 0 t` when a
+    /// program sets it, and give the host the report to send after a
+    /// resize ([`Parser::resize_report`]). Pixel sizes are reported as 0,
+    /// which the spec allows a terminal that does not know them. Off, the
+    /// mode is not recognized, and DECRQM says so.
+    pub in_band_resize: bool,
     /// Track the kitty keyboard protocol's flag stacks (`CSI > u`, `CSI < u`,
     /// `CSI = u`) and xterm's modifyOtherKeys (`CSI > 4 ; Pv m`), and answer
     /// the flag query `CSI ? u`. State only: the host encodes keys, reading
@@ -162,6 +179,16 @@ pub struct Options {
     /// resize, keeping the cursor on its character. The alternate screen is
     /// resized without reflow, as its programs redraw anyway.
     pub reflow: bool,
+    /// Keep hyperlinks (`OSC 8 ; params ; URI ST`): each cell printed while
+    /// one is open has it, read with [`crate::Row::link`]. The URIs are
+    /// kept, so OSC 8 payloads are buffered, up to [`OSC_PAYLOAD_LIMIT`],
+    /// and each screen holds up to 4 MiB of links. Off, OSC 8 is ignored.
+    pub hyperlinks: bool,
+    /// Keep prompt marks (`OSC 133 ; A`, semantic prompts): the row a prompt
+    /// starts on is marked, read with [`crate::Row::starts_prompt`], and `A`
+    /// and `L` start a fresh line. An OSC string's first bytes are kept to
+    /// tell one. Off, OSC 133 is ignored.
+    pub prompt_marks: bool,
     /// Answer as this terminal rather than as a bare VT100: see [`Identity`].
     pub identity: Option<Identity>,
 }
@@ -173,8 +200,12 @@ impl Options {
         Self {
             events: false,
             extended_replies: false,
+            mode_reports: false,
+            in_band_resize: false,
             kitty_keyboard: false,
             reflow: false,
+            hyperlinks: false,
+            prompt_marks: false,
             identity: None,
         }
     }
@@ -188,6 +219,16 @@ impl Options {
         self.extended_replies = on;
         self
     }
+    /// These options with [`Options::mode_reports`] as `on` says.
+    pub const fn with_mode_reports(mut self, on: bool) -> Self {
+        self.mode_reports = on;
+        self
+    }
+    /// These options with [`Options::in_band_resize`] as `on` says.
+    pub const fn with_in_band_resize(mut self, on: bool) -> Self {
+        self.in_band_resize = on;
+        self
+    }
     /// These options with [`Options::kitty_keyboard`] as `on` says.
     pub const fn with_kitty_keyboard(mut self, on: bool) -> Self {
         self.kitty_keyboard = on;
@@ -196,6 +237,16 @@ impl Options {
     /// These options with [`Options::reflow`] as `on` says.
     pub const fn with_reflow(mut self, on: bool) -> Self {
         self.reflow = on;
+        self
+    }
+    /// These options with [`Options::prompt_marks`] as `on` says.
+    pub const fn with_prompt_marks(mut self, on: bool) -> Self {
+        self.prompt_marks = on;
+        self
+    }
+    /// These options with [`Options::hyperlinks`] as `on` says.
+    pub const fn with_hyperlinks(mut self, on: bool) -> Self {
+        self.hyperlinks = on;
         self
     }
     /// These options answering as `identity`, or as a bare VT100 if `None`.
@@ -318,10 +369,15 @@ impl<F: FnMut(&[u8])> Sink for Replies<F> {
 pub struct Parser {
     screen: Screen,
     options: Options,
-    /// OSC payload, collected only with `options.events`, at most
-    /// `OSC_PAYLOAD_LIMIT` bytes.
+    /// OSC payload, at most `osc_limit` bytes.
     osc: Vec<u8>,
+    /// `OSC_PAYLOAD_LIMIT` with `options.events` or `options.hyperlinks`,
+    /// else `OSC_PREFIX`: set once, as it is asked for every byte of an OSC.
+    osc_limit: usize,
     osc_overflow: bool,
+    /// Whether the last sequence dispatched set synchronized output, for
+    /// `Parser::process_until_frame`.
+    frame_begun: bool,
     state: State,
     params: Parameters,
     intermediates: [u8; 2],
@@ -353,7 +409,15 @@ impl Parser {
             screen: Screen::new(rows, cols, history_lines)?,
             options,
             osc: Vec::new(),
+            osc_limit: if options.events || options.hyperlinks {
+                OSC_PAYLOAD_LIMIT
+            } else if options.prompt_marks {
+                OSC_PREFIX
+            } else {
+                0
+            },
             osc_overflow: false,
+            frame_begun: false,
             state: State::Ground,
             params: Parameters::default(),
             intermediates: [0; 2],
@@ -373,6 +437,15 @@ impl Parser {
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error> {
         self.screen.resize(rows, cols, self.options.reflow)
     }
+    /// The size report a program that set in-band resize (mode 2048) is to
+    /// be sent after the terminal's size changed: `CSI 48 ; rows ; cols ; 0
+    /// ; 0 t`, or `None` if it did not set it or
+    /// [`Options::in_band_resize`] is off. The host sends it once the
+    /// program's terminal has the new size, as the spec requires.
+    pub fn resize_report(&self) -> Option<Vec<u8>> {
+        (self.options.in_band_resize && self.screen.in_band_resize())
+            .then(|| self.screen.size_report().as_bytes().to_vec())
+    }
     /// The options the parser was made with.
     pub fn options(&self) -> Options {
         self.options
@@ -391,10 +464,35 @@ impl Parser {
     }
     /// Process output, delivering replies and (with [`Options::events`]) events.
     pub fn process_with(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(), Error> {
+        self.run::<false>(bytes, sink).map(|_| ())
+    }
+    /// Process output as [`Parser::process_with`] does, but stop right after
+    /// a sequence that sets synchronized output (`CSI ? 2026 h`, BSU), and
+    /// say how many bytes that took; `None` if no sequence did, and every
+    /// byte was processed. A host that holds a program's frames
+    /// ([`crate::Screen::synchronized_output`]) holds the rest from there, found
+    /// exactly as the parser reads it: split across calls, or set beside
+    /// other modes in one sequence.
+    pub fn process_until_frame(
+        &mut self,
+        bytes: &[u8],
+        sink: &mut impl Sink,
+    ) -> Result<Option<usize>, Error> {
+        self.run::<true>(bytes, sink)
+    }
+    /// Processes `bytes`, stopping after a BSU if `UNTIL_FRAME`; how many
+    /// bytes it took if it stopped. A constant, so that `process_with`
+    /// compiles as it did before frames were looked for.
+    fn run<const UNTIL_FRAME: bool>(
+        &mut self,
+        bytes: &[u8],
+        sink: &mut impl Sink,
+    ) -> Result<Option<usize>, Error> {
         if bytes.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         self.screen.begin()?;
+        self.frame_begun = false;
         let mut remaining = bytes;
         while let Some((&byte, tail)) = remaining.split_first() {
             let ground = self.state == State::Ground && self.utf8_len == 0;
@@ -414,9 +512,14 @@ impl Parser {
             } else {
                 self.byte(byte, sink)?;
                 remaining = tail;
+                // Every BSU ends in `h`: the byte in hand rules out the rest.
+                if UNTIL_FRAME && byte == b'h' && self.frame_begun {
+                    self.frame_begun = false;
+                    return Ok(Some(bytes.len().saturating_sub(remaining.len())));
+                }
             }
         }
-        Ok(())
+        Ok(None)
     }
     /// Prints the run of valid non-ASCII UTF-8 `bytes` begins with, decoded
     /// at once rather than byte by byte, and says how many
@@ -537,7 +640,7 @@ impl Parser {
         }
         if byte == 0x1b {
             if self.state == State::OscString {
-                self.dispatch_osc(sink);
+                self.dispatch_osc(sink)?;
             }
             self.reset_sequence();
             self.state = State::Escape;
@@ -547,13 +650,15 @@ impl Parser {
             State::Ground => self.ground(byte, sink)?,
             State::OscString => {
                 if byte == 7 {
-                    self.dispatch_osc(sink);
+                    self.dispatch_osc(sink)?;
                     self.state = State::Ground;
-                } else if self.options.events && !self.osc_overflow {
-                    if self.osc.len() < OSC_PAYLOAD_LIMIT {
+                } else if !self.osc_overflow {
+                    if self.osc.len() < self.osc_limit {
                         self.osc.push(byte);
                     } else {
-                        self.osc.clear();
+                        // What came first stays: a prompt mark, and an OSC
+                        // 8 too long to keep, which closes the link, are
+                        // told by it.
                         self.osc_overflow = true;
                     }
                 }
@@ -666,12 +771,14 @@ impl Parser {
                                 let intermediates = intermediates
                                     .get(..self.intermediate_len)
                                     .unwrap_or_default();
+                                let begun = self.screen.frames_begun();
                                 let dispatch = self.screen.csi(
                                     &self.params,
                                     intermediates,
                                     byte,
                                     &self.options,
                                 )?;
+                                self.frame_begun = self.screen.frames_begun() != begun;
                                 match dispatch {
                                     Dispatch::Done => {}
                                     Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
@@ -701,13 +808,25 @@ impl Parser {
         Ok(())
     }
 
-    /// Deliver the completed OSC string as events. Only 0/1/2/52 are recognized;
-    /// an overflowed or unrecognized string is dropped.
-    fn dispatch_osc(&mut self, sink: &mut impl Sink) {
-        if !self.options.events || self.osc_overflow {
-            return;
-        }
+    /// Carries out the completed OSC string: 133 (prompt marks), from its
+    /// first bytes, with [`Options::prompt_marks`]; 8 (hyperlinks) with [`Options::hyperlinks`]; 0, 1,
+    /// 2 and 52 delivered as events with [`Options::events`]. An overflowed
+    /// string is no event, and closes any link; others are dropped.
+    ///
+    /// Kept out of line: inlined into `byte`, with the screen's OSC
+    /// handling, it made `byte` too large to inline into the parser's loop,
+    /// and escape-heavy output slower.
+    #[inline(never)]
+    fn dispatch_osc(&mut self, sink: &mut impl Sink) -> Result<(), Error> {
         let payload = std::mem::take(&mut self.osc);
+        let result = self.osc_command(&payload, sink);
+        // Reuse the allocation for the next OSC string.
+        self.osc = payload;
+        self.osc.clear();
+        result
+    }
+
+    fn osc_command(&mut self, payload: &[u8], sink: &mut impl Sink) -> Result<(), Error> {
         let (command, rest) = match payload.iter().position(|b| *b == b';') {
             Some(i) => (
                 payload.get(..i).unwrap_or_default(),
@@ -716,8 +835,22 @@ impl Parser {
                     .and_then(|r| r.get(1..))
                     .unwrap_or_default(),
             ),
-            None => (payload.as_slice(), &[][..]),
+            None => (payload, &[][..]),
         };
+        match command {
+            b"133" if self.options.prompt_marks => return self.screen.prompt_osc(rest),
+            // A link too long to keep is no link: what follows is printed
+            // without one.
+            b"8" if self.options.hyperlinks => {
+                let whole = if self.osc_overflow { &[][..] } else { rest };
+                self.screen.hyperlink_osc(whole);
+                return Ok(());
+            }
+            _ => {}
+        }
+        if !self.options.events || self.osc_overflow {
+            return Ok(());
+        }
         match command {
             b"0" => {
                 sink.event(Event::IconName(rest));
@@ -736,9 +869,7 @@ impl Parser {
             }
             _ => {}
         }
-        // Reuse the allocation for the next OSC string.
-        self.osc = payload;
-        self.osc.clear();
+        Ok(())
     }
 
     /// Replies enabled by [`Options::extended_replies`] and
@@ -747,6 +878,7 @@ impl Parser {
     fn query_reply(&self, intermediates: &[u8], byte: u8) -> Option<Reply> {
         let n = self.params.first(0, 0);
         let extended = self.options.extended_replies;
+        let modes = extended || self.options.mode_reports;
         let identity = self.options.identity;
         match (intermediates, byte) {
             (b"?", b'n') if n == 6 && extended => {
@@ -770,11 +902,14 @@ impl Parser {
                 let (name, version) = (identity.name, identity.version);
                 Some(Reply::of(format_args!("\x1bP>|{name} {version}\x1b\\")))
             }
-            (b"?$", b'p') if extended => {
-                let status = self.screen.private_mode_status(n);
+            (b"?$", b'p') if modes => {
+                let status = match n {
+                    2048 if !self.options.in_band_resize => 0,
+                    _ => self.screen.private_mode_status(n),
+                };
                 Some(Reply::of(format_args!("\x1b[?{n};{status}$y")))
             }
-            (b"$", b'p') if extended => {
+            (b"$", b'p') if modes => {
                 // IRM alone of the ANSI modes is known.
                 let status = match n {
                     4 if self.screen.insert_mode() => 1,
