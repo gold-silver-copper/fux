@@ -276,6 +276,17 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
                 p.process(b"\r")?;
                 p.process(&fill)?;
             }
+            // Clusters of up to 121 bytes, enough for rows laid out of
+            // them to run out of room for their text.
+            2 => {
+                for _ in 0..r.below(4).saturating_add(1) {
+                    let marks = r.below(61);
+                    let cluster: String = std::iter::once('a')
+                        .chain(std::iter::repeat_n('\u{301}', marks))
+                        .collect();
+                    p.process(cluster.as_bytes())?;
+                }
+            }
             _ => {
                 let piece = PIECES.get(r.below(PIECES.len())).copied().unwrap_or(b"a");
                 p.process(piece)?;
@@ -346,16 +357,16 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
 /// No reader can tell the two grids apart: each row's identity, version,
 /// wrap, prompt, cells with their text and links, and whether it has
 /// links at all; the cursor, the saved cursor, each waiting to wrap or
-/// not; the margins and the size. And `kept`'s rows are blank past their
+/// not; the margins and the size. And `runs`'s rows are blank past their
 /// `used` marks.
-fn assert_same(kept: &Grid, laid: &Grid, case: &str) {
-    assert!(kept.seen() == laid.seen(), "{case}: rows");
+fn assert_same(runs: &Grid, cells: &Grid, case: &str) {
+    assert!(runs.seen() == cells.seen(), "{case}: rows");
     let linked = |g: &Grid| -> Vec<bool> {
         (0..g.retained_len())
             .map(|i| g.row_at(i).is_some_and(|r| r.links.is_some()))
             .collect()
     };
-    assert_eq!(linked(kept), linked(laid), "{case}: linked rows");
+    assert_eq!(linked(runs), linked(cells), "{case}: linked rows");
     let shape = |g: &Grid| {
         (
             (g.rows, g.cols, g.history_len(), g.stride),
@@ -364,18 +375,24 @@ fn assert_same(kept: &Grid, laid: &Grid, case: &str) {
             (g.origin, g.saved_origin, g.top, g.bottom),
         )
     };
-    assert_eq!(shape(kept), shape(laid), "{case}: shape");
-    assert!(kept.blank_past_used(), "{case}: used");
+    assert_eq!(shape(runs), shape(cells), "{case}: shape");
+    assert!(runs.blank_past_used(), "{case}: used");
 }
 
-/// A reflow keeps a line row by row (`Grid::kept`) exactly where laying
-/// it out cell by cell gives the same: the two agree on every observable,
-/// over random grids and sizes, at the same width (the rows alone
-/// changing, as a split, zoom or height-only drag does) and at others.
+/// A reflow laying out lines a run of cells at a time (`lay_out_runs`)
+/// gives exactly what laying them out a cell at a time does: the two agree
+/// on every observable, over random grids and sizes, at the same width (the
+/// rows alone changing, as a split, zoom or height-only drag does) and at
+/// others.
 #[test]
-fn keeping_lines_is_laying_them_out_cell_by_cell() -> Result<(), Error> {
+fn laying_out_runs_is_laying_out_cells() -> Result<(), Error> {
     let mut r = Rng(0x0ef1_0000_0000_0003);
-    let (mut kept_lines, mut kept_wrapped, mut total) = (0usize, 0usize, 0usize);
+    let wrapped = |g: &Grid| {
+        (0..g.retained_len())
+            .filter(|i| g.meta_at(*i).is_some_and(|m| m.wrapped))
+            .count()
+    };
+    let (mut wrapped_in, mut wrapped_out) = (0usize, 0usize);
     for case in 0..3_000 {
         let grid = random_grid(&mut r)?;
         let next = grid
@@ -385,6 +402,7 @@ fn keeping_lines_is_laying_them_out_cell_by_cell() -> Result<(), Error> {
             .max()
             .unwrap_or(0)
             .saturating_add(1);
+        wrapped_in = wrapped_in.saturating_add(wrapped(&grid));
         for target in 0..6 {
             let rows = r.small(9).saturating_add(1);
             let cols = if target < 3 {
@@ -393,56 +411,25 @@ fn keeping_lines_is_laying_them_out_cell_by_cell() -> Result<(), Error> {
                 r.small(14).saturating_add(1)
             };
             let (mut a, mut b) = (next, next);
-            let kept = grid.reflowed(rows, cols, &mut a, 1_000);
-            let laid = grid.reflowed_by(rows, cols, &mut b, 1_000, Lines::All);
+            let runs = grid.reflowed(rows, cols, &mut a, 1_000);
+            let cells = grid.reflowed_by(rows, cols, &mut b, 1_000, Lines::All);
             let name = format!("case {case} to {rows}x{cols}");
-            match (kept, laid) {
-                (Ok(kept), Ok(laid)) => assert_same(&kept, &laid, &name),
-                (kept, laid) => assert_eq!(kept.err(), laid.err(), "{name}"),
+            match (runs, cells) {
+                (Ok(runs), Ok(cells)) => {
+                    assert_same(&runs, &cells, &name);
+                    if cols != grid.cols.get() {
+                        wrapped_out = wrapped_out.saturating_add(wrapped(&runs));
+                    }
+                }
+                (runs, cells) => assert_eq!(runs.err(), cells.err(), "{name}"),
             }
             assert_eq!(a, b, "{name}: identities taken");
-            let [kept, wrapped] = lines_kept(&grid, usize::from(cols));
-            kept_lines = kept_lines.saturating_add(kept);
-            kept_wrapped = kept_wrapped.saturating_add(wrapped);
-            total = total.saturating_add(lines_of(&grid));
         }
     }
-    // Most lines are kept, soft-wrapped ones too, and some are not.
+    // Soft-wrapped lines go in, and lines are wrapped anew coming out.
     assert!(
-        kept_lines > total / 2 && kept_lines < total && kept_wrapped > 1_000,
-        "{kept_lines} of {total} lines kept, {kept_wrapped} soft-wrapped"
+        wrapped_in > 10_000 && wrapped_out > 10_000,
+        "{wrapped_in} soft-wrapped rows in, {wrapped_out} out at other widths"
     );
     Ok(())
-}
-
-/// The grid's lines: each a run of soft-wrapped rows and the row that ends
-/// it, by their first and last rows.
-fn lines(grid: &Grid) -> Vec<(usize, usize)> {
-    let retained = grid.retained_len();
-    let (mut start, mut out) = (0, Vec::new());
-    while start < retained {
-        let mut end = start;
-        while end.saturating_add(1) < retained && grid.meta_at(end).is_some_and(|m| m.wrapped) {
-            end = end.saturating_add(1);
-        }
-        out.push((start, end));
-        start = end.saturating_add(1);
-    }
-    out
-}
-
-fn lines_of(grid: &Grid) -> usize {
-    lines(grid).len()
-}
-
-/// How many of the grid's lines `kept` keeps at `width`, and how many of
-/// those are more than a row.
-fn lines_kept(grid: &Grid, width: usize) -> [usize; 2] {
-    let kept = lines(grid)
-        .into_iter()
-        .filter(|(start, end)| grid.kept(*start, *end, width).is_some());
-    [
-        kept.clone().count(),
-        kept.filter(|(start, end)| start != end).count(),
-    ]
 }
