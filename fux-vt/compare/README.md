@@ -615,9 +615,7 @@ timeout passes, and painted.
 server's output cap) does not happen; the client's terminal's answers to
 the server's queries are not sent back (they say how to read keys and
 which colours to answer a pane's colour queries with, and the recording's
-output is fixed). A recording's resize is made on both sides (the
-client's terminal and the session, which resizes the pane) and painted;
-it is compared once the program has answered it, at the step's points.
+output is fixed). The recordings have no resizes.
 
 **A difference is fux's, or where fux-vt and the engine read the program's
 bytes apart.** Both sides are read by one engine, so it is never the
@@ -632,7 +630,6 @@ recording still fails:
 | --- | --- | --- |
 | every | ghostty, alacritty | a cell erased while a foreground is set (ECH, EL, ED, IL, a scroll's new row) keeps it in fux-vt, as in xterm, and only the background in Ghostty and alacritty: tmux pads its status line with ECH in black on green; neovim, htop, mc, ncdu, ranger and tig clear in their own colours. Only a foreground on a cell blank on both sides is covered: a blank's foreground is not drawn |
 | `delta-diff` | alacritty, avt, wezterm | the wrap marker delta erases with EL 0 while a wrap is pending: these keep it, fux-vt (as xterm, Ghostty and libvterm) erases it |
-| every | ghostty, alacritty, libvterm, wezterm | these reflow on a resize and fux's panes do not, so a line the program does not draw again stays as each resized it, and a shell redraws its prompt on other rows (`zsh-resize`). Covered is only a field whose value directly is fux-vt's own when it reflows, and through fux fux-vt's when it does not, given the same output and resizes (two fux-vt parsers beside the comparison, for a recording that resizes) |
 
 Today, of the 113 recordings, 77 are identical beside Ghostty and 32 differ
 as recorded (31 by a blank's foreground, `zsh-resize` by the reflow), at
