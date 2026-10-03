@@ -280,6 +280,29 @@ impl Through {
         Ok(through)
     }
 
+    /// The client's terminal resized to show a pane of `rows` by `cols`, as
+    /// a user resizes the window: the session resizes the client, and so
+    /// the pane, the terminal takes the new size, and the next paint is the
+    /// server's.
+    pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
+        let client_rows = rows.checked_add(1).ok_or("too many rows for the bar")?;
+        self.session.resize(self.client, client_rows, cols);
+        self.terminal.resize(client_rows, cols)?;
+        let view = self.session.views.get(&self.client).ok_or("fux: no view")?;
+        self.session.placement_into(view, &mut self.placement);
+        self.rect = match self.placement.panes.as_slice() {
+            [(_, rect)] => *rect,
+            _ => return Err("fux: not one pane on the client's screen".into()),
+        };
+        if (self.rect.h, self.rect.w) != (rows, cols) {
+            return Err(format!(
+                "fux: the pane is {}x{} after a resize, not {rows}x{cols}",
+                self.rect.h, self.rect.w
+            ));
+        }
+        Ok(())
+    }
+
     /// The program's output, read into the pane as the server reads it;
     /// its replies are read by the program.
     pub fn output(&mut self, bytes: &[u8]) {
@@ -505,6 +528,14 @@ fn through_fux(
     let mut at = 0usize;
     let steps = recording.steps.len();
     for (step, (_, bytes)) in recording.steps.iter().enumerate() {
+        // A resize is made on both sides and painted, and not judged until
+        // the program has answered it, as the corpus judges it: right after
+        // it each side shows its own resize policy (see corpus.rs).
+        if let Some((rows, cols)) = recording.resize_at(step) {
+            direct.resize(rows, cols)?;
+            through.resize(rows, cols)?;
+            through.paint()?;
+        }
         let mut from = 0usize;
         for point in points(bytes, chunk) {
             let piece = bytes.get(from..point).unwrap_or_default();
@@ -661,6 +692,7 @@ fn chosen(options: &Options) -> Result<Vec<Recording>, String> {
         rows,
         cols,
         steps,
+        resizes: Vec::new(),
     }])
 }
 
@@ -1166,7 +1198,17 @@ fn percent(part: usize, whole: usize) -> String {
 /// difference is scored, not failed.
 fn multiplexers(options: &Options) -> Result<bool, String> {
     let kinds = kinds(options.engines.as_deref())?;
-    let recordings = chosen(options)?;
+    // Recordings that resize are left out: a multiplexer's client would
+    // have to be resized mid-recording, which this does not yet do.
+    let (recordings, resizing): (Vec<Recording>, Vec<Recording>) = chosen(options)?
+        .into_iter()
+        .partition(|r| r.resizes.is_empty());
+    if !resizing.is_empty() {
+        println!(
+            "({} recordings that resize are left out of the multiplexer scores)",
+            resizing.len()
+        );
+    }
     let mut results = Vec::new();
     for kind in &kinds {
         println!(

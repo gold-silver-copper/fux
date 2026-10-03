@@ -535,8 +535,9 @@ mod tests {
 
     #[test]
     fn keys_files_give_steps_with_their_waits() -> Result<(), String> {
-        let (start, steps) =
-            super::steps("# a comment\n!start 900\nj\n\n!quiet 50\n\\e:q\\r\n!wait\n!resize 24x80\n")?;
+        let (start, steps) = super::steps(
+            "# a comment\n!start 900\nj\n\n!quiet 50\n\\e:q\\r\n!wait\n!resize 24x80\n",
+        )?;
         assert_eq!(start, Duration::from_millis(900));
         type Got = (Vec<u8>, Option<(u16, u16)>, u128);
         let got: Vec<Got> = steps
