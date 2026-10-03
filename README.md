@@ -342,7 +342,10 @@ A program can draw in synchronized output too (`CSI ? 2026 h` … `l`, which
 neovim, helix and lazygit use): its pane holds the frame's output until the
 frame ends, so clients are never shown half of one, and answers DECRQM so
 the program knows it may. A frame is shown anyway after a second, or past
-2 MiB, so a program that stops mid-frame does not freeze its pane.
+2 MiB, so a program that stops mid-frame does not freeze its pane. A
+program that asks for in-band resize reports (`CSI ? 2048 h`) gets
+`CSI 48 ; rows ; cols ; 0 ; 0 t` whenever its pane's size changes, once its
+terminal has the new size.
 
 The previous, Bevy-based fux is kept at the tag `bevy-final`.
 

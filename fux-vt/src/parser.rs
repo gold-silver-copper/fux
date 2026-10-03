@@ -156,6 +156,13 @@ pub struct Options {
     /// which modes the terminal knows, synchronized output (2026) among
     /// them, without what DA2 and DECXCPR say about it.
     pub mode_reports: bool,
+    /// Mode 2048, in-band resize (`references/modern/mode_2048_in_band_resize.md`):
+    /// track it, report the size as `CSI 48 ; rows ; cols ; 0 ; 0 t` when a
+    /// program sets it, and give the host the report to send after a
+    /// resize ([`Parser::resize_report`]). Pixel sizes are reported as 0,
+    /// which the spec allows a terminal that does not know them. Off, the
+    /// mode is not recognized, and DECRQM says so.
+    pub in_band_resize: bool,
     /// Track the kitty keyboard protocol's flag stacks (`CSI > u`, `CSI < u`,
     /// `CSI = u`) and xterm's modifyOtherKeys (`CSI > 4 ; Pv m`), and answer
     /// the flag query `CSI ? u`. State only: the host encodes keys, reading
@@ -179,6 +186,7 @@ impl Options {
             events: false,
             extended_replies: false,
             mode_reports: false,
+            in_band_resize: false,
             kitty_keyboard: false,
             reflow: false,
             identity: None,
@@ -197,6 +205,11 @@ impl Options {
     /// These options with [`Options::mode_reports`] as `on` says.
     pub const fn with_mode_reports(mut self, on: bool) -> Self {
         self.mode_reports = on;
+        self
+    }
+    /// These options with [`Options::in_band_resize`] as `on` says.
+    pub const fn with_in_band_resize(mut self, on: bool) -> Self {
+        self.in_band_resize = on;
         self
     }
     /// These options with [`Options::kitty_keyboard`] as `on` says.
@@ -387,6 +400,15 @@ impl Parser {
     /// [`Options::reflow`].
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error> {
         self.screen.resize(rows, cols, self.options.reflow)
+    }
+    /// The size report a program that set in-band resize (mode 2048) is to
+    /// be sent after the terminal's size changed: `CSI 48 ; rows ; cols ; 0
+    /// ; 0 t`, or `None` if it did not set it or
+    /// [`Options::in_band_resize`] is off. The host sends it once the
+    /// program's terminal has the new size, as the spec requires.
+    pub fn resize_report(&self) -> Option<Vec<u8>> {
+        (self.options.in_band_resize && self.screen.in_band_resize())
+            .then(|| self.screen.size_report().as_bytes().to_vec())
     }
     /// The options the parser was made with.
     pub fn options(&self) -> Options {
@@ -819,7 +841,10 @@ impl Parser {
                 Some(Reply::of(format_args!("\x1bP>|{name} {version}\x1b\\")))
             }
             (b"?$", b'p') if modes => {
-                let status = self.screen.private_mode_status(n);
+                let status = match n {
+                    2048 if !self.options.in_band_resize => 0,
+                    _ => self.screen.private_mode_status(n),
+                };
                 Some(Reply::of(format_args!("\x1b[?{n};{status}$y")))
             }
             (b"$", b'p') if modes => {
