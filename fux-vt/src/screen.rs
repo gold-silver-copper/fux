@@ -2,7 +2,7 @@ use crate::link::{Held, Pen};
 use crate::unicode::Cluster;
 use crate::{
     Attributes, Blink, Cell, CellRef, Color, Error, Hyperlink, Mark, Options, Reply, Row, RowId,
-    Window,
+    UnderlineStyle, Window,
     grid::{Grid, Scroll},
     parser::Parameters,
 };
@@ -1971,9 +1971,9 @@ impl Screen {
                 [1] => self.attributes.flags |= Attributes::BOLD,
                 [2] => self.attributes.flags |= Attributes::DIM,
                 [3] => self.attributes.flags |= Attributes::ITALIC,
-                // 21 is doubly underlined (ECMA-48 8.3.117, xterm's
-                // ctlseqs): fux-vt keeps no underline style.
-                [4 | 21] => self.attributes.flags |= Attributes::UNDERLINE,
+                [4] => self.underline(UnderlineStyle::Single),
+                // Doubly underlined (ECMA-48 8.3.117, xterm's ctlseqs).
+                [21] => self.underline(UnderlineStyle::Double),
                 // Slow and rapid blink replace one another.
                 [5] => self.attributes = self.attributes.with_blink(Blink::Slow),
                 [6] => self.attributes = self.attributes.with_blink(Blink::Rapid),
@@ -1982,7 +1982,7 @@ impl Screen {
                 [9] => self.attributes.flags |= Attributes::STRIKEOUT,
                 [22] => self.attributes.flags &= !(Attributes::BOLD | Attributes::DIM),
                 [23] => self.attributes.flags &= !Attributes::ITALIC,
-                [24] => self.attributes.flags &= !Attributes::UNDERLINE,
+                [24] => self.underline(UnderlineStyle::None),
                 [25] => self.attributes.flags &= !Attributes::BLINK,
                 [27] => self.attributes.flags &= !Attributes::INVERSE,
                 [28] => self.attributes.flags &= !Attributes::HIDDEN,
@@ -2000,11 +2000,14 @@ impl Screen {
                         self.attributes = self.attributes.with_background(color);
                     }
                 }
-                // Underline styles (kitty's, which every engine in
-                // `compare/` reads but xterm): fux-vt keeps no style, so
-                // 4:0 ends underline and the styles 1 to 5 set it.
-                [4, 0, ..] => self.attributes.flags &= !Attributes::UNDERLINE,
-                [4, 1..=5, ..] => self.attributes.flags |= Attributes::UNDERLINE,
+                // Underline styles (`references/modern/kitty_underlines.html`):
+                // `4:0` ends the underline, and 1 to 5 are single, double,
+                // curly, dotted and dashed. Another number changes nothing.
+                [4, n, ..] => {
+                    if let Some(style) = UnderlineStyle::from_number(*n) {
+                        self.underline(style);
+                    }
+                }
                 // Foreground, background and underline colour share their
                 // forms (ITU-T T.416, 13.1.8, and xterm's ctlseqs). An
                 // invalid colour is skipped, and the rest of the SGR goes on.
@@ -2021,6 +2024,10 @@ impl Screen {
                 _ => {}
             }
         }
+    }
+
+    fn underline(&mut self, style: UnderlineStyle) {
+        self.attributes = self.attributes.with_underline_style(style);
     }
 
     fn set_colour(&mut self, selector: u16, colour: Color) {

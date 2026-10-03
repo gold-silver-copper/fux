@@ -63,7 +63,7 @@ fn cells_are_32_bytes_and_hold_17_bytes_inline() {
         foreground: Packed::new(Color::Idx(9)),
         background: Packed::new(Color::Rgb(1, 2, 3)),
         underline_color: Packed::new(Color::Idx(4)),
-        flags: 0x1ff & !Attributes::RAPID_BLINK,
+        flags: (0x1ff & !Attributes::RAPID_BLINK) | Attributes::UNDERLINE,
     };
     let seventeen = "a\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}";
     assert_eq!(seventeen.len(), Cell::INLINE_CAPACITY);
@@ -77,6 +77,40 @@ fn cells_are_32_bytes_and_hold_17_bytes_inline() {
     assert!(view.hidden() && view.strikeout() && view.blink() == Blink::Slow);
     assert_eq!(view.underline_color(), Color::Idx(4));
     assert!(Cell::new(&format!("{seventeen}x"), false, attributes).is_none());
+}
+
+/// The underline's style takes three bits of the flags, apart from every
+/// other style's: each style, set over any other attributes, reads back
+/// alone, and setting it changes nothing else.
+#[test]
+fn underline_styles_keep_to_their_own_bits() {
+    use super::UnderlineStyle;
+    let others = Attributes::new(Color::Idx(1), Color::Rgb(1, 2, 3))
+        .with_bold(true)
+        .with_dim(true)
+        .with_italic(true)
+        .with_inverse(true)
+        .with_blink(Blink::Rapid)
+        .with_hidden(true)
+        .with_strikeout(true)
+        .with_underline_color(Color::Idx(5));
+    for n in 0..=5 {
+        let style = UnderlineStyle::from_number(n).unwrap_or_default();
+        assert_eq!(style.number(), n);
+        for base in [Attributes::default(), others] {
+            let a = base
+                .with_underline_style(UnderlineStyle::Dashed)
+                .with_underline_style(style);
+            assert_eq!(a.underline_style(), style);
+            assert_eq!(a.underline(), n != 0);
+            assert_eq!(a.with_underline_style(UnderlineStyle::None), base);
+        }
+    }
+    assert_eq!(UnderlineStyle::from_number(6), None);
+    assert_eq!(
+        Attributes::default().with_underline(true).underline_style(),
+        UnderlineStyle::Single
+    );
 }
 
 #[test]
