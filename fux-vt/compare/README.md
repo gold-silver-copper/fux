@@ -379,6 +379,141 @@ and every DCS, APC, PM and SOS string. Those lists are in
 `src/inventory.rs`, and must follow fux-vt. `corpus/INVENTORY.md` is its
 output, made again with the recordings.
 
+## Transparency
+
+A program inside fux should look exactly as it does with no fux in
+between. `transparency` checks that on every recording.
+
+```sh
+fux-vt/compare/run.sh transparency                    # every recording, read by Ghostty; exit 1 on a difference
+fux-vt/compare/run.sh transparency --engines in-process vim   # read by each engine in this process
+fux-vt/compare/run.sh transparency --chunk 64         # compared every 64 bytes too
+fux-vt/compare/run.sh transparency --size 3x10 '\e]133;A\x07$ '   # output given, as `replay` takes it
+fux-vt/compare/run.sh transparency --multiplexers     # tmux's and zellij's scores beside fux's
+fux-vt/compare/run.sh transparency --json FILE        # the results as JSON too
+```
+
+The output goes two ways, to two terminals of one kind (Ghostty unless
+`--engines` names others; they must run in this process):
+
+1. **Directly**, at the recording's size.
+2. **Through fux**, used as a library as its server runs it
+   (`src/transparency.rs`, `Through`). A `Session` with one pane and one
+   client a row taller than the recording, so that the pane, above the
+   bar, is the recording's size (the placement is checked). The output is
+   read into the pane as the server reads it (`Session::output`, 16 KiB at
+   most a read), and the pane's replies are taken as a program reads them.
+   The client's terminal gets what `fux attach` writes to it first
+   (`client::ENTER`: the alternate screen, autowrap off), what the server
+   sends it outside paints (its queries), and every paint, made as
+   `Server::paint` makes it: composed into the spare grid
+   (`render::compose_into`); nothing sent if it is the screen the client
+   shows; else `render::paint_into` from the shown grid, or a full paint
+   the first time, and the grids swap.
+
+Then the pane's rectangle of the client's terminal is compared with the
+direct terminal, field by field (`snapshot::differences`), on what the
+engine can tell (its `Can`) and a screen shows (`SHOWN`): each cell's text,
+width, style and link, the rows where a prompt starts, cursor visibility,
+and where the cursor is when either side shows it. Left out, as nothing on
+the screen shows them and a multiplexer keeps them for the pane: soft-wrap
+flags and a pending wrap (fux places every run it paints, with autowrap
+off), the modes (they say how keys and the mouse are read, which fux does
+for the pane), the title (fux shows it in its bar), reports and history.
+
+**Where it compares:** after each step, and inside one before each BSU and
+after each ESU of synchronized output (2026); `--chunk N` adds a point every
+N bytes. The client is painted at every point. While the pane holds a frame,
+fux shows the screen from before it, by design, so the point is painted but
+not compared; the frame is compared at its end. A frame still held when
+the recording ends is released, as the server releases one when its
+timeout passes, and painted.
+
+**What the mirror leaves out:** paints are made at every point, not spaced
+16 ms apart as the server spaces them; a client that stops reading (the
+server's output cap) does not happen; the client's terminal's answers to
+the server's queries are not sent back (they say how to read keys and
+which colours to answer a pane's colour queries with, and the recording's
+output is fixed). The recordings have no resizes.
+
+**A difference is fux's, or where fux-vt and the engine read the program's
+bytes apart.** Both sides are read by one engine, so it is never the
+engines splitting on fux's paint. Where fux-vt reads the program's own
+output otherwise than the engine, fux paints what fux-vt has, and the two
+sides differ; the corpus shows the same split (`corpus`'s marks). Such a
+difference is recorded (`KNOWN` in `src/transparency.rs`) with its reason
+and the differences it covers, and any other difference in the same
+recording still fails:
+
+| Recording | Engines | Why |
+| --- | --- | --- |
+| `tmux` | ghostty, alacritty | tmux pads its status line with ECH in black on green; fux-vt's erased cells keep the foreground, as xterm's do, Ghostty's and alacritty's only the background. A blank's foreground is not drawn |
+| `delta-diff` | alacritty, avt, wezterm | the wrap marker delta erases with EL 0 while a wrap is pending: these keep it, fux-vt (as xterm, Ghostty and libvterm) erases it |
+
+Today 14 recordings are identical beside Ghostty and the tmux recording
+differs as recorded: 171 points compared, in half a second (0.3 s of
+CPU; 1.5 s through `run.sh`, with its build check). With
+`--chunk 13` the recordings but `tmux` stay identical at 19837 points (a
+minute). `--chunk` with libvterm finds only libvterm's own handling of
+UTF-8 split between writes. `cargo test` keeps every recording
+transparent beside Ghostty (`every_recording_is_transparent`).
+
+**Found:** fux does not pass prompt marks (OSC 133) on to its client's
+terminal, so a prompt's row is marked directly and not through fux:
+`transparency --size 3x10 '\e]133;A\x07$ '`. No recording sends them yet.
+
+### Other multiplexers
+
+`--multiplexers` replays each recording through tmux and zellij (each if
+installed), and scores them: the share of recordings, and of steps, whose
+pane looks the same as the direct screen at the end of each step, beside
+fux's own share at the same points. Their differences are scored, not
+failed. Each runs as a real server of its own, with nothing of the user's:
+
+- **tmux**: `tmux -u -S SOCKET -f /dev/null new-session`, its socket in the
+  harness's directory (`-S`, not `-L`, as for the tmux engine), with its
+  status line under the pane, so its client is a row taller.
+- **zellij**: its own configuration (no pane frames, tips, release notes,
+  session saving or mouse), a layout of one pane and no bars, its own
+  `HOME`, configuration and data directories, and `ZELLIJ_SOCKET_DIR`.
+
+The client runs on a PTY with `TERM=xterm-256color` and
+`COLORTERM=truecolor`, as a modern terminal sets them, and what it writes
+goes to the reference engine. The pane runs the pane program the
+process engines use (`src/engines/pane.rs`): each step's output goes into
+it, synced by DA1, and the screen is read once the client has been quiet
+for 200 ms. The terminal's answers to the client's queries are not sent
+back.
+
+Today, beside Ghostty (about 40 s for tmux and 50 s for zellij, 90 s in all;
+the same scores in two runs):
+
+| Multiplexer | Recordings identical | Steps identical |
+| --- | ---: | ---: |
+| fux 0.17.0 | 14 of 15 (93.3%) | 134 of 154 (87.0%) |
+| tmux 3.7c | 9 of 15 (60.0%) | 127 of 154 (82.4%) |
+| zellij 0.44.3 | 12 of 15 (80.0%) | 127 of 154 (82.4%) |
+
+tmux leaves out hyperlinks (its `hyperlinks` feature is off for `xterm*`),
+keeps delta's erased wrap marker, and draws blanks with the default
+foreground; zellij keeps the wrap marker, makes URLs it finds into links,
+and keeps ECH's foreground as fux-vt does.
+
+**JSON** (`--json FILE`), for the scoreboard: `transparency` writes
+`{"check": "transparency", "multiplexer": "fux", "version", "chunk",
+"seconds", "ok", "results": [...]}`, a result for each engine and
+recording: `engine`, `recording`, `steps`, `bytes`, `points`, `held`,
+`points_differing_as_recorded`, `points_differing`, `step_ends`,
+`step_ends_identical`, `identical`, `recorded` (the reason, or null),
+`paints`, `painted_bytes` and `first_difference` (`step`, `offset`, `at`,
+and each difference's `key`, `directly` and `through`), or null.
+`--multiplexers` writes `{"check": "transparency-multiplexers",
+"results": [...]}`, a result for each engine and multiplexer (fux first):
+`engine`, `multiplexer`, `version`, `recordings`, `recordings_identical`,
+`steps`, `steps_identical`, `seconds`, and for tmux and zellij `each`
+recording's `steps`, `steps_identical`, `identical` and
+`first_difference`; or `skipped` and why.
+
 ## Files
 
 | File | What |
@@ -393,6 +528,7 @@ output, made again with the recordings.
 | `src/families.rs` | the families: generators, statuses and reasons |
 | `src/cases.rs` | the named cases |
 | `src/snapshot.rs` | what is compared, field by field, and the side-by-side view |
+| `src/transparency.rs` | `transparency`: each recording directly and through fux, tmux and zellij |
 | `src/bench.rs` | the workloads and the speed table |
 | `src/escape.rs` | bytes as replayable text, and back |
 | `src/rng.rs` | splitmix64, as in `diff/` |
