@@ -131,9 +131,17 @@ pub struct Recorded {
     pub steps: usize,
 }
 
-/// A fux pane's sink: replies kept up to [`REPLY_LIMIT`] a read, and
-/// everything else dropped (fux keeps the title, which the recording
-/// does not need).
+/// What fux answers a pane's colour queries with: its client terminal's
+/// colours (src/outer.rs). The recorder stands for one fixed terminal, not
+/// whoever records: white on black, which says it is dark.
+const FOREGROUND: &str = "rgb:ffff/ffff/ffff";
+const BACKGROUND: &str = "rgb:0000/0000/0000";
+const DARK: &[u8] = b"\x1b[?997;1n";
+
+/// A fux pane's sink: replies kept up to [`REPLY_LIMIT`] a read, colour
+/// queries (OSC 10, 11, `CSI ? 996 n`) answered as fux answers them, and
+/// everything else dropped (fux keeps the title, which the recording does
+/// not need).
 #[derive(Default)]
 struct Replies(Vec<u8>);
 
@@ -146,6 +154,28 @@ impl fux_vt::Sink for Replies {
             .is_some_and(|len| len <= REPLY_LIMIT)
         {
             self.0.extend_from_slice(bytes);
+        }
+    }
+    fn event(&mut self, event: fux_vt::Event<'_>) {
+        if let fux_vt::Event::ColorQuery { number, bel } = event {
+            let colour = match number {
+                10 => FOREGROUND,
+                11 => BACKGROUND,
+                _ => return,
+            };
+            let end = if bel { "\x07" } else { "\x1b\\" };
+            self.reply(format!("\x1b]{number};{colour}{end}").as_bytes());
+        }
+    }
+    fn unhandled(&mut self, sequence: fux_vt::Unhandled<'_>) {
+        if let fux_vt::Unhandled::Csi {
+            params,
+            intermediates: b"?",
+            action: b'n',
+        } = sequence
+            && params.groups().eq([&[996][..]])
+        {
+            self.reply(DARK);
         }
     }
 }
@@ -283,6 +313,7 @@ pub fn record(request: &Request) -> Result<Recorded, String> {
         .with_mode_reports(true)
         .with_in_band_resize(true)
         .with_size_reports(true)
+        .with_color_scheme_updates(true)
         .with_hyperlinks(true)
         .with_prompt_marks(true);
     let parser = fux_vt::Parser::with_options(request.rows, request.cols, 10_000, options)

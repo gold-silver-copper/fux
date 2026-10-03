@@ -7,13 +7,14 @@ use fux_vt::{Blink, CellRef, Event, Identity, Options, Parser, Sink};
 /// kitty keyboard protocol), with events on so titles can be compared; or,
 /// with `reflow` off, as fux does.
 pub fn options(reflow: bool) -> Options {
-    // DECRQM, in-band resize, hyperlinks and prompt marks as fux's panes
-    // have them (src/pane.rs).
+    // DECRQM, in-band resize, colour-scheme reports, hyperlinks and prompt
+    // marks as fux's panes have them (src/pane.rs).
     Options::new()
         .with_events(true)
         .with_mode_reports(true)
         .with_in_band_resize(true)
         .with_size_reports(true)
+        .with_color_scheme_updates(true)
         .with_hyperlinks(true)
         .with_prompt_marks(true)
         .with_kitty_keyboard(reflow)

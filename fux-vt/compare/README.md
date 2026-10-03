@@ -281,11 +281,14 @@ output ends). The keys typed are in `corpus/keys/NAME.keys`.
 
 `record` runs a program on a PTY of 40×120 with `TERM=xterm-256color`, as
 fux runs a pane. A fux-vt parser, set up as fux sets up a pane's (events,
-DECRQM answers, in-band resize, hyperlinks and prompt marks: `src/pane.rs`),
-reads the output beside the PTY, and its replies are written back as fux
-writes them, so a program that asks (DA1, DECRQM, a cursor report) gets
-fux's answer, and one that asks what fux does not answer (DA2, a colour)
-gets nothing, as in fux. Step 0 is the
+DECRQM answers, in-band resize, colour-scheme reports, hyperlinks and
+prompt marks: `src/pane.rs`), reads the output beside the PTY, and its
+replies are written back as fux writes them, so a program that asks (DA1,
+DECRQM, a cursor report) gets fux's answer, and one that asks what fux does
+not answer (DA2) gets nothing, as in fux. fux answers the colour queries
+(OSC 10 and 11, `CSI ? 996 n`) with its client terminal's colours
+(`src/outer.rs`); the recorder answers as a fixed terminal would, white
+on black, dark (`src/record.rs`), not as whoever records. Step 0 is the
 program starting; each line of keys is a step, typed at once, and the step
 ends when the program has been quiet for a while (400 ms, or as the keys
 file says). After the last step the program has two seconds to exit, then
@@ -305,7 +308,7 @@ that it holds nothing private.
 
 | Recording | Program | Steps | Bytes | What |
 | --- | --- | ---: | ---: | --- |
-| `vim` | VIM 9.1 | 24 | 23326 | a Rust file, syntax on: move, scroll, search, `*`, visual mode, `:split`, `:set spell`, quit |
+| `vim` | VIM 9.1 | 24 | 25234 | a Rust file, syntax on: move, scroll, search, `*`, visual mode, `:split`, `:set spell`, quit |
 | `helix` | helix 25.07.1 | 16 | 63966 | a cargo project with errors; rust-analyzer's diagnostics after a save; move, search, select, split |
 | `less` | less 668 | 12 | 24348 | this README: lines, pages, search, the end, the start |
 | `fzf` | fzf 0.65.2 | 9 | 24510 | full screen, filtering files as a query is typed, moving, accepting |

@@ -14,8 +14,12 @@ use std::time::{Duration, Instant};
 /// screen, normal cursor and keypad keys, bracketed paste, focus events, no
 /// autowrap; never mouse reporting.
 const ENTER: &str = "\x1b[?1049h\x1b[?1l\x1b>\x1b[?2004h\x1b[?1004h\x1b[?7l\x1b[H\x1b[2J";
-/// And turns them off again.
-const LEAVE: &str = "\x1b[?2026l\x1b[?1004l\x1b[?2004l\x1b[?7h\x1b[0m\x1b[0 q\x1b[?25h\x1b[?1049l";
+/// And turns them off again, with what the server may have turned on in
+/// its paints: colour-scheme reports (mode 2031, `outer`). The client
+/// sends this however the attachment ends, the server gone or not; a
+/// terminal that never had it on ignores it.
+const LEAVE: &str =
+    "\x1b[?2026l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?7h\x1b[0m\x1b[0 q\x1b[?25h\x1b[?1049l";
 
 /// Why a client could not reach the server, start one, or go on.
 #[derive(Debug)]

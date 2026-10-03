@@ -22,7 +22,7 @@
   ],
   "note": "",
   "program": "delta-log",
-  "replies": "\\e[?1;2c",
+  "replies": "\\e]10;rgb:ffff/ffff/ffff\\x07\\e]11;rgb:0000/0000/0000\\x07\\e[?1;2c",
   "scrubbed": [],
   "size": [
     40,

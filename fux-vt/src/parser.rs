@@ -173,6 +173,14 @@ pub struct Options {
     /// characters. The pixel query (`CSI 14 t`) stays unanswered: fux-vt
     /// knows no pixels.
     pub size_reports: bool,
+    /// Mode 2031, colour-scheme change reports
+    /// (`references/modern/mode_2031_color_scheme_updates.md`): track it,
+    /// read with [`Screen::color_scheme_updates`], and report it to DECRQM.
+    /// State only: the host knows the colour scheme, and sends the reports
+    /// (`CSI ? 997 ; 1 n` dark, `CSI ? 997 ; 2 n` light) and answers
+    /// `CSI ? 996 n`, which stays unhandled. Off, the mode is not
+    /// recognized, and DECRQM says so.
+    pub color_scheme_updates: bool,
     /// Track the kitty keyboard protocol's flag stacks (`CSI > u`, `CSI < u`,
     /// `CSI = u`) and xterm's modifyOtherKeys (`CSI > 4 ; Pv m`), and answer
     /// the flag query `CSI ? u`. State only: the host encodes keys, reading
@@ -208,6 +216,7 @@ impl Options {
             mode_reports: false,
             in_band_resize: false,
             size_reports: false,
+            color_scheme_updates: false,
             kitty_keyboard: false,
             reflow: false,
             hyperlinks: false,
@@ -238,6 +247,11 @@ impl Options {
     /// These options with [`Options::size_reports`] as `on` says.
     pub const fn with_size_reports(mut self, on: bool) -> Self {
         self.size_reports = on;
+        self
+    }
+    /// These options with [`Options::color_scheme_updates`] as `on` says.
+    pub const fn with_color_scheme_updates(mut self, on: bool) -> Self {
+        self.color_scheme_updates = on;
         self
     }
     /// These options with [`Options::kitty_keyboard`] as `on` says.
@@ -317,6 +331,37 @@ pub enum Event<'a> {
         /// The data, `Pd`, as sent (normally base64).
         data: &'a [u8],
     },
+    /// A query of one of xterm's dynamic colours, `OSC Ps ; ?` with `Ps`
+    /// from 10 to 19: 10 the text foreground, 11 the background, 12 the
+    /// cursor (ctlseqs, "Operating System Commands"). One OSC can ask for
+    /// several, each `?` the next colour (`OSC 10 ; ? ; ?` asks 10 and 11),
+    /// an event each, in order. xterm answers `OSC Ps ; rgb:RRRR/GGGG/BBBB`,
+    /// ended as the query was; the host knows the colours, so the answer
+    /// is its to make. A request to set a colour is no event.
+    ColorQuery {
+        /// The colour asked for, 10 to 19.
+        number: u8,
+        /// Whether the query ended with BEL rather than ST.
+        bel: bool,
+    },
+}
+
+/// The colour queries of an OSC 10 to 19, `command` its number and `rest`
+/// what follows it: each parameter is the next colour, and each `?` among
+/// them asks for that one (ctlseqs, "Operating System Commands").
+fn color_queries(command: &[u8], rest: &[u8], bel: bool, sink: &mut impl Sink) {
+    let Some(first) = std::str::from_utf8(command)
+        .ok()
+        .and_then(|n| n.parse::<u8>().ok())
+        .filter(|n| (10..=19).contains(n))
+    else {
+        return;
+    };
+    for (number, parameter) in (first..=19).zip(rest.split(|b| *b == b';')) {
+        if parameter == b"?" {
+            sink.event(Event::ColorQuery { number, bel });
+        }
+    }
 }
 
 /// A complete sequence fux-vt parsed but does not implement, so a host can
@@ -651,7 +696,7 @@ impl Parser {
         }
         if byte == 0x1b {
             if self.state == State::OscString {
-                self.dispatch_osc(sink)?;
+                self.dispatch_osc(false, sink)?;
             }
             self.reset_sequence();
             self.state = State::Escape;
@@ -661,7 +706,7 @@ impl Parser {
             State::Ground => self.ground(byte, sink)?,
             State::OscString => {
                 if byte == 7 {
-                    self.dispatch_osc(sink)?;
+                    self.dispatch_osc(true, sink)?;
                     self.state = State::Ground;
                 } else if !self.osc_overflow {
                     if self.osc.len() < self.osc_limit {
@@ -819,25 +864,32 @@ impl Parser {
         Ok(())
     }
 
-    /// Carries out the completed OSC string: 133 (prompt marks), from its
-    /// first bytes, with [`Options::prompt_marks`]; 8 (hyperlinks) with [`Options::hyperlinks`]; 0, 1,
-    /// 2 and 52 delivered as events with [`Options::events`]. An overflowed
-    /// string is no event, and closes any link; others are dropped.
+    /// Carries out the completed OSC string, ended by BEL if `bel`, else
+    /// by ESC (ST): 133 (prompt marks), from its first bytes, with
+    /// [`Options::prompt_marks`]; 8 (hyperlinks) with [`Options::hyperlinks`];
+    /// 0, 1, 2, 52 and colour queries (10 to 19) delivered as events with
+    /// [`Options::events`]. An overflowed string is no event, and closes any
+    /// link; others are dropped.
     ///
     /// Kept out of line: inlined into `byte`, with the screen's OSC
     /// handling, it made `byte` too large to inline into the parser's loop,
     /// and escape-heavy output slower.
     #[inline(never)]
-    fn dispatch_osc(&mut self, sink: &mut impl Sink) -> Result<(), Error> {
+    fn dispatch_osc(&mut self, bel: bool, sink: &mut impl Sink) -> Result<(), Error> {
         let payload = std::mem::take(&mut self.osc);
-        let result = self.osc_command(&payload, sink);
+        let result = self.osc_command(&payload, bel, sink);
         // Reuse the allocation for the next OSC string.
         self.osc = payload;
         self.osc.clear();
         result
     }
 
-    fn osc_command(&mut self, payload: &[u8], sink: &mut impl Sink) -> Result<(), Error> {
+    fn osc_command(
+        &mut self,
+        payload: &[u8],
+        bel: bool,
+        sink: &mut impl Sink,
+    ) -> Result<(), Error> {
         let (command, rest) = match payload.iter().position(|b| *b == b';') {
             Some(i) => (
                 payload.get(..i).unwrap_or_default(),
@@ -878,7 +930,7 @@ impl Parser {
                     }
                 }
             }
-            _ => {}
+            _ => color_queries(command, rest, bel, sink),
         }
         Ok(())
     }
@@ -920,6 +972,7 @@ impl Parser {
             (b"?$", b'p') if modes => {
                 let status = match n {
                     2048 if !self.options.in_band_resize => 0,
+                    2031 if !self.options.color_scheme_updates => 0,
                     _ => self.screen.private_mode_status(n),
                 };
                 Some(Reply::of(format_args!("\x1b[?{n};{status}$y")))

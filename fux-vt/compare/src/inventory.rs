@@ -18,8 +18,16 @@ use std::fmt::Write;
 
 /// The private modes `Screen::mode` keeps (fux-vt `src/screen.rs`).
 const MODES: &[u16] = &[
-    1, 6, 7, 9, 25, 47, 1000, 1002, 1003, 1004, 1005, 1006, 1047, 1048, 1049, 2004, 2026, 2048,
+    1, 6, 7, 9, 25, 47, 1000, 1002, 1003, 1004, 1005, 1006, 1047, 1048, 1049, 2004, 2026, 2031,
+    2048,
 ];
+
+/// Sequences fux-vt reports as unhandled that fux answers itself, from
+/// what it knows as the host, and how.
+const HOST_ANSWERS: &[(&str, &str)] = &[(
+    "CSI ? 996 n",
+    "reported as unhandled; fux answers with its client terminal's scheme (src/outer.rs)",
+)];
 
 /// What fux-vt does with a sequence.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -473,10 +481,12 @@ fn csi(params: &[u8], intermediates: &[u8], action: u8, heard: &Heard) -> Vec<(S
             (None, 't') => keep_first(rest),
             _ => numbers_as_n(rest),
         };
-        return vec![(
-            format!("CSI {lead}{}{tail}", spaced(&shown)),
-            Does::Unhandled,
-        )];
+        let key = format!("CSI {lead}{}{tail}", spaced(&shown));
+        let does = HOST_ANSWERS
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map_or(Does::Unhandled, |(_, how)| Does::Implemented(how));
+        return vec![(key, does)];
     }
     if !heard.replies.is_empty() {
         return vec![(format!("CSI {lead}{}{tail}", spaced(rest)), answered())];
@@ -551,6 +561,9 @@ fn osc(body: &[u8]) -> (String, Does) {
     let does = match number {
         "0" | "1" | "2" => Does::Implemented("an event; fux sets the pane title"),
         "52" if rest.ends_with('?') => Does::Ignored("a query, dropped unanswered"),
+        "10" | "11" if rest == "?" => Does::Implemented(
+            "a ColorQuery event; fux answers with its client terminal's colour (src/outer.rs)",
+        ),
         "52" => Does::Implemented("a clipboard event"),
         "8" if key == "OSC 8 (close)" => Does::Implemented("ends the open hyperlink"),
         "8" => Does::Implemented("opens a hyperlink, which the cells printed keep (Row::link)"),
@@ -691,6 +704,7 @@ fn tally(recordings: &[Recording]) -> Result<BTreeMap<String, Row>, String> {
             .with_mode_reports(true)
             .with_in_band_resize(true)
             .with_size_reports(true)
+            .with_color_scheme_updates(true)
             .with_hyperlinks(true)
             .with_prompt_marks(true);
         let mut parser = fux_vt::Parser::with_options(r.rows, r.cols, 10_000, options)
@@ -788,7 +802,8 @@ pub fn run(names: &[String]) -> Result<bool, String> {
          capabilities it asks for. \"Count\" counts every time it was sent, in all the \
          recordings. \"fux-vt\" is what a fux pane's parser does with it, as fux sets \
          it up (`Options::new().with_events(true).with_mode_reports(true).with_in_band_resize(true)\
-         .with_hyperlinks(true).with_prompt_marks(true)`).\n"
+         .with_color_scheme_updates(true).with_hyperlinks(true).with_prompt_marks(true)`), with \
+         what fux itself answers.\n"
     );
     let _ = writeln!(out, "Recordings:\n");
     for r in &recordings {

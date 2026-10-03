@@ -32,6 +32,7 @@ impl Session {
             rest = later;
             match self.views.get_mut(&client) {
                 Some(view) => {
+                    view.decoder.expire(now);
                     view.decoder.bytes(piece, &mut inputs);
                     view.decoder.mark(now);
                 }
@@ -75,6 +76,7 @@ impl Session {
                 Input::FocusIn | Input::FocusOut => {
                     self.focus_event(client, input == Input::FocusIn)
                 }
+                Input::Reply(reply) => self.terminal_reply(client, reply),
             }
         }
         // A command the input ran repainted every client already; else only
@@ -128,6 +130,7 @@ impl Session {
         }
         view.notice = None;
         let Some(pane) = view.focus() else { return };
+        self.typed(client);
         let Some(p) = self.panes.get_mut(&pane) else {
             return;
         };

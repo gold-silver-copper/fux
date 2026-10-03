@@ -12,6 +12,7 @@ pub mod input;
 pub mod json;
 pub mod keys;
 pub mod layout;
+pub mod outer;
 pub mod overlay;
 pub mod pane;
 pub mod process;
