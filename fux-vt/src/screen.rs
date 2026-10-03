@@ -424,6 +424,11 @@ impl Screen {
             next_link: 1,
         })
     }
+    /// The primary screen's grid, as a test starts from it.
+    #[cfg(test)]
+    pub(crate) fn primary_grid(&self) -> &Grid {
+        &self.primary
+    }
     fn grid(&self) -> &Grid {
         if self.alternate_active {
             &self.alternate
