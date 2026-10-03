@@ -92,6 +92,17 @@ fn retained(parser: &Parser) -> HashMap<RowId, (u64, bool, Cells)> {
         .collect()
 }
 
+/// The SGR that sets `attributes`' underline style, kitty's `4:n`.
+fn underline(attributes: Attributes) -> &'static str {
+    match attributes.underline_style().number() {
+        2 => "4:2",
+        3 => "4:3",
+        4 => "4:4",
+        5 => "4:5",
+        _ => "4",
+    }
+}
+
 /// The SGR that sets exactly `attributes`.
 fn sgr(attributes: Attributes) -> String {
     let mut out = String::from("\x1b[0");
@@ -99,7 +110,7 @@ fn sgr(attributes: Attributes) -> String {
         (attributes.bold(), "1"),
         (attributes.dim(), "2"),
         (attributes.italic(), "3"),
-        (attributes.underline(), "4"),
+        (attributes.underline(), underline(attributes)),
         (attributes.inverse(), "7"),
         (attributes.blink() == Blink::Slow, "5"),
         (attributes.blink() == Blink::Rapid, "6"),

@@ -409,7 +409,7 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
             .with_bold(a.bold())
             .with_dim(a.dim())
             .with_italic(a.italic())
-            .with_underline(a.underline())
+            .with_underline_style(a.underline_style())
             .with_inverse(a.inverse());
         let text = original.contents();
         assert!(copy.set_text(usize::from(col), text, original.is_wide(), attributes));

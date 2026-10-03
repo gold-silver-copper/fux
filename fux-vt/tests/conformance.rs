@@ -190,29 +190,58 @@ fn an_invalid_sgr_colour_skips_only_itself() -> Result {
     Ok(())
 }
 
-/// Underline styles, `4:n`, are kitty's extension, which no reference
-/// defines and xterm ignores: Ghostty, alacritty, libvterm, wezterm,
-/// xterm.js and tmux read `4:0` as no underline and `4:1` to `4:5` as
-/// one style or another. fux-vt keeps no style, and follows them, on
-/// purpose departing from xterm, so that a program's curly underline
-/// stays an underline.
+/// Underline styles, `4:n`, are kitty's extension
+/// (`references/modern/kitty_underlines.html`), which xterm ignores:
+/// `4:0` is no underline, and `4:1` to `4:5` straight, double, curly,
+/// dotted and dashed, each replacing the last. 4 is straight and 24 ends
+/// any (ECMA-48 8.3.117). Ghostty, alacritty, libvterm, wezterm, xterm.js
+/// and tmux read them; fux-vt follows the spec, on purpose departing from
+/// xterm, so that neovim's curly diagnostics stay curly.
 #[test]
-fn underline_styles_set_and_end_underline() -> Result {
-    styled("\x1b[4m\x1b[4:0m", |c| assert!(!c.underline()))?;
-    styled("\x1b[4:3m", |c| assert!(c.underline()))?;
-    styled("\x1b[4:1m", |c| assert!(c.underline()))?;
+fn underline_styles_are_kept_and_replace_one_another() -> Result {
+    use fux_vt::UnderlineStyle::{Curly, Dashed, Dotted, Double, None, Single};
+    for (sgr, style) in [
+        ("\x1b[4:0m", None),
+        ("\x1b[4:1m", Single),
+        ("\x1b[4:2m", Double),
+        ("\x1b[4:3m", Curly),
+        ("\x1b[4:4m", Dotted),
+        ("\x1b[4:5m", Dashed),
+        ("\x1b[4m", Single),
+        ("\x1b[4:3m\x1b[4m", Single),
+        ("\x1b[4m\x1b[4:5m", Dashed),
+        ("\x1b[4:3m\x1b[4:0m", None),
+        ("\x1b[4:3m\x1b[24m", None),
+        ("\x1b[4:3;1m", Curly),
+        // `4:` is `4:0`; a number past 5 names no style and changes nothing.
+        ("\x1b[4:3m\x1b[4:m", None),
+        ("\x1b[4:3m\x1b[4:6m", Curly),
+        ("\x1b[4:3m\x1b[0m", None),
+    ] {
+        styled(sgr, |c| {
+            assert_eq!(c.underline_style(), style, "{sgr:?}");
+            assert_eq!(c.underline(), style != None, "{sgr:?}");
+        })?;
+    }
+    styled("\x1b[1;4:3;9m", |c| assert!(c.bold() && c.strikeout()))?;
     Ok(())
 }
 
 /// ECMA-48 8.3.117 lists 21 as doubly underlined, and xterm's ctlseqs
-/// does too; fux-vt keeps no underline style, so it is underline, as in
-/// xterm, Ghostty, libvterm, wezterm, xterm.js and tmux. Bold (1) and
+/// does too, as xterm, Ghostty, libvterm, wezterm, xterm.js and tmux read
+/// it; 24 ends it. Bold (1) and
 /// faint (2) are separate renditions, each ended by 22: xterm keeps both
 /// (`fux-vt-compare replay --engines all --size 1x3 '\e[1;2mX'`), where
 /// the vt100 crate let each replace the other.
 #[test]
-fn sgr_21_underlines_and_bold_and_dim_are_kept_apart() -> Result {
-    styled("\x1b[21m", |c| assert!(c.underline()))?;
+fn sgr_21_underlines_doubly_and_bold_and_dim_are_kept_apart() -> Result {
+    use fux_vt::UnderlineStyle;
+    styled("\x1b[21m", |c| {
+        assert_eq!(c.underline_style(), UnderlineStyle::Double);
+    })?;
+    styled("\x1b[21;4m", |c| {
+        assert_eq!(c.underline_style(), UnderlineStyle::Single);
+    })?;
     styled("\x1b[21;24m", |c| assert!(!c.underline()))?;
     styled("\x1b[1;2m", |c| assert!(c.bold() && c.dim()))?;
     styled("\x1b[2;1m", |c| assert!(c.bold() && c.dim()))?;
