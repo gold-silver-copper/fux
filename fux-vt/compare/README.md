@@ -685,7 +685,24 @@ replies are written back up the PTY (Ghostty's answer DA1, DA2, XTVERSION
 and palette queries, not OSC 10/11 or CSI 14/16 t). The pane runs the pane
 program the process engines use (`src/engines/pane.rs`): each step's
 output goes into it, synced by DA1, and the screen is read once the client
-has been quiet for 200 ms. The client is read, and answered, while the
+has drawn it:
+
+- **tmux**: once its status line shows a mark. The harness renames the
+  session (`rename-session mN`), and waits for `[mN]` at the start of the
+  status line, then for 20 ms of quiet. tmux draws the status line after
+  the panes it has yet to draw, in the same pass, and puts the whole pass
+  off while its output to the client has not drained or is blocked
+  (`server_client_check_redraw`, `tty_block_maybe`), so once the mark
+  shows, the pane is drawn; the quiet takes the rest of the pass (the
+  cursor and modes, set back after the status line). A rename redraws the
+  status line alone, as its clock does; a message would not do (while one
+  shows, tmux draws nothing of the panes and hides the cursor). This took
+  tmux's pass over the corpus from 200 s (200 ms of quiet) to 45 s, with
+  every result the same, first differences included; and at none of the
+  820 steps did the pane change in 300 ms of quiet after the mark.
+- **zellij**: once the client has been quiet for 200 ms.
+
+The client is read, and answered, while the
 pane syncs: zellij forwards a pane's colour and size queries (OSC 4, 10
 and 11, CSI 14 and 16 t) to the client's terminal, one at a time, each
 with a DA1 behind it, and holds the rest of the pane's output, the sync's
