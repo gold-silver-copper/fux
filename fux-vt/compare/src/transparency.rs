@@ -397,7 +397,7 @@ impl Through {
 /// shows it too), so that no paint can make the two sides agree. Only the
 /// differences `covers` takes are expected; any other still fails.
 pub struct Known {
-    pub recordings: &'static [&'static str],
+    pub recordings: Recordings,
     pub engines: &'static [&'static str],
     pub why: &'static str,
     /// Whether this is the difference: the difference, then the direct
@@ -405,21 +405,40 @@ pub struct Known {
     pub covers: fn(&Diff, &Snapshot, &Snapshot) -> bool,
 }
 
+/// The recordings a recorded difference is expected in.
+pub enum Recordings {
+    /// Any: what it covers is narrow enough to be expected anywhere.
+    Every,
+    Only(&'static [&'static str]),
+}
+
+impl Recordings {
+    fn contains(&self, recording: &str) -> bool {
+        match self {
+            Recordings::Every => true,
+            Recordings::Only(names) => names.contains(&recording),
+        }
+    }
+}
+
 /// The differences recorded.
 pub const KNOWN: &[Known] = &[
     Known {
-        recordings: &["tmux"],
+        recordings: Recordings::Every,
         engines: &["ghostty", "alacritty"],
-        why: "tmux draws its status line's padding with ECH (CSI 100 X) in black on green. \
-            fux-vt's erased cells keep the foreground, as xterm's do (`corpus` agrees beside \
-            xterm); Ghostty's and alacritty's keep only the background. fux paints the cells \
-            as fux-vt has them, so the blanks have a black foreground through fux, and none \
-            directly; a blank's foreground is not drawn. `replay --engines ghostty,alacritty \
-            --size 2x10 '\\e[30m\\e[42mab\\e[3Xcd'` shows it.",
+        why: "a cell erased while a foreground is set (ECH, EL, ED, ICH, DCH, IL, DL, a \
+            scroll's new row: tmux pads its status line with CSI 100 X in black on green, \
+            neovim, htop, mc, ncdu, ranger and tig clear in their own colours) keeps the \
+            pen's foreground in fux-vt, as in xterm (`corpus` agrees beside xterm; fux-vt's \
+            README, CSI J / K and CSI @ P X); Ghostty's and alacritty's keep only the \
+            background. fux paints the cells as fux-vt has them, so the blanks have that \
+            foreground through fux and the default directly; a blank's foreground is not \
+            drawn. Only a foreground on a cell blank on both sides is covered. `replay \
+            --engines ghostty,alacritty --size 2x10 '\\e[30m\\e[42mab\\e[3Xcd'` shows it.",
         covers: blank_foreground,
     },
     Known {
-        recordings: &["delta-diff"],
+        recordings: Recordings::Only(&["delta-diff"]),
         engines: &["alacritty", "avt", "wezterm"],
         why: "delta draws its wrap marker in the last column, then sends EL 0 with the wrap \
             pending: xterm, Ghostty, libvterm and fux-vt erase the marker; alacritty, avt and \
@@ -469,7 +488,7 @@ fn known(
     through: &Snapshot,
 ) -> Option<&'static Known> {
     KNOWN.iter().find(|k| {
-        k.recordings.contains(&recording)
+        k.recordings.contains(recording)
             && k.engines.contains(&engine)
             && differences.iter().all(|d| (k.covers)(d, direct, through))
     })
@@ -1485,6 +1504,11 @@ mod tests {
         let (a, b) = (blank("x  "), blank("x  "));
         assert!(super::blank_foreground(&fg(1), &a, &b));
         assert!(!super::blank_foreground(&fg(0), &a, &b));
+        // A blank's foreground is expected in any recording, beside the
+        // engines that keep only the background, and with nothing else.
+        assert!(super::known("nvim", "ghostty", &[fg(1)], &a, &b).is_some());
+        assert!(super::known("nvim", "libvterm", &[fg(1)], &a, &b).is_none());
+        assert!(super::known("nvim", "ghostty", &[fg(1), fg(0)], &a, &b).is_none());
         assert!(super::erased_at_the_last_column(&fg(2), &a, &b));
         assert!(!super::erased_at_the_last_column(&fg(1), &a, &b));
         Ok(())
