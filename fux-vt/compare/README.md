@@ -279,13 +279,13 @@ output ends). The keys typed are in `corpus/keys/NAME.keys`.
 
 ### Recording
 
-`record` runs a program on a PTY of 40×120 with `TERM=xterm-256color`, as
-fux runs a pane. A fux-vt parser, set up as fux sets up a pane's (events,
+`record` runs a program on a PTY of 40×120 (or `--size`) with
+`TERM=xterm-256color`, as fux runs a pane. A fux-vt parser, set up as fux sets up a pane's (events,
 DECRQM answers, in-band resize, colour-scheme reports, hyperlinks and
 prompt marks: `src/pane.rs`), reads the output beside the PTY, and its
 replies are written back as fux writes them, so a program that asks (DA1,
-DECRQM, a cursor report) gets fux's answer, and one that asks what fux does
-not answer (DA2) gets nothing, as in fux. fux answers the colour queries
+DECRQM, a cursor report, DA2) gets fux's answer, and one that asks what fux
+does not answer (XTGETTCAP, DECRQSS) gets nothing, as in fux. fux answers the colour queries
 (OSC 10 and 11, `CSI ? 996 n`) with its client terminal's colours
 (`src/outer.rs`); the recorder answers as a fixed terminal would, white
 on black, dark (`src/record.rs`), not as whoever records. The keys are
@@ -295,7 +295,10 @@ for (the kitty keyboard protocol, modifyOtherKeys, cursor keys), so helix
 gets Escape as `CSI 27 u` and vim Ctrl-D as `CSI 27 ; 5 ; 100 ~`. Step 0 is the
 program starting; each line of keys is a step, typed at once, and the step
 ends when the program has been quiet for a while (400 ms, or as the keys
-file says). After the last step the program has two seconds to exit, then
+file says). A line `!resize RxC` resizes the terminal instead, as fux
+resizes a pane (the parser, then the PTY, then the in-band resize report
+for a program that asked for it); the manifest gives that step's new size
+(`resize`). After the last step the program has two seconds to exit, then
 gets SIGHUP and SIGKILL; what it writes meanwhile belongs to the last step.
 
 `corpus/record.sh` records every scenario again, or those named. Each runs
@@ -342,7 +345,8 @@ Not installed here, so not recorded: neovim, htop, btop, lazygit, fish.
 
 `corpus` replays each recording through fux-vt and the engines (default:
 xterm and the panel), as a case of the recording's size with a step for
-each step recorded, and compares them after every step as `run` does. fux-vt
+each step recorded (and a resize before the output of a step that
+resized), and compares them after every step as `run` does. fux-vt
 is set up as fux sets up a pane (no reflow, the kitty keyboard protocol,
 no identity), as the recordings were made, with fux's 10000 rows of history.
 

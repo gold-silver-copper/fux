@@ -68,6 +68,10 @@ pub struct Recording {
     pub cols: u16,
     /// Each step's keys (escaped, as typed) and the output after them.
     pub steps: Vec<(String, Vec<u8>)>,
+    /// The steps that resized the terminal (`!resize` in the keys) rather
+    /// than typing: the step's index and the new size, rows and columns.
+    /// The step's output is what the program wrote after the resize.
+    pub resizes: Vec<(usize, u16, u16)>,
 }
 
 impl Recording {
@@ -79,7 +83,33 @@ impl Recording {
             .collect()
     }
 
-    /// The recording as a case: one step for each step recorded.
+    /// The size the terminal is resized to before step `index`'s output,
+    /// if that step resized it.
+    pub fn resize_at(&self, index: usize) -> Option<(u16, u16)> {
+        self.resizes
+            .iter()
+            .find(|(i, _, _)| *i == index)
+            .map(|&(_, rows, cols)| (rows, cols))
+    }
+
+    /// The step recorded (counted from 0) that the case's step `index`
+    /// belongs to, as `Outcome::step` counts them: none for 0, before any
+    /// step, the program's start for 1. A step that resized is two in the
+    /// case, the resize and the output after it.
+    pub fn recorded_step(&self, index: usize) -> Option<usize> {
+        let mut case_steps = 0usize;
+        for i in 0..self.steps.len() {
+            let these = if self.resize_at(i).is_some() { 2 } else { 1 };
+            case_steps = case_steps.saturating_add(these);
+            if index > 0 && case_steps >= index {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// The recording as a case: one step for each step recorded, and a
+    /// resize before the output of each step that resized.
     pub fn case(&self) -> Case {
         Case {
             rows: self.rows,
@@ -90,11 +120,15 @@ impl Recording {
             steps: self
                 .steps
                 .iter()
-                .map(|(_, bytes)| {
-                    Step::Output(vec![Snippet {
+                .enumerate()
+                .flat_map(|(i, (_, bytes))| {
+                    let resize = self
+                        .resize_at(i)
+                        .map(|(rows, cols)| Step::Resize(rows, cols));
+                    resize.into_iter().chain([Step::Output(vec![Snippet {
                         family: usize::MAX,
                         bytes: bytes.clone(),
-                    }])
+                    }])])
                 })
                 .collect(),
         }
@@ -131,11 +165,24 @@ fn load(path: &Path) -> Result<Recording, String> {
             .ok_or(format!("{}: a bad size", path.display()))
     };
     let mut steps = Vec::new();
+    let mut resizes = Vec::new();
     let mut from = 0usize;
-    for step in field(&json, "steps", path)?
+    for (i, step) in field(&json, "steps", path)?
         .as_array()
         .ok_or(format!("{}: steps is not a list", path.display()))?
+        .iter()
+        .enumerate()
     {
+        if let Some(size) = step.get("resize") {
+            let dimension = |d: usize| -> Result<u16, String> {
+                size.get(d)
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|n| u16::try_from(n).ok())
+                    .filter(|&n| n > 0)
+                    .ok_or(format!("{}: a bad resize", path.display()))
+            };
+            resizes.push((i, dimension(0)?, dimension(1)?));
+        }
         let keys = field(step, "keys", path)?
             .as_str()
             .unwrap_or_default()
@@ -163,6 +210,7 @@ fn load(path: &Path) -> Result<Recording, String> {
         rows: dimension(0)?,
         cols: dimension(1)?,
         steps,
+        resizes,
     })
 }
 
@@ -262,14 +310,21 @@ fn marks(outcome: &case::Outcome) -> String {
 /// engine's (xterm's, or the first that differs).
 fn report(recording: &Recording, outcome: &case::Outcome) -> String {
     let mut out = String::new();
-    let step = outcome.step.unwrap_or(0);
-    let keys = step
-        .checked_sub(1)
-        .and_then(|i| recording.steps.get(i))
-        .map_or("(start)", |(k, _)| k.as_str());
+    let recorded = outcome.step.and_then(|s| recording.recorded_step(s));
+    let step = recorded.map_or(0, |i| i.saturating_add(1));
+    let keys = match recorded {
+        None | Some(0) => "(start)".to_owned(),
+        Some(i) => match recording.resize_at(i) {
+            Some((rows, cols)) => format!("(resized to {rows}x{cols})"),
+            None => recording
+                .steps
+                .get(i)
+                .map_or(String::new(), |(k, _)| format!("'{k}'")),
+        },
+    };
     let _ = writeln!(
         out,
-        "  {}, {}: after step {step} of {}, keys '{keys}'",
+        "  {}, {}: after step {step} of {}, keys {keys}",
         recording.program,
         recording.version,
         recording.steps.len()
@@ -402,8 +457,34 @@ mod tests {
                 recording.name
             );
             assert_eq!(recording.steps.first().map(|(k, _)| k.as_str()), Some(""));
+            assert!(recording.resize_at(0).is_none());
             assert!(!crate::escape::escape(&recording.bytes()).is_empty());
         }
         Ok(())
+    }
+
+    /// A step that resized is two steps of the case: the resize, then the
+    /// output after it.
+    #[test]
+    fn a_resize_is_its_own_step_of_the_case() {
+        let recording = super::Recording {
+            name: "r".into(),
+            program: "p".into(),
+            version: "v".into(),
+            rows: 4,
+            cols: 10,
+            steps: vec![
+                (String::new(), b"a".to_vec()),
+                ("j".into(), b"b".to_vec()),
+                (String::new(), b"c".to_vec()),
+                ("k".into(), b"d".to_vec()),
+            ],
+            resizes: vec![(2, 3, 8)],
+        };
+        let case = recording.case();
+        assert_eq!(case.steps.len(), 5);
+        assert_eq!(case.steps.get(2), Some(&crate::case::Step::Resize(3, 8)));
+        let recorded: Vec<Option<usize>> = (0..=5).map(|s| recording.recorded_step(s)).collect();
+        assert_eq!(recorded, [None, Some(0), Some(1), Some(2), Some(2), Some(3)]);
     }
 }

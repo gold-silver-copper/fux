@@ -14,7 +14,10 @@
 //! was run and typed (see [`Manifest`]). Step 0 is the program starting;
 //! each later step is one line of keys and the output that followed it,
 //! until the program had been quiet for a while. Each step's `end` is the
-//! offset in the bytes where its output ends.
+//! offset in the bytes where its output ends. A step may resize the
+//! terminal instead of typing (`!resize`): its `resize` is the new size,
+//! given to the PTY and the parser as fux gives it to a pane's, and its
+//! output is what the program wrote after it.
 use crate::escape;
 use fuxix::poll::{Events, PollFd};
 use fuxix::process::{Pid, Signal};
@@ -81,10 +84,11 @@ fn replaced(bytes: &[u8], old: &[u8], new: &[u8]) -> Vec<u8> {
     out
 }
 
-/// One line of the keys file: what to type, and how long the program must
-/// stay quiet afterwards before the next step.
+/// One line of the keys file: what to type, or the size to resize to, and
+/// how long the program must stay quiet afterwards before the next step.
 struct Step {
     keys: Vec<u8>,
+    resize: Option<(u16, u16)>,
     quiet: Duration,
 }
 
@@ -93,7 +97,8 @@ struct Step {
 /// comment and an empty line is skipped. `!quiet MS` sets how long the
 /// program must stay quiet after each following step (400 ms at first),
 /// `!start MS` how long after it starts (1500 ms at first). A step that
-/// types nothing (`!wait`) only waits.
+/// types nothing (`!wait`) only waits, and `!resize RxC` resizes the
+/// terminal to R rows and C columns.
 fn steps(text: &str) -> Result<(Duration, Vec<Step>), String> {
     let mut quiet = Duration::from_millis(400);
     let mut start = Duration::from_millis(1500);
@@ -116,11 +121,25 @@ fn steps(text: &str) -> Result<(Duration, Vec<Step>), String> {
         } else if line == "!wait" {
             out.push(Step {
                 keys: Vec::new(),
+                resize: None,
+                quiet,
+            });
+        } else if let Some(rest) = line.strip_prefix("!resize ") {
+            let size = rest
+                .trim()
+                .split_once('x')
+                .and_then(|(r, c)| Some((r.parse::<u16>().ok()?, c.parse::<u16>().ok()?)))
+                .filter(|&(r, c)| r > 0 && c > 0)
+                .ok_or_else(|| at(format!("{rest:?} is not RxC")))?;
+            out.push(Step {
+                keys: Vec::new(),
+                resize: Some(size),
                 quiet,
             });
         } else {
             out.push(Step {
                 keys: escape::unescape(line).map_err(at)?,
+                resize: None,
                 quiet,
             });
         }
@@ -196,6 +215,24 @@ struct Session {
 }
 
 impl Session {
+    /// Resizes the terminal as fux resizes a pane (`Pane::resize` in
+    /// src/pane.rs): the parser, then the PTY, then the in-band resize
+    /// report for a program that asked for it.
+    fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
+        self.parser
+            .resize(rows, cols)
+            .map_err(|e| format!("fux-vt: {e}"))?;
+        fuxix::terminal::set_window_size(&self.master, rows, cols)
+            .map_err(|e| format!("resizing the PTY: {e}"))?;
+        if let Some(report) = self.parser.resize_report() {
+            self.replies.extend_from_slice(&report);
+            self.master
+                .write_all(&report)
+                .map_err(|e| format!("writing the resize report: {e}"))?;
+        }
+        Ok(())
+    }
+
     /// Reads what the program writes until it has been quiet for `quiet`,
     /// or `limit` has passed, answering its queries as it goes.
     fn settle(&mut self, quiet: Duration, limit: Duration) -> Result<(), String> {
@@ -351,8 +388,15 @@ pub fn record(request: &Request) -> Result<Recorded, String> {
     let mut ends = Vec::with_capacity(steps.len().saturating_add(1));
     let result = (|| {
         session.settle(start, STEP_LIMIT)?;
-        ends.push((Vec::new(), session.output.len()));
+        ends.push(End {
+            keys: Vec::new(),
+            at: session.output.len(),
+            resize: None,
+        });
         for step in &steps {
+            if let Some((rows, cols)) = step.resize {
+                session.resize(rows, cols)?;
+            }
             if !step.keys.is_empty() && !session.closed {
                 let typed = typed(&step.keys, session.parser.screen());
                 session
@@ -361,14 +405,18 @@ pub fn record(request: &Request) -> Result<Recorded, String> {
                     .map_err(|e| format!("typing: {e}"))?;
             }
             session.settle(step.quiet, STEP_LIMIT)?;
-            ends.push((step.keys.clone(), session.output.len()));
+            ends.push(End {
+                keys: step.keys.clone(),
+                at: session.output.len(),
+                resize: step.resize,
+            });
         }
         Ok::<(), String>(())
     })();
     end(&mut child, &mut session);
     // What the program wrote as it exited belongs to the last step.
     if let Some(last) = ends.last_mut() {
-        last.1 = session.output.len();
+        last.at = session.output.len();
     }
     result?;
     write(request, &session, &ends)?;
@@ -379,14 +427,21 @@ pub fn record(request: &Request) -> Result<Recorded, String> {
     })
 }
 
-fn write(request: &Request, session: &Session, ends: &[(Vec<u8>, usize)]) -> Result<(), String> {
+/// Where a step's output ends, and what started it.
+struct End {
+    keys: Vec<u8>,
+    at: usize,
+    resize: Option<(u16, u16)>,
+}
+
+fn write(request: &Request, session: &Session, ends: &[End]) -> Result<(), String> {
     // Each step's output is scrubbed alone, so the steps' ends move with
     // what is replaced.
     let mut output = Vec::with_capacity(session.output.len());
     let mut steps = Vec::with_capacity(ends.len());
     let mut from = 0usize;
-    for (keys, end) in ends {
-        let mut piece = session.output.get(from..*end).unwrap_or_default().to_vec();
+    for End { keys, at, resize } in ends {
+        let mut piece = session.output.get(from..*at).unwrap_or_default().to_vec();
         for pair in &request.scrub {
             let (old, new) = pair
                 .split_once('=')
@@ -394,8 +449,12 @@ fn write(request: &Request, session: &Session, ends: &[(Vec<u8>, usize)]) -> Res
             piece = replaced(&piece, old.as_bytes(), new.as_bytes());
         }
         output.extend_from_slice(&piece);
-        steps.push(serde_json::json!({"keys": escape::escape(keys), "end": output.len()}));
-        from = *end;
+        let mut step = serde_json::json!({"keys": escape::escape(keys), "end": output.len()});
+        if let (Some((rows, cols)), Some(object)) = (resize, step.as_object_mut()) {
+            object.insert("resize".into(), serde_json::json!([rows, cols]));
+        }
+        steps.push(step);
+        from = *at;
     }
     let scrubbed: Vec<&str> = request
         .scrub
@@ -477,20 +536,24 @@ mod tests {
     #[test]
     fn keys_files_give_steps_with_their_waits() -> Result<(), String> {
         let (start, steps) =
-            super::steps("# a comment\n!start 900\nj\n\n!quiet 50\n\\e:q\\r\n!wait\n")?;
+            super::steps("# a comment\n!start 900\nj\n\n!quiet 50\n\\e:q\\r\n!wait\n!resize 24x80\n")?;
         assert_eq!(start, Duration::from_millis(900));
-        let got: Vec<(Vec<u8>, u128)> = steps
+        type Got = (Vec<u8>, Option<(u16, u16)>, u128);
+        let got: Vec<Got> = steps
             .iter()
-            .map(|s| (s.keys.clone(), s.quiet.as_millis()))
+            .map(|s| (s.keys.clone(), s.resize, s.quiet.as_millis()))
             .collect();
         assert_eq!(
             got,
             [
-                (b"j".to_vec(), 400),
-                (b"\x1b:q\r".to_vec(), 50),
-                (Vec::new(), 50)
+                (b"j".to_vec(), None, 400),
+                (b"\x1b:q\r".to_vec(), None, 50),
+                (Vec::new(), None, 50),
+                (Vec::new(), Some((24, 80)), 50)
             ]
         );
+        assert!(super::steps("!resize 24\n").is_err());
+        assert!(super::steps("!resize 0x80\n").is_err());
         Ok(())
     }
 }
