@@ -28,6 +28,29 @@ below records which.
 
 ## Running it
 
+Three commands run the harness at three depths, each to a budget, and end
+with a one-screen summary; each exits 1 if any check fails. None of them is
+in CI. `harness.sh` says what each runs; checks that are independent of
+each other run side by side, and what counts instructions or times itself
+runs alone.
+
+| Command | When | Budget | What |
+| --- | --- | --- | --- |
+| `run.sh quick` | before a commit | 1 minute (40 s here) | the corpus beside xterm and the panel; transparency through fux on every recording; 2,000 random cases; the named cases beside every engine |
+| `run.sh full` | before a PR | 10 minutes | `quick`; 20,000 random cases as ratty and as fux set fux-vt up; esctest directly; instructions against main (`bench/`) |
+| `run.sh deep` | before a release, or when hunting | none; it prints its estimate | `full`; `verdicts` beside xterm, seeds 1–20 (`FUX_DEEP_SEEDS`); esctest in a fux pane; transparency through tmux and zellij; `fux-bench feel` and `info`; 10 minutes of fuzzing |
+| `run.sh fuzz [MINUTES]` | by hand | MINUTES (10) | every fuzz target in turn, from its stored corpus and what earlier runs here found; a crash is minimized (`cargo fuzz tmin`) and listed, to be made a test |
+| `run.sh scoreboard` | after any of them | seconds | the last runs' numbers, as `scoreboard.json` and `scoreboard.md` |
+
+Results, logs and the fuzz ledger (`fuzz.jsonl`) go to
+`fux-vt/compare/target/harness` (`$FUX_HARNESS_OUT`). Each check leaves a
+stamp there: the commit, when, how long, and its exit status, which the
+scoreboard lists. The scoreboard's axes: esctest's pass rate; corpus
+recordings agreeing; recordings identical through fux, beside tmux and
+zellij; instructions against main and MB/s beside Ghostty and alacritty;
+keystroke latency; footprint and bytes per frame; fuzz time since the last
+crash. An axis whose check has not run says so.
+
 ```sh
 fux-vt/compare/run.sh                       # families expected to agree, 20000 cases, beside the panel
 fux-vt/compare/run.sh engines               # which engines run here, which vote, what each cannot tell
@@ -799,6 +822,8 @@ failed the run.
 | File | What |
 | --- | --- |
 | `run.sh` | fetch and pin Zig, Ghostty and libvterm, install node deps, build, run |
+| `harness.sh` | `quick`, `full`, `deep`, `fuzz` and `scoreboard`, run by `run.sh` |
+| `src/scoreboard.rs` | `scoreboard`: the last runs' results gathered and rendered |
 | `build.rs` | compile libvterm and its shim |
 | `src/main.rs` | commands |
 | `src/engine.rs` | the `Engine` trait and its reading rules, `Can`, the engine list |
