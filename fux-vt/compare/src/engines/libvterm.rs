@@ -131,6 +131,10 @@
 //!   and what follows is printed: `--size 1x8 '\e]2;he\e]2;llo\x07'`.
 //! - A C1 control written as UTF-8 is a glyph of width -1, which moves the
 //!   cursor left: `--size 1x4 'a\xc2\x85b'`.
+//! - A CSI keeps 16 parameters. libvterm 0.3.3 writes a 17th past its
+//!   slots and crashes (`--size 2x4 '\e[1;2;3;4;5;7;8;9;38;5;3;48;5;17;58;5;9m'`);
+//!   built here bounded (build.rs), each parameter past the 16th is written
+//!   over the 16th.
 use crate::engine::{Blanks, Can, Engine, Kind, Setup, always};
 use crate::snapshot::{self, Cell, Color, Line, Snapshot, Style, Width};
 
@@ -491,5 +495,33 @@ mod ffi {
             // here, and never used again.
             unsafe { fvc_libvterm_free(self.0.as_ptr()) }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::engine::Setup;
+
+    /// A CSI of more parameters than libvterm keeps no longer crashes the
+    /// process (build.rs bounds its parser).
+    #[test]
+    fn a_csi_of_17_parameters_is_read() -> Result<(), String> {
+        let mut engine = super::make(&Setup {
+            rows: 2,
+            cols: 4,
+            history: 0,
+            reflow: false,
+        })?;
+        engine.process(b"\x1b[1;2;3;4;5;7;8;9;38;5;3;48;5;17;58;5;9;1;2;3;4mX")?;
+        let snapshot = engine.snapshot(0)?;
+        assert_eq!(
+            snapshot
+                .screen
+                .first()
+                .and_then(|l| l.cells.first())
+                .map(|c| c.text.as_str()),
+            Some("X")
+        );
+        Ok(())
     }
 }
