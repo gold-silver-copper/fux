@@ -515,58 +515,91 @@ impl Grid {
             m.wrapped = wrapped;
         }
     }
+    /// Blanks columns `start` to `end` of live row `row` in `attributes`,
+    /// with the other half of a wide glyph the span splits. The row takes
+    /// `version` only if a cell changed.
+    ///
+    /// The cells from the row's `used` mark on are blank in the default
+    /// attributes already, so an erase in those (what programs mostly
+    /// send: tmux sends an EL for nearly every line it draws) looks at the
+    /// cells before the mark alone, and one that reaches the mark brings
+    /// the mark back to `start`: a row erased once costs nothing to erase
+    /// again, and nothing to recycle.
     pub fn erase(&mut self, row: u16, start: u16, end: u16, attributes: Attributes, version: u64) {
         let (cols, last) = (self.cols.get(), self.cols.last());
         let mut clears_edge = end >= cols;
-        // Blanks in the default attributes are what a recycled row holds;
-        // others count as written.
-        let written = if attributes == Attributes::default() {
-            0
-        } else {
-            end
+        let Some(slot) = self.slot(row) else {
+            return;
         };
-        self.mutate_row(row, version, written, |cells| {
-            let span = usize::from(start)..usize::from(end.min(cols));
-            // Already blank in this style, as erasing an erased tail finds
-            // it: the row is as it was. A blank is never half a wide glyph,
-            // so there is nothing to repair either.
-            let blank = Cell::blank(attributes);
-            if cells
-                .get(span.clone())
-                .is_none_or(|run| run.iter().all(|c| c.same(&blank)))
+        let Some(&Meta { used, width, .. }) = self.meta.get(slot) else {
+            return;
+        };
+        let plain = attributes == Attributes::default();
+        let span_end = usize::from(end.min(cols));
+        let first = usize::from(start);
+        // The cells that may not be blank in `attributes` yet: in the
+        // default attributes, none past the mark.
+        let reach = if plain {
+            span_end.min(usize::from(used))
+        } else {
+            span_end
+        };
+        let blank = Cell::blank(attributes);
+        let cells = self.slice_mut(slot);
+        // Already blank in this style up to the first that is not, as an
+        // erased tail is: the row is as it was, and a blank is never half
+        // a wide glyph, so there is nothing to repair either.
+        let differs = cells
+            .get(first..reach)
+            .and_then(|run| run.iter().position(|c| !c.is_blank(attributes)));
+        let changed = differs.is_some();
+        if let Some(differs) = differs {
+            // A wide glyph inside the run goes with it; one across either
+            // end loses its other half too, which keeps its attributes. A
+            // half is always next to its other half (`repair_wide`).
+            if let Some(cell) = cells.get(first)
+                && !cell.is_wide()
+                && cell.is_wide_continuation()
+                && let Some(other) = first.checked_sub(1).and_then(|i| cells.get_mut(i))
             {
-                return false;
+                *other = Cell::blank(other.attributes);
             }
-            for col in span {
-                if let Some(cell) = cells.get(col).copied() {
-                    if cell.is_wide() {
-                        let next = col.checked_add(1);
-                        if let Some(other) = next.and_then(|i| cells.get_mut(i)) {
-                            *other = Cell::blank(other.attributes);
-                        }
-                        // The glyph's second half is in the last column.
-                        clears_edge |= next == Some(usize::from(last));
-                    } else if cell.is_wide_continuation()
-                        && let Some(other) = col.checked_sub(1).and_then(|i| cells.get_mut(i))
-                    {
-                        *other = Cell::blank(other.attributes);
-                    }
-                    if let Some(cell) = cells.get_mut(col) {
-                        *cell = blank;
-                    }
+            if let Some(at) = reach.checked_sub(1)
+                && cells.get(at).is_some_and(Cell::is_wide)
+            {
+                if let Some(other) = cells.get_mut(reach) {
+                    *other = Cell::blank(other.attributes);
+                }
+                // The glyph's second half is in the last column.
+                clears_edge |= reach == usize::from(last);
+            }
+            if let Some(run) = cells
+                .get_mut(first..reach)
+                .and_then(|run| run.get_mut(differs..))
+            {
+                run.fill(blank);
+            }
+        }
+        if let Some(m) = self.meta.get_mut(slot) {
+            if changed {
+                m.version = version;
+                if !plain {
+                    m.used = m.used.max(end.min(width));
                 }
             }
-            true
-        });
-        if clears_edge {
-            self.wrap(row, false, version);
+            if plain && span_end >= usize::from(m.used) {
+                // Every cell from `start` on is blank now.
+                m.used = m.used.min(start);
+            }
+            // As `wrap` ends the row's soft wrap.
+            if clears_edge && m.wrapped {
+                m.wrapped = false;
+                m.version = version;
+            }
         }
         // A whole row erased keeps no text, and no links: its blank cells
         // would never read them.
-        if start == 0
-            && end >= cols
-            && let Some(slot) = self.slot(row)
-        {
+        if start == 0 && end >= cols {
             if let Some(spill) = self.spill.get_mut(slot) {
                 spill.clear();
             }
