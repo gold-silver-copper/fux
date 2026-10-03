@@ -400,9 +400,21 @@ pub struct Known {
     pub recordings: Recordings,
     pub engines: &'static [&'static str],
     pub why: &'static str,
-    /// Whether this is the difference: the difference, then the direct
-    /// screen and the screen through the multiplexer.
-    pub covers: fn(&Diff, &Snapshot, &Snapshot) -> bool,
+    /// Whether this is the difference, given the screens at its point.
+    pub covers: fn(&Diff, &Screens<'_>) -> bool,
+}
+
+/// The screens at a point where the two sides differ, for [`Known::covers`].
+pub struct Screens<'a> {
+    pub direct: &'a Snapshot,
+    /// Through the multiplexer, cropped to the pane.
+    pub through: &'a Snapshot,
+    /// For a recording that resizes: where fux-vt reflowing on resize (as
+    /// the reference engine does) and fux-vt not reflowing (as fux's panes
+    /// do, `Options::reflow` off) differ, given the same output and resizes:
+    /// each difference's `fux` is the reflowing parser's value, its `other`
+    /// the other's.
+    pub reflow: Option<&'a [Diff]>,
 }
 
 /// The recordings a recorded difference is expected in.
@@ -446,6 +458,20 @@ pub const KNOWN: &[Known] = &[
             has it, without the marker.",
         covers: erased_at_the_last_column,
     },
+    Known {
+        recordings: Recordings::Every,
+        engines: &["ghostty", "alacritty", "libvterm", "wezterm"],
+        why: "the terminal reflows its lines when it is resized, and fux's panes do not \
+            (fux-vt's README, \"Without Options::reflow\"), so a line the program does not \
+            draw again stays as each resized it, and a shell redrawing its prompt from where \
+            the cursor was left draws it on other rows. Covered is only a field whose value \
+            directly is fux-vt's own when it reflows, and through fux fux-vt's when it does \
+            not, for the same output and resizes; anything else at the same point fails. \
+            In zsh-resize Ghostty rewraps zsh's command line onto two rows at the shrink \
+            to 60 columns, the cursor on the second, and zsh redraws its prompt from there, \
+            so the line shows twice; the corpus records zsh-resize for the same reason.",
+        covers: as_reflowed,
+    },
 ];
 
 /// The cell a difference's key names, `cell (Y,X) ...`.
@@ -460,10 +486,10 @@ fn cell_at(s: &Snapshot, (y, x): (usize, usize)) -> Option<&snapshot::Cell> {
 }
 
 /// A foreground that differs on a cell blank on both sides.
-fn blank_foreground(d: &Diff, direct: &Snapshot, through: &Snapshot) -> bool {
+fn blank_foreground(d: &Diff, s: &Screens<'_>) -> bool {
     d.field == Field::Fg
         && cell_of(&d.key).is_some_and(|at| {
-            [direct, through]
+            [s.direct, s.through]
                 .iter()
                 .all(|s| cell_at(s, at).is_some_and(|c| c.text.is_empty()))
         })
@@ -471,10 +497,20 @@ fn blank_foreground(d: &Diff, direct: &Snapshot, through: &Snapshot) -> bool {
 
 /// Any difference in a cell of the last column that is blank through the
 /// multiplexer.
-fn erased_at_the_last_column(d: &Diff, direct: &Snapshot, through: &Snapshot) -> bool {
+fn erased_at_the_last_column(d: &Diff, s: &Screens<'_>) -> bool {
     cell_of(&d.key).is_some_and(|(y, x)| {
-        x.checked_add(1) == Some(usize::from(direct.cols))
-            && cell_at(through, (y, x)).is_some_and(|c| c.text.is_empty())
+        x.checked_add(1) == Some(usize::from(s.direct.cols))
+            && cell_at(s.through, (y, x)).is_some_and(|c| c.text.is_empty())
+    })
+}
+
+/// A field that shows directly as fux-vt reflowing shows it, and through
+/// the multiplexer as fux-vt not reflowing shows it.
+fn as_reflowed(d: &Diff, s: &Screens<'_>) -> bool {
+    s.reflow.is_some_and(|reflow| {
+        reflow
+            .iter()
+            .any(|r| r.key == d.key && r.fux == d.fux && r.other == d.other)
     })
 }
 
@@ -484,14 +520,57 @@ fn known(
     recording: &str,
     engine: &str,
     differences: &[Diff],
-    direct: &Snapshot,
-    through: &Snapshot,
+    screens: &Screens<'_>,
 ) -> Option<&'static Known> {
     KNOWN.iter().find(|k| {
         k.recordings.contains(recording)
             && k.engines.contains(&engine)
-            && differences.iter().all(|d| (k.covers)(d, direct, through))
+            && differences.iter().all(|d| (k.covers)(d, screens))
     })
+}
+
+/// fux-vt reflowing on resize, as the reference engine does, and not, as
+/// fux's panes do: what a resize leaves differs only by that.
+struct Reflow {
+    reflowing: Box<dyn Engine>,
+    not: Box<dyn Engine>,
+}
+
+impl Reflow {
+    fn new(rows: u16, cols: u16) -> Result<Reflow, String> {
+        // History as on each side: none directly (`terminal`), and a pane's.
+        let make = |history, reflow| {
+            (crate::engine::SUBJECT.make)(&Setup {
+                rows,
+                cols,
+                history,
+                reflow,
+            })
+        };
+        Ok(Reflow {
+            reflowing: make(0, true)?,
+            not: make(fux::config::Config::default().history_lines, false)?,
+        })
+    }
+
+    fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
+        self.reflowing.resize(rows, cols)?;
+        self.not.resize(rows, cols)
+    }
+
+    fn process(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.reflowing.process(bytes)?;
+        self.not.process(bytes)
+    }
+
+    /// Where the two differ, on what `can` tells and a screen shows.
+    fn differences(&mut self, can: &Can) -> Result<Vec<Diff>, String> {
+        Ok(compare(
+            &self.reflowing.snapshot(0)?,
+            &self.not.snapshot(0)?,
+            can,
+        ))
+    }
 }
 
 /// A point where the two sides differ.
@@ -532,6 +611,11 @@ fn through_fux(
     let (rows, cols) = (recording.rows, recording.cols);
     let mut direct = terminal(kind, rows, cols)?;
     let mut through = Through::new(kind, rows, cols)?;
+    let mut reflow = if recording.resizes.is_empty() {
+        None
+    } else {
+        Some(Reflow::new(rows, cols)?)
+    };
     let mut outcome = Outcome {
         points: 0,
         held: 0,
@@ -554,12 +638,18 @@ fn through_fux(
             direct.resize(rows, cols)?;
             through.resize(rows, cols)?;
             through.paint()?;
+            if let Some(reflow) = &mut reflow {
+                reflow.resize(rows, cols)?;
+            }
         }
         let mut from = 0usize;
         for point in points(bytes, chunk) {
             let piece = bytes.get(from..point).unwrap_or_default();
             direct.process(piece)?;
             through.output(piece);
+            if let Some(reflow) = &mut reflow {
+                reflow.process(piece)?;
+            }
             at = at.saturating_add(piece.len());
             from = point;
             let last = step.saturating_add(1) == steps && point == bytes.len();
@@ -583,7 +673,16 @@ fn through_fux(
             if differences.is_empty() {
                 continue;
             }
-            if let Some(k) = known(&recording.name, kind.name, &differences, &d, &t) {
+            let reflowed = match &mut reflow {
+                Some(reflow) => Some(reflow.differences(&kind.can)?),
+                None => None,
+            };
+            let screens = Screens {
+                direct: &d,
+                through: &t,
+                reflow: reflowed.as_deref(),
+            };
+            if let Some(k) = known(&recording.name, kind.name, &differences, &screens) {
                 outcome.recorded = outcome.recorded.saturating_add(1);
                 outcome.known = Some(k);
                 continue;
@@ -1502,15 +1601,53 @@ mod tests {
             other: "Idx(0)".into(),
         };
         let (a, b) = (blank("x  "), blank("x  "));
-        assert!(super::blank_foreground(&fg(1), &a, &b));
-        assert!(!super::blank_foreground(&fg(0), &a, &b));
+        let screens = super::Screens {
+            direct: &a,
+            through: &b,
+            reflow: None,
+        };
+        assert!(super::blank_foreground(&fg(1), &screens));
+        assert!(!super::blank_foreground(&fg(0), &screens));
         // A blank's foreground is expected in any recording, beside the
         // engines that keep only the background, and with nothing else.
-        assert!(super::known("nvim", "ghostty", &[fg(1)], &a, &b).is_some());
-        assert!(super::known("nvim", "libvterm", &[fg(1)], &a, &b).is_none());
-        assert!(super::known("nvim", "ghostty", &[fg(1), fg(0)], &a, &b).is_none());
-        assert!(super::erased_at_the_last_column(&fg(2), &a, &b));
-        assert!(!super::erased_at_the_last_column(&fg(1), &a, &b));
+        assert!(super::known("nvim", "ghostty", &[fg(1)], &screens).is_some());
+        assert!(super::known("nvim", "libvterm", &[fg(1)], &screens).is_none());
+        assert!(super::known("nvim", "ghostty", &[fg(1), fg(0)], &screens).is_none());
+        assert!(super::erased_at_the_last_column(&fg(2), &screens));
+        assert!(!super::erased_at_the_last_column(&fg(1), &screens));
+        // A difference is the reflow's only where fux-vt reflowing and not
+        // differ on the same field with the same values, and only in a
+        // recording that resizes.
+        let text = |direct: &str, through: &str| Diff {
+            key: "cell (0,0) text".into(),
+            field: Field::Text,
+            styled_cell: Some((0, 0)),
+            fux: direct.into(),
+            other: through.into(),
+        };
+        let reflow = [text("\"a\"", "\"b\"")];
+        let resized = super::Screens {
+            reflow: Some(&reflow),
+            ..screens
+        };
+        assert!(super::as_reflowed(&text("\"a\"", "\"b\""), &resized));
+        assert!(!super::as_reflowed(&text("\"a\"", "\"c\""), &resized));
+        assert!(!super::as_reflowed(&text("\"b\"", "\"a\""), &resized));
+        assert!(!super::as_reflowed(&fg(1), &resized));
+        assert!(!super::as_reflowed(&text("\"a\"", "\"b\""), &screens));
+        Ok(())
+    }
+
+    /// A resize the terminal reflows and fux's pane does not: zsh redraws
+    /// its prompt where the cursor is left, and what differs is the reflow.
+    #[test]
+    fn a_reflow_is_recorded_as_the_reflow() -> Result<(), String> {
+        let recording = crate::corpus::recordings(&["zsh-resize".to_owned()])?;
+        let recording = recording.first().ok_or("no zsh-resize")?;
+        let outcome = super::through_fux(ghostty()?, recording, None)?;
+        assert!(outcome.first.is_none());
+        assert!(outcome.recorded > 0);
+        assert!(outcome.known.is_some_and(|k| k.why.contains("reflows")));
         Ok(())
     }
 
