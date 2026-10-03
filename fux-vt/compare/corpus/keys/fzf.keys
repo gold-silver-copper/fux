@@ -1,0 +1,11 @@
+# fzf, full screen, filtering a list of files as a query is typed, moving
+# the selection, then accepting it.
+!start 1500
+s
+c
+r
+\x0e
+\x0e
+\x10
+\x7f
+\r

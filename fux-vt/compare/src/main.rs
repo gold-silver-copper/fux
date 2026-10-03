@@ -13,6 +13,7 @@ mod engine;
 mod engines;
 mod escape;
 mod families;
+mod record;
 mod rng;
 mod snapshot;
 
@@ -34,6 +35,9 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
        fux-vt-compare replay [--engines LIST] [--size RxC] [--history N] [--no-reflow]
                              [--newline-before-resize] STEP...
        fux-vt-compare bench [--engines LIST] [--mb N] [WORKLOAD...]
+       fux-vt-compare record --keys FILE --out PREFIX [--size RxC] [--program NAME]
+                             [--version TEXT] [--env KEY=VALUE]... [--dir DIR]
+                             [--scrub OLD=NEW]... [--note TEXT] -- PROGRAM ARGS...
        fux-vt-compare engines
        fux-vt-compare --list
 
@@ -56,6 +60,13 @@ replay   one case: STEP is output, written as `run` prints it ('\\e[1mX'),
          or resize:RxC. Prints each engine's verdict after every step, and
          the screens.
 bench    each engine's speed on the same workloads (default: all), in MB/s.
+record   runs PROGRAM on a PTY (--size, else 40x120) as a pane of fux
+         runs it, types each line of keys in FILE, and keeps every byte it
+         writes (PREFIX.bin) and what was run and typed (PREFIX.json).
+         fux-vt answers its queries as fux does. Its environment is TERM
+         and the --env pairs alone (and PATH, if they have none). --scrub
+         replaces OLD in the output before it is saved, for what the setup
+         cannot keep out (a host name).
 engines  every engine: whether it can run here, whether it votes, and what
          it cannot tell.
 --list   the families, what each covers, and its status.
@@ -81,6 +92,17 @@ struct Args {
     history: usize,
     newline_before_resize: bool,
     mb: usize,
+    /// Whether `--size` was given.
+    sized: bool,
+    /// `record`'s own options.
+    out: Option<String>,
+    keys: Option<String>,
+    program: Option<String>,
+    version: String,
+    env: Vec<String>,
+    dir: Option<String>,
+    scrub: Vec<String>,
+    note: String,
     rest: Vec<String>,
 }
 
@@ -104,12 +126,21 @@ fn parse() -> Result<Args, String> {
         history: 0,
         newline_before_resize: false,
         mb: 8,
+        sized: false,
+        out: None,
+        keys: None,
+        program: None,
+        version: String::new(),
+        env: Vec::new(),
+        dir: None,
+        scrub: Vec::new(),
+        note: String::new(),
         rest: Vec::new(),
     };
     let mut words = std::env::args().skip(1).peekable();
     if let Some(first) = words.peek()
         && [
-            "run", "survey", "matrix", "cases", "verdicts", "replay", "bench", "engines",
+            "run", "survey", "matrix", "cases", "verdicts", "replay", "bench", "engines", "record",
         ]
         .contains(&first.as_str())
     {
@@ -126,9 +157,24 @@ fn parse() -> Result<Args, String> {
             "--engines" => args.engines = Some(value("--engines")?),
             "--no-reflow" => args.reflow = false,
             "--newline-before-resize" => args.newline_before_resize = true,
-            "--size" => args.size = dimensions(&value("--size")?)?,
+            "--size" => {
+                args.size = dimensions(&value("--size")?)?;
+                args.sized = true;
+            }
             "--history" => args.history = number("--history", &value("--history")?)?,
             "--mb" => args.mb = number("--mb", &value("--mb")?)?,
+            "--out" => args.out = Some(value("--out")?),
+            "--keys" => args.keys = Some(value("--keys")?),
+            "--program" => args.program = Some(value("--program")?),
+            "--version" => args.version = value("--version")?,
+            "--env" => args.env.push(value("--env")?),
+            "--dir" => args.dir = Some(value("--dir")?),
+            "--scrub" => args.scrub.push(value("--scrub")?),
+            "--note" => args.note = value("--note")?,
+            "--" => {
+                args.rest.extend(words.by_ref());
+                break;
+            }
             "--list" => args.command = "list".into(),
             "-h" | "--help" => args.command = "help".into(),
             other if other.starts_with("--") => return Err(format!("unknown option {other}")),
@@ -598,10 +644,45 @@ fn replay(args: &Args) -> Result<bool, String> {
     Ok(agrees)
 }
 
+fn record(args: &Args) -> Result<bool, String> {
+    let program = args.rest.first().ok_or("record: no program to run")?;
+    let (rows, cols) = if args.sized { args.size } else { (40, 120) };
+    let request = record::Request {
+        rows,
+        cols,
+        out: args.out.as_ref().ok_or("record needs --out")?.into(),
+        program: args.program.clone().unwrap_or_else(|| program.clone()),
+        version: args.version.clone(),
+        env: args.env.clone(),
+        dir: args.dir.as_ref().map(Into::into),
+        keys: args.keys.as_ref().ok_or("record needs --keys")?.into(),
+        scrub: args.scrub.clone(),
+        note: args.note.clone(),
+        argv: args.rest.clone(),
+    };
+    let done = record::record(&request)?;
+    println!(
+        "{}: {} bytes in {} steps, {} bytes of replies",
+        request.out.display(),
+        done.bytes,
+        done.steps,
+        done.replies
+    );
+    Ok(true)
+}
+
 fn main() -> ExitCode {
     // An engine's panic is caught and costs it its vote (`case::guarded`),
     // and reported there; the default hook would print each one again.
     std::panic::set_hook(Box::new(|_| {}));
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if let Some((first, rest)) = argv.split_first()
+        && first == record::LAUNCH
+    {
+        let error = record::launched(rest).err().unwrap_or_default();
+        eprintln!("fux-vt-compare: {error}");
+        return ExitCode::from(127);
+    }
     let result = parse().and_then(|args| match args.command.as_str() {
         "list" => {
             list();
@@ -620,6 +701,7 @@ fn main() -> ExitCode {
         "cases" => cases(&args),
         "verdicts" => verdicts(&args),
         "replay" => replay(&args),
+        "record" => record(&args),
         "bench" => bench::run(&panel(&args, "all")?, &args.rest, args.mb),
         _ => run(&args),
     });

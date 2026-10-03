@@ -14,7 +14,8 @@ cursor, the modes, soft wraps, the title, cursor reports and recent history.
 fux-vt fails a case only where the engines outvote it (see "The vote"). A
 failing case is shrunk to the smallest one that still fails and printed with
 the command that replays it. `bench` times every engine on the same
-workloads.
+workloads. The corpus (`corpus/`) holds what real programs wrote to a
+terminal, recorded by `record`.
 
 It is not built or run by fux's own gates. It needs Zig, a Ghostty
 checkout, libvterm's source and, for the engines in their own processes,
@@ -40,6 +41,7 @@ fux-vt/compare/run.sh run --family sgr --family text --cases 2000 --seed 7
 fux-vt/compare/run.sh run --engines ghostty,libvterm,xterm   # any panel
 fux-vt/compare/run.sh replay --engines all --size 1x5 'abcde\x08X'
 fux-vt/compare/run.sh --no-reflow           # fux-vt set up as fux sets it up
+fux-vt/compare/corpus/record.sh [NAME...]   # record the corpus again (see "The corpus")
 fux-vt/compare/run.sh --cargo test          # any cargo subcommand, in the same environment
 fux-vt/compare/run.sh --cargo clippy --all-targets -- -D warnings
 ```
@@ -242,6 +244,67 @@ An engine linked in is timed on parsing and applying alone. An engine in its
 own process also pays for the pipe to it, so its figure (marked `*`) is end
 to end.
 
+## The corpus
+
+`corpus/` holds what real programs wrote to a terminal, byte for byte, while
+keys were typed into them: one recording a scenario, `NAME.bin` (the bytes)
+and `NAME.json` (the program and its version, the command, the size, the
+environment, the replies fux-vt gave, and each step's keys and where its
+output ends). The keys typed are in `corpus/keys/NAME.keys`.
+
+### Recording
+
+`record` runs a program on a PTY of 40×120 with `TERM=xterm-256color`, as
+fux runs a pane. A fux-vt parser, set up as fux sets up a pane's
+(`Options::new().with_events(true)`), reads the output beside the PTY,
+and its replies are written back as fux writes them, so a program that asks
+(DA1, a cursor report) gets fux's answer, and one that asks what fux does
+not answer (DECRQM, DA2, a colour) gets nothing, as in fux. Step 0 is the
+program starting; each line of keys is a step, typed at once, and the step
+ends when the program has been quiet for a while (400 ms, or as the keys
+file says). After the last step the program has two seconds to exit, then
+gets SIGHUP and SIGKILL; what it writes meanwhile belongs to the last step.
+
+`corpus/record.sh` records every scenario again, or those named. Each runs
+in a directory of its own, `/tmp/fux-corpus`: a HOME with a minimal rc file
+for each program (no prompt shows a user or host name), and a work
+directory of copies of files from this repository and generated text (a man
+page written for the purpose, `corpus/fux-corpus.1`; a small cargo project
+with mistakes, for helix's diagnostics). The environment is only what the
+manifest lists, and `TERM`. `git` runs on this repository, with a log
+format that leaves out authors. GNU ls puts the host name in its `file://`
+URIs, so it is replaced by `localhost` (`--scrub`, recorded in the
+manifest). Before a recording is committed, `record.sh` says how to check
+that it holds nothing private.
+
+| Recording | Program | Steps | Bytes | What |
+| --- | --- | ---: | ---: | --- |
+| `vim` | VIM 9.1 | 24 | 23326 | a Rust file, syntax on: move, scroll, search, `*`, visual mode, `:split`, `:set spell`, quit |
+| `helix` | helix 25.07.1 | 16 | 63966 | a cargo project with errors; rust-analyzer's diagnostics after a save; move, search, select, split |
+| `less` | less 668 | 12 | 24348 | this README: lines, pages, search, the end, the start |
+| `fzf` | fzf 0.65.2 | 9 | 24510 | full screen, filtering files as a query is typed, moving, accepting |
+| `fzf-height` | fzf 0.65.2 | 7 | 12983 | `--height=40% --layout=reverse --border`, below the prompt |
+| `gls` | GNU ls 9.12 | 1 | 1821 | `--color=always --hyperlink=always -F` on two directories |
+| `man` | man (macOS, mandoc) | 8 | 8431 | `corpus/fux-corpus.1`, paged by less: lines, a page, search |
+| `delta-log` | delta 0.19.2, git 2.51 | 8 | 34377 | `git log -p -n 3` through delta, paged by less |
+| `delta-diff` | delta 0.19.2, git 2.51 | 5 | 45384 | `git diff` through delta `--side-by-side`, paged by less |
+| `zsh` | zsh 5.9 | 17 | 1549 | ZLE: type, move, fix a word, run, Tab completion, history, Ctrl-R |
+| `bash` | bash 5.3 | 17 | 877 | readline: the same keys |
+| `tmux` | tmux 3.7c | 21 | 15838 | a server of its own (`-L`, `-f /dev/null`): splits, zoom, copy mode, a second window |
+| `claude` | Claude Code 2.1.288 | 3 | 10616 | a first start (no settings: the theme is asked for), Ctrl-C twice |
+| `claude-main` | Claude Code 2.1.288 | 3 | 2848 | a later start (onboarding done, the directory trusted): the main screen, Ctrl-C twice |
+| `claude-ghostty` | Claude Code 2.1.288 | 3 | 3049 | as `claude-main`, with `TERM_PROGRAM=ghostty`, as fux passes on from Ghostty |
+
+`claude-ghostty` is there because fux passes its own environment on to its
+panes: a program in a pane of fux started from Ghostty sees
+`TERM_PROGRAM=ghostty`, and Claude Code goes by it. With it, Claude Code
+sends synchronized output (2026), OSC 8 and the kitty keyboard protocol;
+without it, none of them. helix sends the same either way (tried), so it
+has one recording. Claude Code's screens hold no account: it starts not
+logged in.
+
+Not installed here, so not recorded: neovim, htop, btop, lazygit, fish.
+
 ## Files
 
 | File | What |
@@ -259,3 +322,5 @@ to end.
 | `src/bench.rs` | the workloads and the speed table |
 | `src/escape.rs` | bytes as replayable text, and back |
 | `src/rng.rs` | splitmix64, as in `diff/` |
+| `src/record.rs` | `record`: a program on a PTY, its output recorded, fux-vt answering its queries |
+| `corpus/` | the recordings, their keys, `record.sh` that makes them, and the man page one shows |
