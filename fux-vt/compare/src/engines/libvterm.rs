@@ -281,6 +281,10 @@ impl Engine for Libvterm {
             history,
         })
     }
+
+    fn replies(&self) -> Vec<u8> {
+        self.term.replies().to_vec()
+    }
 }
 
 /// The shim's interface, and a safe owner of one terminal.

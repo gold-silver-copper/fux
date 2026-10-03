@@ -78,6 +78,14 @@ const UNSTICK: &[u8] = b"\x18\x1b\\";
 const FIRST_WAIT: Duration = Duration::from_secs(2);
 const LAST_WAIT: Duration = Duration::from_secs(10);
 
+/// While a sync waits with something to do meanwhile, the longest it
+/// waits for a reply before doing it again.
+const TURN: Duration = Duration::from_millis(1);
+
+/// What a sync does while it waits, if anything: a multiplexer's client
+/// must be read, and its queries answered, for the multiplexer to go on.
+type Meanwhile<'a> = Option<&'a mut dyn FnMut() -> Result<(), String>>;
+
 /// This process's directory for FIFOs and files, made if it is missing.
 pub fn dir() -> Result<PathBuf, String> {
     let dir = std::env::temp_dir().join(format!("fux-vt-compare-{}", std::process::id()));
@@ -352,18 +360,26 @@ impl Pane {
     }
 
     /// Waits until a DA1 reply to every DA1 request written has arrived
-    /// after `mark` (one, at least), or `limit` has passed. Gives the
-    /// replies up to the last DA1 reply, with every DA1 reply taken out,
-    /// and moves `mark` past them.
-    fn wait(&mut self, limit: Duration) -> Result<Option<Vec<u8>>, String> {
+    /// after `mark` (one, at least), or `limit` has passed, doing
+    /// `meanwhile` every [`TURN`] if there is one. Gives the replies up to
+    /// the last DA1 reply, with every DA1 reply taken out, and moves
+    /// `mark` past them.
+    fn wait(
+        &mut self,
+        limit: Duration,
+        meanwhile: &mut Meanwhile<'_>,
+    ) -> Result<Option<Vec<u8>>, String> {
         let deadline = Instant::now()
             .checked_add(limit)
             .ok_or("a deadline out of range")?;
-        let mut heard = self
-            .inbox
-            .heard
-            .lock()
-            .map_err(|_| "the reply buffer is poisoned")?;
+        let inbox = Arc::clone(&self.inbox);
+        let lock = || {
+            inbox
+                .heard
+                .lock()
+                .map_err(|_| "the reply buffer is poisoned")
+        };
+        let mut heard = lock()?;
         loop {
             let fresh = heard.bytes.get(self.mark..).unwrap_or_default();
             let found = da_replies(fresh);
@@ -388,12 +404,21 @@ impl Pane {
             if left.is_zero() {
                 return Ok(None);
             }
-            heard = self
-                .inbox
+            let turn = if meanwhile.is_some() {
+                left.min(TURN)
+            } else {
+                left
+            };
+            heard = inbox
                 .arrived
-                .wait_timeout(heard, left)
+                .wait_timeout(heard, turn)
                 .map_err(|_| "the reply buffer is poisoned")?
                 .0;
+            if let Some(meanwhile) = meanwhile.as_mut() {
+                drop(heard);
+                meanwhile()?;
+                heard = lock()?;
+            }
         }
     }
 
@@ -401,22 +426,31 @@ impl Pane {
     /// written before has been processed. Gives the replies since the last
     /// sync, without the syncs'.
     pub fn sync(&mut self) -> Result<Vec<u8>, String> {
+        self.sync_while(None)
+    }
+
+    fn sync_while(&mut self, mut meanwhile: Meanwhile<'_>) -> Result<Vec<u8>, String> {
         self.write(SYNC)?;
-        if let Some(batch) = self.wait(FIRST_WAIT)? {
+        if let Some(batch) = self.wait(FIRST_WAIT, &mut meanwhile)? {
             return Ok(batch);
         }
         let mut again = UNSTICK.to_vec();
         again.extend_from_slice(SYNC);
         self.write(&again)?;
-        self.wait(LAST_WAIT)?
+        self.wait(LAST_WAIT, &mut meanwhile)?
             .ok_or_else(|| "no reply to a device attributes request".to_owned())
     }
 
     /// Gives the terminal a program's output and waits for it to be
     /// processed, keeping its replies.
     pub fn output(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.output_while(bytes, None)
+    }
+
+    /// [`Pane::output`], doing `meanwhile` while it waits, if anything.
+    pub fn output_while(&mut self, bytes: &[u8], meanwhile: Meanwhile<'_>) -> Result<(), String> {
         self.write(bytes)?;
-        let replies = self.sync()?;
+        let replies = self.sync_while(meanwhile)?;
         self.kept.extend_from_slice(&replies);
         Ok(())
     }

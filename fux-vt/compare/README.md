@@ -680,11 +680,18 @@ failed. Each runs as a real server of its own, with nothing of the user's:
 
 The client runs on a PTY with `TERM=xterm-256color` and
 `COLORTERM=truecolor`, as a modern terminal sets them, and what it writes
-goes to the reference engine. The pane runs the pane program the
-process engines use (`src/engines/pane.rs`): each step's output goes into
-it, synced by DA1, and the screen is read once the client has been quiet
-for 200 ms. The terminal's answers to the client's queries are not sent
-back.
+goes to the reference engine, which answers it as a terminal does: its
+replies are written back up the PTY (Ghostty's answer DA1, DA2, XTVERSION
+and palette queries, not OSC 10/11 or CSI 14/16 t). The pane runs the pane
+program the process engines use (`src/engines/pane.rs`): each step's
+output goes into it, synced by DA1, and the screen is read once the client
+has been quiet for 200 ms. The client is read, and answered, while the
+pane syncs: zellij forwards a pane's colour and size queries (OSC 4, 10
+and 11, CSI 14 and 16 t) to the client's terminal, one at a time, each
+with a DA1 behind it, and holds the rest of the pane's output, the sync's
+DA1 too, until the terminal answers or 500 ms pass. Unanswered, the 260
+queries zellij itself sends at its start (zellij-small, zellij) held the
+sync for over two minutes.
 
 Today, beside Ghostty (about 40 s for tmux and 50 s for zellij, 90 s in all;
 the same scores in two runs):

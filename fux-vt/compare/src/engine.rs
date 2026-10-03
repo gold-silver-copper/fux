@@ -39,6 +39,13 @@ pub trait Engine {
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String>;
     fn snapshot(&mut self, history_rows: usize) -> Result<Snapshot, String>;
 
+    /// Every reply the terminal has written back so far, in order: what a
+    /// terminal sends up its pty for its program to read. Empty for an
+    /// engine that answers nothing, or whose answers are not taken here.
+    fn replies(&self) -> Vec<u8> {
+        Vec::new()
+    }
+
     /// Feeds a whole workload, `chunk` bytes at a time, as a program's
     /// output arrives. Engines behind a process stream it and wait once.
     fn feed(&mut self, bytes: &[u8], chunk: usize) -> Result<(), String> {
