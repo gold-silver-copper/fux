@@ -181,6 +181,7 @@ function snapshot(t, req) {
     application_cursor: modes.applicationCursorKeysMode,
     application_keypad: modes.applicationKeypadMode,
     bracketed_paste: modes.bracketedPasteMode,
+    synchronized_output: modes.synchronizedOutputMode,
     focus_reporting: modes.sendFocusMode,
     title: t.title,
     replies: t.replies,

@@ -92,7 +92,8 @@ engine that can run here, the default for cases and bench), `in-process`
 or `xterm` (the default for verdicts).
 
 fux-vt is set up as ratty sets it up (reflow, an identity, the kitty
-keyboard protocol); --no-reflow sets it up as fux does, which leaves out
+keyboard protocol), with the DECRQM answers and in-band resize fux's panes
+have; --no-reflow sets it up as fux does, which leaves out
 the families that need ratty's setup.";
 
 struct Args {

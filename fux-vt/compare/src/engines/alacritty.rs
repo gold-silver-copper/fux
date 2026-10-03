@@ -104,6 +104,8 @@ pub const KIND: Kind = Kind {
     about: "Alacritty's terminal core, alacritty_terminal",
     can: Can {
         blink: false,
+        synchronized_output: false,
+        in_band_resize: false,
         ..Can::ALL
     },
     panel: true,
@@ -329,6 +331,8 @@ impl Alacritty {
             application_cursor: mode.contains(TermMode::APP_CURSOR),
             application_keypad: mode.contains(TermMode::APP_KEYPAD),
             bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
+            synchronized_output: false,
+            in_band_resize: false,
             focus_reporting: mode.contains(TermMode::FOCUS_IN_OUT),
             kitty_keyboard_flags: kitty,
             title: heard.title.clone(),

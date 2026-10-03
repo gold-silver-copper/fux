@@ -112,6 +112,8 @@ pub const KIND: Kind = Kind {
         pending_wrap: false,
         underline_color: false,
         kitty_keyboard_flags: false,
+        synchronized_output: false,
+        in_band_resize: false,
         ..Can::ALL
     },
     panel: false,
@@ -607,6 +609,8 @@ impl Xterm {
             application_cursor: set(1),
             application_keypad: set(66),
             bracketed_paste: set(2004),
+            synchronized_output: false,
+            in_band_resize: false,
             focus_reporting: set(1004),
             kitty_keyboard_flags: 0,
             title: title(&replies).unwrap_or_default(),

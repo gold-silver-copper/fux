@@ -174,6 +174,8 @@ impl Ghostty {
             application_cursor: mode(Mode::DECCKM)?,
             application_keypad: mode(Mode::KEYPAD_KEYS)?,
             bracketed_paste: mode(Mode::BRACKETED_PASTE)?,
+            synchronized_output: mode(Mode::SYNC_OUTPUT)?,
+            in_band_resize: mode(Mode::IN_BAND_RESIZE)?,
             focus_reporting: mode(Mode::FOCUS_EVENT)?,
             kitty_keyboard_flags: t.kitty_keyboard_flags().map_err(err("kitty flags"))?.bits(),
             title: t.title().map_err(err("title"))?.to_owned(),

@@ -112,7 +112,7 @@ its own file (`src/engines/*.rs`), each with a `replay` command.
 
 | Engine | What, and pins | Cannot tell | Notes |
 | --- | --- | --- | --- |
-| fux-vt | the subject, by path, set up as ratty sets it up (reflow, an identity, kitty keyboard, events) | — | `--no-reflow`: as fux sets it up |
+| fux-vt | the subject, by path, set up as ratty sets it up (reflow, an identity, kitty keyboard, events), with the DECRQM answers and in-band resize fux's panes have | — | `--no-reflow`: as fux sets it up |
 | ghostty | libghostty-vt 0.2.1 over Ghostty `7aa95917`, built by Zig 0.16 (see "Setup") | — | mode 2027 on; history kept in bytes |
 | alacritty | alacritty_terminal 0.26.0 | blink | synchronized updates applied at once (no event loop); a wide glyph on one column panics it, which the adapter repairs |
 | libvterm | libvterm 0.3.3 from its release tarball, through a C shim (`src/engines/libvterm_shim.c`); modes and pending wrap read from the pinned source's `vterm_internal.h` | dim, underline colour, kitty | the shim guards five crashes, hangs and out-of-bounds reads that random cases reach (found with ASan and UBSan; each listed with a replay in its file) |
@@ -154,7 +154,9 @@ After creation and after every step, each engine is read into one
 - the cursor, and whether a wrap is pending (a cursor waiting to wrap is in
   the last column with `pending_wrap` set);
 - cursor visibility, DECAWM, DECOM, the alternate screen, DECCKM, DECKPAM,
-  bracketed paste, focus reporting, and the kitty keyboard flags;
+  bracketed paste, focus reporting, synchronized output (2026: fux-vt,
+  Ghostty and xterm.js can tell), in-band resize (2048: fux-vt and Ghostty),
+  and the kitty keyboard flags;
 - the title;
 - cursor position and status reports (`CSI r;c R`, `CSI 0 n`);
 - history: the text and wrap flag of every row fux-vt keeps, against the
