@@ -281,7 +281,9 @@ pub fn record(request: &Request) -> Result<Recorded, String> {
     let options = fux_vt::Options::new()
         .with_events(true)
         .with_mode_reports(true)
-        .with_in_band_resize(true);
+        .with_in_band_resize(true)
+        .with_hyperlinks(true)
+        .with_prompt_marks(true);
     let parser = fux_vt::Parser::with_options(request.rows, request.cols, 10_000, options)
         .map_err(|e| format!("fux-vt: {e}"))?;
     let (master, mut child) = spawn(request)?;

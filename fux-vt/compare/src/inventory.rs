@@ -527,7 +527,7 @@ fn keep_first(params: &str) -> String {
 }
 
 /// The row an OSC gives (`Parser::dispatch_osc`: 0, 1, 2 and 52 are
-/// events, the rest dropped).
+/// events, 8 a hyperlink, 133's A and L prompt marks, the rest dropped).
 fn osc(body: &[u8]) -> (String, Does) {
     let body = text(body);
     let (number, rest) = body.split_once(';').unwrap_or((body.as_str(), ""));
@@ -552,6 +552,13 @@ fn osc(body: &[u8]) -> (String, Does) {
         "0" | "1" | "2" => Does::Implemented("an event; fux sets the pane title"),
         "52" if rest.ends_with('?') => Does::Ignored("a query, dropped unanswered"),
         "52" => Does::Implemented("a clipboard event"),
+        "8" if key == "OSC 8 (close)" => Does::Implemented("ends the open hyperlink"),
+        "8" => Does::Implemented("opens a hyperlink, which the cells printed keep (Row::link)"),
+        "133" if rest.starts_with('A') => {
+            Does::Implemented("a fresh line, and the row marked (Row::starts_prompt)")
+        }
+        "133" if rest.starts_with('L') => Does::Implemented("a fresh line"),
+        "133" => Does::Ignored("consumed: only A and L are kept (Parser::dispatch_osc)"),
         _ if rest.ends_with('?') => Does::Ignored("a query, dropped unanswered"),
         _ => Does::Ignored("dropped (Parser::dispatch_osc)"),
     };
@@ -682,7 +689,9 @@ fn tally(recordings: &[Recording]) -> Result<BTreeMap<String, Row>, String> {
         let options = fux_vt::Options::new()
             .with_events(true)
             .with_mode_reports(true)
-            .with_in_band_resize(true);
+            .with_in_band_resize(true)
+            .with_hyperlinks(true)
+            .with_prompt_marks(true);
         let mut parser = fux_vt::Parser::with_options(r.rows, r.cols, 10_000, options)
             .map_err(|e| format!("fux-vt: {e}"))?;
         let bytes = r.bytes();
@@ -777,7 +786,8 @@ pub fn run(names: &[String]) -> Result<bool, String> {
          SGR attribute is a row of its own, and an XTGETTCAP request shows the \
          capabilities it asks for. \"Count\" counts every time it was sent, in all the \
          recordings. \"fux-vt\" is what a fux pane's parser does with it, as fux sets \
-         it up (`Options::new().with_events(true).with_mode_reports(true).with_in_band_resize(true)`).\n"
+         it up (`Options::new().with_events(true).with_mode_reports(true).with_in_band_resize(true)\
+         .with_hyperlinks(true).with_prompt_marks(true)`).\n"
     );
     let _ = writeln!(out, "Recordings:\n");
     for r in &recordings {

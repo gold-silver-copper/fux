@@ -270,11 +270,12 @@ output ends). The keys typed are in `corpus/keys/NAME.keys`.
 ### Recording
 
 `record` runs a program on a PTY of 40×120 with `TERM=xterm-256color`, as
-fux runs a pane. A fux-vt parser, set up as fux sets up a pane's
-(`Options::new().with_events(true)`), reads the output beside the PTY,
-and its replies are written back as fux writes them, so a program that asks
-(DA1, a cursor report) gets fux's answer, and one that asks what fux does
-not answer (DECRQM, DA2, a colour) gets nothing, as in fux. Step 0 is the
+fux runs a pane. A fux-vt parser, set up as fux sets up a pane's (events,
+DECRQM answers, in-band resize, hyperlinks and prompt marks: `src/pane.rs`),
+reads the output beside the PTY, and its replies are written back as fux
+writes them, so a program that asks (DA1, DECRQM, a cursor report) gets
+fux's answer, and one that asks what fux does not answer (DA2, a colour)
+gets nothing, as in fux. Step 0 is the
 program starting; each line of keys is a step, typed at once, and the step
 ends when the program has been quiet for a while (400 ms, or as the keys
 file says). After the last step the program has two seconds to exit, then
