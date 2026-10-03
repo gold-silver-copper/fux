@@ -31,10 +31,12 @@
 //! (`CSI c`) and waits for the reply (`CSI ? ... c`). A terminal answers
 //! in order, so once it has arrived every byte before it has been
 //! processed. DA1 and not a cursor position report: cases ask for cursor
-//! reports themselves, and none asks for device attributes, so every DA1
-//! reply is the harness's own and is taken out of the replies kept (they
-//! are not reports either: `snapshot::reports` drops them). Every other
-//! reply to the case's output is kept, and filtered by
+//! reports themselves, and none asks for device attributes. Real programs
+//! do (delta, tmux, Claude Code, in the corpus), so every DA1 request
+//! written, the output's and the harness's, is counted ([`Requests`]), and
+//! a sync waits for as many replies. Every DA1 reply is taken out of the
+//! replies kept (they are not reports: `snapshot::reports` drops them).
+//! Every other reply to the case's output is kept, and filtered by
 //! `snapshot::reports`.
 //!
 //! Quirks of syncing in band:
@@ -199,6 +201,67 @@ fn da_replies(bytes: &[u8]) -> Vec<(usize, usize)> {
     out
 }
 
+/// Where a scan of written bytes is: a DA1 request counts only outside
+/// strings, and only whole.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Scan {
+    #[default]
+    Ground,
+    Escape,
+    /// Inside `CSI`: whether it can still be DA1 (`CSI c`, `CSI 0 c`).
+    Csi(bool),
+    /// Inside a string; OSC's ends at BEL too.
+    String {
+        osc: bool,
+    },
+    /// ESC inside a string: ST if `\` follows.
+    StringEscape,
+}
+
+/// Counts the DA1 requests in bytes written to a terminal, as it reads
+/// them, across writes: each gets a reply the sync must wait for.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Requests {
+    scan: Scan,
+}
+
+impl Requests {
+    /// How many DA1 requests end in `bytes`.
+    pub fn count(&mut self, bytes: &[u8]) -> usize {
+        let mut found = 0usize;
+        for &b in bytes {
+            self.scan = match (self.scan, b) {
+                // CAN and SUB end any sequence or string.
+                (_, 0x18 | 0x1a) => Scan::Ground,
+                (Scan::String { osc: true }, 0x07) => Scan::Ground,
+                (Scan::String { .. }, 0x1b) => Scan::StringEscape,
+                (Scan::String { osc }, _) => Scan::String { osc },
+                (Scan::StringEscape, b'\\') => Scan::Ground,
+                (_, 0x1b) => Scan::Escape,
+                (Scan::Escape | Scan::StringEscape, b'[') => Scan::Csi(true),
+                (Scan::Escape | Scan::StringEscape, b']') => Scan::String { osc: true },
+                (Scan::Escape | Scan::StringEscape, b'P' | b'X' | b'^' | b'_') => {
+                    Scan::String { osc: false }
+                }
+                (Scan::Escape | Scan::StringEscape, 0x20..=0x2f) => Scan::Escape,
+                (Scan::Escape | Scan::StringEscape, _) => Scan::Ground,
+                (Scan::Csi(da), b'0') => Scan::Csi(da),
+                (Scan::Csi(_), 0x20..=0x3f) => Scan::Csi(false),
+                (Scan::Csi(da), 0x40..=0x7e) => {
+                    if da && b == b'c' {
+                        found = found.saturating_add(1);
+                    }
+                    Scan::Ground
+                }
+                // Other controls are carried out inside a sequence.
+                (Scan::Csi(da), _) => Scan::Csi(da),
+                (Scan::Ground, _) => Scan::Ground,
+            };
+        }
+        found
+    }
+}
+
 /// The pipe to a terminal through its pane program.
 pub struct Pane {
     input: Option<File>,
@@ -208,6 +271,9 @@ pub struct Pane {
     mark: usize,
     /// The replies to the output given so far, without the syncs'.
     kept: Vec<u8>,
+    /// DA1 requests written whose replies no sync has taken yet.
+    requests: Requests,
+    asked: usize,
     fifos: [PathBuf; 2],
 }
 
@@ -249,6 +315,8 @@ impl Pane {
                 inbox,
                 mark: 0,
                 kept: Vec::new(),
+                requests: Requests::default(),
+                asked: 0,
                 fifos: [into, from],
             },
             program,
@@ -275,6 +343,7 @@ impl Pane {
     }
 
     pub fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.asked = self.asked.saturating_add(self.requests.count(bytes));
         self.input
             .as_mut()
             .ok_or("the pane is not connected")?
@@ -282,9 +351,10 @@ impl Pane {
             .map_err(|e| format!("writing to the pane: {e}"))
     }
 
-    /// Waits until a DA1 reply has arrived after `mark`, or `limit` has
-    /// passed. Gives the replies up to the last DA1 reply, with every DA1
-    /// reply taken out, and moves `mark` past them.
+    /// Waits until a DA1 reply to every DA1 request written has arrived
+    /// after `mark` (one, at least), or `limit` has passed. Gives the
+    /// replies up to the last DA1 reply, with every DA1 reply taken out,
+    /// and moves `mark` past them.
     fn wait(&mut self, limit: Duration) -> Result<Option<Vec<u8>>, String> {
         let deadline = Instant::now()
             .checked_add(limit)
@@ -297,7 +367,10 @@ impl Pane {
         loop {
             let fresh = heard.bytes.get(self.mark..).unwrap_or_default();
             let found = da_replies(fresh);
-            if let Some(&(_, end)) = found.last() {
+            if let Some(&(_, end)) = found.last()
+                && found.len() >= self.asked
+            {
+                self.asked = 0;
                 let mut batch = Vec::new();
                 let mut at = 0usize;
                 for &(start, after) in &found {
@@ -771,6 +844,23 @@ impl Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_attribute_requests_are_counted_outside_strings() {
+        let mut r = Requests::default();
+        assert_eq!(r.count(b"\x1b[c\x1b[0c\x1b[>c\x1b[?1c\x1b[1c"), 2);
+        // Across writes.
+        assert_eq!(r.count(b"ab\x1b["), 0);
+        assert_eq!(r.count(b"c"), 1);
+        // Not inside a string; after one ends by BEL (OSC alone), ST or
+        // CAN.
+        assert_eq!(r.count(b"\x1b]11;?\x07\x1b[c"), 1);
+        assert_eq!(r.count(b"\x1bP+q[c\x1b\\\x1b[c"), 1);
+        assert_eq!(r.count(b"\x1b_G\x07[c\x1b\\"), 0);
+        assert_eq!(r.count(b"\x1b_G\x18\x1b[c"), 1);
+        // ESC inside a string, not ST, ends it and starts a sequence.
+        assert_eq!(r.count(b"\x1b]2;t\x1b[c"), 1);
+    }
 
     #[test]
     fn device_attribute_replies_are_found() {
