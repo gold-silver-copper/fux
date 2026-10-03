@@ -1,6 +1,6 @@
 # What the corpus's programs send
 
-Made by `fux-vt-compare inventory` from the recordings in this directory (see the harness README, "The corpus"). Each sequence is normalized: numbers that only place the cursor or pick a colour are `n`, a mode or an SGR attribute is a row of its own, and an XTGETTCAP request shows the capabilities it asks for. "Count" counts every time it was sent, in all the recordings. "fux-vt" is what a fux pane's parser does with it, as fux sets it up (`Options::new().with_events(true)`).
+Made by `fux-vt-compare inventory` from the recordings in this directory (see the harness README, "The corpus"). Each sequence is normalized: numbers that only place the cursor or pick a colour are `n`, a mode or an SGR attribute is a row of its own, and an XTGETTCAP request shows the capabilities it asks for. "Count" counts every time it was sent, in all the recordings. "fux-vt" is what a fux pane's parser does with it, as fux sets it up (`Options::new().with_events(true).with_mode_reports(true).with_in_band_resize(true)`).
 
 Recordings:
 
@@ -48,8 +48,6 @@ Recordings:
 | `CSI ? 12 l` | steady cursor (att610) | 30 | helix, tmux, vim | not implemented: a mode fux-vt does not keep, consumed quietly |
 | `OSC 8 (close)` | hyperlink: end | 23 | claude-ghostty, gls | not implemented: dropped (Parser::dispatch_osc) |
 | `OSC 8 (open)` | hyperlink: start | 23 | claude-ghostty, gls | not implemented: dropped (Parser::dispatch_osc) |
-| `CSI ? 2026 h` | synchronized output: begin | 6 | claude-ghostty | not implemented: a mode fux-vt does not keep, consumed quietly |
-| `CSI ? 2026 l` | synchronized output: end | 6 | claude-ghostty | not implemented: a mode fux-vt does not keep, consumed quietly |
 | `CSI ? 2031 h` | colour-scheme change reports | 4 | claude, claude-ghostty, claude-main, tmux | not implemented: a mode fux-vt does not keep, consumed quietly |
 | `CSI ? 2031 l` | reset: colour-scheme change reports | 4 | claude, claude-ghostty, claude-main, tmux | not implemented: a mode fux-vt does not keep, consumed quietly |
 | `CSI ? u` | kitty keyboard: query flags | 4 | claude, claude-ghostty, claude-main, helix | not implemented: reported as unhandled |
@@ -139,6 +137,8 @@ Recordings:
 | `CSI ? 1004 l` | reset: focus reporting | 6 | claude, claude-ghostty, claude-main, helix, tmux, vim | implemented |
 | `CSI ? 1049 h` | alternate screen, cursor saved | 6 | fzf, helix, less, man, tmux, vim | implemented |
 | `CSI ? 1049 l` | reset: alternate screen, cursor saved | 6 | fzf, helix, less, man, tmux, vim | implemented |
+| `CSI ? 2026 h` | synchronized output: begin | 6 | claude-ghostty | implemented |
+| `CSI ? 2026 l` | synchronized output: end | 6 | claude-ghostty | implemented |
 | `CSI n @` | ICH | 6 | bash | implemented |
 | `CSI r` |  | 6 | claude, claude-ghostty, claude-main | implemented |
 | `ESC 7` | DECSC | 6 | claude, claude-ghostty, claude-main | implemented |

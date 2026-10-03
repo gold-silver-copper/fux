@@ -18,7 +18,7 @@ use std::fmt::Write;
 
 /// The private modes `Screen::mode` keeps (fux-vt `src/screen.rs`).
 const MODES: &[u16] = &[
-    1, 6, 7, 9, 25, 47, 1000, 1002, 1003, 1004, 1005, 1006, 1047, 1048, 1049, 2004,
+    1, 6, 7, 9, 25, 47, 1000, 1002, 1003, 1004, 1005, 1006, 1047, 1048, 1049, 2004, 2026, 2048,
 ];
 
 /// What fux-vt does with a sequence.
@@ -678,7 +678,11 @@ struct Row {
 fn tally(recordings: &[Recording]) -> Result<BTreeMap<String, Row>, String> {
     let mut rows: BTreeMap<String, Row> = BTreeMap::new();
     for r in recordings {
-        let options = fux_vt::Options::new().with_events(true);
+        // As fux's panes are set up (src/pane.rs).
+        let options = fux_vt::Options::new()
+            .with_events(true)
+            .with_mode_reports(true)
+            .with_in_band_resize(true);
         let mut parser = fux_vt::Parser::with_options(r.rows, r.cols, 10_000, options)
             .map_err(|e| format!("fux-vt: {e}"))?;
         let bytes = r.bytes();
@@ -773,7 +777,7 @@ pub fn run(names: &[String]) -> Result<bool, String> {
          SGR attribute is a row of its own, and an XTGETTCAP request shows the \
          capabilities it asks for. \"Count\" counts every time it was sent, in all the \
          recordings. \"fux-vt\" is what a fux pane's parser does with it, as fux sets \
-         it up (`Options::new().with_events(true)`).\n"
+         it up (`Options::new().with_events(true).with_mode_reports(true).with_in_band_resize(true)`).\n"
     );
     let _ = writeln!(out, "Recordings:\n");
     for r in &recordings {
