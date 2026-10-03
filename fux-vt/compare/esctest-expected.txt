@@ -1,0 +1,314 @@
+# esctest2's tests that fail against fux-vt, each with its reason: read by
+# `run.sh esctest` (src/esctest.rs, and the README's "esctest" section).
+# The run fails on a failure not listed here, and on a test listed here that
+# passes, so the list never goes stale: when a change makes a test pass,
+# remove its line.
+#
+# A line is `CLASS.test_name  [SCOPE] KIND: why`. SCOPE is empty for a test
+# that fails both directly and in a fux pane, `[direct]` for one that fails
+# against fux-vt alone, `[fux]` for one that fails only in a pane. KIND is
+# one of:
+#
+#   departure:        fux-vt does otherwise on purpose, as its README records
+#   spec:             a choice the specs leave open, or fux's own, that
+#                     esctest's expectation (xterm's) does not share
+#   not-implemented:  fux-vt does not do it, and no real program needs it:
+#                     the corpus (corpus/INVENTORY.md) has no program
+#                     sending it, unless the line says otherwise
+#   xterm-too:        xterm fails it as well: esctest marks it a known bug
+#                     of xterm's, or needing an option xterm is not run
+#                     with by default
+#   bug:              a fux-vt (or fux) bug, to fix in a later PR, with
+#                     its replay
+#
+# esctest runs with --expected-terminal=xterm --max-vt-level=4 (see
+# src/esctest.rs). Tests needing VT level 5, and those esctest does not try
+# in xterm, are skipped and not listed.
+
+APCTests.test_APC_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
+BSTests.test_BS_AfterNoWrappedInlines  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
+BSTests.test_BS_AfterOneWrappedInline  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
+BSTests.test_BS_ReverseWrapGoesToBottom  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
+BSTests.test_BS_ReverseWrapStartingInDoWrapPosition  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
+BSTests.test_BS_ReverseWrapWithLeftRight  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+BSTests.test_BS_ReversewrapFromLeftEdgeToRightMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+BSTests.test_BS_StopsAtLeftMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+BSTests.test_BS_WrapsInWraparoundMode  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
+CHATests.test_CHA_RespectsOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+CHTTests.test_CHT_IgnoresScrollingRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+CNLTests.test_CNL_StopsAtBottomLineWhenBegunBelowScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+CNLTests.test_CNL_StopsAtBottomMarginInScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+CPLTests.test_CPL_StopsAtTopLineWhenBegunAboveScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+CPLTests.test_CPL_StopsAtTopMarginInScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+CRTests.test_CR_MovesToLeftMarginWhenLeftOfLeftMarginInOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+CRTests.test_CR_MovesToLeftMarginWhenRightOfLeftMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+CRTests.test_CR_StaysPutWhenAtLeftMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+CUBTests.test_CUB_AfterNoWrappedInlines  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
+CUBTests.test_CUB_AfterOneWrappedInline  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
+CUBTests.test_CUB_StopsAtLeftMarginInScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+CUFTests.test_CUF_StopsAtRightMarginInScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+CUPTests.test_CUP_RespectsOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+ChangeColorTests.test_ChangeColor_CIELab  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeColorTests.test_ChangeColor_CIELuv  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeColorTests.test_ChangeColor_CIEXYZ  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeColorTests.test_ChangeColor_CIEuvY  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeColorTests.test_ChangeColor_CIExyY  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeColorTests.test_ChangeColor_Hash12  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeColorTests.test_ChangeColor_Hash3  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeColorTests.test_ChangeColor_Hash6  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeColorTests.test_ChangeColor_Hash9  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeColorTests.test_ChangeColor_Multiple  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeColorTests.test_ChangeColor_RGB  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeColorTests.test_ChangeColor_RGBI  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeColorTests.test_ChangeColor_TekHVC  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeDynamicColorTests.test_ChangeDynamicColor_CIELab  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeDynamicColorTests.test_ChangeDynamicColor_CIELuv  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeDynamicColorTests.test_ChangeDynamicColor_CIEXYZ  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeDynamicColorTests.test_ChangeDynamicColor_CIEuvY  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeDynamicColorTests.test_ChangeDynamicColor_CIExyY  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeDynamicColorTests.test_ChangeDynamicColor_Hash12  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeDynamicColorTests.test_ChangeDynamicColor_Hash3  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeDynamicColorTests.test_ChangeDynamicColor_Hash6  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeDynamicColorTests.test_ChangeDynamicColor_Hash9  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeDynamicColorTests.test_ChangeDynamicColor_Multiple  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeDynamicColorTests.test_ChangeDynamicColor_RGB  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeDynamicColorTests.test_ChangeDynamicColor_RGBI  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeDynamicColorTests.test_ChangeDynamicColor_TekHVC  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeSpecialColorTests.test_ChangeSpecialColor_CIELab  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeSpecialColorTests.test_ChangeSpecialColor_CIELuv  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeSpecialColorTests.test_ChangeSpecialColor_CIEXYZ  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeSpecialColorTests.test_ChangeSpecialColor_CIEuvY  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeSpecialColorTests.test_ChangeSpecialColor_CIExyY  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeSpecialColorTests.test_ChangeSpecialColor_Hash12  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeSpecialColorTests.test_ChangeSpecialColor_Hash3  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeSpecialColorTests.test_ChangeSpecialColor_Hash6  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeSpecialColorTests.test_ChangeSpecialColor_Hash9  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeSpecialColorTests.test_ChangeSpecialColor_Multiple  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeSpecialColorTests.test_ChangeSpecialColor_Multiple2  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeSpecialColorTests.test_ChangeSpecialColor_RGB  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeSpecialColorTests.test_ChangeSpecialColor_RGBI  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ChangeSpecialColorTests.test_ChangeSpecialColor_TekHVC  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+DA2Tests.test_DA2_0  spec: fux says it is a VT220-class terminal (DA1 CSI ? 62 ; 22 c) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
+DA2Tests.test_DA2_NoParameter  spec: fux says it is a VT220-class terminal (DA1 CSI ? 62 ; 22 c) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
+DATests.test_DA_0  spec: fux says it is a VT220-class terminal (DA1 CSI ? 62 ; 22 c) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
+DATests.test_DA_NoParameter  spec: fux says it is a VT220-class terminal (DA1 CSI ? 62 ; 22 c) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
+DCHTests.test_DCH_DeleteAllWithMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DCHTests.test_DCH_DoesNothingOutsideLeftRightMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DCHTests.test_DCH_RespectsMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECALNTests.test_DECALN_ClearsMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECALNTests.test_DECALN_FillsScreen  not-implemented: DECALN (ESC # 8, the screen alignment test); no program in the corpus sends it
+DECALNTests.test_DECALN_MovesCursorHome  not-implemented: DECALN (ESC # 8, the screen alignment test); no program in the corpus sends it
+DECBITests.test_DECBI_Basic  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
+DECBITests.test_DECBI_LeftOfMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECBITests.test_DECBI_Scrolls  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECBITests.test_DECBI_WholeScreenScrolls  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
+DECCRATests.test_DECCRA_defaultValuesInDest  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
+DECCRATests.test_DECCRA_defaultValuesInSource  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
+DECCRATests.test_DECCRA_destinationPartiallyOffscreen  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
+DECCRATests.test_DECCRA_ignoresMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECCRATests.test_DECCRA_nonOverlappingSourceAndDest  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
+DECCRATests.test_DECCRA_overlappingSourceAndDest  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
+DECCRATests.test_DECCRA_overlyLargeSourceClippedToScreenSize  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
+DECCRATests.test_DECCRA_respectsOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECDCTests.test_DECDC_CursorWithinTopBottom  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECDCTests.test_DECDC_DefaultParam  not-implemented: DECIC and DECDC (insert and delete columns); no program in the corpus sends them
+DECDCTests.test_DECDC_DeleteAll  not-implemented: DECIC and DECDC (insert and delete columns); no program in the corpus sends them
+DECDCTests.test_DECDC_DeleteAllWithLeftRightMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECDCTests.test_DECDC_DeleteWithLeftRightMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECDCTests.test_DECDC_ExplicitParam  not-implemented: DECIC and DECDC (insert and delete columns); no program in the corpus sends them
+DECDSRTests.test_DECDSR_DECCKSR  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
+DECDSRTests.test_DECDSR_DECMSR  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
+DECDSRTests.test_DECDSR_DECXCPR  [fux] not-implemented: DECXCPR (CSI ? 6 n) in fux's panes, which leave extended_replies off; no program in the corpus asks it
+DECDSRTests.test_DECDSR_DSRDECLocatorStatus  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
+DECDSRTests.test_DECDSR_DSRDataIntegrity  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
+DECDSRTests.test_DECDSR_DSRKeyboard  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
+DECDSRTests.test_DECDSR_DSRMultipleSessionStatus  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
+DECDSRTests.test_DECDSR_DSRPrinterPort  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
+DECDSRTests.test_DECDSR_DSRUDKLocked  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
+DECDSRTests.test_DECDSR_LocatorType  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
+DECERATests.test_DECERA_basic  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
+DECERATests.test_DECERA_defaultArgs  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
+DECERATests.test_DECERA_ignoresMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECERATests.test_DECERA_overlyLargeSourceClippedToScreenSize  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
+DECERATests.test_DECERA_respectsOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECFITests.test_DECFI_Basic  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
+DECFITests.test_DECFI_RightOfMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECFITests.test_DECFI_Scrolls  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECFITests.test_DECFI_WholeScreenScrolls  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
+DECFRATests.test_DECFRA_basic  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
+DECFRATests.test_DECFRA_defaultArgs  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
+DECFRATests.test_DECFRA_ignoresMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECFRATests.test_DECFRA_overlyLargeSourceClippedToScreenSize  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
+DECFRATests.test_DECFRA_respectsOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECICTests.test_DECIC_CursorWithinTopBottom  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECICTests.test_DECIC_DefaultParam  not-implemented: DECIC and DECDC (insert and delete columns); no program in the corpus sends them
+DECICTests.test_DECIC_ExplicitParam  not-implemented: DECIC and DECDC (insert and delete columns); no program in the corpus sends them
+DECICTests.test_DECIC_ScrollEntirelyOffRightEdge  not-implemented: DECIC and DECDC (insert and delete columns); no program in the corpus sends them
+DECICTests.test_DECIC_ScrollOffRightEdge  not-implemented: DECIC and DECDC (insert and delete columns); no program in the corpus sends them
+DECICTests.test_DECIC_ScrollOffRightMarginInScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECIDTests.test_DECID_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
+DECIDTests.test_DECID_Basic  not-implemented: DECID (ESC Z), the VT100's request for its attributes, which the VT220 and DEC STD 070 replace by DA; no program in the corpus sends it
+DECRQMTests.test_DECRQM_ANSI_EBM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_ANSI_FEAM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_ANSI_FETM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_ANSI_GATM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_ANSI_HEM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_ANSI_KAM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_ANSI_LNM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_ANSI_MATM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_ANSI_PUM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_ANSI_SATM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_ANSI_SRM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_ANSI_SRTM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_ANSI_TSM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_ANSI_TTM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_ANSI_VEM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_DEC_DECARM  xterm-too: esctest's known xterm bug (xterm always returns 4 (permanently reset))
+DECRQMTests.test_DECRQM_DEC_DECBKM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_DEC_DECCOLM  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+DECRQMTests.test_DECRQM_DEC_DECHCCM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_DEC_DECKBUM  xterm-too: esctest's known xterm bug (Not supported)
+DECRQMTests.test_DECRQM_DEC_DECKPM  xterm-too: esctest's known xterm bug (Not supported)
+DECRQMTests.test_DECRQM_DEC_DECLRMM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_DEC_DECNKM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_DEC_DECNRCM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_DEC_DECPCCM  xterm-too: esctest's known xterm bug (Not supported)
+DECRQMTests.test_DECRQM_DEC_DECPEX  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_DEC_DECPFF  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_DEC_DECSCLM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_DEC_DECSCNM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
+DECRQMTests.test_DECRQM_DEC_DECVCCM  xterm-too: esctest's known xterm bug (Not supported)
+DECRQMTests.test_DECRQM_DEC_DECXRLM  xterm-too: esctest's known xterm bug (Not supported)
+DECRQSSTests.test_DECRQSS_DECELF  xterm-too: esctest's known xterm bug (Not implemented.)
+DECRQSSTests.test_DECRQSS_DECLFKC  xterm-too: esctest's known xterm bug (Not implemented.)
+DECRQSSTests.test_DECRQSS_DECSACE  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
+DECRQSSTests.test_DECRQSS_DECSASD  not-implemented: DECRQSS (DCS $ q); vim asks DECSCUSR by it (corpus: DCS $ q SP q), a candidate for a later PR
+DECRQSSTests.test_DECRQSS_DECSCA  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+DECRQSSTests.test_DECRQSS_DECSCL  not-implemented: conformance levels (DECSCL, CSI Pl ; Pc " p); no program in the corpus sends it
+DECRQSSTests.test_DECRQSS_DECSCUSR  not-implemented: DECRQSS (DCS $ q); vim asks DECSCUSR by it (corpus: DCS $ q SP q), a candidate for a later PR
+DECRQSSTests.test_DECRQSS_DECSLPP  not-implemented: DECRQSS (DCS $ q); vim asks DECSCUSR by it (corpus: DCS $ q SP q), a candidate for a later PR
+DECRQSSTests.test_DECRQSS_DECSLRM  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECRQSSTests.test_DECRQSS_DECSMKR  xterm-too: esctest's known xterm bug (Not implemented.)
+DECRQSSTests.test_DECRQSS_DECSNLS  not-implemented: DECRQSS (DCS $ q); vim asks DECSCUSR by it (corpus: DCS $ q SP q), a candidate for a later PR
+DECRQSSTests.test_DECRQSS_DECSSDT  not-implemented: DECRQSS (DCS $ q); vim asks DECSCUSR by it (corpus: DCS $ q SP q), a candidate for a later PR
+DECRQSSTests.test_DECRQSS_DECSTBM  not-implemented: DECRQSS (DCS $ q); vim asks DECSCUSR by it (corpus: DCS $ q SP q), a candidate for a later PR
+DECRQSSTests.test_DECRQSS_SGR  not-implemented: DECRQSS (DCS $ q); vim asks DECSCUSR by it (corpus: DCS $ q SP q), a candidate for a later PR
+DECSCLTests.test_DECSCL_Level2DoesntSupportDECRQM  not-implemented: conformance levels (DECSCL, CSI Pl ; Pc " p); no program in the corpus sends it
+DECSCLTests.test_DECSCL_Level4_SupportsDECSLRMDoesntSupportDECNCSM  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+DECSEDTests.test_DECSED_0_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+DECSEDTests.test_DECSED_0_WithScrollRegion_Protection  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSEDTests.test_DECSED_1_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+DECSEDTests.test_DECSED_1_WithScrollRegion_Protection  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSEDTests.test_DECSED_2_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+DECSEDTests.test_DECSED_2_WithScrollRegion_Protection  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSEDTests.test_DECSED_DECSCA_2  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+DECSEDTests.test_DECSED_Default_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+DECSELTests.test_DECSEL_0_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+DECSELTests.test_DECSEL_1_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+DECSELTests.test_DECSEL_2_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+DECSELTests.test_DECSEL_Default_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+DECSELTests.test_DECSEL_IgnoresScrollRegion_Protection  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSERATests.test_DECSERA_basic  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+DECSERATests.test_DECSERA_defaultArgs  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+DECSERATests.test_DECSERA_doesNotRespectISOProtect  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+DECSERATests.test_DECSERA_ignoresMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSERATests.test_DECSERA_overlyLargeSourceClippedToScreenSize  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+DECSERATests.test_DECSERA_respectsOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSETTests.test_DECSET_Allow80To132  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+DECSETTests.test_DECSET_DECAWM_NoLineWrapOnTabWithLeftRightMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSETTests.test_DECSET_DECAWM_OffRespectsLeftRightMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSETTests.test_DECSET_DECAWM_OnRespectsLeftRightMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSETTests.test_DECSET_DECCOLM  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSETTests.test_DECSET_DECLRMM  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSETTests.test_DECSET_DECOM  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSETTests.test_DECSET_DECOM_DECRQCRA  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSETTests.test_DECSET_MoreFix  not-implemented: xterm's more(1) fix (mode 41), a curses workaround of xterm's own; no program in the corpus sets it
+DECSETTests.test_DECSET_ReverseWraparoundLastCol_BS  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
+DECSETTests.test_DECSET_ReverseWraparound_BS  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
+DECSETTests.test_DECSET_ReverseWraparound_Multi  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
+DLTests.test_DL_ClearOutLeftRightAndTopBottomScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DLTests.test_DL_InLeftRightAndTopBottomScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DLTests.test_DL_InLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DLTests.test_DL_OutsideLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+ECHTests.test_ECH_respectsISOProtection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+EDTests.test_ED_respectsISOProtection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+ELTests.test_EL_respectsISOProtection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+FFTests.test_FF_MovesDoesNotScrollOutsideLeftRight  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+HPRTests.test_HPR_IgnoresOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+HTSTests.test_HTS_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
+HVPTests.test_HVP_RespectsOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+ICHTests.test_ICH_IsNoOpWhenCursorBeginsOutsideScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+ICHTests.test_ICH_ScrollOffRightMarginInScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+ILTests.test_IL_RespectsScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+ILTests.test_IL_RespectsScrollRegion_Over  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+INDTests.test_IND_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
+INDTests.test_IND_MovesDoesNotScrollOutsideLeftRight  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+LFTests.test_LF_MovesDoesNotScrollOutsideLeftRight  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+ManipulateSelectionDataTests.test_ManipulateSelectionData_default  xterm-too: needs window operations xterm leaves off by default (esctest's xtermWinopsEnabled: title reports, OSC 52 reads); fux-vt does no window operations for programs
+NELTests.test_NEL_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
+NELTests.test_NEL_MovesDoesNotScrollOutsideLeftRight  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+PMTests.test_PM_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
+REPTests.test_REP_RespectsLeftRightMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+RISTests.test_RIS_ResetDECCOLM  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+RISTests.test_RIS_ResetTitleMode  xterm-too: reads the title back (CSI 21 t), which xterm refuses by default (disallowedWindowOps GetWinTitle); fux-vt reports no title
+RITests.test_RI_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
+RITests.test_RI_MovesDoesNotScrollOutsideLeftRight  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+ResetColorTests.test_ResetColor_All  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ResetColorTests.test_ResetColor_Standard  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ResetSpecialColorTests.test_ResetSpecialColor_Dynamic  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ResetSpecialColorTests.test_ResetSpecialColor_Multiple  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ResetSpecialColorTests.test_ResetSpecialColor_Multiple2  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ResetSpecialColorTests.test_ResetSpecialColor_Single  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+ResetSpecialColorTests.test_ResetSpecialColor_Single2  not-implemented: the colour palette and dynamic colours (OSC 4, 5, 10 to 19, 104, 105, 110 to 119): fux-vt keeps no colours; in a pane fux answers OSC 10 and 11 with its client terminal's, which delta, vim and tmux ask (corpus), and no program in the corpus sets or asks the others
+S8C1TTests.test_S8C1T_CSI  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
+S8C1TTests.test_S8C1T_DCS  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
+S8C1TTests.test_S8C1T_SPA_EPA  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
+SCORCTests.test_SaveRestoreCursor_WorksInLRM  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+SDTests.test_SD_BigScrollLeftRightAndTopBottomScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+SDTests.test_SD_LeftRightAndTopBottomScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+SDTests.test_SD_OutsideLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+SDTests.test_SD_RespectsLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+SMTests.test_SM_IRM_TruncatesAtRightMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+SMTests.test_SM_LNM  not-implemented: LNM (CSI 20 h, line feed as CR LF); no program in the corpus sets it
+SMTitleTests.test_SMTitle_SetHexQueryHex  xterm-too: needs window operations xterm leaves off by default (esctest's xtermWinopsEnabled: title reports, OSC 52 reads); fux-vt does no window operations for programs
+SMTitleTests.test_SMTitle_SetHexQueryUTF8  xterm-too: needs window operations xterm leaves off by default (esctest's xtermWinopsEnabled: title reports, OSC 52 reads); fux-vt does no window operations for programs
+SMTitleTests.test_SMTitle_SetUTF8QueryHex  xterm-too: needs window operations xterm leaves off by default (esctest's xtermWinopsEnabled: title reports, OSC 52 reads); fux-vt does no window operations for programs
+SMTitleTests.test_SMTitle_SetUTF8QueryUTF8  xterm-too: needs window operations xterm leaves off by default (esctest's xtermWinopsEnabled: title reports, OSC 52 reads); fux-vt does no window operations for programs
+SOSTests.test_SOS_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
+SUTests.test_SU_BigScrollLeftRightAndTopBottomScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+SUTests.test_SU_LeftRightAndTopBottomScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+SUTests.test_SU_OutsideLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+SUTests.test_SU_RespectsLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+VPATests.test_VPA_IgnoresOriginMode  bug: DSR 6n and DECXCPR report the cursor's line from the screen's top in origin mode, where xterm reports it from the top margin (charproc.c, CASE_CPR), as esctest expects: after '\e[6;11r\e[?6h\e[2d' a DSR 6n gets '\e[7;1R' from fux-vt, '\e[2;1R' from xterm; replay: run.sh esctest VPATests.test_VPA_IgnoresOriginMode
+VPRTests.test_VPR_IgnoresOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+VTTests.test_VT_MovesDoesNotScrollOutsideLeftRight  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+XtermSaveTests.test_XtermSave_SaveResetState  not-implemented: XTSAVE and XTRESTORE (CSI ? Pm s, CSI ? Pm r), xterm's saved private modes; no program in the corpus sends them
+XtermSaveTests.test_XtermSave_SaveSetState  not-implemented: XTSAVE and XTRESTORE (CSI ? Pm s, CSI ? Pm r), xterm's saved private modes; no program in the corpus sends them
+XtermWinopsTests.test_XtermWinops_DECSLPP  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_Fullscreen  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_IconifyDeiconfiy  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_MaximizeWindow_Horizontally  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_MaximizeWindow_HorizontallyAndVertically  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_MaximizeWindow_Vertically  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_MoveToXY  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_MoveToXY_Defaults  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_PushIconAndWindow_PopIcon  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_PushIconAndWindow_PopIconAndWindow  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_PushIconAndWindow_PopWindow  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_PushIconThenWindowThenPopBoth  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_PushIcon_PopIcon  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_PushMultiplePopMultiple_Icon  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_PushMultiplePopMultiple_Window  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_PushWindow_PopWindow  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_ReportIconLabel  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_ReportWindowLabel  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_ResizeChars_BothParameters  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_ResizeChars_DefaultHeight  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_ResizeChars_DefaultWidth  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_ResizeChars_ZeroHeight  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_ResizeChars_ZeroWidth  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_ResizePixels_BothParameters  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_ResizePixels_OmittedHeight  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_ResizePixels_OmittedWidth  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_ResizePixels_ZeroHeight  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+XtermWinopsTests.test_XtermWinops_ResizePixels_ZeroWidth  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
