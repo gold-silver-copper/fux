@@ -163,6 +163,42 @@ fn decode(bytes: &[u8]) -> Option<(char, usize)> {
     Some((char::from_u32(code)?, length))
 }
 
+/// How many bytes `bytes` begins with are printable ASCII, 0x20 to 0x7e,
+/// its first being one: a run of one, as a character between sequences
+/// is, by the second byte alone; else eight at a time, as a word, then one
+/// at a time. In a word, a byte below 0x20 borrows when 0x20 is taken from
+/// it, setting its top bit where the byte's own is clear; one from 0x7f up
+/// has its top bit set once 1 is added to it, or before. A borrow or carry
+/// runs only into the bytes after the one it came from, so the first byte
+/// flagged is the first that is not printable.
+fn printable(bytes: &[u8]) -> usize {
+    const ONES: u64 = u64::from_le_bytes([0x01; 8]);
+    const TOPS: u64 = u64::from_le_bytes([0x80; 8]);
+    debug_assert!(bytes.first().is_some_and(|b| (0x20..=0x7e).contains(b)));
+    if !bytes.get(1).is_some_and(|b| (0x20..=0x7e).contains(b)) {
+        return 1;
+    }
+    let (words, _) = bytes.as_chunks::<8>();
+    let mut length = 0usize;
+    for word in words {
+        let x = u64::from_le_bytes(*word);
+        let below = x.wrapping_sub(ONES.wrapping_mul(0x20)) & !x;
+        let above = x.wrapping_add(ONES) | x;
+        let flagged = (below | above) & TOPS;
+        if flagged != 0 {
+            let first = usize::try_from(flagged.trailing_zeros() / 8).unwrap_or(0);
+            return length.saturating_add(first);
+        }
+        length = length.saturating_add(8);
+    }
+    let tail = bytes.get(length..).unwrap_or_default();
+    length.saturating_add(
+        tail.iter()
+            .take_while(|b| (0x20..=0x7e).contains(*b))
+            .count(),
+    )
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum State {
     #[default]
@@ -695,10 +731,7 @@ impl Parser {
         while let Some((&byte, tail)) = remaining.split_first() {
             let ground = self.state == State::Ground && self.utf8_len == 0;
             if ground && (0x20..=0x7e).contains(&byte) {
-                let length = remaining
-                    .iter()
-                    .take_while(|b| (0x20..=0x7e).contains(*b))
-                    .count();
+                let length = printable(remaining);
                 self.screen
                     .ascii(remaining.get(..length).unwrap_or_default())?;
                 remaining = remaining.get(length..).unwrap_or_default();

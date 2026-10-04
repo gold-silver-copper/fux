@@ -595,3 +595,52 @@ fn the_alternate_screen_holds_no_cells_until_shown() -> Result<(), Error> {
     assert_eq!(parser.screen().storage_cells(), 5 * 10);
     Ok(())
 }
+
+/// The printable run, as the general path counts it: a byte at a time.
+fn printable_slowly(bytes: &[u8]) -> usize {
+    bytes
+        .iter()
+        .take_while(|b| (0x20..=0x7e).contains(*b))
+        .count()
+}
+
+/// `printable`, found a word at a time, is the run counted a byte at a
+/// time: every byte at every place of runs up to 24 long, after every
+/// printable byte and before, and random bytes, mostly printable.
+#[test]
+fn printable_runs_are_found_a_word_at_a_time_as_a_byte_at_a_time() {
+    for len in 1..=24usize {
+        for at in 1..len {
+            for byte in 0..=u8::MAX {
+                for fill in *b" a~" {
+                    let mut bytes = vec![fill; len];
+                    if let Some(slot) = bytes.get_mut(at) {
+                        *slot = byte;
+                    }
+                    assert_eq!(
+                        printable(&bytes),
+                        printable_slowly(&bytes),
+                        "{len} bytes, {byte:#x} at {at}"
+                    );
+                }
+            }
+        }
+    }
+    let mut r = Rng(7);
+    for _ in 0..20_000 {
+        let len = r.below(40).saturating_add(1);
+        let mut bytes: Vec<u8> = (0..len)
+            .map(|_| {
+                if r.chance(95) {
+                    r.byte_in(0x20, 0x7e)
+                } else {
+                    r.byte_in(0, 0xff)
+                }
+            })
+            .collect();
+        if let Some(first) = bytes.first_mut() {
+            *first = r.byte_in(0x20, 0x7e);
+        }
+        assert_eq!(printable(&bytes), printable_slowly(&bytes), "{bytes:?}");
+    }
+}
