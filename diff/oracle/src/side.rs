@@ -5,10 +5,23 @@
 //! two APIs part (a method renamed, a type reshaped), give the macro an
 //! argument for that part, as `diff/src/terminal.rs`'s `stack!` does, and
 //! read both into the same model; say so in the README's list of adapters.
-//! Today the API is the same on both sides, and no adapter differs.
+//!
+//! Adapters today: `Options::palette` and `Screen::colors_changed`, which
+//! the pinned commit has not. The working tree is given the option the
+//! case asks for; the commit, which has no palette, reports the option as
+//! asked and no colour changed. The palette's sequences are exempt
+//! (`exempt`), so with the option on the working tree sees none of them,
+//! and anything else that changed a colour would differ.
 
 macro_rules! side {
-    ($module:ident, $vt:ident, $name:literal) => {
+    (
+        $module:ident,
+        $vt:ident,
+        $name:literal,
+        with_palette: $with_palette:expr,
+        palette: $palette:expr,
+        colors_changed: $colors_changed:expr $(,)?
+    ) => {
         pub mod $module {
             use crate::model::{
                 self, Blink, Cell, Color, Encoding, Error, Heard, Lookup, Marked, Mouse, Row, Seen,
@@ -20,6 +33,8 @@ macro_rules! side {
             #[derive(Clone)]
             pub struct Terminal {
                 parser: vt::Parser,
+                /// `Options::palette` as the case asked for it.
+                palette: bool,
                 marks: Vec<vt::Mark>,
                 /// The oldest row seen at the last lookup, to ask for again
                 /// once it may be gone.
@@ -113,7 +128,7 @@ macro_rules! side {
             }
 
             fn options(setup: &Setup) -> vt::Options {
-                vt::Options::new()
+                let options = vt::Options::new()
                     .with_events(setup.events)
                     .with_extended_replies(setup.extended_replies)
                     .with_mode_reports(setup.mode_reports)
@@ -125,17 +140,21 @@ macro_rules! side {
                     .with_hyperlinks(setup.hyperlinks)
                     .with_prompt_marks(setup.prompt_marks)
                     .with_rectangle_checksums(setup.rectangle_checksums)
-                    .with_setting_reports(setup.setting_reports)
-                    .with_identity(
-                        setup
-                            .identity
-                            .map(|(name, version)| vt::Identity { name, version }),
-                    )
+                    .with_setting_reports(setup.setting_reports);
+                let with_palette: fn(vt::Options, bool) -> vt::Options = $with_palette;
+                with_palette(options, setup.palette).with_identity(
+                    setup
+                        .identity
+                        .map(|(name, version)| vt::Identity { name, version }),
+                )
             }
 
-            /// The options back, as the parser reports them.
-            fn setup(o: vt::Options) -> Setup {
+            /// The options back, as the parser reports them; `palette` as
+            /// the case asked for it.
+            fn setup(o: vt::Options, palette: bool) -> Setup {
+                let reported: fn(vt::Options, bool) -> bool = $palette;
                 Setup {
+                    palette: reported(o, palette),
                     events: o.events,
                     extended_replies: o.extended_replies,
                     mode_reports: o.mode_reports,
@@ -203,6 +222,7 @@ macro_rules! side {
                         .map_err(error)?;
                     Ok(Terminal {
                         parser,
+                        palette: setup.palette,
                         marks: Vec::new(),
                         oldest: None,
                     })
@@ -277,7 +297,11 @@ macro_rules! side {
                         storage_cells: s.storage_cells(),
                         mark: number(s.mark()),
                         resize_report: self.parser.resize_report(),
-                        options: setup(self.parser.options()),
+                        options: setup(self.parser.options(), self.palette),
+                        colors_changed: {
+                            let changed: fn(&vt::Screen) -> bool = $colors_changed;
+                            changed(s)
+                        },
                         rows_end_there: retained
                             .checked_sub(1)
                             .is_none_or(|last| s.row_from_bottom(last).is_some())
@@ -674,5 +698,19 @@ macro_rules! side {
     };
 }
 
-side!(work, fux_vt, "work");
-side!(base, base_vt, "base");
+side!(
+    work,
+    fux_vt,
+    "work",
+    with_palette: |o, on| o.with_palette(on),
+    palette: |o, _| o.palette,
+    colors_changed: |s| s.colors_changed(),
+);
+side!(
+    base,
+    base_vt,
+    "base",
+    with_palette: |o, _| o,
+    palette: |_, asked| asked,
+    colors_changed: |_| false,
+);

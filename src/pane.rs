@@ -187,7 +187,10 @@ pub const IDENTITY: fux_vt::Identity = fux_vt::Identity {
 /// keyboard protocol (fux encodes keys as each pane asks), hyperlinks,
 /// prompt marks, DECRQSS (neovim asks it whether the terminal keeps
 /// underline styles: a pane keeps them, and each client is painted them as
-/// far as its terminal draws them, `render::sgr`), reflow (a resized pane's
+/// far as its terminal draws them, `render::sgr`), the palette (a pane's
+/// program sets and asks its colours, OSC 4, 10 to 19 and the rest, and
+/// is drawn in them, `render::pane_colours`, without its client's palette
+/// changing), reflow (a resized pane's
 /// lines re-wrap at its new width, its history with them, as in the
 /// terminals fux runs in) and fux's identity.
 pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
@@ -200,6 +203,7 @@ pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
     .with_hyperlinks(true)
     .with_prompt_marks(true)
     .with_setting_reports(true)
+    .with_palette(true)
     .with_reflow(true)
     .with_identity(Some(IDENTITY));
 
