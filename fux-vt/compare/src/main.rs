@@ -10,12 +10,14 @@ mod bench;
 mod case;
 mod cases;
 mod corpus;
+mod count;
 mod engine;
 mod engines;
 mod escape;
 mod esctest;
 mod families;
 mod footprint;
+mod instructions;
 mod inventory;
 mod memory;
 mod record;
@@ -42,6 +44,8 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
        fux-vt-compare replay [--engines LIST] [--size RxC] [--history N] [--no-reflow]
                              [--newline-before-resize] STEP...
        fux-vt-compare bench [--engines LIST] [--mb N] [WORKLOAD...]
+       fux-vt-compare bench --instructions [--engines LIST] [--mb N] [--repeats N] [--jobs N]
+                            [--json FILE] [WORKLOAD...]
        fux-vt-compare footprint [--engines LIST] [--jobs N] [--json FILE]
        fux-vt-compare record --keys FILE --out PREFIX [--size RxC] [--program NAME]
                              [--version TEXT] [--env KEY=VALUE]... [--dir DIR]
@@ -77,7 +81,11 @@ replay   one case: STEP is output, written as `run` prints it ('\\e[1mX'),
          the screens.
 bench    each engine's speed on the same workloads, in MB/s (default: the
          synthetic ones and the corpus all together; `corpus` adds each
-         recording alone).
+         recording alone). --instructions: instructions retired per
+         byte instead, each engine in this process and workload in a
+         child process of its own, less the same child without the
+         feeding, the fewest of --repeats (3) runs each; --json writes
+         them to FILE.
 footprint
          the memory each engine in this process holds (default: all of
          them), each measured in a child process of its own: a screen
@@ -159,8 +167,12 @@ struct Args {
     note: String,
     /// Where `corpus` writes its results.
     json: Option<String>,
-    /// How many children `footprint` runs at once.
+    /// How many children `footprint` and `bench --instructions` run at once.
     jobs: Option<usize>,
+    /// `bench`: instructions retired, not MB/s.
+    instructions: bool,
+    /// `bench --instructions`: runs of each.
+    repeats: usize,
     rest: Vec<String>,
 }
 
@@ -196,6 +208,8 @@ fn parse() -> Result<Args, String> {
         note: String::new(),
         json: None,
         jobs: None,
+        instructions: false,
+        repeats: 3,
         rest: Vec::new(),
     };
     let mut words = std::env::args().skip(1).peekable();
@@ -246,6 +260,8 @@ fn parse() -> Result<Args, String> {
             "--note" => args.note = value("--note")?,
             "--json" => args.json = Some(value("--json")?),
             "--jobs" => args.jobs = Some(number("--jobs", &value("--jobs")?)?),
+            "--repeats" => args.repeats = number("--repeats", &value("--repeats")?)?,
+            "--instructions" => args.instructions = true,
             "--" => {
                 args.rest.extend(words.by_ref());
                 break;
@@ -783,6 +799,17 @@ fn main() -> ExitCode {
         return ExitCode::from(127);
     }
     if let Some((first, rest)) = argv.split_first()
+        && first == instructions::CHILD
+    {
+        return match instructions::child(rest) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("fux-vt-compare: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if let Some((first, rest)) = argv.split_first()
         && first == footprint::CHILD
     {
         return match footprint::child(rest) {
@@ -855,6 +882,15 @@ fn main() -> ExitCode {
             &panel(&args, "xterm,panel")?,
             &args.rest,
             args.show,
+            args.json.as_deref(),
+        ),
+        "bench" if args.instructions => instructions::run(
+            &panel(&args, "in-process")?,
+            &args.rest,
+            args.mb,
+            args.repeats,
+            args.jobs
+                .unwrap_or_else(|| half_the_cores().saturating_mul(2)),
             args.json.as_deref(),
         ),
         "bench" => bench::run(&panel(&args, "all")?, &args.rest, args.mb),
