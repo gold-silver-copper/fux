@@ -849,7 +849,13 @@ impl Parser {
                         let intermediates = intermediates
                             .get(..self.intermediate_len)
                             .unwrap_or_default();
-                        if !self.screen.escape(intermediates, byte)? {
+                        // DECID, the VT100's request for its identity, which
+                        // the VT220 replaced by DA (ctlseqs: "Obsolete form
+                        // of CSI c"): answered as DA1 is.
+                        if intermediates.is_empty() && byte == b'Z' {
+                            let reply = Screen::primary_attributes(&self.options);
+                            sink.reply(reply.as_bytes());
+                        } else if !self.screen.escape(intermediates, byte)? {
                             sink.unhandled(Unhandled::Escape {
                                 intermediates,
                                 action: byte,

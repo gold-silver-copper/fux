@@ -6,7 +6,7 @@
 //! terminal, xterm 411's, asked the same sequences under Xvfb (80 by 25,
 //! a VT420) and read back by DSR and DECRQM.
 
-use fux_vt::{Options, Parser};
+use fux_vt::{Identity, Options, Parser};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 const MODES: Options = Options::new().with_mode_reports(true);
@@ -198,5 +198,22 @@ fn lnm_makes_a_line_feed_a_new_line() -> Result {
     assert_eq!(replies(&mut p, b"\x1b[20$p")?, "^[[20;2$y");
     p.process(b"\x1b[20h\x1bc")?;
     assert_eq!(replies(&mut p, b"\x1b[20$p")?, "^[[20;2$y");
+    Ok(())
+}
+
+/// DECID (`ESC Z`), the VT100's request for its identity, which the VT220
+/// replaced by DA (ctlseqs: "Obsolete form of CSI c"), is answered as DA1
+/// is. esctest's DECID_Basic.
+#[test]
+fn decid_is_answered_as_da1() -> Result {
+    let mut p = Parser::new(25, 80, 0)?;
+    assert_eq!(replies(&mut p, b"\x1bZ")?, "^[[?1;2c");
+    let identity = Identity {
+        name: "fux",
+        version: "1.2.3",
+    };
+    let options = Options::new().with_identity(Some(identity));
+    let mut p = Parser::with_options(25, 80, 0, options)?;
+    assert_eq!(replies(&mut p, b"\x1bZ\x1b[c")?, "^[[?62;22c^[[?62;22c");
     Ok(())
 }

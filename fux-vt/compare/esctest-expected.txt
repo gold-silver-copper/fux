@@ -127,7 +127,6 @@ DECICTests.test_DECIC_ScrollEntirelyOffRightEdge  not-implemented: DECIC and DEC
 DECICTests.test_DECIC_ScrollOffRightEdge  not-implemented: DECIC and DECDC (insert and delete columns); no program in the corpus sends them
 DECICTests.test_DECIC_ScrollOffRightMarginInScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 DECIDTests.test_DECID_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
-DECIDTests.test_DECID_Basic  not-implemented: DECID (ESC Z), the VT100's request for its attributes, which the VT220 and DEC STD 070 replace by DA; no program in the corpus sends it
 DECRQMTests.test_DECRQM_ANSI_EBM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_ANSI_FEAM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_ANSI_FETM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
