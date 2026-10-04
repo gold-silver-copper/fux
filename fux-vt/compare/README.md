@@ -737,6 +737,19 @@ flags and a pending wrap (fux places every run it paints, with autowrap
 off), the modes (they say how keys and the mouse are read, which fux does
 for the pane), the title (fux shows it in its bar), reports and history.
 
+**Colours are compared as they show.** A program that changes its
+palette (OSC 4) or its foreground and background (OSC 10, 11) is drawn
+in them directly by the engine, and painted in them through fux, as RGB
+colours, by fux (its panes keep their colours, `fux_vt::Options::
+palette`; the client's terminal is never told them). So where the engine
+can tell its colours (`Engine::colours`: Ghostty), a colour on the direct
+side whose palette entry, or default, the program changed from the
+terminal's own is read as the colour it is now; any other is compared as
+the snapshot has it, as before. The client's terminal's colours must stay
+its own: if they change at any point, the run fails (`fux changed its
+client terminal's colours`). Planted, an OSC 4 at the head of every paint
+fails the first point of any recording.
+
 **Where it compares:** after each step, and inside one before each BSU and
 after each ESU of synchronized output (2026); `--chunk N` adds a point every
 N bytes. The client is painted at every point. While the pane holds a frame,

@@ -52,6 +52,13 @@ pub trait Engine {
         None
     }
 
+    /// The colours it draws with now, if it can tell: its palette and its
+    /// default foreground and background, as a program's OSC 4, 10 and 11
+    /// leave them. `transparency` compares colours as they show by them.
+    fn colours(&mut self) -> Option<crate::snapshot::Colours> {
+        None
+    }
+
     /// Feeds a whole workload, `chunk` bytes at a time, as a program's
     /// output arrives. Engines behind a process stream it and wait once.
     fn feed(&mut self, bytes: &[u8], chunk: usize) -> Result<(), String> {

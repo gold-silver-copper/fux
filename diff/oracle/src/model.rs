@@ -257,7 +257,7 @@ impl Setup {
             prompt_marks: true,
             rectangle_checksums: false,
             setting_reports: true,
-            palette: false,
+            palette: true,
             identity: Some(("fux", "0.17.0")),
         }
     }
