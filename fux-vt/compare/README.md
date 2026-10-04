@@ -988,20 +988,23 @@ fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt   # and fux-vt 
   feature is specified (DEC STD 070, the VT510 manual, ctlseqs, ECMA-48:
   `SOURCES` in `src/esctest.rs`), and the tests run in one only.
 
-At this commit (an Apple M2 Max, 12 CPUs, loaded by other work):
+At this commit (an Apple M2 Max, 12 CPUs, loaded by other work; xterm
+at 6424721):
 
 | | passed | failed | skipped | time |
 | --- | ---: | ---: | ---: | ---: |
-| directly | 263 (47.9%) | 286 | 18 | 31 s |
-| in fux | 125 (39.7% of 315 run) | 190 | 252 | 31 s |
+| directly | 303 (55.2%) | 246 | 18 | 31 s |
+| in fux | 163 (52.1% of 313 run) | 150 | 254 | 31 s |
 | in xterm 411 | 427 (77.8%) | 122 | 18 | 38 s |
 
-The 286 failures by reason: 223 `not-implemented` (left and right margins
-77, the colour palette 47, DECRQM of modes fux-vt does not keep 24,
-protected cells and selective erase 17, rectangle operations 13 and more),
-32 `departure` (window operations), 26 `xterm-too`, 4 `spec` (fux says it
-is a VT220 and fux), 1 `bug` (a cursor report in origin mode). In fux, the
-only difference is DECXCPR, which panes leave off.
+The 246 failures by reason: 171 `not-implemented` (left and right margins
+75, DECRQM of modes fux-vt does not keep 19, XParseColor's
+device-independent colour spaces 18, protected cells and selective erase
+17, rectangle operations 13 and more), 36 `xterm-too` (reverse wraparound
+7, as xterm since patch 383), 32 `departure` (window operations), 7 `spec`
+(fux says it is a VT220 and fux 4, a special colour never set 2, the
+foreground's default 1). In fux, the only difference is DECXCPR, which
+panes leave off.
 
 Ghostty's core (libghostty-vt at the pinned commit), with fux-vt beside it,
 at 6424721 (the same machine, loaded by other work):
@@ -1009,7 +1012,7 @@ at 6424721 (the same machine, loaded by other work):
 | | passed | failed | skipped | time |
 | --- | ---: | ---: | ---: | ---: |
 | Ghostty's core | 328 (60.1%) | 218 | 21 | 27.5 s |
-| fux-vt | 267 (48.6%) | 282 | 18 | 30.5 s |
+| fux-vt | 303 (55.2%) | 246 | 18 | 30.5 s |
 
 Ghostty's 218 failures by reason: 141 `not-implemented` (window
 operations 27, rectangle operations 19, XParseColor's CIE colour spaces 18,
@@ -1019,10 +1022,12 @@ mode 3, TBC 2, BS past the left margin, RIS keeping 132 columns), 9
 `departure` (colours kept at 8 bits), 7 `spec`. Its parser drops DECSTR,
 with which esctest resets the terminal before every test, so 11 tests fail
 only after the one before them; they pass alone, and the list says so.
-Ghostty passes 92 tests fux-vt fails (left and right margins 49, protected
-cells 12, colours 11, DECRQM 5, window operations 4, reverse wraparound 3,
-and more); fux-vt passes 30 Ghostty fails (DECSTR 19, ANSI DECRQM 3,
-DECRQSS 3, and more). `--json`'s `comparison` lists both, each with its
+Ghostty passes 67 tests fux-vt fails (left and right margins 48, protected
+cells 12, window operations 4, DECRQM of DECLRMM and of DECARM, which
+xterm 411 reports permanently reset as fux-vt does, and DECSCL); fux-vt
+passes 41 Ghostty fails (DECSTR 19, colours kept at 8 bits 9, ANSI DECRQM
+4, DECRQSS 3, and more). Before the palette and the modes of phase 5
+(`d7cf9b4`), fux-vt passed 267 (48.6%), and Ghostty 92 tests it failed. `--json`'s `comparison` lists both, each with its
 feature and source.
 
 `--json FILE` writes, for the scoreboard:
