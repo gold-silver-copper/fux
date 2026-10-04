@@ -202,16 +202,16 @@ impl std::fmt::Write for Text<'_> {
 
 /// A workload made: its name, what it is, the screen it runs on, and its
 /// bytes.
-struct Load {
-    name: String,
-    about: String,
-    rows: u16,
-    cols: u16,
-    bytes: Vec<u8>,
+pub struct Load {
+    pub name: String,
+    pub about: String,
+    pub rows: u16,
+    pub cols: u16,
+    pub bytes: Vec<u8>,
 }
 
 /// `bytes` over and over, whole, until there are at least `total`.
-fn repeated(bytes: &[u8], total: usize) -> Vec<u8> {
+pub fn repeated(bytes: &[u8], total: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(total.saturating_add(bytes.len()));
     while !bytes.is_empty() && out.len() < total {
         out.extend_from_slice(bytes);

@@ -59,6 +59,7 @@ fux-vt/compare/run.sh verdicts              # the families with a recorded verdi
 fux-vt/compare/run.sh matrix                # family by engine: % of cases each engine differs from fux-vt
 fux-vt/compare/run.sh bench                 # MB/s for every engine on every workload, and the corpus
 fux-vt/compare/run.sh bench --engines ghostty corpus   # each recording alone too
+fux-vt/compare/run.sh bench --instructions  # instructions retired per byte, which load does not move
 fux-vt/compare/run.sh footprint             # memory per cell, per row and per 10,000 rows of history
 fux-vt/compare/run.sh --list                # the families, their status and reasons
 fux-vt/compare/run.sh survey                # each family alone: how often it fails, and the smallest failure
@@ -319,6 +320,21 @@ stay a few minutes.
 An engine linked in is timed on parsing and applying alone. An engine in its
 own process also pays for the pipe to it, so its figure (marked `*`) is end
 to end.
+
+MB/s moves with the machine's load; instructions retired do not.
+`bench --instructions` counts them instead, for fux-vt and every engine in
+this process (an engine in its own process does its work where the count
+cannot see it). Each engine and workload runs in a child process of its
+own, counted as `fux-bench --against` counts: `/usr/bin/time -l` on macOS,
+`perf` or cachegrind on Linux (`src/count.rs`). The child makes the
+workload and the engine as `bench` does, and feeds it. Its baseline is the
+same child without the feeding. The figure is the fewest instructions of
+`--repeats` runs (3) less the fewest of the baseline's, per byte; the
+spread of the runs over it is its noise. The engine is never dropped, so
+freeing its memory is not counted. With no workloads named it counts the
+synthetic ones and the corpus all together, 8 MiB each (`--mb`), in about
+a minute: libvterm's `scrolling`, at 33,000 instructions a byte, is most
+of it. `--json FILE` writes the table.
 
 ## Memory
 
@@ -947,6 +963,8 @@ failed the run.
 | `src/snapshot.rs` | what is compared, field by field, and the side-by-side view |
 | `src/transparency.rs` | `transparency`: each recording directly and through fux, tmux and zellij |
 | `src/bench.rs` | the workloads and the speed table |
+| `src/instructions.rs` | `bench --instructions`: instructions retired per byte, each engine in a child process |
+| `src/count.rs` | counting a child's instructions, as `bench/src/count.rs` does |
 | `src/footprint.rs` | `footprint`: each engine's memory, each in a child process |
 | `src/memory.rs` | the process's memory, as the system and malloc count it |
 | `src/escape.rs` | bytes as replayable text, and back |
