@@ -324,6 +324,18 @@ fn outcomes(log: &str) -> BTreeMap<String, Outcome> {
             body.push(next);
             lines.next();
         }
+        // A test may log lines of its own before its outcome
+        // (ChangeSpecialColorTests logs each colour it reads, `Read: …`).
+        let start = body
+            .iter()
+            .position(|l| {
+                *l == "Passed."
+                    || l.starts_with("Fails as expected: ")
+                    || l.starts_with("Skipped because ")
+                    || l.starts_with("*** TEST ")
+            })
+            .unwrap_or(0);
+        let body = body.get(start..).unwrap_or_default();
         let outcome = if body.first().is_some_and(|l| *l == "Passed.") {
             Outcome::Pass {
                 beyond_xterm: false,
@@ -1496,6 +1508,29 @@ a
         assert!(message.ends_with("Expected:\na"));
         assert_eq!(found.len(), 6);
         Ok(())
+    }
+
+    /// A test's own log lines before its outcome do not hide it.
+    #[test]
+    fn a_tests_own_log_lines_come_before_its_outcome() {
+        let found = super::outcomes(
+            "Run test: A.test_pass\nRead: ;17;rgb:8080/0000/0000\nPassed.\n\n\
+             Run test: A.test_fail\nRead: x\n*** TEST A.test_fail FAILED:\n\
+             Traceback (most recent call last):\n  File \"a.py\", line 1, in test_fail\n    \
+             f()\nesctypes.InternalError: Timeout waiting to read.\n\n",
+        );
+        assert_eq!(
+            found.get("A.test_pass"),
+            Some(&Outcome::Pass {
+                beyond_xterm: false
+            })
+        );
+        assert_eq!(
+            found.get("A.test_fail"),
+            Some(&Outcome::Fail(
+                "esctypes.InternalError: Timeout waiting to read. (in test_fail)".into()
+            ))
+        );
     }
 
     /// The list of expected failures: a scope, a reason of a known kind,
