@@ -1,37 +1,25 @@
-[workspace]
-# The oracle (fux-vt beside a pinned commit, oracle/) and its fuzz target
-# (fuzz/) share this lockfile, which says which commit they were built
-# against.
-members = [".", "oracle", "fuzz"]
-
 [package]
-name = "fux-diff"
+name = "fux-vt-oracle-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
 
-[[bin]]
-name = "fux-diff"
-path = "src/main.rs"
-doc = false
-bench = false
+[package.metadata]
+cargo-fuzz = true
 
 [dependencies]
-# The code under test: fux and its crates beside this one.
-fux = { path = ".." }
-fux-vt = { path = "../fux-vt" }
-fuxix = { path = "../fuxix" }
-# The baseline it is run beside: the last release of each, as published.
-# Bump these after each release.
-baseline = { package = "fux", version = "=0.17.0" }
-baseline-vt = { package = "fux-vt", version = "=0.2.0" }
-baseline-ix = { package = "fuxix", version = "=0.1.4" }
+libfuzzer-sys = "0.4"
+# The oracle: the working tree's fux-vt beside the pinned commit's.
+fux-vt-oracle = { path = "../oracle" }
 
-[profile.release]
-# Overflow is an error here, as in a debug build.
-overflow-checks = true
+[[bin]]
+name = "oracle"
+path = "fuzz_targets/oracle.rs"
+test = false
+doc = false
+bench = false
 
 [lints.rust]
 unused_must_use = "forbid"
