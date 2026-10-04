@@ -169,7 +169,15 @@ pub fn compare<A: Side, B: Side>(
             &b.copy(&selection, false),
         )?;
     }
-    same_list(step, "probes", &probes(a), &probes(b))
+    let (pa, pb) = (probes(a), probes(b));
+    match pa.iter().zip(&pb).find(|(x, y)| x != y) {
+        // Each reading starts with its probe's name.
+        Some((x, y)) => {
+            let name = x.split_once(": ").map_or(x.as_str(), |(name, _)| name);
+            same(step, &format!("the probe {name:?}"), x, y)
+        }
+        None => same(step, "how many probes", &pa.len(), &pb.len()),
+    }
 }
 
 /// Every query fux-vt answers, or might: DECRQM for each DEC private mode
