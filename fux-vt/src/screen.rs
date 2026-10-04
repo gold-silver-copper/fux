@@ -285,6 +285,11 @@ pub struct Screen {
     /// The character sets DECSC saved, which DECRC restores.
     saved_charsets: Charsets,
     autowrap: bool,
+    /// Reverse wraparound (`CSI ? 45 h`, xterm's XTREVWRAP) and extended
+    /// reverse wraparound (`CSI ? 1045 h`, XTREVWRAP2): with DECAWM, BS and
+    /// CUB go on at the end of the line before (`cursor_back`).
+    reverse_wrap: bool,
+    extended_reverse_wrap: bool,
     /// IRM (ECMA-48 7.2.10, `CSI 4 h`): a glyph printed moves what is at
     /// and after the cursor right, rather than writing over it.
     insert: bool,
@@ -412,6 +417,8 @@ impl Screen {
             charsets: Charsets::default(),
             saved_charsets: Charsets::default(),
             autowrap: true,
+            reverse_wrap: false,
+            extended_reverse_wrap: false,
             insert: false,
             tabs: TabStops::default(),
             application_cursor: false,
@@ -1331,6 +1338,11 @@ impl Screen {
         if (8..=13).contains(&byte) {
             self.break_cluster();
         }
+        if byte == 8 && self.reverse_wraps() {
+            let pending = self.grid().pending_wrap;
+            self.cursor_back(1, pending);
+            return Ok(());
+        }
         let g = self.grid_mut();
         // BS, LF, VT, FF and CR end a pending wrap (DEC STD 070, Appendix
         // D.6.1). HT does not: it leaves a cursor in the last column where
@@ -1364,6 +1376,59 @@ impl Screen {
         }
         self.grid_mut().cursor.1 = col;
     }
+    /// Whether BS and CUB wrap back: reverse wraparound, either kind, with
+    /// DECAWM, as xterm has it.
+    fn reverse_wraps(&self) -> bool {
+        self.autowrap && (self.reverse_wrap || self.extended_reverse_wrap)
+    }
+
+    /// BS and CUB with reverse wraparound, as xterm 411 moves (`CursorBack`;
+    /// ctlseqs, `CSI ? 45 h` and `CSI ? 1045 h`): back `count` columns, and
+    /// at the first column on from the last column of the line before,
+    /// which takes one of the count. With 45 the line before is only a
+    /// soft-wrapped row above, so a line's text is gone back over and no
+    /// further (since xterm patch 383); with 1045 it is any row above, and
+    /// from the top margin the bottom margin. A cursor waiting to wrap
+    /// counts as one past the last column, so the first column back is
+    /// the one it waits in. Where xterm 411 crashes or leaves the screen
+    /// (45 past a soft-wrapped first row; 1045 above the top margin), the
+    /// cursor stops at the first row, as Ghostty's does.
+    fn cursor_back(&mut self, count: u16, pending: bool) {
+        let extended = self.extended_reverse_wrap;
+        let g = self.grid_mut();
+        g.pending_wrap = false;
+        let mut count = if pending {
+            count.saturating_sub(1)
+        } else {
+            count
+        };
+        let (top, bottom, last) = (g.top, g.bottom, g.cols.last());
+        while count > 0 {
+            let moved = g.cursor.1.min(count);
+            g.cursor.1 = g.cursor.1.saturating_sub(moved);
+            count = count.saturating_sub(moved);
+            if count == 0 {
+                break;
+            }
+            let row = g.cursor.0;
+            let before = if extended {
+                if row == top {
+                    Some(bottom)
+                } else {
+                    row.checked_sub(1)
+                }
+            } else {
+                row.checked_sub(1)
+                    .filter(|above| g.live_row(*above).is_some_and(|r| r.wrapped))
+            };
+            let Some(before) = before else {
+                break;
+            };
+            g.cursor = (before, last);
+            count = count.saturating_sub(1);
+        }
+    }
+
     /// DECSC: the cursor, with its pending wrap (DEC STD 070, Appendix
     /// D.6.1), origin mode and the drawing attributes.
     fn save(&mut self) {
@@ -1451,6 +1516,8 @@ impl Screen {
                 self.charsets = Charsets::default();
                 self.saved_charsets = Charsets::default();
                 self.autowrap = true;
+                self.reverse_wrap = false;
+                self.extended_reverse_wrap = false;
                 self.insert = false;
                 self.tabs = TabStops::default();
                 self.application_cursor = false;
@@ -1498,6 +1565,9 @@ impl Screen {
         // which send DECSTR, never leave a frame waiting.
         self.synchronized_output = false;
         self.autowrap = true;
+        // Reverse wraparound too, as xterm 411's DECSTR ends both.
+        self.reverse_wrap = false;
+        self.extended_reverse_wrap = false;
         self.insert = false;
         self.application_cursor = false;
         self.application_keypad = false;
@@ -1624,6 +1694,8 @@ impl Screen {
             4 => self.smooth_scroll,
             5 => self.reverse_video,
             8 => return 4,
+            45 => self.reverse_wrap,
+            1045 => self.extended_reverse_wrap,
             66 => self.application_keypad,
             67 => self.backarrow_sends_backspace,
             6 => self.grid().origin,
@@ -1747,6 +1819,8 @@ impl Screen {
             1 => self.application_cursor = set,
             4 => self.smooth_scroll = set,
             5 => self.reverse_video = set,
+            45 => self.reverse_wrap = set,
+            1045 => self.extended_reverse_wrap = set,
             66 => self.application_keypad = set,
             67 => self.backarrow_sends_backspace = set,
             6 => {
@@ -1960,6 +2034,7 @@ impl Screen {
         }
         let n = p.first(0, 1);
         let (row, col) = self.grid().cursor;
+        let pending = self.grid().pending_wrap;
         // Every cursor movement, erase and edit ends a pending wrap (DEC STD
         // 070, Appendix D.6.1, which lists them), as xterm does; ED, EL, IL,
         // DL and DECSTBM below, once they are carried out. SU and SD are not
@@ -1990,6 +2065,8 @@ impl Screen {
                 let g = self.grid_mut();
                 g.cursor.1 = col.saturating_add(n).min(g.cols.last());
             }
+            // CUB; with reverse wraparound, back over line ends too.
+            b'D' if self.reverse_wraps() => self.cursor_back(n, pending),
             b'D' => self.grid_mut().cursor.1 = col.saturating_sub(n),
             // CHA, and HPA, the same with no left margin. Coordinates are
             // one-based, and 0 means 1.
