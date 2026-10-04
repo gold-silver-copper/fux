@@ -276,4 +276,16 @@ impl Engine for Ghostty {
     fn replies(&self) -> Vec<u8> {
         self.replies.borrow().clone()
     }
+
+    /// Its palette, foreground and background as OSC 4, 10 and 11 left
+    /// them (the foreground and background unset until a program sets
+    /// them: the harness gives the core no defaults).
+    fn colours(&mut self) -> Option<snapshot::Colours> {
+        let rgb = |c: libghostty_vt::style::RgbColor| (c.r, c.g, c.b);
+        Some(snapshot::Colours {
+            palette: self.terminal.color_palette().ok()?.0.map(rgb).to_vec(),
+            foreground: self.terminal.fg_color().ok()?.map(rgb),
+            background: self.terminal.bg_color().ok()?.map(rgb),
+        })
+    }
 }
