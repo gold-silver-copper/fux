@@ -2492,7 +2492,7 @@ impl Screen {
             return Ok(Dispatch::Done);
         }
         if !intermediates.is_empty() && !private {
-            return Ok(self.intermediate_csi(p, intermediates, byte));
+            return Ok(Dispatch::Unhandled);
         }
         if private && matches!(byte, b'h' | b'l') {
             let mut report = false;
@@ -2790,10 +2790,17 @@ impl Screen {
     }
 
     /// The CSI sequences with an intermediate the screen carries out
-    /// (DECSCUSR and DECSTR aside): DECSCA, DECIC and DECDC. Out of line,
-    /// as `csi` is on every CSI's way.
+    /// (DECSCUSR and DECSTR aside): DECSCA, DECIC and DECDC. `csi` leaves
+    /// them unhandled, and the parser asks here then (`csi_dispatch`):
+    /// carried out in `csi`, even out of line, they cost every CSI a
+    /// percent or two of its instructions.
     #[inline(never)]
-    fn intermediate_csi(&mut self, p: &Parameters, intermediates: &[u8], byte: u8) -> Dispatch {
+    pub(crate) fn intermediate_csi(
+        &mut self,
+        p: &Parameters,
+        intermediates: &[u8],
+        byte: u8,
+    ) -> Dispatch {
         match (intermediates, byte) {
             // DECSCA (`CSI Ps " q`; DEC STD 070, 5.11.1.2): 1 protects the
             // glyphs printed next from DECSED and DECSEL, 0 and 2 end it,

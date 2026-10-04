@@ -1206,14 +1206,25 @@ impl Parser {
         match dispatch {
             Dispatch::Done => {}
             Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
-            Dispatch::Unhandled => match self.query_reply(intermediates, byte) {
-                Some(reply) => sink.reply(reply.as_bytes()),
-                None => sink.unhandled(Unhandled::Csi {
-                    params: Params(&self.params),
-                    intermediates,
-                    action: byte,
-                }),
-            },
+            Dispatch::Unhandled => {
+                if !intermediates.is_empty()
+                    && matches!(
+                        self.screen
+                            .intermediate_csi(&self.params, intermediates, byte),
+                        Dispatch::Done
+                    )
+                {
+                    return Ok(());
+                }
+                match self.query_reply(intermediates, byte) {
+                    Some(reply) => sink.reply(reply.as_bytes()),
+                    None => sink.unhandled(Unhandled::Csi {
+                        params: Params(&self.params),
+                        intermediates,
+                        action: byte,
+                    }),
+                }
+            }
         }
         Ok(())
     }
