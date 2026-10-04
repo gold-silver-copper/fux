@@ -506,3 +506,92 @@ fn first_difference(a: &str, b: &str) -> Option<String> {
         around(b)
     ))
 }
+
+/// Output that shows, leaves, clears and resets the alternate screen.
+const SCREENS: &[&[u8]] = &[
+    b"\x1b[?47h",
+    b"\x1b[?47l",
+    b"\x1b[?1047h",
+    b"\x1b[?1047l",
+    b"\x1b[?1049h",
+    b"\x1b[?1049l",
+    b"\x1b[?1049s",
+    b"\x1b[?1049r",
+    b"\x1b[?6h\x1b[2;3r",
+    b"\x1b[!p",
+    b"\x1bc",
+    b"\x1b7",
+];
+
+/// The alternate screen, made when a program first shows it, is the
+/// screen made at once: random output, resizes (with reflow and without),
+/// RIS, DECSTR and every way of showing and leaving it, beside a parser
+/// whose alternate screen was made as it was made; after every step the
+/// lazy parser, its alternate screen made then, is the eager one in all
+/// its state as `Debug` shows it, and holds no more cells than it.
+#[test]
+fn the_alternate_screen_made_late_is_the_one_made_at_once() -> Result<(), Error> {
+    for case in 0..1500u64 {
+        let mut r = Rng(case.wrapping_add(1 << 32));
+        let rows = u16::try_from(r.below(6)).unwrap_or(0).saturating_add(1);
+        let cols = u16::try_from(r.below(12)).unwrap_or(0).saturating_add(1);
+        let mut lazy = Parser::with_options(rows, cols, r.below(8), options(&mut r))?;
+        let mut eager = lazy.clone();
+        eager.screen_mut().make_alternate()?;
+        for step in 0..r.below(40) {
+            let resize = r.chance(15).then(|| {
+                let rows = u16::try_from(r.below(7)).unwrap_or(0).saturating_add(1);
+                let cols = u16::try_from(r.below(13)).unwrap_or(0).saturating_add(1);
+                (rows, cols)
+            });
+            let output = if r.chance(40) {
+                r.pick(SCREENS).unwrap_or_default().to_vec()
+            } else {
+                let fragments = r.below(6).saturating_add(1);
+                sequences(&mut r, fragments, false)
+            };
+            let (a, b) = match resize {
+                Some((rows, cols)) => (lazy.resize(rows, cols), eager.resize(rows, cols)),
+                None => (lazy.process(&output), eager.process(&output)),
+            };
+            assert_eq!(a, b, "case {case} step {step}");
+            assert!(
+                lazy.screen().storage_cells() <= eager.screen().storage_cells(),
+                "case {case} step {step}"
+            );
+            // As before the lazy screen, the eager one's is always made:
+            // RIS leaves it unmade again (`Grid::unmade`).
+            eager.screen_mut().make_alternate()?;
+            let mut made = lazy.clone();
+            made.screen_mut().make_alternate()?;
+            let difference = first_difference(&state(&made), &state(&eager));
+            assert_eq!(difference, None, "case {case} step {step}");
+        }
+    }
+    Ok(())
+}
+
+/// The alternate screen holds no cells until a program shows it: not as
+/// made, nor resized, reset (RIS, DECSTR) or left, its modes saved and
+/// restored unset; then as many as the screen.
+#[test]
+fn the_alternate_screen_holds_no_cells_until_shown() -> Result<(), Error> {
+    let mut parser = Parser::new(50, 200, 0)?;
+    assert_eq!(parser.screen().storage_cells(), 50 * 200);
+    parser.resize(40, 120)?;
+    assert_eq!(parser.screen().storage_cells(), 40 * 120);
+    parser.process(b"\x1bc\x1b[!p\x1b[?47l\x1b[?1047l\x1b[?1049l\x1b[?1049s\x1b[?1049r")?;
+    parser.resize(30, 100)?;
+    parser.process(b"\x1bc")?;
+    assert_eq!(parser.screen().storage_cells(), 30 * 100);
+    parser.process(b"\x1b[?1049h")?;
+    assert_eq!(parser.screen().storage_cells(), 2 * 30 * 100);
+    // RIS with history makes both grids afresh, the alternate unmade.
+    let mut parser = Parser::new(5, 10, 100)?;
+    parser.process(b"\x1b[?1049h\x1b[?1049l")?;
+    let lines: Vec<u8> = std::iter::repeat_n(*b"x\n", 20).flatten().collect();
+    parser.process(&lines)?;
+    parser.process(b"\x1bc")?;
+    assert_eq!(parser.screen().storage_cells(), 5 * 10);
+    Ok(())
+}
