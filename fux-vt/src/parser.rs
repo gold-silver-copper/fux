@@ -718,10 +718,12 @@ impl Parser {
                 // through `byte`: only an XTRESTORE of synchronized output
                 // sets it and goes on.
                 let strings = !(UNTIL_FRAME && self.frame_begun);
-                let (length, last) = self.sequence(remaining, strings, sink)?;
+                let (length, ended) = self.sequence(remaining, strings, sink)?;
                 remaining = remaining.get(length..).unwrap_or_default();
-                // As below: only a CSI's final byte can be `h` here.
-                if UNTIL_FRAME && last == b'h' && self.frame_begun {
+                // As below: of the bytes `sequence` takes, only a final
+                // byte can be `h` (a string's are not taken with a frame
+                // begun).
+                if UNTIL_FRAME && ended == b'h' && self.frame_begun {
                     self.frame_begun = false;
                     return Ok(Some(bytes.len().saturating_sub(remaining.len())));
                 }
@@ -759,7 +761,7 @@ impl Parser {
     /// ends it (`osc_string`). It stops before any other byte, or at the
     /// end, with the parser in the state `byte` would have left it in, for
     /// `byte` to go on from. Says how many bytes it took, at least the ESC,
-    /// and the last of them.
+    /// and the final byte of the sequence it carried out, if it did, else 0.
     fn sequence(
         &mut self,
         bytes: &[u8],
@@ -769,53 +771,12 @@ impl Parser {
         debug_assert!(self.state == State::Ground && self.utf8_len == 0);
         self.reset_sequence();
         self.state = State::Escape;
-        let mut taken = (1, 0x1b);
-        let rest = bytes.iter().enumerate().skip(1);
         if bytes.get(1) == Some(&b'[') {
-            // The parameter being read and how many there are, kept here
-            // rather than in `params` until the sequence ends or this does:
-            // one empty one, as `reset_sequence` left them.
-            let (mut len, mut value) = (1usize, 0u16);
-            let mut entry = true;
-            taken = (2, b'[');
-            for (i, &byte) in rest.skip(1) {
-                let next = (i.saturating_add(1), byte);
-                match byte {
-                    b'0'..=b'9' => {
-                        let digit = u16::from(byte.saturating_sub(b'0'));
-                        value = value.saturating_mul(10).saturating_add(digit);
-                    }
-                    b';' | b':' => match self.params.next(len, value, byte == b':') {
-                        Some(more) => (len, value) = (more, 0),
-                        None => {
-                            self.params.end(len, value);
-                            self.state = State::CsiIgnore;
-                            return Ok(next);
-                        }
-                    },
-                    0x3c..=0x3f if entry => self.collect(byte),
-                    0x40..=0x7e => {
-                        self.params.end(len, value);
-                        self.state = State::Ground;
-                        self.csi_dispatch(byte, sink)?;
-                        self.screen.forget_repeat();
-                        return Ok(next);
-                    }
-                    _ => break,
-                }
-                entry = false;
-                taken = next;
-            }
-            self.params.end(len, value);
-            self.state = if entry {
-                State::CsiEntry
-            } else {
-                State::CsiParam
-            };
-            return Ok(taken);
+            return self.csi_sequence(bytes, sink);
         }
-        for (i, &byte) in rest {
-            let next = (i.saturating_add(1), byte);
+        let mut at = 1usize;
+        while let Some(&byte) = bytes.get(at) {
+            let next = at.wrapping_add(1);
             match byte {
                 0x20..=0x2f => {
                     self.collect(byte);
@@ -825,38 +786,79 @@ impl Parser {
                     self.osc.clear();
                     self.osc_overflow = false;
                     self.state = State::OscString;
-                    let payload = bytes.get(next.0..).unwrap_or_default();
+                    let payload = bytes.get(next..).unwrap_or_default();
                     let taken = if strings {
-                        self.osc_string(payload)
+                        self.osc_string(payload).unwrap_or(0)
                     } else {
-                        None
+                        0
                     };
-                    return Ok(match taken {
-                        Some(length) => {
-                            let end = next.0.saturating_add(length);
-                            (
-                                end,
-                                bytes.get(end.saturating_sub(1)).copied().unwrap_or(byte),
-                            )
-                        }
-                        None => next,
-                    });
+                    return Ok((next.saturating_add(taken), 0));
                 }
                 // The other strings, which `byte` begins.
-                b'P' | b'X' | b'^' | b'_' if self.state == State::Escape => return Ok(taken),
+                b'P' | b'X' | b'^' | b'_' if self.state == State::Escape => break,
                 0x30..=0x7e => {
                     self.state = State::Ground;
                     if !self.ignoring {
                         self.escape_dispatch(byte, sink)?;
                     }
                     self.screen.forget_repeat();
-                    return Ok(next);
+                    return Ok((next, byte));
                 }
-                _ => return Ok(taken),
+                _ => break,
             }
-            taken = next;
+            at = next;
         }
-        Ok(taken)
+        Ok((at, 0))
+    }
+    /// `sequence` for a CSI, `bytes` beginning with `ESC [`.
+    fn csi_sequence(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(usize, u8), Error> {
+        // The parameter being read and how many there are, kept here
+        // rather than in `params` until the sequence ends or this does: one
+        // empty one, as `reset_sequence` left them. The value is read as
+        // `Parameters::digit` reads it, staying at u16::MAX once past it:
+        // `(v * 10).min(MAX) + d` saturated is `(v * 10 + d).min(MAX)`.
+        let (mut len, mut value) = (1usize, 0u32);
+        let max = u32::from(u16::MAX);
+        let mut at = 2usize;
+        while let Some(&byte) = bytes.get(at) {
+            let next = at.wrapping_add(1);
+            match byte {
+                b'0'..=b'9' => {
+                    let digit = u32::from(byte.wrapping_sub(b'0'));
+                    value = value.wrapping_mul(10).wrapping_add(digit).min(max);
+                }
+                b';' | b':' => {
+                    let ended = u16::try_from(value).unwrap_or(u16::MAX);
+                    match self.params.next(len, ended, byte == b':') {
+                        Some(more) => (len, value) = (more, 0),
+                        None => {
+                            self.params.end(len, ended);
+                            self.state = State::CsiIgnore;
+                            return Ok((next, 0));
+                        }
+                    }
+                }
+                0x3c..=0x3f if at == 2 => self.collect(byte),
+                0x40..=0x7e => {
+                    self.params
+                        .end(len, u16::try_from(value).unwrap_or(u16::MAX));
+                    self.state = State::Ground;
+                    self.csi_dispatch(byte, sink)?;
+                    self.screen.forget_repeat();
+                    return Ok((next, byte));
+                }
+                _ => break,
+            }
+            at = next;
+        }
+        self.params
+            .end(len, u16::try_from(value).unwrap_or(u16::MAX));
+        self.state = if at == 2 {
+            State::CsiEntry
+        } else {
+            State::CsiParam
+        };
+        Ok((at, 0))
     }
     /// Takes the OSC string's bytes `bytes` begins with, up to the BEL,
     /// CAN, SUB or ESC that ends it, at once rather than each through
