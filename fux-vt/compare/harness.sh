@@ -84,6 +84,12 @@ full() {
   # Nine repeats, not the bench's five: on a busy machine five left a
   # workload's spread above the 3% it judges at.
   step against "$bench" --against main --repeats 9 --json "$out/against.json"
+  # Each engine's memory, and its instructions per byte beside Ghostty's:
+  # every measure a child process of its own. About 5 s and 45-60 s.
+  echo "full: memory and instructions per byte, every engine in process (alone)"
+  ran+=(footprint instructions)
+  step footprint "$compare" footprint --json "$out/footprint.json"
+  step instructions "$compare" bench --instructions --repeats 5 --json "$out/instructions.json"
 }
 
 # What `deep` takes beyond `full`, from the last run of each part here if
@@ -106,7 +112,7 @@ deep() {
   muxes=$(last_seconds multiplexers 500)
   feel=$(last_seconds feel 300)
   info=$(last_seconds info 20)
-  full_s=420
+  full_s=480
   local estimate=$((full_s + seeds * verdicts + esctest + muxes + feel + info + fuzz_minutes * 60 + 60))
   echo "deep: about $((estimate / 60)) minutes (full, $seeds verdict seeds at ${verdicts}s, esctest in fux, tmux and zellij, feel, MB/s, $fuzz_minutes minutes of fuzzing)"
   full
