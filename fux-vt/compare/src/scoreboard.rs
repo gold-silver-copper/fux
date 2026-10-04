@@ -340,6 +340,7 @@ const CHECKS: &[&str] = &[
     "transparency",
     "random",
     "cases",
+    "oracle",
     "random-wide",
     "random-no-reflow",
     "esctest",
