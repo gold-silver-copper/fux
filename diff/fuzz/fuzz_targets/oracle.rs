@@ -2,7 +2,9 @@
 //! fed the same random bytes, resizes, frames and copies: everything its
 //! API shows must be equal after every step.
 //!
-//! Input: five header bytes, then operations.
+//! Input: a case as `fux-vt-oracle --replay` reads it (text starting
+//! `size `), which is how the oracle's own random cases seed the fuzzer
+//! (`fux-vt-oracle --seeds DIR`); or five header bytes, then operations.
 //!
 //! - Header: rows (1 to 16), columns (1 to 24), history (one of ten sizes,
 //!   0 to 100, so it fills), then two bytes of options: the first's bits
@@ -11,6 +13,8 @@
 //!   reflow; the second's, hyperlinks, prompt marks, rectangle checksums,
 //!   setting reports, and (two bits) an identity.
 //! - `ff rows cols`: a resize, to 1 to 40 rows and 1 to 100 columns.
+//! - `fb n`: a resize fux-vt refuses for capacity, to 65,535 rows and
+//!   1,100 columns or more (`n` picks), or to 65,535 by 65,535.
 //! - `fe` and eight bytes: a window (offset, rows, columns), two corners
 //!   and the copy's cell and byte limits.
 //! - `fd n` and n bytes: output through `process_until_frame`.
@@ -29,8 +33,18 @@ fn bit(byte: u8, n: u8) -> bool {
     byte.checked_shr(u32::from(n)).is_some_and(|b| b & 1 == 1)
 }
 
+/// The most bytes of output, and steps, a case given as text may have,
+/// so each run stays quick.
+const TEXT_BYTES: usize = 64 * 1024;
+const TEXT_STEPS: usize = 300;
+
 /// The case the bytes describe.
 fn case(data: &[u8]) -> Option<Case> {
+    if data.starts_with(b"size ") {
+        let case = Case::from_text(std::str::from_utf8(data).ok()?).ok()?;
+        return (case.is_safe() && case.bytes() <= TEXT_BYTES && case.steps.len() <= TEXT_STEPS)
+            .then_some(case);
+    }
     let (header, mut input) = data.split_at_checked(5)?;
     let [rows, cols, history, a, b] = <[u8; 5]>::try_from(header).ok()?;
     let setup = Setup {
@@ -69,6 +83,16 @@ fn case(data: &[u8]) -> Option<Case> {
                 input = rest;
                 case.steps
                     .push(Step::Resize(1 + u16::from(r % 40), 1 + u16::from(c % 100)));
+            }
+            0xfb => {
+                let (&n, rest) = input.split_first()?;
+                input = rest;
+                let cols = if n == 0xff {
+                    u16::MAX
+                } else {
+                    1_100u16.saturating_add(u16::from(n))
+                };
+                case.steps.push(Step::Resize(u16::MAX, cols));
             }
             0xfe => {
                 let (&[offset, h, w, y0, x0, y1, x1, limit], rest) =

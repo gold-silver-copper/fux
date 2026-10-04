@@ -13,6 +13,7 @@ const USAGE: &str = "\
 usage: fux-vt-oracle [--seed N] [--cases N] [--streams N] [--cells N]
                      [--no-corpus] [--shrink SECONDS] [--threads N]
        fux-vt-oracle --replay FILE
+       fux-vt-oracle --seeds DIR [--seed N] [--cases N] [--streams N]
        fux-vt-oracle --baseline
 
 Runs the working tree's fux-vt beside fux-vt at the commit Cargo.lock pins
@@ -20,9 +21,12 @@ Runs the working tree's fux-vt beside fux-vt at the commit Cargo.lock pins
 comparing everything its API shows after every step: over every corpus
 recording (as fux sets up a pane, and with every option off; each step in
 pieces of up to 2048 bytes), --cases random cases (default 10000), --streams
-resize-heavy streams with history full (default 50), the limits, and --cells runs of the standalone types (default
-300). A difference is shrunk for up to --shrink seconds (default 60) and
-written to diff/target/oracle/ to replay with --replay.";
+resize-heavy streams with history full (default 50), the limits, and
+--cells runs of the standalone types (default 300). A difference is shrunk
+for up to --shrink seconds (default 60) and written to diff/target/oracle/
+to replay with --replay. --seeds writes --cases random cases and --streams
+resize streams to DIR instead, as --replay reads them, to seed the fuzz
+target (diff/fuzz).";
 
 /// The most bytes of a corpus recording given in one step.
 const PIECE: usize = 2048;
@@ -35,10 +39,13 @@ struct Options {
     corpus: bool,
     shrink: Duration,
     threads: usize,
+    /// Where to write seeds for the fuzz target, rather than run.
+    seeds: Option<String>,
 }
 
 enum Asked {
     Run(Options),
+    Seeds(String, Options),
     Replay(String),
     Print(String),
 }
@@ -65,6 +72,7 @@ fn parse() -> Result<Asked, String> {
         corpus: true,
         shrink: Duration::from_secs(60),
         threads,
+        seeds: None,
     };
     let number = |value: Option<String>, flag: &str| -> Result<usize, String> {
         value
@@ -84,13 +92,35 @@ fn parse() -> Result<Asked, String> {
                     Duration::from_secs(u64::try_from(number(args.next(), &arg)?).unwrap_or(60));
             }
             "--no-corpus" => o.corpus = false,
+            "--seeds" => o.seeds = Some(args.next().ok_or("--seeds needs a directory")?),
             "--replay" => return Ok(Asked::Replay(args.next().ok_or("--replay needs a file")?)),
             "--baseline" => return Ok(Asked::Print(pinned().into())),
             "--help" | "-h" => return Ok(Asked::Print(USAGE.into())),
             other => return Err(format!("unknown argument {other:?}\n{USAGE}")),
         }
     }
-    Ok(Asked::Run(o))
+    Ok(match o.seeds.take() {
+        Some(dir) => Asked::Seeds(dir, o),
+        None => Asked::Run(o),
+    })
+}
+
+/// Writes the random cases and resize streams to `dir` as `--replay`
+/// reads them, which the fuzz target reads too: seeds that reach far more
+/// than random bytes do. How many it wrote.
+fn seeds(dir: &str, o: &Options) -> Result<bool, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("{dir}: {e}"))?;
+    let cases = inputs::random_cases(o.seed ^ 0x5241_4e44, o.cases)
+        .into_iter()
+        .chain(inputs::resize_streams(o.seed ^ 0x5349_5a45, o.streams));
+    let mut n = 0usize;
+    for (i, case) in cases.enumerate() {
+        let path = std::path::Path::new(dir).join(format!("seed-{}-{i}.case", o.seed));
+        std::fs::write(&path, case.to_text()).map_err(|e| format!("{}: {e}", path.display()))?;
+        n = n.saturating_add(1);
+    }
+    println!("fux-vt-oracle: {n} seeds in {dir}");
+    Ok(true)
 }
 
 /// A case that differed: what it was, which, and how.
@@ -295,6 +325,7 @@ fn main() -> ExitCode {
     let result = match parse() {
         Ok(Asked::Run(o)) => run(&o),
         Ok(Asked::Replay(path)) => replay(&path),
+        Ok(Asked::Seeds(dir, o)) => seeds(&dir, &o),
         Ok(Asked::Print(text)) => {
             println!("{text}");
             Ok(true)
