@@ -59,6 +59,7 @@ fux-vt/compare/run.sh verdicts              # the families with a recorded verdi
 fux-vt/compare/run.sh matrix                # family by engine: % of cases each engine differs from fux-vt
 fux-vt/compare/run.sh bench                 # MB/s for every engine on every workload, and the corpus
 fux-vt/compare/run.sh bench --engines ghostty corpus   # each recording alone too
+fux-vt/compare/run.sh footprint             # memory per cell, per row and per 10,000 rows of history
 fux-vt/compare/run.sh --list                # the families, their status and reasons
 fux-vt/compare/run.sh survey                # each family alone: how often it fails, and the smallest failure
 fux-vt/compare/run.sh run --family sgr --family text --cases 2000 --seed 7
@@ -318,6 +319,56 @@ stay a few minutes.
 An engine linked in is timed on parsing and applying alone. An engine in its
 own process also pays for the pipe to it, so its figure (marked `*`) is end
 to end.
+
+## Memory
+
+`footprint` measures the memory each engine in this process holds (fux-vt,
+Ghostty, alacritty, libvterm, avt, wezterm and vt100; `--engines` picks).
+Every measure runs in a child process of its own, so no engine's
+allocations, kept or freed, mix with another's. The child makes the bytes
+first, reads its memory, makes the engine and feeds it in 4 KiB chunks,
+and reads its memory again with the bytes still held. The difference is
+the engine's, counted two ways:
+
+- **the footprint**: the process's dirty memory, resident or compressed.
+  On macOS this is `task_info`'s `phys_footprint`; on Linux, `RssAnon`. It
+  sees every allocator, including memory an engine maps itself: Ghostty's
+  pages come from the page allocator, not malloc. Memory mapped but never
+  written costs nothing here, and Ghostty's pages are mapped zeroed and
+  written only as rows fill.
+- **malloc**: the bytes malloc has handed out and not taken back
+  (`malloc_zone_statistics`, macOS only). It is exact, but it is blind to
+  memory mapped directly, and it counts capacity reserved but not yet
+  written.
+
+Both counts are libSystem's, declared in `src/memory.rs`; no crate is
+added for them.
+
+The measures, on 50 rows at 80 and at 200 columns:
+
+- a new screen;
+- a screen full of SGR-styled text: one screen of `dense-cells`, where
+  every cell has its own colours, and one of `medium-cells`, made for the
+  screen's size;
+- 10,000 rows of history from each synthetic workload and from the corpus,
+  every recording in turn. The workload is cut into pieces of 4 KiB (a
+  recording each, for the corpus). A piece of a workload that does not
+  scroll the screen into history by itself (all but `ascii`, `scrolling`
+  and `unicode`) is followed by a scroll-out: back to the main screen,
+  margins and SGR reset, and a newline for each row from the bottom one.
+  Every engine is fed the same pieces: as many as fux-vt needs to fill
+  10,000 rows of history, found before the children run.
+
+Every engine with a row limit keeps 10,000 rows here: fux-vt, alacritty,
+avt, wezterm, vt100, and libvterm, whose shim keeps the rows libvterm
+pushes (libvterm keeps no history itself). Ghostty's limit is in bytes and
+prunes whole pages, so it is given 1 GiB and keeps every row it is fed:
+sometimes a few hundred more than 10,000, when the last piece pushes many.
+A history's figure per row is its footprint beyond the same engine's empty
+screen, divided by the rows of history the engine says it holds.
+
+A run takes a few seconds. `--json FILE` writes every measure, with both
+readings of each child.
 
 ## The corpus
 
@@ -896,6 +947,8 @@ failed the run.
 | `src/snapshot.rs` | what is compared, field by field, and the side-by-side view |
 | `src/transparency.rs` | `transparency`: each recording directly and through fux, tmux and zellij |
 | `src/bench.rs` | the workloads and the speed table |
+| `src/footprint.rs` | `footprint`: each engine's memory, each in a child process |
+| `src/memory.rs` | the process's memory, as the system and malloc count it |
 | `src/escape.rs` | bytes as replayable text, and back |
 | `src/rng.rs` | splitmix64, as in `diff/` |
 | `src/record.rs` | `record`: a program on a PTY, its output recorded, fux-vt answering its queries |

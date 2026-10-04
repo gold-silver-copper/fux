@@ -100,12 +100,15 @@ const PASTE_END: &[u8] = b"\x1b[201~";
 /// How long a sync may take before the engine is said to have failed.
 const SYNC_WAIT: Duration = Duration::from_secs(10);
 
+/// The configuration: `scrollback` rows of history.
 #[derive(Debug)]
-struct Config;
+struct Config {
+    scrollback: usize,
+}
 
 impl TerminalConfiguration for Config {
     fn scrollback_size(&self) -> usize {
-        HISTORY_ROWS
+        self.scrollback
     }
 
     fn color_palette(&self) -> ColorPalette {
@@ -310,11 +313,16 @@ pub const KIND: Kind = Kind {
 };
 
 fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
+    with_history(setup, HISTORY_ROWS)
+}
+
+/// wezterm keeping `rows` rows of scrollback (`footprint`).
+pub fn with_history(setup: &Setup, rows: usize) -> Result<Box<dyn Engine>, String> {
     let replies = Arc::new(Replies::default());
     let title = Arc::new(Mutex::new(None));
     let mut terminal = Terminal::new(
         size(setup.rows, setup.cols),
-        Arc::new(Config),
+        Arc::new(Config { scrollback: rows }),
         "fux-vt-compare",
         "0.0.0",
         Box::new(Writer(Arc::clone(&replies))),
@@ -386,6 +394,10 @@ fn u16_of(n: usize, what: &str) -> Result<u16, String> {
 }
 
 impl Engine for Wezterm {
+    fn history_len(&mut self) -> Option<usize> {
+        Some(self.terminal.screen().phys_row(0))
+    }
+
     fn process(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.guarded("advance_bytes", |t| t.advance_bytes(bytes))
     }

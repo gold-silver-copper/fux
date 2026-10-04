@@ -46,6 +46,12 @@ pub trait Engine {
         Vec::new()
     }
 
+    /// The rows of history it holds now, if it can tell (`footprint`
+    /// divides its memory by them).
+    fn history_len(&mut self) -> Option<usize> {
+        None
+    }
+
     /// Feeds a whole workload, `chunk` bytes at a time, as a program's
     /// output arrives. Engines behind a process stream it and wait once.
     fn feed(&mut self, bytes: &[u8], chunk: usize) -> Result<(), String> {

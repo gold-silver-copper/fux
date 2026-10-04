@@ -164,8 +164,13 @@ pub const KIND: Kind = Kind {
 };
 
 fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
+    with_history(setup, HISTORY_ROWS)
+}
+
+/// libvterm with the shim keeping `rows` rows of history (`footprint`).
+pub fn with_history(setup: &Setup, rows: usize) -> Result<Box<dyn Engine>, String> {
     Ok(Box::new(Libvterm {
-        term: ffi::Term::new(setup.rows, setup.cols, HISTORY_ROWS)?,
+        term: ffi::Term::new(setup.rows, setup.cols, rows)?,
     }))
 }
 
@@ -220,6 +225,10 @@ fn int(what: &str, n: i32) -> Result<u16, String> {
 }
 
 impl Engine for Libvterm {
+    fn history_len(&mut self) -> Option<usize> {
+        Some(self.term.history_len())
+    }
+
     fn process(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.term.write(bytes);
         Ok(())
