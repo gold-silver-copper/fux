@@ -29,24 +29,11 @@ APCTests.test_APC_8bit  xterm-too: 8-bit controls, which esctest expects only wi
 BSTests.test_BS_AfterNoWrappedInlines  xterm-too: reverse wraparound as xterm does it since patch 383 (mode 45 goes back only over soft-wrapped lines; 1045 is the older wrap, README): esctest, run without --xterm-reverse-wrap=383, expects the older behaviour, and xterm 411 fails it the same way
 BSTests.test_BS_AfterOneWrappedInline  xterm-too: reverse wraparound as xterm does it since patch 383 (mode 45 goes back only over soft-wrapped lines; 1045 is the older wrap, README): esctest, run without --xterm-reverse-wrap=383, expects the older behaviour, and xterm 411 fails it the same way
 BSTests.test_BS_ReverseWrapGoesToBottom  xterm-too: reverse wraparound as xterm does it since patch 383 (mode 45 goes back only over soft-wrapped lines; 1045 is the older wrap, README): esctest, run without --xterm-reverse-wrap=383, expects the older behaviour, and xterm 411 fails it the same way
-BSTests.test_BS_ReverseWrapWithLeftRight  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-BSTests.test_BS_ReversewrapFromLeftEdgeToRightMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-BSTests.test_BS_StopsAtLeftMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+BSTests.test_BS_ReverseWrapWithLeftRight  xterm-too: reverse wraparound as xterm does it since patch 383 (mode 45 goes back only over soft-wrapped lines; 1045 is the older wrap, README): esctest, run without --xterm-reverse-wrap=383, expects the older behaviour, and xterm 411 fails it the same way
+BSTests.test_BS_ReversewrapFromLeftEdgeToRightMargin  xterm-too: reverse wraparound as xterm does it since patch 383 (mode 45 goes back only over soft-wrapped lines; 1045 is the older wrap, README): esctest, run without --xterm-reverse-wrap=383, expects the older behaviour, and xterm 411 fails it the same way
 BSTests.test_BS_WrapsInWraparoundMode  xterm-too: reverse wraparound as xterm does it since patch 383 (mode 45 goes back only over soft-wrapped lines; 1045 is the older wrap, README): esctest, run without --xterm-reverse-wrap=383, expects the older behaviour, and xterm 411 fails it the same way
-CHATests.test_CHA_RespectsOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-CHTTests.test_CHT_IgnoresScrollingRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-CNLTests.test_CNL_StopsAtBottomLineWhenBegunBelowScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-CNLTests.test_CNL_StopsAtBottomMarginInScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-CPLTests.test_CPL_StopsAtTopLineWhenBegunAboveScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-CPLTests.test_CPL_StopsAtTopMarginInScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-CRTests.test_CR_MovesToLeftMarginWhenLeftOfLeftMarginInOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-CRTests.test_CR_MovesToLeftMarginWhenRightOfLeftMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-CRTests.test_CR_StaysPutWhenAtLeftMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 CUBTests.test_CUB_AfterNoWrappedInlines  xterm-too: reverse wraparound as xterm does it since patch 383 (mode 45 goes back only over soft-wrapped lines; 1045 is the older wrap, README): esctest, run without --xterm-reverse-wrap=383, expects the older behaviour, and xterm 411 fails it the same way
 CUBTests.test_CUB_AfterOneWrappedInline  xterm-too: reverse wraparound as xterm does it since patch 383 (mode 45 goes back only over soft-wrapped lines; 1045 is the older wrap, README): esctest, run without --xterm-reverse-wrap=383, expects the older behaviour, and xterm 411 fails it the same way
-CUBTests.test_CUB_StopsAtLeftMarginInScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-CUFTests.test_CUF_StopsAtRightMarginInScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-CUPTests.test_CUP_RespectsOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 ChangeColorTests.test_ChangeColor_CIELab  not-implemented: XParseColor's device-independent colour spaces and intensities (CIEXYZ, CIEuvY, CIExyY, CIELab, CIELuv, TekHVC, rgbi:): fux-vt reads rgb: and the # forms (README, Options::palette); no program in the corpus sends these
 ChangeColorTests.test_ChangeColor_CIELuv  not-implemented: XParseColor's device-independent colour spaces and intensities (CIEXYZ, CIEuvY, CIExyY, CIELab, CIELuv, TekHVC, rgbi:): fux-vt reads rgb: and the # forms (README, Options::palette); no program in the corpus sends these
 ChangeColorTests.test_ChangeColor_CIEXYZ  not-implemented: XParseColor's device-independent colour spaces and intensities (CIEXYZ, CIEuvY, CIExyY, CIELab, CIELuv, TekHVC, rgbi:): fux-vt reads rgb: and the # forms (README, Options::palette); no program in the corpus sends these
@@ -72,27 +59,18 @@ DA2Tests.test_DA2_0  spec: fux says it is a VT220-class terminal (DA1 CSI ? 62 ;
 DA2Tests.test_DA2_NoParameter  spec: fux says it is a VT220-class terminal (DA1 CSI ? 62 ; 22 c) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
 DATests.test_DA_0  spec: fux says it is a VT220-class terminal (DA1 CSI ? 62 ; 22 c) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
 DATests.test_DA_NoParameter  spec: fux says it is a VT220-class terminal (DA1 CSI ? 62 ; 22 c) and fux by its version (DA2), fux's README "Commands"; esctest expects xterm's VT420 class and terminal id 41
-DCHTests.test_DCH_DeleteAllWithMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DCHTests.test_DCH_DoesNothingOutsideLeftRightMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DCHTests.test_DCH_RespectsMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 DECBITests.test_DECBI_Basic  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
-DECBITests.test_DECBI_LeftOfMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DECBITests.test_DECBI_Scrolls  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECBITests.test_DECBI_LeftOfMargin  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
+DECBITests.test_DECBI_Scrolls  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
 DECBITests.test_DECBI_WholeScreenScrolls  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
 DECCRATests.test_DECCRA_defaultValuesInDest  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECCRATests.test_DECCRA_defaultValuesInSource  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECCRATests.test_DECCRA_destinationPartiallyOffscreen  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECCRATests.test_DECCRA_ignoresMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECCRATests.test_DECCRA_ignoresMargins  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECCRATests.test_DECCRA_nonOverlappingSourceAndDest  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECCRATests.test_DECCRA_overlappingSourceAndDest  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECCRATests.test_DECCRA_overlyLargeSourceClippedToScreenSize  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECCRATests.test_DECCRA_respectsOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DECDCTests.test_DECDC_CursorWithinTopBottom  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DECDCTests.test_DECDC_DefaultParam  not-implemented: DECIC and DECDC (insert and delete columns); no program in the corpus sends them
-DECDCTests.test_DECDC_DeleteAll  not-implemented: DECIC and DECDC (insert and delete columns); no program in the corpus sends them
-DECDCTests.test_DECDC_DeleteAllWithLeftRightMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DECDCTests.test_DECDC_DeleteWithLeftRightMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DECDCTests.test_DECDC_ExplicitParam  not-implemented: DECIC and DECDC (insert and delete columns); no program in the corpus sends them
+DECCRATests.test_DECCRA_respectsOriginMode  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECDSRTests.test_DECDSR_DECCKSR  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
 DECDSRTests.test_DECDSR_DECMSR  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
 DECDSRTests.test_DECDSR_DECXCPR  [fux] not-implemented: DECXCPR (CSI ? 6 n) in fux's panes, which leave extended_replies off; no program in the corpus asks it
@@ -105,24 +83,18 @@ DECDSRTests.test_DECDSR_DSRUDKLocked  not-implemented: the DSR reports of DEC's 
 DECDSRTests.test_DECDSR_LocatorType  not-implemented: the DSR reports of DEC's other devices (printer, UDK, keyboard, locator, macros, data integrity, sessions, DECCKSR); no program in the corpus asks them
 DECERATests.test_DECERA_basic  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECERATests.test_DECERA_defaultArgs  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECERATests.test_DECERA_ignoresMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECERATests.test_DECERA_ignoresMargins  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECERATests.test_DECERA_overlyLargeSourceClippedToScreenSize  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECERATests.test_DECERA_respectsOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECERATests.test_DECERA_respectsOriginMode  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECFITests.test_DECFI_Basic  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
-DECFITests.test_DECFI_RightOfMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DECFITests.test_DECFI_Scrolls  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECFITests.test_DECFI_RightOfMargin  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
+DECFITests.test_DECFI_Scrolls  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
 DECFITests.test_DECFI_WholeScreenScrolls  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
 DECFRATests.test_DECFRA_basic  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECFRATests.test_DECFRA_defaultArgs  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECFRATests.test_DECFRA_ignoresMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECFRATests.test_DECFRA_ignoresMargins  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECFRATests.test_DECFRA_overlyLargeSourceClippedToScreenSize  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
-DECFRATests.test_DECFRA_respectsOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DECICTests.test_DECIC_CursorWithinTopBottom  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DECICTests.test_DECIC_DefaultParam  not-implemented: DECIC and DECDC (insert and delete columns); no program in the corpus sends them
-DECICTests.test_DECIC_ExplicitParam  not-implemented: DECIC and DECDC (insert and delete columns); no program in the corpus sends them
-DECICTests.test_DECIC_ScrollEntirelyOffRightEdge  not-implemented: DECIC and DECDC (insert and delete columns); no program in the corpus sends them
-DECICTests.test_DECIC_ScrollOffRightEdge  not-implemented: DECIC and DECDC (insert and delete columns); no program in the corpus sends them
-DECICTests.test_DECIC_ScrollOffRightMarginInScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECFRATests.test_DECFRA_respectsOriginMode  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECIDTests.test_DECID_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
 DECRQMTests.test_DECRQM_ANSI_EBM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_ANSI_FEAM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
@@ -143,7 +115,6 @@ DECRQMTests.test_DECRQM_DEC_DECCOLM  departure: window operations from programs 
 DECRQMTests.test_DECRQM_DEC_DECHCCM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_DEC_DECKBUM  xterm-too: esctest's known xterm bug (Not supported)
 DECRQMTests.test_DECRQM_DEC_DECKPM  xterm-too: esctest's known xterm bug (Not supported)
-DECRQMTests.test_DECRQM_DEC_DECLRMM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_DEC_DECNRCM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_DEC_DECPCCM  xterm-too: esctest's known xterm bug (Not supported)
 DECRQMTests.test_DECRQM_DEC_DECPEX  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
@@ -157,68 +128,47 @@ DECRQSSTests.test_DECRQSS_DECSASD  not-implemented: DECRQSS is answered for the 
 DECRQSSTests.test_DECRQSS_DECSCA  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
 DECRQSSTests.test_DECRQSS_DECSCL  not-implemented: conformance levels (DECSCL, CSI Pl ; Pc " p); no program in the corpus sends it
 DECRQSSTests.test_DECRQSS_DECSLPP  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the margins (r), what neovim and vim ask (corpus); fux-vt keeps no other setting it reports
-DECRQSSTests.test_DECRQSS_DECSLRM  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECRQSSTests.test_DECRQSS_DECSLRM  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the top and bottom margins (r), what neovim and vim ask (corpus); not for DECSLRM (s), which no program in the corpus asks
 DECRQSSTests.test_DECRQSS_DECSMKR  xterm-too: esctest's known xterm bug (Not implemented.)
 DECRQSSTests.test_DECRQSS_DECSNLS  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the margins (r), what neovim and vim ask (corpus); fux-vt keeps no other setting it reports
 DECRQSSTests.test_DECRQSS_DECSSDT  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the margins (r), what neovim and vim ask (corpus); fux-vt keeps no other setting it reports
 DECSCLTests.test_DECSCL_Level2DoesntSupportDECRQM  not-implemented: conformance levels (DECSCL, CSI Pl ; Pc " p); no program in the corpus sends it
 DECSCLTests.test_DECSCL_Level4_SupportsDECSLRMDoesntSupportDECNCSM  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
+DECSCLTests.test_DSCSCL_Level3_SupportsDECRQMDoesntSupportDECSLRM  not-implemented: conformance levels (DECSCL, CSI Pl ; Pc " p); no program in the corpus sends it. fux-vt is a VT420 or more throughout: at level 3 DECSLRM still sets margins (it passed while fux-vt had no left and right margins at all)
 DECSEDTests.test_DECSED_0_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSEDTests.test_DECSED_0_WithScrollRegion_Protection  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSEDTests.test_DECSED_0_WithScrollRegion_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
 DECSEDTests.test_DECSED_1_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSEDTests.test_DECSED_1_WithScrollRegion_Protection  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSEDTests.test_DECSED_1_WithScrollRegion_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
 DECSEDTests.test_DECSED_2_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSEDTests.test_DECSED_2_WithScrollRegion_Protection  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSEDTests.test_DECSED_2_WithScrollRegion_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
 DECSEDTests.test_DECSED_DECSCA_2  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
 DECSEDTests.test_DECSED_Default_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
 DECSELTests.test_DECSEL_0_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
 DECSELTests.test_DECSEL_1_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
 DECSELTests.test_DECSEL_2_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
 DECSELTests.test_DECSEL_Default_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSELTests.test_DECSEL_IgnoresScrollRegion_Protection  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSELTests.test_DECSEL_IgnoresScrollRegion_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
 DECSERATests.test_DECSERA_basic  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
 DECSERATests.test_DECSERA_defaultArgs  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
 DECSERATests.test_DECSERA_doesNotRespectISOProtect  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSERATests.test_DECSERA_ignoresMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSERATests.test_DECSERA_ignoresMargins  not-implemented: DECSERA (selective erase of a rectangle), a rectangle operation as DECFRA, DECERA, DECCRA, DECCARA, DECRARA and DECSACE are; no program in the corpus sends them
 DECSERATests.test_DECSERA_overlyLargeSourceClippedToScreenSize  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSERATests.test_DECSERA_respectsOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSERATests.test_DECSERA_respectsOriginMode  not-implemented: DECSERA (selective erase of a rectangle), a rectangle operation as DECFRA, DECERA, DECCRA, DECCARA, DECRARA and DECSACE are; no program in the corpus sends them
 DECSETTests.test_DECSET_Allow80To132  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
-DECSETTests.test_DECSET_DECAWM_NoLineWrapOnTabWithLeftRightMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DECSETTests.test_DECSET_DECAWM_OffRespectsLeftRightMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DECSETTests.test_DECSET_DECAWM_OnRespectsLeftRightMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DECSETTests.test_DECSET_DECCOLM  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DECSETTests.test_DECSET_DECLRMM  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DECSETTests.test_DECSET_DECOM  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DECSETTests.test_DECSET_DECOM_DECRQCRA  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
+DECSETTests.test_DECSET_DECCOLM  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
 DECSETTests.test_DECSET_MoreFix  not-implemented: xterm's more(1) fix (mode 41), a curses workaround of xterm's own; no program in the corpus sets it
 DECSETTests.test_DECSET_ReverseWraparound_BS  xterm-too: reverse wraparound as xterm does it since patch 383 (mode 45 goes back only over soft-wrapped lines; 1045 is the older wrap, README): esctest, run without --xterm-reverse-wrap=383, expects the older behaviour, and xterm 411 fails it the same way
-DLTests.test_DL_ClearOutLeftRightAndTopBottomScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DLTests.test_DL_InLeftRightAndTopBottomScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DLTests.test_DL_InLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DLTests.test_DL_OutsideLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 ECHTests.test_ECH_respectsISOProtection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
 EDTests.test_ED_respectsISOProtection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
 ELTests.test_EL_respectsISOProtection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-FFTests.test_FF_MovesDoesNotScrollOutsideLeftRight  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-HPRTests.test_HPR_IgnoresOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 HTSTests.test_HTS_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
-HVPTests.test_HVP_RespectsOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-ICHTests.test_ICH_IsNoOpWhenCursorBeginsOutsideScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-ICHTests.test_ICH_ScrollOffRightMarginInScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-ILTests.test_IL_RespectsScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-ILTests.test_IL_RespectsScrollRegion_Over  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 INDTests.test_IND_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
-INDTests.test_IND_MovesDoesNotScrollOutsideLeftRight  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-LFTests.test_LF_MovesDoesNotScrollOutsideLeftRight  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 ManipulateSelectionDataTests.test_ManipulateSelectionData_default  xterm-too: needs window operations xterm leaves off by default (esctest's xtermWinopsEnabled: title reports, OSC 52 reads); fux-vt does no window operations for programs
 NELTests.test_NEL_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
-NELTests.test_NEL_MovesDoesNotScrollOutsideLeftRight  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 PMTests.test_PM_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
-REPTests.test_REP_RespectsLeftRightMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 RISTests.test_RIS_ResetDECCOLM  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
 RISTests.test_RIS_ResetTitleMode  xterm-too: reads the title back (CSI 21 t), which xterm refuses by default (disallowedWindowOps GetWinTitle); fux-vt reports no title
 RITests.test_RI_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
-RITests.test_RI_MovesDoesNotScrollOutsideLeftRight  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 ResetSpecialColorTests.test_ResetSpecialColor_Dynamic  spec: of the colour palette and dynamic colours, a foreground the program has not set is the host's (Event::ColorQuery; README, Options::palette); esctest sets it black (#000) before every test and expects OSC 110 to give black back, xterm's default. Directly the run's host answers nothing; in a fux pane fux answers its client terminal's, white here
 ResetSpecialColorTests.test_ResetSpecialColor_Multiple  not-implemented: XTGETTCAP (DCS + q), which esctest asks for the number of colours (Co) to find where OSC 4's special colours start; unanswered, it takes 16, a palette entry, which OSC 105 (the special colours) does not reset; no program in the corpus asks XTGETTCAP (xterm 411 fails _Multiple too: its OSC 105 ; 0 ; 1 resets nothing)
 ResetSpecialColorTests.test_ResetSpecialColor_Multiple2  spec: of the special colours, one the program has not set is not answered (README, Options::palette): xterm's default for one is its foreground, which fux-vt does not know; esctest reads it before setting it
@@ -227,23 +177,11 @@ ResetSpecialColorTests.test_ResetSpecialColor_Single2  spec: of the special colo
 S8C1TTests.test_S8C1T_CSI  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
 S8C1TTests.test_S8C1T_DCS  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
 S8C1TTests.test_S8C1T_SPA_EPA  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
-SCORCTests.test_SaveRestoreCursor_WorksInLRM  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-SDTests.test_SD_BigScrollLeftRightAndTopBottomScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-SDTests.test_SD_LeftRightAndTopBottomScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-SDTests.test_SD_OutsideLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-SDTests.test_SD_RespectsLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-SMTests.test_SM_IRM_TruncatesAtRightMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 SMTitleTests.test_SMTitle_SetHexQueryHex  xterm-too: needs window operations xterm leaves off by default (esctest's xtermWinopsEnabled: title reports, OSC 52 reads); fux-vt does no window operations for programs
 SMTitleTests.test_SMTitle_SetHexQueryUTF8  xterm-too: needs window operations xterm leaves off by default (esctest's xtermWinopsEnabled: title reports, OSC 52 reads); fux-vt does no window operations for programs
 SMTitleTests.test_SMTitle_SetUTF8QueryHex  xterm-too: needs window operations xterm leaves off by default (esctest's xtermWinopsEnabled: title reports, OSC 52 reads); fux-vt does no window operations for programs
 SMTitleTests.test_SMTitle_SetUTF8QueryUTF8  xterm-too: needs window operations xterm leaves off by default (esctest's xtermWinopsEnabled: title reports, OSC 52 reads); fux-vt does no window operations for programs
 SOSTests.test_SOS_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
-SUTests.test_SU_BigScrollLeftRightAndTopBottomScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-SUTests.test_SU_LeftRightAndTopBottomScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-SUTests.test_SU_OutsideLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-SUTests.test_SU_RespectsLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-VPRTests.test_VPR_IgnoresOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-VTTests.test_VT_MovesDoesNotScrollOutsideLeftRight  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 XtermWinopsTests.test_XtermWinops_DECSLPP  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
 XtermWinopsTests.test_XtermWinops_Fullscreen  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
 XtermWinopsTests.test_XtermWinops_IconifyDeiconfiy  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
