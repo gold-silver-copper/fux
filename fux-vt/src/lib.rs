@@ -2,10 +2,14 @@
 //! See the crate README for the sequence and resource contracts.
 
 mod cell;
+mod compact;
 mod grid;
+mod history;
 mod link;
+mod palette;
 mod parser;
 mod screen;
+mod style;
 mod unicode;
 
 pub use cell::{Attributes, Blink, Cell, CellRef, Cells, Color, UnderlineStyle};
@@ -80,11 +84,16 @@ pub struct Row<'a> {
     pub(crate) wrapped: bool,
     /// Whether a prompt starts on the row (OSC 133 ; A).
     pub(crate) prompt: bool,
-    pub(crate) cells: &'a [Cell],
-    pub(crate) spill: &'a cell::Spill,
+    /// The cells the row keeps: all of them, or those before its blank
+    /// tail, a history row's; those past them, to `width`, are blank.
+    pub(crate) cells: &'a [compact::Compact],
+    pub(crate) width: usize,
+    pub(crate) spill: &'a compact::Text,
     /// Each cell's link, if any cell of the row has had one (`link.rs`).
     pub(crate) links: Option<&'a [u16]>,
     pub(crate) table: &'a link::Links,
+    /// The attributes of the cells' styles.
+    pub(crate) styles: &'a style::Styles,
 }
 
 impl<'a> Row<'a> {
@@ -104,28 +113,44 @@ impl<'a> Row<'a> {
     }
     /// How many cells the row has: a history row keeps the width it had.
     pub fn len(&self) -> usize {
-        self.cells.len()
+        self.width
     }
     /// Whether the row has no cells.
     pub fn is_empty(&self) -> bool {
-        self.cells.is_empty()
+        self.width == 0
+    }
+    /// The stored cell at column `col`, blank past those kept; `None` past
+    /// the row's width.
+    pub(crate) fn stored(&self, col: usize) -> Option<&'a compact::Compact> {
+        if col >= self.width {
+            return None;
+        }
+        Some(self.cells.get(col).unwrap_or(&compact::BLANK))
+    }
+    /// The row's stored cells, left to right, blank past those kept.
+    pub(crate) fn padded(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = &'a compact::Compact> + ExactSizeIterator + Clone + use<'a>
+    {
+        let cells = self.cells;
+        (0..self.width).map(move |col| cells.get(col).unwrap_or(&compact::BLANK))
     }
     /// The cell at column `col`.
     pub fn cell(&self, col: usize) -> Option<CellRef<'a>> {
-        let spill = self.spill;
-        self.cells.get(col).map(|cell| CellRef::new(cell, spill))
+        let (spill, styles) = (self.spill, self.styles);
+        self.stored(col).map(|cell| cell.read(spill, styles))
     }
     /// The hyperlink (OSC 8) of the cell at column `col`: the link that was
     /// open when its glyph was printed, if one was. A blank cell has none;
     /// the second half of a wide glyph has its first half's.
     pub fn link(&self, col: usize) -> Option<Hyperlink<'a>> {
         let links = self.links?;
-        let col = if self.cells.get(col)?.is_wide_continuation() {
+        let col = if self.stored(col)?.is_wide_continuation() {
             col.checked_sub(1)?
         } else {
             col
         };
-        if !self.cells.get(col)?.has_contents() {
+        if !self.stored(col)?.has_contents() {
             return None;
         }
         self.table.get(*links.get(col)?)
@@ -151,8 +176,17 @@ impl<'a> Row<'a> {
     pub fn cells(
         &self,
     ) -> impl DoubleEndedIterator<Item = CellRef<'a>> + ExactSizeIterator + Clone + use<'a> {
-        let spill = self.spill;
-        self.cells.iter().map(move |cell| CellRef::new(cell, spill))
+        let (spill, styles) = (self.spill, self.styles);
+        // Cells side by side mostly share a style: its attributes are found
+        // once for a run of them. Style 0 is the default attributes.
+        let mut last = (0, Attributes::default());
+        self.padded().map(move |cell| {
+            let style = cell.style();
+            if style != last.0 {
+                last = (style, styles.get(style));
+            }
+            cell.read_as(spill, last.1)
+        })
     }
 }
 

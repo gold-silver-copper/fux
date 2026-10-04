@@ -57,13 +57,21 @@ quick() {
   # that runs here, not the in-process ones alone: xterm decides the fields
   # where the panel splits (a blank's colour), and xterm.js is the only
   # voter beside Ghostty that can tell synchronized output. Both still fit.
-  echo "quick: corpus beside xterm, transparency, 2,000 random cases, the named cases"
-  ran+=(corpus transparency random cases)
+  # The corpus again with Ghostty judged as fux-vt is, fux-vt voting in its
+  # place: both scores and where each departs alone (corpus-ghostty.json).
+  # It runs beside the corpus, an xterm of its own, and still fits.
+  # The oracle (diff/oracle.sh) holds fux-vt to what it did at the merge
+  # base with main: every observable, after every step, over the corpus,
+  # 10,000 random cases and 50 resize streams.
+  echo "quick: corpus beside xterm, with Ghostty judged too, transparency, 2,000 random cases, the named cases, the oracle"
+  ran+=(corpus corpus-ghostty transparency random cases oracle)
   together \
     "corpus $compare corpus --json $out/corpus.json" \
+    "corpus-ghostty $compare corpus --subject ghostty --json $out/corpus-ghostty.json" \
     "transparency $compare transparency --json $out/transparency.json" \
     "random $compare run --cases 2000" \
-    "cases $compare cases"
+    "cases $compare cases" \
+    "oracle $root/diff/oracle.sh"
 }
 
 build_bench() {
@@ -72,18 +80,27 @@ build_bench() {
 
 full() {
   quick
-  echo "full: 20,000 random cases with reflow and without, esctest"
-  ran+=(random-wide random-no-reflow esctest)
+  # Ghostty's core runs esctest with fux-vt beside it (about a minute,
+  # inside the group's time): the scoreboard's conformance against Ghostty.
+  echo "full: 20,000 random cases with reflow and without, esctest, esctest of Ghostty's core"
+  ran+=(random-wide random-no-reflow esctest esctest-ghostty)
   together \
     "random-wide $compare run --cases 20000" \
     "random-no-reflow $compare run --cases 20000 --no-reflow" \
-    "esctest $compare esctest --json $out/esctest.json"
+    "esctest $compare esctest --json $out/esctest.json" \
+    "esctest-ghostty $compare esctest --terminal ghostty --beside fux-vt --json $out/esctest-ghostty.json"
   echo "full: instructions against main (alone)"
   ran+=(against)
   build_bench
   # Nine repeats, not the bench's five: on a busy machine five left a
   # workload's spread above the 3% it judges at.
   step against "$bench" --against main --repeats 9 --json "$out/against.json"
+  # Each engine's memory, and its instructions per byte beside Ghostty's:
+  # every measure a child process of its own. About 5 s and 45-60 s.
+  echo "full: memory and instructions per byte, every engine in process (alone)"
+  ran+=(footprint instructions)
+  step footprint "$compare" footprint --json "$out/footprint.json"
+  step instructions "$compare" bench --instructions --repeats 5 --json "$out/instructions.json"
 }
 
 # What `deep` takes beyond `full`, from the last run of each part here if
@@ -106,7 +123,7 @@ deep() {
   muxes=$(last_seconds multiplexers 500)
   feel=$(last_seconds feel 300)
   info=$(last_seconds info 20)
-  full_s=420
+  full_s=480
   local estimate=$((full_s + seeds * verdicts + esctest + muxes + feel + info + fuzz_minutes * 60 + 60))
   echo "deep: about $((estimate / 60)) minutes (full, $seeds verdict seeds at ${verdicts}s, esctest in fux, tmux and zellij, feel, MB/s, $fuzz_minutes minutes of fuzzing)"
   full
@@ -136,6 +153,7 @@ targets=(
   "fux-vt/fuzz terminal fux-vt/fuzz/terminal.dict"
   "fux-vt/fuzz graphemes"
   "fux-vt/fuzz cells"
+  "diff/fuzz oracle fux-vt/fuzz/terminal.dict"
 )
 
 # fuzz MINUTES: each target for its share, from its stored corpus and what
@@ -148,8 +166,13 @@ fuzz() {
   ((share > 0)) || share=1
   echo "fuzz: ${#targets[@]} targets, ${share}s each"
   (cd "$root" && cargo +nightly fuzz build --fuzz-dir fuzz -O -a >/dev/null 2>&1 &&
-    cargo +nightly fuzz build --fuzz-dir fux-vt/fuzz -O -a >/dev/null 2>&1) ||
+    cargo +nightly fuzz build --fuzz-dir fux-vt/fuzz -O -a >/dev/null 2>&1 &&
+    cargo +nightly fuzz build --fuzz-dir diff/fuzz -O -a >/dev/null 2>&1) ||
     { echo "fuzz: the targets do not build (cargo +nightly fuzz build)"; return 1; }
+  # The oracle's target starts from the oracle's own random cases, written
+  # as its stored corpus (ignored by git), which reach far more than bytes.
+  "$root/diff/oracle.sh" --seeds "$root/diff/fuzz/corpus/oracle" --cases 1000 --streams 5 >/dev/null ||
+    { echo "fuzz: the oracle's seeds could not be written"; return 1; }
   for spec in "${targets[@]}"; do
     read -r dir target dict asan <<<"$spec"
     local found=$out/fuzz-corpus/$target stored=$root/$dir/corpus/$target

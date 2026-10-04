@@ -379,6 +379,18 @@ terminal reports changes between dark and light (mode 2031: Ghostty,
 kitty, contour), fux turns that on while attached, and passes a change on
 to each program that asked for it (`CSI ? 2031 h`: Claude Code, tmux).
 
+A program that changes its colours (OSC 4, the 256-colour palette; OSC
+10 and 11, its foreground and background: theme scripts, base16-shell)
+has them in its own pane: fux paints the cells of a changed entry, and
+the pane's default foreground and background, in the colours it set, so
+the pane looks as it would directly in your terminal, while the other
+panes, and your terminal's own palette, are left as they were (fux never
+sends your terminal OSC 4). Reset (OSC 104, 110, 111), they are your
+terminal's again; `reset` resets the palette, as xterm's does. A program that asks a palette entry (OSC 4
+`?`: zellij asks all 256) is answered with the colour it set, or xterm's
+default for it, which is what `xterm-256color` names; fux does not ask
+your terminal its palette.
+
 Hyperlinks a program prints (OSC 8: `ls --hyperlink`, gcc, delta, Claude
 Code) reach your terminal as links, each with an id of its pane's, so two
 panes' links never merge into one; a terminal that does not know OSC 8

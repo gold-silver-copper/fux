@@ -1,4 +1,8 @@
 [workspace]
+# The oracle (fux-vt beside a pinned commit, oracle/) and its fuzz target
+# (fuzz/) share this lockfile, which says which commit they were built
+# against.
+members = [".", "oracle", "fuzz"]
 
 [package]
 name = "fux-diff"

@@ -1,0 +1,65 @@
+[package]
+name = "fux-vt-oracle"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "fux-vt's behaviour oracle: the working tree beside a pinned commit"
+
+[lib]
+path = "src/lib.rs"
+doc = false
+
+[[bin]]
+name = "fux-vt-oracle"
+path = "src/main.rs"
+doc = false
+bench = false
+
+[dependencies]
+# The code under test: the working tree's fux-vt.
+fux-vt = { path = "../../fux-vt" }
+# What it must behave as: fux-vt at a commit, the merge base with main
+# unless told another. diff/oracle.sh pins it (it rewrites this rev, and
+# Cargo.lock follows), so Cargo.lock says which commit was built.
+base-vt = { package = "fux-vt", git = "https://github.com/gold-silver-copper/fux", rev = "86dbbdda762f6882f9f0327f5308422df5f105fe" }
+# The corpus's manifests.
+serde_json = "1"
+
+[lints.rust]
+unused_must_use = "forbid"
+unconditional_recursion = "forbid"
+unsafe_code = "forbid"
+
+[lints.clippy]
+suspicious = { level = "forbid", priority = -1 }
+unwrap_used = "forbid"
+expect_used = "forbid"
+panic = "forbid"
+unreachable = "forbid"
+todo = "forbid"
+unimplemented = "forbid"
+indexing_slicing = "forbid"
+exit = "forbid"
+infinite_loop = "forbid"
+large_stack_frames = "forbid"
+unchecked_time_subtraction = "forbid"
+read_zero_byte_vec = "forbid"
+unused_result_ok = "forbid"
+debug_assert_with_mut_call = "forbid"
+allow_attributes = "forbid"
+undocumented_unsafe_blocks = "forbid"
+significant_drop_in_scrutinee = "forbid"
+significant_drop_tightening = "forbid"
+cast_lossless = "forbid"
+string_slice = "forbid"
+mem_forget = "forbid"
+large_stack_arrays = "forbid"
+allow_attributes_without_reason = "forbid"
+wildcard_enum_match_arm = "forbid"
+cast_possible_truncation = "forbid"
+cast_possible_wrap = "forbid"
+cast_sign_loss = "forbid"
+arithmetic_side_effects = "forbid"
+disallowed_methods = "forbid"

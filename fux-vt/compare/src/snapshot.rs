@@ -13,6 +13,48 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
+/// The colours a terminal draws with: its 256-colour palette and its
+/// default foreground and background (`Engine::colours`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Colours {
+    pub palette: Vec<(u8, u8, u8)>,
+    /// `None` while the terminal has none of its own and no program set
+    /// one.
+    pub foreground: Option<(u8, u8, u8)>,
+    pub background: Option<(u8, u8, u8)>,
+}
+
+impl Colours {
+    /// `color` as this terminal shows it, if its program changed what it
+    /// shows from `initial`, the terminal's own: a palette entry it set,
+    /// or the default foreground (`foreground`) or background it set, as
+    /// the colour they are now; any other as it is.
+    pub fn shown(&self, initial: &Colours, color: Color, foreground: bool) -> Color {
+        let rgb = |(r, g, b): (u8, u8, u8)| Color::Rgb(r, g, b);
+        match color {
+            Color::Idx(n) => {
+                let i = usize::from(n);
+                match (self.palette.get(i), initial.palette.get(i)) {
+                    (Some(now), Some(was)) if now != was => rgb(*now),
+                    _ => color,
+                }
+            }
+            Color::Default => {
+                let (now, was) = if foreground {
+                    (self.foreground, initial.foreground)
+                } else {
+                    (self.background, initial.background)
+                };
+                match now {
+                    Some(now) if Some(now) != was => rgb(now),
+                    _ => color,
+                }
+            }
+            Color::Rgb(..) => color,
+        }
+    }
+}
+
 /// What a cell looks like. Underline style and blink speed are reduced to
 /// on or off: the engines' underline styles are not read yet, and Ghostty
 /// keeps no blink speed.
@@ -147,6 +189,28 @@ impl Line {
 }
 
 impl Snapshot {
+    /// The snapshot with its colours as they show (`Colours::shown`): each
+    /// a program changed, from `initial` to `now`, as the colour it is now.
+    pub fn in_colours(mut self, now: &Colours, initial: &Colours) -> Snapshot {
+        if now == initial {
+            return self;
+        }
+        for cell in self
+            .screen
+            .iter_mut()
+            .flat_map(|line| line.cells.iter_mut())
+        {
+            let style = &mut cell.style;
+            style.fg = now.shown(initial, style.fg, true);
+            style.bg = now.shown(initial, style.bg, false);
+            // A default underline colour is the cell's foreground's.
+            if style.underline_color != Color::Default {
+                style.underline_color = now.shown(initial, style.underline_color, true);
+            }
+        }
+        self
+    }
+
     /// The snapshot with what an engine cannot tell left at its default,
     /// so comparing two masked snapshots compares only what it can.
     pub fn masked(&self, can: &Can) -> Snapshot {
@@ -400,8 +464,17 @@ pub struct Diff {
 }
 
 impl Diff {
+    #[cfg(test)]
     pub fn line(&self, engine: &str) -> String {
-        format!("{}: fux-vt {}, {engine} {}", self.key, self.fux, self.other)
+        self.line_beside("fux-vt", engine)
+    }
+
+    /// The difference as a line, naming the subject (`fux` is its side).
+    pub fn line_beside(&self, subject: &str, engine: &str) -> String {
+        format!(
+            "{}: {subject} {}, {engine} {}",
+            self.key, self.fux, self.other
+        )
     }
 }
 
@@ -610,8 +683,20 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
 /// Both screens side by side, as text, with the cursor marked and each
 /// soft-wrapped row flagged.
 pub fn side_by_side(fux: &Snapshot, other: &Snapshot, engine: &str) -> String {
-    let width = usize::from(fux.cols.max(other.cols)).max(6);
-    let mut out = format!("  {:<width$}   {engine}\n", "fux-vt");
+    side_by_side_beside("fux-vt", fux, other, engine)
+}
+
+/// [`side_by_side`], with the subject's screen (`fux`) under its own name.
+pub fn side_by_side_beside(
+    subject: &str,
+    fux: &Snapshot,
+    other: &Snapshot,
+    engine: &str,
+) -> String {
+    let width = usize::from(fux.cols.max(other.cols))
+        .max(6)
+        .max(subject.chars().count());
+    let mut out = format!("  {subject:<width$}   {engine}\n");
     let lines = fux.screen.len().max(other.screen.len());
     for y in 0..lines {
         let side = |s: &Snapshot| -> String {

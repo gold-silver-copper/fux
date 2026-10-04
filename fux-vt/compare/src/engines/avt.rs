@@ -102,9 +102,14 @@ pub const KIND: Kind = Kind {
 };
 
 fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
+    with_history(setup, SCROLLBACK)
+}
+
+/// avt keeping `rows` rows of scrollback (`footprint`).
+pub fn with_history(setup: &Setup, rows: usize) -> Result<Box<dyn Engine>, String> {
     let vt = avt::Vt::builder()
         .size(usize::from(setup.cols), usize::from(setup.rows))
-        .scrollback_limit(SCROLLBACK)
+        .scrollback_limit(rows)
         .build();
     Ok(Box::new(Avt {
         vt,
@@ -175,6 +180,11 @@ fn mode(dump: &str, mode: &str, default: bool) -> bool {
 }
 
 impl Engine for Avt {
+    fn history_len(&mut self) -> Option<usize> {
+        let (_, rows) = self.vt.size();
+        Some(self.vt.lines().count().saturating_sub(rows))
+    }
+
     fn process(&mut self, bytes: &[u8]) -> Result<(), String> {
         if self.tail.is_empty()
             && let Ok(text) = std::str::from_utf8(bytes)

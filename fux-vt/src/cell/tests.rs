@@ -1,61 +1,5 @@
 use super::*;
 
-/// A cell's text, `set` into a fresh run of one.
-fn texts(cells: &mut [Cell], spill: &mut Spill) -> String {
-    let line = Line { cells, spill };
-    (0..line.cells.len())
-        .map(|i| line.text(i).to_owned())
-        .collect::<Vec<_>>()
-        .join("|")
-}
-
-/// What follows a cell's text is zero, however it was made, so `same`
-/// and `is_ascii`, which compare only the text in use, agree with `==`.
-#[test]
-fn text_past_the_length_is_zero_and_the_quick_comparisons_agree() {
-    let bold = Attributes::default().with_bold(true);
-    let red = Attributes::new(Color::Idx(1), Color::Rgb(1, 2, 3));
-    let mut cells = vec![
-        Cell::default(),
-        Cell::blank(bold),
-        Cell::continuation(),
-        Cell::ascii(b'a', Attributes::default()),
-        Cell::ascii(b'a', bold),
-        Cell::ascii(b'b', red),
-        Cell::glyph('界', 2, red),
-        Cell::glyph('é', 1, Attributes::default()),
-        Cell::glyph(' ', 1, bold),
-        Cell::new("xy", false, red).unwrap_or_default(),
-        Cell::default().with_spilled(7, 30),
-        Cell::glyph('a', 2, bold).with_spilled(7, 30),
-    ];
-    let mut spill = Spill::default();
-    let mut row = [Cell::glyph('a', 1, bold), Cell::blank(red)];
-    for _ in 0..70 {
-        let mut line = Line {
-            cells: &mut row,
-            spill: &mut spill,
-        };
-        line.append(0, '\u{301}');
-        line.append(1, '\u{302}');
-        cells.extend(row);
-    }
-    for cell in &cells {
-        let used = cell.used();
-        assert!(cell.text.iter().skip(used).all(|b| *b == 0), "{cell:?}");
-        for other in &cells {
-            assert_eq!(cell.same(other), cell == other, "{cell:?} {other:?}");
-        }
-        for (byte, attributes) in [(b'a', Attributes::default()), (b'a', bold), (b'b', red)] {
-            assert_eq!(
-                cell.is_ascii(byte, attributes),
-                *cell == Cell::ascii(byte, attributes),
-                "{cell:?}"
-            );
-        }
-    }
-}
-
 #[test]
 fn cells_are_32_bytes_and_hold_17_bytes_inline() {
     assert_eq!(std::mem::size_of::<Cell>(), 32);
@@ -111,43 +55,6 @@ fn underline_styles_keep_to_their_own_bits() {
         Attributes::default().with_underline(true).underline_style(),
         UnderlineStyle::Single
     );
-}
-
-#[test]
-fn a_cluster_grows_inline_then_into_the_rows_text_up_to_its_capacity() {
-    let mut cells = [
-        Cell::glyph('\u{1F468}', 2, Attributes::default()),
-        Cell::continuation(),
-        Cell::ascii(b'x', Attributes::default()),
-    ];
-    let mut spill = Spill::default();
-    let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
-    let mut line = Line {
-        cells: &mut cells,
-        spill: &mut spill,
-    };
-    for c in family.chars().skip(1) {
-        assert!(line.append(0, c));
-    }
-    assert_eq!(line.text(0), family);
-    assert!(
-        line.cells
-            .first()
-            .is_some_and(|c| c.is_spilled() && c.is_wide())
-    );
-    assert_eq!(line.spill.len(), family.len(), "grown in place, not copied");
-    assert_eq!(texts(&mut cells, &mut spill), format!("{family}||x"));
-
-    // Marks past the cluster's capacity are refused; the rest stays.
-    let mut cells = [Cell::ascii(b'e', Attributes::default())];
-    let mut spill = Spill::default();
-    let mut line = Line {
-        cells: &mut cells,
-        spill: &mut spill,
-    };
-    let kept = (0..100).filter(|_| line.append(0, '\u{301}')).count();
-    assert_eq!(kept, (Cell::CLUSTER_CAPACITY - 1) / 2);
-    assert_eq!(line.text(0).len(), Cell::CLUSTER_CAPACITY - 1);
 }
 
 #[test]

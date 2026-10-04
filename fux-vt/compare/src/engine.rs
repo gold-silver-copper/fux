@@ -46,6 +46,19 @@ pub trait Engine {
         Vec::new()
     }
 
+    /// The rows of history it holds now, if it can tell (`footprint`
+    /// divides its memory by them).
+    fn history_len(&mut self) -> Option<usize> {
+        None
+    }
+
+    /// The colours it draws with now, if it can tell: its palette and its
+    /// default foreground and background, as a program's OSC 4, 10 and 11
+    /// leave them. `transparency` compares colours as they show by them.
+    fn colours(&mut self) -> Option<crate::snapshot::Colours> {
+        None
+    }
+
     /// Feeds a whole workload, `chunk` bytes at a time, as a program's
     /// output arrives. Engines behind a process stream it and wait once.
     fn feed(&mut self, bytes: &[u8], chunk: usize) -> Result<(), String> {
@@ -138,6 +151,46 @@ impl Can {
         reports: true,
         history: true,
     };
+
+    /// What both can tell. A field the subject cannot tell is masked on
+    /// both sides, as an engine's own `Can` masks one, so comparing with
+    /// `subject.and(engine)` compares only what both can tell.
+    pub const fn and(self, other: Can) -> Can {
+        Can {
+            widths: self.widths && other.widths,
+            wrapped: self.wrapped && other.wrapped,
+            pending_wrap: self.pending_wrap && other.pending_wrap,
+            fg: self.fg && other.fg,
+            bg: self.bg && other.bg,
+            underline_color: self.underline_color && other.underline_color,
+            bold: self.bold && other.bold,
+            dim: self.dim && other.dim,
+            italic: self.italic && other.italic,
+            underline: self.underline && other.underline,
+            blink: self.blink && other.blink,
+            inverse: self.inverse && other.inverse,
+            hidden: self.hidden && other.hidden,
+            strikeout: self.strikeout && other.strikeout,
+            cursor: self.cursor && other.cursor,
+            cursor_visible: self.cursor_visible && other.cursor_visible,
+            autowrap: self.autowrap && other.autowrap,
+            origin: self.origin && other.origin,
+            alternate: self.alternate && other.alternate,
+            application_cursor: self.application_cursor && other.application_cursor,
+            application_keypad: self.application_keypad && other.application_keypad,
+            bracketed_paste: self.bracketed_paste && other.bracketed_paste,
+            focus_reporting: self.focus_reporting && other.focus_reporting,
+            kitty_keyboard_flags: self.kitty_keyboard_flags && other.kitty_keyboard_flags,
+            synchronized_output: self.synchronized_output && other.synchronized_output,
+            in_band_resize: self.in_band_resize && other.in_band_resize,
+            link_uri: self.link_uri && other.link_uri,
+            link_group: self.link_group && other.link_group,
+            prompt: self.prompt && other.prompt,
+            title: self.title && other.title,
+            reports: self.reports && other.reports,
+            history: self.history && other.history,
+        }
+    }
 
     /// The fields missing here, by name.
     pub fn missing(&self) -> Vec<&'static str> {
@@ -297,7 +350,8 @@ pub fn always() -> Result<(), String> {
     Ok(())
 }
 
-/// The subject: fux-vt itself.
+/// fux-vt itself: the subject by default. `--subject` names another, and
+/// fux-vt then joins the panel, as [`FUX_VT`].
 pub const SUBJECT: Kind = Kind {
     name: "fux-vt",
     about: "the code under test",
@@ -324,4 +378,22 @@ pub const ENGINES: &[Kind] = &[
 
 pub fn find(name: &str) -> Option<usize> {
     ENGINES.iter().position(|k| k.name == name)
+}
+
+/// fux-vt's index beside [`ENGINES`]: one past the last, so every index
+/// into `ENGINES` keeps its meaning. fux-vt is the subject by default, and
+/// an engine of the panel, at this index, when another engine is.
+pub const FUX_VT: usize = ENGINES.len();
+
+/// The engine at `index`: one of [`ENGINES`], or fux-vt at [`FUX_VT`].
+pub fn kind(index: usize) -> Option<&'static Kind> {
+    const FUX_VT_KIND: &Kind = &SUBJECT;
+    ENGINES
+        .get(index)
+        .or_else(|| (index == FUX_VT).then_some(FUX_VT_KIND))
+}
+
+/// The name of the engine at `index` (see [`kind`]), or `?`.
+pub fn name(index: usize) -> &'static str {
+    kind(index).map_or("?", |k| k.name)
 }
