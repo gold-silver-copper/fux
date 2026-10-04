@@ -400,8 +400,17 @@ pub struct Diff {
 }
 
 impl Diff {
+    #[cfg(test)]
     pub fn line(&self, engine: &str) -> String {
-        format!("{}: fux-vt {}, {engine} {}", self.key, self.fux, self.other)
+        self.line_beside("fux-vt", engine)
+    }
+
+    /// The difference as a line, naming the subject (`fux` is its side).
+    pub fn line_beside(&self, subject: &str, engine: &str) -> String {
+        format!(
+            "{}: {subject} {}, {engine} {}",
+            self.key, self.fux, self.other
+        )
     }
 }
 
@@ -610,8 +619,20 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
 /// Both screens side by side, as text, with the cursor marked and each
 /// soft-wrapped row flagged.
 pub fn side_by_side(fux: &Snapshot, other: &Snapshot, engine: &str) -> String {
-    let width = usize::from(fux.cols.max(other.cols)).max(6);
-    let mut out = format!("  {:<width$}   {engine}\n", "fux-vt");
+    side_by_side_beside("fux-vt", fux, other, engine)
+}
+
+/// [`side_by_side`], with the subject's screen (`fux`) under its own name.
+pub fn side_by_side_beside(
+    subject: &str,
+    fux: &Snapshot,
+    other: &Snapshot,
+    engine: &str,
+) -> String {
+    let width = usize::from(fux.cols.max(other.cols))
+        .max(6)
+        .max(subject.chars().count());
+    let mut out = format!("  {subject:<width$}   {engine}\n");
     let lines = fux.screen.len().max(other.screen.len());
     for y in 0..lines {
         let side = |s: &Snapshot| -> String {

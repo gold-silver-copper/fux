@@ -154,6 +154,23 @@ marked as differing for that reason (see `--list`). They are all in-process, and
   slower: about 100 cases a second instead of 2000. Add them with `--engines
   panel,xterm.js` and so on; `cases` uses every engine.
 
+**Another subject.** `--subject NAME` (`run`, `cases`, `corpus`, `replay`)
+judges another engine in fux-vt's place: ghostty, or any engine in this
+process. It is judged exactly as fux-vt is, and fux-vt joins the panel as
+an engine like any other: in the subject's place in the list (`panel` and
+`all` hold Ghostty), or where the list names `fux-vt`. A field the subject
+cannot tell is compared with no one, masked on both sides as an engine's
+own `Can` masks it: Ghostty tells no link groups, so with Ghostty the
+subject, no engine is compared on them. The statuses (the families', the
+named cases', the recordings') are fux-vt's, so they are not applied to
+another subject: `run`, `cases` and `corpus` report its outcomes and fail
+only on an error. Without `--subject`, every command is as it was.
+
+```sh
+fux-vt-compare cases --subject ghostty      # the named cases, Ghostty judged, fux-vt voting
+fux-vt-compare replay --subject ghostty --engines fux-vt --size 1x4 '\e[?2026h' '\e[!p'
+```
+
 ## Engines
 
 The quirks each engine showed against fux-vt and the others are listed in
