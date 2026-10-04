@@ -290,7 +290,16 @@ pub struct Screen {
     insert: bool,
     tabs: TabStops,
     application_cursor: bool,
+    /// DECKPAM / DECKPNM (`ESC =`, `ESC >`), which DECNKM (`CSI ? 66 h`)
+    /// sets too, as in xterm.
     application_keypad: bool,
+    /// DECSCLM, smooth scroll (`CSI ? 4 h`), DECSCNM, reverse video
+    /// (`CSI ? 5 h`), and DECBKM, the backarrow key sending BS (`CSI ? 67
+    /// h`): kept as xterm keeps them, for DECRQM and XTSAVE. State only:
+    /// fux-vt scrolls at once, draws nothing and encodes no keys.
+    smooth_scroll: bool,
+    reverse_video: bool,
+    backarrow_sends_backspace: bool,
     hide_cursor: bool,
     bracketed_paste: bool,
     synchronized_output: bool,
@@ -407,6 +416,9 @@ impl Screen {
             tabs: TabStops::default(),
             application_cursor: false,
             application_keypad: false,
+            smooth_scroll: false,
+            reverse_video: false,
+            backarrow_sends_backspace: false,
             hide_cursor: false,
             bracketed_paste: false,
             synchronized_output: false,
@@ -1443,6 +1455,9 @@ impl Screen {
                 self.tabs = TabStops::default();
                 self.application_cursor = false;
                 self.application_keypad = false;
+                self.smooth_scroll = false;
+                self.reverse_video = false;
+                self.backarrow_sends_backspace = false;
                 self.hide_cursor = false;
                 self.bracketed_paste = false;
                 self.synchronized_output = false;
@@ -1600,10 +1615,17 @@ impl Screen {
         Reply::of(format_args!("\x1bP{id}!~{checksum:04X}\x1b\\"))
     }
 
-    /// DECRQM status for a DEC private mode: 1 set, 2 reset, 0 not recognized.
+    /// DECRQM status for a DEC private mode: 1 set, 2 reset, 0 not
+    /// recognized, and 4 permanently reset for DECARM (8), which xterm 411
+    /// reports so (its auto-repeat is the X server's).
     pub(crate) fn private_mode_status(&self, n: u16) -> u8 {
         let set = match n {
             1 => self.application_cursor,
+            4 => self.smooth_scroll,
+            5 => self.reverse_video,
+            8 => return 4,
+            66 => self.application_keypad,
+            67 => self.backarrow_sends_backspace,
             6 => self.grid().origin,
             7 => self.autowrap,
             25 => !self.hide_cursor,
@@ -1723,6 +1745,10 @@ impl Screen {
     fn mode(&mut self, n: u16, set: bool) -> Result<(), Error> {
         match n {
             1 => self.application_cursor = set,
+            4 => self.smooth_scroll = set,
+            5 => self.reverse_video = set,
+            66 => self.application_keypad = set,
+            67 => self.backarrow_sends_backspace = set,
             6 => {
                 let g = self.grid_mut();
                 g.origin = set;
