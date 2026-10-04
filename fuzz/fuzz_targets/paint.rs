@@ -20,8 +20,9 @@ const GLYPHS: [Option<(&str, bool)>; 8] = [
     None,
 ];
 
-/// What fux paints: fux-vt keeps bold and dim apart (SGR 1 and 2 replace one
-/// another), and fux never sets both, so no set here does.
+/// What fux paints: bold and dim alone and together (fux-vt keeps both, as
+/// xterm does; SGR 22 ends both), the other renditions, colours of each
+/// kind, and underline styles.
 fn attributes(index: u8) -> Attributes {
     let plain = Attributes::default();
     match index % 12 {
@@ -35,7 +36,9 @@ fn attributes(index: u8) -> Attributes {
         3 => plain.with_italic(true).with_underline(true),
         4 => plain.with_inverse(true),
         5 => Attributes::new(Color::Idx(1), Color::Default),
-        6 => Attributes::new(Color::Idx(9), Color::Idx(4)).with_bold(true),
+        6 => Attributes::new(Color::Idx(9), Color::Idx(4))
+            .with_bold(true)
+            .with_dim(true),
         7 => Attributes::new(Color::Idx(200), Color::Idx(17)),
         8 => Attributes::new(Color::Rgb(1, 2, 3), Color::Default),
         _ => Attributes::new(Color::Default, Color::Rgb(250, 128, 0))
