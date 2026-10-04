@@ -134,7 +134,6 @@ DECRQMTests.test_DECRQM_ANSI_FETM  not-implemented: DECRQM recognizes only the m
 DECRQMTests.test_DECRQM_ANSI_GATM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_ANSI_HEM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_ANSI_KAM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
-DECRQMTests.test_DECRQM_ANSI_LNM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_ANSI_MATM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_ANSI_PUM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_ANSI_SATM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
@@ -238,7 +237,6 @@ SDTests.test_SD_LeftRightAndTopBottomScrollRegion  not-implemented: left and rig
 SDTests.test_SD_OutsideLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 SDTests.test_SD_RespectsLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 SMTests.test_SM_IRM_TruncatesAtRightMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-SMTests.test_SM_LNM  not-implemented: LNM (CSI 20 h, line feed as CR LF); no program in the corpus sets it
 SMTitleTests.test_SMTitle_SetHexQueryHex  xterm-too: needs window operations xterm leaves off by default (esctest's xtermWinopsEnabled: title reports, OSC 52 reads); fux-vt does no window operations for programs
 SMTitleTests.test_SMTitle_SetHexQueryUTF8  xterm-too: needs window operations xterm leaves off by default (esctest's xtermWinopsEnabled: title reports, OSC 52 reads); fux-vt does no window operations for programs
 SMTitleTests.test_SMTitle_SetUTF8QueryHex  xterm-too: needs window operations xterm leaves off by default (esctest's xtermWinopsEnabled: title reports, OSC 52 reads); fux-vt does no window operations for programs

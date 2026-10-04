@@ -174,3 +174,29 @@ fn xtsave_and_xtrestore_save_and_restore_modes() -> Result {
     assert!(!p.screen().autowrap());
     Ok(())
 }
+
+/// LNM (DEC STD 070, Line Feed/New Line Mode; the VT520 manual; `CSI 20
+/// h`): LF, VT and FF return the carriage too; IND does not. DECRQM
+/// reports it (`CSI 20 $ p`); RIS resets it and DECSTR keeps it, as in
+/// xterm 411. esctest's SM_LNM.
+#[test]
+fn lnm_makes_a_line_feed_a_new_line() -> Result {
+    for control in [b'\n', 0x0b, 0x0c] {
+        let mut p = Parser::with_options(25, 80, 0, MODES)?;
+        p.process(&[b"\x1b[1;5H".as_slice(), &[control]].concat())?;
+        assert_eq!(p.screen().cursor_position(), (1, 4));
+        p.process(&[b"\x1b[20h\x1b[1;5H".as_slice(), &[control]].concat())?;
+        assert_eq!(p.screen().cursor_position(), (1, 0));
+    }
+    let mut p = Parser::with_options(25, 80, 0, MODES)?;
+    p.process(b"\x1b[20h\x1b[1;5H\x1bD")?;
+    assert_eq!(p.screen().cursor_position(), (1, 4));
+    assert_eq!(replies(&mut p, b"\x1b[20$p")?, "^[[20;1$y");
+    p.process(b"\x1b[!p")?;
+    assert_eq!(replies(&mut p, b"\x1b[20$p")?, "^[[20;1$y");
+    p.process(b"\x1b[20;4l")?;
+    assert_eq!(replies(&mut p, b"\x1b[20$p")?, "^[[20;2$y");
+    p.process(b"\x1b[20h\x1bc")?;
+    assert_eq!(replies(&mut p, b"\x1b[20$p")?, "^[[20;2$y");
+    Ok(())
+}

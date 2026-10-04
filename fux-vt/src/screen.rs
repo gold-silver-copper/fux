@@ -304,6 +304,9 @@ pub struct Screen {
     /// IRM (ECMA-48 7.2.10, `CSI 4 h`): a glyph printed moves what is at
     /// and after the cursor right, rather than writing over it.
     insert: bool,
+    /// LNM (DEC STD 070, Line Feed/New Line Mode; `CSI 20 h`): LF, VT and
+    /// FF return the carriage too.
+    new_line: bool,
     tabs: TabStops,
     application_cursor: bool,
     /// DECKPAM / DECKPNM (`ESC =`, `ESC >`), which DECNKM (`CSI ? 66 h`)
@@ -432,6 +435,7 @@ impl Screen {
             extended_reverse_wrap: false,
             saved_modes: 0,
             insert: false,
+            new_line: false,
             tabs: TabStops::default(),
             application_cursor: false,
             application_keypad: false,
@@ -580,6 +584,10 @@ impl Screen {
     /// replaces. Off by default, and after RIS and DECSTR.
     pub fn insert_mode(&self) -> bool {
         self.insert
+    }
+    /// LNM (`CSI 20 h` / `l`), for DECRQM.
+    pub(crate) fn new_line_mode(&self) -> bool {
+        self.new_line
     }
     /// DECOM (`CSI ? 6`): whether lines are addressed from the top margin.
     pub fn origin_mode(&self) -> bool {
@@ -1365,7 +1373,13 @@ impl Screen {
         match byte {
             8 => g.cursor.1 = g.cursor.1.saturating_sub(1),
             9 => self.tab(1, true),
-            10..=12 => self.linefeed()?,
+            10..=12 => {
+                self.linefeed()?;
+                // LNM: a new line, the carriage returned too.
+                if self.new_line {
+                    self.grid_mut().cursor.1 = 0;
+                }
+            }
             13 => g.cursor.1 = 0,
             // SO puts G1 in GL, SI G0.
             14 => self.charsets.shifted = true,
@@ -1531,6 +1545,7 @@ impl Screen {
                 self.reverse_wrap = false;
                 self.extended_reverse_wrap = false;
                 self.insert = false;
+                self.new_line = false;
                 self.tabs = TabStops::default();
                 self.application_cursor = false;
                 self.application_keypad = false;
@@ -2057,12 +2072,15 @@ impl Screen {
                 Dispatch::Done
             });
         }
-        // SM and RM: IRM (4) alone of the ANSI modes.
+        // SM and RM: IRM (4) and LNM (20) of the ANSI modes.
         if !private && matches!(byte, b'h' | b'l') {
             let mut handled = false;
             for group in p.groups() {
                 if group == [4] {
                     self.insert = byte == b'h';
+                    handled = true;
+                } else if group == [20] {
+                    self.new_line = byte == b'h';
                     handled = true;
                 }
             }
