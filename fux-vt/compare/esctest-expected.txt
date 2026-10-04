@@ -145,19 +145,15 @@ DECRQMTests.test_DECRQM_ANSI_TSM  not-implemented: DECRQM recognizes only the mo
 DECRQMTests.test_DECRQM_ANSI_TTM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_ANSI_VEM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_DEC_DECARM  xterm-too: esctest's known xterm bug (xterm always returns 4 (permanently reset))
-DECRQMTests.test_DECRQM_DEC_DECBKM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_DEC_DECCOLM  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
 DECRQMTests.test_DECRQM_DEC_DECHCCM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_DEC_DECKBUM  xterm-too: esctest's known xterm bug (Not supported)
 DECRQMTests.test_DECRQM_DEC_DECKPM  xterm-too: esctest's known xterm bug (Not supported)
 DECRQMTests.test_DECRQM_DEC_DECLRMM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
-DECRQMTests.test_DECRQM_DEC_DECNKM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_DEC_DECNRCM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_DEC_DECPCCM  xterm-too: esctest's known xterm bug (Not supported)
 DECRQMTests.test_DECRQM_DEC_DECPEX  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_DEC_DECPFF  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
-DECRQMTests.test_DECRQM_DEC_DECSCLM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
-DECRQMTests.test_DECRQM_DEC_DECSCNM  not-implemented: DECRQM recognizes only the modes fux-vt keeps (README, extended_replies), answering 0 for others, as DEC STD 070 says of a mode not recognized; xterm knows this one
 DECRQMTests.test_DECRQM_DEC_DECVCCM  xterm-too: esctest's known xterm bug (Not supported)
 DECRQMTests.test_DECRQM_DEC_DECXRLM  xterm-too: esctest's known xterm bug (Not supported)
 DECRQSSTests.test_DECRQSS_DECELF  xterm-too: esctest's known xterm bug (Not implemented.)
