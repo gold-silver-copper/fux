@@ -1,0 +1,6 @@
+# man at 24x80 on a page with tables: pages, search, the start, quit.
+\x20
+\x20
+/EXIT\r
+g
+q

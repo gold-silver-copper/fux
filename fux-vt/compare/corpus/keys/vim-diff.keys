@@ -1,0 +1,9 @@
+# vimdiff of two versions of a file: next and previous change, take a
+# change, switch windows, quit.
+]c
+]c
+do
+\x17w
+[c
+\x04
+:qa!\r

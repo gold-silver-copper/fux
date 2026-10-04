@@ -2,9 +2,10 @@
 //! Input: two bytes for the size (1–40 rows by 1–120 columns; ff ff is one
 //! row of u16::MAX columns), a flags byte, the cursors, then four-byte cell
 //! writes. Bit 2 of the flags gives the new grid its own size, in the next two
-//! bytes, so that the paint is a full one.
+//! bytes, so that the paint is a full one. Bit 3 paints for a terminal that
+//! draws underline styles, and bit 4 says the old grid was painted for one.
 use fux::render::{Grid, paint};
-use fux_vt::{Attributes, Cell, CellRef, Color, Parser};
+use fux_vt::{Attributes, Cell, CellRef, Color, Parser, UnderlineStyle};
 use libfuzzer_sys::fuzz_target;
 
 /// A glyph: its text, whether it is wide. `None` is a cell never written.
@@ -23,7 +24,11 @@ const GLYPHS: [Option<(&str, bool)>; 8] = [
 /// another), and fux never sets both, so no set here does.
 fn attributes(index: u8) -> Attributes {
     let plain = Attributes::default();
-    match index % 10 {
+    match index % 12 {
+        10 => plain
+            .with_underline_style(UnderlineStyle::Curly)
+            .with_underline_color(Color::Rgb(255, 0, 0)),
+        11 => plain.with_underline_style(UnderlineStyle::Double),
         0 => plain,
         1 => plain.with_bold(true),
         2 => plain.with_dim(true),
@@ -129,6 +134,7 @@ fuzz_target!(|data: &[u8]| {
         (rows, cols)
     };
     let mut old = grid(rows, cols);
+    old.underline_styles = flags & 16 != 0;
     old.cursor = (flags & 1 != 0).then(|| bytes.at(rows, cols));
     let new_cursor = (flags & 2 != 0).then(|| bytes.at(new_rows, new_cols));
     // The new grid starts as the old one, so that the paint is a diff, unless
@@ -152,6 +158,7 @@ fuzz_target!(|data: &[u8]| {
         grid(new_rows, new_cols)
     };
     new.cursor = new_cursor;
+    new.underline_styles = flags & 8 != 0;
     for &(which, kind, y, xh, xl) in &writes {
         if which {
             let (y, x) = (
@@ -177,6 +184,10 @@ fuzz_target!(|data: &[u8]| {
             // A wide glyph cannot fit the last column: it is painted blank.
             if want.0 && x + 1 == new_cols {
                 want = (false, false, " ", want.3);
+            }
+            // A terminal that draws no styles is painted plain underlines.
+            if !new.underline_styles && want.3.underline() {
+                want.3 = want.3.with_underline(true);
             }
             let got = seen(screen.cell(y, x));
             assert_eq!((got.0, got.1), (want.0, want.1), "width at {y},{x}");

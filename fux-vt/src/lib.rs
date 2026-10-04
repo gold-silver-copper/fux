@@ -8,11 +8,11 @@ mod parser;
 mod screen;
 mod unicode;
 
-pub use cell::{Attributes, Blink, Cell, CellRef, Cells, Color};
+pub use cell::{Attributes, Blink, Cell, CellRef, Cells, Color, UnderlineStyle};
 pub use link::{Hyperlink, ID_LIMIT, URI_LIMIT};
 pub use parser::{Event, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink, Unhandled};
 pub use screen::{MouseProtocolEncoding, MouseProtocolMode, Screen};
-pub use unicode::UNICODE_VERSION;
+pub use unicode::{UNICODE_VERSION, continues_cluster};
 
 /// `slice::copy_from_slice`, checked: copies `src` over `dst`, if they are the
 /// same length.

@@ -302,6 +302,128 @@ fn size_reports_answer_the_text_area_in_characters() -> Result {
     Ok(())
 }
 
+const SETTINGS: Options = Options::new().with_setting_reports(true);
+
+/// DECRQSS, `DCS $ q Pt ST` (xterm's ctlseqs, "Device-Control functions";
+/// DECRPSS in the VT510 manual): `DCS 1 $ r Pt ST`, `Pt` the control
+/// function that sets the setting now, or `DCS 0 $ r ST` for a request
+/// the terminal does not know. The pen is in xterm's form and order
+/// (`xtermFormatSGR`, xterm 411 misc.c): 0, then bold, underline, blink,
+/// inverse, hidden, faint, italic, strikeout and double underline, then
+/// the colours, 16 in their short forms and the rest with colons. An
+/// underline style is kitty's `4:n`, in the underline's place, and the
+/// underline colour, which xterm lacks, comes last in 38's form. neovim
+/// sets `0` then `4:3` and asks: it draws curly diagnostics only on
+/// `1$r0;4:3m` or `1$r4:3m` (neovim 0.12.5, src/nvim/tui/input.c,
+/// `handle_term_response`).
+#[test]
+fn setting_reports_answer_the_pen_the_cursor_shape_and_the_margins() -> Result {
+    let ask = |input: &str| -> std::result::Result<Vec<String>, fux_vt::Error> {
+        Ok(run(SETTINGS, input.as_bytes())?
+            .replies
+            .iter()
+            .map(|r| String::from_utf8_lossy(r).into_owned())
+            .collect())
+    };
+    let pen = |sgr: &str| ask(&format!("{sgr}\x1bP$qm\x1b\\"));
+    assert_eq!(pen("\x1b[0m\x1b[4:3m")?, ["\x1bP1$r0;4:3m\x1b\\"]);
+    assert_eq!(pen("")?, ["\x1bP1$r0m\x1b\\"]);
+    assert_eq!(pen("\x1b[4m")?, ["\x1bP1$r0;4m\x1b\\"]);
+    assert_eq!(pen("\x1b[21m")?, ["\x1bP1$r0;21m\x1b\\"]);
+    assert_eq!(pen("\x1b[4:5m")?, ["\x1bP1$r0;4:5m\x1b\\"]);
+    assert_eq!(
+        pen("\x1b[9;3;2;8;7;6;4:4;1m")?,
+        ["\x1bP1$r0;1;4:4;6;7;8;2;3;9m\x1b\\"]
+    );
+    assert_eq!(pen("\x1b[5m")?, ["\x1bP1$r0;5m\x1b\\"]);
+    assert_eq!(pen("\x1b[31;102m")?, ["\x1bP1$r0;31;102m\x1b\\"]);
+    assert_eq!(pen("\x1b[38;5;9;48;5;0m")?, ["\x1bP1$r0;91;40m\x1b\\"]);
+    assert_eq!(
+        pen("\x1b[38;5;208;48;2;1;2;3;58:2::4:5:6m")?,
+        ["\x1bP1$r0;38:5:208;48:2::1:2:3;58:2::4:5:6m\x1b\\"]
+    );
+    // neovim's truecolor check (runtime/lua/vim/_core/defaults.lua) wants
+    // its colour back: `48:2` and its three numbers.
+    assert_eq!(
+        pen("\x1b[0m\x1b[48;2;1;2;3m")?,
+        ["\x1bP1$r0;48:2::1:2:3m\x1b\\"]
+    );
+    assert_eq!(pen("\x1b[4;58;5;1m")?, ["\x1bP1$r0;4;58:5:1m\x1b\\"]);
+    // The margins, one-based.
+    assert_eq!(ask("\x1bP$qr\x1b\\")?, ["\x1bP1$r1;24r\x1b\\"]);
+    assert_eq!(ask("\x1b[3;10r\x1bP$qr\x1b\\")?, ["\x1bP1$r3;10r\x1b\\"]);
+    // A cursor shape a program set; none for the terminal's own.
+    assert_eq!(ask("\x1b[5 q\x1bP$q q\x1b\\")?, ["\x1bP1$r5 q\x1b\\"]);
+    assert!(ask("\x1bP$q q\x1b\\")?.is_empty());
+    assert!(ask("\x1b[0 q\x1bP$q q\x1b\\")?.is_empty());
+    // Requests fux-vt does not know, a long one among them, are invalid.
+    for request in ["s", "\"q", "t", "$|", "mm", "a long request"] {
+        assert_eq!(
+            ask(&format!("\x1bP$q{request}\x1b\\"))?,
+            ["\x1bP0$r\x1b\\"],
+            "{request:?}"
+        );
+    }
+    // Not DECRQSS: parameters, another intermediate, XTGETTCAP, a string
+    // cancelled.
+    for other in [
+        "\x1bP1$qm\x1b\\",
+        "\x1bP+q536d756c78\x1b\\",
+        "\x1bP$pm\x1b\\",
+        "\x1bP$qm\x18",
+        "\x1bPqm\x1b\\",
+    ] {
+        assert!(ask(other)?.is_empty(), "{other:?}");
+    }
+    // The pen the reply reports is the one when the string ends, and
+    // printing goes on as before after it.
+    let mut p = Parser::with_options(1, 10, 0, SETTINGS)?;
+    let mut record = Record::default();
+    p.process_with(b"a\x1bP$qm\x1b\\b\x1b[1m\x1bP$qm\x1b\\c", &mut record)?;
+    let expected: [&[u8]; 2] = [b"\x1bP1$r0m\x1b\\", b"\x1bP1$r0;1m\x1b\\"];
+    assert_eq!(record.replies, expected.map(<[u8]>::to_vec));
+    let text: String = (0..3)
+        .filter_map(|x| p.screen().cell(0, x))
+        .map(|c| c.contents().to_owned())
+        .collect();
+    assert_eq!(text, "abc");
+    Ok(())
+}
+
+/// Without `Options::setting_reports`, DECRQSS is a DCS like any other:
+/// consumed, unanswered.
+#[test]
+fn without_the_option_decrqss_is_ignored() -> Result {
+    let input = b"\x1b[4:3m\x1bP$qm\x1b\\\x1bP$qr\x1b\\\x1b[5 q\x1bP$q q\x1b\\\x1bP$qx\x1b\\";
+    let record = run(Options::default(), input)?;
+    assert_eq!(record, Record::default());
+    let all = Options::new()
+        .with_events(true)
+        .with_extended_replies(true)
+        .with_mode_reports(true);
+    assert_eq!(run(all, input)?, Record::default());
+    Ok(())
+}
+
+/// A DECRQSS answers the same however its bytes arrive, a byte at a time
+/// included.
+#[test]
+fn setting_reports_are_the_same_in_any_pieces() -> Result {
+    let input =
+        b"\x1b[0m\x1b[4:3;38:2::1:2:3m\x1bP$qm\x1b\\x\x1b[2;5r\x1bP$qr\x1b\\\x1bP$qzz\x1b\\";
+    let whole = run(SETTINGS, input)?;
+    assert_eq!(whole.replies.len(), 3);
+    for size in 1..input.len() {
+        let mut parser = Parser::with_options(24, 80, 0, SETTINGS)?;
+        let mut record = Record::default();
+        for piece in pieces::pieces(input, size) {
+            parser.process_with(piece, &mut record)?;
+        }
+        assert_eq!(record, whole, "pieces of {size}");
+    }
+    Ok(())
+}
+
 /// xterm's dynamic colour queries (ctlseqs, "Operating System Commands",
 /// OSC 10 to 19): each `?` asks for the next colour from the one the OSC
 /// names, an event each, with how the query ended so the host answers in
@@ -409,7 +531,7 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
             .with_bold(a.bold())
             .with_dim(a.dim())
             .with_italic(a.italic())
-            .with_underline(a.underline())
+            .with_underline_style(a.underline_style())
             .with_inverse(a.inverse());
         let text = original.contents();
         assert!(copy.set_text(usize::from(col), text, original.is_wide(), attributes));

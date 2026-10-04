@@ -1,0 +1,8 @@
+# bat on a Rust file, paged by less: a page, search, next, the end,
+# quit.
+!start 1500
+\x20
+/fn \r
+n
+G
+q

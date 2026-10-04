@@ -1,0 +1,16 @@
+# Midnight Commander (no subshell) on a tree of files: move, into a
+# directory, view a file, a page, out of the viewer, the other panel,
+# quit.
+!start 2000
+\e[B
+\e[B
+\e[B
+\r
+\e[B
+\e[B
+\eOR
+\x20
+q
+\t
+\e[B
+\e[21~

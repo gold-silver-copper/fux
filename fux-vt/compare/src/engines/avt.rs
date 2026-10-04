@@ -44,8 +44,9 @@
 //! - Bold and dim are one intensity, so the later of SGR 1 and 2 wins, as
 //!   in fux-vt; Ghostty keeps both (`'\e[1;2mX'`).
 //! - The blanks it makes, erasing, inserting, deleting or scrolling, take
-//!   the whole pen, not only its background (`--size 2x3
-//!   'abc\r\ndef\e[2;41m\n'`). fux-vt does the same when erasing only.
+//!   the whole pen, where xterm's and fux-vt's take its colours alone
+//!   (`--size 2x3 'abc\r\ndef\e[2;41m\n'`), so it does not vote on a
+//!   blank's attributes (`engine::Blanks`).
 //! - A cell holds one char: a combining mark takes a cell of its own
 //!   (`'e\u{301}'`), and an emoji modifier replaces the emoji before it
 //!   (`--size 1x2 '\u{1f44d}\u{1f3fd}'`).
@@ -65,7 +66,7 @@
 //!   10000 --newline-before-resize 'a  ' resize:2x2`).
 //! - UTF-8-encoded C1 controls are controls, since avt is fed chars: U+009B
 //!   is a CSI (`--size 1x5 'a\xc2\x9b31mb'`).
-use crate::engine::{Can, Engine, Kind, Setup, always};
+use crate::engine::{Blanks, Can, Engine, Kind, Setup, always};
 use crate::snapshot::{Cell, Color, Line, Snapshot, Style, Width};
 
 /// Scrollback avt keeps, in rows: far more than a case writes.
@@ -89,6 +90,10 @@ pub const KIND: Kind = Kind {
         link_group: false,
         prompt: false,
         ..Can::ALL
+    },
+    blanks: Blanks {
+        attributes: false,
+        ..Blanks::XTERM
     },
     panel: true,
     in_process: true,

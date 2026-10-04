@@ -1,0 +1,10 @@
+# tig --all on a generated repository: move, a commit's diff, scroll
+# it, close it, quit.
+!start 1500
+j
+j
+\r
+j
+\x20
+q
+q

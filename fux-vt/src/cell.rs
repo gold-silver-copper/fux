@@ -31,6 +31,54 @@ pub enum Blink {
     Rapid,
 }
 
+/// How a cell is underlined: SGR 4 and 24, 21 (doubly underlined, ECMA-48
+/// 8.3.117), and kitty's styles `4:0` to `4:5`
+/// (`references/modern/kitty_underlines.html`), numbered as they are there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum UnderlineStyle {
+    /// Not underlined (SGR 24, `4:0`).
+    #[default]
+    None,
+    /// A straight underline (SGR 4, `4:1`).
+    Single,
+    /// A double underline (SGR 21, `4:2`).
+    Double,
+    /// A curly underline (`4:3`): neovim's diagnostics.
+    Curly,
+    /// A dotted underline (`4:4`).
+    Dotted,
+    /// A dashed underline (`4:5`).
+    Dashed,
+}
+
+impl UnderlineStyle {
+    /// The style kitty's `4:n` names, `n` from 0 to 5; `None` for another
+    /// number.
+    pub const fn from_number(n: u16) -> Option<Self> {
+        Some(match n {
+            0 => Self::None,
+            1 => Self::Single,
+            2 => Self::Double,
+            3 => Self::Curly,
+            4 => Self::Dotted,
+            5 => Self::Dashed,
+            _ => return None,
+        })
+    }
+    /// Its number in kitty's `4:n`, 0 to 5.
+    pub const fn number(self) -> u16 {
+        match self {
+            Self::None => 0,
+            Self::Single => 1,
+            Self::Double => 2,
+            Self::Curly => 3,
+            Self::Dotted => 4,
+            Self::Dashed => 5,
+        }
+    }
+}
+
 /// Every ASCII character, in order: the text of a cell holding one.
 const ASCII: &str = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20\x21\x22\x23\x24\x25\x26\x27\x28\x29\x2a\x2b\x2c\x2d\x2e\x2f\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x3a\x3b\x3c\x3d\x3e\x3f\x40\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50\x51\x52\x53\x54\x55\x56\x57\x58\x59\x5a\x5b\x5c\x5d\x5e\x5f\x60\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6a\x6b\x6c\x6d\x6e\x6f\x70\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7a\x7b\x7c\x7d\x7e\x7f";
 
@@ -78,17 +126,20 @@ impl std::fmt::Debug for Attributes {
 }
 
 impl Attributes {
-    // The bits of `flags`, one a style.
+    // The bits of `flags`, one a style, but the underline's: three bits
+    // from `UNDERLINE_SHIFT` hold its style's number (`UnderlineStyle`), 0
+    // for none. Bit 3, the underline's while it had no style, is spare.
     pub(crate) const BOLD: u16 = 1;
     pub(crate) const DIM: u16 = 2;
     pub(crate) const ITALIC: u16 = 4;
-    pub(crate) const UNDERLINE: u16 = 8;
     pub(crate) const INVERSE: u16 = 16;
     pub(crate) const SLOW_BLINK: u16 = 32;
     pub(crate) const RAPID_BLINK: u16 = 64;
     pub(crate) const HIDDEN: u16 = 128;
     pub(crate) const STRIKEOUT: u16 = 256;
     pub(crate) const BLINK: u16 = Self::SLOW_BLINK | Self::RAPID_BLINK;
+    const UNDERLINE_SHIFT: u32 = 9;
+    pub(crate) const UNDERLINE: u16 = 0b111 << Self::UNDERLINE_SHIFT;
 
     /// Plain attributes with the given colours; add styles with the `with_*`
     /// builders. For consumers that store or transport cells.
@@ -158,10 +209,21 @@ impl Attributes {
     pub const fn with_italic(self, on: bool) -> Self {
         self.with_flag(Self::ITALIC, on)
     }
-    /// These attributes with underline (SGR 4) on or off.
+    /// These attributes with a single underline (SGR 4), or none of any
+    /// style.
     #[must_use]
     pub const fn with_underline(self, on: bool) -> Self {
-        self.with_flag(Self::UNDERLINE, on)
+        self.with_underline_style(if on {
+            UnderlineStyle::Single
+        } else {
+            UnderlineStyle::None
+        })
+    }
+    /// These attributes underlined in `style` (SGR 4, 21, 24 and `4:n`).
+    #[must_use]
+    pub const fn with_underline_style(mut self, style: UnderlineStyle) -> Self {
+        self.flags = (self.flags & !Self::UNDERLINE) | (style.number() << Self::UNDERLINE_SHIFT);
+        self
     }
     /// These attributes with inverse (SGR 7) on or off.
     #[must_use]
@@ -206,9 +268,14 @@ impl Attributes {
     pub fn italic(self) -> bool {
         self.flags & Self::ITALIC != 0
     }
-    /// Whether underline (SGR 4, or 21, or a style of 4) is on.
+    /// Whether the text is underlined, in any style.
     pub fn underline(self) -> bool {
         self.flags & Self::UNDERLINE != 0
+    }
+    /// How the text is underlined.
+    pub fn underline_style(self) -> UnderlineStyle {
+        UnderlineStyle::from_number((self.flags & Self::UNDERLINE) >> Self::UNDERLINE_SHIFT)
+            .unwrap_or(UnderlineStyle::None)
     }
     /// Whether inverse (SGR 7) is on.
     pub fn inverse(self) -> bool {
@@ -753,9 +820,13 @@ impl<'a> CellRef<'a> {
     pub fn italic(&self) -> bool {
         self.cell.attributes.italic()
     }
-    /// Whether underline (SGR 4, or 21, or a style of 4) is on.
+    /// Whether the text is underlined, in any style.
     pub fn underline(&self) -> bool {
         self.cell.attributes.underline()
+    }
+    /// How the text is underlined.
+    pub fn underline_style(&self) -> UnderlineStyle {
+        self.cell.attributes.underline_style()
     }
     /// Whether inverse (SGR 7) is on.
     pub fn inverse(&self) -> bool {

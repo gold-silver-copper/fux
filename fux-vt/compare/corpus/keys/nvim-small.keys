@@ -1,0 +1,9 @@
+# neovim at 10x40: scroll, search, a vertical split, quit.
+!start 2000
+\x04
+j
+j
+/pub\r
+:vsplit\r
+:q\r
+:q\r

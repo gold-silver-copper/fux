@@ -1,0 +1,7 @@
+# vim at 24x80: pages, search, quit.
+\x06
+\x06
+\x02
+/pub\r
+n
+:q\r

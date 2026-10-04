@@ -1,0 +1,13 @@
+# ncdu on a tree of files: move, into a directory, back, the item's
+# information, sort by name and by size, quit.
+!start 1500
+j
+j
+\r
+j
+h
+i
+i
+n
+s
+q

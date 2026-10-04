@@ -62,6 +62,11 @@ struct Conn {
     spare: Grid,
     placement: Placement,
     next_paint: Instant,
+    /// The pane the client last typed into, until it writes: what it writes
+    /// then, a keystroke's echo, is painted at once, not held to `PAINT`
+    /// behind a pane that keeps the screen changing (tmux paints it at
+    /// once too). One paint a keystroke at most.
+    echo: Option<PaneId>,
     /// Paints were skipped while its output was full: repaint all once drained.
     starved: bool,
     /// Close once `out` is flushed.
@@ -475,6 +480,7 @@ impl Server {
                         spare: Grid::new(0, 0),
                         placement: Placement::default(),
                         next_paint: Instant::now(),
+                        echo: None,
                         starved: false,
                         closing: false,
                         dead: false,
@@ -645,6 +651,11 @@ impl Server {
             if let (Some(Role::Attach), Some(bytes)) = (conn.role, raw.input()) {
                 if let Some(client) = conn.client {
                     self.session.input_at(client, bytes, now);
+                    conn.echo = self
+                        .session
+                        .views
+                        .get(&client)
+                        .and_then(crate::view::View::focus);
                 }
                 continue;
             }
@@ -805,6 +816,13 @@ impl Server {
                     // Past PANE_READ by at most one buffer, when the loop ends.
                     total = total.saturating_add(n);
                     self.session.output(id, buffer.get(..n).unwrap_or_default());
+                    // A keystroke's echo is painted at once.
+                    for conn in &mut self.conns {
+                        if conn.echo == Some(id) {
+                            conn.echo = None;
+                            conn.next_paint = Instant::now();
+                        }
+                    }
                 }
                 Err(fuxix::Errno::AGAIN) => break,
                 Err(fuxix::Errno::INTR) => continue,

@@ -13,6 +13,32 @@ mod tables;
 
 pub use tables::UNICODE_VERSION;
 
+/// Whether `c`, printed right after the grapheme cluster `cluster`, would
+/// continue it rather than start the next one, as fux-vt joins what is
+/// printed (UAX #29, but nothing joins a Prepend character): an emoji
+/// modifier after an emoji, a combining mark after anything. A host that
+/// paints cells side by side to a terminal (fux) uses it to tell where the
+/// terminal may join a cell to the one before it.
+pub fn continues_cluster(cluster: &str, c: char) -> bool {
+    // No printable ASCII character continues a cluster: they are all Other.
+    if (' '..='~').contains(&c) {
+        return false;
+    }
+    // Nor does any character that no rule joins whatever comes before it
+    // (most of what is not ASCII: box drawing, CJK, letters), which needs
+    // no look at the cluster.
+    let next = Properties::of(c);
+    if matches!(
+        next.kind,
+        Break::Other | Break::Prepend | Break::Control | Break::Cr
+    ) && !next.pictographic
+        && next.conjunct != Conjunct::Consonant
+    {
+        return false;
+    }
+    Cluster::of(cluster).push(c)
+}
+
 /// Grapheme_Cluster_Break, numbered as the generated tables store it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Break {

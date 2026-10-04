@@ -1,0 +1,7 @@
+# vim's help: scroll, search, follow a tag, back, quit.
+\x04
+/motion\r
+n
+\x1d
+\x0f
+:qa!\r

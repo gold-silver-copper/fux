@@ -1,0 +1,15 @@
+# lazygit on a generated repository: the commits, a commit's files,
+# back, the branches, the files, quit.
+!start 3000
+!quiet 800
+4
+j
+j
+\r
+j
+\e
+3
+j
+2
+j
+q

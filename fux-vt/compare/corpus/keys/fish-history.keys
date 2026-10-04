@@ -1,0 +1,12 @@
+# fish's history: up and down, a prefix search, run it, the history,
+# exit.
+!start 2000
+\e[A
+\e[A
+\e[B
+\x15
+gre
+\e[A
+\r
+history --max 3\r
+exit\r

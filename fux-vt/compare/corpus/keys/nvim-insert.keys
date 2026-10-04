@@ -1,0 +1,15 @@
+# neovim inserting: open a line, type, complete with Ctrl-N (the popup
+# menu), a cursor line, undo, quit without saving.
+!start 2000
+G
+o
+pub fn added() -> usize {\r1\r}
+\e
+o
+pub\x0e
+\x0e
+\x0e
+\e
+:set cursorline\r
+u
+:q!\r
