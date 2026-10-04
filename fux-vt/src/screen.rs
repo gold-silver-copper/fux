@@ -1712,6 +1712,17 @@ impl Screen {
         Reply::of(format_args!("\x1bP{id}!~{checksum:04X}\x1b\\"))
     }
 
+    /// The primary device attributes (DA1, `CSI c`; and DECID, `ESC Z`):
+    /// a VT220 with ANSI colour with an identity, else a VT100 with
+    /// advanced video, as the vt100 crate answered.
+    pub(crate) fn primary_attributes(options: &Options) -> Reply {
+        if options.identity.is_some() {
+            Reply::of(format_args!("\x1b[?62;22c"))
+        } else {
+            Reply::of(format_args!("\x1b[?1;2c"))
+        }
+    }
+
     /// DECRQM status for a DEC private mode: 1 set, 2 reset, 0 not
     /// recognized, and 4 permanently reset for DECARM (8), which xterm 411
     /// reports so (its auto-repeat is the X server's).
@@ -2307,12 +2318,7 @@ impl Screen {
                 _ => return Ok(Dispatch::Unhandled),
             },
             b'c' if p.first(0, 0) == 0 => {
-                let reply = if options.identity.is_some() {
-                    Reply::of(format_args!("\x1b[?62;22c"))
-                } else {
-                    Reply::of(format_args!("\x1b[?1;2c"))
-                };
-                return Ok(Dispatch::Reply(reply));
+                return Ok(Dispatch::Reply(Self::primary_attributes(options)));
             }
             _ => return Ok(Dispatch::Unhandled),
         }
