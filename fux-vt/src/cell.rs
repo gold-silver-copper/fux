@@ -483,10 +483,14 @@ impl Cell {
     }
     /// The inline text; empty for a spilled cell.
     fn inline(&self) -> &str {
-        // One ASCII byte, as most cells hold: its text without validating
-        // it, which readers that walk every cell (copy, search) would pay
-        // on each.
-        if self.length & (Self::LENGTH | Self::SPILLED) == 1
+        // One ASCII byte, as most cells hold, or none, as a blank holds:
+        // its text without validating it, which readers that walk every
+        // cell (copy, search, a host's paint) would pay on each.
+        let length = self.length & (Self::LENGTH | Self::SPILLED);
+        if length == 0 {
+            return "";
+        }
+        if length == 1
             && let Some(&byte) = self.text.first()
             && byte.is_ascii()
         {
