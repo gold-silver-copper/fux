@@ -1363,6 +1363,7 @@ impl Screen {
             self.cursor_back(1, pending);
             return Ok(());
         }
+        let new_line = self.new_line;
         let g = self.grid_mut();
         // BS, LF, VT, FF and CR end a pending wrap (DEC STD 070, Appendix
         // D.6.1). HT does not: it leaves a cursor in the last column where
@@ -1374,11 +1375,12 @@ impl Screen {
             8 => g.cursor.1 = g.cursor.1.saturating_sub(1),
             9 => self.tab(1, true),
             10..=12 => {
-                self.linefeed()?;
-                // LNM: a new line, the carriage returned too.
-                if self.new_line {
-                    self.grid_mut().cursor.1 = 0;
+                // LNM: a new line, the carriage returned too, first, as
+                // the line feed leaves the column as it is.
+                if new_line {
+                    g.cursor.1 = 0;
                 }
+                self.linefeed()?;
             }
             13 => g.cursor.1 = 0,
             // SO puts G1 in GL, SI G0.
