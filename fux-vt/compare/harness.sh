@@ -171,7 +171,7 @@ fuzz() {
     { echo "fuzz: the targets do not build (cargo +nightly fuzz build)"; return 1; }
   # The oracle's target starts from the oracle's own random cases, written
   # as its stored corpus (ignored by git), which reach far more than bytes.
-  "$root/diff/oracle.sh" --seeds "$root/diff/fuzz/corpus/oracle" --cases 300 --streams 5 >/dev/null ||
+  "$root/diff/oracle.sh" --seeds "$root/diff/fuzz/corpus/oracle" --cases 1000 --streams 5 >/dev/null ||
     { echo "fuzz: the oracle's seeds could not be written"; return 1; }
   for spec in "${targets[@]}"; do
     read -r dir target dict asan <<<"$spec"

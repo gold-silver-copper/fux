@@ -24,8 +24,8 @@ pieces of up to 2048 bytes), --cases random cases (default 10000), --streams
 resize-heavy streams with history full (default 50), the limits, and
 --cells runs of the standalone types (default 300). A difference is shrunk
 for up to --shrink seconds (default 60) and written to diff/target/oracle/
-to replay with --replay. --seeds writes --cases random cases and --streams
-resize streams to DIR instead, as --replay reads them, to seed the fuzz
+to replay with --replay. --seeds writes --cases random cases, --streams
+resize streams and the limits to DIR instead, as --replay reads them, to seed the fuzz
 target (diff/fuzz).";
 
 /// The most bytes of a corpus recording given in one step.
@@ -105,14 +105,15 @@ fn parse() -> Result<Asked, String> {
     })
 }
 
-/// Writes the random cases and resize streams to `dir` as `--replay`
+/// Writes the random cases, resize streams and limits to `dir` as `--replay`
 /// reads them, which the fuzz target reads too: seeds that reach far more
 /// than random bytes do. How many it wrote.
 fn seeds(dir: &str, o: &Options) -> Result<bool, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{dir}: {e}"))?;
     let cases = inputs::random_cases(o.seed ^ 0x5241_4e44, o.cases)
         .into_iter()
-        .chain(inputs::resize_streams(o.seed ^ 0x5349_5a45, o.streams));
+        .chain(inputs::resize_streams(o.seed ^ 0x5349_5a45, o.streams))
+        .chain(inputs::limits_cases(o.seed ^ 0x4c49_4d49));
     let mut n = 0usize;
     for (i, case) in cases.enumerate() {
         let path = std::path::Path::new(dir).join(format!("seed-{}-{i}.case", o.seed));
