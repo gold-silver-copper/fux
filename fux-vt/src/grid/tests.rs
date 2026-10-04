@@ -7,7 +7,7 @@ const UP: Scroll = Scroll::Up { history: true };
 /// saturates.
 fn heap(grid: &Grid) -> [usize; 3] {
     [
-        grid.cells.capacity().saturating_mul(size_of::<Cell>()),
+        grid.cells.capacity().saturating_mul(size_of::<Compact>()),
         grid.meta.capacity().saturating_mul(size_of::<Meta>()),
         grid.order.capacity().saturating_mul(size_of::<usize>()),
     ]
@@ -20,11 +20,11 @@ fn measured_storage_plateau_and_transactional_resize_peak_include_metadata() -> 
     let initial_primary = heap(&primary);
     let initial_alternate = heap(&alternate);
     for version in 1..=10_000 {
-        primary.scroll((0, 23), 1, UP, Attributes::default(), &mut next, version)?;
+        primary.scroll((0, 23), 1, UP, 0, &mut next, version)?;
     }
     let plateau = heap(&primary);
     for version in 10_001..=20_000 {
-        primary.scroll((0, 23), 1, UP, Attributes::default(), &mut next, version)?;
+        primary.scroll((0, 23), 1, UP, 0, &mut next, version)?;
     }
     assert_eq!(heap(&primary), plateau);
     assert_eq!(primary.history_len(), 10_000);
@@ -38,7 +38,7 @@ fn measured_storage_plateau_and_transactional_resize_peak_include_metadata() -> 
     let new_heap = new_primary.iter().sum::<usize>() + new_alternate.iter().sum::<usize>();
     let screen_bytes = std::mem::size_of::<crate::Screen>();
     let peak_reserved = old_heap + new_heap + screen_bytes + 2 * std::mem::size_of::<Grid>();
-    assert_eq!(std::mem::size_of::<Cell>(), 32);
+    assert_eq!(std::mem::size_of::<Compact>(), 8);
     println!(
         "MEMORY-BOUNDS {{\"components\":[\"cells\",\"row_metadata\",\"slot_order\"],\"initial_primary\":{initial_primary:?},\"initial_alternate\":{initial_alternate:?},\"plateau_primary\":{plateau:?},\"resized_primary\":{new_primary:?},\"resized_alternate\":{new_alternate:?},\"screen_object_bytes\":{screen_bytes},\"steady_reserved_bytes\":{},\"resize_peak_reserved_bytes\":{peak_reserved},\"scrolls\":20000}}",
         old_heap + screen_bytes
@@ -68,7 +68,7 @@ fn moving_a_row_is_a_removal_then_an_insertion() -> Result<(), Error> {
     let contiguous = Grid::new(5, 1, 0, &mut next, 0)?;
     let mut wrapped = Grid::new(5, 1, 4, &mut next, 0)?;
     for version in 1..=11 {
-        wrapped.scroll((0, 4), 1, UP, Attributes::default(), &mut next, version)?;
+        wrapped.scroll((0, 4), 1, UP, 0, &mut next, version)?;
     }
     let (front, back) = wrapped.order.as_slices();
     assert!(!front.is_empty() && !back.is_empty(), "the deque wraps");
@@ -102,8 +102,15 @@ fn moves_are_removals_then_insertions(grid: &Grid) {
 }
 
 /// What a reader sees of a row: its identity, version, wrap and prompt
-/// flags, and each cell as stored, with its text and its link's number.
-pub(crate) type Seen = (RowId, u64, bool, bool, Vec<(Cell, String, u16)>);
+/// flags, and each cell as stored, with its attributes, its text and its
+/// link's number.
+pub(crate) type Seen = (
+    RowId,
+    u64,
+    bool,
+    bool,
+    Vec<(Compact, Attributes, String, u16)>,
+);
 
 impl Grid {
     /// `erase` as it was before the `used` mark bounded it: every cell of
@@ -124,9 +131,10 @@ impl Grid {
         } else {
             end
         };
+        let style = self.style(attributes);
         self.mutate_row(row, version, written, |cells| {
             let span = usize::from(start)..usize::from(end.min(cols));
-            let blank = Cell::blank(attributes);
+            let blank = Compact::blank(style);
             if cells
                 .get(span.clone())
                 .is_none_or(|run| run.iter().all(|c| c.same(&blank)))
@@ -138,13 +146,13 @@ impl Grid {
                     if cell.is_wide() {
                         let next = col.checked_add(1);
                         if let Some(other) = next.and_then(|i| cells.get_mut(i)) {
-                            *other = Cell::blank(other.attributes);
+                            *other = other.blanked();
                         }
                         clears_edge |= next == Some(usize::from(last));
                     } else if cell.is_wide_continuation()
                         && let Some(other) = col.checked_sub(1).and_then(|i| cells.get_mut(i))
                     {
-                        *other = Cell::blank(other.attributes);
+                        *other = other.blanked();
                     }
                     if let Some(cell) = cells.get_mut(col) {
                         *cell = blank;
@@ -173,11 +181,13 @@ impl Grid {
             .filter_map(|i| self.row_at(i))
             .map(|row| {
                 let cells = row
-                    .cells()
+                    .cells
+                    .iter()
                     .enumerate()
                     .map(|(col, c)| {
                         let link = row.links.and_then(|l| l.get(col)).copied().unwrap_or(0);
-                        (*c.stored(), c.contents().to_owned(), link)
+                        let read = c.read(row.spill, row.styles);
+                        (*c, read.attributes(), read.contents().to_owned(), link)
                     })
                     .collect();
                 (row.id, row.version, row.wrapped, row.prompt, cells)
@@ -310,9 +320,9 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
             2 => {
                 m.used = m.width;
                 let half = match r.below(3) {
-                    0 => Cell::glyph('\u{4e2d}', 2, Attributes::default()),
-                    1 => Cell::continuation(),
-                    _ => Cell::default(),
+                    0 => Compact::glyph('\u{4e2d}', 2, 0),
+                    1 => Compact::continuation(),
+                    _ => Compact::default(),
                 };
                 let at = if r.chance(50) {
                     width.saturating_sub(1)

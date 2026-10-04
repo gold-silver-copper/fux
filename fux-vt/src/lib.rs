@@ -2,10 +2,12 @@
 //! See the crate README for the sequence and resource contracts.
 
 mod cell;
+mod compact;
 mod grid;
 mod link;
 mod parser;
 mod screen;
+mod style;
 mod unicode;
 
 pub use cell::{Attributes, Blink, Cell, CellRef, Cells, Color, UnderlineStyle};
@@ -80,11 +82,13 @@ pub struct Row<'a> {
     pub(crate) wrapped: bool,
     /// Whether a prompt starts on the row (OSC 133 ; A).
     pub(crate) prompt: bool,
-    pub(crate) cells: &'a [Cell],
-    pub(crate) spill: &'a cell::Spill,
+    pub(crate) cells: &'a [compact::Compact],
+    pub(crate) spill: &'a compact::Text,
     /// Each cell's link, if any cell of the row has had one (`link.rs`).
     pub(crate) links: Option<&'a [u16]>,
     pub(crate) table: &'a link::Links,
+    /// The attributes of the cells' styles.
+    pub(crate) styles: &'a style::Styles,
 }
 
 impl<'a> Row<'a> {
@@ -112,8 +116,8 @@ impl<'a> Row<'a> {
     }
     /// The cell at column `col`.
     pub fn cell(&self, col: usize) -> Option<CellRef<'a>> {
-        let spill = self.spill;
-        self.cells.get(col).map(|cell| CellRef::new(cell, spill))
+        let (spill, styles) = (self.spill, self.styles);
+        self.cells.get(col).map(|cell| cell.read(spill, styles))
     }
     /// The hyperlink (OSC 8) of the cell at column `col`: the link that was
     /// open when its glyph was printed, if one was. A blank cell has none;
@@ -151,8 +155,17 @@ impl<'a> Row<'a> {
     pub fn cells(
         &self,
     ) -> impl DoubleEndedIterator<Item = CellRef<'a>> + ExactSizeIterator + Clone + use<'a> {
-        let spill = self.spill;
-        self.cells.iter().map(move |cell| CellRef::new(cell, spill))
+        let (spill, styles) = (self.spill, self.styles);
+        // Cells side by side mostly share a style: its attributes are found
+        // once for a run of them. Style 0 is the default attributes.
+        let mut last = (0, Attributes::default());
+        self.cells.iter().map(move |cell| {
+            let style = cell.style();
+            if style != last.0 {
+                last = (style, styles.get(style));
+            }
+            cell.read_as(spill, last.1)
+        })
     }
 }
 
