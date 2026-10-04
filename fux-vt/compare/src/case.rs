@@ -2,7 +2,11 @@
 //! to fux-vt and to a panel of other engines. Running one compares fux-vt
 //! with each after every step, and fux-vt fails where most of them differ
 //! from it; shrinking one keeps it failing while taking away all it can.
-use crate::engine::{ENGINES, Engine, SUBJECT, Setup};
+//!
+//! fux-vt is the subject unless the case names another engine
+//! (`Case::subject`, `--subject`): that engine is then judged as fux-vt is,
+//! and fux-vt is an engine of the panel. "fux-vt" below means the subject.
+use crate::engine::{self, Engine, FUX_VT, Setup};
 use crate::escape;
 use crate::families::{self, FAMILIES};
 use crate::rng::Rng;
@@ -47,6 +51,9 @@ pub struct Case {
     /// does; named cases and replays do not.
     pub newline_before_resize: bool,
     pub steps: Vec<Step>,
+    /// The engine judged ([`FUX_VT`] unless `--subject` names another),
+    /// by its index (`engine::kind`). The panel never holds it.
+    pub subject: usize,
 }
 
 /// What one engine made of a step, beside fux-vt.
@@ -141,7 +148,7 @@ pub fn outvoted_on(verdicts: &[Verdict]) -> Vec<String> {
 /// `fux_blank`): it can tell the field, read the cell's style, and, on a
 /// cell blank on both sides, makes that part of its blanks as xterm does.
 fn votes(verdict: &Verdict, field: Field, cell: Option<(usize, usize)>, fux_blank: bool) -> bool {
-    ENGINES.get(verdict.engine).is_some_and(|k| {
+    engine::kind(verdict.engine).is_some_and(|k| {
         field.told_by(&k.can)
             && cell.is_none_or(|(y, x)| {
                 read_style(&verdict.snapshot, y, x)
@@ -188,17 +195,61 @@ pub fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         .unwrap_or_else(|payload| Err(format!("panicked: {}", panic_message(payload.as_ref()))))
 }
 
+/// What an engine made of a step beside the subject's `base` snapshot:
+/// compared on what both the engine and the subject can tell.
+pub fn verdict(subject: usize, base: &Snapshot, engine: usize, snapshot: Snapshot) -> Verdict {
+    let can = match (engine::kind(subject), engine::kind(engine)) {
+        (Some(s), Some(e)) => s.can.and(e.can),
+        (None, Some(e)) => e.can,
+        (Some(_) | None, None) => engine::Can::ALL,
+    };
+    Verdict {
+        engine,
+        differences: snapshot::differences(&base.masked(&can), &snapshot.masked(&can)),
+        snapshot,
+    }
+}
+
+/// The same step judged with another subject: `to`, an engine of
+/// `verdicts`, takes the place of `from`, the subject whose snapshot is
+/// `base`, which joins the panel where `to` was. None if `to` gave no
+/// verdict (it abstained). Every snapshot is as it was read, so nothing
+/// runs again, and each engine is fed once for both judgements.
+pub fn rejudge(
+    from: usize,
+    base: &Snapshot,
+    verdicts: &[Verdict],
+    to: usize,
+) -> Option<(Snapshot, Vec<Verdict>)> {
+    let new_base = verdicts.iter().find(|v| v.engine == to)?.snapshot.clone();
+    let judged = verdicts
+        .iter()
+        .map(|v| {
+            if v.engine == to {
+                verdict(to, &new_base, from, base.clone())
+            } else {
+                verdict(to, &new_base, v.engine, v.snapshot.clone())
+            }
+        })
+        .collect();
+    Some((new_base, judged))
+}
+
 struct Running {
+    subject: usize,
+    /// The rows of history the subject is asked for: the case's.
+    history: usize,
     fux: Box<dyn Engine>,
     engines: Vec<(usize, Box<dyn Engine>)>,
     abstained: Vec<(usize, String)>,
 }
 
 impl Running {
-    /// Applies `f` to fux-vt, whose errors end the case, and to every
+    /// Applies `f` to the subject, whose errors end the case, and to every
     /// engine, whose errors make it abstain.
     fn each(&mut self, f: impl Fn(&mut dyn Engine) -> Result<(), String>) -> Result<(), String> {
-        guarded(|| f(self.fux.as_mut())).map_err(|e| format!("fux-vt: {e}"))?;
+        let subject = engine::name(self.subject);
+        guarded(|| f(self.fux.as_mut())).map_err(|e| format!("{subject}: {e}"))?;
         let mut kept = Vec::with_capacity(self.engines.len());
         for (index, mut engine) in std::mem::take(&mut self.engines) {
             match guarded(|| f(engine.as_mut())) {
@@ -210,21 +261,20 @@ impl Running {
         Ok(())
     }
 
+    /// The subject's snapshot and each engine's verdict beside it. The
+    /// subject is asked for the case's rows of history (fux-vt gives all it
+    /// keeps, whatever is asked), the engines for as many as it gave.
     fn compare(&mut self) -> Result<(Snapshot, Vec<Verdict>), String> {
-        let fux = guarded(|| self.fux.snapshot(0)).map_err(|e| format!("fux-vt: {e}"))?;
+        let subject = engine::name(self.subject);
+        let history = self.history;
+        let fux = guarded(|| self.fux.snapshot(history)).map_err(|e| format!("{subject}: {e}"))?;
         let mut verdicts = Vec::with_capacity(self.engines.len());
         let mut kept = Vec::with_capacity(self.engines.len());
         for (index, mut engine) in std::mem::take(&mut self.engines) {
-            let kind = ENGINES.get(index).ok_or("no such engine")?;
+            engine::kind(index).ok_or("no such engine")?;
             match guarded(|| engine.snapshot(fux.history.len())) {
                 Ok(snapshot) => {
-                    let differences =
-                        snapshot::differences(&fux.masked(&kind.can), &snapshot.masked(&kind.can));
-                    verdicts.push(Verdict {
-                        engine: index,
-                        differences,
-                        snapshot,
-                    });
+                    verdicts.push(verdict(self.subject, &fux, index, snapshot));
                     kept.push((index, engine));
                 }
                 Err(e) => self.abstained.push((index, e)),
@@ -245,10 +295,13 @@ impl Case {
         }
     }
 
-    /// Runs the case beside the `panel` (indices into [`ENGINES`]),
-    /// comparing after creation and after every step, and stopping where
-    /// fux-vt is first outvoted. An error means an engine refused or
+    /// Runs the case beside the `panel` (indices into [`ENGINES`], and
+    /// [`FUX_VT`] when another engine is the subject), comparing after
+    /// creation and after every step, and stopping where the subject is
+    /// first outvoted. An error means the subject or an engine refused or
     /// failed something, not that they differed.
+    ///
+    /// [`ENGINES`]: crate::engine::ENGINES
     pub fn run(&self, panel: &[usize]) -> Result<Outcome, String> {
         self.run_until(panel, true)
     }
@@ -256,32 +309,36 @@ impl Case {
     /// Runs the case, stopping where fux-vt is first outvoted if `stop`,
     /// else running every step and giving the verdicts at the end.
     pub fn run_until(&self, panel: &[usize], stop: bool) -> Result<Outcome, String> {
-        self.run_judged(panel, stop, outvoted)
+        self.run_judged(panel, stop, |_, verdicts| outvoted(verdicts))
     }
 
     /// Runs the case as [`Case::run_until`] does, with `fails` saying, from
-    /// the verdicts after a step, whether fux-vt fails there.
+    /// the subject's snapshot and the verdicts after a step, whether the
+    /// subject fails there.
     pub fn run_judged(
         &self,
         panel: &[usize],
         stop: bool,
-        fails: impl Fn(&[Verdict]) -> bool,
+        fails: impl Fn(&Snapshot, &[Verdict]) -> bool,
     ) -> Result<Outcome, String> {
         let setup = self.setup();
+        let subject = engine::kind(self.subject).ok_or("no such subject")?;
         let mut running = Running {
-            fux: (SUBJECT.make)(&setup)?,
+            subject: self.subject,
+            history: self.history,
+            fux: (subject.make)(&setup)?,
             engines: Vec::with_capacity(panel.len()),
             abstained: Vec::new(),
         };
         for &index in panel {
-            let kind = ENGINES.get(index).ok_or("no such engine")?;
+            let kind = engine::kind(index).ok_or("no such engine")?;
             match guarded(|| (kind.make)(&setup)) {
                 Ok(engine) => running.engines.push((index, engine)),
                 Err(e) => running.abstained.push((index, e)),
             }
         }
         let (fux, verdicts) = running.compare()?;
-        if fails(&verdicts) && (stop || self.steps.is_empty()) {
+        if fails(&fux, &verdicts) && (stop || self.steps.is_empty()) {
             return Ok(Outcome {
                 step: Some(0),
                 fux,
@@ -308,7 +365,7 @@ impl Case {
             }
             let (fux, verdicts) = running.compare()?;
             let at_end = i.saturating_add(1) == self.steps.len();
-            if fails(&verdicts) && (stop || at_end) {
+            if fails(&fux, &verdicts) && (stop || at_end) {
                 return Ok(Outcome {
                     step: Some(i.saturating_add(1)),
                     fux,
@@ -354,10 +411,15 @@ impl Case {
     pub fn command(&self, panel: &[usize]) -> String {
         let names: Vec<&str> = panel
             .iter()
-            .filter_map(|&i| ENGINES.get(i).map(|k| k.name))
+            .filter_map(|&i| engine::kind(i).map(|k| k.name))
             .collect();
+        let subject = if self.subject == FUX_VT {
+            String::new()
+        } else {
+            format!(" --subject {}", engine::name(self.subject))
+        };
         let mut out = format!(
-            "fux-vt-compare replay --engines {} --size {}x{} --history {}",
+            "fux-vt-compare replay{subject} --engines {} --size {}x{} --history {}",
             names.join(","),
             self.rows,
             self.cols,
@@ -605,13 +667,15 @@ pub fn random(r: &mut Rng, families: &[usize], reflow: bool) -> Case {
         reflow,
         newline_before_resize: true,
         steps,
+        subject: FUX_VT,
     }
 }
 
 /// The report for a case: what led to it, the command that replays it,
-/// each engine's verdict and what it found different, and fux-vt's screen
-/// beside the first engine that differs.
+/// each engine's verdict and what it found different, and the subject's
+/// screen beside the first engine that differs.
 pub fn report(case: &Case, panel: &[usize], outcome: &Outcome) -> String {
+    let subject = engine::name(case.subject);
     let mut out = String::new();
     let _ = writeln!(out, "  families: {}", case.families().join(", "));
     let _ = writeln!(out, "  replay:   {}", case.command(panel));
@@ -640,32 +704,33 @@ pub fn report(case: &Case, panel: &[usize], outcome: &Outcome) -> String {
         None => {
             let _ = writeln!(
                 out,
-                "  fux-vt is not outvoted; {} of {total} engines differ:",
+                "  {subject} is not outvoted; {} of {total} engines differ:",
                 outcome.differing()
             );
         }
     }
     for verdict in &outcome.verdicts {
-        let name = ENGINES.get(verdict.engine).map_or("?", |k| k.name);
+        let name = engine::name(verdict.engine);
         if verdict.differences.is_empty() {
             let _ = writeln!(out, "    {name}: agrees");
             continue;
         }
         let _ = writeln!(out, "    {name}: differs");
         for diff in verdict.differences.iter().take(8) {
-            let _ = writeln!(out, "      {}", diff.line(name));
+            let _ = writeln!(out, "      {}", diff.line_beside(subject, name));
         }
         if verdict.differences.len() > 8 {
             let _ = writeln!(out, "      ...");
         }
     }
     for (index, why) in &outcome.abstained {
-        let name = ENGINES.get(*index).map_or("?", |k| k.name);
+        let name = engine::name(*index);
         let _ = writeln!(out, "    {name}: abstains: {why}");
     }
     if let Some(verdict) = outcome.verdicts.iter().find(|v| !v.differences.is_empty()) {
-        let name = ENGINES.get(verdict.engine).map_or("?", |k| k.name);
-        for line in snapshot::side_by_side(&outcome.fux, &verdict.snapshot, name).lines() {
+        let name = engine::name(verdict.engine);
+        let shown = snapshot::side_by_side_beside(subject, &outcome.fux, &verdict.snapshot, name);
+        for line in shown.lines() {
             let _ = writeln!(out, "    {line}");
         }
     }
@@ -674,9 +739,9 @@ pub fn report(case: &Case, panel: &[usize], outcome: &Outcome) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Verdict, outvoted_on};
-    use crate::engine::{self, ENGINES};
-    use crate::snapshot::{self, Cell, Color, Line, Snapshot, Style, Width};
+    use super::{Case, Snippet, Step, Verdict, outvoted_on};
+    use crate::engine::{self, ENGINES, FUX_VT};
+    use crate::snapshot::{self, Cell, Color, Field, Line, Snapshot, Style, Width};
 
     const PEN: Color = Color::Rgb(10, 20, 30);
 
@@ -747,6 +812,128 @@ mod tests {
             outvoted_on(&panel(&no_fg, screen("", PEN, false))?),
             ["cell (0,0) fg"]
         );
+        Ok(())
+    }
+
+    /// A one-step case of `rows` by `cols` with `subject` judged.
+    fn one_step(rows: u16, cols: u16, bytes: &[u8], subject: usize) -> Case {
+        Case {
+            rows,
+            cols,
+            history: 0,
+            reflow: true,
+            newline_before_resize: false,
+            steps: vec![Step::Output(vec![Snippet {
+                family: usize::MAX,
+                bytes: bytes.to_vec(),
+            }])],
+            subject,
+        }
+    }
+
+    /// Another engine judged in fux-vt's place, with fux-vt on the panel:
+    /// Ghostty keeps synchronized output on through DECSTR, fux-vt ends it
+    /// (the named case `decstr-ends-synchronized-output`). Each, as the
+    /// subject, is outvoted by the other alone, on the same field, with
+    /// the sides swapped; the replay names the subject.
+    #[test]
+    fn another_engine_is_judged_as_fux_vt_is() -> Result<(), String> {
+        let ghostty = engine::find("ghostty").ok_or("no ghostty")?;
+        let bytes = b"\x1b[?2026h\x1b[!p";
+        let case = one_step(1, 4, bytes, ghostty);
+        let outcome = case.run_until(&[FUX_VT], false)?;
+        assert!(!outcome.agrees());
+        assert_eq!(outvoted_on(&outcome.verdicts), ["synchronized output"]);
+        let verdict = outcome.verdicts.first().ok_or("no verdict")?;
+        assert_eq!(verdict.engine, FUX_VT);
+        let diff = verdict.differences.first().ok_or("no difference")?;
+        assert_eq!(
+            diff.line_beside("ghostty", "fux-vt"),
+            "synchronized output: ghostty true, fux-vt false"
+        );
+        assert!(
+            case.command(&[FUX_VT])
+                .starts_with("fux-vt-compare replay --subject ghostty --engines fux-vt --size 1x4")
+        );
+        let fux = one_step(1, 4, bytes, FUX_VT);
+        let outcome = fux.run_until(&[ghostty], false)?;
+        assert_eq!(outvoted_on(&outcome.verdicts), ["synchronized output"]);
+        let diff = outcome
+            .verdicts
+            .first()
+            .and_then(|v| v.differences.first())
+            .ok_or("no difference")?;
+        assert_eq!(
+            diff.line_beside("fux-vt", "ghostty"),
+            "synchronized output: fux-vt false, ghostty true"
+        );
+        assert!(
+            fux.command(&[ghostty])
+                .starts_with("fux-vt-compare replay --engines ghostty --size 1x4")
+        );
+        Ok(())
+    }
+
+    /// A field the subject cannot tell is compared with no one, on both
+    /// sides, as an engine's own `Can` masks it: Ghostty tells no link
+    /// groups, so its two links to one URI read as one, where fux-vt and
+    /// alacritty keep two (the named case
+    /// `two-links-without-an-id-to-one-uri-are-two`). With Ghostty the
+    /// subject, neither fux-vt nor alacritty differs on them.
+    #[test]
+    fn a_field_the_subject_cannot_tell_is_compared_with_no_one() -> Result<(), String> {
+        let ghostty = engine::find("ghostty").ok_or("no ghostty")?;
+        let alacritty = engine::find("alacritty").ok_or("no alacritty")?;
+        let bytes = b"\x1b]8;;http://a.example/\x1b\\ab\x1b]8;;\x1b\\ \
+            \x1b]8;;http://a.example/\x1b\\cd\x1b]8;;\x1b\\";
+        let case = one_step(1, 6, bytes, ghostty);
+        let outcome = case.run_until(&[FUX_VT, alacritty], false)?;
+        let groups =
+            |diffs: &[snapshot::Diff]| diffs.iter().filter(|d| d.field == Field::LinkGroup).count();
+        let fux = outcome
+            .verdicts
+            .iter()
+            .find(|v| v.engine == FUX_VT)
+            .ok_or("no fux-vt verdict")?;
+        // Unmasked, the second link differs in its group.
+        assert_eq!(
+            groups(&snapshot::differences(&outcome.fux, &fux.snapshot)),
+            2
+        );
+        assert_eq!(outcome.verdicts.len(), 2);
+        for verdict in &outcome.verdicts {
+            assert_eq!(
+                groups(&verdict.differences),
+                0,
+                "{}",
+                engine::name(verdict.engine)
+            );
+        }
+        assert!(outcome.agrees());
+        Ok(())
+    }
+
+    /// Judging fux-vt again on the screens read with Ghostty the subject
+    /// gives what running fux-vt as the subject gives, engine by engine,
+    /// in the same order: `corpus --subject` scores both from one run.
+    #[test]
+    fn a_step_judged_again_is_judged_as_a_run_of_the_other_subject() -> Result<(), String> {
+        let ghostty = engine::find("ghostty").ok_or("no ghostty")?;
+        let alacritty = engine::find("alacritty").ok_or("no alacritty")?;
+        let bytes = b"\x1b[1;38;5;9mab\x1b[?2026h\x1b]8;;u\x1b\\c\x1b[!p\x1b[2K";
+        let theirs = one_step(2, 4, bytes, ghostty).run_until(&[FUX_VT, alacritty], false)?;
+        let (base, again) = super::rejudge(ghostty, &theirs.fux, &theirs.verdicts, FUX_VT)
+            .ok_or("fux-vt gave no verdict")?;
+        let direct = one_step(2, 4, bytes, FUX_VT).run_until(&[ghostty, alacritty], false)?;
+        assert_eq!(base, direct.fux);
+        let pairs = |verdicts: &[Verdict]| -> Vec<(usize, Vec<snapshot::Diff>)> {
+            verdicts
+                .iter()
+                .map(|v| (v.engine, v.differences.clone()))
+                .collect()
+        };
+        assert_eq!(pairs(&again), pairs(&direct.verdicts));
+        assert!(!again.iter().all(|v| v.differences.is_empty()));
         Ok(())
     }
 }

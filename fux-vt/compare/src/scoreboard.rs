@@ -340,6 +340,7 @@ const CHECKS: &[&str] = &[
     "transparency",
     "random",
     "cases",
+    "oracle",
     "random-wide",
     "random-no-reflow",
     "esctest",
@@ -355,6 +356,193 @@ const CHECKS: &[&str] = &[
 /// scoreboard is also kept in the repository, in KEPT: `SCOREBOARD.md`, the
 /// last, and `history.jsonl`, a line per commit (a commit's line is
 /// replaced if it is the last).
+/// Where fux-vt stands beside Ghostty's core on one axis.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Standing {
+    Ahead,
+    Level,
+    Behind,
+}
+
+impl Standing {
+    /// fux-vt's figure beside Ghostty's, level within 1%.
+    fn of(fux_vt: f64, ghostty: f64, higher_is_better: bool) -> Self {
+        let (better, worse) = if higher_is_better {
+            (fux_vt, ghostty)
+        } else {
+            (ghostty, fux_vt)
+        };
+        if (fux_vt - ghostty).abs() <= ghostty.abs().max(fux_vt.abs()) * 0.01 {
+            Self::Level
+        } else if better > worse {
+            Self::Ahead
+        } else {
+            Self::Behind
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            Self::Ahead => "ahead",
+            Self::Level => "level",
+            Self::Behind => "behind",
+        }
+    }
+}
+
+/// One axis of fux-vt beside Ghostty's core (libghostty-vt).
+struct Versus {
+    axis: String,
+    fux_vt: String,
+    ghostty: String,
+    standing: Standing,
+}
+
+fn versus(
+    axis: String,
+    (fux_vt, ghostty): (f64, f64),
+    higher_is_better: bool,
+    shown: &dyn Fn(f64) -> String,
+) -> Versus {
+    Versus {
+        axis,
+        fux_vt: shown(fux_vt),
+        ghostty: shown(ghostty),
+        standing: Standing::of(fux_vt, ghostty, higher_is_better),
+    }
+}
+
+/// A pass rate's figures, from esctest's JSON for a run: passed of run.
+fn passed(results: &Value, pointer: &str) -> Option<(u64, u64)> {
+    let passed = count(results, &format!("{pointer}/passed"))?;
+    let failed = count(results, &format!("{pointer}/failed"))?;
+    Some((passed, passed.saturating_add(failed)))
+}
+
+fn rate((passed, run): (u64, u64)) -> f64 {
+    if run == 0 {
+        return 0.0;
+    }
+    (passed as f64) / (run as f64) * 100.0
+}
+
+/// Every axis the last runs measured both fux-vt and Ghostty's core on:
+/// conformance, real programs, instructions per byte and memory.
+fn beside_ghostty(dir: &Path) -> Vec<Versus> {
+    let mut out = Vec::new();
+    let percent = |v: f64| format!("{v:.1}%");
+    if let (Some(fux_vt), Some(ghostty)) = (
+        load(dir, "esctest.json").and_then(|e| passed(&e, "/direct")),
+        load(dir, "esctest-ghostty.json").and_then(|e| {
+            ["/ghostty", "/direct", ""]
+                .iter()
+                .find_map(|pointer| passed(&e, pointer))
+        }),
+    ) {
+        out.push(versus(
+            format!(
+                "esctest2 pass rate ({}/{} and {}/{})",
+                fux_vt.0, fux_vt.1, ghostty.0, ghostty.1
+            ),
+            (rate(fux_vt), rate(ghostty)),
+            true,
+            &percent,
+        ));
+    }
+    if let Some(corpus) = load(dir, "corpus-ghostty.json") {
+        let pairs = [
+            (
+                "corpus recordings agreeing with xterm",
+                "/fux-vt/agree",
+                "/agree",
+                "/recordings",
+            ),
+            (
+                "corpus points agreeing with xterm",
+                "/fux-vt/points_agree",
+                "/points_agree",
+                "/points",
+            ),
+        ];
+        for (axis, fux_vt, ghostty, all) in pairs {
+            if let (Some(a), Some(b), Some(all)) = (
+                count(&corpus, fux_vt),
+                count(&corpus, ghostty),
+                count(&corpus, all),
+            ) {
+                let of = |n: f64| format!("{n:.0} of {all}");
+                out.push(versus(axis.to_owned(), (a as f64, b as f64), true, &of));
+            }
+        }
+    }
+    if let Some(instructions) = load(dir, "instructions.json") {
+        for workload in instructions
+            .get("workloads")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let name = workload.get("name").and_then(Value::as_str).unwrap_or("?");
+            let per_byte = |engine: &str| number(workload, &format!("/engines/{engine}/per_byte"));
+            if let (Some(a), Some(b)) = (per_byte("fux-vt"), per_byte("ghostty")) {
+                out.push(versus(
+                    format!("instructions per byte: {name}"),
+                    (a, b),
+                    false,
+                    &|v| format!("{v:.1}"),
+                ));
+            }
+        }
+    }
+    if let Some(footprint) = load(dir, "footprint.json") {
+        let measures: Vec<&Value> = footprint
+            .get("measures")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .collect();
+        let find = |engine: &str, measure: &str, cols: u64| {
+            measures.iter().copied().find(|m| {
+                m.get("engine").and_then(Value::as_str) == Some(engine)
+                    && m.get("measure").and_then(Value::as_str) == Some(measure)
+                    && count(m, "/cols") == Some(cols)
+            })
+        };
+        let mut names: Vec<&str> = measures
+            .iter()
+            .filter_map(|m| m.get("measure").and_then(Value::as_str))
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        for cols in [80, 200] {
+            for name in &names {
+                let figure = |engine: &str| {
+                    let m = find(engine, name, cols)?;
+                    number(m, "/per_history_row/footprint")
+                        .or_else(|| number(m, "/footprint_per_cell"))
+                };
+                let what = if name.starts_with("history:") {
+                    "bytes per history row"
+                } else {
+                    "bytes per cell, a screen"
+                };
+                if let (Some(a), Some(b)) = (figure("fux-vt"), figure("ghostty")) {
+                    out.push(versus(
+                        format!(
+                            "memory, {what}: {}, {cols} columns",
+                            name.strip_prefix("history:").unwrap_or(name)
+                        ),
+                        (a, b),
+                        false,
+                        &|v| format!("{v:.0} B"),
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn run(rest: &[String]) -> Result<bool, String> {
     let (dir, keep) = match rest {
         [dir] => (dir, None),
@@ -381,9 +569,14 @@ pub fn run(rest: &[String]) -> Result<bool, String> {
         .iter()
         .filter_map(|c| stamp(dir, c).map(|s| (*c, s)))
         .collect();
+    let ghostty = beside_ghostty(dir);
     let json = json!({
         "rows": rows.iter().map(|r| json!({
             "axis": r.axis, "measure": r.measure, "fux": r.fux, "beside": r.beside,
+        })).collect::<Vec<_>>(),
+        "beside_ghostty": ghostty.iter().map(|v| json!({
+            "axis": v.axis, "fux-vt": v.fux_vt, "ghostty": v.ghostty,
+            "standing": v.standing.word(),
         })).collect::<Vec<_>>(),
         "checks": stamps.iter().map(|(c, s)| json!({"check": c, "stamp": s})).collect::<Vec<_>>(),
     });
@@ -396,6 +589,27 @@ pub fn run(rest: &[String]) -> Result<bool, String> {
             "| {} | {} | {} | {} |",
             r.axis, r.measure, r.fux, r.beside
         );
+    }
+    if !ghostty.is_empty() {
+        let level = ghostty
+            .iter()
+            .filter(|v| v.standing != Standing::Behind)
+            .count();
+        let _ = write!(
+            md,
+            "\n## fux-vt beside Ghostty's core (libghostty-vt)\n\nAhead or level on {level} of {}.\n\n| Axis | fux-vt | Ghostty | |\n| --- | --- | --- | --- |\n",
+            ghostty.len()
+        );
+        for v in &ghostty {
+            let _ = writeln!(
+                md,
+                "| {} | {} | {} | {} |",
+                v.axis,
+                v.fux_vt,
+                v.ghostty,
+                v.standing.word()
+            );
+        }
     }
     md.push_str("\n| Check | Commit, when, how long, exit |\n| --- | --- |\n");
     for (check, s) in &stamps {
@@ -518,6 +732,18 @@ mod tests {
         assert!(page.contains("| Conformance |"), "{page}");
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
+    }
+
+    /// fux-vt beside Ghostty: lower is better for costs, higher for rates,
+    /// level within 1%.
+    #[test]
+    fn standing_beside_ghostty() {
+        use super::Standing;
+        assert_eq!(Standing::of(10.0, 20.0, false), Standing::Ahead);
+        assert_eq!(Standing::of(20.0, 10.0, false), Standing::Behind);
+        assert_eq!(Standing::of(100.0, 100.5, false), Standing::Level);
+        assert_eq!(Standing::of(90.0, 60.0, true), Standing::Ahead);
+        assert_eq!(Standing::of(60.0, 90.0, true), Standing::Behind);
     }
 
     /// Fuzz time counts from the last crash on.

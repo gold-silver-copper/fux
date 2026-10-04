@@ -184,6 +184,29 @@ impl Grid {
             }
         }
     }
+    /// Draws the first `width` cells of row `y` from column `x`, a pane's
+    /// row `put_row` copied, in the colours its program set
+    /// (`pane_colours`): so a pane whose program changed a palette entry,
+    /// or its foreground or background, looks through fux as it would
+    /// directly in a terminal, and the client's own palette is never
+    /// changed (fux sends it no OSC 4, 10 or 11). Each pane's colours are
+    /// its own.
+    fn recolour(&mut self, y: u16, x: u16, width: u16, screen: &fux_vt::Screen) {
+        let Some(start) = self.index(y, x) else {
+            return;
+        };
+        let room = usize::from(self.cols.saturating_sub(x).min(width));
+        for i in start..start.saturating_add(room) {
+            let Some(cell) = self.cells.get(i).filter(|c| !c.is_wide_continuation()) else {
+                continue;
+            };
+            let attributes = cell.attributes();
+            let colours = pane_colours(attributes, screen);
+            if colours != attributes {
+                self.cells.set_attributes(i, colours);
+            }
+        }
+    }
     /// Sets one cell as it is, without `set`'s repairs.
     fn put(&mut self, y: u16, x: u16, cell: Cell) {
         if let Some(i) = self.index(y, x) {
@@ -275,6 +298,25 @@ impl Grid {
             self.set(y, x, blank);
         }
     }
+}
+
+/// `attributes` in the colours a pane's program set (`fux_vt::Options::
+/// palette`): an indexed colour whose palette entry it changed (OSC 4) as
+/// the colour it set, and the default foreground and background, if it set
+/// them (OSC 10, 11), as those; each colour it left alone, or reset, as it
+/// is, for the client's terminal to draw in its own. A default underline
+/// colour is the foreground's, and stays.
+fn pane_colours(attributes: Attributes, screen: &fux_vt::Screen) -> Attributes {
+    let rgb = |(r, g, b): (u8, u8, u8)| Color::Rgb(r, g, b);
+    let colour = |c: Color, default: Option<(u8, u8, u8)>| match c {
+        Color::Idx(n) => screen.palette_color(n).map_or(c, rgb),
+        Color::Default => default.map_or(c, rgb),
+        Color::Rgb(..) | _ => c,
+    };
+    attributes
+        .with_foreground(colour(attributes.foreground(), screen.dynamic_color(10)))
+        .with_background(colour(attributes.background(), screen.dynamic_color(11)))
+        .with_underline_color(colour(attributes.underline_color(), None))
 }
 
 /// What a cell shows: its text, or a space if it has none.
@@ -381,6 +423,8 @@ pub fn compose_into(
             continue;
         };
         let screen = pane.screen();
+        // A pane whose program changed its colours is drawn in them.
+        let colours = screen.colors_changed().then_some(screen);
         let at = copy.filter(|(c, _)| c.pane == *id).map(|(_, at)| at);
         let offset = at.map_or(0, |at| at.offset(screen));
         let (rows, cols) = screen.size();
@@ -405,6 +449,9 @@ pub fn compose_into(
             let len = row.map_or(0, |row| row.len());
             if let Some(row) = row {
                 grid.put_row(gy, gx, *id, row, width);
+                if let Some(screen) = colours {
+                    grid.recolour(gy, gx, width, screen);
+                }
             }
             if tiled {
                 // At most `width`, which is at most the place's width.
@@ -1795,6 +1842,93 @@ mod tests {
     /// closes it after them. Two panes' links never share an id, though
     /// each pane's first link has the same key; a terminal reading the
     /// paint has each cell's link.
+    /// A pane's colours are its own (`fux_vt::Options::palette`): a cell
+    /// of an entry its program changed (OSC 4) is painted in the colour it
+    /// set, and its default foreground and background in those it set (OSC
+    /// 10, 11), while the pane beside it, which changed nothing, is painted
+    /// its indices and defaults; the client's terminal is sent no OSC 4,
+    /// 10 or 11, so its own palette stays as it was. Reset (OSC 104, 110,
+    /// 111), the entry is painted as its index again. Each pane answers its
+    /// program's queries with its own colours.
+    #[test]
+    fn a_panes_palette_is_painted_and_stays_the_panes() -> Result<(), Box<dyn std::error::Error>> {
+        let mut s = Session::new(
+            crate::config::Config::default(),
+            "/nonexistent/fux.sock".into(),
+            false,
+        );
+        s.start()?;
+        let c = s.attach(6, 41, None)?;
+        let outcome = s.run(
+            &["split".to_owned(), "-h".to_owned()],
+            &crate::session::Ctx::client(c),
+        );
+        assert_eq!(outcome.status, 0, "{}", outcome.stderr);
+        let set = b"\x1b]4;1;#ff0000\x1b\\\x1b]10;rgb:11/22/33;#000080\x07";
+        s.output(PaneId(1), &[&set[..], b"\x1b[31mR\x1b[39mD"].concat());
+        s.output(PaneId(2), b"\x1b[31mR\x1b[39mD");
+        let grid = compose(&s, c).ok_or("a screen")?;
+        let bytes = paint(None, &grid);
+        let text = String::from_utf8_lossy(&bytes);
+        for osc in ["\x1b]4", "\x1b]5", "\x1b]1"] {
+            assert!(!text.contains(osc), "{osc:?} sent to the client: {text:?}");
+        }
+        // Read back by a terminal that keeps colours, as the client's.
+        let options = fux_vt::Options::new().with_palette(true);
+        let mut client = fux_vt::Parser::with_options(6, 41, 0, options)?;
+        client.process(&bytes)?;
+        let navy = Color::Rgb(0, 0, 0x80);
+        let right: u16 = 21;
+        let cells = |p: &fux_vt::Parser, x: u16| {
+            let c = p.screen().cell(0, x)?;
+            Some((c.contents().to_owned(), c.fgcolor(), c.bgcolor()))
+        };
+        assert!(!client.screen().colors_changed(), "the client's colours");
+        assert_eq!(
+            cells(&client, 0),
+            Some(("R".into(), Color::Rgb(0xff, 0, 0), navy))
+        );
+        assert_eq!(
+            cells(&client, 1),
+            Some(("D".into(), Color::Rgb(0x11, 0x22, 0x33), navy))
+        );
+        // The pane's blanks are in its background too.
+        assert_eq!(cells(&client, 2).map(|(_, _, bg)| bg), Some(navy));
+        assert_eq!(
+            cells(&client, right),
+            Some(("R".into(), Color::Idx(1), Color::Default))
+        );
+        assert_eq!(
+            cells(&client, right + 1),
+            Some(("D".into(), Color::Default, Color::Default))
+        );
+        // Reset, the entry and the defaults are the client's again.
+        s.output(PaneId(1), b"\x1b]104;1\x07\x1b]110\x07\x1b]111\x07");
+        let reset = compose(&s, c).ok_or("a screen")?;
+        let diff = paint(Some(&grid), &reset);
+        assert!(!String::from_utf8_lossy(&diff).contains("\x1b]"));
+        client.process(&diff)?;
+        assert_eq!(
+            cells(&client, 0),
+            Some(("R".into(), Color::Idx(1), Color::Default))
+        );
+        assert_eq!(
+            cells(&client, 1),
+            Some(("D".into(), Color::Default, Color::Default))
+        );
+        // Each pane answers its program with its own colours.
+        s.output(PaneId(1), b"\x1b]4;1;#00ff00\x07");
+        for (id, answer) in [(1, "0000/ffff/0000"), (2, "cdcd/0000/0000")] {
+            let pane = s.panes.get_mut(&PaneId(id)).ok_or("a pane")?;
+            pane.input.drain_all();
+            pane.output(b"\x1b]4;1;?\x07");
+            let asked = pane.input.drain_all();
+            let expected = format!("\x1b]4;1;rgb:{answer}\x07");
+            assert_eq!(String::from_utf8_lossy(&asked), expected, "pane {id}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn hyperlinks_are_painted_with_their_panes_ids() -> Result<(), Box<dyn std::error::Error>> {
         let mut s = Session::new(

@@ -16,15 +16,15 @@ use crate::rng::Rng;
 use std::fmt::Write;
 use std::time::{Duration, Instant};
 
-const ROWS: u16 = 50;
-const COLS: u16 = 200;
-const CHUNK: usize = 4096;
+pub const ROWS: u16 = 50;
+pub const COLS: u16 = 200;
+pub const CHUNK: usize = 4096;
 const RUNS: usize = 3;
 
 /// A workload: its name, what it is, and how to make `bytes` of it.
-type Workload = (&'static str, &'static str, fn(&mut Rng, usize) -> Vec<u8>);
+pub type Workload = (&'static str, &'static str, fn(&mut Rng, usize) -> Vec<u8>);
 
-const WORKLOADS: &[Workload] = &[
+pub const WORKLOADS: &[Workload] = &[
     ("ascii", "lines of plain ASCII text, scrolling", ascii),
     (
         "dense-cells",
@@ -85,21 +85,37 @@ fn ascii(r: &mut Rng, bytes: usize) -> Vec<u8> {
 fn dense_cells(r: &mut Rng, bytes: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes);
     while out.len() < bytes {
-        out.extend_from_slice(b"\x1b[H");
-        for _ in 0..usize::from(ROWS).saturating_mul(usize::from(COLS)) {
-            let glyph = char::from(b'A'.saturating_add(u8::try_from(r.below(26)).unwrap_or(0)));
-            let _ = write!(
-                Text(&mut out),
-                "\x1b[38;5;{};48;5;{}m{glyph}",
-                r.below(256),
-                r.below(256)
-            );
-        }
+        dense_screen(r, &mut out, ROWS, COLS);
     }
     out
 }
 
+/// A screen of `rows` x `cols` where every cell has its own 256-colour
+/// foreground and background: one screen of `dense-cells`.
+pub fn dense_screen(r: &mut Rng, out: &mut Vec<u8>, rows: u16, cols: u16) {
+    out.extend_from_slice(b"\x1b[H");
+    for _ in 0..usize::from(rows).saturating_mul(usize::from(cols)) {
+        let glyph = char::from(b'A'.saturating_add(u8::try_from(r.below(26)).unwrap_or(0)));
+        let _ = write!(
+            Text(out),
+            "\x1b[38;5;{};48;5;{}m{glyph}",
+            r.below(256),
+            r.below(256)
+        );
+    }
+}
+
 fn medium_cells(r: &mut Rng, bytes: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes);
+    while out.len() < bytes {
+        medium_screen(r, &mut out, ROWS, COLS);
+    }
+    out
+}
+
+/// A screen of `rows` x `cols` of words, an SGR change every few cells:
+/// one screen of `medium-cells`.
+pub fn medium_screen(r: &mut Rng, out: &mut Vec<u8>, rows: u16, cols: u16) {
     let words = [
         "the ", "quick ", "brown ", "fox ", "jumps ", "over ", "lazy ", "dog ",
     ];
@@ -113,19 +129,15 @@ fn medium_cells(r: &mut Rng, bytes: usize) -> Vec<u8> {
         "\x1b[44m",
         "\x1b[m",
     ];
-    let mut out = Vec::with_capacity(bytes);
-    while out.len() < bytes {
-        out.extend_from_slice(b"\x1b[H");
-        for _ in 0..usize::from(ROWS)
-            .saturating_mul(usize::from(COLS))
-            .checked_div(6)
-            .unwrap_or(1)
-        {
-            out.extend_from_slice(r.pick(&sgr).copied().unwrap_or("").as_bytes());
-            out.extend_from_slice(r.pick(&words).copied().unwrap_or("").as_bytes());
-        }
+    out.extend_from_slice(b"\x1b[H");
+    for _ in 0..usize::from(rows)
+        .saturating_mul(usize::from(cols))
+        .checked_div(6)
+        .unwrap_or(1)
+    {
+        out.extend_from_slice(r.pick(&sgr).copied().unwrap_or("").as_bytes());
+        out.extend_from_slice(r.pick(&words).copied().unwrap_or("").as_bytes());
     }
-    out
 }
 
 fn cursor_motion(r: &mut Rng, bytes: usize) -> Vec<u8> {
@@ -190,16 +202,16 @@ impl std::fmt::Write for Text<'_> {
 
 /// A workload made: its name, what it is, the screen it runs on, and its
 /// bytes.
-struct Load {
-    name: String,
-    about: String,
-    rows: u16,
-    cols: u16,
-    bytes: Vec<u8>,
+pub struct Load {
+    pub name: String,
+    pub about: String,
+    pub rows: u16,
+    pub cols: u16,
+    pub bytes: Vec<u8>,
 }
 
 /// `bytes` over and over, whole, until there are at least `total`.
-fn repeated(bytes: &[u8], total: usize) -> Vec<u8> {
+pub fn repeated(bytes: &[u8], total: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(total.saturating_add(bytes.len()));
     while !bytes.is_empty() && out.len() < total {
         out.extend_from_slice(bytes);

@@ -14,6 +14,9 @@ pub(crate) struct Parameters {
     /// True when this value continues the previous colon-delimited group.
     sub: [bool; 32],
     len: usize,
+    /// Whether any value continues a group (a `:` was read): until one
+    /// does, each value is a group of its own, and `sub` is not read.
+    colons: bool,
 }
 impl Default for Parameters {
     fn default() -> Self {
@@ -21,6 +24,7 @@ impl Default for Parameters {
             values: [0; 32],
             sub: [false; 32],
             len: 1,
+            colons: false,
         }
     }
 }
@@ -46,13 +50,39 @@ impl Parameters {
             *value = 0;
         }
         self.len = len;
+        self.colons |= colon;
         true
+    }
+    /// `separator` for a reader that keeps the parameter being read and
+    /// how many there are itself (`Parser::sequence`): the parameter
+    /// `len` ends with `value`, and the next begins, continuing its group
+    /// if `colon`. The new count, or `None`, with nothing changed, where
+    /// `separator` refuses one past the last slot.
+    #[inline]
+    fn next(&mut self, len: usize, value: u16, colon: bool) -> Option<usize> {
+        let more = len.checked_add(1).filter(|n| *n <= self.values.len())?;
+        self.end(len, value);
+        if let Some(sub) = self.sub.get_mut(len) {
+            *sub = colon;
+        }
+        self.colons |= colon;
+        Some(more)
+    }
+    /// The parameters as such a reader leaves them: `len` of them, the
+    /// last `value`.
+    #[inline]
+    fn end(&mut self, len: usize, value: u16) {
+        if let Some(slot) = len.checked_sub(1).and_then(|i| self.values.get_mut(i)) {
+            *slot = value;
+        }
+        self.len = len;
     }
     /// Back to one empty parameter, touching only what `separator` and
     /// `digit` read: a sequence is begun on every ESC, so this is kept to
-    /// two stores rather than rewriting all the parameters.
+    /// three stores rather than rewriting all the parameters.
     fn clear(&mut self) {
         self.len = 1;
+        self.colons = false;
         if let Some(value) = self.values.first_mut() {
             *value = 0;
         }
@@ -64,7 +94,7 @@ impl Parameters {
                 return None;
             }
             let mut end = start.checked_add(1)?;
-            while end < self.len && self.sub.get(end).copied().unwrap_or(false) {
+            while self.colons && end < self.len && self.sub.get(end).copied().unwrap_or(false) {
                 end = end.checked_add(1)?;
             }
             let result = self.values.get(start..end);
@@ -76,14 +106,29 @@ impl Parameters {
     fn is_empty(&self) -> bool {
         self.len == 1 && self.values.first() == Some(&0)
     }
+    /// The first value of the group `index`, or `default` if it is 0 or
+    /// there is no such group. Without colons the group is the value: a
+    /// load, inlined into every caller, where a sequence with colons asks
+    /// `grouped` out of line.
+    #[inline(always)]
     pub fn first(&self, index: usize, default: u16) -> u16 {
-        let value = self
-            .groups()
-            .nth(index)
-            .and_then(|g| g.first())
-            .copied()
-            .unwrap_or(0);
-        if value == 0 { default } else { value }
+        let value = if self.colons {
+            self.grouped(index)
+        } else {
+            self.values
+                .get(..self.len)
+                .and_then(|v| v.get(index))
+                .copied()
+        };
+        match value {
+            Some(0) | None => default,
+            Some(value) => value,
+        }
+    }
+    /// The first value of the group `index`, if there is one.
+    #[inline(never)]
+    fn grouped(&self, index: usize) -> Option<u16> {
+        self.groups().nth(index).and_then(|g| g.first()).copied()
     }
 }
 
@@ -116,6 +161,42 @@ fn decode(bytes: &[u8]) -> Option<(char, usize)> {
         code = code.checked_shl(6)? | u32::from(byte & 0x3f);
     }
     Some((char::from_u32(code)?, length))
+}
+
+/// How many bytes `bytes` begins with are printable ASCII, 0x20 to 0x7e,
+/// its first being one: a run of one, as a character between sequences
+/// is, by the second byte alone; else eight at a time, as a word, then one
+/// at a time. In a word, a byte below 0x20 borrows when 0x20 is taken from
+/// it, setting its top bit where the byte's own is clear; one from 0x7f up
+/// has its top bit set once 1 is added to it, or before. A borrow or carry
+/// runs only into the bytes after the one it came from, so the first byte
+/// flagged is the first that is not printable.
+fn printable(bytes: &[u8]) -> usize {
+    const ONES: u64 = u64::from_le_bytes([0x01; 8]);
+    const TOPS: u64 = u64::from_le_bytes([0x80; 8]);
+    debug_assert!(bytes.first().is_some_and(|b| (0x20..=0x7e).contains(b)));
+    if !bytes.get(1).is_some_and(|b| (0x20..=0x7e).contains(b)) {
+        return 1;
+    }
+    let (words, _) = bytes.as_chunks::<8>();
+    let mut length = 0usize;
+    for word in words {
+        let x = u64::from_le_bytes(*word);
+        let below = x.wrapping_sub(ONES.wrapping_mul(0x20)) & !x;
+        let above = x.wrapping_add(ONES) | x;
+        let flagged = (below | above) & TOPS;
+        if flagged != 0 {
+            let first = usize::try_from(flagged.trailing_zeros() / 8).unwrap_or(0);
+            return length.saturating_add(first);
+        }
+        length = length.saturating_add(8);
+    }
+    let tail = bytes.get(length..).unwrap_or_default();
+    length.saturating_add(
+        tail.iter()
+            .take_while(|b| (0x20..=0x7e).contains(*b))
+            .count(),
+    )
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -256,6 +337,20 @@ pub struct Options {
     /// underline and asks, and draws its diagnostics curly only if `4:3`
     /// comes back. Off, DECRQSS is ignored, as every other DCS.
     pub setting_reports: bool,
+    /// Keep the colours a program sets (`crate::Screen::palette_color`,
+    /// `crate::Screen::dynamic_color`) and answer its queries of them, as
+    /// xterm does (its ctlseqs, "Operating System Commands"): the 256-colour
+    /// palette (OSC 4 sets and queries an entry, OSC 104 resets it), the
+    /// special colours (OSC 5, OSC 105), and the dynamic colours (OSC 10 to
+    /// 19 set them, OSC 110 to 119 reset them). An entry the program has
+    /// not set is answered with xterm's default; a dynamic colour it has
+    /// not set is asked of the host, an [`Event::ColorQuery`] with
+    /// [`Options::events`], as without this option. The colours are
+    /// state: drawing a cell in the colour its entry was set to is the
+    /// host's to do. OSC payloads are buffered, up to
+    /// [`OSC_PAYLOAD_LIMIT`]. Off, these OSCs are ignored, and OSC 10 to 19
+    /// queries are events, with [`Options::events`].
+    pub palette: bool,
     /// Answer as this terminal rather than as a bare VT100: see [`Identity`].
     pub identity: Option<Identity>,
 }
@@ -277,6 +372,7 @@ impl Options {
             prompt_marks: false,
             rectangle_checksums: false,
             setting_reports: false,
+            palette: false,
             identity: None,
         }
     }
@@ -338,6 +434,11 @@ impl Options {
     /// These options with [`Options::setting_reports`] as `on` says.
     pub const fn with_setting_reports(mut self, on: bool) -> Self {
         self.setting_reports = on;
+        self
+    }
+    /// These options with [`Options::palette`] as `on` says.
+    pub const fn with_palette(mut self, on: bool) -> Self {
+        self.palette = on;
         self
     }
     /// These options answering as `identity`, or as a bare VT100 if `None`.
@@ -403,7 +504,9 @@ pub enum Event<'a> {
     /// several, each `?` the next colour (`OSC 10 ; ? ; ?` asks 10 and 11),
     /// an event each, in order. xterm answers `OSC Ps ; rgb:RRRR/GGGG/BBBB`,
     /// ended as the query was; the host knows the colours, so the answer
-    /// is its to make. A request to set a colour is no event.
+    /// is its to make. A request to set a colour is no event; with
+    /// [`Options::palette`], neither is a query of a colour the program
+    /// set, which fux-vt answers itself.
     ColorQuery {
         /// The colour asked for, 10 to 19.
         number: u8,
@@ -534,7 +637,7 @@ impl Parser {
             screen: Screen::new(rows, cols, history_lines)?,
             options,
             osc: Vec::new(),
-            osc_limit: if options.events || options.hyperlinks {
+            osc_limit: if options.events || options.hyperlinks || options.palette {
                 OSC_PAYLOAD_LIMIT
             } else if options.prompt_marks {
                 OSC_PREFIX
@@ -553,6 +656,11 @@ impl Parser {
             utf8_len: 0,
             utf8_need: 0,
         })
+    }
+    /// The screen, for a test to reach into.
+    #[cfg(test)]
+    pub(crate) fn screen_mut(&mut self) -> &mut Screen {
+        &mut self.screen
     }
     /// The terminal's state: what the screen shows, the cursor and the modes.
     pub fn screen(&self) -> &Screen {
@@ -623,18 +731,35 @@ impl Parser {
         while let Some((&byte, tail)) = remaining.split_first() {
             let ground = self.state == State::Ground && self.utf8_len == 0;
             if ground && (0x20..=0x7e).contains(&byte) {
-                let length = remaining
-                    .iter()
-                    .take_while(|b| (0x20..=0x7e).contains(*b))
-                    .count();
+                let length = printable(remaining);
                 self.screen
                     .ascii(remaining.get(..length).unwrap_or_default())?;
                 remaining = remaining.get(length..).unwrap_or_default();
+            } else if ground && byte < 0x20 && byte != 0x1b {
+                // A C0 control, as `ground` carries it out.
+                self.control(byte, sink)?;
+                self.screen.forget_repeat();
+                remaining = tail;
             } else if ground
                 && byte >= 0x80
                 && let Some(length) = self.text(remaining)?
             {
                 remaining = remaining.get(length..).unwrap_or_default();
+            } else if ground && byte == 0x1b {
+                // An `h` read with a frame begun stops the run (below), so
+                // until the next CSI clears it, an OSC string's bytes go
+                // through `byte`: only an XTRESTORE of synchronized output
+                // sets it and goes on.
+                let strings = !(UNTIL_FRAME && self.frame_begun);
+                let (length, ended) = self.sequence(remaining, strings, sink)?;
+                remaining = remaining.get(length..).unwrap_or_default();
+                // As below: of the bytes `sequence` takes, only a final
+                // byte can be `h` (a string's are not taken with a frame
+                // begun).
+                if UNTIL_FRAME && ended == b'h' && self.frame_begun {
+                    self.frame_begun = false;
+                    return Ok(Some(bytes.len().saturating_sub(remaining.len())));
+                }
             } else {
                 self.byte(byte, sink)?;
                 remaining = tail;
@@ -658,6 +783,136 @@ impl Parser {
             taken = taken.saturating_add(length);
         }
         Ok((taken > 0).then_some(taken))
+    }
+    /// Reads the escape sequence `bytes` begins with (its ESC read in
+    /// ground state, no character half read) as far as it is one programs
+    /// send most: an escape sequence of intermediates and a final byte, or
+    /// a CSI of parameters alone (a private marker, digits, `;` and `:`,
+    /// and a final byte). The bytes are taken in a loop of their own rather
+    /// than each through `byte`, but each is done exactly as `byte` does
+    /// it. With `strings`, an OSC string it begins is taken too, up to what
+    /// ends it (`osc_string`). It stops before any other byte, or at the
+    /// end, with the parser in the state `byte` would have left it in, for
+    /// `byte` to go on from. Says how many bytes it took, at least the ESC,
+    /// and the final byte of the sequence it carried out, if it did, else 0.
+    fn sequence(
+        &mut self,
+        bytes: &[u8],
+        strings: bool,
+        sink: &mut impl Sink,
+    ) -> Result<(usize, u8), Error> {
+        debug_assert!(self.state == State::Ground && self.utf8_len == 0);
+        self.reset_sequence();
+        self.state = State::Escape;
+        if bytes.get(1) == Some(&b'[') {
+            return self.csi_sequence(bytes, sink);
+        }
+        let mut at = 1usize;
+        while let Some(&byte) = bytes.get(at) {
+            let next = at.wrapping_add(1);
+            match byte {
+                0x20..=0x2f => {
+                    self.collect(byte);
+                    self.state = State::EscapeIntermediate;
+                }
+                b']' if self.state == State::Escape => {
+                    self.osc.clear();
+                    self.osc_overflow = false;
+                    self.state = State::OscString;
+                    let payload = bytes.get(next..).unwrap_or_default();
+                    let taken = if strings {
+                        self.osc_string(payload).unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    return Ok((next.saturating_add(taken), 0));
+                }
+                // The other strings, which `byte` begins.
+                b'P' | b'X' | b'^' | b'_' if self.state == State::Escape => break,
+                0x30..=0x7e => {
+                    self.state = State::Ground;
+                    if !self.ignoring {
+                        self.escape_dispatch(byte, sink)?;
+                    }
+                    self.screen.forget_repeat();
+                    return Ok((next, byte));
+                }
+                _ => break,
+            }
+            at = next;
+        }
+        Ok((at, 0))
+    }
+    /// `sequence` for a CSI, `bytes` beginning with `ESC [`.
+    fn csi_sequence(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(usize, u8), Error> {
+        // The parameter being read and how many there are, kept here
+        // rather than in `params` until the sequence ends or this does: one
+        // empty one, as `reset_sequence` left them. The value is read as
+        // `Parameters::digit` reads it, staying at u16::MAX once past it:
+        // `(v * 10).min(MAX) + d` saturated is `(v * 10 + d).min(MAX)`.
+        let (mut len, mut value) = (1usize, 0u32);
+        let max = u32::from(u16::MAX);
+        let mut at = 2usize;
+        while let Some(&byte) = bytes.get(at) {
+            let next = at.wrapping_add(1);
+            match byte {
+                b'0'..=b'9' => {
+                    let digit = u32::from(byte.wrapping_sub(b'0'));
+                    value = value.wrapping_mul(10).wrapping_add(digit).min(max);
+                }
+                b';' | b':' => {
+                    let ended = u16::try_from(value).unwrap_or(u16::MAX);
+                    match self.params.next(len, ended, byte == b':') {
+                        Some(more) => (len, value) = (more, 0),
+                        None => {
+                            self.params.end(len, ended);
+                            self.state = State::CsiIgnore;
+                            return Ok((next, 0));
+                        }
+                    }
+                }
+                0x3c..=0x3f if at == 2 => self.collect(byte),
+                0x40..=0x7e => {
+                    self.params
+                        .end(len, u16::try_from(value).unwrap_or(u16::MAX));
+                    self.state = State::Ground;
+                    self.csi_dispatch(byte, sink)?;
+                    self.screen.forget_repeat();
+                    return Ok((next, byte));
+                }
+                _ => break,
+            }
+            at = next;
+        }
+        self.params
+            .end(len, u16::try_from(value).unwrap_or(u16::MAX));
+        self.state = if at == 2 {
+            State::CsiEntry
+        } else {
+            State::CsiParam
+        };
+        Ok((at, 0))
+    }
+    /// Takes the OSC string's bytes `bytes` begins with, up to the BEL,
+    /// CAN, SUB or ESC that ends it, at once rather than each through
+    /// `byte`, keeping what `byte` would keep of them; how many it took,
+    /// `None` if `bytes` begins with one of those, for `byte` to read.
+    fn osc_string(&mut self, bytes: &[u8]) -> Option<usize> {
+        let length = bytes
+            .iter()
+            .position(|b| matches!(b, 0x07 | 0x18 | 0x1a | 0x1b))
+            .unwrap_or(bytes.len());
+        if length == 0 {
+            return None;
+        }
+        if !self.osc_overflow {
+            let room = self.osc_limit.saturating_sub(self.osc.len());
+            let kept = bytes.get(..length.min(room)).unwrap_or_default();
+            self.osc.extend_from_slice(kept);
+            // The byte past the limit marks the string overflowed.
+            self.osc_overflow = length > room;
+        }
+        Some(length)
     }
     fn reset_sequence(&mut self) {
         self.params.clear();
@@ -823,16 +1078,7 @@ impl Parser {
                         self.state = State::Ground;
                     }
                     if self.state == State::Ground && !self.ignoring {
-                        let intermediates = self.intermediates;
-                        let intermediates = intermediates
-                            .get(..self.intermediate_len)
-                            .unwrap_or_default();
-                        if !self.screen.escape(intermediates, byte)? {
-                            sink.unhandled(Unhandled::Escape {
-                                intermediates,
-                                action: byte,
-                            });
-                        }
+                        self.escape_dispatch(byte, sink)?;
                     }
                 }
                 _ => {}
@@ -907,32 +1153,7 @@ impl Parser {
                             let dispatch = self.state != State::CsiIgnore && !self.ignoring;
                             self.state = State::Ground;
                             if dispatch {
-                                let intermediates = self.intermediates;
-                                let intermediates = intermediates
-                                    .get(..self.intermediate_len)
-                                    .unwrap_or_default();
-                                let begun = self.screen.frames_begun();
-                                let dispatch = self.screen.csi(
-                                    &self.params,
-                                    intermediates,
-                                    byte,
-                                    &self.options,
-                                )?;
-                                self.frame_begun = self.screen.frames_begun() != begun;
-                                match dispatch {
-                                    Dispatch::Done => {}
-                                    Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
-                                    Dispatch::Unhandled => {
-                                        match self.query_reply(intermediates, byte) {
-                                            Some(reply) => sink.reply(reply.as_bytes()),
-                                            None => sink.unhandled(Unhandled::Csi {
-                                                params: Params(&self.params),
-                                                intermediates,
-                                                action: byte,
-                                            }),
-                                        }
-                                    }
-                                }
+                                self.csi_dispatch(byte, sink)?;
                             }
                         }
                     }
@@ -948,11 +1169,72 @@ impl Parser {
         Ok(())
     }
 
+    /// Carries out the escape sequence whose final byte is `byte`, its
+    /// intermediates collected.
+    fn escape_dispatch(&mut self, byte: u8, sink: &mut impl Sink) -> Result<(), Error> {
+        let intermediates = self.intermediates;
+        let intermediates = intermediates
+            .get(..self.intermediate_len)
+            .unwrap_or_default();
+        // DECID, the VT100's request for its identity, which the VT220
+        // replaced by DA (ctlseqs: "Obsolete form of CSI c"): answered as
+        // DA1 is.
+        if intermediates.is_empty() && byte == b'Z' {
+            let reply = Screen::primary_attributes(&self.options);
+            sink.reply(reply.as_bytes());
+        } else if !self.screen.escape(intermediates, byte)? {
+            sink.unhandled(Unhandled::Escape {
+                intermediates,
+                action: byte,
+            });
+        }
+        Ok(())
+    }
+
+    /// Carries out the CSI sequence whose final byte is `byte`, its
+    /// parameters and intermediates collected.
+    fn csi_dispatch(&mut self, byte: u8, sink: &mut impl Sink) -> Result<(), Error> {
+        let intermediates = self.intermediates;
+        let intermediates = intermediates
+            .get(..self.intermediate_len)
+            .unwrap_or_default();
+        let begun = self.screen.frames_begun();
+        let dispatch = self
+            .screen
+            .csi(&self.params, intermediates, byte, &self.options)?;
+        self.frame_begun = self.screen.frames_begun() != begun;
+        match dispatch {
+            Dispatch::Done => {}
+            Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
+            Dispatch::Unhandled => {
+                if !intermediates.is_empty()
+                    && matches!(
+                        self.screen
+                            .intermediate_csi(&self.params, intermediates, byte),
+                        Dispatch::Done
+                    )
+                {
+                    return Ok(());
+                }
+                match self.query_reply(intermediates, byte) {
+                    Some(reply) => sink.reply(reply.as_bytes()),
+                    None => sink.unhandled(Unhandled::Csi {
+                        params: Params(&self.params),
+                        intermediates,
+                        action: byte,
+                    }),
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Carries out the completed OSC string, ended by BEL if `bel`, else
     /// by ESC (ST): 133 (prompt marks), from its first bytes, with
     /// [`Options::prompt_marks`]; 8 (hyperlinks) with [`Options::hyperlinks`];
-    /// 0, 1, 2, 52 and colour queries (10 to 19) delivered as events with
-    /// [`Options::events`]. An overflowed string is no event, and closes any
+    /// the colours (4, 5, 10 to 19, 104, 105, 110 to 119) with
+    /// [`Options::palette`]; 0, 1, 2, 52 and colour queries (10 to 19)
+    /// delivered as events with [`Options::events`]. An overflowed string is no event, and closes any
     /// link; others are dropped.
     ///
     /// Kept out of line: inlined into `byte`, with the screen's OSC
@@ -1013,6 +1295,19 @@ impl Parser {
                 return Ok(());
             }
             _ => {}
+        }
+        if self.options.palette
+            && !self.osc_overflow
+            && crate::palette::osc(
+                self.screen.colours_mut(),
+                command,
+                rest,
+                bel,
+                self.options.events,
+                sink,
+            )
+        {
+            return Ok(());
         }
         if !self.options.events || self.osc_overflow {
             return Ok(());
@@ -1084,10 +1379,11 @@ impl Parser {
                 Some(Reply::of(format_args!("\x1b[?{n};{status}$y")))
             }
             (b"$", b'p') if modes => {
-                // IRM alone of the ANSI modes is known.
+                // IRM and LNM alone of the ANSI modes are known.
                 let status = match n {
                     4 if self.screen.insert_mode() => 1,
-                    4 => 2,
+                    20 if self.screen.new_line_mode() => 1,
+                    4 | 20 => 2,
                     _ => 0,
                 };
                 Some(Reply::of(format_args!("\x1b[{n};{status}$y")))

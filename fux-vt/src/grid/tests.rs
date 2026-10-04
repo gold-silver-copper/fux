@@ -5,11 +5,12 @@ const UP: Scroll = Scroll::Up { history: true };
 
 /// Heap bytes; a Vec's allocation cannot exceed `isize::MAX`, so no product
 /// saturates.
-fn heap(grid: &Grid) -> [usize; 3] {
+fn heap(grid: &Grid) -> [usize; 4] {
     [
-        grid.cells.capacity().saturating_mul(size_of::<Cell>()),
+        grid.cells.capacity().saturating_mul(size_of::<Compact>()),
         grid.meta.capacity().saturating_mul(size_of::<Meta>()),
         grid.order.capacity().saturating_mul(size_of::<usize>()),
+        grid.history.heap(),
     ]
 }
 #[test]
@@ -20,11 +21,11 @@ fn measured_storage_plateau_and_transactional_resize_peak_include_metadata() -> 
     let initial_primary = heap(&primary);
     let initial_alternate = heap(&alternate);
     for version in 1..=10_000 {
-        primary.scroll((0, 23), 1, UP, Attributes::default(), &mut next, version)?;
+        primary.scroll((0, 23), 1, UP, 0, &mut next, version)?;
     }
     let plateau = heap(&primary);
     for version in 10_001..=20_000 {
-        primary.scroll((0, 23), 1, UP, Attributes::default(), &mut next, version)?;
+        primary.scroll((0, 23), 1, UP, 0, &mut next, version)?;
     }
     assert_eq!(heap(&primary), plateau);
     assert_eq!(primary.history_len(), 10_000);
@@ -38,24 +39,25 @@ fn measured_storage_plateau_and_transactional_resize_peak_include_metadata() -> 
     let new_heap = new_primary.iter().sum::<usize>() + new_alternate.iter().sum::<usize>();
     let screen_bytes = std::mem::size_of::<crate::Screen>();
     let peak_reserved = old_heap + new_heap + screen_bytes + 2 * std::mem::size_of::<Grid>();
-    assert_eq!(std::mem::size_of::<Cell>(), 32);
+    assert_eq!(std::mem::size_of::<Compact>(), 8);
     println!(
-        "MEMORY-BOUNDS {{\"components\":[\"cells\",\"row_metadata\",\"slot_order\"],\"initial_primary\":{initial_primary:?},\"initial_alternate\":{initial_alternate:?},\"plateau_primary\":{plateau:?},\"resized_primary\":{new_primary:?},\"resized_alternate\":{new_alternate:?},\"screen_object_bytes\":{screen_bytes},\"steady_reserved_bytes\":{},\"resize_peak_reserved_bytes\":{peak_reserved},\"scrolls\":20000}}",
+        "MEMORY-BOUNDS {{\"components\":[\"cells\",\"row_metadata\",\"slot_order\",\"history\"],\"initial_primary\":{initial_primary:?},\"initial_alternate\":{initial_alternate:?},\"plateau_primary\":{plateau:?},\"resized_primary\":{new_primary:?},\"resized_alternate\":{new_alternate:?},\"screen_object_bytes\":{screen_bytes},\"steady_reserved_bytes\":{},\"resize_peak_reserved_bytes\":{peak_reserved},\"scrolls\":20000}}",
         old_heap + screen_bytes
     );
     Ok(())
 }
 
-// Narrowing a pane whose rows all stay live must not keep the old width as the
-// storage stride: that multiplied every later copy of the grid by the widest
+// Narrowing a pane whose rows all stay live must not keep the old width in
+// its storage: that multiplied every later copy of the grid by the widest
 // width it ever had, and doubled the smoke's 200-pane `scale` run.
 #[test]
-fn narrowing_live_rows_uses_the_new_width_as_stride() -> Result<(), Error> {
+fn narrowing_live_rows_uses_the_new_width() -> Result<(), Error> {
     let mut next = 0;
     let wide = Grid::new(24, 400, 100, &mut next, 0)?;
     let narrow = wide.resized(23, 10, &mut next, 1)?;
     assert_eq!(narrow.history_len(), 0);
-    assert_eq!(narrow.stride, 10);
+    assert_eq!(narrow.cells.capacity(), 23 * 10);
+    assert_eq!(narrow.storage_cells(), 23 * 10);
     Ok(())
 }
 
@@ -68,7 +70,7 @@ fn moving_a_row_is_a_removal_then_an_insertion() -> Result<(), Error> {
     let contiguous = Grid::new(5, 1, 0, &mut next, 0)?;
     let mut wrapped = Grid::new(5, 1, 4, &mut next, 0)?;
     for version in 1..=11 {
-        wrapped.scroll((0, 4), 1, UP, Attributes::default(), &mut next, version)?;
+        wrapped.scroll((0, 4), 1, UP, 0, &mut next, version)?;
     }
     let (front, back) = wrapped.order.as_slices();
     assert!(!front.is_empty() && !back.is_empty(), "the deque wraps");
@@ -102,8 +104,15 @@ fn moves_are_removals_then_insertions(grid: &Grid) {
 }
 
 /// What a reader sees of a row: its identity, version, wrap and prompt
-/// flags, and each cell as stored, with its text and its link's number.
-pub(crate) type Seen = (RowId, u64, bool, bool, Vec<(Cell, String, u16)>);
+/// flags, and each cell as stored, with its attributes, its text and its
+/// link's number.
+pub(crate) type Seen = (
+    RowId,
+    u64,
+    bool,
+    bool,
+    Vec<(Compact, Attributes, String, u16)>,
+);
 
 impl Grid {
     /// `erase` as it was before the `used` mark bounded it: every cell of
@@ -124,9 +133,10 @@ impl Grid {
         } else {
             end
         };
+        let style = self.style(attributes);
         self.mutate_row(row, version, written, |cells| {
             let span = usize::from(start)..usize::from(end.min(cols));
-            let blank = Cell::blank(attributes);
+            let blank = Compact::blank(style);
             if cells
                 .get(span.clone())
                 .is_none_or(|run| run.iter().all(|c| c.same(&blank)))
@@ -138,13 +148,13 @@ impl Grid {
                     if cell.is_wide() {
                         let next = col.checked_add(1);
                         if let Some(other) = next.and_then(|i| cells.get_mut(i)) {
-                            *other = Cell::blank(other.attributes);
+                            *other = other.blanked();
                         }
                         clears_edge |= next == Some(usize::from(last));
                     } else if cell.is_wide_continuation()
                         && let Some(other) = col.checked_sub(1).and_then(|i| cells.get_mut(i))
                     {
-                        *other = Cell::blank(other.attributes);
+                        *other = other.blanked();
                     }
                     if let Some(cell) = cells.get_mut(col) {
                         *cell = blank;
@@ -173,11 +183,13 @@ impl Grid {
             .filter_map(|i| self.row_at(i))
             .map(|row| {
                 let cells = row
-                    .cells()
+                    .cells
+                    .iter()
                     .enumerate()
                     .map(|(col, c)| {
                         let link = row.links.and_then(|l| l.get(col)).copied().unwrap_or(0);
-                        (*c.stored(), c.contents().to_owned(), link)
+                        let read = c.read(row.spill, row.styles);
+                        (*c, read.attributes(), read.contents().to_owned(), link)
                     })
                     .collect();
                 (row.id, row.version, row.wrapped, row.prompt, cells)
@@ -294,9 +306,10 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
         }
     }
     let mut grid = p.screen().primary_grid().clone();
-    let retained = grid.retained_len();
+    // Rows of the screen are poked; some go into history after.
+    let rows = usize::from(grid.rows.get());
     for _ in 0..r.below(5) {
-        let Some(&slot) = grid.order.get(r.below(retained)) else {
+        let Some(&slot) = grid.order.get(r.below(rows)) else {
             continue;
         };
         let Some(m) = grid.meta.get_mut(slot) else {
@@ -310,9 +323,9 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
             2 => {
                 m.used = m.width;
                 let half = match r.below(3) {
-                    0 => Cell::glyph('\u{4e2d}', 2, Attributes::default()),
-                    1 => Cell::continuation(),
-                    _ => Cell::default(),
+                    0 => Compact::glyph('\u{4e2d}', 2, 0),
+                    1 => Compact::continuation(),
+                    _ => Compact::default(),
                 };
                 let at = if r.chance(50) {
                     width.saturating_sub(1)
@@ -342,6 +355,11 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
             m.used = m.width;
         }
     }
+    if grid.history_limit > 0 && r.chance(50) {
+        let mut next = max_id(&grid).saturating_add(1);
+        let last = grid.rows.last();
+        grid.scroll((0, last), r.small(grid.rows.get()), UP, 0, &mut next, 999)?;
+    }
     let (rows, cols) = (grid.rows.get(), grid.cols.get());
     if r.chance(50) {
         grid.cursor = (r.small(rows), r.small(cols));
@@ -352,6 +370,15 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
         grid.saved_pending_wrap = r.chance(30);
     }
     Ok(grid)
+}
+
+/// The greatest identity a retained row of `grid` has.
+fn max_id(grid: &Grid) -> u64 {
+    (0..grid.retained_len())
+        .filter_map(|i| grid.row_at(i))
+        .map(|row| row.id.0)
+        .max()
+        .unwrap_or(0)
 }
 
 /// No reader can tell the two grids apart: each row's identity, version,
@@ -369,7 +396,7 @@ fn assert_same(runs: &Grid, cells: &Grid, case: &str) {
     assert_eq!(linked(runs), linked(cells), "{case}: linked rows");
     let shape = |g: &Grid| {
         (
-            (g.rows, g.cols, g.history_len(), g.stride),
+            (g.rows, g.cols, g.history_len(), g.storage_cells()),
             (g.cursor, g.pending_wrap),
             (g.saved_cursor, g.saved_pending_wrap),
             (g.origin, g.saved_origin, g.top, g.bottom),
@@ -389,19 +416,13 @@ fn laying_out_runs_is_laying_out_cells() -> Result<(), Error> {
     let mut r = Rng(0x0ef1_0000_0000_0003);
     let wrapped = |g: &Grid| {
         (0..g.retained_len())
-            .filter(|i| g.meta_at(*i).is_some_and(|m| m.wrapped))
+            .filter(|i| g.row_at(*i).is_some_and(|r| r.wrapped))
             .count()
     };
     let (mut wrapped_in, mut wrapped_out) = (0usize, 0usize);
     for case in 0..3_000 {
         let grid = random_grid(&mut r)?;
-        let next = grid
-            .meta
-            .iter()
-            .map(|m| m.id.0)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
+        let next = max_id(&grid).saturating_add(1);
         wrapped_in = wrapped_in.saturating_add(wrapped(&grid));
         for target in 0..6 {
             let rows = r.small(9).saturating_add(1);
@@ -431,5 +452,70 @@ fn laying_out_runs_is_laying_out_cells() -> Result<(), Error> {
         wrapped_in > 10_000 && wrapped_out > 10_000,
         "{wrapped_in} soft-wrapped rows in, {wrapped_out} out at other widths"
     );
+    Ok(())
+}
+
+/// A live row's cells as a reader reads them: text, halves, attributes
+/// and link.
+fn read_row(grid: &Grid, y: u16) -> Vec<(String, bool, bool, Attributes, Option<String>)> {
+    let Some(row) = grid.live_row(y) else {
+        return Vec::new();
+    };
+    (0..row.width)
+        .filter_map(|x| {
+            let cell = row.cell(x)?;
+            let link = row.link(x).map(|l| l.uri().to_owned());
+            Some((
+                cell.contents().to_owned(),
+                cell.is_wide(),
+                cell.is_wide_continuation(),
+                cell.attributes(),
+                link,
+            ))
+        })
+        .collect()
+}
+
+/// Scrolling between left and right margins as wide as the screen
+/// (`scroll_columns`, which copies cells, their text and their links from
+/// row to row) leaves every row reading as scrolling the rows themselves
+/// (`scroll_region`, which moves them) does: over random grids, with wide
+/// glyphs, halves alone, clusters kept in a row's text and links, every
+/// region, count and way, blanks in the default style or another.
+#[test]
+fn scrolling_between_full_margins_is_scrolling_rows() -> Result<(), Error> {
+    let mut r = Rng(0x0ef1_0000_0000_0069);
+    let coloured = Attributes::new(crate::Color::Idx(1), crate::Color::Idx(4))
+        .inline_style()
+        .unwrap_or(0);
+    let mut moved = 0usize;
+    for case in 0..3_000 {
+        let grid = random_grid(&mut r)?;
+        let rows = grid.rows.get();
+        let top = r.small(rows);
+        let bottom = top.saturating_add(r.small(rows.saturating_sub(top)));
+        let count = r.small(rows.saturating_add(2)).saturating_add(1);
+        let up = r.chance(50);
+        let blank = if r.chance(30) { coloured } else { 0 };
+        let (mut by_rows, mut by_cells) = (grid.clone(), grid.clone());
+        let mut next = max_id(&grid).saturating_add(1);
+        let direction = if up {
+            Scroll::Up { history: false }
+        } else {
+            Scroll::Down
+        };
+        by_rows.scroll_region((top, bottom), count, direction, blank, &mut next, 1_000)?;
+        by_cells.scroll_columns((top, bottom), count, up, blank, 1_000);
+        for y in 0..rows {
+            let (a, b) = (read_row(&by_rows, y), read_row(&by_cells, y));
+            assert_eq!(
+                a, b,
+                "case {case}: {top}..={bottom} by {count}, up {up}, row {y}"
+            );
+            moved = moved.saturating_add(usize::from(a != read_row(&grid, y)));
+        }
+        assert!(by_cells.blank_past_used(), "case {case}: used");
+    }
+    assert!(moved > 3_000, "{moved} rows changed");
     Ok(())
 }

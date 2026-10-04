@@ -85,13 +85,13 @@ pub const KIND: Kind = Kind {
 };
 
 fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
+    with_history(setup, SCROLLBACK)
+}
+
+/// vt100 keeping `rows` rows of scrollback (`footprint`).
+pub fn with_history(setup: &Setup, rows: usize) -> Result<Box<dyn Engine>, String> {
     Ok(Box::new(Vt100 {
-        parser: vt100::Parser::new_with_callbacks(
-            setup.rows,
-            setup.cols,
-            SCROLLBACK,
-            Heard::default(),
-        ),
+        parser: vt100::Parser::new_with_callbacks(setup.rows, setup.cols, rows, Heard::default()),
     }))
 }
 
@@ -200,6 +200,14 @@ fn read(parser: &mut vt100::Parser<Heard>, history_rows: usize) -> Snapshot {
 }
 
 impl Engine for Vt100 {
+    fn history_len(&mut self) -> Option<usize> {
+        let s = self.parser.screen_mut();
+        s.set_scrollback(usize::MAX);
+        let kept = s.scrollback();
+        s.set_scrollback(0);
+        Some(kept)
+    }
+
     fn process(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.parser.process(bytes);
         Ok(())

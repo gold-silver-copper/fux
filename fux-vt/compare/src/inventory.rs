@@ -18,8 +18,8 @@ use std::fmt::Write;
 
 /// The private modes `Screen::mode` keeps (fux-vt `src/screen.rs`).
 const MODES: &[u16] = &[
-    1, 6, 7, 9, 25, 47, 1000, 1002, 1003, 1004, 1005, 1006, 1047, 1048, 1049, 2004, 2026, 2031,
-    2048,
+    1, 6, 7, 9, 25, 47, 69, 1000, 1002, 1003, 1004, 1005, 1006, 1047, 1048, 1049, 2004, 2026,
+    2031, 2048,
 ];
 
 /// Sequences fux-vt reports as unhandled that fux answers itself, from
@@ -390,6 +390,8 @@ fn name(key: &str) -> String {
         ("CSI ? 2026 h", "synchronized output: begin"),
         ("CSI ? 2026 l", "synchronized output: end"),
         ("CSI ? 2026 $ p", "DECRQM: synchronized output?"),
+        ("CSI ? 69 h", "DECLRMM, left and right margins"),
+        ("CSI ? 69 $ p", "DECRQM: left and right margins?"),
         ("CSI ? 2027 $ p", "DECRQM: grapheme clusters?"),
         ("CSI ? 2031 h", "colour-scheme change reports"),
         ("CSI ? 2048 h", "in-band resize reports"),
@@ -415,6 +417,7 @@ fn name(key: &str) -> String {
         ("CSI n SP q", "DECSCUSR, cursor style"),
         ("CSI 3 J", "ED 3, erase saved lines"),
         ("CSI n;n r", "DECSTBM, scrolling region"),
+        ("CSI n;n s", "DECSLRM, left and right margins (SCOSC without DECLRMM)"),
         ("CSI n;n H", "CUP"),
         ("CSI H", "CUP, home"),
         ("CSI K", "EL"),
@@ -561,7 +564,8 @@ fn keep_first(params: &str) -> String {
 }
 
 /// The row an OSC gives (`Parser::dispatch_osc`: 0, 1, 2 and 52 are
-/// events, 8 a hyperlink, 133's A and L prompt marks, the rest dropped).
+/// events, 8 a hyperlink, 133's A and L prompt marks, the colours kept
+/// (Options::palette), the rest dropped).
 fn osc(body: &[u8]) -> (String, Does) {
     let body = text(body);
     let (number, rest) = body.split_once(';').unwrap_or((body.as_str(), ""));
@@ -589,6 +593,21 @@ fn osc(body: &[u8]) -> (String, Does) {
             "a ColorQuery event; fux answers with its client terminal's colour (src/outer.rs)",
         ),
         "52" => Does::Implemented("a clipboard event"),
+        "4" | "5" if rest.ends_with('?') => Does::Implemented(
+            "answered (Options::palette): the colour the program set, or xterm's default",
+        ),
+        "4" | "5" | "104" | "105" => Does::Implemented(
+            "the palette kept (Options::palette); fux paints a changed entry's cells in its colour",
+        ),
+        "10" | "11" | "12" | "13" | "14" | "15" | "16" | "17" | "18" | "19" | "110" | "111"
+        | "112" | "113" | "114" | "115" | "116" | "117" | "118" | "119"
+            if !rest.ends_with('?') =>
+        {
+            Does::Implemented(
+                "the dynamic colour kept (Options::palette); fux paints 10 and 11, the pane's \
+                 foreground and background",
+            )
+        }
         "8" if key == "OSC 8 (close)" => Does::Implemented("ends the open hyperlink"),
         "8" => Does::Implemented("opens a hyperlink, which the cells printed keep (Row::link)"),
         "133" if rest.starts_with('A') => {
@@ -828,7 +847,7 @@ pub fn run(names: &[String]) -> Result<bool, String> {
          recordings. \"fux-vt\" is what a fux pane's parser does with it, as fux sets \
          it up (`fux::pane::OPTIONS`: events, DECRQM, in-band resize, the size query, \
          colour-scheme reports, the kitty keyboard protocol, hyperlinks, prompt marks, \
-         DECRQSS and fux's identity), with what fux itself answers.\n"
+         DECRQSS, the palette and fux's identity), with what fux itself answers.\n"
     );
     let _ = writeln!(out, "Recordings:\n");
     for r in &recordings {

@@ -86,6 +86,10 @@ pub fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
 }
 
 impl Engine for Vt {
+    fn history_len(&mut self) -> Option<usize> {
+        Some(self.parser.screen().history_len())
+    }
+
     fn process(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.parser
             .process_with(bytes, &mut self.heard)
