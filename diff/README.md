@@ -259,8 +259,11 @@ marker, then the sequence's intermediates, as fux-vt's parser takes them:
 a parameter byte after an intermediate, or a C0 control, DEL or a byte
 from 0x80 inside, read as fux-vt reads them); any other is passed on, as
 both sides read it alike. On the corpus the filter takes out zellij's 512
-`OSC 4 ; n ; ?` queries (8,888 bytes) and neovim's 15 `CSI ? 69 $ p`
-(one a recording, 105 bytes), and nothing else.
+`OSC 4 ; n ; ?` queries (8,888 bytes) and neovim's left and right margins:
+its 15 `CSI ? 69 $ p` (one a recording), and in `nvim-split` and
+`nvim-wide`, which scroll a window beside another between margins once
+told the mode is known, 9 `CSI ? 69 h`, 3 `CSI ? 69 l` and 6 DECSLRM
+(228 bytes in all); and nothing else.
 
 **The memory diagnostics** (phase 3 of the same work, the compact cell,
 approved with it): `storage_cells` and each row's `text_len` may be smaller
@@ -279,7 +282,12 @@ alone, in the corpus (htop) and random cases, 0.0 s, shrunk to `CSI 4 m`,
 `CSI X`. With every feature in, two more: OSC 2 taken by the palette (its
 title event lost) with `Options::palette` on, in random cases, 0.1 s; and BS
 going back two columns where reverse wraparound is off, in the corpus
-(bash) and random cases, 0.1 s, shrunk to `rl`, BS.
+(bash) and random cases, 0.1 s, shrunk to `rl`, BS. With the margins and
+protection in too, two more beside their sequences: BS not leaving the
+second column (next to the left margin's BS), in the corpus (emacs-dired)
+and random cases, 0.8 s and 0.0 s, shrunk to 1x2 `F`, BS; and SCOSC, the
+`CSI s` the filter passes on while DECLRMM is reset, saving nothing, in
+random cases, 0.0 s, shrunk to 1x1 `\xe7`, `CSI s` (the probes restore).
 
 ### A difference
 
