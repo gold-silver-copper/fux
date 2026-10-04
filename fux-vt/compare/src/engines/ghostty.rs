@@ -145,7 +145,7 @@ pub fn with_scrollback(setup: &Setup, bytes: usize) -> Result<Box<dyn Engine>, S
 /// `libghostty`. Not used by the comparisons: `transparency` reads
 /// multiplexers that ask for the size through Ghostty as it is set up there.
 pub fn answering(rows: u16, cols: u16) -> Result<Box<dyn Engine>, String> {
-    let mut ghostty = Ghostty::new(rows, cols)?;
+    let mut ghostty = Ghostty::new(rows, cols, HISTORY_BYTES)?;
     ghostty
         .terminal
         .on_size(|t| {
