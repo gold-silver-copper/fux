@@ -29,6 +29,19 @@ pub(crate) struct Compact {
 
 const _: () = assert!(std::mem::size_of::<Compact>() == 8);
 
+/// A blank cell in the default attributes: what a row is past the cells it
+/// keeps.
+pub(crate) const BLANK: Compact = Compact {
+    text: [0; 4],
+    word: 0,
+};
+
+/// The text of a row that keeps none.
+pub(crate) static NO_TEXT: Text = Text {
+    long: Spill(Vec::new()),
+    short: Vec::new(),
+};
+
 /// The style's number, in `word`.
 const STYLE: u32 = (1 << 28) - 1;
 /// The second half of a wide glyph; and its first. Their bits, shifted
@@ -278,6 +291,19 @@ impl Text {
         self.long.clear();
         if self.short.capacity() != 0 {
             self.short = Vec::new();
+        }
+    }
+    /// Forgets all the text, keeping its memory for the row's next: a slot
+    /// of the screen, which rows pass through.
+    pub(crate) fn empty(&mut self) {
+        self.long.0.clear();
+        self.short.clear();
+    }
+    /// A copy, in no more memory than it needs: what history keeps.
+    pub(crate) fn exact(&self) -> Text {
+        Text {
+            long: Spill(self.long.0.as_slice().to_vec()),
+            short: self.short.as_slice().to_vec(),
         }
     }
     /// The most bytes of short clusters `cells` cells keep: one each.

@@ -168,9 +168,14 @@ A one-column grid drops wide glyphs without moving or wrapping the cursor.
 ## Storage, identity and windows
 
 The implementation owns row-major arenas and bounded row-slot metadata for
-the primary and alternate grids. Logical order is independent of physical
-slot. Primary history is a ring of at most `history_lines` rows; zero disables
-it. Full-screen upward scroll retains departing rows; partial scroll,
+the primary and alternate grids' screens. Logical order is independent of
+physical slot. Primary history holds at most `history_lines` rows; zero
+disables it. A row scrolled into history keeps its cells up to the last that
+is not blank in the default attributes, after the rows before it's, in blocks
+of 4,096 cells (`history.rs`), with 24 bytes of metadata (identity, version,
+width, where its cells are, its flags); its text and links, if it has any,
+go with it. The cells past those it keeps read blank, as they were.
+Full-screen upward scroll retains departing rows; partial scroll,
 reverse scroll and insert/delete lines discard displaced rows. Surviving
 rows retain their IDs. Recycled slots receive new IDs. A row's version changes
 on each edit that changes its cells or its wrap flag, and on no other: erasing
@@ -197,9 +202,9 @@ retain an already-applied input prefix; even a partially completed scroll
 forces every old window mark to refresh. Resize replacement is transactional. Each buffer permits
 at most 64 Mi retained cells (8 bytes each, and at most 17 bytes of short
 and 32 bytes of long cluster text each) and 1,048,576 retained rows.
-Storage grows geometrically only to the configured cap as history fills;
-empty history is not eagerly allocated. At capacity, scrolling reuses slots
-without allocating. Resize builds replacement storage before swapping it in,
+History grows as it fills, only to the configured cap; empty history is
+not eagerly allocated. At capacity, scrolling reuses the blocks the oldest
+rows leave, and allocates nothing more. Resize builds replacement storage before swapping it in,
 so peak storage can include old and new buffers.
 
 Windows are immutable views with bounded width/height and history offset.
