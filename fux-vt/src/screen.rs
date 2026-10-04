@@ -1,12 +1,18 @@
+use crate::compact::Compact;
 use crate::link::{Held, Pen};
 use crate::unicode::Cluster;
 use crate::{
-    Attributes, Blink, Cell, CellRef, Color, Error, Hyperlink, Mark, Options, Reply, Row, RowId,
+    Attributes, Blink, CellRef, Color, Error, Hyperlink, Mark, Options, Reply, Row, RowId,
     UnderlineStyle, Window,
     grid::{Grid, Scroll},
     parser::Parameters,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// A pen style (`Screen::pen_style`) not asked for since the pen changed.
+const UNKNOWN: u32 = u32::MAX;
+/// A pen style that is no number of its own: the grid's table has it.
+const TABLED: u32 = u32::MAX - 1;
 
 /// The mouse reporting a program asked for, the latest set winning
 /// (`CSI ? 9 / 1000 / 1002 / 1003 h`). State only: fux-vt reports nothing.
@@ -280,6 +286,19 @@ pub struct Screen {
     structural: u64,
     alternate_active: bool,
     attributes: Attributes,
+    /// The pen's style, and the style of its colours alone (what erasing
+    /// fills with), if each is a style that is its own number (`style.rs`),
+    /// the same in either grid; else `TABLED`, or `UNKNOWN` until they are
+    /// first asked for after the pen changes (`pen_changed`). So printing
+    /// and erasing in the pen look nothing up.
+    pen_style: u32,
+    blank_style: u32,
+    /// The number each of those has in the grid's table, if it is
+    /// `TABLED` and its number was found since it changed: with whether
+    /// the grid is the alternate screen's, and its styles' epoch then
+    /// (`Grid::epoch`), while which the number holds.
+    pen_table: Option<(u32, bool, u64)>,
+    blank_table: Option<(u32, bool, u64)>,
     saved_attributes: Attributes,
     charsets: Charsets,
     /// The character sets DECSC saved, which DECRC restores.
@@ -364,25 +383,14 @@ fn rgb(r: u16, g: u16, b: u16) -> Option<Color> {
     ))
 }
 
-/// Whether `cells` are already the ASCII `run` in `attributes`. Kept out of
-/// line, so that the write that usually follows compiles as if it were not
-/// there.
-#[inline(never)]
-fn unchanged(cells: &[Cell], run: &[u8], attributes: Attributes) -> bool {
-    cells
-        .iter()
-        .zip(run)
-        .all(|(c, b)| c.is_ascii(*b, attributes))
-}
-
 /// Whether a glyph `width` wide at `i` has its second half after it, if it
 /// needs one. Kept out of line, as `unchanged` is.
 #[inline(never)]
-fn whole(cells: &[Cell], i: usize, width: u16) -> bool {
+fn whole(cells: &[Compact], i: usize, width: u16) -> bool {
     width != 2
         || i.checked_add(1)
             .and_then(|j| cells.get(j))
-            .is_some_and(|c| c.same(&Cell::continuation()))
+            .is_some_and(|c| c.same(&Compact::continuation()))
 }
 
 impl Screen {
@@ -396,6 +404,10 @@ impl Screen {
             structural: 1,
             alternate_active: false,
             attributes: Attributes::default(),
+            pen_style: 0,
+            blank_style: 0,
+            pen_table: None,
+            blank_table: None,
             saved_attributes: Attributes::default(),
             charsets: Charsets::default(),
             saved_charsets: Charsets::default(),
@@ -450,6 +462,74 @@ impl Screen {
             &mut self.primary
         };
         f(grid, &mut self.next_id, self.version)
+    }
+    /// Finds the pen's style again, and forgets the style of its colours
+    /// (`pen_style`, `blank_style`), to find it when next asked for: every
+    /// change of `attributes` is followed by this.
+    fn pen_changed(&mut self) {
+        self.pen_style = self.attributes.inline_style().unwrap_or(TABLED);
+        self.blank_style = UNKNOWN;
+        self.pen_table = None;
+        self.blank_table = None;
+    }
+    /// The number `table`, of the table of the grid shown, if it is still
+    /// that grid's and its epoch's.
+    #[inline]
+    fn still(&self, table: Option<(u32, bool, u64)>) -> Option<u32> {
+        let (id, alternate, epoch) = table?;
+        (alternate == self.alternate_active && epoch == self.grid().epoch()).then_some(id)
+    }
+    /// The number of the pen's style in the grid shown.
+    #[inline]
+    fn pen_style(&mut self) -> u32 {
+        let style = self.pen_style;
+        debug_assert!(style >= TABLED || Some(style) == self.attributes.inline_style());
+        if style < TABLED {
+            return style;
+        }
+        if let Some(id) = self.still(self.pen_table) {
+            return id;
+        }
+        self.find_pen_style(false)
+    }
+    /// The number, in the grid shown, of the style of the pen's colours
+    /// alone, which erasing, scrolling and inserting fill cells with (`bce`).
+    #[inline]
+    fn blank_style(&mut self) -> u32 {
+        let style = self.blank_style;
+        debug_assert!(style >= TABLED || Some(style) == self.attributes.erased().inline_style());
+        if style < TABLED {
+            return style;
+        }
+        if let Some(id) = self.still(self.blank_table) {
+            return id;
+        }
+        self.find_pen_style(true)
+    }
+    /// `pen_style`, or `blank_style` if `blank`, when it is not known to
+    /// be a number of its own: found, and kept if it is one.
+    #[inline(never)]
+    fn find_pen_style(&mut self, blank: bool) -> u32 {
+        let (attributes, known) = if blank {
+            (self.attributes.erased(), &mut self.blank_style)
+        } else {
+            (self.attributes, &mut self.pen_style)
+        };
+        if *known == UNKNOWN {
+            *known = attributes.inline_style().unwrap_or(TABLED);
+        }
+        if *known < TABLED {
+            return *known;
+        }
+        let id = self.grid_mut().table_style(attributes);
+        // After the search, which may have swept the styles.
+        let found = Some((id, self.alternate_active, self.grid().epoch()));
+        if blank {
+            self.blank_table = found;
+        } else {
+            self.pen_table = found;
+        }
+        id
     }
     pub(crate) fn begin(&mut self) -> Result<(), Error> {
         self.version = self
@@ -851,7 +931,7 @@ impl Screen {
         // invalidate every reader's window, not just its newly blank rows.
         self.structural = self.version;
         // The rows brought in take the pen's colours (`bce`), as in xterm.
-        let blank = self.attributes.erased();
+        let blank = self.blank_style();
         self.with_grid(|g, next, version| {
             let direction = if up {
                 Scroll::Up { history }
@@ -957,12 +1037,14 @@ impl Screen {
                 None
             };
             if let Some((row, mut col)) = previous {
-                if g.cell(row, col).is_some_and(|c| c.is_wide_continuation()) {
+                if g.stored(row, col)
+                    .is_some_and(Compact::is_wide_continuation)
+                {
                     col = col.saturating_sub(1);
                 }
                 // A blank cell takes a space for the mark to follow, and
                 // with it the open link, as a glyph printed there would.
-                let blank = g.cell(row, col).is_some_and(|c| !c.has_contents());
+                let blank = g.stored(row, col).is_some_and(|c| !c.has_contents());
                 // A cell already holding all it can takes no more.
                 let end = col.saturating_add(1);
                 self.with_grid(|g, _, v| {
@@ -979,20 +1061,20 @@ impl Screen {
         self.wrap_for(width)?;
         if self.insert {
             // Room for the glyph, what was there moving right (ICH).
-            let blank = self.attributes.erased();
+            let blank = self.blank_style();
             self.with_grid(|g, _, v| g.edit_cells(width, true, blank, v));
         }
         let (row, col) = self.grid().cursor;
-        let attributes = self.attributes;
+        let style = self.pen_style();
         // A narrow glyph over a wide one's first half leaves a space in its
         // second, which no link printed.
         let split = self.links_seen
             && width == 1
-            && self.grid().cell(row, col).is_some_and(|c| c.is_wide());
+            && self.grid().stored(row, col).is_some_and(Compact::is_wide);
         self.with_grid(|g, _, version| {
             g.mutate_row(row, version, col.saturating_add(width), |cells| {
                 let i = usize::from(col);
-                let glyph = Cell::glyph(c, usize::from(width), attributes);
+                let glyph = Compact::glyph(c, usize::from(width), style);
                 // Already this glyph, whole, as a redraw finds it: the row is
                 // as it was. Otherwise what follows writes a cell that
                 // differs, the glyph or its second half.
@@ -1003,21 +1085,21 @@ impl Screen {
                     return false;
                 }
                 // An overwrite at either half removes the other half too.
-                if cells.get(i).is_some_and(Cell::is_wide_continuation)
+                if cells.get(i).is_some_and(Compact::is_wide_continuation)
                     && let Some(other) = i.checked_sub(1).and_then(|j| cells.get_mut(j))
                 {
-                    *other = Cell::blank(attributes);
+                    *other = Compact::blank(style);
                 }
-                if cells.get(i).is_some_and(Cell::is_wide)
+                if cells.get(i).is_some_and(Compact::is_wide)
                     && let Some(other) = cells.get_mut(i + 1)
                 {
-                    *other = Cell::glyph(' ', 1, attributes);
+                    *other = Compact::glyph(' ', 1, style);
                 }
                 if width == 2
-                    && cells.get(i + 1).is_some_and(Cell::is_wide)
+                    && cells.get(i + 1).is_some_and(Compact::is_wide)
                     && let Some(other) = cells.get_mut(i + 2)
                 {
-                    *other = Cell::blank(attributes);
+                    *other = Compact::blank(style);
                 }
                 if let Some(cell) = cells.get_mut(i) {
                     *cell = glyph;
@@ -1025,7 +1107,7 @@ impl Screen {
                 if width == 2
                     && let Some(cell) = cells.get_mut(i + 1)
                 {
-                    *cell = Cell::continuation();
+                    *cell = Compact::continuation();
                 }
                 true
             });
@@ -1063,7 +1145,7 @@ impl Screen {
                 return None;
             }
             let mut left = col.checked_sub(1)?;
-            if g.cell(row, left)?.is_wide_continuation() {
+            if g.stored(row, left)?.is_wide_continuation() {
                 left = left.checked_sub(1)?;
             }
             // Its cluster's state, from its text.
@@ -1082,7 +1164,7 @@ impl Screen {
         else {
             return false;
         };
-        let Some(cell) = g.cell(anchor_row, anchor_col) else {
+        let Some(cell) = g.stored(anchor_row, anchor_col) else {
             return false;
         };
         let narrow = !cell.is_wide();
@@ -1113,14 +1195,14 @@ impl Screen {
                     }
                     // The cell under the cursor becomes the second half; if
                     // it led a wide glyph, that glyph's half is left blank.
-                    if line.cells.get(cursor).is_some_and(Cell::is_wide)
+                    if line.cells.get(cursor).is_some_and(Compact::is_wide)
                         && let Some(orphan) =
                             cursor.checked_add(1).and_then(|i| line.cells.get_mut(i))
                     {
-                        *orphan = Cell::default();
+                        *orphan = Compact::default();
                     }
                     if let Some(cell) = line.cells.get_mut(cursor) {
-                        *cell = Cell::continuation();
+                        *cell = Compact::continuation();
                     }
                     widened = true;
                 }
@@ -1226,43 +1308,16 @@ impl Screen {
             let Some(end) = col.checked_add(count) else {
                 return Ok(());
             };
-            let span = usize::from(col)..usize::from(end);
-            let simple = self
-                .grid()
-                .live_cells(row)
-                .get(span.clone())
-                .is_some_and(|cells| {
-                    cells
-                        .iter()
-                        .all(|c| !c.is_wide() && !c.is_wide_continuation())
-                });
-            if !simple {
+            let style = self.pen_style();
+            let run = bytes.get(..usize::from(count)).unwrap_or_default();
+            // Written whole unless the run meets half of a wide glyph,
+            // which the general path repairs.
+            if !self.with_grid(|g, _, v| g.write_ascii(row, col, run, style, v)) {
                 self.print(char::from(first))?;
                 bytes = tail;
                 continue;
             }
-            let attributes = self.attributes;
-            let run = bytes.get(..usize::from(count)).unwrap_or_default();
-            self.with_grid(|g, _, v| {
-                g.mutate_row(row, v, end, |cells| {
-                    let Some(dst) = cells.get_mut(span) else {
-                        return false;
-                    };
-                    // Already these very cells, as a redraw finds them: the
-                    // row is as it was. New text differs at the first cell.
-                    let first = dst.first().zip(run.first());
-                    if first.is_some_and(|(c, b)| c.is_ascii(*b, attributes))
-                        && unchanged(dst, run, attributes)
-                    {
-                        return false;
-                    }
-                    for (cell, byte) in dst.iter_mut().zip(run) {
-                        *cell = Cell::ascii(*byte, attributes);
-                    }
-                    true
-                });
-                g.advance_to(end);
-            });
+            self.grid_mut().advance_to(end);
             // The cells' links, after the cells: before, the call would make
             // the write above load again what it had in hand.
             if self.links_seen {
@@ -1335,6 +1390,7 @@ impl Screen {
         g.pending_wrap = g.saved_pending_wrap;
         g.origin = g.saved_origin;
         self.attributes = self.saved_attributes;
+        self.pen_changed();
         self.charsets = self.saved_charsets;
     }
     /// Carries out an escape sequence; whether fux-vt implements it.
@@ -1402,6 +1458,7 @@ impl Screen {
                 self.alternate.reset_links();
                 self.alternate_active = false;
                 self.attributes = Attributes::default();
+                self.pen_changed();
                 self.saved_attributes = Attributes::default();
                 self.charsets = Charsets::default();
                 self.saved_charsets = Charsets::default();
@@ -1449,6 +1506,7 @@ impl Screen {
         self.application_cursor = false;
         self.application_keypad = false;
         self.attributes = Attributes::default();
+        self.pen_changed();
         self.saved_attributes = Attributes::default();
         self.charsets = Charsets::default();
         self.saved_charsets = Charsets::default();
@@ -1471,10 +1529,14 @@ impl Screen {
         let kept = self.alternate.clone_cursor();
         self.alternate.clear(&mut self.next_id, self.version)?;
         let blank = self.attributes.erased();
+        let blank = match blank.inline_style() {
+            Some(style) => style,
+            None => self.alternate.style(blank),
+        };
         let g = &mut self.alternate;
         g.set_cursor(kept);
         g.pending_wrap = false;
-        if blank != Attributes::default() {
+        if blank != 0 {
             let cols = g.cols.get();
             for y in 0..g.rows.get() {
                 g.erase(y, 0, cols, blank, self.version);
@@ -1952,20 +2014,20 @@ impl Screen {
                 g.position(line, col);
             }
             b'@' | b'P' => {
-                let blank = self.attributes.erased();
+                let blank = self.blank_style();
                 self.with_grid(|g, _, v| g.edit_cells(n, byte == b'@', blank, v));
             }
             // Erased cells take the pen's colours alone, as xterm's do.
             b'X' => {
-                let a = self.attributes.erased();
+                let a = self.blank_style();
                 self.with_grid(|g, _, v| g.erase(row, col, col.saturating_add(n), a, v));
             }
             b'J' | b'K' => {
                 let mode = p.first(0, 0);
-                let a = self.attributes.erased();
                 if mode > 2 {
                     return Ok(Dispatch::Unhandled);
                 }
+                let a = self.blank_style();
                 self.with_grid(|g, _, v| {
                     g.pending_wrap = false;
                     let cols = g.cols.get();
@@ -2019,7 +2081,10 @@ impl Screen {
                     g.position(0, 0);
                 }
             }
-            b'm' => self.sgr(p),
+            b'm' => {
+                self.sgr(p);
+                self.pen_changed();
+            }
             b'b' => self.repeat(n)?,
             // CHT (ECMA-48 8.3.10): HT n times. Like HT, it leaves a
             // pending wrap waiting in the last column.

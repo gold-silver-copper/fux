@@ -130,13 +130,28 @@ parameter/intermediate overflow and string termination. Parameters saturate
 at u16::MAX; at most 32 numeric fields and two intermediates are retained;
 overflow moves to ignore-until-final. Ignored strings retain no payload.
 
-A cell is 32 bytes: its attributes and 17 bytes of text, enough for single
-emoji with modifiers, flags, keycaps and most accented text. A longer
-cluster, up to 128 bytes (Unicode's stream-safe limit, which holds every
-emoji sequence), goes in its row's text, which the cell locates. A row's
-text is at most 32 bytes a cell and 128 more; overwritten clusters leave
-their text until the row runs out of room and is compacted. A cluster that
-would not fit even then keeps what fits inline, whole chars, in its cell.
+A cell holds a cluster of up to 17 bytes (`Cell::INLINE_CAPACITY`), enough
+for single emoji with modifiers, flags, keycaps and most accented text. A
+longer cluster, up to 128 bytes (Unicode's stream-safe limit, which holds
+every emoji sequence), goes in its row's text, which the cell locates. A
+row's long text is at most 32 bytes a cell and 128 more; overwritten
+clusters leave their text until the row runs out of room and is compacted.
+A cluster that would not fit even then keeps what fits inline, whole chars,
+in its cell.
+
+A grid stores a cell in 8 bytes (`compact.rs`): a cluster of up to 4 bytes,
+one character, inline, and a style's number of 28 bits (`style.rs`) for its
+attributes. The attributes programs mostly print in are their own number
+(indexed colours with any rendition but rapid blink and a single underline;
+a direct foreground on the default background, bold or italic); the rest
+are kept once in the grid's table, which is swept, never counted: when it
+has grown to twice the styles in use at the last sweep, and past an eighth
+of the grid's cells, the styles no cell has are let go and the cells'
+numbers rewritten. A cluster of 5 to 17 bytes goes in its row's short text,
+which holds one such cluster a cell and is compacted when full; long ones
+in its long text, within the budget above, so what is kept and what is cut
+is as a 32-byte `Cell` keeps it. Neither shows: cells are read through
+`CellRef`, and a host's `Cell` is 32 bytes.
 A combining scalar after an empty preceding cell attaches to a space;
 at column zero it attaches to the previous row only when that row is
 soft-wrapped. Otherwise it is dropped. An over-capacity mark is dropped, not
@@ -173,8 +188,8 @@ Zero dimensions are rejected. Allocation uses checked arithmetic and explicit
 cell/row caps; errors leave the existing terminal usable. Processing may
 retain an already-applied input prefix; even a partially completed scroll
 forces every old window mark to refresh. Resize replacement is transactional. Each buffer permits
-at most 64 Mi retained cells (32 bytes each, and at most 32 bytes of long
-cluster text each) and 1,048,576 retained rows.
+at most 64 Mi retained cells (8 bytes each, and at most 17 bytes of short
+and 32 bytes of long cluster text each) and 1,048,576 retained rows.
 Storage grows geometrically only to the configured cap as history fills;
 empty history is not eagerly allocated. At capacity, scrolling reuses slots
 without allocating. Resize builds replacement storage before swapping it in,

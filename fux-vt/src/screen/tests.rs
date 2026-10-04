@@ -202,7 +202,8 @@ fn an_erase_within_the_used_mark_is_the_erase_of_every_cell() -> Result<(), Erro
                         .copied()
                         .unwrap_or_default();
                     let (mut bounded, mut every) = (grid.clone(), grid.clone());
-                    bounded.erase(row, start, end, attributes, version);
+                    let style = bounded.style(attributes);
+                    bounded.erase(row, start, end, style, version);
                     every.erase_reference(row, start, end, attributes, version);
                     assert!(
                         bounded.seen() == every.seen(),
@@ -266,5 +267,141 @@ fn link_counts_follow_the_rows() -> Result<(), Error> {
         check(&p, "filling the links");
         assert!(p.screen().primary.links.len() < 2200);
     }
+    Ok(())
+}
+
+/// Each cell of a grid as a reader sees it, its style's number left out:
+/// what sweeping the styles, which renumbers them, must keep.
+fn looks(grid: &Grid) -> Vec<crate::grid::tests::Seen> {
+    grid.seen()
+        .into_iter()
+        .map(|(id, version, wrapped, prompt, cells)| {
+            let cells = cells
+                .into_iter()
+                .map(|(mut cell, attributes, text, link)| {
+                    cell.set_style(0);
+                    (cell, attributes, text, link)
+                })
+                .collect();
+            (id, version, wrapped, prompt, cells)
+        })
+        .collect()
+}
+
+/// A sweep renumbers the styles and nothing a reader sees changes: two
+/// parsers given the same output, one with both grids swept after every
+/// piece, look the same throughout, through new colours, erasing in
+/// colour, scrolling into history and in regions, insertion, deletion,
+/// wide glyphs, long clusters, links, both screens and resizes.
+#[test]
+fn sweeping_the_styles_changes_nothing_a_reader_sees() -> Result<(), Error> {
+    let pieces: [&[u8]; 22] = [
+        b"hello",
+        b"\r\n",
+        b"\n",
+        "\u{754c}x".as_bytes(),
+        "e\u{301}\u{302}\u{303}\u{304}\u{305}\u{306}\u{307}\u{308}\u{309}".as_bytes(),
+        b"\x1b[m",
+        b"\x1b[K",
+        b"\x1b[1K",
+        b"\x1b[2J",
+        b"\x1b[3X",
+        b"\x1b[2@",
+        b"\x1b[2P",
+        b"\x1b[L",
+        b"\x1b[M",
+        b"\x1b[2;4r",
+        b"\x1b[r",
+        b"\x1b[S",
+        b"\x1b[T",
+        b"\x1b[9;3H",
+        b"\x1b]8;;https://a\x1b\\link\x1b]8;;\x1b\\",
+        b"\x1b[?1049h",
+        b"\x1b[?1049l",
+    ];
+    let mut state = 0x5157_u64;
+    let mut below = |n: usize| {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        usize::try_from(state >> 33)
+            .unwrap_or(0)
+            .checked_rem(n)
+            .unwrap_or(0)
+    };
+    for reflow in [false, true] {
+        let options = crate::Options::new()
+            .with_reflow(reflow)
+            .with_hyperlinks(true);
+        let mut plain = crate::Parser::with_options(5, 9, 6, options)?;
+        let mut swept = crate::Parser::with_options(5, 9, 6, options)?;
+        for step in 0..4_000u32 {
+            let piece: Vec<u8> = match below(8) {
+                0 => format!("\x1b[48;2;{};1;{}m", below(4), below(256)).into_bytes(),
+                1 => format!("\x1b[48;5;{}m", below(8)).into_bytes(),
+                2 if below(10) == 0 => {
+                    let rows = u16::try_from(below(6)).unwrap_or(0).saturating_add(1);
+                    let cols = u16::try_from(below(10)).unwrap_or(0).saturating_add(1);
+                    plain.resize(rows, cols)?;
+                    swept.resize(rows, cols)?;
+                    Vec::new()
+                }
+                _ => pieces
+                    .get(below(pieces.len()))
+                    .copied()
+                    .unwrap_or(b"a")
+                    .to_vec(),
+            };
+            plain.process(&piece)?;
+            swept.process(&piece)?;
+            let s = swept.screen_mut();
+            s.primary.sweep();
+            s.alternate.sweep();
+            let (a, b) = (plain.screen(), swept.screen());
+            assert!(
+                looks(&a.primary) == looks(&b.primary)
+                    && looks(&a.alternate) == looks(&b.alternate),
+                "step {step}"
+            );
+            assert_eq!(a.attributes(), b.attributes(), "step {step}");
+        }
+    }
+    Ok(())
+}
+
+/// Past the floor, new styles sweep the table, and the cells keep their
+/// attributes: a truecolour run, every glyph a colour of its own, scrolled
+/// through history many times over, reads back colour by colour, and the
+/// table stays bounded however many styles were made.
+#[test]
+fn styles_in_use_survive_the_sweeps_that_new_ones_bring() -> Result<(), Error> {
+    let (rows, cols, history) = (4u16, 16u16, 30usize);
+    let mut p = crate::Parser::new(rows, cols, history)?;
+    let colour = |n: u32| {
+        let [_, r, g, b] = n.to_be_bytes();
+        (r, g, b)
+    };
+    let glyphs = 40_000u32;
+    for n in 0..glyphs {
+        let (r, g, b) = colour(n);
+        p.process(format!("\x1b[48;2;{r};{g};{b}mx").as_bytes())?;
+    }
+    let grid = &p.screen().primary;
+    assert!(grid.style_count() <= 2 * 4096, "{}", grid.style_count());
+    // Every retained cell, oldest first, is one of the last glyphs printed,
+    // in its colour.
+    let retained = grid.retained_len();
+    let cells = u32::try_from(retained.saturating_mul(usize::from(cols))).unwrap_or(0);
+    let mut n = glyphs.saturating_sub(cells);
+    for i in 0..retained {
+        let row = grid.row_at(i).ok_or(Error::InvalidRange)?;
+        for cell in row.cells() {
+            let (r, g, b) = colour(n);
+            assert_eq!(cell.contents(), "x", "glyph {n}");
+            assert_eq!(cell.bgcolor(), Color::Rgb(r, g, b), "glyph {n}");
+            n = n.saturating_add(1);
+        }
+    }
+    assert_eq!(n, glyphs);
     Ok(())
 }

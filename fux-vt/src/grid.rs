@@ -4,9 +4,10 @@ use std::num::NonZeroU16;
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::cell::{Line, Spill};
+use crate::compact::{Compact, Line, Text};
 use crate::link::Links;
-use crate::{Attributes, Cell, CellRef, Error, Row, RowId};
+use crate::style::Styles;
+use crate::{Attributes, CellRef, Error, Row, RowId};
 
 /// A grid's number of rows or columns. Never zero, so a grid always has a
 /// last row and a last column.
@@ -27,7 +28,19 @@ impl Extent {
     }
 }
 
-/// Maximum addressable retained cells per buffer (2.5 GiB at 40 bytes/cell).
+/// How many styles of the table a grid keeps at hand (`Grid::recent`).
+const RECENT: usize = 32;
+
+/// Where attributes are kept among the styles at hand: a hash of them.
+#[inline]
+fn recent(attributes: Attributes) -> usize {
+    let (a, b) = attributes.bits();
+    let hash = (a ^ b.rotate_left(17)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    // The top five bits, one of 32.
+    usize::try_from(hash >> 59).unwrap_or(0)
+}
+
+/// Maximum addressable retained cells per buffer (512 MiB at 8 bytes a cell).
 /// Storage is committed only for live/retained rows, not empty history slots.
 pub(crate) const MAX_CELLS: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_ROWS: usize = 1_048_576;
@@ -69,12 +82,25 @@ impl Meta {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Grid {
-    cells: Vec<Cell>,
+    cells: Vec<Compact>,
     meta: Vec<Meta>,
     /// Each slot's text too long for its cells to hold inline.
-    spill: Vec<Spill>,
+    spill: Vec<Text>,
     /// The links the cells point to.
     pub links: Links,
+    /// The attributes of the cells' styles: shared with the grid a resize
+    /// makes from this one, until either adds a style.
+    styles: Arc<Styles>,
+    /// Styles of the table found lately, each with its attributes, by a
+    /// hash of them (`recent`): a program's colours, which it changes
+    /// between, are found again without a search of the table. Empty, as
+    /// whenever styles are numbered anew, each holds the default attributes,
+    /// which are no style of the table.
+    recent: [(Attributes, u32); RECENT],
+    /// Changed whenever a style's number may have changed: a sweep, the
+    /// grid started again. A number got with one epoch is a style's while
+    /// the epoch lasts, and a resize, which keeps the numbers, keeps it.
+    epoch: u64,
     /// The link of each cell of the slots whose `Meta::linked` is set, by
     /// slot: only rows a link was printed in have one (see `link.rs`).
     linked: Linked,
@@ -152,6 +178,9 @@ impl Grid {
             meta: Vec::new(),
             spill: Vec::new(),
             links: Links::default(),
+            styles: Arc::default(),
+            recent: [(Attributes::default(), 0); RECENT],
+            epoch: 0,
             linked: Linked::default(),
             order: VecDeque::new(),
             stride: usize::from(cols.get()),
@@ -216,10 +245,10 @@ impl Grid {
             self.reserve_rows(capacity)?;
         }
         let id = next_id(next)?;
-        self.cells.resize(end, Cell::default());
+        self.cells.resize(end, Compact::default());
         self.meta
             .push(Meta::new(id, version, self.cols.get(), false, 0));
-        self.spill.push(Spill::default());
+        self.spill.push(Text::default());
         Ok(slot)
     }
 
@@ -242,12 +271,12 @@ impl Grid {
         let start = slot.checked_mul(self.stride)?;
         Some(start..start.checked_add(width)?)
     }
-    fn slice(&self, slot: usize) -> &[Cell] {
+    fn slice(&self, slot: usize) -> &[Compact] {
         self.cells_of(slot)
             .and_then(|cells| self.cells.get(cells))
             .unwrap_or(&[])
     }
-    fn slice_mut(&mut self, slot: usize) -> &mut [Cell] {
+    fn slice_mut(&mut self, slot: usize) -> &mut [Compact] {
         match self.cells_of(slot) {
             Some(cells) => self.cells.get_mut(cells).unwrap_or(&mut []),
             None => &mut [],
@@ -258,7 +287,7 @@ impl Grid {
         let cells = self.cells_of(slot)?;
         Some(Line {
             cells: self.cells.get_mut(cells)?,
-            spill: self.spill.get_mut(slot)?,
+            text: self.spill.get_mut(slot)?,
         })
     }
     pub fn row_at(&self, index: usize) -> Option<Row<'_>> {
@@ -278,6 +307,7 @@ impl Grid {
             spill: self.spill.get(slot)?,
             links,
             table: &self.links,
+            styles: &self.styles,
         })
     }
     pub fn row_by_id(&self, id: RowId) -> Option<Row<'_>> {
@@ -309,11 +339,13 @@ impl Grid {
     pub fn cell(&self, row: u16, col: u16) -> Option<CellRef<'_>> {
         let slot = self.slot(row)?;
         let cell = self.slice(slot).get(usize::from(col))?;
-        Some(CellRef::new(cell, self.spill.get(slot)?))
+        Some(cell.read(self.spill.get(slot)?, &self.styles))
     }
-    /// A live row's cells, as `cell` finds them.
-    pub fn live_cells(&self, row: u16) -> &[Cell] {
-        self.slot(row).map_or(&[], |slot| self.slice(slot))
+    /// A live row's cell as stored, for what its halves and whether it
+    /// has text say, which need neither its text nor its attributes.
+    #[inline]
+    pub fn stored(&self, row: u16, col: u16) -> Option<&Compact> {
+        self.slice(self.slot(row)?).get(usize::from(col))
     }
     /// Edits a live row's cells with `f`, which says whether it changed any
     /// of them; only then does the row take `version`. An edit that leaves
@@ -324,7 +356,7 @@ impl Grid {
         row: u16,
         version: u64,
         end: u16,
-        f: impl FnOnce(&mut [Cell]) -> bool,
+        f: impl FnOnce(&mut [Compact]) -> bool,
     ) {
         if let Some(slot) = self.slot(row)
             && f(self.slice_mut(slot))
@@ -333,6 +365,48 @@ impl Grid {
             m.version = version;
             m.used = m.used.max(end.min(m.width));
         }
+    }
+    /// Writes the ASCII `run` from column `col` of live row `row`, in style
+    /// `style`, as `mutate_row` writes, taking `version` only if a cell
+    /// changed; unless a cell there is half of a wide glyph, which the
+    /// general path repairs, when nothing is written and `false` returned.
+    #[inline]
+    pub fn write_ascii(
+        &mut self,
+        row: u16,
+        col: u16,
+        run: &[u8],
+        style: u32,
+        version: u64,
+    ) -> bool {
+        let Some(slot) = self.slot(row) else {
+            return false;
+        };
+        let start = usize::from(col);
+        let Some(dst) = start
+            .checked_add(run.len())
+            .and_then(|end| self.slice_mut(slot).get_mut(start..end))
+        else {
+            return false;
+        };
+        if dst.iter().any(|c| c.is_wide() || c.is_wide_continuation()) {
+            return false;
+        }
+        // Already these very cells, as a redraw finds them: the row is as
+        // it was. New text differs at the first cell.
+        let first = dst.first().zip(run.first());
+        if first.is_some_and(|(c, b)| c.is_ascii(*b, style)) && unchanged(dst, run, style) {
+            return true;
+        }
+        for (cell, byte) in dst.iter_mut().zip(run) {
+            *cell = Compact::ascii(*byte, style);
+        }
+        if let Some(m) = self.meta.get_mut(slot) {
+            let end = u16::try_from(start.saturating_add(run.len())).unwrap_or(m.width);
+            m.version = version;
+            m.used = m.used.max(end.min(m.width));
+        }
+        true
     }
     /// `mutate_row` with the row's text too, for edits that store clusters.
     pub fn mutate_line(
@@ -382,6 +456,86 @@ impl Grid {
             run.fill(link);
             m.version = version;
         }
+    }
+
+    /// The number of the style with `attributes`, which is added to the
+    /// table if they need it and it has none. Adding a style may sweep the
+    /// styles, renumbering every cell's: a number got before this call is
+    /// not to be used after it.
+    pub fn style(&mut self, attributes: Attributes) -> u32 {
+        match attributes.inline_style() {
+            Some(style) => style,
+            None => self.table_style(attributes),
+        }
+    }
+
+    /// The number of the style with `attributes`, which are no number of
+    /// their own (`Attributes::inline_style`): the table's, found among
+    /// those found lately if it is there.
+    #[inline]
+    pub fn table_style(&mut self, attributes: Attributes) -> u32 {
+        let at = recent(attributes);
+        if let Some(&(seen, id)) = self.recent.get(at)
+            && seen == attributes
+        {
+            return id;
+        }
+        self.find_table_style(attributes, at)
+    }
+
+    /// `table_style` for attributes not found lately, which are then.
+    #[inline(never)]
+    fn find_table_style(&mut self, attributes: Attributes, at: usize) -> u32 {
+        let id = match self.styles.find(attributes) {
+            Some(id) => id,
+            None => {
+                if self.styles.wants_sweep(self.cells.len()) {
+                    self.sweep();
+                }
+                // After a sweep there is room: the styles in use are at
+                // most the cells, far fewer than the table holds.
+                Arc::make_mut(&mut self.styles)
+                    .insert(attributes)
+                    .unwrap_or(0)
+            }
+        };
+        if let Some(slot) = self.recent.get_mut(at) {
+            *slot = (attributes, id);
+        }
+        id
+    }
+
+    /// Keeps only the styles cells have, numbered anew, and gives every
+    /// cell its style's new number (`style.rs`).
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn sweep(&mut self) {
+        let mut used = vec![false; self.styles.len()];
+        for cell in &self.cells {
+            if let Some(mark) = Styles::place(cell.style()).and_then(|i| used.get_mut(i)) {
+                *mark = true;
+            }
+        }
+        let renumber = Arc::make_mut(&mut self.styles).retain(&used);
+        for cell in &mut self.cells {
+            if let Some(&new) = Styles::place(cell.style()).and_then(|i| renumber.get(i)) {
+                cell.set_style(new);
+            }
+        }
+        self.recent = [(Attributes::default(), 0); RECENT];
+        self.epoch = self.epoch.wrapping_add(1);
+    }
+
+    /// The styles' epoch (`Grid::epoch`).
+    #[inline]
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// How many styles the grid's table holds, in use or not.
+    #[cfg(test)]
+    pub(crate) fn style_count(&self) -> usize {
+        self.styles.len()
     }
 
     /// Forgets slot `slot`'s links; whether it had any.
@@ -525,7 +679,7 @@ impl Grid {
     /// cells before the mark alone, and one that reaches the mark brings
     /// the mark back to `start`: a row erased once costs nothing to erase
     /// again, and nothing to recycle.
-    pub fn erase(&mut self, row: u16, start: u16, end: u16, attributes: Attributes, version: u64) {
+    pub fn erase(&mut self, row: u16, start: u16, end: u16, style: u32, version: u64) {
         let (cols, last) = (self.cols.get(), self.cols.last());
         let mut clears_edge = end >= cols;
         let Some(slot) = self.slot(row) else {
@@ -534,7 +688,7 @@ impl Grid {
         let Some(&Meta { used, width, .. }) = self.meta.get(slot) else {
             return;
         };
-        let plain = attributes == Attributes::default();
+        let plain = style == 0;
         let span_end = usize::from(end.min(cols));
         let first = usize::from(start);
         // The cells that may not be blank in `attributes` yet: in the
@@ -544,14 +698,14 @@ impl Grid {
         } else {
             span_end
         };
-        let blank = Cell::blank(attributes);
+        let blank = Compact::blank(style);
         let cells = self.slice_mut(slot);
         // Already blank in this style up to the first that is not, as an
         // erased tail is: the row is as it was, and a blank is never half
         // a wide glyph, so there is nothing to repair either.
         let differs = cells
             .get(first..reach)
-            .and_then(|run| run.iter().position(|c| !c.is_blank(attributes)));
+            .and_then(|run| run.iter().position(|c| !c.is_blank(style)));
         let changed = differs.is_some();
         if let Some(differs) = differs {
             // A wide glyph inside the run goes with it; one across either
@@ -562,13 +716,13 @@ impl Grid {
                 && cell.is_wide_continuation()
                 && let Some(other) = first.checked_sub(1).and_then(|i| cells.get_mut(i))
             {
-                *other = Cell::blank(other.attributes);
+                *other = other.blanked();
             }
             if let Some(at) = reach.checked_sub(1)
-                && cells.get(at).is_some_and(Cell::is_wide)
+                && cells.get(at).is_some_and(Compact::is_wide)
             {
                 if let Some(other) = cells.get_mut(reach) {
-                    *other = Cell::blank(other.attributes);
+                    *other = other.blanked();
                 }
                 // The glyph's second half is in the last column.
                 clears_edge |= reach == usize::from(last);
@@ -611,7 +765,7 @@ impl Grid {
     /// a pending wrap (DEC STD 070, Appendix D.6.1). The cells they bring
     /// in are blank in `blank`. DCH ends the row's soft wrap; ICH, and the
     /// insertion IRM makes, keep it, as xterm does.
-    pub fn edit_cells(&mut self, count: u16, insert: bool, blank: Attributes, version: u64) {
+    pub fn edit_cells(&mut self, count: u16, insert: bool, blank: u32, version: u64) {
         self.pending_wrap = false;
         let (row, col) = self.cursor;
         // At most the cells from the cursor to the edge.
@@ -620,6 +774,7 @@ impl Grid {
             return;
         }
         let cols = self.cols.get();
+        let blank = Compact::blank(blank);
         self.mutate_row(row, version, cols, |cells| {
             let col = usize::from(col);
             let len = cells.len();
@@ -635,16 +790,19 @@ impl Grid {
             };
             // Clear a wide glyph straddling either edit boundary before shifting.
             for boundary in [col, shifted] {
-                if cells.get(boundary).is_some_and(Cell::is_wide_continuation) {
+                if cells
+                    .get(boundary)
+                    .is_some_and(Compact::is_wide_continuation)
+                {
                     if let Some(c) = boundary.checked_sub(1).and_then(|i| cells.get_mut(i)) {
-                        *c = Cell::blank(c.attributes);
+                        *c = c.blanked();
                     }
                     if let Some(c) = cells.get_mut(boundary) {
-                        *c = Cell::blank(c.attributes);
+                        *c = c.blanked();
                     }
                 }
             }
-            shift(cells, col, count, insert, Cell::blank(blank));
+            shift(cells, col, count, insert, blank);
             repair_wide(cells);
             // Inserting and deleting always count as a change.
             true
@@ -684,23 +842,23 @@ impl Grid {
         let cells = self.slice_mut(slot);
         let used = used.min(cells.len());
         if let Some(cells) = cells.get_mut(..used) {
-            cells.fill(Cell::default());
+            cells.fill(Compact::default());
         }
         if let Some(spill) = self.spill.get_mut(slot) {
             spill.clear();
         }
     }
 
-    /// Gives the blank cells of a row brought in the attributes `blank`,
-    /// the pen's colours. They are blanked first in the default attributes,
-    /// all zeros, which compiles to a memset, much faster than storing any
-    /// other cell; this goes over them again only for another pen, and is
-    /// kept out of line so the two are never fused into one slower loop.
+    /// Gives the blank cells of a row brought in style `blank`, the pen's
+    /// colours. They are blanked first in the default style, all zeros,
+    /// which compiles to a memset, much faster than storing any other cell;
+    /// this goes over them again only for another pen, and is kept out of
+    /// line so the two are never fused into one slower loop.
     #[inline(never)]
-    fn colour(&mut self, slot: usize, blank: Attributes) {
-        if blank != Attributes::default() {
+    fn colour(&mut self, slot: usize, blank: u32) {
+        if blank != 0 {
             for cell in self.slice_mut(slot) {
-                cell.attributes = blank;
+                cell.set_style(blank);
             }
             if let Some(m) = self.meta.get_mut(slot) {
                 m.used = m.width;
@@ -715,7 +873,7 @@ impl Grid {
         (top, bottom): (u16, u16),
         count: u16,
         direction: Scroll,
-        blank: Attributes,
+        blank: u32,
         next: &mut u64,
         version: u64,
     ) -> Result<(), Error> {
@@ -868,6 +1026,10 @@ impl Grid {
             meta: Vec::new(),
             spill: Vec::new(),
             links: Links::default(),
+            // The cells keep their styles' numbers.
+            styles: Arc::clone(&self.styles),
+            recent: self.recent,
+            epoch: self.epoch,
             linked: Linked::default(),
             order: VecDeque::new(),
             stride,
@@ -913,7 +1075,7 @@ impl Grid {
             };
             let start = replacement.cells.len();
             let row_end = start.checked_add(stride).ok_or(Error::Capacity)?;
-            replacement.cells.resize(row_end, Cell::default());
+            replacement.cells.resize(row_end, Compact::default());
             let wrapped = old.is_some_and(|r| r.wrapped) && is_history;
             let row_version = if is_history {
                 old.map_or(version, |r| r.version)
@@ -933,7 +1095,7 @@ impl Grid {
                 meta.linked = true;
             }
             replacement.meta.push(meta);
-            replacement.spill.push(Spill::default());
+            replacement.spill.push(Text::default());
             replacement.order.push_back(p);
             if let Some(old) = old {
                 // As much of the old row as fits, over the new one's start:
@@ -1032,6 +1194,10 @@ impl Grid {
             meta: Vec::new(),
             spill: Vec::new(),
             links: Links::default(),
+            // The cells keep their styles' numbers.
+            styles: Arc::clone(&self.styles),
+            recent: self.recent,
+            epoch: self.epoch,
             linked: Linked::default(),
             order: VecDeque::new(),
             stride: usize::from(cols.get()),
@@ -1055,8 +1221,8 @@ impl Grid {
         let size = keep_total
             .checked_mul(replacement.stride)
             .ok_or(Error::Capacity)?;
-        replacement.cells.resize(size, Cell::default());
-        replacement.spill.resize_with(keep_total, Spill::default);
+        replacement.cells.resize(size, Compact::default());
+        replacement.spill.resize_with(keep_total, Text::default);
         let mut copy = Copy {
             grid: &mut replacement,
             rows: base..end,
@@ -1141,9 +1307,8 @@ impl Grid {
             target,
         } = pass;
         let width = *width;
-        let blank = Cell::default();
-        let no_text = Spill::default();
-        let pad = CellRef::new(&blank, &no_text);
+        let blank = Compact::default();
+        let no_text = Text::default();
         let line = (start..=end).filter_map(|i| self.row_at(i));
         // Its length without the blank tail, where the cursor is in it,
         // and the spacers in it: the blank a reflow left at the end of a
@@ -1170,7 +1335,7 @@ impl Grid {
                 && self
                     .row_at(i.saturating_add(1))
                     .and_then(|next| next.cells.first())
-                    .is_some_and(Cell::is_wide)
+                    .is_some_and(Compact::is_wide)
                 && let Some(at) = length
                     .checked_add(row.cells.len())
                     .and_then(|end| end.checked_sub(1))
@@ -1200,13 +1365,13 @@ impl Grid {
         // next cell placed goes to.
         let (mut prompt, mut pending) = (false, false);
         let cells = line.flat_map(|r| {
-            let links = r.links;
-            r.cells().enumerate().map(move |(i, cell)| {
+            let (links, spill) = (r.links, r.spill);
+            r.cells.iter().enumerate().map(move |(i, cell)| {
                 let link = links.and_then(|l| l.get(i)).copied().unwrap_or(0);
-                (cell, link)
+                (cell, spill, link)
             })
         });
-        for (n, (cell, link)) in cells.take(length).enumerate() {
+        for (n, (cell, spill, link)) in cells.take(length).enumerate() {
             pending |= prompts.contains(&n);
             if spacers.contains(&n) {
                 // A cursor on a spacer goes with the glyph after it.
@@ -1225,7 +1390,7 @@ impl Grid {
             let padded = !full && cell.is_wide() && used.saturating_add(1) == width;
             if full || padded {
                 if padded {
-                    target.cell(out.rows, used, pad, 0);
+                    target.cell(out.rows, used, &blank, &no_text, 0);
                 }
                 target.row(out.rows, used, true, ids.next(), prompt)?;
                 out.rows = out.rows.saturating_add(1);
@@ -1240,7 +1405,7 @@ impl Grid {
             }
             prompt |= pending;
             pending = false;
-            target.cell(out.rows, used, cell, link);
+            target.cell(out.rows, used, cell, spill, link);
             used = used.saturating_add(1);
         }
         // A prompt starting past the line's text starts on its last row.
@@ -1385,13 +1550,13 @@ impl Grid {
             // A wide glyph ending the run in the last column goes to the
             // next row, a blank left in its place.
             let last = next.saturating_sub(1);
-            let padded = take == room && row.cells.get(last).is_some_and(Cell::is_wide);
+            let padded = take == room && row.cells.get(last).is_some_and(Compact::is_wide);
             if padded {
                 line.place(row, base, at..last, pass);
-                let blank = Cell::default();
-                let no_text = Spill::default();
+                let blank = Compact::default();
+                let no_text = Text::default();
                 pass.target
-                    .cell(pass.out.rows, line.used, CellRef::new(&blank, &no_text), 0);
+                    .cell(pass.out.rows, line.used, &blank, &no_text, 0);
                 self.end_row(line, pass)?;
                 line.place(row, base, last..next, pass);
             } else {
@@ -1434,13 +1599,11 @@ impl Grid {
     /// Whether retained row `index`, soft-wrapped, ends in a spacer: a
     /// blank that a wide glyph starting the next row did not fit in.
     fn spacer(&self, index: usize) -> bool {
-        self.cells_at(index)
-            .last()
-            .is_some_and(|c| c.is_blank(Attributes::default()))
+        self.cells_at(index).last().is_some_and(|c| c.is_blank(0))
             && self
                 .cells_at(index.saturating_add(1))
                 .first()
-                .is_some_and(Cell::is_wide)
+                .is_some_and(Compact::is_wide)
     }
 
     /// The identity of retained row `index`, if it is at most `end`: the
@@ -1458,7 +1621,7 @@ impl Grid {
     }
 
     /// Retained row `index`'s cells.
-    fn cells_at(&self, index: usize) -> &[Cell] {
+    fn cells_at(&self, index: usize) -> &[Compact] {
         self.order.get(index).map_or(&[], |slot| self.slice(*slot))
     }
 
@@ -1472,14 +1635,14 @@ impl Grid {
             .get(..used.min(cells.len()))
             .unwrap_or_default()
             .iter()
-            .rposition(|c| !c.is_blank(Attributes::default()))
+            .rposition(|c| !c.is_blank(0))
             .map_or(0, |last| last.saturating_add(1))
     }
 
     /// How many cells of the line from row `start` through `end` come before
     /// its blank tail, which can run back over several rows.
     fn trimmed(&self, start: usize, end: usize) -> usize {
-        let blank = Cell::default();
+        let blank = Compact::default();
         let mut length = 0usize;
         let mut kept = 0usize;
         for row in (start..=end).filter_map(|i| self.row_at(i)) {
@@ -1508,6 +1671,7 @@ impl Grid {
                 version,
             )?;
             grid.adopt_links(std::mem::take(&mut self.links));
+            grid.epoch = self.epoch.wrapping_add(1);
             *self = grid;
             return Ok(());
         }
@@ -1542,6 +1706,10 @@ impl Grid {
                 self.recycle(slot, id, version);
             }
         }
+        // No cell has a style but the default now.
+        self.styles = Arc::default();
+        self.recent = [(Attributes::default(), 0); RECENT];
+        self.epoch = self.epoch.wrapping_add(1);
         self.cursor = (0, 0);
         self.pending_wrap = false;
         self.saved_cursor = (0, 0);
@@ -1588,7 +1756,7 @@ impl Grid {
             let used = self.meta.get(slot).map_or(0, |m| usize::from(m.used));
             self.slice(slot)
                 .get(used..)
-                .is_some_and(|tail| tail.iter().all(|c| *c == Cell::default()))
+                .is_some_and(|tail| tail.iter().all(|c| *c == Compact::default()))
         })
     }
     pub fn in_region(&self) -> bool {
@@ -1637,12 +1805,13 @@ fn past(col: u16, pending_wrap: bool) -> u16 {
 /// Where a reflow's rows go: `Layout` only counts them; `Copy` writes the
 /// ones kept into the replacement grid.
 trait Reflow {
-    /// `cell`, with link `link`, is at `col` of reflowed row `row`.
-    fn cell(&mut self, row: usize, col: usize, cell: CellRef<'_>, link: u16);
+    /// `cell`, of a row whose text is in `spill`, with link `link`, is at
+    /// `col` of reflowed row `row`.
+    fn cell(&mut self, row: usize, col: usize, cell: &Compact, spill: &Text, link: u16);
     /// `cells`, of a row whose text is in `spill`, with links `links` (as
     /// many as it has, the rest none), are at `col` on of reflowed row
     /// `row`, where they fit.
-    fn run(&mut self, row: usize, col: usize, cells: &[Cell], spill: &Spill, links: &[u16]);
+    fn run(&mut self, row: usize, col: usize, cells: &[Compact], spill: &Text, links: &[u16]);
     /// Reflowed row `row` is finished, its cells from `used` on blank;
     /// `wrapped` if its line goes on, the identity of its line's row in the
     /// same place before, if any, and whether a prompt starts on it.
@@ -1751,8 +1920,8 @@ struct Reflowed {
 
 struct Layout;
 impl Reflow for Layout {
-    fn cell(&mut self, _: usize, _: usize, _: CellRef<'_>, _: u16) {}
-    fn run(&mut self, _: usize, _: usize, _: &[Cell], _: &Spill, _: &[u16]) {}
+    fn cell(&mut self, _: usize, _: usize, _: &Compact, _: &Text, _: u16) {}
+    fn run(&mut self, _: usize, _: usize, _: &[Compact], _: &Text, _: &[u16]) {}
     fn row(&mut self, _: usize, _: usize, _: bool, _: Option<RowId>, _: bool) -> Result<(), Error> {
         Ok(())
     }
@@ -1768,7 +1937,7 @@ struct Copy<'a> {
     version: u64,
 }
 impl Reflow for Copy<'_> {
-    fn cell(&mut self, row: usize, col: usize, cell: CellRef<'_>, link: u16) {
+    fn cell(&mut self, row: usize, col: usize, cell: &Compact, text: &Text, link: u16) {
         let stride = self.grid.stride;
         if !self.rows.contains(&row) || col >= stride {
             return;
@@ -1789,7 +1958,7 @@ impl Reflow for Copy<'_> {
         {
             *at = link;
         }
-        let stored = *cell.stored();
+        let stored = *cell;
         if !stored.is_spilled() {
             if let Some(target) = start
                 .checked_add(col)
@@ -1803,10 +1972,10 @@ impl Reflow for Copy<'_> {
             .checked_add(stride)
             .and_then(|end| self.grid.cells.get_mut(start..end));
         if let (Some(cells), Some(spill)) = (cells, self.grid.spill.get_mut(slot)) {
-            Line { cells, spill }.set(col, stored, cell.contents());
+            Line { cells, text: spill }.set(col, stored, text.of(cell));
         }
     }
-    fn run(&mut self, row: usize, col: usize, cells: &[Cell], spill: &Spill, links: &[u16]) {
+    fn run(&mut self, row: usize, col: usize, cells: &[Compact], spill: &Text, links: &[u16]) {
         let stride = self.grid.stride;
         if !self.rows.contains(&row) {
             return;
@@ -1833,20 +2002,17 @@ impl Reflow for Copy<'_> {
         // The clusters held in the row's text are stored again, left to
         // right, as placing the cells one at a time stores them: until
         // then, a cell locates nothing in the new row's text.
-        if spill.len() != 0 && cells.iter().any(Cell::is_spilled) {
+        if !spill.is_empty() && cells.iter().any(Compact::is_spilled) {
             for (cell, src) in dst.iter_mut().zip(cells) {
                 if src.is_spilled() {
-                    *cell = Cell::blank(src.attributes);
+                    *cell = src.blanked();
                 }
             }
             if let Some(text) = self.grid.spill.get_mut(slot) {
-                let mut line = Line {
-                    cells: line,
-                    spill: text,
-                };
+                let mut line = Line { cells: line, text };
                 for (i, cell) in cells.iter().enumerate() {
                     if cell.is_spilled() {
-                        line.set(col.saturating_add(i), *cell, spill.text(cell));
+                        line.set(col.saturating_add(i), *cell, spill.of(cell));
                     }
                 }
             }
@@ -1932,6 +2098,14 @@ fn forget(linked: &mut Linked, links: &mut Links, slot: usize) {
     }
 }
 
+/// Whether `cells` are already the ASCII `run` in style `style`. Kept out
+/// of line, so that the write that usually follows compiles as if it were
+/// not there.
+#[inline(never)]
+fn unchanged(cells: &[Compact], run: &[u8], style: u32) -> bool {
+    cells.iter().zip(run).all(|(c, b)| c.is_ascii(*b, style))
+}
+
 /// ICH and DCH on a row's cells, or on their links: what is at and after
 /// `col` turns `count` places right to insert, left to delete, and the
 /// places it leaves are `blank`.
@@ -1955,25 +2129,25 @@ fn shift<T: std::marker::Copy>(cells: &mut [T], col: usize, count: usize, insert
     }
 }
 
-pub(crate) fn repair_wide(cells: &mut [Cell]) {
+pub(crate) fn repair_wide(cells: &mut [Compact]) {
     for i in 0..cells.len() {
         let invalid = cells.get(i).is_some_and(|c| {
             c.is_wide()
                 && !i
                     .checked_add(1)
                     .and_then(|j| cells.get(j))
-                    .is_some_and(Cell::is_wide_continuation)
+                    .is_some_and(Compact::is_wide_continuation)
                 || c.is_wide_continuation()
                     && !i
                         .checked_sub(1)
                         .and_then(|j| cells.get(j))
-                        .is_some_and(Cell::is_wide)
+                        .is_some_and(Compact::is_wide)
         });
         if invalid && let Some(cell) = cells.get_mut(i) {
-            *cell = Cell::blank(cell.attributes);
+            *cell = cell.blanked();
         }
     }
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

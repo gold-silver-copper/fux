@@ -554,6 +554,11 @@ impl Parser {
             utf8_need: 0,
         })
     }
+    /// The screen, for a test to reach into.
+    #[cfg(test)]
+    pub(crate) fn screen_mut(&mut self) -> &mut Screen {
+        &mut self.screen
+    }
     /// The terminal's state: what the screen shows, the cursor and the modes.
     pub fn screen(&self) -> &Screen {
         &self.screen
