@@ -989,30 +989,35 @@ fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt   # and fux-vt 
   `SOURCES` in `src/esctest.rs`), and the tests run in one only.
 
 At this commit (an Apple M2 Max, 12 CPUs, loaded by other work; xterm
-at 6424721):
+at 6424721 with the left and right margins and protected glyphs):
 
 | | passed | failed | skipped | time |
 | --- | ---: | ---: | ---: | ---: |
-| directly | 303 (55.2%) | 246 | 18 | 31 s |
-| in fux | 163 (52.1% of 313 run) | 150 | 254 | 31 s |
-| in xterm 411 | 427 (77.8%) | 122 | 18 | 38 s |
+| directly | 379 (69.0%) | 170 | 18 | 30.5 s |
+| in fux | 175 (56.3% of 311 run) | 136 | 256 | 30.5 s |
+| in xterm 411 | 429 (78.1%) | 120 | 18 | 38 s |
 
-The 246 failures by reason: 171 `not-implemented` (left and right margins
-75, DECRQM of modes fux-vt does not keep 19, XParseColor's
-device-independent colour spaces 18, protected cells and selective erase
-17, rectangle operations 13 and more), 36 `xterm-too` (reverse wraparound
-7, as xterm since patch 383), 32 `departure` (window operations), 7 `spec`
-(fux says it is a VT220 and fux 4, a special colour never set 2, the
-foreground's default 1). In fux, the only difference is DECXCPR, which
-panes leave off.
+The 170 failures by reason: 90 `not-implemented` (rectangle operations
+19 and DECSERA 6, XParseColor's device-independent colour spaces 18, DECRQM
+of modes fux-vt does not keep 18, the DSR reports of DEC's other devices 9,
+DECBI and DECFI 8, DECRQSS of settings fux-vt does not report 6, and
+more), 40 `xterm-too` (8-bit controls 11, reverse wraparound 9, as xterm
+since patch 383, DECSED and DECSEL leaving ISO-protected glyphs 2, and
+more), 33 `departure` (window operations), 7 `spec` (fux says it is a
+VT220 and fux 4, a special colour never set 2, the foreground's default
+1). In fux, the only difference is DECXCPR, which panes leave off. Before
+the left and right margins and protected glyphs, fux-vt passed 303
+(55.2%): the margins made 61 tests pass and the protection 12, and
+`DSCSCL_Level3_SupportsDECRQMDoesntSupportDECSLRM`, which passed only for
+want of DECSLRM, now fails, fux-vt keeping no conformance levels.
 
-Ghostty's core (libghostty-vt at the pinned commit), with fux-vt beside it,
-at 6424721 (the same machine, loaded by other work):
+Ghostty's core (libghostty-vt at the pinned commit), with fux-vt beside it
+(the same machine, loaded by other work):
 
 | | passed | failed | skipped | time |
 | --- | ---: | ---: | ---: | ---: |
 | Ghostty's core | 328 (60.1%) | 218 | 21 | 27.5 s |
-| fux-vt | 303 (55.2%) | 246 | 18 | 30.5 s |
+| fux-vt | 379 (69.0%) | 170 | 18 | 30.5 s |
 
 Ghostty's 218 failures by reason: 141 `not-implemented` (window
 operations 27, rectangle operations 19, XParseColor's CIE colour spaces 18,
@@ -1022,12 +1027,14 @@ mode 3, TBC 2, BS past the left margin, RIS keeping 132 columns), 9
 `departure` (colours kept at 8 bits), 7 `spec`. Its parser drops DECSTR,
 with which esctest resets the terminal before every test, so 11 tests fail
 only after the one before them; they pass alone, and the list says so.
-Ghostty passes 67 tests fux-vt fails (left and right margins 48, protected
-cells 12, window operations 4, DECRQM of DECLRMM and of DECARM, which
-xterm 411 reports permanently reset as fux-vt does, and DECSCL); fux-vt
-passes 41 Ghostty fails (DECSTR 19, colours kept at 8 bits 9, ANSI DECRQM
-4, DECRQSS 3, and more). Before the palette and the modes of phase 5
-(`d7cf9b4`), fux-vt passed 267 (48.6%), and Ghostty 92 tests it failed. `--json`'s `comparison` lists both, each with its
+Ghostty passes 6 tests fux-vt fails (window operations 4, DECRQM of
+DECARM, which xterm 411 reports permanently reset as fux-vt does, and
+DECSCL); fux-vt passes 54 Ghostty fails (DECSTR 19, DECIC and DECDC 12,
+colours kept at 8 bits 9, CHA, HPR and VPR in origin mode 3, ANSI DECRQM 3,
+DECRQSS 3, and more). Before the left and right margins and protected
+glyphs, Ghostty passed 67 tests fux-vt failed; before the palette and the
+modes of phase 5 (`d7cf9b4`), fux-vt passed 267 (48.6%), and Ghostty 92
+tests it failed. `--json`'s `comparison` lists both, each with its
 feature and source.
 
 `--json FILE` writes, for the scoreboard:
