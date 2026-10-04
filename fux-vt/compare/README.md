@@ -1,1118 +1,676 @@
 # fux-vt-compare: fux-vt beside other terminal emulators
 
-An excluded package with its own lockfile. It runs fux-vt beside a panel of
-other terminal emulators ("engines"):
+An excluded package with its own lockfile. It feeds fux-vt and a panel of
+other terminal emulators ("engines") the same output and compares their
+screens after every piece of it and every resize: each cell, the cursor,
+the modes, soft wraps, the title, cursor reports and recent history. fux-vt
+fails only where the engines outvote it ("The vote"). A failing case is
+shrunk to the smallest that still fails and printed with a command that
+replays it.
 
-- engines linked into the binary: Ghostty's core (libghostty-vt), alacritty_terminal,
-  libvterm, avt, wezterm-term and the vt100 crate;
-- engines run as processes of their own: xterm.js (`@xterm/headless` under
-  Node), tmux, and xterm itself under Xvfb.
-
-Every engine gets the same output. After each piece of it, and each resize,
-each engine's screen is compared with fux-vt's, cell by cell, along with the
-cursor, the modes, soft wraps, the title, cursor reports and recent history.
-fux-vt fails a case only where the engines outvote it (see "The vote"). A
-failing case is shrunk to the smallest one that still fails and printed with
-the command that replays it. `bench` times every engine on the same
-workloads. The corpus (`corpus/`) holds what real programs wrote to a
-terminal, recorded by `record`.
-
-It is not built or run by fux's own gates. It needs Zig, a Ghostty
-checkout, libvterm's source and, for the engines in their own processes,
-Node, tmux, xterm and Xvfb. `run.sh` fetches the first three.
+Beside that, it replays real programs' output (`corpus/`), checks that
+fux paints a pane exactly as the program drew it (`transparency`), runs
+xterm's conformance suite (`esctest`), and measures speed, instructions and
+memory against the other engines.
 
 No engine is the truth. When the panel outvotes fux-vt, the difference says
-where to look. xterm's behaviour and the standards decide which side is
-right. Some differences are choices fux-vt makes on purpose, and each family
-below records which.
+where to look. xterm and the standards decide who is right, and fux-vt's
+deliberate choices are recorded with each family.
+
+fux's own gates and CI don't build or run it. It needs Zig, a Ghostty
+checkout and libvterm's source, which `run.sh` fetches, and, for the
+engines in their own processes, Node, tmux, xterm and Xvfb.
 
 ## Running it
 
-Three commands run the harness at three depths, each to a budget, and end
-with a one-screen summary; each exits 1 if any check fails. None of them is
-in CI. `harness.sh` says what each runs; checks that are independent of
-each other run side by side, and what counts instructions or times itself
-runs alone.
+`run.sh` sets up the environment, builds, and runs `fux-vt-compare` with
+its arguments, or one of the harness commands in `harness.sh`:
 
-| Command | When | Budget | What |
+| Command | When | Budget | Runs |
 | --- | --- | --- | --- |
-| `run.sh quick` | before a commit | 1 minute (40 s here) | the corpus beside xterm and the panel, and again with Ghostty judged in fux-vt's place (`corpus-ghostty.json`); transparency through fux on every recording; 2,000 random cases; the named cases beside every engine; the oracle, fux-vt beside the merge base with main on every observable (`diff/oracle.sh`, `diff/README.md`) |
-| `run.sh full` | before a PR | 10 minutes | `quick`; 20,000 random cases with reflow, as fux and ratty set fux-vt up, and without; esctest directly, and against Ghostty's core with fux-vt beside it; instructions against main (`bench/`); each engine's memory (`footprint`, 5 s) and instructions per byte (`bench --instructions`, under a minute) |
-| `run.sh deep` | before a release, or when hunting | none; it prints its estimate | `full`; `verdicts` beside xterm, seeds 1–20 (`FUX_DEEP_SEEDS`); esctest in a fux pane; transparency through tmux and zellij; `fux-bench feel` and `info`; 10 minutes of fuzzing |
-| `run.sh fuzz [MINUTES]` | by hand | MINUTES (10) | every fuzz target in turn, from its stored corpus and what earlier runs here found; a crash is minimized (`cargo fuzz tmin`) and listed, to be made a test |
-| `run.sh scoreboard` | after any of them | seconds | the last runs' numbers, as `scoreboard.json` and `scoreboard.md`, and kept in the repository: `scoreboard/SCOREBOARD.md` for the commit, and a line of `scoreboard/history.jsonl` for each commit, committed with the work they measure |
+| `run.sh quick` | before a commit | 60 s | `corpus` beside xterm and the panel; `corpus --subject ghostty`; `transparency`; `run --cases 2000`; `cases`; the oracle (`diff/oracle.sh`, see [`diff/README.md`](../../diff/README.md)) |
+| `run.sh full` | before a PR | 600 s | `quick`; `run --cases 20000` with and without `--no-reflow`; `esctest`; `esctest --terminal ghostty --beside fux-vt`; `fux-bench --against main`; `footprint`; `bench --instructions` |
+| `run.sh deep` | before a release, or when hunting | none (prints an estimate) | `full`; `verdicts` for seeds 1–20 (`FUX_DEEP_SEEDS`); `esctest --in-fux`; `transparency --multiplexers`; `fux-bench feel` and `info`; 10 minutes of fuzzing |
+| `run.sh fuzz [MINUTES]` | by hand | MINUTES (10) | every fuzz target in `harness.sh`, sharing the time; a crash is minimized (`cargo fuzz tmin`) and listed, to be made a test |
+| `run.sh scoreboard` | after any of them | seconds | the last results, gathered (see "The scoreboard") |
 
-Results, logs and the fuzz ledger (`fuzz.jsonl`) go to
-`fux-vt/compare/target/harness` (`$FUX_HARNESS_OUT`). Each check leaves a
-stamp there: the commit, when, how long, and its exit status, which the
-scoreboard lists. The scoreboard's axes: esctest's pass rate; corpus
-recordings agreeing; recordings identical through fux, beside tmux and
-zellij; instructions against main and MB/s beside Ghostty and alacritty;
-keystroke latency; footprint and bytes per frame; fuzz time since the last
-crash. An axis whose check has not run says so.
+Each ends with a summary of its checks and exits 1 if any failed, or says
+so if it ran over its budget. Independent checks run side by side, while
+whatever times itself or counts instructions runs alone. Results, logs
+(`logs/NAME.log`), a stamp for each check (commit, time, seconds, exit
+status) and the fuzz ledger (`fuzz.jsonl`) go to
+`fux-vt/compare/target/harness`, or `$FUX_HARNESS_OUT`.
+
+The single commands:
 
 ```sh
-fux-vt/compare/run.sh                       # families expected to agree, 20000 cases, beside the panel
-fux-vt/compare/run.sh engines               # which engines run here, which vote, what each cannot tell
-fux-vt/compare/run.sh cases                 # the named cases beside every engine, with each engine's mark
-fux-vt/compare/run.sh verdicts              # the families with a recorded verdict, beside the engines that decide each
-fux-vt/compare/run.sh matrix                # family by engine: % of cases each engine differs from fux-vt
-fux-vt/compare/run.sh bench                 # MB/s for every engine on every workload, and the corpus
-fux-vt/compare/run.sh bench --engines ghostty corpus   # each recording alone too
-fux-vt/compare/run.sh bench --instructions  # instructions retired per byte, which load does not move
-fux-vt/compare/run.sh footprint             # memory per cell, per row and per 10,000 rows of history
-fux-vt/compare/run.sh --list                # the families, their status and reasons
-fux-vt/compare/run.sh survey                # each family alone: how often it fails, and the smallest failure
+fux-vt/compare/run.sh                       # run: 20000 random cases from the families expected to agree
 fux-vt/compare/run.sh run --family sgr --family text --cases 2000 --seed 7
 fux-vt/compare/run.sh run --engines ghostty,libvterm,xterm   # any panel
-fux-vt/compare/run.sh replay --engines all --size 1x5 'abcde\x08X'
 fux-vt/compare/run.sh --no-reflow           # fux-vt without reflow, its default
-fux-vt/compare/run.sh corpus                # the recordings beside xterm and the panel; exit 1 if one regresses
-fux-vt/compare/run.sh corpus --show vim     # one recording, and fux-vt's screen at its end
-fux-vt/compare/run.sh inventory > fux-vt/compare/corpus/INVENTORY.md   # what the recordings send
+fux-vt/compare/run.sh --list                # the families, their status and reasons
+fux-vt/compare/run.sh engines               # which engines run here, which vote, what each cannot tell
+fux-vt/compare/run.sh cases                 # the named cases beside every engine
+fux-vt/compare/run.sh verdicts              # the decided families, beside the engines that decide them
+fux-vt/compare/run.sh survey                # each family alone: how often it fails, the smallest failure
+fux-vt/compare/run.sh matrix                # family by engine: % of cases each differs from fux-vt
+fux-vt/compare/run.sh replay --engines all --size 1x5 'abcde\x08X'
+fux-vt/compare/run.sh corpus                # the recordings beside xterm and the panel
+fux-vt/compare/run.sh corpus --show vim     # one recording, with fux-vt's screen at its end
+fux-vt/compare/run.sh inventory > fux-vt/compare/corpus/INVENTORY.md
+fux-vt/compare/run.sh transparency          # every recording directly and through fux
+fux-vt/compare/run.sh esctest               # xterm's conformance suite
+fux-vt/compare/run.sh bench                 # MB/s for every engine on every workload
+fux-vt/compare/run.sh bench --instructions  # instructions per byte, which load does not move
+fux-vt/compare/run.sh footprint             # memory per cell and per row of history
 fux-vt/compare/corpus/record.sh [NAME...]   # record the corpus again (see "The corpus")
 fux-vt/compare/run.sh --cargo test          # any cargo subcommand, in the same environment
 fux-vt/compare/run.sh --cargo clippy --all-targets -- -D warnings
 ```
 
-The first run fetches Zig 0.16.0, Ghostty and libvterm into
-`~/.cache/fux-vt-compare` (or `$FUX_VT_COMPARE_CACHE`). It also installs
-`@xterm/headless` with `npm ci` in `node/` when Node is present. The first
-build takes a few minutes (Ghostty by Zig, then wezterm-term). After that,
-`fux-vt/compare/target/release/fux-vt-compare` can be run directly.
+`fux-vt-compare --help` (and `esctest --help`) gives every option. After
+the first build, `fux-vt/compare/target/release/fux-vt-compare` runs
+directly.
 
-- `run` exits 1 if any case fails, and prints up to five distinct shrunk
-  cases. Each one shows:
-  - its families and the `replay` command;
-  - the fields fux-vt is outvoted on;
-  - each engine's verdict and differences;
-  - fux-vt's screen beside the first engine that differs (`.` blank, `_`
-    cursor, `↩` soft-wrapped, `≠` a row that differs).
-- `cases` marks each engine: `+` agrees, `-` differs, `!` abstains.
-- `--seed` replays a run exactly. Every random choice comes from it.
-- `--engines` takes names joined by commas, or one of:
-  - `panel`, the voters, which is the default for `run`, `survey`, `matrix`
-    and `replay`;
-  - `all`, the default for `cases` and `bench`;
-  - `in-process`.
+- `--engines LIST`: engine names joined by commas, or:
+  - `panel`: the voters that run here, the default for `run`, `survey`,
+    `matrix` and `replay`;
+  - `all`: every engine that runs here, the default for `cases` and `bench`;
+  - `in-process`: the default for `footprint` and `bench --instructions`.
+
+  `corpus` defaults to `xterm,panel`, and `verdicts` to each family's
+  deciding engines.
+- `--seed N` replays a run exactly; every random choice comes from it.
+- `replay` takes each step as output, written as `run` prints it
+  (`'\e[1mX'`), or `resize:RxC`. It also takes `--size RxC` (default 6x20),
+  `--history N` and `--newline-before-resize`.
+
+### Reading a failure
+
+`run` exits 1 if any case fails, and prints up to five distinct shrunk
+cases. Each shows:
+
+- its families and the `replay` command that reproduces it;
+- the fields fux-vt is outvoted on;
+- each engine's verdict and differences;
+- fux-vt's screen beside the first engine that differs: `.` blank, `_` the
+  cursor, `↩` a soft-wrapped row, `≠` a row that differs.
+
+`cases` and `corpus` mark each engine: `+` agrees, `-` differs, `!`
+abstains. Run the `replay` with `--engines all` to see every engine,
+xterm included. Each engine's file in `src/engines/` lists its known
+quirks, each with a `replay`.
 
 ## The vote
 
-Each engine says what it can tell (`Can` in `src/engine.rs`): `engines`
-lists what each one cannot. Each engine is compared with fux-vt only on
-those fields, field by field: each cell's text, width and every attribute,
-the cursor, each mode, the title, the reports, each history row.
+Each engine says which fields it can tell (`Can` in `src/engine.rs`; `run.sh
+engines` lists what each cannot). Only those fields are compared, one by
+one: each cell's text, width and every attribute, the cursor, each mode,
+the title, the reports and each history row.
 
 fux-vt is outvoted on a field when more of the engines that can tell it
-share one other value than agree with fux-vt. A case fails at the first step
-where fux-vt is outvoted on any field. So:
+share one other value than agree with fux-vt (`case::outvoted_on`). A case
+fails at the first step where fux-vt is outvoted on any field. So:
 
-- An engine's quirk alone never fails a case unless it is the only engine
-  on the panel.
-- Engines that each differ from fux-vt in a way of their own don't outvote
-  it.
-- A tie doesn't outvote it.
+- one engine's quirk never fails a case, unless it is the only engine on
+  the panel;
+- engines that each differ from fux-vt in their own way don't outvote it;
+- a tie doesn't outvote it.
 
-**A blank's style is a split the engines make by choice.** The blanks an
-engine makes (erasing, inserting, deleting, scrolling a line in) take what
-it chooses of the pen:
+**A blank's style is a choice.** When an engine erases, inserts, deletes or
+scrolls in a blank, it decides which parts of the pen the blank keeps:
 
-- xterm and libvterm take its colours alone, as fux-vt does (fux-vt's
-  README, CSI J / K). DEC STD 070 gives an erased cell the empty rendition
-  (ED, EL), ECMA-48 applies SGR to text alone, and xterm's `ClearCells`
-  keeps only the colour flags (`bce`).
-- Ghostty, alacritty, xterm.js and tmux take its background alone.
-- avt, wezterm and vt100 take its attributes too (wezterm's ICH takes none
-  of it).
+- xterm and libvterm keep its colours alone, as fux-vt does (DEC STD 070
+  gives an erased cell the empty rendition; xterm's `ClearCells` keeps the
+  colours, `bce`);
+- Ghostty, alacritty, xterm.js and tmux keep its background alone;
+- avt, wezterm and vt100 keep its attributes too.
 
-So on a cell blank in fux-vt and in an engine, the engine votes only on the
-parts of the style it makes as xterm does (`Blanks` in `src/engine.rs`;
-`engines` lists the rest). The foreground is voted on by libvterm and avt,
-the attributes by Ghostty, alacritty and libvterm, and the background by
-every engine. Its differences there are still shown. Before this rule,
-about one random case in 20,000 failed, on either setup. In each one,
-libvterm's own wrapping on one column put a glyph where fux-vt has a blank,
-and it sided with avt's and wezterm's bold blanks, or with Ghostty's and
-alacritty's blanks without a foreground (`replay --engines all --size 8x1
---history 0 --no-reflow
-'\e]8;;http://a.example/\e\\name\e]8;;\e\\\e[1;38:2::10:20:30;4m\r\e[2Jlqqk'`).
+So on a cell that is blank in fux-vt and in the engine, an engine votes
+only on the parts it makes as xterm does (`Blanks` in `src/engine.rs`;
+`engines` lists the rest). Its differences there are still shown.
 
-An engine that fails or panics abstains for the rest of that case. The
-report says why, and the run goes on: vt100 panics on wrapping a
-one-row screen, and wezterm on HTS one past the edge. xterm.js abstains from
-terminals narrower than 2 columns, which it can't be.
+An engine that fails or panics abstains for the rest of the case. The
+report says why, and the run goes on.
 
 **The default panel** is every voter that runs here: ghostty, alacritty,
-libvterm, avt and wezterm.
+libvterm, avt and wezterm, all in this process and fast.
 
-**The panel can be wrong.** xterm decides where it splits. In `autowrap`, it
-outvotes fux-vt even though xterm agrees with fux-vt, so that family is
-marked as differing for that reason (see `--list`). They are all in-process, and fast.
-- **vt100 doesn't vote.** It is fux-vt's ancestor, and its inherited choices
-  are what the vote is meant to catch.
-- **xterm.js, tmux and xterm don't vote by default** because they are
-  slower: about 100 cases a second instead of 2000. Add them with `--engines
-  panel,xterm.js` and so on; `cases` uses every engine.
+- **vt100 doesn't vote.** It is fux-vt's ancestor, and its inherited
+  choices are what the vote is meant to catch.
+- **xterm.js, tmux and xterm don't vote by default.** They run in
+  processes of their own, about 20 times slower. Add them with `--engines
+  panel,xterm.js` and so on. `cases` uses every engine.
+- **The panel can be wrong.** Where it splits, xterm and the references
+  decide: such a family is "decided" and checked by `verdicts` (see
+  "Families").
 
-**Another subject.** `--subject NAME` (`run`, `cases`, `corpus`, `replay`)
-judges another engine in fux-vt's place: ghostty, or any engine in this
-process. It is judged exactly as fux-vt is, and fux-vt joins the panel as
-an engine like any other: in the subject's place in the list (`panel` and
-`all` hold Ghostty), or where the list names `fux-vt`. A field the subject
-cannot tell is compared with no one, masked on both sides as an engine's
-own `Can` masks it: Ghostty tells no link groups, so with Ghostty the
-subject, no engine is compared on them. The statuses (the families', the
-named cases', the recordings') are fux-vt's, so they are not applied to
-another subject: `run`, `cases` and `corpus` report its outcomes and fail
-only on an error. Without `--subject`, every command is as it was.
+### Another subject
 
-`corpus --subject` and `cases --subject` judge fux-vt too, on the same
-screens, with the subject voting in its place (`case::rejudge`): each
-engine is fed once, and fux-vt's judgement is the one `corpus` and `cases`
-make without `--subject` (checked: the same outcome for every recording
-and case). They list where each is outvoted and the other is not, with
-the command that shows it, and `--json FILE` writes it all:
+`--subject NAME` (for `run`, `cases`, `corpus` and `replay`) judges another
+engine in this process, such as ghostty, in fux-vt's place, exactly as
+fux-vt is judged. fux-vt then joins the panel: where the list names
+`fux-vt`, else in the subject's place (`panel` and `all` hold Ghostty). A
+field the subject cannot tell is compared with no one. The statuses of the
+families, named cases and recordings are fux-vt's, so they are not applied
+to another subject. With one, `run`, `cases` and `corpus` report its
+outcomes and fail only on an error.
 
-- `corpus`: both scores, in recordings and in points (each judged
-  comparison of each recording, the finer number); then, recording by
-  recording, the points where the subject fails on a field fux-vt does not
-  ("fux-vt ahead") and the reverse ("ghostty ahead"), with the first such
-  point, its fields, and the points by what the fields are about.
-- `cases`: the named cases where the subject is outvoted and fux-vt is not,
-  the reverse, and those where both are, each with a `replay`.
+`corpus --subject` and `cases --subject` judge fux-vt too, from the same
+screens (`case::rejudge`), and list where each one is outvoted and the
+other is not, each with the command that shows it. `--json FILE` writes it
+all, including both scores, in recordings and in points (each judged
+comparison):
 
 ```sh
 fux-vt-compare corpus --subject ghostty --json corpus-ghostty.json
-fux-vt-compare cases --subject ghostty      # the named cases, Ghostty judged, fux-vt voting
+fux-vt-compare cases --subject ghostty
 fux-vt-compare replay --subject ghostty --engines fux-vt --size 1x4 '\e[?2026h' '\e[!p'
 ```
 
 ## Engines
 
-The quirks each engine showed against fux-vt and the others are listed in
-its own file (`src/engines/*.rs`), each with a `replay` command.
+Each engine's adapter is `src/engines/NAME.rs`. Its doc comment lists the
+engine's quirks against fux-vt and the others, each with a `replay`.
+`run.sh engines` prints what each one cannot tell and how its blanks
+differ from xterm's.
 
-| Engine | What, and pins | Cannot tell | Notes |
+| Engine | What, and pin | Votes | Notes |
 | --- | --- | --- | --- |
-| fux-vt | the subject, by path, set up as fux and ratty set it up (reflow, an identity, events), with the DECRQM answers, in-band resize, colour-scheme reports, kitty keyboard, hyperlinks and prompt marks fux's panes have | — | `--no-reflow`: without reflow, fux-vt's default |
-| ghostty | libghostty-vt 0.2.1 over Ghostty `7aa95917`, built by Zig 0.16 (see "Setup") | link groups | mode 2027 on; history kept in bytes; a link's URI only (`GridRef::hyperlink_uri`), a row's mark from `Row::semantic_prompt` (a primary prompt's row, not a continuation's) |
-| alacritty | alacritty_terminal 0.26.0 | blink, 2026, 2048, prompt marks | synchronized updates applied at once (no event loop); a wide glyph on one column panics it, which the adapter repairs |
-| libvterm | libvterm 0.3.3 from its release tarball, through a C shim (`src/engines/libvterm_shim.c`); modes and pending wrap read from the pinned source's `vterm_internal.h` | dim, underline colour, kitty, 2026, 2048, links, prompt marks | the shim guards five crashes, hangs and out-of-bounds reads that random cases reach (found with ASan and UBSan; each listed with a replay in its file) |
-| avt | avt 0.18.0 | underline colour, hidden, keypad, bracketed paste, focus, kitty, 2026, 2048, links, prompt marks, title, reports | takes `&str`: the adapter carries split UTF-8 and turns invalid bytes into U+FFFD |
-| wezterm | wezterm-term at `cab25161` (git) | pending wrap, 2026, 2048, link groups, prompt marks | replies come through a writer thread, synced with a paste marker; links without an id to one URI are one link |
-| vt100 | vt100 0.16.2 | underline colour, blink, hidden, strikeout, autowrap, origin, focus, kitty, 2026, 2048, links, prompt marks, reports | doesn't vote |
-| xterm.js | @xterm/headless 6.0.0 with addon-unicode-graphemes 0.4.0, `reflowCursorLine` on, one Node process for every terminal (`node/engine.mjs`) | underline colour, kitty, 2048, prompt marks | patches a crash in ED 1 (see its file); links read from its core, not the public API (`urlId`, `OscLinkService`) |
-| tmux | the installed tmux (3.7c here): a private server, one session per terminal, read with `capture-pane -p -e -N -F` and `display -p` | kitty, 2026, 2048, link groups | links from the OSC 8 `-e` prints, prompt marks from `-F`'s `P`; a `sh` pane program copies bytes in raw mode; every step is synced with DA1 (`CSI c`), which no family sends; a sync waits for a reply to each DA1 request in the output too (real programs send them) |
-| xterm | the installed xterm (XTerm 411 here) under one Xvfb per run, read by printing every page (`CSI ? 11 i`) through `printerCommand`, modes by DECRQM, resize by `CSI 8 t` | pending wrap, underline colour, kitty, 2026, 2048, links, prompt marks | the deciding vote for most disputed families (`verdicts`); the style of a row's blank cells after its last drawn cell cannot be read, and xterm abstains from a case with SGR 58, which it lacks (see its file) |
+| fux-vt | the subject, by path, set up as `fux::pane::OPTIONS` with reflow and an identity, as fux and ratty set it up | — | `--no-reflow`: without reflow, fux-vt's default, leaving out the families that need it |
+| ghostty | libghostty-vt `=0.2.1` over Ghostty `7aa95917`, built by Zig 0.16 | yes | mode 2027 on; history kept in bytes |
+| alacritty | alacritty_terminal `=0.26.0` | yes | synchronized updates applied at once (no event loop) |
+| libvterm | libvterm 0.3.3 through a C shim (`src/engines/libvterm_shim.c`) | yes | the shim guards crashes, hangs and out-of-bounds reads that random cases reach |
+| avt | avt `=0.18.0` | yes | takes `&str`: the adapter carries split UTF-8 and turns invalid bytes into U+FFFD |
+| wezterm | wezterm-term at git `cab25161` | yes | replies come through a writer thread, synced by a marker |
+| vt100 | vt100 `=0.16.2` | no | fux-vt's ancestor; a speed baseline |
+| xterm.js | `@xterm/headless` 6.0.0 with addon-unicode-graphemes 0.4.0, one Node process (`node/engine.mjs`) | on request | links read from its core, not the public API |
+| tmux | the installed tmux: a private server, one session per terminal, read with `capture-pane` | on request | every step synced by DA1, which no family sends |
+| xterm | the installed xterm under one Xvfb per run, read by printing every page through `printerCommand` | on request | decides most disputed families (`verdicts`) and the corpus; abstains from a case with SGR 58, which it lacks |
+
+tmux and xterm share the pane program, syncing and SGR decoding in
+`src/engines/pane.rs`.
+
+### Adding an engine
+
+1. Write `src/engines/NAME.rs`: an `Engine` (`process`, `resize`,
+   `snapshot`, following the reading rules in `Engine`'s doc comment in
+   `src/engine.rs`), and a `KIND` that gives its `Can`, its `Blanks`,
+   whether it votes (`panel`), whether it runs `in_process`, `available`
+   and `make`.
+2. Add it to `src/engines/mod.rs` and to `ENGINES` in `src/engine.rs`.
+3. Run `cases --engines NAME` and `run --engines panel,NAME`, and record
+   each quirk the panel outvotes it on in its doc comment, with a `replay`.
 
 ## Setup and pins
 
+The first `run.sh` fetches Zig, Ghostty and libvterm into
+`~/.cache/fux-vt-compare` (or `$FUX_VT_COMPARE_CACHE`), and installs
+`@xterm/headless` with `npm ci` in `node/` when npm is present. The first
+build takes a few minutes.
+
 | What | Pin | Why |
 | --- | --- | --- |
-| `libghostty-vt` | `=0.2.1` (`libghostty-vt-sys` 0.2.2 in `Cargo.lock`) | the Rust bindings |
-| Ghostty | `7aa9591746ff` (2026-07-22), through `GHOSTTY_SOURCE_DIR` | the first commit built by Zig 0.16. The bindings pin `a887df42` (2026-07-11), which needs Zig 0.15. Between the two, the C API changed only in the kitty-graphics temporary-file option (built out here: `default-features = false`) and one new data key |
-| Zig | 0.16.0 | Zig 0.15.2 cannot link anything on macOS 27 |
-| macOS SDK | the newest one before 27, through an `xcrun` shim | Zig's bundled libc++ does not compile against the macOS 27.0 SDK. Zig asks `xcrun --sdk macosx --show-sdk-path`, which ignores `SDKROOT` |
-| libvterm | 0.3.3, SHA-256 checked in `run.sh` | compiled by `build.rs` with the `cc` crate |
+| `libghostty-vt` | `=0.2.1` (`libghostty-vt-sys` 0.2.2 in `Cargo.lock`), `default-features = false` | the Rust bindings |
+| Ghostty | `7aa9591746ff`, `ghostty_commit` in `run.sh`, through `GHOSTTY_SOURCE_DIR` | the first commit Zig 0.16 builds. The bindings pin `a887df42`, which needs Zig 0.15. Between the two, the C API changed only in the kitty-graphics temporary-file option (built out here) and one new data key |
+| Zig | 0.16.0, SHA-256 checked in `run.sh` | Zig 0.15 cannot link on macOS 27 |
+| macOS SDK | the newest one before 27, through an `xcrun` shim | Zig's bundled libc++ does not compile against the macOS 27 SDK, and Zig asks `xcrun --sdk macosx --show-sdk-path`, which ignores `SDKROOT` |
+| libvterm | 0.3.3 release tarball, SHA-256 checked in `run.sh` | compiled by `build.rs` with the `cc` crate; modes and pending wrap read from its `vterm_internal.h` |
 | alacritty_terminal, avt, vt100 | exact versions in `Cargo.toml` | |
 | wezterm-term | git `rev` in `Cargo.toml` | not on crates.io |
 | @xterm/headless | `node/package-lock.json` | |
 
 To move to a newer Ghostty, update `libghostty-vt` and check its pinned
 commit and Zig version. Then diff `include/ghostty/vt/` between that commit
-and the one `run.sh` checks out, before changing `ghostty_commit`.
+and the one `run.sh` checks out before changing `ghostty_commit`.
 
 ## What is compared
 
 After creation and after every step, each engine is read into one
-`Snapshot`. The rules for reading are in the `Engine` doc comment in
-`src/engine.rs`:
+`Snapshot`, by the rules in the `Engine` doc comment (`src/engine.rs`):
 
-- every visible cell: its text (the whole grapheme cluster), width (narrow,
-  wide, wide tail), style (foreground, background and underline colour;
-  bold, dim, italic, underline of any style, blink of either speed, inverse,
-  hidden, strikeout) and hyperlink (OSC 8): its URI (fux-vt, Ghostty,
-  alacritty, wezterm, xterm.js and tmux can tell), and which cells share a
-  link (fux-vt, alacritty and xterm.js). Engines name links their own ways,
-  so the names are not compared: among the cells both engines link to the
-  same URI, each cell's link is named by the first of them that has it;
-- each row's soft-wrap flag, and whether a prompt starts on it (OSC 133 A:
-  fux-vt, Ghostty and tmux can tell);
-- the cursor, and whether a wrap is pending (a cursor waiting to wrap is in
-  the last column with `pending_wrap` set);
+- every visible cell: its text (the whole grapheme cluster), its width
+  (narrow, wide, wide tail), its style (foreground, background and
+  underline colour; bold, dim, italic, underline, blink, inverse, hidden,
+  strikeout) and its OSC 8 link: the URI, and which cells share one link.
+  Engines name links in their own ways, so the names are not compared;
+- each row's soft-wrap flag, and whether a prompt starts on it (OSC 133 A);
+- the cursor, and whether a wrap is pending;
 - cursor visibility, DECAWM, DECOM, the alternate screen, DECCKM, DECKPAM,
-  bracketed paste, focus reporting, synchronized output (2026: fux-vt,
-  Ghostty and xterm.js can tell), in-band resize (2048: fux-vt and Ghostty),
-  and the kitty keyboard flags;
+  bracketed paste, focus reporting, synchronized output (2026), in-band
+  resize (2048) and the kitty keyboard flags;
 - the title;
 - cursor position and status reports (`CSI r;c R`, `CSI 0 n`);
 - history: the text and wrap flag of every row fux-vt keeps, against the
   engine's most recent rows.
 
-What is normalized away, and why:
+Normalized away:
 
-- **A printed space and an empty cell are both blank.** Engines store spaces
+- **A printed space and an empty cell are both blank.** Engines store them
   differently.
-- **The cell after a wide glyph has no text, style or link of its own.**
-- **A spacer at the end of a row is a blank.** That is where a wide glyph
-  that didn't fit would have started.
-- **Underline style and blink speed count only as on or off.** fux-vt keeps
-  underline styles, but the snapshot does not yet read each engine's (a
-  follow-up); some engines keep no blink speed.
+- **A wide glyph's second cell has no text, style or link of its own.**
+- **A spacer at the end of a row is a blank.** It is where a wide glyph that
+  didn't fit would have started.
+- **Underline style and blink speed count only as on or off.** The
+  engines' underline styles are not read yet.
 - **Device attributes and mode reports are not compared.** They name the
   terminal.
 - **An empty title on the engine's side is not compared.** Some engines
-  clear the title on RIS. fux-vt reports titles as they are set and keeps
-  none.
-- **Engines keep far more history than fux-vt can fill in a case.** Only the
-  rows fux-vt keeps are compared. Ghostty also needs this for another
-  reason: without scrollback it leaves a stale soft-wrap flag on the row it
-  recycles (`replay --engines ghostty --size 1x3 abcd`).
-- **Cases that resize give fux-vt 10000 rows of history.** A screen that
-  grows pulls rows back from history.
+  clear the title on RIS.
+- **Only the history rows fux-vt keeps are compared.** Engines keep far
+  more than a case can fill. Cases that resize give fux-vt 10000 rows,
+  since a screen that grows pulls rows back from history.
 - **Random cases settle the cursor before each resize.** They send `CSI ? 7
-  h`, CR, `.`, CR (`--newline-before-resize` in a replay). Engines choose
-  differently, on purpose, on these points:
-  - whether a pending wrap survives a reflow;
-  - where the cursor goes after a line that exactly fills the new width;
-  - whether blank rows come back from history;
-  - whether a reflow happens with autowrap off.
-
-  Named cases and replays don't settle the cursor.
-- **Some generators avoid an engine's parsing quirk:**
-  - no empty SGR parameter within a list, which Ghostty ignores where xterm
-    reads it as 0;
-  - no empty kitty `CSI =` mode, which wezterm drops;
-  - in `links` and `prompts`, erasing, editing and scrolling only after CR
-    or CUB, so no wrap is pending (see `erase` and `edit`), and no SD
-    (which moves soft-wrap flags its own way in each engine);
-  - in `prompts`, no IL, DL, or ED 2 but from the home position: Ghostty
-    handles marks its own way there (the family's reason).
+  h`, CR, `.`, CR (`--newline-before-resize` in a replay), because engines
+  choose differently whether a pending wrap survives a reflow, where the
+  cursor goes after a line that exactly fills the new width, whether blank
+  rows come back from history, and whether autowrap off still reflows
+  (`Case::newline_before_resize`). Named cases and replays don't settle.
+- **Some generators avoid one engine's parsing quirk**, each noted in
+  `src/families.rs`: for example, no empty SGR parameter within a list,
+  which Ghostty ignores and xterm reads as 0.
 
 ## Families
 
-`--list` prints them with their current status. A family **agrees** when no
-seed tried finds a case where the panel outvotes fux-vt.
+The random cases come from families of sequences (`src/families.rs`).
+`--list` prints each with its status:
 
-A family is **decided** (`Status::Decided`, a recorded verdict) when the
-engines split and fux-vt follows a recorded choice: what the references say
-(`references/README.md` says which settles what), or what xterm does where
-xterm departs from them (listed in fux-vt's README, "Departures from the
-references") or they are silent. A vote can't judge such a family: on these
-points the default panel's majority is often the side fux-vt has chosen
-against. So the default run leaves it out, and `verdicts` checks it beside
-the engines that decide it (`by`, which `--list` prints): its named cases
-(each pins one point of the verdict), then random cases from it with plain
-text, where those engines vote as the panel does in `run`. For the VT
-families that is xterm alone, so any field xterm can tell must equal
-xterm's. For a feature xterm does not implement (OSC 133), it is the
-engines that do what the feature's spec says. `cases` fails a named case
-in a decided family where its deciding engines outvote fux-vt. The reason
-says which reference and choice, where the engines stand, and a `replay
---engines all` that shows it.
-
-Otherwise a family **differs**, with a recorded reason, which is one of:
-- a fux-vt defect still to fix (most are from the audit of fux-vt 0.2.0,
-  numbered F1–F10 in the reasons);
-- a documented fux-vt choice;
-- engines agreeing on something else for reasons of their own.
+- **Agree** (`Status::Agree`): no seed tried finds a case where the panel
+  outvotes fux-vt. `run` checks these by default.
+- **Decided** (`Status::Decided`): the engines split, and fux-vt follows a
+  recorded choice. That choice is what the references say
+  ([`references/README.md`](../../references/README.md) says which settles
+  what), or what xterm does where it departs from them (fux-vt's
+  [README](../README.md), "Departures from the references") or they are
+  silent. Its reason (`why`) names the reference and where the engines
+  stand, and `by` names the engines that decide it: xterm for the VT
+  families, and for a feature xterm lacks (OSC 133), the engines that follow
+  the feature's spec. The default panel's majority is often the side
+  fux-vt chose against, so `run` leaves these out. `verdicts` runs each
+  family's named cases, then random cases from it, beside its deciding
+  engines. `cases` fails a named case of a decided family where those
+  engines outvote fux-vt.
+- **Differs** (`Status::Differs`): the panel splits on a documented fux-vt
+  choice, or on something the engines agree on for reasons of their own,
+  or fux-vt has a defect still to fix. The reason says which.
 
 When a fix lands, run its family alone over several seeds:
 
 ```sh
-run --family NAME --family text --cases 20000
+fux-vt/compare/run.sh run --family NAME --family text --cases 20000 --seed N
 ```
 
-Once it agrees, set its status to `Status::Agree` in `src/families.rs`, so
-every later run keeps it agreeing.
+Once it agrees, set its status to `Status::Agree`, so every later run
+keeps it agreeing.
 
-**Random cases:**
-- **Size:** 1–3 cells now and then, mostly up to 9×17, and sometimes up to
-  40×100.
-- **History:** 0, 3 or 50 rows, or 10000 when the case resizes.
-- **Length:** up to 10 steps, of up to 10 snippets each.
+Random cases are mostly up to 9×17, sometimes 1–3 cells and sometimes up
+to 40×100. They have 0, 3 or 50 rows of history (10000 when they resize)
+and up to 10 steps of up to 10 snippets. The shrinker takes away steps,
+snippets and characters of text, never bytes from inside a sequence: a
+sequence cut short belongs to no family.
 
-**The shrinker** takes away steps, snippets, and whole characters of text
-snippets. It never removes bytes from a sequence, because a sequence cut
-short is a different sequence that belongs to no family.
-
-## Speed
-
-`bench` feeds each engine every workload in 4 KiB chunks, on a 50×200
-screen with 10000 rows of history. It prints MB/s, the best of three runs.
-The workloads are modelled on alacritty's vtebench: ascii, dense-cells,
-medium-cells, cursor-motion, scrolling, scroll-region and unicode.
-
-Beside them, real traffic: `corpus` is every recording in turn, over and
-over to the same size, at 40×120, the size most were recorded at (those
-recorded at another size are replayed at 40×120 there too). `bench corpus`
-adds each recording alone (`corpus:vim` and so on), at the size it was
-recorded at, without its resizes; a run without names leaves those out, to
-stay a few minutes.
-
-An engine linked in is timed on parsing and applying alone. An engine in its
-own process also pays for the pipe to it, so its figure (marked `*`) is end
-to end.
-
-MB/s moves with the machine's load; instructions retired do not.
-`bench --instructions` counts them instead, for fux-vt and every engine in
-this process (an engine in its own process does its work where the count
-cannot see it). Each engine and workload runs in a child process of its
-own, counted as `fux-bench --against` counts: `/usr/bin/time -l` on macOS,
-`perf` or cachegrind on Linux (`src/count.rs`). The child makes the
-workload and the engine as `bench` does, and feeds it. Its baseline is the
-same child without the feeding. The figure is the fewest instructions of
-`--repeats` runs (3) less the fewest of the baseline's, per byte; the
-spread of the runs over it is its noise. The engine is never dropped, so
-freeing its memory is not counted. With no workloads named it counts the
-synthetic ones and the corpus all together, 8 MiB each (`--mb`), in about
-a minute: libvterm's `scrolling`, at 33,000 instructions a byte, is most
-of it. `--json FILE` writes the table.
-
-## Memory
-
-`footprint` measures the memory each engine in this process holds (fux-vt,
-Ghostty, alacritty, libvterm, avt, wezterm and vt100; `--engines` picks).
-Every measure runs in a child process of its own, so no engine's
-allocations, kept or freed, mix with another's. The child makes the bytes
-first, reads its memory, makes the engine and feeds it in 4 KiB chunks,
-and reads its memory again with the bytes still held. The difference is
-the engine's, counted two ways:
-
-- **the footprint**: the process's dirty memory, resident or compressed.
-  On macOS this is `task_info`'s `phys_footprint`; on Linux, `RssAnon`. It
-  sees every allocator, including memory an engine maps itself: Ghostty's
-  pages come from the page allocator, not malloc. Memory mapped but never
-  written costs nothing here, and Ghostty's pages are mapped zeroed and
-  written only as rows fill.
-- **malloc**: the bytes malloc has handed out and not taken back
-  (`malloc_zone_statistics`, macOS only). It is exact, but it is blind to
-  memory mapped directly, and it counts capacity reserved but not yet
-  written.
-
-Both counts are libSystem's, declared in `src/memory.rs`; no crate is
-added for them.
-
-The measures, on 50 rows at 80 and at 200 columns:
-
-- a new screen;
-- a screen full of SGR-styled text: one screen of `dense-cells`, where
-  every cell has its own colours, and one of `medium-cells`, made for the
-  screen's size;
-- 10,000 rows of history from each synthetic workload and from the corpus,
-  every recording in turn. The workload is cut into pieces of 4 KiB (a
-  recording each, for the corpus). A piece of a workload that does not
-  scroll the screen into history by itself (all but `ascii`, `scrolling`
-  and `unicode`) is followed by a scroll-out: back to the main screen,
-  margins and SGR reset, and a newline for each row from the bottom one.
-  Every engine is fed the same pieces: as many as fux-vt needs to fill
-  10,000 rows of history, found before the children run.
-
-Every engine with a row limit keeps 10,000 rows here: fux-vt, alacritty,
-avt, wezterm, vt100, and libvterm, whose shim keeps the rows libvterm
-pushes (libvterm keeps no history itself). Ghostty's limit is in bytes and
-prunes whole pages, so it is given 1 GiB and keeps every row it is fed:
-sometimes a few hundred more than 10,000, when the last piece pushes many.
-A history's figure per row is its footprint beyond the same engine's empty
-screen, divided by the rows of history the engine says it holds.
-
-A run takes a few seconds. `--json FILE` writes every measure, with both
-readings of each child.
+`src/families.rs` is also included by path by `diff/oracle` for its random
+cases, so it may use nothing but `crate::rng`, and must pass `diff`'s
+lints.
 
 ## The corpus
 
-`corpus/` holds what real programs wrote to a terminal, byte for byte, while
-keys were typed into them: one recording a scenario, `NAME.bin` (the bytes)
-and `NAME.json` (the program and its version, the command, the size, the
-environment, the replies fux-vt gave, and each step's keys and where its
-output ends). The keys typed are in `corpus/keys/NAME.keys`.
+`corpus/` holds what real programs wrote to a terminal while keys were
+typed into them, byte for byte. Each scenario has:
+
+- `NAME.bin`: the bytes;
+- `NAME.json`: the program, its version, the command, the size, the
+  environment, the replies fux-vt gave, and each step's keys and where its
+  output ends;
+- `corpus/keys/NAME.keys`: the keys, headed by a comment saying what the
+  scenario does.
 
 ### Recording
 
-`record` runs a program on a PTY of 40×120 (or `--size`) with
-`TERM=xterm-256color`, as fux runs a pane. A fux-vt parser, set up as fux sets up a pane's (events,
-DECRQM answers, in-band resize, colour-scheme reports, hyperlinks and
-prompt marks: `src/pane.rs`), reads the output beside the PTY, and its
-replies are written back as fux writes them, so a program that asks (DA1,
-DECRQM, a cursor report, DA2) gets fux's answer, and one that asks what fux
-does not answer (XTGETTCAP, DECRQSS) gets nothing, as in fux. fux answers the colour queries
-(OSC 10 and 11, `CSI ? 996 n`) with its client terminal's colours
-(`src/outer.rs`); the recorder answers as a fixed terminal would, white
-on black, dark (`src/record.rs`), not as whoever records. The keys are
-typed as fux gives them to a pane: read by fux's decoder as from a legacy
-terminal, and written by its encoder in the key mode the program asked
-for (the kitty keyboard protocol, modifyOtherKeys, cursor keys), so helix
-gets Escape as `CSI 27 u` and vim Ctrl-D as `CSI 27 ; 5 ; 100 ~`. Step 0 is the
-program starting; each line of keys is a step, typed at once, and the step
-ends when the program has been quiet for a while (400 ms, or as the keys
-file says). A line `!resize RxC` resizes the terminal instead, as fux
-resizes a pane (the parser, then the PTY, then the in-band resize report
-for a program that asked for it); the manifest gives that step's new size
-(`resize`). After the last step the program has two seconds to exit, then
-gets SIGHUP and SIGKILL; what it writes meanwhile belongs to the last step.
+`record` runs a program on a PTY (40x120, or `--size`) with
+`TERM=xterm-256color`, as fux runs a pane:
 
-`corpus/record.sh` records every scenario again, or those named, and is
-run by hand only. Each runs in a directory of its own, `/tmp/fux-corpus`:
+- A fux-vt parser set up as a fux pane's reads the output, and its replies
+  are written back as fux writes them. So a program that asks (DA1,
+  DECRQM, a cursor report) gets fux's answer, and one that asks what fux
+  doesn't answer gets nothing. Colour queries get a fixed white-on-black,
+  dark answer, never the recording user's colours.
+- Keys are typed as fux gives them to a pane: decoded as from a legacy
+  terminal and encoded in the key mode the program asked for (kitty
+  keyboard, modifyOtherKeys, cursor keys).
+- Step 0 is the program starting. Each line of keys is then a step, and
+  the step ends when the program has been quiet for 400 ms.
+- In a keys file:
+  - keys are written as `replay` writes output (`\e`, `\r`, `\x03`,
+    `\u{…}`);
+  - `#` starts a comment;
+  - `!quiet MS` changes how long a step waits for quiet, and `!start MS`
+    how long the program has to start (1500 ms by default);
+  - `!wait` only waits;
+  - `!resize RxC` resizes, as fux resizes a pane.
+- After the last step the program has two seconds to exit, then gets
+  SIGHUP, then SIGKILL.
 
-- a HOME with a minimal rc file for each program: no prompt shows a user or
-  host name; neovim, micro, htop, btop, lazygit, mc, ranger, fish and zellij
-  have a config of their own there; times are shown in UTC;
-- a work directory of copies of files from this repository and generated
-  text: man pages written for the purpose (`corpus/fux-corpus.1`,
-  `fux-corpus-tables.1` with tables, `fux-corpus-long.7` to page and
-  search), text in many scripts and widths, two versions of a file for the
-  editors' diff modes, a tree of files for the file managers and ncdu, a
-  cargo project with mistakes and a workspace of path crates (fux-vt among
-  them) that builds offline, a C file with mistakes, an npm package
-  installed from the directory beside it;
-- a git repository made there, with a made-up author (`Corpus Author
-  <corpus@example.com>`), fixed dates, two branches, a merge, a tag and
-  changes not committed, for lazygit, tig, `git log --graph`, `git add -p`,
-  delta and bat. `delta-log` and `delta-diff` run on this repository, with a
-  log format that leaves out authors.
+`corpus/record.sh [NAME...]` records every scenario again, or those named.
+It is run by hand only. Everything a program can show comes from
+`/tmp/fux-corpus`:
 
-The environment is only what the manifest lists, and `TERM`. What the setup
-cannot keep out is scrubbed (`--scrub`, the new text recorded in the
-manifest): GNU ls, fish and mc put the host name in `file://` URIs (it
-becomes `localhost`), and ranger shows each file's owner (the login becomes
-as many `x`s, so its columns stay where they were). The monitors show only
-what is generated: htop and top only the three processes the scenario
-starts, btop no process list, disks or battery. Every recording is checked
-for the login and host names, `$HOME`, and git's user name and email and the
-account in this repository's remote; one that holds any is moved to
-`/tmp/fux-corpus/dropped` and the run fails. At the end the inventory is made
-again and its changed rows printed, for a person to review. Recording all
-113 scenarios takes about 11 minutes.
+- a HOME with a minimal configuration for each program;
+- copies of files from this repository and generated text, including the
+  man pages `corpus/fux-corpus.1`, `fux-corpus-tables.1` and
+  `fux-corpus-long.7`;
+- a generated git repository with a made-up author and fixed dates;
+- cargo projects and a tree of files.
 
-The programs as installed here (Homebrew's, and macOS's vim, less, man, zsh,
-pico, top and clang):
+The environment is only what the manifest lists, plus `TERM`, and times are
+in UTC. What the setup cannot keep out is scrubbed (`--scrub`): host names
+in `file://` URIs, and file owners in ranger. Every recording is checked
+for the login and host names, `$HOME`, git's user name and email, and the
+remote's account. A recording that holds any of them is moved to
+`/tmp/fux-corpus/dropped`, and the run fails. At the end the inventory is
+made again and its changed rows printed for review.
 
-| Recording | Program | Size | Steps | Bytes | What |
-| --- | --- | --- | ---: | ---: | --- |
-| `bash` | bash 5.3.3 | 40x120 | 17 | 877 | bash's line editor (readline), emacs keys: type, move, fix a word, run; complete with Tab; history up; Ctrl-R search; Ctrl-U; exit. |
-| `bash-complete` | bash 5.3.3 | 40x120 | 9 | 452 | bash's completion: list a directory's files, complete one, run it, complete a directory, back, complete a command, exit. |
-| `bash-history` | bash 5.3.3 | 40x120 | 10 | 786 | bash's history: up, up, Ctrl-R search, abort, the history list, an event designator, exit. |
-| `bash-small` | bash 5.3.3 | 10x40 | 7 | 302 | bash at 10x40: a command line longer than the terminal, moved through by words and run, exit. |
-| `bat-diff` | bat 0.26.1 | 40x120 | 3 | 5665 | bat --diff on a changed file, paged by less: a page, quit. |
-| `bat-markdown` | bat 0.26.1 | 24x80 | 1 | 14675 | bat on Markdown at 24x80, not paged: it prints and exits, no keys. |
-| `bat-page` | bat 0.26.1 | 40x120 | 6 | 63913 | bat on a Rust file, paged by less: a page, search, next, the end, quit. |
-| `btop` | btop 1.4.7 | 40x120 | 3 | 196379 | btop (CPU, memory and network boxes) for a few seconds: an update, hide the memory box, quit. |
-| `btop-small` | btop 1.4.7 | 24x80 | 3 | 95526 | btop at 24x80 for a few seconds, then quit. |
-| `cargo-build` | cargo 1.98.1 | 40x120 | 1 | 1515 | cargo build of a workspace of path crates (fux-vt among them): its progress, then it exits, no keys. |
-| `cargo-errors` | cargo 1.98.1 | 40x120 | 1 | 2206 | cargo build of a crate with errors: its diagnostics, then it exits, no keys. |
-| `cargo-test` | cargo 1.98.1 | 40x120 | 1 | 3978 | cargo test of a workspace, one test failing: its progress and output, then it exits, no keys. |
-| `clang-errors` | clang 21.0.0 | 40x120 | 1 | 702 | clang on a C file with errors: its diagnostics, then it exits, no keys. |
-| `claude` | Claude Code 2.1.288 | 40x120 | 3 | 10793 | Claude Code starting up in an empty project, then quitting with Ctrl-C twice; no prompt is sent. |
-| `claude-ghostty` | Claude Code 2.1.288 | 40x120 | 3 | 3110 | Claude Code starting up in an empty project, then quitting with Ctrl-C twice; no prompt is sent. |
-| `claude-main` | Claude Code 2.1.288 | 40x120 | 3 | 3025 | Claude Code starting up in an empty project, then quitting with Ctrl-C twice; no prompt is sent. |
-| `claude-resize` | Claude Code 2.1.288 | 40x120 → 30x90 → 50x160 | 5 | 8087 | Claude Code starting up in an empty project, resized smaller and larger, then quitting with Ctrl-C twice; no prompt is sent. |
-| `claude-small` | Claude Code 2.1.288 | 24x80 | 3 | 3336 | Claude Code starting up at 24x80 in an empty project, then quitting with Ctrl-C twice; no prompt is sent. |
-| `delta-diff` | delta 0.19.2, git 2.51.0 | 40x120 | 5 | 45384 | git diff through delta, side by side, paged by less: pages, quit. |
-| `delta-log` | delta 0.19.2, git 2.51.0 | 40x120 | 8 | 34377 | git log -p through delta, paged by less: lines, pages, search, quit. |
-| `delta-show` | delta 0.19.2, git 2.51.0 | 40x120 | 4 | 5921 | git show through delta with line numbers, paged by less: pages, quit. |
-| `delta-wide` | delta 0.19.2, git 2.51.0 | 50x200 | 3 | 12517 | git diff through delta side by side at 50x200: a page, quit. |
-| `emacs-dired` | GNU Emacs 31.1 | 40x120 | 8 | 24730 | emacs -nw's dired on a directory (ls-lisp, no owners): move, open a file, back, up a directory, quit. |
-| `emacs-mx` | GNU Emacs 31.1 | 40x120 | 10 | 19958 | emacs -nw: M-x with completion (the *Completions* window), cancel, the buffer list, quit. |
-| `emacs-resize` | GNU Emacs 31.1 | 40x120 → 24x80 → 50x200 → 40x120 | 7 | 45279 | emacs -nw resized while it runs: smaller, larger with a split, back. |
-| `emacs-scroll` | GNU Emacs 31.1 | 40x120 | 12 | 30817 | emacs -nw on a Rust file: pages, back, incremental search, the end, the start, quit. |
-| `emacs-split` | GNU Emacs 31.1 | 40x120 | 8 | 19302 | emacs -nw's windows: split below, beside, move, scroll, one window, quit. |
-| `fish` | fish 4.9.3 | 40x120 | 9 | 2727 | fish (OSC 133 prompt marks of its own): an autosuggestion from history, accepted; completion; into a directory and back; exit. |
-| `fish-complete` | fish 4.9.3 | 40x120 | 10 | 3782 | fish's completion pager: options with descriptions, cycle, cancel; files; exit. |
-| `fish-history` | fish 4.9.3 | 40x120 | 10 | 1884 | fish's history: up and down, a prefix search, run it, the history, exit. |
-| `fish-small` | fish 4.9.3 | 10x40 | 5 | 2160 | fish at 10x40: a command line longer than the terminal, run, exit. |
-| `fzf` | fzf 0.65.2 | 40x120 | 9 | 29408 | fzf, full screen, filtering a list of files as a query is typed, moving the selection, then accepting it. |
-| `fzf-height` | fzf 0.65.2 | 40x120 | 7 | 15185 | fzf below the prompt (--height 40%, reversed, with a border): filter, move, accept. |
-| `fzf-multi` | fzf 0.65.2 | 40x120 | 8 | 17005 | fzf -m below the prompt: mark three, filter, mark one more, accept. |
-| `fzf-preview` | fzf 0.65.2, bat 0.26.1 | 40x120 | 8 | 72463 | fzf with a preview by bat: filter, move, delete, accept. |
-| `fzf-small` | fzf 0.65.2 | 10x40 | 5 | 4538 | fzf at 10x40: filter, move, accept. |
-| `git-add-p` | git 2.51.0 | 40x120 | 5 | 1961 | git add -p: stage a hunk, skip one, the help, quit. |
-| `git-diff` | git 2.51.0 | 40x120 | 4 | 5701 | git diff --stat -p with colours, paged by less: a page, search, quit. |
-| `git-graph` | git 2.51.0 | 40x120 | 3 | 942 | git log --graph --all with colours, paged by less: a page, quit. |
-| `gls` | GNU ls 9.12 | 40x120 | 1 | 1900 | GNU ls with colours and hyperlinks: it lists and exits, no keys. |
-| `gls-long` | GNU ls 9.12 | 40x120 | 1 | 1511 | GNU ls -l (no owner, no group) with colours and hyperlinks: it lists and exits, no keys. |
-| `gls-wide` | GNU ls 9.12 | 50x200 | 1 | 5064 | GNU ls -R in columns at 50x200 with colours and hyperlinks: it lists and exits, no keys. |
-| `helix` | helix 25.07.1 | 40x120 | 16 | 63873 | helix on a Rust file of a small cargo project with errors, so rust-analyzer's diagnostics show: wait for it to start, save (cargo check runs), wait for the diagnostics, then move, search, select, split, quit. |
-| `helix-picker` | helix 25.07.1 | 40x120 | 7 | 77362 | helix on a directory: its file picker, filter, move, open, quit. |
-| `helix-resize` | helix 25.07.1 | 40x120 → 24x80 → 50x200 → 40x120 | 8 | 204497 | helix resized while it runs: smaller, larger with a split, back. |
-| `helix-select` | helix 25.07.1 | 40x120 | 14 | 114947 | helix's selections: all, split on a regex (many cursors), keep one, lines, copy the cursor down, quit. |
-| `helix-small` | helix 25.07.1 | 24x80 | 6 | 32379 | helix at 24x80 on a man page source: scroll, search, quit. |
-| `helix-unicode` | helix 25.07.1 | 40x120 | 12 | 30510 | helix on text of other widths and scripts: move, delete, undo, quit. |
-| `htop` | htop 3.5.3 | 40x120 | 8 | 9639 | htop on three processes for a few seconds: wait for updates, sort by CPU, by memory, move, the help, quit. |
-| `htop-small` | htop 3.5.3 | 24x80 | 3 | 2691 | htop at 24x80 for a few seconds, then quit. |
-| `htop-tree` | htop 3.5.3 | 40x120 | 5 | 3962 | htop on three processes: the tree view, move, the list again, quit. |
-| `lazygit` | lazygit 0.65.1 | 40x120 | 12 | 32909 | lazygit on a generated repository: the commits, a commit's files, back, the branches, the files, quit. |
-| `lazygit-small` | lazygit 0.65.1 | 24x80 | 6 | 14991 | lazygit at 24x80: the commits, a commit's files, back, quit. |
-| `lazygit-stage` | lazygit 0.65.1 | 40x120 | 12 | 29201 | lazygit staging: the files, stage one, the next one's lines, stage a hunk, back, commit with a message, the commits, quit. |
-| `less` | less 668 | 40x120 | 12 | 26267 | less paging a Markdown file: lines, pages, search, the end, the start. |
-| `less-chop` | less 668 | 40x120 | 8 | 11424 | less -S -N on a Rust file: scroll right, left, search, next, the end, quit. |
-| `less-color` | less 668 | 40x120 | 5 | 17967 | less -R on text with colours: a page, back, search, quit. |
-| `less-small` | less 668 | 10x40 | 7 | 1871 | less at 10x40 on text of other widths: lines, a page, the end, the start, quit. |
-| `man` | man, mandoc | 40x120 | 8 | 8431 | man on a page written for the purpose: lines, a page, search, quit. |
-| `man-long` | man, mandoc | 40x120 | 9 | 22623 | man on a long page: pages, search, next, the end, the start, quit. |
-| `man-small` | man, mandoc | 10x40 | 7 | 2216 | man at 10x40: lines, pages, search, quit. |
-| `man-tables` | man, mandoc | 24x80 | 6 | 9351 | man at 24x80 on a page with tables: pages, search, the start, quit. |
-| `man-wide` | man, mandoc | 50x200 | 5 | 20203 | man at 50x200 on a long page: a page, search, next, quit. |
-| `mc` | mc 4.8.33 | 40x120 | 13 | 19325 | Midnight Commander (no subshell) on a tree of files: move, into a directory, view a file, a page, out of the viewer, the other panel, quit. |
-| `mc-small` | mc 4.8.33 | 24x80 | 6 | 4536 | Midnight Commander at 24x80: move, the other panel, quit. |
-| `micro-edit` | micro 2.0.15 | 40x120 | 9 | 103721 | micro: find, find the next, move, type, undo, quit. |
-| `micro-small` | micro 2.0.15 | 24x80 | 7 | 14682 | micro at 24x80 on text of other widths and scripts: move, quit. |
-| `micro-split` | micro 2.0.15 | 40x120 | 9 | 86086 | micro's splits: a vertical split with another file, move between them, a horizontal split, quit each. |
-| `ncdu` | ncdu 2.9.2 | 40x120 | 11 | 5916 | ncdu on a tree of files: move, into a directory, back, the item's information, sort by name and by size, quit. |
-| `nnn` | nnn 5.3 | 40x120 | 8 | 1394 | nnn on a tree of files: move, into a directory, back, hidden files, quit. |
-| `nnn-detail` | nnn 5.3 | 40x120 | 7 | 2283 | nnn in detail mode with hidden files: move, into a directory, back, quit. |
-| `npm-install` | npm 11.19.1, node v26.10.0 | 40x120 | 1 | 50 | npm install of a package from a directory beside it, offline: then it exits, no keys. |
-| `nvim-diagnostics` | neovim 0.12.5 | 40x120 | 9 | 58700 | neovim's diagnostics without a language server: :Diag (in init.lua) sets warnings and errors on the file; jump to them, the float, the location list, quit. |
-| `nvim-diff` | neovim 0.12.5 | 40x120 | 8 | 49321 | nvim -d on two versions of a file: changes, take one, switch, quit. |
-| `nvim-help` | neovim 0.12.5 | 40x120 | 7 | 28828 | neovim's help: scroll, search, follow a tag, back, quit. |
-| `nvim-insert` | neovim 0.12.5 | 40x120 | 13 | 47232 | neovim inserting: open a line, type, complete with Ctrl-N (the popup menu), a cursor line, undo, quit without saving. |
-| `nvim-netrw` | neovim 0.12.5 | 40x120 | 8 | 19749 | neovim on a directory (netrw): move, open a file, back up, quit. |
-| `nvim-resize` | neovim 0.12.5 | 40x120 → 24x80 → 50x200 → 10x40 → 40x120 | 9 | 108397 | neovim resized while it runs: smaller, larger, split, tiny, back. |
-| `nvim-scroll` | neovim 0.12.5 | 40x120 | 10 | 81610 | neovim on a Rust file: half pages, the end, the start, lines. |
-| `nvim-search` | neovim 0.12.5 | 40x120 | 10 | 55817 | neovim searching: a pattern, next, previous, the word under the cursor, a substitution, undo, quit. |
-| `nvim-small` | neovim 0.12.5 | 10x40 | 8 | 10809 | neovim at 10x40: scroll, search, a vertical split, quit. |
-| `nvim-split` | neovim 0.12.5 | 40x120 | 9 | 49320 | neovim's windows: split, vertical split with another file, move between them, equal sizes, only one, quit. |
-| `nvim-tabs` | neovim 0.12.5 | 40x120 | 7 | 57941 | neovim with three files in tabs: next, previous, a new tab, close it. |
-| `nvim-terminal` | neovim 0.12.5 | 40x120 | 9 | 29394 | neovim's terminal: a shell in it, a command, exit, quit. |
-| `nvim-unicode` | neovim 0.12.5 | 40x120 | 12 | 18006 | neovim on text of other widths and scripts: move, delete a wide glyph, show tabs and ends, quit. |
-| `nvim-visual` | neovim 0.12.5 | 40x120 | 18 | 33580 | neovim's visual modes: lines, characters, a block; indent, yank, put, delete, undo. |
-| `nvim-wide` | neovim 0.12.5 | 50x200 | 6 | 91044 | neovim at 50x200 with two files side by side: scroll each, a cursor line, quit. |
-| `pico` | UW PICO 5.09 | 24x80 | 6 | 7379 | pico (macOS's nano): next page, search, cut a line, exit without saving. |
-| `ranger` | ranger 1.9.4 | 40x120 | 10 | 5733 | ranger on a tree of files: move, into a directory, its preview, back, hidden files, quit. |
-| `tig` | tig 2.6.1 | 40x120 | 8 | 4733 | tig --all on a generated repository: move, a commit's diff, scroll it, close it, quit. |
-| `tig-blame` | tig 2.6.1 | 40x120 | 7 | 20700 | tig blame on a file: move, a page, a line's commit, back, quit. |
-| `tig-tree` | tig 2.6.1 | 40x120 | 9 | 3791 | tig's tree view: into a directory, a file, back, quit. |
-| `tmux` | tmux 3.7c | 40x120 | 21 | 16112 | tmux inside the recorder, with a server of its own: commands, a split each way, zoom, copy mode, a second window, then every shell exits. |
-| `tmux-copy` | tmux 3.7c | 40x120 | 10 | 5763 | tmux's copy mode over history: a page up, a search back, the next, out; then the shell exits. |
-| `tmux-resize` | tmux 3.7c | 40x120 → 24x80 → 50x200 → 10x40 → 40x120 | 12 | 11276 | tmux with a split, resized while it runs: smaller, another split, larger, tiny, back; then every shell exits. |
-| `tmux-small` | tmux 3.7c | 24x80 | 10 | 4975 | tmux at 24x80: a command, a second window, a split, the next window, then every shell exits. |
-| `tmux-vim` | tmux 3.7c | 40x120 | 12 | 34482 | vim in two tmux panes (TERM=tmux-256color inside): edit, switch, quit both, then the shells exit. |
-| `top` | top | 40x120 | 3 | 1423 | macOS top on three processes for a few seconds, then quit. |
-| `vim` | vim 9.1 | 40x120 | 24 | 25352 | vim on a Rust file, syntax on: move, scroll, search, visual mode, a split, spell checking (undercurl), quit. |
-| `vim-diff` | vim 9.1 | 40x120 | 8 | 18648 | vimdiff of two versions of a file: next and previous change, take a change, switch windows, quit. |
-| `vim-help` | vim 9.1 | 40x120 | 7 | 12130 | vim's help: scroll, search, follow a tag, back, quit. |
-| `vim-insert` | vim 9.1 | 40x120 | 12 | 12340 | vim inserting: open a line, type, complete a word with Ctrl-N (the popup menu), undo, quit without saving. |
-| `vim-resize` | vim 9.1 | 40x120 → 24x80 → 50x200 → 10x40 → 40x120 | 9 | 25174 | vim resized while it runs: smaller, larger, split, tiny, back. |
-| `vim-small` | vim 9.1 | 24x80 | 7 | 11390 | vim at 24x80: pages, search, quit. |
-| `vim-terminal` | vim 9.1 | 40x120 | 6 | 17696 | vim's own terminal (:terminal), a shell in it, then quit. |
-| `vim-unicode` | vim 9.1 | 40x120 | 12 | 11488 | vim on text of other widths and scripts: move through it, delete a wide glyph, show tabs and line ends, quit. |
-| `zellij` | zellij 0.44.3 | 40x120 | 8 | 120004 | zellij with a session of its own: a new pane, a command, a pane below, a new tab, back to the first, quit. |
-| `zellij-small` | zellij 0.44.3 | 24x80 | 4 | 26305 | zellij at 24x80: a command, a new pane, quit. |
-| `zsh` | zsh 5.9 | 40x120 | 17 | 1549 | zsh's line editor (ZLE), emacs keys: type, move, fix a word, run; complete with Tab; history up; Ctrl-R search; Ctrl-U; exit. |
-| `zsh-history` | zsh 5.9 | 40x120 | 10 | 1577 | zsh's history: up and down, Ctrl-R search, run it, !! expansion, fc -l, exit. |
-| `zsh-menu` | zsh 5.9 | 40x120 | 13 | 3629 | zsh with menu selection, descriptions, colours and a right prompt: complete files and move in the menu, complete git's commands, a command that fails (the right prompt shows its status), exit. |
-| `zsh-resize` | zsh 5.9 | 40x120 → 20x60 → 40x120 → 24x80 | 9 | 1533 | zsh resized at its prompt with a long line typed, then after output. |
-| `zsh-small` | zsh 5.9 | 10x40 | 7 | 972 | zsh at 10x40: a command line longer than the terminal, moved through and run, a listing, exit. |
+To add a recording:
 
-`claude-ghostty` is there because fux passes its own environment on to its
-panes: a program in a pane of fux started from Ghostty sees
-`TERM_PROGRAM=ghostty`, and Claude Code goes by it. With it, Claude Code
-sends synchronized output (2026), OSC 8 and the kitty keyboard protocol;
-without it, none of them. helix sends the same either way (tried), so it
-has one set of recordings. Claude Code's screens hold no account: it starts
-not logged in, and no prompt is ever sent.
-
-The emacs scenarios type a Meta key as Escape and then the key: emacs sets
-modifyOtherKeys 1, and fux gives Alt-v to it as `CSI 27 ; 3 ; 118 ~` (where
-xterm sends `ESC v`, its input.c leaving a bare Meta out of modifyOtherKeys
-at that level), which emacs does not know and inserts in part.
-
-Not recorded: ssh to localhost (Remote Login is off here, and turning it on
-changes the system), pip and Python TUIs (rich, textual), bubbletea, pnpm:
-not installed.
+1. Write `corpus/keys/NAME.keys`.
+2. Add a case for NAME to `scenario` in `corpus/record.sh`, and add NAME
+   to its `all` list.
+3. Run `corpus/record.sh NAME`.
+4. Give NAME a status in `STATUSES` (`src/corpus.rs`). A recording without
+   one fails `corpus`.
+5. Regenerate `corpus/INVENTORY.md`.
 
 ### Replaying
 
 `corpus` replays each recording through fux-vt and the engines (default:
-xterm and the panel), as a case of the recording's size with a step for
-each step recorded (and a resize before the output of a step that
-resized), and compares them after every step as `run` does. fux-vt
-is set up as fux sets up a pane (reflow, the kitty keyboard protocol,
-no identity), as the recordings were made, with fux's 10000 rows of history.
+xterm and the panel), as a case of the recording's size, with one step for
+each step recorded. It compares them after every step, as `run` does. fux-vt
+is set up as fux sets up a pane (reflow, kitty keyboard, no identity),
+with fux's 10000 rows of history.
 
 - **xterm decides what it can tell.** A field xterm tells that differs
   from fux-vt fails the step.
-- **The panel decides the rest**: the fields xterm cannot tell (underline
+- **The panel decides the rest**: fields xterm cannot tell (underline
   colour, pending wrap, the kitty flags), and every field once xterm
-  abstains (from SGR 58 on). fux-vt fails there where the panel outvotes
-  it, as in `run`.
-- **A resize is judged by the program's answer to it.** A step that
-  resized is two steps of the case, the resize and the program's output
-  after it, compared after both; only the second is judged. Right after
-  the resize each engine shows its own way of resizing (whether it
-  reflows, what comes back from history, where the cursor lands), which
-  they choose differently on purpose, as `run` avoids by settling the
-  cursor before each resize; fux's panes reflow, as Ghostty, wezterm and
-  libvterm do, and xterm does not. What the program
-  leaves as the resize left it (a shell's earlier lines) stays as each
-  engine resized it, and a recording where that differs says so in its
-  status.
-- A field the panel outvotes fux-vt on where xterm agrees with fux-vt is
-  shown in the marks (`-alacritty`), not failed. In `delta-diff`, delta
-  draws its wrap marker in the last column and then sends EL 0 with the
-  wrap pending; xterm, Ghostty, libvterm and fux-vt erase the marker,
-  alacritty, avt and wezterm keep it.
+  abstains (from SGR 58 on). A field the panel outvotes fux-vt on while
+  xterm agrees with fux-vt is shown in the marks (`-alacritty`), not
+  failed.
+- **A resize is judged by the program's answer to it.** A resized step is
+  two steps of the case: the resize, then the program's output. Only the
+  second is judged, because right after a resize each engine shows its
+  own way of resizing. fux's panes reflow, as Ghostty, wezterm and libvterm
+  do; xterm doesn't.
 
 Each recording has a status, as a family has (`STATUSES` in
-`src/corpus.rs`): expected to agree, or differing for a recorded reason.
-`corpus` exits 1 if one expected to agree fails, or one has no status. It
-takes 25 to 50 seconds beside xterm here, depending on the machine's load
-(xterm is most of it), and about 8 with the in-process engines alone
-(`--engines panel`), where `delta-diff` fails, the panel outvoting fux-vt
-where xterm decides for it. Today 101 agree and 12 differ, each at the
-point its reason says:
-
-- the five of Claude Code, at the end, where it sets an empty title and
-  xterm shows its default one, `xterm`;
-- five with emoji sequences (`vim-unicode`, `nvim-unicode`,
-  `helix-unicode`, `micro-small`, `less-small`): fux-vt joins them into one
-  wide cell as Ghostty and wezterm do (the `clusters` family's choice),
-  xterm keeps a cell for each code point;
-- `zsh-resize`: the shell's line typed before a shrink, which fux's panes
-  reflow as Ghostty, wezterm and libvterm do, and xterm does not;
-- `tmux-resize`: where xterm puts the cursor on leaving an alternate screen
-  that shrank and grew (a replay in the reason).
-
-`corpus --subject ghostty` judges Ghostty's core the same way, beside
-xterm and the panel with fux-vt in Ghostty's place (see "Another
-subject"). Today Ghostty agrees on 74 recordings of 113 and 754 points of
-992; fux-vt, judged in the same run, on 101 and 939. Ghostty fails where
-fux-vt does not at 213 points of 33 recordings, 196 of them a blank's
-foreground: Ghostty's blanks take the pen's background alone, xterm's its
-colours (see "The vote"). fux-vt fails where Ghostty does not at 6 points,
-all in `micro-small`.
+`src/corpus.rs`): expected to agree, or differing for a recorded reason
+that says at which step and why, with a command that shows it. `corpus`
+exits 1 if a recording expected to agree fails, or one has no status.
+`--json FILE` writes the results. The counts are in
+[`scoreboard/SCOREBOARD.md`](scoreboard/SCOREBOARD.md).
 
 ### The inventory
 
-`inventory` lists every sequence the recordings send, normalized (numbers
-that only place the cursor or pick a colour are `n`; each mode and each SGR
-attribute a row of its own), with how often, which programs sent it, and
-what fux-vt does with it. A fux-vt parser set up as fux's reads each
-sequence in turn: what it reports through `Sink::unhandled`, or answers, it
-is seen doing. What it consumes without a word is named from its source:
-private modes `Screen::mode` does not keep, SGR parameters `Screen::sgr`
-passes over or reads in part, the OSC numbers `Parser::dispatch_osc` drops,
-and every DCS, APC, PM and SOS string. Those lists are in
-`src/inventory.rs`, and must follow fux-vt. `corpus/INVENTORY.md` is its
-output, made again with the recordings.
+`inventory` lists every sequence the recordings send, normalized: numbers
+that only place the cursor or pick a colour are `n`, and each mode and SGR
+attribute gets a row of its own. Each row has how often it was sent, by
+which programs, and what fux-vt does with it. What fux-vt reports
+(`Sink::unhandled`) or answers is observed. What it consumes without a word
+is named from its source in `src/inventory.rs`, which must follow fux-vt.
+`corpus/INVENTORY.md` is the output.
 
 ## Transparency
 
-A program inside fux should look exactly as it does with no fux in
-between. `transparency` checks that on every recording.
+A program inside fux should look exactly as it does with no fux in between.
+`transparency` checks that for every recording:
 
 ```sh
 fux-vt/compare/run.sh transparency                    # every recording, read by Ghostty; exit 1 on a difference
 fux-vt/compare/run.sh transparency --engines in-process vim   # read by each engine in this process
 fux-vt/compare/run.sh transparency --chunk 64         # compared every 64 bytes too
-fux-vt/compare/run.sh transparency --size 3x10 '\e]133;A\x07$ '   # output given, as `replay` takes it
-fux-vt/compare/run.sh transparency --multiplexers     # tmux's and zellij's scores beside fux's
-fux-vt/compare/run.sh transparency --json FILE        # the results as JSON too
+fux-vt/compare/run.sh transparency --size 3x10 '\e]133;A\x07$ '   # given output, as replay takes it
+fux-vt/compare/run.sh transparency --multiplexers     # tmux and zellij scored beside fux
+fux-vt/compare/run.sh transparency --json FILE
 ```
 
-The output goes two ways, to two terminals of one kind (Ghostty unless
-`--engines` names others; they must run in this process):
+The output goes to two terminals of one kind (Ghostty, unless `--engines`
+names others in this process):
 
 1. **Directly**, at the recording's size.
-2. **Through fux**, used as a library as its server runs it
-   (`src/transparency.rs`, `Through`). A `Session` with one pane and one
-   client a row taller than the recording, so that the pane, above the
-   bar, is the recording's size (the placement is checked). The output is
-   read into the pane as the server reads it (`Session::output`, 16 KiB at
-   most a read), and the pane's replies are taken as a program reads them.
-   The client's terminal gets what `fux attach` writes to it first
-   (`client::ENTER`: the alternate screen, autowrap off), what the server
-   sends it outside paints (its queries), and every paint, made as
-   `Server::paint` makes it: composed into the spare grid
-   (`render::compose_into`); nothing sent if it is the screen the client
-   shows; else `render::paint_into` from the shown grid, or a full paint
-   the first time, and the grids swap.
+2. **Through fux**, used as a library as its server runs it (`Through` in
+   `src/transparency.rs`). A `Session` with one pane and one client a row
+   taller, so the pane above the bar has the recording's size. Output is
+   read into the pane as the server reads it, and the client's terminal
+   gets what `fux attach` writes first (`client::ENTER`), the server's
+   queries, and every paint, made as `Server::paint` makes it.
 
-Then the pane's rectangle of the client's terminal is compared with the
-direct terminal, field by field (`snapshot::differences`), on what the
-engine can tell (its `Can`) and a screen shows (`SHOWN`): each cell's text,
-width, style and link, the rows where a prompt starts, cursor visibility,
-and where the cursor is when either side shows it. Left out, as nothing on
-the screen shows them and a multiplexer keeps them for the pane: soft-wrap
-flags and a pending wrap (fux places every run it paints, with autowrap
-off), the modes (they say how keys and the mouse are read, which fux does
-for the pane), the title (fux shows it in its bar), reports and history.
+Then the pane's rectangle of the client's screen is compared with the
+direct screen, field by field, on what the engine can tell and a screen
+shows (`SHOWN`): cells, prompt rows, cursor visibility, and the cursor
+where it shows. Soft wraps, pending wrap, modes, the title, reports and
+history are left out, because fux keeps them for the pane.
 
-**Colours are compared as they show.** A program that changes its
-palette (OSC 4) or its foreground and background (OSC 10, 11) is drawn
-in them directly by the engine, and painted in them through fux, as RGB
-colours, by fux (its panes keep their colours, `fux_vt::Options::
-palette`; the client's terminal is never told them). So where the engine
-can tell its colours (`Engine::colours`: Ghostty), a colour on the direct
-side whose palette entry, or default, the program changed from the
-terminal's own is read as the colour it is now; any other is compared as
-the snapshot has it, as before. The client's terminal's colours must stay
-its own: if they change at any point, the run fails (`fux changed its
-client terminal's colours`). Planted, an OSC 4 at the head of every paint
-fails the first point of any recording.
+- **Colours are compared as they show.** fux paints a program's palette
+  and default colours (OSC 4, 10, 11) as RGB and never sets them on the
+  client's terminal. Where the engine can tell its colours (Ghostty), the
+  direct side's colours are read as they now show. The run fails if the
+  client's terminal's own colours ever change.
+- **Where it compares:** after each step, and before each BSU and after
+  each ESU of synchronized output; `--chunk N` adds a point every N bytes.
+  While the pane holds a frame, fux shows the screen from before it by
+  design, so that point is not compared.
+- **What the mirror leaves out:** paints are made at every point, not
+  16 ms apart; a client never stops reading; the client's answers to the
+  server's queries are not sent back.
+- **A difference is fux's, or fux-vt and the engine reading the program
+  apart.** Both sides are read by one engine. Where fux-vt reads the
+  program otherwise than the engine, fux paints what fux-vt has, and that
+  difference is recorded with its reason in `KNOWN` (`src/transparency.rs`).
+  Any other difference fails.
 
-**Where it compares:** after each step, and inside one before each BSU and
-after each ESU of synchronized output (2026); `--chunk N` adds a point every
-N bytes. The client is painted at every point. While the pane holds a frame,
-fux shows the screen from before it, by design, so the point is painted but
-not compared; the frame is compared at its end. A frame still held when
-the recording ends is released, as the server releases one when its
-timeout passes, and painted.
-
-**What the mirror leaves out:** paints are made at every point, not spaced
-16 ms apart as the server spaces them; a client that stops reading (the
-server's output cap) does not happen; the client's terminal's answers to
-the server's queries are not sent back (they say how to read keys and
-which colours to answer a pane's colour queries with, and the recording's
-output is fixed). A recording's resize is made on both sides (the
-client's terminal and the session, which resizes the pane) and painted;
-it is compared once the program has answered it, at the step's points.
-fux's panes reflow on a resize, as Ghostty does.
-
-**A difference is fux's, or where fux-vt and the engine read the program's
-bytes apart.** Both sides are read by one engine, so it is never the
-engines splitting on fux's paint. Where fux-vt reads the program's own
-output otherwise than the engine, fux paints what fux-vt has, and the two
-sides differ; the corpus shows the same split (`corpus`'s marks). Such a
-difference is recorded (`KNOWN` in `src/transparency.rs`) with its reason
-and the differences it covers, and any other difference in the same
-recording still fails:
-
-| Recording | Engines | Why |
-| --- | --- | --- |
-| every | ghostty, alacritty | a cell erased while a foreground is set (ECH, EL, ED, IL, a scroll's new row) keeps it in fux-vt, as in xterm, and only the background in Ghostty and alacritty: tmux pads its status line with ECH in black on green; neovim, htop, mc, ncdu, ranger and tig clear in their own colours. Only a foreground on a cell blank on both sides is covered: a blank's foreground is not drawn |
-| `delta-diff` | alacritty, avt, wezterm | the wrap marker delta erases with EL 0 while a wrap is pending: these keep it, fux-vt (as xterm, Ghostty and libvterm) erases it |
-| every | ghostty | a shell's prompt marks (OSC 133, fish's) mark rows in the pane and are not passed on to the client's terminal (the user's decision: on the alternate screen, where fux's client is, no terminal jumps to a prompt, and Ghostty would tag what fux paints as prompt). Only a row a prompt starts directly and not through fux is covered |
-
-Today, of the 113 recordings, 78 are identical beside Ghostty and 35 differ
-as recorded, at 1545 points in 4 seconds through `run.sh`: 31 by a blank's
-foreground, and the four fish recordings by which rows start a prompt.
-fish sends OSC 133, and fux keeps the marks in its panes (copy mode's `[`
-and `]` jump between them) but does not pass them on to its client's
-terminal, the user's decision: the client is on the alternate screen,
-where no terminal jumps to a prompt, and Ghostty would tag every cell
-painted after a mark as prompt.
-On the first 15 recordings, `--chunk 13` found nothing more at 19837
-points (a minute); `--chunk` with libvterm finds only libvterm's own
-handling of UTF-8 split between writes. `run.sh --cargo test` checks
-every recording beside Ghostty (`every_recording_is_transparent`).
-
-**Found and fixed in fux** (each with a test in `render` and one here):
-
-- micro-small: micro places an emoji's skin-tone modifier after it with a
-  cursor move. fux-vt keeps it a cell of its own; Ghostty joins it to the
-  emoji and does not advance. fux painted the row in one run, so every
-  glyph after it landed two columns left. A glyph that would continue the
-  cluster before it is now placed by a cursor move, and so is the next
-  (`fux_vt::continues_cluster`).
-- less-small: with autowrap off (fux's client), Ghostty puts zero-width
-  characters on the last column's cell if the cursor is there and the cell
-  holds anything, a space included, though the glyph they follow ended
-  just before it. A cluster with marks ending one column short of the edge
-  is now painted with autowrap on (`replay --engines ghostty --size 1x4
-  '\e[?7l    \e[1;1Hxxa\u{301}'` shows Ghostty's choice).
+`run.sh --cargo test` checks every recording beside Ghostty
+(`every_recording_is_transparent`).
 
 ### Other multiplexers
 
-`--multiplexers` replays each recording through tmux and zellij (each if
-installed), and scores them: the share of recordings, and of steps, whose
-pane looks the same as the direct screen at the end of each step, beside
-fux's own share at the same points. Their differences are scored, not
-failed. Each runs as a real server of its own, with nothing of the user's:
+`--multiplexers` replays each recording that does not resize through tmux
+and zellij, if installed, and scores them beside fux. The score is the
+share of recordings and of steps whose pane matches the direct screen at
+the end of each step. Their differences are scored, not failed. Each runs
+as its own server with nothing of the user's:
 
-- **tmux**: `tmux -u -S SOCKET -f /dev/null new-session`, its socket in the
-  harness's directory (`-S`, not `-L`, as for the tmux engine), with its
-  status line under the pane, so its client is a row taller.
-- **zellij**: its own configuration (no pane frames, tips, release notes,
-  session saving or mouse), a layout of one pane and no bars, its own
-  `HOME`, configuration and data directories, and `ZELLIJ_SOCKET_DIR`.
+- **tmux**: `-S` socket in the harness's directory, `-f /dev/null`, its
+  status line below the pane. A step is read once a renamed session's
+  mark shows in the status line, then 20 ms of quiet.
+- **zellij**: its own configuration, a one-pane layout with no bars, its
+  own `HOME`, data directory and `ZELLIJ_SOCKET_DIR`. A step is read after
+  200 ms of quiet.
 
 The client runs on a PTY with `TERM=xterm-256color` and
-`COLORTERM=truecolor`, as a modern terminal sets them, and what it writes
-goes to the reference engine, which answers it as a terminal does: its
-replies are written back up the PTY (Ghostty's answer DA1, DA2, XTVERSION
-and palette queries, not OSC 10/11 or CSI 14/16 t). The pane runs the pane
-program the process engines use (`src/engines/pane.rs`): each step's
-output goes into it, synced by DA1, and the screen is read once the client
-has drawn it:
+`COLORTERM=truecolor`. What it writes goes to the reference engine, whose
+replies go back up the PTY. The pane runs the pane program in
+`src/engines/pane.rs`.
 
-- **tmux**: once its status line shows a mark. The harness renames the
-  session (`rename-session mN`), and waits for `[mN]` at the start of the
-  status line, then for 20 ms of quiet. tmux draws the status line after
-  the panes it has yet to draw, in the same pass, and puts the whole pass
-  off while its output to the client has not drained or is blocked
-  (`server_client_check_redraw`, `tty_block_maybe`), so once the mark
-  shows, the pane is drawn; the quiet takes the rest of the pass (the
-  cursor and modes, set back after the status line). A rename redraws the
-  status line alone, as its clock does; a message would not do (while one
-  shows, tmux draws nothing of the panes and hides the cursor). This took
-  tmux's pass over the corpus from 200 s (200 ms of quiet) to 45 s, with
-  every result the same, first differences included; and at none of the
-  820 steps did the pane change in 300 ms of quiet after the mark.
-- **zellij**: once the client has been quiet for 200 ms.
+`--json` writes `{"check": "transparency", ...}` for each engine and
+recording, or `{"check": "transparency-multiplexers", ...}` for each
+multiplexer; the fields are in `src/transparency.rs`. A multiplexer that
+is not installed is `skipped`, and one that fails on a recording reports
+`error` and gets no score. The scores are on the scoreboard.
 
-The client is read, and answered, while the
-pane syncs: zellij forwards a pane's colour and size queries (OSC 4, 10
-and 11, CSI 14 and 16 t) to the client's terminal, one at a time, each
-with a DA1 behind it, and holds the rest of the pane's output, the sync's
-DA1 too, until the terminal answers or 500 ms pass. Unanswered, the 260
-queries zellij itself sends at its start (zellij-small, zellij) held the
-sync for over two minutes.
-
-Today, beside Ghostty, over the 106 recordings that do not resize (the 7
-that do are left out; about 4 s for fux, 40 s for tmux and 220 s for
-zellij, 265 s in all; the same results in three runs):
-
-| Multiplexer | Recordings identical | Steps identical |
-| --- | ---: | ---: |
-| fux 0.17.0 | 73 of 106 (68.8%) | 543 of 819 (66.3%) |
-| tmux 3.7c | 52 of 106 (49.0%) | 491 of 820 (59.8%) |
-| zellij 0.44.3 | 69 of 106 (65.0%) | 576 of 820 (70.2%) |
-
-fux's steps are one fewer: a step whose end is in a frame of synchronized
-output that fux holds is not compared.
-
-tmux leaves out hyperlinks (its `hyperlinks` feature is off for `xterm*`),
-keeps delta's erased wrap marker, and draws blanks with the default
-foreground; zellij keeps the wrap marker, makes URLs it finds into links,
-and keeps ECH's foreground as fux-vt does.
-
-**JSON** (`--json FILE`), for the scoreboard: `transparency` writes
-`{"check": "transparency", "multiplexer": "fux", "version", "chunk",
-"seconds", "ok", "results": [...]}`, a result for each engine and
-recording: `engine`, `recording`, `steps`, `bytes`, `points`, `held`,
-`points_differing_as_recorded`, `points_differing`, `step_ends`,
-`step_ends_identical`, `identical`, `recorded` (the reason, or null),
-`paints`, `painted_bytes` and `first_difference` (`step`, `offset`, `at`,
-and each difference's `key`, `directly` and `through`), or null.
-`--multiplexers` writes `{"check": "transparency-multiplexers", "ok",
-"results": [...]}`, a result for each engine and multiplexer (fux first):
-`engine`, `multiplexer`, `version`, `recordings`, `recordings_identical`,
-`steps`, `steps_identical`, `seconds`, and for tmux and zellij `each`
-recording's `steps`, `steps_identical`, `identical` and
-`first_difference`; or `skipped` and why (not installed); or, for one
-that could not be run through a recording, `error` (the recording and
-why), `seconds` and `each` recording run before it, and no score. The run
-goes on to the next multiplexer, and exits 1 (`ok` false) at its end.
 ## esctest
 
-`esctest` runs esctest2 (`references/xterm/esctest2`, which
-`references/fetch.sh` clones), xterm's conformance suite by George Nachman
-and Thomas E. Dickey: 567 tests in 76 areas (a test class, one file of
-`esctest/tests/`), each writing to its terminal and reading the terminal's
-reports back: the cells by DECRQCRA rectangle checksums, the cursor by DSR,
-modes by DECRQM, settings by DECRQSS.
+`esctest` runs esctest2 (`references/xterm/esctest2`, cloned by
+`references/fetch.sh`), xterm's conformance suite by George Nachman and
+Thomas E. Dickey. Each test writes to its terminal and reads reports back:
+the cells by DECRQCRA checksums, the cursor by DSR, modes by DECRQM, and
+settings by DECRQSS.
 
 ```sh
 fux-vt/compare/run.sh esctest                    # every test against fux-vt; exit 1 on a mismatch with the list
-fux-vt/compare/run.sh esctest DECSTBM            # the tests whose name contains it (a Python regex)
+fux-vt/compare/run.sh esctest DECSTBM            # tests whose name contains it (a Python regex)
 fux-vt/compare/run.sh esctest --show --replays CUP   # each failure's message, and its bytes as a replay
 fux-vt/compare/run.sh esctest --in-fux --xterm   # also in a real fux pane, and in a real xterm
-fux-vt/compare/run.sh esctest --json FILE --logs DIR   # every result, and esctest's own logs
-fux-vt/compare/run.sh esctest --terminal ghostty # Ghostty's core under test, against esctest-expected-ghostty.txt
-fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt   # and fux-vt beside it, compared test by test
+fux-vt/compare/run.sh esctest --json FILE --logs DIR
+fux-vt/compare/run.sh esctest --terminal ghostty # Ghostty's core under test
+fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt   # with fux-vt beside it, test by test
 ```
 
-- **Directly** (`src/esctest.rs`): each area is one esctest process (Python
-  3) on a PTY of 25×80, the size esctest resizes to before every test,
-  which fux-vt does not do, as it refuses window operations. Its terminal is
-  a fux-vt parser set up as fux's panes are (`fux::pane::OPTIONS`), with
-  two reports panes leave off: rectangle checksums (`Options::
-  rectangle_checksums`, added for esctest: no program in the corpus asks
-  for it, and with it a program can read its screen back, which is why xterm
-  refuses it by default) and `extended_replies` (DECXCPR). It reads what
-  esctest writes, and its replies are written back. Every area starts on a
-  fresh terminal; within one, tests run in esctest's order, as they would
-  in a terminal. Each read esctest makes waits `--timeout` (esctest's own,
-  1 second) for its reply, so a report fux-vt does not give fails that
-  test alone; an area running past `--limit` (120 s) is stopped, and its
-  unfinished tests fail. Areas run as many at a time as there are CPUs.
-- **Options.** `--expected-terminal=xterm`: esctest bends its
-  expectations to the terminal it is told it runs in, xterm or iTerm2, and
-  fux-vt follows xterm (blanks are spaces, checksums DEC's, xterm's own
-  known bugs expected to fail). `--max-vt-level=4`, a VT420: xterm's
-  default (`decTerminalID`) and the level esctest's README runs a vanilla
-  xterm at; it is the level with DECRQCRA, without which no cell is read.
-  The 17 VT520 tests are skipped, as are the one esctest does not try in
-  xterm. No `--options`: fux-vt is UTF-8 (so not `disableWideChars`) and does
-  no window operations (so not `xtermWinopsEnabled`), like a default xterm.
-- **The list**, `esctest-expected.txt`: every failing test, with its
-  reason, one of `departure`, `spec`, `not-implemented`, `xterm-too` or
-  `bug` (the file's header says what each means). The run fails on a
-  failure that is not listed, and on a listed test that passes, so the list
-  never goes stale. A test that passes where esctest expects xterm to fail
-  ("Should have failed") passes.
-- **In fux** (`--in-fux`, for `deep`): fux is built (`cargo build --release
-  --bin fux`) and each area runs in the only pane of a fux server of its
-  own (a directory and socket under `/tmp/fux-esctest-*`, as fux's tests
-  start one; never the user's), whose shell is esctest. A client is
-  attached on a PTY of 26×80, so the pane is 25×80 beside the bar; its
-  terminal is a fux-vt parser answering what fux asks of a terminal (DA1,
-  DECRQM, the kitty flags, the colours, white on black). fux's panes do not
-  answer DECRQCRA, so the tests that read cells cannot run there: they are
-  counted as skipped. The rest are set beside the direct run's: a test that
-  passes in one and fails in the other is printed, and points at fux (its
-  pane replies, its encoding). A line `[fux]` in the list is a test that
-  fails only in a pane, `[direct]` one that fails only directly.
-- **In xterm** (`--xterm`): each area also runs in a real xterm, under the
-  harness's Xvfb, the reference. It is set up as esctest's README says (80
-  by 25, a VT420), UTF-8 as fux is, with DECRQCRA allowed
-  (`disallowedWindowOps` without `GetChecksum`) and counting a cell nothing
-  was written to as a space (`checksumExtension: 8`), as esctest expects of
-  a DEC terminal: xterm's own default counts such a cell as nothing, and
-  then fails every test that reads one. What passes there and fails against
-  fux-vt is what fux-vt lacks; `--json` lists them.
-- **Another engine** (`--terminal NAME`, for `full`: `ghostty`): the
-  terminal under test is an engine in this process instead of fux-vt, as
-  `src/answering.rs` runs it. What esctest writes goes to the engine, and
-  its replies (`Engine::replies`) go back in order. DECRQCRA, how esctest
-  reads every cell, is answered by fux-vt alone (Ghostty's core ignores it,
-  as it ignores all DCS): for an engine it never reaches the engine and is
-  answered from the engine's screen, read as every comparison reads it
-  (`Engine::snapshot`), with fux-vt's sum, xterm's. A test holds the two to
-  each other: fux-vt's own reply and the one read from its snapshot agree
-  byte for byte on random screens, in any chunking. In origin mode the
-  rectangle is relative to margins no snapshot gives, so those tests are
-  skipped as "cannot read" (3 for Ghostty). Ghostty's core reports its size
-  (CSI 14, 16, 18 t, which esctest asks before every test) only through its
-  embedder, so it is given its size as Ghostty's app gives it, in 8×16-pixel
-  cells (`engines::ghostty::answering`); its other answers are its own: DA1
-  `CSI ? 62 ; 22 c`, DA2 `CSI > 1 ; 0 ; 0 c`, XTVERSION `libghostty`, OSC 4,
-  OSC 10 and 11 once set. It does not answer DECRQSS, DECXCPR, OSC 5, CSI
-  20 t, or DECRQM of an ANSI mode (a parser bug). The results are checked
-  against the engine's own list, `esctest-expected-NAME.txt`, with the same
-  vocabulary, each reason naming the place in the engine's source.
-- **Beside** (`--beside NAME`, fux-vt or an engine): another terminal runs
-  every area too, checked against its own list, and the two are compared:
-  each area's pass rate for both, the tests one passes and the other fails,
-  each with its feature (the failing one's listed reason) and where the
-  feature is specified (DEC STD 070, the VT510 manual, ctlseqs, ECMA-48:
-  `SOURCES` in `src/esctest.rs`), and the tests run in one only.
-
-At this commit (an Apple M2 Max, 12 CPUs, loaded by other work; xterm
-at 6424721 with the left and right margins and protected glyphs):
-
-| | passed | failed | skipped | time |
-| --- | ---: | ---: | ---: | ---: |
-| directly | 379 (69.0%) | 170 | 18 | 30.5 s |
-| in fux | 175 (56.3% of 311 run) | 136 | 256 | 30.5 s |
-| in xterm 411 | 429 (78.1%) | 120 | 18 | 38 s |
-
-The 170 failures by reason: 90 `not-implemented` (rectangle operations
-19 and DECSERA 6, XParseColor's device-independent colour spaces 18, DECRQM
-of modes fux-vt does not keep 18, the DSR reports of DEC's other devices 9,
-DECBI and DECFI 8, DECRQSS of settings fux-vt does not report 6, and
-more), 40 `xterm-too` (8-bit controls 11, reverse wraparound 9, as xterm
-since patch 383, DECSED and DECSEL leaving ISO-protected glyphs 2, and
-more), 33 `departure` (window operations), 7 `spec` (fux says it is a
-VT220 and fux 4, a special colour never set 2, the foreground's default
-1). In fux, the only difference is DECXCPR, which panes leave off. Before
-the left and right margins and protected glyphs, fux-vt passed 303
-(55.2%): the margins made 61 tests pass and the protection 12, and
-`DSCSCL_Level3_SupportsDECRQMDoesntSupportDECSLRM`, which passed only for
-want of DECSLRM, now fails, fux-vt keeping no conformance levels.
-
-Ghostty's core (libghostty-vt at the pinned commit), with fux-vt beside it
-(the same machine, loaded by other work):
-
-| | passed | failed | skipped | time |
-| --- | ---: | ---: | ---: | ---: |
-| Ghostty's core | 328 (60.1%) | 218 | 21 | 27.5 s |
-| fux-vt | 379 (69.0%) | 170 | 18 | 30.5 s |
-
-Ghostty's 218 failures by reason: 141 `not-implemented` (window
-operations 27, rectangle operations 19, XParseColor's CIE colour spaces 18,
-DECSTR 20, DECIC and DECDC 12, DECRQSS 10, and more), 36 `xterm-too`, 25
-`bug` (DECRQM of an ANSI mode never answered 18, CHA, HPR and VPR in origin
-mode 3, TBC 2, BS past the left margin, RIS keeping 132 columns), 9
-`departure` (colours kept at 8 bits), 7 `spec`. Its parser drops DECSTR,
-with which esctest resets the terminal before every test, so 11 tests fail
-only after the one before them; they pass alone, and the list says so.
-Ghostty passes 6 tests fux-vt fails (window operations 4, DECRQM of
-DECARM, which xterm 411 reports permanently reset as fux-vt does, and
-DECSCL); fux-vt passes 54 Ghostty fails (DECSTR 19, DECIC and DECDC 12,
-colours kept at 8 bits 9, CHA, HPR and VPR in origin mode 3, ANSI DECRQM 3,
-DECRQSS 3, and more). Before the left and right margins and protected
-glyphs, Ghostty passed 67 tests fux-vt failed; before the palette and the
-modes of phase 5 (`d7cf9b4`), fux-vt passed 267 (48.6%), and Ghostty 92
-tests it failed. `--json`'s `comparison` lists both, each with its
-feature and source.
+- **Directly** (`src/esctest.rs`): each area (a test class) is one esctest
+  process on a 25×80 PTY. Its terminal is a fux-vt parser set up as fux's
+  panes are, plus rectangle checksums and DECXCPR (`extended_replies`),
+  which panes leave off. Areas start on a fresh terminal and run in
+  parallel, up to `--jobs` (one per CPU by default). A read waits
+  `--timeout` (1 s) for its reply, so a missing report fails only that
+  test. An area past `--limit` (120 s) is stopped, and its unfinished tests
+  fail.
+- **Options passed to esctest:** `--expected-terminal=xterm` (fux-vt
+  follows xterm), `--max-vt-level=4` (a VT420, xterm's default and the
+  level with DECRQCRA), and no `--options` (UTF-8, no window operations, like
+  a default xterm). VT520 tests are skipped.
+- **The list**, `esctest-expected.txt`: every failing test with its reason,
+  one of `departure`, `spec`, `not-implemented`, `xterm-too` or `bug` (the
+  file's header defines them). The run fails on an unlisted failure and on
+  a listed test that passes, so the list never goes stale. A line tagged
+  `[fux]` fails only in a pane, and `[direct]` only directly.
+- **In fux** (`--in-fux`): builds fux and runs each area in the only pane
+  of a fux server of its own (under `/tmp/fux-esctest-*`, never the
+  user's), with a client on a 26×80 PTY. Panes don't answer DECRQCRA, so
+  tests that read cells are skipped. A test that passes in one place and
+  fails in the other is printed, and points at fux.
+- **In xterm** (`--xterm`): each area also runs in a real xterm under Xvfb,
+  set up as esctest's README says, with DECRQCRA allowed and empty cells
+  counted as spaces. What passes there and fails in fux-vt is what fux-vt
+  lacks.
+- **Another engine** (`--terminal NAME`, any engine in this process): the
+  engine is the terminal (`src/answering.rs`), and its replies go back in
+  order. No engine but fux-vt answers DECRQCRA, so it is answered from the
+  engine's snapshot with xterm's checksum. In origin mode, where the
+  rectangle is relative to margins no snapshot gives, the test is skipped.
+  Ghostty is given its size as Ghostty's app gives it. The results are
+  checked against `esctest-expected-NAME.txt`.
+- **Beside** (`--beside NAME`, fux-vt or an engine): runs another terminal
+  too, checked against its own list, and compares the two: each area's
+  pass rate, and the tests one passes and the other fails, each with its
+  feature and where that feature is specified (`SOURCES` in
+  `src/esctest.rs`).
 
 `--json FILE` writes, for the scoreboard:
 
-```json
-{
-  "suite": "esctest2", "expected_terminal": "xterm", "max_vt_level": "4",
-  "timeout": 1.0, "filter": null, "tests": 567,
-  "direct": {
-    "passed": 263, "passed_beyond_xterm": 2, "failed": 286, "skipped": 18,
-    "pass_rate": 47.9, "seconds": 30.6,
-    "areas": {"CUPTests": {"passed": 5, "failed": 1, "skipped": 0, "pass_rate": 83.3, "...": 0}},
-    "tests": {"CUPTests.test_CUP_RespectsOriginMode": {"outcome": "fail", "message": "...", "listed": "not-implemented: ..."}}
-  },
-  "in_fux": {"...": "as direct"},
-  "xterm": {"...": "as direct"},
-  "differences_in_fux": ["NAME: directly passes, in fux fails (...)"],
-  "differences_xterm": ["..."],
-  "mismatches": []
-}
-```
+- the run: `suite`, `expected_terminal`, `max_vt_level`, `timeout`,
+  `filter`, `tests`, and `terminal` with `--terminal`;
+- a column per place:
+  - `direct`, plus `in_fux` and `xterm` with those flags, and one named for
+    the `--beside` terminal (`fux_vt`);
+  - each with `passed`, `passed_beyond_xterm`, `failed`, `skipped`,
+    `pass_rate` (passed over passed and failed), `seconds`, per-area
+    counts in `areas`, and each test's `outcome`, `message` and `listed`
+    reason in `tests`;
+- `differences_in_fux` and `differences_xterm`;
+- with `--beside`, `comparison`: `terminals`, `total`, `areas`,
+  `passes_only_in` (each with `test`, `kind`, `feature`, `source`,
+  `failure`) and `run_in_one_only`;
+- `mismatches`: what failed the run.
 
-`pass_rate` is passed over passed and failed, in percent; `in_fux` and
-`xterm` are there with `--in-fux` and `--xterm`; `mismatches` are what
-failed the run.
+The pass rates are in [`scoreboard/SCOREBOARD.md`](scoreboard/SCOREBOARD.md).
 
-With `--terminal ghostty --beside fux-vt` (`full`'s `esctest-ghostty.json`),
-`terminal` names the terminal under test, whose results are `direct`, as
-above; fux-vt's are `fux_vt`, the same shape; and `comparison` sets them
-side by side:
+## Speed
 
-```json
-{
-  "terminal": "ghostty", "direct": {"...": "Ghostty's, as direct above"}, "fux_vt": {"...": "fux-vt's"},
-  "comparison": {
-    "terminals": ["ghostty", "fux-vt"],
-    "total": {"ghostty": {"passed": 328, "pass_rate": 60.1, "...": 0}, "fux-vt": {"...": 0}},
-    "areas": {"CUPTests": {"ghostty": {"passed": 6, "...": 0}, "fux-vt": {"passed": 5, "...": 0}}},
-    "passes_only_in": {
-      "ghostty": [{"test": "CUPTests.test_CUP_RespectsOriginMode", "kind": "not-implemented",
-                   "feature": "left and right margins (...)", "source": "DEC STD 070 §5.4.3, ...",
-                   "failure": "fux-vt's message, its first line"}],
-      "fux-vt": [{"test": "TBCTests.test_TBC_Default", "kind": "bug", "...": ""}]
-    },
-    "run_in_one_only": [{"test": "DECSETTests.test_DECSET_DECOM", "ghostty": "skipped: cannot read: ...", "fux-vt": "fails (...)"}]
-  }
-}
-```
+`bench` feeds each engine every workload in 4 KiB chunks, on a 50×200
+screen with 10000 rows of history, and prints MB/s, the best of three
+runs. The synthetic workloads follow alacritty's vtebench: ascii,
+dense-cells, medium-cells, cursor-motion, scrolling, scroll-region and
+unicode. `corpus` is every recording in turn, at the first one's size
+(40x120). `bench corpus` adds each recording alone (`corpus:vim` and so
+on) at the size it was recorded at, without its resizes. `--mb N` sets
+the MiB per workload (8). An engine in its own process also pays for
+the pipe, so its figure is end to end and marked `*`.
+
+`bench --instructions` counts instructions retired per byte instead,
+because load doesn't move them, for every engine in this process. Each
+engine and workload runs in a child process (`src/count.rs`: `/usr/bin/time
+-l` on macOS, `perf` or cachegrind on Linux), less a baseline child that
+does everything but the feeding. The figure is the fewest of `--repeats`
+runs (3); the spread is its noise. With no workloads named it counts the
+synthetic ones and the corpus. `--jobs N` and `--json FILE` work as in
+`footprint`.
+
+## Memory
+
+`footprint` measures the memory each engine in this process holds
+(`--engines` picks), each measure in a child process of its own. The child
+makes the bytes, reads its memory, makes and feeds the engine, and reads its
+memory again. The difference is counted two ways (`src/memory.rs`):
+
+- **footprint**: dirty memory, resident or compressed (`phys_footprint` on
+  macOS, `RssAnon` on Linux). It sees every allocator, including Ghostty's
+  own page mapping.
+- **malloc**: bytes handed out and not returned (`malloc_zone_statistics`,
+  macOS only). It is exact, but blind to memory mapped directly.
+
+At 50 rows and 80 and 200 columns, it measures:
+
+- an empty screen;
+- a screen of `dense-cells` and one of `medium-cells`;
+- 10,000 rows of history from each synthetic workload and from the corpus.
+
+Every engine keeps 10,000 rows of history, except Ghostty: its limit is in
+bytes, so it gets 1 GiB and keeps every row. The figure per row is the
+footprint beyond the same engine's empty screen, over the rows it holds.
+`--json FILE` writes every measure; `--jobs N` sets how many children run
+at once.
+
+## The scoreboard
+
+`run.sh scoreboard` gathers the last results in `target/harness` into
+`scoreboard.json` and `scoreboard.md` there. It also keeps them in the
+repository:
+
+- [`scoreboard/SCOREBOARD.md`](scoreboard/SCOREBOARD.md): the page for
+  the last commit;
+- `scoreboard/history.jsonl`: one line per commit, replacing the last line
+  if it is the same commit's.
+
+Commit both with the work they measure. It runs nothing itself. Any axis
+whose check has not run says `not run`.
+
+The axes:
+
+- conformance: esctest's pass rate, directly and in a fux pane;
+- real programs: corpus recordings agreeing;
+- the multiplexer: transparency, beside tmux and zellij;
+- speed: instructions against main, and MB/s beside Ghostty and alacritty;
+- latency;
+- footprint and bytes per frame;
+- robustness: fuzz time since the last crash;
+- fux-vt beside Ghostty's core, axis by axis;
+- each check's stamp.
 
 ## Files
 
 | File | What |
 | --- | --- |
-| `run.sh` | fetch and pin Zig, Ghostty and libvterm, install node deps, build, run |
+| `run.sh` | fetches and pins Zig, Ghostty and libvterm, installs node deps, builds, runs |
 | `harness.sh` | `quick`, `full`, `deep`, `fuzz` and `scoreboard`, run by `run.sh` |
-| `scoreboard/` | the scoreboard kept: the last commit's, and a line of history for each |
-| `src/scoreboard.rs` | `scoreboard`: the last runs' results gathered and rendered |
-| `build.rs` | compile libvterm and its shim |
-| `src/main.rs` | commands |
-| `src/engine.rs` | the `Engine` trait and its reading rules, `Can`, the engine list |
-| `src/engines/*.rs` | one adapter per engine, each documenting its quirks; `pane.rs` is what tmux and xterm share (the pane program, syncing, SGR decoding) |
+| `build.rs` | compiles libvterm and its shim |
+| `src/main.rs` | the commands |
+| `src/engine.rs` | the `Engine` trait and its reading rules, `Can`, `Blanks`, the engine list |
+| `src/engines/*.rs` | one adapter per engine, documenting its quirks; `pane.rs` is shared by tmux and xterm |
 | `node/` | the xterm.js server and its pinned packages |
 | `src/case.rs` | running, voting, generating and shrinking cases; reports |
-| `src/families.rs` | the families: generators, statuses and reasons; `diff/oracle` includes it by path to draw its random cases, so it must stay free of anything but `crate::rng` and pass `diff`'s lints |
+| `src/families.rs` | the families: generators, statuses and reasons (also included by `diff/oracle`) |
 | `src/cases.rs` | the named cases |
 | `src/snapshot.rs` | what is compared, field by field, and the side-by-side view |
-| `src/transparency.rs` | `transparency`: each recording directly and through fux, tmux and zellij |
-| `src/bench.rs` | the workloads and the speed table |
-| `src/instructions.rs` | `bench --instructions`: instructions retired per byte, each engine in a child process |
-| `src/count.rs` | counting a child's instructions, as `bench/src/count.rs` does |
-| `src/footprint.rs` | `footprint`: each engine's memory, each in a child process |
-| `src/memory.rs` | the process's memory, as the system and malloc count it |
+| `src/rng.rs` | splitmix64, as in `diff/`; also included by `diff/oracle` |
 | `src/escape.rs` | bytes as replayable text, and back |
-| `src/esctest.rs` | `esctest`: esctest2 against fux-vt, an engine, a fux pane or xterm; the comparison of two terminals |
-| `src/answering.rs` | an engine as the terminal a program talks to: its replies, and DECRQCRA from its screen |
+| `src/record.rs` | `record` |
+| `src/corpus.rs` | the recordings: loading, replaying, their statuses |
+| `src/inventory.rs` | `inventory` |
+| `src/transparency.rs` | `transparency`, with `KNOWN` and the multiplexers |
+| `src/esctest.rs` | `esctest`, and comparing two terminals |
+| `src/answering.rs` | an engine as the terminal a program talks to, for `esctest --terminal` |
+| `src/bench.rs` | `bench`: the workloads and the speed table |
+| `src/instructions.rs`, `src/count.rs` | `bench --instructions`, counting a child's instructions as `bench/src/count.rs` does |
+| `src/footprint.rs`, `src/memory.rs` | `footprint`, and the process's memory as the system and malloc count it |
+| `src/scoreboard.rs` | `scoreboard` |
 | `esctest-expected.txt`, `esctest-expected-ghostty.txt` | the esctest tests fux-vt and Ghostty's core fail, each with its reason |
-| `src/rng.rs` | splitmix64, as in `diff/`; `diff/oracle` includes it by path, for the families |
-| `src/record.rs` | `record`: a program on a PTY, its output recorded, fux-vt answering its queries |
-| `src/corpus.rs` | the recordings: loading, replaying beside the engines, their statuses |
-| `src/inventory.rs` | what the recordings send, and what fux-vt does with it |
-| `corpus/` | the recordings, their keys, `record.sh` that makes them, and the man page one shows |
+| `corpus/` | the recordings, their keys, `record.sh`, the man pages they show, and `INVENTORY.md` |
+| `scoreboard/` | the kept scoreboard and its history |
