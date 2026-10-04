@@ -27,6 +27,14 @@
 //! Results are checked against `esctest-expected.txt`, every test that
 //! fails with its reason: the run fails on a test failing that is not
 //! listed, and on one listed that passes, so the list never goes stale.
+//!
+//! With `--terminal NAME`, the terminal under test is another engine in
+//! this process instead of fux-vt (Ghostty's core, for one), answering as
+//! [`crate::answering`] says: its replies go back, and DECRQCRA, which only
+//! fux-vt answers, is answered from its screen. Its results are checked
+//! against its own list, `esctest-expected-NAME.txt`.
+use crate::answering::Answering;
+use crate::engine::{ENGINES, Setup};
 use crate::escape;
 use fuxix::poll::{Events, PollFd};
 use fuxix::process::{Pid, Signal};
@@ -61,9 +69,9 @@ const VT_LEVEL: &str = "4";
 
 /// The usage of `esctest`.
 pub const USAGE: &str = "\
-usage: fux-vt-compare esctest [--in-fux] [--xterm] [--jobs N] [--timeout SECONDS]
-                              [--limit SECONDS] [--expected FILE] [--json FILE]
-                              [--logs DIR] [--replays] [--show] [FILTER]
+usage: fux-vt-compare esctest [--terminal NAME] [--in-fux] [--xterm] [--jobs N]
+                              [--timeout SECONDS] [--limit SECONDS] [--expected FILE]
+                              [--json FILE] [--logs DIR] [--replays] [--show] [FILTER]
 
 Runs esctest2 (references/xterm/esctest2, from references/fetch.sh) against
 fux-vt set up as fux's panes are, with the reports it needs; FILTER is a
@@ -76,11 +84,78 @@ long a read waits for its reply (default 1); --limit how long an area may run
 (default 120). --logs keeps esctest's logs (AREA.log, AREA.fux.log,
 AREA.xterm.log) in DIR. --replays prints, for each failure, what the test wrote
 (without its queries) as a run.sh replay. --show prints each failure's message.
---json writes every result, as fux-vt/compare's README says.";
+--json writes every result, as fux-vt/compare's README says. --terminal runs
+against another engine in this process (ghostty) instead of fux-vt, checked
+against esctest-expected-NAME.txt.";
+
+/// The terminal esctest runs against directly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Subject {
+    /// fux-vt, set up as fux's panes are with the reports esctest needs
+    /// ([`options`]): it answers every query itself, DECRQCRA among them.
+    FuxVt,
+    /// An engine in this process (by its index in [`ENGINES`]), answering
+    /// as [`crate::answering`] says.
+    Engine(usize),
+}
+
+impl Subject {
+    /// The terminal `name` names: fux-vt, or an engine in this process
+    /// that can run here.
+    fn named(name: &str) -> Result<Subject, String> {
+        if name == "fux-vt" {
+            return Ok(Subject::FuxVt);
+        }
+        let i = crate::engine::find(name).ok_or(format!("no engine {name}"))?;
+        let kind = ENGINES.get(i).ok_or(format!("no engine {name}"))?;
+        if !kind.in_process {
+            return Err(format!(
+                "{name} runs in a process of its own; esctest's terminal must run in this one"
+            ));
+        }
+        (kind.available)().map_err(|e| format!("{name}: {e}"))?;
+        Ok(Subject::Engine(i))
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Subject::FuxVt => "fux-vt",
+            Subject::Engine(i) => ENGINES.get(i).map_or("?", |k| k.name),
+        }
+    }
+
+    /// Its list of expected failures: `esctest-expected.txt` for fux-vt,
+    /// `esctest-expected-NAME.txt` for an engine.
+    fn expected(self) -> PathBuf {
+        let file = match self {
+            Subject::FuxVt => "esctest-expected.txt".to_owned(),
+            Subject::Engine(_) => format!("esctest-expected-{}.txt", self.name()),
+        };
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(file)
+    }
+
+    /// The engine set up as esctest's terminal: Ghostty's core told its
+    /// size ([`crate::engines::ghostty::answering`]), any other as the
+    /// comparisons make it.
+    fn engine(i: usize) -> Result<Box<dyn crate::engine::Engine>, String> {
+        let kind = ENGINES.get(i).ok_or("no such engine")?;
+        if kind.name == "ghostty" {
+            return crate::engines::ghostty::answering(ROWS, COLS);
+        }
+        (kind.make)(&Setup {
+            rows: ROWS,
+            cols: COLS,
+            history: 10_000,
+            reflow: false,
+        })
+    }
+}
 
 /// What the command was asked.
 struct Request {
     filter: Option<String>,
+    /// The terminal under test.
+    terminal: Subject,
     in_fux: bool,
     /// Also run each area in a real xterm, as the reference.
     xterm: bool,
@@ -102,17 +177,19 @@ struct Request {
 fn request(argv: &[String]) -> Result<Option<Request>, String> {
     let mut out = Request {
         filter: None,
+        terminal: Subject::FuxVt,
         in_fux: false,
         xterm: false,
         jobs: std::thread::available_parallelism().map_or(4, std::num::NonZero::get),
         timeout: 1.0,
         limit: Duration::from_secs(120),
-        expected: Path::new(env!("CARGO_MANIFEST_DIR")).join("esctest-expected.txt"),
+        expected: PathBuf::new(),
         json: None,
         logs: None,
         replays: false,
         show: false,
     };
+    let mut expected = None;
     let mut words = argv.iter();
     while let Some(word) = words.next() {
         let mut value = |name: &str| words.next().ok_or(format!("{name} needs a value"));
@@ -140,7 +217,8 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
                 out.limit = Duration::try_from_secs_f64(number("--limit", value("--limit")?)?)
                     .map_err(|e| format!("--limit: {e}"))?;
             }
-            "--expected" => out.expected = value("--expected")?.into(),
+            "--expected" => expected = Some(value("--expected")?.into()),
+            "--terminal" => out.terminal = Subject::named(value("--terminal")?)?,
             "--json" => out.json = Some(value("--json")?.into()),
             "--logs" => out.logs = Some(value("--logs")?.into()),
             "-h" | "--help" => return Ok(None),
@@ -152,6 +230,11 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
             }
         }
     }
+    // A fux pane runs fux-vt, and is set beside fux-vt's direct run.
+    if out.in_fux && out.terminal != Subject::FuxVt {
+        return Err("--in-fux runs fux-vt in a fux pane: it goes with --terminal fux-vt".into());
+    }
+    out.expected = expected.unwrap_or_else(|| out.terminal.expected());
     Ok(Some(out))
 }
 
@@ -488,13 +571,30 @@ impl fux_vt::Sink for Terminal {
     }
 }
 
-/// Reads `master` until it hangs up or `done` says so, giving what is read
-/// to `parser` and writing its replies back; past `deadline`, gives up.
-/// Whether it finished before the deadline.
-fn pump<S: fux_vt::Sink + Default>(
-    master: &mut File,
+/// What `parser` answers to `bytes`, its replies collected by a sink `S`
+/// and taken by `take`.
+fn parse<S: fux_vt::Sink + Default>(
     parser: &mut fux_vt::Parser,
+    bytes: &[u8],
     take: impl Fn(&mut S) -> Vec<u8>,
+) -> Vec<u8> {
+    let mut sink = S::default();
+    // The parser refuses only allocations past its limits, and output goes
+    // on regardless, as in fux.
+    let _ = parser.process_with(bytes, &mut sink);
+    take(&mut sink)
+}
+
+/// A terminal answering a program: what it answers to what the program
+/// wrote.
+type Answer<'a> = dyn FnMut(&[u8]) -> Result<Vec<u8>, String> + 'a;
+
+/// Reads `master` until it hangs up or `done` says so, giving what is read
+/// to `answer` and writing what it answers back; past `deadline`, gives up.
+/// Whether it finished before the deadline.
+fn pump(
+    master: &mut File,
+    answer: &mut Answer<'_>,
     deadline: Instant,
     done: impl Fn() -> bool,
 ) -> Result<bool, String> {
@@ -515,11 +615,7 @@ fn pump<S: fux_vt::Sink + Default>(
         match master.read(&mut buf) {
             Ok(0) => return Ok(true),
             Ok(n) => {
-                let mut sink = S::default();
-                // The parser refuses only allocations past its limits, and
-                // output goes on regardless, as in fux.
-                let _ = parser.process_with(buf.get(..n).unwrap_or_default(), &mut sink);
-                let replies = take(&mut sink);
+                let replies = answer(buf.get(..n).unwrap_or_default())?;
                 if !replies.is_empty() {
                     master
                         .write_all(&replies)
@@ -539,10 +635,19 @@ struct Ran {
     stopped: bool,
 }
 
-/// Runs `area` against fux-vt directly.
-fn direct(job: &Job<'_>, area: &Area, scratch: &Path) -> Result<Ran, String> {
-    let log = scratch.join(format!("{}.log", area.name));
-    let cases = job.cases_dir(scratch, area)?;
+/// Runs `area` against `subject` directly: fux-vt (its log `AREA.log`), or
+/// an engine (`AREA.NAME.log`). Only the terminal under test keeps each
+/// test's bytes, for `--replays`.
+fn direct(job: &Job<'_>, subject: Subject, area: &Area, scratch: &Path) -> Result<Ran, String> {
+    let log = match subject {
+        Subject::FuxVt => scratch.join(format!("{}.log", area.name)),
+        Subject::Engine(_) => scratch.join(format!("{}.{}.log", area.name, subject.name())),
+    };
+    let cases = if subject == job.request.terminal {
+        job.cases_dir(scratch, area)?
+    } else {
+        None
+    };
     let argv = esctest_argv(
         job.python,
         job.suite,
@@ -551,20 +656,27 @@ fn direct(job: &Job<'_>, area: &Area, scratch: &Path) -> Result<Ran, String> {
         &log,
         cases.as_deref(),
     );
-    let mut parser = fux_vt::Parser::with_options(ROWS, COLS, 10_000, options())
-        .map_err(|e| format!("fux-vt: {e}"))?;
+    let mut answer: Box<Answer<'_>> = match subject {
+        Subject::FuxVt => {
+            let mut parser = fux_vt::Parser::with_options(ROWS, COLS, 10_000, options())
+                .map_err(|e| format!("fux-vt: {e}"))?;
+            Box::new(move |bytes| {
+                Ok(parse(&mut parser, bytes, |s: &mut Replies| {
+                    std::mem::take(&mut s.0)
+                }))
+            })
+        }
+        Subject::Engine(i) => {
+            let mut terminal = Answering::new(Subject::engine(i)?);
+            Box::new(move |bytes| terminal.take(bytes))
+        }
+    };
     let (master, slave) = fuxix::pty::open(ROWS, COLS).map_err(|e| format!("a PTY: {e}"))?;
     let mut child = launch(&argv, &slave, &[])?;
     drop(slave);
     let mut master = File::from(master);
     let deadline = deadline(job.request.limit);
-    let finished = pump(
-        &mut master,
-        &mut parser,
-        |s: &mut Replies| std::mem::take(&mut s.0),
-        deadline,
-        || false,
-    );
+    let finished = pump(&mut master, &mut *answer, deadline, || false);
     stop(&mut child);
     let finished = finished?;
     Ok(Ran {
@@ -670,13 +782,12 @@ fn in_fux(job: &Job<'_>, fux: &Path, area: &Area, scratch: &Path) -> Result<Ran,
                 .any(|l| l.starts_with("*** ") && l.ends_with(" ***"))
         })
     };
-    let finished = pump(
-        &mut master,
-        &mut parser,
-        |s: &mut Terminal| std::mem::take(&mut s.0),
-        deadline,
-        ended,
-    );
+    let mut answer = |bytes: &[u8]| {
+        Ok(parse(&mut parser, bytes, |s: &mut Terminal| {
+            std::mem::take(&mut s.0)
+        }))
+    };
+    let finished = pump(&mut master, &mut answer, deadline, ended);
     stop(&mut client);
     drop(server);
     let finished = finished?;
@@ -1044,35 +1155,45 @@ fn reasons(results: &[(String, Outcome)], list: &BTreeMap<String, Listed>) -> St
     out
 }
 
-/// Where an area runs: against fux-vt directly, in a fux pane, or in xterm.
+/// Where an area runs: against the terminal under test directly, in a fux
+/// pane, or in xterm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Place {
-    Direct,
+    Direct(Subject),
     Fux,
     Xterm,
 }
 
 impl Place {
-    fn label(self) -> &'static str {
+    /// How the place is named in the table and the summary, with
+    /// `terminal` the terminal under test: fux-vt's direct run is
+    /// `directly`, an engine's is its name.
+    fn label(self, terminal: Subject) -> String {
         match self {
-            Place::Direct => "directly",
-            Place::Fux => "in fux",
-            Place::Xterm => "in xterm",
+            Place::Direct(Subject::FuxVt) if terminal == Subject::FuxVt => "directly".into(),
+            Place::Direct(subject) => subject.name().into(),
+            Place::Fux => "in fux".into(),
+            Place::Xterm => "in xterm".into(),
         }
     }
-    fn key(self) -> &'static str {
+    /// Its key in the JSON: the terminal under test's is `direct`.
+    fn key(self, terminal: Subject) -> String {
         match self {
-            Place::Direct => "direct",
-            Place::Fux => "in_fux",
-            Place::Xterm => "xterm",
+            Place::Direct(subject) if subject == terminal => "direct".into(),
+            Place::Direct(subject) => subject.name().replace('-', "_"),
+            Place::Fux => "in_fux".into(),
+            Place::Xterm => "xterm".into(),
         }
     }
 }
 
 /// One place's results: each area's, in the areas' order, and how long
-/// they took.
+/// they took; how it is named, and its JSON key ([`Place::label`],
+/// [`Place::key`]).
 struct Column {
     place: Place,
+    label: String,
+    key: String,
     results: Vec<Tests>,
     time: Duration,
 }
@@ -1101,6 +1222,39 @@ fn unanswered_checksum(outcome: Outcome) -> Outcome {
     }
 }
 
+/// For an engine answering as [`crate::answering`] says, a test that reads
+/// cells in origin mode waits for a DECRQCRA reply that is never given:
+/// there the rectangle is relative to the margins, which the engine's
+/// snapshot does not give. Its cells cannot be read, so it is not counted.
+fn unread_checksum(outcome: Outcome, name: &str) -> Outcome {
+    match outcome {
+        Outcome::Fail(message)
+            if message.contains("Timeout waiting to read")
+                && message.contains("GetChecksumOfRect") =>
+        {
+            Outcome::Skip(format!(
+                "cannot read: reads cells by DECRQCRA in origin mode, where {name}'s margins \
+                 cannot be read"
+            ))
+        }
+        other @ (Outcome::Pass { .. } | Outcome::Fail(_) | Outcome::Skip(_)) => other,
+    }
+}
+
+/// Each outcome of `results`, as `f` reads it again.
+fn reread(results: &mut [Tests], f: impl Fn(Outcome) -> Outcome) {
+    for (_, outcome) in results.iter_mut().flatten() {
+        let taken = std::mem::replace(outcome, Outcome::Skip(String::new()));
+        *outcome = f(taken);
+    }
+}
+
+/// The list of expected failures in `path`.
+fn read_list(path: &Path) -> Result<BTreeMap<String, Listed>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    expected(&text)
+}
+
 /// How `outcome` reads in a list of differences.
 fn say(outcome: &Outcome) -> String {
     match outcome {
@@ -1118,13 +1272,7 @@ fn differences(a: &Column, b: &Column) -> Vec<String> {
         .zip(b.flat())
         .filter(|((_, x), (_, y))| (x.passed() && y.failed()) || (x.failed() && y.passed()))
         .map(|((name, x), (_, y))| {
-            format!(
-                "{name}: {} {}, {} {}",
-                a.place.label(),
-                say(x),
-                b.place.label(),
-                say(&y)
-            )
+            format!("{name}: {} {}, {} {}", a.label, say(x), b.label, say(&y))
         })
         .collect()
 }
@@ -1142,9 +1290,7 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         return Err("no esctest test matches".into());
     }
     let count: usize = areas.iter().map(|a| a.tests.len()).sum();
-    let list_text = std::fs::read_to_string(&request.expected)
-        .map_err(|e| format!("{}: {e}", request.expected.display()))?;
-    let list = expected(&list_text)?;
+    let list = read_list(&request.expected)?;
     let scratch = request.logs.clone().unwrap_or_else(|| {
         std::env::temp_dir().join(format!("fux-vt-esctest-{}", std::process::id()))
     });
@@ -1161,12 +1307,19 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         request.timeout,
         request.jobs
     );
+    let terminal = request.terminal;
+    if let Subject::Engine(_) = terminal {
+        println!(
+            "terminal: {}, answering as src/answering.rs says (DECRQCRA from its screen)",
+            terminal.name()
+        );
+    }
     let fux = if request.in_fux {
         Some(build_fux()?)
     } else {
         None
     };
-    let mut places = vec![Place::Direct];
+    let mut places = vec![Place::Direct(terminal)];
     if let Some(fux) = &fux {
         places.push(Place::Fux);
         println!("fux: {}", fux.display());
@@ -1184,24 +1337,28 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
             &|area| match (place, &fux) {
                 (Place::Fux, Some(fux)) => in_fux(&job, fux, area, &scratch),
                 (Place::Xterm, _) => in_xterm(&job, area, &scratch),
-                (Place::Direct | Place::Fux, _) => direct(&job, area, &scratch),
+                (Place::Direct(subject), _) => direct(&job, subject, area, &scratch),
+                (Place::Fux, None) => direct(&job, terminal, area, &scratch),
             },
         )?;
-        if place == Place::Fux {
-            for (_, outcome) in results.iter_mut().flatten() {
-                let taken = std::mem::replace(outcome, Outcome::Skip(String::new()));
-                *outcome = unanswered_checksum(taken);
+        match place {
+            Place::Fux => reread(&mut results, unanswered_checksum),
+            Place::Direct(subject @ Subject::Engine(_)) => {
+                reread(&mut results, |o| unread_checksum(o, subject.name()));
             }
+            Place::Direct(Subject::FuxVt) | Place::Xterm => {}
         }
         columns.push(Column {
             place,
+            label: place.label(terminal),
+            key: place.key(terminal),
             results,
             time: at.elapsed(),
         });
     }
     let runs: Vec<(&str, &[Tests])> = columns
         .iter()
-        .map(|c| (c.place.label(), c.results.as_slice()))
+        .map(|c| (c.label.as_str(), c.results.as_slice()))
         .collect();
     print!("{}", table(&areas, &runs));
     let mut problems = Vec::new();
@@ -1213,16 +1370,23 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         "filter": request.filter,
         "tests": count,
     });
+    if let (Subject::Engine(_), Some(object)) = (terminal, json.as_object_mut()) {
+        object.insert("terminal".into(), serde_json::json!(terminal.name()));
+    }
     for column in &columns {
         let flat = column.flat();
+        let first = column.place == Place::Direct(terminal);
         if column.place != Place::Xterm {
             let found = mismatches(&flat, &list, column.place == Place::Fux);
-            problems.extend(found.iter().map(|p| match column.place {
-                Place::Direct => p.clone(),
-                Place::Fux | Place::Xterm => format!("{}: {p}", column.place.label()),
+            problems.extend(found.iter().map(|p| {
+                if first {
+                    p.clone()
+                } else {
+                    format!("{}: {p}", column.label)
+                }
             }));
         }
-        if column.place == Place::Direct && (request.show || request.replays) {
+        if first && (request.show || request.replays) {
             for (name, outcome) in &flat {
                 if let Outcome::Fail(message) = outcome {
                     if request.show {
@@ -1238,35 +1402,38 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         }
         if let Some(object) = json.as_object_mut() {
             object.insert(
-                column.place.key().into(),
+                column.key.clone(),
                 run_json(&areas, &column.results, column.time, &list),
             );
         }
     }
+    let alone = match terminal {
+        Subject::FuxVt => "fux-vt alone",
+        Subject::Engine(_) => terminal.name(),
+    };
     if let Some(direct) = columns.first() {
         for other in columns.iter().skip(1) {
             let differ = differences(direct, other);
             // xterm, the reference, passes many tests fux-vt does not
             // implement: they are counted, and listed with --show.
             if other.place == Place::Xterm && !request.show {
-                let fux_vt_fails = differ
-                    .iter()
-                    .filter(|d| d.contains("directly fails"))
-                    .count();
+                let fails = format!("{} fails", direct.label);
+                let direct_fails = differ.iter().filter(|d| d.contains(&fails)).count();
                 println!(
-                    "in xterm: {fux_vt_fails} tests pass that fail directly, {} the other way \
+                    "in xterm: {direct_fails} tests pass that fail {}, {} the other way \
                      (--show lists them)",
-                    differ.len().saturating_sub(fux_vt_fails)
+                    direct.label,
+                    differ.len().saturating_sub(direct_fails)
                 );
             } else if !differ.is_empty() {
-                println!("where {} differs from fux-vt alone:", other.place.label());
+                println!("where {} differs from {alone}:", other.label);
                 for line in &differ {
                     println!("  {line}");
                 }
             }
             if let Some(object) = json.as_object_mut() {
                 object.insert(
-                    format!("differences_{}", other.place.key()),
+                    format!("differences_{}", other.key),
                     serde_json::json!(differ),
                 );
             }
@@ -1297,7 +1464,7 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
             summary,
             "{} {} {} of {} pass ({:.1}%), {} skipped, in {:.1}s",
             if i == 0 { "" } else { ";" },
-            column.place.label(),
+            column.label,
             t.passed,
             t.passed.saturating_add(t.failed),
             t.rate(),

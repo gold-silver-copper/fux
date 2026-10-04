@@ -6,6 +6,7 @@
 //! fux-vt fails a case where most of the panel differs from it. A failing
 //! case is shrunk to the smallest that still fails, and printed with the
 //! command that replays it. `bench` times the engines on the same output.
+mod answering;
 mod bench;
 mod case;
 mod cases;

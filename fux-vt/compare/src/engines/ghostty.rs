@@ -3,7 +3,7 @@ use crate::engine::{Blanks, Can, Engine, Kind, Setup, always};
 use crate::snapshot::{self, Cell, Color, Line, Snapshot, Style, Width};
 use libghostty_vt::screen::{CellContentTag, CellWide, GridRef, RowSemanticPrompt};
 use libghostty_vt::style::{StyleColor, Underline};
-use libghostty_vt::terminal::{Mode, Point, PointCoordinate};
+use libghostty_vt::terminal::{Mode, Point, PointCoordinate, SizeReportSize};
 use libghostty_vt::{Terminal, TerminalOptions};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -14,6 +14,11 @@ use std::rc::Rc;
 /// leaves a stale soft-wrap flag on the row it recycles when it scrolls
 /// (`replay --size 1x3 abcd`).
 const HISTORY_BYTES: usize = 64 << 20;
+
+/// A cell's size in pixels, which the core is told on every resize and,
+/// for esctest, reports ([`answering`]).
+const CELL_WIDTH: u32 = 8;
+const CELL_HEIGHT: u32 = 16;
 
 pub struct Ghostty {
     terminal: Terminal<'static, 'static>,
@@ -129,6 +134,32 @@ pub fn with_scrollback(setup: &Setup, bytes: usize) -> Result<Box<dyn Engine>, S
     Ok(Box::new(Ghostty::new(setup.rows, setup.cols, bytes)?))
 }
 
+/// Ghostty's core as the terminal a program talks to, for `esctest`: as
+/// [`make`] sets it up, and told its size. The core reports its size (CSI
+/// 14, 16 and 18 t) only through its embedder (`on_size`, "return null to
+/// silently ignore the query"), as Ghostty's app does; esctest asks for it
+/// (CSI 18 t) before every test. It is the screen's rows and columns, in
+/// cells of [`CELL_WIDTH`] by [`CELL_HEIGHT`] pixels, as a resize tells the
+/// core. Its other answers are the core's own: DA1, DA2 and DA3 its
+/// defaults (`CSI ? 62 ; 22 c`, `CSI > 1 ; 0 ; 0 c`), XTVERSION
+/// `libghostty`. Not used by the comparisons: `transparency` reads
+/// multiplexers that ask for the size through Ghostty as it is set up there.
+pub fn answering(rows: u16, cols: u16) -> Result<Box<dyn Engine>, String> {
+    let mut ghostty = Ghostty::new(rows, cols)?;
+    ghostty
+        .terminal
+        .on_size(|t| {
+            Some(SizeReportSize {
+                rows: t.rows().ok()?,
+                columns: t.cols().ok()?,
+                cell_width: CELL_WIDTH,
+                cell_height: CELL_HEIGHT,
+            })
+        })
+        .map_err(err("size"))?;
+    Ok(Box::new(ghostty))
+}
+
 impl Ghostty {
     fn new(rows: u16, cols: u16, max_scrollback: usize) -> Result<Ghostty, String> {
         let mut terminal = Terminal::new(TerminalOptions {
@@ -234,7 +265,7 @@ impl Engine for Ghostty {
 
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
         self.terminal
-            .resize(cols, rows, 8, 16)
+            .resize(cols, rows, CELL_WIDTH, CELL_HEIGHT)
             .map_err(err("resize"))
     }
 
