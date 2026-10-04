@@ -60,14 +60,18 @@ quick() {
   # The corpus again with Ghostty judged as fux-vt is, fux-vt voting in its
   # place: both scores and where each departs alone (corpus-ghostty.json).
   # It runs beside the corpus, an xterm of its own, and still fits.
-  echo "quick: corpus beside xterm, with Ghostty judged too, transparency, 2,000 random cases, the named cases"
-  ran+=(corpus corpus-ghostty transparency random cases)
+  # The oracle (diff/oracle.sh) holds fux-vt to what it did at the merge
+  # base with main: every observable, after every step, over the corpus,
+  # 10,000 random cases and 50 resize streams.
+  echo "quick: corpus beside xterm, with Ghostty judged too, transparency, 2,000 random cases, the named cases, the oracle"
+  ran+=(corpus corpus-ghostty transparency random cases oracle)
   together \
     "corpus $compare corpus --json $out/corpus.json" \
     "corpus-ghostty $compare corpus --subject ghostty --json $out/corpus-ghostty.json" \
     "transparency $compare transparency --json $out/transparency.json" \
     "random $compare run --cases 2000" \
-    "cases $compare cases"
+    "cases $compare cases" \
+    "oracle $root/diff/oracle.sh"
 }
 
 build_bench() {
@@ -149,6 +153,7 @@ targets=(
   "fux-vt/fuzz terminal fux-vt/fuzz/terminal.dict"
   "fux-vt/fuzz graphemes"
   "fux-vt/fuzz cells"
+  "diff/fuzz oracle fux-vt/fuzz/terminal.dict"
 )
 
 # fuzz MINUTES: each target for its share, from its stored corpus and what
@@ -161,7 +166,8 @@ fuzz() {
   ((share > 0)) || share=1
   echo "fuzz: ${#targets[@]} targets, ${share}s each"
   (cd "$root" && cargo +nightly fuzz build --fuzz-dir fuzz -O -a >/dev/null 2>&1 &&
-    cargo +nightly fuzz build --fuzz-dir fux-vt/fuzz -O -a >/dev/null 2>&1) ||
+    cargo +nightly fuzz build --fuzz-dir fux-vt/fuzz -O -a >/dev/null 2>&1 &&
+    cargo +nightly fuzz build --fuzz-dir diff/fuzz -O -a >/dev/null 2>&1) ||
     { echo "fuzz: the targets do not build (cargo +nightly fuzz build)"; return 1; }
   for spec in "${targets[@]}"; do
     read -r dir target dict asan <<<"$spec"
