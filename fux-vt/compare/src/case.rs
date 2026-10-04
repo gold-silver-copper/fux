@@ -210,6 +210,31 @@ pub fn verdict(subject: usize, base: &Snapshot, engine: usize, snapshot: Snapsho
     }
 }
 
+/// The same step judged with another subject: `to`, an engine of
+/// `verdicts`, takes the place of `from`, the subject whose snapshot is
+/// `base`, which joins the panel where `to` was. None if `to` gave no
+/// verdict (it abstained). Every snapshot is as it was read, so nothing
+/// runs again, and each engine is fed once for both judgements.
+pub fn rejudge(
+    from: usize,
+    base: &Snapshot,
+    verdicts: &[Verdict],
+    to: usize,
+) -> Option<(Snapshot, Vec<Verdict>)> {
+    let new_base = verdicts.iter().find(|v| v.engine == to)?.snapshot.clone();
+    let judged = verdicts
+        .iter()
+        .map(|v| {
+            if v.engine == to {
+                verdict(to, &new_base, from, base.clone())
+            } else {
+                verdict(to, &new_base, v.engine, v.snapshot.clone())
+            }
+        })
+        .collect();
+    Some((new_base, judged))
+}
+
 struct Running {
     subject: usize,
     /// The rows of history the subject is asked for: the case's.
@@ -885,6 +910,30 @@ mod tests {
             );
         }
         assert!(outcome.agrees());
+        Ok(())
+    }
+
+    /// Judging fux-vt again on the screens read with Ghostty the subject
+    /// gives what running fux-vt as the subject gives, engine by engine,
+    /// in the same order: `corpus --subject` scores both from one run.
+    #[test]
+    fn a_step_judged_again_is_judged_as_a_run_of_the_other_subject() -> Result<(), String> {
+        let ghostty = engine::find("ghostty").ok_or("no ghostty")?;
+        let alacritty = engine::find("alacritty").ok_or("no alacritty")?;
+        let bytes = b"\x1b[1;38;5;9mab\x1b[?2026h\x1b]8;;u\x1b\\c\x1b[!p\x1b[2K";
+        let theirs = one_step(2, 4, bytes, ghostty).run_until(&[FUX_VT, alacritty], false)?;
+        let (base, again) = super::rejudge(ghostty, &theirs.fux, &theirs.verdicts, FUX_VT)
+            .ok_or("fux-vt gave no verdict")?;
+        let direct = one_step(2, 4, bytes, FUX_VT).run_until(&[ghostty, alacritty], false)?;
+        assert_eq!(base, direct.fux);
+        let pairs = |verdicts: &[Verdict]| -> Vec<(usize, Vec<snapshot::Diff>)> {
+            verdicts
+                .iter()
+                .map(|v| (v.engine, v.differences.clone()))
+                .collect()
+        };
+        assert_eq!(pairs(&again), pairs(&direct.verdicts));
+        assert!(!again.iter().all(|v| v.differences.is_empty()));
         Ok(())
     }
 }

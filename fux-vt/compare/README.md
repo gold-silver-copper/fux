@@ -166,7 +166,23 @@ named cases', the recordings') are fux-vt's, so they are not applied to
 another subject: `run`, `cases` and `corpus` report its outcomes and fail
 only on an error. Without `--subject`, every command is as it was.
 
+`corpus --subject` and `cases --subject` judge fux-vt too, on the same
+screens, with the subject voting in its place (`case::rejudge`): each
+engine is fed once, and fux-vt's judgement is the one `corpus` and `cases`
+make without `--subject` (checked: the same outcome for every recording
+and case). They list where each is outvoted and the other is not, with
+the command that shows it, and `--json FILE` writes it all:
+
+- `corpus`: both scores, in recordings and in points (each judged
+  comparison of each recording, the finer number); then, recording by
+  recording, the points where the subject fails on a field fux-vt does not
+  ("fux-vt ahead") and the reverse ("ghostty ahead"), with the first such
+  point, its fields, and the points by what the fields are about.
+- `cases`: the named cases where the subject is outvoted and fux-vt is not,
+  the reverse, and those where both are, each with a `replay`.
+
 ```sh
+fux-vt-compare corpus --subject ghostty --json corpus-ghostty.json
 fux-vt-compare cases --subject ghostty      # the named cases, Ghostty judged, fux-vt voting
 fux-vt-compare replay --subject ghostty --engines fux-vt --size 1x4 '\e[?2026h' '\e[!p'
 ```
@@ -655,6 +671,15 @@ point its reason says:
   reflow as Ghostty, wezterm and libvterm do, and xterm does not;
 - `tmux-resize`: where xterm puts the cursor on leaving an alternate screen
   that shrank and grew (a replay in the reason).
+
+`corpus --subject ghostty` judges Ghostty's core the same way, beside
+xterm and the panel with fux-vt in Ghostty's place (see "Another
+subject"). Today Ghostty agrees on 74 recordings of 113 and 754 points of
+992; fux-vt, judged in the same run, on 101 and 939. Ghostty fails where
+fux-vt does not at 213 points of 33 recordings, 196 of them a blank's
+foreground: Ghostty's blanks take the pen's background alone, xterm's its
+colours (see "The vote"). fux-vt fails where Ghostty does not at 6 points,
+all in `micro-small`.
 
 ### The inventory
 
