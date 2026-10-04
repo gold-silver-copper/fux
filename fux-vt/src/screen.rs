@@ -324,6 +324,9 @@ pub struct Screen {
     links_seen: bool,
     /// The key the next link opened takes (`Hyperlink::key`).
     next_link: u64,
+    /// The colours the program set, with `Options::palette`: made when
+    /// the first is set, so a screen whose program sets none keeps none.
+    colours: Option<Box<crate::palette::Colours>>,
 }
 
 #[cfg(test)]
@@ -422,6 +425,7 @@ impl Screen {
             link: None,
             links_seen: false,
             next_link: 1,
+            colours: None,
         })
     }
     /// The primary screen's grid, as a test starts from it.
@@ -634,6 +638,35 @@ impl Screen {
     /// [`Row::starts_prompt`]).
     pub fn starts_prompt(&self, row: u16) -> bool {
         self.grid().live_row(row).is_some_and(|r| r.starts_prompt())
+    }
+
+    /// The colour palette entry `index` shows if the program changed it
+    /// (OSC 4, with `Options::palette`), as red, green and blue; `None`
+    /// while it is the terminal's own, and after OSC 104, DECSTR or RIS
+    /// reset it. A cell of `Color::Idx(index)` shows this colour.
+    pub fn palette_color(&self, index: u8) -> Option<(u8, u8, u8)> {
+        let [r, g, b] = self.colours.as_ref()?.palette(index)?;
+        Some((r, g, b))
+    }
+    /// The colour dynamic colour `number` shows if the program set it (OSC
+    /// 10 to 19, with `Options::palette`): 10 the text foreground and 11
+    /// the background, which a cell of `Color::Default` shows, 12 the
+    /// cursor, and the others xterm's pointer, Tektronix and highlight
+    /// colours. `None` while it is the terminal's own, and after OSC 110 to
+    /// 119 reset it.
+    pub fn dynamic_color(&self, number: u8) -> Option<(u8, u8, u8)> {
+        let [r, g, b] = self.colours.as_ref()?.dynamic(number)?;
+        Some((r, g, b))
+    }
+    /// Whether the program changed a palette entry or a dynamic colour, so
+    /// that a host drawing the screen knows to ask `palette_color` and
+    /// `dynamic_color`.
+    pub fn colors_changed(&self) -> bool {
+        self.colours.as_ref().is_some_and(|c| c.changed())
+    }
+    /// The colours the program set, for the parser's OSC handling.
+    pub(crate) fn colours_mut(&mut self) -> &mut Option<Box<crate::palette::Colours>> {
+        &mut self.colours
     }
 
     /// OSC 8: opens the link `payload` names, or closes the open one
@@ -1422,6 +1455,11 @@ impl Screen {
                 self.primary_keyboard = KeyboardStack::default();
                 self.alternate_keyboard = KeyboardStack::default();
                 self.modify_other_keys = None;
+                // The palette, as xterm resets it; the dynamic and special
+                // colours stay, as in xterm.
+                if let Some(colours) = &mut self.colours {
+                    colours.reset_palette();
+                }
                 self.structural = self.version;
             }
             _ => return Ok(false),
@@ -1461,6 +1499,11 @@ impl Screen {
         g.saved_cursor = (0, 0);
         g.saved_pending_wrap = false;
         g.saved_origin = false;
+        // The palette, as xterm 411 resets it (in neither table); the
+        // dynamic and special colours stay.
+        if let Some(colours) = &mut self.colours {
+            colours.reset_palette();
+        }
     }
 
     /// Clears the alternate screen, its blanks in the pen's colours

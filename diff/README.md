@@ -181,8 +181,13 @@ public API (`oracle/src/side.rs`), after every step:
 
 Where the two sides' APIs part (a renamed method, a reshaped type), give
 `side!` an argument for that part, read both into the same model, and list
-the adapter here. **Adapters today: none;** both sides have the same API.
-A commit with another API does not build until it has one: `oracle.sh
+the adapter here. **Adapters today:** `Options::palette` and
+`Screen::colors_changed` (the palette, an approved feature; see
+[Exemptions](#exemptions)), which the merge base has not: the working
+tree is given the option a case asks for and its `colors_changed` is
+compared; the merge base reports the option as asked, and no colour
+changed. The palette's sequences are exempt, so a colour changed by
+anything else differs. A commit with another API does not build until it has one: `oracle.sh
 dfe1ffb`, from before `Options::setting_reports`, stops there.
 
 ### The inputs
