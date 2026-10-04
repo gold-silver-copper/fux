@@ -256,6 +256,20 @@ pub struct Options {
     /// underline and asks, and draws its diagnostics curly only if `4:3`
     /// comes back. Off, DECRQSS is ignored, as every other DCS.
     pub setting_reports: bool,
+    /// Keep the colours a program sets (`crate::Screen::palette_color`,
+    /// `crate::Screen::dynamic_color`) and answer its queries of them, as
+    /// xterm does (its ctlseqs, "Operating System Commands"): the 256-colour
+    /// palette (OSC 4 sets and queries an entry, OSC 104 resets it), the
+    /// special colours (OSC 5, OSC 105), and the dynamic colours (OSC 10 to
+    /// 19 set them, OSC 110 to 119 reset them). An entry the program has
+    /// not set is answered with xterm's default; a dynamic colour it has
+    /// not set is asked of the host, an [`Event::ColorQuery`] with
+    /// [`Options::events`], as without this option. The colours are
+    /// state: drawing a cell in the colour its entry was set to is the
+    /// host's to do. OSC payloads are buffered, up to
+    /// [`OSC_PAYLOAD_LIMIT`]. Off, these OSCs are ignored, and OSC 10 to 19
+    /// queries are events, with [`Options::events`].
+    pub palette: bool,
     /// Answer as this terminal rather than as a bare VT100: see [`Identity`].
     pub identity: Option<Identity>,
 }
@@ -277,6 +291,7 @@ impl Options {
             prompt_marks: false,
             rectangle_checksums: false,
             setting_reports: false,
+            palette: false,
             identity: None,
         }
     }
@@ -338,6 +353,11 @@ impl Options {
     /// These options with [`Options::setting_reports`] as `on` says.
     pub const fn with_setting_reports(mut self, on: bool) -> Self {
         self.setting_reports = on;
+        self
+    }
+    /// These options with [`Options::palette`] as `on` says.
+    pub const fn with_palette(mut self, on: bool) -> Self {
+        self.palette = on;
         self
     }
     /// These options answering as `identity`, or as a bare VT100 if `None`.
@@ -403,7 +423,9 @@ pub enum Event<'a> {
     /// several, each `?` the next colour (`OSC 10 ; ? ; ?` asks 10 and 11),
     /// an event each, in order. xterm answers `OSC Ps ; rgb:RRRR/GGGG/BBBB`,
     /// ended as the query was; the host knows the colours, so the answer
-    /// is its to make. A request to set a colour is no event.
+    /// is its to make. A request to set a colour is no event; with
+    /// [`Options::palette`], neither is a query of a colour the program
+    /// set, which fux-vt answers itself.
     ColorQuery {
         /// The colour asked for, 10 to 19.
         number: u8,
@@ -534,7 +556,7 @@ impl Parser {
             screen: Screen::new(rows, cols, history_lines)?,
             options,
             osc: Vec::new(),
-            osc_limit: if options.events || options.hyperlinks {
+            osc_limit: if options.events || options.hyperlinks || options.palette {
                 OSC_PAYLOAD_LIMIT
             } else if options.prompt_marks {
                 OSC_PREFIX
@@ -951,8 +973,9 @@ impl Parser {
     /// Carries out the completed OSC string, ended by BEL if `bel`, else
     /// by ESC (ST): 133 (prompt marks), from its first bytes, with
     /// [`Options::prompt_marks`]; 8 (hyperlinks) with [`Options::hyperlinks`];
-    /// 0, 1, 2, 52 and colour queries (10 to 19) delivered as events with
-    /// [`Options::events`]. An overflowed string is no event, and closes any
+    /// the colours (4, 5, 10 to 19, 104, 105, 110 to 119) with
+    /// [`Options::palette`]; 0, 1, 2, 52 and colour queries (10 to 19)
+    /// delivered as events with [`Options::events`]. An overflowed string is no event, and closes any
     /// link; others are dropped.
     ///
     /// Kept out of line: inlined into `byte`, with the screen's OSC
@@ -1013,6 +1036,19 @@ impl Parser {
                 return Ok(());
             }
             _ => {}
+        }
+        if self.options.palette
+            && !self.osc_overflow
+            && crate::palette::osc(
+                self.screen.colours_mut(),
+                command,
+                rest,
+                bel,
+                self.options.events,
+                sink,
+            )
+        {
+            return Ok(());
         }
         if !self.options.events || self.osc_overflow {
             return Ok(());

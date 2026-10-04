@@ -227,6 +227,8 @@ pub struct Setup {
     pub prompt_marks: bool,
     pub rectangle_checksums: bool,
     pub setting_reports: bool,
+    /// `Options::palette`, which the pinned commit has not: see `side`.
+    pub palette: bool,
     /// The name and version the terminal answers as.
     pub identity: Option<(&'static str, &'static str)>,
 }
@@ -255,12 +257,13 @@ impl Setup {
             prompt_marks: true,
             rectangle_checksums: false,
             setting_reports: true,
+            palette: false,
             identity: Some(("fux", "0.17.0")),
         }
     }
 
     /// Each flag by name, to print, read back and turn off one at a time.
-    pub fn flags(&mut self) -> [(&'static str, &mut bool); 12] {
+    pub fn flags(&mut self) -> [(&'static str, &mut bool); 13] {
         [
             ("events", &mut self.events),
             ("extended_replies", &mut self.extended_replies),
@@ -274,6 +277,7 @@ impl Setup {
             ("prompt_marks", &mut self.prompt_marks),
             ("rectangle_checksums", &mut self.rectangle_checksums),
             ("setting_reports", &mut self.setting_reports),
+            ("palette", &mut self.palette),
         ]
     }
 }
@@ -336,6 +340,9 @@ pub struct State {
     pub resize_report: Option<Vec<u8>>,
     /// The options the parser says it has.
     pub options: Setup,
+    /// Whether the program changed a colour (`Screen::colors_changed`),
+    /// which the pinned commit cannot: see `side`.
+    pub colors_changed: bool,
     /// Whether `row_from_bottom` ends where the history and screen do.
     pub rows_end_there: bool,
 }

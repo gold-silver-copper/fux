@@ -4,6 +4,7 @@
 mod cell;
 mod grid;
 mod link;
+mod palette;
 mod parser;
 mod screen;
 mod unicode;
