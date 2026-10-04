@@ -18,8 +18,8 @@ use std::fmt::Write;
 
 /// The private modes `Screen::mode` keeps (fux-vt `src/screen.rs`).
 const MODES: &[u16] = &[
-    1, 6, 7, 9, 25, 47, 1000, 1002, 1003, 1004, 1005, 1006, 1047, 1048, 1049, 2004, 2026, 2031,
-    2048,
+    1, 6, 7, 9, 25, 47, 69, 1000, 1002, 1003, 1004, 1005, 1006, 1047, 1048, 1049, 2004, 2026,
+    2031, 2048,
 ];
 
 /// Sequences fux-vt reports as unhandled that fux answers itself, from
@@ -390,6 +390,8 @@ fn name(key: &str) -> String {
         ("CSI ? 2026 h", "synchronized output: begin"),
         ("CSI ? 2026 l", "synchronized output: end"),
         ("CSI ? 2026 $ p", "DECRQM: synchronized output?"),
+        ("CSI ? 69 h", "DECLRMM, left and right margins"),
+        ("CSI ? 69 $ p", "DECRQM: left and right margins?"),
         ("CSI ? 2027 $ p", "DECRQM: grapheme clusters?"),
         ("CSI ? 2031 h", "colour-scheme change reports"),
         ("CSI ? 2048 h", "in-band resize reports"),
@@ -415,6 +417,7 @@ fn name(key: &str) -> String {
         ("CSI n SP q", "DECSCUSR, cursor style"),
         ("CSI 3 J", "ED 3, erase saved lines"),
         ("CSI n;n r", "DECSTBM, scrolling region"),
+        ("CSI n;n s", "DECSLRM, left and right margins (SCOSC without DECLRMM)"),
         ("CSI n;n H", "CUP"),
         ("CSI H", "CUP, home"),
         ("CSI K", "EL"),
