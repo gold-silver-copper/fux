@@ -1,0 +1,4 @@
+# git diff through delta side by side at 50x200: a page, quit.
+!start 1500
+\x20
+q

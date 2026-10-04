@@ -169,8 +169,8 @@ fuzz_target!(|data: &[u8]| {
     // replies (0x20), hyperlinks (0x40) and prompt marks (0x80); above the
     // row count, into reflow
     // (0x10), the kitty keyboard protocol (0x20), an identity (0x40) and
-    // colour-scheme updates (0x80); above the column count (0x80), into
-    // rectangle checksums.
+    // colour-scheme updates (0x80); above the column count, into setting
+    // reports (DECRQSS, 0x40) and rectangle checksums (0x80).
     // Each is fuzzed alone and with the others, alongside the default.
     let options = Options::new()
         .with_events(history & 0x10 != 0)
@@ -184,6 +184,7 @@ fuzz_target!(|data: &[u8]| {
             version: "1.2.3",
         }))
         .with_color_scheme_updates(r & 0x80 != 0)
+        .with_setting_reports(c & 0x40 != 0)
         .with_rectangle_checksums(c & 0x80 != 0);
     let Ok(mut whole) = Parser::with_options(
         1 + u16::from(r % 16),

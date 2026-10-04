@@ -1,0 +1,5 @@
+# less -R on text with colours: a page, back, search, quit.
+\x20
+b
+/fn\r
+q

@@ -1,0 +1,14 @@
+# tmux with a split, resized while it runs: smaller, another split,
+# larger, tiny, back; then every shell exits.
+!start 1500
+\x02%
+seq 1 30\r
+!resize 24x80
+\x02"
+!resize 50x200
+ls\r
+!resize 10x40
+!resize 40x120
+exit\r
+exit\r
+exit\r

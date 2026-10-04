@@ -1,0 +1,3 @@
+# GNU ls -l (no owner, no group) with colours and hyperlinks: it lists
+# and exits, no keys.
+!start 1000

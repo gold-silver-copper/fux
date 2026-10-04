@@ -1,0 +1,9 @@
+# nnn in detail mode with hidden files: move, into a directory, back,
+# quit.
+!start 1500
+j
+j
+j
+l
+h
+q

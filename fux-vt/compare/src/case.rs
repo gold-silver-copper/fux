@@ -90,27 +90,43 @@ impl Outcome {
 /// of them share one other value than agree with fux-vt. Engines that
 /// differ from fux-vt each in their own way do not outvote it; a tie does
 /// not. With one engine, wherever it differs.
+///
+/// On a cell blank in fux-vt and in an engine, the engine does not vote on
+/// a part of the blank's style it makes otherwise than xterm (its
+/// [`engine::Blanks`](crate::engine::Blanks)): the engines split three ways
+/// there by choice, so its value is its choice, not a judgement of the
+/// cell. Its difference is still shown.
 pub fn outvoted_on(verdicts: &[Verdict]) -> Vec<String> {
-    type Dissent<'a> = (Field, Option<(usize, usize)>, BTreeMap<&'a str, usize>);
+    type Dissent<'a> = (
+        Field,
+        Option<(usize, usize)>,
+        bool,
+        BTreeMap<&'a str, usize>,
+    );
     let mut dissent: BTreeMap<&str, Dissent<'_>> = BTreeMap::new();
     for verdict in verdicts {
         for diff in &verdict.differences {
-            let (_, _, values) = dissent
-                .entry(diff.key.as_str())
-                .or_insert_with(|| (diff.field, diff.styled_cell, BTreeMap::new()));
+            if !votes(verdict, diff.field, diff.styled_cell, diff.fux_blank) {
+                continue;
+            }
+            let (_, _, _, values) = dissent.entry(diff.key.as_str()).or_insert_with(|| {
+                (
+                    diff.field,
+                    diff.styled_cell,
+                    diff.fux_blank,
+                    BTreeMap::new(),
+                )
+            });
             let count = values.entry(diff.other.as_str()).or_insert(0);
             *count = count.saturating_add(1);
         }
     }
     dissent
         .into_iter()
-        .filter(|(_, (field, cell, values))| {
+        .filter(|(_, (field, cell, fux_blank, values))| {
             let told = verdicts
                 .iter()
-                .filter(|v| {
-                    ENGINES.get(v.engine).is_some_and(|k| field.told_by(&k.can))
-                        && cell.is_none_or(|(y, x)| read_style(&v.snapshot, y, x))
-                })
+                .filter(|v| votes(v, *field, *cell, *fux_blank))
                 .count();
             let differing: usize = values.values().sum();
             let agreeing = told.saturating_sub(differing);
@@ -120,6 +136,20 @@ pub fn outvoted_on(verdicts: &[Verdict]) -> Vec<String> {
         .collect()
 }
 
+/// Whether `verdict`'s engine votes on `field`, of the screen cell `cell`
+/// for a part of a cell's style (where fux-vt's cell is blank if
+/// `fux_blank`): it can tell the field, read the cell's style, and, on a
+/// cell blank on both sides, makes that part of its blanks as xterm does.
+fn votes(verdict: &Verdict, field: Field, cell: Option<(usize, usize)>, fux_blank: bool) -> bool {
+    ENGINES.get(verdict.engine).is_some_and(|k| {
+        field.told_by(&k.can)
+            && cell.is_none_or(|(y, x)| {
+                read_style(&verdict.snapshot, y, x)
+                    && (k.blanks.as_xterm(field) || !(fux_blank && blank(&verdict.snapshot, y, x)))
+            })
+    })
+}
+
 /// Whether an engine read the style of the screen cell at row `y`,
 /// column `x`.
 fn read_style(snapshot: &Snapshot, y: usize, x: usize) -> bool {
@@ -127,6 +157,15 @@ fn read_style(snapshot: &Snapshot, y: usize, x: usize) -> bool {
         .screen
         .get(y)
         .is_none_or(|line| line.unread_from.is_none_or(|from| x < from))
+}
+
+/// Whether the screen cell at row `y`, column `x` is a blank.
+fn blank(snapshot: &Snapshot, y: usize, x: usize) -> bool {
+    snapshot
+        .screen
+        .get(y)
+        .and_then(|line| line.cells.get(x))
+        .is_some_and(snapshot::Cell::is_blank)
 }
 
 fn outvoted(verdicts: &[Verdict]) -> bool {
@@ -631,4 +670,83 @@ pub fn report(case: &Case, panel: &[usize], outcome: &Outcome) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Verdict, outvoted_on};
+    use crate::engine::{self, ENGINES};
+    use crate::snapshot::{self, Cell, Color, Line, Snapshot, Style, Width};
+
+    const PEN: Color = Color::Rgb(10, 20, 30);
+
+    /// A screen of one cell: its text, foreground and whether it is bold.
+    fn screen(text: &str, fg: Color, bold: bool) -> Snapshot {
+        let style = Style {
+            fg,
+            bold,
+            ..Style::default()
+        };
+        Snapshot {
+            rows: 1,
+            cols: 1,
+            screen: vec![Line {
+                cells: vec![Cell::new(text, Width::Narrow, style)],
+                wrapped: false,
+                prompt: false,
+                unread_from: None,
+            }],
+            ..Snapshot::default()
+        }
+    }
+
+    fn verdict(name: &str, fux: &Snapshot, other: Snapshot) -> Result<Verdict, String> {
+        let engine = engine::find(name).ok_or(format!("no engine {name}"))?;
+        let kind = ENGINES.get(engine).ok_or("no such engine")?;
+        Ok(Verdict {
+            engine,
+            differences: snapshot::differences(&fux.masked(&kind.can), &other.masked(&kind.can)),
+            snapshot: other,
+        })
+    }
+
+    /// The default panel, after an erase with a bold pen of foreground
+    /// [`PEN`]: Ghostty and alacritty keep neither on the blank, avt and
+    /// wezterm both, libvterm and xterm the foreground alone.
+    fn panel(fux: &Snapshot, libvterm: Snapshot) -> Result<Vec<Verdict>, String> {
+        Ok(vec![
+            verdict("ghostty", fux, screen("", Color::Default, false))?,
+            verdict("alacritty", fux, screen("", Color::Default, false))?,
+            verdict("libvterm", fux, libvterm)?,
+            verdict("avt", fux, screen("", PEN, true))?,
+            verdict("wezterm", fux, screen("", PEN, true))?,
+        ])
+    }
+
+    /// The engines split three ways on a blank's style by choice, so an
+    /// engine votes only on the parts it makes as xterm does: a blank's
+    /// foreground libvterm and avt, its bold Ghostty, alacritty and
+    /// libvterm. A blank as xterm makes it is not outvoted, even where
+    /// libvterm, wrapping its own way on one column, has a bold glyph
+    /// instead (`run --no-reflow`, seed 1, before the rule); a blank
+    /// otherwise is.
+    #[test]
+    fn a_blank_s_style_is_judged_by_the_engines_that_make_it_as_xterm_does() -> Result<(), String> {
+        let xterm = screen("", PEN, false);
+        let none: Vec<String> = Vec::new();
+        assert_eq!(outvoted_on(&panel(&xterm, screen("", PEN, false))?), none);
+        let glyph = screen("k", Color::Rgb(255, 10, 20), true);
+        assert_eq!(outvoted_on(&panel(&xterm, glyph)?), none);
+        let bold = screen("", PEN, true);
+        assert_eq!(
+            outvoted_on(&panel(&bold, screen("", PEN, false))?),
+            ["cell (0,0) bold"]
+        );
+        let no_fg = screen("", Color::Default, false);
+        assert_eq!(
+            outvoted_on(&panel(&no_fg, screen("", PEN, false))?),
+            ["cell (0,0) fg"]
+        );
+        Ok(())
+    }
 }

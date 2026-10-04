@@ -185,7 +185,11 @@ pub const IDENTITY: fux_vt::Identity = fux_vt::Identity {
 /// How every pane's terminal is set up: events (titles, colour queries),
 /// DECRQM, in-band resize, the size query, colour-scheme reports, the kitty
 /// keyboard protocol (fux encodes keys as each pane asks), hyperlinks,
-/// prompt marks and fux's identity.
+/// prompt marks, DECRQSS (neovim asks it whether the terminal keeps
+/// underline styles: a pane keeps them, and each client is painted them as
+/// far as its terminal draws them, `render::sgr`), reflow (a resized pane's
+/// lines re-wrap at its new width, its history with them, as in the
+/// terminals fux runs in) and fux's identity.
 pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
     .with_events(true)
     .with_mode_reports(true)
@@ -195,6 +199,8 @@ pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
     .with_kitty_keyboard(true)
     .with_hyperlinks(true)
     .with_prompt_marks(true)
+    .with_setting_reports(true)
+    .with_reflow(true)
     .with_identity(Some(IDENTITY));
 
 /// The most titles a pane's program can push (`CSI 22 t`): xterm's bound.
@@ -795,9 +801,14 @@ mod tests {
         assert!(first_row(&pane).ends_with('z'), "past it, read");
         assert_eq!(pane.frame_deadline(), None);
         pane.output(b"\x1b[2J\x1b[H\x1b[?2026hw");
-        // Fewer columns, the same rows: growing would bring history back.
         pane.resize(3, 20);
-        assert_eq!(first_row(&pane), "w", "a resize reads it first");
+        // The cursor's row: a reflow may bring history down above it.
+        let (y, _) = pane.screen().cursor_position();
+        let row: String = (0..20)
+            .filter_map(|x| pane.screen().cell(y, x))
+            .map(|c| c.contents().chars().next().unwrap_or(' '))
+            .collect();
+        assert_eq!(row.trim_end(), "w", "a resize reads it first");
         Ok(())
     }
 
@@ -839,6 +850,23 @@ mod tests {
             pane.output(b"\x1b[23t");
         }
         assert_eq!(pane.title, "t2", "ten kept: the first two pushes dropped");
+        Ok(())
+    }
+
+    /// neovim's handshake for underline styles (neovim 0.12.5,
+    /// `tui_query_extended_underline`): it sets a curly underline and asks
+    /// for the pen with DECRQSS, and draws its diagnostics curly, with
+    /// their colour (`58:2::r:g:b`), only if `4:3` comes back. A pane keeps
+    /// the style and says so; the cells keep what neovim then draws.
+    #[test]
+    fn a_pane_tells_neovim_it_keeps_underline_styles() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = pane()?;
+        pane.output(b"\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\");
+        assert_eq!(pane.input.drain_all(), b"\x1bP1$r0;4:3m\x1b\\");
+        pane.output(b"\x1b[0m\x1b[4:3m\x1b[58:2::255:0:0mx\x1b[0m");
+        let cell = pane.screen().cell(0, 0).ok_or("no cell")?;
+        assert_eq!(cell.underline_style(), fux_vt::UnderlineStyle::Curly);
+        assert_eq!(cell.underline_color(), fux_vt::Color::Rgb(255, 0, 0));
         Ok(())
     }
 

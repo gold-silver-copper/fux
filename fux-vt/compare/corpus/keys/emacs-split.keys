@@ -1,0 +1,10 @@
+# emacs -nw's windows: split below, beside, move, scroll, one window,
+# quit.
+!start 2000
+\x182
+\x183
+\x18o
+\x16
+\x18o
+\x181
+\x18\x03

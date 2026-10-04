@@ -1,0 +1,6 @@
+# zellij at 24x80: a command, a new pane, quit.
+!start 8000
+!quiet 1500
+echo small\r
+\x10n
+\x11

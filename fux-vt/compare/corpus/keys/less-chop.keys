@@ -1,0 +1,9 @@
+# less -S -N on a Rust file: scroll right, left, search, next, the end,
+# quit.
+\e[C
+\e[C
+\e[D
+/match\r
+n
+G
+q

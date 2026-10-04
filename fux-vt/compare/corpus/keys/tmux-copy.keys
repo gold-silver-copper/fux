@@ -1,0 +1,12 @@
+# tmux's copy mode over history: a page up, a search back, the next,
+# out; then the shell exits.
+!start 1500
+seq 1 200\r
+\x02[
+\e[5~
+\x12
+150\r
+n
+q
+clear\r
+exit\r

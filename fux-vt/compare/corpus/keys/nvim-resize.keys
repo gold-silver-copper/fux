@@ -1,0 +1,10 @@
+# neovim resized while it runs: smaller, larger, split, tiny, back.
+!start 2000
+j
+!resize 24x80
+\x04
+!resize 50x200
+:vsplit\r
+!resize 10x40
+!resize 40x120
+:qa\r

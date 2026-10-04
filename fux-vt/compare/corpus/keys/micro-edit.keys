@@ -1,0 +1,10 @@
+# micro: find, find the next, move, type, undo, quit.
+!start 1500
+\x06reflow\r
+\x0e
+\e[B
+\e[B
+added
+\x1a
+\x11
+n

@@ -1,0 +1,15 @@
+# lazygit staging: the files, stage one, the next one's lines, stage a
+# hunk, back, commit with a message, the commits, quit.
+!start 3000
+!quiet 800
+2
+\x20
+j
+\r
+\x20
+\e
+c
+Corpus commit
+\r
+4
+q

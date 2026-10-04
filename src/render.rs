@@ -7,7 +7,7 @@ use crate::layout::{Axis, PaneId, Placement, Rect, Separator};
 use crate::overlay::{self, ColumnRow};
 use crate::session::Session;
 use crate::view::{Mode, View};
-use fux_vt::{Attributes, Cell, CellRef, Cells, Color, Row};
+use fux_vt::{Attributes, Cell, CellRef, Cells, Color, Row, UnderlineStyle};
 use std::borrow::Cow;
 use std::io::Write;
 use unicode_width::UnicodeWidthChar;
@@ -29,6 +29,9 @@ pub struct Grid {
     pub cursor: Option<(u16, u16)>,
     /// DECSCUSR shape for the cursor; 0 is the terminal's default.
     pub cursor_shape: u16,
+    /// Whether the client's terminal draws underline styles (`outer`):
+    /// painted as they are, else as plain underlines (`sgr`).
+    pub underline_styles: bool,
 }
 
 /// A hyperlink of a pane's cells (OSC 8): the pane, the link's key there
@@ -53,6 +56,7 @@ impl Grid {
             uris: String::new(),
             cursor: None,
             cursor_shape: 0,
+            underline_styles: false,
         }
     }
     /// The hyperlink of the cell at `y`, `x`: the pane whose it is, its key
@@ -360,6 +364,7 @@ pub fn compose_into(
         .fold(0u32, u32::saturating_add);
     let tiled = covered == u32::from(area.w).saturating_mul(u32::from(area.h));
     grid.reset(view.rows, view.cols, !tiled);
+    grid.underline_styles = view.terminal.underline_styles;
     let focus = view.focus();
     // Copy mode and its positions, their rows found once for the paint.
     let copy = if let Mode::Copy(copy) = &view.mode {
@@ -971,7 +976,13 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
 
 // ------------------------------------------------------------------ paint
 
-fn sgr(out: &mut Vec<u8>, a: Attributes) {
+/// The SGR that sets `a` from nothing: an underline style (kitty's `4:n`)
+/// as it is if the client's terminal draws them (`styles`, `outer::STYLES`),
+/// else a plain underline, as a terminal that does not know `4:3` draws no
+/// underline at all (xterm, avt) or reads the colon as a semicolon,
+/// underline and italic, and one that does not know 21 may read it as bold
+/// off (alacritty, avt). The underline colour goes either way: see below.
+fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
     out.extend_from_slice(b"\x1b[0");
     if a.bold() {
         out.extend_from_slice(b";1");
@@ -982,8 +993,19 @@ fn sgr(out: &mut Vec<u8>, a: Attributes) {
     if a.italic() {
         out.extend_from_slice(b";3");
     }
-    if a.underline() {
-        out.extend_from_slice(b";4");
+    match a.underline_style() {
+        UnderlineStyle::None => {}
+        style @ (UnderlineStyle::Double
+        | UnderlineStyle::Curly
+        | UnderlineStyle::Dotted
+        | UnderlineStyle::Dashed)
+            if styles =>
+        {
+            let _ = write!(out, ";4:{}", style.number());
+        }
+        // Single, a style the terminal does not draw, or one fux-vt does
+        // not know yet: a plain underline.
+        UnderlineStyle::Single | _ => out.extend_from_slice(b";4"),
     }
     // A kind of blink fux-vt does not know yet is drawn as none.
     match a.blink() {
@@ -1004,6 +1026,10 @@ fn sgr(out: &mut Vec<u8>, a: Attributes) {
     // empty colour-space slot: a terminal that does not know SGR 58 skips
     // the whole parameter, where in the semicolon form it would take the
     // colour's numbers for attributes of their own (`58;2;…` would be dim).
+    // So it goes to every terminal, styles or not: each engine in
+    // `fux-vt/compare` reads `58:5:9` and `58:2::1:2:3` beside 4 and 1 as
+    // 4 and 1 alone, xterm, which has no SGR 58, included (xterm 411
+    // skips an SGR parameter with subparameters other than 38's and 48's).
     match a.underline_color() {
         Color::Idx(n) => {
             let _ = write!(out, ";58:5:{n}");
@@ -1052,6 +1078,70 @@ fn hyperlink(out: &mut Vec<u8>, link: Option<(PaneId, u64, &str)>) {
     }
 }
 
+/// Whether `text`, painted at (`y`, `x`) right after the glyph before it,
+/// would continue that glyph's grapheme cluster in a terminal that joins
+/// clusters as fux-vt does.
+fn joins_the_glyph_before(grid: &Grid, y: u16, x: u16, text: &str) -> bool {
+    let Some(first) = text.chars().next() else {
+        return false;
+    };
+    let Some(mut before) = x.checked_sub(1) else {
+        return false;
+    };
+    if grid
+        .get(y, before)
+        .is_some_and(|c| c.is_wide_continuation())
+    {
+        before = before.saturating_sub(1);
+    }
+    grid.get(y, before)
+        .is_some_and(|glyph| fux_vt::continues_cluster(shown(glyph), first))
+}
+
+/// Paints `text`, a glyph `width` columns wide at (`y`, `x`) in a run of
+/// cells painted one after another, where it is not one byte of ASCII or
+/// follows a glyph that `joined` the one before it; whether it joins the one
+/// before it.
+///
+/// A glyph that continues the cluster of the one before it (an emoji
+/// modifier a program put after an emoji with a cursor move of its own, as
+/// micro and vim do) is placed by a cursor move, and so is what follows it:
+/// the client's terminal joins it to the glyph before, or not, as it does
+/// when the program writes it directly, and the next glyph is where fux-vt
+/// has it either way.
+///
+/// Zero-width characters after a glyph that leaves the cursor in the last
+/// column: with autowrap off, as fux's client has it, Ghostty puts them on
+/// the cell under the cursor if it holds anything, a space included
+/// (`Terminal.print`, for a glyph printed in the last column, where the
+/// cursor stays); with autowrap on, on the glyph before, as everywhere
+/// else. So autowrap is on just for them: the glyph ends a column short of
+/// the edge, and nothing printed wraps.
+fn cluster(
+    out: &mut Vec<u8>,
+    grid: &Grid,
+    (y, x): (u16, u16),
+    width: u16,
+    text: &str,
+    joined: bool,
+) -> bool {
+    let joins = text.len() > 1 && joins_the_glyph_before(grid, y, x, text);
+    if joins || joined {
+        let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(x));
+    }
+    let marks_at_the_edge = x.saturating_add(width).saturating_add(1) == grid.cols
+        && text.chars().nth(1).is_some()
+        && text.chars().skip(1).all(|c| cells(c) == 0);
+    if marks_at_the_edge {
+        out.extend_from_slice(b"\x1b[?7h");
+    }
+    out.extend_from_slice(text.as_bytes());
+    if marks_at_the_edge {
+        out.extend_from_slice(b"\x1b[?7l");
+    }
+    joins
+}
+
 /// A row or column as the terminal counts it, from 1; exact in a u32.
 fn one_based(n: u16) -> u32 {
     u32::from(n).saturating_add(1)
@@ -1068,7 +1158,11 @@ pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
 /// into `new` to `out`.
 pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
     out.extend_from_slice(b"\x1b[?2026h\x1b[?25l");
-    let full = old.is_none_or(|o| o.rows != new.rows || o.cols != new.cols);
+    // Learning that the terminal draws underline styles repaints it whole,
+    // so that what it shows takes them.
+    let full = old.is_none_or(|o| {
+        o.rows != new.rows || o.cols != new.cols || o.underline_styles != new.underline_styles
+    });
     if full {
         out.extend_from_slice(b"\x1b[0m\x1b[H\x1b[2J");
     }
@@ -1105,6 +1199,9 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
             }
             let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(start));
             let mut cx = start;
+            // Whether the glyph before was one the client's terminal may
+            // have joined to the one before it (see `cluster`).
+            let mut joined = false;
             while cx < new.cols
                 && (cx == start
                     || changed(cx)
@@ -1115,9 +1212,16 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
                     cx = cx.saturating_add(1);
                     continue;
                 }
+                let wide = cell.is_wide();
+                // A wide glyph cannot fit in the last column.
+                let text = if wide && cx.saturating_add(1) >= new.cols {
+                    " "
+                } else {
+                    shown(cell)
+                };
                 let attrs = cell.attributes();
                 if current != Some(attrs) {
-                    sgr(out, attrs);
+                    sgr(out, attrs, new.underline_styles);
                     current = Some(attrs);
                 }
                 let link = new.number_at(y, cx);
@@ -1125,13 +1229,16 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
                     hyperlink(out, new.numbered(link));
                     open = link;
                 }
-                if cell.is_wide() && cx.saturating_add(1) >= new.cols {
-                    // A wide glyph cannot fit in the last column.
-                    out.push(b' ');
+                let width = if wide { 2 } else { 1 };
+                // Most cells hold one byte of ASCII, which neither joins the
+                // glyph before nor carries marks, and follow one that joined
+                // nothing: one test, and the text.
+                if text.len() > 1 || joined {
+                    joined = cluster(out, new, (y, cx), width, text, joined);
                 } else {
-                    out.extend_from_slice(shown(cell).as_bytes());
+                    out.extend_from_slice(text.as_bytes());
                 }
-                cx = cx.saturating_add(if cell.is_wide() { 2 } else { 1 });
+                cx = cx.saturating_add(width);
             }
             x = cx.max(x.saturating_add(1));
         }
@@ -1401,6 +1508,68 @@ mod tests {
         assert!(bytes.ends_with(b"\x1b[?2026l"));
     }
 
+    /// A glyph that continues the cluster of the one before it (an emoji
+    /// modifier micro puts after an emoji with a cursor move of its own) is
+    /// placed by a cursor move, and so is the glyph after it: Ghostty joins
+    /// the modifier to the emoji, as it does when micro writes it directly,
+    /// and the next glyph still lands where fux-vt has it.
+    #[test]
+    fn a_glyph_that_would_join_the_one_before_is_placed() -> Result<(), String> {
+        let mut grid = Grid::new(1, 12);
+        grid.text(0, 2, "\u{1F44D}", Attributes::default(), 12);
+        grid.text(0, 4, "\u{1F3FD}", Attributes::default(), 12);
+        grid.text(0, 6, "x", Attributes::default(), 12);
+        let bytes = paint(None, &grid);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("\u{1F44D}\x1b[1;5H\u{1F3FD}\x1b[1;7Hx"),
+            "{text:?}"
+        );
+        let mut parser = fux_vt::Parser::new(1, 12, 0).map_err(|e| e.to_string())?;
+        assert_eq!(apply(&bytes, 1, 12, &mut parser), grid_lines(&grid));
+        // Glyphs that do not join are painted in one run.
+        let mut plain = Grid::new(1, 12);
+        plain.text(0, 2, "\u{1F44D}\u{1F680}x", Attributes::default(), 12);
+        let text = String::from_utf8_lossy(&paint(None, &plain)).into_owned();
+        assert!(text.contains("\u{1F44D}\u{1F680}x"), "{text:?}");
+        Ok(())
+    }
+
+    /// Zero-width characters after a glyph that leaves the cursor in the
+    /// last column are painted with autowrap on, so that Ghostty puts them
+    /// on that glyph and not on the last column's; anywhere else, and in
+    /// the last column itself, a cluster is painted as it is.
+    #[test]
+    fn marks_short_of_the_edge_are_painted_with_autowrap() -> Result<(), String> {
+        let marked = |text| Cell::new(text, false, Attributes::default()).unwrap_or_default();
+        let painted = |x: u16, text| {
+            let mut grid = Grid::new(1, 6);
+            grid.fill(0, 0, 6, Attributes::default());
+            grid.set(0, x, marked(text));
+            (
+                String::from_utf8_lossy(&paint(None, &grid)).into_owned(),
+                grid,
+            )
+        };
+        let (text, grid) = painted(4, "a\u{301}\u{356}");
+        assert!(
+            text.contains("\x1b[?7ha\u{301}\u{356}\x1b[?7l "),
+            "{text:?}"
+        );
+        let mut parser = fux_vt::Parser::new(1, 6, 0).map_err(|e| e.to_string())?;
+        assert_eq!(apply(text.as_bytes(), 1, 6, &mut parser), grid_lines(&grid));
+        for (x, cluster) in [
+            (3, "a\u{301}"),
+            (5, "a\u{301}"),
+            (4, "a"),
+            (4, "\u{1F44D}\u{1F3FD}"),
+        ] {
+            let (text, _) = painted(x, cluster);
+            assert!(!text.contains("\x1b[?7h"), "{x} {cluster:?}: {text:?}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn the_prompt_cursor_falls_between_chars_not_bytes() {
         for (text, cursor, shown) in [
@@ -1552,6 +1721,73 @@ mod tests {
             assert_eq!(cell.attributes(), *a, "cell {x}");
         }
         Ok(())
+    }
+
+    /// Underline styles reach a client whose terminal draws them as kitty's
+    /// `4:n` (`references/modern/kitty_underlines.html`): double, curly,
+    /// dotted and dashed, with their colour; a plain underline is 4. Any
+    /// other terminal is painted a plain underline for each, with the
+    /// colour still. Learning that the terminal draws them repaints it
+    /// whole, so what it showed plain takes its style.
+    #[test]
+    fn underline_styles_are_painted_as_the_terminal_draws_them() -> Result<(), String> {
+        use fux_vt::UnderlineStyle::{Curly, Dashed, Dotted, Double, Single};
+        let styles = [Single, Double, Curly, Dotted, Dashed];
+        let mut grid = Grid::new(1, 6);
+        for (x, style) in styles.iter().enumerate() {
+            let x = u16::try_from(x).map_err(|e| e.to_string())?;
+            let a = Attributes::default()
+                .with_underline_style(*style)
+                .with_underline_color(Color::Rgb(255, 0, 0));
+            grid.text(0, x, "x", a, 6);
+        }
+        let painted = |grid: &Grid| String::from_utf8_lossy(&paint(None, grid)).into_owned();
+        let plain = painted(&grid);
+        assert_eq!(plain.matches("\x1b[0;4;58:2::255:0:0mx").count(), 5);
+        assert!(!plain.contains("4:"), "{plain:?}");
+        let mut styled = grid.clone();
+        styled.underline_styles = true;
+        let text = painted(&styled);
+        for sgr in [
+            "\x1b[0;4;58:2::255:0:0mx",
+            "\x1b[0;4:2;58:2::255:0:0mx",
+            "\x1b[0;4:3;58:2::255:0:0mx",
+            "\x1b[0;4:4;58:2::255:0:0mx",
+            "\x1b[0;4:5;58:2::255:0:0mx",
+        ] {
+            assert!(text.contains(sgr), "{sgr:?} in {text:?}");
+        }
+        // Read back by a terminal that keeps styles, each cell has its own;
+        // painted plain, each is a plain underline.
+        for (grid, keeps) in [(&styled, true), (&grid, false)] {
+            let mut parser = fux_vt::Parser::new(1, 6, 0).map_err(|e| e.to_string())?;
+            parser
+                .process(&paint(None, grid))
+                .map_err(|e| e.to_string())?;
+            for (x, style) in styles_of(keeps).iter().enumerate() {
+                let x = u16::try_from(x).map_err(|e| e.to_string())?;
+                let cell = parser.screen().cell(0, x).ok_or("a cell")?;
+                assert_eq!(cell.underline_style(), *style, "cell {x}");
+                assert_eq!(cell.underline_color(), Color::Rgb(255, 0, 0));
+            }
+        }
+        // The terminal turns out to draw styles: the screen is painted again
+        // whole, not as a diff of nothing.
+        let again = paint(Some(&grid), &styled);
+        assert!(String::from_utf8_lossy(&again).contains("\x1b[2J"));
+        assert!(!String::from_utf8_lossy(&paint(Some(&styled), &styled)).contains("\x1b[2J"));
+        Ok(())
+    }
+
+    /// What `underline_styles_are_painted_as_the_terminal_draws_them`
+    /// expects a terminal to keep: each style, or plain underlines.
+    fn styles_of(keeps: bool) -> [fux_vt::UnderlineStyle; 5] {
+        use fux_vt::UnderlineStyle::{Curly, Dashed, Dotted, Double, Single};
+        if keeps {
+            [Single, Double, Curly, Dotted, Dashed]
+        } else {
+            [Single; 5]
+        }
     }
 
     /// A pane's hyperlinks reach the client: OSC 8 before the linked cells,

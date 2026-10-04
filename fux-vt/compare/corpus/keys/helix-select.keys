@@ -1,0 +1,16 @@
+# helix's selections: all, split on a regex (many cursors), keep one,
+# lines, copy the cursor down, quit.
+!start 2000
+%
+s
+the\r
+,
+x
+x
+C
+C
+\e
+gg
+w
+e
+:q!\r

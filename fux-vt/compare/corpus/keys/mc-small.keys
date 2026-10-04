@@ -1,0 +1,7 @@
+# Midnight Commander at 24x80: move, the other panel, quit.
+!start 2000
+\e[B
+\e[B
+\t
+\e[B
+\e[21~

@@ -1,0 +1,9 @@
+# zsh at 10x40: a command line longer than the terminal, moved through
+# and run, a listing, exit.
+!start 1500
+echo the quick brown fox jumps over the lazy dog and keeps running past the edge
+\x01
+\x05
+\r
+ls\r
+exit\r

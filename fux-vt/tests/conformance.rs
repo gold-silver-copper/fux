@@ -2,7 +2,7 @@
 //! each test citing the section that sets its expected values. Where xterm
 //! departs from the specification, the test says so and follows xterm.
 
-use fux_vt::{CellRef, Color, Parser};
+use fux_vt::{CellRef, Color, Identity, Options, Parser};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 fn lines(parser: &Parser) -> Vec<String> {
@@ -190,29 +190,58 @@ fn an_invalid_sgr_colour_skips_only_itself() -> Result {
     Ok(())
 }
 
-/// Underline styles, `4:n`, are kitty's extension, which no reference
-/// defines and xterm ignores: Ghostty, alacritty, libvterm, wezterm,
-/// xterm.js and tmux read `4:0` as no underline and `4:1` to `4:5` as
-/// one style or another. fux-vt keeps no style, and follows them, on
-/// purpose departing from xterm, so that a program's curly underline
-/// stays an underline.
+/// Underline styles, `4:n`, are kitty's extension
+/// (`references/modern/kitty_underlines.html`), which xterm ignores:
+/// `4:0` is no underline, and `4:1` to `4:5` straight, double, curly,
+/// dotted and dashed, each replacing the last. 4 is straight and 24 ends
+/// any (ECMA-48 8.3.117). Ghostty, alacritty, libvterm, wezterm, xterm.js
+/// and tmux read them; fux-vt follows the spec, on purpose departing from
+/// xterm, so that neovim's curly diagnostics stay curly.
 #[test]
-fn underline_styles_set_and_end_underline() -> Result {
-    styled("\x1b[4m\x1b[4:0m", |c| assert!(!c.underline()))?;
-    styled("\x1b[4:3m", |c| assert!(c.underline()))?;
-    styled("\x1b[4:1m", |c| assert!(c.underline()))?;
+fn underline_styles_are_kept_and_replace_one_another() -> Result {
+    use fux_vt::UnderlineStyle::{Curly, Dashed, Dotted, Double, None, Single};
+    for (sgr, style) in [
+        ("\x1b[4:0m", None),
+        ("\x1b[4:1m", Single),
+        ("\x1b[4:2m", Double),
+        ("\x1b[4:3m", Curly),
+        ("\x1b[4:4m", Dotted),
+        ("\x1b[4:5m", Dashed),
+        ("\x1b[4m", Single),
+        ("\x1b[4:3m\x1b[4m", Single),
+        ("\x1b[4m\x1b[4:5m", Dashed),
+        ("\x1b[4:3m\x1b[4:0m", None),
+        ("\x1b[4:3m\x1b[24m", None),
+        ("\x1b[4:3;1m", Curly),
+        // `4:` is `4:0`; a number past 5 names no style and changes nothing.
+        ("\x1b[4:3m\x1b[4:m", None),
+        ("\x1b[4:3m\x1b[4:6m", Curly),
+        ("\x1b[4:3m\x1b[0m", None),
+    ] {
+        styled(sgr, |c| {
+            assert_eq!(c.underline_style(), style, "{sgr:?}");
+            assert_eq!(c.underline(), style != None, "{sgr:?}");
+        })?;
+    }
+    styled("\x1b[1;4:3;9m", |c| assert!(c.bold() && c.strikeout()))?;
     Ok(())
 }
 
 /// ECMA-48 8.3.117 lists 21 as doubly underlined, and xterm's ctlseqs
-/// does too; fux-vt keeps no underline style, so it is underline, as in
-/// xterm, Ghostty, libvterm, wezterm, xterm.js and tmux. Bold (1) and
+/// does too, as xterm, Ghostty, libvterm, wezterm, xterm.js and tmux read
+/// it; 24 ends it. Bold (1) and
 /// faint (2) are separate renditions, each ended by 22: xterm keeps both
 /// (`fux-vt-compare replay --engines all --size 1x3 '\e[1;2mX'`), where
 /// the vt100 crate let each replace the other.
 #[test]
-fn sgr_21_underlines_and_bold_and_dim_are_kept_apart() -> Result {
-    styled("\x1b[21m", |c| assert!(c.underline()))?;
+fn sgr_21_underlines_doubly_and_bold_and_dim_are_kept_apart() -> Result {
+    use fux_vt::UnderlineStyle;
+    styled("\x1b[21m", |c| {
+        assert_eq!(c.underline_style(), UnderlineStyle::Double);
+    })?;
+    styled("\x1b[21;4m", |c| {
+        assert_eq!(c.underline_style(), UnderlineStyle::Single);
+    })?;
     styled("\x1b[21;24m", |c| assert!(!c.underline()))?;
     styled("\x1b[1;2m", |c| assert!(c.bold() && c.dim()))?;
     styled("\x1b[2;1m", |c| assert!(c.bold() && c.dim()))?;
@@ -467,6 +496,70 @@ fn line_and_column_addressing_obeys_origin_mode() -> Result {
     assert_eq!(lines(&p), ["Yd", "", ""]);
     let p = run(5, 5, b"\x1b[2;3r\x1b[5;3H\x1b[LX")?;
     assert_eq!(lines(&p), ["", "", "", "", "  X"]);
+    Ok(())
+}
+
+/// The replies to `bytes` on a `rows` by `cols` screen answering
+/// DECXCPR, with an identity if `identity`.
+fn replies(
+    rows: u16,
+    cols: u16,
+    identity: bool,
+    bytes: &[u8],
+) -> std::result::Result<Vec<String>, fux_vt::Error> {
+    let fux = Identity {
+        name: "fux",
+        version: "1.0.0",
+    };
+    let options = Options::new()
+        .with_extended_replies(true)
+        .with_identity(identity.then_some(fux));
+    let mut parser = Parser::with_options(rows, cols, 0, options)?;
+    let mut replies = Vec::new();
+    parser.process_with_replies(bytes, |r| {
+        replies.push(String::from_utf8_lossy(r).into_owned());
+    })?;
+    Ok(replies)
+}
+
+/// CPR and DECXCPR count the line as CUP addresses it: from the top
+/// margin with DECOM set, "relative to the origin of the current
+/// scrolling region (the Top and Left Margin)", from the screen's top
+/// with it reset (DEC STD 070, CPR and DECXCPR, note 1 and the
+/// algorithms, pages 5-53 to 5-56; the VT100 User Guide, chapter 3, CPR:
+/// "The numbering of lines depends on the state of the Origin Mode";
+/// xterm's charproc.c, `CASE_CPR`). fux-vt has no left margin, so the
+/// column is the screen's. A cursor waiting to wrap keeps its column
+/// rule, one past the last column, or the last with an identity, in
+/// either mode. Expected values are xterm's (`fux-vt-compare replay
+/// --engines all --size 12x10 '\e[6;11r\e[?6h\e[2d\e[6n'`: Ghostty,
+/// WezTerm and avt agree; alacritty, libvterm, xterm.js and tmux report
+/// from the screen's top).
+#[test]
+fn cursor_reports_count_lines_from_the_top_margin_in_origin_mode() -> Result {
+    let report = b"\x1b[6n\x1b[?6n";
+    for (setup, cpr) in [
+        (&b"\x1b[6;11r\x1b[?6h\x1b[2d"[..], "2;1"),
+        (b"\x1b[6;11r\x1b[?6h\x1b[3;4H", "3;4"),
+        (b"\x1b[6;11r\x1b[?6h\x1b[99;4H", "6;4"),
+        (b"\x1b[6;11r\x1b[?6h\x1b[3;4H\x1b[?6l\x1b[3;4H", "3;4"),
+        (b"\x1b[6;11r\x1b[8;4H", "8;4"),
+        (b"\x1b[6;11r\x1b[2d", "2;1"),
+    ] {
+        let expected = [format!("\x1b[{cpr}R"), format!("\x1b[?{cpr}R")];
+        let both = [setup, &report[..]].concat();
+        assert_eq!(replies(24, 80, false, &both)?, expected, "{setup:?}");
+        assert_eq!(replies(24, 80, true, &both)?, expected, "{setup:?}");
+    }
+    // At the last column, waiting to wrap, in the region's second line.
+    let wrap = b"\x1b[6;11r\x1b[?6h\x1b[2;1H0123456789\x1b[6n";
+    assert_eq!(replies(12, 10, false, wrap)?, ["\x1b[2;11R"]);
+    assert_eq!(replies(12, 10, true, wrap)?, ["\x1b[2;10R"]);
+    // DECSC kept the cursor above where the margins now begin: its line
+    // would be negative. xterm's subtraction wraps (it reports 65532),
+    // Ghostty reports the first line, as fux-vt does.
+    let above = b"\x1b[?6h\x1b7\x1b[6;11r\x1b8\x1b[6n";
+    assert_eq!(replies(24, 80, false, above)?, ["\x1b[1;1R"]);
     Ok(())
 }
 

@@ -1,0 +1,13 @@
+# vim inserting: open a line, type, complete a word with Ctrl-N (the
+# popup menu), undo, quit without saving.
+G
+o
+fn added() -> usize {\r1\r}
+\e
+o
+se\x0e
+\x0e
+\x0e
+\e
+u
+:q!\r

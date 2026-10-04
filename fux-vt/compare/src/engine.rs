@@ -2,7 +2,7 @@
 //! emulator, in this process or behind a process of its own, and what
 //! each can be asked.
 use crate::engines;
-use crate::snapshot::Snapshot;
+use crate::snapshot::{Field, Snapshot};
 
 /// A terminal emulator under comparison.
 ///
@@ -38,6 +38,13 @@ pub trait Engine {
     fn process(&mut self, bytes: &[u8]) -> Result<(), String>;
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String>;
     fn snapshot(&mut self, history_rows: usize) -> Result<Snapshot, String>;
+
+    /// Every reply the terminal has written back so far, in order: what a
+    /// terminal sends up its pty for its program to read. Empty for an
+    /// engine that answers nothing, or whose answers are not taken here.
+    fn replies(&self) -> Vec<u8> {
+        Vec::new()
+    }
 
     /// Feeds a whole workload, `chunk` bytes at a time, as a program's
     /// output arrives. Engines behind a process stream it and wait once.
@@ -176,6 +183,86 @@ impl Can {
     }
 }
 
+/// Which parts of the blanks an engine makes (erasing, inserting,
+/// deleting, scrolling a line in) it makes as xterm does: the pen's
+/// colours and nothing else, as fux-vt does (fux-vt's README, CSI J / K;
+/// DEC STD 070's ED and EL give a blank the empty rendition, and xterm's
+/// `ClearCells` keeps only the colours, `bce`). The engines split three
+/// ways here by choice: Ghostty, alacritty, xterm.js and tmux keep no
+/// foreground; avt, wezterm and vt100 keep the pen's attributes; xterm and
+/// libvterm keep the colours alone. On a part an engine makes otherwise,
+/// a cell blank in fux-vt and in the engine shows the engine's choice, not
+/// the cell's: its difference there is shown, and it does not vote on it
+/// (`case::outvoted_on`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Blanks {
+    /// The pen's foreground.
+    pub fg: bool,
+    /// None of the pen's attributes: no bold, dim, italic, underline,
+    /// blink, inverse, hidden or strikeout, and no underline colour.
+    pub attributes: bool,
+}
+
+impl Blanks {
+    /// Blanks made as xterm makes them.
+    pub const XTERM: Blanks = Blanks {
+        fg: true,
+        attributes: true,
+    };
+
+    /// Whether a blank's `field` is made as xterm makes it. The background
+    /// is not part of the split: the panel keeps the pen's (`bce`), but in
+    /// wezterm's ICH, which keeps none of the pen.
+    pub fn as_xterm(self, field: Field) -> bool {
+        match field {
+            Field::Fg => self.fg,
+            Field::UnderlineColor
+            | Field::Bold
+            | Field::Dim
+            | Field::Italic
+            | Field::Underline
+            | Field::Blink
+            | Field::Inverse
+            | Field::Hidden
+            | Field::Strikeout => self.attributes,
+            Field::Size
+            | Field::Cursor
+            | Field::PendingWrap
+            | Field::CursorVisible
+            | Field::Autowrap
+            | Field::Origin
+            | Field::Alternate
+            | Field::ApplicationCursor
+            | Field::ApplicationKeypad
+            | Field::BracketedPaste
+            | Field::FocusReporting
+            | Field::SynchronizedOutput
+            | Field::InBandResize
+            | Field::Kitty
+            | Field::Prompt
+            | Field::LinkUri
+            | Field::LinkGroup
+            | Field::Title
+            | Field::Reports
+            | Field::Wrapped
+            | Field::Text
+            | Field::Width
+            | Field::Bg
+            | Field::History
+            | Field::HistoryWrapped => true,
+        }
+    }
+
+    /// The parts made otherwise, by name.
+    pub fn unlike_xterm(self) -> Vec<&'static str> {
+        [(self.fg, "foreground"), (self.attributes, "attributes")]
+            .iter()
+            .filter(|(as_xterm, _)| !as_xterm)
+            .map(|(_, name)| *name)
+            .collect()
+    }
+}
+
 /// How a case's terminals start.
 #[derive(Clone, Copy, Debug)]
 pub struct Setup {
@@ -193,6 +280,8 @@ pub struct Kind {
     pub name: &'static str,
     pub about: &'static str,
     pub can: Can,
+    /// Which parts of its blanks it makes as xterm does.
+    pub blanks: Blanks,
     /// Whether it votes by default: every engine in this process but the
     /// vt100 crate, fux-vt's ancestor, whose inherited choices are what
     /// the vote is meant to catch.
@@ -213,6 +302,7 @@ pub const SUBJECT: Kind = Kind {
     name: "fux-vt",
     about: "the code under test",
     can: Can::ALL,
+    blanks: Blanks::XTERM,
     panel: false,
     in_process: true,
     available: always,

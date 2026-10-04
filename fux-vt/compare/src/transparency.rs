@@ -48,7 +48,7 @@ use fux::render::{self, Grid};
 use fux::session::{Outgoing, Session};
 use std::fmt::Write as _;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -280,6 +280,29 @@ impl Through {
         Ok(through)
     }
 
+    /// The client's terminal resized to show a pane of `rows` by `cols`, as
+    /// a user resizes the window: the session resizes the client, and so
+    /// the pane, the terminal takes the new size, and the next paint is the
+    /// server's.
+    pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
+        let client_rows = rows.checked_add(1).ok_or("too many rows for the bar")?;
+        self.session.resize(self.client, client_rows, cols);
+        self.terminal.resize(client_rows, cols)?;
+        let view = self.session.views.get(&self.client).ok_or("fux: no view")?;
+        self.session.placement_into(view, &mut self.placement);
+        self.rect = match self.placement.panes.as_slice() {
+            [(_, rect)] => *rect,
+            _ => return Err("fux: not one pane on the client's screen".into()),
+        };
+        if (self.rect.h, self.rect.w) != (rows, cols) {
+            return Err(format!(
+                "fux: the pane is {}x{} after a resize, not {rows}x{cols}",
+                self.rect.h, self.rect.w
+            ));
+        }
+        Ok(())
+    }
+
     /// The program's output, read into the pane as the server reads it;
     /// its replies are read by the program.
     pub fn output(&mut self, bytes: &[u8]) {
@@ -374,7 +397,7 @@ impl Through {
 /// shows it too), so that no paint can make the two sides agree. Only the
 /// differences `covers` takes are expected; any other still fails.
 pub struct Known {
-    pub recordings: &'static [&'static str],
+    pub recordings: Recordings,
     pub engines: &'static [&'static str],
     pub why: &'static str,
     /// Whether this is the difference: the difference, then the direct
@@ -382,21 +405,40 @@ pub struct Known {
     pub covers: fn(&Diff, &Snapshot, &Snapshot) -> bool,
 }
 
+/// The recordings a recorded difference is expected in.
+pub enum Recordings {
+    /// Any: what it covers is narrow enough to be expected anywhere.
+    Every,
+    Only(&'static [&'static str]),
+}
+
+impl Recordings {
+    fn contains(&self, recording: &str) -> bool {
+        match self {
+            Recordings::Every => true,
+            Recordings::Only(names) => names.contains(&recording),
+        }
+    }
+}
+
 /// The differences recorded.
 pub const KNOWN: &[Known] = &[
     Known {
-        recordings: &["tmux"],
+        recordings: Recordings::Every,
         engines: &["ghostty", "alacritty"],
-        why: "tmux draws its status line's padding with ECH (CSI 100 X) in black on green. \
-            fux-vt's erased cells keep the foreground, as xterm's do (`corpus` agrees beside \
-            xterm); Ghostty's and alacritty's keep only the background. fux paints the cells \
-            as fux-vt has them, so the blanks have a black foreground through fux, and none \
-            directly; a blank's foreground is not drawn. `replay --engines ghostty,alacritty \
-            --size 2x10 '\\e[30m\\e[42mab\\e[3Xcd'` shows it.",
+        why: "a cell erased while a foreground is set (ECH, EL, ED, ICH, DCH, IL, DL, a \
+            scroll's new row: tmux pads its status line with CSI 100 X in black on green, \
+            neovim, htop, mc, ncdu, ranger and tig clear in their own colours) keeps the \
+            pen's foreground in fux-vt, as in xterm (`corpus` agrees beside xterm; fux-vt's \
+            README, CSI J / K and CSI @ P X); Ghostty's and alacritty's keep only the \
+            background. fux paints the cells as fux-vt has them, so the blanks have that \
+            foreground through fux and the default directly; a blank's foreground is not \
+            drawn. Only a foreground on a cell blank on both sides is covered. `replay \
+            --engines ghostty,alacritty --size 2x10 '\\e[30m\\e[42mab\\e[3Xcd'` shows it.",
         covers: blank_foreground,
     },
     Known {
-        recordings: &["delta-diff"],
+        recordings: Recordings::Only(&["delta-diff"]),
         engines: &["alacritty", "avt", "wezterm"],
         why: "delta draws its wrap marker in the last column, then sends EL 0 with the wrap \
             pending: xterm, Ghostty, libvterm and fux-vt erase the marker; alacritty, avt and \
@@ -404,7 +446,26 @@ pub const KNOWN: &[Known] = &[
             has it, without the marker.",
         covers: erased_at_the_last_column,
     },
+    Known {
+        recordings: Recordings::Every,
+        engines: &["ghostty"],
+        why: "a shell's prompt marks (OSC 133: fish sends them) mark its rows in the pane, \
+            and fux does not pass them on to its client's terminal, the user's decision: \
+            the client is on the alternate screen, where Ghostty keeps no scrollback and \
+            jumps to no prompt (Terminal.zig: the alternate screen's max_scrollback is 0; \
+            PageList.scrollPrompt; cursorIsAtPrompt is false there), so a mark would give \
+            no jump, and would tag every cell fux paints after it as prompt, which changes \
+            Ghostty's selection, and start its command timer. fux's copy mode jumps \
+            between the pane's prompts (`[`, `]`). Only a row a prompt starts directly and \
+            not through fux is covered.",
+        covers: prompt_not_passed_on,
+    },
 ];
+
+/// A row a prompt starts directly, and not through the multiplexer.
+fn prompt_not_passed_on(d: &Diff, _: &Snapshot, _: &Snapshot) -> bool {
+    d.field == Field::Prompt && d.fux == "true" && d.other == "false"
+}
 
 /// The cell a difference's key names, `cell (Y,X) ...`.
 fn cell_of(key: &str) -> Option<(usize, usize)> {
@@ -446,7 +507,7 @@ fn known(
     through: &Snapshot,
 ) -> Option<&'static Known> {
     KNOWN.iter().find(|k| {
-        k.recordings.contains(&recording)
+        k.recordings.contains(recording)
             && k.engines.contains(&engine)
             && differences.iter().all(|d| (k.covers)(d, direct, through))
     })
@@ -505,6 +566,14 @@ fn through_fux(
     let mut at = 0usize;
     let steps = recording.steps.len();
     for (step, (_, bytes)) in recording.steps.iter().enumerate() {
+        // A resize is made on both sides and painted, and not judged until
+        // the program has answered it, as the corpus judges it: right after
+        // it each side shows its own resize policy (see corpus.rs).
+        if let Some((rows, cols)) = recording.resize_at(step) {
+            direct.resize(rows, cols)?;
+            through.resize(rows, cols)?;
+            through.paint()?;
+        }
         let mut from = 0usize;
         for point in points(bytes, chunk) {
             let piece = bytes.get(from..point).unwrap_or_default();
@@ -661,6 +730,7 @@ fn chosen(options: &Options) -> Result<Vec<Recording>, String> {
         rows,
         cols,
         steps,
+        resizes: Vec::new(),
     }])
 }
 
@@ -825,10 +895,13 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
 
 // ------------------------------------------------------------ multiplexers
 
-/// How long a multiplexer's client must stay quiet after a step for its
-/// screen to be taken as drawn, and the longest a step may take.
+/// How long zellij's client must stay quiet after a step for its screen
+/// to be taken as drawn, and the longest a step may take.
 const QUIET: Duration = Duration::from_millis(200);
 const STEP_LIMIT: Duration = Duration::from_secs(10);
+/// How long tmux's client must stay quiet once it shows a mark (see
+/// [`Client::marked`]).
+const AFTER_MARK: Duration = Duration::from_millis(20);
 /// How long a multiplexer may take to start its pane's program.
 const START: Duration = Duration::from_secs(15);
 
@@ -896,17 +969,22 @@ mouse_mode false
 ";
 
 /// A multiplexer's client on a PTY, what it writes read by a thread here
-/// into a terminal of the reference engine's kind.
+/// into a terminal of the reference engine's kind, which answers it as a
+/// terminal does: its replies are written back up the PTY.
 struct Client {
     child: std::process::Child,
     from: mpsc::Receiver<Vec<u8>>,
     terminal: Box<dyn Engine>,
-    /// The PTY's master, kept open while the client runs.
-    _master: OwnedFd,
+    /// The PTY's master, kept open while the client runs, and how much of
+    /// the terminal's replies has been written to it.
+    master: File,
+    answered: usize,
     /// The server's files: tmux's socket, zellij's directories.
     dir: PathBuf,
     mux: Mux,
     env: Vec<(String, String)>,
+    /// The client's rows.
+    rows: u16,
 }
 
 impl Client {
@@ -1018,26 +1096,111 @@ impl Client {
             child,
             from,
             terminal: terminal(kind, client_rows, cols)?,
-            _master: master,
+            master: File::from(master),
+            answered: 0,
             dir,
             mux,
             env,
+            rows: client_rows,
         })
     }
 
-    /// Reads what the client writes into its terminal until it has been
-    /// quiet for `quiet`, or `limit` has passed.
+    /// What the client wrote, into its terminal; and the terminal's new
+    /// replies to the client.
+    fn take(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.terminal.process(bytes)?;
+        let replies = self.terminal.replies();
+        if let Some(new) = replies.get(self.answered..)
+            && !new.is_empty()
+        {
+            self.master
+                .write_all(new)
+                .map_err(|e| format!("answering {}: {e}", self.mux.name()))?;
+            self.answered = replies.len();
+        }
+        Ok(())
+    }
+
+    /// Takes what the client has written so far, without waiting.
+    fn pump(&mut self) -> Result<(), String> {
+        while let Ok(bytes) = self.from.try_recv() {
+            self.take(&bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Takes what the client writes until it has been quiet for `quiet`,
+    /// or `limit` has passed.
     fn settle(&mut self, quiet: Duration, limit: Duration) -> Result<(), String> {
         let started = Instant::now();
         while started.elapsed() < limit {
             match self.from.recv_timeout(quiet) {
-                Ok(bytes) => self.terminal.process(&bytes)?,
+                Ok(bytes) => self.take(&bytes)?,
                 Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
                     return Ok(());
                 }
             }
         }
         Ok(())
+    }
+
+    /// Takes what the client writes until it has drawn what the pane's
+    /// output so far makes it draw: tmux's, until it shows a mark
+    /// ([`Client::marked`]); zellij's, until it has been quiet for
+    /// [`QUIET`].
+    fn drawn(&mut self) -> Result<(), String> {
+        match self.mux {
+            Mux::Tmux => self.marked(),
+            Mux::Zellij => self.settle(QUIET, STEP_LIMIT),
+        }
+    }
+
+    /// Renames tmux's session to a mark, which its status line shows
+    /// (`[NAME]` at its start), and takes what the client writes until the
+    /// mark shows, then until the client is quiet for [`AFTER_MARK`].
+    ///
+    /// The pane's output has been read (its sync's DA1 answered), and tmux
+    /// has written what it draws as it reads, or marked the pane to be
+    /// drawn again. It draws its status line in the same pass as the panes
+    /// so marked, after them, and puts the whole pass off while its output
+    /// to the client has not drained or is blocked
+    /// (`server_client_check_redraw`, `tty_block_maybe`), so once the mark
+    /// shows, every pane is drawn. The quiet is for the rest of that pass,
+    /// written with it: the cursor and the modes, set back after the
+    /// status line.
+    ///
+    /// A rename redraws the status line alone, as its clock does. A message
+    /// would not do: while one shows, tmux draws nothing of the panes and
+    /// hides the cursor (`status_message_set`, `TTY_FREEZE`).
+    fn marked(&mut self) -> Result<(), String> {
+        let name = format!("m{}", pane::serial());
+        self.command(&["rename-session", &name]);
+        let mark = format!("[{name}]");
+        let status = usize::from(self.rows).saturating_sub(1);
+        let deadline = Instant::now()
+            .checked_add(STEP_LIMIT)
+            .ok_or("a deadline out of range")?;
+        loop {
+            let shown = self.terminal.snapshot(0)?;
+            if shown
+                .screen
+                .get(status)
+                .is_some_and(|line| line.text().contains(&mark))
+            {
+                break;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.from.recv_timeout(left) {
+                Ok(bytes) => self.take(&bytes)?,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    return Err(format!("tmux did not show its mark in {STEP_LIMIT:?}"));
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("tmux's client is gone".into());
+                }
+            }
+        }
+        self.settle(AFTER_MARK, STEP_LIMIT)
     }
 
     /// Runs one of the multiplexer's own commands on its server.
@@ -1114,7 +1277,7 @@ fn through_mux(mux: Mux, kind: &Kind, recording: &Recording) -> Result<Score, St
             return Err(format!("{} did not start its pane", mux.name()));
         }
     }
-    client.settle(QUIET, STEP_LIMIT)?;
+    client.drawn()?;
     let mut score = Score {
         steps: 0,
         same: 0,
@@ -1123,8 +1286,11 @@ fn through_mux(mux: Mux, kind: &Kind, recording: &Recording) -> Result<Score, St
     let mut at = 0usize;
     for (step, (_, bytes)) in recording.steps.iter().enumerate() {
         direct.process(bytes)?;
-        replayer.output(bytes)?;
-        client.settle(QUIET, STEP_LIMIT)?;
+        // The multiplexer may ask the client's terminal something before
+        // it goes on (zellij forwards a pane's colour and size queries),
+        // so the client is read, and answered, while the pane syncs.
+        replayer.output_while(bytes, Some(&mut || client.pump()))?;
+        client.drawn()?;
         at = at.saturating_add(bytes.len());
         let d = direct.snapshot(0)?;
         let t = crop(&client.terminal.snapshot(0)?, rect);
@@ -1163,11 +1329,24 @@ fn percent(part: usize, whole: usize) -> String {
 
 /// `transparency --multiplexers`: tmux's and zellij's transparency scores
 /// (of those installed), beside fux's own at the ends of the same steps. A
-/// difference is scored, not failed.
+/// difference is scored, not failed. A multiplexer that cannot be run
+/// through a recording is reported with why, and the run goes on to the
+/// next; false if one could not be.
 fn multiplexers(options: &Options) -> Result<bool, String> {
     let kinds = kinds(options.engines.as_deref())?;
-    let recordings = chosen(options)?;
+    // Recordings that resize are left out: a multiplexer's client would
+    // have to be resized mid-recording, which this does not yet do.
+    let (recordings, resizing): (Vec<Recording>, Vec<Recording>) = chosen(options)?
+        .into_iter()
+        .partition(|r| r.resizes.is_empty());
+    if !resizing.is_empty() {
+        println!(
+            "({} recordings that resize are left out of the multiplexer scores)",
+            resizing.len()
+        );
+    }
     let mut results = Vec::new();
+    let mut ok = true;
     for kind in &kinds {
         println!(
             "transparency through each multiplexer, at the end of each step, read by {}",
@@ -1214,8 +1393,15 @@ fn multiplexers(options: &Options) -> Result<bool, String> {
             let started = Instant::now();
             let (mut same, mut steps, mut steps_same) = (0usize, 0usize, 0usize);
             let mut each = Vec::new();
+            let mut failed = None;
             for recording in &recordings {
-                let score = through_mux(mux, kind, recording)?;
+                let score = match crate::case::guarded(|| through_mux(mux, kind, recording)) {
+                    Ok(score) => score,
+                    Err(why) => {
+                        failed = Some(format!("{}: {why}", recording.name));
+                        break;
+                    }
+                };
                 steps = steps.saturating_add(score.steps);
                 steps_same = steps_same.saturating_add(score.same);
                 let first_json = match &score.first {
@@ -1250,6 +1436,25 @@ fn multiplexers(options: &Options) -> Result<bool, String> {
                 }));
             }
             let seconds = started.elapsed().as_secs_f64();
+            if let Some(error) = failed {
+                // No score: one made of the recordings before the error
+                // would not be comparable with fux's.
+                ok = false;
+                println!(
+                    "{version}: error, not scored ({} of {} recordings run before it, {seconds:.1}s): {error}",
+                    each.len(),
+                    recordings.len(),
+                );
+                results.push(serde_json::json!({
+                    "engine": kind.name,
+                    "multiplexer": mux.name(),
+                    "version": version,
+                    "error": error,
+                    "seconds": seconds,
+                    "each": each,
+                }));
+                continue;
+            }
             println!(
                 "{version}: {same} of {} recordings identical ({}%), {steps_same} of {steps} steps ({}%), {seconds:.1}s",
                 recordings.len(),
@@ -1275,11 +1480,12 @@ fn multiplexers(options: &Options) -> Result<bool, String> {
             path,
             &serde_json::json!({
                 "check": "transparency-multiplexers",
+                "ok": ok,
                 "results": results,
             }),
         )?;
     }
-    Ok(true)
+    Ok(ok)
 }
 
 #[cfg(test)]
@@ -1374,6 +1580,26 @@ mod tests {
         Ok(())
     }
 
+    /// Combining marks on a glyph a column short of the edge stay on it
+    /// through fux (less-small): with autowrap off, Ghostty put them on the
+    /// last column's cell, where fux had painted a space.
+    #[test]
+    fn marks_short_of_the_edge_stay_on_their_glyph() -> Result<(), String> {
+        let marked = "xxxxxxxx\u{e4}\u{356}\u{32d}\u{308}\u{307}";
+        assert_eq!(differences(3, 10, marked.as_bytes())?, []);
+        Ok(())
+    }
+
+    /// An emoji modifier a program places after its emoji with a cursor
+    /// move of its own (micro-small) is joined to the emoji by Ghostty both
+    /// ways, and what follows stays where the program put it.
+    #[test]
+    fn a_modifier_placed_after_its_emoji_moves_nothing() -> Result<(), String> {
+        let placed = "\x1b[1;3H\u{1F44D}\x1b[1;5H\u{1F3FD}\x1b[1;7Hx \u{1F469}";
+        assert_eq!(differences(2, 12, placed.as_bytes())?, []);
+        Ok(())
+    }
+
     /// Text, styles, a wide glyph, a link and the cursor look the same
     /// through fux; and a difference is found where there is one.
     #[test]
@@ -1437,12 +1663,18 @@ mod tests {
             key: format!("cell (0,{x}) fg"),
             field: Field::Fg,
             styled_cell: Some((0, x)),
+            fux_blank: x > 0,
             fux: "Default".into(),
             other: "Idx(0)".into(),
         };
         let (a, b) = (blank("x  "), blank("x  "));
         assert!(super::blank_foreground(&fg(1), &a, &b));
         assert!(!super::blank_foreground(&fg(0), &a, &b));
+        // A blank's foreground is expected in any recording, beside the
+        // engines that keep only the background, and with nothing else.
+        assert!(super::known("nvim", "ghostty", &[fg(1)], &a, &b).is_some());
+        assert!(super::known("nvim", "libvterm", &[fg(1)], &a, &b).is_none());
+        assert!(super::known("nvim", "ghostty", &[fg(1), fg(0)], &a, &b).is_none());
         assert!(super::erased_at_the_last_column(&fg(2), &a, &b));
         assert!(!super::erased_at_the_last_column(&fg(1), &a, &b));
         Ok(())

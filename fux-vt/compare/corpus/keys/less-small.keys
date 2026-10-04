@@ -1,0 +1,8 @@
+# less at 10x40 on text of other widths: lines, a page, the end, the
+# start, quit.
+j
+j
+\x20
+G
+g
+q

@@ -1,0 +1,3 @@
+# cargo build of a crate with errors: its diagnostics, then it exits,
+# no keys.
+!start 5000

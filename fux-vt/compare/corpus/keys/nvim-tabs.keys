@@ -1,0 +1,8 @@
+# neovim with three files in tabs: next, previous, a new tab, close it.
+!start 2000
+gt
+gt
+gT
+:tabnew\r
+:tabclose\r
+:qa\r

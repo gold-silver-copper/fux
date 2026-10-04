@@ -1,0 +1,6 @@
+# btop (CPU, memory and network boxes) for a few seconds: an update,
+# hide the memory box, quit.
+!start 2000
+!quiet 2500
+2
+q

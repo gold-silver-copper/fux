@@ -1,0 +1,8 @@
+# emacs -nw resized while it runs: smaller, larger with a split, back.
+!start 2000
+!resize 24x80
+\x16
+!resize 50x200
+\x183
+!resize 40x120
+\x18\x03

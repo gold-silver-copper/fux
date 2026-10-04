@@ -94,7 +94,7 @@
 //! - ZWJ and VS16 are not kept, so emoji sequences are cells of their own
 //!   (`--size 1x8 '👨\u{200d}👩❤\u{fe0f}'`); a skin tone and a second
 //!   regional indicator are cells of their own.
-use crate::engine::{Can, Engine, Kind, Setup};
+use crate::engine::{Blanks, Can, Engine, Kind, Setup};
 use crate::engines::pane::{self, Glyphs, Pane, Reader};
 use crate::snapshot::{Line, Snapshot};
 use std::fs::{self, File};
@@ -119,6 +119,7 @@ pub const KIND: Kind = Kind {
         prompt: false,
         ..Can::ALL
     },
+    blanks: Blanks::XTERM,
     panel: false,
     in_process: false,
     available,

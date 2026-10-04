@@ -1,0 +1,10 @@
+# nnn on a tree of files: move, into a directory, back, hidden files,
+# quit.
+!start 1500
+j
+j
+l
+j
+h
+.
+q

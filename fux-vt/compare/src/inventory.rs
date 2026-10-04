@@ -322,10 +322,10 @@ fn sgr(group: &str) -> (String, Does) {
         }
         4 => match sub {
             Some(0 | 1) => Does::Implemented(""),
-            Some(2..=5) => Does::Partly("underline on; the style is not kept"),
+            Some(2..=5) => Does::Implemented("the style kept; painted to terminals that draw it"),
             _ => Does::Ignored("passed over"),
         },
-        21 => Does::Partly("a double underline, kept as a single one"),
+        21 => Does::Implemented("a double underline"),
         38 | 48 | 58 => Does::Implemented(""),
         _ => Does::Ignored("passed over without a report"),
     };
@@ -631,7 +631,15 @@ fn string(kind: u8, body: &[u8]) -> (String, Does) {
         b'^' => "PM".to_owned(),
         _ => "SOS".to_owned(),
     };
-    let does = if kind == b'P' && (key.starts_with("DCS + q") || key.starts_with("DCS $ q")) {
+    let does = if kind == b'P' && matches!(key.as_str(), "DCS $ q m" | "DCS $ q r") {
+        Does::Implemented("answered (Options::setting_reports)")
+    } else if kind == b'P' && key == "DCS $ q  q" {
+        Does::Partly(
+            "answered once the program set a cursor shape; the terminal's own is not known",
+        )
+    } else if kind == b'P' && key.starts_with("DCS $ q") {
+        Does::Implemented("answered as invalid, as xterm answers it")
+    } else if kind == b'P' && key.starts_with("DCS + q") {
         Does::Ignored("a query, consumed unanswered")
     } else {
         Does::Ignored("consumed, dropped")
@@ -819,8 +827,8 @@ pub fn run(names: &[String]) -> Result<bool, String> {
          capabilities it asks for. \"Count\" counts every time it was sent, in all the \
          recordings. \"fux-vt\" is what a fux pane's parser does with it, as fux sets \
          it up (`fux::pane::OPTIONS`: events, DECRQM, in-band resize, the size query, \
-         colour-scheme reports, the kitty keyboard protocol, hyperlinks, prompt marks and \
-         fux's identity), with what fux itself answers.\n"
+         colour-scheme reports, the kitty keyboard protocol, hyperlinks, prompt marks, \
+         DECRQSS and fux's identity), with what fux itself answers.\n"
     );
     let _ = writeln!(out, "Recordings:\n");
     for r in &recordings {

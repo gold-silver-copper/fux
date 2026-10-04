@@ -1,9 +1,10 @@
 //! What fux knows of each client's own terminal, learned by asking it: its
 //! colours (OSC 10 and 11) and colour scheme (dark or light, `CSI ? 996 n`),
-//! whether it reports changes to the scheme (mode 2031), and whether it
-//! speaks the kitty keyboard protocol (`CSI ? u`). Programs in panes ask
-//! the same of their terminal, which is fux, and are answered from what the
-//! client terminal said.
+//! whether it reports changes to the scheme (mode 2031), whether it
+//! speaks the kitty keyboard protocol (`CSI ? u`), and whether it draws
+//! underline styles (`STYLES`). Programs in panes ask the same of their
+//! terminal, which is fux, and are answered from what the client terminal
+//! said; the styles are what fux paints the client.
 //!
 //! A terminal that speaks the kitty protocol gets disambiguate (1) and
 //! alternate keys (4) pushed (`CSI > 5 u`), so that fux reads keys as
@@ -41,22 +42,46 @@ use crate::session::{Outgoing, Session};
 use std::time::Instant;
 
 /// What the server asks a client's terminal when the client attaches:
-/// whether it knows mode 2031 (DECRQM), its foreground and background, its
-/// kitty keyboard flags, and last the primary device attributes, which
-/// every terminal answers: once that answer is in, any other the terminal
-/// will give is in too (terminals answer in order), so the decoder stops
-/// waiting for them. The kitty spec detects the protocol so: an answer to
-/// `CSI ? u` before DA1's.
-pub const QUERIES: &[u8] = b"\x1b[?2031$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[?u\x1b[c";
+/// whether it knows mode 2031 (DECRQM), its foreground and background,
+/// whether it draws underline styles (`STYLES`), its kitty keyboard flags,
+/// and last the primary device attributes, which every terminal answers: once
+/// that answer is in, any other the terminal will give is in too
+/// (terminals answer in order), so the decoder stops waiting for them. The
+/// kitty spec detects the protocol so: an answer to `CSI ? u` before DA1's.
+pub const QUERIES: &[u8] = b"\x1b[?2031$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\
+\x1bP+q536d756c78\x1b\\\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\\x1b[0m\x1b[?u\x1b[c";
+/// How fux learns whether a terminal draws underline styles (kitty's
+/// `4:n`, `references/modern/kitty_underlines.html`): it asks two ways,
+/// and either answer is enough (`decode::Reply::UnderlineStyles`).
+///
+/// - XTGETTCAP for `Smulx` (`DCS + q 536d756c78 ST`, the name in hex),
+///   the terminfo capability that sets a style. A terminal that answers
+///   XTGETTCAP answers from its own terminfo: Ghostty, kitty, WezTerm,
+///   foot and iTerm2 have `Smulx` in theirs; xterm answers that it has
+///   none (`DCS 0 + r`). Ghostty draws styles but reports a curly
+///   underline as plain 4 to DECRQSS, so this is how it is known.
+/// - The pen, as neovim asks it (`tui_query_extended_underline`, neovim
+///   0.12.5): a curly underline set, then DECRQSS (`DCS $ q m ST`); a
+///   terminal that kept the style answers with `4:3` in it, as VTE does,
+///   which answers no XTGETTCAP. xterm drops `4:3`; then the pen is reset.
+///
+/// A terminal that answers neither (Apple's Terminal; alacritty, which
+/// draws styles but answers neither question) is painted plain
+/// underlines, as before: the safe way, as a terminal that does not know
+/// `4:3` draws no underline at all (xterm, avt) or reads the colon as a
+/// semicolon, underline and italic. Neither question changes what a
+/// terminal shows, and both come before DA1, whose answer ends the
+/// waiting for them.
+pub const STYLES: &[u8] = b"\x1bP+q536d756c78\x1b\\\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\\x1b[0m";
 /// Pushes disambiguate and alternate keys (see the module documentation).
-const KITTY_PUSH: &[u8] = b"\x1b[>5u";
+pub const KITTY_PUSH: &[u8] = b"\x1b[>5u";
 /// Asked again after the terminal reports that its scheme changed.
-const COLOUR_QUERIES: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[c";
+pub const COLOUR_QUERIES: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[c";
 /// Turns on the terminal's scheme reports and asks for the scheme now. The
 /// client turns the reports off on every way out (`client::LEAVE`).
-const REPORTS_ON: &[u8] = b"\x1b[?2031h\x1b[?996n";
+pub const REPORTS_ON: &[u8] = b"\x1b[?2031h\x1b[?996n";
 /// Asks for the scheme alone, of a terminal whose reports are always on.
-const SCHEME_QUERY: &[u8] = b"\x1b[?996n";
+pub const SCHEME_QUERY: &[u8] = b"\x1b[?996n";
 
 /// A colour as xterm reports it: 16 bits a channel.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -154,6 +179,9 @@ pub struct Terminal {
     change: Option<Scheme>,
     /// Whether the kitty keyboard flags were pushed.
     pub kitty: bool,
+    /// Whether the terminal draws underline styles (see `STYLES`): the
+    /// client is painted them (`render::sgr`), else plain underlines.
+    pub underline_styles: bool,
 }
 
 impl Session {
@@ -227,6 +255,15 @@ impl Session {
                 terminal.kitty = true;
                 self.outbox
                     .push(Outgoing::Bytes(client, KITTY_PUSH.to_vec()));
+            }
+            // From now on the client is painted underline styles; what it
+            // shows already, painted plain, is painted again
+            // (`render::paint_into`).
+            Reply::UnderlineStyles => {
+                if !terminal.underline_styles {
+                    terminal.underline_styles = true;
+                    view.dirty = true;
+                }
             }
             Reply::Mode { .. } | Reply::KittyFlags(_) => {}
         }
@@ -341,6 +378,15 @@ mod tests {
         ] {
             assert_eq!(Rgb::parse(bad), None, "{bad:?}");
         }
+    }
+
+    /// The questions about underline styles are asked at attach, before the
+    /// kitty query and DA1, whose answer ends the waiting for theirs, and
+    /// leave the pen reset.
+    #[test]
+    fn the_questions_about_styles_come_before_da1() {
+        assert!(QUERIES.ends_with(&[STYLES, b"\x1b[?u\x1b[c"].concat()));
+        assert!(STYLES.ends_with(b"\x1b[0m"));
     }
 
     #[test]
