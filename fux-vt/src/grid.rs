@@ -264,6 +264,9 @@ pub(crate) struct Grid {
     /// Whether `left` and `right` are narrower than the screen: one test
     /// for every operation they bound, which without them does as it did.
     lr: bool,
+    /// Whether its screen's cells are yet to be made (`Grid::unmade`):
+    /// every row is blank, and `make` makes them.
+    unmade: bool,
 }
 
 /// A grid's cursor and what goes with it (`Grid::clone_cursor`).
@@ -313,8 +316,50 @@ impl Grid {
         next: &mut u64,
         version: u64,
     ) -> Result<Self, Error> {
+        Self::made(rows, cols, history_limit, next, version, false)
+    }
+
+    /// `new`, but with no storage for the screen's cells until `make`
+    /// makes it: the rows, their identities and versions, the cursor and
+    /// the margins are all `new`'s. Blank rows read as blank, and resizing
+    /// and clearing keep it unmade (`resized`, `clear`); anything else is
+    /// for a made grid. The alternate screen is made so, as most programs
+    /// never show it.
+    pub fn unmade(rows: u16, cols: u16, next: &mut u64, version: u64) -> Result<Self, Error> {
+        Self::made(rows, cols, 0, next, version, true)
+    }
+
+    /// Gives an unmade grid (`unmade`) its screen's cells, blank, as `new`
+    /// would have made them; nothing if it has them. On failure, it stays
+    /// as it was.
+    pub fn make(&mut self) -> Result<(), Error> {
+        if !self.unmade {
+            return Ok(());
+        }
+        let size = usize::from(self.rows.get())
+            .checked_mul(usize::from(self.cols.get()))
+            .ok_or(Error::Capacity)?;
+        self.cells
+            .try_reserve_exact(size)
+            .map_err(|_| Error::Capacity)?;
+        self.cells.resize(size, BLANK);
+        self.unmade = false;
+        Ok(())
+    }
+
+    fn made(
+        rows: u16,
+        cols: u16,
+        history_limit: usize,
+        next: &mut u64,
+        version: u64,
+        unmade: bool,
+    ) -> Result<Self, Error> {
         let (rows, cols) = Self::check_size(rows, cols, history_limit)?;
-        let mut grid = Self::bare(rows, cols, history_limit);
+        let mut grid = Self {
+            unmade,
+            ..Self::bare(rows, cols, history_limit)
+        };
         grid.reserve_screen()?;
         for _ in 0..rows.get() {
             let id = next_id(next)?;
@@ -355,21 +400,24 @@ impl Grid {
             left: 0,
             right: cols.last(),
             lr: false,
+            unmade: false,
         }
     }
 
     /// A grid with no row yet that takes this one's place: the same styles,
-    /// and their numbers, which the rows it is given keep.
+    /// and their numbers, which the rows it is given keep; unmade if this
+    /// one is.
     fn successor(&self, rows: Extent, cols: Extent) -> Self {
         Self {
             styles: Arc::clone(&self.styles),
             recent: self.recent,
             epoch: self.epoch,
+            unmade: self.unmade,
             ..Self::bare(rows, cols, self.history_limit)
         }
     }
 
-    /// Room for the screen's rows, exactly.
+    /// Room for the screen's rows, exactly; their cells' only once made.
     fn reserve_screen(&mut self) -> Result<(), Error> {
         let rows = usize::from(self.rows.get());
         let size = rows
@@ -378,8 +426,9 @@ impl Grid {
         if size > MAX_CELLS {
             return Err(Error::Capacity);
         }
+        let cells = if self.unmade { 0 } else { size };
         self.cells
-            .try_reserve_exact(size.saturating_sub(self.cells.len()))
+            .try_reserve_exact(cells.saturating_sub(self.cells.len()))
             .map_err(|_| Error::Capacity)?;
         self.meta
             .try_reserve_exact(rows.saturating_sub(self.meta.len()))
@@ -404,10 +453,13 @@ impl Grid {
     ) {
         let slot = self.meta.len();
         let cols = usize::from(self.cols.get());
-        let start = self.cells.len();
-        self.cells
-            .extend_from_slice(cells.get(..cells.len().min(cols)).unwrap_or_default());
-        self.cells.resize(start.saturating_add(cols), BLANK);
+        // An unmade grid's rows are blank, and have no cells to put.
+        if !self.unmade {
+            let start = self.cells.len();
+            self.cells
+                .extend_from_slice(cells.get(..cells.len().min(cols)).unwrap_or_default());
+            self.cells.resize(start.saturating_add(cols), BLANK);
+        }
         meta.linked = links.is_some();
         if let Some(links) = links {
             self.linked.insert(slot, links);
@@ -2189,12 +2241,13 @@ impl Grid {
         if !self.recyclable() {
             // The links are kept, as a link the program has open keeps its
             // number (`Screen::pen_link`).
-            let mut grid = Self::new(
+            let mut grid = Self::made(
                 self.rows.get(),
                 self.cols.get(),
                 self.history_limit,
                 next,
                 version,
+                self.unmade,
             )?;
             grid.adopt_links(std::mem::take(&mut self.links));
             grid.epoch = self.epoch.wrapping_add(1);
@@ -2212,14 +2265,19 @@ impl Grid {
 
     /// Whether `clear` can start the grid again in the storage it has: it
     /// holds its live rows alone, each as wide as the grid, in storage that
-    /// `new` would make no smaller.
+    /// `new` would make no smaller (none for an unmade grid's cells).
     pub fn recyclable(&self) -> bool {
         let rows = usize::from(self.rows.get());
         let cols = usize::from(self.cols.get());
         self.history.is_bare()
             && self.order.len() == rows
             && self.meta.len() == rows
-            && self.cells.capacity() == rows.saturating_mul(cols)
+            && self.cells.capacity()
+                == if self.unmade {
+                    0
+                } else {
+                    rows.saturating_mul(cols)
+                }
     }
 
     /// Blanks every row of a recyclable grid and gives each a new identity,
@@ -2278,15 +2336,16 @@ impl Grid {
         ) = state.saved;
     }
     /// Whether every slot's cells from `used` to its width are blank, as
-    /// recycling relies on.
+    /// recycling relies on; an unmade grid's are all blank.
     #[cfg(test)]
     pub fn blank_past_used(&self) -> bool {
-        (0..self.meta.len()).all(|slot| {
-            let used = self.meta.get(slot).map_or(0, |m| usize::from(m.used));
-            self.slice(slot)
-                .get(used..)
-                .is_some_and(|tail| tail.iter().all(|c| *c == BLANK))
-        })
+        self.unmade
+            || (0..self.meta.len()).all(|slot| {
+                let used = self.meta.get(slot).map_or(0, |m| usize::from(m.used));
+                self.slice(slot)
+                    .get(used..)
+                    .is_some_and(|tail| tail.iter().all(|c| *c == BLANK))
+            })
     }
     pub fn in_region(&self) -> bool {
         (self.top..=self.bottom).contains(&self.cursor.0)
