@@ -32,7 +32,10 @@
 //! this process instead of fux-vt (Ghostty's core, for one), answering as
 //! [`crate::answering`] says: its replies go back, and DECRQCRA, which only
 //! fux-vt answers, is answered from its screen. Its results are checked
-//! against its own list, `esctest-expected-NAME.txt`.
+//! against its own list, `esctest-expected-NAME.txt`. With `--beside NAME`,
+//! another terminal runs every area too, checked against its own list, and
+//! the two are compared area by area, with the tests one passes and the
+//! other fails, each with its feature and where the feature is specified.
 use crate::answering::Answering;
 use crate::engine::{ENGINES, Setup};
 use crate::escape;
@@ -69,9 +72,10 @@ const VT_LEVEL: &str = "4";
 
 /// The usage of `esctest`.
 pub const USAGE: &str = "\
-usage: fux-vt-compare esctest [--terminal NAME] [--in-fux] [--xterm] [--jobs N]
-                              [--timeout SECONDS] [--limit SECONDS] [--expected FILE]
-                              [--json FILE] [--logs DIR] [--replays] [--show] [FILTER]
+usage: fux-vt-compare esctest [--terminal NAME] [--beside NAME] [--in-fux] [--xterm]
+                              [--jobs N] [--timeout SECONDS] [--limit SECONDS]
+                              [--expected FILE] [--json FILE] [--logs DIR]
+                              [--replays] [--show] [FILTER]
 
 Runs esctest2 (references/xterm/esctest2, from references/fetch.sh) against
 fux-vt set up as fux's panes are, with the reports it needs; FILTER is a
@@ -86,7 +90,9 @@ AREA.xterm.log) in DIR. --replays prints, for each failure, what the test wrote
 (without its queries) as a run.sh replay. --show prints each failure's message.
 --json writes every result, as fux-vt/compare's README says. --terminal runs
 against another engine in this process (ghostty) instead of fux-vt, checked
-against esctest-expected-NAME.txt.";
+against esctest-expected-NAME.txt; --beside also runs NAME (fux-vt, or an
+engine), checked against its own list, and compares the two: each area's pass
+rates, and the tests one passes and the other fails, with their features.";
 
 /// The terminal esctest runs against directly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,6 +162,8 @@ struct Request {
     filter: Option<String>,
     /// The terminal under test.
     terminal: Subject,
+    /// A terminal run beside it, and compared with it.
+    beside: Option<Subject>,
     in_fux: bool,
     /// Also run each area in a real xterm, as the reference.
     xterm: bool,
@@ -178,6 +186,7 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
     let mut out = Request {
         filter: None,
         terminal: Subject::FuxVt,
+        beside: None,
         in_fux: false,
         xterm: false,
         jobs: std::thread::available_parallelism().map_or(4, std::num::NonZero::get),
@@ -219,6 +228,7 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
             }
             "--expected" => expected = Some(value("--expected")?.into()),
             "--terminal" => out.terminal = Subject::named(value("--terminal")?)?,
+            "--beside" => out.beside = Some(Subject::named(value("--beside")?)?),
             "--json" => out.json = Some(value("--json")?.into()),
             "--logs" => out.logs = Some(value("--logs")?.into()),
             "-h" | "--help" => return Ok(None),
@@ -233,6 +243,12 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
     // A fux pane runs fux-vt, and is set beside fux-vt's direct run.
     if out.in_fux && out.terminal != Subject::FuxVt {
         return Err("--in-fux runs fux-vt in a fux pane: it goes with --terminal fux-vt".into());
+    }
+    if out.beside == Some(out.terminal) {
+        return Err(format!(
+            "--beside {0}: {0} is the terminal under test",
+            out.terminal.name()
+        ));
     }
     out.expected = expected.unwrap_or_else(|| out.terminal.expected());
     Ok(Some(out))
@@ -1155,8 +1171,8 @@ fn reasons(results: &[(String, Outcome)], list: &BTreeMap<String, Listed>) -> St
     out
 }
 
-/// Where an area runs: against the terminal under test directly, in a fux
-/// pane, or in xterm.
+/// Where an area runs: against a terminal directly (the one under test, or
+/// the one beside it), in a fux pane, or in xterm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Place {
     Direct(Subject),
@@ -1167,7 +1183,7 @@ enum Place {
 impl Place {
     /// How the place is named in the table and the summary, with
     /// `terminal` the terminal under test: fux-vt's direct run is
-    /// `directly`, an engine's is its name.
+    /// `directly`, an engine's or a terminal's beside it is its name.
     fn label(self, terminal: Subject) -> String {
         match self {
             Place::Direct(Subject::FuxVt) if terminal == Subject::FuxVt => "directly".into(),
@@ -1176,7 +1192,8 @@ impl Place {
             Place::Xterm => "in xterm".into(),
         }
     }
-    /// Its key in the JSON: the terminal under test's is `direct`.
+    /// Its key in the JSON: the terminal under test's is `direct`, the one
+    /// beside it is its name (`fux_vt`).
     fn key(self, terminal: Subject) -> String {
         match self {
             Place::Direct(subject) if subject == terminal => "direct".into(),
@@ -1291,6 +1308,13 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
     }
     let count: usize = areas.iter().map(|a| a.tests.len()).sum();
     let list = read_list(&request.expected)?;
+    let beside = match request.beside {
+        Some(subject) => {
+            let path = subject.expected();
+            Some((subject, read_list(&path)?, path))
+        }
+        None => None,
+    };
     let scratch = request.logs.clone().unwrap_or_else(|| {
         std::env::temp_dir().join(format!("fux-vt-esctest-{}", std::process::id()))
     });
@@ -1320,6 +1344,9 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         None
     };
     let mut places = vec![Place::Direct(terminal)];
+    if let Some((subject, _, _)) = &beside {
+        places.push(Place::Direct(*subject));
+    }
     if let Some(fux) = &fux {
         places.push(Place::Fux);
         println!("fux: {}", fux.display());
@@ -1373,11 +1400,17 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
     if let (Subject::Engine(_), Some(object)) = (terminal, json.as_object_mut()) {
         object.insert("terminal".into(), serde_json::json!(terminal.name()));
     }
+    // Each column's list: the beside terminal's own, the list given for
+    // every other.
+    let list_of = |place: Place| match (&beside, place) {
+        (Some((subject, list, _)), Place::Direct(s)) if s == *subject => list,
+        _ => &list,
+    };
     for column in &columns {
         let flat = column.flat();
         let first = column.place == Place::Direct(terminal);
         if column.place != Place::Xterm {
-            let found = mismatches(&flat, &list, column.place == Place::Fux);
+            let found = mismatches(&flat, list_of(column.place), column.place == Place::Fux);
             problems.extend(found.iter().map(|p| {
                 if first {
                     p.clone()
@@ -1403,7 +1436,7 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         if let Some(object) = json.as_object_mut() {
             object.insert(
                 column.key.clone(),
-                run_json(&areas, &column.results, column.time, &list),
+                run_json(&areas, &column.results, column.time, list_of(column.place)),
             );
         }
     }
@@ -1412,7 +1445,12 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         Subject::Engine(_) => terminal.name(),
     };
     if let Some(direct) = columns.first() {
-        for other in columns.iter().skip(1) {
+        // The terminal beside is compared below, feature by feature.
+        for other in columns
+            .iter()
+            .skip(1)
+            .filter(|c| !matches!(c.place, Place::Direct(_)))
+        {
             let differ = differences(direct, other);
             // xterm, the reference, passes many tests fux-vt does not
             // implement: they are counted, and listed with --show.
@@ -1437,6 +1475,21 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
                     serde_json::json!(differ),
                 );
             }
+        }
+    }
+    if let (Some(direct), Some((subject, other_list, _))) = (columns.first(), &beside)
+        && let Some(other) = columns.iter().find(|c| c.place == Place::Direct(*subject))
+    {
+        let compared = Comparison::of(
+            &areas,
+            [
+                (terminal.name(), direct, &list),
+                (subject.name(), other, other_list),
+            ],
+        );
+        print!("{}", compared.text());
+        if let Some(object) = json.as_object_mut() {
+            object.insert("comparison".into(), compared.json());
         }
     }
     if let Some(object) = json.as_object_mut() {
@@ -1478,8 +1531,346 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         problems.len(),
         request.expected.display()
     );
+    if let Some((_, _, path)) = &beside {
+        let _ = write!(summary, " and {}", path.display());
+    }
     println!("{summary}");
     Ok(problems.is_empty())
+}
+
+/// A test one terminal passes and the other fails.
+struct Only {
+    test: String,
+    /// The failing terminal's message, its first line.
+    failure: String,
+    /// The reason the failing terminal's list gives: what the feature is.
+    reason: String,
+}
+
+impl Only {
+    fn json(&self) -> serde_json::Value {
+        let (kind, feature) = self
+            .reason
+            .split_once(": ")
+            .unwrap_or(("", self.reason.as_str()));
+        serde_json::json!({
+            "test": self.test,
+            "kind": kind,
+            "feature": feature,
+            "source": source(&self.reason),
+            "failure": self.failure,
+        })
+    }
+}
+
+/// Two terminals' results side by side, for `--beside`: each area's pass
+/// rate, and the tests one passes and the other fails, each with what its
+/// feature is (the failing terminal's list says) and where it is specified
+/// ([`source`]).
+struct Comparison {
+    names: [&'static str; 2],
+    /// Each area's tallies, the first terminal's then the second's.
+    areas: Vec<(String, [Tally; 2])>,
+    totals: [Tally; 2],
+    /// The tests only the first passes, then those only the second does.
+    only: [Vec<Only>; 2],
+    /// The tests run in one and not the other: what each did.
+    one_ran: Vec<(String, [String; 2])>,
+}
+
+impl Comparison {
+    fn of(
+        areas: &[Area],
+        sides: [(&'static str, &Column, &BTreeMap<String, Listed>); 2],
+    ) -> Comparison {
+        let [(a_name, a, a_list), (b_name, b, b_list)] = sides;
+        let tallies = |c: &Column, i: usize| {
+            Tally::of(c.results.get(i).into_iter().flatten().map(|(_, o)| o))
+        };
+        let per_area = areas
+            .iter()
+            .enumerate()
+            .map(|(i, area)| (area.name.clone(), [tallies(a, i), tallies(b, i)]))
+            .collect();
+        let only = |name: &str, outcome: &Outcome, list: &BTreeMap<String, Listed>| Only {
+            test: name.to_owned(),
+            failure: match outcome {
+                Outcome::Fail(m) => m.lines().next().unwrap_or_default().to_owned(),
+                Outcome::Pass { .. } | Outcome::Skip(_) => String::new(),
+            },
+            reason: list
+                .get(name)
+                .map_or_else(|| "unlisted".to_owned(), |l| l.reason.clone()),
+        };
+        let mut first = Vec::new();
+        let mut second = Vec::new();
+        let mut one_ran = Vec::new();
+        for ((name, x), (_, y)) in a.flat().iter().zip(b.flat()) {
+            if x.passed() && y.failed() {
+                first.push(only(name, &y, b_list));
+            } else if x.failed() && y.passed() {
+                second.push(only(name, x, a_list));
+            } else if matches!(x, Outcome::Skip(_)) != matches!(y, Outcome::Skip(_)) {
+                let what = |o: &Outcome| match o {
+                    Outcome::Skip(why) => format!("skipped: {why}"),
+                    Outcome::Pass { .. } | Outcome::Fail(_) => say(o),
+                };
+                one_ran.push((name.clone(), [what(x), what(&y)]));
+            }
+        }
+        Comparison {
+            names: [a_name, b_name],
+            areas: per_area,
+            totals: [a.tally(), b.tally()],
+            only: [first, second],
+            one_ran,
+        }
+    }
+
+    /// The comparison as text: a line per area, then each list.
+    fn text(&self) -> String {
+        let [a, b] = self.names;
+        let rate = |t: Tally| {
+            let run = t.passed.saturating_add(t.failed);
+            format!("{:>3}/{:<3} {:>5.1}%", t.passed, run, t.rate())
+        };
+        let mut out = format!(
+            "{a} beside {b}, each area's pass rate (passed/run):\n  {:<24}{a:<16}{b}\n",
+            "AREA"
+        );
+        for (name, [x, y]) in self
+            .areas
+            .iter()
+            .chain(std::iter::once(&("ALL".to_owned(), self.totals)))
+        {
+            let name = name.strip_suffix("Tests").unwrap_or(name);
+            let mark = match x.passed.cmp(&y.passed) {
+                std::cmp::Ordering::Greater => {
+                    format!("  {a} +{}", x.passed.saturating_sub(y.passed))
+                }
+                std::cmp::Ordering::Less => format!("  {b} +{}", y.passed.saturating_sub(x.passed)),
+                std::cmp::Ordering::Equal => String::new(),
+            };
+            let _ = writeln!(out, "  {name:<24}{:<16}{}{mark}", rate(*x), rate(*y));
+        }
+        let [first, second] = &self.only;
+        for (list, pass, fail) in [(first, a, b), (second, b, a)] {
+            let _ = writeln!(out, "passes in {pass}, fails in {fail}: {}", list.len());
+            for only in list {
+                let _ = writeln!(out, "  {}: {}", only.test, only.reason);
+                if let Some(source) = source(&only.reason) {
+                    let _ = writeln!(out, "      source: {source}");
+                }
+            }
+        }
+        if !self.one_ran.is_empty() {
+            let _ = writeln!(
+                out,
+                "run in one only: {} (the JSON's comparison lists them)",
+                self.one_ran.len()
+            );
+        }
+        out
+    }
+
+    fn json(&self) -> serde_json::Value {
+        let [a, b] = self.names;
+        let mut areas = serde_json::Map::new();
+        for (name, [x, y]) in &self.areas {
+            areas.insert(name.clone(), serde_json::json!({a: x.json(), b: y.json()}));
+        }
+        let [first, second] = &self.only;
+        let [x, y] = self.totals;
+        serde_json::json!({
+            "terminals": [a, b],
+            "total": {a: x.json(), b: y.json()},
+            "areas": areas,
+            "passes_only_in": {
+                a: first.iter().map(Only::json).collect::<Vec<_>>(),
+                b: second.iter().map(Only::json).collect::<Vec<_>>(),
+            },
+            "run_in_one_only": self.one_ran.iter().map(|(test, [x, y])| {
+                serde_json::json!({"test": test, a: x, b: y})
+            }).collect::<Vec<_>>(),
+        })
+    }
+}
+
+/// Where the feature a list's `reason` names is specified: xterm's
+/// ctlseqs, DEC STD 070 (the 1990 revision of chapter 5 in
+/// `references/dec/`), the VT510 manual (`references/dec/vt100.net/
+/// vt510-rm/`, a page a function), ECMA-48. Matched by the first entry
+/// whose words the reason contains, so the narrower come first; every
+/// reason in both lists has one (a test says so).
+const SOURCES: &[(&str, &str)] = &[
+    (
+        "DECSTR",
+        "DEC STD 070 ch. 4, Soft Terminal Reset (p. 4-37); VT510 DECSTR; ctlseqs CSI ! p",
+    ),
+    (
+        "BS without",
+        "DEC STD 070 §5.4.4, Back Space, and §5.4.3, Set Left and Right Margins; ECMA-48 BS",
+    ),
+    (
+        "CHA, HPR and VPR",
+        "DEC STD 070 §5.4.3, Set/Reset Origin Mode, and §5.4.4, Horizontal/Vertical Position; \
+         ECMA-48 CHA, HPR, VPR; VT510 DECOM",
+    ),
+    (
+        "RIS leaves",
+        "DEC STD 070 appendix 0 §0.2, Reset to Initial State, and §5.4.6, Set/Reset Column \
+         Mode; ctlseqs ESC c, CSI ? 3 h, CSI ? 40 h",
+    ),
+    (
+        "TBC",
+        "ECMA-48 TBC (Ps 0, the default: the stop at the active position); DEC STD 070 §5.4.5, \
+         Tabulation Clear; ctlseqs CSI Ps g",
+    ),
+    (
+        "needs window operations",
+        "ctlseqs CSI Ps t (XTWINOPS: 20 and 21 t report the titles) and OSC 52 (Manipulate \
+         Selection Data), with xterm's allowWindowOps resource",
+    ),
+    (
+        "reads the title back",
+        "ctlseqs CSI 20 t and CSI 21 t (XTWINOPS), with xterm's disallowedWindowOps resource",
+    ),
+    (
+        "ISO-protected",
+        "ECMA-48 SPA, EPA and ERM; ctlseqs CSI ? Ps J and CSI ? Ps K (DECSED, DECSEL), ESC V and \
+         ESC W; DEC STD 070 §5.11.1.2, Selectively Erasable Character Attribute",
+    ),
+    (
+        "xterm always returns 4",
+        "DEC STD 070 §5.13.2, Request Mode, and ch. 6 §6.6.3, Auto Repeat Mode; VT510 DECRQM, \
+         DECARM; ctlseqs CSI ? Ps $ p",
+    ),
+    (
+        "DECSERA (",
+        "DEC STD 070 §5.12.1, Selective Erase Rectangular Area; VT510 DECSERA; ctlseqs \
+         CSI Pt ; Pl ; Pb ; Pr $ {",
+    ),
+    (
+        "protected cells (DECSCA",
+        "DEC STD 070 §5.11.1.2, Selectively Erasable Character Attribute (DECSCA, DECSED, DECSEL), \
+         and §5.12.1 (DECSERA); ECMA-48 SPA, EPA; ctlseqs CSI Ps \" q, CSI ? Ps J, CSI ? Ps K",
+    ),
+    (
+        "rectangle operations",
+        "DEC STD 070 §5.12.1, Rectangular Area Operations; VT510 DECCRA, DECFRA, DECERA, \
+         DECCARA, DECRARA, DECSACE; ctlseqs CSI … $ v, $ x, $ z, $ r, $ t, * x",
+    ),
+    (
+        "DECIC and DECDC",
+        "DEC STD 070 §5.11, Insert Column and Delete Column; VT510 DECIC, DECDC; ctlseqs \
+         CSI Pn ' } and CSI Pn ' ~",
+    ),
+    (
+        "DECBI and DECFI",
+        "DEC STD 070 §5.4.3, Back Index and Forward Index; VT510 DECBI, DECFI; ctlseqs ESC 6, \
+         ESC 9",
+    ),
+    (
+        "left and right margins",
+        "DEC STD 070 §5.4.3, Set Left and Right Margins and Set/Reset Left Right Margin Mode; \
+         VT510 DECSLRM, DECLRMM; ctlseqs CSI ? 69 h, CSI Pl ; Pr s",
+    ),
+    (
+        "reverse wraparound",
+        "ctlseqs CSI ? 45 h (reverse-wraparound mode) and CSI ? 1045 h (extended \
+         reverse-wraparound mode)",
+    ),
+    (
+        "device-independent colour spaces",
+        "ctlseqs OSC 4 and OSC 10 to 19, whose colours are XParseColor's; Xlib manual, Color \
+         Strings (CIEXYZ, CIEuvY, CIExyY, CIELab, CIELuv, TekHVC)",
+    ),
+    (
+        "#RGB",
+        "Xlib manual, Color Strings (#RGB: the digits are the high bits); ctlseqs OSC 4 and \
+         OSC 10 to 19",
+    ),
+    (
+        "rgbi:",
+        "Xlib manual, Color Strings (RGBi); ctlseqs OSC 4 and OSC 10 to 19",
+    ),
+    (
+        "special colours",
+        "ctlseqs OSC 5 and OSC 105 (special colours), OSC 4 past the palette, XTGETTCAP Co",
+    ),
+    (
+        "colour palette",
+        "ctlseqs OSC 4, OSC 5, OSC 10 to 19, OSC 104, OSC 105, OSC 110 to 119",
+    ),
+    (
+        "DECRQSS",
+        "DEC STD 070 §5.13.2, Request Selection or Setting; VT510 DECRQSS; ctlseqs \
+         DCS $ q Pt ST",
+    ),
+    (
+        "DECRQM",
+        "DEC STD 070 §5.13.2, Request Mode and Report Mode; VT510 DECRQM; ctlseqs CSI Ps $ p \
+         and CSI ? Ps $ p",
+    ),
+    (
+        "DECXCPR",
+        "DEC STD 070 §5.4.4, Extended Cursor Position Report; VT510 DSR-XCPR; ctlseqs \
+         CSI ? 6 n",
+    ),
+    (
+        "DSR reports of DEC's other devices",
+        "DEC STD 070 ch. 4, Device Status Report (p. 4-41), and §5.12.2, Memory Checksum DSR; \
+         VT510 DSR-PP, DSR-UDK, DSR-KBD, DSR-DECCKSR, DSR-DIR, DSR-MSR; ctlseqs CSI ? Ps n",
+    ),
+    (
+        "DA1",
+        "DEC STD 070 ch. 4, Device Attributes (Primary, p. 4-22, and Secondary, p. 4-29); \
+         VT510 DA1, DA2; ctlseqs CSI Ps c, CSI > Ps c",
+    ),
+    (
+        "window operations",
+        "ctlseqs CSI Ps ; Ps ; Ps t (XTWINOPS), CSI ? 40 h; DEC STD 070 §5.4.6, Set/Reset \
+         Column Mode and Set Lines Per Page; VT510 DECCOLM, DECSLPP",
+    ),
+    (
+        "8-bit controls",
+        "ctlseqs, C1 (8-Bit) Control Characters, and S8C1T (ESC SP G); ECMA-43, C1 in 8-bit \
+         codes",
+    ),
+    (
+        "conformance levels",
+        "DEC STD 070 ch. 4, Select Conformance Level (p. 4-27); VT510 DECSCL; ctlseqs \
+         CSI Pl ; Pc \" p",
+    ),
+    (
+        "DECALN",
+        "DEC STD 070 appendix 0 §0.8, Screen Alignment; VT510 DECALN; ctlseqs ESC # 8",
+    ),
+    (
+        "DECID",
+        "DEC STD 070 ch. 4, Identify Terminal (p. 4-33); VT100 User Guide, DECID; ctlseqs ESC Z",
+    ),
+    (
+        "XTSAVE",
+        "ctlseqs CSI ? Pm s (XTSAVE) and CSI ? Pm r (XTRESTORE)",
+    ),
+    (
+        "LNM",
+        "ECMA-48 LNM; DEC STD 070 §5.4.4, Set/Reset New Line Mode; ctlseqs CSI 20 h",
+    ),
+    ("more(1) fix", "ctlseqs CSI ? 41 h (more(1) fix)"),
+    (
+        "known xterm bug",
+        "esctest's own marking of xterm (escutil.py, knownBug) on the test",
+    ),
+];
+
+/// The source of the feature `reason` names ([`SOURCES`]).
+fn source(reason: &str) -> Option<&'static str> {
+    SOURCES
+        .iter()
+        .find(|(words, _)| reason.contains(words))
+        .map(|(_, source)| *source)
 }
 
 /// Runs `area` in a real xterm, under the harness's Xvfb (`engines::xterm`),
@@ -1674,6 +2065,78 @@ a
         assert!(message.starts_with("esctypes.ChecksumException: Checksum failed"));
         assert!(message.ends_with("Expected:\na"));
         assert_eq!(found.len(), 6);
+        Ok(())
+    }
+
+    /// Every reason in fux-vt's list and in Ghostty's says where its
+    /// feature is specified, so each test of `--beside`'s lists has one.
+    #[test]
+    fn every_listed_reason_has_a_source() -> Result<(), String> {
+        for file in ["esctest-expected.txt", "esctest-expected-ghostty.txt"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+            for (name, listed) in super::read_list(&path)? {
+                assert!(
+                    super::source(&listed.reason).is_some(),
+                    "{file}: {name}: no source for {:?}",
+                    listed.reason
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Two terminals' results side by side: each area's tallies, the
+    /// tests only one passes with the failing one's reason, and those run
+    /// in one only.
+    #[test]
+    fn a_comparison_lists_what_one_passes_and_the_other_fails() -> Result<(), String> {
+        let areas = vec![super::Area {
+            name: "ATests".into(),
+            tests: vec!["A.t1".into(), "A.t2".into(), "A.t3".into(), "A.t4".into()],
+        }];
+        let pass = Outcome::Pass {
+            beyond_xterm: false,
+        };
+        let fail = Outcome::Fail("esctypes.TestFailure: x\nmore".into());
+        let skip = Outcome::Skip("cannot read".into());
+        let column = |results: Vec<Outcome>| super::Column {
+            place: super::Place::Xterm,
+            label: String::new(),
+            key: String::new(),
+            results: vec![
+                areas
+                    .iter()
+                    .flat_map(|a| a.tests.iter().cloned())
+                    .zip(results)
+                    .collect(),
+            ],
+            time: std::time::Duration::ZERO,
+        };
+        let a = column(vec![pass.clone(), fail.clone(), skip, pass.clone()]);
+        let b = column(vec![fail.clone(), pass.clone(), fail, pass]);
+        let a_list = super::expected("A.t2 bug: a's\n")?;
+        let b_list = super::expected("A.t1 not-implemented: left and right margins\n")?;
+        let compared = super::Comparison::of(&areas, [("a", &a, &a_list), ("b", &b, &b_list)]);
+        let json = compared.json();
+        let at = |pointer: &str| json.pointer(pointer).cloned().unwrap_or_default();
+        assert_eq!(at("/passes_only_in/a/0/test"), "A.t1");
+        assert_eq!(at("/passes_only_in/a/0/kind"), "not-implemented");
+        assert_eq!(at("/passes_only_in/a/0/feature"), "left and right margins");
+        assert_eq!(at("/passes_only_in/a/0/failure"), "esctypes.TestFailure: x");
+        assert!(
+            at("/passes_only_in/a/0/source")
+                .as_str()
+                .is_some_and(|s| s.contains("DECSLRM"))
+        );
+        assert_eq!(at("/passes_only_in/b/0/test"), "A.t2");
+        assert_eq!(at("/passes_only_in/b/0/kind"), "bug");
+        assert_eq!(at("/run_in_one_only/0/test"), "A.t3");
+        assert_eq!(at("/areas/ATests/a/passed"), 2);
+        assert_eq!(at("/areas/ATests/b/passed"), 2);
+        assert_eq!(at("/areas/ATests/a/skipped"), 1);
+        let text = compared.text();
+        assert!(text.contains("passes in a, fails in b: 1\n  A.t1: not-implemented"));
+        assert!(text.contains("passes in b, fails in a: 1\n  A.t2: bug: a's"));
         Ok(())
     }
 
