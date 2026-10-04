@@ -217,6 +217,13 @@ pub(crate) enum Dispatch {
     Unhandled,
 }
 
+/// The DEC private modes XTSAVE saves and XTRESTORE restores: every one
+/// fux-vt keeps (DECARM is permanently reset, and 1048 is an action).
+const SAVABLE: [u16; 24] = [
+    1, 4, 5, 6, 7, 9, 25, 45, 47, 66, 67, 1000, 1002, 1003, 1004, 1005, 1006, 1045, 1047, 1049,
+    2004, 2026, 2031, 2048,
+];
+
 /// The most flag sets a kitty keyboard stack holds; a push onto a full stack
 /// drops the oldest, as kitty does, so a runaway program cannot grow it.
 const KEYBOARD_STACK_LIMIT: usize = 32;
@@ -290,6 +297,10 @@ pub struct Screen {
     /// CUB go on at the end of the line before (`cursor_back`).
     reverse_wrap: bool,
     extended_reverse_wrap: bool,
+    /// The modes XTSAVE saved: bit i for `SAVABLE[i]`, set if the mode
+    /// was. One never saved is reset, as in xterm, and RIS and DECSTR keep
+    /// them, as xterm 411 does.
+    saved_modes: u32,
     /// IRM (ECMA-48 7.2.10, `CSI 4 h`): a glyph printed moves what is at
     /// and after the cursor right, rather than writing over it.
     insert: bool,
@@ -419,6 +430,7 @@ impl Screen {
             autowrap: true,
             reverse_wrap: false,
             extended_reverse_wrap: false,
+            saved_modes: 0,
             insert: false,
             tabs: TabStops::default(),
             application_cursor: false,
@@ -1689,11 +1701,22 @@ impl Screen {
     /// recognized, and 4 permanently reset for DECARM (8), which xterm 411
     /// reports so (its auto-repeat is the X server's).
     pub(crate) fn private_mode_status(&self, n: u16) -> u8 {
-        let set = match n {
+        if n == 8 {
+            return 4;
+        }
+        match self.private_mode(n) {
+            Some(true) => 1,
+            Some(false) => 2,
+            None => 0,
+        }
+    }
+
+    /// Whether DEC private mode `n` is set, if fux-vt keeps it.
+    fn private_mode(&self, n: u16) -> Option<bool> {
+        Some(match n {
             1 => self.application_cursor,
             4 => self.smooth_scroll,
             5 => self.reverse_video,
-            8 => return 4,
             45 => self.reverse_wrap,
             1045 => self.extended_reverse_wrap,
             66 => self.application_keypad,
@@ -1712,9 +1735,75 @@ impl Screen {
             2026 => self.synchronized_output,
             2048 => self.in_band_resize,
             2031 => self.color_scheme_updates,
-            _ => return 0,
+            _ => return None,
+        })
+    }
+
+    /// XTSAVE (`CSI ? Pm s`, ctlseqs): mode `n` saved as it is, if fux-vt
+    /// keeps it, as DECRQM knows it (2048 and 2031 with their options).
+    fn save_mode(&mut self, n: u16, options: &Options) {
+        let known = match n {
+            2048 => options.in_band_resize,
+            2031 => options.color_scheme_updates,
+            1004 => true,
+            _ => self.private_mode_status(n) != 0,
         };
-        if set { 1 } else { 2 }
+        let set = if n == 1004 {
+            self.focus_reporting
+        } else {
+            self.private_mode(n) == Some(true)
+        };
+        if let Some(bit) = SAVABLE.iter().position(|m| *m == n).filter(|_| known) {
+            let mask = 1u32
+                .checked_shl(u32::try_from(bit).unwrap_or(u32::MAX))
+                .unwrap_or(0);
+            self.saved_modes = if set {
+                self.saved_modes | mask
+            } else {
+                self.saved_modes & !mask
+            };
+        }
+    }
+
+    /// XTRESTORE (`CSI ? Pm r`, ctlseqs): mode `n` set as XTSAVE saved it,
+    /// as DECSET or DECRST would set it, or reset if it never was, as in
+    /// xterm 411. Whether a size report is due (`set_private_mode`).
+    fn restore_mode(&mut self, n: u16, options: &Options) -> Result<bool, Error> {
+        let Some(bit) = SAVABLE.iter().position(|m| *m == n) else {
+            return Ok(false);
+        };
+        let set = self
+            .saved_modes
+            .checked_shr(u32::try_from(bit).unwrap_or(u32::MAX))
+            .is_some_and(|b| b & 1 == 1);
+        self.set_private_mode(n, set, options)
+    }
+
+    /// DECSET or DECRST of DEC private mode `n`; whether a size report is
+    /// due (setting in-band resize reports at once, however often it is
+    /// set: `references/modern/mode_2048_in_band_resize.md`).
+    fn set_private_mode(&mut self, n: u16, set: bool, options: &Options) -> Result<bool, Error> {
+        match n {
+            2048 => {
+                if options.in_band_resize {
+                    self.in_band_resize = set;
+                    return Ok(set);
+                }
+            }
+            2031 => {
+                if options.color_scheme_updates {
+                    self.color_scheme_updates = set;
+                }
+            }
+            _ => {
+                // A switch of screens leaves the printed cell behind.
+                if matches!(n, 47 | 1047 | 1049) {
+                    self.break_cluster();
+                }
+                self.mode(n, set)?;
+            }
+        }
+        Ok(false)
     }
 
     /// DECRQSS (`DCS $ q Pt ST`): the setting `request` names, written to
@@ -1959,26 +2048,7 @@ impl Screen {
             let mut report = false;
             for group in p.groups() {
                 if let [n] = group {
-                    // In-band resize, which sets off a report however often
-                    // it is set (references/modern/mode_2048_in_band_resize.md).
-                    if *n == 2048 {
-                        if options.in_band_resize {
-                            self.in_band_resize = byte == b'h';
-                            report |= byte == b'h';
-                        }
-                        continue;
-                    }
-                    if *n == 2031 {
-                        if options.color_scheme_updates {
-                            self.color_scheme_updates = byte == b'h';
-                        }
-                        continue;
-                    }
-                    // A switch of screens leaves the printed cell behind.
-                    if matches!(n, 47 | 1047 | 1049) {
-                        self.break_cluster();
-                    }
-                    self.mode(*n, byte == b'h')?;
+                    report |= self.set_private_mode(*n, byte == b'h', options)?;
                 }
             }
             return Ok(if report {
@@ -2028,6 +2098,28 @@ impl Screen {
                 | b'u'
         ) {
             self.break_cluster();
+        }
+        // XTSAVE and XTRESTORE (ctlseqs). Their private marker tells them
+        // from DECSLRM (`CSI Pl ; Pr s`) and SCOSC (`CSI s`), and from
+        // DECSTBM (`CSI Pt ; Pb r`); `CSI s` is SCOSC here, below, as fux-vt
+        // keeps no left and right margins (with DECLRMM it would be DECSLRM,
+        // as Ghostty reads it).
+        if private && matches!(byte, b's' | b'r') {
+            let mut report = false;
+            for group in p.groups() {
+                if let [n] = group {
+                    if byte == b's' {
+                        self.save_mode(*n, options);
+                    } else {
+                        report |= self.restore_mode(*n, options)?;
+                    }
+                }
+            }
+            return Ok(if report {
+                Dispatch::Reply(self.size_report())
+            } else {
+                Dispatch::Done
+            });
         }
         if private && !matches!(byte, b'J' | b'K') {
             return Ok(Dispatch::Unhandled);
