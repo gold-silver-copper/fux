@@ -3,61 +3,50 @@
 A small terminal multiplexer. One server keeps your shells running in
 workspaces, tabs and split panes; `fux` attaches a terminal to it, and every
 other `fux` command changes it. Several terminals can attach at once, each
-with its own view. Everything is driven from the keyboard: there is no mouse
-support at all, by design.
+with its own view. fux is driven from the keyboard only: it has no mouse
+support, by design.
 
-fux is one binary with no runtime dependencies beyond the system: it needs a
-Unix (macOS or Linux), and builds with Rust 1.95 or later.
+fux is one binary for macOS and Linux, built with Rust 1.95 or later.
 
 ```sh
-cargo install --locked --path .       # or: cargo build --release --locked
-fux                                   # attach, starting a server if none runs
+cargo install --locked fux        # or, in a clone: cargo install --locked --path .
+fux                               # attach, starting a server if none runs
 ```
 
 ## Using it
 
-`fux` (or `fux attach`) attaches this terminal to the server, starting one in
-the background if none answers. A new server starts with one workspace, one
-tab and one shell. `C-b d` detaches; the shells keep running, and `fux`
-attaches again. `fux attach -t NAME` attaches to a workspace by name.
-Running `fux` inside a fux pane is refused, since it would show fux inside
-itself; `--nested` does it anyway.
+`fux` (or `fux attach`) attaches this terminal, starting a server in the
+background if none answers; `-t NAME` picks a workspace. A new server has
+one workspace, tab and shell. `C-b d` detaches, and the shells keep
+running. Inside a fux pane, `fux` refuses to attach unless given
+`--nested`.
 
-The server keeps running until `fux kill-server`, SIGTERM, SIGINT or SIGHUP,
-or until its last pane closes. Then it hangs up every pane, tells each
-attached terminal why, and removes its socket.
+The server runs until `fux kill-server`, SIGTERM, SIGINT, SIGHUP, or until
+its last pane closes. It then hangs up every pane, tells each attached
+terminal why, and removes its socket.
 
 Every pane runs your shell (`set shell`, else `$SHELL`, else `/bin/sh`). A
-command given to `split`, `new-tab` or `new-workspace` after `--` is typed
-into that shell once it shows its prompt, as if you had typed it: it runs with your aliases and
-shell setup, lands in the shell's history, and when it ends, the prompt is
-back in the same pane. A pane closes when its shell exits (`exit`, `C-d`),
-and its viewers are told the exit status. A tab closes with its last pane,
-and a workspace with its last tab; a tab emptied by moving its panes out
-stays, showing how to split or close it.
+command after `--` in `split`, `new-tab` or `new-workspace` is typed into
+the new shell at its first prompt, so it gets your aliases and history,
+and the shell remains when it ends. A pane closes when its shell exits,
+showing its viewers the exit status; a tab closes with its last pane, a
+workspace with its last tab. A pane's lines re-wrap when its width changes,
+history included.
 
-The bottom row is the bar: the workspace and its tabs on the left (the
-selected tab highlighted), and on the right the focused pane's number and
-title (a program's OSC 0/2 title, else the pane's name), a notice, or copy
-mode's position.
+The bottom row is the bar: the workspace and its tabs on the left; on the
+right the focused pane's number and title (the program's OSC 0/2 title,
+else the pane's name), a notice, or copy mode's position.
 
 ### Keys
 
-Every key below follows the prefix, `C-b` by default, and every one is a
-plain letter: `a`–`z`, without modifiers, in either case (`C-b T` is `C-b t`,
-and Caps Lock changes nothing). The prefix alone opens the **command
-column**, which lists every binding, grouped: the arrows, PageUp/PageDown and
-Home/End move through it, Enter runs the selected command, a bound key runs
-its command directly, and Esc closes it. Commands that cannot run now are
-dimmed, and running one says why. The prefix twice sends it to the pane. This
-column is the only help screen.
+Every key below follows the prefix, `C-b` by default, and is a plain
+letter, in either case (`C-b T` is `C-b t`). The prefix twice sends it to
+the pane.
 
-Some keys open a **layer**, where one more letter runs a command: tabs (`t`)
-and workspaces (`w`) share their verbs, so `C-b t n` is a new tab and `C-b w n`
-a new workspace, and the column shows the layer's commands. Others start a
-**repeat mode**: after `C-b r` (resize) or `C-b m` (move), `h` `j` `k` `l` act
-again and again without the prefix until Esc or Enter, and the bar shows the
-mode and its keys. Any other key ends the mode without reaching the pane.
+The prefix alone opens the **command column**, the help screen, listing
+every binding: arrows, PageUp/PageDown and Home/End move, Enter runs the
+selected command, a bound key runs its own, Esc closes. Commands that
+cannot run now are dimmed.
 
 | Key | Command | Does |
 | --- | --- | --- |
@@ -65,206 +54,153 @@ mode and its keys. Any other key ends the mode without reaching the pane.
 | `o` / `q` | `select-pane --next` / `--last` | focus the next / last pane |
 | `v` / `s` | `split -h` / `split -v` | split side by side / stacked |
 | `x` | `confirm-close pane` | close the pane (asks `y`/`n`) |
-| `z` | `zoom` | zoom the focused pane, or restore |
+| `z` | `zoom` | zoom the pane, or restore it |
 | `a` | `menu pane` | pane actions |
 | `c` | `copy-mode` | copy and select |
 | `p` | `paste-buffer` | paste the newest copy |
 | `n` / `b` | `select-tab --next` / `--previous` | next / previous tab |
 | `e` | `command-prompt` | type any fux command |
 | `d` | `detach` | detach this terminal |
-| `r` | resize mode | see below |
-| `m` | move mode | see below |
-| `t` | tab layer | see below |
-| `w` | workspace layer | see below |
-
-The repeat modes:
-
-| Keys | Command | Does, again and again |
-| --- | --- | --- |
-| `r`, then `h` `j` `k` `l` | `resize-pane -L` / `-D` / `-U` / `-R` | move a border by one cell |
+| `r`, then `h` `j` `k` `l` | `resize-pane -L` / `-D` / `-U` / `-R` | move a border one cell |
 | `m`, then `h` `j` `k` `l` | `move-pane -L` / `-D` / `-U` / `-R` | move the pane beside its neighbour that way |
+| `t`, `w` | tab and workspace layers | below |
 
-The layers' verbs:
+`r` and `m` are **repeat modes**: `h` `j` `k` `l` act again without the
+prefix until Esc or Enter; any other key ends the mode and is dropped.
+
+`t` and `w` are **layers**, sharing their verbs:
 
 | Verb | After `t`: tabs | After `w`: workspaces |
 | --- | --- | --- |
 | `n` | `new-tab` | `new-workspace` |
 | `h` / `l` | `select-tab --previous` / `--next` | `select-workspace --previous` / `--next` |
-| `g` | `choose-tab`: the chooser | `choose-workspace`: the chooser |
+| `g` | `choose-tab` | `choose-workspace` |
 | `r` | `rename-prompt tab` | `rename-prompt workspace` |
 | `x` | `confirm-close tab` | `confirm-close workspace` |
-| `a` | `menu tab`: tab actions | `menu workspace`: workspace actions |
+| `a` | `menu tab` | `menu workspace` |
 | `m`, then `h` / `l` | `reorder tab --previous` / `--next`, repeating | `reorder workspace --previous` / `--next`, repeating |
 
-`f`, `g`, `i`, `u` and `y` are free for your own bindings. Renaming a pane and
-focusing the previous pane have no key of their own: the pane menu renames,
-and `select-pane --previous` is a command away (`C-b e`) or a binding of your
-own.
+`f`, `g`, `i`, `u` and `y` are free for your own bindings.
 
-**Choosers** (`t g`, `w g`) list each tab or workspace with its panes, the
-current one marked. Enter selects, `r` renames, `x` closes (after asking), Esc
-or `q` cancels; Up/Down, `j`/`k`, PageUp/PageDown and Home/End move. Their
-letters, like a confirmation's `y`/`n`/`q`, work in either case.
+- **Choosers** (`t g`, `w g`) list tabs or workspaces with their panes.
+  Enter selects, `r` renames, `x` closes, Esc or `q` cancels; arrows,
+  `j`/`k`, PageUp/PageDown and Home/End move.
+- **Action menus** (`a`, `t a`, `w a`) hold what has no key: rename, close,
+  terminate the running command, swap, move elsewhere, reorder. A menu acts
+  on the item it was opened for, and closes if that item is gone.
+- **The command prompt** (`e`) runs a fux command line, such as
+  `split -v -- htop`, and shows its output in the bar. It and the rename
+  prompts edit with the arrows, Home, End, Backspace and Delete.
 
-**Action menus** (`a`, `t a`, `w a`) hold what has no key of its own: rename,
-close, terminate the running command, swap, move to another or a new tab or
-workspace, reorder. A menu acts on the item it was opened for, even if focus
-changes meanwhile; if that item is gone, the menu closes and says so.
-
-**The command prompt** (`e`) takes any fux command, in the same grammar as the
-command line and the config file, for example `split -v -- htop`. Its output
-or error shows in the bar. It and the rename prompts edit one line: letters are
-text, so editing uses the arrows, Home, End, Backspace and Delete; Enter runs
-it and Esc closes it.
-
-Directional focus picks, among the panes beyond the focused pane's edge, the
-one whose centre is closest across the direction, then along it, then the
-lowest number.
+Directional focus picks, among the panes beyond the focused pane's edge,
+the one whose centre is closest across the direction, then along it, then
+the lowest number.
 
 ### Copy and select
 
-`C-b c` puts a keyboard cursor on the focused pane, starting at its text
-cursor. For your terminal the pane holds still while you look, even as output
-continues (other terminals see it live). Only history's own limit moves it:
-if output pushes the rows copy mode holds (the top of its view, its cursor,
-or where the selection starts) out of the history, copy mode ends, and the
-bar says why. In place of the tabs, the bar shows
-`COPY` (`COPY select`, `lines` or `block` while selecting, or the search being
-typed) and the keys that act now, and on the right the cursor's line in the
-history.
+`C-b c` puts a keyboard cursor on the focused pane. For your terminal the
+pane holds still while output continues; other terminals see it live. If
+the history drops the rows copy mode holds, copy mode ends and says why.
 
-Like the keys after the prefix, copy mode's keys are letters, in either case,
-and the brackets, without Ctrl or Alt; the arrows, PageUp/PageDown, Home, End,
-Enter and Esc also work.
+Keys are letters, in either case, and the brackets; the arrows,
+PageUp/PageDown, Home, End, Enter and Esc also work.
 
 | Keys | Do |
 | --- | --- |
 | `h` `j` `k` `l`, arrows | move |
-| `w` / `b` | the next word / back a word |
-| `a` / `e`, Home / End | the first / last non-blank of the line; Home is column 0 |
-| `u` / `d`, PageUp / PageDown | half a page / a page, up or down |
+| `w` / `b` | next word / back a word |
+| `a` / `e` or End | first / last non-blank of the line |
+| Home | column 0 |
+| `u` / `d` | half a page up / down |
+| PageUp / PageDown | a page up / down |
 | `t` / `z` | top of the history / the live bottom |
-| `f` / `r`, then `n` / `p` | search forward / back; the next match, the previous |
-| `[` / `]` | the previous / next prompt, at the top of the view with its output below |
+| `f` / `r`, then `n` / `p` | search forward / back; next / previous match |
+| `[` / `]` | previous / next shell prompt |
 | `v` / `s` / `x` | select characters / lines / a block; again to clear |
 | `o` | swap the selection's ends |
 | `y` or Enter | copy and leave |
 | `q` or Esc | leave without copying |
 
-Search is literal (not a regular expression) over the whole history, and
-ignores case unless the query has a capital letter. `[` and `]` find the
-prompts a shell marks with `OSC 133 ; A`: fish does, and zsh and bash do
-with a terminal's shell integration script (Ghostty's, kitty's, WezTerm's
-or iTerm2's). Your terminal's own jump to a prompt does not work inside
-fux, which shows its panes on the alternate screen, where terminals keep
-no scrollback to jump in; fux does not pass the marks on, and its `[` and
-`]` are the way. A selection keeps wide
-characters and combining marks whole, joins soft-wrapped lines without an
-invented newline, and trims trailing blanks. One copy is at most 262,144
-cells.
+Search is literal over the whole history, and ignores case unless the
+query has a capital letter. `[` and `]` find prompts marked with
+`OSC 133 ; A`, which fish sends, and zsh and bash send with a terminal's
+shell-integration script. fux does not pass these marks to your terminal,
+so its own jump-to-prompt does not work inside fux.
 
-A copy goes into fux's paste buffers (the newest 16, `set buffers`), where
-`C-b p` pastes the newest into the focused pane, bracketed if the pane asked
-for bracketed paste. It is also sent to your terminal's clipboard as OSC 52,
+A copy keeps wide characters whole, joins soft-wrapped lines, and trims
+trailing blanks. One copy is at most 262,144 cells.
+
+**Clipboards.** A copy goes to fux's paste buffers (the newest 16, `set
+buffers`); `C-b p` pastes the newest, bracketed if the program asked for
+bracketed paste. It is also sent to your terminal's clipboard as OSC 52,
 up to 1 MiB encoded, unless `set clipboard off`; your terminal must allow
-OSC 52 writes (many do; some ask first or need an option). fux never reads
-the clipboard.
+OSC 52 writes. fux never reads the clipboard.
 
 ## Commands
 
-Every command runs from the command line (`fux COMMAND …`), from a key
-binding, from the command prompt, and, for `set`/`bind`/`unbind`, from the config
-file. Targets: a pane is `%N`, a tab `@N`, a workspace `+N` or its name (`$N`
-is avoided because the shell would expand it). A client is `cN`.
-
-Inside a pane, `TERM` is `xterm-256color`, `TERM_PROGRAM` is `fux` and
-`TERM_PROGRAM_VERSION` fux's version, whatever the terminal fux runs in sets
-(programs read `TERM_PROGRAM` to guess which terminal they talk to, as they
-would in tmux, which sets its own). Asked, fux says the same: XTVERSION
-(`CSI > q`) answers `fux` and its version, secondary device attributes
-(`CSI > c`) the version, and primary ones (`CSI c`) a VT220-class terminal.
-
-Inside a pane, `FUX_PANE` names it and `FUX_SOCKET` names the server, so
-commands there target that pane without `-t`. A command that needs a target
-and has neither `-t` nor `FUX_PANE` fails with a message naming `-t`; it never
-guesses. From a key or the command prompt, commands act on your focused pane,
-tab and workspace.
+Commands run from the command line (`fux COMMAND …`), a key binding or the
+command prompt; `fux help` lists them. Targets: a pane is `%N`, a tab
+`@N`, a workspace `+N` or its name, a client `cN`. Inside a pane,
+`FUX_PANE` and `FUX_SOCKET` name the pane and the server, so commands there
+need no `-t`. Elsewhere a command that needs a target and has none fails.
+From a key or the prompt, commands act on your focused pane.
 
 | Command | Does |
 | --- | --- |
 | `fux` / `fux attach [-t WS] [--nested]` | attach, starting a server if none answers |
 | `fux server [--socket PATH] [--config FILE]` | run a server in the foreground |
-| `fux kill-server` | stop the server (hangs up every pane) |
+| `fux kill-server` | stop the server |
 | `fux ls [--json]` | workspaces, tabs, panes and clients |
-| `fux new-workspace [-n NAME] [-- CMD…]` | a workspace with a shell, CMD typed into it; workspaces are found by name, so no two share one |
+| `fux new-workspace [-n NAME] [-- CMD…]` | a workspace with a shell, CMD typed into it; names are unique |
 | `fux new-tab [-t WS] [-n NAME] [-- CMD…]` | a tab with a shell, CMD typed into it |
 | `fux split -h\|-v [-t %N] [-- CMD…]` | split a pane: `-h` side by side, `-v` stacked |
 | `fux kill-pane\|kill-tab\|kill-workspace [-t …]` | close, without asking |
 | `fux rename -t TARGET NAME` | rename a pane, tab or workspace |
 | `fux move-pane [-t %N] --to @N\|+N\|new-tab\|new-workspace` | move a pane (to a workspace: its first tab) |
 | `fux move-pane [-t %N] -L\|-R\|-U\|-D` | move a pane beside its neighbour that way |
-| `fux swap-pane [-t %N] %M` or `-L\|-R\|-U\|-D` | swap two panes, anywhere |
-| `fux resize-pane [-t %N] -L\|-R\|-U\|-D [CELLS]` | move the nearest border that way (default one cell) |
+| `fux swap-pane [-t %N] %M\|-L\|-R\|-U\|-D` | swap two panes, anywhere |
+| `fux resize-pane [-t %N] -L\|-R\|-U\|-D [CELLS]` | move the nearest border (default one cell) |
 | `fux reorder pane\|tab\|workspace [-t TARGET] --next\|--previous` | move one place in its order |
-| `fux terminate [-t %N]` | SIGTERM to what runs in the pane's foreground, not the shell |
-| `fux send-keys [-t %N] [-l] KEYS…` | send keys (`C-c`, `Enter`, …); an argument that is not a key name is sent as text, and `-l` sends every argument as text |
-| `fux capture-pane [-t %N] [-S -LINES] [--json]` | the pane's screen text, with LINES of history before it |
-| `fux capture-client [-c CLIENT] [--json]` | what a client's terminal shows: the screen the server composes for it, bar and overlays included |
-| `fux set OPTION VALUE`, `fux bind [-g GROUP] [-r] KEY… CMD…`, `fux unbind KEY…`, `fux unbind-all` | change the running configuration |
+| `fux terminate [-t %N]` | SIGTERM to the pane's foreground job, not the shell or background jobs |
+| `fux send-keys [-t %N] [-l] KEYS…` | send keys (`C-c`, `Enter`, …); other words, or all with `-l`, as text |
+| `fux capture-pane [-t %N] [-S -LINES] [--json]` | the pane's text, after LINES of history |
+| `fux capture-client [-c CLIENT] [--json]` | what a client's terminal shows, bar included |
+| `fux set`, `bind`, `unbind`, `unbind-all` | change the configuration |
 | `fux reload` | run the config file again over the defaults |
-| `fux list-buffers`, `fux show-buffer [-b N]`, `fux paste-buffer [-b N] [-t %N]` | paste buffers, newest `0` |
-| `fux list-keys` | key names, and the current bindings |
-| `fux help`, `fux --version` (or `fux version`) | usage, and the version |
+| `fux list-buffers`, `show-buffer [-b N]`, `paste-buffer [-b N] [-t %N]` | paste buffers, newest `0` |
+| `fux list-keys` | key names and the current bindings |
 | `fux detach [-c CLIENT]` | detach a client |
+| `fux help`, `fux --version` | usage, version |
 
-These act on one client's screen. From a key or the command prompt they act on
-yours; from the command line they need `-c CLIENT`:
-`command-column`, `command-prompt`, `copy-mode`, `zoom`,
-`choose-tab [-t %N] [--move]`, `choose-workspace [-t %N] [--move]` (with a
-pane, a chooser to move it), `choose-pane [-t %N]` (swap),
-`menu pane|tab|workspace [-t TARGET]`,
-`rename-prompt [pane|tab|workspace] [-t TARGET]`,
-`confirm-close [pane|tab|workspace] [-t TARGET]`,
-`select-pane -t %N|--next|--previous|--last|-L|-R|-U|-D`,
-`select-tab -t @N|--next|--previous`, `select-workspace -t WS|--next|--previous`,
-`capture-client [--json]`. Each takes only the flags shown: `zoom` and
-`copy-mode` act on the client's focused pane, and refuse `-t`.
+These act on a client's screen: yours from a key or the prompt, `-c CLIENT`
+from the command line. `zoom` and `copy-mode` take no `-t`.
 
-Exit status: 0 done; 1 the command failed, with the reason on stderr; 2 a
-usage error.
+- `command-column`, `command-prompt`, `copy-mode`, `zoom`
+- `choose-tab [-t %N] [--move]`, `choose-workspace [-t %N] [--move]` (with
+  a pane: choose where to move it), `choose-pane [-t %N]` (to swap with)
+- `menu pane|tab|workspace [-t TARGET]`,
+  `rename-prompt [pane|tab|workspace] [-t TARGET]`,
+  `confirm-close [pane|tab|workspace] [-t TARGET]`
+- `select-pane -t %N|--next|--previous|--last|-L|-R|-U|-D`,
+  `select-tab -t @N|--next|--previous`,
+  `select-workspace -t WS|--next|--previous`
 
-Key names, for `send-keys` and the prefix, are tmux's: `C-x`, `M-x`,
-`S-Left`, `Enter`, `Tab`, `BTab`, `Escape`, `Space`, `BSpace`, `Up`, `Down`,
-`Left`, `Right`, `Home`, `End`, `PageUp`, `PageDown`, `Insert`, `Delete`,
-`F1`–`F12` (also `PgUp`, `PgDn`, `NPage`, `PPage`, `IC`, `DC`), plus any single
-character. A character carries its own shift (`T`, not `S-t`). `fux list-keys`
-prints them, with the bindings.
+Exit status: 0 done; 1 failed, with the reason on stderr; 2 a usage error.
 
-If your terminal speaks the kitty keyboard protocol (Ghostty, kitty,
-WezTerm, foot, iTerm2), fux turns it on while attached, so it can tell keys
-apart that a terminal otherwise sends alike (Shift-Enter and Enter, Ctrl-I
-and Tab, Ctrl-[ and Escape), and Escape needs no wait. Each pane's program
-gets its keys as it asked for them: in the kitty protocol (helix and
-Claude Code), xterm's modifyOtherKeys (vim and emacs), or xterm's plain encodings,
-the same as before. Key names, the prefix and bindings mean the same with
-the protocol or without it.
+**Key names**, for `send-keys` and `set prefix`, are tmux's (`C-x`, `M-x`,
+`S-Left`, `Enter`, `BTab`, `BSpace`, `PageUp`, `F1`–`F12`, …) and any
+single character, which carries its own shift (`T`, not `S-t`).
+`fux list-keys` prints them all.
 
-The keys of `bind` and `unbind` are the keys after the prefix: one or more
-letters, `a`–`z` in either case, as separate words before the command.
-`bind t n new-tab` binds `n` in the layer `t`; any binding of two or more
-letters makes its first ones layers. `-r` makes a binding repeat:
-`bind -r r l resize-pane -R` means that after `C-b r l`, each further `l`
-resizes again, until Esc. A key sequence is a command or a layer, never both:
-`bind t zoom` is refused while `t` is a layer, and `unbind t` removes the
-whole layer. Anything else (`C-Left`, `:`, `Tab`) is refused, naming the
-rule. The command is checked when the binding is made, not when its keys
-are typed: `fux bind g no-such-command` is refused with the reason the
-command does not parse (`bind g: unknown command "no-such-command"; …`),
-and such a line in the config file is a config error like any other.
+**Inside a pane**, `TERM` is `xterm-256color`, `TERM_PROGRAM` is `fux` and
+`TERM_PROGRAM_VERSION` is fux's version. XTVERSION (`CSI > q`) answers
+`fux` and its version, secondary device attributes (`CSI > c`) the
+version, and primary ones (`CSI c`) a VT220-class terminal.
 
 ### `--json`
 
-`fux ls --json` prints one object:
+These shapes are part of fux's interface; changing one is a breaking
+change.
 
 ```json
 {"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main",
@@ -272,152 +208,115 @@ and such a line in the config file is a config error like any other.
  "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false}]}
 ```
 
-`fux capture-pane --json` prints
-`{"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":[…]}`, where
-`lines` is the history asked for with `-S` followed by the screen, each line's
-trailing blanks trimmed.
-
-`fux capture-client -c CLIENT --json` prints
-`{"client":"c1","rows":24,"cols":80,"cursor":[ROW,COL],"lines":[…]}`, where
-`lines` is every row the client shows, bar included, trailing blanks trimmed,
-and `cursor` is `null` while the terminal cursor is hidden.
-
-These shapes are part of fux's interface: changing one is a breaking change.
+That is `fux ls --json`. `fux capture-pane --json` prints
+`{"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":[…]}`, the
+history asked for with `-S` then the screen. `fux capture-client --json`
+prints `{"client":"c1","rows":24,"cols":80,"cursor":[ROW,COL],"lines":[…]}`,
+every row the client shows, with `cursor` `null` while it is hidden. Lines
+have trailing blanks trimmed.
 
 ## Configuration
 
-The config file is a list of fux commands, one per line, as in `tmux.conf`:
-`--config`, else `$XDG_CONFIG_HOME/fux/fux.conf`, else
-`~/.config/fux/fux.conf`. It is optional.
+The optional config file is `--config`, else
+`$XDG_CONFIG_HOME/fux/fux.conf`, else `~/.config/fux/fux.conf`. It holds
+`set`, `bind`, `unbind` and `unbind-all` lines, split into words like a
+shell (quotes, backslashes, `#` comments).
 
 ```sh
 # ~/.config/fux/fux.conf
 set prefix C-a
-set shell /bin/zsh -l            # default: $SHELL, else /bin/sh
-set history-lines 10000          # per pane
-set clipboard off                # default: on (OSC 52 writes)
-set buffers 16                   # paste buffers kept
+set shell /bin/zsh -l
+set clipboard off
 
 unbind-all                       # optional: start from no bindings
 bind v split -h
-bind s split -v
-bind d detach
 bind t n new-tab                 # t is a layer: C-b t n
 bind -r r l resize-pane -R       # -r repeats: C-b r l l l, then Esc
-bind -g Tools g split -v -- lazygit   # -g puts it under a column group
+bind -g Tools g split -v -- lazygit   # -g: its group in the command column
 ```
 
-A line is split into words like a shell: whitespace separates, `'…'` is
-literal, `"…"` allows backslash escapes, a backslash escapes outside quotes,
-and `#` starts a comment. A binding's command is the rest of its line. `set`,
-`bind` and `unbind` are ordinary commands, so `fux bind x kill-pane` or
-`set clipboard off` at the command prompt change a running server the same
-way.
+| Option | Value | Default |
+| --- | --- | --- |
+| `prefix` | a key name | `C-b` |
+| `shell` | a program and its arguments | `$SHELL`, else `/bin/sh` |
+| `history-lines` | lines per pane, 0 to 1,000,000 | 10000 |
+| `clipboard` | `on` or `off`: OSC 52 writes | `on` |
+| `buffers` | paste buffers kept, 1 to 1000 | 16 |
 
-`fux reload` runs the file again over the defaults. On any error it names the
-file and line and keeps the previous configuration whole. At startup an
-invalid file does not stop the server: it runs on the defaults, logs the
-error, and shows it to each terminal that attaches until a reload succeeds.
-A binding from an older fux, such as `bind C-Left resize-pane -L`, is such an
-error: keys after the prefix are letters now.
-Only `set`, `bind`, `unbind` and `unbind-all` may appear in the file.
+**Bindings** take the keys after the prefix: letters `a`–`z`, either case,
+as separate words before the command. `bind t n new-tab` makes `t` a
+layer. A key sequence is a command or a layer, never both: `bind t zoom`
+is refused while `t` is a layer, and `unbind t` removes the layer. The
+command is checked when the binding is made.
 
-Options: `prefix` (a key), `shell` (a program and its arguments),
-`history-lines` (0 to 1,000,000), `clipboard` (`on` or `off`), `buffers` (1
-to 1000).
+`set`, `bind` and `unbind` are ordinary commands, so they change a running
+server from the command line or the prompt too. `fux reload` reruns the
+file over the defaults; on an error it names the file and line and changes
+nothing. A server started with an invalid file runs on the defaults and
+shows the error to each terminal that attaches until a reload succeeds.
+
+## Terminal features
+
+- **Keyboard.** If your terminal speaks the kitty keyboard protocol
+  (Ghostty, kitty, WezTerm, foot, iTerm2), fux turns it on while attached,
+  telling apart keys otherwise sent alike (Shift-Enter and Enter, Ctrl-I
+  and Tab); Escape needs no wait. Each program gets keys as it asked: kitty
+  protocol, xterm's modifyOtherKeys, or plain.
+- **Synchronized output** (mode 2026): frames reach your terminal whole; a
+  frame is shown anyway after one second or past 2 MiB.
+- **Colours.** Programs asking the foreground and background (OSC 10, 11)
+  are told your terminal's, and get its dark/light changes (mode 2031) if
+  it reports them. Colours a program sets (OSC 4, 10, 11) apply to its own
+  pane only; your terminal's palette is never changed.
+- **Hyperlinks** (OSC 8) reach your terminal as links.
+- **Underline styles** (curly, dotted, dashed, double) reach your terminal
+  if it draws them, else a plain underline.
+- **In-band resize reports** (mode 2048) are sent when a pane's size
+  changes.
 
 ## Security
 
-The server listens only on a Unix domain socket: `FUX_SOCKET`, else
-`$XDG_RUNTIME_DIR/fux/server.sock`, else `$TMPDIR/fux/server.sock`
-(`fux server --socket PATH` overrides it). The socket's directory must be
-yours with mode 0700, reached only through directories no other user can
-change; the default `fux` directory is created that way, and nothing that
-already exists is modified. The socket is created with mode 0600 before any
-connection is accepted. A lock file beside it makes one server its only
-owner; a socket left by a killed server is replaced only when nothing
-answers on it; and at exit the server removes the socket only if it is still
-the one it bound. Every connection's peer must run as the server's own user
-(checked with `SO_PEERCRED` on Linux, `getpeereid` on macOS); others,
-including root, are refused. An auto-started server logs to `fux.log` beside
-the socket.
+The server listens only on a Unix socket: `fux server --socket PATH`, else
+`FUX_SOCKET`, else `$XDG_RUNTIME_DIR/fux/server.sock`, else
+`$TMPDIR/fux/server.sock`. An auto-started server logs to `fux.log` beside
+it.
 
-Anyone who can open the socket can run anything as you: `split -- CMD` and
-`send-keys` exist for exactly that. The socket's permissions are the access
-control, as with tmux. Every message is length-prefixed and at most 1 MiB,
-and the whole interface is the fixed command list above.
+- The socket's directory must be yours, mode 0700, reached only through
+  directories no other user can change; fux creates the default one so.
+- The socket is mode 0600 before any connection is accepted, and a lock
+  file makes one server its owner.
+- Every peer must run as the server's own user (`SO_PEERCRED` on Linux,
+  `getpeereid` on macOS); others, root included, are refused.
+- Messages are length-prefixed and at most 1 MiB.
 
-## How it works
-
-One server thread runs a `poll` loop over the socket, every client and every
-pane's PTY; there are no other threads and no async runtime. Each pane has a
-PTY and a [`fux-vt`](https://github.com/gold-silver-copper/fux/blob/main/fux-vt) terminal emulator. Layout is a tree of weighted
-splits per tab; each client gets its own rectangles for its own size, and a
-PTY's size is the smallest rectangle any client shows it in. A client is a
-dumb pipe: its keystrokes go to the server as raw bytes and are decoded
-there, and the server paints each client's screen from a cell grid, sending
-only what changed, at most once per 16 ms, inside synchronized output. A
-client that stops reading gets nothing more queued until it catches up, then
-one full repaint.
-
-A program can draw in synchronized output too (`CSI ? 2026 h` … `l`, which
-neovim, helix and lazygit use): its pane holds the frame's output until the
-frame ends, so clients are never shown half of one, and answers DECRQM so
-the program knows it may. A frame is shown anyway after a second, or past
-2 MiB, so a program that stops mid-frame does not freeze its pane. A
-program that asks for in-band resize reports (`CSI ? 2048 h`) gets
-`CSI 48 ; rows ; cols ; 0 ; 0 t` whenever its pane's size changes, once its
-terminal has the new size.
-
-A program that asks its terminal's colours (OSC 10 and 11: vim, delta,
-tmux, to choose a dark or light theme) is told your terminal's: the server
-asks each client's terminal as it attaches, and answers a pane with the
-colours of the client that last typed into its tab, else of one showing
-it, else the last any terminal gave. A terminal that does not answer is
-not asked again, and the program gets no answer, as before. If your
-terminal reports changes between dark and light (mode 2031: Ghostty,
-kitty, contour), fux turns that on while attached, and passes a change on
-to each program that asked for it (`CSI ? 2031 h`: Claude Code, tmux).
-
-A program that changes its colours (OSC 4, the 256-colour palette; OSC
-10 and 11, its foreground and background: theme scripts, base16-shell)
-has them in its own pane: fux paints the cells of a changed entry, and
-the pane's default foreground and background, in the colours it set, so
-the pane looks as it would directly in your terminal, while the other
-panes, and your terminal's own palette, are left as they were (fux never
-sends your terminal OSC 4). Reset (OSC 104, 110, 111), they are your
-terminal's again; `reset` resets the palette, as xterm's does. A program that asks a palette entry (OSC 4
-`?`: zellij asks all 256) is answered with the colour it set, or xterm's
-default for it, which is what `xterm-256color` names; fux does not ask
-your terminal its palette.
-
-Hyperlinks a program prints (OSC 8: `ls --hyperlink`, gcc, delta, Claude
-Code) reach your terminal as links, each with an id of its pane's, so two
-panes' links never merge into one; a terminal that does not know OSC 8
-ignores them. Copy mode copies a link's text, not its URI.
-
-Underline styles (curly, dotted, dashed and double, kitty's `4:n`: neovim
-draws its diagnostics curly, in their colour) reach your terminal if it
-draws them. A program learns that fux keeps them as neovim asks, with
-DECRQSS; the server asks each client's terminal as it attaches, through
-XTGETTCAP (`Smulx`: Ghostty, kitty, WezTerm, foot, iTerm2) and the same
-DECRQSS (VTE), and paints a terminal that says neither (Apple's Terminal,
-xterm, alacritty) a plain underline for each style.
-
-The previous, Bevy-based fux is kept at the tag `bevy-final`.
+Anyone who can open the socket can run anything as you (`split -- CMD`,
+`send-keys`). As with tmux, the socket's permissions are the access
+control.
 
 ## Development
 
-`cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked
--- -D warnings` and `cargo test --workspace --locked` are the gates CI runs
-on Linux and macOS. The tests start real servers and shells: they need
-`/bin/sh`, `/bin/dash` and `python3`, and use zsh where it is installed.
-Packages outside the workspace, each with a README: `walk` (scripted runs of
-the real binary), `diff` (fux beside its last release), `fuzz` and
-`fux-vt/fuzz` (libFuzzer targets), `fux-vt/compare` (fux-vt beside other
-terminals), `bench` (speed against `main`, in instructions retired; and
-latency, throughput and footprint beside tmux and zellij).
-`references/` fetches the specifications fux-vt follows.
+CI runs, on Linux and macOS:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+```
+
+The tests start real servers and shells: they need `/bin/sh`, `/bin/dash`
+and `python3`, and use zsh if installed. Tools outside the workspace, each
+with a README:
+
+- [`fux-vt/compare`](https://github.com/gold-silver-copper/fux/blob/main/fux-vt/compare/README.md):
+  fux's terminal emulator beside other terminals;
+- [`diff`](https://github.com/gold-silver-copper/fux/blob/main/diff/README.md):
+  fux beside its last release;
+- [`bench`](https://github.com/gold-silver-copper/fux/blob/main/bench/README.md):
+  speed, latency and footprint;
+- [`fuzz`](https://github.com/gold-silver-copper/fux/blob/main/fuzz/README.md):
+  libFuzzer targets;
+- [`walk`](https://github.com/gold-silver-copper/fux/blob/main/walk/README.md):
+  scripted runs of the real binary.
 
 ## License
 
