@@ -18,6 +18,15 @@ fn replies(parser: &mut Parser, input: &[u8]) -> std::result::Result<String, fux
     Ok(String::from_utf8_lossy(&out).replace('\x1b', "^["))
 }
 
+/// The cursor, one-based (row, column), as xterm's DSR reports it, after
+/// `input` on a fresh 25 by 80 screen.
+fn cursor_after(input: &[u8]) -> std::result::Result<(u16, u16), fux_vt::Error> {
+    let mut parser = Parser::new(25, 80, 0)?;
+    parser.process(input)?;
+    let (row, col) = parser.screen().cursor_position();
+    Ok((row.saturating_add(1), col.saturating_add(1)))
+}
+
 /// DECSCLM (4), DECSCNM (5), DECNKM (66) and DECBKM (67) are kept as modes,
 /// set and reset, and reported by DECRQM, as xterm 411 keeps them; DECARM
 /// (8) is reported permanently reset, as xterm 411 reports it (esctest
@@ -50,5 +59,79 @@ fn decrqm_reports_the_modes_xterm_keeps() -> Result {
         replies(&mut p, all)?,
         "^[[?4;2$y^[[?5;2$y^[[?8;4$y^[[?66;2$y^[[?67;2$y"
     );
+    Ok(())
+}
+
+/// Reverse wraparound (ctlseqs: `CSI ? 45 h`, XTREVWRAP, and `CSI ? 1045
+/// h`, XTREVWRAP2), with DECAWM: BS and CUB at the first column go on at
+/// the end of the line before. 45 goes back only over a line's soft wraps;
+/// 1045 over any line, from the top margin to the bottom margin. A cursor
+/// waiting to wrap counts as one past the last column. Each expected
+/// position is xterm 411's.
+#[test]
+fn reverse_wraparound_moves_as_xterm_moves() -> Result {
+    let long: String = std::iter::repeat_n('x', 81).collect();
+    let cases: [(&str, (u16, u16)); 14] = [
+        // 45: row 1 is not soft-wrapped, so nothing.
+        ("\x1b[?45h\x1b[2;1H\x08", (2, 1)),
+        // 45: row 1 is, so back to its end.
+        ("\x1b[?45h\x1b[1;1H{long}\x08\x08", (1, 80)),
+        // 1045: from the top to the bottom, the margins first.
+        ("\x1b[?1045h\x1b[1;1H\x08", (25, 80)),
+        ("\x1b[?1045h\x1b[3;5r\x1b[3;1H\x08", (5, 80)),
+        ("\x1b[?1045h\x1b[3;5r\x1b[7;1H\x08", (6, 80)),
+        ("\x1b[?1045h\x1b[3;5r\x1b[3;1H\x1b[200D", (3, 41)),
+        ("\x1b[?1045h\x1b[3;5r\x1b[6;1H{long}\x1b[7;1H\x08", (6, 80)),
+        // A wrap pending: the first column back is the one it waits in.
+        ("\x1b[?45h\x1b[1;79Hab\x08\x08", (1, 79)),
+        ("\x1b[?1045h\x1b[1;80Hx\x08", (1, 80)),
+        // Without DECAWM, nothing.
+        ("\x1b[?7l\x1b[?45h\x1b[1;1H{long}\x1b[2;1H\x08", (2, 1)),
+        ("\x1b[?1045h\x1b[?7l\x1b[2;1H\x08", (2, 1)),
+        // 45 alone after 1045 is reset; CUB counts the wrap as a column.
+        (
+            "\x1b[?1045h\x1b[?45h\x1b[?1045l\x1b[1;1H{long}\x1b[2;1H\x1b[3D",
+            (1, 78),
+        ),
+        // 45 crosses the margins (xterm's, unlike Ghostty's).
+        ("\x1b[?45h\x1b[3;5r\x1b[2;1H{long}\x1b[3;1H\x08", (2, 80)),
+        ("\x1b[?45h\x1b[1;1H{long}{long}\x1b[3;1H\x1b[3D", (2, 78)),
+    ];
+    for (sequence, expected) in cases {
+        let input = sequence.replace("{long}", &long);
+        assert_eq!(cursor_after(input.as_bytes())?, expected, "{input:?}");
+    }
+    Ok(())
+}
+
+/// Where xterm 411 crashes (45 past a soft-wrapped first row) or puts the
+/// cursor above the screen (1045 above the top margin), fux-vt stops at the
+/// first row, as Ghostty does.
+#[test]
+fn reverse_wraparound_stops_at_the_first_row() -> Result {
+    let long: String = std::iter::repeat_n('x', 81).collect();
+    let past = format!("\x1b[?45h\x1b[1;1H{long}\x1b[2;1H\x1b[200D");
+    assert_eq!(cursor_after(past.as_bytes())?, (1, 1));
+    assert_eq!(
+        cursor_after(b"\x1b[?45h\x1b[3;5r\x1b[1;5H\x08\x08\x08\x08\x08\x08")?,
+        (1, 1)
+    );
+    assert_eq!(cursor_after(b"\x1b[?1045h\x1b[3;5r\x1b[1;1H\x08")?, (1, 1));
+    Ok(())
+}
+
+/// The modes are reported by DECRQM; DECSTR and RIS reset both, as xterm
+/// 411 does.
+#[test]
+fn reverse_wraparound_is_a_mode() -> Result {
+    let mut p = Parser::with_options(25, 80, 0, MODES)?;
+    let both = b"\x1b[?45$p\x1b[?1045$p";
+    assert_eq!(replies(&mut p, both)?, "^[[?45;2$y^[[?1045;2$y");
+    p.process(b"\x1b[?45;1045h")?;
+    assert_eq!(replies(&mut p, both)?, "^[[?45;1$y^[[?1045;1$y");
+    p.process(b"\x1b[!p")?;
+    assert_eq!(replies(&mut p, both)?, "^[[?45;2$y^[[?1045;2$y");
+    p.process(b"\x1b[?45;1045h\x1bc")?;
+    assert_eq!(replies(&mut p, both)?, "^[[?45;2$y^[[?1045;2$y");
     Ok(())
 }

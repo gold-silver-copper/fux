@@ -26,14 +26,13 @@
 # in xterm, are skipped and not listed.
 
 APCTests.test_APC_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
-BSTests.test_BS_AfterNoWrappedInlines  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
-BSTests.test_BS_AfterOneWrappedInline  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
-BSTests.test_BS_ReverseWrapGoesToBottom  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
-BSTests.test_BS_ReverseWrapStartingInDoWrapPosition  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
+BSTests.test_BS_AfterNoWrappedInlines  xterm-too: reverse wraparound as xterm does it since patch 383 (mode 45 goes back only over soft-wrapped lines; 1045 is the older wrap, README): esctest, run without --xterm-reverse-wrap=383, expects the older behaviour, and xterm 411 fails it the same way
+BSTests.test_BS_AfterOneWrappedInline  xterm-too: reverse wraparound as xterm does it since patch 383 (mode 45 goes back only over soft-wrapped lines; 1045 is the older wrap, README): esctest, run without --xterm-reverse-wrap=383, expects the older behaviour, and xterm 411 fails it the same way
+BSTests.test_BS_ReverseWrapGoesToBottom  xterm-too: reverse wraparound as xterm does it since patch 383 (mode 45 goes back only over soft-wrapped lines; 1045 is the older wrap, README): esctest, run without --xterm-reverse-wrap=383, expects the older behaviour, and xterm 411 fails it the same way
 BSTests.test_BS_ReverseWrapWithLeftRight  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 BSTests.test_BS_ReversewrapFromLeftEdgeToRightMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 BSTests.test_BS_StopsAtLeftMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-BSTests.test_BS_WrapsInWraparoundMode  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
+BSTests.test_BS_WrapsInWraparoundMode  xterm-too: reverse wraparound as xterm does it since patch 383 (mode 45 goes back only over soft-wrapped lines; 1045 is the older wrap, README): esctest, run without --xterm-reverse-wrap=383, expects the older behaviour, and xterm 411 fails it the same way
 CHATests.test_CHA_RespectsOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 CHTTests.test_CHT_IgnoresScrollingRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 CNLTests.test_CNL_StopsAtBottomLineWhenBegunBelowScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
@@ -43,8 +42,8 @@ CPLTests.test_CPL_StopsAtTopMarginInScrollRegion  not-implemented: left and righ
 CRTests.test_CR_MovesToLeftMarginWhenLeftOfLeftMarginInOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 CRTests.test_CR_MovesToLeftMarginWhenRightOfLeftMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 CRTests.test_CR_StaysPutWhenAtLeftMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-CUBTests.test_CUB_AfterNoWrappedInlines  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
-CUBTests.test_CUB_AfterOneWrappedInline  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
+CUBTests.test_CUB_AfterNoWrappedInlines  xterm-too: reverse wraparound as xterm does it since patch 383 (mode 45 goes back only over soft-wrapped lines; 1045 is the older wrap, README): esctest, run without --xterm-reverse-wrap=383, expects the older behaviour, and xterm 411 fails it the same way
+CUBTests.test_CUB_AfterOneWrappedInline  xterm-too: reverse wraparound as xterm does it since patch 383 (mode 45 goes back only over soft-wrapped lines; 1045 is the older wrap, README): esctest, run without --xterm-reverse-wrap=383, expects the older behaviour, and xterm 411 fails it the same way
 CUBTests.test_CUB_StopsAtLeftMarginInScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 CUFTests.test_CUF_StopsAtRightMarginInScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 CUPTests.test_CUP_RespectsOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
@@ -197,9 +196,7 @@ DECSETTests.test_DECSET_DECLRMM  not-implemented: left and right margins (DECLRM
 DECSETTests.test_DECSET_DECOM  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 DECSETTests.test_DECSET_DECOM_DECRQCRA  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 DECSETTests.test_DECSET_MoreFix  not-implemented: xterm's more(1) fix (mode 41), a curses workaround of xterm's own; no program in the corpus sets it
-DECSETTests.test_DECSET_ReverseWraparoundLastCol_BS  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
-DECSETTests.test_DECSET_ReverseWraparound_BS  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
-DECSETTests.test_DECSET_ReverseWraparound_Multi  not-implemented: reverse wraparound (mode 45), and xterm's extended reverse wrap (1045); no program in the corpus sets them
+DECSETTests.test_DECSET_ReverseWraparound_BS  xterm-too: reverse wraparound as xterm does it since patch 383 (mode 45 goes back only over soft-wrapped lines; 1045 is the older wrap, README): esctest, run without --xterm-reverse-wrap=383, expects the older behaviour, and xterm 411 fails it the same way
 DLTests.test_DL_ClearOutLeftRightAndTopBottomScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 DLTests.test_DL_InLeftRightAndTopBottomScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 DLTests.test_DL_InLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
