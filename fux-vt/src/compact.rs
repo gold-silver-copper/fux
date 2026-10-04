@@ -51,6 +51,14 @@ const WIDE: u32 = 1 << 29;
 const HALVES: u32 = WIDE | CONTINUATION;
 /// The text is in the row's text.
 const SPILLED: u32 = 1 << 30;
+/// The glyph is protected from selective erase (DECSCA 1, or SPA): the
+/// word's last bit, so a protected cell costs nothing more. Only a glyph
+/// printed while the pen protects has it; a blank, and a wide glyph's
+/// second half, never do (its first half's says).
+pub(crate) const PROTECTED: u32 = 1 << 31;
+/// What a cell keeps of its word when its text changes: all but where
+/// the text is.
+const KEPT: u32 = STYLE | HALVES | PROTECTED;
 const _: () = assert!(HALVES >> 22 == Cell::HALVES as u32);
 
 /// The longest cluster a short one is: what a [`Cell`] holds inline.
@@ -69,7 +77,8 @@ impl Compact {
             word: style & STYLE,
         }
     }
-    /// The glyph `c`, `width` columns wide, in style `style`.
+    /// The glyph `c`, `width` columns wide, in style `style`, protected
+    /// if `style` has [`PROTECTED`] too.
     #[inline]
     pub(crate) fn glyph(c: char, width: usize, style: u32) -> Self {
         // A char is at most four UTF-8 bytes; the rest stay zeros.
@@ -77,15 +86,16 @@ impl Compact {
         c.encode_utf8(&mut text);
         Self {
             text,
-            word: (style & STYLE) | if width == 2 { WIDE } else { 0 },
+            word: (style & (STYLE | PROTECTED)) | if width == 2 { WIDE } else { 0 },
         }
     }
-    /// The ASCII character `byte` in style `style`.
+    /// The ASCII character `byte` in style `style`, protected if `style`
+    /// has [`PROTECTED`] too.
     #[inline]
     pub(crate) fn ascii(byte: u8, style: u32) -> Self {
         Self {
             text: [byte, 0, 0, 0],
-            word: style & STYLE,
+            word: style & (STYLE | PROTECTED),
         }
     }
     /// The second half of a wide glyph: no text, the default style.
@@ -136,9 +146,14 @@ impl Compact {
     pub(crate) fn is_spilled(&self) -> bool {
         self.word & SPILLED != 0
     }
+    /// Whether the glyph is protected from selective erase (DECSCA, SPA).
+    #[inline]
+    pub(crate) fn is_protected(&self) -> bool {
+        self.word & PROTECTED != 0
+    }
     /// Whether the cell, of a row whose text is `text`, holds what `other`,
-    /// of a row whose text is `other_text`, holds: the same text, halves
-    /// and style, wherever each row keeps its text.
+    /// of a row whose text is `other_text`, holds: the same text, halves,
+    /// style and protection, wherever each row keeps its text.
     pub(crate) fn same_as(&self, text: &Text, other: &Self, other_text: &Text) -> bool {
         if !self.is_spilled() && !other.is_spilled() {
             return self == other;
@@ -222,7 +237,7 @@ impl Compact {
             .is_some();
         Self {
             text: if fits { bytes } else { [0; 4] },
-            word: self.word & (STYLE | HALVES),
+            word: self.word & KEPT,
         }
     }
     /// The cell, keeping its halves and style, locating `len` bytes of its
@@ -231,7 +246,7 @@ impl Compact {
         match start.to_le_bytes() {
             [a, b, c, 0] => Self {
                 text: [a, b, c, len],
-                word: (self.word & (STYLE | HALVES)) | SPILLED,
+                word: (self.word & KEPT) | SPILLED,
             },
             _ => self.blanked(),
         }

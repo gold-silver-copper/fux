@@ -125,7 +125,7 @@ DECRQSSTests.test_DECRQSS_DECELF  xterm-too: esctest's known xterm bug (Not impl
 DECRQSSTests.test_DECRQSS_DECLFKC  xterm-too: esctest's known xterm bug (Not implemented.)
 DECRQSSTests.test_DECRQSS_DECSACE  not-implemented: rectangle operations (DECFRA, DECERA, DECCRA, DECCARA, DECRARA, DECSACE); no program in the corpus sends them
 DECRQSSTests.test_DECRQSS_DECSASD  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the margins (r), what neovim and vim ask (corpus); fux-vt keeps no other setting it reports
-DECRQSSTests.test_DECRQSS_DECSCA  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+DECRQSSTests.test_DECRQSS_DECSCA  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the top and bottom margins (r), what neovim and vim ask (corpus); not for DECSCA (" q), which no program in the corpus asks
 DECRQSSTests.test_DECRQSS_DECSCL  not-implemented: conformance levels (DECSCL, CSI Pl ; Pc " p); no program in the corpus sends it
 DECRQSSTests.test_DECRQSS_DECSLPP  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the margins (r), what neovim and vim ask (corpus); fux-vt keeps no other setting it reports
 DECRQSSTests.test_DECRQSS_DECSLRM  not-implemented: DECRQSS is answered for the pen (m), the cursor shape (SP q) and the top and bottom margins (r), what neovim and vim ask (corpus); not for DECSLRM (s), which no program in the corpus asks
@@ -135,32 +135,18 @@ DECRQSSTests.test_DECRQSS_DECSSDT  not-implemented: DECRQSS is answered for the 
 DECSCLTests.test_DECSCL_Level2DoesntSupportDECRQM  not-implemented: conformance levels (DECSCL, CSI Pl ; Pc " p); no program in the corpus sends it
 DECSCLTests.test_DECSCL_Level4_SupportsDECSLRMDoesntSupportDECNCSM  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
 DECSCLTests.test_DSCSCL_Level3_SupportsDECRQMDoesntSupportDECSLRM  not-implemented: conformance levels (DECSCL, CSI Pl ; Pc " p); no program in the corpus sends it. fux-vt is a VT420 or more throughout: at level 3 DECSLRM still sets margins (it passed while fux-vt had no left and right margins at all)
-DECSEDTests.test_DECSED_0_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSEDTests.test_DECSED_0_WithScrollRegion_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSEDTests.test_DECSED_1_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSEDTests.test_DECSED_1_WithScrollRegion_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSEDTests.test_DECSED_2_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSEDTests.test_DECSED_2_WithScrollRegion_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSEDTests.test_DECSED_DECSCA_2  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSEDTests.test_DECSED_Default_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSELTests.test_DECSEL_0_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSELTests.test_DECSEL_1_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSELTests.test_DECSEL_2_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSELTests.test_DECSEL_Default_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSELTests.test_DECSEL_IgnoresScrollRegion_Protection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSERATests.test_DECSERA_basic  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSERATests.test_DECSERA_defaultArgs  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-DECSERATests.test_DECSERA_doesNotRespectISOProtect  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+DECSEDTests.test_DECSED_doesNotRespectISOProtect  xterm-too: DECSED and DECSEL leave ISO-protected glyphs (SPA, EPA) alone, as xterm does for compatibility (esctest's known xterm bug); fux-vt follows xterm (README)
+DECSELTests.test_DECSEL_doesNotRespectISOProtect  xterm-too: DECSED and DECSEL leave ISO-protected glyphs (SPA, EPA) alone, as xterm does for compatibility (esctest's known xterm bug); fux-vt follows xterm (README)
+DECSERATests.test_DECSERA_basic  not-implemented: DECSERA (selective erase of a rectangle), a rectangle operation as DECFRA, DECERA, DECCRA, DECCARA, DECRARA and DECSACE are; no program in the corpus sends them
+DECSERATests.test_DECSERA_defaultArgs  not-implemented: DECSERA (selective erase of a rectangle), a rectangle operation as DECFRA, DECERA, DECCRA, DECCARA, DECRARA and DECSACE are; no program in the corpus sends them
+DECSERATests.test_DECSERA_doesNotRespectISOProtect  not-implemented: DECSERA (selective erase of a rectangle), a rectangle operation as DECFRA, DECERA, DECCRA, DECCARA, DECRARA and DECSACE are; no program in the corpus sends them
 DECSERATests.test_DECSERA_ignoresMargins  not-implemented: DECSERA (selective erase of a rectangle), a rectangle operation as DECFRA, DECERA, DECCRA, DECCARA, DECRARA and DECSACE are; no program in the corpus sends them
-DECSERATests.test_DECSERA_overlyLargeSourceClippedToScreenSize  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
+DECSERATests.test_DECSERA_overlyLargeSourceClippedToScreenSize  not-implemented: DECSERA (selective erase of a rectangle), a rectangle operation as DECFRA, DECERA, DECCRA, DECCARA, DECRARA and DECSACE are; no program in the corpus sends them
 DECSERATests.test_DECSERA_respectsOriginMode  not-implemented: DECSERA (selective erase of a rectangle), a rectangle operation as DECFRA, DECERA, DECCRA, DECCARA, DECRARA and DECSACE are; no program in the corpus sends them
 DECSETTests.test_DECSET_Allow80To132  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
 DECSETTests.test_DECSET_DECCOLM  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
 DECSETTests.test_DECSET_MoreFix  not-implemented: xterm's more(1) fix (mode 41), a curses workaround of xterm's own; no program in the corpus sets it
 DECSETTests.test_DECSET_ReverseWraparound_BS  xterm-too: reverse wraparound as xterm does it since patch 383 (mode 45 goes back only over soft-wrapped lines; 1045 is the older wrap, README): esctest, run without --xterm-reverse-wrap=383, expects the older behaviour, and xterm 411 fails it the same way
-ECHTests.test_ECH_respectsISOProtection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-EDTests.test_ED_respectsISOProtection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
-ELTests.test_EL_respectsISOProtection  not-implemented: protected cells (DECSCA, SPA/EPA) and selective erase (DECSED, DECSEL, DECSERA); no program in the corpus sends them
 HTSTests.test_HTS_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
 INDTests.test_IND_8bit  xterm-too: 8-bit controls, which esctest expects only with its disableWideChars option; in UTF-8, as fux-vt reads its input, C1 bytes are not controls, as in xterm
 ManipulateSelectionDataTests.test_ManipulateSelectionData_default  xterm-too: needs window operations xterm leaves off by default (esctest's xtermWinopsEnabled: title reports, OSC 52 reads); fux-vt does no window operations for programs

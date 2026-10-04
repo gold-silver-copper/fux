@@ -962,6 +962,53 @@ impl Grid {
         }
     }
 
+    /// `erase`, leaving protected glyphs (DECSCA, SPA) as they are: each
+    /// run of unprotected cells between them is erased, as xterm's
+    /// `ClearInLine2` erases around them. A wide glyph's second half is
+    /// protected if its first half is. Whether there was a protected glyph
+    /// in the span.
+    #[inline(never)]
+    pub fn erase_unprotected(
+        &mut self,
+        row: u16,
+        start: u16,
+        end: u16,
+        style: u32,
+        version: u64,
+    ) -> bool {
+        let end = end.min(self.cols.get());
+        let cells = self.live_cells(row);
+        let protected = |at: usize| {
+            cells.get(at).is_some_and(|c| {
+                c.is_protected()
+                    || c.is_wide_continuation()
+                        && at
+                            .checked_sub(1)
+                            .and_then(|i| cells.get(i))
+                            .is_some_and(Compact::is_protected)
+            })
+        };
+        let mut runs = Vec::new();
+        let mut from = start;
+        let mut found = false;
+        for col in start..end {
+            if protected(usize::from(col)) {
+                found = true;
+                if from < col {
+                    runs.push((from, col));
+                }
+                from = col.saturating_add(1);
+            }
+        }
+        if from < end {
+            runs.push((from, end));
+        }
+        for (from, to) in runs {
+            self.erase(row, from, to, style, version);
+        }
+        found
+    }
+
     /// ICH and DCH, at the cursor, which they leave where it is; they end
     /// a pending wrap (DEC STD 070, Appendix D.6.1). The cells they bring
     /// in are blank in `blank`. DCH ends the row's soft wrap; ICH, and the
