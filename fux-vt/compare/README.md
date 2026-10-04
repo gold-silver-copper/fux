@@ -36,7 +36,7 @@ runs alone.
 
 | Command | When | Budget | What |
 | --- | --- | --- | --- |
-| `run.sh quick` | before a commit | 1 minute (40 s here) | the corpus beside xterm and the panel, and again with Ghostty judged in fux-vt's place (`corpus-ghostty.json`); transparency through fux on every recording; 2,000 random cases; the named cases beside every engine |
+| `run.sh quick` | before a commit | 1 minute (40 s here) | the corpus beside xterm and the panel, and again with Ghostty judged in fux-vt's place (`corpus-ghostty.json`); transparency through fux on every recording; 2,000 random cases; the named cases beside every engine; the oracle, fux-vt beside the merge base with main on every observable (`diff/oracle.sh`, `diff/README.md`) |
 | `run.sh full` | before a PR | 10 minutes | `quick`; 20,000 random cases with reflow, as fux and ratty set fux-vt up, and without; esctest directly, and against Ghostty's core with fux-vt beside it; instructions against main (`bench/`); each engine's memory (`footprint`, 5 s) and instructions per byte (`bench --instructions`, under a minute) |
 | `run.sh deep` | before a release, or when hunting | none; it prints its estimate | `full`; `verdicts` beside xterm, seeds 1–20 (`FUX_DEEP_SEEDS`); esctest in a fux pane; transparency through tmux and zellij; `fux-bench feel` and `info`; 10 minutes of fuzzing |
 | `run.sh fuzz [MINUTES]` | by hand | MINUTES (10) | every fuzz target in turn, from its stored corpus and what earlier runs here found; a crash is minimized (`cargo fuzz tmin`) and listed, to be made a test |
@@ -1073,7 +1073,7 @@ side by side:
 | `src/engines/*.rs` | one adapter per engine, each documenting its quirks; `pane.rs` is what tmux and xterm share (the pane program, syncing, SGR decoding) |
 | `node/` | the xterm.js server and its pinned packages |
 | `src/case.rs` | running, voting, generating and shrinking cases; reports |
-| `src/families.rs` | the families: generators, statuses and reasons |
+| `src/families.rs` | the families: generators, statuses and reasons; `diff/oracle` includes it by path to draw its random cases, so it must stay free of anything but `crate::rng` and pass `diff`'s lints |
 | `src/cases.rs` | the named cases |
 | `src/snapshot.rs` | what is compared, field by field, and the side-by-side view |
 | `src/transparency.rs` | `transparency`: each recording directly and through fux, tmux and zellij |
@@ -1086,7 +1086,7 @@ side by side:
 | `src/esctest.rs` | `esctest`: esctest2 against fux-vt, an engine, a fux pane or xterm; the comparison of two terminals |
 | `src/answering.rs` | an engine as the terminal a program talks to: its replies, and DECRQCRA from its screen |
 | `esctest-expected.txt`, `esctest-expected-ghostty.txt` | the esctest tests fux-vt and Ghostty's core fail, each with its reason |
-| `src/rng.rs` | splitmix64, as in `diff/` |
+| `src/rng.rs` | splitmix64, as in `diff/`; `diff/oracle` includes it by path, for the families |
 | `src/record.rs` | `record`: a program on a PTY, its output recorded, fux-vt answering its queries |
 | `src/corpus.rs` | the recordings: loading, replaying beside the engines, their statuses |
 | `src/inventory.rs` | what the recordings send, and what fux-vt does with it |
