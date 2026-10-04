@@ -250,8 +250,6 @@ SUTests.test_SU_OutsideLeftRightScrollRegion  not-implemented: left and right ma
 SUTests.test_SU_RespectsLeftRightScrollRegion  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 VPRTests.test_VPR_IgnoresOriginMode  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 VTTests.test_VT_MovesDoesNotScrollOutsideLeftRight  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-XtermSaveTests.test_XtermSave_SaveResetState  not-implemented: XTSAVE and XTRESTORE (CSI ? Pm s, CSI ? Pm r), xterm's saved private modes; no program in the corpus sends them
-XtermSaveTests.test_XtermSave_SaveSetState  not-implemented: XTSAVE and XTRESTORE (CSI ? Pm s, CSI ? Pm r), xterm's saved private modes; no program in the corpus sends them
 XtermWinopsTests.test_XtermWinops_DECSLPP  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
 XtermWinopsTests.test_XtermWinops_Fullscreen  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"
 XtermWinopsTests.test_XtermWinops_IconifyDeiconfiy  departure: window operations from programs (resizing, moving, iconifying, 132 columns, the title stack's reports) are refused, fux-vt README "Deliberate boundary"

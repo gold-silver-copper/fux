@@ -135,3 +135,42 @@ fn reverse_wraparound_is_a_mode() -> Result {
     assert_eq!(replies(&mut p, both)?, "^[[?45;2$y^[[?1045;2$y");
     Ok(())
 }
+
+/// XTSAVE and XTRESTORE (ctlseqs: `CSI ? Pm s`, `CSI ? Pm r`): each mode
+/// listed saved, and set back as it was saved; one never saved is restored
+/// reset, as in xterm 411 (`CSI ? 7 r` turns autowrap off), and RIS and
+/// DECSTR keep what was saved, as xterm 411 does. esctest's
+/// XtermSave_SaveSetState and _SaveResetState: autowrap.
+#[test]
+fn xtsave_and_xtrestore_save_and_restore_modes() -> Result {
+    let mut p = Parser::with_options(25, 80, 0, MODES)?;
+    p.process(b"\x1b[?7h\x1b[?7s\x1b[?7l\x1b[?7r")?;
+    assert!(p.screen().autowrap());
+    p.process(b"\x1b[?7l\x1b[?7s\x1b[?7h\x1b[?7r")?;
+    assert!(!p.screen().autowrap());
+    let mut p = Parser::with_options(25, 80, 0, MODES)?;
+    p.process(b"\x1b[?25;2004;1;45s\x1b[?25l\x1b[?2004h\x1b[?1h\x1b[?45h\x1b[?25;2004;1;45r")?;
+    let s = p.screen();
+    assert!(!s.hide_cursor() && !s.bracketed_paste() && !s.application_cursor());
+    assert_eq!(replies(&mut p, b"\x1b[?45$p")?, "^[[?45;2$y");
+    // Never saved: reset.
+    let mut p = Parser::with_options(25, 80, 0, MODES)?;
+    p.process(b"\x1b[?7r")?;
+    assert!(!p.screen().autowrap());
+    // RIS and DECSTR keep what was saved; a later save replaces it.
+    let mut p = Parser::with_options(25, 80, 0, MODES)?;
+    p.process(b"\x1b[?1h\x1b[?1s\x1bc\x1b[?1r")?;
+    assert!(p.screen().application_cursor());
+    p.process(b"\x1b[?1l\x1b[!p\x1b[?1r")?;
+    assert!(p.screen().application_cursor());
+    p.process(b"\x1b[?2004h\x1b[?2004s\x1b[?2004l\x1b[?2004s\x1b[?2004h\x1b[?2004r")?;
+    assert!(!p.screen().bracketed_paste());
+    // The alternate screen, saved off and restored, is left.
+    p.process(b"\x1b[?1049s\x1b[?1049h\x1b[?1049r")?;
+    assert!(!p.screen().alternate_screen());
+    // A mode fux-vt does not keep, or one with a colon, changes nothing.
+    let mut p = Parser::with_options(25, 80, 0, MODES)?;
+    p.process(b"\x1b[?7;12;9999s\x1b[?7l\x1b[?12;9999r\x1b[?7:1r")?;
+    assert!(!p.screen().autowrap());
+    Ok(())
+}
