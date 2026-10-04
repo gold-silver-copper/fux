@@ -14,6 +14,9 @@ pub(crate) struct Parameters {
     /// True when this value continues the previous colon-delimited group.
     sub: [bool; 32],
     len: usize,
+    /// Whether any value continues a group (a `:` was read): until one
+    /// does, each value is a group of its own, and `sub` is not read.
+    colons: bool,
 }
 impl Default for Parameters {
     fn default() -> Self {
@@ -21,6 +24,7 @@ impl Default for Parameters {
             values: [0; 32],
             sub: [false; 32],
             len: 1,
+            colons: false,
         }
     }
 }
@@ -46,13 +50,39 @@ impl Parameters {
             *value = 0;
         }
         self.len = len;
+        self.colons |= colon;
         true
+    }
+    /// `separator` for a reader that keeps the parameter being read and
+    /// how many there are itself (`Parser::sequence`): the parameter
+    /// `len` ends with `value`, and the next begins, continuing its group
+    /// if `colon`. The new count, or `None`, with nothing changed, where
+    /// `separator` refuses one past the last slot.
+    #[inline]
+    fn next(&mut self, len: usize, value: u16, colon: bool) -> Option<usize> {
+        let more = len.checked_add(1).filter(|n| *n <= self.values.len())?;
+        self.end(len, value);
+        if let Some(sub) = self.sub.get_mut(len) {
+            *sub = colon;
+        }
+        self.colons |= colon;
+        Some(more)
+    }
+    /// The parameters as such a reader leaves them: `len` of them, the
+    /// last `value`.
+    #[inline]
+    fn end(&mut self, len: usize, value: u16) {
+        if let Some(slot) = len.checked_sub(1).and_then(|i| self.values.get_mut(i)) {
+            *slot = value;
+        }
+        self.len = len;
     }
     /// Back to one empty parameter, touching only what `separator` and
     /// `digit` read: a sequence is begun on every ESC, so this is kept to
-    /// two stores rather than rewriting all the parameters.
+    /// three stores rather than rewriting all the parameters.
     fn clear(&mut self) {
         self.len = 1;
+        self.colons = false;
         if let Some(value) = self.values.first_mut() {
             *value = 0;
         }
@@ -64,7 +94,7 @@ impl Parameters {
                 return None;
             }
             let mut end = start.checked_add(1)?;
-            while end < self.len && self.sub.get(end).copied().unwrap_or(false) {
+            while self.colons && end < self.len && self.sub.get(end).copied().unwrap_or(false) {
                 end = end.checked_add(1)?;
             }
             let result = self.values.get(start..end);
@@ -76,14 +106,29 @@ impl Parameters {
     fn is_empty(&self) -> bool {
         self.len == 1 && self.values.first() == Some(&0)
     }
+    /// The first value of the group `index`, or `default` if it is 0 or
+    /// there is no such group. Without colons the group is the value: a
+    /// load, inlined into every caller, where a sequence with colons asks
+    /// `grouped` out of line.
+    #[inline(always)]
     pub fn first(&self, index: usize, default: u16) -> u16 {
-        let value = self
-            .groups()
-            .nth(index)
-            .and_then(|g| g.first())
-            .copied()
-            .unwrap_or(0);
-        if value == 0 { default } else { value }
+        let value = if self.colons {
+            self.grouped(index)
+        } else {
+            self.values
+                .get(..self.len)
+                .and_then(|v| v.get(index))
+                .copied()
+        };
+        match value {
+            Some(0) | None => default,
+            Some(value) => value,
+        }
+    }
+    /// The first value of the group `index`, if there is one.
+    #[inline(never)]
+    fn grouped(&self, index: usize) -> Option<u16> {
+        self.groups().nth(index).and_then(|g| g.first()).copied()
     }
 }
 
@@ -725,33 +770,48 @@ impl Parser {
         self.reset_sequence();
         self.state = State::Escape;
         let mut taken = (1, 0x1b);
-        let mut rest = bytes.iter().enumerate().skip(1);
+        let rest = bytes.iter().enumerate().skip(1);
         if bytes.get(1) == Some(&b'[') {
-            rest.next();
-            self.state = State::CsiEntry;
+            // The parameter being read and how many there are, kept here
+            // rather than in `params` until the sequence ends or this does:
+            // one empty one, as `reset_sequence` left them.
+            let (mut len, mut value) = (1usize, 0u16);
+            let mut entry = true;
             taken = (2, b'[');
-            for (i, &byte) in rest {
+            for (i, &byte) in rest.skip(1) {
                 let next = (i.saturating_add(1), byte);
                 match byte {
-                    b'0'..=b'9' => self.params.digit(byte),
-                    b';' | b':' => {
-                        if !self.params.separator(byte == b':') {
+                    b'0'..=b'9' => {
+                        let digit = u16::from(byte.saturating_sub(b'0'));
+                        value = value.saturating_mul(10).saturating_add(digit);
+                    }
+                    b';' | b':' => match self.params.next(len, value, byte == b':') {
+                        Some(more) => (len, value) = (more, 0),
+                        None => {
+                            self.params.end(len, value);
                             self.state = State::CsiIgnore;
                             return Ok(next);
                         }
-                    }
-                    0x3c..=0x3f if self.state == State::CsiEntry => self.collect(byte),
+                    },
+                    0x3c..=0x3f if entry => self.collect(byte),
                     0x40..=0x7e => {
+                        self.params.end(len, value);
                         self.state = State::Ground;
                         self.csi_dispatch(byte, sink)?;
                         self.screen.forget_repeat();
                         return Ok(next);
                     }
-                    _ => return Ok(taken),
+                    _ => break,
                 }
-                self.state = State::CsiParam;
+                entry = false;
                 taken = next;
             }
+            self.params.end(len, value);
+            self.state = if entry {
+                State::CsiEntry
+            } else {
+                State::CsiParam
+            };
             return Ok(taken);
         }
         for (i, &byte) in rest {
