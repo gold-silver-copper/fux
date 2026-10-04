@@ -1,180 +1,116 @@
-# Coverage-guided targets for fux (macOS)
+# fux's fuzz targets
 
-This excluded workspace has its own lockfile. It depends only on
-libfuzzer-sys, fux and fux-vt by path; fux's own dependencies are unchanged.
-fux-vt's parser has its own target in `fux-vt/fuzz`.
-
-Verified tooling: cargo-fuzz 0.13.2, `rustc +nightly --version` =
-`rustc 1.100.0-nightly (bba531001 2026-09-20)`, Darwin arm64. From repository
-root:
+An excluded workspace with its own lockfile, depending only on
+libfuzzer-sys and fux and fux-vt by path. fux-vt's own targets are in
+`fux-vt/fuzz`, and the fux-vt oracle's in `diff/fuzz`.
 
 ```sh
-cargo fmt --manifest-path fuzz/Cargo.toml --all --check
 cargo +nightly fuzz build --fuzz-dir fuzz
 cargo +nightly fuzz run TARGET --fuzz-dir fuzz -- -max_total_time=600 -max_len=4096 -rss_limit_mb=1024 -timeout=25
+ASAN_OPTIONS=quarantine_size_mb=16 cargo +nightly fuzz run session --fuzz-dir fuzz -- \
+  -dict=fuzz/session.dict -max_total_time=600 -max_len=4096 -rss_limit_mb=1024 -timeout=25
 ```
 
-`TARGET` is one of `protocol`, `keys`, `paint`, `layout`, `config` or
-`session`. `-timeout=25` makes a hang a failure within the run; libFuzzer's
-own default is 1200 s, longer than the run. `config` and `session` take a
-dictionary of their words and keys, after the `--`:
-`-dict=fuzz/config.dict` or `-dict=fuzz/session.dict`. `session` also needs a
-smaller AddressSanitizer quarantine, set in the environment:
+- `TARGET` is `protocol`, `keys`, `paint`, `layout`, `config` or `session`.
+- `-timeout=25` makes a hang fail within the run (libFuzzer's default is
+  1200 s).
+- `config` and `session` take a dictionary: `-dict=fuzz/config.dict`,
+  `-dict=fuzz/session.dict`.
+- `session` needs `ASAN_OPTIONS=quarantine_size_mb=16`: it frees millions
+  of small allocations, and with the default 256 MB quarantine RSS passes
+  1 GB within minutes. A smaller quarantine only shortens how long a freed
+  allocation is watched, which safe Rust makes moot.
 
-```sh
-ASAN_OPTIONS=quarantine_size_mb=16 cargo +nightly fuzz run session --fuzz-dir fuzz -- -dict=fuzz/session.dict -max_total_time=600 -max_len=4096 -rss_limit_mb=1024 -timeout=25
-```
+Where they run:
 
-Each `session` run is small (the largest input in a 600-second corpus peaked
-at 146 MB alone, and 38 MB was live when the limit hit), but it frees
-millions of small allocations. With the default 256 MB quarantine, the
-allocator keeps taking fresh memory for them, and RSS passed 1024 MB within
-five minutes; without the sanitizer it levels off at about 140 MB. At 16 MB, a
-600-second run peaked at 437 MB. A smaller quarantine only shortens how long a freed
-allocation is watched for use after free, which safe Rust rules out anyway.
+- **CI** (`.github/workflows/fuzz.yml`, nightly and on request, cargo-fuzz
+  0.13.2) replays each target's stored corpus (`-runs=0`); `cargo test`
+  does not. CI's "Excluded packages" step runs fmt, clippy and `cargo test`
+  on this workspace on every push.
+- **`fux-vt/compare/run.sh fuzz`** (and `run.sh deep`) fuzzes every target
+  here, in fux-vt and the oracle for a share of the time each, and lists
+  any crash.
 
 ## Targets
 
+Every target checks that nothing panics. Each target's input format is
+documented at the top of its file in `fuzz_targets/`.
+
 **`protocol`**: bytes from a peer on the server's socket, into
-`protocol::Decoder`.
-- Input: one byte choosing a piece size (0 is the whole stream at once), then
-  the stream.
-- Each target checks:
-  - nothing panics;
-  - after the frames are drained, `buffered()` is under `4 + MAX_FRAME`. All
-    it holds is one incomplete frame, whose header claimed at most `MAX_FRAME`;
-  - the frames and the first error are the same pushed whole, in pieces, and
-    byte by byte;
-  - each decoded frame, re-encoded with `Frame::encode`, decodes back to itself;
-  - encoded with `Frame::encode_into` after other bytes, it is the same bytes
-    after them; and a paint, stdout or stderr frame is what `Stream::encode_into`
-    writes for its payload, nothing for an empty one.
+`protocol::Decoder`, whole or in pieces of a size the first byte picks.
+- The frames and first error are the same pushed whole, in pieces and byte
+  by byte.
+- After draining, `buffered()` is under `4 + MAX_FRAME`.
+- Each frame round-trips through `Frame::encode`; `Frame::encode_into`
+  after other bytes appends the same bytes; a paint, stdout or stderr frame
+  is what `Stream::encode_into` writes for its payload.
 
-**`keys`**: an attached client's terminal bytes, into `decode::Decoder`, with
-the Escape deadline passing only at the end.
-- Input: one byte choosing a piece size, then the stream.
-- The inputs are the same whole, in pieces, and byte by byte.
-- No paste text is longer than `PASTE_LIMIT` chars. The limit counts pasted
-  bytes, and invalid UTF-8 becomes U+FFFD, three bytes, so the text is bounded
-  in chars, one per byte, not in bytes.
+**`keys`**: a client's terminal bytes, into `decode::Decoder`, the Escape
+deadline passing only at the end.
+- The inputs are the same whole, in pieces and byte by byte.
+- No paste is longer than `PASTE_LIMIT` chars (the limit counts bytes, and
+  invalid UTF-8 becomes U+FFFD, so the text is bounded in chars).
 
-**`paint`**: `render::paint` diffs, applied to a fux-vt terminal.
-- Input: two bytes for the size, 1–40 rows by 1–120 columns, where `ff ff` is
-  one row of `u16::MAX` columns. Then a flags byte (bits 0 and 1: old and new
-  cursors; bit 2: a new size of its own, which forces a full repaint), the
-  cursors, and four-byte cell writes.
-- Glyphs are ASCII, a blank, `é`, `e` with a combining accent, and `界`.
-  Attribute sets never hold both bold and dim, as fux never paints both and
-  fux-vt keeps them apart (SGR 1 and 2 replace one another). Wide glyphs are
-  kept whole.
-- The terminal is painted `old` from nothing, then the paint from `old` to
-  `new`. Every cell must then equal `new`'s in text, width and attributes,
-  where a blank reads as a space and a wide glyph in the last column is
-  painted as a blank. The cursor must be `new`'s, or hidden.
+**`paint`**: `render::paint` diffs applied to a fux-vt terminal.
+- Input: a size (1–40 by 1–120, or one row of `u16::MAX` columns), a flags
+  byte (old and new cursors; a new size of its own, forcing a full repaint;
+  underline styles drawn by the terminal, and by the old paint), the
+  cursors, then four-byte cell writes. Glyphs include `é`, a combining
+  accent and `界`; no attribute set holds both bold and dim.
+- After painting `old` from nothing and then the diff to `new`, every cell
+  equals `new`'s in text, width and attributes (a blank reads as a space; a
+  wide glyph in the last column is painted blank), and the cursor is
+  `new`'s or hidden.
 
-**`layout`**: `layout::place` on normalized trees, then `resize`.
-- Input: two bytes for the area's origin, four for its width and height (a high
-  byte below `0x80` is a small size, `lo % 64`; `ff` is `u16::MAX`), a tree of
-  up to 16 panes four deep with weights from 0 to `u32::MAX`, then two-byte
-  resizes.
-- After every placement:
-  - every pane is in the tree, placed once, not empty, and at least `MIN` in
-    each dimension where the area has room;
-  - panes and separators lie inside the area and never overlap;
-  - when the whole tree fits (the area is at least the tree's minimum, computed
-    by the rule `min_len` documents), they tile it exactly. Where it does not
-    fit, a split without room for its first child shows nothing, by design;
-  - `neighbor` only names another placed pane.
+**`layout`**: `layout::place` on normalized trees (up to 16 panes, four
+deep, weights 0 to `u32::MAX`), then `resize`. After every placement:
+- every pane is placed once, not empty, and at least `MIN` each way where
+  the area has room;
+- panes and separators lie in the area and never overlap;
+- when the tree fits (its minimum by `min_len`'s rule), they tile the area
+  exactly; where it does not, a split without room for its first child
+  shows nothing, by design;
+- `neighbor` names only another placed pane.
 
-**`config`**: `set`, `bind`, `unbind` and `unbind-all` lines, into
-`Config::apply`, from the defaults.
-- Input: lines. A line starting with `0xff` is structured: its next byte picks
-  the command, and each byte after picks the word for the command's next
-  slot, from lists of keys (letters and not), groups, commands, options, and
-  values, including values that need quoting. Any other line is text, split
-  by `words::split` as a config file's lines are.
-- After every line:
-  - a line that fails changes nothing;
-  - a small model of `bind`, `unbind` and `unbind-all`, written from the
-    README's rules, accepts and refuses the same lines and holds the same
-    bindings in the same order. That covers each command's promise: after a
-    `bind`, one binding of its keys (in lower case), with its command, group
-    and repeat flag, and none if its command does not parse; after an
-    `unbind K…`, none starting with `K…`, and a failing `unbind` had nothing
-    to remove;
-  - `split(&join(&words))` gives back the line's words.
-- After every line that changes the configuration:
-  - every binding has keys and a command; every key is a lower-case letter
-    without modifiers; no two bindings have the same keys, and no binding's
-    keys start another's;
-  - `describe()`'s lines, applied after `unbind-all`, give the same
-    configuration back, prefix, shell and options included. An unchanged
-    configuration was checked already, and the check is most of the cost.
+**`config`**: `set`, `bind`, `unbind` and `unbind-all` lines into
+`Config::apply`, from the defaults; lines are text, or structured (a
+leading `0xff`) to reach every command and word. After every line:
+- a failing line changes nothing;
+- a small model of `bind`, `unbind` and `unbind-all`, written from the
+  README's rules, accepts the same lines and holds the same bindings in
+  the same order;
+- `split(&join(&words))` gives the words back.
 
-**`session`**: clients typing into a whole `Session`, with no processes
-(`launch` is false), while commands arrive from the command line.
-- Input: two bytes for the first client's size, 1–60 rows by 1–200 columns,
-  then operations, each a tag byte and its arguments:
-  - bytes to a client: up to 16, or up to 255 with tag 15, delivered whole or
-    in pieces of 1–7 bytes;
-  - the Escape deadline for a client (no clock: `Session::escape`);
-  - a resize, to 1–60 by 1–200;
-  - a client attaching, or once three are, detaching; the last one to go is
-    replaced, so one to three are attached;
-  - a command from the side, from a fixed list: new tabs, workspaces and
-    splits, closing, moving and selecting, the overlays with `-c`, binding
-    and unbinding layers and repeat modes, `unbind-all`, `set prefix`,
-    `set clipboard`, `reload`, `detach`, `paste-buffer` and `send-keys`;
-  - output from a pane's program, up to 64 bytes;
-  - a pane's shell exiting.
-- After every operation, the target does what the server does: settles, acts
-  on the outbox (detaching on `Exit`, stopping on `Shutdown`) and takes each
-  pane's queued input, as the PTY would. Then:
-  - every pane is in exactly one tab's layout, and every pane there exists;
-  - every view's workspace, tab and focused pane exist while any workspace
-    does, and its screen composes at its size;
-  - a column shows the bindings, or a layer that still exists, and selects
-    an entry within it; a repeat mode's layer holds a repeating binding; a
-    prompt's cursor is within its text, which is at most 4096 bytes; a list
-    selects one of its items;
-  - every `Outgoing::Bytes` is OSC 52, `ESC ] 52 ; c ;` then base64 then BEL,
-    with at most `MAX_CLIPBOARD` bytes of base64: at most `MAX_CLIPBOARD + 8`
-    bytes in all.
-- A key typed in a repeat mode reaches no pane: a second session gets every
-  client's bytes one at a time, and a decoder beside each client's tells
-  which byte completes a key. When that key arrives in a repeat mode, no
-  pane's input may grow. The exception is a key bound there to `send-keys`
-  or `paste-buffer`, which writes to a pane by design.
-- However a client's bytes arrive, the same result: at the end, both sessions
-  have the same `ls`, the same mode, notice and screen for each client, the
-  same configuration and the same paste buffers. They are compared once, not
-  after every operation, which would double the cost.
-- About 120 executions a second with the dictionary (116 over a 600-second
-  run).
+After a line that changes the configuration: every binding has keys and a
+command; keys are lower-case letters without modifiers; no binding's keys
+equal or start another's; and `describe()` applied after `unbind-all` gives
+the same configuration back.
+
+**`session`**: clients typing into a whole `Session` with no processes
+while commands arrive from the side. Operations: bytes a client types
+(whole or in pieces), the Escape deadline, resizes, one to three clients
+attaching and detaching, a fixed list of commands (tabs, splits, overlays
+with `-c`, `bind`/`unbind`, `set prefix`, `reload`, `detach`,
+`paste-buffer`, `send-keys` and more), pane output, a shell exiting. After
+each, the target does what the server does (settles, acts on the outbox,
+takes queued pane input), then checks:
+- every pane is in exactly one tab's layout, and every view's workspace,
+  tab and focus exist and its screen composes;
+- each overlay's state is valid (a column's layer exists, a repeat mode's
+  layer repeats, a prompt's cursor is in its text of at most 4096 bytes, a
+  list selects an item);
+- every `Outgoing::Bytes` is OSC 52 with at most `MAX_CLIPBOARD` bytes of
+  base64;
+- a key typed in a repeat mode reaches no pane, unless bound there to
+  `send-keys` or `paste-buffer`;
+- a second session given every byte one at a time ends with the same `ls`,
+  modes, notices, screens, configuration and paste buffers.
 
 ## Corpus
 
-`corpus/TARGET/fixture-*` are the permanent seeds, taken from the unit tests
-that state each property:
-- `protocol`: every frame of `every_frame_round_trips_in_any_chunking`, encoded
-  by fux, and the malformed frames of `malformed_frames_are_errors_not_panics`;
-- `keys`: `every_key_sequence_decodes`,
-  `a_sequence_split_at_every_byte_decodes_the_same`, and the Escape, mouse and
-  paste cases;
-- `paint`: `a_diff_applied_to_the_old_grid_gives_the_new_one`,
-  `painting_the_widest_last_column_ends`, a resize and combining marks;
-- `layout`: the split, nested, small-area and resize tests, and extremes;
-- `config`: the lines of `set_bind_and_unbind_change_the_configuration`,
-  `keys_are_a_command_or_a_layer_never_both`,
-  `keys_after_the_prefix_are_letters_stored_in_lower_case` and
-  `a_file_applies_whole_or_names_its_bad_line`, the default bindings as
-  `bind` lines, and one structured line of each kind;
-- `session`: the key sequences of the overlay unit tests: a layer, an
-  unbound key in a layer, a repeat mode left with Enter, Esc or another key,
-  letters in either case, the resize, move and tab-reorder modes, the column
-  scrolling, a menu acting on its item and one whose item goes, a chooser, a
-  prompt's edits, a confirmation and copy mode; every default binding's keys
-  in a busy session; and bindings changing under a client from the side.
-
-`corpus/TARGET/regression-*` are minimized inputs of fixed findings. Coverage
-growth stays local and ignored.
+`corpus/TARGET/fixture-*` are permanent seeds taken from the unit tests
+that state each property (round-tripped frames and malformed ones, key
+sequences, paint and layout cases, config lines and the default bindings,
+the overlay tests' key sequences). `corpus/TARGET/regression-*` are
+minimized inputs of fixed findings. Anything else in `corpus/` is local
+and ignored by git.
