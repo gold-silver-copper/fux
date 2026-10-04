@@ -240,15 +240,23 @@ enum Csi {
 
 /// What becomes of `sequence`, a whole CSI sequence from its ESC.
 fn csi(sequence: &[u8]) -> Csi {
-    let Some((&last, body)) = sequence.get(2..).and_then(<[u8]>::split_last) else {
+    // What fux-vt reads of it: the C0 controls in it are carried out where
+    // they are, and DEL and the bytes from 0x80 on are ignored there, in
+    // the escape as in the CSI (Parser::byte); none of them is part of the
+    // sequence. So `ESC BEL [ ? r` and `CSI 2 0xA9 0 l` are XTRESTORE and
+    // LNM, as fux-vt reads them.
+    let read: Vec<u8> = sequence
+        .iter()
+        .skip(1)
+        .copied()
+        .filter(|c| (0x20..=0x7e).contains(c))
+        .collect();
+    let Some((&last, body)) = read.get(1..).and_then(<[u8]>::split_last) else {
         return Csi::Keep;
     };
-    // The C0 controls in it are carried out where they are, and are no
-    // part of the sequence.
-    let body: Vec<u8> = body.iter().copied().filter(|c| *c >= 0x20).collect();
     let (private, rest) = match body.split_first() {
         Some((b'?', rest)) => (true, rest),
-        _ => (false, body.as_slice()),
+        _ => (false, body),
     };
     let (dollar, digits) = match rest.split_last() {
         Some((b'$', digits)) => (true, digits),
@@ -355,6 +363,12 @@ mod tests {
     #[test]
     fn exactly_the_approved_sequences_are_taken_out() {
         let cases: &[(&[u8], &[u8])] = &[
+            // Bytes fux-vt ignores, or carries out, inside a sequence do
+            // not hide it (the oracle's --cases 50000, seeds 1-3).
+            (b"\x1b[2\xa90l", b""),
+            (b"\x1b\x07[?r", b"\x07"),
+            (b"\x1b[\x95?r", b""),
+            (b"\x1b[?\x7f45h", b""),
             // Kept whole.
             (
                 b"ab\x1b[?7;25h\x1b[4h\x1b[?6$p\x1b[4$p",
