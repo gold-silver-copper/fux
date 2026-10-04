@@ -1120,10 +1120,11 @@ impl Parser {
                 Some(Reply::of(format_args!("\x1b[?{n};{status}$y")))
             }
             (b"$", b'p') if modes => {
-                // IRM alone of the ANSI modes is known.
+                // IRM and LNM alone of the ANSI modes are known.
                 let status = match n {
                     4 if self.screen.insert_mode() => 1,
-                    4 => 2,
+                    20 if self.screen.new_line_mode() => 1,
+                    4 | 20 => 2,
                     _ => 0,
                 };
                 Some(Reply::of(format_args!("\x1b[{n};{status}$y")))
