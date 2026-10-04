@@ -6,7 +6,7 @@
 //! terminal, xterm 411's, asked the same sequences under Xvfb (80 by 25,
 //! a VT420) and read back by DSR and DECRQM.
 
-use fux_vt::{Identity, Options, Parser};
+use fux_vt::{Attributes, Color, Identity, Options, Parser};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 const MODES: Options = Options::new().with_mode_reports(true);
@@ -215,5 +215,50 @@ fn decid_is_answered_as_da1() -> Result {
     let options = Options::new().with_identity(Some(identity));
     let mut p = Parser::with_options(25, 80, 0, options)?;
     assert_eq!(replies(&mut p, b"\x1bZ\x1b[c")?, "^[[?62;22c^[[?62;22c");
+    Ok(())
+}
+
+/// DECALN (`ESC # 8`; DEC STD 070, Appendix D, Screen Alignment; VT520
+/// manual 5-17): the screen filled with E, the margins the whole screen,
+/// origin mode off, the cursor home with no wrap pending, and the pen's
+/// rendition off; as xterm 411 does it, the pen keeps its colours and
+/// loses every attribute, and the E's have none of either. Each row's soft
+/// wrap ends (Ghostty, alacritty and wezterm; xterm keeps it). esctest's
+/// DECALN_FillsScreen and _MovesCursorHome.
+#[test]
+fn decaln_fills_the_screen_with_e() -> Result {
+    let mut p = Parser::new(3, 4, 0)?;
+    p.process(b"abcdef\x1b[31;1;4;7m\x1b[2;3r\x1b[?6h\x1b[2;2H\x1b#8")?;
+    let s = p.screen();
+    assert_eq!(s.cursor_position(), (0, 0));
+    assert!(!s.pending_wrap() && !s.origin_mode());
+    assert_eq!(s.scroll_region(), (0, 2));
+    assert_eq!(
+        s.attributes(),
+        Attributes::new(Color::Idx(1), Color::Default)
+    );
+    for row in 0..3 {
+        assert!(!s.row_wrapped(row), "row {row}");
+        for col in 0..4 {
+            let cell = s.cell(row, col).ok_or("a cell")?;
+            assert_eq!(cell.contents(), "E");
+            assert_eq!(cell.attributes(), Attributes::default());
+        }
+    }
+    // An E printed after it takes the pen's colours.
+    p.process(b"X")?;
+    let cell = p.screen().cell(0, 0).ok_or("a cell")?;
+    assert_eq!((cell.contents(), cell.fgcolor()), ("X", Color::Idx(1)));
+    // A prompt mark goes with the row's text, as ED's erase takes it.
+    let options = Options::new().with_prompt_marks(true);
+    let mut p = Parser::with_options(2, 3, 0, options)?;
+    p.process(b"\x1b]133;A\x07$ \x1b#8")?;
+    assert!(!p.screen().starts_prompt(0));
+    // Rows already filled keep their version.
+    let mut p = Parser::new(2, 3, 0)?;
+    p.process(b"\x1b#8")?;
+    let mark = p.screen().mark();
+    p.process(b"\x1b#8")?;
+    assert_eq!(p.screen().dirty_rows_since(mark).count(), 0);
     Ok(())
 }
