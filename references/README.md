@@ -1,100 +1,104 @@
 # References
 
-The specifications fux-vt is checked against. Only this index and
-`fetch.sh` are committed. The documents are free to download, but not
-obviously free to redistribute, so run the script to get them (about 176
-MB):
+The specifications fux-vt is checked against. Only this index, `fetch.sh`
+and `.gitignore` are committed: the documents are free to download but not
+obviously free to redistribute, so fetch them (about 170 MB):
 
 ```sh
 references/fetch.sh            # fetches what is missing
 references/fetch.sh --force    # fetches everything again
 ```
 
+It needs `curl`, `wget` (for the vt100.net copies) and `git` (for
+esctest2), and exits 1 listing anything it could not fetch.
+`fux-vt-compare esctest` runs `xterm/esctest2` from here.
+
 **Which source decides.** When the standards, xterm and the engines in
-`fux-vt/compare` disagree, use this order:
+`fux-vt/compare` disagree:
 
 1. **ECMA-48** decides the standard control functions.
 2. **DEC STD 070** decides DEC behaviour, with the VT520 manual as its
    readable companion.
-3. **ctlseqs** and xterm itself decide xterm extensions. The comparison
-   harness runs real xterm: `replay --engines all`.
+3. **ctlseqs** and xterm itself decide xterm's extensions; the harness
+   runs real xterm (`fux-vt-compare replay --engines all`).
 
-A fux-vt test cites the section that sets its expected value.
+Where fux-vt follows xterm against the references, fux-vt's README lists
+it under "Departures from the references". A fux-vt test cites the section
+that sets its expected value.
 
 ## Contents
 
-### `standards/`: formal standards
+### `standards/`
 
-| File | What | Use it for |
+| File | What | For |
 | --- | --- | --- |
-| `ECMA-48_5th_edition_1991.pdf` | Control Functions for Coded Character Sets; the same text as ISO/IEC 6429:1992 | C0/C1 controls, control-sequence syntax, every standard control function and mode |
-| `ECMA-35_6th_edition_1994.pdf` | Character Code Structure and Extension Techniques (ISO/IEC 2022) | designating G0–G3 (`ESC ( 0`), SO/SI, locking shifts |
-| `ECMA-43_3rd_edition_1991.pdf` | 8-bit coded character set structure (ISO 4873) | the 8-bit code table, C1 in 8-bit form |
-| `ECMA-6_6th_edition_1991.pdf` | 7-bit coded character set (ISO 646 / ASCII) | the 7-bit code table |
-| `ITU-T_T.416_1993.pdf` | ITU-T T.416 (ISO/IEC 8613-6), Open Document Architecture | §13.1.8 SGR: where `38:2:<colour space>:r:g:b` and the colon subparameters come from |
+| `ECMA-48_5th_edition_1991.pdf` | Control Functions for Coded Character Sets (= ISO/IEC 6429:1992) | C0/C1 controls, sequence syntax, standard functions and modes, SPA/EPA |
+| `ECMA-35_6th_edition_1994.pdf` | Character Code Structure and Extension Techniques (ISO/IEC 2022) | designating G0–G3, SO/SI, locking shifts |
+| `ECMA-43_3rd_edition_1991.pdf` | 8-bit code structure (ISO 4873) | C1 in 8-bit form |
+| `ECMA-6_6th_edition_1991.pdf` | 7-bit code (ISO 646 / ASCII) | the 7-bit table |
+| `ITU-T_T.416_1993.pdf` | ITU-T T.416 (ISO/IEC 8613-6) | §13.1.8: SGR's colon form, `38:2:<colour space>:r:g:b` |
 
-### `dec/`: DEC terminals, which everyone emulates
+### `dec/`
 
-| File | What | Use it for |
+| File | What | For |
 | --- | --- | --- |
-| `DEC_STD_070_Video_Systems_Reference_Manual_1991.pdf` | DEC STD 070, DEC's internal standard for its video terminals, with pseudocode for every function | the most rigorous source on DEC behaviour. Chapter 5, "Character Cell Display": the Last Column Flag (pending wrap) in "Insert or Replace Graphic Character" (page 5-139 on), autowrap, margins, origin mode. Chapter 4: Soft Terminal Reset (DECSTR, page 4-37) |
-| `VT520_VT525_Programmer_Information_1994.pdf` | VT520/VT525 Programmer Information (EK-VT520-RM) | the latest DEC programmer manual: DECSTR's table of what a soft reset restores (§5, page 5-150), every DEC private mode |
+| `DEC_STD_070_Video_Systems_Reference_Manual_1991.pdf` | DEC STD 070, with pseudocode for every function | DEC behaviour. Ch. 5: the Last Column Flag (pending wrap, p. 5-139 on), autowrap, margins (5.4.3), origin mode, selective erase (5.11.1.2). Ch. 4: DECSTR (p. 4-37) |
+| `VT520_VT525_Programmer_Information_1994.pdf` | VT520/VT525 Programmer Information (EK-VT520-RM) | DECSTR's table (p. 5-150), every DEC private mode |
 | `VT510_520_Spec.pdf` | VT510/VT520 product specification | what the VT500 series implements |
 | `VT330_VT340_Text_Programming_1988.pdf` | VT330/VT340 Text Programming | VT300-era text functions, character sets |
-| `VT220_Programmer_Pocket_Guide_1984.pdf`, `VT220_Technical_Manual_1984.pdf` | VT220 | the VT220 baseline that DA1 `62` claims |
-| `VT100_User_Guide_1979.pdf`, `VT100_Technical_Manual_1982.pdf`, `VT100_Programming_Reference_Card_1982.pdf` | VT100 | the original behaviour, quirks included |
-| `vt100.net/vt510-rm/` | vt100.net's transcription of the VT510 Reference Manual, one page per function (open `contents.html`) | searchable DEC function pages: `DECSTR.html`, `DECAWM.html`, `DECSTBM.html`, `DECOM.html`, and so on |
-| `vt100.net/vt220-rm/`, `vt100.net/vt100-ug/` | the same, for the VT220 manual and the VT100 user guide | |
-| `vt100.net/dec_ansi_parser.html` | Paul Williams's DEC ANSI parser state machine, with its diagram inline | fux-vt's parser (fux-vt's README, "Parser") |
+| `VT220_Programmer_Pocket_Guide_1984.pdf`, `VT220_Technical_Manual_1984.pdf` | VT220 | the VT220 class that DA1's `62` claims |
+| `VT100_User_Guide_1979.pdf`, `VT100_Technical_Manual_1982.pdf`, `VT100_Programming_Reference_Card_1982.pdf` | VT100 | the original behaviour |
+| `vt100.net/vt510-rm/`, `vt220-rm/`, `vt100-ug/` | vt100.net's transcriptions, one page per function (open `contents.html`) | searchable function pages: `DECSTR.html`, `DECSLRM.html`, `DECSCA.html`… |
+| `vt100.net/dec_ansi_parser.html` | Paul Williams's DEC ANSI parser state machine | fux-vt's parser (fux-vt's README, "Parser") |
 
-### `xterm/`: the de facto standard
+### `xterm/`
 
-| File | What | Use it for |
+| File | What | For |
 | --- | --- | --- |
-| `ctlseqs.html`, `ctlseqs.pdf` | XTerm Control Sequences, by Thomas Dickey | every sequence xterm implements: DEC private modes, OSC, DECRQM, XTVERSION, mouse, bracketed paste, focus |
-| `terminfo.src` (and `.gz`) | ncurses's terminfo source | what `TERM=xterm-256color` promises programs (`bce`, `smacs`, `smir`, `rep`, `hts`, `cbt`...); the rule in the audit prompt |
-| `vttest/` | vttest source | the classic interactive conformance test; its menus show what correct output looks like |
-| `esctest2/` | esctest2, Dickey's fork of George Nachman's automated test suite | automated conformance tests with expected values for xterm, one per function, readable as executable specifications |
+| `ctlseqs.html`, `ctlseqs.pdf` | XTerm Control Sequences | every xterm sequence: private modes, OSC (the palette: 4, 5, 10–19, 104, 105, 110–119), DECRQM, XTVERSION, XTSAVE/XTRESTORE, mouse |
+| `terminfo.src` (and `.gz`) | ncurses's terminfo source | what `TERM=xterm-256color` promises programs (`bce`, `rep`, `smir`…) |
+| `vttest/` | vttest source | the classic interactive conformance test |
+| `esctest2/` | Dickey's esctest2, from George Nachman's suite | automated tests with xterm's expected values, one per function |
 
-### `unicode/`: Unicode 17.0.0, the version fux-vt's tables follow
+### `unicode/`: Unicode 17.0.0, the version of fux-vt's tables
 
-| File | What | Use it for |
-| --- | --- | --- |
-| `UAX29_Text_Segmentation.html` | UAX #29, revision 47 | grapheme cluster boundaries |
-| `UAX11_East_Asian_Width.html` | UAX #11, revision 44 | narrow and wide |
-| `UTS51_Emoji.html` | UTS #51, revision 29 | emoji presentation, ZWJ sequences, modifiers, flags |
-| `ucd/EastAsianWidth.txt`, `ucd/DerivedCoreProperties.txt` (InCB), `ucd/auxiliary/GraphemeBreakProperty.txt`, `ucd/auxiliary/GraphemeBreakTest.txt`, `ucd/emoji/emoji-data.txt` | the data files | the inputs `fux-vt/gen` generates its tables from, and the conformance cases |
+| File | What |
+| --- | --- |
+| `UAX29_Text_Segmentation.html` | UAX #29, revision 47: grapheme clusters |
+| `UAX11_East_Asian_Width.html` | UAX #11, revision 44: widths |
+| `UTS51_Emoji.html` | UTS #51, revision 29: emoji presentation, ZWJ sequences, modifiers, flags |
+| `ucd/` | `EastAsianWidth.txt`, `DerivedCoreProperties.txt` (InCB), `auxiliary/GraphemeBreakProperty.txt`, `auxiliary/GraphemeBreakTest.txt`, `emoji/emoji-data.txt`. `fux-vt/gen` builds its tables from four of them, given in one directory (`fux-vt/gen/README.md`) |
 
 ### `modern/`: extensions with no formal standard
 
 | File | What |
 | --- | --- |
 | `kitty_keyboard_protocol.html` | the kitty keyboard protocol (`CSI > u`, `CSI < u`, `CSI = u`, `CSI ? u`) |
-| `mode_2026_synchronized_output.md` | synchronized output, mode 2026 (contour's vt-extensions) |
-| `mode_2027_grapheme_clusters.tex` | grapheme cluster processing, mode 2027 (contour's terminal-unicode-core) |
-| `mode_2048_in_band_resize.md` | in-band resize reports, mode 2048 |
-| `mode_2031_color_scheme_updates.md` | colour-scheme (dark or light) reports, mode 2031: `CSI ? 996 n` asks, `CSI ? 997 ; 1 n` (dark) or `; 2 n` (light) answers and reports a change (contour's vt-extensions) |
+| `kitty_underlines.html` | underline styles (`4:0` to `4:5`) and colour (SGR 58, 59) |
+| `mode_2026_synchronized_output.md` | synchronized output |
+| `mode_2027_grapheme_clusters.tex` | grapheme cluster processing |
+| `mode_2031_color_scheme_updates.md` | colour-scheme reports (`CSI ? 996 n`, `CSI ? 997 ; 1/2 n`) |
+| `mode_2048_in_band_resize.md` | in-band resize reports |
 | `osc8_hyperlinks.md` | hyperlinks, OSC 8 |
-| `kitty_underlines.html` | kitty's underline styles (`4:0` to `4:5`) and underline colour (SGR 58, 59) |
-| `osc133_iterm2_escape_codes.html` | iTerm2's escape codes; its "Shell Integration/FinalTerm" section documents FinalTerm's semantic prompt marks, OSC 133 `A` (prompt), `B` (command), `C` (output) and `D` (finished) |
-| `osc133_semantic_prompts.md` | Per Bothner's semantic prompts proposal: OSC 133 extended (`L` fresh line, `A` a fresh line then a prompt, `N`, `P`, `I`, options such as `aid`, `k` and `cl`) |
+| `osc133_iterm2_escape_codes.html` | iTerm2's escape codes; "Shell Integration/FinalTerm" has OSC 133 `A`–`D` |
+| `osc133_semantic_prompts.md` | Per Bothner's semantic prompts proposal, extending OSC 133 (`L`, `N`, `P`, `I`, options) |
 
-## Where each audit finding is settled
+## Which source settles what
 
-The findings are listed in `~/Desktop/code/fux-audit-fixes-prompt.md`.
-
-| Finding | Source |
+| Topic | Source |
 | --- | --- |
-| F1 pending wrap: what clears it, what saves it | DEC STD 070 ch. 5, the Last Column Flag ("Insert or Replace Graphic Character", and each function's pseudocode that clears it) |
-| F2 SGR colon form and colour space | ITU-T T.416 §13.1.8; ECMA-48 §8.3.117 (SGR) |
-| F3 DEC special graphics, G0/G1, SO/SI | ECMA-35; DEC STD 070 ch. 3 (code extension); VT520 manual, SCS |
-| F7 REP | ECMA-48 §8.3.103 |
-| F8 DECSTBM, VPA in origin mode, IL/DL to column 0, HPR/VPR | DEC STD 070 ch. 5; VT520 manual; ECMA-48 §8.3.158 (VPA), §8.3.160 (VPR), §8.3.59 (HPR), §8.3.67 (IL), §8.3.32 (DL) |
-| IND/NEL, tab stops (HTS, TBC, CHT, CBT) | ECMA-48 §8.3.86 (NEL), §8.3.62 (HTS), §8.3.154 (TBC), §8.3.10 (CHT), §8.3.7 (CBT); IND is in DEC STD 070 and ctlseqs, as ECMA-48 withdrew it |
+| pending wrap: what sets, clears and saves it | DEC STD 070 ch. 5, the Last Column Flag |
+| SGR, the colon form and colour space | ECMA-48 §8.3.117; ITU-T T.416 §13.1.8 |
+| character sets, G0/G1, SO/SI | ECMA-35; DEC STD 070 ch. 3; VT520 manual, SCS |
+| REP | ECMA-48 §8.3.103 |
+| DECSTBM, origin mode, VPA, VPR, HPR, IL, DL | DEC STD 070 ch. 5; VT520 manual; ECMA-48 §8.3.158, .160, .59, .67, .32 |
+| left and right margins, DECIC, DECDC | DEC STD 070 5.4.3; VT510 manual; ctlseqs |
+| protected glyphs, selective erase | DEC STD 070 5.11.1.2 (DECSCA, DECSED, DECSEL); ECMA-48 (SPA, EPA) |
+| NEL, IND, tab stops (HTS, TBC, CHT, CBT) | ECMA-48 §8.3.86, .62, .154, .10, .7; IND from DEC STD 070 and ctlseqs (ECMA-48 withdrew it) |
 | IRM | ECMA-48 §7.2.10, §7.3.3 |
-| BCE: blanks a scroll or insert brings in | DEC STD 070 ch. 5 (erase and scroll with the Current Rendition); ctlseqs and terminfo `bce` |
-| DECSTR | VT520 manual p. 5-150 (its table); DEC STD 070 ch. 4, Soft Terminal Reset |
-| 47, 1047, 1048, 1049 | ctlseqs (private modes) |
-| F6 0x9c inside a DCS string; F9 U+FFFD | ECMA-48 §5.6 (control strings), §8.3.27 (DCS), §8.3.143 (ST); ctlseqs on UTF-8 and C1 |
-| Grapheme clusters and widths | UAX #29, UAX #11, UTS #51; mode 2027 |
-| Kitty keyboard flags | `modern/kitty_keyboard_protocol.html` |
+| BCE | DEC STD 070 ch. 5; ctlseqs; terminfo `bce` |
+| DECSTR | VT520 manual p. 5-150; DEC STD 070 ch. 4 |
+| alternate screen (47, 1047, 1048, 1049), XTSAVE/XTRESTORE, the palette | ctlseqs |
+| control strings, ST inside a DCS, U+FFFD | ECMA-48 §5.6, §8.3.27, §8.3.143; ctlseqs on UTF-8 and C1 |
+| grapheme clusters and widths | UAX #29, UAX #11, UTS #51; mode 2027 |
+| kitty keyboard flags | `modern/kitty_keyboard_protocol.html` |

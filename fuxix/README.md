@@ -1,36 +1,38 @@
 # fuxix
 
-The system calls [fux](https://github.com/gold-silver-copper/fux) makes, on
-Linux, Android and macOS, over `libc`, each behind a safe function. It holds
-only what fux, its tests, its fuzz targets and its walk use.
+The system calls [fux](https://github.com/gold-silver-copper/fux) makes on
+Linux, Android and macOS, over `libc`, each behind a safe function. It
+holds only what fux and the tools in its repository use. On any other
+platform it does not build.
 
-fux itself forbids `unsafe_code`; this crate is where the `unsafe` it needs
-lives, one call per `unsafe` block, each with its reasoning. No function
-returns a value its caller has to check for validity: a process ID, group or
-session is a `Pid`, which is positive; a failure is an `Errno` or `None`; a
-struct the kernel fills is read only after the call says it filled it.
+## Rules
 
-No function retries a call a signal interrupted: it fails with
-`Errno::INTR`, as the call did, and the caller decides.
+- fux forbids `unsafe_code`; the `unsafe` it needs lives here, one call per
+  `unsafe` block, each with a `SAFETY` comment.
+- No returned value has to be checked for validity: a process ID, group or
+  session is a `Pid`, which is positive; a failure is an `Errno` or `None`;
+  a struct the kernel fills is read only after the call says it filled it.
+- No function retries a call a signal interrupted: it fails with
+  `Errno::INTR`, and the caller decides.
 
-`pty::open` on macOS is the one function that retries, around two macOS
-kernel bugs that strike when PTYs are allocated and freed quickly, by any
-processes (see [the report for Apple](https://github.com/gold-silver-copper/fux/blob/main/docs/apple-feedback-ptmx-eredriveopen.md)):
+## `pty::open` on macOS
 
-- `posix_openpt` can fail with errno -6, the kernel-private `EREDRIVEOPEN`,
-  after the kernel gives up retrying a race between openers. fuxix opens one
-  master at a time in the process and retries that code up to 8 times; if it
-  persists, the error is `AGAIN`.
-- `posix_openpt` can fail with `ENXIO` when it loses a race with another
-  process's close: the kernel picks a number past the end of its table, a
-  close frees a slot, and the table is not grown (xnu `ptmx_clone` and
-  `ptmx_get_ioctl`). fuxix retries `ENXIO` as it does `EREDRIVEOPEN`; if it
-  persists, as every PTY being in use would, the error stays `ENXIO`.
-- A master can open with no replica node in `/dev`, and `grantpt` on it then
-  never returns. fuxix looks the replica up before `grantpt`, and watches
-  `grantpt`: after 1 s a watchdog thread replaces the master with `/dev/null`,
-  so the call returns. Either way that PTY is dropped and another opened, up
-  to 4 in all; then the error is `AGAIN`.
+The one function that retries, though not for signals. It works around
+two macOS kernel bugs that strike when PTYs are allocated and freed
+quickly, by any processes (see [the report for Apple](https://github.com/gold-silver-copper/fux/blob/main/docs/apple-feedback-ptmx-eredriveopen.md)):
+
+- `posix_openpt` can fail with errno -6, the kernel-private
+  `EREDRIVEOPEN`, or with `ENXIO` after losing a race with another
+  process's close. fuxix opens one master at a time in the process and
+  tries up to 8 times; then `EREDRIVEOPEN` becomes `AGAIN`, and
+  `ENXIO` (which also means every PTY is in use) stays `ENXIO`.
+- A master can open with no replica node in `/dev`, and `grantpt` on it
+  then never returns. fuxix checks for the replica first and watches
+  `grantpt`: after 1 s a watchdog thread replaces the master with
+  `/dev/null`, so the call returns. Either way the PTY is dropped and
+  another opened, up to 4 in all; then the error is `AGAIN`.
+
+## Functions
 
 | Function | Linux and Android | macOS | Why not std |
 | --- | --- | --- | --- |
@@ -38,15 +40,16 @@ processes (see [the report for Apple](https://github.com/gold-silver-copper/fux/
 | `io::set_nonblocking` | `fcntl(F_SETFL, O_NONBLOCK)` | the same | not offered on a bare descriptor |
 | `io::set_cloexec` | `fcntl(F_SETFD, FD_CLOEXEC)` | the same | not offered |
 | `io::cloexec_from` | `close_range(CLOSE_RANGE_CLOEXEC)`, else `/proc/self/fd` (Android: always) | `/dev/fd` | not offered |
-| `io::duplicate_inheritable` | `dup` | the same | std's copies are close-on-exec, by design |
-| `poll::poll` | `poll` | the same | not offered |
+| `io::duplicate_inheritable` | `dup` | the same | std's copies are close-on-exec |
+| `poll::poll` | `ppoll`, with an exact timeout | `poll`, the timeout rounded up to a millisecond | not offered |
 | `process::kill`, `kill_group`, `exists` | `kill`, `killpg`, `kill(pid, 0)` | the same | std signals only its own children, and only with SIGKILL |
 | `process::geteuid`, `setsid`, `session` | `geteuid`, `setsid`, `getsid` | the same | not offered |
+| `process::thread_cpu_time` | `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` | the same | not offered |
 | `process::ended` | `waitid(WEXITED, WNOHANG, WNOWAIT)` | the same, ignoring the stops macOS reports | std's `try_wait` reaps |
 | `process::reap` | `waitpid(WNOHANG)` | the same | for a pid, not a `Child` |
 | `process::processes` | `/proc` | `proc_listallpids` | not offered |
 | `process::cwd` | `/proc/PID/cwd` | `proc_pidinfo(PROC_PIDVNODEPATHINFO)` | not offered |
-| `pty::open` | `posix_openpt(O_CLOEXEC)`, `grantpt`, `unlockpt`, `ptsname_r` | `posix_openpt(O_CLOEXEC)` (one at a time, retried on -6; a release that refuses the flag is marked close-on-exec after), `TIOCPTYGNAME` and a check of the replica, `grantpt` under a watchdog, `unlockpt` | not offered |
+| `pty::open` | `posix_openpt(O_CLOEXEC)`, `grantpt`, `unlockpt`, `ptsname_r` | `posix_openpt(O_CLOEXEC)` (retried as above; marked close-on-exec after if a release refuses the flag), `TIOCPTYGNAME` and a check of the replica, `grantpt` under a watchdog, `unlockpt` | not offered |
 | `terminal::attributes`, `set_attributes`, `Termios::make_raw` | `tcgetattr`, `tcsetattr`, `cfmakeraw` | the same | not offered |
 | `terminal::window_size`, `set_window_size` | `TIOCGWINSZ`, `TIOCSWINSZ` | the same | not offered |
 | `terminal::foreground_group`, `make_controlling` | `tcgetpgrp`, `TIOCSCTTY` | the same | not offered |
@@ -54,14 +57,4 @@ processes (see [the report for Apple](https://github.com/gold-silver-copper/fux/
 | `socket::peer_uid` | `SO_PEERCRED` | `getpeereid` | `peer_cred` is unstable |
 | `file::pin` | `open(O_PATH \| O_NOFOLLOW)` | none | `O_PATH` has no name in std |
 
-It replaces `fux-sys`, which had the macOS calls, and rustix, which fux
-used for the rest. Where rustix did not serve:
-
-- `tcgetpgrp` and `getsid` built a process ID from their result unchecked
-  on macOS, where 0 is undefined behaviour;
-- `getsid` panicked on Linux for kernel threads, whose session is 0;
-- `socket` cannot be close-on-exec on macOS without a second call, which it
-  left to the caller (`posix_openpt` takes `O_CLOEXEC` there now);
-- nothing marked every inherited descriptor close-on-exec.
-
-On any other platform the crate does not build, and neither does fux.
+`file::NOFOLLOW` is `O_NOFOLLOW`, for `OpenOptions::custom_flags`.
