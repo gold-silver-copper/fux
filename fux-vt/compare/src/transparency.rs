@@ -390,6 +390,11 @@ impl Through {
     pub fn snapshot(&mut self) -> Result<Snapshot, String> {
         Ok(crop(&self.terminal.snapshot(0)?, self.rect))
     }
+
+    /// The colours the client's terminal draws with, if it can tell.
+    pub fn colours(&mut self) -> Option<snapshot::Colours> {
+        self.terminal.colours()
+    }
 }
 
 /// A difference recorded, with its reason: where the reference engine
@@ -551,6 +556,13 @@ fn through_fux(
     let (rows, cols) = (recording.rows, recording.cols);
     let mut direct = terminal(kind, rows, cols)?;
     let mut through = Through::new(kind, rows, cols)?;
+    // Each terminal's own colours, to compare colours as they show: a
+    // palette entry the program changes is drawn as its colour directly,
+    // and painted as that colour by fux, whose client's palette stays its
+    // own (fux sends it no OSC 4, 10 or 11; checked at every point).
+    // Both terminals start alike; `direct` has been given nothing yet,
+    // and the client's terminal has been painted.
+    let colours = direct.colours();
     let mut outcome = Outcome {
         points: 0,
         held: 0,
@@ -590,7 +602,18 @@ fn through_fux(
                 outcome.held = outcome.held.saturating_add(1);
                 continue;
             }
-            let (d, t) = (direct.snapshot(0)?, through.snapshot()?);
+            let (mut d, t) = (direct.snapshot(0)?, through.snapshot()?);
+            if let (Some(initial), Some(now)) = (&colours, direct.colours()) {
+                d = d.in_colours(&now, initial);
+            }
+            if let Some(initial) = &colours
+                && through.colours().as_ref() != Some(initial)
+            {
+                return Err(format!(
+                    "{}: fux changed its client terminal's colours, {at} bytes in",
+                    recording.name
+                ));
+            }
             outcome.points = outcome.points.saturating_add(1);
             let differences = compare(&d, &t, &kind.can);
             if point == bytes.len() {
@@ -1693,6 +1716,35 @@ mod tests {
                 return Err(format!("{} differs: {shown:?}", recording.name));
             }
         }
+        Ok(())
+    }
+
+    /// A program that changes its palette entries, foreground and
+    /// background looks the same through fux, colours compared as they
+    /// show (`Snapshot::in_colours`), at every 3 bytes; fux paints them
+    /// as colours and never changes its client's (`through_fux` fails if
+    /// it does). Compared by the colours the specs name, as before, the
+    /// two would differ: directly the cell is entry 1, through fux the
+    /// colour it was set to.
+    #[test]
+    fn a_programs_palette_is_transparent() -> Result<(), String> {
+        let output = b"\x1b]4;1;#ff0000\x1b\\\x1b[31mX\x1b[0m\x1b]11;#000080\x1b\\Y\
+            \x1b]10;rgb:12/34/56\x07Z\x1b]104\x1b\\\x1b]110\x1b\\\x1b[31mW\x1b]111\x07V\
+            \x1b]4;200;rgb:1/2/3\x1b\\\x1b[48;5;200;58;5;200;4mU";
+        let recording = crate::corpus::Recording {
+            name: "palette".into(),
+            program: "printf".into(),
+            version: String::new(),
+            rows: 3,
+            cols: 10,
+            steps: vec![(String::new(), output.to_vec())],
+            resizes: Vec::new(),
+        };
+        let outcome = super::through_fux(ghostty()?, &recording, Some(3))?;
+        assert!(outcome.points > 10);
+        assert!(outcome.first.is_none(), "differs");
+        let found = differences(3, 10, b"\x1b]4;1;#ff0000\x1b\\\x1b[31mX")?;
+        assert!(found.iter().any(|d| d.field == Field::Fg), "{found:?}");
         Ok(())
     }
 

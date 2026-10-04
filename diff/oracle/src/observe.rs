@@ -300,7 +300,8 @@ pub fn probes<S: Side>(s: &S) -> Vec<String> {
     out.push(poke(&mut copy, "REP", b"\x1b[2b"));
     let mut heard: Vec<Heard> = Vec::new();
     for query in QUERIES {
-        let result = copy.process(query.as_bytes(), &mut heard);
+        // A query of an approved feature's is taken out (`exempt`).
+        let result = copy.process(&crate::exempt::bytes(query.as_bytes()), &mut heard);
         if result.is_err() {
             out.push(format!("{query:?}: {result:?}"));
         }

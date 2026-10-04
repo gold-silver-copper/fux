@@ -5,6 +5,7 @@ mod cell;
 mod compact;
 mod grid;
 mod link;
+mod palette;
 mod parser;
 mod screen;
 mod style;

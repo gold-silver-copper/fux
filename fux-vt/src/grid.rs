@@ -341,6 +341,10 @@ impl Grid {
         let cell = self.slice(slot).get(usize::from(col))?;
         Some(cell.read(self.spill.get(slot)?, &self.styles))
     }
+    /// A live row's cells as stored.
+    pub fn live_cells(&self, row: u16) -> &[Compact] {
+        self.slot(row).map_or(&[], |slot| self.slice(slot))
+    }
     /// A live row's cell as stored, for what its halves and whether it
     /// has text say, which need neither its text nor its attributes.
     #[inline]

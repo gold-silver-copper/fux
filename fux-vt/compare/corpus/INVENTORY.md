@@ -1,6 +1,6 @@
 # What the corpus's programs send
 
-Made by `fux-vt-compare inventory` from the recordings in this directory (see the harness README, "The corpus"). Each sequence is normalized: numbers that only place the cursor or pick a colour are `n`, a mode or an SGR attribute is a row of its own, and an XTGETTCAP request shows the capabilities it asks for. "Count" counts every time it was sent, in all the recordings. "fux-vt" is what a fux pane's parser does with it, as fux sets it up (`fux::pane::OPTIONS`: events, DECRQM, in-band resize, the size query, colour-scheme reports, the kitty keyboard protocol, hyperlinks, prompt marks, DECRQSS and fux's identity), with what fux itself answers.
+Made by `fux-vt-compare inventory` from the recordings in this directory (see the harness README, "The corpus"). Each sequence is normalized: numbers that only place the cursor or pick a colour are `n`, a mode or an SGR attribute is a row of its own, and an XTGETTCAP request shows the capabilities it asks for. "Count" counts every time it was sent, in all the recordings. "fux-vt" is what a fux pane's parser does with it, as fux sets it up (`fux::pane::OPTIONS`: events, DECRQM, in-band resize, the size query, colour-scheme reports, the kitty keyboard protocol, hyperlinks, prompt marks, DECRQSS, the palette and fux's identity), with what fux itself answers.
 
 Recordings:
 
@@ -143,7 +143,6 @@ Recordings:
 
 | Sequence | What | Count | Programs | fux-vt |
 | --- | --- | ---: | --- | --- |
-| `OSC 4 ?` |  | 512 | zellij, zellij-small | not implemented: a query, dropped unanswered |
 | `CSI ? 12 l` | steady cursor (att610) | 270 | emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, htop, htop-small, htop-tree, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small | not implemented: a mode fux-vt does not keep, consumed quietly |
 | `CSI ? 12 h` | blinking cursor (att610) | 67 | emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a mode fux-vt does not keep, consumed quietly |
 | `OSC 7` | current directory | 25 | fish, fish-complete, fish-history, fish-small, mc, mc-small | not implemented: dropped (Parser::dispatch_osc) |
@@ -179,8 +178,6 @@ Recordings:
 | `CSI ? 1001 s` |  | 2 | mc, mc-small | not implemented: reported as unhandled |
 | `ESC \` |  | 2 | ranger | not implemented: reported as unhandled |
 | `ESC k` |  | 2 | ranger | not implemented: reported as unhandled |
-| `OSC 112` | reset cursor colour | 2 | nvim-terminal | not implemented: dropped (Parser::dispatch_osc) |
-| `OSC 12` |  | 2 | vim-terminal | not implemented: dropped (Parser::dispatch_osc) |
 | `CSI ? 1034 h` |  | 1 | top | not implemented: a mode fux-vt does not keep, consumed quietly |
 | `OSC 9;4` | progress | 1 | nvim-netrw | not implemented: dropped (Parser::dispatch_osc) |
 
@@ -224,6 +221,7 @@ Recordings:
 | `CSI ? 25 h` | DECTCEM, show the cursor | 648 | btop, btop-small, claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish, fish-complete, fish-history, fish-small, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small | implemented |
 | `CSI H` | CUP, home | 577 | claude, claude-resize, delta-diff, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, less, less-chop, less-color, less-small, man, man-long, man-tables, mc, mc-small, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, top, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented |
 | `CSI n d` |  | 525 | emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, htop, htop-small, htop-tree, ncdu, nnn, nnn-detail, ranger, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-small, tmux-vim, top | implemented |
+| `OSC 4 ?` |  | 512 | zellij, zellij-small | implemented: answered (Options::palette): the colour the program set, or xterm's default |
 | `CSI 1 K` |  | 467 | htop, mc, mc-small, ncdu, tig, tmux, tmux-resize, tmux-vim | implemented |
 | `CSI A` |  | 461 | bash-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish-complete, fish-small, nvim-diff, nvim-insert, nvim-terminal, nvim-wide, ranger, tmux-copy, tmux-small, tmux-vim, zsh, zsh-history, zsh-menu, zsh-resize, zsh-small | implemented |
 | `CSI n A` |  | 440 | claude, claude-ghostty, claude-main, claude-resize, claude-small, fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, nvim-diff, nvim-netrw, nvim-resize, nvim-small, nvim-split, nvim-unicode, nvim-wide, tmux, tmux-resize, zsh-menu | implemented |
@@ -323,3 +321,5 @@ Recordings:
 | `ESC ) 0` |  | 3 | lazygit, lazygit-small, lazygit-stage | implemented |
 | `SGR 4:2` |  | 3 | nvim-help | implemented: the style kept; painted to terminals that draw it |
 | `CSI > 1 u` |  | 2 | zellij, zellij-small | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `OSC 112` | reset cursor colour | 2 | nvim-terminal | implemented: the dynamic colour kept (Options::palette); fux paints 10 and 11, the pane's foreground and background |
+| `OSC 12` |  | 2 | vim-terminal | implemented: the dynamic colour kept (Options::palette); fux paints 10 and 11, the pane's foreground and background |

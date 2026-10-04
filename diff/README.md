@@ -181,8 +181,13 @@ public API (`oracle/src/side.rs`), after every step:
 
 Where the two sides' APIs part (a renamed method, a reshaped type), give
 `side!` an argument for that part, read both into the same model, and list
-the adapter here. **Adapters today: none;** both sides have the same API.
-A commit with another API does not build until it has one: `oracle.sh
+the adapter here. **Adapters today:** `Options::palette` and
+`Screen::colors_changed` (the palette, an approved feature; see
+[Exemptions](#exemptions)), which the merge base has not: the working
+tree is given the option a case asks for and its `colors_changed` is
+compared; the merge base reports the option as asked, and no colour
+changed. The palette's sequences are exempt, so a colour changed by
+anything else differs. A commit with another API does not build until it has one: `oracle.sh
 dfe1ffb`, from before `Options::setting_reports`, stops there.
 
 ### The inputs
@@ -218,6 +223,49 @@ dfe1ffb`, from before `Options::setting_reports`, stops there.
 No case may make a grid able to hold more than 2 Mi cells unless fux-vt is
 sure to refuse the size (`case::safe`), so neither the generators nor the
 shrinker make one that allocates gigabytes.
+
+### Exemptions
+
+A feature the user approved adding to fux-vt changes what the sequences it
+reads do, and only those: the commit ignores them, or answers them
+otherwise. Each such feature is a named exemption in `oracle/src/exempt.rs`,
+an input filter: every byte both sides are given, each step's output and
+each probe, goes through it first, and it takes out exactly the feature's
+sequences (a C0 control inside one, which executes wherever it is, stays).
+Both sides get the same filtered bytes, and everything is compared as
+before; a sequence not named there is passed on whole. A sequence cut
+between two steps is held until it is whole, and given with the step that
+ends it. `exempt`'s tests list what is taken out and what is kept.
+
+**Exemptions today** (phase 5 of the work to beat Ghostty's core, approved
+by the user):
+
+| Feature | Sequences taken out |
+| --- | --- |
+| the palette, `Options::palette` | OSC 4, 5, 104, 105 and 110 to 119; OSC 10 to 19 with a parameter other than `?` (a query alone stays: with no colour set it is an event, as before) |
+| reverse wraparound | `CSI ? 45 h/l`, `CSI ? 1045 h/l` |
+| modes kept as xterm keeps them | DECSCLM (`CSI ? 4`), DECSCNM (5), DECARM (8), DECNKM (66), DECBKM (67) |
+| XTSAVE and XTRESTORE | `CSI ? Pm s`, `CSI ? Pm r` |
+| LNM | `CSI 20 h/l` |
+| DECID | `ESC Z` |
+| DECALN | `ESC # 8` |
+
+A mode is taken out of a DECSET, DECRST, SM or RM and the modes beside it
+kept (`CSI ? 7;45 h` is given as `CSI ? 7 h`); DECRQM of it is taken out
+whole. Only the plain form fux-vt reads is touched (digits and `;`, a `?`
+marker, a `$` intermediate); any other is passed on, as both sides read it
+alike. On the corpus the filter takes out zellij's 512 `OSC 4 ; n ; ?`
+queries (8,888 bytes) and nothing else.
+
+With the filter in, two bugs planted next to the exempt sequences were
+each found at once (and never committed): DECRQM of DECAWM (`?7`, among
+the probes beside the exempt `?4`, `?5`, `?8`) answering the opposite, in
+the probes, 0.1 s; and ECH taking the pen's attributes, not its colours
+alone, in the corpus (htop) and random cases, 0.0 s, shrunk to `CSI 4 m`,
+`CSI X`. With every feature in, two more: OSC 2 taken by the palette (its
+title event lost) with `Options::palette` on, in random cases, 0.1 s; and BS
+going back two columns where reverse wraparound is off, in the corpus
+(bash) and random cases, 0.1 s, shrunk to `rl`, BS.
 
 ### A difference
 

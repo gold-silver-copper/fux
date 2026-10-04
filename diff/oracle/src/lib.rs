@@ -11,6 +11,8 @@
 //!   both are run through it, and how it is written down and read back.
 //! - `observe`: what is read after each step, and how two readings are
 //!   told apart.
+//! - `exempt`: the approved exemptions, sequences of features added on
+//!   purpose since the commit, taken out of what both sides are given.
 //! - `cells`: fux-vt's standalone types (`Cells`, `Cell`), its constants
 //!   and `continues_cluster`, compared on their own.
 //! - `inputs`: the cases: the corpus, the random families shared with
@@ -19,6 +21,7 @@
 //! - `shrink`: the smallest case that still differs.
 pub mod case;
 pub mod cells;
+pub mod exempt;
 pub mod inputs;
 pub mod model;
 pub mod observe;
