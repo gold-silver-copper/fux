@@ -262,7 +262,10 @@ each found at once (and never committed): DECRQM of DECAWM (`?7`, among
 the probes beside the exempt `?4`, `?5`, `?8`) answering the opposite, in
 the probes, 0.1 s; and ECH taking the pen's attributes, not its colours
 alone, in the corpus (htop) and random cases, 0.0 s, shrunk to `CSI 4 m`,
-`CSI X`.
+`CSI X`. With every feature in, two more: OSC 2 taken by the palette (its
+title event lost) with `Options::palette` on, in random cases, 0.1 s; and BS
+going back two columns where reverse wraparound is off, in the corpus
+(bash) and random cases, 0.1 s, shrunk to `rl`, BS.
 
 ### A difference
 
