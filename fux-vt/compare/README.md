@@ -37,7 +37,7 @@ runs alone.
 | Command | When | Budget | What |
 | --- | --- | --- | --- |
 | `run.sh quick` | before a commit | 1 minute (40 s here) | the corpus beside xterm and the panel, and again with Ghostty judged in fux-vt's place (`corpus-ghostty.json`); transparency through fux on every recording; 2,000 random cases; the named cases beside every engine |
-| `run.sh full` | before a PR | 10 minutes | `quick`; 20,000 random cases with reflow, as fux and ratty set fux-vt up, and without; esctest directly; instructions against main (`bench/`); each engine's memory (`footprint`, 5 s) and instructions per byte (`bench --instructions`, under a minute) |
+| `run.sh full` | before a PR | 10 minutes | `quick`; 20,000 random cases with reflow, as fux and ratty set fux-vt up, and without; esctest directly, and against Ghostty's core with fux-vt beside it; instructions against main (`bench/`); each engine's memory (`footprint`, 5 s) and instructions per byte (`bench --instructions`, under a minute) |
 | `run.sh deep` | before a release, or when hunting | none; it prints its estimate | `full`; `verdicts` beside xterm, seeds 1–20 (`FUX_DEEP_SEEDS`); esctest in a fux pane; transparency through tmux and zellij; `fux-bench feel` and `info`; 10 minutes of fuzzing |
 | `run.sh fuzz [MINUTES]` | by hand | MINUTES (10) | every fuzz target in turn, from its stored corpus and what earlier runs here found; a crash is minimized (`cargo fuzz tmin`) and listed, to be made a test |
 | `run.sh scoreboard` | after any of them | seconds | the last runs' numbers, as `scoreboard.json` and `scoreboard.md`, and kept in the repository: `scoreboard/SCOREBOARD.md` for the commit, and a line of `scoreboard/history.jsonl` for each commit, committed with the work they measure |
@@ -895,6 +895,8 @@ fux-vt/compare/run.sh esctest DECSTBM            # the tests whose name contains
 fux-vt/compare/run.sh esctest --show --replays CUP   # each failure's message, and its bytes as a replay
 fux-vt/compare/run.sh esctest --in-fux --xterm   # also in a real fux pane, and in a real xterm
 fux-vt/compare/run.sh esctest --json FILE --logs DIR   # every result, and esctest's own logs
+fux-vt/compare/run.sh esctest --terminal ghostty # Ghostty's core under test, against esctest-expected-ghostty.txt
+fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt   # and fux-vt beside it, compared test by test
 ```
 
 - **Directly** (`src/esctest.rs`): each area is one esctest process (Python
@@ -946,6 +948,32 @@ fux-vt/compare/run.sh esctest --json FILE --logs DIR   # every result, and escte
   a DEC terminal: xterm's own default counts such a cell as nothing, and
   then fails every test that reads one. What passes there and fails against
   fux-vt is what fux-vt lacks; `--json` lists them.
+- **Another engine** (`--terminal NAME`, for `full`: `ghostty`): the
+  terminal under test is an engine in this process instead of fux-vt, as
+  `src/answering.rs` runs it. What esctest writes goes to the engine, and
+  its replies (`Engine::replies`) go back in order. DECRQCRA, how esctest
+  reads every cell, is answered by fux-vt alone (Ghostty's core ignores it,
+  as it ignores all DCS): for an engine it never reaches the engine and is
+  answered from the engine's screen, read as every comparison reads it
+  (`Engine::snapshot`), with fux-vt's sum, xterm's. A test holds the two to
+  each other: fux-vt's own reply and the one read from its snapshot agree
+  byte for byte on random screens, in any chunking. In origin mode the
+  rectangle is relative to margins no snapshot gives, so those tests are
+  skipped as "cannot read" (3 for Ghostty). Ghostty's core reports its size
+  (CSI 14, 16, 18 t, which esctest asks before every test) only through its
+  embedder, so it is given its size as Ghostty's app gives it, in 8×16-pixel
+  cells (`engines::ghostty::answering`); its other answers are its own: DA1
+  `CSI ? 62 ; 22 c`, DA2 `CSI > 1 ; 0 ; 0 c`, XTVERSION `libghostty`, OSC 4,
+  OSC 10 and 11 once set. It does not answer DECRQSS, DECXCPR, OSC 5, CSI
+  20 t, or DECRQM of an ANSI mode (a parser bug). The results are checked
+  against the engine's own list, `esctest-expected-NAME.txt`, with the same
+  vocabulary, each reason naming the place in the engine's source.
+- **Beside** (`--beside NAME`, fux-vt or an engine): another terminal runs
+  every area too, checked against its own list, and the two are compared:
+  each area's pass rate for both, the tests one passes and the other fails,
+  each with its feature (the failing one's listed reason) and where the
+  feature is specified (DEC STD 070, the VT510 manual, ctlseqs, ECMA-48:
+  `SOURCES` in `src/esctest.rs`), and the tests run in one only.
 
 At this commit (an Apple M2 Max, 12 CPUs, loaded by other work):
 
@@ -961,6 +989,28 @@ protected cells and selective erase 17, rectangle operations 13 and more),
 32 `departure` (window operations), 26 `xterm-too`, 4 `spec` (fux says it
 is a VT220 and fux), 1 `bug` (a cursor report in origin mode). In fux, the
 only difference is DECXCPR, which panes leave off.
+
+Ghostty's core (libghostty-vt at the pinned commit), with fux-vt beside it,
+at 6424721 (the same machine, loaded by other work):
+
+| | passed | failed | skipped | time |
+| --- | ---: | ---: | ---: | ---: |
+| Ghostty's core | 328 (60.1%) | 218 | 21 | 27.5 s |
+| fux-vt | 267 (48.6%) | 282 | 18 | 30.5 s |
+
+Ghostty's 218 failures by reason: 141 `not-implemented` (window
+operations 27, rectangle operations 19, XParseColor's CIE colour spaces 18,
+DECSTR 20, DECIC and DECDC 12, DECRQSS 10, and more), 36 `xterm-too`, 25
+`bug` (DECRQM of an ANSI mode never answered 18, CHA, HPR and VPR in origin
+mode 3, TBC 2, BS past the left margin, RIS keeping 132 columns), 9
+`departure` (colours kept at 8 bits), 7 `spec`. Its parser drops DECSTR,
+with which esctest resets the terminal before every test, so 11 tests fail
+only after the one before them; they pass alone, and the list says so.
+Ghostty passes 92 tests fux-vt fails (left and right margins 49, protected
+cells 12, colours 11, DECRQM 5, window operations 4, reverse wraparound 3,
+and more); fux-vt passes 30 Ghostty fails (DECSTR 19, ANSI DECRQM 3,
+DECRQSS 3, and more). `--json`'s `comparison` lists both, each with its
+feature and source.
 
 `--json FILE` writes, for the scoreboard:
 
@@ -986,6 +1036,29 @@ only difference is DECXCPR, which panes leave off.
 `xterm` are there with `--in-fux` and `--xterm`; `mismatches` are what
 failed the run.
 
+With `--terminal ghostty --beside fux-vt` (`full`'s `esctest-ghostty.json`),
+`terminal` names the terminal under test, whose results are `direct`, as
+above; fux-vt's are `fux_vt`, the same shape; and `comparison` sets them
+side by side:
+
+```json
+{
+  "terminal": "ghostty", "direct": {"...": "Ghostty's, as direct above"}, "fux_vt": {"...": "fux-vt's"},
+  "comparison": {
+    "terminals": ["ghostty", "fux-vt"],
+    "total": {"ghostty": {"passed": 328, "pass_rate": 60.1, "...": 0}, "fux-vt": {"...": 0}},
+    "areas": {"CUPTests": {"ghostty": {"passed": 6, "...": 0}, "fux-vt": {"passed": 5, "...": 0}}},
+    "passes_only_in": {
+      "ghostty": [{"test": "CUPTests.test_CUP_RespectsOriginMode", "kind": "not-implemented",
+                   "feature": "left and right margins (...)", "source": "DEC STD 070 §5.4.3, ...",
+                   "failure": "fux-vt's message, its first line"}],
+      "fux-vt": [{"test": "TBCTests.test_TBC_Default", "kind": "bug", "...": ""}]
+    },
+    "run_in_one_only": [{"test": "DECSETTests.test_DECSET_DECOM", "ghostty": "skipped: cannot read: ...", "fux-vt": "fails (...)"}]
+  }
+}
+```
+
 ## Files
 
 | File | What |
@@ -1010,6 +1083,9 @@ failed the run.
 | `src/footprint.rs` | `footprint`: each engine's memory, each in a child process |
 | `src/memory.rs` | the process's memory, as the system and malloc count it |
 | `src/escape.rs` | bytes as replayable text, and back |
+| `src/esctest.rs` | `esctest`: esctest2 against fux-vt, an engine, a fux pane or xterm; the comparison of two terminals |
+| `src/answering.rs` | an engine as the terminal a program talks to: its replies, and DECRQCRA from its screen |
+| `esctest-expected.txt`, `esctest-expected-ghostty.txt` | the esctest tests fux-vt and Ghostty's core fail, each with its reason |
 | `src/rng.rs` | splitmix64, as in `diff/` |
 | `src/record.rs` | `record`: a program on a PTY, its output recorded, fux-vt answering its queries |
 | `src/corpus.rs` | the recordings: loading, replaying beside the engines, their statuses |
