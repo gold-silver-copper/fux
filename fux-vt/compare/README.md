@@ -36,7 +36,7 @@ runs alone.
 
 | Command | When | Budget | What |
 | --- | --- | --- | --- |
-| `run.sh quick` | before a commit | 1 minute (40 s here) | the corpus beside xterm and the panel; transparency through fux on every recording; 2,000 random cases; the named cases beside every engine |
+| `run.sh quick` | before a commit | 1 minute (40 s here) | the corpus beside xterm and the panel, and again with Ghostty judged in fux-vt's place (`corpus-ghostty.json`); transparency through fux on every recording; 2,000 random cases; the named cases beside every engine |
 | `run.sh full` | before a PR | 10 minutes | `quick`; 20,000 random cases with reflow, as fux and ratty set fux-vt up, and without; esctest directly; instructions against main (`bench/`); each engine's memory (`footprint`, 5 s) and instructions per byte (`bench --instructions`, under a minute) |
 | `run.sh deep` | before a release, or when hunting | none; it prints its estimate | `full`; `verdicts` beside xterm, seeds 1–20 (`FUX_DEEP_SEEDS`); esctest in a fux pane; transparency through tmux and zellij; `fux-bench feel` and `info`; 10 minutes of fuzzing |
 | `run.sh fuzz [MINUTES]` | by hand | MINUTES (10) | every fuzz target in turn, from its stored corpus and what earlier runs here found; a crash is minimized (`cargo fuzz tmin`) and listed, to be made a test |

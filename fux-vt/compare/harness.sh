@@ -57,10 +57,14 @@ quick() {
   # that runs here, not the in-process ones alone: xterm decides the fields
   # where the panel splits (a blank's colour), and xterm.js is the only
   # voter beside Ghostty that can tell synchronized output. Both still fit.
-  echo "quick: corpus beside xterm, transparency, 2,000 random cases, the named cases"
-  ran+=(corpus transparency random cases)
+  # The corpus again with Ghostty judged as fux-vt is, fux-vt voting in its
+  # place: both scores and where each departs alone (corpus-ghostty.json).
+  # It runs beside the corpus, an xterm of its own, and still fits.
+  echo "quick: corpus beside xterm, with Ghostty judged too, transparency, 2,000 random cases, the named cases"
+  ran+=(corpus corpus-ghostty transparency random cases)
   together \
     "corpus $compare corpus --json $out/corpus.json" \
+    "corpus-ghostty $compare corpus --subject ghostty --json $out/corpus-ghostty.json" \
     "transparency $compare transparency --json $out/transparency.json" \
     "random $compare run --cases 2000" \
     "cases $compare cases"
