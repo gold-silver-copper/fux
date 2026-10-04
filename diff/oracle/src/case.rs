@@ -82,7 +82,56 @@ impl fmt::Display for Difference {
     }
 }
 
-/// `Err` naming `what`, unless the two are equal.
+/// How much of a long line a report shows either side of where two differ.
+const NEAR: usize = 100;
+
+/// `text`'s characters from `from` (a character count) for `len`, with
+/// `…` where it is cut.
+fn window(text: &str, from: usize, len: usize) -> String {
+    let count = text.chars().count();
+    let shown: String = text.chars().skip(from).take(len).collect();
+    let before = if from > 0 { "…" } else { "" };
+    let after = if from.saturating_add(len) < count {
+        "…"
+    } else {
+        ""
+    };
+    format!("{before}{shown}{after}")
+}
+
+/// Where two `Debug` texts first differ: the path of fields to the first
+/// line that differs (from `{:#?}`'s indentation), and that line of each,
+/// cut to a window about the first character that differs.
+pub fn explain(base: &dyn fmt::Debug, work: &dyn fmt::Debug) -> (String, String, String) {
+    let (a, b) = (format!("{base:#?}"), format!("{work:#?}"));
+    let (la, lb): (Vec<&str>, Vec<&str>) = (a.lines().collect(), b.lines().collect());
+    let at = la.iter().zip(&lb).take_while(|(x, y)| x == y).count();
+    // The fields open at that line: each line before it that opens a
+    // field (`name: Kind {`, `name: [`, `name: (`) and is not yet closed.
+    let mut path: Vec<(usize, &str)> = Vec::new();
+    let indent = |line: &str| line.len().saturating_sub(line.trim_start().len());
+    for line in la.iter().take(at.saturating_add(1)) {
+        let depth = indent(line);
+        path.retain(|(d, _)| *d < depth);
+        if let Some((name, _)) = line.trim_start().split_once(": ")
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            path.push((depth, name));
+        }
+    }
+    let field: Vec<&str> = path.iter().map(|(_, name)| *name).collect();
+    let (x, y) = (
+        la.get(at).copied().unwrap_or("(nothing)").trim(),
+        lb.get(at).copied().unwrap_or("(nothing)").trim(),
+    );
+    let first = x.chars().zip(y.chars()).take_while(|(p, q)| p == q).count();
+    let from = first.saturating_sub(NEAR);
+    let len = NEAR.saturating_mul(2);
+    (field.join("."), window(x, from, len), window(y, from, len))
+}
+
+/// `Err` naming `what` and the field in it that differs, unless the two
+/// are equal.
 pub fn same<T: PartialEq + fmt::Debug>(
     step: Option<usize>,
     what: &str,
@@ -92,16 +141,21 @@ pub fn same<T: PartialEq + fmt::Debug>(
     if base == work {
         return Ok(());
     }
+    let (field, base, work) = explain(base, work);
     Err(Difference {
         step,
-        what: what.into(),
-        base: format!("{base:?}"),
-        work: format!("{work:?}"),
+        what: if field.is_empty() {
+            what.into()
+        } else {
+            format!("{what}: {field}")
+        },
+        base,
+        work,
     })
 }
 
 /// Two lists that should be equal: `Err` naming the first item that
-/// differs, and where.
+/// differs, where, and the field in it.
 pub fn same_list<T: PartialEq + fmt::Debug>(
     step: Option<usize>,
     what: &str,
@@ -112,12 +166,12 @@ pub fn same_list<T: PartialEq + fmt::Debug>(
         return Ok(());
     }
     let at = base.iter().zip(work).take_while(|(a, b)| a == b).count();
-    Err(Difference {
+    same(
         step,
-        what: format!("{what}, item {at} of {} and {}", base.len(), work.len()),
-        base: format!("{:?}", base.get(at)),
-        work: format!("{:?}", work.get(at)),
-    })
+        &format!("{what}, item {at} of {} and {}", base.len(), work.len()),
+        &base.get(at),
+        &work.get(at),
+    )
 }
 
 /// Runs the case on both sides, comparing everything after every step.
@@ -444,6 +498,45 @@ mod tests {
         };
         assert_eq!(Case::from_text(&case.to_text())?, case);
         Ok(())
+    }
+
+    #[test]
+    fn a_difference_names_its_field() {
+        let base = crate::model::Glance {
+            cursor: (2, 3),
+            pending_wrap: false,
+            origin_mode: false,
+            pen: crate::cells::default_style(),
+            kitty_keyboard_flags: 0,
+            row: "a row: of text".into(),
+        };
+        let mut work = base.clone();
+        work.pen.bold = true;
+        assert_eq!(
+            explain(&base, &work),
+            (
+                "pen.bold".into(),
+                "bold: false,".into(),
+                "bold: true,".into()
+            )
+        );
+        let mut work = base.clone();
+        work.cursor.1 = 4;
+        assert_eq!(
+            explain(&base, &work),
+            ("cursor".into(), "3,".into(), "4,".into())
+        );
+        let long = |c: char| -> String {
+            let mut text: String = std::iter::repeat_n('x', 300).collect();
+            text.push(c);
+            text
+        };
+        let (field, a, b) = explain(&long('a'), &long('b'));
+        assert_eq!(field, "");
+        assert!(
+            a.starts_with('…') && a.ends_with("xa\"") && b.ends_with("xb\""),
+            "{a}"
+        );
     }
 
     #[test]
