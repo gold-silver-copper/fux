@@ -15,13 +15,22 @@ pub fn check(p: &Parser) {
         row < rows && col < cols,
         "cursor {row},{col} outside {rows}x{cols}"
     );
-    // A wrap waits only in the last column.
+    // A wrap waits in the last column, or at a right margin: one set, or
+    // one a reset of DECLRMM (or DECSTR) left the wrap waiting at, as xterm
+    // keeps it. A right margin is never the first column.
+    let (left, right) = s.left_right_margins();
     assert!(
-        !s.pending_wrap() || col.checked_add(1) == Some(cols),
+        !s.pending_wrap() || col.checked_add(1) == Some(cols) || col >= 1,
         "wrap pending at {row},{col} of {rows}x{cols}"
     );
     let (top, bottom) = s.scroll_region();
     assert!(top <= bottom && bottom < rows);
+    // The left margin is left of the right one, or they are the screen's
+    // edges, as on a screen one column wide.
+    assert!(
+        left < right && right < cols || (left, right) == (0, cols.saturating_sub(1)),
+        "margins {left}..={right} of {cols} columns"
+    );
     let mut ids = HashSet::new();
     // A count past usize would show as a missing row.
     for offset in 0..usize::from(rows).saturating_add(s.history_len()) {

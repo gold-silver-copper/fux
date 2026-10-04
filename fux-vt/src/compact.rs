@@ -136,6 +136,15 @@ impl Compact {
     pub(crate) fn is_spilled(&self) -> bool {
         self.word & SPILLED != 0
     }
+    /// Whether the cell, of a row whose text is `text`, holds what `other`,
+    /// of a row whose text is `other_text`, holds: the same text, halves
+    /// and style, wherever each row keeps its text.
+    pub(crate) fn same_as(&self, text: &Text, other: &Self, other_text: &Text) -> bool {
+        if !self.is_spilled() && !other.is_spilled() {
+            return self == other;
+        }
+        self.word == other.word && text.of(self) == other_text.of(other)
+    }
     /// Whether the cell equals `other`: every cell is held one way only,
     /// so the same cells are the same bytes. Two spilled cells are the same
     /// if they locate the same text of one row.

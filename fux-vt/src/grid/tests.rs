@@ -454,3 +454,68 @@ fn laying_out_runs_is_laying_out_cells() -> Result<(), Error> {
     );
     Ok(())
 }
+
+/// A live row's cells as a reader reads them: text, halves, attributes
+/// and link.
+fn read_row(grid: &Grid, y: u16) -> Vec<(String, bool, bool, Attributes, Option<String>)> {
+    let Some(row) = grid.live_row(y) else {
+        return Vec::new();
+    };
+    (0..row.width)
+        .filter_map(|x| {
+            let cell = row.cell(x)?;
+            let link = row.link(x).map(|l| l.uri().to_owned());
+            Some((
+                cell.contents().to_owned(),
+                cell.is_wide(),
+                cell.is_wide_continuation(),
+                cell.attributes(),
+                link,
+            ))
+        })
+        .collect()
+}
+
+/// Scrolling between left and right margins as wide as the screen
+/// (`scroll_columns`, which copies cells, their text and their links from
+/// row to row) leaves every row reading as scrolling the rows themselves
+/// (`scroll_region`, which moves them) does: over random grids, with wide
+/// glyphs, halves alone, clusters kept in a row's text and links, every
+/// region, count and way, blanks in the default style or another.
+#[test]
+fn scrolling_between_full_margins_is_scrolling_rows() -> Result<(), Error> {
+    let mut r = Rng(0x0ef1_0000_0000_0069);
+    let coloured = Attributes::new(crate::Color::Idx(1), crate::Color::Idx(4))
+        .inline_style()
+        .unwrap_or(0);
+    let mut moved = 0usize;
+    for case in 0..3_000 {
+        let grid = random_grid(&mut r)?;
+        let rows = grid.rows.get();
+        let top = r.small(rows);
+        let bottom = top.saturating_add(r.small(rows.saturating_sub(top)));
+        let count = r.small(rows.saturating_add(2)).saturating_add(1);
+        let up = r.chance(50);
+        let blank = if r.chance(30) { coloured } else { 0 };
+        let (mut by_rows, mut by_cells) = (grid.clone(), grid.clone());
+        let mut next = max_id(&grid).saturating_add(1);
+        let direction = if up {
+            Scroll::Up { history: false }
+        } else {
+            Scroll::Down
+        };
+        by_rows.scroll_region((top, bottom), count, direction, blank, &mut next, 1_000)?;
+        by_cells.scroll_columns((top, bottom), count, up, blank, 1_000);
+        for y in 0..rows {
+            let (a, b) = (read_row(&by_rows, y), read_row(&by_cells, y));
+            assert_eq!(
+                a, b,
+                "case {case}: {top}..={bottom} by {count}, up {up}, row {y}"
+            );
+            moved = moved.saturating_add(usize::from(a != read_row(&grid, y)));
+        }
+        assert!(by_cells.blank_past_used(), "case {case}: used");
+    }
+    assert!(moved > 3_000, "{moved} rows changed");
+    Ok(())
+}

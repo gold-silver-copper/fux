@@ -256,6 +256,14 @@ pub(crate) struct Grid {
     pub saved_origin: bool,
     pub top: u16,
     pub bottom: u16,
+    /// The left and right margins (DECSLRM, with DECLRMM set), zero-based
+    /// and inclusive: the screen's first and last columns unless a program
+    /// set them. Set with `set_columns` alone, which keeps `lr`.
+    pub left: u16,
+    pub right: u16,
+    /// Whether `left` and `right` are narrower than the screen: one test
+    /// for every operation they bound, which without them does as it did.
+    lr: bool,
 }
 
 /// A grid's cursor and what goes with it (`Grid::clone_cursor`).
@@ -264,7 +272,7 @@ pub(crate) struct CursorState {
     cursor: (u16, u16),
     pending_wrap: bool,
     origin: bool,
-    margins: (u16, u16),
+    margins: (u16, u16, u16, u16),
     saved: ((u16, u16), bool, bool),
 }
 
@@ -344,6 +352,9 @@ impl Grid {
             saved_origin: false,
             top: 0,
             bottom: rows.last(),
+            left: 0,
+            right: cols.last(),
+            lr: false,
         }
     }
 
@@ -954,19 +965,59 @@ impl Grid {
     /// ICH and DCH, at the cursor, which they leave where it is; they end
     /// a pending wrap (DEC STD 070, Appendix D.6.1). The cells they bring
     /// in are blank in `blank`. DCH ends the row's soft wrap; ICH, and the
-    /// insertion IRM makes, keep it, as xterm does.
+    /// insertion IRM makes, keep it, as xterm does. With left and right
+    /// margins they edit up to the right margin, and outside them they do
+    /// nothing at all, the pending wrap staying too, as in xterm
+    /// (`InsertChar`, `DeleteChar`; DEC STD 070, 5.4.3).
     pub fn edit_cells(&mut self, count: u16, insert: bool, blank: u32, version: u64) {
+        if self.lr && !self.in_columns() {
+            return;
+        }
         self.pending_wrap = false;
         let (row, col) = self.cursor;
-        // At most the cells from the cursor to the edge.
-        let count = usize::from(count.min(self.cols.get().saturating_sub(col)));
+        self.edit_row(row, col, count, insert, blank, version);
+    }
+
+    /// ICH or DCH of `count` cells at column `col` of live row `row`, up
+    /// to the right margin: `edit_cells` at the cursor, and DECIC and DECDC
+    /// on each row of the scrolling region. `col` is between the margins.
+    pub fn edit_row(
+        &mut self,
+        row: u16,
+        col: u16,
+        count: u16,
+        insert: bool,
+        blank: u32,
+        version: u64,
+    ) {
+        // The cells the edit moves end at the right margin, which is the
+        // last column without margins.
+        let end = self.right.saturating_add(1).min(self.cols.get());
+        // At most the cells from the column to the margin.
+        let count = usize::from(count.min(end.saturating_sub(col)));
         if count == 0 {
             return;
         }
         let cols = self.cols.get();
+        let end = usize::from(end);
         let blank = Compact::blank(blank);
-        self.mutate_row(row, version, cols, |cells| {
+        self.mutate_row(row, version, cols, |row_cells| {
             let col = usize::from(col);
+            // A wide glyph across the right margin loses both halves: the
+            // edit moves one and not the other.
+            if row_cells
+                .get(end)
+                .is_some_and(Compact::is_wide_continuation)
+            {
+                for at in [end.saturating_sub(1), end] {
+                    if let Some(c) = row_cells.get_mut(at) {
+                        *c = c.blanked();
+                    }
+                }
+            }
+            let Some(cells) = row_cells.get_mut(..end) else {
+                return false;
+            };
             let len = cells.len();
             // Where the cells shifted out start.
             let shifted = if insert {
@@ -993,13 +1044,14 @@ impl Grid {
                 }
             }
             shift(cells, col, count, insert, blank);
-            repair_wide(cells);
+            repair_wide(row_cells);
             // Inserting and deleting always count as a change.
             true
         });
         // The cells' links move with them.
         if let Some(slot) = self.slot(row)
-            && let Some(links) = self.linked.get_mut(&slot)
+            && let Some(row_links) = self.linked.get_mut(&slot)
+            && let Some(links) = row_links.get_mut(..end)
         {
             // The cells shifted out of the row lose their links: the last
             // `count` to insert, those from the cursor to delete.
@@ -1084,6 +1136,150 @@ impl Grid {
             return Ok(());
         }
         self.scroll_region((top, bottom), count, direction, blank, next, version)
+    }
+
+    /// A scroll inside left and right margins (DEC STD 070, 5.4.3; xterm's
+    /// `scrollInMargins`): the cells between the margins of rows `top` to
+    /// `bottom` move `count` rows up or down, and those the move leaves
+    /// are blank in `blank`. Rows do not move, so each keeps its identity,
+    /// its soft wrap and its prompt mark, as xterm keeps a row's flags;
+    /// their cells change, with their text and links, and so their
+    /// versions. A wide glyph across either margin, in any row of the
+    /// region, loses both halves first, as in xterm. Nothing goes into
+    /// history.
+    pub fn scroll_columns(
+        &mut self,
+        (top, bottom): (u16, u16),
+        count: u16,
+        up: bool,
+        blank: u32,
+        version: u64,
+    ) {
+        if bottom >= self.rows.get() {
+            return;
+        }
+        let Some(height) = bottom.checked_sub(top).and_then(|h| h.checked_add(1)) else {
+            return;
+        };
+        let count = count.min(height);
+        if count == 0 {
+            return;
+        }
+        let (left, right) = (usize::from(self.left), usize::from(self.right));
+        let end = right.saturating_add(1);
+        for y in top..=bottom {
+            self.mutate_row(y, version, 0, |cells| {
+                let mut changed = false;
+                for edge in [left, end] {
+                    if edge > 0 && cells.get(edge).is_some_and(Compact::is_wide_continuation) {
+                        for at in [edge.saturating_sub(1), edge] {
+                            if let Some(c) = cells.get_mut(at) {
+                                *c = c.blanked();
+                            }
+                        }
+                        changed = true;
+                    }
+                }
+                changed
+            });
+        }
+        let span = left..end;
+        // Up, each row takes the cells of the row `count` below it, from
+        // the top; down, of the row `count` above it, from the bottom. The
+        // rows left at the far end are blanked.
+        let moved = height.saturating_sub(count);
+        for i in 0..moved {
+            let (to, from) = if up {
+                (
+                    top.saturating_add(i),
+                    top.saturating_add(i).saturating_add(count),
+                )
+            } else {
+                let to = bottom.saturating_sub(i);
+                (to, to.saturating_sub(count))
+            };
+            self.copy_span(from, to, span.clone(), version);
+        }
+        for i in 0..count {
+            let y = if up {
+                bottom.saturating_sub(i)
+            } else {
+                top.saturating_add(i)
+            };
+            self.blank_span(y, span.clone(), blank, version);
+        }
+    }
+
+    /// Copies the cells `span` of live row `from` into live row `to`, with
+    /// their text and links; `to` takes `version` if a cell changed.
+    fn copy_span(&mut self, from: u16, to: u16, span: Range<usize>, version: u64) {
+        let (Some(source), Some(target)) = (self.slot(from), self.slot(to)) else {
+            return;
+        };
+        let cells: Vec<Compact> = self
+            .slice(source)
+            .get(span.clone())
+            .unwrap_or_default()
+            .to_vec();
+        let text = self.spill.get(source).map(Text::exact).unwrap_or_default();
+        let links: Option<Vec<u16>> = if self.meta.get(source).is_some_and(|m| m.linked) {
+            self.linked
+                .get(&source)
+                .and_then(|row| row.get(span.clone()))
+                .map(<[u16]>::to_vec)
+        } else {
+            None
+        };
+        let mut changed = false;
+        if let Some(mut line) = self.line(target) {
+            for (i, cell) in cells.iter().enumerate() {
+                let at = span.start.saturating_add(i);
+                let Some(&old) = line.cells.get(at) else {
+                    continue;
+                };
+                if old.same_as(line.text, cell, &text) {
+                    continue;
+                }
+                changed = true;
+                if cell.is_spilled() {
+                    line.set(at, *cell, text.of(cell));
+                } else if let Some(slot) = line.cells.get_mut(at) {
+                    *slot = *cell;
+                }
+            }
+        }
+        if changed && let Some(m) = self.meta.get_mut(target) {
+            m.version = version;
+            let end = u16::try_from(span.end).unwrap_or(m.width);
+            m.used = m.used.max(end.min(m.width));
+        }
+        // The links, a cell at a time: each takes its source's, or none.
+        let linked = links.is_some() || self.meta.get(target).is_some_and(|m| m.linked);
+        if linked {
+            for (i, at) in span.enumerate() {
+                let link = links.as_ref().and_then(|l| l.get(i)).copied().unwrap_or(0);
+                self.set_link(to, at..at.saturating_add(1), link, version);
+            }
+        }
+    }
+
+    /// Blanks the cells `span` of live row `row` in style `blank`, with no
+    /// links, keeping the row's soft wrap; it takes `version` if a cell
+    /// changed.
+    fn blank_span(&mut self, row: u16, span: Range<usize>, blank: u32, version: u64) {
+        let cell = Compact::blank(blank);
+        let end = u16::try_from(span.end).unwrap_or(u16::MAX);
+        self.mutate_row(row, version, end, |cells| {
+            let Some(run) = cells.get_mut(span.clone()) else {
+                return false;
+            };
+            if run.iter().all(|c| *c == cell) {
+                return false;
+            }
+            run.fill(cell);
+            true
+        });
+        self.set_link(row, span, 0, version);
     }
 
     /// `scroll` within the margins, or down, or without history.
@@ -2001,6 +2197,7 @@ impl Grid {
         self.saved_origin = false;
         self.top = 0;
         self.bottom = self.rows.last();
+        self.set_columns(0, self.cols.last());
         Ok(())
     }
 
@@ -2011,7 +2208,7 @@ impl Grid {
             cursor: self.cursor,
             pending_wrap: self.pending_wrap,
             origin: self.origin,
-            margins: (self.top, self.bottom),
+            margins: (self.top, self.bottom, self.left, self.right),
             saved: (
                 self.saved_cursor,
                 self.saved_pending_wrap,
@@ -2024,7 +2221,9 @@ impl Grid {
         self.cursor = state.cursor;
         self.pending_wrap = state.pending_wrap;
         self.origin = state.origin;
-        (self.top, self.bottom) = state.margins;
+        let (top, bottom, left, right) = state.margins;
+        (self.top, self.bottom) = (top, bottom);
+        self.set_columns(left, right);
         (
             self.saved_cursor,
             self.saved_pending_wrap,
@@ -2045,16 +2244,64 @@ impl Grid {
     pub fn in_region(&self) -> bool {
         (self.top..=self.bottom).contains(&self.cursor.0)
     }
+    /// Whether left and right margins narrower than the screen are set
+    /// (DECSLRM): every operation they bound looks here first, so without
+    /// them each costs this test and no more.
+    #[inline]
+    pub fn lr(&self) -> bool {
+        self.lr
+    }
+    /// Sets the left and right margins, `left` before `right`, both on the
+    /// screen.
+    pub fn set_columns(&mut self, left: u16, right: u16) {
+        self.left = left;
+        self.right = right;
+        self.lr = left != 0 || right != self.cols.last();
+    }
+    /// Whether the cursor is between the left and right margins.
+    #[inline]
+    pub fn in_columns(&self) -> bool {
+        (self.left..=self.right).contains(&self.cursor.1)
+    }
+    /// One past the last column a glyph printed now may take: the right
+    /// margin's, unless the cursor is past it, when the margin is no bound
+    /// (DEC STD 070, 5.4.3; xterm's `dotext`). The screen's without margins.
+    #[inline]
+    pub fn line_end(&self) -> u16 {
+        if self.lr {
+            return self.line_end_in_margins();
+        }
+        self.cols.get()
+    }
+    /// `line_end` with left and right margins. Out of line, as every margin
+    /// case is, so that without margins each costs one test.
+    #[cold]
+    #[inline(never)]
+    fn line_end_in_margins(&self) -> u16 {
+        if self.cursor.1 <= self.right {
+            self.right.saturating_add(1)
+        } else {
+            self.cols.get()
+        }
+    }
     /// Where the next glyph goes, before any wrap: the cursor's column, or
     /// one past the last column while a wrap is pending.
     pub fn next_column(&self) -> u16 {
         past(self.cursor.1, self.pending_wrap)
     }
-    /// Puts the cursor in column `col` of its row; one past the last
-    /// column is the last column with a wrap pending.
+    /// Puts the cursor in column `col` of its row, from where it is; one
+    /// past the end of its line (`line_end`) is the line's last column with
+    /// a wrap pending.
+    #[inline]
     pub fn advance_to(&mut self, col: u16) {
-        self.pending_wrap = col >= self.cols.get();
-        self.cursor.1 = col.min(self.cols.last());
+        let end = self.line_end();
+        self.advance_within(col, end);
+    }
+    /// `advance_to`, the line ending at `end`, as `line_end` found it.
+    #[inline]
+    pub fn advance_within(&mut self, col: u16, end: u16) {
+        self.pending_wrap = col >= end;
+        self.cursor.1 = col.min(end.saturating_sub(1));
     }
     /// The cursor's line as CUP addresses it: from the top margin in
     /// origin mode.
@@ -2065,17 +2312,109 @@ impl Grid {
             self.cursor.0
         }
     }
-    /// CUP: moves the cursor, within the margins in origin mode. Like every
-    /// cursor movement, it ends a pending wrap.
+    /// The column CR moves the cursor to: the left margin, unless the
+    /// cursor is left of it outside origin mode, when it is the first
+    /// (xterm's `CarriageReturn`; DEC STD 070 leaves CR at the margin).
+    #[inline]
+    pub fn carriage_column(&self) -> u16 {
+        if self.lr {
+            return self.carriage_in_margins();
+        }
+        0
+    }
+    #[cold]
+    #[inline(never)]
+    fn carriage_in_margins(&self) -> u16 {
+        if self.origin || self.cursor.1 >= self.left {
+            self.left
+        } else {
+            0
+        }
+    }
+    /// CUP: moves the cursor, within the margins in origin mode, where
+    /// lines count from the top margin and columns from the left. Like
+    /// every cursor movement, it ends a pending wrap.
+    #[inline]
     pub fn position(&mut self, row: u16, col: u16) {
         self.pending_wrap = false;
+        // Without margins, the left one is the first column and the right
+        // the last: outside origin mode the margins are no bound.
         self.cursor = if self.origin {
             (
                 row.saturating_add(self.top).min(self.bottom).max(self.top),
-                col.min(self.cols.last()),
+                col.saturating_add(self.left).min(self.right),
             )
         } else {
             (row.min(self.rows.last()), col.min(self.cols.last()))
+        };
+    }
+    /// BS without reverse wraparound: back a column, stopping at the left
+    /// margin unless the cursor is already left of it (xterm's
+    /// `CursorBack`).
+    #[inline]
+    pub fn back(&mut self) {
+        if self.lr && self.cursor.1 == self.left {
+            return;
+        }
+        self.cursor.1 = self.cursor.1.saturating_sub(1);
+    }
+    /// The column CUF, or HPR (`absolute`, outside origin mode), moves the
+    /// cursor `n` columns right to: no further than the right margin, for
+    /// CUF while the cursor is not past it, for HPR in origin mode
+    /// (xterm's `CursorForward` and `CASE_HPR`), else the last column.
+    #[inline]
+    pub fn forward(&self, n: u16, absolute: bool) -> u16 {
+        let col = self.cursor.1.saturating_add(n);
+        if self.lr {
+            return self.forward_in_margins(col, absolute);
+        }
+        col.min(self.cols.last())
+    }
+    #[cold]
+    #[inline(never)]
+    fn forward_in_margins(&self, col: u16, absolute: bool) -> u16 {
+        let bounded = if absolute {
+            self.origin
+        } else {
+            self.cursor.1 <= self.right
+        };
+        col.min(if bounded {
+            self.right
+        } else {
+            self.cols.last()
+        })
+    }
+    /// The column CUB moves the cursor `n` columns left to: no further than
+    /// the left margin, unless the cursor is left of it already (xterm's
+    /// `CursorBack`).
+    #[inline]
+    pub fn backward(&self, n: u16) -> u16 {
+        let col = self.cursor.1.saturating_sub(n);
+        if self.lr && self.cursor.1 >= self.left {
+            return col.max(self.left);
+        }
+        col
+    }
+    /// The column CHA and HPA move the cursor to, `col` counting from the
+    /// left margin in origin mode, no further than the right one.
+    #[inline]
+    pub fn column(&self, col: u16) -> u16 {
+        if self.lr && self.origin {
+            return col.saturating_add(self.left).min(self.right);
+        }
+        col.min(self.cols.last())
+    }
+    /// Moves the cursor to line `line` as CUP does, keeping its column,
+    /// which origin mode keeps within the right margin (VPA and VPR, as
+    /// xterm addresses them).
+    #[inline]
+    pub fn position_line(&mut self, line: u16) {
+        let col = self.cursor.1;
+        self.position(line, 0);
+        self.cursor.1 = if self.origin {
+            col.min(self.right)
+        } else {
+            col
         };
     }
 }

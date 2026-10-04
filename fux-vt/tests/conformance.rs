@@ -528,8 +528,8 @@ fn replies(
 /// with it reset (DEC STD 070, CPR and DECXCPR, note 1 and the
 /// algorithms, pages 5-53 to 5-56; the VT100 User Guide, chapter 3, CPR:
 /// "The numbering of lines depends on the state of the Origin Mode";
-/// xterm's charproc.c, `CASE_CPR`). fux-vt has no left margin, so the
-/// column is the screen's. A cursor waiting to wrap keeps its column
+/// xterm's charproc.c, `CASE_CPR`). Without left and right margins the
+/// column is the screen's (with them, see `margins.rs`). A cursor waiting to wrap keeps its column
 /// rule, one past the last column, or the last with an identity, in
 /// either mode. Expected values are xterm's (`fux-vt-compare replay
 /// --engines all --size 12x10 '\e[6;11r\e[?6h\e[2d\e[6n'`: Ghostty,
