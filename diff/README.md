@@ -257,6 +257,15 @@ marker, a `$` intermediate); any other is passed on, as both sides read it
 alike. On the corpus the filter takes out zellij's 512 `OSC 4 ; n ; ?`
 queries (8,888 bytes) and nothing else.
 
+**The memory diagnostics** (phase 3 of the same work, the compact cell,
+approved with it): `storage_cells` and each row's `text_len` may be smaller
+than the commit's, and never larger; everything else is compared exactly
+(`observe.rs`, `larger`). The grid stores its cells in 8 bytes, a cluster
+of 5 to 17 bytes outside the cell, and history rows trimmed to the cells
+they use, so the counts of what it keeps change by design: a row keeps the
+long clusters' text a row of 32-byte cells keeps, or less. `Cells`, which
+hosts keep, is unchanged, and its `text_len` is compared exactly.
+
 With the filter in, two bugs planted next to the exempt sequences were
 each found at once (and never committed): DECRQM of DECAWM (`?7`, among
 the probes beside the exempt `?4`, `?5`, `?8`) answering the opposite, in
@@ -322,7 +331,8 @@ The fuzz target, 60 s a bug (at a load of 30 to 150 on 12 cores):
 - **`Parser::process` and `process_with_replies`** are not called on their
   own: each is `process_with` with a sink that keeps less.
 
-The memory diagnostics, `storage_cells` and `text_len`, *are* compared. A
-change to how cells or long clusters are stored may change them on
-purpose; that is a change to approve and record as an exemption, not to
-hide.
+The memory diagnostics, `storage_cells` and `text_len`, *are* compared:
+since the compact cell, as no larger than the commit's (see
+[Exemptions](#exemptions)). Another change to how cells or long clusters
+are stored that changes them is a change to approve and record as an
+exemption, not to hide.
