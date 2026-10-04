@@ -75,9 +75,6 @@ DATests.test_DA_NoParameter  spec: fux says it is a VT220-class terminal (DA1 CS
 DCHTests.test_DCH_DeleteAllWithMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 DCHTests.test_DCH_DoesNothingOutsideLeftRightMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 DCHTests.test_DCH_RespectsMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DECALNTests.test_DECALN_ClearsMargins  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
-DECALNTests.test_DECALN_FillsScreen  not-implemented: DECALN (ESC # 8, the screen alignment test); no program in the corpus sends it
-DECALNTests.test_DECALN_MovesCursorHome  not-implemented: DECALN (ESC # 8, the screen alignment test); no program in the corpus sends it
 DECBITests.test_DECBI_Basic  not-implemented: DECBI and DECFI (back and forward index, ESC 6, ESC 9); no program in the corpus sends them
 DECBITests.test_DECBI_LeftOfMargin  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them
 DECBITests.test_DECBI_Scrolls  not-implemented: left and right margins (DECLRMM, CSI ? 69 h, and DECSLRM); no program in the corpus sets them

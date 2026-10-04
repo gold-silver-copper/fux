@@ -1480,6 +1480,10 @@ impl Screen {
         match intermediates {
             b"(" => self.charsets.g0_graphics = byte == b'0',
             b")" => self.charsets.g1_graphics = byte == b'0',
+            b"#" if byte == b'8' => {
+                self.alignment();
+                return Ok(true);
+            }
             [] => {}
             _ => return Ok(false),
         }
@@ -1574,6 +1578,45 @@ impl Screen {
             _ => return Ok(false),
         }
         Ok(true)
+    }
+
+    /// DECALN (`ESC # 8`; DEC STD 070, Appendix D, Screen Alignment; VT520
+    /// manual, 5-17): the screen filled with E, the margins the whole
+    /// screen, origin mode off, the cursor home with no wrap pending, and
+    /// the pen's rendition off, as DEC STD 070's algorithm has it. As in
+    /// xterm 411, which DEC leaves the rest to: the pen keeps its colours
+    /// and loses every attribute, and the E's have neither. Each row's soft
+    /// wrap ends, as in Ghostty, alacritty and wezterm (xterm keeps it: a
+    /// screen of E's is no line going on), and its prompt mark goes, as an
+    /// ED erasing it whole takes it. A row already all plain E's is left
+    /// as it is, its version too.
+    fn alignment(&mut self) {
+        self.break_cluster();
+        self.attributes = self.attributes.erased();
+        let version = self.version;
+        let g = self.grid_mut();
+        g.origin = false;
+        g.top = 0;
+        g.bottom = g.rows.last();
+        g.cursor = (0, 0);
+        g.pending_wrap = false;
+        let plain = Attributes::default();
+        let cols = g.cols.get();
+        for y in 0..g.rows.get() {
+            let filled = !g.live_row(y).is_some_and(|r| r.has_links())
+                && g.live_cells(y).iter().all(|c| c.is_ascii(b'E', plain));
+            if !filled {
+                // Erased whole first: its long clusters' text and its links
+                // go, as an erase takes them.
+                g.erase(y, 0, cols, plain, version);
+                g.mutate_row(y, version, cols, |cells| {
+                    cells.fill(Cell::ascii(b'E', plain));
+                    true
+                });
+            }
+            g.wrap(y, false, version);
+            g.clear_prompt(y);
+        }
     }
 
     /// DECSTR (`CSI ! p`), as xterm does it: the modes a program sets go
