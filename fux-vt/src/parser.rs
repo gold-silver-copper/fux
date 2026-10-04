@@ -657,11 +657,29 @@ impl Parser {
                 self.screen
                     .ascii(remaining.get(..length).unwrap_or_default())?;
                 remaining = remaining.get(length..).unwrap_or_default();
+            } else if ground && byte < 0x20 && byte != 0x1b {
+                // A C0 control, as `ground` carries it out.
+                self.control(byte, sink)?;
+                self.screen.forget_repeat();
+                remaining = tail;
             } else if ground
                 && byte >= 0x80
                 && let Some(length) = self.text(remaining)?
             {
                 remaining = remaining.get(length..).unwrap_or_default();
+            } else if ground && byte == 0x1b {
+                // An `h` read with a frame begun stops the run (below), so
+                // until the next CSI clears it, an OSC string's bytes go
+                // through `byte`: only an XTRESTORE of synchronized output
+                // sets it and goes on.
+                let strings = !(UNTIL_FRAME && self.frame_begun);
+                let (length, last) = self.sequence(remaining, strings, sink)?;
+                remaining = remaining.get(length..).unwrap_or_default();
+                // As below: only a CSI's final byte can be `h` here.
+                if UNTIL_FRAME && last == b'h' && self.frame_begun {
+                    self.frame_begun = false;
+                    return Ok(Some(bytes.len().saturating_sub(remaining.len())));
+                }
             } else {
                 self.byte(byte, sink)?;
                 remaining = tail;
@@ -685,6 +703,121 @@ impl Parser {
             taken = taken.saturating_add(length);
         }
         Ok((taken > 0).then_some(taken))
+    }
+    /// Reads the escape sequence `bytes` begins with (its ESC read in
+    /// ground state, no character half read) as far as it is one programs
+    /// send most: an escape sequence of intermediates and a final byte, or
+    /// a CSI of parameters alone (a private marker, digits, `;` and `:`,
+    /// and a final byte). The bytes are taken in a loop of their own rather
+    /// than each through `byte`, but each is done exactly as `byte` does
+    /// it. With `strings`, an OSC string it begins is taken too, up to what
+    /// ends it (`osc_string`). It stops before any other byte, or at the
+    /// end, with the parser in the state `byte` would have left it in, for
+    /// `byte` to go on from. Says how many bytes it took, at least the ESC,
+    /// and the last of them.
+    fn sequence(
+        &mut self,
+        bytes: &[u8],
+        strings: bool,
+        sink: &mut impl Sink,
+    ) -> Result<(usize, u8), Error> {
+        debug_assert!(self.state == State::Ground && self.utf8_len == 0);
+        self.reset_sequence();
+        self.state = State::Escape;
+        let mut taken = (1, 0x1b);
+        let mut rest = bytes.iter().enumerate().skip(1);
+        if bytes.get(1) == Some(&b'[') {
+            rest.next();
+            self.state = State::CsiEntry;
+            taken = (2, b'[');
+            for (i, &byte) in rest {
+                let next = (i.saturating_add(1), byte);
+                match byte {
+                    b'0'..=b'9' => self.params.digit(byte),
+                    b';' | b':' => {
+                        if !self.params.separator(byte == b':') {
+                            self.state = State::CsiIgnore;
+                            return Ok(next);
+                        }
+                    }
+                    0x3c..=0x3f if self.state == State::CsiEntry => self.collect(byte),
+                    0x40..=0x7e => {
+                        self.state = State::Ground;
+                        self.csi_dispatch(byte, sink)?;
+                        self.screen.forget_repeat();
+                        return Ok(next);
+                    }
+                    _ => return Ok(taken),
+                }
+                self.state = State::CsiParam;
+                taken = next;
+            }
+            return Ok(taken);
+        }
+        for (i, &byte) in rest {
+            let next = (i.saturating_add(1), byte);
+            match byte {
+                0x20..=0x2f => {
+                    self.collect(byte);
+                    self.state = State::EscapeIntermediate;
+                }
+                b']' if self.state == State::Escape => {
+                    self.osc.clear();
+                    self.osc_overflow = false;
+                    self.state = State::OscString;
+                    let payload = bytes.get(next.0..).unwrap_or_default();
+                    let taken = if strings {
+                        self.osc_string(payload)
+                    } else {
+                        None
+                    };
+                    return Ok(match taken {
+                        Some(length) => {
+                            let end = next.0.saturating_add(length);
+                            (
+                                end,
+                                bytes.get(end.saturating_sub(1)).copied().unwrap_or(byte),
+                            )
+                        }
+                        None => next,
+                    });
+                }
+                // The other strings, which `byte` begins.
+                b'P' | b'X' | b'^' | b'_' if self.state == State::Escape => return Ok(taken),
+                0x30..=0x7e => {
+                    self.state = State::Ground;
+                    if !self.ignoring {
+                        self.escape_dispatch(byte, sink)?;
+                    }
+                    self.screen.forget_repeat();
+                    return Ok(next);
+                }
+                _ => return Ok(taken),
+            }
+            taken = next;
+        }
+        Ok(taken)
+    }
+    /// Takes the OSC string's bytes `bytes` begins with, up to the BEL,
+    /// CAN, SUB or ESC that ends it, at once rather than each through
+    /// `byte`, keeping what `byte` would keep of them; how many it took,
+    /// `None` if `bytes` begins with one of those, for `byte` to read.
+    fn osc_string(&mut self, bytes: &[u8]) -> Option<usize> {
+        let length = bytes
+            .iter()
+            .position(|b| matches!(b, 0x07 | 0x18 | 0x1a | 0x1b))
+            .unwrap_or(bytes.len());
+        if length == 0 {
+            return None;
+        }
+        if !self.osc_overflow {
+            let room = self.osc_limit.saturating_sub(self.osc.len());
+            let kept = bytes.get(..length.min(room)).unwrap_or_default();
+            self.osc.extend_from_slice(kept);
+            // The byte past the limit marks the string overflowed.
+            self.osc_overflow = length > room;
+        }
+        Some(length)
     }
     fn reset_sequence(&mut self) {
         self.params.clear();
@@ -850,22 +983,7 @@ impl Parser {
                         self.state = State::Ground;
                     }
                     if self.state == State::Ground && !self.ignoring {
-                        let intermediates = self.intermediates;
-                        let intermediates = intermediates
-                            .get(..self.intermediate_len)
-                            .unwrap_or_default();
-                        // DECID, the VT100's request for its identity, which
-                        // the VT220 replaced by DA (ctlseqs: "Obsolete form
-                        // of CSI c"): answered as DA1 is.
-                        if intermediates.is_empty() && byte == b'Z' {
-                            let reply = Screen::primary_attributes(&self.options);
-                            sink.reply(reply.as_bytes());
-                        } else if !self.screen.escape(intermediates, byte)? {
-                            sink.unhandled(Unhandled::Escape {
-                                intermediates,
-                                action: byte,
-                            });
-                        }
+                        self.escape_dispatch(byte, sink)?;
                     }
                 }
                 _ => {}
@@ -940,32 +1058,7 @@ impl Parser {
                             let dispatch = self.state != State::CsiIgnore && !self.ignoring;
                             self.state = State::Ground;
                             if dispatch {
-                                let intermediates = self.intermediates;
-                                let intermediates = intermediates
-                                    .get(..self.intermediate_len)
-                                    .unwrap_or_default();
-                                let begun = self.screen.frames_begun();
-                                let dispatch = self.screen.csi(
-                                    &self.params,
-                                    intermediates,
-                                    byte,
-                                    &self.options,
-                                )?;
-                                self.frame_begun = self.screen.frames_begun() != begun;
-                                match dispatch {
-                                    Dispatch::Done => {}
-                                    Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
-                                    Dispatch::Unhandled => {
-                                        match self.query_reply(intermediates, byte) {
-                                            Some(reply) => sink.reply(reply.as_bytes()),
-                                            None => sink.unhandled(Unhandled::Csi {
-                                                params: Params(&self.params),
-                                                intermediates,
-                                                action: byte,
-                                            }),
-                                        }
-                                    }
-                                }
+                                self.csi_dispatch(byte, sink)?;
                             }
                         }
                     }
@@ -977,6 +1070,55 @@ impl Parser {
         // for REP to repeat until one is printed.
         if self.state == State::Ground {
             self.screen.forget_repeat();
+        }
+        Ok(())
+    }
+
+    /// Carries out the escape sequence whose final byte is `byte`, its
+    /// intermediates collected.
+    fn escape_dispatch(&mut self, byte: u8, sink: &mut impl Sink) -> Result<(), Error> {
+        let intermediates = self.intermediates;
+        let intermediates = intermediates
+            .get(..self.intermediate_len)
+            .unwrap_or_default();
+        // DECID, the VT100's request for its identity, which the VT220
+        // replaced by DA (ctlseqs: "Obsolete form of CSI c"): answered as
+        // DA1 is.
+        if intermediates.is_empty() && byte == b'Z' {
+            let reply = Screen::primary_attributes(&self.options);
+            sink.reply(reply.as_bytes());
+        } else if !self.screen.escape(intermediates, byte)? {
+            sink.unhandled(Unhandled::Escape {
+                intermediates,
+                action: byte,
+            });
+        }
+        Ok(())
+    }
+
+    /// Carries out the CSI sequence whose final byte is `byte`, its
+    /// parameters and intermediates collected.
+    fn csi_dispatch(&mut self, byte: u8, sink: &mut impl Sink) -> Result<(), Error> {
+        let intermediates = self.intermediates;
+        let intermediates = intermediates
+            .get(..self.intermediate_len)
+            .unwrap_or_default();
+        let begun = self.screen.frames_begun();
+        let dispatch = self
+            .screen
+            .csi(&self.params, intermediates, byte, &self.options)?;
+        self.frame_begun = self.screen.frames_begun() != begun;
+        match dispatch {
+            Dispatch::Done => {}
+            Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
+            Dispatch::Unhandled => match self.query_reply(intermediates, byte) {
+                Some(reply) => sink.reply(reply.as_bytes()),
+                None => sink.unhandled(Unhandled::Csi {
+                    params: Params(&self.params),
+                    intermediates,
+                    action: byte,
+                }),
+            },
         }
         Ok(())
     }
