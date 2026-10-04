@@ -457,7 +457,8 @@ impl Screen {
         let mut next_id = 1;
         Ok(Self {
             primary: Grid::new(rows, cols, history, &mut next_id, 1)?,
-            alternate: Grid::new(rows, cols, 0, &mut next_id, 1)?,
+            // Its cells are made when a program first shows it.
+            alternate: Grid::unmade(rows, cols, &mut next_id, 1)?,
             next_id,
             version: 1,
             structural: 1,
@@ -511,6 +512,12 @@ impl Screen {
     #[cfg(test)]
     pub(crate) fn primary_grid(&self) -> &Grid {
         &self.primary
+    }
+    /// Makes the alternate screen's cells now, as a test compares a screen
+    /// that made them at once with one that waited.
+    #[cfg(test)]
+    pub(crate) fn make_alternate(&mut self) -> Result<(), Error> {
+        self.alternate.make()
     }
     fn grid(&self) -> &Grid {
         if self.alternate_active {
@@ -1756,7 +1763,7 @@ impl Screen {
                 } else {
                     let history = self.primary.history_limit;
                     let primary = Grid::new(rows, cols, history, &mut next, self.version)?;
-                    let alternate = Grid::new(rows, cols, 0, &mut next, self.version)?;
+                    let alternate = Grid::unmade(rows, cols, &mut next, self.version)?;
                     self.primary = primary;
                     self.alternate = alternate;
                 }
@@ -2223,8 +2230,13 @@ impl Screen {
                 }
             }
             _ => {
-                // A switch of screens leaves the printed cell behind.
+                // A switch of screens leaves the printed cell behind. The
+                // alternate screen is made when first shown, before anything
+                // changes, so that failing to make it changes nothing.
                 if matches!(n, 47 | 1047 | 1049) {
+                    if set {
+                        self.alternate.make()?;
+                    }
                     self.break_cluster();
                 }
                 self.mode(n, set)?;
