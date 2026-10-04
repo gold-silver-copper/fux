@@ -56,7 +56,7 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
        fux-vt-compare inventory [NAME...]
        fux-vt-compare transparency [--engines LIST] [--chunk N] [--json FILE]
                                    [--multiplexers] [NAME... | --size RxC STEP...]
-       fux-vt-compare esctest [--in-fux] [--subset] [FILTER] (esctest --help: the rest)
+       fux-vt-compare esctest [--terminal NAME] [--beside NAME] [--in-fux] [FILTER] (esctest --help: the rest)
        fux-vt-compare scoreboard DIR [--keep KEPT COMMIT DATE]
        fux-vt-compare engines
        fux-vt-compare --list
