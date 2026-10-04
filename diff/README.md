@@ -249,13 +249,18 @@ by the user):
 | LNM | `CSI 20 h/l` |
 | DECID | `ESC Z` |
 | DECALN | `ESC # 8` |
+| left and right margins | `CSI ? 69 h/l` (DECLRMM) and its DECRQM; `CSI Pl ; Pr s` (DECSLRM) while DECLRMM is set, which the filter follows as fux-vt would: DECSET and DECRST of 69, DECSTR and RIS resetting it, XTRESTORE of it putting back what XTSAVE saved (while it is reset the sequence is SCOSC, and passed on); `CSI Pn ' }` and `CSI Pn ' ~` (DECIC and DECDC, the column edits the margins bound) |
+| protected glyphs and selective erase | `CSI Ps " q` (DECSCA), `ESC V` and `ESC W` (SPA, EPA), `CSI ? Ps J` (DECSED) and `CSI ? Ps K` (DECSEL) |
 
 A mode is taken out of a DECSET, DECRST, SM or RM and the modes beside it
 kept (`CSI ? 7;45 h` is given as `CSI ? 7 h`); DECRQM of it is taken out
 whole. Only the plain form fux-vt reads is touched (digits and `;`, a `?`
-marker, a `$` intermediate); any other is passed on, as both sides read it
-alike. On the corpus the filter takes out zellij's 512 `OSC 4 ; n ; ?`
-queries (8,888 bytes) and nothing else.
+marker, then the sequence's intermediates, as fux-vt's parser takes them:
+a parameter byte after an intermediate, or a C0 control, DEL or a byte
+from 0x80 inside, read as fux-vt reads them); any other is passed on, as
+both sides read it alike. On the corpus the filter takes out zellij's 512
+`OSC 4 ; n ; ?` queries (8,888 bytes) and neovim's 15 `CSI ? 69 $ p`
+(one a recording, 105 bytes), and nothing else.
 
 **The memory diagnostics** (phase 3 of the same work, the compact cell,
 approved with it): `storage_cells` and each row's `text_len` may be smaller

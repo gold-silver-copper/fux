@@ -28,17 +28,28 @@
 //! - **LNM** (`CSI 20 h/l`).
 //! - **DECID** (`ESC Z`), answered as DA1.
 //! - **DECALN** (`ESC # 8`).
+//! - **Left and right margins**: DECLRMM (`CSI ? 69 h/l`) and its DECRQM;
+//!   DECSLRM (`CSI Pl ; Pr s`), only while DECLRMM is set, which the
+//!   filter follows as fux-vt would (DECSET and DECRST of 69, DECSTR and
+//!   RIS resetting it, XTSAVE and XTRESTORE of it): while it is reset the
+//!   sequence is SCOSC, on both sides, and passed on; and DECIC and DECDC
+//!   (`CSI Pn ' }`, `CSI Pn ' ~`), the column edits the margins bound.
+//! - **Protected glyphs and selective erase**: DECSCA (`CSI Ps " q`), SPA
+//!   and EPA (`ESC V`, `ESC W`), DECSED (`CSI ? Ps J`) and DECSEL (`CSI ?
+//!   Ps K`).
 //!
 //! For the modes: the mode is taken out of a DECSET or DECRST (`CSI ? Pm
 //! h/l`, `CSI Pm h/l`) and the others in it are kept, and DECRQM of it
 //! (`CSI ? Ps $ p`, `CSI Ps $ p`) is taken out whole. Only sequences in the
 //! plain form fux-vt reads them in are touched (digits and `;`, a `?`
-//! marker, a `$` intermediate): any other form is passed on, as both sides
-//! read it alike.
+//! marker, then the intermediates the sequence has): any other form is
+//! passed on, as both sides read it alike.
 use crate::case::{Case, Step};
 
 /// The DEC private modes of the approved features.
-const DEC_MODES: &[u16] = &[4, 5, 8, 45, 66, 67, 1045];
+const DEC_MODES: &[u16] = &[4, 5, 8, 45, 66, 67, 69, 1045];
+/// DECLRMM, the left and right margins' mode.
+const LEFT_RIGHT: u16 = 69;
 /// The ANSI modes of the approved features: LNM.
 const ANSI_MODES: &[u16] = &[20];
 /// The OSC commands of the palette: every one of them.
@@ -80,6 +91,11 @@ pub struct Filter {
     state: State,
     /// The sequence being read, from its ESC, while it is held.
     held: Vec<u8>,
+    /// Whether DECLRMM is set in the stream, as fux-vt would have it: then
+    /// `CSI Pl ; Pr s` is DECSLRM, and taken out.
+    left_right: bool,
+    /// DECLRMM as XTSAVE saved it, if it did.
+    saved_left_right: Option<bool>,
 }
 
 impl Filter {
@@ -177,14 +193,24 @@ impl Filter {
                         _ => {}
                     }
                 }
-                // DECID (ESC Z) and DECALN (ESC # 8).
-                let exempt = matches!((intermediates.as_slice(), b), ([], b'Z') | ([b'#'], b'8'));
+                // RIS resets DECLRMM.
+                if (intermediates.as_slice(), b) == ([].as_slice(), b'c') {
+                    self.left_right = false;
+                }
+                // DECID (ESC Z), DECALN (ESC # 8), and SPA and EPA (ESC V,
+                // ESC W).
+                let exempt = matches!(
+                    (intermediates.as_slice(), b),
+                    ([], b'Z' | b'V' | b'W') | ([b'#'], b'8')
+                );
                 self.end(exempt, None, out);
             }
             State::Csi => {
                 self.held.push(b);
                 if (0x40..=0x7e).contains(&b) {
-                    let rewritten = csi(&self.held);
+                    let held = std::mem::take(&mut self.held);
+                    let rewritten = self.csi(&held);
+                    self.held = held;
                     match rewritten {
                         Csi::Keep => self.end(false, None, out),
                         Csi::Drop => self.end(true, None, out),
@@ -238,72 +264,108 @@ enum Csi {
     Rewrite(Vec<u8>),
 }
 
-/// What becomes of `sequence`, a whole CSI sequence from its ESC.
-fn csi(sequence: &[u8]) -> Csi {
-    // What fux-vt reads of it: the C0 controls in it are carried out where
-    // they are, and DEL and the bytes from 0x80 on are ignored there, in
-    // the escape as in the CSI (Parser::byte); none of them is part of the
-    // sequence. So `ESC BEL [ ? r` and `CSI 2 0xA9 0 l` are XTRESTORE and
-    // LNM, as fux-vt reads them.
-    let read: Vec<u8> = sequence
-        .iter()
-        .skip(1)
-        .copied()
-        .filter(|c| (0x20..=0x7e).contains(c))
-        .collect();
-    let Some((&last, body)) = read.get(1..).and_then(<[u8]>::split_last) else {
-        return Csi::Keep;
-    };
-    let (private, rest) = match body.split_first() {
-        Some((b'?', rest)) => (true, rest),
-        _ => (false, body),
-    };
-    let (dollar, digits) = match rest.split_last() {
-        Some((b'$', digits)) => (true, digits),
-        _ => (false, rest),
-    };
-    if !digits.iter().all(|c| c.is_ascii_digit() || *c == b';') {
-        return Csi::Keep;
-    }
-    let params: Vec<u16> = digits
-        .split(|c| *c == b';')
-        .map(|p| {
-            p.iter().fold(0u16, |n, d| {
-                n.saturating_mul(10)
-                    .saturating_add(u16::from(d.saturating_sub(b'0')))
-            })
-        })
-        .collect();
-    if params.len() > PARAMETERS {
-        return Csi::Keep;
-    }
-    let first = params.first().copied().unwrap_or(0);
-    let modes = if private { DEC_MODES } else { ANSI_MODES };
-    match (private, dollar, last) {
-        // DECSET and DECRST, SM and RM: the approved modes out, the rest
-        // kept.
-        (_, false, b'h' | b'l') => {
-            let kept: Vec<u16> = params
-                .iter()
-                .copied()
-                .filter(|n| !modes.contains(n))
-                .collect();
-            if kept.len() == params.len() {
-                Csi::Keep
-            } else if kept.is_empty() {
-                Csi::Drop
-            } else {
-                let list: Vec<String> = kept.iter().map(u16::to_string).collect();
-                let marker = if private { "?" } else { "" };
-                let text = format!("\x1b[{marker}{}{}", list.join(";"), char::from(last));
-                Csi::Rewrite(text.into_bytes())
-            }
+impl Filter {
+    /// What becomes of `sequence`, a whole CSI sequence from its ESC; and
+    /// DECLRMM as it leaves it.
+    fn csi(&mut self, sequence: &[u8]) -> Csi {
+        // What fux-vt reads of it: the C0 controls in it are carried out
+        // where they are, and DEL and the bytes from 0x80 on are ignored
+        // there, in the escape as in the CSI (Parser::byte); none of them
+        // is part of the sequence. So `ESC BEL [ ? r` and `CSI 2 0xA9 0 l`
+        // are XTRESTORE and LNM, as fux-vt reads them.
+        let read: Vec<u8> = sequence
+            .iter()
+            .skip(1)
+            .copied()
+            .filter(|c| (0x20..=0x7e).contains(c))
+            .collect();
+        let Some((&last, body)) = read.get(1..).and_then(<[u8]>::split_last) else {
+            return Csi::Keep;
+        };
+        let (private, rest) = match body.split_first() {
+            Some((b'?', rest)) => (true, rest),
+            _ => (false, body),
+        };
+        // The parameters, then the intermediates: a parameter byte after
+        // an intermediate makes fux-vt ignore the sequence.
+        let split = rest
+            .iter()
+            .position(|c| (0x20..=0x2f).contains(c))
+            .unwrap_or(rest.len());
+        let (digits, intermediates) = rest.split_at_checked(split).unwrap_or((rest, &[]));
+        if !digits.iter().all(|c| c.is_ascii_digit() || *c == b';')
+            || !intermediates.iter().all(|c| (0x20..=0x2f).contains(c))
+        {
+            return Csi::Keep;
         }
-        // XTSAVE and XTRESTORE.
-        (true, false, b's' | b'r') => Csi::Drop,
-        // DECRQM of an approved mode.
-        (_, true, b'p') if modes.contains(&first) => Csi::Drop,
-        _ => Csi::Keep,
+        let params: Vec<u16> = digits
+            .split(|c| *c == b';')
+            .map(|p| {
+                p.iter().fold(0u16, |n, d| {
+                    n.saturating_mul(10)
+                        .saturating_add(u16::from(d.saturating_sub(b'0')))
+                })
+            })
+            .collect();
+        if params.len() > PARAMETERS {
+            return Csi::Keep;
+        }
+        let first = params.first().copied().unwrap_or(0);
+        let modes = if private { DEC_MODES } else { ANSI_MODES };
+        match (private, intermediates, last) {
+            // DECSTR resets DECLRMM, and is passed on.
+            (false, b"!", b'p') => {
+                self.left_right = false;
+                Csi::Keep
+            }
+            // DECSCA.
+            (false, b"\"", b'q') => Csi::Drop,
+            // DECIC and DECDC.
+            (false, b"'", b'}' | b'~') => Csi::Drop,
+            // DECSED and DECSEL.
+            (true, b"", b'J' | b'K') => Csi::Drop,
+            // DECSLRM, while DECLRMM is set; SCOSC otherwise.
+            (false, b"", b's') if self.left_right => Csi::Drop,
+            // DECSET and DECRST, SM and RM: the approved modes out, the
+            // rest kept.
+            (_, b"", b'h' | b'l') => {
+                if private && params.contains(&LEFT_RIGHT) {
+                    self.left_right = last == b'h';
+                }
+                let kept: Vec<u16> = params
+                    .iter()
+                    .copied()
+                    .filter(|n| !modes.contains(n))
+                    .collect();
+                if kept.len() == params.len() {
+                    Csi::Keep
+                } else if kept.is_empty() {
+                    Csi::Drop
+                } else {
+                    let list: Vec<String> = kept.iter().map(u16::to_string).collect();
+                    let marker = if private { "?" } else { "" };
+                    let text = format!("\x1b[{marker}{}{}", list.join(";"), char::from(last));
+                    Csi::Rewrite(text.into_bytes())
+                }
+            }
+            // XTSAVE and XTRESTORE, DECLRMM among the modes they save and
+            // restore.
+            (true, b"", b's') => {
+                if params.contains(&LEFT_RIGHT) {
+                    self.saved_left_right = Some(self.left_right);
+                }
+                Csi::Drop
+            }
+            (true, b"", b'r') => {
+                if params.contains(&LEFT_RIGHT) {
+                    self.left_right = self.saved_left_right.unwrap_or(false);
+                }
+                Csi::Drop
+            }
+            // DECRQM of an approved mode.
+            (_, b"$", b'p') if modes.contains(&first) => Csi::Drop,
+            _ => Csi::Keep,
+        }
     }
 }
 
@@ -403,6 +465,27 @@ mod tests {
             // A control inside a sequence taken out is still carried out.
             (b"\x1b[?4\n5h", b"\n"),
             (b"\x1b\rZ", b"\r"),
+            // Left and right margins: DECSLRM only while DECLRMM is set,
+            // as fux-vt sets and resets it; SCOSC otherwise.
+            (b"\x1b[?69h\x1b[2;5s\x1b[s\x1b[?69$p", b""),
+            (b"\x1b[2;5s\x1b[s", b"\x1b[2;5s\x1b[s"),
+            (b"\x1b[?69h\x1b[?69l\x1b[2;5s", b"\x1b[2;5s"),
+            (b"\x1b[?69h\x1b[!p\x1b[2;5s", b"\x1b[!p\x1b[2;5s"),
+            (b"\x1b[?69hx\x1bc\x1b[s", b"x\x1bc\x1b[s"),
+            (b"\x1b[?7;69h\x1b[s", b"\x1b[?7h"),
+            (
+                b"\x1b[?69h\x1b[?69s\x1b[?69l\x1b[?69r\x1b[2;5s\x1b[?69s\x1b[!p\x1b[?69r\x1b[s",
+                b"\x1b[!p",
+            ),
+            (b"\x1b[?69r\x1b[s", b"\x1b[s"),
+            (b"\x1b[?69h\x1b[?1:2s\x1b[1:2s", b"\x1b[?1:2s\x1b[1:2s"),
+            (b"\x1b[3'}\x1b['~\x1b[2;3r", b"\x1b[2;3r"),
+            // Protected glyphs and selective erase.
+            (b"\x1b[1\"qa\x1b[\"q\x1bVb\x1bWc\x1b[?J\x1b[?2K", b"abc"),
+            (
+                b"\x1b[J\x1b[2K\x1b[3X\x1b[1 q\x1b[?1\"q\x1b[1$\"q\x1b[?2$J\x1b#V",
+                b"\x1b[J\x1b[2K\x1b[3X\x1b[1 q\x1b[?1\"q\x1b[1$\"q\x1b[?2$J\x1b#V",
+            ),
             // Cancelled, or cut short: nothing was carried out.
             (b"\x1b[?45\x18h", b"\x1b[?45\x18h"),
             (b"\x1b[?4\x1b[?45h", b"\x1b[?4"),
