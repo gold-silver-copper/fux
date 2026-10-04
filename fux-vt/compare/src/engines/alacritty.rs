@@ -120,7 +120,12 @@ pub const KIND: Kind = Kind {
 };
 
 fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
-    Ok(Box::new(Alacritty::new(setup.rows, setup.cols)?))
+    with_history(setup, HISTORY_ROWS)
+}
+
+/// Alacritty keeping `rows` rows of history (`footprint`).
+pub fn with_history(setup: &Setup, rows: usize) -> Result<Box<dyn Engine>, String> {
+    Ok(Box::new(Alacritty::new(setup.rows, setup.cols, rows)?))
 }
 
 /// What the terminal says through its listener.
@@ -272,10 +277,10 @@ fn err(what: &str) -> impl Fn(std::num::TryFromIntError) -> String + '_ {
 }
 
 impl Alacritty {
-    fn new(rows: u16, cols: u16) -> Result<Alacritty, String> {
+    fn new(rows: u16, cols: u16, history: usize) -> Result<Alacritty, String> {
         let heard = Rc::new(RefCell::new(Heard::default()));
         let config = Config {
-            scrolling_history: HISTORY_ROWS,
+            scrolling_history: history,
             kitty_keyboard: true,
             ..Config::default()
         };
@@ -404,6 +409,10 @@ impl Alacritty {
 }
 
 impl Engine for Alacritty {
+    fn history_len(&mut self) -> Option<usize> {
+        Some(self.term.grid().history_size())
+    }
+
     fn process(&mut self, bytes: &[u8]) -> Result<(), String> {
         if self.term.columns() == 1 {
             return self.process_one_column(bytes);

@@ -120,15 +120,21 @@ pub const KIND: Kind = Kind {
 };
 
 fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
-    Ok(Box::new(Ghostty::new(setup.rows, setup.cols)?))
+    with_scrollback(setup, HISTORY_BYTES)
+}
+
+/// Ghostty keeping at most `bytes` of scrollback (`footprint`): its limit
+/// is in bytes, not rows.
+pub fn with_scrollback(setup: &Setup, bytes: usize) -> Result<Box<dyn Engine>, String> {
+    Ok(Box::new(Ghostty::new(setup.rows, setup.cols, bytes)?))
 }
 
 impl Ghostty {
-    fn new(rows: u16, cols: u16) -> Result<Ghostty, String> {
+    fn new(rows: u16, cols: u16, max_scrollback: usize) -> Result<Ghostty, String> {
         let mut terminal = Terminal::new(TerminalOptions {
             cols,
             rows,
-            max_scrollback: HISTORY_BYTES,
+            max_scrollback,
         })
         .map_err(err("new"))?;
         // fux-vt always measures a grapheme cluster as a whole, as mode
@@ -217,6 +223,10 @@ impl Ghostty {
 }
 
 impl Engine for Ghostty {
+    fn history_len(&mut self) -> Option<usize> {
+        self.terminal.scrollback_rows().ok()
+    }
+
     fn process(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.terminal.vt_write(bytes);
         Ok(())

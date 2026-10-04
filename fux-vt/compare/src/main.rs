@@ -15,7 +15,9 @@ mod engines;
 mod escape;
 mod esctest;
 mod families;
+mod footprint;
 mod inventory;
+mod memory;
 mod record;
 mod rng;
 mod scoreboard;
@@ -40,6 +42,7 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
        fux-vt-compare replay [--engines LIST] [--size RxC] [--history N] [--no-reflow]
                              [--newline-before-resize] STEP...
        fux-vt-compare bench [--engines LIST] [--mb N] [WORKLOAD...]
+       fux-vt-compare footprint [--engines LIST] [--jobs N] [--json FILE]
        fux-vt-compare record --keys FILE --out PREFIX [--size RxC] [--program NAME]
                              [--version TEXT] [--env KEY=VALUE]... [--dir DIR]
                              [--scrub OLD=NEW]... [--note TEXT] -- PROGRAM ARGS...
@@ -75,6 +78,12 @@ replay   one case: STEP is output, written as `run` prints it ('\\e[1mX'),
 bench    each engine's speed on the same workloads, in MB/s (default: the
          synthetic ones and the corpus all together; `corpus` adds each
          recording alone).
+footprint
+         the memory each engine in this process holds (default: all of
+         them), each measured in a child process of its own: a screen
+         empty and full of styled text, and 10,000 rows of history from
+         each synthetic workload and from the corpus, at 80 and 200
+         columns. --json writes the measures to FILE.
 record   runs PROGRAM on a PTY (--size, else 40x120) as a pane of fux
          runs it, types each line of keys in FILE (a line `!resize RxC`
          resizes it instead), and keeps every byte it writes (PREFIX.bin)
@@ -150,6 +159,8 @@ struct Args {
     note: String,
     /// Where `corpus` writes its results.
     json: Option<String>,
+    /// How many children `footprint` runs at once.
+    jobs: Option<usize>,
     rest: Vec<String>,
 }
 
@@ -184,6 +195,7 @@ fn parse() -> Result<Args, String> {
         scrub: Vec::new(),
         note: String::new(),
         json: None,
+        jobs: None,
         rest: Vec::new(),
     };
     let mut words = std::env::args().skip(1).peekable();
@@ -196,6 +208,7 @@ fn parse() -> Result<Args, String> {
             "verdicts",
             "replay",
             "bench",
+            "footprint",
             "engines",
             "record",
             "corpus",
@@ -232,6 +245,7 @@ fn parse() -> Result<Args, String> {
             "--scrub" => args.scrub.push(value("--scrub")?),
             "--note" => args.note = value("--note")?,
             "--json" => args.json = Some(value("--json")?),
+            "--jobs" => args.jobs = Some(number("--jobs", &value("--jobs")?)?),
             "--" => {
                 args.rest.extend(words.by_ref());
                 break;
@@ -749,6 +763,13 @@ fn record(args: &Args) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Half the cores here, at least one: children measured side by side.
+fn half_the_cores() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .div_ceil(2)
+}
+
 fn main() -> ExitCode {
     // An engine's panic is caught and costs it its vote (`case::guarded`),
     // and reported there; the default hook would print each one again.
@@ -760,6 +781,17 @@ fn main() -> ExitCode {
         let error = record::launched(rest).err().unwrap_or_default();
         eprintln!("fux-vt-compare: {error}");
         return ExitCode::from(127);
+    }
+    if let Some((first, rest)) = argv.split_first()
+        && first == footprint::CHILD
+    {
+        return match footprint::child(rest) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("fux-vt-compare: {e}");
+                ExitCode::FAILURE
+            }
+        };
     }
     if let Some((first, rest)) = argv.split_first()
         && first == "transparency"
@@ -826,6 +858,11 @@ fn main() -> ExitCode {
             args.json.as_deref(),
         ),
         "bench" => bench::run(&panel(&args, "all")?, &args.rest, args.mb),
+        "footprint" => footprint::run(
+            &panel(&args, "in-process")?,
+            args.json.as_deref(),
+            args.jobs.unwrap_or_else(half_the_cores),
+        ),
         _ => run(&args),
     });
     match result {
