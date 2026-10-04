@@ -148,7 +148,8 @@ mod mach {
     mod tests {
         /// The footprint grows by about what is written into new memory,
         /// and malloc counts what it hands out: the offsets are right. Large
-        /// enough that what other tests allocate meanwhile is lost in it.
+        /// enough that what other tests allocate meanwhile (tens of MiB) is
+        /// lost in it.
         #[test]
         fn a_new_buffer_shows_in_both_counts() -> Result<(), String> {
             let before = super::vm_info()?;
@@ -164,7 +165,7 @@ mod mach {
                 "{before:?} {after:?}"
             );
             assert!(
-                grown(after.0, before.0) <= size / 10 * 11,
+                grown(after.0, before.0) <= size / 2 * 3,
                 "{before:?} {after:?}"
             );
             assert!(
