@@ -212,7 +212,10 @@ fn cases_part(name: &str, jobs: Vec<(String, Case)>, o: &Options) -> bool {
     let n = jobs.len();
     let result = run_all(jobs, o.threads)
         .map(|count| format!("{n} cases: {count}"))
-        .map_err(|f| report(&f, o.shrink));
+        .map_err(|f| {
+            let found = started.elapsed().as_secs_f64();
+            format!("found in {found:.1} s; {}", report(&f, o.shrink))
+        });
     part(name, started, result)
 }
 
