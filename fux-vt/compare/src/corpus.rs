@@ -36,7 +36,7 @@ use crate::case::{self, Case, Snippet, Step, Verdict};
 use crate::engine::{self, ENGINES, FUX_VT};
 use crate::families::Status;
 use crate::snapshot::{self, Field};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -424,6 +424,21 @@ pub fn failures(verdicts: &[Verdict]) -> Vec<String> {
     failed.into_iter().collect()
 }
 
+/// [`failures`], each with what it is about.
+fn failing_fields(verdicts: &[Verdict]) -> Vec<(String, Field)> {
+    failures(verdicts)
+        .into_iter()
+        .filter_map(|key| {
+            let field = verdicts
+                .iter()
+                .flat_map(|v| v.differences.iter())
+                .find(|d| d.key == key)?
+                .field;
+            Some((key, field))
+        })
+        .collect()
+}
+
 /// Each engine's verdict at the end, as marks: `+` agrees, `-` differs,
 /// `!` abstained (and why, on lines of their own).
 fn marks(outcome: &case::Outcome) -> String {
@@ -553,7 +568,7 @@ pub fn run(
     json: Option<&str>,
 ) -> Result<bool, String> {
     if subject != FUX_VT {
-        return run_subject(subject, panel, names, show);
+        return run_subject(subject, panel, names, show, json);
     }
     let recordings = recordings(names)?;
     let names_of: Vec<&str> = panel.iter().map(|&i| engine::name(i)).collect();
@@ -651,11 +666,17 @@ pub fn run(
 /// judged: xterm decides what it can tell, the panel (where fux-vt now
 /// votes) the rest. The statuses are fux-vt's, so none is applied: each
 /// recording's outcome is reported, and only an error fails.
+///
+/// Every recording runs to its end, and at each judged point fux-vt is
+/// judged too, on the same screens, with the subject voting in its place:
+/// both scores, in recordings and in points, and where each fails and
+/// the other does not, field by field, come from one run.
 fn run_subject(
     subject: usize,
     panel: &[usize],
     names: &[String],
     show: bool,
+    json: Option<&str>,
 ) -> Result<bool, String> {
     let recordings = recordings(names)?;
     let name = engine::name(subject);
@@ -663,32 +684,45 @@ fn run_subject(
     println!("subject: {name}, judged as fux-vt is (fux-vt's statuses are not applied)");
     println!("engines: {}", names_of.join(" "));
     let started = Instant::now();
-    let (mut agree, mut differ) = (0usize, 0usize);
+    let mut scores = [Score::default(), Score::default()];
+    let mut results = Vec::new();
+    let (mut fux_ahead, mut subject_ahead) = (Vec::new(), Vec::new());
     for recording in &recordings {
         let case = Case {
             subject,
             ..recording.case()
         };
-        let outcome = first_failure(recording, &case, panel)?;
+        let (points, outcome) = judge_both(recording, &case, panel)?;
+        let mine: Vec<Option<&[(String, Field)]>> =
+            points.iter().map(|p| Some(p.subject.as_slice())).collect();
+        let fux: Vec<Option<&[(String, Field)]>> =
+            points.iter().map(|p| p.fux.as_deref()).collect();
+        let judged = [Judged::of(&points, &mine), Judged::of(&points, &fux)];
+        for (score, j) in scores.iter_mut().zip(&judged) {
+            score.add(j, points.len());
+        }
+        let [me, _] = &judged;
         let label = format!(
-            "{} ({} steps, {} bytes)",
+            "{} ({} steps, {} bytes; {} of {} points)",
             recording.name,
             recording.steps.len(),
-            recording.bytes().len()
+            recording.bytes().len(),
+            me.points_agree,
+            points.len()
         );
-        if outcome.agrees() {
-            agree = agree.saturating_add(1);
-            println!("agrees   {label}   {}", marks(&outcome));
-        } else {
-            differ = differ.saturating_add(1);
-            println!(
-                "differs  {label}: {}; on {}   {}",
-                place(recording, outcome.step),
-                listed(&failures(&outcome.verdicts)),
-                marks(&outcome)
-            );
-            if !names.is_empty() {
-                print!("{}", report(recording, subject, &outcome));
+        match &me.first {
+            None => println!("agrees   {label}   {}", marks(&outcome)),
+            Some((step, keys)) => {
+                println!(
+                    "differs  {label}: {}; on {}   {}",
+                    place(recording, Some(*step)),
+                    listed(keys),
+                    marks(&outcome)
+                );
+                if !names.is_empty() {
+                    let first = first_failure(recording, &case, panel)?;
+                    print!("{}", report(recording, subject, &first));
+                }
             }
         }
         if show {
@@ -697,10 +731,294 @@ fn run_subject(
                 println!("    |{}", line.text());
             }
         }
+        let alone_mine = Alone::of(recording, &points, |p| {
+            p.fux.as_ref().map(|f| alone(&p.subject, f))
+        });
+        let alone_fux = Alone::of(recording, &points, |p| {
+            p.fux.as_ref().map(|f| alone(f, &p.subject))
+        });
+        let [jm, jf] = &judged;
+        results.push(serde_json::json!({
+            "recording": recording.name,
+            "points": points.len(),
+            "subject": jm.json(recording),
+            "fux-vt": jf.json(recording),
+        }));
+        fux_ahead.extend(alone_mine);
+        subject_ahead.extend(alone_fux);
     }
     let seconds = started.elapsed().as_secs_f64();
-    println!("{name}: {agree} recordings agree, {differ} differ ({seconds:.1}s)");
+    let [mine, fux] = &scores;
+    println!(
+        "{name}: {} recordings agree, {} differ; {} of {} points agree ({seconds:.1}s)",
+        mine.agree, mine.differ, mine.points_agree, mine.points
+    );
+    println!(
+        "fux-vt, judged on the same screens with {name} voting in its place: {} recordings \
+         agree, {} differ; {} of {} points agree",
+        fux.agree, fux.differ, fux.points_agree, fux.points
+    );
+    let engines_of = |panel: &[usize]| -> String {
+        panel
+            .iter()
+            .map(|&i| engine::name(i))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let swapped: Vec<usize> = panel
+        .iter()
+        .map(|&i| if i == FUX_VT { subject } else { i })
+        .collect();
+    let replay_mine = format!(
+        "fux-vt-compare corpus --subject {name} --engines {}",
+        engines_of(panel)
+    );
+    let replay_fux = format!("fux-vt-compare corpus --engines {}", engines_of(&swapped));
+    println!();
+    print_ahead(
+        &format!("fux-vt ahead: {name} departs from xterm and the panel where fux-vt does not"),
+        &fux_ahead,
+        &replay_mine,
+    );
+    println!();
+    print_ahead(
+        &format!("{name} ahead: fux-vt departs from xterm and the panel where {name} does not"),
+        &subject_ahead,
+        &replay_fux,
+    );
+    if let Some(path) = json {
+        let value = serde_json::json!({
+            "check": "corpus",
+            "subject": name,
+            "engines": names_of,
+            "recordings": recordings.len(),
+            "agree": mine.agree,
+            "differ": mine.differ,
+            "points": mine.points,
+            "points_agree": mine.points_agree,
+            "fux-vt": {
+                "agree": fux.agree,
+                "differ": fux.differ,
+                "points": fux.points,
+                "points_agree": fux.points_agree,
+            },
+            "seconds": seconds,
+            "ok": true,
+            "results": results,
+            "fux_vt_ahead": ahead_json(&fux_ahead, &replay_mine),
+            "subject_ahead": ahead_json(&subject_ahead, &replay_fux),
+        });
+        let mut text =
+            serde_json::to_string_pretty(&value).map_err(|e| format!("the results: {e}"))?;
+        text.push('\n');
+        std::fs::write(path, text).map_err(|e| format!("{path}: {e}"))?;
+    }
     Ok(true)
+}
+
+/// One judged comparison of a recording: the case's step (as
+/// `Outcome::step` counts them) and the fields each fails on there: the
+/// subject, and fux-vt judged on the same screens with the subject voting
+/// in its place (none if fux-vt abstained).
+struct Point {
+    step: usize,
+    subject: Vec<(String, Field)>,
+    fux: Option<Vec<(String, Field)>>,
+}
+
+/// Runs a recording's case to its end, judging both the subject and
+/// fux-vt at every judged comparison; each engine is fed once. The
+/// outcome is the end's.
+fn judge_both(
+    recording: &Recording,
+    case: &Case,
+    panel: &[usize],
+) -> Result<(Vec<Point>, case::Outcome), String> {
+    let judged = recording.judged();
+    let at = std::cell::Cell::new(0usize);
+    let points = std::cell::RefCell::new(Vec::new());
+    let outcome = case.run_judged(panel, false, |base, verdicts| {
+        let step = at.get();
+        at.set(step.saturating_add(1));
+        if !judged.get(step).copied().unwrap_or(true) {
+            return false;
+        }
+        let subject = failing_fields(verdicts);
+        let fux = case::rejudge(case.subject, base, verdicts, FUX_VT)
+            .map(|(_, theirs)| failing_fields(&theirs));
+        let fails = !subject.is_empty();
+        points.borrow_mut().push(Point { step, subject, fux });
+        fails
+    })?;
+    Ok((points.into_inner(), outcome))
+}
+
+/// How one subject did on one recording: the points it agrees at, and
+/// where it first fails and on what (none if it never does).
+struct Judged {
+    points_agree: usize,
+    first: Option<(usize, Vec<String>)>,
+}
+
+impl Judged {
+    /// From each point's failures for this subject (none: it abstained,
+    /// which counts as failing).
+    fn of(points: &[Point], failed: &[Option<&[(String, Field)]>]) -> Judged {
+        let mut points_agree = 0usize;
+        let mut first = None;
+        for (point, failed) in points.iter().zip(failed) {
+            match failed {
+                Some([]) => points_agree = points_agree.saturating_add(1),
+                Some(keys) if first.is_none() => {
+                    first = Some((point.step, keys.iter().map(|(k, _)| k.clone()).collect()));
+                }
+                None if first.is_none() => first = Some((point.step, vec!["abstained".into()])),
+                Some(_) | None => {}
+            }
+        }
+        Judged {
+            points_agree,
+            first,
+        }
+    }
+
+    fn json(&self, recording: &Recording) -> serde_json::Value {
+        serde_json::json!({
+            "agrees": self.first.is_none(),
+            "points_agree": self.points_agree,
+            "first": self.first.as_ref().map(|(step, keys)| serde_json::json!({
+                "at": place(recording, Some(*step)),
+                "fails_on": keys,
+            })),
+        })
+    }
+}
+
+/// One subject's totals over the recordings.
+#[derive(Default)]
+struct Score {
+    agree: usize,
+    differ: usize,
+    points: usize,
+    points_agree: usize,
+}
+
+impl Score {
+    fn add(&mut self, judged: &Judged, points: usize) {
+        if judged.first.is_none() {
+            self.agree = self.agree.saturating_add(1);
+        } else {
+            self.differ = self.differ.saturating_add(1);
+        }
+        self.points = self.points.saturating_add(points);
+        self.points_agree = self.points_agree.saturating_add(judged.points_agree);
+    }
+}
+
+/// The failures in `mine` that are not in `theirs`.
+fn alone(mine: &[(String, Field)], theirs: &[(String, Field)]) -> Vec<(String, Field)> {
+    mine.iter()
+        .filter(|(key, _)| !theirs.iter().any(|(k, _)| k == key))
+        .cloned()
+        .collect()
+}
+
+/// Where one subject fails and the other does not, in one recording: at
+/// how many points, the first of them and its fields, and what the fields
+/// are about over all of them, with how many points each.
+struct Alone {
+    recording: String,
+    points: usize,
+    at: String,
+    keys: Vec<String>,
+    about: BTreeMap<String, usize>,
+}
+
+impl Alone {
+    /// From each point's failures of one side alone (none where the other
+    /// abstained, which is not counted).
+    fn of(
+        recording: &Recording,
+        points: &[Point],
+        alone: impl Fn(&Point) -> Option<Vec<(String, Field)>>,
+    ) -> Option<Alone> {
+        let mut found: Option<Alone> = None;
+        for point in points {
+            let Some(fields) = alone(point).filter(|f| !f.is_empty()) else {
+                continue;
+            };
+            let entry = found.get_or_insert_with(|| Alone {
+                recording: recording.name.clone(),
+                points: 0,
+                at: place(recording, Some(point.step)),
+                keys: fields.iter().map(|(k, _)| k.clone()).collect(),
+                about: BTreeMap::new(),
+            });
+            entry.points = entry.points.saturating_add(1);
+            let kinds: BTreeSet<String> = fields.iter().map(|(_, f)| format!("{f:?}")).collect();
+            for kind in kinds {
+                let n = entry.about.entry(kind).or_insert(0);
+                *n = n.saturating_add(1);
+            }
+        }
+        found
+    }
+}
+
+/// Fields, by what they are about, with how many points each.
+fn about(about: &BTreeMap<String, usize>) -> String {
+    about
+        .iter()
+        .map(|(kind, n)| format!("{kind} {n}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn print_ahead(title: &str, ahead: &[Alone], replay: &str) {
+    let points: usize = ahead.iter().map(|a| a.points).sum();
+    let mut total: BTreeMap<String, usize> = BTreeMap::new();
+    for a in ahead {
+        for (kind, n) in &a.about {
+            let t = total.entry(kind.clone()).or_insert(0);
+            *t = t.saturating_add(*n);
+        }
+    }
+    println!(
+        "{title}: {} recordings, {points} points{}",
+        ahead.len(),
+        if total.is_empty() {
+            String::new()
+        } else {
+            format!(" (points by field: {})", about(&total))
+        }
+    );
+    for a in ahead {
+        println!(
+            "  {}: {} points; first {}: {} [{}]",
+            a.recording,
+            a.points,
+            a.at,
+            listed(&a.keys),
+            about(&a.about)
+        );
+        println!("    replay: {replay} {}", a.recording);
+    }
+}
+
+fn ahead_json(ahead: &[Alone], replay: &str) -> serde_json::Value {
+    ahead
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "recording": a.recording,
+                "points": a.points,
+                "first": a.at,
+                "fails_on": a.keys,
+                "points_by_field": a.about,
+                "replay": format!("{replay} {}", a.recording),
+            })
+        })
+        .collect()
 }
 
 /// The first six of `keys`, joined, and `...` if there are more.

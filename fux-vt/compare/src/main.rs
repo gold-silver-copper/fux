@@ -778,13 +778,26 @@ fn outvoted_in(index: usize, verdicts: &[case::Verdict]) -> Vec<String> {
 /// The named cases with another engine as the subject, judged as fux-vt
 /// is (fux-vt votes beside the others). The statuses are fux-vt's, so
 /// each case's outcome is reported, and only an error fails.
+///
+/// At each case's end fux-vt is judged too, on the same screens, with the
+/// subject voting in its place: the cases where one is outvoted and the
+/// other is not are listed, each with the replay that shows it.
 fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
     let panel = panel_beside(args, "all", subject)?;
+    // The panel fux-vt is judged beside: the subject where fux-vt was.
+    let swapped: Vec<usize> = panel
+        .iter()
+        .map(|&i| if i == FUX_VT { subject } else { i })
+        .collect();
     let name_of = engine::name(subject);
     println!("subject: {name_of}, judged as fux-vt is (fux-vt's statuses are not applied)");
     println!("engines: {}", names(&panel));
-    let (mut agree, mut outvoted) = (0usize, 0usize);
+    let (mut agree, mut fux_agree, mut count) = (0usize, 0usize, 0usize);
+    // Name, family, the fields the subject and fux-vt are outvoted on, and
+    // the replays with each the subject.
+    let mut split = Vec::new();
     for named in named_cases(args, subject)? {
+        count = count.saturating_add(1);
         let outcome = named.case.run_until(&panel, false)?;
         let marks = marks(&outcome);
         let deciders = match FAMILIES.get(named.index).map(|f| f.status) {
@@ -793,6 +806,13 @@ fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
             _ => String::new(),
         };
         let on = outvoted_in(named.index, &outcome.verdicts);
+        let fux_on = case::rejudge(subject, &outcome.fux, &outcome.verdicts, FUX_VT).map_or_else(
+            || vec!["fux-vt abstained".to_owned()],
+            |(_, verdicts)| outvoted_in(named.index, &verdicts),
+        );
+        if fux_on.is_empty() {
+            fux_agree = fux_agree.saturating_add(1);
+        }
         if on.is_empty() {
             agree = agree.saturating_add(1);
             println!(
@@ -800,7 +820,6 @@ fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
                 named.name, named.family
             );
         } else {
-            outvoted = outvoted.saturating_add(1);
             println!(
                 "outvoted {} (family {}{deciders}) on {}   {marks}",
                 named.name,
@@ -811,8 +830,84 @@ fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
                 print!("{}", case::report(&named.case, &panel, &outcome));
             }
         }
+        if !on.is_empty() || !fux_on.is_empty() {
+            let as_fux = Case {
+                subject: FUX_VT,
+                ..named.case.clone()
+            };
+            split.push((
+                named.name,
+                named.family,
+                on,
+                fux_on,
+                named.case.command(&panel),
+                as_fux.command(&swapped),
+            ));
+        }
     }
-    println!("{name_of}: {agree} named cases agree, {outvoted} outvoted");
+    println!(
+        "{name_of}: {agree} of {count} named cases agree; fux-vt, judged on the same screens \
+         with {name_of} voting in its place: {fux_agree} of {count}"
+    );
+    let lists = [
+        (
+            format!("fux-vt ahead: {name_of} outvoted, fux-vt not"),
+            "fux_vt_ahead",
+            true,
+            false,
+        ),
+        (
+            format!("{name_of} ahead: fux-vt outvoted, {name_of} not"),
+            "subject_ahead",
+            false,
+            true,
+        ),
+        ("both outvoted".to_owned(), "both", true, true),
+    ];
+    let mut json = serde_json::Map::new();
+    for (title, key, mine, theirs) in lists {
+        let chosen: Vec<_> = split
+            .iter()
+            .filter(|(_, _, on, fux_on, _, _)| on.is_empty() != mine && fux_on.is_empty() != theirs)
+            .collect();
+        println!("\n{title}: {}", chosen.len());
+        let mut entries = Vec::new();
+        for (name, family, on, fux_on, replay, replay_fux) in chosen {
+            let shown = if mine { on } else { fux_on };
+            println!("  {name} (family {family}): on {}", shown.join(", "));
+            if mine && theirs {
+                println!("    fux-vt on {}", fux_on.join(", "));
+            }
+            let replay = if mine { replay } else { replay_fux };
+            println!("    replay: {replay}");
+            entries.push(serde_json::json!({
+                "case": name,
+                "family": family,
+                "subject_outvoted_on": on,
+                "fux_vt_outvoted_on": fux_on,
+                "replay": replay,
+            }));
+        }
+        json.insert(key.to_owned(), serde_json::Value::Array(entries));
+    }
+    if let Some(path) = args.json.as_deref() {
+        let mut value = serde_json::json!({
+            "check": "cases",
+            "subject": name_of,
+            "engines": panel.iter().map(|&i| engine::name(i)).collect::<Vec<_>>(),
+            "cases": count,
+            "agree": agree,
+            "fux-vt": { "agree": fux_agree },
+            "ok": true,
+        });
+        if let Some(object) = value.as_object_mut() {
+            object.extend(json);
+        }
+        let mut text =
+            serde_json::to_string_pretty(&value).map_err(|e| format!("the results: {e}"))?;
+        text.push('\n');
+        std::fs::write(path, text).map_err(|e| format!("{path}: {e}"))?;
+    }
     Ok(true)
 }
 
