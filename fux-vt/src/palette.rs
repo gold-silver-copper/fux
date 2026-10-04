@@ -148,27 +148,21 @@ impl Colours {
 /// leading white space, a sign, and the digits that follow, 0 if none; a
 /// number too large for an `i32` is as large as one.
 fn atoi(text: &[u8]) -> i32 {
-    let mut rest = text
-        .iter()
-        .skip_while(|b| b" \t\n\x0b\x0c\r".contains(b))
-        .peekable();
-    let negative = match rest.peek() {
-        Some(b'-') => {
-            rest.next();
-            true
-        }
-        Some(b'+') => {
-            rest.next();
-            false
-        }
-        _ => false,
-    };
-    let magnitude = rest
-        .map_while(|b| {
-            b.is_ascii_digit()
-                .then(|| i32::from(b.saturating_sub(b'0')))
-        })
-        .fold(0i32, |n, d| n.saturating_mul(10).saturating_add(d));
+    let mut i = 0usize;
+    while text.get(i).is_some_and(|b| b" \t\n\x0b\x0c\r".contains(b)) {
+        i = i.saturating_add(1);
+    }
+    let negative = text.get(i) == Some(&b'-');
+    if matches!(text.get(i), Some(b'-' | b'+')) {
+        i = i.saturating_add(1);
+    }
+    let mut magnitude = 0i32;
+    while let Some(d) = text.get(i).filter(|b| b.is_ascii_digit()) {
+        magnitude = magnitude
+            .saturating_mul(10)
+            .saturating_add(i32::from(d.saturating_sub(b'0')));
+        i = i.saturating_add(1);
+    }
     if negative {
         magnitude.saturating_neg()
     } else {
@@ -227,13 +221,66 @@ pub(crate) fn parse(spec: &[u8]) -> Option<Rgb> {
     }))
 }
 
-/// xterm's answer: `OSC prefix rgb:RRRR/GGGG/BBBB`, ended as the query was.
-fn report(sink: &mut impl Sink, prefix: std::fmt::Arguments<'_>, [r, g, b]: Rgb, bel: bool) {
-    let end = if bel { "\x07" } else { "\x1b\\" };
-    let reply = crate::Reply::of(format_args!(
-        "\x1b]{prefix};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}{end}"
-    ));
-    sink.reply(reply.as_bytes());
+/// xterm's answer: `OSC command ; index ; rgb:RRRR/GGGG/BBBB` (no index for
+/// a dynamic colour), each channel's byte twice, ended as the query was.
+/// Built byte by byte rather than formatted: zellij asks all 256 entries
+/// as it starts, and formatting cost more than the rest of the work.
+fn report(sink: &mut impl Sink, command: u16, index: Option<u16>, colour: Rgb, bel: bool) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = Answer::default();
+    out.push(b"\x1b]");
+    out.decimal(command);
+    if let Some(index) = index {
+        out.byte(b';');
+        out.decimal(index);
+    }
+    out.push(b";rgb:");
+    for (i, channel) in colour.into_iter().enumerate() {
+        if i > 0 {
+            out.byte(b'/');
+        }
+        let high = HEX.get(usize::from(channel >> 4)).copied().unwrap_or(b'0');
+        let low = HEX.get(usize::from(channel & 0xf)).copied().unwrap_or(b'0');
+        out.push(&[high, low, high, low]);
+    }
+    out.push(if bel { b"\x07" } else { b"\x1b\\" });
+    sink.reply(out.bytes.get(..out.len).unwrap_or_default());
+}
+
+/// An answer being built: the longest, `OSC 4 ; 260 ; rgb:`, three
+/// channels and ST, is 31 bytes.
+#[derive(Default)]
+struct Answer {
+    bytes: [u8; 32],
+    len: usize,
+}
+
+impl Answer {
+    fn byte(&mut self, b: u8) {
+        if let Some(slot) = self.bytes.get_mut(self.len) {
+            *slot = b;
+            self.len = self.len.saturating_add(1);
+        }
+    }
+    fn push(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.byte(b);
+        }
+    }
+    /// `n` in decimal: at most three digits, as every colour number is.
+    fn decimal(&mut self, n: u16) {
+        let digit = |d: u16| {
+            let d = u8::try_from(d.checked_rem(10).unwrap_or(0)).unwrap_or(0);
+            b'0'.saturating_add(d)
+        };
+        if n >= 100 {
+            self.byte(digit(n.checked_div(100).unwrap_or(0)));
+        }
+        if n >= 10 {
+            self.byte(digit(n.checked_div(10).unwrap_or(0)));
+        }
+        self.byte(digit(n));
+    }
 }
 
 /// The parameters of an OSC string, after its command.
@@ -314,7 +361,7 @@ fn pairs(
             // Answered in the form it was asked: OSC 5 by its own number.
             let asked = n.saturating_sub(offset);
             let command = if offset == 0 { 4 } else { 5 };
-            report(sink, format_args!("{command};{asked}"), colour, bel);
+            report(sink, command, Some(asked), colour, bel);
             continue;
         }
         let Some(colour) = parse(spec) else {
@@ -383,7 +430,7 @@ fn dynamic(
     for (number, parameter) in (first..=19).zip(parameters(rest)) {
         if parameter == b"?" {
             match colours.as_ref().and_then(|c| c.dynamic(number)) {
-                Some(colour) => report(sink, format_args!("{number}"), colour, bel),
+                Some(colour) => report(sink, u16::from(number), None, colour, bel),
                 None if events => sink.event(Event::ColorQuery { number, bel }),
                 None => {}
             }
