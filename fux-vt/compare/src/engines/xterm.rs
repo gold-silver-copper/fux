@@ -50,7 +50,8 @@
 //!   saved lines only when it flushes, and a print before that has no
 //!   history.
 //! - Cursor: a cursor position report; in origin mode it counts from the
-//!   top margin, which DECRQSS (`DCS $ q r ST`) tells.
+//!   top and left margins, which DECRQSS (`DCS $ q r ST`, `DCS $ q s ST`)
+//!   tells.
 //! - Modes: DECRQM for 1, 6, 7, 25, 66, 1004, 2004, and 1049, 1047 and 47
 //!   for the alternate screen.
 //! - Title: `CSI 21 t`.
@@ -276,7 +277,7 @@ const ARRIVE: Duration = Duration::from_secs(10);
 /// Everything a snapshot asks, ending with the print.
 const QUERY: &[u8] = b"\x1b[?4h\x1b[?4l\x1b[6n\
 \x1b[?1$p\x1b[?6$p\x1b[?7$p\x1b[?25$p\x1b[?66$p\x1b[?1004$p\x1b[?2004$p\
-\x1b[?1049$p\x1b[?1047$p\x1b[?47$p\x1b[21t\x1bP$qr\x1b\\\x1b[?11i";
+\x1b[?1049$p\x1b[?1047$p\x1b[?47$p\x1b[21t\x1bP$qr\x1b\\\x1bP$qs\x1b\\\x1b[?11i";
 
 fn available() -> Result<(), String> {
     pane::on_path("xterm")?;
@@ -547,14 +548,16 @@ impl Xterm {
             Some([row, col]) => (*row, *col),
             _ => return Err(format!("xterm: no cursor report in {replies:?}")),
         };
-        let top = if origin {
-            match numbers(&replies, "\x1bP1$r", 'r').as_deref() {
-                Some([top, _]) => top.saturating_sub(1),
+        let margin = |last: char| {
+            if !origin {
+                return 0;
+            }
+            match numbers(&replies, "\x1bP1$r", last).as_deref() {
+                Some([first, _]) => first.saturating_sub(1),
                 _ => 0,
             }
-        } else {
-            0
         };
+        let (top, left) = (margin('r'), margin('s'));
         // Rows end with CR; a row that is not soft-wrapped, with LF after.
         let mut rows: Vec<(Vec<u8>, bool)> = Vec::new();
         let mut rest = printed.as_slice();
@@ -604,7 +607,7 @@ impl Xterm {
             cols: self.cols,
             cursor: (
                 row.saturating_add(top).saturating_sub(1),
-                col.saturating_sub(1),
+                col.saturating_add(left).saturating_sub(1),
             ),
             pending_wrap: false,
             cursor_visible: set(25),
