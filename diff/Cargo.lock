@@ -45,8 +45,10 @@ checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 [[package]]
 name = "fux"
 version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a684101d1ec808812cde09daff890c6df0f43e5aaed81e2c65c93697b84e4fc4"
 dependencies = [
- "fux-vt 0.2.0",
+ "fux-vt 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "fuxix 0.1.4",
  "signal-hook",
  "unicode-width",
@@ -54,12 +56,10 @@ dependencies = [
 
 [[package]]
 name = "fux"
-version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a684101d1ec808812cde09daff890c6df0f43e5aaed81e2c65c93697b84e4fc4"
+version = "0.18.0"
 dependencies = [
- "fux-vt 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "fuxix 0.1.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "fux-vt 0.3.0",
+ "fuxix 0.1.5",
  "signal-hook",
  "unicode-width",
 ]
@@ -69,18 +69,11 @@ name = "fux-diff"
 version = "0.0.0"
 dependencies = [
  "fux 0.17.0",
- "fux 0.17.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "fux-vt 0.2.0",
+ "fux 0.18.0",
  "fux-vt 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "fux-vt 0.3.0",
  "fuxix 0.1.4",
- "fuxix 0.1.4 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "fux-vt"
-version = "0.2.0"
-dependencies = [
- "unicode-width",
+ "fuxix 0.1.5",
 ]
 
 [[package]]
@@ -101,11 +94,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fux-vt"
+version = "0.3.0"
+dependencies = [
+ "unicode-width",
+]
+
+[[package]]
 name = "fux-vt-oracle"
 version = "0.0.0"
 dependencies = [
- "fux-vt 0.2.0",
  "fux-vt 0.2.0 (git+https://github.com/gold-silver-copper/fux?rev=86dbbdda762f6882f9f0327f5308422df5f105fe)",
+ "fux-vt 0.3.0",
  "serde_json",
 ]
 
@@ -120,15 +120,15 @@ dependencies = [
 [[package]]
 name = "fuxix"
 version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da43a79d9f037309115d0811a275a92d495e2a6cf5b2340c1cb5ce2a173b6f88"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "fuxix"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da43a79d9f037309115d0811a275a92d495e2a6cf5b2340c1cb5ce2a173b6f88"
+version = "0.1.5"
 dependencies = [
  "libc",
 ]
