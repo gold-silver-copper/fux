@@ -125,7 +125,8 @@ transparency
 esctest  xterm's conformance suite, esctest2, against fux-vt set up as fux's
          panes are, and with --in-fux in a real fux pane too. Exit 1 if a
          test fails that esctest-expected.txt does not list, or one listed
-         passes.
+         passes. --terminal ghostty runs it against Ghostty's core instead
+         (esctest-expected-ghostty.txt); --beside fux-vt compares the two.
 scoreboard
          the results run.sh quick, full, deep and fuzz left in DIR,
          gathered into DIR/scoreboard.json and DIR/scoreboard.md.

@@ -76,12 +76,15 @@ build_bench() {
 
 full() {
   quick
-  echo "full: 20,000 random cases with reflow and without, esctest"
-  ran+=(random-wide random-no-reflow esctest)
+  # Ghostty's core runs esctest with fux-vt beside it (about a minute,
+  # inside the group's time): the scoreboard's conformance against Ghostty.
+  echo "full: 20,000 random cases with reflow and without, esctest, esctest of Ghostty's core"
+  ran+=(random-wide random-no-reflow esctest esctest-ghostty)
   together \
     "random-wide $compare run --cases 20000" \
     "random-no-reflow $compare run --cases 20000 --no-reflow" \
-    "esctest $compare esctest --json $out/esctest.json"
+    "esctest $compare esctest --json $out/esctest.json" \
+    "esctest-ghostty $compare esctest --terminal ghostty --beside fux-vt --json $out/esctest-ghostty.json"
   echo "full: instructions against main (alone)"
   ran+=(against)
   build_bench
