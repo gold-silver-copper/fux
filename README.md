@@ -155,7 +155,10 @@ Search is literal (not a regular expression) over the whole history, and
 ignores case unless the query has a capital letter. `[` and `]` find the
 prompts a shell marks with `OSC 133 ; A`: fish does, and zsh and bash do
 with a terminal's shell integration script (Ghostty's, kitty's, WezTerm's
-or iTerm2's). A selection keeps wide
+or iTerm2's). Your terminal's own jump to a prompt does not work inside
+fux, which shows its panes on the alternate screen, where terminals keep
+no scrollback to jump in; fux does not pass the marks on, and its `[` and
+`]` are the way. A selection keeps wide
 characters and combining marks whole, joins soft-wrapped lines without an
 invented newline, and trims trailing blanks. One copy is at most 262,144
 cells.
@@ -242,7 +245,7 @@ WezTerm, foot, iTerm2), fux turns it on while attached, so it can tell keys
 apart that a terminal otherwise sends alike (Shift-Enter and Enter, Ctrl-I
 and Tab, Ctrl-[ and Escape), and Escape needs no wait. Each pane's program
 gets its keys as it asked for them: in the kitty protocol (helix and
-Claude Code), xterm's modifyOtherKeys (vim), or xterm's plain encodings,
+Claude Code), xterm's modifyOtherKeys (vim and emacs), or xterm's plain encodings,
 the same as before. Key names, the prefix and bindings mean the same with
 the protocol or without it.
 
@@ -380,6 +383,14 @@ Hyperlinks a program prints (OSC 8: `ls --hyperlink`, gcc, delta, Claude
 Code) reach your terminal as links, each with an id of its pane's, so two
 panes' links never merge into one; a terminal that does not know OSC 8
 ignores them. Copy mode copies a link's text, not its URI.
+
+Underline styles (curly, dotted, dashed and double, kitty's `4:n`: neovim
+draws its diagnostics curly, in their colour) reach your terminal if it
+draws them. A program learns that fux keeps them as neovim asks, with
+DECRQSS; the server asks each client's terminal as it attaches, through
+XTGETTCAP (`Smulx`: Ghostty, kitty, WezTerm, foot, iTerm2) and the same
+DECRQSS (VTE), and paints a terminal that says neither (Apple's Terminal,
+xterm, alacritty) a plain underline for each style.
 
 The previous, Bevy-based fux is kept at the tag `bevy-final`.
 

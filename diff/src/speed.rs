@@ -6,9 +6,9 @@
 //! with the areas.
 //!
 //! A last stream is real traffic: every recording in fux-vt-compare's
-//! corpus (`fux-vt/compare/corpus/*.bin`, all made on a 40 by 120 screen),
-//! one after another, over and over to the length of the ASCII stream, on
-//! a screen of that size.
+//! corpus (`fux-vt/compare/corpus/*.bin`, most made on a 40 by 120
+//! screen), one after another, over and over to the length of the ASCII
+//! stream, on a screen of 40 by 120.
 use std::time::Duration;
 
 /// What a stream is made of: one line of output, repeated.

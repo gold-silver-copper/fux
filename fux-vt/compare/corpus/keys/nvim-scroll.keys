@@ -1,0 +1,11 @@
+# neovim on a Rust file: half pages, the end, the start, lines.
+!start 2000
+\x04
+\x04
+\x15
+G
+gg
+\x05
+\x05
+zz
+:q\r

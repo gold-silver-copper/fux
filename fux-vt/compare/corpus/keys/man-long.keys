@@ -1,0 +1,9 @@
+# man on a long page: pages, search, next, the end, the start, quit.
+\x20
+\x20
+\x20
+/SECTION 7\r
+n
+G
+g
+q

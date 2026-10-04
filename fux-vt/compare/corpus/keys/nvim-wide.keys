@@ -1,0 +1,8 @@
+# neovim at 50x200 with two files side by side: scroll each, a cursor
+# line, quit.
+!start 2000
+\x04
+\x17w
+\x04
+:set cursorline\r
+:qa\r

@@ -1,0 +1,13 @@
+# emacs -nw on a Rust file: pages, back, incremental search, the end,
+# the start, quit.
+# Meta keys are Alt keys: emacs sets modifyOtherKeys 1, where fux gives
+# Alt-v as ESC v, as xterm does.
+!start 2000
+\x16
+\x16
+\ev
+\x13fn \x13
+\r
+\e>
+\e<
+\x18\x03

@@ -1,0 +1,9 @@
+# fzf with a preview by bat: filter, move, delete, accept.
+!start 2000
+g
+r
+\x0e
+\x10
+\x7f
+\x7f
+\r

@@ -1,0 +1,3 @@
+# cargo build of a workspace of path crates (fux-vt among them): its
+# progress, then it exits, no keys.
+!start 5000

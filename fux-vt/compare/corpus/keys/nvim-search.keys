@@ -1,0 +1,13 @@
+# neovim searching: a pattern, next, previous, the word under the
+# cursor, a substitution, undo, quit.
+!start 2000
+/fn \r
+n
+n
+N
+*
+#
+:noh\r
+:%s/self/this/g\r
+u
+:q!\r

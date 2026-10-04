@@ -1,0 +1,13 @@
+# vim on text of other widths and scripts: move through it, delete a
+# wide glyph, show tabs and line ends, quit.
+j
+j
+j
+$
+0
+w
+w
+x
+:set list\r
+G
+:q!\r

@@ -1,0 +1,12 @@
+# fish's completion pager: options with descriptions, cycle, cancel;
+# files; exit.
+!start 2000
+set -\t
+\t
+\t
+\e
+\x15
+ls src/\t
+\t
+\r
+exit\r

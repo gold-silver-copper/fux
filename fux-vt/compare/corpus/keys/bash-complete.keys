@@ -1,0 +1,11 @@
+# bash's completion: list a directory's files, complete one, run it,
+# complete a directory, back, complete a command, exit.
+!start 1500
+ls src/\t\t
+pa\t
+\r
+cd sr\t\r
+cd ..\r
+ech\t
+\x15
+exit\r

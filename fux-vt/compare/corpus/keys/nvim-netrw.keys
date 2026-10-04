@@ -1,0 +1,9 @@
+# neovim on a directory (netrw): move, open a file, back up, quit.
+!start 2000
+j
+j
+j
+\r
+:Explore\r
+-
+:q\r

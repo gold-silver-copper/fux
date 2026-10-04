@@ -1,0 +1,8 @@
+# tig blame on a file: move, a page, a line's commit, back, quit.
+!start 1500
+j
+j
+\x20
+\r
+q
+q

@@ -1,0 +1,11 @@
+# fish (OSC 133 prompt marks of its own): an autosuggestion from
+# history, accepted; completion; into a directory and back; exit.
+!start 2000
+echo hel
+\e[C
+\r
+ls s\t
+\r
+cd tr\t\r
+cd ..\r
+exit\r

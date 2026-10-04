@@ -1,0 +1,4 @@
+# git log --graph --all with colours, paged by less: a page, quit.
+!start 1500
+\x20
+q

@@ -48,7 +48,9 @@
 //! - Erased and scrolled-in blanks take the whole pen but underline,
 //!   overline and strikeout (foreground, underline colour, bold, dim,
 //!   italic, blink, inverse, hidden), not only the background: `--size 1x2
-//!   'da\e[41;49;2mo'`.
+//!   'da\e[41;49;2mo'`. A blank ICH inserts takes none of it, not even the
+//!   background: `--size 1x3 'abc\e[31;41m\r\e[@'`. So it does not vote on
+//!   a blank's foreground or attributes (`engine::Blanks`).
 //! - In origin mode a line feed or a wrap moves the cursor down by one plus
 //!   the top margin: `--size 6x3 '\e[2;6r\e[?6h\nX'`.
 //! - A CSI sequence whose last parameter is empty is ignored: `--size 3x1
@@ -74,7 +76,7 @@
 //! - Reflow puts a cursor in column 0 of a continuation row at the end of
 //!   the row before: `--size 1x1 --history 10000 --newline-before-resize
 //!   'llo ' resize:2x3`.
-use crate::engine::{Can, Engine, Kind, Setup, always};
+use crate::engine::{Blanks, Can, Engine, Kind, Setup, always};
 use crate::snapshot::{self, Cell, Color, Line, Snapshot, Style, Width};
 use std::any::Any;
 use std::io;
@@ -296,6 +298,10 @@ pub const KIND: Kind = Kind {
         link_group: false,
         prompt: false,
         ..Can::ALL
+    },
+    blanks: Blanks {
+        fg: false,
+        attributes: false,
     },
     panel: true,
     in_process: true,

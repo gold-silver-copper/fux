@@ -1,0 +1,8 @@
+# micro at 24x80 on text of other widths and scripts: move, quit.
+!start 1500
+\e[B
+\e[B
+\e[B
+\e[F
+\e[C
+\x11

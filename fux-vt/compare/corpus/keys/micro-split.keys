@@ -1,0 +1,11 @@
+# micro's splits: a vertical split with another file, move between
+# them, a horizontal split, quit each.
+!start 1500
+\x05vsplit src/grid.rs\r
+\x17
+\e[B
+\e[B
+\x05hsplit\r
+\x11
+\x11
+\x11

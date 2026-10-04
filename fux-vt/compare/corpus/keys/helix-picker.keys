@@ -1,0 +1,8 @@
+# helix on a directory: its file picker, filter, move, open, quit.
+!start 2000
+grid
+\e[B
+\e[A
+\r
+\x04
+:q\r

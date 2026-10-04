@@ -160,4 +160,8 @@ impl Engine for Vt {
             history,
         })
     }
+
+    fn replies(&self) -> Vec<u8> {
+        self.heard.replies.clone()
+    }
 }

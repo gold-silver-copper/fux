@@ -18,6 +18,7 @@ mod families;
 mod inventory;
 mod record;
 mod rng;
+mod scoreboard;
 mod snapshot;
 mod transparency;
 
@@ -42,11 +43,12 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
        fux-vt-compare record --keys FILE --out PREFIX [--size RxC] [--program NAME]
                              [--version TEXT] [--env KEY=VALUE]... [--dir DIR]
                              [--scrub OLD=NEW]... [--note TEXT] -- PROGRAM ARGS...
-       fux-vt-compare corpus [--engines LIST] [--show] [NAME...]
+       fux-vt-compare corpus [--engines LIST] [--show] [--json FILE] [NAME...]
        fux-vt-compare inventory [NAME...]
        fux-vt-compare transparency [--engines LIST] [--chunk N] [--json FILE]
                                    [--multiplexers] [NAME... | --size RxC STEP...]
        fux-vt-compare esctest [--in-fux] [--subset] [FILTER] (esctest --help: the rest)
+       fux-vt-compare scoreboard DIR [--keep KEPT COMMIT DATE]
        fux-vt-compare engines
        fux-vt-compare --list
 
@@ -74,8 +76,9 @@ bench    each engine's speed on the same workloads, in MB/s (default: the
          synthetic ones and the corpus all together; `corpus` adds each
          recording alone).
 record   runs PROGRAM on a PTY (--size, else 40x120) as a pane of fux
-         runs it, types each line of keys in FILE, and keeps every byte it
-         writes (PREFIX.bin) and what was run and typed (PREFIX.json).
+         runs it, types each line of keys in FILE (a line `!resize RxC`
+         resizes it instead), and keeps every byte it writes (PREFIX.bin)
+         and what was run and typed (PREFIX.json).
          fux-vt answers its queries as fux does. Its environment is TERM
          and the --env pairs alone (and PATH, if they have none). --scrub
          replaces OLD in the output before it is saved, for what the setup
@@ -85,7 +88,7 @@ corpus   the recordings in corpus/ (default: all), each replayed through
          compared after every step. xterm decides the fields it can tell;
          the panel's vote the rest, and all once xterm abstains. Exit 1 if
          a recording expected to agree does not. --show prints fux-vt's
-         screen at the end of each.
+         screen at the end of each; --json writes the results to FILE.
 inventory every sequence the recordings (default: all) send, normalized,
          with how often, from which programs, and what fux-vt does with
          it, as Markdown (corpus/INVENTORY.md is its output).
@@ -104,6 +107,9 @@ esctest  xterm's conformance suite, esctest2, against fux-vt set up as fux's
          panes are, and with --in-fux in a real fux pane too. Exit 1 if a
          test fails that esctest-expected.txt does not list, or one listed
          passes.
+scoreboard
+         the results run.sh quick, full, deep and fuzz left in DIR,
+         gathered into DIR/scoreboard.json and DIR/scoreboard.md.
 engines  every engine: whether it can run here, whether it votes, and what
          it cannot tell.
 --list   the families, what each covers, and its status.
@@ -113,10 +119,10 @@ survey, matrix and replay: the voters that can run here), `all` (every
 engine that can run here, the default for cases and bench), `in-process`
 or `xterm`.
 
-fux-vt is set up as ratty sets it up (reflow, an identity), with the DECRQM
-answers, in-band resize, colour-scheme reports, the kitty keyboard
-protocol, hyperlinks and prompt marks fux's panes have; --no-reflow sets it
-up as fux does, which leaves out the families that need ratty's setup.";
+fux-vt is set up as fux and ratty set it up (reflow, an identity), with the
+DECRQM answers, in-band resize, colour-scheme reports, the kitty keyboard
+protocol, hyperlinks and prompt marks fux's panes have; --no-reflow without
+reflow, fux-vt's default, which leaves out the families that need reflow.";
 
 struct Args {
     command: String,
@@ -142,6 +148,8 @@ struct Args {
     dir: Option<String>,
     scrub: Vec<String>,
     note: String,
+    /// Where `corpus` writes its results.
+    json: Option<String>,
     rest: Vec<String>,
 }
 
@@ -175,6 +183,7 @@ fn parse() -> Result<Args, String> {
         dir: None,
         scrub: Vec::new(),
         note: String::new(),
+        json: None,
         rest: Vec::new(),
     };
     let mut words = std::env::args().skip(1).peekable();
@@ -222,6 +231,7 @@ fn parse() -> Result<Args, String> {
             "--dir" => args.dir = Some(value("--dir")?),
             "--scrub" => args.scrub.push(value("--scrub")?),
             "--note" => args.note = value("--note")?,
+            "--json" => args.json = Some(value("--json")?),
             "--" => {
                 args.rest.extend(words.by_ref());
                 break;
@@ -328,6 +338,13 @@ fn list_engines() {
         let missing = kind.can.missing();
         if !missing.is_empty() {
             println!("           cannot tell: {}", missing.join(", "));
+        }
+        let unlike = kind.blanks.unlike_xterm();
+        if !unlike.is_empty() {
+            println!(
+                "           blanks unlike xterm's (no vote on a blank's): {}",
+                unlike.join(", ")
+            );
         }
     }
 }
@@ -757,6 +774,19 @@ fn main() -> ExitCode {
             }
         };
     }
+    // `scoreboard` takes its own arguments (`--keep`).
+    if let Some((first, rest)) = argv.split_first()
+        && first == "scoreboard"
+    {
+        return match scoreboard::run(rest) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("fux-vt-compare scoreboard: {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
     if let Some((first, rest)) = argv.split_first()
         && first == "esctest"
     {
@@ -789,7 +819,12 @@ fn main() -> ExitCode {
         "replay" => replay(&args),
         "record" => record(&args),
         "inventory" => inventory::run(&args.rest),
-        "corpus" => corpus::run(&panel(&args, "xterm,panel")?, &args.rest, args.show),
+        "corpus" => corpus::run(
+            &panel(&args, "xterm,panel")?,
+            &args.rest,
+            args.show,
+            args.json.as_deref(),
+        ),
         "bench" => bench::run(&panel(&args, "all")?, &args.rest, args.mb),
         _ => run(&args),
     });

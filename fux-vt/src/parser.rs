@@ -72,6 +72,10 @@ impl Parameters {
             result
         })
     }
+    /// Whether no parameter was given (or only 0, which reads the same).
+    fn is_empty(&self) -> bool {
+        self.len == 1 && self.values.first() == Some(&0)
+    }
     pub fn first(&self, index: usize, default: u16) -> u16 {
         let value = self
             .groups()
@@ -142,6 +146,36 @@ pub const OSC_PAYLOAD_LIMIT: usize = 64 * 1024;
 /// enough to tell a prompt mark, `133;A`, or a prompt's kind, `133;P;k=i`.
 const OSC_PREFIX: usize = 16;
 
+/// The most bytes of a DECRQSS request kept: xterm's longest are two
+/// (` q`, `$|`, `"p`). A longer request is no setting fux-vt knows.
+const REQUEST_LIMIT: usize = 4;
+
+/// A DECRQSS request (`DCS $ q Pt ST`) as far as it has come, with
+/// [`Options::setting_reports`].
+#[derive(Clone, Copy, Debug, Default)]
+struct Request {
+    bytes: [u8; REQUEST_LIMIT],
+    len: usize,
+    /// Whether it ran past `REQUEST_LIMIT`.
+    long: bool,
+}
+
+impl Request {
+    fn push(&mut self, byte: u8) {
+        match (self.bytes.get_mut(self.len), self.len.checked_add(1)) {
+            (Some(slot), Some(len)) => {
+                *slot = byte;
+                self.len = len;
+            }
+            _ => self.long = true,
+        }
+    }
+    /// The request, unless it was too long to be one fux-vt knows.
+    fn text(&self) -> Option<&[u8]> {
+        self.bytes.get(..self.len).filter(|_| !self.long)
+    }
+}
+
 /// Opt-in behaviour that needs the host's cooperation. The default
 /// (everything off) is fux's policy: child output causes no title, bell or
 /// clipboard side effects, OSC payloads are never retained, only DSR 5n/6n
@@ -211,6 +245,17 @@ pub struct Options {
     /// (`disallowedWindowOps`); no program in fux's corpus asks for it, and
     /// fux's panes leave it off.
     pub rectangle_checksums: bool,
+    /// Answer DECRQSS (`DCS $ q Pt ST`, xterm's ctlseqs; DECRPSS in the
+    /// VT510 manual) for the pen (`m`, SGR), the cursor shape (` q`,
+    /// DECSCUSR) and the margins (`r`, DECSTBM), as xterm answers: `DCS 1 $
+    /// r Pt ST`, `Pt` the sequence that sets it, such as `0;1;4:3m`.
+    /// Another request is answered as invalid, `DCS 0 $ r ST`, and a cursor
+    /// shape left to the terminal (DECSCUSR 0, the default) not at all. A
+    /// request's first bytes are kept to tell it, nothing more. Programs
+    /// learn from the pen what the terminal draws: neovim sets a curly
+    /// underline and asks, and draws its diagnostics curly only if `4:3`
+    /// comes back. Off, DECRQSS is ignored, as every other DCS.
+    pub setting_reports: bool,
     /// Answer as this terminal rather than as a bare VT100: see [`Identity`].
     pub identity: Option<Identity>,
 }
@@ -231,6 +276,7 @@ impl Options {
             hyperlinks: false,
             prompt_marks: false,
             rectangle_checksums: false,
+            setting_reports: false,
             identity: None,
         }
     }
@@ -287,6 +333,11 @@ impl Options {
     /// These options with [`Options::rectangle_checksums`] as `on` says.
     pub const fn with_rectangle_checksums(mut self, on: bool) -> Self {
         self.rectangle_checksums = on;
+        self
+    }
+    /// These options with [`Options::setting_reports`] as `on` says.
+    pub const fn with_setting_reports(mut self, on: bool) -> Self {
+        self.setting_reports = on;
         self
     }
     /// These options answering as `identity`, or as a bare VT100 if `None`.
@@ -446,6 +497,9 @@ pub struct Parser {
     /// else `OSC_PREFIX`: set once, as it is asked for every byte of an OSC.
     osc_limit: usize,
     osc_overflow: bool,
+    /// The DECRQSS the DCS string being read is, with
+    /// [`Options::setting_reports`]; `None` for any other string.
+    request: Option<Request>,
     /// Whether the last sequence dispatched set synchronized output, for
     /// `Parser::process_until_frame`.
     frame_begun: bool,
@@ -488,6 +542,7 @@ impl Parser {
                 0
             },
             osc_overflow: false,
+            request: None,
             frame_begun: false,
             state: State::Ground,
             params: Parameters::default(),
@@ -712,6 +767,8 @@ impl Parser {
         if byte == 0x1b {
             if self.state == State::OscString {
                 self.dispatch_osc(false, sink)?;
+            } else if self.state == State::DcsString && self.request.is_some() {
+                self.dispatch_request(sink);
             }
             self.reset_sequence();
             self.state = State::Escape;
@@ -737,7 +794,12 @@ impl Parser {
             // In UTF-8 a string ends only at ESC (ST is ESC \, ECMA-48
             // 8.3.143): the byte 0x9c, 8-bit ST, is part of a character
             // there, as in `\u{271c}` (e2 9c 9c).
-            State::DcsString | State::SosPmApcString | State::DcsIgnore => {}
+            State::DcsString => {
+                if let Some(request) = &mut self.request {
+                    request.push(byte);
+                }
+            }
+            State::SosPmApcString | State::DcsIgnore => {}
             State::Escape | State::EscapeIntermediate => match byte {
                 0x00..=0x1f => self.control(byte, sink)?,
                 0x20..=0x2f => {
@@ -834,6 +896,13 @@ impl Parser {
                     0x40..=0x7e => {
                         if dcs {
                             self.state = State::DcsString;
+                            // DECRQSS: `$ q` with no parameters.
+                            let decrqss = self.options.setting_reports
+                                && byte == b'q'
+                                && !self.ignoring
+                                && self.intermediates.get(..self.intermediate_len) == Some(b"$")
+                                && self.params.is_empty();
+                            self.request = decrqss.then(Request::default);
                         } else {
                             let dispatch = self.state != State::CsiIgnore && !self.ignoring;
                             self.state = State::Ground;
@@ -897,6 +966,25 @@ impl Parser {
         self.osc = payload;
         self.osc.clear();
         result
+    }
+
+    /// Answers the DECRQSS whose string just ended (see
+    /// [`Options::setting_reports`]). Out of line, as `dispatch_osc` is.
+    #[inline(never)]
+    fn dispatch_request(&mut self, sink: &mut impl Sink) {
+        let Some(request) = self.request.take() else {
+            return;
+        };
+        let mut setting = String::new();
+        let valid = match request.text() {
+            Some(text) => self.screen.setting_report(text, &mut setting),
+            None => Some(false),
+        };
+        let Some(valid) = valid else {
+            return;
+        };
+        let status = if valid { '1' } else { '0' };
+        sink.reply(format!("\x1bP{status}$r{setting}\x1b\\").as_bytes());
     }
 
     fn osc_command(

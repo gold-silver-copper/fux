@@ -1,0 +1,7 @@
+# vim's own terminal (:terminal), a shell in it, then quit.
+!start 1500
+:terminal\r
+echo inside vim\r
+seq 1 30\r
+exit\r
+:q!\r

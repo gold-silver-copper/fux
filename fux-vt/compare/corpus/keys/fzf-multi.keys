@@ -1,0 +1,9 @@
+# fzf -m below the prompt: mark three, filter, mark one more, accept.
+!start 1500
+\t
+\t
+\t
+r
+s
+\t
+\r

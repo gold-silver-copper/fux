@@ -2,7 +2,7 @@ use crate::link::{Held, Pen};
 use crate::unicode::Cluster;
 use crate::{
     Attributes, Blink, Cell, CellRef, Color, Error, Hyperlink, Mark, Options, Reply, Row, RowId,
-    Window,
+    UnderlineStyle, Window,
     grid::{Grid, Scroll},
     parser::Parameters,
 };
@@ -424,6 +424,11 @@ impl Screen {
             next_link: 1,
         })
     }
+    /// The primary screen's grid, as a test starts from it.
+    #[cfg(test)]
+    pub(crate) fn primary_grid(&self) -> &Grid {
+        &self.primary
+    }
     fn grid(&self) -> &Grid {
         if self.alternate_active {
             &self.alternate
@@ -583,10 +588,13 @@ impl Screen {
             &mut self.primary_keyboard
         }
     }
-    /// The one-based cursor position a DSR 6n or DECXCPR reports. A cursor
-    /// waiting to wrap is reported one past the last column, as the vt100
-    /// crate did; with an identity it is reported at the last column, as
-    /// xterm does.
+    /// The one-based cursor position a DSR 6n or DECXCPR reports. The line
+    /// is counted as CUP addresses it: from the top margin with DECOM set
+    /// (DEC STD 070, CPR and DECXCPR, pages 5-53 to 5-56; xterm's
+    /// `CASE_CPR`), and a cursor above the margin, as DECRC can leave one,
+    /// on the first line. A cursor waiting to wrap is reported one past
+    /// the last column, as the vt100 crate did; with an identity it is
+    /// reported at the last column, as xterm does.
     pub(crate) fn reported_cursor(&self, options: &Options) -> (u32, u32) {
         let g = self.grid();
         let col = if options.identity.is_some() {
@@ -594,7 +602,7 @@ impl Screen {
         } else {
             g.next_column()
         };
-        (u32::from(g.cursor.0) + 1, u32::from(col) + 1)
+        (u32::from(g.cursor_line()) + 1, u32::from(col) + 1)
     }
     /// The pen: the colours and rendition of the next glyph printed.
     pub fn attributes(&self) -> Attributes {
@@ -1572,6 +1580,103 @@ impl Screen {
         if set { 1 } else { 2 }
     }
 
+    /// DECRQSS (`DCS $ q Pt ST`): the setting `request` names, written to
+    /// `out` as the control function that sets it, in the form xterm
+    /// answers (`do_dcs` and `xtermFormatSGR`, xterm 411 misc.c). `Some(true)`
+    /// for a setting written, `Some(false)` for a request fux-vt does not
+    /// know, which xterm answers as invalid; `None` for a cursor shape
+    /// left to the terminal (DECSCUSR 0 or never set), which fux-vt does
+    /// not know: xterm and Ghostty always know theirs, and vim, the program
+    /// that asks, takes an invalid answer for keys.
+    pub(crate) fn setting_report(&self, request: &[u8], out: &mut String) -> Option<bool> {
+        use std::fmt::Write;
+        match request {
+            b"m" => {
+                self.sgr_report(out);
+                out.push('m');
+            }
+            b" q" => {
+                let shape = self.cursor_shape;
+                if !(1..=6).contains(&shape) {
+                    return None;
+                }
+                let _ = write!(out, "{shape} q");
+            }
+            b"r" => {
+                let (top, bottom) = self.scroll_region();
+                let (top, bottom) = (u32::from(top), u32::from(bottom));
+                let _ = write!(
+                    out,
+                    "{};{}r",
+                    top.saturating_add(1),
+                    bottom.saturating_add(1)
+                );
+            }
+            _ => return Some(false),
+        }
+        Some(true)
+    }
+
+    /// The pen as xterm reports it to DECRQSS (`xtermFormatSGR`): 0, then
+    /// bold, underline, blink, inverse, hidden, faint, italic, strikeout and
+    /// double underline, in that order, then the foreground and background,
+    /// 16 colours in their short forms and the rest as `38:5:n` or
+    /// `38:2::r:g:b`. What xterm does not have follows its forms: rapid
+    /// blink is 6 in blink's place, an underline style `4:n` in the
+    /// underline's, and the underline colour `58:5:n` or `58:2::r:g:b`
+    /// last. So a curly underline alone is `0;4:3`, which is what neovim
+    /// looks for to learn the terminal draws styles.
+    fn sgr_report(&self, out: &mut String) {
+        use std::fmt::Write;
+        let a = self.attributes;
+        out.push('0');
+        if a.bold() {
+            out.push_str(";1");
+        }
+        match a.underline_style() {
+            UnderlineStyle::None | UnderlineStyle::Double => {}
+            UnderlineStyle::Single => out.push_str(";4"),
+            style @ (UnderlineStyle::Curly | UnderlineStyle::Dotted | UnderlineStyle::Dashed) => {
+                let _ = write!(out, ";4:{}", style.number());
+            }
+        }
+        match a.blink() {
+            Blink::Slow => out.push_str(";5"),
+            Blink::Rapid => out.push_str(";6"),
+            Blink::None => {}
+        }
+        for (on, code) in [
+            (a.inverse(), ";7"),
+            (a.hidden(), ";8"),
+            (a.dim(), ";2"),
+            (a.italic(), ";3"),
+            (a.strikeout(), ";9"),
+            (a.underline_style() == UnderlineStyle::Double, ";21"),
+        ] {
+            if on {
+                out.push_str(code);
+            }
+        }
+        let colour = |out: &mut String, colour: Color, short: Option<(u8, u8)>, long: u8| {
+            let _ = match (colour, short) {
+                // 30 to 37 and 90 to 97, 40 to 47 and 100 to 107: no sum
+                // comes near 255.
+                (Color::Idx(n @ 0..=7), Some((base, _))) => {
+                    write!(out, ";{}", base.saturating_add(n))
+                }
+                (Color::Idx(n @ 8..=15), Some((_, bright))) => {
+                    write!(out, ";{}", bright.saturating_add(n.saturating_sub(8)))
+                }
+                (Color::Idx(n), _) => write!(out, ";{long}:5:{n}"),
+                (Color::Rgb(r, g, b), _) => write!(out, ";{long}:2::{r}:{g}:{b}"),
+                (Color::Default, _) => Ok(()),
+            };
+        };
+        colour(out, a.foreground(), Some((30, 90)), 38);
+        colour(out, a.background(), Some((40, 100)), 48);
+        colour(out, a.underline_color(), None, 58);
+    }
+
     fn mode(&mut self, n: u16, set: bool) -> Result<(), Error> {
         match n {
             1 => self.application_cursor = set,
@@ -1968,9 +2073,9 @@ impl Screen {
                 [1] => self.attributes.flags |= Attributes::BOLD,
                 [2] => self.attributes.flags |= Attributes::DIM,
                 [3] => self.attributes.flags |= Attributes::ITALIC,
-                // 21 is doubly underlined (ECMA-48 8.3.117, xterm's
-                // ctlseqs): fux-vt keeps no underline style.
-                [4 | 21] => self.attributes.flags |= Attributes::UNDERLINE,
+                [4] => self.underline(UnderlineStyle::Single),
+                // Doubly underlined (ECMA-48 8.3.117, xterm's ctlseqs).
+                [21] => self.underline(UnderlineStyle::Double),
                 // Slow and rapid blink replace one another.
                 [5] => self.attributes = self.attributes.with_blink(Blink::Slow),
                 [6] => self.attributes = self.attributes.with_blink(Blink::Rapid),
@@ -1979,7 +2084,7 @@ impl Screen {
                 [9] => self.attributes.flags |= Attributes::STRIKEOUT,
                 [22] => self.attributes.flags &= !(Attributes::BOLD | Attributes::DIM),
                 [23] => self.attributes.flags &= !Attributes::ITALIC,
-                [24] => self.attributes.flags &= !Attributes::UNDERLINE,
+                [24] => self.underline(UnderlineStyle::None),
                 [25] => self.attributes.flags &= !Attributes::BLINK,
                 [27] => self.attributes.flags &= !Attributes::INVERSE,
                 [28] => self.attributes.flags &= !Attributes::HIDDEN,
@@ -1997,11 +2102,14 @@ impl Screen {
                         self.attributes = self.attributes.with_background(color);
                     }
                 }
-                // Underline styles (kitty's, which every engine in
-                // `compare/` reads but xterm): fux-vt keeps no style, so
-                // 4:0 ends underline and the styles 1 to 5 set it.
-                [4, 0, ..] => self.attributes.flags &= !Attributes::UNDERLINE,
-                [4, 1..=5, ..] => self.attributes.flags |= Attributes::UNDERLINE,
+                // Underline styles (`references/modern/kitty_underlines.html`):
+                // `4:0` ends the underline, and 1 to 5 are single, double,
+                // curly, dotted and dashed. Another number changes nothing.
+                [4, n, ..] => {
+                    if let Some(style) = UnderlineStyle::from_number(*n) {
+                        self.underline(style);
+                    }
+                }
                 // Foreground, background and underline colour share their
                 // forms (ITU-T T.416, 13.1.8, and xterm's ctlseqs). An
                 // invalid colour is skipped, and the rest of the SGR goes on.
@@ -2018,6 +2126,10 @@ impl Screen {
                 _ => {}
             }
         }
+    }
+
+    fn underline(&mut self, style: UnderlineStyle) {
+        self.attributes = self.attributes.with_underline_style(style);
     }
 
     fn set_colour(&mut self, selector: u16, colour: Color) {

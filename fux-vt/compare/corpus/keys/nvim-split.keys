@@ -1,0 +1,11 @@
+# neovim's windows: split, vertical split with another file, move
+# between them, equal sizes, only one, quit.
+!start 2000
+:split\r
+:vsplit src/grid.rs\r
+\x17w
+\x04
+\x17w
+\x17=
+:only\r
+:q\r

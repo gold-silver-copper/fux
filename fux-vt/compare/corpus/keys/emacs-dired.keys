@@ -1,0 +1,10 @@
+# emacs -nw's dired on a directory (ls-lisp, no owners): move, open a
+# file, back, up a directory, quit.
+!start 2000
+n
+n
+n
+\r
+\x18k\r
+^
+\x18\x03
