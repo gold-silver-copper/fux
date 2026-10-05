@@ -362,6 +362,7 @@ fn typed(keys: &[u8], screen: &fux_vt::Screen) -> Vec<u8> {
             fux::decode::Input::PasteTooLong
             | fux::decode::Input::FocusIn
             | fux::decode::Input::FocusOut
+            | fux::decode::Input::Mouse(_)
             | fux::decode::Input::Reply(_) => {}
         }
     }

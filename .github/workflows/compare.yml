@@ -37,3 +37,6 @@ jobs:
 
       - name: The families with a recorded verdict, beside xterm
         run: fux-vt/compare/run.sh verdicts
+
+      - name: The input encoders, beside libghostty-vt's
+        run: fux-vt/compare/run.sh encoders

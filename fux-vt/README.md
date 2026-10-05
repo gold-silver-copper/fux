@@ -111,26 +111,38 @@ decoded, and what a program asked for, encoded. It needs no option.
 - **Decoding:** `keys::decode::Decoder` turns a terminal's raw bytes,
   however split, into `Input`s: keys (legacy and xterm's modifiers, and
   the kitty keyboard protocol with disambiguate and alternate keys),
-  bracketed pastes (whole, at most `PASTE_LIMIT`, 64 KiB), focus changes
-  and answers to the host's own questions (DA1, the kitty flags, DECRQM,
-  OSC 10 and 11, the colour scheme, DECRQSS for underline styles). A lone
-  Escape is a key once `ESCAPE_DELAY` (35 ms) passes without more, which
-  the host learns from `Decoder::deadline` and tells with
-  `Decoder::timeout`. Every buffer is bounded.
-- **Encoding:** `Screen::key_mode()` is what the program asked for
-  (DECCKM, the kitty flags, modifyOtherKeys), and `Screen::encode_key`
-  writes a `Keystroke` as that mode sends it: kitty protocol, xterm's
-  `CSI 27 ; m ; k ~`, or plain. `keys::encode::key_bytes` does the same
-  for any `KeyMode`; `keys::encode::paste` wraps a paste for a program
-  with bracketed paste.
+  bracketed pastes (whole, at most `PASTE_LIMIT`, 64 KiB), focus changes,
+  mouse reports (SGR and the default encoding) and answers to the host's
+  own questions (DA1, the kitty flags, DECRQM, OSC 10 and 11, the colour
+  scheme, DECRQSS for underline styles). A lone Escape is a key once
+  `ESCAPE_DELAY` (35 ms) passes without more, which the host learns from
+  `Decoder::deadline` and tells with `Decoder::timeout`. Every buffer is
+  bounded.
+
+**Encoding** reads what the program asked for from its screen:
+
+| Encoder | Sends |
+| --- | --- |
+| `Screen::encode_key(stroke, out)` | the key as `Screen::key_mode()` asks (DECCKM, the kitty flags, modifyOtherKeys): kitty protocol; xterm's `CSI 27 ; m ; k ~`; or legacy bytes, Ctrl mapping only what Xlib maps (`Ctrl-;` is `;`), Alt an ESC before them (Alt-Escape is ESC ESC). `keys::encode::key_bytes` takes any `KeyMode` |
+| `Screen::encode_paste(text, out)` | the text, framed by `CSI 200 ~` and `CSI 201 ~` with bracketed paste (2004) set; inside the frame every end marker (`ESC [ 201 ~`, or with the C1 CSI U+009B) is removed, as often as removing one makes another. Otherwise as pasted. `keys::encode::paste` takes the mode given |
+| `Screen::encode_focus(focused, out)` | `CSI I` or `CSI O` with focus reporting (1004) set, else nothing |
+| `Screen::encode_mouse(event, out)` | a `keys::mouse::MouseEvent` as xterm reports it in the program's mode and encoding: X10 (9) presses of buttons 1 to 3 without modifiers; 1000 presses and releases (the wheel's turns as presses, never released); 1002 also motion with a button held; 1003 also motion with none; in the default encoding (nothing past position 223), UTF-8 (1005, Cb too, nothing past 2015) or SGR (1006, any position, a release naming its button). `keys::mouse::mouse_bytes` takes them given |
+
+Each but the paste returns whether it sent anything. Motion within one
+cell is the host's to drop.
+
 - **Colours:** `keys::colour` holds `Rgb` (read from and answered as
   `rgb:RRRR/GGGG/BBBB`), `Scheme` (dark or light, as mode 2031 reports
   it) and `Colours`, a terminal's foreground, background and scheme.
 - `fux_vt::bytes::ByteQueue` is the bounded byte queue the decoder reads
   from, for hosts that need one.
 
-Tests are in `src/keys/decode.rs` and `src/keys/encode.rs`; `fuzz/`'s
-`keys` target feeds the decoder arbitrary bytes and splits.
+Tests are in `src/keys/decode.rs`, `src/keys/encode.rs` and
+`src/keys/mouse/tests.rs` (each encoder against ctlseqs, every mouse report
+decoding back to its event, no paste ending its bracket); `fuzz/`'s `keys`
+target feeds the decoder arbitrary bytes and splits, re-encodes each mouse
+event and paste it decodes, and checks both. `compare/`'s `encoders` holds
+every encoder beside libghostty-vt's, with its recorded verdicts.
 
 ## Deliberate boundary
 
@@ -139,9 +151,10 @@ Tests are in `src/keys/decode.rs` and `src/keys/encode.rs`; `fuzz/`'s
   other than `CSI 18 t` is unhandled; DECCOLM is ignored).
 - By default, output causes no title, bell or clipboard side effects, and
   no OSC payload is kept. OSC 52 is only ever an event, which fux drops.
-- Keypad, mouse and focus are state only. Keys are encoded only when the
-  host asks (`Screen::encode_key`, see [Keys](#keys)); nothing a program
-  writes makes fux-vt send input.
+- Keypad, mouse and focus modes are state only. Keys, pastes, focus
+  changes and mouse events are encoded only when the host asks
+  (`Screen::encode_*`, see [Keys](#keys)); nothing a program writes makes
+  fux-vt send input.
 - No graphics protocols: a host that draws images parses them itself.
 - Only the primary screen has history, up to its limit. CSI 3 J (erase
   saved lines) is unhandled.

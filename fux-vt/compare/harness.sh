@@ -63,14 +63,16 @@ quick() {
   # The oracle (diff/oracle.sh) holds fux-vt to what it did at the merge
   # base with main: every observable, after every step, over the corpus,
   # 10,000 random cases and 50 resize streams.
-  echo "quick: corpus beside xterm, with Ghostty judged too, transparency, 2,000 random cases, the named cases, the oracle"
-  ran+=(corpus corpus-ghostty transparency random cases oracle)
+  # The input encoders beside libghostty-vt's (encoders.rs) take seconds.
+  echo "quick: corpus beside xterm, with Ghostty judged too, transparency, 2,000 random cases, the named cases, the encoders, the oracle"
+  ran+=(corpus corpus-ghostty transparency random cases encoders oracle)
   together \
     "corpus $compare corpus --json $out/corpus.json" \
     "corpus-ghostty $compare corpus --subject ghostty --json $out/corpus-ghostty.json" \
     "transparency $compare transparency --json $out/transparency.json" \
     "random $compare run --cases 2000" \
     "cases $compare cases" \
+    "encoders $compare encoders" \
     "oracle $root/diff/oracle.sh"
 }
 

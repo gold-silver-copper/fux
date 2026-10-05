@@ -1,7 +1,12 @@
 #![no_main]
 //! Input: one byte choosing a piece size (0 is the whole stream at once),
-//! then the bytes an attached client's terminal sends.
+//! then the bytes an attached client's terminal sends. Each mouse report
+//! decoded encodes back to an event that decodes alike, and each paste,
+//! bracketed again, holds no end marker but its own.
 use fux_vt::keys::decode::{Decoder, Input, PASTE_LIMIT};
+use fux_vt::keys::encode::{PASTE_END, PASTE_START, paste};
+use fux_vt::keys::mouse::mouse_bytes;
+use fux_vt::{MouseProtocolEncoding, MouseProtocolMode};
 use libfuzzer_sys::fuzz_target;
 use std::num::NonZeroUsize;
 
@@ -48,6 +53,39 @@ fuzz_target!(|data: &[u8]| {
                 "{} chars",
                 text.chars().count()
             );
+            let mut framed = Vec::new();
+            paste(text, true, &mut framed);
+            let inner = framed
+                .strip_prefix(PASTE_START)
+                .and_then(|f| f.strip_suffix(PASTE_END))
+                .unwrap_or_default();
+            let ends = (0..inner.len()).any(|i| {
+                inner
+                    .get(i..)
+                    .is_some_and(|t| t.starts_with(PASTE_END) || t.starts_with(b"\xc2\x9b201~"))
+            });
+            assert!(!ends, "{text:?} gave {framed:?}");
+        }
+        if let Input::Mouse(event) = *input {
+            // SGR carries every event any report does.
+            let mut sgr = Vec::new();
+            let sent = mouse_bytes(
+                event,
+                MouseProtocolMode::AnyMotion,
+                MouseProtocolEncoding::Sgr,
+                &mut sgr,
+            );
+            assert!(
+                sent || event.button.is_some_and(|b| b.is_wheel()),
+                "{event:?}"
+            );
+            if sent {
+                assert_eq!(
+                    decode(&sgr, 0),
+                    vec![Input::Mouse(event)],
+                    "{event:?} {sgr:?}"
+                );
+            }
         }
     }
 });
