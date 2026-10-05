@@ -18,7 +18,7 @@ include = ["/src/**", "/tests/**", "/README.md", "/LICENSE"]
 
 [dependencies]
 fux-vt = { path = "fux-vt", version = "0.3.1" }
-signal-hook = "0.3"
+signal-hook = "0.4"
 unicode-width = "0.2"
 fuxix = { path = "fuxix", version = "0.1.6" }
 

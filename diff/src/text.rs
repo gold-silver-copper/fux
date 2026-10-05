@@ -141,9 +141,9 @@ macro_rules! stack {
     };
 }
 
-// How each folds a key typed after the prefix: 0.17 and before with
-// config::folded, the current fux with KeyPress::folded.
-stack!(base, baseline, baseline::config::folded);
+// How each folds a key typed after the prefix: KeyPress::folded, in the
+// baseline as in the current fux.
+stack!(base, baseline, |p: baseline::keys::KeyPress| p.folded());
 stack!(cur, fux, |p: fux::keys::KeyPress| p.folded());
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
