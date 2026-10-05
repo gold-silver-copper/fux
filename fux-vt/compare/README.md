@@ -28,7 +28,7 @@ its arguments, or one of the harness commands in `harness.sh`:
 
 | Command | When | Budget | Runs |
 | --- | --- | --- | --- |
-| `run.sh quick` | before a commit | 60 s | `corpus` beside xterm and the panel; `corpus --subject ghostty`; `transparency`; `run --cases 2000`; `cases`; the oracle (`diff/oracle.sh`, see [`diff/README.md`](../../diff/README.md)) |
+| `run.sh quick` | before a commit | 60 s | `corpus` beside xterm and the panel; `corpus --subject ghostty`; `transparency`; `run --cases 2000`; `cases`; `encoders`; the oracle (`diff/oracle.sh`, see [`diff/README.md`](../../diff/README.md)) |
 | `run.sh full` | before a PR | 600 s | `quick`; `run --cases 20000` with and without `--no-reflow`; `esctest`; `esctest --terminal ghostty --beside fux-vt`; `fux-bench --against main`; `footprint`; `bench --instructions` |
 | `run.sh deep` | before a release, or when hunting | none (prints an estimate) | `full`; `verdicts` for seeds 1–20 (`FUX_DEEP_SEEDS`); `esctest --in-fux`; `transparency --multiplexers`; `fux-bench feel` and `info`; 10 minutes of fuzzing |
 | `run.sh fuzz [MINUTES]` | by hand | MINUTES (10) | every fuzz target in `harness.sh`, sharing the time; a crash is minimized (`cargo fuzz tmin`) and listed, to be made a test |
@@ -60,6 +60,7 @@ fux-vt/compare/run.sh corpus --show vim     # one recording, with fux-vt's scree
 fux-vt/compare/run.sh inventory > fux-vt/compare/corpus/INVENTORY.md
 fux-vt/compare/run.sh transparency          # every recording directly and through fux
 fux-vt/compare/run.sh esctest               # xterm's conformance suite
+fux-vt/compare/run.sh encoders              # key, mouse, focus and paste encoders beside libghostty-vt's
 fux-vt/compare/run.sh bench                 # MB/s for every engine on every workload
 fux-vt/compare/run.sh bench --instructions  # instructions per byte, which load does not move
 fux-vt/compare/run.sh footprint             # memory per cell and per row of history
@@ -572,6 +573,45 @@ fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt   # with fux-vt
 
 The pass rates are in [`scoreboard/SCOREBOARD.md`](scoreboard/SCOREBOARD.md).
 
+## The input encoders
+
+`encoders` holds fux-vt's input encoders (`fux_vt::keys`) beside
+libghostty-vt's. Both terminals are put in the same modes by the same bytes:
+every mouse tracking mode in every encoding, focus reporting and bracketed
+paste on and off, normal and application cursor keys with modifyOtherKeys 2
+and each kitty flag set 1 to 31. Then each encoder reads the modes from its
+own terminal (`Screen::encode_key`, `encode_mouse`, `encode_focus`,
+`encode_paste`; ghostty's `set_options_from_terminal`) and the bytes are
+compared:
+
+- keys: Enter, Tab, Escape, Backspace, Delete, Insert, Home, End, the page
+  keys, the arrows, F1 to F12 and what a US layout types, each with every
+  combination of Shift, Alt and Ctrl, as ghostty's host makes the event (the
+  text the key types, its unshifted key, Shift consumed by a shifted
+  character) and as fux-vt's decoder reads a kitty-protocol terminal's
+  report of it;
+- mouse: every button pressed, released and dragged, and motion with none,
+  with every modifier, at positions about each encoding's limits (94/95,
+  222/223, 2014/2015);
+- focus changes, and pastes: a few fixed texts (nested end markers, the C1
+  end) and `--cases` random ones (default 2000) from pieces that include
+  controls, newlines and end markers.
+
+A difference fails `encoders` unless it is one of its recorded verdicts,
+each with the source that decides it, printed with every run:
+
+| Verdict | Decided by |
+| --- | --- |
+| `utf8-button`, `utf8-limit` | ctlseqs: in UTF-8 mouse mode Cb is UTF-8 encoded too, and 2015 is the last position; ghostty writes Cb raw and has no limit |
+| `legacy-extras`, `f3`, `modify-other-keys` | xterm: with no keyboard mode a program gets legacy bytes (ghostty sends CSI u and CSI 27 forms, and kitty's F3); at modifyOtherKeys 2 every modified key but Shift with a printable is CSI 27 ; m ; k ~ |
+| `kitty-flags-without-disambiguate`, `kitty-press-type` | the kitty spec: it gives no other encoding without flag 1 or 8, and lets a press leave out its event type, as kitty does |
+| `ctrl-backspace` | a choice: fux-vt's Ctrl-Backspace is DEL, ghostty's BS |
+| `paste-controls`, `paste-newline` | a choice: ghostty, as xterm, makes NUL, BS, ENQ, EOT, ESC, DEL and the tty's special characters spaces, and an unbracketed LF a CR; fux-vt passes a paste as pasted, removing only what would end its bracket |
+| `paste-c1-end` | fux-vt: U+009B 201 ~ ends a bracket for a terminal that reads C1, so fux-vt removes it as it removes ESC [ 201 ~ |
+
+It needs no engine but ghostty, takes a few seconds, and is part of
+`run.sh quick`.
+
 ## Speed
 
 `bench` feeds each engine every workload in 4 KiB chunks, on a 50×200
@@ -666,6 +706,7 @@ The axes:
 | `src/inventory.rs` | `inventory` |
 | `src/transparency.rs` | `transparency`, with `KNOWN` and the multiplexers |
 | `src/esctest.rs` | `esctest`, and comparing two terminals |
+| `src/encoders.rs` | `encoders`, with its recorded verdicts |
 | `src/answering.rs` | an engine as the terminal a program talks to, for `esctest --terminal` |
 | `src/bench.rs` | `bench`: the workloads and the speed table |
 | `src/instructions.rs`, `src/count.rs` | `bench --instructions`, counting a child's instructions as `bench/src/count.rs` does |
