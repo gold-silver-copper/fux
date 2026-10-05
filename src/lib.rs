@@ -1,16 +1,15 @@
 //! fux: a terminal multiplexer. One server holds workspaces, tabs and split
 //! panes; `fux attach` shows them in a terminal; every other `fux` command
 //! changes them.
-pub mod bytes;
+pub use fux_vt::bytes;
+pub use fux_vt::keys;
+pub use fux_vt::keys::{decode, encode};
 pub mod client;
 pub mod command;
 pub mod config;
 pub mod copy;
-pub mod decode;
-pub mod encode;
 pub mod input;
 pub mod json;
-pub mod keys;
 pub mod layout;
 pub mod outer;
 pub mod overlay;

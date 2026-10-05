@@ -38,3 +38,10 @@ path = "fuzz_targets/cells.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "keys"
+path = "fuzz_targets/keys.rs"
+test = false
+doc = false
+bench = false

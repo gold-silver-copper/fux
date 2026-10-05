@@ -145,7 +145,7 @@ deep() {
 # The fuzz targets: DIR TARGET [DICT] [ASAN_OPTIONS].
 targets=(
   "fuzz protocol"
-  "fuzz keys"
+  "fux-vt/fuzz keys"
   "fuzz paint"
   "fuzz layout"
   "fuzz config fuzz/config.dict"

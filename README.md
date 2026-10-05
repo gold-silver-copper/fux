@@ -261,7 +261,8 @@ shows the error to each terminal that attaches until a reload succeeds.
   (Ghostty, kitty, WezTerm, foot, iTerm2), fux turns it on while attached,
   telling apart keys otherwise sent alike (Shift-Enter and Enter, Ctrl-I
   and Tab); Escape needs no wait. Each program gets keys as it asked: kitty
-  protocol, xterm's modifyOtherKeys, or plain.
+  protocol, xterm's modifyOtherKeys, or plain. The decoder and encoder are
+  fux-vt's (`fux_vt::keys`), so other hosts of fux-vt can use them.
 - **Synchronized output** (mode 2026): frames reach your terminal whole; a
   frame is shown anyway after one second or past 2 MiB.
 - **Colours.** Programs asking the foreground and background (OSC 10, 11)

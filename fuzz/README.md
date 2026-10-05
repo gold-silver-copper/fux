@@ -11,7 +11,8 @@ ASAN_OPTIONS=quarantine_size_mb=16 cargo +nightly fuzz run session --fuzz-dir fu
   -dict=fuzz/session.dict -max_total_time=600 -max_len=4096 -rss_limit_mb=1024 -timeout=25
 ```
 
-- `TARGET` is `protocol`, `keys`, `paint`, `layout`, `config` or `session`.
+- `TARGET` is `protocol`, `paint`, `layout`, `config` or `session`. The
+  terminal-input decoder's target, `keys`, is fux-vt's (`fux-vt/fuzz`).
 - `-timeout=25` makes a hang fail within the run (libFuzzer's default is
   1200 s).
 - `config` and `session` take a dictionary: `-dict=fuzz/config.dict`,
@@ -44,12 +45,6 @@ documented at the top of its file in `fuzz_targets/`.
 - Each frame round-trips through `Frame::encode`; `Frame::encode_into`
   after other bytes appends the same bytes; a paint, stdout or stderr frame
   is what `Stream::encode_into` writes for its payload.
-
-**`keys`**: a client's terminal bytes, into `decode::Decoder`, the Escape
-deadline passing only at the end.
-- The inputs are the same whole, in pieces and byte by byte.
-- No paste is longer than `PASTE_LIMIT` chars (the limit counts bytes, and
-  invalid UTF-8 becomes U+FFFD, so the text is bounded in chars).
 
 **`paint`**: `render::paint` diffs applied to a fux-vt terminal.
 - Input: a size (1–40 by 1–120, or one row of `u16::MAX` columns), a flags

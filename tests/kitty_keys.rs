@@ -1,7 +1,7 @@
 //! The kitty keyboard protocol between fux and a client's terminal, and
 //! between fux and a pane's program: the real client on a PTY, answering as
 //! Ghostty does, sends keys in the protocol's forms; each pane gets them as
-//! its program asked (`src/encode.rs`).
+//! its program asked (`fux-vt/src/keys/encode.rs`).
 mod support;
 use support::*;
 

@@ -266,27 +266,27 @@ Recordings:
 | `CSI 23;n;n t` | XTWINOPS: pop title | 32 | htop, htop-small, htop-tree, micro-edit, micro-small, micro-split, ncdu, nnn, nnn-detail, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, tig, tig-blame, tig-tree, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim | implemented: reported as unhandled; fux's pane pops its title (src/pane.rs) |
 | `OSC 10 ?` | foreground colour query | 32 | bat-diff, bat-markdown, bat-page, delta-diff, delta-log, delta-show, delta-wide, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode, zellij, zellij-small | implemented: a ColorQuery event; fux answers with its client terminal's colour (src/outer.rs) |
 | `CSI 5 n` | DSR, status | 30 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | answers (first with `\e[0n`) |
-| `CSI < u` | kitty keyboard: pop flags | 30 | claude, claude-ghostty, claude-main, claude-resize, claude-small, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI < u` | kitty keyboard: pop flags | 30 | claude, claude-ghostty, claude-main, claude-resize, claude-small, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | implemented: tracked; fux encodes keys as it asks (fux-vt/src/keys/encode.rs) |
 | `CSI r` |  | 27 | claude, claude-ghostty, claude-main, claude-resize, claude-small, nvim-help, nvim-insert, nvim-resize, nvim-scroll, nvim-split, nvim-wide, zellij, zellij-small | implemented |
 | `CSI n @` | ICH | 26 | bash, bash-history, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split | implemented |
 | `SGR 2` |  | 25 | claude, fish, fish-complete, fish-history, fish-small, git-graph, helix | implemented |
 | `CSI ? 1000 h` | mouse: press and release | 24 | fzf, fzf-height, fzf-multi, fzf-preview, fzf-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, htop, htop-small, htop-tree, lazygit, lazygit-small, lazygit-stage, micro-edit, micro-small, micro-split, nnn, nnn-detail, ranger | implemented |
-| `CSI = 0 u` |  | 23 | fish, fish-complete, fish-history, fish-small, lazygit, lazygit-small, lazygit-stage | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI = 0 u` |  | 23 | fish, fish-complete, fish-history, fish-small, lazygit, lazygit-small, lazygit-stage | implemented: tracked; fux encodes keys as it asks (fux-vt/src/keys/encode.rs) |
 | `CSI ? 2026 $ p` | DECRQM: synchronized output? | 22 | claude, claude-ghostty, claude-main, claude-resize, claude-small, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide, zellij, zellij-small | answers (first with `\e[?2026;2$y`) |
 | `CSI n M` | DL | 22 | emacs-mx, emacs-scroll, emacs-split, nvim-help, nvim-insert, nvim-resize, nvim-scroll, nvim-split, nvim-wide, vim, vim-help, vim-insert, vim-resize, vim-small, vim-terminal | implemented |
 | `SGR 3` |  | 22 | emacs-mx, fish-complete | implemented |
-| `CSI = 5 u` |  | 21 | fish, fish-complete, fish-history, fish-small | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI = 5 u` |  | 21 | fish, fish-complete, fish-history, fish-small | implemented: tracked; fux encodes keys as it asks (fux-vt/src/keys/encode.rs) |
 | `CSI n S` | SU | 21 | tmux-copy, tmux-vim | implemented |
 | `CSI 22;n t` | XTWINOPS: push title | 19 | lazygit, lazygit-small, lazygit-stage, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: reported as unhandled; fux's pane pushes its title (src/pane.rs) |
 | `CSI 23;n t` | XTWINOPS: pop title | 19 | lazygit, lazygit-small, lazygit-stage, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: reported as unhandled; fux's pane pops its title (src/pane.rs) |
-| `CSI > 4;2 m` | XTMODKEYS: modifyOtherKeys 2 | 18 | claude, claude-ghostty, claude-main, claude-resize, claude-small, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI > 4;2 m` | XTMODKEYS: modifyOtherKeys 2 | 18 | claude, claude-ghostty, claude-main, claude-resize, claude-small, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: tracked; fux encodes keys as it asks (fux-vt/src/keys/encode.rs) |
 | `CSI ? 2048 $ p` |  | 18 | lazygit, lazygit-small, lazygit-stage, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | answers (first with `\e[?2048;2$y`) |
 | `CSI ? 2048 h` | in-band resize reports | 18 | lazygit, lazygit-small, lazygit-stage, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | answers (first with `\e[48;24;80;0;0t`) |
 | `CSI ? 2048 l` | reset: in-band resize reports | 18 | lazygit, lazygit-small, lazygit-stage, nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | implemented |
 | `CSI 0 c` |  | 17 | fish, fish-complete, fish-history, fish-small | answers (first with `\e[?62;22c`) |
-| `CSI > 4; m` | XTMODKEYS: modifyOtherKeys reset | 16 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
-| `CSI > 5 u` | kitty keyboard: push flags 5 | 16 | claude, claude-ghostty, claude-main, claude-resize, claude-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
-| `CSI > 3 u` |  | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI > 4; m` | XTMODKEYS: modifyOtherKeys reset | 16 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: tracked; fux encodes keys as it asks (fux-vt/src/keys/encode.rs) |
+| `CSI > 5 u` | kitty keyboard: push flags 5 | 16 | claude, claude-ghostty, claude-main, claude-resize, claude-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode | implemented: tracked; fux encodes keys as it asks (fux-vt/src/keys/encode.rs) |
+| `CSI > 3 u` |  | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | implemented: tracked; fux encodes keys as it asks (fux-vt/src/keys/encode.rs) |
 | `CSI ? 2027 $ p` | DECRQM: grapheme clusters? | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | answers (first with `\e[?2027;0$y`) |
 | `CSI ? 2031 $ p` |  | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | answers (first with `\e[?2031;2$y`) |
 | `CSI ? 69 $ p` | DECRQM: left and right margins? | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | answers (first with `\e[?69;2$y`) |
@@ -298,30 +298,30 @@ Recordings:
 | `OSC 133 ; A` | semantic prompt | 13 | fish, fish-complete, fish-history, fish-small | implemented: a fresh line, and the row marked (Row::starts_prompt) |
 | `CSI ? 1005 l` | reset: mouse: UTF-8 encoding | 12 | tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, zellij, zellij-small | implemented |
 | `CSI 18 t` | XTWINOPS: size in characters? | 11 | lazygit, lazygit-small, lazygit-stage, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim | answers (first with `\e[8;24;80t`) |
-| `CSI > 4 m` | XTMODKEYS: modifyOtherKeys reset | 10 | claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI > 4 m` | XTMODKEYS: modifyOtherKeys reset | 10 | claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split | implemented: tracked; fux encodes keys as it asks (fux-vt/src/keys/encode.rs) |
 | `ESC 7` | DECSC | 10 | claude, claude-ghostty, claude-main, claude-resize, claude-small | implemented |
 | `ESC 8` | DECRC | 10 | claude, claude-ghostty, claude-main, claude-resize, claude-small | implemented |
 | `CSI ? 1003 h` | mouse: any motion | 9 | helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, lazygit, lazygit-small, lazygit-stage | implemented |
 | `CSI ? 69 h` | DECLRMM, left and right margins | 9 | nvim-split, nvim-wide | implemented |
-| `CSI < 1 u` | kitty keyboard: pop flags | 8 | helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, zellij, zellij-small | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI < 1 u` | kitty keyboard: pop flags | 8 | helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode, zellij, zellij-small | implemented: tracked; fux encodes keys as it asks (fux-vt/src/keys/encode.rs) |
 | `CSI > q` | XTVERSION | 8 | lazygit, lazygit-small, lazygit-stage, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim | answers (first with `\eP>\|fux 0.17.0\e\\`) |
 | `CSI ? 12 $ p` |  | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | answers (first with `\e[?12;0$y`) |
 | `CSI ? 996 n` | colour-scheme query | 7 | tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, zellij, zellij-small | implemented: reported as unhandled; fux answers with its client terminal's scheme (src/outer.rs) |
 | `CSI n;n s` | DECSLRM, left and right margins (SCOSC without DECLRMM) | 6 | nvim-split, nvim-wide | implemented |
 | `CSI > 0 c` |  | 5 | emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split | answers (first with `\e[>1;1700;0c`) |
-| `CSI > 4;1 m` |  | 5 | emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI > 4;1 m` |  | 5 | emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split | implemented: tracked; fux encodes keys as it asks (fux-vt/src/keys/encode.rs) |
 | `CSI ? 1016 $ p` |  | 5 | claude, claude-ghostty, claude-main, claude-resize, claude-small | answers (first with `\e[?1016;0$y`) |
 | `CSI M` |  | 5 | nvim-insert, nvim-scroll, top | implemented |
 | `CSI n P` | DCH | 5 | bash-history, emacs-scroll, top | implemented |
 | `CSI n L` | IL | 4 | emacs-mx, nvim-scroll, vim | implemented |
-| `CSI = 1 u` |  | 3 | lazygit, lazygit-small, lazygit-stage | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI = 1 u` |  | 3 | lazygit, lazygit-small, lazygit-stage | implemented: tracked; fux encodes keys as it asks (fux-vt/src/keys/encode.rs) |
 | `CSI ? 1000 $ p` |  | 3 | lazygit, lazygit-small, lazygit-stage | answers (first with `\e[?1000;2$y`) |
 | `CSI ? 1006 $ p` |  | 3 | lazygit, lazygit-small, lazygit-stage | answers (first with `\e[?1006;2$y`) |
 | `CSI ? 69 l` | reset: DECLRMM, left and right margins | 3 | nvim-split, nvim-wide | implemented |
 | `CSI ? 9001 $ p` |  | 3 | lazygit, lazygit-small, lazygit-stage | answers (first with `\e[?9001;0$y`) |
 | `ESC ) 0` |  | 3 | lazygit, lazygit-small, lazygit-stage | implemented |
 | `SGR 4:2` |  | 3 | nvim-help | implemented: the style kept; painted to terminals that draw it |
-| `CSI > 1 u` |  | 2 | zellij, zellij-small | implemented: tracked; fux encodes keys as it asks (src/encode.rs) |
+| `CSI > 1 u` |  | 2 | zellij, zellij-small | implemented: tracked; fux encodes keys as it asks (fux-vt/src/keys/encode.rs) |
 | `CSI ? n r` |  | 2 | mc, mc-small | implemented |
 | `CSI ? n s` |  | 2 | mc, mc-small | implemented |
 | `OSC 112` | reset cursor colour | 2 | nvim-terminal | implemented: the dynamic colour kept (Options::palette); fux paints 10 and 11, the pane's foreground and background |

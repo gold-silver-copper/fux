@@ -537,7 +537,7 @@ fn csi(params: &[u8], intermediates: &[u8], action: u8, heard: &Heard) -> Vec<(S
         // The kitty keyboard protocol and modifyOtherKeys, their numbers kept.
         (Some('<' | '>' | '='), 'u', "") | (Some('>'), 'm', "") => vec![(
             format!("CSI {lead}{}{tail}", spaced(rest)),
-            Does::Implemented("tracked; fux encodes keys as it asks (src/encode.rs)"),
+            Does::Implemented("tracked; fux encodes keys as it asks (fux-vt/src/keys/encode.rs)"),
         )],
         _ => vec![(
             format!("CSI {lead}{}{tail}", spaced(&numbers_as_n(rest))),

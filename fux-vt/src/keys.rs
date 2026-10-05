@@ -1,18 +1,29 @@
 //! Keys, their modifiers, and their names in `bind`, `send-keys` and
 //! `list-keys`: tmux's names (`C-x`, `M-x`, `S-Left`, `Enter`, `BTab`, …)
 //! plus any single character.
+pub mod colour;
+pub mod decode;
+pub mod encode;
+
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// An arrow key's direction.
 pub enum Direction {
+    /// The left arrow.
     Left,
+    /// The right arrow.
     Right,
+    /// The up arrow.
     Up,
+    /// The down arrow.
     Down,
 }
 
 impl Direction {
+    /// Every direction, left, right, up, down.
     pub const ALL: [Direction; 4] = [Self::Left, Self::Right, Self::Up, Self::Down];
+    /// The direction's name in a key name (`Left`, `Right`, `Up`, `Down`).
     pub fn name(self) -> &'static str {
         match self {
             Self::Left => "left",
@@ -33,36 +44,55 @@ impl Direction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// A key, without its modifiers.
 pub enum Key {
+    /// A key that types a character.
     Char(char),
+    /// Enter (Return).
     Enter,
+    /// Tab.
     Tab,
+    /// Escape.
     Escape,
+    /// Backspace.
     Backspace,
+    /// Delete (forward delete).
     Delete,
+    /// Insert.
     Insert,
+    /// An arrow key.
     Arrow(Direction),
+    /// Home.
     Home,
+    /// End.
     End,
+    /// Page Up.
     PageUp,
+    /// Page Down.
     PageDown,
     /// `1..=12`.
     F(u8),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+/// The modifiers fux and legacy terminals tell apart.
 pub struct Modifiers {
+    /// Control.
     pub ctrl: bool,
+    /// Alt (Meta in the legacy sense: an Escape prefix).
     pub alt: bool,
+    /// Shift.
     pub shift: bool,
 }
 
 impl Modifiers {
+    /// No modifier.
     pub const NONE: Modifiers = Modifiers {
         ctrl: false,
         alt: false,
         shift: false,
     };
+    /// Whether no modifier is held.
     pub fn is_empty(self) -> bool {
         self == Self::NONE
     }
@@ -73,11 +103,14 @@ impl Modifiers {
 /// letter is lower case (`C-b`), as terminals cannot tell the two apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeyPress {
+    /// The key.
     pub key: Key,
+    /// The modifiers held with it.
     pub mods: Modifiers,
 }
 
 impl KeyPress {
+    /// `key` with `mods` held.
     pub fn new(key: Key, mods: Modifiers) -> Self {
         let mut press = Self { key, mods };
         if let Key::Char(c) = key {
@@ -88,9 +121,11 @@ impl KeyPress {
         }
         press
     }
+    /// `key` with no modifier.
     pub fn plain(key: Key) -> Self {
         Self::new(key, Modifiers::NONE)
     }
+    /// The key that types `c`, with no modifier.
     pub fn char(c: char) -> Self {
         Self::plain(Key::Char(c))
     }
@@ -121,7 +156,9 @@ impl KeyPress {
 /// speaks the protocol is given back (`encode::key_bytes`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Keystroke {
+    /// The press a legacy terminal would have sent for the key.
     pub press: KeyPress,
+    /// What a terminal speaking the kitty protocol said beyond the press, if it did.
     pub kitty: Option<Kitty>,
 }
 
@@ -136,6 +173,7 @@ pub struct Kitty {
     /// The shifted key and the base-layout key, as reported (alternate
     /// keys).
     pub shifted: Option<u32>,
+    /// The base-layout key, as reported (alternate keys).
     pub base: Option<u32>,
     /// The modifier bits: Shift 1, Alt 2, Ctrl 4, Super 8, Hyper 16, Meta
     /// 32, Caps Lock 64, Num Lock 128. A `KeyPress` keeps the first three.
@@ -212,6 +250,7 @@ impl fmt::Display for KeyPress {
 /// A name that is no key's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
+    /// The name that was not recognised.
     pub name: String,
 }
 

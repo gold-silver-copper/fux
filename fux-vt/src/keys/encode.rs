@@ -1,6 +1,7 @@
-//! Byte encodings for keys and pastes delivered to a pane's PTY, in the
-//! pane's own modes (application cursor keys, the kitty keyboard protocol,
-//! modifyOtherKeys, bracketed paste).
+//! Byte encodings for keys and pastes delivered to a program, in the modes it
+//! asked for (application cursor keys, the kitty keyboard protocol,
+//! modifyOtherKeys, bracketed paste): [`crate::Screen::encode_key`] reads them
+//! from the program's screen, [`key_bytes`] takes them given.
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Modifiers};
 use std::io::Write;
 
@@ -15,16 +16,25 @@ pub struct KeyMode {
     pub other_keys: Option<u8>,
 }
 
-impl KeyMode {
-    /// The mode a pane's screen is in.
-    pub fn of(screen: &fux_vt::Screen) -> KeyMode {
+impl crate::Screen {
+    /// How the program on this screen asked for its keys: application cursor keys, the kitty
+    /// keyboard protocol's flags, modifyOtherKeys.
+    pub fn key_mode(&self) -> KeyMode {
         KeyMode {
-            application: screen.application_cursor(),
-            kitty: screen.kitty_keyboard_flags(),
-            other_keys: screen.modify_other_keys(),
+            application: self.application_cursor(),
+            kitty: self.kitty_keyboard_flags(),
+            other_keys: self.modify_other_keys(),
         }
     }
 
+    /// Appends `stroke`'s bytes to `out` as the program on this screen asked for its keys
+    /// ([`key_bytes`] in [`Screen::key_mode`](crate::Screen::key_mode)).
+    pub fn encode_key(&self, stroke: Keystroke, out: &mut Vec<u8>) {
+        key_bytes(stroke, self.key_mode(), out);
+    }
+}
+
+impl KeyMode {
     /// Legacy keys, in normal or application cursor mode.
     pub fn legacy(application: bool) -> KeyMode {
         KeyMode {
@@ -43,7 +53,9 @@ const TEXT: u8 = 16;
 /// The kitty protocol's lock modifiers, Caps Lock and Num Lock.
 const LOCKS: u8 = 64 | 128;
 
+/// What a bracketed paste begins with (`CSI 200 ~`).
 pub const PASTE_START: &[u8] = b"\x1b[200~";
+/// What a bracketed paste ends with (`CSI 201 ~`).
 pub const PASTE_END: &[u8] = b"\x1b[201~";
 
 /// Appends a paste as the pane should receive it to `out`: framed if it

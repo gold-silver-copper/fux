@@ -351,7 +351,7 @@ fn typed(keys: &[u8], screen: &fux_vt::Screen) -> Vec<u8> {
     let mut inputs = Vec::new();
     decoder.bytes(keys, &mut inputs);
     decoder.timeout(&mut inputs);
-    let mode = fux::encode::KeyMode::of(screen);
+    let mode = screen.key_mode();
     let mut out = Vec::with_capacity(keys.len());
     for input in inputs {
         match input {
@@ -507,7 +507,7 @@ mod tests {
     use std::time::Duration;
 
     /// Keys reach the program as fux gives them to a pane, in the key mode
-    /// it asked for (fux's src/encode.rs).
+    /// it asked for (fux-vt/src/keys/encode.rs).
     #[test]
     fn keys_are_typed_in_the_programs_key_mode() -> Result<(), fux_vt::Error> {
         let options = fux_vt::Options::new().with_kitty_keyboard(true);

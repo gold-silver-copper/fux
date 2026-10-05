@@ -1,7 +1,7 @@
 #![no_main]
 //! Input: one byte choosing a piece size (0 is the whole stream at once),
 //! then the bytes an attached client's terminal sends.
-use fux::decode::{Decoder, Input, PASTE_LIMIT};
+use fux_vt::keys::decode::{Decoder, Input, PASTE_LIMIT};
 use libfuzzer_sys::fuzz_target;
 use std::num::NonZeroUsize;
 
