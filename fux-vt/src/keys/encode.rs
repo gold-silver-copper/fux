@@ -1,7 +1,10 @@
-//! Byte encodings for keys and pastes delivered to a program, in the modes it
-//! asked for (application cursor keys, the kitty keyboard protocol,
-//! modifyOtherKeys, bracketed paste): [`crate::Screen::encode_key`] reads them
-//! from the program's screen, [`key_bytes`] takes them given.
+//! Byte encodings for keys, pastes and focus changes delivered to a
+//! program, in the modes it asked for (application cursor keys, the kitty
+//! keyboard protocol, modifyOtherKeys, bracketed paste, focus reporting):
+//! [`crate::Screen::encode_key`], [`crate::Screen::encode_paste`] and
+//! [`crate::Screen::encode_focus`] read them from the program's screen,
+//! [`key_bytes`] and [`paste`] take them given. Mouse reports are
+//! [`crate::keys::mouse`]'s.
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Modifiers};
 use std::io::Write;
 
@@ -59,17 +62,61 @@ pub const PASTE_START: &[u8] = b"\x1b[200~";
 pub const PASTE_END: &[u8] = b"\x1b[201~";
 
 /// Appends a paste as the pane should receive it to `out`: framed if it
-/// asked for bracketed paste, with any end marker inside the text removed so
-/// the text cannot end the paste early.
+/// asked for bracketed paste, with every end marker inside the text removed
+/// (`CSI 201 ~`, ESC `[` or the C1 CSI, U+009B), as often as removing one
+/// makes another, so the text cannot end the paste early. Unbracketed, the
+/// text goes as it is: the program asked for no frame to break.
 pub fn paste(text: &str, bracketed: bool, out: &mut Vec<u8>) {
     if !bracketed {
         return out.extend_from_slice(text.as_bytes());
     }
     out.extend_from_slice(PASTE_START);
-    for piece in text.split("\x1b[201~") {
-        out.extend_from_slice(piece.as_bytes());
+    // A marker can only be made by removing one, so text with none goes as
+    // it is.
+    if !text.contains("201~") {
+        out.extend_from_slice(text.as_bytes());
+        return out.extend_from_slice(PASTE_END);
+    }
+    let start = out.len();
+    for c in text.chars() {
+        let mut utf8 = [0; 4];
+        out.extend_from_slice(c.encode_utf8(&mut utf8).as_bytes());
+        // A marker can only end where a character was just added; what is
+        // left after removing one is checked again by the characters after.
+        if c == '~' {
+            let text = out.get(start..).unwrap_or_default();
+            for marker in [PASTE_END, C1_PASTE_END] {
+                if text.ends_with(marker) {
+                    out.truncate(out.len().saturating_sub(marker.len()));
+                    break;
+                }
+            }
+        }
     }
     out.extend_from_slice(PASTE_END);
+}
+
+/// `CSI 201 ~` with the C1 CSI, U+009B, in UTF-8.
+const C1_PASTE_END: &[u8] = b"\xc2\x9b201~";
+
+impl crate::Screen {
+    /// Appends a paste to `out` as the program on this screen asked for it:
+    /// framed by `CSI 200 ~` and `CSI 201 ~` if it set bracketed paste
+    /// (`CSI ? 2004 h`), never ended early from inside ([`paste`]).
+    pub fn encode_paste(&self, text: &str, out: &mut Vec<u8>) {
+        paste(text, self.bracketed_paste(), out);
+    }
+
+    /// Appends a focus change to `out`, `CSI I` for gained and `CSI O` for
+    /// lost, if the program on this screen asked for them (`CSI ? 1004 h`),
+    /// and returns whether it did.
+    pub fn encode_focus(&self, focused: bool, out: &mut Vec<u8>) -> bool {
+        if !self.focus_reporting() {
+            return false;
+        }
+        out.extend_from_slice(if focused { b"\x1b[I" } else { b"\x1b[O" });
+        true
+    }
 }
 
 /// Appends a key's bytes, as the pane asked for them in `mode`, to `out`:
@@ -113,10 +160,13 @@ fn kitty(stroke: Keystroke, flags: u8, out: &mut Vec<u8>) {
     let capital = matches!(key, Key::Char(c) if c.is_ascii_uppercase()) && exact.is_none();
     let bits = exact.map_or_else(|| xterm_bits(mods) | u8::from(capital), |k| k.mods);
     let held = bits & !LOCKS;
-    // `;mods`, left out when there are none, unless a parameter follows.
+    // `;mods`, left out when there are none; empty if a parameter follows,
+    // as the spec's examples have it (`CSI 0 ; ; 229 u`).
     let modifier = |out: &mut Vec<u8>, more: bool| {
-        if bits != 0 || more {
+        if bits != 0 {
             let _ = write!(out, ";{}", u16::from(bits).saturating_add(1));
+        } else if more {
+            out.push(b';');
         }
     };
     let csi_u = |out: &mut Vec<u8>, code: u32| {
@@ -475,11 +525,13 @@ fn legacy(press: KeyPress, application: bool, out: &mut Vec<u8>) {
             Some(code) => csi(out, *code, '~'),
             None => out.push(27),
         },
-        Key::Char(c) if ctrl && c.is_ascii() => out.push(control_byte(c)),
+        Key::Char(c) if ctrl && c.is_ascii() => out.push(control_byte(c).unwrap_or(c as u8)),
         Key::Char(c) => out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
     }
-    // Alt is an Escape before the key, unless it begins with one already.
-    if alt && out.get(start) != Some(&27) {
+    // Alt is an Escape before the key, unless the key is a sequence, which
+    // carries Alt in its parameter; a lone ESC (Escape, Ctrl-[) takes one
+    // too, as xterm sends Alt-Escape: ESC ESC.
+    if alt && !(out.get(start) == Some(&27) && out.len() > start.saturating_add(1)) {
         out.push(27);
         // The key's bytes and the Escape after them: at least one to turn.
         if let Some(key) = out.get_mut(start..) {
@@ -488,22 +540,22 @@ fn legacy(press: KeyPress, application: bool, out: &mut Vec<u8>) {
     }
 }
 
-/// xterm's control-key byte. Masking works for letters and the punctuation
-/// that shares a column with a C0 control; the controls above Ctrl-Z are
-/// named after digits too (Ctrl-4 is 0x1c), and xterm sends the digit itself
-/// for the digits that have no control.
-fn control_byte(c: char) -> u8 {
-    match c {
-        '2' => 0,
-        '3' => 0x1b,
-        '4' => 0x1c,
-        '5' => 0x1d,
-        '6' => 0x1e,
-        '7' => 0x1f,
-        '8' | '?' => 0x7f,
-        '0' | '1' | '9' => c as u8,
-        _ => (c.to_ascii_uppercase() as u8) & 0x1f,
-    }
+/// xterm's control-key byte, Xlib's control mapping: `@` to `~` masked to
+/// a C0 control, Space and `2` NUL, `3` to `7` ESC to US, `/` US, and `8`
+/// and `?` DEL (`?` as kitty's table and xterm's own translations have it).
+/// Ctrl leaves any other character untouched, as it does in both: `Ctrl-;`
+/// is `;`, never the ESC masking would make of it.
+fn control_byte(c: char) -> Option<u8> {
+    let b = u8::try_from(c).ok()?;
+    Some(match b {
+        // Masking drops the case bit too: `a` and `A` are both 0x01.
+        b'@'..=b'~' => b & 0x1f,
+        b' ' | b'2' => 0,
+        b'3'..=b'7' => b.wrapping_sub(b'3').wrapping_add(0x1b),
+        b'/' => 0x1f,
+        b'8' | b'?' => 0x7f,
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -660,7 +712,7 @@ mod tests {
             (9, "a", "\x1b[97u"),
             (9, "A", "\x1b[97;2u"),
             (13, "A", "\x1b[97:65;2u"),
-            (25, "a", "\x1b[97;1;97u"),
+            (25, "a", "\x1b[97;;97u"),
             (25, "A", "\x1b[97;2;65u"),
             (25, "C-a", "\x1b[97;5u"),
             (9, "Enter", "\x1b[13u"),
@@ -883,6 +935,19 @@ mod tests {
             ('?', 0x7f),
             ('0', b'0'),
             ('9', b'9'),
+            ('/', 0x1f),
+            ('`', 0x00),
+            ('~', 0x1e),
+            // What Xlib does not map, Ctrl leaves alone: masking made
+            // `;` ESC and `-` CR.
+            (';', b';'),
+            ('-', b'-'),
+            (',', b','),
+            ('.', b'.'),
+            ('\'', b'\''),
+            ('=', b'='),
+            ('1', b'1'),
+            ('!', b'!'),
         ] {
             assert_eq!(
                 encoded(press(Key::Char(c), ctrl), false),
@@ -890,6 +955,43 @@ mod tests {
                 "{c:?}"
             );
         }
+    }
+
+    /// Alt is an ESC before a key's bytes, a lone ESC's too (xterm's
+    /// Alt-Escape is ESC ESC), but not before a sequence, which carries it.
+    #[test]
+    fn alt_prefixes_a_lone_escape_but_not_a_sequence() {
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::NONE
+        };
+        let ctrl_alt = Modifiers { ctrl: true, ..alt };
+        assert_eq!(encoded(press(Key::Escape, alt), false), b"\x1b\x1b");
+        assert_eq!(encoded(press(Key::Char('['), ctrl_alt), false), b"\x1b\x1b");
+        assert_eq!(encoded(press(Key::Char('3'), ctrl_alt), false), b"\x1b\x1b");
+        assert_eq!(encoded(press(Key::Char('a'), alt), false), b"\x1ba");
+        assert_eq!(encoded(press(Key::Delete, alt), false), b"\x1b[3;3~");
+        assert_eq!(
+            encoded(press(Key::Arrow(Direction::Up), alt), true),
+            b"\x1b[1;3A"
+        );
+    }
+
+    /// Report associated text: with no modifiers the field is empty, as in
+    /// the spec's `CSI 0 ; ; 229 u`; with some it is their value.
+    #[test]
+    fn associated_text_follows_an_empty_modifier_field() {
+        let mode = KeyMode {
+            kitty: ALL_KEYS | TEXT,
+            ..KeyMode::default()
+        };
+        let sent = |press: KeyPress| {
+            let mut out = Vec::new();
+            key_bytes(press.into(), mode, &mut out);
+            String::from_utf8_lossy(&out).into_owned()
+        };
+        assert_eq!(sent(KeyPress::plain(Key::Char('a'))), "\x1b[97;;97u");
+        assert_eq!(sent(KeyPress::plain(Key::Char('A'))), "\x1b[97;2;65u");
     }
 
     /// Every key, under all eight modifier sets and both cursor modes, has a
@@ -962,5 +1064,87 @@ mod tests {
     fn a_bracketed_paste_cannot_end_itself_early() {
         assert_eq!(pasted("a\x1b[201~b", false), b"a\x1b[201~b");
         assert_eq!(pasted("a\x1b[201~b", true), b"\x1b[200~ab\x1b[201~");
+        // A marker that removing another makes is removed too, however
+        // deep: a single pass left `\x1b[201~` here.
+        assert_eq!(pasted("\x1b[20\x1b[201~1~x", true), b"\x1b[200~x\x1b[201~");
+        let mut nested = String::from("x");
+        for _ in 0..5 {
+            nested = nested.replacen('x', "\x1b[20x1~", 1);
+        }
+        let nested = nested.replacen('x', "\x1b[201~", 1);
+        assert_eq!(pasted(&nested, true), b"\x1b[200~\x1b[201~");
+        // The C1 CSI, U+009B, which a terminal may read as ESC [.
+        assert_eq!(pasted("a\u{9b}201~b", true), b"\x1b[200~ab\x1b[201~");
+        assert_eq!(pasted("\u{9b}20\x1b[201~1~", true), b"\x1b[200~\x1b[201~");
+        // Text that only looks alike stays.
+        for text in [
+            "\x1b[200~",
+            "\x1b[2011~",
+            "201~",
+            "\x1b[201",
+            "~~\x1b[20~1~",
+            "é~界",
+        ] {
+            let mut expected = PASTE_START.to_vec();
+            expected.extend_from_slice(text.as_bytes());
+            expected.extend_from_slice(PASTE_END);
+            assert_eq!(pasted(text, true), expected, "{text:?}");
+        }
+    }
+
+    /// Whatever the text, a bracketed paste holds no end marker before its
+    /// own, and keeps all of it that is no marker.
+    #[test]
+    fn no_text_ends_a_bracketed_paste() {
+        let pieces = ["\x1b", "[", "2", "0", "1", "~", "\u{9b}", "x", "\x1b[201~"];
+        // Every text of up to six pieces.
+        let mut texts = vec![String::new()];
+        for _ in 0..6 {
+            let longer: Vec<String> = texts
+                .iter()
+                .flat_map(|t| pieces.iter().map(move |p| format!("{t}{p}")))
+                .collect();
+            texts.extend(longer);
+            texts.dedup();
+        }
+        for text in texts {
+            let out = pasted(&text, true);
+            let inner = out
+                .strip_prefix(PASTE_START)
+                .and_then(|o| o.strip_suffix(PASTE_END))
+                .unwrap_or_default();
+            let holds = |marker: &[u8]| {
+                (0..inner.len()).any(|i| inner.get(i..).is_some_and(|t| t.starts_with(marker)))
+            };
+            assert!(
+                !holds(PASTE_END) && !holds(C1_PASTE_END),
+                "{text:?} gave {out:?}"
+            );
+            let kept = text.matches('x').count();
+            assert_eq!(
+                inner.iter().filter(|&&b| b == b'x').count(),
+                kept,
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_screen_encodes_pastes_and_focus_as_its_program_asked() -> Result<(), crate::Error> {
+        let mut parser = crate::Parser::new(4, 10, 0)?;
+        let (mut out, screen) = (Vec::new(), parser.screen());
+        screen.encode_paste("a\x1b[201~b", &mut out);
+        assert_eq!(out, b"a\x1b[201~b");
+        out.clear();
+        assert!(!screen.encode_focus(true, &mut out) && !screen.encode_focus(false, &mut out));
+        assert_eq!(out, b"");
+        parser.process(b"\x1b[?2004h\x1b[?1004h")?;
+        let screen = parser.screen();
+        screen.encode_paste("a\x1b[201~b", &mut out);
+        assert_eq!(out, b"\x1b[200~ab\x1b[201~");
+        out.clear();
+        assert!(screen.encode_focus(true, &mut out) && screen.encode_focus(false, &mut out));
+        assert_eq!(out, b"\x1b[I\x1b[O");
+        Ok(())
     }
 }

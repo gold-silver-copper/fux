@@ -18,8 +18,8 @@ use std::fmt::Write;
 
 /// The private modes `Screen::mode` keeps (fux-vt `src/screen.rs`).
 const MODES: &[u16] = &[
-    1, 6, 7, 9, 25, 47, 69, 1000, 1002, 1003, 1004, 1005, 1006, 1047, 1048, 1049, 2004, 2026,
-    2031, 2048,
+    1, 6, 7, 9, 25, 47, 69, 1000, 1002, 1003, 1004, 1005, 1006, 1047, 1048, 1049, 2004, 2026, 2031,
+    2048,
 ];
 
 /// Sequences fux-vt reports as unhandled that fux answers itself, from
@@ -417,7 +417,10 @@ fn name(key: &str) -> String {
         ("CSI n SP q", "DECSCUSR, cursor style"),
         ("CSI 3 J", "ED 3, erase saved lines"),
         ("CSI n;n r", "DECSTBM, scrolling region"),
-        ("CSI n;n s", "DECSLRM, left and right margins (SCOSC without DECLRMM)"),
+        (
+            "CSI n;n s",
+            "DECSLRM, left and right margins (SCOSC without DECLRMM)",
+        ),
         ("CSI n;n H", "CUP"),
         ("CSI H", "CUP, home"),
         ("CSI K", "EL"),

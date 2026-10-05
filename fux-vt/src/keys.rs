@@ -4,6 +4,7 @@
 pub mod colour;
 pub mod decode;
 pub mod encode;
+pub mod mouse;
 
 use std::fmt;
 

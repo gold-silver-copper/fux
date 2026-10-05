@@ -5,8 +5,9 @@
 //! The outer terminal is in normal (not application) cursor and keypad mode,
 //! so each key has one xterm encoding. A lone Escape is only known to be one
 //! when no more bytes follow within `ESCAPE_DELAY`; the server calls
-//! `timeout` at the `deadline` the decoder reports. Mouse sequences, which a
-//! correctly configured outer terminal never sends, are dropped.
+//! `timeout` at the `deadline` the decoder reports. Mouse reports, in SGR
+//! or the default encoding, decode to [`MouseEvent`]s; a host that asked
+//! for none drops them.
 //!
 //! A terminal that speaks the kitty keyboard protocol has disambiguate and
 //! alternate keys pushed (`outer`): it sends Escape, and keys with Ctrl or
@@ -43,6 +44,7 @@
 //! dropped to its end as it arrives, none of it typed.
 use crate::bytes::ByteQueue;
 use crate::keys::colour::{Rgb, Scheme};
+use crate::keys::mouse::{self, MouseEvent};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
 use std::time::{Duration, Instant};
 
@@ -72,12 +74,16 @@ pub enum Input {
     Key(Keystroke),
     /// A bracketed paste, its text whole.
     Paste(String),
-    /// A paste longer than `PASTE_LIMIT`, dropped whole.
+    /// A paste longer than the decoder's limit ([`PASTE_LIMIT`] unless
+    /// [`Decoder::with_paste_limit`] set another), dropped whole.
     PasteTooLong,
     /// The terminal gained focus (`CSI I`).
     FocusIn,
     /// The terminal lost focus (`CSI O`).
     FocusOut,
+    /// A mouse report, in SGR (`CSI < code ; column ; row M` or `m`) or the
+    /// default encoding (`CSI M` and three bytes).
+    Mouse(MouseEvent),
     /// An answer from the terminal, or a report it sends unasked.
     Reply(Reply),
 }
@@ -90,6 +96,13 @@ pub enum Reply {
         /// Which colour: 10 the foreground, 11 the background.
         number: u8,
         /// The colour.
+        rgb: Rgb,
+    },
+    /// `OSC 4 ; index ; rgb:… ST`: a palette entry.
+    Palette {
+        /// The entry, 0 to 255.
+        index: u8,
+        /// Its colour.
         rgb: Rgb,
     },
     /// `CSI ? 997 ; 1 n` (dark) or `; 2 n` (light): the answer to
@@ -121,6 +134,8 @@ pub struct Decoder {
     pending: ByteQueue,
     /// Inside a bracketed paste: its bytes so far, capped one past the limit.
     paste: Option<Vec<u8>>,
+    /// The longest paste kept, if not [`PASTE_LIMIT`].
+    paste_limit: Option<usize>,
     /// The paste's end marker, as far as it has arrived.
     marker: usize,
     /// When decoding began waiting on a timeout, as `mark` found it.
@@ -161,6 +176,16 @@ enum Step {
 }
 
 impl Decoder {
+    /// A decoder that keeps pastes of up to `limit` bytes, rather than
+    /// [`PASTE_LIMIT`]: a host that sends a long paste on in pieces. It
+    /// holds that much while a paste arrives.
+    pub fn with_paste_limit(limit: usize) -> Decoder {
+        Decoder {
+            paste_limit: Some(limit),
+            ..Decoder::default()
+        }
+    }
+
     /// Whether decoding is waiting on a timeout: a lone Escape or an
     /// incomplete sequence, outside a paste.
     pub fn waiting(&self) -> bool {
@@ -227,6 +252,7 @@ impl Decoder {
             },
             None => bytes,
         };
+        let limit = self.paste_limit.unwrap_or(PASTE_LIMIT);
         for (i, &byte) in bytes.iter().enumerate() {
             if let Some(paste) = &mut self.paste {
                 // Match the end marker incrementally; a partial marker that
@@ -239,7 +265,7 @@ impl Decoder {
                         self.marker = 0;
                         let text = std::mem::take(paste);
                         self.paste = None;
-                        out.push(if text.len() > PASTE_LIMIT {
+                        out.push(if text.len() > limit {
                             Input::PasteTooLong
                         } else {
                             // Moved as it is, unless it is not UTF-8.
@@ -254,7 +280,7 @@ impl Decoder {
                 // An Escape can begin the marker again, so it is held too.
                 let text = if byte == 0x1b { None } else { Some(&byte) };
                 for &b in held.iter().chain(text) {
-                    if paste.len() <= PASTE_LIMIT {
+                    if paste.len() <= limit {
                         paste.push(b);
                     }
                 }
@@ -583,13 +609,22 @@ fn dcs_reply(payload: &[u8]) -> Option<Reply> {
         .then_some(Reply::UnderlineStyles)
 }
 
-/// `10 ; rgb:…` or `11 ; rgb:…`: the terminal's foreground or background.
+/// `10 ; rgb:…` or `11 ; rgb:…`: the terminal's foreground or background;
+/// `4 ; index ; rgb:…`: one of its palette entries.
 fn colour_reply(payload: &[u8]) -> Option<Reply> {
     let split = payload.iter().position(|b| *b == b';')?;
     let (number, spec) = payload.split_at_checked(split)?;
     let number = match number {
         b"10" => 10,
         b"11" => 11,
+        b"4" => {
+            let entry = spec.get(1..)?;
+            let split = entry.iter().position(|b| *b == b';')?;
+            let (index, spec) = entry.split_at_checked(split)?;
+            let index = std::str::from_utf8(index).ok()?.parse::<u8>().ok()?;
+            let rgb = Rgb::parse(spec.get(1..)?)?;
+            return Some(Reply::Palette { index, rgb });
+        }
         _ => return None,
     };
     let rgb = Rgb::parse(spec.get(1..)?)?;
@@ -622,13 +657,43 @@ fn csi_reply(params: &[u8], last: u8) -> Option<Reply> {
     }
 }
 
+/// The event a default-encoding mouse report's three bytes describe, each
+/// value plus 32. Mouse reports are rare among keys: kept out of `csi`'s
+/// way.
+#[cold]
+#[inline(never)]
+fn default_mouse(code: u8, x: u8, y: u8) -> Option<MouseEvent> {
+    let value = |b: u8| u32::from(b).checked_sub(32);
+    mouse::event(value(code)?, value(x)?, value(y)?, false)
+}
+
+/// The event an SGR mouse report's parameters (after `<`) and final byte
+/// describe; `None` for anything else.
+#[cold]
+#[inline(never)]
+fn sgr_mouse(params: &[u8], last: u8) -> Option<MouseEvent> {
+    let release = match last {
+        b'M' => false,
+        b'm' => true,
+        _ => return None,
+    };
+    let text = std::str::from_utf8(params.get(1..)?).ok()?;
+    let mut numbers = text.split(';').map(|n| n.parse::<u32>().ok());
+    let (code, x, y) = (numbers.next()??, numbers.next()??, numbers.next()??);
+    if numbers.next().is_some() {
+        return None;
+    }
+    mouse::event(code, x, y, release)
+}
+
 /// A CSI sequence: `ESC [ params final`. Too long a sequence is dropped.
 fn csi(bytes: &[u8], flush: bool) -> Step {
     let body = bytes.get(2..).unwrap_or_default();
-    // Legacy mouse: `ESC [ M` and three raw bytes.
+    // A mouse report in the default encoding: `ESC [ M` and three raw
+    // bytes, each value plus 32.
     if body.first() == Some(&b'M') {
-        return if body.len() >= 4 {
-            Step::Done(6, None)
+        return if let Some(&[code, x, y]) = body.get(1..4) {
+            Step::Done(6, default_mouse(code, x, y).map(Input::Mouse))
         } else if flush {
             Step::Done(bytes.len(), None)
         } else {
@@ -662,8 +727,8 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     let params = body.get(..end).unwrap_or_default();
     let last = body.get(end).copied().unwrap_or(0);
     if params.first() == Some(&b'<') {
-        // SGR mouse reports are dropped.
-        return Step::Done(consumed, None);
+        // An SGR mouse report: `CSI < code ; column ; row M`, `m` a release.
+        return Step::Done(consumed, sgr_mouse(params, last).map(Input::Mouse));
     }
     if params.first() == Some(&b'?') {
         // Answers fux does not use are dropped.
@@ -851,6 +916,7 @@ mod tests {
                 | Input::PasteTooLong
                 | Input::FocusIn
                 | Input::FocusOut
+                | Input::Mouse(_)
                 | Input::Reply(_) => None,
             })
             .collect()
@@ -1148,12 +1214,21 @@ mod tests {
     #[test]
     fn answers_are_told_from_keys_however_they_arrive() {
         let stream: &[u8] = b"a\x1b]10;rgb:ffff/ffff/ffff\x1b\\b\x1b]11;rgb:1e/1e/20\x07\
+            \x1b]4;1;rgb:cdcd/0000/0000\x1b\\\x1b]4;15;rgb:f/f/f\x07\
             \x1b[?2031;2$y\x1b[?997;1nc\x1b[?997;2n\x1b[?5u\x1b[?62;22;52c\x1b[Ad";
+        let palette = |index, r, g, b| {
+            Input::Reply(Reply::Palette {
+                index,
+                rgb: Rgb { r, g, b },
+            })
+        };
         let expected = vec![
             key("a"),
             colour(10, 0xffff, 0xffff, 0xffff),
             key("b"),
             colour(11, 0x1e1e, 0x1e1e, 0x2020),
+            palette(1, 0xcdcd, 0, 0),
+            palette(15, 0xffff, 0xffff, 0xffff),
             Input::Reply(Reply::Mode {
                 mode: 2031,
                 status: 2,
@@ -1184,7 +1259,7 @@ mod tests {
         // Colours fux does not ask for or cannot read are dropped; answers
         // it does not use reach the session, which ignores them: no keys.
         assert_eq!(
-            all(b"\x1b[?1;2c\x1b]12;rgb:0/0/0\x07\x1b]11;#000\x07\x1b[?6;1$yx"),
+            all(b"\x1b[?1;2c\x1b]12;rgb:0/0/0\x07\x1b]11;#000\x07\x1b]4;256;rgb:0/0/0\x07\x1b]4;x;rgb:0/0/0\x07\x1b]4;1\x07\x1b[?6;1$yx"),
             vec![
                 Input::Reply(Reply::Attributes),
                 Input::Reply(Reply::Mode { mode: 6, status: 1 }),
@@ -1366,9 +1441,43 @@ mod tests {
     }
 
     #[test]
-    fn mouse_reports_are_dropped_and_pastes_are_bounded() {
-        assert_eq!(all(b"\x1b[M !!a"), vec![key("a")]);
-        assert_eq!(all(b"\x1b[<0;10;5Ma"), vec![key("a")]);
+    fn mouse_reports_are_events_and_pastes_are_bounded() {
+        use crate::keys::mouse::{MouseAction, MouseButton};
+        let left = |action, row, col| {
+            Input::Mouse(MouseEvent {
+                action,
+                button: Some(MouseButton::Left),
+                mods: Modifiers::NONE,
+                row,
+                col,
+            })
+        };
+        assert_eq!(
+            all(b"\x1b[M !!a"),
+            vec![left(MouseAction::Press, 0, 0), key("a")]
+        );
+        assert_eq!(
+            all(b"\x1b[<0;10;5Ma\x1b[<0;10;5m"),
+            vec![
+                left(MouseAction::Press, 4, 9),
+                key("a"),
+                left(MouseAction::Release, 4, 9)
+            ]
+        );
+        // What no report is: dropped, never typed.
+        for junk in [
+            &b"\x1b[<0;0;5M"[..],
+            b"\x1b[<0;1M",
+            b"\x1b[<0;1;1;1M",
+            b"\x1b[<0;1;1x",
+            b"\x1b[<192;1;1M",
+            b"\x1b[<0;1;65537M",
+            b"\x1b[<1:2;1;1M",
+            b"\x1b[M\x1f!!",
+            b"\x1b[M  !",
+        ] {
+            assert_eq!(all(junk), vec![], "{junk:?}");
+        }
         let mut long = b"\x1b[200~".to_vec();
         long.extend(std::iter::repeat_n(b'x', PASTE_LIMIT + 10));
         long.extend_from_slice(b"\x1b[201~k");
@@ -1382,6 +1491,20 @@ mod tests {
             all(b"\x1b[200~\x02d\x1b[201~"),
             vec![Input::Paste("\x02d".into())]
         );
+        // Another limit, larger or smaller.
+        let pasted = |limit: usize, n: usize| {
+            let mut bytes = b"\x1b[200~".to_vec();
+            bytes.extend(std::iter::repeat_n(b'x', n));
+            bytes.extend_from_slice(b"\x1b[201~");
+            let mut out = Vec::new();
+            Decoder::with_paste_limit(limit).bytes(&bytes, &mut out);
+            out
+        };
+        let big = PASTE_LIMIT * 4;
+        assert!(matches!(pasted(big, big).first(), Some(Input::Paste(t)) if t.len() == big));
+        assert_eq!(pasted(big, big + 1), vec![Input::PasteTooLong]);
+        assert_eq!(pasted(3, 4), vec![Input::PasteTooLong]);
+        assert_eq!(pasted(3, 3), vec![Input::Paste("xxx".into())]);
     }
 
     /// An answer's string past its limit is dropped to its end however its

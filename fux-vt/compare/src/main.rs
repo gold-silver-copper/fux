@@ -12,6 +12,7 @@ mod case;
 mod cases;
 mod corpus;
 mod count;
+mod encoders;
 mod engine;
 mod engines;
 mod escape;
@@ -54,6 +55,7 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
        fux-vt-compare corpus [--engines LIST] [--show] [--json FILE] [--subject NAME]
                              [NAME...]
        fux-vt-compare inventory [NAME...]
+       fux-vt-compare encoders [--seed N] [--cases N]
        fux-vt-compare transparency [--engines LIST] [--chunk N] [--json FILE]
                                    [--multiplexers] [NAME... | --size RxC STEP...]
        fux-vt-compare esctest [--terminal NAME] [--beside NAME] [--in-fux] [FILTER] (esctest --help: the rest)
@@ -241,6 +243,7 @@ fn parse() -> Result<Args, String> {
             "record",
             "corpus",
             "inventory",
+            "encoders",
         ]
         .contains(&first.as_str())
     {
@@ -1171,6 +1174,7 @@ fn main() -> ExitCode {
         "replay" => replay(&args),
         "record" => record(&args),
         "inventory" => inventory::run(&args.rest),
+        "encoders" => encoders::run(args.seed, args.cases.unwrap_or(2000)),
         "corpus" => corpus::run(
             subject(&args)?,
             &panel_beside(&args, "xterm,panel", subject(&args)?)?,
