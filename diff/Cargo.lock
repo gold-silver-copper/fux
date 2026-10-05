@@ -59,7 +59,7 @@ name = "fux"
 version = "0.18.0"
 dependencies = [
  "fux-vt 0.3.1",
- "fuxix 0.1.5",
+ "fuxix 0.1.6",
  "signal-hook",
  "unicode-width",
 ]
@@ -73,7 +73,7 @@ dependencies = [
  "fux-vt 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "fux-vt 0.3.1",
  "fuxix 0.1.4",
- "fuxix 0.1.5",
+ "fuxix 0.1.6",
 ]
 
 [[package]]
@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "fuxix"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "libc",
 ]

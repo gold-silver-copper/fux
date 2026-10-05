@@ -599,7 +599,7 @@ Every key is a letter, in either case, without Ctrl or Alt.
 | Crate | Why |
 | --- | --- |
 | `fux-vt` (path, 0.3.0) | Emulator |
-| `fuxix` (path, 0.1.5) | fux's system calls over `libc`, each safe to call: PTYs, processes, poll, sockets, terminal modes; its README says why each is not std's |
+| `fuxix` (path, 0.1.6) | fux's system calls over `libc`, each safe to call: PTYs, processes, poll, sockets, terminal modes; its README says why each is not std's |
 | `signal-hook` | Signal → self-pipe (fuxix installs no handlers) |
 | `unicode-width` | Bar and overlay layout (already in the graph through fux-vt) |
 
