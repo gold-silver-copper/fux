@@ -74,7 +74,8 @@ pub enum Input {
     Key(Keystroke),
     /// A bracketed paste, its text whole.
     Paste(String),
-    /// A paste longer than `PASTE_LIMIT`, dropped whole.
+    /// A paste longer than the decoder's limit ([`PASTE_LIMIT`] unless
+    /// [`Decoder::with_paste_limit`] set another), dropped whole.
     PasteTooLong,
     /// The terminal gained focus (`CSI I`).
     FocusIn,
@@ -133,6 +134,8 @@ pub struct Decoder {
     pending: ByteQueue,
     /// Inside a bracketed paste: its bytes so far, capped one past the limit.
     paste: Option<Vec<u8>>,
+    /// The longest paste kept, if not [`PASTE_LIMIT`].
+    paste_limit: Option<usize>,
     /// The paste's end marker, as far as it has arrived.
     marker: usize,
     /// When decoding began waiting on a timeout, as `mark` found it.
@@ -173,6 +176,16 @@ enum Step {
 }
 
 impl Decoder {
+    /// A decoder that keeps pastes of up to `limit` bytes, rather than
+    /// [`PASTE_LIMIT`]: a host that sends a long paste on in pieces. It
+    /// holds that much while a paste arrives.
+    pub fn with_paste_limit(limit: usize) -> Decoder {
+        Decoder {
+            paste_limit: Some(limit),
+            ..Decoder::default()
+        }
+    }
+
     /// Whether decoding is waiting on a timeout: a lone Escape or an
     /// incomplete sequence, outside a paste.
     pub fn waiting(&self) -> bool {
@@ -239,6 +252,7 @@ impl Decoder {
             },
             None => bytes,
         };
+        let limit = self.paste_limit.unwrap_or(PASTE_LIMIT);
         for (i, &byte) in bytes.iter().enumerate() {
             if let Some(paste) = &mut self.paste {
                 // Match the end marker incrementally; a partial marker that
@@ -251,7 +265,7 @@ impl Decoder {
                         self.marker = 0;
                         let text = std::mem::take(paste);
                         self.paste = None;
-                        out.push(if text.len() > PASTE_LIMIT {
+                        out.push(if text.len() > limit {
                             Input::PasteTooLong
                         } else {
                             // Moved as it is, unless it is not UTF-8.
@@ -266,7 +280,7 @@ impl Decoder {
                 // An Escape can begin the marker again, so it is held too.
                 let text = if byte == 0x1b { None } else { Some(&byte) };
                 for &b in held.iter().chain(text) {
-                    if paste.len() <= PASTE_LIMIT {
+                    if paste.len() <= limit {
                         paste.push(b);
                     }
                 }
@@ -1477,6 +1491,20 @@ mod tests {
             all(b"\x1b[200~\x02d\x1b[201~"),
             vec![Input::Paste("\x02d".into())]
         );
+        // Another limit, larger or smaller.
+        let pasted = |limit: usize, n: usize| {
+            let mut bytes = b"\x1b[200~".to_vec();
+            bytes.extend(std::iter::repeat_n(b'x', n));
+            bytes.extend_from_slice(b"\x1b[201~");
+            let mut out = Vec::new();
+            Decoder::with_paste_limit(limit).bytes(&bytes, &mut out);
+            out
+        };
+        let big = PASTE_LIMIT * 4;
+        assert!(matches!(pasted(big, big).first(), Some(Input::Paste(t)) if t.len() == big));
+        assert_eq!(pasted(big, big + 1), vec![Input::PasteTooLong]);
+        assert_eq!(pasted(3, 4), vec![Input::PasteTooLong]);
+        assert_eq!(pasted(3, 3), vec![Input::Paste("xxx".into())]);
     }
 
     /// An answer's string past its limit is dropped to its end however its
