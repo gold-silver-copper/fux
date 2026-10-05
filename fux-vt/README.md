@@ -111,7 +111,8 @@ decoded, and what a program asked for, encoded. It needs no option.
 - **Decoding:** `keys::decode::Decoder` turns a terminal's raw bytes,
   however split, into `Input`s: keys (legacy and xterm's modifiers, and
   the kitty keyboard protocol with disambiguate and alternate keys),
-  bracketed pastes (whole, at most `PASTE_LIMIT`, 64 KiB), focus changes,
+  bracketed pastes (whole, at most `PASTE_LIMIT`, 64 KiB, or what
+  `Decoder::with_paste_limit` sets), focus changes,
   mouse reports (SGR and the default encoding) and answers to the host's
   own questions (DA1, the kitty flags, DECRQM, OSC 10 and 11, OSC 4
   palette entries, the colour scheme, DECRQSS for underline styles). A
