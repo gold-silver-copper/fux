@@ -50,7 +50,7 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
 | `process::processes` | `/proc` | `proc_listallpids` | not offered |
 | `process::cwd` | `/proc/PID/cwd` | `proc_pidinfo(PROC_PIDVNODEPATHINFO)` | not offered |
 | `pty::open` | `posix_openpt(O_CLOEXEC)`, `grantpt`, `unlockpt`, `ptsname_r` | `posix_openpt(O_CLOEXEC)` (retried as above; marked close-on-exec after if a release refuses the flag), `TIOCPTYGNAME` and a check of the replica, `grantpt` under a watchdog, `unlockpt` | not offered |
-| `terminal::attributes`, `set_attributes`, `Termios::make_raw` | `tcgetattr`, `tcsetattr`, `cfmakeraw` | the same | not offered |
+| `terminal::attributes`, `set_attributes`, `Termios::make_raw`, `echoes`, `line_mode` | `tcgetattr`, `tcsetattr`, `cfmakeraw`, `ECHO` and `ICANON` in `c_lflag` | the same | not offered |
 | `terminal::window_size`, `set_window_size` | `TIOCGWINSZ`, `TIOCSWINSZ` | the same | not offered |
 | `terminal::foreground_group`, `make_controlling` | `tcgetpgrp`, `TIOCSCTTY` | the same | not offered |
 | `socket::stream`, `bind`, `listen`, `connect` | `socket(SOCK_CLOEXEC)`, `bind`, `listen`, `connect` | `socket`, then close-on-exec | `UnixListener::bind` binds and listens in one step; fux sets the socket's mode between them |
