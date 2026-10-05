@@ -210,8 +210,17 @@ macro_rules! stack {
 stack!(
     base,
     baseline,
-    baseline::encode::key_bytes,
-    |input| format!("{input:?}")
+    |press, application, out| baseline::encode::key_bytes(
+        press.into(),
+        baseline::encode::KeyMode::legacy(application),
+        out
+    ),
+    |input| {
+        if let baseline::decode::Input::Key(stroke) = input {
+            return format!("Key({:?})", stroke.press);
+        }
+        format!("{input:?}")
+    }
 );
 stack!(
     cur,
