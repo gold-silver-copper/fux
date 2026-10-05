@@ -45,21 +45,21 @@ checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 [[package]]
 name = "fux"
 version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e3abef04ffb0a348a57d5f229eed04717d70a5a40e9e5ec80f317a853b2d516"
 dependencies = [
  "fux-vt 0.3.1",
- "fuxix 0.1.6",
+ "fuxix 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "signal-hook",
  "unicode-width",
 ]
 
 [[package]]
 name = "fux"
-version = "0.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e3abef04ffb0a348a57d5f229eed04717d70a5a40e9e5ec80f317a853b2d516"
+version = "0.19.0"
 dependencies = [
- "fux-vt 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "fuxix 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
+ "fux-vt 0.3.2",
+ "fuxix 0.1.6",
  "signal-hook",
  "unicode-width",
 ]
@@ -69,9 +69,9 @@ name = "fux-diff"
 version = "0.0.0"
 dependencies = [
  "fux 0.18.1",
- "fux 0.18.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "fux 0.19.0",
  "fux-vt 0.3.1",
- "fux-vt 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "fux-vt 0.3.2",
  "fuxix 0.1.6",
  "fuxix 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -87,15 +87,15 @@ dependencies = [
 [[package]]
 name = "fux-vt"
 version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01d8cdfaf9f0f6ac5b942266ce744cb524f9dec71d2677f2950b88a1088ddf69"
 dependencies = [
  "unicode-width",
 ]
 
 [[package]]
 name = "fux-vt"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01d8cdfaf9f0f6ac5b942266ce744cb524f9dec71d2677f2950b88a1088ddf69"
+version = "0.3.2"
 dependencies = [
  "unicode-width",
 ]
@@ -105,7 +105,7 @@ name = "fux-vt-oracle"
 version = "0.0.0"
 dependencies = [
  "fux-vt 0.2.0",
- "fux-vt 0.3.1",
+ "fux-vt 0.3.2",
  "serde_json",
 ]
 
