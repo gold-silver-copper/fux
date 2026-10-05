@@ -20,6 +20,18 @@ pub(crate) fn request(value: impl TryInto<Request>) -> Result<Request> {
 pub struct Termios(libc::termios);
 
 impl Termios {
+    /// Whether the terminal echoes what is typed (`ECHO`).
+    pub fn echoes(&self) -> bool {
+        self.0.c_lflag & libc::ECHO != 0
+    }
+
+    /// Whether the terminal edits input a line at a time (`ICANON`), as a
+    /// program reading a line, or a password, has it; a line editor or a
+    /// full-screen program turns it off and reads each key.
+    pub fn line_mode(&self) -> bool {
+        self.0.c_lflag & libc::ICANON != 0
+    }
+
     /// Raw mode: no echo, no line editing, no signals from keys, and no
     /// output processing.
     pub fn make_raw(&mut self) {
@@ -98,11 +110,15 @@ mod tests {
         set_window_size(&master, 5, 7).map_err(|e| e.to_string())?;
         assert_eq!(window_size(&slave), Ok((5, 7)));
         let mut modes = attributes(&slave).map_err(|e| e.to_string())?;
-        assert!(modes.0.c_lflag & libc::ECHO != 0, "a new terminal echoes");
+        assert!(modes.echoes(), "a new terminal echoes");
+        assert!(modes.line_mode(), "and edits a line at a time");
         modes.make_raw();
         set_attributes(&slave, &modes).map_err(|e| e.to_string())?;
         let again = attributes(&slave).map_err(|e| e.to_string())?;
-        assert_eq!(again.0.c_lflag & (libc::ECHO | libc::ICANON), 0);
+        assert!(!again.echoes() && !again.line_mode());
+        // The master reads the modes the program set on its side.
+        let seen = attributes(&master).map_err(|e| e.to_string())?;
+        assert!(!seen.echoes() && !seen.line_mode());
         // No session has it as its terminal: no foreground group.
         assert_eq!(foreground_group(&master), None);
         assert!(attributes(std::fs::File::open("/dev/null").map_err(|e| e.to_string())?).is_err());
