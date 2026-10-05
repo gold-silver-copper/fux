@@ -299,7 +299,9 @@ The server decodes the bytes, per client:
    - The prefix key twice sends it literally.
    - Pastes never become commands.
    - Otherwise the input goes to the focused pane, re-encoded for that pane's
-     modes by the ported `encode.rs`.
+     modes by the ported `encode.rs` (now `fux_vt::keys`: the decoder, the
+     encoder and `Screen::encode_key` live in fux-vt, so any host of fux-vt
+     encodes keys as fux does; fux re-exports them at their old paths).
    - Focus-in and focus-out go to that client's focused pane, only if the pane
      enabled focus reporting (`?1004`). fux-vt does not track that mode, nor
      the cursor shape (DECSCUSR), so fux scans each pane's output for those

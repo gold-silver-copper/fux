@@ -1,10 +1,12 @@
 //! Bounded terminal emulation with immutable history windows and stable row IDs.
 //! See the crate README for the sequence and resource contracts.
 
+pub mod bytes;
 mod cell;
 mod compact;
 mod grid;
 mod history;
+pub mod keys;
 mod link;
 mod palette;
 mod parser;

@@ -30,15 +30,22 @@ pub struct ByteQueue {
 
 impl ByteQueue {
     /// The bytes not yet taken.
+    #[inline]
     pub fn as_slice(&self) -> &[u8] {
         self.bytes.get(self.taken..).unwrap_or_default()
     }
+    /// The number of bytes not yet taken.
+    #[inline]
     pub fn len(&self) -> usize {
         self.bytes.len().saturating_sub(self.taken)
     }
+    /// Whether every byte has been taken.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+    /// Append `more` after the bytes not yet taken.
+    #[inline]
     pub fn push(&mut self, more: &[u8]) {
         self.compact();
         self.bytes.extend_from_slice(more);
@@ -78,15 +85,19 @@ impl ByteQueue {
         self.bytes.shrink_to(keep);
     }
     /// Takes `n` bytes from the front, or all there are.
+    #[inline]
     pub fn take(&mut self, n: usize) {
-        self.taken = self.taken.saturating_add(n).min(self.bytes.len());
-        if self.taken == self.bytes.len() {
+        let taken = self.taken.saturating_add(n);
+        if taken >= self.bytes.len() {
             self.bytes.clear();
             self.taken = 0;
+        } else {
+            self.taken = taken;
         }
     }
     /// Takes `n` bytes from the front, or all there are, and returns them,
     /// borrowed: their space is reclaimed by a later push.
+    #[inline]
     pub fn take_front(&mut self, n: usize) -> &[u8] {
         let start = self.taken;
         self.taken = self.taken.saturating_add(n).min(self.bytes.len());
