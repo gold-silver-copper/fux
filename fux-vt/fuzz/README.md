@@ -11,12 +11,13 @@ cargo +nightly fuzz run terminal --fuzz-dir fux-vt/fuzz -- -max_total_time=600 -
   -dict=fux-vt/fuzz/terminal.dict -use_value_profile=1 -rss_limit_mb=4096 -malloc_limit_mb=1024
 cargo +nightly fuzz run graphemes --fuzz-dir fux-vt/fuzz -- -max_total_time=120 -use_value_profile=1
 cargo +nightly fuzz run cells --fuzz-dir fux-vt/fuzz -- -max_total_time=120 -use_value_profile=1
+cargo +nightly fuzz run keys --fuzz-dir fux-vt/fuzz fux-vt/fuzz/corpus/keys -- -max_total_time=120
 ```
 
 `fux-vt/compare/run.sh fuzz [MINUTES]` runs every target of the repository
-in turn, these three included, and minimizes any crash. CI
-(`.github/workflows/fuzz.yml`) replays the `terminal` corpus nightly and
-runs the other two for a minute each.
+in turn, these four included, and minimizes any crash. CI
+(`.github/workflows/fuzz.yml`) replays the `terminal` and `keys` corpora
+nightly and runs the other two for a minute each.
 
 Under AddressSanitizer on macOS a run passes 1 GiB of RSS within a minute,
 so RSS is capped at 4 GiB and single allocations at 1 GiB instead.
@@ -30,6 +31,7 @@ table lookups) that edge coverage misses.
 | `terminal` | Raw bytes: a header, then operations (below) | Whole, byte-at-a-time and chunked processing agree; invariants and row versions after every step |
 | `graphemes` | Structured (`arbitrary`): lines of characters from `tests/corpus/graphemes.rs` or any scalar value, SGR between them, piece sizes, a width to reflow to | Every row holds the cells `tests/corpus/models.rs` makes of its line (UAX #29 by unicode-segmentation, widths by unicode-width), the cursor after the last; again after reflowing narrower and back |
 | `cells` | Structured: a run's length and edits of every kind to `Cells` | The plain list of cells in `tests/corpus/models.rs`; the text budget; exact copies |
+| `keys` | One byte choosing a piece size (0 for the stream whole), then a terminal's input bytes, into `keys::decode::Decoder`, the Escape deadline passing only at the end | The same inputs whole, in pieces and byte by byte; no paste longer than `PASTE_LIMIT` chars (the limit counts bytes, and invalid UTF-8 becomes U+FFFD) |
 
 The structured targets share their models with `tests/properties.rs` and
 reach clustering, spilling and compaction in seconds; `terminal` covers

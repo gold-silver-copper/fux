@@ -6,3 +6,6 @@
 !/corpus/terminal/fixture-*
 /corpus/graphemes/
 /corpus/cells/
+/corpus/keys/*
+!/corpus/keys/fixture-*
+!/corpus/keys/regression-*
