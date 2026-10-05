@@ -633,6 +633,44 @@ fn reflowed_heights_scroll_into_history_and_drop_blank_rows_first() -> Result {
     Ok(())
 }
 
+/// Rows in history stay there on a resize: the blank rows below the cursor
+/// are dropped only as far as the screen's own lines are past the new
+/// height, so none is given up to bring a history row back above the
+/// cursor. A shrink after a line scrolled into history and the screen was
+/// cleared (ED 2) left the cursor on row 1, under a history row brought
+/// back.
+#[test]
+fn a_shrink_takes_no_history_back_onto_the_screen() -> Result {
+    let mut p = with(REFLOW, 4, 10, 100)?;
+    p.process(b"old\r\none\r\ntwo\r\nthree\r\nfour\x1b[H\x1b[2J")?;
+    assert_eq!(p.screen().history_len(), 1);
+    p.resize(2, 10)?;
+    assert_eq!(lines(&p), ["", ""]);
+    assert_eq!(p.screen().cursor_position(), (0, 0));
+    assert_eq!(p.screen().history_len(), 1);
+
+    let mut p = with(REFLOW, 6, 10, 100)?;
+    p.process(b"old\r\n\r\n\r\n\r\n\r\n\r\n\x1b[H\x1b[2Jtop\r\nmid")?;
+    assert_eq!(p.screen().history_len(), 1);
+    p.resize(3, 10)?;
+    assert_eq!(lines(&p), ["top", "mid", ""]);
+    assert_eq!(p.screen().cursor_position(), (1, 3));
+    assert_eq!(window_lines(&p, 1), ["old", "top", "mid"]);
+
+    // Growing, the blank rows below the cursor are not given up to bring
+    // more history back above it: the rows land where a resize without
+    // reflow puts them.
+    for options in [REFLOW, Options::new()] {
+        let mut p = with(options, 2, 1, 3)?;
+        p.process(b"b9m\n\n\x1b[?1049l")?;
+        p.resize(4, 1)?;
+        assert_eq!(lines(&p), ["9", "m", "", ""]);
+        assert_eq!(p.screen().cursor_position(), (2, 0));
+        assert_eq!(p.screen().history_len(), 1);
+    }
+    Ok(())
+}
+
 #[test]
 fn reflow_resets_the_scroll_region_and_keeps_the_history_limit() -> Result {
     let mut p = with(REFLOW, 10, 20, 0)?;
