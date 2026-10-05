@@ -149,8 +149,8 @@ macro_rules! stack {
     };
 }
 
-// fux-vt 0.2's rows have fields where later ones have accessors.
-stack!(base, baseline, baseline_vt, |row| row.id);
+// Rows give their identity through an accessor, in the baseline as now.
+stack!(base, baseline, baseline_vt, |row| row.id());
 stack!(cur, fux, fux_vt, |row| row.id());
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {

@@ -194,7 +194,7 @@ macro_rules! stack {
             }
 
             /// A row's identity, version and soft wrap, through what each
-            /// side has: fields in 0.2, accessors since.
+            /// side has (accessors, in both since fux-vt 0.3).
             fn identity($meta: Row<'_>) -> ($vt::RowId, u64, bool) {
                 $identity
             }
@@ -302,12 +302,10 @@ stack!(
     baseline_vt,
     |row| row.cells(),
     |a| (a.foreground(), a.background()),
-    |row| (row.id, row.version, row.wrapped),
-    |events, extended| Options {
-        events,
-        extended_replies: extended,
-        ..Options::default()
-    }
+    |row| (row.id(), row.version(), row.wrapped()),
+    |events, extended| Options::new()
+        .with_events(events)
+        .with_extended_replies(extended)
 );
 stack!(
     cur,
