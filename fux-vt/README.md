@@ -113,7 +113,8 @@ decoded, and what a program asked for, encoded. It needs no option.
   the kitty keyboard protocol with disambiguate and alternate keys),
   bracketed pastes (whole, at most `PASTE_LIMIT`, 64 KiB), focus changes,
   mouse reports (SGR and the default encoding) and answers to the host's
-  own questions (DA1, the kitty flags, DECRQM, OSC 10 and 11, the colour
+  own questions (DA1, the kitty flags, DECRQM, OSC 10 and 11, OSC 4 palette
+  entries, the colour
   scheme, DECRQSS for underline styles). A lone Escape is a key once
   `ESCAPE_DELAY` (35 ms) passes without more, which the host learns from
   `Decoder::deadline` and tells with `Decoder::timeout`. Every buffer is
