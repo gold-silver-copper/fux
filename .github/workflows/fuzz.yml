@@ -37,14 +37,16 @@ jobs:
           ASAN_OPTIONS: quarantine_size_mb=16
         run: |
           set -euo pipefail
-          for target in protocol keys paint layout config session; do
+          for target in protocol paint layout config session; do
             cargo +nightly fuzz run "$target" --fuzz-dir fuzz "fuzz/corpus/$target" -- -runs=0 -rss_limit_mb=2048 -timeout=25
           done
 
       - name: fux-vt's targets
         run: |
           set -euo pipefail
-          cargo +nightly fuzz run terminal --fuzz-dir fux-vt/fuzz fux-vt/fuzz/corpus/terminal -- -runs=0 -rss_limit_mb=2048 -timeout=25
+          for target in terminal keys; do
+            cargo +nightly fuzz run "$target" --fuzz-dir fux-vt/fuzz "fux-vt/fuzz/corpus/$target" -- -runs=0 -rss_limit_mb=2048 -timeout=25
+          done
           # graphemes and cells keep no corpus: a short run of each.
           for target in graphemes cells; do
             cargo +nightly fuzz run "$target" --fuzz-dir fux-vt/fuzz -- -max_total_time=60 -rss_limit_mb=2048 -timeout=25

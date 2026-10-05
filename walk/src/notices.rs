@@ -4,16 +4,16 @@
 
 /// fux's sources, read when the walk is built.
 const SOURCES: &[&str] = &[
-    include_str!("../../src/bytes.rs"),
+    include_str!("../../fux-vt/src/bytes.rs"),
     include_str!("../../src/client.rs"),
     include_str!("../../src/command.rs"),
     include_str!("../../src/config.rs"),
     include_str!("../../src/copy.rs"),
-    include_str!("../../src/decode.rs"),
-    include_str!("../../src/encode.rs"),
+    include_str!("../../fux-vt/src/keys/decode.rs"),
+    include_str!("../../fux-vt/src/keys/encode.rs"),
     include_str!("../../src/input.rs"),
     include_str!("../../src/json.rs"),
-    include_str!("../../src/keys.rs"),
+    include_str!("../../fux-vt/src/keys.rs"),
     include_str!("../../src/layout.rs"),
     include_str!("../../src/lib.rs"),
     include_str!("../../src/overlay.rs"),

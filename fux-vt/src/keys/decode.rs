@@ -42,8 +42,8 @@
 //! An answer's string longer than any answer (`OSC_LIMIT`, `DCS_LIMIT`) is
 //! dropped to its end as it arrives, none of it typed.
 use crate::bytes::ByteQueue;
+use crate::keys::colour::{Rgb, Scheme};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
-use crate::outer::{Rgb, Scheme};
 use std::time::{Duration, Instant};
 
 /// How long a lone Escape waits for the rest of a sequence.
@@ -66,12 +66,17 @@ const DCS_LIMIT: usize = 256;
 pub const PASTE_LIMIT: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// What a terminal's input decodes to.
 pub enum Input {
+    /// A key.
     Key(Keystroke),
+    /// A bracketed paste, its text whole.
     Paste(String),
     /// A paste longer than `PASTE_LIMIT`, dropped whole.
     PasteTooLong,
+    /// The terminal gained focus (`CSI I`).
     FocusIn,
+    /// The terminal lost focus (`CSI O`).
     FocusOut,
     /// An answer from the terminal, or a report it sends unasked.
     Reply(Reply),
@@ -81,12 +86,23 @@ pub enum Input {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reply {
     /// `OSC 10 ; rgb:… ST` (foreground) or `OSC 11 ; …` (background).
-    Colour { number: u8, rgb: Rgb },
+    Colour {
+        /// Which colour: 10 the foreground, 11 the background.
+        number: u8,
+        /// The colour.
+        rgb: Rgb,
+    },
     /// `CSI ? 997 ; 1 n` (dark) or `; 2 n` (light): the answer to
     /// `CSI ? 996 n`, or a report of a change.
     Scheme(Scheme),
     /// DECRQM's answer for a DEC private mode: `CSI ? mode ; status $ y`.
-    Mode { mode: u16, status: u8 },
+    Mode {
+        /// The mode asked about.
+        mode: u16,
+        /// DECRPM's status: 0 not recognised, 1 set, 2 reset, 3 permanently set, 4 permanently
+        /// reset.
+        status: u8,
+    },
     /// The kitty keyboard protocol's flags: `CSI ? flags u`.
     KittyFlags(u8),
     /// Primary device attributes, `CSI ? … c`.
@@ -99,6 +115,7 @@ pub enum Reply {
 }
 
 #[derive(Default)]
+/// Decodes a terminal's raw input, however it is split, into [`Input`]s.
 pub struct Decoder {
     /// Bytes of an incomplete sequence or character.
     pending: ByteQueue,
@@ -173,10 +190,7 @@ impl Decoder {
                     || dcs_begun(pending)
             }
         };
-        Some(crate::after(
-            since,
-            if reply { REPLY_DELAY } else { ESCAPE_DELAY },
-        ))
+        Some(after(since, if reply { REPLY_DELAY } else { ESCAPE_DELAY }))
     }
 
     /// Fux has asked the terminal questions, ending with DA1, at `now`: until
@@ -184,7 +198,7 @@ impl Decoder {
     /// long as an answer begun.
     pub fn expect(&mut self, now: Instant) {
         self.expected = self.expected.saturating_add(1);
-        self.expected_until = Some(crate::after(now, REPLY_WINDOW));
+        self.expected_until = Some(after(now, REPLY_WINDOW));
     }
 
     /// Forgets the answers expected if their window has passed by `now`.
@@ -195,6 +209,8 @@ impl Decoder {
         }
     }
 
+    /// Decodes `bytes`, appending what they complete to `out`; an incomplete
+    /// sequence waits for more, or for [`Decoder::timeout`].
     pub fn bytes(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
         self.feed(bytes, out);
         // Waiting that stops and starts again within these bytes goes on.
@@ -805,10 +821,15 @@ fn functional(code: u32) -> Option<Key> {
     Some(key)
 }
 
+/// `from` plus `wait`, or `from` itself if that would overflow the clock.
+fn after(from: Instant, wait: Duration) -> Instant {
+    from.checked_add(wait).unwrap_or(from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::outer::{Rgb, Scheme};
+    use crate::keys::colour::{Rgb, Scheme};
 
     fn all(bytes: &[u8]) -> Vec<Input> {
         let mut d = Decoder::default();
@@ -1086,7 +1107,7 @@ mod tests {
     /// flags (`encode::tests`).
     #[test]
     fn every_key_decodes_alike_with_and_without_the_kitty_protocol() {
-        use crate::encode::{KeyMode, key_bytes};
+        use crate::keys::encode::{KeyMode, key_bytes};
         let mut names = crate::keys::all_names();
         names.extend(
             (' '..='~')

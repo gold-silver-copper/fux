@@ -103,6 +103,35 @@ independently. `Parser::process_with` delivers to a `Sink`, whose `reply`,
 | `palette` | The colours a program sets, as xterm 411 keeps them. OSC 4 sets or queries palette entries (pairs of number and specification; 256–260 are the special colours, OSC 5's 0–4); OSC 10–19 the dynamic colours, each parameter the next; OSC 104, 105, 110–119 reset them. Specifications: `rgb:R/G/B` (1–4 hex digits a channel) and `#RGB` to `#RRRRGGGGBBBB`; names and other colour spaces are not read. Kept at 8 bits a channel; answered `OSC 4 ; n ; rgb:RRRR/GGGG/BBBB`, each byte twice, ended as asked. OSC 4 and 5 stop at the first bad number or specification; OSC 10–19 skip a bad one; OSC 104 and 105 stop at the first non-number; OSC 110–119 with a parameter do nothing; OSC 105 alone resets nothing (see Departures). Unset entries are answered with xterm's defaults (16 colours, 6×6×6 cube, grey ramp); unset dynamic colours become `ColorQuery` events with `events`; unset special colours are not answered. RIS and DECSTR reset the palette only. Read with `Screen::palette_color`, `dynamic_color`, `colors_changed`; the host draws them. | `palette::*` |
 | `rectangle_checksums` | DECRQCRA → `DCS Pi ! ~ xxxx ST`, xterm's default sum, the VT520's: each cell's character plus 0x08 hidden, 0x10 underline, 0x20 inverse, 0x40 blink, 0x80 bold, summed in 16 bits and negated. A character past Latin-1 or below a space, and a wide glyph's second half, count as ESC; a Special Graphics glyph as its code; combining marks are added; an empty cell is a space. `Pp` is ignored. The rectangle is one-based, relative to and clamped by the margins in origin mode, the screen otherwise; 0 is its whole extent; an inverted one sums to `0000`. It lets a program read the screen, so fux leaves it off; esctest needs it. | `opt_in::rectangle_checksums_*` |
 
+## Keys
+
+`fux_vt::keys` is the host's side of input: what a user's terminal sends,
+decoded, and what a program asked for, encoded. It needs no option.
+
+- **Decoding:** `keys::decode::Decoder` turns a terminal's raw bytes,
+  however split, into `Input`s: keys (legacy and xterm's modifiers, and
+  the kitty keyboard protocol with disambiguate and alternate keys),
+  bracketed pastes (whole, at most `PASTE_LIMIT`, 64 KiB), focus changes
+  and answers to the host's own questions (DA1, the kitty flags, DECRQM,
+  OSC 10 and 11, the colour scheme, DECRQSS for underline styles). A lone
+  Escape is a key once `ESCAPE_DELAY` (35 ms) passes without more, which
+  the host learns from `Decoder::deadline` and tells with
+  `Decoder::timeout`. Every buffer is bounded.
+- **Encoding:** `Screen::key_mode()` is what the program asked for
+  (DECCKM, the kitty flags, modifyOtherKeys), and `Screen::encode_key`
+  writes a `Keystroke` as that mode sends it: kitty protocol, xterm's
+  `CSI 27 ; m ; k ~`, or plain. `keys::encode::key_bytes` does the same
+  for any `KeyMode`; `keys::encode::paste` wraps a paste for a program
+  with bracketed paste.
+- **Colours:** `keys::colour` holds `Rgb` (read from and answered as
+  `rgb:RRRR/GGGG/BBBB`), `Scheme` (dark or light, as mode 2031 reports
+  it) and `Colours`, a terminal's foreground, background and scheme.
+- `fux_vt::bytes::ByteQueue` is the bounded byte queue the decoder reads
+  from, for hosts that need one.
+
+Tests are in `src/keys/decode.rs` and `src/keys/encode.rs`; `fuzz/`'s
+`keys` target feeds the decoder arbitrary bytes and splits.
+
 ## Deliberate boundary
 
 - Programs cannot operate the window: resizing, moving or iconifying it,
@@ -110,7 +139,9 @@ independently. `Parser::process_with` delivers to a `Sink`, whose `reply`,
   other than `CSI 18 t` is unhandled; DECCOLM is ignored).
 - By default, output causes no title, bell or clipboard side effects, and
   no OSC payload is kept. OSC 52 is only ever an event, which fux drops.
-- Keys, keypad, mouse and focus are state only: fux-vt encodes no input.
+- Keypad, mouse and focus are state only. Keys are encoded only when the
+  host asks (`Screen::encode_key`, see [Keys](#keys)); nothing a program
+  writes makes fux-vt send input.
 - No graphics protocols: a host that draws images parses them itself.
 - Only the primary screen has history, up to its limit. CSI 3 J (erase
   saved lines) is unhandled.

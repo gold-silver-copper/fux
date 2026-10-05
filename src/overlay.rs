@@ -712,7 +712,7 @@ pub fn send_key(session: &mut Session, client: ClientId, stroke: Keystroke) {
     if p.input.refusing() {
         return;
     }
-    let mode = crate::encode::KeyMode::of(p.screen());
+    let mode = p.screen().key_mode();
     if let Err(error) = p
         .input
         .push_with(|out| crate::encode::key_bytes(stroke, mode, out))

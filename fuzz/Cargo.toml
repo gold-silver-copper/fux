@@ -24,13 +24,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "keys"
-path = "fuzz_targets/keys.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "paint"
 path = "fuzz_targets/paint.rs"
 test = false
