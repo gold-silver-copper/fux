@@ -122,8 +122,7 @@ macro_rules! stack {
 
                 fn waits(&self, inputs: Vec<$fux::decode::Input>, start: Instant) -> String {
                     let shown: fn(&$fux::decode::Input) -> String = $shown;
-                    let inputs: Vec<String> =
-                        inputs.iter().map(shown).filter(|s| !s.is_empty()).collect();
+                    let inputs: Vec<String> = inputs.iter().map(shown).collect();
                     format!(
                         "[{}] waiting {} until {:?}",
                         inputs.join(", "),
@@ -237,11 +236,6 @@ stack!(
         // fux's own tests' to check (`decode::tests`).
         if let fux::decode::Input::Key(stroke) = input {
             return format!("Key({:?})", stroke.press);
-        }
-        // Mouse reports, which the baseline dropped, decode since fux-vt
-        // 0.3.2; fux drops them, so they show as nothing.
-        if let fux::decode::Input::Mouse(_) = input {
-            return String::new();
         }
         format!("{input:?}")
     }

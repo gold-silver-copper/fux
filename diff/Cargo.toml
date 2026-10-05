@@ -25,8 +25,8 @@ fux-vt = { path = "../fux-vt" }
 fuxix = { path = "../fuxix" }
 # The baseline it is run beside: the last release of each, as published.
 # Bump these after each release.
-baseline = { package = "fux", version = "=0.18.1" }
-baseline-vt = { package = "fux-vt", version = "=0.3.1" }
+baseline = { package = "fux", version = "=0.19.0" }
+baseline-vt = { package = "fux-vt", version = "=0.3.2" }
 baseline-ix = { package = "fuxix", version = "=0.1.6" }
 
 [profile.release]
