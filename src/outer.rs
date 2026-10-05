@@ -184,7 +184,8 @@ impl Session {
                     view.dirty = true;
                 }
             }
-            Reply::Mode { .. } | Reply::KittyFlags(_) => {}
+            // fux asks no palette entries.
+            Reply::Mode { .. } | Reply::KittyFlags(_) | Reply::Palette { .. } => {}
         }
     }
 

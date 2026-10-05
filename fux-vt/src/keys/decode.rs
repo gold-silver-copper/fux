@@ -97,6 +97,13 @@ pub enum Reply {
         /// The colour.
         rgb: Rgb,
     },
+    /// `OSC 4 ; index ; rgb:… ST`: a palette entry.
+    Palette {
+        /// The entry, 0 to 255.
+        index: u8,
+        /// Its colour.
+        rgb: Rgb,
+    },
     /// `CSI ? 997 ; 1 n` (dark) or `; 2 n` (light): the answer to
     /// `CSI ? 996 n`, or a report of a change.
     Scheme(Scheme),
@@ -588,13 +595,22 @@ fn dcs_reply(payload: &[u8]) -> Option<Reply> {
         .then_some(Reply::UnderlineStyles)
 }
 
-/// `10 ; rgb:…` or `11 ; rgb:…`: the terminal's foreground or background.
+/// `10 ; rgb:…` or `11 ; rgb:…`: the terminal's foreground or background;
+/// `4 ; index ; rgb:…`: one of its palette entries.
 fn colour_reply(payload: &[u8]) -> Option<Reply> {
     let split = payload.iter().position(|b| *b == b';')?;
     let (number, spec) = payload.split_at_checked(split)?;
     let number = match number {
         b"10" => 10,
         b"11" => 11,
+        b"4" => {
+            let entry = spec.get(1..)?;
+            let split = entry.iter().position(|b| *b == b';')?;
+            let (index, spec) = entry.split_at_checked(split)?;
+            let index = std::str::from_utf8(index).ok()?.parse::<u8>().ok()?;
+            let rgb = Rgb::parse(spec.get(1..)?)?;
+            return Some(Reply::Palette { index, rgb });
+        }
         _ => return None,
     };
     let rgb = Rgb::parse(spec.get(1..)?)?;
@@ -1184,12 +1200,21 @@ mod tests {
     #[test]
     fn answers_are_told_from_keys_however_they_arrive() {
         let stream: &[u8] = b"a\x1b]10;rgb:ffff/ffff/ffff\x1b\\b\x1b]11;rgb:1e/1e/20\x07\
+            \x1b]4;1;rgb:cdcd/0000/0000\x1b\\\x1b]4;15;rgb:f/f/f\x07\
             \x1b[?2031;2$y\x1b[?997;1nc\x1b[?997;2n\x1b[?5u\x1b[?62;22;52c\x1b[Ad";
+        let palette = |index, r, g, b| {
+            Input::Reply(Reply::Palette {
+                index,
+                rgb: Rgb { r, g, b },
+            })
+        };
         let expected = vec![
             key("a"),
             colour(10, 0xffff, 0xffff, 0xffff),
             key("b"),
             colour(11, 0x1e1e, 0x1e1e, 0x2020),
+            palette(1, 0xcdcd, 0, 0),
+            palette(15, 0xffff, 0xffff, 0xffff),
             Input::Reply(Reply::Mode {
                 mode: 2031,
                 status: 2,
@@ -1220,7 +1245,7 @@ mod tests {
         // Colours fux does not ask for or cannot read are dropped; answers
         // it does not use reach the session, which ignores them: no keys.
         assert_eq!(
-            all(b"\x1b[?1;2c\x1b]12;rgb:0/0/0\x07\x1b]11;#000\x07\x1b[?6;1$yx"),
+            all(b"\x1b[?1;2c\x1b]12;rgb:0/0/0\x07\x1b]11;#000\x07\x1b]4;256;rgb:0/0/0\x07\x1b]4;x;rgb:0/0/0\x07\x1b]4;1\x07\x1b[?6;1$yx"),
             vec![
                 Input::Reply(Reply::Attributes),
                 Input::Reply(Reply::Mode { mode: 6, status: 1 }),
