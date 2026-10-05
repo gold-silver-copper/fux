@@ -5,8 +5,9 @@
 //! The outer terminal is in normal (not application) cursor and keypad mode,
 //! so each key has one xterm encoding. A lone Escape is only known to be one
 //! when no more bytes follow within `ESCAPE_DELAY`; the server calls
-//! `timeout` at the `deadline` the decoder reports. Mouse sequences, which a
-//! correctly configured outer terminal never sends, are dropped.
+//! `timeout` at the `deadline` the decoder reports. Mouse reports, in SGR
+//! or the default encoding, decode to [`MouseEvent`]s; a host that asked
+//! for none drops them.
 //!
 //! A terminal that speaks the kitty keyboard protocol has disambiguate and
 //! alternate keys pushed (`outer`): it sends Escape, and keys with Ctrl or
@@ -43,6 +44,7 @@
 //! dropped to its end as it arrives, none of it typed.
 use crate::bytes::ByteQueue;
 use crate::keys::colour::{Rgb, Scheme};
+use crate::keys::mouse::{self, MouseEvent};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
 use std::time::{Duration, Instant};
 
@@ -78,6 +80,9 @@ pub enum Input {
     FocusIn,
     /// The terminal lost focus (`CSI O`).
     FocusOut,
+    /// A mouse report, in SGR (`CSI < code ; column ; row M` or `m`) or the
+    /// default encoding (`CSI M` and three bytes).
+    Mouse(MouseEvent),
     /// An answer from the terminal, or a report it sends unasked.
     Reply(Reply),
 }
@@ -622,13 +627,43 @@ fn csi_reply(params: &[u8], last: u8) -> Option<Reply> {
     }
 }
 
+/// The event a default-encoding mouse report's three bytes describe, each
+/// value plus 32. Mouse reports are rare among keys: kept out of `csi`'s
+/// way.
+#[cold]
+#[inline(never)]
+fn default_mouse(code: u8, x: u8, y: u8) -> Option<MouseEvent> {
+    let value = |b: u8| u32::from(b).checked_sub(32);
+    mouse::event(value(code)?, value(x)?, value(y)?, false)
+}
+
+/// The event an SGR mouse report's parameters (after `<`) and final byte
+/// describe; `None` for anything else.
+#[cold]
+#[inline(never)]
+fn sgr_mouse(params: &[u8], last: u8) -> Option<MouseEvent> {
+    let release = match last {
+        b'M' => false,
+        b'm' => true,
+        _ => return None,
+    };
+    let text = std::str::from_utf8(params.get(1..)?).ok()?;
+    let mut numbers = text.split(';').map(|n| n.parse::<u32>().ok());
+    let (code, x, y) = (numbers.next()??, numbers.next()??, numbers.next()??);
+    if numbers.next().is_some() {
+        return None;
+    }
+    mouse::event(code, x, y, release)
+}
+
 /// A CSI sequence: `ESC [ params final`. Too long a sequence is dropped.
 fn csi(bytes: &[u8], flush: bool) -> Step {
     let body = bytes.get(2..).unwrap_or_default();
-    // Legacy mouse: `ESC [ M` and three raw bytes.
+    // A mouse report in the default encoding: `ESC [ M` and three raw
+    // bytes, each value plus 32.
     if body.first() == Some(&b'M') {
-        return if body.len() >= 4 {
-            Step::Done(6, None)
+        return if let Some(&[code, x, y]) = body.get(1..4) {
+            Step::Done(6, default_mouse(code, x, y).map(Input::Mouse))
         } else if flush {
             Step::Done(bytes.len(), None)
         } else {
@@ -662,8 +697,8 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     let params = body.get(..end).unwrap_or_default();
     let last = body.get(end).copied().unwrap_or(0);
     if params.first() == Some(&b'<') {
-        // SGR mouse reports are dropped.
-        return Step::Done(consumed, None);
+        // An SGR mouse report: `CSI < code ; column ; row M`, `m` a release.
+        return Step::Done(consumed, sgr_mouse(params, last).map(Input::Mouse));
     }
     if params.first() == Some(&b'?') {
         // Answers fux does not use are dropped.
@@ -851,6 +886,7 @@ mod tests {
                 | Input::PasteTooLong
                 | Input::FocusIn
                 | Input::FocusOut
+                | Input::Mouse(_)
                 | Input::Reply(_) => None,
             })
             .collect()
@@ -1366,9 +1402,43 @@ mod tests {
     }
 
     #[test]
-    fn mouse_reports_are_dropped_and_pastes_are_bounded() {
-        assert_eq!(all(b"\x1b[M !!a"), vec![key("a")]);
-        assert_eq!(all(b"\x1b[<0;10;5Ma"), vec![key("a")]);
+    fn mouse_reports_are_events_and_pastes_are_bounded() {
+        use crate::keys::mouse::{MouseAction, MouseButton};
+        let left = |action, row, col| {
+            Input::Mouse(MouseEvent {
+                action,
+                button: Some(MouseButton::Left),
+                mods: Modifiers::NONE,
+                row,
+                col,
+            })
+        };
+        assert_eq!(
+            all(b"\x1b[M !!a"),
+            vec![left(MouseAction::Press, 0, 0), key("a")]
+        );
+        assert_eq!(
+            all(b"\x1b[<0;10;5Ma\x1b[<0;10;5m"),
+            vec![
+                left(MouseAction::Press, 4, 9),
+                key("a"),
+                left(MouseAction::Release, 4, 9)
+            ]
+        );
+        // What no report is: dropped, never typed.
+        for junk in [
+            &b"\x1b[<0;0;5M"[..],
+            b"\x1b[<0;1M",
+            b"\x1b[<0;1;1;1M",
+            b"\x1b[<0;1;1x",
+            b"\x1b[<192;1;1M",
+            b"\x1b[<0;1;65537M",
+            b"\x1b[<1:2;1;1M",
+            b"\x1b[M\x1f!!",
+            b"\x1b[M  !",
+        ] {
+            assert_eq!(all(junk), vec![], "{junk:?}");
+        }
         let mut long = b"\x1b[200~".to_vec();
         long.extend(std::iter::repeat_n(b'x', PASTE_LIMIT + 10));
         long.extend_from_slice(b"\x1b[201~k");

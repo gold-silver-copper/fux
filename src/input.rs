@@ -77,6 +77,9 @@ impl Session {
                     self.focus_event(client, input == Input::FocusIn)
                 }
                 Input::Reply(reply) => self.terminal_reply(client, reply),
+                // fux asks the terminal for no mouse reports (no mouse,
+                // deliberately); one sent anyway is dropped.
+                Input::Mouse(_) => {}
             }
         }
         // A command the input ran repainted every client already; else only
