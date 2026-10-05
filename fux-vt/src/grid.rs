@@ -1741,9 +1741,17 @@ impl Grid {
         // into history: a mostly empty screen keeps its text on screen.
         let screen = usize::from(rows.get());
         let [(cursor_row, cursor_col), (saved_row, saved_col)] = layout.marks;
+        // Only as many as the screen's own lines are past the new height:
+        // rows in history stay there, and a resize never brings one back
+        // above the cursor to fill the place of dropped blank lines.
         let drop = layout
             .trailing_blank
-            .min(layout.rows.saturating_sub(screen))
+            .min(
+                layout
+                    .rows
+                    .saturating_sub(layout.screen_line)
+                    .saturating_sub(screen),
+            )
             .min(layout.rows.saturating_sub(cursor_row.saturating_add(1)));
         let total = layout.rows.saturating_sub(drop);
         let live_top = total.saturating_sub(screen).min(cursor_row);
@@ -1813,6 +1821,7 @@ impl Grid {
                 rows: 0,
                 marks: [(0, 0); 2],
                 trailing_blank: 0,
+                screen_line: 0,
             },
             found: [false; 2],
             target,
@@ -1823,6 +1832,9 @@ impl Grid {
             let mut end = start;
             while end.checked_add(1).is_some_and(|next| next < retained) && self.wrapped_at(end) {
                 end = end.saturating_add(1);
+            }
+            if (start..=end).contains(&self.history_len()) {
+                pass.out.screen_line = pass.out.rows;
             }
             if lines == Lines::Changed && width >= 2 {
                 self.lay_out_runs(start, end, &mut pass)?;
@@ -2648,6 +2660,9 @@ struct Reflowed {
     rows: usize,
     marks: [(usize, usize); 2],
     trailing_blank: usize,
+    /// The laid-out row the screen's line begins on: the line holding the
+    /// screen's first row before.
+    screen_line: usize,
 }
 
 struct Layout;
