@@ -61,7 +61,7 @@ and identity ratty needs as options; then 0.3.0, whose grid keeps 8-byte
 cells with styles interned per screen and history rows trimmed, which reads
 escape sequences in a loop of its own, and which adds the palette, left and
 right margins, protected cells and xterm's remaining modes as options or
-modes, its enums and `Options` now `#[non_exhaustive]`; then 0.3.1, a bug fix: a reflowing resize brings no history row back above the cursor. It is the emulator, with no dependency but `unicode-width`,
+modes, its enums and `Options` now `#[non_exhaustive]`; then 0.3.1, a bug fix: a reflowing resize brings no history row back above the cursor. Then 0.3.2, an addition: `fux_vt::keys`, fux's key decoder and encoder moved in, with `Screen::encode_key`, and new mouse, focus and paste encoders and mouse decoding. It is the emulator, with no dependency but `unicode-width`,
 and koh depends on it. A fux-vt change is allowed as a bug fix with a
 failing test, or as a change inside it or an addition to its API that makes
 fux or koh faster, or fux's code simpler. Either must keep every item koh
