@@ -19,7 +19,7 @@ bench = false
 fux-vt = { path = ".." }
 # The reference: Ghostty's terminal core, built from source by Zig. `run.sh`
 # pins the Ghostty commit and the Zig toolchain it is built with.
-libghostty-vt = { version = "=0.2.1", default-features = false }
+libghostty-vt = { version = "=0.2.2", default-features = false }
 # The other engines run in this process.
 alacritty_terminal = "=0.26.0"
 avt = "=0.18.0"

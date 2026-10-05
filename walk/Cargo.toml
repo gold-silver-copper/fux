@@ -21,7 +21,7 @@ fuxix = { path = "../fuxix" }
 # Reads `ls --json` and `capture-client --json`; fux itself only writes JSON.
 serde_json = "1"
 # Stops the walk cleanly on SIGINT and SIGTERM, between steps.
-signal-hook = "0.3"
+signal-hook = "0.4"
 
 [lints.rust]
 unused_must_use = "forbid"
