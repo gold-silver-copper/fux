@@ -398,8 +398,13 @@ impl Server {
             if !dirty || now < conn.next_paint {
                 continue;
             }
+            // The title and bell marks first: the bar shows the marks.
+            let before = self.session.before_paint(client);
             if !render::compose_into(&self.session, client, &mut conn.spare, &mut conn.placement) {
                 continue;
+            }
+            if !before.is_empty() {
+                conn.send_stream(Stream::Paint, &before);
             }
             // The same screen as the client shows: nothing to send, not even
             // the envelope, whose cursor hide and show would restart a
