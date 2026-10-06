@@ -342,10 +342,14 @@ and private to the client that opened them:
 
 - **The command column:** opened by the prefix key. It lists every binding,
   grouped (Panes, Focus, Tabs, Workspaces, Session, Other).
-  - Every key after the prefix is a plain letter, `a`–`z` in either case, so
-    the arrows, PageUp/PageDown and Home/End navigate; Enter runs the
-    selected command; Esc cancels.
-  - Pressing a bound key runs that binding directly.
+  - The defaults after the prefix are lower-case letters, so the arrows,
+    PageUp/PageDown and Home/End navigate; Enter runs the selected command;
+    Esc cancels. Keys match as typed: `V` is not `v`.
+  - Pressing a bound key runs that binding directly. Any key can be bound
+    after the prefix, and a binding wins over the column's own use of that
+    key, except Esc, which always cancels.
+  - Bindings without the prefix (`bind -n`, none by default) are listed
+    last, under their own heading.
   - A binding of several letters makes its first ones a layer: `t` for tabs
     and `w` for workspaces share their verbs (`t n` new tab, `w n` new
     workspace). The column lists a layer as one entry; its letter, or Enter
@@ -382,8 +386,8 @@ notice if the pane closes or its history drops the anchored rows.
   bar's tabs give way to `COPY` (or the selection's kind, or the search being
   typed) and the keys that act now, with the cursor's line in history on the
   right.
-- **Keys** are letters in either case, without Ctrl or Alt, as after the
-  prefix; the arrows, PageUp/PageDown, Home, End, Enter and Esc also work.
+- **Keys** are letters in either case, without Ctrl or Alt (fux's own keys,
+  not bindings, so Caps Lock does not matter); the arrows, PageUp/PageDown, Home, End, Enter and Esc also work.
 - **Move:**
   - `h j k l` or the arrows;
   - `w b` by word;
@@ -573,7 +577,8 @@ values.
 These are the current defaults. The prefix alone opens the command column,
 which lists all of them.
 
-Every key is a letter, in either case, without Ctrl or Alt.
+Every key is a lower-case letter, without Ctrl or Alt; case counts, so the
+upper-case letters are free to bind.
 
 - `h j k l` directional focus; `o` next pane; `q` last pane;
 - `v` `s` split; `x` close (confirm `y`); `z` zoom; `a` pane actions;

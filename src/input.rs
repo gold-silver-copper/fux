@@ -115,7 +115,7 @@ impl Session {
                         path: Vec::new(),
                         selected: 0,
                     };
-                } else {
+                } else if !overlay::run_root(self, client, press) {
                     overlay::send_key(self, client, stroke);
                 }
             }

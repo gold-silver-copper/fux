@@ -39,13 +39,16 @@ else the pane's name), a notice, or copy mode's position.
 
 ### Keys
 
-Every key below follows the prefix, `C-b` by default, and is a plain
-letter, in either case (`C-b T` is `C-b t`). The prefix twice sends it to
-the pane.
+Every key below follows the prefix, `C-b` by default, and is a lower-case
+letter: case counts, so `C-b T` is not `C-b t` (with Caps Lock on, fux
+says `C-b T` is not bound). The prefix twice sends it to the pane
+(`send-prefix`).
 
 The prefix alone opens the **command column**, the help screen, listing
-every binding: arrows, PageUp/PageDown and Home/End move, Enter runs the
-selected command, a bound key runs its own, Esc closes. Commands that
+every binding, and those without the prefix last: arrows, PageUp/PageDown
+and Home/End move, Enter runs the selected command, a bound key runs its
+own, Esc closes. A key you bind after the prefix is yours there, even one
+the column moves with (`bind Up …`); Esc always closes. Commands that
 cannot run now are dimmed.
 
 | Key | Command | Does |
@@ -163,6 +166,7 @@ From a key or the prompt, commands act on your focused pane.
 | `fux reorder pane\|tab\|workspace [-t TARGET] --next\|--previous` | move one place in its order |
 | `fux terminate [-t %N]` | SIGTERM to the pane's foreground job, not the shell or background jobs |
 | `fux send-keys [-t %N] [-l] KEYS…` | send keys (`C-c`, `Enter`, …); other words, or all with `-l`, as text |
+| `fux send-prefix [-t %N]` | send the prefix key to the pane, as its program asked for keys |
 | `fux capture-pane [-t %N] [-S -LINES] [--json]` | the pane's text, after LINES of history |
 | `fux capture-client [-c CLIENT] [--json]` | what a client's terminal shows, bar included |
 | `fux set`, `bind`, `unbind`, `unbind-all` | change the configuration |
@@ -233,21 +237,35 @@ bind v split -h
 bind t n new-tab                 # t is a layer: C-b t n
 bind -r r l resize-pane -R       # -r repeats: C-b r l l l, then Esc
 bind -g Tools g split -v -- lazygit   # -g: its group in the command column
+bind V split -v                  # case counts: C-b V, Shift-v
+bind Left select-pane -L         # any key after the prefix: C-b Left
+bind -n M-h select-pane -L       # -n: no prefix, Alt-h alone
 ```
 
 | Option | Value | Default |
 | --- | --- | --- |
-| `prefix` | a key name | `C-b` |
+| `prefix` | a key name; not one bound with `bind -n` | `C-b` |
 | `shell` | a program and its arguments | `$SHELL`, else `/bin/sh` |
 | `history-lines` | lines per pane, 0 to 1,000,000 | 10000 |
 | `clipboard` | `on` or `off`: OSC 52 writes | `on` |
 | `buffers` | paste buffers kept, 1 to 1000 | 16 |
 
-**Bindings** take the keys after the prefix: letters `a`–`z`, either case,
-as separate words before the command. `bind t n new-tab` makes `t` a
-layer. A key sequence is a command or a layer, never both: `bind t zoom`
-is refused while `t` is a layer, and `unbind t` removes the layer. The
-command is checked when the binding is made.
+**Bindings** take the keys after the prefix, as separate words before the
+command: any key `fux list-keys` names (`Up`, `F5`, `Space`, `Enter`, …),
+any character (`1`, `:`), and chords (`M-h`, `C-Left`). Case counts: `V`
+is Shift-v, and `S-v` is read as `V`. A letter with Ctrl has no case
+(`C-V` is `C-v`). `bind t n new-tab` makes `t` a layer. A key sequence is
+a command or a layer, never both: `bind t zoom` is refused while `t` is a
+layer, and `unbind t` removes the layer. Esc after the prefix always
+closes the column, so it cannot be bound. The command is checked when the
+binding is made.
+
+**Without the prefix**, `bind -n KEY COMMAND` binds one key that acts at
+once, and `unbind -n KEY` removes it. There are none by default. Any key
+but the prefix can be bound, and a key bound so never reaches any program,
+in any pane: bind chords (`M-h`) or function keys rather than letters. It
+acts only while you type into a pane: in copy mode, the command column, a
+menu or a prompt, the key is theirs. `unbind-all` removes these too.
 
 `set`, `bind` and `unbind` are ordinary commands, so they change a running
 server from the command line or the prompt too. `fux reload` reruns the
