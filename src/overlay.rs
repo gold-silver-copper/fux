@@ -27,13 +27,18 @@ pub enum ColumnRow<'a> {
     },
 }
 
-/// An entry of the command column: a binding of its layer, or a key that
-/// opens a layer inside it, with the layer's first binding.
+/// An entry of the command column: a binding of its layer, a key that
+/// opens a layer inside it, with the layer's first binding, or, right after
+/// the prefix, a binding without the prefix (`bind -n`).
 #[derive(Clone, Copy)]
 enum Entry<'a> {
     Binding(KeyPress, &'a Binding),
     Layer(KeyPress, &'a Binding),
+    Root(KeyPress, &'a Binding),
 }
+
+/// The group of bindings without the prefix that `-g` gave none.
+pub const ROOT_GROUP: &str = "Without the prefix";
 
 impl<'a> Entry<'a> {
     /// The group it is listed under: a binding's own, or the group of the
@@ -42,12 +47,13 @@ impl<'a> Entry<'a> {
         match self {
             Entry::Binding(_, binding) => binding.group(),
             Entry::Layer(_, first) => first.derived_group(),
+            Entry::Root(_, binding) => binding.group.as_deref().unwrap_or(ROOT_GROUP),
         }
     }
 
     fn row(self) -> ColumnRow<'a> {
         match self {
-            Entry::Binding(key, binding) => ColumnRow::Binding {
+            Entry::Binding(key, binding) | Entry::Root(key, binding) => ColumnRow::Binding {
                 key,
                 label: crate::command::label(&binding.command),
                 command: &binding.parsed,
@@ -62,18 +68,22 @@ impl<'a> Entry<'a> {
 
 /// The column's entries for the layer at `path`, in the order of the
 /// bindings, found without building their rows. A layer is an entry once,
-/// where its first binding is.
+/// where its first binding is. Right after the prefix, the bindings without
+/// it follow.
 fn entries<'a>(session: &'a Session, path: &[KeyPress]) -> impl Iterator<Item = Entry<'a>> {
     let bindings = &session.config.bindings;
-    bindings.iter().enumerate().filter_map(move |(i, binding)| {
-        match binding.keys.strip_prefix(path) {
+    let root = session.config.root.iter().filter(|_| path.is_empty());
+    bindings
+        .iter()
+        .enumerate()
+        .filter_map(move |(i, binding)| match binding.keys.strip_prefix(path) {
             Some([key]) => Some(Entry::Binding(*key, binding)),
             Some([key, _, ..]) if !bindings.iter().take(i).any(|b| opens(b, path, key)) => {
                 Some(Entry::Layer(*key, binding))
             }
             Some(_) | None => None,
-        }
-    })
+        })
+        .chain(root.filter_map(|b| b.keys.first().map(|key| Entry::Root(*key, b))))
 }
 
 /// Whether `binding` is in the layer that `key` opens in the layer at `path`.
@@ -82,9 +92,13 @@ fn opens(binding: &Binding, path: &[KeyPress], key: &KeyPress) -> bool {
 }
 
 /// The column's entries in its order, with their groups: groups in their
-/// order, custom groups after them and `Other` last.
+/// order, custom groups after them and `Other` last; then the bindings
+/// without the prefix, in their own groups, so that none shares a heading
+/// with keys typed after the prefix.
 fn ordered<'a>(session: &'a Session, path: &[KeyPress]) -> Vec<(&'a str, Entry<'a>)> {
-    let entries: Vec<(&str, Entry)> = entries(session, path).map(|e| (e.group(), e)).collect();
+    let (root, entries): (Vec<_>, Vec<_>) = entries(session, path)
+        .map(|e| (e.group(), e))
+        .partition(|(_, e)| matches!(e, Entry::Root(..)));
     let mut groups: Vec<&str> = crate::config::GROUPS.to_vec();
     for (group, _) in &entries {
         if !groups.contains(group) && *group != "Other" {
@@ -92,10 +106,27 @@ fn ordered<'a>(session: &'a Session, path: &[KeyPress]) -> Vec<(&'a str, Entry<'
         }
     }
     groups.push("Other");
-    groups
-        .iter()
-        .flat_map(|group| entries.iter().filter(move |(g, _)| g == group).cloned())
-        .collect()
+    let mut root_groups: Vec<&str> = Vec::new();
+    for (group, _) in &root {
+        if !root_groups.contains(group) {
+            root_groups.push(group);
+        }
+    }
+    let grouped = |groups: Vec<&'a str>, entries: Vec<(&'a str, Entry<'a>)>| {
+        groups
+            .into_iter()
+            .flat_map(move |group| {
+                entries
+                    .iter()
+                    .filter(|(g, _)| *g == group)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut ordered = grouped(groups, entries);
+    ordered.extend(grouped(root_groups, root));
+    ordered
 }
 
 /// The command column's rows for the layer at `path`: its bindings and the
@@ -592,8 +623,17 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let len = column_len(session, &path);
     let (_, page) = column_room(rows);
     let last = len.saturating_sub(1);
-    // The column navigates with keys that are not letters: every letter after
-    // the prefix is a binding's.
+    // Escape always closes the column, and cannot be bound. Any other key
+    // bound in this layer, or opening a layer in it, is the binding's; the
+    // column navigates with the keys left unbound.
+    if press.key == Key::Escape && !press.mods.ctrl && !press.mods.alt {
+        session.set_mode(client, Mode::Normal);
+        return;
+    }
+    if binds(session, &path, press) {
+        follow(session, client, &path, press);
+        return;
+    }
     let unmodified = press.mods.is_empty().then_some(press.key);
     let new = match unmodified {
         _ if press == prefix => {
@@ -609,10 +649,6 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
         Some(Key::PageDown) => selected.saturating_add(page).min(last),
         Some(Key::Home) => 0,
         Some(Key::End) => last,
-        Some(Key::Escape) => {
-            session.set_mode(client, Mode::Normal);
-            return;
-        }
         Some(Key::Enter) => {
             match column_selected(session, &path, selected) {
                 Some(ColumnRow::Binding { command, .. }) => {
@@ -639,12 +675,22 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
     );
 }
 
+/// Whether `press`, typed in the layer at `path`, is bound there or opens a
+/// layer inside it. Keys match as typed: `V` is not `v`.
+fn binds(session: &Session, path: &[KeyPress], press: KeyPress) -> bool {
+    session.config.bindings.iter().any(|b| {
+        b.keys.len() > path.len()
+            && b.keys.starts_with(path)
+            && b.keys.get(path.len()) == Some(&press)
+    })
+}
+
 /// A key typed in the layer at `path`: it runs its binding, entering the
 /// layer's repeat mode if the binding repeats; opens the layer it starts;
 /// or, unbound, leaves the column open, saying so.
 fn follow(session: &mut Session, client: ClientId, path: &[KeyPress], press: KeyPress) {
     let mut keys = path.to_vec();
-    keys.push(press.folded());
+    keys.push(press);
     if run_binding(session, client, &keys) {
         return;
     }
@@ -682,12 +728,16 @@ pub fn repeat_key(session: &mut Session, client: ClientId, press: KeyPress) {
         );
         return;
     }
-    if matches!(press.plain_key(), Some(Key::Escape | Key::Enter)) {
+    // Escape leaves; so does Enter, unless the layer binds it.
+    let plain = !press.mods.ctrl && !press.mods.alt;
+    if plain
+        && (press.key == Key::Escape || (press.key == Key::Enter && !binds(session, &path, press)))
+    {
         session.set_mode(client, Mode::Normal);
         return;
     }
     let mut keys = path.clone();
-    keys.push(press.folded());
+    keys.push(press);
     if !run_binding(session, client, &keys) {
         let title = layer_title(session, &path).unwrap_or_default().to_owned();
         session.set_mode(client, Mode::Normal);
@@ -696,6 +746,17 @@ pub fn repeat_key(session: &mut Session, client: ClientId, press: KeyPress) {
             format!("{title} ended: {press} is not one of its keys"),
         );
     }
+}
+
+/// Runs the binding without the prefix of `press`, if there is one, and
+/// says whether there was.
+pub fn run_root(session: &mut Session, client: ClientId, press: KeyPress) -> bool {
+    let Some(binding) = session.config.root.iter().find(|b| b.keys == [press]) else {
+        return false;
+    };
+    let command = binding.parsed.clone();
+    run_entry(session, client, &command, None);
+    true
 }
 
 /// Sends a key to the client's focused pane, encoded as its program asked.
@@ -1513,17 +1574,121 @@ mod tests {
         Ok(())
     }
 
+    /// How many tabs the first workspace has.
+    fn tabs(s: &Session) -> Option<usize> {
+        s.workspaces.first().map(|w| w.tabs.len())
+    }
+
     #[test]
-    fn keys_after_the_prefix_are_letters_in_either_case() -> Outcome {
-        let (mut lower, c) = busy()?;
-        lower.input(c, &prefixed("tn"));
-        let (mut upper, d) = busy()?;
-        upper.input(d, &prefixed("TN"));
-        assert_eq!(state(&mut lower, c), state(&mut upper, d));
-        assert_eq!(lower.workspaces.first().map(|w| w.tabs.len()), Some(3));
+    fn keys_after_the_prefix_match_as_typed() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "bind V new-tab")?;
+        s.input(c, &prefixed("V"));
+        assert_eq!(tabs(&s), Some(2));
+        assert_eq!(mode(&s, c), "normal");
+        // An upper-case letter bound to nothing (Caps Lock on) says so, and
+        // is not taken for its lower case.
+        s.input(c, &prefixed("T"));
+        assert_eq!(notice(&s, c), "C-b T is not bound");
+        assert_eq!(tabs(&s), Some(2));
+        escape(&mut s, c);
         // A letter with Ctrl is no binding's.
-        lower.input(c, &prefixed("\x14"));
-        assert_eq!(notice(&lower, c), "C-b C-t is not bound");
+        s.input(c, &prefixed("\x14"));
+        assert_eq!(notice(&s, c), "C-b C-t is not bound");
+        Ok(())
+    }
+
+    #[test]
+    fn a_binding_wins_over_the_columns_own_keys() -> Outcome {
+        let (mut s, c) = session()?;
+        // Unbound, Up and Down move the column's selection.
+        s.input(c, &prefixed("\x1b[B\x1b[B\x1b[A"));
+        assert_eq!(mode(&s, c), "column 1");
+        escape(&mut s, c);
+        run(&mut s, "bind Up new-tab")?;
+        s.input(c, &prefixed("\x1b[A"));
+        assert_eq!(tabs(&s), Some(2));
+        assert_eq!(mode(&s, c), "normal");
+        // Down, still unbound, still moves.
+        s.input(c, &prefixed("\x1b[B"));
+        assert_eq!(mode(&s, c), "column 1");
+        escape(&mut s, c);
+        // The prefix twice sends it, until the layer binds it.
+        let pane = s.views.get(&c).and_then(|v| v.focus()).map_or(0, |p| p.0);
+        let _ = queued(&mut s, pane);
+        s.input(c, &[0x02, 0x02]);
+        assert_eq!(queued(&mut s, pane), b"\x02");
+        run(&mut s, "bind C-b new-tab")?;
+        s.input(c, &[0x02, 0x02]);
+        assert_eq!(tabs(&s), Some(3));
+        let pane = s.views.get(&c).and_then(|v| v.focus()).map_or(0, |p| p.0);
+        assert!(queued(&mut s, pane).is_empty());
+        // `send-prefix` sends it from anywhere.
+        run(&mut s, &format!("send-prefix -t %{pane}"))?;
+        assert_eq!(queued(&mut s, pane), b"\x02");
+        // A digit, a function key and a chord bind as letters do.
+        run(&mut s, "bind 1 new-tab")?;
+        run(&mut s, "bind F5 new-tab")?;
+        run(&mut s, "bind M-n new-tab")?;
+        s.input(c, &prefixed("1"));
+        s.input(c, &prefixed("\x1b[15~"));
+        s.input(c, &prefixed("\x1bn"));
+        assert_eq!(tabs(&s), Some(6));
+        Ok(())
+    }
+
+    #[test]
+    fn a_repeat_mode_may_bind_enter() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "split -h -t %1")?;
+        run(&mut s, "select-pane -c c1 -t %1")?;
+        let start = width(&s, 1);
+        run(&mut s, "bind -r r Enter resize-pane -R")?;
+        s.input(c, &prefixed("r\r\r"));
+        assert_eq!(mode(&s, c), "repeat r");
+        assert_eq!(start.checked_add(2), Some(width(&s, 1)));
+        escape(&mut s, c);
+        assert_eq!(mode(&s, c), "normal");
+        Ok(())
+    }
+
+    #[test]
+    fn a_key_bound_without_the_prefix_runs_at_once_and_reaches_no_pane() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "bind -n M-t new-tab")?;
+        s.input(c, b"\x1bt");
+        assert_eq!(tabs(&s), Some(2));
+        let pane = s.views.get(&c).and_then(|v| v.focus()).map_or(0, |p| p.0);
+        assert!(queued(&mut s, pane).is_empty());
+        // A chord bound to nothing reaches the pane as it was typed.
+        s.input(c, b"\x1bl");
+        assert_eq!(queued(&mut s, pane), b"\x1bl");
+        // In copy mode and in the column the key is theirs, not the binding's.
+        run(&mut s, "copy-mode -c c1")?;
+        s.input(c, b"\x1bt");
+        assert_eq!(tabs(&s), Some(2));
+        s.input(c, b"q");
+        assert_eq!(mode(&s, c), "normal");
+        s.input(c, &prefixed("\x1bt"));
+        assert_eq!(tabs(&s), Some(2));
+        assert_eq!(notice(&s, c), "C-b M-t is not bound");
+        escape(&mut s, c);
+        // The column lists it last, under its own heading, and runs it.
+        let rows = column_rows(&s, &[]);
+        let at = rows
+            .iter()
+            .position(|r| *r == ColumnRow::Heading(ROOT_GROUP));
+        assert!(
+            at.is_some_and(|at| at.checked_add(2) == Some(rows.len())),
+            "{rows:?}"
+        );
+        let last = column_len(&s, &[]).saturating_sub(1);
+        s.input(c, &prefixed(""));
+        for _ in 0..last {
+            s.input(c, b"\x1b[B");
+        }
+        s.input(c, b"\r");
+        assert_eq!(tabs(&s), Some(3));
         Ok(())
     }
 
