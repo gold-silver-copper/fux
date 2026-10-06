@@ -45,16 +45,6 @@ checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 [[package]]
 name = "fux"
 version = "0.19.0"
-dependencies = [
- "fux-vt 0.3.3",
- "fuxix 0.1.6",
- "signal-hook",
- "unicode-width",
-]
-
-[[package]]
-name = "fux"
-version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "38248d5bcfa10145720609d27709333bab40880e2c00d473a3675388538906b0"
 dependencies = [
@@ -65,11 +55,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "fux"
+version = "0.20.0"
+dependencies = [
+ "fux-vt 0.3.3",
+ "fuxix 0.1.6",
+ "signal-hook",
+ "unicode-width",
+]
+
+[[package]]
 name = "fux-diff"
 version = "0.0.0"
 dependencies = [
  "fux 0.19.0",
- "fux 0.19.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "fux 0.20.0",
  "fux-vt 0.3.2",
  "fux-vt 0.3.3",
  "fuxix 0.1.6",
