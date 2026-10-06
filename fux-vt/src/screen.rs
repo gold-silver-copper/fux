@@ -821,6 +821,23 @@ impl Screen {
         let [r, g, b] = self.colours.as_ref()?.palette(index)?;
         Some((r, g, b))
     }
+    /// Sets the host's colour for palette entry `index` ([`crate::Parser::set_host_color`]).
+    pub(crate) fn set_host_color(&mut self, index: u8, rgb: Option<(u8, u8, u8)>) -> bool {
+        let colour = rgb.map(|(r, g, b)| [r, g, b]);
+        if usize::from(index) >= crate::palette::HOST_ENTRIES {
+            return false;
+        }
+        if colour.is_none() && self.colours.is_none() {
+            return true;
+        }
+        self.colours.get_or_insert_default().set_host(index, colour)
+    }
+    /// What the host said its terminal shows for palette entry `index`
+    /// ([`crate::Parser::set_host_color`]).
+    pub fn host_color(&self, index: u8) -> Option<(u8, u8, u8)> {
+        let [r, g, b] = self.colours.as_ref()?.host(index)?;
+        Some((r, g, b))
+    }
     /// The colour dynamic colour `number` shows if the program set it (OSC
     /// 10 to 19, with `Options::palette`): 10 the text foreground and 11
     /// the background, which a cell of `Color::Default` shows, 12 the
