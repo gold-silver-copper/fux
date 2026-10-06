@@ -3,6 +3,8 @@
 use crate::command::ClientId;
 use crate::decode::Input;
 use crate::keys::Keystroke;
+use crate::keys::mouse::{MouseAction, MouseEvent};
+use crate::layout::Placement;
 use crate::overlay;
 use crate::session::Session;
 use crate::view::Mode;
@@ -77,9 +79,7 @@ impl Session {
                     self.focus_event(client, input == Input::FocusIn)
                 }
                 Input::Reply(reply) => self.terminal_reply(client, reply),
-                // fux asks the terminal for no mouse reports (no mouse,
-                // deliberately); one sent anyway is dropped.
-                Input::Mouse(_) => {}
+                Input::Mouse(event) => self.mouse(client, event),
             }
         }
         // A command the input ran repainted every client already; else only
@@ -158,6 +158,62 @@ impl Session {
             && p.screen().focus_reporting()
         {
             let _ = p.input.push(if gained { b"\x1b[I" } else { b"\x1b[O" });
+        }
+    }
+
+    /// A mouse report from the client's terminal, which reports only while
+    /// its focused pane's program asked for it (`render::mouse_level`):
+    /// moved to the pane's cells and encoded as the program asked. fux has
+    /// no mouse actions of its own: a report outside the focused pane is
+    /// dropped, except that the motion and release of a press made inside
+    /// are kept to the pane's edge, so the program never sees a button left
+    /// down. One that arrives as an overlay opens is dropped.
+    fn mouse(&mut self, client: ClientId, event: MouseEvent) {
+        let Some(view) = self.views.get(&client) else {
+            return;
+        };
+        let Some(pane) = view.focus().filter(|_| matches!(view.mode, Mode::Normal)) else {
+            return;
+        };
+        let mut placement = Placement::default();
+        self.placement_into(view, &mut placement);
+        let Some(rect) = placement.rect(pane) else {
+            return;
+        };
+        let inside = rect.contains(event.col, event.row);
+        let held = view.mouse_held == Some(pane);
+        let pressed =
+            event.action == MouseAction::Press && event.button.is_some_and(|b| !b.is_wheel());
+        if !(inside || held && event.action != MouseAction::Press) {
+            return;
+        }
+        if let Some(view) = self.views.get_mut(&client) {
+            if pressed {
+                view.mouse_held = Some(pane);
+            } else if event.action == MouseAction::Release {
+                view.mouse_held = None;
+            }
+        }
+        // Kept to the pane: `rect` holds the press, so it is not empty.
+        let last = |start: u16, len: u16| start.saturating_add(len.saturating_sub(1));
+        let event = MouseEvent {
+            row: event
+                .row
+                .clamp(rect.y, last(rect.y, rect.h))
+                .saturating_sub(rect.y),
+            col: event
+                .col
+                .clamp(rect.x, last(rect.x, rect.w))
+                .saturating_sub(rect.x),
+            ..event
+        };
+        self.typed(client);
+        let Some(p) = self.panes.get_mut(&pane) else {
+            return;
+        };
+        let mut report = Vec::new();
+        if p.screen().encode_mouse(event, &mut report) && !p.input.refusing() {
+            let _ = p.input.push(&report);
         }
     }
 }
