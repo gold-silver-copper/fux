@@ -313,6 +313,17 @@ shows the error to each terminal that attaches until a reload succeeds.
 - **In-band resize reports** (mode 2048) are sent when a pane's size
   changes.
 
+## Not included
+
+- **fux's own mouse actions**: the mouse reaches only programs that ask for
+  it (see [Terminal features](#terminal-features)).
+- **Saving and loading layouts**: a script of `fux split` and `fux new-tab
+  -- CMD` lines makes one.
+- **Hooks** (tmux's `set-hook`): watch `fux ls --json` and run commands
+  instead.
+- **Surviving a server restart**: as in tmux, panes end with their server.
+- **Watching the config file**: run `fux reload`.
+
 ## Security
 
 The server listens only on a Unix socket: `fux server --socket PATH`, else

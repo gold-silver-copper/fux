@@ -307,7 +307,10 @@ The server decodes the bytes, per client:
      enabled focus reporting (`?1004`). fux-vt does not track that mode, nor
      the cursor shape (DECSCUSR), so fux scans each pane's output for those
      two itself, leaving fux-vt unchanged.
-   - The Kitty keyboard protocol is not supported. Keys use xterm encodings.
+   - The kitty keyboard protocol: a client terminal that speaks it has
+     disambiguate and alternate keys pushed (`outer`), and each pane's
+     program gets keys in the protocol it pushed itself, or legacy bytes
+     (`fux_vt::keys::encode`), whatever terminal typed them.
 
 **The mouse is passed through, and nothing more.** fux has no mouse actions
 of its own. While the client is in normal mode and its focused pane's
@@ -605,11 +608,22 @@ upper-case letters are free to bind.
 - **Mouse actions of fux's own** (clicking to focus, dragging borders,
   scrolling history), by decision: the mouse reaches only a program that
   asks for it (see Input).
-- **Saving and loading layouts**, by decision.
+- **Saving and loading layouts**, by decision: a layout is made with a few
+  commands, which a script can run (`fux split`, `new-tab -- CMD`).
+- **Hooks** (tmux's `set-hook`): `fux ls --json` and the command line
+  already let a script watch and act, without a second language of events
+  inside the server.
+- **Surviving a server restart**: panes are PTYs whose programs die with
+  the server, as in tmux; keeping them means handing descriptors to a new
+  process, for little gain.
 - **Watching the config file**: run `fux reload` instead.
-- **Keybindings without the prefix** (tmux's `bind -n`).
-- **Passing pane titles and bells to the outer terminal**, or the Kitty
-  keyboard protocol.
+
+Added since the first version, once in use: keybindings without the prefix
+(`bind -n`, opt-in), any key after the prefix and case-sensitive keys; the
+kitty keyboard protocol (`outer`, `fux_vt::keys`); bells and pane titles
+passed to the outer terminal (`set bell`, `set titles`); the outer
+terminal's palette answered in panes; the mouse passed through to programs
+that ask for it.
 
 ## Dependencies
 
@@ -665,17 +679,27 @@ Ordinary tests, written with each part:
 
 ## Later, not in the first version
 
-Hardening, once the functionality is in use:
+Hardening, once the functionality is in use. Done:
 
-- tests that each prove a lesson from `bevy-final:fux-fuzz/BREAKS.md` (for
-  example a dash background job hung up on close (013), 3000 keys to a
-  stopped program (021), a reused socket inode on ext4 (014), descriptor
-  pressure (012)), each shown to fail against its bug;
-- `cargo-fuzz` targets for the decoder, the protocol codec and the command
-  tokenizer, and a black-box harness driving the CLI and attach clients;
-- benchmarks (key-to-echo latency, heavy output, idle CPU, memory) against
-  the Bevy version;
-- Linux runs beyond CI (ext4 `/tmp`, amd64).
+- **The BREAKS lessons:** each finding of `bevy-final:fux-fuzz/BREAKS.md`
+  that still applies has a test, shown to fail with its fix reverted: see
+  [The BREAKS audit](breaks-audit.md), which also lists the findings that
+  died with Bevy and BRP.
+- **Fuzzing:** `cargo-fuzz` targets for the key decoder (`fux-vt/fuzz`
+  `keys`), the protocol codec (`fuzz` `protocol`), the config and command
+  words (`config`), whole sessions (`session`), layout and paint;
+  `diff/` compares fux with its last release, and `walk/` is the black-box
+  harness driving a real server, `fux attach` clients and the CLI.
+- **Benchmarks:** `bench/` counts instructions against `main`, and `bench
+  feel` measures key-to-echo latency, throughput, idle CPU and memory
+  beside tmux and zellij (the Bevy version is gone, so it is no longer the
+  yardstick).
+- **Linux beyond CI:** the suite runs on amd64 Linux machines outside CI.
+
+Still open:
+
+- an ext4 run of finding 014's test outside CI: CI's Ubuntu runners are
+  where it is run.
 
 ## Plan
 
