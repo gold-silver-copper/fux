@@ -938,6 +938,9 @@ enum Mux {
     /// zellij with a configuration and layout of its own: one pane, no
     /// frames, no bars.
     Zellij,
+    /// herdr with a configuration of its own: no sidebar, tab bar,
+    /// borders, gaps or scrollbars, and the pane's program as its shell.
+    Herdr,
 }
 
 impl Mux {
@@ -945,6 +948,7 @@ impl Mux {
         match self {
             Mux::Tmux => "tmux",
             Mux::Zellij => "zellij",
+            Mux::Herdr => "herdr",
         }
     }
 
@@ -952,7 +956,7 @@ impl Mux {
     fn version(self) -> String {
         let flag = match self {
             Mux::Tmux => "-V",
-            Mux::Zellij => "--version",
+            Mux::Zellij | Mux::Herdr => "--version",
         };
         Command::new(self.name())
             .arg(flag)
@@ -966,7 +970,7 @@ impl Mux {
     fn screen(self, rows: u16, cols: u16) -> Result<(u16, Rect), String> {
         let client_rows = match self {
             Mux::Tmux => rows.checked_add(1).ok_or("too many rows")?,
-            Mux::Zellij => rows,
+            Mux::Zellij | Mux::Herdr => rows,
         };
         Ok((
             client_rows,
@@ -989,6 +993,31 @@ show_startup_tips false
 show_release_notes false
 session_serialization false
 mouse_mode false
+";
+
+/// herdr's configuration: its chrome off, so that its one pane is the
+/// whole screen, at any width (below `mobile_width_threshold` it draws a
+/// bar of its own over the pane); no mouse capture, no network checks;
+/// `{shell}` is the pane's program.
+const HERDR_CONFIG: &str = "\
+onboarding = false
+[update]
+version_check = false
+manifest_check = false
+[terminal]
+default_shell = \"{shell}\"
+shell_mode = \"non_login\"
+[ui]
+sidebar_start_collapsed = true
+sidebar_collapsed_mode = \"hidden\"
+mouse_capture = false
+confirm_close = false
+pane_borders = false
+pane_outer_borders = false
+pane_scrollbars = false
+pane_gaps = false
+hide_tab_bar_when_single_tab = true
+mobile_width_threshold = 0
 ";
 
 /// A multiplexer's client on a PTY, what it writes read by a thread here
@@ -1079,6 +1108,49 @@ impl Client {
                     "--new-session-with-layout".into(),
                     layout.to_string_lossy().into_owned(),
                 ]
+            }
+            Mux::Herdr => {
+                // Its socket is in its config directory, whose path must
+                // stay short.
+                let config = PathBuf::from(format!(
+                    "/tmp/fux-vt-compare-h{}-{}",
+                    std::process::id(),
+                    pane::serial()
+                ));
+                std::fs::create_dir_all(config.join("herdr"))
+                    .map_err(|e| format!("{}: {e}", config.display()))?;
+                std::os::unix::fs::symlink(&config, dir.join("sockets"))
+                    .map_err(|e| format!("{}: {e}", config.display()))?;
+                // The pane's program is its shell, from its first byte.
+                let shell = dir.join("pane.sh");
+                std::fs::write(
+                    &shell,
+                    format!("#!/bin/sh\nexec sh -c {}\n", pane::quote(program)),
+                )
+                .map_err(|e| format!("{}: {e}", shell.display()))?;
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755))
+                    .map_err(|e| format!("{}: {e}", shell.display()))?;
+                let text = HERDR_CONFIG.replace("{shell}", &shell.to_string_lossy());
+                std::fs::write(config.join("herdr").join("config.toml"), text)
+                    .map_err(|e| format!("{}: {e}", config.display()))?;
+                env.push((
+                    "XDG_CONFIG_HOME".into(),
+                    config.to_string_lossy().into_owned(),
+                ));
+                for (name, sub) in [
+                    ("XDG_STATE_HOME", "state"),
+                    ("XDG_DATA_HOME", "data"),
+                    ("XDG_CACHE_HOME", "cache"),
+                    ("XDG_RUNTIME_DIR", "run"),
+                ] {
+                    let path = dir.join(sub);
+                    std::fs::create_dir_all(&path)
+                        .map_err(|e| format!("{}: {e}", path.display()))?;
+                    env.push((name.into(), path.to_string_lossy().into_owned()));
+                }
+                env.push(("SHELL".into(), shell.to_string_lossy().into_owned()));
+                vec!["herdr".into()]
             }
         };
         let (client_rows, _) = mux.screen(rows, cols)?;
@@ -1174,7 +1246,7 @@ impl Client {
     fn drawn(&mut self) -> Result<(), String> {
         match self.mux {
             Mux::Tmux => self.marked(),
-            Mux::Zellij => self.settle(QUIET, STEP_LIMIT),
+            Mux::Zellij | Mux::Herdr => self.settle(QUIET, STEP_LIMIT),
         }
     }
 
@@ -1253,6 +1325,7 @@ impl Drop for Client {
                 self.command(&["kill-all-sessions", "--yes"]);
                 self.command(&["delete-all-sessions", "--yes", "--force"]);
             }
+            Mux::Herdr => self.command(&["server", "stop"]),
         }
         let deadline = Instant::now().checked_add(Duration::from_secs(2));
         while matches!(self.child.try_wait(), Ok(None))
@@ -1404,7 +1477,7 @@ fn multiplexers(options: &Options) -> Result<bool, String> {
             "steps_identical": steps_same,
             "seconds": seconds,
         }));
-        for mux in [Mux::Tmux, Mux::Zellij] {
+        for mux in [Mux::Tmux, Mux::Zellij, Mux::Herdr] {
             if let Err(why) = pane::on_path(mux.name()) {
                 println!("{}: skipped ({why})", mux.name());
                 results.push(serde_json::json!({

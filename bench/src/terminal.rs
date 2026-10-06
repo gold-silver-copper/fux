@@ -1,7 +1,9 @@
 //! A program on a PTY of its own, as a terminal runs it: `feel`'s stand-in
 //! for the terminal a person types in. A thread reads everything the
 //! program writes as it comes, counting it, and notes when a pattern it is
-//! told to watch for arrives.
+//! told to watch for arrives in the text written: escape sequences are
+//! skipped, as a multiplexer that moves the cursor before each cell
+//! (herdr) writes a pattern's characters apart.
 use std::os::fd::{AsFd, OwnedFd};
 use std::process::{Child, Command};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -14,8 +16,13 @@ struct Seen {
     total: u64,
     /// Paints begun: each `CSI ? 2026 h` (fux begins every paint with one).
     frames: u64,
-    /// The last bytes read, to find a pattern split between reads.
+    /// The last bytes read, to find a paint's start split between reads.
     tail: Vec<u8>,
+    /// The last of the text written, escape sequences skipped, to find a
+    /// pattern split between reads.
+    text: Vec<u8>,
+    /// Where the text filter is in an escape sequence.
+    escape: Escape,
     /// A pattern watched for, and when it arrived.
     watch: Option<Vec<u8>>,
     arrived: Option<Instant>,
@@ -24,6 +31,44 @@ struct Seen {
 }
 
 const BEGIN: &[u8] = b"\x1b[?2026h";
+
+/// Where `text` is in what it reads: in text, or in an escape sequence,
+/// a control sequence (CSI), or a string (OSC, DCS, SOS, PM, APC).
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+enum Escape {
+    #[default]
+    Text,
+    Esc,
+    Csi,
+    Str,
+    StrEsc,
+}
+
+/// Appends the text in `bytes` to `out`: what is not an escape sequence
+/// nor a C0 control, the state carried from one read to the next.
+fn text(bytes: &[u8], state: &mut Escape, out: &mut Vec<u8>) {
+    for &b in bytes {
+        *state = match (*state, b) {
+            (_, 0x18 | 0x1a) => Escape::Text,
+            (Escape::Text, 0x1b) => Escape::Esc,
+            (Escape::Text, b) if b < 0x20 || b == 0x7f => Escape::Text,
+            (Escape::Text, b) => {
+                out.push(b);
+                Escape::Text
+            }
+            (Escape::Esc, b'[') => Escape::Csi,
+            (Escape::Esc, b']' | b'P' | b'X' | b'^' | b'_') => Escape::Str,
+            (Escape::Esc, 0x20..=0x2f) => Escape::Esc,
+            (Escape::Esc, _) => Escape::Text,
+            (Escape::Csi, 0x40..=0x7e) => Escape::Text,
+            (Escape::Csi, _) => Escape::Csi,
+            (Escape::Str | Escape::StrEsc, 0x07) => Escape::Text,
+            (Escape::Str | Escape::StrEsc, 0x1b) => Escape::StrEsc,
+            (Escape::StrEsc, b'\\') => Escape::Text,
+            (Escape::Str | Escape::StrEsc, _) => Escape::Str,
+        };
+    }
+}
 
 /// Whether `pattern` is in `window` ending past `old` (its first `old`
 /// bytes were looked at before).
@@ -129,6 +174,7 @@ impl Terminal {
         let (lock, _) = &*self.seen;
         let mut seen = lock.lock().unwrap_or_else(PoisonError::into_inner);
         seen.tail.clear();
+        seen.text.clear();
         seen.watch = Some(pattern.to_vec());
         seen.arrived = None;
     }
@@ -199,14 +245,23 @@ fn read(master: &OwnedFd, seen: &(Mutex<Seen>, Condvar)) {
         window.extend_from_slice(chunk);
         let frames = found(&window, old, BEGIN);
         s.frames = s.frames.saturating_add(u64::try_from(frames).unwrap_or(0));
-        if s.arrived.is_none()
-            && let Some(pattern) = &s.watch
-            && found(&window, old, pattern) > 0
-        {
-            s.arrived = Some(now);
-        }
         let keep = window.len().saturating_sub(64);
         s.tail = window.get(keep..).unwrap_or_default().to_vec();
+        if s.arrived.is_none() && s.watch.is_some() {
+            let mut written = std::mem::take(&mut s.text);
+            let old = written.len();
+            let mut state = s.escape;
+            text(chunk, &mut state, &mut written);
+            s.escape = state;
+            if s.watch
+                .as_ref()
+                .is_some_and(|p| found(&written, old, p) > 0)
+            {
+                s.arrived = Some(now);
+            }
+            let keep = written.len().saturating_sub(64);
+            s.text = written.get(keep..).unwrap_or_default().to_vec();
+        }
         drop(s);
         wake.notify_all();
     }
@@ -214,6 +269,23 @@ fn read(master: &OwnedFd, seen: &(Mutex<Seen>, Condvar)) {
 
 #[cfg(test)]
 mod tests {
+    /// A pattern is found in the text, whatever escape sequences come
+    /// between its characters, and only in the text.
+    #[test]
+    fn text_skips_escape_sequences_across_reads() {
+        let mut state = super::Escape::default();
+        let mut out = Vec::new();
+        let painted = "\u{2603}\x1b[1;2H\u{2603}\x1b]8;;\x1b\\\u{2603}\x1b[0m";
+        let (a, b) = painted.as_bytes().split_at_checked(7).unwrap_or_default();
+        super::text(a, &mut state, &mut out);
+        super::text(b, &mut state, &mut out);
+        assert_eq!(out, "\u{2603}\u{2603}\u{2603}".as_bytes());
+        // The text of a sequence is not text.
+        let mut out = Vec::new();
+        super::text(b"\x1b]2;hidden\x07shown\x1b[31mred", &mut state, &mut out);
+        assert_eq!(out, b"shownred");
+    }
+
     #[test]
     fn a_pattern_is_found_once_across_reads() {
         let begin = super::BEGIN;
