@@ -182,8 +182,14 @@ fn the_real_client_attaches_restores_its_terminal_and_reattaches() -> Outcome {
             .get(..leave)
             .is_some_and(|o| o.contains("\x1b[?2004l") && o.contains("\x1b[?1004l"))
     );
+    // And mouse reporting, which the server turns on while a program wants
+    // it: here none did, so it was never turned on.
+    assert!(
+        output
+            .get(..leave)
+            .is_some_and(|o| o.contains(fux::render::MOUSE_OFF))
+    );
     assert!(output.contains("[detached]"), "{output:?}");
-    // No mouse reporting is ever enabled.
     assert!(!output.contains("\x1b[?1000h") && !output.contains("\x1b[?1006h"));
     // And the shell is still there for the next attach.
     let mut again = Terminal::attach(&server, 12, 50, &[])?;

@@ -97,6 +97,9 @@ pub struct View {
     pub terminal: crate::outer::Terminal,
     /// Something this view shows may have changed since its last paint.
     pub dirty: bool,
+    /// The pane a mouse button was pressed in and not yet released: its
+    /// motion and release go to it, kept to its edge (`Session::mouse`).
+    pub mouse_held: Option<PaneId>,
 }
 
 impl View {
@@ -115,6 +118,7 @@ impl View {
             decoder: Decoder::default(),
             terminal: crate::outer::Terminal::default(),
             dirty: true,
+            mouse_held: None,
         }
     }
 

@@ -12,17 +12,19 @@ use std::time::{Duration, Instant};
 
 /// Modes the attach client sets on the outer terminal: the alternate
 /// screen, normal cursor and keypad keys, bracketed paste, focus events, no
-/// autowrap; never mouse reporting. Public for fux-vt-compare's
+/// autowrap. Mouse reporting is the server's to turn on and off in its
+/// paints, while a program asks for it (`render::mouse_level`). Public for fux-vt-compare's
 /// `transparency`, which writes it to its terminal as this client does.
 pub const ENTER: &str = "\x1b[?1049h\x1b[?1l\x1b>\x1b[?2004h\x1b[?1004h\x1b[?7l\x1b[H\x1b[2J";
 /// And turns them off again, with what the server may have turned on in
-/// its paints (`outer`): colour-scheme reports (mode 2031), and the kitty
+/// its paints: mouse reporting (`render::MOUSE_OFF`), colour-scheme
+/// reports (mode 2031, `outer`), and the kitty
 /// keyboard flags it pushed, popped on the alternate screen they were
 /// pushed on, as the kitty spec says to leave. The client sends this
 /// however the attachment ends, the server gone or not; a terminal that
 /// never had them ignores both, and a pop of a stack the server pushed
 /// nothing on, the alternate screen's own, empties it.
-const LEAVE: &str = "\x1b[?2026l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[?7h\x1b[0m\x1b[0 q\x1b[?25h\x1b[?1049l";
+const LEAVE: &str = "\x1b[?2026l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[?7h\x1b[0m\x1b[0 q\x1b[?25h\x1b[?1049l";
 
 /// Why a client could not reach the server, start one, or go on.
 #[derive(Debug)]

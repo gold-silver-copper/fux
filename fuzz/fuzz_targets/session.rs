@@ -87,6 +87,19 @@ const SIDE: &[&str] = &[
     "unbind -n x",
 ];
 
+/// What a pane's program may say of the mouse.
+const MOUSE_MODES: &[&[u8]] = &[
+    b"\x1b[?1000h",
+    b"\x1b[?1002h",
+    b"\x1b[?1003h",
+    b"\x1b[?9h",
+    b"\x1b[?1006h",
+    b"\x1b[?1005h",
+    b"\x1b[?1006l",
+    b"\x1b[?1000l",
+    b"\x1b[?1003l",
+];
+
 /// Commands that write to a pane: a repeating binding of one may.
 const WRITES: &[&str] = &["send-keys", "paste-buffer"];
 
@@ -278,6 +291,29 @@ impl Run {
         (!writes).then_some(*press)
     }
 
+    /// Types a mouse report in pieces of `piece` bytes (whole for 0), its
+    /// client's held input flushed first so that the report is one: no pane may hear it but the focused pane of a
+    /// client with nothing of fux's open, whose program asked for the mouse.
+    fn mouse(&mut self, client: ClientId, report: &[u8], piece: usize) {
+        self.escape(client);
+        for pane in self.s.panes.values_mut() {
+            pane.input.drain_all();
+        }
+        self.type_in(client, report, piece);
+        let view = self.s.views.get(&client);
+        let focus = view
+            .filter(|v| matches!(v.mode, Mode::Normal))
+            .and_then(|v| v.focus());
+        for (id, pane) in &mut self.s.panes {
+            let heard = pane.input.drain_all();
+            let asked = pane.screen().mouse_protocol_mode() != fux_vt::MouseProtocolMode::None;
+            assert!(
+                heard.is_empty() || (Some(*id) == focus && asked),
+                "{id} heard {heard:?} from {report:?}"
+            );
+        }
+    }
+
     fn assert_no_pane_input(&mut self, key: KeyPress) {
         for (id, pane) in &mut self.s.panes {
             let queued = pane.input.drain_all();
@@ -417,7 +453,24 @@ fuzz_target!(|data: &[u8]| {
     check(&given.s);
     while !input.0.is_empty() && !given.shut {
         let tag = input.next();
-        match tag % 16 {
+        match tag % 18 {
+            16 => {
+                let pick = input.next();
+                let mode = MOUSE_MODES[usize::from(input.next()) % MOUSE_MODES.len()];
+                if let Some(p) = given.pane(pick) {
+                    given.s.output(p, mode);
+                    bytewise.s.output(p, mode);
+                }
+            }
+            17 => {
+                let (pick, button, x, y) = (input.next(), input.next(), input.next(), input.next());
+                let end = if button & 0x80 == 0 { 'M' } else { 'm' };
+                let report = format!("\x1b[<{};{};{}{end}", button & 0x7f, x, y);
+                if let Some(c) = given.client(pick) {
+                    given.mouse(c, report.as_bytes(), 0);
+                    bytewise.mouse(c, report.as_bytes(), 1);
+                }
+            }
             0..=7 | 15 => {
                 let pick = input.next();
                 let len = if tag % 16 == 15 {
