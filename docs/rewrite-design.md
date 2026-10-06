@@ -37,7 +37,7 @@ tree, a socket and a render loop.
 | Detach and reattach | Yes: a server outlives the terminal that started it. |
 | Several clients on one server | Yes, each with an **independent view**, as today. |
 | Save and load layouts | No. |
-| Mouse | **None.** fux never enables mouse reporting; the outer terminal keeps its own mouse behaviour. |
+| Mouse | **Passed through only.** Reporting is on only while the focused pane's program asks for it and nothing of fux's has the keys; fux has no mouse actions of its own. |
 | Selecting and copying | A keyboard **copy/select mode**: a movable cursor over the pane and its history. |
 | Menus | The navigable command column, tab and workspace choosers, and pane/tab/workspace action menus, all keyboard-driven. |
 | A pane's program | **Always the user's shell.** A command given with `-- CMD` is typed into that shell, as if the user had typed it; when it ends, the prompt is back. A pane closes only when its shell exits. |
@@ -279,7 +279,9 @@ The client is a dumb pipe:
 - It puts the outer terminal in raw mode, on the alternate screen, with normal
   (not application) cursor and keypad modes, so that each key has one
   encoding.
-- It enables bracketed paste and focus events, and never mouse reporting.
+- It enables bracketed paste and focus events. Mouse reporting is the
+  server's to turn on and off in its paints (see below); the client turns
+  it off on every exit path.
 - It forwards raw bytes in frames of at most 64 KiB.
 - On every exit path it restores the terminal: detach, server gone, a signal,
   or a panic, through a panic hook. That means leaving the alternate screen,
@@ -291,8 +293,7 @@ The client is a dumb pipe:
 The server decodes the bytes, per client:
 
 1. **Decoding:** keys (CSI/SS3, UTF-8, a lone Escape after 35 ms) and
-   bracketed-paste envelopes, bounded as before. Mouse sequences, which a
-   correctly configured outer terminal never sends, are dropped.
+   bracketed-paste envelopes, bounded as before, and SGR mouse reports.
 2. **Routing by mode:**
    - The command column, choosers, menus, prompts, confirmations and
      copy/select mode own their input.
@@ -308,11 +309,18 @@ The server decodes the bytes, per client:
      two itself, leaving fux-vt unchanged.
    - The Kitty keyboard protocol is not supported. Keys use xterm encodings.
 
-**No mouse, deliberately.** Programs in panes that ask for the mouse (`vim`
-with `mouse=a`, `htop`) get nothing, because the outer terminal is never put
-in a mouse mode. Its wheel and text selection keep working natively, over
-what is on screen. Selecting across history, or within one pane of a split,
-is what copy/select mode is for.
+**The mouse is passed through, and nothing more.** fux has no mouse actions
+of its own. While the client is in normal mode and its focused pane's
+program asked for the mouse (`vim` with `mouse=a`, `htop`), each paint asks
+the outer terminal for the tracking that program needs (1000, 1002 or 1003,
+always SGR-encoded: `render::mouse_level`); otherwise it turns reporting
+off. A report is moved to the pane's cells and encoded as the program asked
+(`fux_vt::Screen::encode_mouse`). One outside the focused pane is dropped,
+except the motion and release of a press made inside, which are kept to the
+pane's edge so the program never sees a button left down. The rest of the
+time the outer terminal's wheel and text selection work natively, over what
+is on screen. Selecting across history, or within one pane of a split, is
+what copy/select mode is for.
 
 Decoding on the server means one decoder and no key protocol to version, and
 input can be tested without a PTY.
@@ -594,7 +602,9 @@ upper-case letters are free to bind.
 
 ## Not included
 
-- **Mouse support of any kind**, by decision (see Input).
+- **Mouse actions of fux's own** (clicking to focus, dragging borders,
+  scrolling history), by decision: the mouse reaches only a program that
+  asks for it (see Input).
 - **Saving and loading layouts**, by decision.
 - **Watching the config file**: run `fux reload` instead.
 - **Keybindings without the prefix** (tmux's `bind -n`).

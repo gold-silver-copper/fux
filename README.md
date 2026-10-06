@@ -3,8 +3,9 @@
 A small terminal multiplexer. One server keeps your shells running in
 workspaces, tabs and split panes; `fux` attaches a terminal to it, and every
 other `fux` command changes it. Several terminals can attach at once, each
-with its own view. fux is driven from the keyboard only: it has no mouse
-support, by design.
+with its own view. fux is driven from the keyboard: it has no mouse actions
+of its own, by design, and passes the mouse only to a program that asks for
+it (see [Terminal features](#terminal-features)).
 
 fux is one binary for macOS and Linux, built with Rust 1.95 or later.
 
@@ -275,6 +276,15 @@ shows the error to each terminal that attaches until a reload succeeds.
 
 ## Terminal features
 
+- **Mouse.** fux turns on your terminal's mouse reporting only while the
+  focused pane's program asks for it (htop, `vim` with `mouse=a`, lazygit)
+  and nothing of fux's is open, and gives that program its clicks, drags
+  and wheel in its own cells and encoding. Clicks elsewhere (another pane,
+  a border, the bar) do nothing; a drag that leaves the pane stays at its
+  edge. The rest of the time your terminal selects text and scrolls as it
+  always does; while a program has the mouse, most terminals select with
+  Shift held. fux itself never acts on the mouse: no clicking to focus,
+  dragging borders or scrolling history (copy mode does that).
 - **Keyboard.** If your terminal speaks the kitty keyboard protocol
   (Ghostty, kitty, WezTerm, foot, iTerm2), fux turns it on while attached,
   telling apart keys otherwise sent alike (Shift-Enter and Enter, Ctrl-I

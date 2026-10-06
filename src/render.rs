@@ -29,6 +29,10 @@ pub struct Grid {
     pub cursor: Option<(u16, u16)>,
     /// DECSCUSR shape for the cursor; 0 is the terminal's default.
     pub cursor_shape: u16,
+    /// The mouse tracking the client's terminal is asked for (1000, 1002
+    /// or 1003, always SGR-encoded), 0 for none: the focused pane's
+    /// program's, while it has the keys ([`mouse_level`]).
+    pub mouse: u16,
     /// Whether the client's terminal draws underline styles (`outer`):
     /// painted as they are, else as plain underlines (`sgr`).
     pub underline_styles: bool,
@@ -56,6 +60,7 @@ impl Grid {
             uris: String::new(),
             cursor: None,
             cursor_shape: 0,
+            mouse: 0,
             underline_styles: false,
         }
     }
@@ -124,6 +129,7 @@ impl Grid {
         }
         self.cursor = None;
         self.cursor_shape = 0;
+        self.mouse = 0;
     }
     fn index(&self, y: u16, x: u16) -> Option<usize> {
         if y >= self.rows || x >= self.cols {
@@ -547,6 +553,16 @@ pub fn compose_into(
                 }
             }
         }
+    }
+    // The mouse: reported by the client's terminal only while the focused
+    // pane's program asked for it and nothing of fux's has the keys, so
+    // that the rest of the time the terminal selects text as it does.
+    if matches!(view.mode, Mode::Normal)
+        && let Some(focus) = focus
+        && placement.rect(focus).is_some()
+        && let Some(pane) = session.panes.get(&focus)
+    {
+        grid.mouse = mouse_level(pane.screen().mouse_protocol_mode());
     }
     bar(grid, session, view, copy);
     match &view.mode {
@@ -1195,6 +1211,25 @@ fn one_based(n: u16) -> u32 {
 }
 
 /// The bytes that turn `old` (what the client shows, or nothing) into `new`.
+/// Turns every mouse tracking mode and SGR encoding off, as `client::LEAVE`
+/// does too.
+pub const MOUSE_OFF: &str = "\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l";
+
+/// The tracking the client's terminal is asked for while a program has
+/// `mode`: enough to report everything the program wants, which its own
+/// mode then filters (`fux_vt::Screen::encode_mouse`). X10's presses come
+/// from 1000, whose releases it drops.
+pub fn mouse_level(mode: fux_vt::MouseProtocolMode) -> u16 {
+    use fux_vt::MouseProtocolMode as M;
+    match mode {
+        M::None => 0,
+        M::Press | M::PressRelease => 1000,
+        M::ButtonMotion => 1002,
+        // `AnyMotion`, and a mode fux-vt may add later: the most.
+        M::AnyMotion | _ => 1003,
+    }
+}
+
 pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
     let mut out = Vec::new();
     paint_into(old, new, &mut out);
@@ -1294,6 +1329,14 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
         hyperlink(out, None);
     }
     out.extend_from_slice(b"\x1b[0m");
+    // From nothing, said either way: a client repainted whole may have had
+    // reporting on.
+    if old.is_none_or(|o| o.mouse != new.mouse) {
+        out.extend_from_slice(MOUSE_OFF.as_bytes());
+        if new.mouse != 0 {
+            let _ = write!(out, "\x1b[?{}h\x1b[?1006h", new.mouse);
+        }
+    }
     let shape_changed = old.is_none_or(|o| o.cursor_shape != new.cursor_shape);
     if shape_changed {
         let _ = write!(out, "\x1b[{} q", new.cursor_shape);
@@ -1307,6 +1350,40 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mouse reporting is said from nothing, either way, and again only
+    /// when it changes.
+    #[test]
+    fn mouse_reporting_is_painted_when_it_changes() {
+        let mut on = Grid::new(2, 4);
+        on.mouse = 1002;
+        let off = Grid::new(2, 4);
+        let text = |b: Vec<u8>| String::from_utf8_lossy(&b).into_owned();
+        let first = text(paint(None, &on));
+        assert!(
+            first.contains(&format!("{MOUSE_OFF}\x1b[?1002h\x1b[?1006h")),
+            "{first:?}"
+        );
+        assert!(text(paint(None, &off)).contains(MOUSE_OFF));
+        assert!(!text(paint(Some(&on), &on)).contains("\x1b[?100"));
+        let gone = text(paint(Some(&on), &off));
+        assert!(
+            gone.contains(MOUSE_OFF) && !gone.contains("1006h"),
+            "{gone:?}"
+        );
+        let mut any = on.clone();
+        any.mouse = 1003;
+        assert!(text(paint(Some(&on), &any)).contains(&format!("{MOUSE_OFF}\x1b[?1003h")));
+        use fux_vt::MouseProtocolMode as M;
+        let levels = [
+            M::None,
+            M::Press,
+            M::PressRelease,
+            M::ButtonMotion,
+            M::AnyMotion,
+        ];
+        assert_eq!(levels.map(mouse_level), [0, 1000, 1000, 1002, 1003]);
+    }
 
     fn apply(bytes: &[u8], rows: u16, cols: u16, parser: &mut fux_vt::Parser) -> Vec<String> {
         let _ = parser.process(bytes);

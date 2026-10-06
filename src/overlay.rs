@@ -1692,6 +1692,119 @@ mod tests {
         Ok(())
     }
 
+    /// The focused pane's rect on client `c`'s screen.
+    fn rect_of(s: &Session, c: ClientId, pane: u32) -> Option<crate::layout::Rect> {
+        let mut placement = crate::layout::Placement::default();
+        s.placement_into(s.views.get(&c)?, &mut placement);
+        placement.rect(crate::layout::PaneId(pane))
+    }
+
+    /// The mouse tracking client `c`'s terminal is asked for.
+    fn mouse_level(s: &Session, c: ClientId) -> Option<u16> {
+        crate::render::compose(s, c).map(|g| g.mouse)
+    }
+
+    #[test]
+    fn a_mouse_report_reaches_the_focused_pane_in_its_cells() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "split -h -t %1")?;
+        run(&mut s, "select-pane -c c1 -t %2")?;
+        let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
+        assert!(right.x > 1 && right.y == 0, "{right:?}");
+        // Nothing asked: no reporting, and a report is dropped.
+        assert_eq!(mouse_level(&s, c), Some(0));
+        let press = |col: u16, row: u16| format!("\x1b[<0;{};{}M", col + 1, row + 1);
+        s.input(c, press(right.x + 3, 2).as_bytes());
+        assert!(queued(&mut s, 2).is_empty());
+        s.output(crate::layout::PaneId(2), b"\x1b[?1000h\x1b[?1006h");
+        assert_eq!(mouse_level(&s, c), Some(1000));
+        // Moved to the pane's cells.
+        s.input(c, press(right.x + 3, 2).as_bytes());
+        assert_eq!(queued(&mut s, 2), b"\x1b[<0;4;3M");
+        // On the other pane, or the border between them: dropped.
+        s.input(c, press(1, 2).as_bytes());
+        s.input(c, press(right.x - 1, 2).as_bytes());
+        assert!(queued(&mut s, 2).is_empty() && queued(&mut s, 1).is_empty());
+        // In the encoding the program asked for: here the default.
+        s.output(crate::layout::PaneId(2), b"\x1b[?1006l");
+        s.input(c, press(right.x, 0).as_bytes());
+        assert_eq!(queued(&mut s, 2), [0x1b, b'[', b'M', 32, 33, 33]);
+        // X10's presses come from asking for 1000, its releases dropped.
+        s.output(crate::layout::PaneId(2), b"\x1b[?9h\x1b[?1006h");
+        assert_eq!(mouse_level(&s, c), Some(1000));
+        s.input(
+            c,
+            format!("{}\x1b[<0;{};1m", press(right.x, 0), right.x + 1).as_bytes(),
+        );
+        assert_eq!(queued(&mut s, 2), b"\x1b[<0;1;1M");
+        Ok(())
+    }
+
+    #[test]
+    fn a_drag_out_of_the_pane_is_kept_to_its_edge() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "split -h -t %1")?;
+        run(&mut s, "select-pane -c c1 -t %2")?;
+        let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
+        s.output(crate::layout::PaneId(2), b"\x1b[?1002h\x1b[?1006h");
+        assert_eq!(mouse_level(&s, c), Some(1002));
+        let x = right.x + 1;
+        // Pressed inside, dragged over the left pane and past the bottom,
+        // released there: the pane hears all of it, at its edge.
+        s.input(c, format!("\x1b[<0;{};2M", x + 1).as_bytes());
+        s.input(c, b"\x1b[<32;1;2M");
+        s.input(c, b"\x1b[<32;1;200M");
+        s.input(c, b"\x1b[<0;1;200m");
+        let bottom = right.h;
+        assert_eq!(
+            String::from_utf8_lossy(&queued(&mut s, 2)),
+            format!("\x1b[<0;2;2M\x1b[<32;1;2M\x1b[<32;1;{bottom}M\x1b[<0;1;{bottom}m")
+        );
+        // Released, a drag from outside is not the pane's.
+        s.input(c, b"\x1b[<0;1;2M\x1b[<32;2;2M\x1b[<0;2;2m");
+        assert!(queued(&mut s, 2).is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn the_mouse_is_reported_only_while_the_focused_program_has_the_keys() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "split -h -t %1")?;
+        run(&mut s, "select-pane -c c1 -t %2")?;
+        s.output(crate::layout::PaneId(2), b"\x1b[?1003h\x1b[?1006h");
+        assert_eq!(mouse_level(&s, c), Some(1003));
+        let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
+        let press = format!("\x1b[<0;{};2M", right.x + 2);
+        // Copy mode, the column and a prompt have the keys: no reporting,
+        // and a report in flight is dropped.
+        for (open, close) in [
+            ("copy-mode -c c1", &b"q"[..]),
+            ("command-column -c c1", b"\x1b"),
+            ("command-prompt -c c1", b"\x1b"),
+        ] {
+            run(&mut s, open)?;
+            assert_eq!(mouse_level(&s, c), Some(0), "{open}");
+            s.input(c, press.as_bytes());
+            assert!(queued(&mut s, 2).is_empty(), "{open}");
+            s.input(c, close);
+            std::thread::sleep(crate::decode::ESCAPE_DELAY);
+            s.escape(c);
+            assert_eq!(mode(&s, c), "normal", "{open}");
+            assert_eq!(mouse_level(&s, c), Some(1003), "{open}");
+        }
+        // Focus on a pane whose program did not ask: none.
+        run(&mut s, "select-pane -c c1 -t %1")?;
+        assert_eq!(mouse_level(&s, c), Some(0));
+        s.input(c, b"\x1b[<0;2;2M");
+        assert!(queued(&mut s, 1).is_empty() && queued(&mut s, 2).is_empty());
+        // Zoomed, the pane fills the screen, and its cells are the screen's.
+        run(&mut s, "select-pane -c c1 -t %2")?;
+        run(&mut s, "zoom -c c1")?;
+        s.input(c, b"\x1b[<0;2;2M");
+        assert_eq!(queued(&mut s, 2), b"\x1b[<0;2;2M");
+        Ok(())
+    }
+
     #[test]
     fn resize_mode_repeats_its_keys_until_esc() -> Outcome {
         let (mut s, c) = session()?;
