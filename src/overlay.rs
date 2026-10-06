@@ -1737,6 +1737,14 @@ mod tests {
             format!("{}\x1b[<0;{};1m", press(right.x, 0), right.x + 1).as_bytes(),
         );
         assert_eq!(queued(&mut s, 2), b"\x1b[<0;1;1M");
+        // A pane below another: moved down too.
+        run(&mut s, "split -v -t %2")?;
+        run(&mut s, "select-pane -c c1 -t %3")?;
+        let below = rect_of(&s, c, 3).ok_or("no rect for %3")?;
+        assert!(below.y > 1, "{below:?}");
+        s.output(crate::layout::PaneId(3), b"\x1b[?1000h\x1b[?1006h");
+        s.input(c, press(below.x + 1, below.y + 2).as_bytes());
+        assert_eq!(queued(&mut s, 3), b"\x1b[<0;2;3M");
         Ok(())
     }
 

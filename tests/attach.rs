@@ -168,6 +168,9 @@ fn the_real_client_attaches_restores_its_terminal_and_reattaches() -> Outcome {
     terminal.resize(15, 70)?;
     terminal.type_bytes(b"stty size\r")?;
     terminal.wait_for("14 70")?;
+    // A program asks for the mouse, and the terminal is detached with it on.
+    terminal.type_bytes(b"printf '\\033[?1002h\\033[?1006h'; echo mouse-ask''ed\r")?;
+    terminal.wait_for("mouse-asked")?;
     terminal.type_bytes(b"\x02d")?;
     let status = terminal.wait_exit()?;
     assert!(status.success(), "{status}");
@@ -182,15 +185,18 @@ fn the_real_client_attaches_restores_its_terminal_and_reattaches() -> Outcome {
             .get(..leave)
             .is_some_and(|o| o.contains("\x1b[?2004l") && o.contains("\x1b[?1004l"))
     );
-    // And mouse reporting, which the server turns on while a program wants
-    // it: here none did, so it was never turned on.
+    // And mouse reporting, which the server turned on for the program: off
+    // again after it was last turned on.
+    let on = output
+        .rfind("\x1b[?1002h\x1b[?1006h")
+        .ok_or("mouse reporting was never turned on")?;
     assert!(
         output
-            .get(..leave)
-            .is_some_and(|o| o.contains(fux::render::MOUSE_OFF))
+            .get(on..leave)
+            .is_some_and(|o| o.contains(fux::render::MOUSE_OFF)),
+        "{output:?}"
     );
     assert!(output.contains("[detached]"), "{output:?}");
-    assert!(!output.contains("\x1b[?1000h") && !output.contains("\x1b[?1006h"));
     // And the shell is still there for the next attach.
     let mut again = Terminal::attach(&server, 12, 50, &[])?;
     again.wait_for("real-client")?;
