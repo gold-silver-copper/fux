@@ -906,7 +906,9 @@ fn bar(
             let Some(room) = left_limit.checked_sub(x).filter(|r| *r > 0) else {
                 break;
             };
-            let label = format!(" {} ", tab.name);
+            // A bell rang in a tab the client does not show (`outer`).
+            let rang = view.bells.contains(&tab.id) && Some(tab.id) != current;
+            let label = format!(" {}{} ", tab.name, if rang { "!" } else { "" });
             let attrs = if Some(tab.id) == current {
                 style(Color::Idx(0), Color::Idx(2)).with_bold(true)
             } else {

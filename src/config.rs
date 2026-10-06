@@ -98,6 +98,7 @@ pub enum Error {
     Words(words::Error),
     NoProgram,
     NotOnOff {
+        option: String,
         value: String,
     },
     NoBuffers,
@@ -181,11 +182,14 @@ impl std::fmt::Display for Error {
             Error::Key(error) => error.fmt(f),
             Error::Words(error) => error.fmt(f),
             Error::NoProgram => f.write_str("set shell needs a program"),
-            Error::NotOnOff { value } => write!(f, "set clipboard: {value:?} is not on or off"),
+            Error::NotOnOff { option, value } => {
+                write!(f, "set {option}: {value:?} is not on or off")
+            }
             Error::NoBuffers => f.write_str("set buffers: at least 1"),
             Error::UnknownOption { option } => write!(
                 f,
-                "unknown option {option}; options are prefix, shell, history-lines, clipboard, buffers"
+                "unknown option {option}; options are prefix, shell, history-lines, clipboard, \
+                 buffers, bell, titles"
             ),
             Error::Read { path, source } => write!(f, "{}: {source}", path.display()),
             Error::Line { path, line, error } => {
@@ -300,6 +304,10 @@ pub struct Config {
     pub clipboard: bool,
     /// How many paste buffers are kept.
     pub buffers: usize,
+    /// A pane's bell rings in the terminals showing its workspace.
+    pub bell: bool,
+    /// Each client's terminal title is its focused pane's.
+    pub titles: bool,
     pub bindings: Vec<Binding>,
     /// Keys bound without the prefix (`bind -n`), one key each, in the order
     /// they were bound. None by default.
@@ -377,6 +385,8 @@ impl Default for Config {
             history_lines: 10_000,
             clipboard: true,
             buffers: 16,
+            bell: true,
+            titles: false,
             bindings: Vec::new(),
             root: Vec::new(),
         };
@@ -643,9 +653,27 @@ impl Config {
                     "off" => false,
                     other => {
                         return Err(Error::NotOnOff {
+                            option: option_name(),
                             value: other.to_owned(),
                         });
                     }
+                }
+            }
+            "bell" | "titles" => {
+                let on = match one()? {
+                    "on" => true,
+                    "off" => false,
+                    other => {
+                        return Err(Error::NotOnOff {
+                            option: option_name(),
+                            value: other.to_owned(),
+                        });
+                    }
+                };
+                if option == "bell" {
+                    self.bell = on;
+                } else {
+                    self.titles = on;
                 }
             }
             "buffers" => {
@@ -706,6 +734,8 @@ impl Config {
                 if self.clipboard { "on" } else { "off" }
             ),
             format!("set buffers {}", self.buffers),
+            format!("set bell {}", if self.bell { "on" } else { "off" }),
+            format!("set titles {}", if self.titles { "on" } else { "off" }),
         ];
         let root = self.root.iter().map(|b| (b, " -n"));
         for (binding, flag) in self.bindings.iter().map(|b| (b, "")).chain(root) {

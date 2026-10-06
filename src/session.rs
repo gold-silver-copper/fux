@@ -326,6 +326,9 @@ pub struct Session {
     /// The colours a client's terminal last said, for panes no attached
     /// client answers for (`outer`).
     pub last_colours: crate::outer::Colours,
+    /// The palette entries any client's terminal said last, each entry the
+    /// latest said (`outer`).
+    pub last_palette: crate::outer::Palette,
     /// Where `size_panes` gathers the rectangles each pane is shown in, and
     /// lays out each view to find them; reused by every settle.
     shown_sizes: Vec<(PaneId, (u16, u16))>,
@@ -385,6 +388,7 @@ impl Session {
             dying: Vec::new(),
             typists: BTreeMap::new(),
             last_colours: crate::outer::Colours::default(),
+            last_palette: crate::outer::Palette::default(),
             shown_sizes: Vec::new(),
             placed: Placement::default(),
             next_pane: 1,
@@ -1206,10 +1210,12 @@ impl Session {
     pub fn output(&mut self, id: PaneId, bytes: &[u8]) {
         let place = self.locate(id);
         let colours = self.colours_for(place.map(|(_, t)| t));
+        let palette = self.palette_for(place.map(|(_, t)| t));
         let Some(pane) = self.panes.get_mut(&id) else {
             return;
         };
         pane.colours = colours;
+        pane.set_host_palette(palette);
         let dropped = pane.output(bytes);
         self.read_into(id, place, dropped);
     }
@@ -1225,8 +1231,10 @@ impl Session {
         for id in due {
             let place = self.locate(id);
             let colours = self.colours_for(place.map(|(_, t)| t));
+            let palette = self.palette_for(place.map(|(_, t)| t));
             if let Some(pane) = self.panes.get_mut(&id) {
                 pane.colours = colours;
+                pane.set_host_palette(palette);
                 let dropped = pane.release_frame();
                 self.read_into(id, place, dropped);
             }
@@ -1244,6 +1252,13 @@ impl Session {
     /// After output was read into pane `id`'s screen, which is at `place`:
     /// the views showing it repaint, and are told if a reply was `dropped`.
     fn read_into(&mut self, id: PaneId, place: Option<(WsId, TabId)>, dropped: bool) {
+        if self
+            .panes
+            .get_mut(&id)
+            .is_some_and(|p| std::mem::take(&mut p.bell))
+        {
+            self.ring(id, Instant::now());
+        }
         self.unsettled |= self
             .views
             .values()
@@ -1596,11 +1611,14 @@ impl Session {
                 let target = self.any_target(kind, target.as_ref(), ctx)?;
                 self.reorder(&target, toward).map(|()| String::new())
             }
-            Command::Set { argv } | Command::Bind { argv } | Command::Unbind { argv } => self
-                .config
-                .apply(argv)
-                .map(|()| String::new())
-                .map_err(Error::Config),
+            Command::Set { argv } | Command::Bind { argv } | Command::Unbind { argv } => {
+                self.config.apply(argv).map_err(Error::Config)?;
+                // `set titles` shows at each client's next paint.
+                for view in self.views.values_mut() {
+                    view.dirty = true;
+                }
+                Ok(String::new())
+            }
             &Command::UnbindAll => {
                 self.config.unbind_all();
                 Ok(String::new())
@@ -2589,7 +2607,7 @@ mod tests {
             (
                 "set nope 1",
                 1,
-                "unknown option nope; options are prefix, shell, history-lines, clipboard, buffers",
+                "unknown option nope; options are prefix, shell, history-lines, clipboard, buffers, bell, titles",
             ),
             (
                 "bind g nope",

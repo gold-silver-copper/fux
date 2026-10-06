@@ -85,6 +85,10 @@ const SIDE: &[&str] = &[
     "bind -n x zoom",
     "bind -n y send-keys -t %1 z",
     "unbind -n x",
+    "set titles on",
+    "set titles off",
+    "set bell off",
+    "set bell on",
 ];
 
 /// What a pane's program may say of the mouse.
@@ -196,6 +200,7 @@ impl Run {
                         outer::REPORTS_ON,
                         outer::SCHEME_QUERY,
                         outer::KITTY_PUSH,
+                        outer::BELL,
                     ]
                     .contains(&bytes.as_slice()) => {}
                 Outgoing::Bytes(_, bytes) => {
@@ -538,6 +543,13 @@ fuzz_target!(|data: &[u8]| {
         }
         given.after();
         bytewise.after();
+        // What each client's terminal is sent before a paint: the same
+        // titles, however the bytes came.
+        let clients: Vec<ClientId> = given.s.views.keys().copied().collect();
+        for c in clients {
+            let (a, b) = (given.s.before_paint(c), bytewise.s.before_paint(c));
+            assert_eq!(a, b, "{c}'s title");
+        }
         assert_eq!(given.shut, bytewise.shut);
         if given.shut {
             break;
