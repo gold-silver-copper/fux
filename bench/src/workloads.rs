@@ -403,9 +403,8 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         if !fux::render::compose_into(&s, c, &mut spare, &mut placement) {
             continue;
         }
-        if have && spare.same_as(&shown) && buffer.is_empty() {
-            continue;
-        }
+        // Every key changes the screen: painted without asking whether it
+        // did, as `paint_into` finds what changed.
         fux::render::paint_into(have.then_some(&shown), &spare, &mut buffer);
         painted = painted.saturating_add(buffer.len());
         frames = frames.saturating_add(1);
@@ -469,7 +468,7 @@ fn paint(
                     if !fux::render::compose_into(&s, c, &mut spare, &mut placement) {
                         continue;
                     }
-                    if have && spare.same_as(&shown) {
+                    if have && spare == shown {
                         continue;
                     }
                     buffer.clear();
