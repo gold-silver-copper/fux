@@ -84,6 +84,29 @@ impl Conn {
     fn send_stream(&mut self, stream: Stream, bytes: &[u8]) {
         stream.encode_into(bytes, &mut self.out);
     }
+
+    /// Writes what waits for the client until it is all written or the
+    /// socket takes no more; a connection that fails is marked dead.
+    fn flush(&mut self) {
+        while !self.out.is_empty() {
+            match self.stream.write(self.out.as_slice()) {
+                Ok(0) => {
+                    self.dead = true;
+                    break;
+                }
+                Ok(n) => {
+                    self.out.take(n);
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    self.dead = true;
+                    break;
+                }
+            }
+        }
+        self.out.shrink(CONN_KEEP);
+    }
 }
 
 pub struct Server {
@@ -238,6 +261,9 @@ impl Server {
             self.ready = ready;
             self.escapes(now);
             self.session.type_due(now);
+            // Input given to panes this tick is written now rather than
+            // when the next poll says their terminals can take it.
+            self.write_waiting_panes();
             self.session.release_frames(now);
             self.finish_dying(false);
             self.close_conns();
@@ -419,6 +445,9 @@ impl Server {
             let shown = conn.painted.then_some(&conn.shown);
             render::paint_into(shown, &conn.spare, &mut self.paint_buffer);
             conn.send_stream(Stream::Paint, &self.paint_buffer);
+            // Written now rather than when the next poll says it can be: a
+            // keystroke's echo goes out a round sooner.
+            conn.flush();
             std::mem::swap(&mut conn.shown, &mut conn.spare);
             conn.painted = true;
             conn.next_paint = crate::after(now, PAINT);
@@ -579,24 +608,7 @@ impl Server {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
-        while !conn.out.is_empty() {
-            match conn.stream.write(conn.out.as_slice()) {
-                Ok(0) => {
-                    conn.dead = true;
-                    break;
-                }
-                Ok(n) => {
-                    conn.out.take(n);
-                }
-                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                Err(_) => {
-                    conn.dead = true;
-                    break;
-                }
-            }
-        }
-        conn.out.shrink(CONN_KEEP);
+        conn.flush();
         if conn.dead
             && let Some(client) = conn.client.take()
         {
@@ -785,6 +797,20 @@ impl Server {
         }
         if flags.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
             self.read_pane(id);
+        }
+    }
+
+    /// Writes each pane's waiting input, as far as its terminal takes it.
+    fn write_waiting_panes(&mut self) {
+        let waiting: Vec<PaneId> = self
+            .session
+            .panes
+            .iter()
+            .filter(|(_, p)| !p.input.is_empty() && !p.hung_up && p.child.is_some())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in waiting {
+            self.write_pane(id);
         }
     }
 
