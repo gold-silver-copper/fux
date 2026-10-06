@@ -70,10 +70,12 @@ Commands:
   reorder pane|tab|workspace [-t TARGET] --next|--previous
   terminate [-t %N]                    SIGTERM to what runs in the pane's foreground
   send-keys [-t %N] [-l] KEYS...
+  send-prefix [-t %N]                  the prefix key, to the pane
   capture-pane [-t %N] [-S -LINES] [--json]
   capture-client [-c CLIENT] [--json]  what a client's terminal shows
-  set OPTION VALUE | unbind KEY... | unbind-all | reload
-  bind [-g GROUP] [-r] KEY... COMMAND...   KEY is a letter after the prefix
+  set OPTION VALUE | unbind [-n] KEY... | unbind-all | reload
+  bind [-g GROUP] [-r] KEY... COMMAND...   keys after the prefix; V is Shift-v
+  bind -n [-g GROUP] KEY COMMAND...    a key without the prefix
   list-buffers | show-buffer [-b N] | paste-buffer [-b N] [-t %N]
   list-keys | detach [-c CLIENT]
 On a client's screen (from a key, the command prompt, or with -c CLIENT):

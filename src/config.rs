@@ -2,13 +2,14 @@
 //! `bind`, `unbind` and `unbind-all`, whether they come from the config file,
 //! the CLI or the command prompt.
 use crate::command::{self, Command, Usage};
-use crate::keys::KeyPress;
+use crate::keys::{Key, KeyPress};
 use crate::words;
 use std::path::{Path, PathBuf};
 
 /// Keys typed after the prefix, bound to a command line. A binding of more
 /// than one key makes each key before its last a layer: `t n` is `n` in the
-/// layer `t`.
+/// layer `t`. A binding without the prefix (`bind -n`) is one key, kept in
+/// [`Config::root`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Binding {
     pub keys: Vec<KeyPress>,
@@ -28,10 +29,28 @@ pub struct Binding {
 /// Why `set`, `bind`, `unbind`, `unbind-all` or a config file is refused.
 #[derive(Debug)]
 pub enum Error {
-    /// A key after the prefix that is not a letter, in `command`.
-    NotALetter {
+    /// A word that names no key, in `command`.
+    NotAKey {
         command: &'static str,
         word: String,
+    },
+    /// Escape after the prefix, which always closes the command column.
+    EscapeBound {
+        keys: Vec<KeyPress>,
+    },
+    /// `bind -n` given more than one key, or `-r`.
+    RootUsage,
+    /// `bind -n` given the prefix.
+    RootPrefix {
+        key: KeyPress,
+    },
+    /// `unbind -n` of a key bound to nothing without the prefix.
+    RootNotBound {
+        key: KeyPress,
+    },
+    /// `set prefix` given a key bound without the prefix.
+    PrefixRootBound {
+        key: KeyPress,
     },
     Empty,
     SetUsage,
@@ -101,14 +120,33 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::NotALetter { command, word } => write!(
+            Error::NotAKey { command, word } => write!(
                 f,
-                "{command}: {word:?} is not a letter: keys after the prefix are a–z, without modifiers"
+                "{command}: {word:?} is not a key; `fux list-keys` lists their names"
+            ),
+            Error::EscapeBound { keys } => write!(
+                f,
+                "bind {}: Escape cannot be bound after the prefix; it closes the column",
+                keys_text(keys)
+            ),
+            Error::RootUsage => {
+                f.write_str("bind -n takes one key and no -r: bind -n [-g GROUP] KEY COMMAND…")
+            }
+            Error::RootPrefix { key } => {
+                write!(
+                    f,
+                    "bind -n {key}: {key} is the prefix, so it cannot be bound without it"
+                )
+            }
+            Error::RootNotBound { key } => write!(f, "{key} is not bound without the prefix"),
+            Error::PrefixRootBound { key } => write!(
+                f,
+                "set prefix {key}: {key} is bound without the prefix; `unbind -n {key}` first"
             ),
             Error::Empty => f.write_str("an empty command"),
             Error::SetUsage => f.write_str("usage: set OPTION VALUE"),
             Error::NoGroupName => f.write_str("bind -g needs a group name"),
-            Error::BindUsage => f.write_str("usage: bind [-g GROUP] [-r] KEY… COMMAND…"),
+            Error::BindUsage => f.write_str("usage: bind [-n] [-g GROUP] [-r] KEY… COMMAND…"),
             Error::NoCommand { keys } => {
                 write!(f, "bind {}: no command given", keys_text(keys))
             }
@@ -129,7 +167,7 @@ impl std::fmt::Display for Error {
                 words::join(command),
                 keys_text(new)
             ),
-            Error::UnbindUsage => f.write_str("usage: unbind KEY…"),
+            Error::UnbindUsage => f.write_str("usage: unbind [-n] KEY…"),
             Error::NotBound { keys } => write!(f, "{} is not bound", keys_text(keys)),
             Error::UnbindAllUsage => f.write_str("usage: unbind-all"),
             Error::NotConfig { command } => write!(
@@ -165,7 +203,12 @@ impl std::error::Error for Error {
             Error::Words(error) => Some(error),
             Error::Read { source, .. } => Some(source),
             Error::Line { error, .. } => Some(error.as_ref()),
-            Error::NotALetter { .. }
+            Error::NotAKey { .. }
+            | Error::EscapeBound { .. }
+            | Error::RootUsage
+            | Error::RootPrefix { .. }
+            | Error::RootNotBound { .. }
+            | Error::PrefixRootBound { .. }
             | Error::Empty
             | Error::SetUsage
             | Error::NoGroupName
@@ -200,16 +243,44 @@ impl From<words::Error> for Error {
     }
 }
 
-/// A key after the prefix: one letter, either case, stored in lower case,
-/// as a key typed after the prefix is matched in lower case.
-fn letter(command: &'static str, word: &str) -> Result<KeyPress, Error> {
-    match word.chars().collect::<Vec<_>>().as_slice() {
-        [c] if c.is_ascii_alphabetic() => Ok(KeyPress::char(c.to_ascii_lowercase())),
-        [_] | [] | [_, _, ..] => Err(Error::NotALetter {
-            command,
-            word: word.to_owned(),
-        }),
+/// A key in `bind`, `unbind` or `set prefix`, by any name `fux list-keys`
+/// gives or as any character. Case counts, as a key typed is matched as it
+/// came: `V` is Shift-v, and `S-v` is read as `V`. A letter with Ctrl has
+/// no case (`C-V` is `C-v`), as a key press keeps what a legacy terminal
+/// sends.
+fn key(command: &'static str, word: &str) -> Result<KeyPress, Error> {
+    let press: KeyPress = word.parse().map_err(|_| Error::NotAKey {
+        command,
+        word: word.to_owned(),
+    })?;
+    // `KeyPress` drops Shift from a character, which carries its own: so
+    // `S-` on a letter is its upper case.
+    let mut rest = word;
+    let mut shift = false;
+    while let Some((modifier, tail)) = rest.split_at_checked(2) {
+        if tail.is_empty() {
+            break;
+        }
+        match modifier {
+            "S-" | "s-" => shift = true,
+            "C-" | "c-" | "M-" | "m-" => {}
+            _ => break,
+        }
+        rest = tail;
     }
+    if let Key::Char(c) = press.key
+        && shift
+        && c.is_ascii_lowercase()
+    {
+        return Ok(KeyPress::new(Key::Char(c.to_ascii_uppercase()), press.mods));
+    }
+    Ok(press)
+}
+
+/// Whether `press` is Escape as the command column takes it: with no Ctrl
+/// or Alt.
+fn is_escape(press: &KeyPress) -> bool {
+    press.key == Key::Escape && !press.mods.ctrl && !press.mods.alt
 }
 
 /// Keys as they are written: `t n`.
@@ -230,6 +301,9 @@ pub struct Config {
     /// How many paste buffers are kept.
     pub buffers: usize,
     pub bindings: Vec<Binding>,
+    /// Keys bound without the prefix (`bind -n`), one key each, in the order
+    /// they were bound. None by default.
+    pub root: Vec<Binding>,
 }
 
 /// The largest history a pane keeps.
@@ -237,7 +311,7 @@ pub const MAX_HISTORY: usize = 1_000_000;
 pub const MAX_BUFFERS: usize = 1000;
 
 /// The default bindings, as `bind` takes them, in command-column order.
-/// After the prefix every key is a plain letter: `r` and `m` are repeat
+/// After the prefix every default key is a lower-case letter: `r` and `m` are repeat
 /// modes, `t` and `w` layers sharing their verbs.
 const DEFAULT_BINDINGS: &[&str] = &[
     "h select-pane -L",
@@ -304,6 +378,7 @@ impl Default for Config {
             clipboard: true,
             buffers: 16,
             bindings: Vec::new(),
+            root: Vec::new(),
         };
         // Each is checked by `default_bindings_all_parse_and_are_grouped`.
         for line in DEFAULT_BINDINGS {
@@ -344,7 +419,7 @@ impl Binding {
             (
                 "split" | "kill-pane" | "zoom" | "resize-pane" | "swap-pane" | "move-pane"
                 | "copy-mode" | "paste-buffer" | "menu" | "rename-prompt" | "confirm-close"
-                | "terminate" | "choose-pane" | "send-keys" | "reorder",
+                | "terminate" | "choose-pane" | "send-keys" | "send-prefix" | "reorder",
                 _,
             ) => "Panes",
             ("new-tab" | "select-tab" | "choose-tab" | "kill-tab", _) => "Tabs",
@@ -369,9 +444,13 @@ impl Config {
                 self.set(option, value)
             }
             "bind" => {
-                let (mut group, mut repeat, mut rest) = (None, false, rest);
+                let (mut group, mut repeat, mut root, mut rest) = (None, false, false, rest);
                 loop {
                     match rest.split_first() {
+                        Some((flag, after)) if flag == "-n" => {
+                            root = true;
+                            rest = after;
+                        }
                         Some((flag, after)) if flag == "-g" => {
                             let (name, after) = after.split_first().ok_or(Error::NoGroupName)?;
                             group = Some(name.clone());
@@ -384,38 +463,73 @@ impl Config {
                         _ => break,
                     }
                 }
-                // The keys: the first word, and the one-character words after
-                // it; no command's name is one character.
+                // The keys: the first word, and the words after it that name
+                // keys; no command's name is a key's
+                // (`no_command_is_named_as_a_key`).
                 let (first, after) = rest.split_first().ok_or(Error::BindUsage)?;
-                let more = after.iter().take_while(|w| w.chars().count() == 1).count();
+                let more = after
+                    .iter()
+                    .take_while(|w| w.parse::<KeyPress>().is_ok())
+                    .count();
                 let (more, command) = after.split_at_checked(more).unwrap_or((after, &[]));
                 let keys = std::iter::once(first)
                     .chain(more)
-                    .map(|key| letter("bind", key))
+                    .map(|word| key("bind", word))
                     .collect::<Result<Vec<KeyPress>, Error>>()?;
+                if root && (keys.len() > 1 || repeat) {
+                    return Err(Error::RootUsage);
+                }
                 if command.is_empty() {
                     return Err(Error::NoCommand { keys });
+                }
+                if root && keys.first() == Some(&self.prefix) {
+                    return Err(Error::RootPrefix { key: self.prefix });
+                }
+                if !root && keys.iter().any(is_escape) {
+                    return Err(Error::EscapeBound { keys });
                 }
                 // Checked now, rather than each time its keys are typed.
                 let parsed = match command::parse(command) {
                     Ok(parsed) => parsed,
                     Err(usage) => return Err(Error::Unparsed { keys, usage }),
                 };
-                self.bind(Binding {
+                let binding = Binding {
                     keys,
                     command: command.to_vec(),
                     parsed,
                     group,
                     repeat,
-                })
+                };
+                if root {
+                    match self.root.iter_mut().find(|b| b.keys == binding.keys) {
+                        Some(existing) => *existing = binding,
+                        None => self.root.push(binding),
+                    }
+                    return Ok(());
+                }
+                self.bind(binding)
             }
             "unbind" => {
+                if let Some((flag, rest)) = rest.split_first()
+                    && flag == "-n"
+                {
+                    let [word] = rest else {
+                        return Err(Error::UnbindUsage);
+                    };
+                    let key = key("unbind", word)?;
+                    let before = self.root.len();
+                    self.root.retain(|b| b.keys != [key]);
+                    if self.root.len() == before {
+                        return Err(Error::RootNotBound { key });
+                    }
+                    return Ok(());
+                }
                 if rest.is_empty() {
                     return Err(Error::UnbindUsage);
                 }
                 let keys = rest
                     .iter()
-                    .map(|key| letter("unbind", key))
+                    .map(|word| key("unbind", word))
                     .collect::<Result<Vec<KeyPress>, Error>>()?;
                 // A binding, or a whole layer.
                 let before = self.bindings.len();
@@ -429,13 +543,19 @@ impl Config {
                 if !rest.is_empty() {
                     return Err(Error::UnbindAllUsage);
                 }
-                self.bindings.clear();
+                self.unbind_all();
                 Ok(())
             }
             other => Err(Error::NotConfig {
                 command: other.to_owned(),
             }),
         }
+    }
+
+    /// Removes every binding, with the prefix and without it.
+    pub fn unbind_all(&mut self) {
+        self.bindings.clear();
+        self.root.clear();
     }
 
     /// Adds a binding, replacing one of the same keys. Keys are a command
@@ -494,7 +614,16 @@ impl Config {
             Ok(n)
         };
         match option {
-            "prefix" => self.prefix = one()?.parse()?,
+            "prefix" => {
+                let prefix = one()?;
+                // `C-b` and the like; an unknown name is the parser's error.
+                prefix.parse::<KeyPress>()?;
+                let prefix = key("set prefix", prefix)?;
+                if self.root.iter().any(|b| b.keys == [prefix]) {
+                    return Err(Error::PrefixRootBound { key: prefix });
+                }
+                self.prefix = prefix;
+            }
             "shell" => {
                 // `set shell /bin/zsh -l` and `set shell '/bin/zsh -l'` alike.
                 let argv = if let [single] = value {
@@ -578,9 +707,10 @@ impl Config {
             ),
             format!("set buffers {}", self.buffers),
         ];
-        for binding in &self.bindings {
+        let root = self.root.iter().map(|b| (b, " -n"));
+        for (binding, flag) in self.bindings.iter().map(|b| (b, "")).chain(root) {
             lines.push(format!(
-                "bind{}{} {} {}",
+                "bind{flag}{}{} {} {}",
                 binding
                     .group
                     .as_ref()
@@ -682,8 +812,8 @@ mod tests {
         assert!(matches!(bind("bind t zoom"), Err(Error::Layer { .. })));
         assert!(matches!(bind("bind h u zoom"), Err(Error::Runs { .. })));
         assert!(matches!(
-            bind("bind C-Left zoom"),
-            Err(Error::NotALetter {
+            bind("bind Nope zoom"),
+            Err(Error::NotAKey {
                 command: "bind",
                 ..
             })
@@ -742,7 +872,10 @@ mod tests {
                 .iter()
                 .any(|b| keys_text(&b.keys).starts_with('g'))
         );
-        assert_eq!(apply(&mut c, "unbind"), Err("usage: unbind KEY…".into()));
+        assert_eq!(
+            apply(&mut c, "unbind"),
+            Err("usage: unbind [-n] KEY…".into())
+        );
     }
 
     /// A binding's command is parsed when the binding is made: one that
@@ -799,34 +932,141 @@ mod tests {
     }
 
     #[test]
-    fn keys_after_the_prefix_are_letters_stored_in_lower_case() {
+    fn keys_after_the_prefix_are_any_key_and_their_case_counts() {
         let mut c = Config::default();
-        for (line, word) in [
-            ("bind C-Left resize-pane -L", "C-Left"),
-            ("bind : command-prompt", ":"),
-            ("bind g ; zoom", ";"),
-            ("bind 1 zoom", "1"),
+        for line in [
+            "bind C-Left resize-pane -L",
+            "bind : command-prompt",
+            "bind g ; zoom",
+            "bind 1 zoom",
+            "bind F5 zoom",
+            "bind M-h select-pane -L",
+            "bind t Up new-tab",
+            "bind Space zoom",
         ] {
-            assert_eq!(
-                apply(&mut c, line),
-                Err(format!(
-                    "bind: {word:?} is not a letter: keys after the prefix are a–z, without modifiers"
-                )),
+            assert_eq!(apply(&mut c, line), Ok(()), "{line}");
+        }
+        let keys =
+            |c: &Config| -> Vec<String> { c.bindings.iter().map(|b| keys_text(&b.keys)).collect() };
+        for bound in ["C-Left", ":", "g ;", "1", "F5", "M-h", "t Up", "Space"] {
+            assert!(keys(&c).iter().any(|k| k == bound), "{bound}");
+        }
+        assert_eq!(
+            apply(&mut c, "bind Nope zoom"),
+            Err("bind: \"Nope\" is not a key; `fux list-keys` lists their names".into())
+        );
+        // Upper case is another key: Shift and the letter.
+        assert!(apply(&mut c, "bind V split -v").is_ok());
+        let v = |c: &Config, k: &str| {
+            c.bindings
+                .iter()
+                .find(|b| keys_text(&b.keys) == k)
+                .map(|b| b.command.clone())
+        };
+        assert_eq!(v(&c, "V"), Some(vec!["split".to_owned(), "-v".to_owned()]));
+        assert_eq!(v(&c, "v"), Some(vec!["split".to_owned(), "-h".to_owned()]));
+        // `S-v` is `V`, written back as `V`; with Ctrl a letter has no case.
+        assert!(apply(&mut c, "bind S-v zoom").is_ok());
+        assert_eq!(v(&c, "V"), Some(vec!["zoom".to_owned()]));
+        assert!(apply(&mut c, "bind M-S-x zoom").is_ok());
+        assert!(v(&c, "M-X").is_some());
+        assert!(apply(&mut c, "bind C-S-y zoom").is_ok());
+        assert!(v(&c, "C-y").is_some());
+        // `T N` is not `t n`: unbinding it leaves `t n`.
+        assert!(apply(&mut c, "unbind T N").is_err());
+        assert!(v(&c, "t n").is_some());
+        assert!(apply(&mut c, "unbind t n").is_ok());
+        assert!(v(&c, "t n").is_none());
+    }
+
+    #[test]
+    fn escape_after_the_prefix_cannot_be_bound() {
+        let mut c = Config::default();
+        for line in [
+            "bind Escape zoom",
+            "bind t Escape zoom",
+            "bind Esc zoom",
+            "bind S-Escape zoom",
+        ] {
+            assert!(
+                matches!(
+                    c.apply(&words::split(line).unwrap_or_default()),
+                    Err(Error::EscapeBound { .. })
+                ),
                 "{line}"
             );
         }
-        assert!(apply(&mut c, "unbind S-Left").is_err());
-        // Upper case is the same key as lower case.
-        assert!(apply(&mut c, "bind T N zoom").is_ok());
-        let t_n: Vec<_> = c
-            .bindings
-            .iter()
-            .filter(|b| keys_text(&b.keys) == "t n")
-            .collect();
-        assert_eq!(t_n.len(), 1);
-        assert!(t_n.iter().all(|b| b.command == ["zoom"]));
-        assert!(apply(&mut c, "unbind T N").is_ok());
-        assert!(!c.bindings.iter().any(|b| keys_text(&b.keys) == "t n"));
+        // With Ctrl or Alt it is another key, which the column does not take.
+        assert_eq!(apply(&mut c, "bind M-Escape zoom"), Ok(()));
+    }
+
+    #[test]
+    fn keys_bind_without_the_prefix_one_at_a_time() {
+        let mut c = Config::default();
+        assert_eq!(apply(&mut c, "bind -n M-h select-pane -L"), Ok(()));
+        assert_eq!(apply(&mut c, "bind -n -g Tools F2 split -v"), Ok(()));
+        // A plain letter is the user's choice.
+        assert_eq!(apply(&mut c, "bind -n h zoom"), Ok(()));
+        assert_eq!(c.root.len(), 3);
+        // The keys after the prefix are untouched.
+        assert_eq!(c.bindings.len(), Config::default().bindings.len());
+        // Rebinding replaces.
+        assert_eq!(apply(&mut c, "bind -n M-h select-pane -R"), Ok(()));
+        assert_eq!(c.root.len(), 3);
+        let refused = |c: &mut Config, line: &str| c.apply(&words::split(line).unwrap_or_default());
+        assert!(matches!(
+            refused(&mut c, "bind -n a b zoom"),
+            Err(Error::RootUsage)
+        ));
+        assert!(matches!(
+            refused(&mut c, "bind -n -r a zoom"),
+            Err(Error::RootUsage)
+        ));
+        assert!(matches!(
+            refused(&mut c, "bind -n C-b zoom"),
+            Err(Error::RootPrefix { .. })
+        ));
+        assert!(matches!(
+            refused(&mut c, "set prefix M-h"),
+            Err(Error::PrefixRootBound { .. })
+        ));
+        assert!(matches!(
+            refused(&mut c, "unbind -n M-l"),
+            Err(Error::RootNotBound { .. })
+        ));
+        // Escape is no prefix key there, so it may be bound.
+        assert_eq!(apply(&mut c, "bind -n Escape zoom"), Ok(()));
+        // `describe` reads back as it was given.
+        let mut again = Config::default();
+        again.unbind_all();
+        for line in c.describe().iter().filter(|l| l.starts_with("bind")) {
+            assert_eq!(apply(&mut again, line), Ok(()), "{line}");
+        }
+        assert_eq!(again.root, c.root);
+        assert_eq!(again.bindings, c.bindings);
+        assert_eq!(apply(&mut c, "unbind -n M-h"), Ok(()));
+        assert_eq!(c.root.len(), 3);
+        assert_eq!(apply(&mut c, "unbind-all"), Ok(()));
+        assert!(c.root.is_empty() && c.bindings.is_empty());
+    }
+
+    /// The words after `bind`'s first key that name keys are keys, so no
+    /// command may be named as a key is.
+    #[test]
+    fn no_command_is_named_as_a_key() {
+        let mut names = crate::keys::all_names();
+        names.extend(["PgUp", "PPage", "PgDn", "NPage", "IC", "DC", "Esc"].map(String::from));
+        let lower: Vec<String> = names.iter().map(|n| n.to_lowercase()).collect();
+        names.extend(lower);
+        for name in names {
+            assert!(
+                matches!(
+                    command::parse(std::slice::from_ref(&name)),
+                    Err(Usage::UnknownCommand(_))
+                ),
+                "{name} is a command's name"
+            );
+        }
     }
 
     #[test]

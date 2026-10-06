@@ -76,6 +76,15 @@ const SIDE: &[&str] = &[
     "detach -c c1",
     "paste-buffer -t %1",
     "send-keys -t %1 x",
+    "send-prefix -t %1",
+    "bind V split -v",
+    "bind Up zoom",
+    "bind C-b new-tab",
+    "bind -r g Enter resize-pane -R",
+    "bind -n M-t new-tab",
+    "bind -n x zoom",
+    "bind -n y send-keys -t %1 z",
+    "unbind -n x",
 ];
 
 /// Commands that write to a pane: a repeating binding of one may.
@@ -259,7 +268,7 @@ impl Run {
             return None;
         };
         let mut keys = path.clone();
-        keys.push(press.folded());
+        keys.push(*press);
         let writes = self.s.config.bindings.iter().any(|b| {
             b.keys == keys
                 && b.command

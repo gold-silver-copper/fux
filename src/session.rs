@@ -354,6 +354,7 @@ fn shows_nothing_new(command: &Command) -> bool {
             | Command::ShowBuffer { .. }
             | Command::CapturePane { .. }
             | Command::SendKeys { .. }
+            | Command::SendPrefix { .. }
             | Command::Terminate { .. }
             | Command::Client {
                 action: ClientAction::Capture { .. },
@@ -1402,7 +1403,7 @@ impl Session {
                 out.push_str(&crate::keys::all_names().join(" "));
                 out.push_str("\n\nBindings (after the prefix, ");
                 out.push_str(&self.config.prefix.to_string());
-                out.push_str("; each key a letter, in either case):\n");
+                out.push_str("; case counts, V is Shift-v):\n");
                 for binding in &self.config.bindings {
                     out.push_str(&format!(
                         "{:>8}  {}{}\n",
@@ -1410,6 +1411,16 @@ impl Session {
                         crate::words::join(&binding.command),
                         if binding.repeat { " (repeats)" } else { "" }
                     ));
+                }
+                if !self.config.root.is_empty() {
+                    out.push_str("\nWithout the prefix (bind -n):\n");
+                    for binding in &self.config.root {
+                        out.push_str(&format!(
+                            "{:>8}  {}\n",
+                            crate::config::keys_text(&binding.keys),
+                            crate::words::join(&binding.command),
+                        ));
+                    }
                 }
                 Ok(out)
             }
@@ -1521,6 +1532,17 @@ impl Session {
                     Err(Error::NoBorder { pane, direction })
                 }
             }
+            &Command::SendPrefix { target } => {
+                let pane = self.pane_target(target, ctx)?;
+                let prefix = self.config.prefix;
+                let Some(p) = self.panes.get_mut(&pane) else {
+                    return Err(Error::NoPane(pane));
+                };
+                let mode = p.screen().key_mode();
+                p.input
+                    .push_with(|out| crate::encode::key_bytes(prefix.into(), mode, out))?;
+                Ok(String::new())
+            }
             &Command::SendKeys {
                 target,
                 literal,
@@ -1580,7 +1602,7 @@ impl Session {
                 .map(|()| String::new())
                 .map_err(Error::Config),
             &Command::UnbindAll => {
-                self.config.bindings.clear();
+                self.config.unbind_all();
                 Ok(String::new())
             }
             &Command::Reload => {
