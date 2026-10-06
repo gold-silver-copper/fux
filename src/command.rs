@@ -163,6 +163,10 @@ pub enum Command {
         literal: bool,
         keys: Vec<String>,
     },
+    /// The prefix, sent to a pane as its program asked for keys.
+    SendPrefix {
+        target: Option<PaneId>,
+    },
     CapturePane {
         target: Option<PaneId>,
         history: Option<usize>,
@@ -613,7 +617,7 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                 cmd: std::mem::take(&mut a.rest),
             }
         }
-        "kill-pane" | "kill-tab" | "kill-workspace" | "terminate" => {
+        "kill-pane" | "kill-tab" | "kill-workspace" | "terminate" | "send-prefix" => {
             // Kept as given, and parsed once every flag is known.
             let target = a.flags("-t", Ok)?.target;
             match name {
@@ -621,6 +625,9 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                     target: target.map(parse_pane).transpose()?,
                 },
                 "terminate" => Command::Terminate {
+                    target: target.map(parse_pane).transpose()?,
+                },
+                "send-prefix" => Command::SendPrefix {
                     target: target.map(parse_pane).transpose()?,
                 },
                 "kill-tab" => Command::KillTab {
@@ -950,6 +957,7 @@ pub fn label(argv: &[String]) -> String {
         ["detach"] => "detach this client",
         ["reload"] => "reload the config",
         ["kill-server"] => "stop the server",
+        ["send-prefix"] => "send the prefix to the pane",
         _ => return crate::words::join(argv),
     };
     text.to_owned()

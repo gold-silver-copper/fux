@@ -49,6 +49,34 @@ fn the_config_file_sets_the_prefix_and_bindings() -> Outcome {
     Ok(())
 }
 
+/// Keys bound without the prefix act at once; keys after it match as typed,
+/// and may be any key.
+#[test]
+fn keys_bind_by_case_any_key_and_without_the_prefix() -> Outcome {
+    let server = Server::start("bind -n M-t new-tab\nbind V split -v\nbind Up split -h")?;
+    let mut client = server.attach(24, 90)?;
+    client.wait_for("$")?;
+    // Alt-t, as a legacy terminal sends it.
+    client.keys("\x1bt")?;
+    eventually("a tab from M-t", || Ok(focused(&server)? == "%2"))?;
+    client.keys("\x02V")?;
+    eventually("a split from C-b V", || Ok(focused(&server)? == "%3"))?;
+    client.keys("\x02\x1b[A")?;
+    eventually("a split from C-b Up", || Ok(focused(&server)? == "%4"))?;
+    // Caps Lock: an upper-case letter bound to nothing is not its lower case.
+    client.keys("\x02T")?;
+    client.wait("the notice", |t| {
+        t.lines()
+            .last()
+            .is_some_and(|b| b.contains("C-b T is not bound"))
+    })?;
+    client.keys("\x1b")?;
+    let keys = server.ok(&["list-keys"])?;
+    assert!(keys.contains("Without the prefix (bind -n):"), "{keys}");
+    assert!(keys.contains("M-t  new-tab"), "{keys}");
+    Ok(())
+}
+
 #[test]
 fn set_and_bind_change_a_running_server() -> Outcome {
     let server = Server::start("")?;
@@ -110,13 +138,13 @@ fn set_and_bind_change_a_running_server() -> Outcome {
 }
 
 #[test]
-fn an_old_key_binding_is_a_config_error_until_a_reload_fixes_it() -> Outcome {
-    let server = Server::start("bind C-Left resize-pane -L")?;
+fn a_key_that_cannot_be_bound_is_a_config_error_until_a_reload_fixes_it() -> Outcome {
+    let server = Server::start("bind Escape resize-pane -L")?;
     let mut client = server.attach(10, 120)?;
     client.wait("the config error", |t| {
         t.lines()
             .last()
-            .is_some_and(|b| b.contains("config:") && b.contains("is not a letter"))
+            .is_some_and(|b| b.contains("config:") && b.contains("cannot be bound"))
     })?;
     std::fs::write(
         server.dir.join("fux.conf"),
