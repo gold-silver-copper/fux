@@ -36,6 +36,189 @@ pub struct Grid {
     /// Whether the client's terminal draws underline styles (`outer`):
     /// painted as they are, else as plain underlines (`sgr`).
     pub underline_styles: bool,
+    /// What composed the grid, so that composing it again puts only what
+    /// changed, and painting it compares only rows that may differ. Not
+    /// what the grid shows: grids compare equal whatever it holds.
+    memo: Memo,
+}
+
+/// What composed a grid in normal mode: its frame, everything that decides
+/// the grid but its panes' rows, and the identity and version of each pane
+/// row put in it. A row of a fux-vt screen keeps its identity while it is
+/// retained, no later row takes it, and its version changes with every
+/// edit of its cells or soft wrap; pane ids are never reused. So two grids
+/// of the same frame show the same cells on a row of the pane area whose
+/// pane rows have the same keys in both.
+#[derive(Clone, Debug, Default)]
+struct Memo {
+    frame: Option<Frame>,
+    /// For each pane of the frame's placement, in its order: each of its
+    /// window's rows on the grid, `None` where it has none.
+    keys: Vec<(PaneId, Vec<RowKey>)>,
+}
+
+/// A pane row's identity and version, `None` where the window has no row.
+type RowKey = Option<(fux_vt::RowId, u64)>;
+
+impl PartialEq for Memo {
+    fn eq(&self, _: &Memo) -> bool {
+        true
+    }
+}
+impl Eq for Memo {}
+
+/// Everything about a composed grid but its panes' rows: its size, where
+/// each pane and separator is and its window's size, the focus (which
+/// colours the separators), whether the panes cover the pane area, and how
+/// underlines are painted. Only in normal mode, with no overlay, no
+/// copy-mode selection, no empty-tab hint, and no pane in colours of its
+/// own (`recolour`), whose rows depend on more than their keys.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Frame {
+    rows: u16,
+    cols: u16,
+    panes: Vec<(PaneId, Rect, (u16, u16))>,
+    separators: Vec<crate::layout::Separator>,
+    focus: Option<PaneId>,
+    tiled: bool,
+    underline_styles: bool,
+}
+
+impl Frame {
+    fn of(
+        session: &Session,
+        view: &View,
+        placement: &Placement,
+        tiled: bool,
+        focus: Option<PaneId>,
+    ) -> Option<Frame> {
+        if !matches!(view.mode, Mode::Normal)
+            || view
+                .tab()
+                .and_then(|t| session.tab(t))
+                .is_none_or(|t| t.root.is_none())
+        {
+            return None;
+        }
+        let mut panes = Vec::with_capacity(placement.panes.len());
+        for (id, rect) in &placement.panes {
+            let screen = session.panes.get(id)?.screen();
+            if screen.colors_changed() {
+                return None;
+            }
+            panes.push((*id, *rect, screen.size()));
+        }
+        Some(Frame {
+            rows: view.rows,
+            cols: view.cols,
+            panes,
+            separators: placement.separators.clone(),
+            focus,
+            tiled,
+            underline_styles: view.terminal.underline_styles,
+        })
+    }
+}
+
+/// Where a pane row goes on the grid: its first cell, the width of the
+/// window put there, the pane's width, whether the panes cover the pane
+/// area, and the window's columns.
+struct Place {
+    gy: u16,
+    gx: u16,
+    width: u16,
+    rect_w: u16,
+    tiled: bool,
+    window_cols: u16,
+}
+
+/// Puts a pane's window row on the grid at `place`, in the pane's own
+/// colours if it has them, blanking what it does not cover of the pane's
+/// width.
+fn draw_row(
+    grid: &mut Grid,
+    pane: PaneId,
+    row: Option<Row<'_>>,
+    place: &Place,
+    colours: Option<&fux_vt::Screen>,
+) {
+    let Place {
+        gy,
+        gx,
+        width,
+        rect_w,
+        tiled,
+        window_cols,
+    } = *place;
+    // The pane's own row, well formed, goes whole onto cells that are blank,
+    // or are blanked after it.
+    let len = row.map_or(0, |row| row.len());
+    if let Some(row) = row {
+        grid.put_row(gy, gx, pane, row, width);
+        if let Some(screen) = colours {
+            grid.recolour(gy, gx, width, screen);
+        }
+    }
+    if tiled {
+        // At most `width`, which is at most the place's width.
+        let end = u16::try_from(len).unwrap_or(width).min(width);
+        grid.blank(gy, gx.saturating_add(end), gx.saturating_add(rect_w));
+    }
+    // A wide glyph in the window's last column is cut off, as `Window::cell`
+    // has it.
+    if let Some(last) = window_cols.checked_sub(1)
+        && last < width
+        && row
+            .and_then(|r| r.cell(usize::from(last)))
+            .is_some_and(|c| c.is_wide())
+        && let Some(x) = gx.checked_add(last)
+    {
+        grid.put(gy, x, Cell::default());
+    }
+}
+
+/// Puts again the pane rows that changed since `grid`, whose memo has the
+/// frame composed now, was composed: whether that was all there was to do;
+/// false if a row now has links, which only a whole composition numbers.
+fn changed_rows(grid: &mut Grid, session: &Session, placement: &Placement, tiled: bool) -> bool {
+    let mut keys = std::mem::take(&mut grid.memo.keys);
+    let mut whole = keys.len() == placement.panes.len();
+    for ((id, rect), (memo_id, pane_keys)) in placement.panes.iter().zip(&mut keys) {
+        let Some(pane) = session.panes.get(id).filter(|_| id == memo_id && whole) else {
+            whole = false;
+            break;
+        };
+        let screen = pane.screen();
+        let (rows, cols) = screen.size();
+        let window = screen.window(0, rows, cols);
+        let width = rect.w.min(window.cols());
+        for (y, key) in (0..rect.h.min(window.rows())).zip(pane_keys.iter_mut()) {
+            let row = window.row(y);
+            let now = row.map(|r| (r.id(), r.version()));
+            if now == *key {
+                continue;
+            }
+            let Some((gy, gx)) = rect.at(y, 0) else {
+                continue;
+            };
+            if row.is_some_and(|r| r.has_links()) {
+                whole = false;
+                break;
+            }
+            let place = Place {
+                gy,
+                gx,
+                width,
+                rect_w: rect.w,
+                tiled,
+                window_cols: window.cols(),
+            };
+            draw_row(grid, *id, row, &place, None);
+            *key = now;
+        }
+    }
+    grid.memo.keys = keys;
+    whole
 }
 
 /// A hyperlink of a pane's cells (OSC 8): the pane, the link's key there
@@ -62,6 +245,7 @@ impl Grid {
             cursor_shape: 0,
             mouse: 0,
             underline_styles: false,
+            memo: Memo::default(),
         }
     }
     /// The hyperlink of the cell at `y`, `x`: the pane whose it is, its key
@@ -130,6 +314,7 @@ impl Grid {
         self.cursor = None;
         self.cursor_shape = 0;
         self.mouse = 0;
+        self.memo = Memo::default();
     }
     fn index(&self, y: u16, x: u16) -> Option<usize> {
         if y >= self.rows || x >= self.cols {
@@ -141,6 +326,57 @@ impl Grid {
     }
     pub fn get(&self, y: u16, x: u16) -> Option<CellRef<'_>> {
         self.index(y, x).and_then(|i| self.cells.get(i))
+    }
+    /// Forgets what composed the grid (`Memo`): it shows the same, and is
+    /// composed whole next time and painted by comparing every row. For
+    /// the oracles that check the memo against working without it.
+    #[doc(hidden)]
+    pub fn forget_memo(&mut self) {
+        self.memo = Memo::default();
+    }
+    /// Whether the grid shows what `other` shows: the same as `==`, without
+    /// comparing the rows their memos show are the same (`Memo`).
+    pub fn same_as(&self, other: &Grid) -> bool {
+        if (
+            self.rows,
+            self.cols,
+            self.cursor,
+            self.cursor_shape,
+            self.mouse,
+        ) != (
+            other.rows,
+            other.cols,
+            other.cursor,
+            other.cursor_shape,
+            other.mouse,
+        ) || self.underline_styles != other.underline_styles
+            || self.link_of != other.link_of
+            || self.links != other.links
+            || self.uris != other.uris
+        {
+            return false;
+        }
+        let memo = self.memo.frame.is_some() && self.memo.frame == other.memo.frame;
+        (0..self.rows).all(|y| memo && same_keys(self, other, y) || self.row_eq(other, y))
+    }
+    /// Whether row `y` has the same cells as `other`'s row `y`, as
+    /// comparing `row(y)` of each does: two grids of a width compare by
+    /// `Cells::range_eq`, without reading each cell's text.
+    pub fn row_eq(&self, other: &Grid, y: u16) -> bool {
+        if self.cols != other.cols {
+            return self.row(y).eq(other.row(y));
+        }
+        let cols = usize::from(self.cols);
+        // Exact: a u16 by a u16 fits even a 32-bit usize.
+        let start = usize::from(y).saturating_mul(cols);
+        let rows = (y < self.rows, y < other.rows);
+        match rows {
+            (true, true) => self
+                .cells
+                .range_eq(&other.cells, start..start.saturating_add(cols)),
+            (false, false) => true,
+            (true, false) | (false, true) => self.row(y).eq(other.row(y)),
+        }
     }
     /// The cells of row `y`; none past the last row.
     pub fn row(&self, y: u16) -> impl Iterator<Item = CellRef<'_>> + Clone {
@@ -411,8 +647,6 @@ pub fn compose_into(
         .chain(placement.separators.iter().map(|s| u32::from(s.len)))
         .fold(0u32, u32::saturating_add);
     let tiled = covered == u32::from(area.w).saturating_mul(u32::from(area.h));
-    grid.reset(view.rows, view.cols, !tiled);
-    grid.underline_styles = view.terminal.underline_styles;
     let focus = view.focus();
     // Copy mode and its positions, their rows found once for the paint.
     let copy = if let Mode::Copy(copy) = &view.mode {
@@ -421,74 +655,91 @@ pub fn compose_into(
     } else {
         None
     };
-    for (id, rect) in &placement.panes {
-        let Some(pane) = session.panes.get(id) else {
-            for (gy, gx) in (0..rect.h).filter_map(|y| rect.at(y, 0)).filter(|_| tiled) {
-                grid.blank(gy, gx, gx.saturating_add(rect.w));
-            }
-            continue;
-        };
-        let screen = pane.screen();
-        // A pane whose program changed its colours is drawn in them.
-        let colours = screen.colors_changed().then_some(screen);
-        let at = copy.filter(|(c, _)| c.pane == *id).map(|(_, at)| at);
-        let offset = at.map_or(0, |at| at.offset(screen));
-        let (rows, cols) = screen.size();
-        let window = screen.window(offset, rows, cols);
-        let width = rect.w.min(window.cols());
-        let screen_rows = rect.h.min(window.rows());
-        // What the pane's screen does not cover of its place is blank.
-        for (gy, gx) in (screen_rows..rect.h)
-            .filter_map(|y| rect.at(y, 0))
-            .filter(|_| tiled)
-        {
-            grid.blank(gy, gx, gx.saturating_add(rect.w));
-        }
-        for y in 0..screen_rows {
-            // Past the largest position is off the grid anyway.
-            let Some((gy, gx)) = rect.at(y, 0) else {
+    // The grid holds this very frame: only the pane rows that changed since
+    // it was composed are put again (`Memo`).
+    let frame = Frame::of(session, view, placement, tiled, focus);
+    let reused = frame.is_some()
+        && grid.memo.frame == frame
+        && (grid.rows, grid.cols) == (view.rows, view.cols)
+        && changed_rows(grid, session, placement, tiled);
+    if reused {
+        grid.cursor = None;
+        grid.cursor_shape = 0;
+        grid.mouse = 0;
+    } else {
+        grid.reset(view.rows, view.cols, !tiled);
+        grid.underline_styles = view.terminal.underline_styles;
+        let mut keys = frame.as_ref().map(|_| Vec::new());
+        for (id, rect) in &placement.panes {
+            let Some(pane) = session.panes.get(id) else {
+                for (gy, gx) in (0..rect.h).filter_map(|y| rect.at(y, 0)).filter(|_| tiled) {
+                    grid.blank(gy, gx, gx.saturating_add(rect.w));
+                }
                 continue;
             };
-            // The pane's own row, well formed, goes whole onto cells that
-            // are blank, or are blanked after it.
-            let row = window.row(y);
-            let len = row.map_or(0, |row| row.len());
-            if let Some(row) = row {
-                grid.put_row(gy, gx, *id, row, width);
-                if let Some(screen) = colours {
-                    grid.recolour(gy, gx, width, screen);
-                }
-            }
-            if tiled {
-                // At most `width`, which is at most the place's width.
-                let end = u16::try_from(len).unwrap_or(width).min(width);
-                grid.blank(gy, gx.saturating_add(end), gx.saturating_add(rect.w));
-            }
-            // A wide glyph in the window's last column is cut off, as
-            // `Window::cell` has it.
-            if let Some(last) = window.cols().checked_sub(1)
-                && last < width
-                && row
-                    .and_then(|r| r.cell(usize::from(last)))
-                    .is_some_and(|c| c.is_wide())
-                && let Some(x) = gx.checked_add(last)
+            let screen = pane.screen();
+            // A pane whose program changed its colours is drawn in them.
+            let colours = screen.colors_changed().then_some(screen);
+            let at = copy.filter(|(c, _)| c.pane == *id).map(|(_, at)| at);
+            let offset = at.map_or(0, |at| at.offset(screen));
+            let (rows, cols) = screen.size();
+            let window = screen.window(offset, rows, cols);
+            let width = rect.w.min(window.cols());
+            let screen_rows = rect.h.min(window.rows());
+            // What the pane's screen does not cover of its place is blank.
+            for (gy, gx) in (screen_rows..rect.h)
+                .filter_map(|y| rect.at(y, 0))
+                .filter(|_| tiled)
             {
-                grid.put(gy, x, Cell::default());
+                grid.blank(gy, gx, gx.saturating_add(rect.w));
             }
-            let Some(at) = at else { continue };
-            for x in 0..width {
-                if at.selected(y, x)
-                    && let Some(i) = gx.checked_add(x).and_then(|x| grid.index(gy, x))
-                    && let Some(cell) = grid.cells.get(i)
-                    && !cell.is_wide_continuation()
-                {
-                    let attrs = cell.attributes().with_inverse(!cell.inverse());
-                    grid.cells.set_attributes(i, attrs);
+            let mut pane_keys = Vec::new();
+            for y in 0..screen_rows {
+                // Past the largest position is off the grid anyway.
+                let Some((gy, gx)) = rect.at(y, 0) else {
+                    pane_keys.push(None);
+                    continue;
+                };
+                let row = window.row(y);
+                if row.is_some_and(|r| r.has_links()) {
+                    // Links are numbered per paint: no memo for this grid.
+                    keys = None;
                 }
+                pane_keys.push(row.map(|r| (r.id(), r.version())));
+                let place = Place {
+                    gy,
+                    gx,
+                    width,
+                    rect_w: rect.w,
+                    tiled,
+                    window_cols: window.cols(),
+                };
+                draw_row(grid, *id, row, &place, colours);
+                let Some(at) = at else { continue };
+                for x in 0..width {
+                    if at.selected(y, x)
+                        && let Some(i) = gx.checked_add(x).and_then(|x| grid.index(gy, x))
+                        && let Some(cell) = grid.cells.get(i)
+                        && !cell.is_wide_continuation()
+                    {
+                        let attrs = cell.attributes().with_inverse(!cell.inverse());
+                        grid.cells.set_attributes(i, attrs);
+                    }
+                }
+            }
+            if let Some(keys) = &mut keys {
+                keys.push((*id, pane_keys));
             }
         }
+        separators(grid, placement, focus);
+        grid.memo = match (frame, keys) {
+            (Some(frame), Some(keys)) => Memo {
+                frame: Some(frame),
+                keys,
+            },
+            (None | Some(_), None) | (None, Some(_)) => Memo::default(),
+        };
     }
-    separators(grid, placement, focus);
     if view
         .tab()
         .and_then(|t| session.tab(t))
@@ -1213,6 +1464,33 @@ fn one_based(n: u16) -> u32 {
 }
 
 /// The bytes that turn `old` (what the client shows, or nothing) into `new`.
+/// Whether row `y` of two grids of one frame (see `paint_into`) is in the
+/// pane area and has the same pane rows in both: then it shows the same
+/// cells.
+fn same_keys(a: &Grid, b: &Grid, y: u16) -> bool {
+    let Some(frame) = &a.memo.frame else {
+        return false;
+    };
+    // The bar's row, and any row past the panes', are not memo'd.
+    if y >= frame.rows.saturating_sub(1) {
+        return false;
+    }
+    a.memo.keys.len() == frame.panes.len()
+        && b.memo.keys.len() == frame.panes.len()
+        && frame
+            .panes
+            .iter()
+            .zip(a.memo.keys.iter().zip(&b.memo.keys))
+            .all(|((_, rect, _), ((_, ka), (_, kb)))| {
+                if y < rect.y || u32::from(y) >= u32::from(rect.y).saturating_add(u32::from(rect.h))
+                {
+                    return true;
+                }
+                let i = usize::from(y.saturating_sub(rect.y));
+                ka.get(i) == kb.get(i)
+            })
+}
+
 /// Turns every mouse tracking mode and SGR encoding off, as `client::LEAVE`
 /// does too.
 pub const MOUSE_OFF: &str = "\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l";
@@ -1255,19 +1533,34 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
     let mut open = 0u32;
     // Whether either grid has a link: if neither does, no cell's changed.
     let links = !new.link_of.is_empty() || old.is_some_and(|o| !o.link_of.is_empty());
+    // Grids of one frame show the same cells on a pane row whose keys are
+    // the same in both (`Memo`): no comparison needed.
+    let memo = old.filter(|o| !full && o.memo.frame.is_some() && o.memo.frame == new.memo.frame);
     for y in 0..new.rows {
         // What the client shows, unless the row is painted whole.
         let before = old.filter(|_| !full);
+        if memo.is_some_and(|o| same_keys(o, new, y)) {
+            continue;
+        }
         // An unchanged row costs this one comparison.
         if before.is_some_and(|o| {
-            o.row(y).eq(new.row(y))
-                && (!links || (0..new.cols).all(|x| o.link(y, x) == new.link(y, x)))
+            o.row_eq(new, y) && (!links || (0..new.cols).all(|x| o.link(y, x) == new.link(y, x)))
         }) {
             continue;
         }
         let cell = |x: u16| new.get(y, x);
+        let row_start = usize::from(y).saturating_mul(usize::from(new.cols));
         let changed = |x: u16| {
-            before.is_none_or(|o| o.get(y, x) != cell(x) || links && o.link(y, x) != new.link(y, x))
+            before.is_none_or(|o| {
+                let i = row_start.saturating_add(usize::from(x));
+                // Grids of a width index alike: compare in place.
+                let same = if o.cols == new.cols && y < o.rows {
+                    o.cells.range_eq(&new.cells, i..i.saturating_add(1))
+                } else {
+                    o.get(y, x) == cell(x)
+                };
+                !same || links && o.link(y, x) != new.link(y, x)
+            })
         };
         let mut x = 0u16;
         while x < new.cols {

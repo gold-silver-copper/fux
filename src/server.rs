@@ -409,7 +409,7 @@ impl Server {
             // The same screen as the client shows: nothing to send, not even
             // the envelope, whose cursor hide and show would restart a
             // blinking cursor.
-            if conn.painted && conn.spare == conn.shown {
+            if conn.painted && conn.spare.same_as(&conn.shown) {
                 if let Some(view) = self.session.views.get_mut(&client) {
                     view.dirty = false;
                 }
