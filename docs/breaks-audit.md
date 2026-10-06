@@ -13,10 +13,10 @@ macOS) was pushed to a throwaway branch and run by CI.
 | Finding | The fix now | The test that fails with it reverted | Revert run |
 | --- | --- | --- | --- |
 | 006: descriptor pressure wedges the accept loop | A spare descriptor (`server.rs`, `Server::spare`, `accept`): a connection that arrives when none is left is accepted, told why, and closed | `a_server_out_of_descriptors_refuses_promptly_and_recovers` (`tests/pressure.rs`) | here |
-| 007: a request of any size is read whole | Every protocol frame is at most `MAX_FRAME` (1 MiB), refused from its length before its body arrives (`protocol.rs`, `Decoder::frame`, `Decoder::check`) | `oversized_frames_are_refused_on_both_sides`, `a_frame_that_does_not_end_is_read_anyway` | here |
-| 008: the attach client buffers an unended line | The same cap on the client's side: what it holds for a frame not yet whole stays under `4 + MAX_FRAME` | `oversized_frames_are_refused_on_both_sides` | here |
+| 007: a request of any size is read whole | Every protocol frame is at most `MAX_FRAME` (1 MiB), refused from its length before its body arrives (`protocol.rs`, `Decoder::frame`, `Decoder::check`) | `oversized_frames_are_refused_on_both_sides` (`protocol.rs`) | here |
+| 008: the attach client buffers an unended line | The same cap on the client's side, which reads with the same `protocol::Decoder`: what it holds for a frame not yet whole stays under `4 + MAX_FRAME` | `oversized_frames_are_refused_on_both_sides` | here |
 | 010: a signal ends the attachment | The attach client goes on when a signal interrupts its `poll` (`client.rs`, `attach`); the command client retries an interrupted read | `resizing_while_typing_keeps_the_client_attached_and_every_byte` (`tests/attach.rs`), for the `poll` | here |
-| 012: under descriptor pressure a Linux client waits 6.5 s | `accept` runs until the backlog is empty, refusing every connection there is no room for, in one tick (`server.rs`, `accept`) | none: see below | here |
+| 012: under descriptor pressure a Linux client waits 6.5 s | `accept` runs until the backlog is empty, refusing every connection there is no room for, in one tick (`server.rs`, `accept`) | `a_server_out_of_descriptors_refuses_promptly_and_recovers`, now holding 150 connections so that about a hundred wait in the backlog: with the fix the slowest client took about 2 ms in each of five runs; with one refusal a 50 ms tick, as the Bevy version did, about 4.7 s | here |
 | 013: `terminate` leaves dash's background jobs alive | `process::hangup` signals every process in the pane's session, not only its group | `a_closed_panes_background_jobs_end_with_it_under_dash`, `terminate_ends_the_foreground_and_leaves_background_jobs` (`tests/processes.rs`) | CI, Ubuntu (no `/bin/dash` here) |
 | 014: socket cleanup trusts a reused inode number | The socket's inode stays allocated while fux holds it (`fuxix::file::pin`, `socket.rs`, `Pinned`) | `cleanup_leaves_a_socket_that_replaced_ours_where_inodes_are_reused` (`socket.rs`): "fux's socket was inode 8912904, the replacement's 8912904" | CI, Ubuntu (ext4; this machine's `/home` is btrfs, its `/tmp` tmpfs) |
 | 016: a file is read without bound | The config file is read up to 1 MiB, and a larger one refused (`config.rs`, `read_bounded`) | `a_config_file_over_a_mebibyte_is_refused`, new | here |
@@ -26,16 +26,6 @@ macOS) was pushed to a throwaway branch and run by CI.
 
 ### What is not proven
 
-- **012.** Its revert, one refusal a 50 ms tick as the Bevy version did, is
-  not caught. The test's backlog (about 50 connections past the server's 64
-  descriptors) is refused within its 3-second bound even one a tick.
-  Holding 150 connections would catch it. But with the fix in place the
-  first client then sometimes waited about 4.7 s: in 3 of 5 runs of the
-  test, and in 1 of 2 runs of the same steps by hand. A server log with a
-  timestamp on each `accept` showed the whole backlog refused within a
-  millisecond, so the wait is not the accept loop. Its cause was not found,
-  and a test that fails that way would make CI flaky. The test stays as it
-  was, and this is open.
 - **010, the command client.** Its read loop retries `Interrupted`
   (`client.rs`, `read_frame`). Removing that retry failed no test, and the
   test meant for it was not examined.
