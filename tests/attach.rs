@@ -158,6 +158,34 @@ fn capture_pane_shows_the_screen_and_history() -> Outcome {
     Ok(())
 }
 
+/// With `set titles on`, the real client's terminal is given its pane's
+/// title, its own saved first and restored on leaving; a bell rings it.
+#[test]
+fn the_real_client_gets_titles_and_bells_and_its_title_back() -> Outcome {
+    let server = Server::start("set titles on")?;
+    let mut terminal = Terminal::attach(&server, 12, 50, &[])?;
+    terminal.wait_for("%1 sh")?;
+    terminal.type_bytes(b"printf '\\033]2;my-title\\007\\007'; echo rang''-it\r")?;
+    terminal.wait_for("rang-it")?;
+    eventually("the title and the bell", || {
+        terminal.pump();
+        let output = String::from_utf8_lossy(&terminal.output).into_owned();
+        Ok(output.contains("\x1b]2;my-title\x1b\\") && output.contains('\x07'))
+    })?;
+    terminal.type_bytes(b"\x02d")?;
+    let status = terminal.wait_exit()?;
+    assert!(status.success(), "{status}");
+    let output = String::from_utf8_lossy(&terminal.output).into_owned();
+    let push = String::from_utf8_lossy(fux::outer::TITLE_PUSH).into_owned();
+    let pop = String::from_utf8_lossy(fux::outer::TITLE_POP).into_owned();
+    let (pushed, popped) = (output.find(&push), output.rfind(&pop));
+    assert!(
+        pushed.is_some() && popped > pushed && output.matches(&push).count() == 1,
+        "{output:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn the_real_client_attaches_restores_its_terminal_and_reattaches() -> Outcome {
     let server = Server::start("")?;

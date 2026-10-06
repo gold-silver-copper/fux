@@ -4,7 +4,7 @@ use crate::copy::Copy;
 use crate::decode::Decoder;
 use crate::keys::KeyPress;
 use crate::layout::PaneId;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notice {
@@ -100,6 +100,15 @@ pub struct View {
     /// The pane a mouse button was pressed in and not yet released: its
     /// motion and release go to it, kept to its edge (`Session::mouse`).
     pub mouse_held: Option<PaneId>,
+    /// Tabs of its workspace whose panes rang the bell while it showed
+    /// another, marked in its bar until it shows them (`Session::ring`).
+    pub bells: BTreeSet<TabId>,
+    /// When its terminal was last rung.
+    pub last_bell: Option<std::time::Instant>,
+    /// The title its terminal was last given, with `titles` on.
+    pub title: Option<String>,
+    /// Whether its terminal's own title was saved (`outer::TITLE_PUSH`).
+    pub title_pushed: bool,
 }
 
 impl View {
@@ -119,6 +128,10 @@ impl View {
             terminal: crate::outer::Terminal::default(),
             dirty: true,
             mouse_held: None,
+            bells: BTreeSet::new(),
+            last_bell: None,
+            title: None,
+            title_pushed: false,
         }
     }
 

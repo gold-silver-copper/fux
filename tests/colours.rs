@@ -146,3 +146,19 @@ fn the_real_client_turns_off_colour_scheme_reports_as_it_leaves() -> Outcome {
     assert!(on < off && off < left, "{output:?}");
     Ok(())
 }
+
+/// A pane's `OSC 4 ; n ; ?` for entries 0 to 15 gets the client terminal's
+/// palette, as its terminal answered the server at attach.
+#[test]
+fn a_panes_palette_query_gets_the_client_terminals_palette() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(10, 100)?;
+    client.wait_for("$")?;
+    // Every entry 0 to 15 was asked, before DA1.
+    wait_painted(&mut client, "\x1b]4;0;?\x1b\\", 1)?;
+    wait_painted(&mut client, "\x1b]4;15;?\x1b\\", 1)?;
+    client.send(b"\x1b]4;1;rgb:1111/2222/3333\x1b\\\x1b[?62;22c")?;
+    probe(&server, r"\x1b]4;1;?\x07\x1b]4;2;?\x07", r"\x07")?;
+    client.wait_for("answer:ESC]4;1;rgb:1111/2222/3333BEL")?;
+    Ok(())
+}
