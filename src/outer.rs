@@ -553,6 +553,17 @@ mod tests {
         run(&mut s, "select-tab -c c1 -t @2")?;
         let _ = s.before_paint(c);
         assert!(!tab_label(&s, c).contains('!'), "{}", tab_label(&s, c));
+        // A client on another workspace is not rung.
+        run(&mut s, "select-tab -c c1 -t @1")?;
+        let _ = s.before_paint(c);
+        run(&mut s, "new-workspace -n elsewhere")?;
+        let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
+        run(&mut s, "select-workspace -c c2 -t elsewhere")?;
+        let _ = sent(&mut s, d);
+        std::thread::sleep(BELL_GAP);
+        s.output(PaneId(1), b"\x07");
+        assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
+        assert!(sent(&mut s, d).is_empty());
         // Off: no bell and no mark.
         run(&mut s, "set bell off")?;
         std::thread::sleep(BELL_GAP);
