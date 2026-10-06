@@ -894,6 +894,27 @@ impl Cells {
             .iter()
             .map(move |cell| CellRef::new(cell, spill))
     }
+    /// Whether the cells in `range` of `self` and of `other` look the same,
+    /// cell by cell, as their [`CellRef`]s compare: the same as
+    /// `self.range(range).eq(other.range(range))`, faster. Two cells that
+    /// hold their text inline, as nearly all do, are compared whole, which
+    /// is the same: inline text is zeros past its length, and a text that
+    /// fits inline is never spilled.
+    pub fn range_eq(&self, other: &Cells, range: std::ops::Range<usize>) -> bool {
+        let (Some(mine), Some(theirs)) = (
+            self.cells.get(range.clone()),
+            other.cells.get(range.clone()),
+        ) else {
+            return self.range(range.clone()).eq(other.range(range));
+        };
+        mine.iter().zip(theirs).all(|(a, b)| {
+            if !a.is_spilled() && !b.is_spilled() {
+                a == b
+            } else {
+                CellRef::new(a, &self.spill) == CellRef::new(b, &other.spill)
+            }
+        })
+    }
     /// Sets cell `i` to a copy of `cell`, from wherever it keeps its text.
     /// Whether its text was kept whole (see [`Cells::set_text`]).
     pub fn set(&mut self, i: usize, cell: CellRef<'_>) -> bool {
@@ -1005,7 +1026,7 @@ impl<'a> FromIterator<CellRef<'a>> for Cells {
 /// Equal if every cell looks the same (see [`CellRef`]'s `==`).
 impl PartialEq for Cells {
     fn eq(&self, other: &Self) -> bool {
-        self.iter().eq(other.iter())
+        self.len() == other.len() && self.range_eq(other, 0..self.len())
     }
 }
 impl Eq for Cells {}
