@@ -666,6 +666,18 @@ impl Parser {
     pub fn screen(&self) -> &Screen {
         &self.screen
     }
+    /// Tells the parser what the host's terminal shows for palette entry
+    /// `index` (`None`: the host does not know), with `Options::palette`: a
+    /// program's query of an entry it has not set (`OSC 4 ; index ; ?`) is
+    /// answered with it rather than with xterm's default. A colour the
+    /// program set still wins, and no reset of the program's colours (OSC
+    /// 104, DECSTR, RIS) clears the host's. It changes no cell and no
+    /// colour drawn: [`Screen::palette_color`] stays the program's, and
+    /// [`Screen::host_color`] reads it back. Entries 0 to 15 can be given,
+    /// the ones themes change; returns whether `index` is one.
+    pub fn set_host_color(&mut self, index: u8, rgb: Option<(u8, u8, u8)>) -> bool {
+        self.screen.set_host_color(index, rgb)
+    }
     /// Resizes the terminal, reflowing the primary screen with
     /// [`Options::reflow`].
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error> {

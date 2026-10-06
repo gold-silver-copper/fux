@@ -15,10 +15,12 @@
 //! device-independent spaces (`rgbi:`, `CIEXYZ:` and the rest) are not
 //! read: a specification fux-vt cannot read changes nothing.
 //!
-//! What fux-vt keeps is only what the program set: the colours themselves
-//! are the terminal's. A palette entry the program has not set is answered
-//! with xterm's default, which is what `TERM=xterm-256color` means by it
-//! (see `DEFAULT`); a dynamic colour it has not set is asked of the host
+//! What fux-vt keeps is what the program set, and what the host says its
+//! terminal shows for palette entries 0 to 15 ([`crate::Screen::set_host_color`]):
+//! the colours themselves are the terminal's. A palette entry the program
+//! has not set is answered with the host's colour for it, if the host gave
+//! one, else with xterm's default, which is what `TERM=xterm-256color`
+//! means by it (see `DEFAULT`); a dynamic colour it has not set is asked of the host
 //! ([`crate::Event::ColorQuery`], as without the palette), which knows its
 //! terminal's; a special colour it has not set is not answered, xterm's
 //! default being the terminal's foreground, which fux-vt does not know.
@@ -92,13 +94,22 @@ pub(crate) fn default(index: u8) -> Rgb {
     }
 }
 
-/// The colours a program set, each `None` while it is the terminal's own.
+/// How many palette entries the host can give its terminal's colour for:
+/// 0 to 15, the ones themes change.
+pub(crate) const HOST_ENTRIES: usize = 16;
+
+/// The colours a program set, each `None` while it is the terminal's own,
+/// and the host's colours for palette entries 0 to 15.
 #[derive(Clone, Debug)]
 pub(crate) struct Colours {
     palette: [Option<Rgb>; 256],
     special: [Option<Rgb>; 5],
     /// OSC 10 to 19.
     dynamic: [Option<Rgb>; 10],
+    /// What the host's terminal shows for palette entries 0 to 15: what a
+    /// query of an entry the program has not set is answered with. No
+    /// reset of the program's colours touches them.
+    host: [Option<Rgb>; HOST_ENTRIES],
 }
 
 impl Default for Colours {
@@ -107,6 +118,7 @@ impl Default for Colours {
             palette: [None; 256],
             special: [None; 5],
             dynamic: [None; 10],
+            host: [None; HOST_ENTRIES],
         }
     }
 }
@@ -120,6 +132,21 @@ impl Colours {
     pub(crate) fn dynamic(&self, number: u8) -> Option<Rgb> {
         let i = usize::from(number.checked_sub(10)?);
         self.dynamic.get(i).copied().flatten()
+    }
+    /// The host's colour for palette entry `index`, if it gave one.
+    pub(crate) fn host(&self, index: u8) -> Option<Rgb> {
+        self.host.get(usize::from(index)).copied().flatten()
+    }
+    /// Sets the host's colour for palette entry `index` (0 to 15), or
+    /// clears it; whether `index` is one the host can give.
+    pub(crate) fn set_host(&mut self, index: u8, colour: Option<Rgb>) -> bool {
+        match self.host.get_mut(usize::from(index)) {
+            Some(slot) => {
+                *slot = colour;
+                true
+            }
+            None => false,
+        }
     }
     /// Whether the program set a palette entry or a dynamic colour: what
     /// a host that draws the screen needs to know of.
@@ -353,7 +380,11 @@ fn pairs(
             let set = colours.as_mut().and_then(|c| *c.slot(n)?);
             let colour = match (set, u8::try_from(n)) {
                 (Some(colour), _) => colour,
-                (None, Ok(index)) => default(index),
+                // The host's terminal's colour, if it said; else xterm's.
+                (None, Ok(index)) => colours
+                    .as_ref()
+                    .and_then(|c| c.host(index))
+                    .unwrap_or_else(|| default(index)),
                 // A special colour the program has not set: fux-vt does
                 // not know the terminal's foreground, xterm's default.
                 (None, Err(_)) => continue,
