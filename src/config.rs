@@ -1109,7 +1109,7 @@ mod tests {
         let path = dir.join("fux.conf");
         // Comments only: read whole, it would apply as the defaults.
         let line = "# a comment, as long as a line may be\n";
-        let fits = line.repeat((1 << 20) / line.len());
+        let fits: String = std::iter::repeat_n(line, (1 << 20) / line.len()).collect();
         std::fs::write(&path, &fits).map_err(|e| e.to_string())?;
         assert!(Config::from_file(&path).is_ok_and(|c| c == Config::default()));
         std::fs::write(&path, format!("{fits}{line}{line}")).map_err(|e| e.to_string())?;
