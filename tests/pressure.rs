@@ -42,12 +42,21 @@ fn a_server_out_of_descriptors_refuses_promptly_and_recovers() -> Outcome {
     let server = Server::start_limited("", Some(64))?;
     let pid = server.pid().ok_or("the server's pid")?;
     assert_eq!(server.fux(&["ls"])?.status, 0);
-    // More than its descriptors allow, so that about a hundred wait in the
-    // backlog (Linux's holds 128): refused one a tick, as hunt 8 found
-    // (012), the clients below would wait seconds behind them.
-    let held: Vec<UnixStream> = (0..150)
-        .map(|_| UnixStream::connect(&server.socket).map_err(e))
-        .collect::<Result<_, _>>()?;
+    // More than its descriptors allow, so that on Linux about a hundred
+    // wait in the backlog (it holds 128): refused one a tick, as hunt 8
+    // found (012), the clients below would wait seconds behind them. macOS
+    // refuses a connection past its shorter backlog at once, which is no
+    // failure here.
+    let mut held: Vec<UnixStream> = Vec::new();
+    for _ in 0..150 {
+        match UnixStream::connect(&server.socket) {
+            Ok(stream) => held.push(stream),
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
+            Err(error) => return Err(e(error)),
+        }
+    }
+    // Past the server's 64 descriptors, whatever the backlog took.
+    assert!(held.len() > 64, "only {} connections held", held.len());
     // Settle: the server takes what it can, and refuses the rest.
     std::thread::sleep(Duration::from_millis(300));
     let lines_before = pressure_lines(&server);
