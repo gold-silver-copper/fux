@@ -1646,6 +1646,119 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
 mod tests {
     use super::*;
 
+    /// A small deterministic generator (splitmix64).
+    struct Rng(u64);
+
+    impl Rng {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut x = self.0;
+            x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            x ^= x >> 31;
+            usize::try_from(x.checked_rem(u64::try_from(n).unwrap_or(1)).unwrap_or(0)).unwrap_or(0)
+        }
+    }
+
+    /// Composing into the grid composed last but one, as the server does,
+    /// puts again only the rows that changed (`Memo`), and paints only the
+    /// rows that may differ: through random output into split panes,
+    /// scrolling, the alternate screen, links, resizes, copy mode, a
+    /// notice and splits, after every step the grid is what composing
+    /// whole gives, its paint is the paint comparing every row, and
+    /// `same_as` is `==`.
+    #[test]
+    fn composing_in_part_is_composing_whole() -> Result<(), String> {
+        use crate::layout::PaneId;
+        let outputs: [&[u8]; 12] = [
+            b"x",
+            b"hello\r\n",
+            b"\x1b[2J\x1b[H",
+            b"\x1b[5;3Hmid\x1b[K",
+            b"line\r\nline\r\nline\r\nline\r\nline\r\nline\r\n",
+            b"\x1b[?1049h\x1b[Halt",
+            b"\x1b[?1049l",
+            b"\x1b[31mred\x1b[m \xe7\x95\x8c",
+            b"\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\",
+            b"\x1b]4;1;#00ff00\x07",
+            b"\x1b]104\x07",
+            b"\x1b[2;4r\x1b[4H\n\n\x1b[r",
+        ];
+        let commands = [
+            "split -h -t %1",
+            "split -v -t %1",
+            "zoom -c c1",
+            "copy-mode -c c1",
+            "command-column -c c1",
+            "select-pane -c c1 --next",
+            "kill-pane -t %2",
+        ];
+        let mut r = Rng(0x00c0_ffee);
+        for case in 0..40 {
+            let config = crate::config::Config::default();
+            let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
+            s.start().map_err(|e| e.to_string())?;
+            let c = s.attach(12, 50, None).map_err(|e| e.to_string())?;
+            let (mut spare, mut shown) = (Grid::new(0, 0), Grid::new(0, 0));
+            let mut placement = Placement::default();
+            let mut painted = false;
+            for step in 0..120 {
+                match r.below(12) {
+                    0 => {
+                        let line = commands.get(r.below(commands.len())).copied().unwrap_or("");
+                        let argv: Vec<String> = line.split(' ').map(str::to_owned).collect();
+                        s.run(&argv, &crate::session::Ctx::default());
+                    }
+                    1 => s.input(c, b"\x1b"),
+                    2 => {
+                        let rows = u16::try_from(4 + r.below(12)).unwrap_or(8);
+                        let cols = u16::try_from(10 + r.below(50)).unwrap_or(40);
+                        s.resize(c, rows, cols);
+                    }
+                    3 => {
+                        let argv = [
+                            "rename".to_owned(),
+                            "-t".to_owned(),
+                            "@1".to_owned(),
+                            "n".to_owned(),
+                        ];
+                        s.run(&argv, &crate::session::Ctx::default());
+                    }
+                    _ => {
+                        let panes: Vec<PaneId> = s.panes.keys().copied().collect();
+                        if let Some(&id) = panes.get(r.below(panes.len().max(1))) {
+                            let out = outputs.get(r.below(outputs.len())).copied().unwrap_or(b"");
+                            s.output(id, out);
+                        }
+                    }
+                }
+                s.settle_if_needed();
+                if !compose_into(&s, c, &mut spare, &mut placement) {
+                    continue;
+                }
+                let whole = compose(&s, c).ok_or("no client")?;
+                assert!(spare == whole, "case {case}, step {step}: composed in part");
+                let fast = paint(painted.then_some(&shown), &spare);
+                let (mut plain_old, mut plain_new) = (shown.clone(), spare.clone());
+                plain_old.forget_memo();
+                plain_new.forget_memo();
+                let slow = paint(painted.then_some(&plain_old), &plain_new);
+                assert!(
+                    fast == slow,
+                    "case {case}, step {step}: the memo's paint differs"
+                );
+                assert_eq!(
+                    spare.same_as(&shown),
+                    spare == shown,
+                    "case {case}, step {step}"
+                );
+                std::mem::swap(&mut spare, &mut shown);
+                painted = true;
+            }
+        }
+        Ok(())
+    }
+
     /// Mouse reporting is said from nothing, either way, and again only
     /// when it changes.
     #[test]
