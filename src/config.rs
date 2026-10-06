@@ -1099,6 +1099,31 @@ mod tests {
         }
     }
 
+    /// A config file is read up to 1 MiB, and a larger one refused rather
+    /// than read whole: the form here of bevy-final finding 016, a file read
+    /// without bound.
+    #[test]
+    fn a_config_file_over_a_mebibyte_is_refused() -> Result<(), String> {
+        let dir = std::env::temp_dir().join(format!("fux-config-big-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join("fux.conf");
+        // Comments only: read whole, it would apply as the defaults.
+        let line = "# a comment, as long as a line may be\n";
+        let fits = line.repeat((1 << 20) / line.len());
+        std::fs::write(&path, &fits).map_err(|e| e.to_string())?;
+        assert!(Config::from_file(&path).is_ok_and(|c| c == Config::default()));
+        std::fs::write(&path, format!("{fits}{line}{line}")).map_err(|e| e.to_string())?;
+        let error = Config::from_file(&path).err().map(|e| e.to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            error
+                .as_deref()
+                .is_some_and(|e| e.ends_with("larger than 1 MiB")),
+            "{error:?}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn a_file_applies_whole_or_names_its_bad_line() -> Result<(), Box<dyn std::error::Error>> {
         let dir = std::env::temp_dir().join(format!("fux-config-{}", std::process::id()));
