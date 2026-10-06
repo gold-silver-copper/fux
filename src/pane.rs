@@ -220,6 +220,8 @@ enum TitleOp {
 struct Sink<'a> {
     replies: &'a mut Vec<u8>,
     titles: &'a mut Vec<TitleOp>,
+    /// Set by a bell (BEL).
+    bell: &'a mut bool,
     /// What colour queries are answered with (`outer`).
     colours: &'a crate::outer::Colours,
 }
@@ -270,10 +272,8 @@ impl fux_vt::Sink for Sink<'_> {
             }
             fux_vt::Event::ColorQuery { number, bel } => self.colour_query(number, bel),
             // fux's clipboard policy: a program's OSC 52 is not taken.
-            fux_vt::Event::IconName(_)
-            | fux_vt::Event::Bell
-            | fux_vt::Event::Clipboard { .. }
-            | _ => {}
+            fux_vt::Event::Bell => *self.bell = true,
+            fux_vt::Event::IconName(_) | fux_vt::Event::Clipboard { .. } | _ => {}
         }
     }
     /// xterm's title stack (ctlseqs, window manipulation): `CSI 22 ; Ps t`
@@ -331,6 +331,12 @@ pub struct Pane {
     /// What the program's colour queries are answered with, as the session
     /// finds them before each read of output (`outer`).
     pub colours: crate::outer::Colours,
+    /// The program rang the bell since the session last looked
+    /// (`Session::ring`).
+    pub bell: bool,
+    /// The palette entries 0 to 15 its client's terminal said, given to the
+    /// parser to answer a program's `OSC 4 ; n ; ?` with.
+    host_palette: crate::outer::Palette,
 }
 
 /// After the shell's output has been quiet this long, it is taken to be
@@ -400,6 +406,8 @@ impl Pane {
             frame: None,
             title_stack: VecDeque::new(),
             colours: crate::outer::Colours::default(),
+            bell: false,
+            host_palette: crate::outer::Palette::default(),
         })
     }
 
@@ -476,6 +484,7 @@ impl Pane {
         let mut sink = Sink {
             replies: &mut replies,
             titles: &mut titles,
+            bell: &mut self.bell,
             colours: &self.colours,
         };
         // The parser refuses only allocations beyond its limits; the screen
@@ -547,6 +556,23 @@ impl Pane {
                 let _ = self.input.push(report);
             }
         }
+    }
+
+    /// Gives the parser `palette` as the host's colours for entries 0 to
+    /// 15, replacing the last whole: an entry it lacks is cleared, so a
+    /// program asking it gets xterm's default. The program's own colours
+    /// still win, and nothing drawn changes (`fux_vt::Parser::set_host_color`).
+    pub fn set_host_palette(&mut self, palette: crate::outer::Palette) {
+        if self.host_palette == palette {
+            return;
+        }
+        // A channel's top byte: OSC 4 answers in eight bits a channel.
+        let byte = |c: u16| u8::try_from(c >> 8).unwrap_or(u8::MAX);
+        for (index, rgb) in (0u8..).zip(palette.0) {
+            let rgb = rgb.map(|c| (byte(c.r), byte(c.g), byte(c.b)));
+            self.parser.set_host_color(index, rgb);
+        }
+        self.host_palette = palette;
     }
 
     pub fn screen(&self) -> &fux_vt::Screen {

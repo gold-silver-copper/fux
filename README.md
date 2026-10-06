@@ -250,6 +250,8 @@ bind -n M-h select-pane -L       # -n: no prefix, Alt-h alone
 | `history-lines` | lines per pane, 0 to 1,000,000 | 10000 |
 | `clipboard` | `on` or `off`: OSC 52 writes | `on` |
 | `buffers` | paste buffers kept, 1 to 1000 | 16 |
+| `bell` | `on` or `off`: a pane's bell rings your terminal and marks its tab | `on` |
+| `titles` | `on` or `off`: your terminal's title follows the focused pane | `off` |
 
 **Bindings** take the keys after the prefix, as separate words before the
 command: any key `fux list-keys` names (`Up`, `F5`, `Space`, `Enter`, …),
@@ -294,9 +296,17 @@ shows the error to each terminal that attaches until a reload succeeds.
 - **Synchronized output** (mode 2026): frames reach your terminal whole; a
   frame is shown anyway after one second or past 2 MiB.
 - **Colours.** Programs asking the foreground and background (OSC 10, 11)
-  are told your terminal's, and get its dark/light changes (mode 2031) if
-  it reports them. Colours a program sets (OSC 4, 10, 11) apply to its own
-  pane only; your terminal's palette is never changed.
+  or palette entries 0 to 15 (OSC 4) are told your terminal's, and get its
+  dark/light changes (mode 2031) if it reports them. With several terminals
+  attached, a pane is answered from the one that typed into its tab last.
+  Colours a program sets (OSC 4, 10, 11) apply to its own pane only, and
+  win over your terminal's; your terminal's palette is never changed.
+- **Bells.** A program's bell rings each terminal showing its workspace, at
+  most once every 250 ms; a tab you are not looking at is marked `!` in the
+  bar until you show it. `set bell off` silences both.
+- **Titles.** With `set titles on`, your terminal's title is the focused
+  pane's (or its tab's name). fux saves your terminal's own title first and
+  restores it when you detach or turn titles off.
 - **Hyperlinks** (OSC 8) reach your terminal as links.
 - **Underline styles** (curly, dotted, dashed, double) reach your terminal
   if it draws them, else a plain underline.

@@ -8,6 +8,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// Modes the attach client sets on the outer terminal: the alternate
@@ -147,11 +148,33 @@ impl From<crate::protocol::Error> for Error {
 
 /// The terminal state to restore, shared with the panic hook.
 static SAVED: Mutex<Option<Termios>> = Mutex::new(None);
+/// Whether the server saved the terminal's title (`outer::TITLE_PUSH`) and
+/// has not restored it: then leaving restores it, however the attachment
+/// ends.
+static TITLE_SAVED: AtomicBool = AtomicBool::new(false);
+
+/// Notes a title saved or restored in a paint: the later of the two wins.
+/// A pane's own title sequences never reach a paint, which fux composes.
+fn note_title(paint: &[u8]) {
+    let last = |needle: &[u8]| {
+        (0..paint.len())
+            .rev()
+            .find(|&at| paint.get(at..).is_some_and(|rest| rest.starts_with(needle)))
+    };
+    let push = last(crate::outer::TITLE_PUSH);
+    let pop = last(crate::outer::TITLE_POP);
+    if push.is_some() || pop.is_some() {
+        TITLE_SAVED.store(push > pop, Ordering::Relaxed);
+    }
+}
 
 fn restore() {
     let saved = SAVED.lock().ok().and_then(|mut s| s.take());
     if let Some(termios) = saved {
         let mut out = std::io::stdout();
+        if TITLE_SAVED.swap(false, Ordering::Relaxed) {
+            let _ = out.write_all(crate::outer::TITLE_POP);
+        }
         let _ = out.write_all(LEAVE.as_bytes());
         let _ = out.flush();
         let _ = fuxix::terminal::set_attributes(std::io::stdin(), &termios);
@@ -443,6 +466,7 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, Error>
             while let Some(raw) = decoder.raw()? {
                 // A paint goes to the terminal straight from the decoder.
                 if let Some(bytes) = raw.paint() {
+                    note_title(bytes);
                     stdout.write_all(bytes).map_err(Error::WriteTerminal)?;
                     continue;
                 }
@@ -460,6 +484,25 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, Error>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The title fux saved is noted, and its restoring too, the later of
+    /// the two in a paint winning.
+    #[test]
+    fn a_saved_title_is_noted_from_the_paints() {
+        let push = crate::outer::TITLE_PUSH;
+        let pop = crate::outer::TITLE_POP;
+        note_title(b"no title here");
+        assert!(!TITLE_SAVED.load(Ordering::Relaxed));
+        note_title(&[b"x", push, b"\x1b]2;t\x1b\\"].concat());
+        assert!(TITLE_SAVED.load(Ordering::Relaxed));
+        note_title(b"a paint without either");
+        assert!(TITLE_SAVED.load(Ordering::Relaxed));
+        note_title(&[push, pop].concat());
+        assert!(!TITLE_SAVED.load(Ordering::Relaxed));
+        note_title(&[pop, push].concat());
+        assert!(TITLE_SAVED.load(Ordering::Relaxed));
+        TITLE_SAVED.store(false, Ordering::Relaxed);
+    }
 
     /// What the client makes of the server's answer to Hello, as read from
     /// a socket in `wait`.

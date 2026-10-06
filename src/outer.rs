@@ -1,5 +1,5 @@
 //! What fux knows of each client's own terminal, learned by asking it: its
-//! colours (OSC 10 and 11) and colour scheme (dark or light, `CSI ? 996 n`),
+//! colours (OSC 10 and 11), its palette entries 0 to 15 (OSC 4), and colour scheme (dark or light, `CSI ? 996 n`),
 //! whether it reports changes to the scheme (mode 2031), whether it
 //! speaks the kitty keyboard protocol (`CSI ? u`), and whether it draws
 //! underline styles (`STYLES`). Programs in panes ask the same of their
@@ -39,17 +39,24 @@ use crate::command::{ClientId, TabId};
 use crate::decode::Reply;
 use crate::layout::PaneId;
 use crate::session::{Outgoing, Session};
+use crate::view::View;
 pub use fux_vt::keys::colour::{Colours, Rgb, Scheme};
 use std::time::Instant;
 
 /// What the server asks a client's terminal when the client attaches:
-/// whether it knows mode 2031 (DECRQM), its foreground and background,
+/// whether it knows mode 2031 (DECRQM), its foreground and background, its
+/// palette entries 0 to 15 (each its own OSC 4, as not every terminal reads
+/// several in one),
 /// whether it draws underline styles (`STYLES`), its kitty keyboard flags,
 /// and last the primary device attributes, which every terminal answers: once
 /// that answer is in, any other the terminal will give is in too
 /// (terminals answer in order), so the decoder stops waiting for them. The
 /// kitty spec detects the protocol so: an answer to `CSI ? u` before DA1's.
 pub const QUERIES: &[u8] = b"\x1b[?2031$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\
+\x1b]4;0;?\x1b\\\x1b]4;1;?\x1b\\\x1b]4;2;?\x1b\\\x1b]4;3;?\x1b\\\
+\x1b]4;4;?\x1b\\\x1b]4;5;?\x1b\\\x1b]4;6;?\x1b\\\x1b]4;7;?\x1b\\\
+\x1b]4;8;?\x1b\\\x1b]4;9;?\x1b\\\x1b]4;10;?\x1b\\\x1b]4;11;?\x1b\\\
+\x1b]4;12;?\x1b\\\x1b]4;13;?\x1b\\\x1b]4;14;?\x1b\\\x1b]4;15;?\x1b\\\
 \x1bP+q536d756c78\x1b\\\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\\x1b[0m\x1b[?u\x1b[c";
 /// How fux learns whether a terminal draws underline styles (kitty's
 /// `4:n`, `references/modern/kitty_underlines.html`): it asks two ways,
@@ -74,10 +81,47 @@ pub const QUERIES: &[u8] = b"\x1b[?2031$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\
 /// terminal shows, and both come before DA1, whose answer ends the
 /// waiting for them.
 pub const STYLES: &[u8] = b"\x1bP+q536d756c78\x1b\\\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\\x1b[0m";
+/// The palette entries 0 to 15, asked one by one: part of [`QUERIES`] and
+/// [`COLOUR_QUERIES`].
+pub const PALETTE_QUERIES: &[u8] =
+    b"\x1b]4;0;?\x1b\\\x1b]4;1;?\x1b\\\x1b]4;2;?\x1b\\\x1b]4;3;?\x1b\\\
+\x1b]4;4;?\x1b\\\x1b]4;5;?\x1b\\\x1b]4;6;?\x1b\\\x1b]4;7;?\x1b\\\
+\x1b]4;8;?\x1b\\\x1b]4;9;?\x1b\\\x1b]4;10;?\x1b\\\x1b]4;11;?\x1b\\\
+\x1b]4;12;?\x1b\\\x1b]4;13;?\x1b\\\x1b]4;14;?\x1b\\\x1b]4;15;?\x1b\\";
 /// Pushes disambiguate and alternate keys (see the module documentation).
 pub const KITTY_PUSH: &[u8] = b"\x1b[>5u";
-/// Asked again after the terminal reports that its scheme changed.
-pub const COLOUR_QUERIES: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[c";
+/// Asked again after the terminal reports that its scheme changed: a theme
+/// that changes changes the palette too.
+pub const COLOUR_QUERIES: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\
+\x1b]4;0;?\x1b\\\x1b]4;1;?\x1b\\\x1b]4;2;?\x1b\\\x1b]4;3;?\x1b\\\
+\x1b]4;4;?\x1b\\\x1b]4;5;?\x1b\\\x1b]4;6;?\x1b\\\x1b]4;7;?\x1b\\\
+\x1b]4;8;?\x1b\\\x1b]4;9;?\x1b\\\x1b]4;10;?\x1b\\\x1b]4;11;?\x1b\\\
+\x1b]4;12;?\x1b\\\x1b]4;13;?\x1b\\\x1b]4;14;?\x1b\\\x1b]4;15;?\x1b\\\x1b[c";
+
+/// Saves the terminal's title (xterm's title stack, `CSI 22 ; 0 t`), sent
+/// before fux first sets it. The client pops it however it leaves, if it
+/// passed this on (`client::LEAVE`); the server pops it when titles are
+/// turned off.
+pub const TITLE_PUSH: &[u8] = b"\x1b[22;0t";
+/// Restores the title [`TITLE_PUSH`] saved.
+pub const TITLE_POP: &[u8] = b"\x1b[23;0t";
+/// The bell, as a client's terminal is rung.
+pub const BELL: &[u8] = b"\x07";
+/// The least time between two bells sent to one terminal, so that a
+/// program ringing without end (`yes $'\a'`) cannot flood it.
+pub const BELL_GAP: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Palette entries 0 to 15 as a terminal said them (OSC 4), `None` for an
+/// entry it did not.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Palette(pub [Option<Rgb>; 16]);
+
+impl Palette {
+    /// Whether the terminal said any entry.
+    pub fn known(&self) -> bool {
+        self.0.iter().any(Option::is_some)
+    }
+}
 /// Turns on the terminal's scheme reports and asks for the scheme now. The
 /// client turns the reports off on every way out (`client::LEAVE`).
 pub const REPORTS_ON: &[u8] = b"\x1b[?2031h\x1b[?996n";
@@ -101,6 +145,15 @@ pub struct Terminal {
     /// Whether the terminal draws underline styles (see `STYLES`): the
     /// client is painted them (`render::sgr`), else plain underlines.
     pub underline_styles: bool,
+    /// Its palette entries 0 to 15, answered to the panes it answers for.
+    pub palette: Palette,
+}
+
+impl Terminal {
+    /// Whether the terminal said anything of its colours.
+    fn said(&self) -> bool {
+        self.colours.known() || self.palette.known()
+    }
 }
 
 impl Session {
@@ -184,16 +237,28 @@ impl Session {
                     view.dirty = true;
                 }
             }
-            // fux asks no palette entries.
-            Reply::Mode { .. } | Reply::KittyFlags(_) | Reply::Palette { .. } => {}
+            Reply::Palette { index, rgb } => {
+                if let Some(entry) = terminal.palette.0.get_mut(usize::from(index)) {
+                    *entry = Some(rgb);
+                    self.learned(client);
+                }
+            }
+            Reply::Mode { .. } | Reply::KittyFlags(_) => {}
         }
     }
 
     /// What client `client`'s terminal said is the last known now.
     fn learned(&mut self, client: ClientId) {
-        let Some(colours) = self.views.get(&client).map(|v| v.terminal.colours) else {
+        let Some((colours, palette)) = self
+            .views
+            .get(&client)
+            .map(|v| (v.terminal.colours, v.terminal.palette))
+        else {
             return;
         };
+        for (last, said) in self.last_palette.0.iter_mut().zip(palette.0) {
+            *last = said.or(*last);
+        }
         let last = &mut self.last_colours;
         last.foreground = colours.foreground.or(last.foreground);
         last.background = colours.background.or(last.background);
@@ -242,11 +307,7 @@ impl Session {
     /// else the first showing it whose terminal did.
     fn colour_client(&self, tab: Option<TabId>) -> Option<ClientId> {
         let tab = tab?;
-        let told = |client: &ClientId| {
-            self.views
-                .get(client)
-                .is_some_and(|v| v.terminal.colours.known())
-        };
+        let told = |client: &ClientId| self.views.get(client).is_some_and(|v| v.terminal.said());
         self.typists
             .get(&tab)
             .filter(|c| told(c))
@@ -267,11 +328,264 @@ impl Session {
             .and_then(|c| self.views.get(&c))
             .map_or(self.last_colours, |v| v.terminal.colours)
     }
+
+    /// The palette the panes of `tab` are answered with, as `colours_for`:
+    /// the answering client's whole, so that another client's replaces it,
+    /// entries it did not say cleared.
+    pub(crate) fn palette_for(&self, tab: Option<TabId>) -> Palette {
+        self.colour_client(tab)
+            .and_then(|c| self.views.get(&c))
+            .map_or(self.last_palette, |v| v.terminal.palette)
+    }
+
+    /// Pane `id`'s program rang the bell: each client showing its workspace
+    /// is rung, at most once every [`BELL_GAP`], and one not showing its
+    /// tab has the tab marked in its bar until it shows it.
+    pub(crate) fn ring(&mut self, id: PaneId, now: Instant) {
+        if !self.config.bell {
+            return;
+        }
+        let Some((ws, tab)) = self.locate(id) else {
+            return;
+        };
+        for view in self.views.values_mut() {
+            if view.workspace != ws {
+                continue;
+            }
+            if view.tab() != Some(tab) && view.bells.insert(tab) {
+                view.dirty = true;
+            }
+            if view
+                .last_bell
+                .is_none_or(|last| now.saturating_duration_since(last) >= BELL_GAP)
+            {
+                view.last_bell = Some(now);
+                self.outbox.push(Outgoing::Bytes(view.id, BELL.to_vec()));
+            }
+        }
+    }
+
+    /// What client `client`'s terminal is sent before it is painted: the
+    /// tab it shows loses its bell mark, and with `titles` on its title
+    /// becomes its focused pane's, or the tab's name for a pane with none;
+    /// turned off, the title fux saved is restored.
+    pub fn before_paint(&mut self, client: ClientId) -> Vec<u8> {
+        let mut out = Vec::new();
+        let Some(view) = self.views.get(&client) else {
+            return out;
+        };
+        let tab = view.tab();
+        let wanted = self.config.titles.then(|| self.title_of(view));
+        let Some(view) = self.views.get_mut(&client) else {
+            return out;
+        };
+        if let Some(tab) = tab {
+            view.bells.remove(&tab);
+        }
+        match wanted {
+            Some(title) if view.title.as_ref() != Some(&title) => {
+                if !view.title_pushed {
+                    out.extend_from_slice(TITLE_PUSH);
+                    view.title_pushed = true;
+                }
+                out.extend_from_slice(b"\x1b]2;");
+                out.extend_from_slice(title.as_bytes());
+                out.extend_from_slice(b"\x1b\\");
+                view.title = Some(title);
+            }
+            None if view.title_pushed => {
+                out.extend_from_slice(TITLE_POP);
+                view.title_pushed = false;
+                view.title = None;
+            }
+            Some(_) | None => {}
+        }
+        out
+    }
+
+    /// The title a view's terminal is given: its focused pane's, else its
+    /// tab's name, without control characters.
+    fn title_of(&self, view: &View) -> String {
+        let pane = view
+            .focus()
+            .and_then(|f| self.panes.get(&f))
+            .map(|p| p.title.as_str())
+            .filter(|t| !t.is_empty());
+        let tab = view
+            .tab()
+            .and_then(|t| self.tab(t))
+            .map(|t| t.name.as_str());
+        pane.or(tab)
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use crate::session::Ctx;
+
+    type Outcome = Result<(), String>;
+
+    fn session() -> Result<(Session, ClientId), String> {
+        let mut s = Session::new(Config::default(), "/nonexistent/fux.sock".into(), false);
+        s.start().map_err(|e| e.to_string())?;
+        let c = s.attach(10, 40, None).map_err(|e| e.to_string())?;
+        Ok((s, c))
+    }
+
+    fn run(s: &mut Session, line: &str) -> Outcome {
+        let words = crate::words::split(line).map_err(|e| e.to_string())?;
+        let out = s.run(&words, &Ctx::default());
+        if out.status == 0 {
+            Ok(())
+        } else {
+            Err(out.stderr)
+        }
+    }
+
+    /// What pane `pane`'s program was answered, taken.
+    fn answered(s: &mut Session, pane: u32) -> String {
+        let bytes = s
+            .panes
+            .get_mut(&PaneId(pane))
+            .map(|p| p.input.drain_all())
+            .unwrap_or_default();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// What pane `pane`'s program is answered to `OSC 4 ; n ; ?`.
+    fn entry(s: &mut Session, pane: u32, n: u8) -> String {
+        let _ = answered(s, pane);
+        s.output(PaneId(pane), format!("\x1b]4;{n};?\x07").as_bytes());
+        answered(s, pane)
+    }
+
+    #[test]
+    fn a_panes_palette_query_is_answered_with_its_clients_palette() -> Outcome {
+        let (mut s, c) = session()?;
+        // Nothing said yet: xterm's red.
+        assert_eq!(entry(&mut s, 1, 1), "\x1b]4;1;rgb:cdcd/0000/0000\x07");
+        s.input(
+            c,
+            b"\x1b]4;1;rgb:1111/2222/3333\x1b\\\x1b]4;12;rgb:ff/80/00\x1b\\\x1b[?62c",
+        );
+        assert_eq!(entry(&mut s, 1, 1), "\x1b]4;1;rgb:1111/2222/3333\x07");
+        assert_eq!(entry(&mut s, 1, 12), "\x1b]4;12;rgb:ffff/8080/0000\x07");
+        // Entries the terminal did not say, and those past 15: xterm's.
+        assert_eq!(entry(&mut s, 1, 2), "\x1b]4;2;rgb:0000/cdcd/0000\x07");
+        // The program's own colour wins, and nothing the host gave is
+        // painted.
+        let before = crate::render::compose(&s, c);
+        s.output(PaneId(1), b"\x1b]4;1;#00ff00\x07");
+        assert_eq!(entry(&mut s, 1, 1), "\x1b]4;1;rgb:0000/ffff/0000\x07");
+        s.output(PaneId(1), b"\x1b]104;1\x07");
+        assert_eq!(entry(&mut s, 1, 1), "\x1b]4;1;rgb:1111/2222/3333\x07");
+        assert_eq!(crate::render::compose(&s, c), before);
+        Ok(())
+    }
+
+    #[test]
+    fn another_client_typing_replaces_the_palette_whole() -> Outcome {
+        let (mut s, c) = session()?;
+        s.input(c, b"\x1b]4;1;rgb:1111/2222/3333\x1b\\\x1b[?62c");
+        let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
+        s.input(d, b"\x1b]4;2;rgb:4444/5555/6666\x1b\\\x1b[?62c");
+        s.input(c, b"x");
+        assert_eq!(entry(&mut s, 1, 1), "\x1b]4;1;rgb:1111/2222/3333\x07");
+        // d types: its palette, whole; entry 1, which it did not say, is
+        // xterm's again.
+        s.input(d, b"y");
+        assert_eq!(entry(&mut s, 1, 2), "\x1b]4;2;rgb:4444/5555/6666\x07");
+        assert_eq!(entry(&mut s, 1, 1), "\x1b]4;1;rgb:cdcd/0000/0000\x07");
+        Ok(())
+    }
+
+    /// What the session sent client `c`'s terminal outside its paints,
+    /// taken.
+    fn sent(s: &mut Session, c: ClientId) -> Vec<Vec<u8>> {
+        let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut s.outbox)
+            .into_iter()
+            .partition(|o| matches!(o, Outgoing::Bytes(to, _) if *to == c));
+        s.outbox = rest;
+        mine.into_iter()
+            .filter_map(|o| match o {
+                Outgoing::Bytes(_, bytes) => Some(bytes),
+                Outgoing::Exit(..) | Outgoing::Shutdown(_) => None,
+            })
+            .collect()
+    }
+
+    /// Client `c`'s bar, as it would be painted.
+    fn tab_label(s: &Session, c: ClientId) -> String {
+        crate::render::compose(s, c)
+            .map(|g| g.row_text(g.rows.saturating_sub(1)))
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_bell_rings_the_clients_showing_its_workspace_and_marks_its_tab() -> Outcome {
+        let (mut s, c) = session()?;
+        let _ = sent(&mut s, c);
+        s.output(PaneId(1), b"\x07");
+        assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
+        // Again at once: not rung twice within the gap.
+        s.output(PaneId(1), b"\x07\x07");
+        assert!(sent(&mut s, c).is_empty());
+        std::thread::sleep(BELL_GAP);
+        s.output(PaneId(1), b"\x07");
+        assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
+        // In a tab the client does not show: its tab is marked until shown.
+        run(&mut s, "new-tab -t +1 -n other")?;
+        run(&mut s, "select-tab -c c1 -t @2")?;
+        s.settle();
+        let _ = s.before_paint(c);
+        std::thread::sleep(BELL_GAP);
+        s.output(PaneId(1), b"\x07");
+        assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
+        assert!(tab_label(&s, c).contains(" main! "), "{}", tab_label(&s, c));
+        run(&mut s, "select-tab -c c1 -t @1")?;
+        let _ = s.before_paint(c);
+        run(&mut s, "select-tab -c c1 -t @2")?;
+        let _ = s.before_paint(c);
+        assert!(!tab_label(&s, c).contains('!'), "{}", tab_label(&s, c));
+        // Off: no bell and no mark.
+        run(&mut s, "set bell off")?;
+        std::thread::sleep(BELL_GAP);
+        s.output(PaneId(1), b"\x07");
+        assert!(sent(&mut s, c).is_empty());
+        assert!(!tab_label(&s, c).contains('!'));
+        Ok(())
+    }
+
+    #[test]
+    fn titles_follow_the_focused_pane_and_are_restored_when_turned_off() -> Outcome {
+        let (mut s, c) = session()?;
+        // Off by default: nothing.
+        s.output(PaneId(1), b"\x1b]2;vim notes\x07");
+        assert!(s.before_paint(c).is_empty());
+        run(&mut s, "set titles on")?;
+        let first = s.before_paint(c);
+        assert_eq!(first, [TITLE_PUSH, b"\x1b]2;vim notes\x1b\\"].concat());
+        // Unchanged: nothing more; changed: the title alone.
+        assert!(s.before_paint(c).is_empty());
+        s.output(PaneId(1), b"\x1b]2;make\x07");
+        assert_eq!(s.before_paint(c), b"\x1b]2;make\x1b\\");
+        // A pane with no title: its tab's name.
+        run(&mut s, "split -h -t %1")?;
+        run(&mut s, "select-pane -c c1 -t %2")?;
+        run(&mut s, "rename -t @1 notes")?;
+        assert_eq!(s.before_paint(c), b"\x1b]2;notes\x1b\\");
+        // Off again: the title fux saved is restored, once.
+        run(&mut s, "set titles off")?;
+        assert_eq!(s.before_paint(c), TITLE_POP);
+        assert!(s.before_paint(c).is_empty());
+        Ok(())
+    }
 
     /// XParseColor's scaling: each channel's digits are a fraction of the
     /// largest number of that many digits.
@@ -306,6 +620,14 @@ mod tests {
     #[test]
     fn the_questions_about_styles_come_before_da1() {
         assert!(QUERIES.ends_with(&[STYLES, b"\x1b[?u\x1b[c"].concat()));
+        // The palette is asked with the colours, before them.
+        let at = |bytes: &[u8], part: &[u8]| {
+            (0..bytes.len()).find(|&i| bytes.get(i..).is_some_and(|r| r.starts_with(part)))
+        };
+        let palette = at(QUERIES, PALETTE_QUERIES);
+        assert!(palette.is_some_and(|p| at(QUERIES, STYLES).is_some_and(|s| p < s)));
+        assert!(at(COLOUR_QUERIES, PALETTE_QUERIES).is_some());
+        assert!(COLOUR_QUERIES.ends_with(b"\x1b[c"));
         assert!(STYLES.ends_with(b"\x1b[0m"));
     }
 

@@ -97,6 +97,8 @@ const OPTIONS: &[&str] = &[
     "history-lines",
     "clipboard",
     "buffers",
+    "bell",
+    "titles",
     "nope",
 ];
 /// Values for `set`: valid and not, and words that only survive a round
