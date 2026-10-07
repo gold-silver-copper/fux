@@ -12,8 +12,31 @@ pub const PROTOCOL: u32 = 2;
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
 pub const MAX_PAYLOAD: usize = MAX_FRAME - 1;
-/// The kind byte of an `Input` frame.
-const INPUT: u8 = 3;
+/// Each frame's kind, its byte in the header: named once, for the encoder
+/// and the decoder both.
+mod kind {
+    pub const HELLO: u8 = 1;
+    pub const ATTACH: u8 = 2;
+    pub const INPUT: u8 = 3;
+    pub const RESIZE: u8 = 4;
+    pub const DETACH: u8 = 5;
+    pub const COMMAND: u8 = 6;
+    pub const PAINT: u8 = 7;
+    pub const EXIT: u8 = 8;
+    pub const STDOUT: u8 = 9;
+    pub const STDERR: u8 = 10;
+    pub const DONE: u8 = 11;
+    pub const TERMINAL: u8 = 12;
+}
+
+/// A `Hello`'s role, its byte in the payload.
+fn role_byte(role: Role) -> u8 {
+    match role {
+        Role::Attach => 0,
+        Role::Command => 1,
+        Role::Kill => 2,
+    }
+}
 
 /// Why bytes are not a frame, or a frame cannot be sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,9 +111,9 @@ pub enum Stream {
 impl Stream {
     fn kind(self) -> u8 {
         match self {
-            Stream::Paint => 7,
-            Stream::Stdout => 9,
-            Stream::Stderr => 10,
+            Stream::Paint => kind::PAINT,
+            Stream::Stdout => kind::STDOUT,
+            Stream::Stderr => kind::STDERR,
         }
     }
 
@@ -160,18 +183,18 @@ pub enum Frame {
 impl Frame {
     fn kind(&self) -> u8 {
         match self {
-            Frame::Hello { .. } => 1,
-            Frame::Attach { .. } => 2,
-            Frame::Input(_) => INPUT,
-            Frame::Resize { .. } => 4,
-            Frame::Detach => 5,
-            Frame::Command { .. } => 6,
-            Frame::Paint(_) => Stream::Paint.kind(),
-            Frame::Exit(_) => 8,
-            Frame::Stdout(_) => Stream::Stdout.kind(),
-            Frame::Stderr(_) => Stream::Stderr.kind(),
-            Frame::Done { .. } => 11,
-            Frame::Terminal { .. } => 12,
+            Frame::Hello { .. } => kind::HELLO,
+            Frame::Attach { .. } => kind::ATTACH,
+            Frame::Input(_) => kind::INPUT,
+            Frame::Resize { .. } => kind::RESIZE,
+            Frame::Detach => kind::DETACH,
+            Frame::Command { .. } => kind::COMMAND,
+            Frame::Paint(_) => kind::PAINT,
+            Frame::Exit(_) => kind::EXIT,
+            Frame::Stdout(_) => kind::STDOUT,
+            Frame::Stderr(_) => kind::STDERR,
+            Frame::Done { .. } => kind::DONE,
+            Frame::Terminal { .. } => kind::TERMINAL,
         }
     }
 
@@ -196,11 +219,7 @@ impl Frame {
                 role,
             } => {
                 out.extend_from_slice(&protocol.to_be_bytes());
-                out.push(match role {
-                    Role::Attach => 0,
-                    Role::Command => 1,
-                    Role::Kill => 2,
-                });
+                out.push(role_byte(*role));
                 put_bytes(out, version.as_bytes());
             }
             Frame::Attach {
@@ -268,7 +287,7 @@ pub fn encode_input(bytes: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
     // MAX_PAYLOAD.
     let length = u32::try_from(bytes.len().saturating_add(1)).unwrap_or(u32::MAX);
     out.extend_from_slice(&length.to_be_bytes());
-    out.push(INPUT);
+    out.push(kind::INPUT);
     out.extend_from_slice(bytes);
     Ok(())
 }
@@ -332,14 +351,13 @@ impl Reader<'_> {
 fn decode_frame(kind: u8, payload: &[u8]) -> Result<Frame, Error> {
     let mut r = Reader(payload);
     let frame = match kind {
-        1 => {
+        kind::HELLO => {
             let protocol = r.u32()?;
-            let role = match r.u8()? {
-                0 => Role::Attach,
-                1 => Role::Command,
-                2 => Role::Kill,
-                other => return Err(Error::UnknownRole(other)),
-            };
+            let byte = r.u8()?;
+            let role = [Role::Attach, Role::Command, Role::Kill]
+                .into_iter()
+                .find(|role| role_byte(*role) == byte)
+                .ok_or(Error::UnknownRole(byte))?;
             let version = r.string()?;
             Frame::Hello {
                 protocol,
@@ -347,18 +365,18 @@ fn decode_frame(kind: u8, payload: &[u8]) -> Result<Frame, Error> {
                 role,
             }
         }
-        2 => Frame::Attach {
+        kind::ATTACH => Frame::Attach {
             rows: r.u16()?,
             cols: r.u16()?,
             workspace: r.option()?,
         },
-        INPUT => return Ok(Frame::Input(payload.to_vec())),
-        4 => Frame::Resize {
+        kind::INPUT => return Ok(Frame::Input(payload.to_vec())),
+        kind::RESIZE => Frame::Resize {
             rows: r.u16()?,
             cols: r.u16()?,
         },
-        5 => Frame::Detach,
-        6 => {
+        kind::DETACH => Frame::Detach,
+        kind::COMMAND => {
             let count = r.u32()? as usize;
             // Each argument takes at least its 4-byte length.
             if count > payload.len() / 4 {
@@ -374,16 +392,16 @@ fn decode_frame(kind: u8, payload: &[u8]) -> Result<Frame, Error> {
                 pane: r.option()?,
             }
         }
-        7 => return Ok(Frame::Paint(payload.to_vec())),
-        8 => {
+        kind::PAINT => return Ok(Frame::Paint(payload.to_vec())),
+        kind::EXIT => {
             return String::from_utf8(payload.to_vec())
                 .map(Frame::Exit)
                 .map_err(|_| Error::ExitNotUtf8);
         }
-        9 => return Ok(Frame::Stdout(payload.to_vec())),
-        10 => return Ok(Frame::Stderr(payload.to_vec())),
-        11 => Frame::Done { status: r.u8()? },
-        12 => Frame::Terminal {
+        kind::STDOUT => return Ok(Frame::Stdout(payload.to_vec())),
+        kind::STDERR => return Ok(Frame::Stderr(payload.to_vec())),
+        kind::DONE => Frame::Done { status: r.u8()? },
+        kind::TERMINAL => Frame::Terminal {
             taken: match r.u8()? {
                 0 => false,
                 1 => true,
@@ -406,12 +424,12 @@ pub struct Raw<'a> {
 impl<'a> Raw<'a> {
     /// A paint's bytes, as they are, without copying them.
     pub fn paint(&self) -> Option<&'a [u8]> {
-        (self.kind == Stream::Paint.kind()).then_some(self.payload)
+        (self.kind == kind::PAINT).then_some(self.payload)
     }
 
     /// An input's bytes, as they are, without copying them.
     pub fn input(&self) -> Option<&'a [u8]> {
-        (self.kind == INPUT).then_some(self.payload)
+        (self.kind == kind::INPUT).then_some(self.payload)
     }
 
     pub fn decode(&self) -> Result<Frame, Error> {
@@ -516,11 +534,12 @@ impl Decoder {
             }
             // At most `4 + MAX_FRAME`.
             let whole = length.saturating_add(4);
-            let Some((&kind, payload)) = rest.get(4..whole).and_then(<[u8]>::split_first) else {
+            let Some((&frame_kind, payload)) = rest.get(4..whole).and_then(<[u8]>::split_first)
+            else {
                 break;
             };
-            if kind != INPUT
-                && let Err(error) = decode_frame(kind, payload)
+            if frame_kind != kind::INPUT
+                && let Err(error) = decode_frame(frame_kind, payload)
             {
                 checked.error = Some(error);
                 break;
@@ -610,6 +629,57 @@ mod tests {
         round_trip(Frame::Stdout(b"out".to_vec()));
         round_trip(Frame::Stderr(Vec::new()));
         round_trip(Frame::Done { status: 2 });
+        round_trip(Frame::Terminal { taken: true });
+        round_trip(Frame::Terminal { taken: false });
+    }
+
+    /// Each frame's kind byte and each role's are the wire format's, which
+    /// a server and a client of another build read: pinned here as numbers,
+    /// apart from the names the code gives them.
+    #[test]
+    fn frame_kinds_and_roles_are_the_wire_formats() {
+        let hello = |role| Frame::Hello {
+            protocol: PROTOCOL,
+            version: String::new(),
+            role,
+        };
+        let kinds = [
+            (hello(Role::Attach), 1),
+            (
+                Frame::Attach {
+                    rows: 1,
+                    cols: 1,
+                    workspace: None,
+                },
+                2,
+            ),
+            (Frame::Input(Vec::new()), 3),
+            (Frame::Resize { rows: 1, cols: 1 }, 4),
+            (Frame::Detach, 5),
+            (
+                Frame::Command {
+                    argv: Vec::new(),
+                    cwd: String::new(),
+                    pane: None,
+                },
+                6,
+            ),
+            (Frame::Paint(Vec::new()), 7),
+            (Frame::Exit(String::new()), 8),
+            (Frame::Stdout(Vec::new()), 9),
+            (Frame::Stderr(Vec::new()), 10),
+            (Frame::Done { status: 0 }, 11),
+            (Frame::Terminal { taken: true }, 12),
+        ];
+        for (frame, kind) in kinds {
+            let encoded = frame.encode().unwrap_or_default();
+            assert_eq!(encoded.get(4), Some(&kind), "{frame:?}");
+        }
+        for (role, byte) in [(Role::Attach, 0), (Role::Command, 1), (Role::Kill, 2)] {
+            let encoded = hello(role).encode().unwrap_or_default();
+            // The length, the kind, the protocol's four bytes, then the role.
+            assert_eq!(encoded.get(9), Some(&byte), "{role:?}");
+        }
     }
 
     #[test]
@@ -725,6 +795,8 @@ mod tests {
             Frame::Stdout(b"out".to_vec()),
             Frame::Stderr(Vec::new()),
             Frame::Done { status: 2 },
+            Frame::Terminal { taken: true },
+            Frame::Terminal { taken: false },
         ];
         for frame in &frames {
             let mut out = b"before".to_vec();
