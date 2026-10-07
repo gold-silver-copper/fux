@@ -464,7 +464,11 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
         b'O' => match bytes.get(2) {
             None if !flush => Step::Incomplete,
             None => Step::Done(2, press(Key::Char('O'), alt())),
-            Some(&last) => Step::Done(3, final_key(last, Modifiers::NONE)),
+            // A byte no final key names: Alt-O, then the byte.
+            Some(&last) => match final_key(last, Modifiers::NONE) {
+                Some(input) => Step::Done(3, Some(input)),
+                None => Step::Done(2, press(Key::Char('O'), alt())),
+            },
         },
         // Escape Escape: an Escape, then decode the second one on its own.
         0x1b => Step::Done(1, press(Key::Escape, Modifiers::NONE)),
@@ -1310,6 +1314,15 @@ mod tests {
         long.extend(std::iter::repeat_n(b'x', 200));
         long.extend_from_slice(b"\x07y");
         assert_eq!(all(&long), vec![key("y")]);
+    }
+
+    /// `ESC O` and a byte no final key names is Alt-O, then that byte, as
+    /// `ESC` and any other byte is: neither is lost.
+    #[test]
+    fn escape_o_and_a_byte_it_does_not_name_is_alt_o_and_the_byte() {
+        assert_eq!(all(b"\x1bOx"), vec![key("M-O"), key("x")]);
+        assert_eq!(all(b"\x1bO\x1b[A"), vec![key("M-O"), key("Up")]);
+        assert_eq!(all(b"\x1bOA"), vec![key("Up")], "a key SS3 names");
     }
 
     /// An answer's string longer than any answer, split by a pause, waits
