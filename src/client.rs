@@ -156,15 +156,8 @@ static TITLE_SAVED: AtomicBool = AtomicBool::new(false);
 /// Notes a title saved or restored in a paint: the later of the two wins.
 /// A pane's own title sequences never reach a paint, which fux composes.
 fn note_title(paint: &[u8]) {
-    let last = |needle: &[u8]| {
-        (0..paint.len())
-            .rev()
-            .find(|&at| paint.get(at..).is_some_and(|rest| rest.starts_with(needle)))
-    };
-    let push = last(crate::outer::TITLE_PUSH);
-    let pop = last(crate::outer::TITLE_POP);
-    if push.is_some() || pop.is_some() {
-        TITLE_SAVED.store(push > pop, Ordering::Relaxed);
+    if let Some(saved) = crate::outer::title_saved_by(paint) {
+        TITLE_SAVED.store(saved, Ordering::Relaxed);
     }
 }
 

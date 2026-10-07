@@ -243,15 +243,8 @@ pub struct Server {
 /// later of the two wins (`client::note_title` does the same for paints
 /// it relays).
 fn note_title(saved: &mut bool, paint: &[u8]) {
-    let last = |needle: &[u8]| {
-        (0..paint.len())
-            .rev()
-            .find(|&at| paint.get(at..).is_some_and(|rest| rest.starts_with(needle)))
-    };
-    let push = last(crate::outer::TITLE_PUSH);
-    let pop = last(crate::outer::TITLE_POP);
-    if push.is_some() || pop.is_some() {
-        *saved = push > pop;
+    if let Some(now) = crate::outer::title_saved_by(paint) {
+        *saved = now;
     }
 }
 
