@@ -609,6 +609,10 @@ fn a_resize_without_reflow_keeps_a_pending_wrap_and_resets_the_region() -> Resul
     p.process(b"\x1b[2;5r")?;
     p.resize(12, 5)?;
     p.process(b"\x1b[5;1H\nX")?;
-    assert_eq!(p.screen().cursor_position(), (5, 1), "no region: a line feed");
+    assert_eq!(
+        p.screen().cursor_position(),
+        (5, 1),
+        "no region: a line feed"
+    );
     Ok(())
 }
