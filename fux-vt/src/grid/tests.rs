@@ -177,7 +177,7 @@ impl Grid {
             && let Some(slot) = self.slot(row)
         {
             if let Some(text) = self.texts.get_mut(slot) {
-                text.clear();
+                text.release();
             }
             self.unlink(slot);
         }
