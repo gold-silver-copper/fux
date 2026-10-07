@@ -482,6 +482,8 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
                 Step::Done(n.saturating_add(1), press(key, mods))
             }
             Step::Done(n, other) => Step::Done(n.saturating_add(1), other),
+            // `single` gives only `Done` or `Incomplete`; these are named
+            // for the match to be whole, as wildcards are refused.
             Step::PasteStart(n) => Step::PasteStart(n.saturating_add(1)),
             Step::DiscardOsc(n) => Step::DiscardOsc(n.saturating_add(1)),
             Step::DiscardDcs(n) => Step::DiscardDcs(n.saturating_add(1)),

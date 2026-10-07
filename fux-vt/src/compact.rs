@@ -556,7 +556,10 @@ impl Line<'_> {
                 *cell = cell.blanked();
                 continue;
             };
+            // Never: the range's length was a `u8`. Blanked as above, so
+            // that no cell points into the text just taken.
             let Ok(len) = u8::try_from(text.len()) else {
+                *cell = cell.blanked();
                 continue;
             };
             long.extend_from_slice(text);
@@ -576,7 +579,10 @@ impl Line<'_> {
                 *cell = cell.blanked();
                 continue;
             };
+            // Never: the range's length was a `u8`. Blanked as above, so
+            // that no cell points into the text just taken.
             let Ok(len) = u8::try_from(text.len()) else {
+                *cell = cell.blanked();
                 continue;
             };
             short.extend_from_slice(text);

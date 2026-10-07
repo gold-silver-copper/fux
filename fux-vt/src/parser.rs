@@ -1045,6 +1045,7 @@ impl Parser {
             return Ok(());
         }
         match self.state {
+            // Ground returned above; named for the match to be whole.
             State::Ground => self.ground(byte, sink)?,
             State::OscString => {
                 if byte == 7 {
