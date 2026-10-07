@@ -883,11 +883,11 @@ pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
             if !press.mods.ctrl
                 && !press.mods.alt
                 && !c.is_control()
-                && prompt.text.len() < 4096 =>
+                && prompt.text.len().saturating_add(c.len_utf8()) <= 4096 =>
         {
             let mut buffer = [0u8; 4];
             prompt.text = splice(&prompt.text, prompt.cursor, 0, c.encode_utf8(&mut buffer));
-            // Exact: the text is under 4096 bytes.
+            // Exact: the text is at most 4096 bytes.
             prompt.cursor = prompt.cursor.saturating_add(1);
         }
         Key::Char(_)
@@ -1089,6 +1089,26 @@ mod tests {
         s.input(c, b"\x1b[H");
         let shown = screen_text(&s, c)?;
         assert!(shown.contains("@1 main"), "{shown}");
+        Ok(())
+    }
+
+    /// A prompt's text is at most 4096 bytes, typed as pasted: a character
+    /// that would pass the limit is not typed.
+    #[test]
+    fn a_prompt_holds_at_most_4096_bytes_typed() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "rename-prompt -c c1 pane -t %1")?;
+        s.input(c, &[0x7f; 16]);
+        let mut paste = b"\x1b[200~".to_vec();
+        paste.extend(std::iter::repeat_n(b'a', 4095));
+        paste.extend_from_slice(b"\x1b[201~");
+        s.input(c, &paste);
+        s.input(c, "\u{754c}".as_bytes());
+        let len = match s.views.get(&c).map(|v| &v.mode) {
+            Some(Mode::Prompt(prompt)) => prompt.text.len(),
+            _ => return Err("no prompt".into()),
+        };
+        assert_eq!(len, 4095, "the three bytes of the glyph would pass 4096");
         Ok(())
     }
 
