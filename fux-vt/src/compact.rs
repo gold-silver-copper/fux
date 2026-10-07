@@ -333,7 +333,7 @@ impl Text {
         self.long.len() == 0 && self.short.is_empty()
     }
     /// Forgets all the text, releasing its memory.
-    pub(crate) fn clear(&mut self) {
+    pub(crate) fn release(&mut self) {
         self.long.clear();
         if self.short.capacity() != 0 {
             self.short = Vec::new();
@@ -352,7 +352,9 @@ impl Text {
             short: self.short.as_slice().to_vec(),
         }
     }
-    /// The most bytes of short clusters `cells` cells keep: one each.
+    /// The most bytes of short clusters `cells` cells keep: one each. A
+    /// cluster grown in place (`Line::append`) may pass it by its growth,
+    /// until the next store compacts.
     fn short_limit(cells: usize) -> usize {
         cells.saturating_mul(SHORT)
     }

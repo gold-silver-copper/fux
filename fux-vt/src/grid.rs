@@ -97,6 +97,8 @@ pub(crate) const MAX_ROWS: usize = 1_048_576;
 struct Meta {
     id: RowId,
     version: u64,
+    /// The row's width: for a row of the screen, always the grid's; it goes
+    /// with a row into history, which keeps rows of the widths they had.
     width: u16,
     wrapped: bool,
     /// How far into the row a cell may differ from a blank in the default
@@ -104,7 +106,10 @@ struct Meta {
     /// slot clears only the cells before it, and a row scrolled into
     /// history is looked at no further.
     used: u16,
-    /// Whether the row has an array of links in `Grid::linked`.
+    /// Whether the row's links are its slot's array in `Grid::linked`. An
+    /// array for a slot whose row is not linked is a recycled row's: stale,
+    /// read by no one, and still counted until links are freed
+    /// (`free_links`).
     linked: bool,
     /// Whether a prompt starts on the row (OSC 133 ; A).
     prompt: bool,
@@ -917,7 +922,7 @@ impl Grid {
         for slot in left {
             forget(&mut self.linked, &mut self.links, slot);
         }
-        self.links.free_unused(&[]);
+        self.links.free_unused();
         if self.links.used_within_half() {
             return;
         }
@@ -927,7 +932,7 @@ impl Grid {
             }
             self.history.unlink(index, version, &mut self.links);
         }
-        self.links.free_unused(&[]);
+        self.links.free_unused();
     }
 
     /// Marks live row `row` as where a prompt starts (OSC 133 ; A).
@@ -1043,7 +1048,7 @@ impl Grid {
         // would never read them.
         if start == 0 && end >= cols {
             if let Some(text) = self.texts.get_mut(slot) {
-                text.clear();
+                text.release();
             }
             self.unlink(slot);
         }
