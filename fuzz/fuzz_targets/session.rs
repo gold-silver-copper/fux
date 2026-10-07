@@ -242,13 +242,21 @@ impl Run {
         self.grids.retain(|c, _| clients.contains(c));
         for c in clients {
             let (spare, shown, placement, painted) = self.grids.entry(c).or_insert_with(|| {
-                (Grid::new(0, 0), Grid::new(0, 0), fux::layout::Placement::default(), false)
+                (
+                    Grid::new(0, 0),
+                    Grid::new(0, 0),
+                    fux::layout::Placement::default(),
+                    false,
+                )
             });
             if !fux::render::compose_into(&self.s, c, spare, placement) {
                 continue;
             }
             let whole = fux::render::compose(&self.s, c);
-            assert!(whole.as_ref() == Some(&*spare), "{c}: composed in part, not as whole");
+            assert!(
+                whole.as_ref() == Some(&*spare),
+                "{c}: composed in part, not as whole"
+            );
             let old = painted.then_some(&*shown);
             let fast = fux::render::paint(old, spare);
             let (mut plain_old, mut plain_new) = (shown.clone(), spare.clone());
@@ -256,7 +264,11 @@ impl Run {
             plain_new.forget_memo();
             let slow = fux::render::paint(painted.then_some(&plain_old), &plain_new);
             assert!(fast == slow, "{c}: the memo's paint differs");
-            assert_eq!(spare.same_as(shown), *spare == *shown, "{c}: same_as is not ==");
+            assert_eq!(
+                spare.same_as(shown),
+                *spare == *shown,
+                "{c}: same_as is not =="
+            );
             std::mem::swap(spare, shown);
             *painted = true;
         }
