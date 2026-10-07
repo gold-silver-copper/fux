@@ -39,11 +39,11 @@ The costliest kind: a reader trusts them, and they are wrong. All are fixed by r
 | P7 | `fux-vt/src/screen.rs:1743-1748` | Two NEL comments side by side, "to the first column" and "as CR takes it"; it goes to the left margin | act |
 | P8, P9 | `fux-vt/src/parser.rs:221-223, 346-347, 599-601` | `osc_limit` and `OSC_PAYLOAD_LIMIT` docs leave out the palette and the zero limit; `Options::palette` predates host colours | act |
 | P25 | `fux-vt/README.md:139` | `ByteQueue` "the bounded byte queue"; it has no bound | act |
-| S4 | `fux-vt/src/grid.rs:1546, 1560-1562`; `grid/tests.rs:64-76`; `clippy.toml:7-19`; `fux-vt/src/bytes.rs:9-10` | `move_row` spoken of as a deque's two slices (`Order` is a vector and an index); `clippy.toml` and `bytes.rs` say `copy_within` is called in one helper alone, and `move_row` calls it directly; the `rotate_*` rationale names calls that no longer exist | act |
+| S4 | `fux-vt/src/grid.rs:1546, 1560-1562`; `grid/tests.rs:64-76`; `clippy.toml:7-19`; `fux-vt/src/bytes.rs:9-10` | `move_row` spoken of as a deque's two slices (`Order` is a vector and an index); `clippy.toml` and `bytes.rs` say `copy_within` is called in one helper alone, and `move_row` calls it directly; the `rotate_*` rationale names calls that no longer exist | act for the comments; routing `move_row` through the checked helper was tried and counts `vt/corpus:man-small` 0.08% more, so the rule names that call instead |
 | S8 | `fux-vt/src/lib.rs:171-176` | `Row::text_len` "bytes of text the row keeps"; it counts only clusters over 17 bytes | act (doc only; the value stays) |
 | S9 | `fux-vt/src/grid.rs:592-595` | `mutate_row`'s contract, the invariant `used` depends on, ends in a sentence that does not parse | act |
 | S20, S29 | `fux-vt/src/cell.rs:129-131`; `grid.rs:111-113` | The `flags` bit comment garbled; "the two flags fit where the struct had padding", of three | act |
-| S24 | `fux-vt/src/grid.rs:1589, 1599-1600` | `resized` says how, not what (a resize without reflow), and cites "hunt 8 finding 017", which the repo does not hold | act |
+| S24 | `fux-vt/src/grid.rs:1589, 1599-1600` | `resized` says how, not what (a resize without reflow), and cites "hunt 8 finding 017" | act. Half wrong: finding 017 is in `docs/breaks-audit.md`, which the comment now cites |
 | K2, K3, K4 | `fux-vt/src/keys.rs:27, 102-104, 174-176` | `KeyPress`: "`A`, not `S-a`", but `S-a` becomes `a`; `Kitty::shifted`'s doc copied from `base`; `Direction::name` "`Left`" returns `left` | act |
 | K11 | `fux-vt/src/keys/decode.rs:57-58, 189-190, 205, 222-223` | `deadline`, `expect`, `REPLY_WINDOW` and `waiting` describe less than the code does | act |
 | R1, R2 | `src/render.rs:1-3, 624-626` | "send only the changed runs, inside synchronized output" (the echo is not); `compose_into` "neither allocates when used again" (it does) | act |
@@ -76,7 +76,7 @@ The costliest kind: a reader trusts them, and they are wrong. All are fixed by r
 | X5 | `src/client.rs:452-500, 503-572` | `watch` and `pump` share their signal, poll and relay code, and have drifted | act |
 | M8 | `src/session.rs:1210-1221, 1231-1241` | `output` and `release_frames` repeat the same five steps before a read | act |
 | M9 | `src/session.rs:704-733, 1881-1898` | A workspace built twice; the default tab name `"main"` in three places | act |
-| S10 | `fux-vt/src/grid.rs:607, 644, 674, 694, 1378, 1019` | `version` and `used` updated by hand six times, the `used` invariant held by each copy | act, measured |
+| S10 | `fux-vt/src/grid.rs:607, 644, 674, 694, 1378, 1019` | `version` and `used` updated by hand six times, the `used` invariant held by each copy | tried and left: a `Meta::touched` helper, even `inline(always)`, counts `paint/corpus` 0.02% more |
 | X8 | `src/protocol.rs:161-176, 335-393, 199-203` | Frame kinds and role bytes numbered twice each; `Frame::Terminal` is in neither encoding test | act: named constants, and `Terminal` added to both tests |
 | K5, K6 | `decode.rs:500-513, 760, 773-780`; `encode.rs:241-254, 267, 505-523` | The CSI final-letter table four times, the `CSI n ~` numbers three; `ss3` decodes CSI finals too | leave the tables (hot on both sides; shared tables change codegen); act: cross-references, and `ss3` renamed |
 | K7, K8 | `encode.rs:270-272, 480-484`; `decode.rs:162`, `encode.rs:62` | `legacy` recomputes `xterm_bits` instead of calling it; `PASTE_END` defined twice | act, measured |
@@ -105,16 +105,16 @@ The costliest kind: a reader trusts them, and they are wrong. All are fixed by r
 
 | Id | Where | What | Decision |
 | --- | --- | --- | --- |
-| M4 | `src/pane.rs:322-323` | `Pane::shell`: set, never read; its doc names quoting done elsewhere | act |
+| M4 | `src/pane.rs:322-323` | `Pane::shell`: set, never read; its doc names quoting done elsewhere | leave the field: it is public, and the bench builds `Pane::new` against main; its doc fixed |
 | M7 | `src/session.rs:1614-1621` | A loop marking every view dirty after `set`, which `run_command` already does | act |
 | M10 | `src/session.rs:1899` | A `MoveTo::Beside` arm after `Beside` has returned | act |
-| R8 | `src/render.rs:366-368, 377-378, 1693-1697` | Branches for grids of different sizes no caller can reach | act, measured |
+| R8 | `src/render.rs:366-368, 377-378, 1693-1697` | Branches for grids of different sizes no caller can reach | act in `paint_whole`; `row_eq` keeps them, as its public doc promises any two grids |
 | R16 | `src/render.rs:866, 874` | `grid.cursor = None` where it is already none | act |
 | S17, S23 | `fux-vt/src/grid.rs:858-863, 1231` | `adopt_links`' store-and-take round trip; `colour` re-checks what both callers checked | act |
 | P21 | `parser.rs:1045`; `screen.rs:1046-1052, 1259-1262, 1284` | An arm after an early return, a rebinding for nothing, `if width != 0` then `if width == 0`, a comment on the wrong line | act (the arm keeps a comment; the wildcard lint needs it) |
 | K14 | `fux-vt/src/keys/decode.rs:484-486` | Arms for steps `single` never returns | act: a comment (the wildcard lint needs them) |
 | S12 | `cell.rs:648-650`, `compact.rs:559-561, 579-581` | Unreachable `continue`s leave a cell pointing into the buffer just taken | act: blank as the sibling branch does |
-| R13, R22 | `src/render.rs:96-99, 743-746`; `src/copy.rs:413-416` | One condition computed twice; an empty needle checked twice | act |
+| R13, R22 | `src/render.rs:96-99, 743-746`; `src/copy.rs:413-416` | One condition computed twice; an empty needle checked twice | act for the needle; leave the condition, computed in two functions |
 
 ### 6. Speed attributes without a reason
 
@@ -135,8 +135,8 @@ The costliest kind: a reader trusts them, and they are wrong. All are fixed by r
 
 | Id | Where | What | Decision |
 | --- | --- | --- | --- |
-| T1 | `fux-vt/src/{cell,compact,grid,parser}/tests.rs`, `src/render.rs` | The test generator (splitmix64) written five times inside the two crates | act: one copy a crate, the sequences unchanged |
-| R24, M27 | `src/overlay.rs:994-1001`, `src/outer.rs:463-469`, `render.rs`, `session.rs`, `copy.rs` | A test session built by hand some twenty times | act |
+| T1 | `fux-vt/src/{cell,compact,grid,parser}/tests.rs`, `src/render.rs` | The test generator (splitmix64) written five times inside the two crates | act in fux-vt (four copies), the sequences unchanged; fux's one copy stays; `screen/tests.rs`'s own LCG stays, as replacing it would change its cases |
+| R24, M27 | `src/overlay.rs:994-1001`, `src/outer.rs:463-469`, `render.rs`, `session.rs`, `copy.rs` | A test session built by hand some twenty times | act for overlay's and outer's identical helpers; tests with a config of their own keep building it |
 | M28 | `tests/*.rs` | `focused()` three times, `painted()` twice, and other helpers outside `support` | act |
 | R25 | `render.rs:1803`; `overlay.rs:1196, 1703` | Test helpers shadow real functions of the same name | act: renamed |
 | S28 | `fux-vt/src/grid/tests.rs:17` | `…resize_peak_include_metadata` asserts only the plateau | act: renamed to what it checks |
@@ -158,6 +158,8 @@ Each would change what fux or fux-vt does, which this PR does not.
 | X18 | `src/server.rs:177-181` | A failed write to the terminal drops it, and keys are then read by no one |
 | M11, M14 | `src/command.rs:729-756, 346`; `config.rs:652`, `command.rs:430, 595` | `capture-pane foo` says "unknown flag"; `NotLines` promises `-N` and plain `N` is taken; undocumented aliases (`clipboard write-only`, `list`, a bare client number) |
 | P10 | `fux-vt/src/screen.rs:1694-1717` | DECSC keeps the cursor per screen and the pen shared; may differ from xterm (not checked) |
+| X27 | `src/client.rs`, `terminal_taken` and `attached` | **A bug, found during the cleanup.** Frames read in the same read as `Frame::Terminal` stay in the decoder until the socket next has bytes, so with a server that does not take the terminal the first paint may not show until more comes. With the server changed locally to take no terminal, three real-client attach tests fail, on main as on this branch. The fix: decode what the decoder holds before polling |
+| H1 | `bench/src/against.rs` | **The harness, found during the cleanup.** `fux-bench --against REF` builds REF in a worktree elsewhere, and identical code counts differently there: up to 0.08% on `vt/corpus:fish`, `man-small`, `mc-small`, `less-small`. A change also moves every workload by a fixed few hundred to ~1,800 instructions, whatever its input, including workloads that run none of the changed code (most likely the dynamic linker binding symbols as the binary changes; not verified). This PR therefore compares the working tree before and after each change, built in the same place |
 | K12, M32 | `decode.rs:738-742`; `src/input.rs:207-208` | Allocations per CSI key and per mouse event (faster, not different; left for a measured PR of their own) |
 
 ## What was not read closely
@@ -168,4 +170,33 @@ Each would change what fux or fux-vt does, which this PR does not.
 
 ## Changes made
 
-Filled in as each finding is acted on, with its commit.
+Each commit, with the findings it addresses. Instructions are fux-bench's counts of the working tree before and after (see H1); memory is `run.sh footprint`, five runs each.
+
+| Commit | Findings | Moved |
+| --- | --- | --- |
+| `4684022` comments: the server, client and design doc | X1, X4, X9, X10, X11, X12, X14, X15, X24 | comments only |
+| `2d2515e` comments: fux-vt's docs | P1, P2, P3, P5, P7, P8, P9, P17, P25, S4, S8, S9, S20, S24, S29, K2, K3, K4, K11, K16 | comments only |
+| `3e3ce09` the one copy_within outside its helper | S4 | comments only |
+| `34833be` comments: fux's render, overlay, pane and input | R1, R2, R7, R10, R11, R23, M5, M6, M19, K23 | comments only |
+| `aa11060` session: a loop and an arm gone | M4, M7, M10 | unchanged |
+| `d712e4b` render: paint_whole | R8, R16, R17 | paint/corpus -3.35%, paint/split -3.22%, session/keystroke -0.81% |
+| `5dcc210` fux-vt: what cannot happen says so | S12, S17, S23, P21, K14 | vt/corpus -0.03% |
+| `a337459` copy: find | R22 | unchanged |
+| `4b5cbbf` fux-vt: grid names | S2, S3, S5, S6, S7 | renames |
+| `a154f2f` render, layout: names | R4, R5, R9, R25, M23 | renames and comments |
+| `f9fff00` server: PaintClock and Terminal | X2, X3, X7, X20 | the same steps |
+| `a83c53f` the placeholder pane id | M16 | comments only |
+| `12ed5ca` protocol: kinds named, pinned, Terminal tested | X8 | the same bytes; a new test |
+| `986c20e` client: one loop | X5, and X27 found | the same steps |
+| `8351b4a` session: read_with, push_workspace | M8, M9 | the same steps |
+| `bf3407a` render: same_frame, same_row | R3 | paint/split -0.15%, session/keystroke -0.06% |
+| `7d7d9dd` keys: shared or pointing across | K5, K6, K7, K8, K24 | encode/legacy -0.99% |
+| `a8dfc49` render: windowed | R15 | the same lines |
+| `0adc5db` fux-vt: speed attributes | S22, P16 | vt/corpus -0.08%, vt/ascii -0.05% |
+| `f58116a` fux-vt tests: one generator | T1 | tests only |
+| `7e03567` tests: session helpers shared | R24, M27 | tests only |
+| `98d18f3` tests: support, the spawn lock, a test's name | M28, M29, S28 | tests only |
+| `3732d17` fux-vt: reflow in a file of its own | S1 | a move |
+| `7d5f89f` render: list_panel | R6 | the same cells |
+
+**Against main at the end** (`fux-bench --against main`, 136 workloads): none flagged; paint/split -3.41%, paint/corpus -3.41%, encode/legacy -1.02%, session/keystroke -0.91%. Four corpus recordings show +0.03% to +0.08%, which identical code showed against main before any change (H1); against the working tree at the start, built in the same place, no workload counts more than the fixed ~1,700-instruction offset (+0.002% at most). Memory: every fux-vt footprint measure falls in the same 4 KiB page range on main and on this branch.
