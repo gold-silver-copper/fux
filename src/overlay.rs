@@ -705,9 +705,8 @@ fn follow(session: &mut Session, client: ClientId, path: &[KeyPress], press: Key
             },
         );
     } else {
-        let prefix = session.config.prefix;
-        let keys = crate::config::keys_text(&keys);
-        session.error_to(client, format!("{prefix} {keys} is not bound"));
+        let named = session.keys_named(&keys);
+        session.error_to(client, format!("{named} is not bound"));
     }
 }
 
