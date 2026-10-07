@@ -1211,9 +1211,11 @@ fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
     let Some(text_x) = x.checked_add(1) else {
         return;
     };
-    // On a short screen the last lines (the selection and help) matter
-    // most, so the first lines give way.
+    // On a short screen the first lines give way, as the last (the help)
+    // matter more; but not past the selected entry, which stays in view.
     let skip = lines.len().saturating_sub(usize::from(height));
+    let selected = lines.iter().position(|(_, attrs)| attrs.inverse());
+    let skip = selected.map_or(skip, |selected| skip.min(selected));
     for (y, (text, attrs)) in (top..available).zip(lines.iter().skip(skip)) {
         grid.fill(y, x, view.cols, *attrs);
         grid.text(
