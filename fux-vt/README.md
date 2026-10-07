@@ -253,7 +253,8 @@ row's slot, and history.
   Arithmetic is checked. After an error the terminal stays usable: input
   already applied may stay, and a partial scroll still forces a refresh.
 - **Resize** builds the new grids first, so a failure changes nothing and
-  peak memory can hold both. Tab stops stay; left and right margins reset.
+  peak memory can hold both. Tab stops stay; the scroll region and the
+  left and right margins reset, as xterm resets them.
 
 ### Without `Options::reflow`
 
@@ -263,7 +264,8 @@ columns past the new width, and the screen's rows lose their soft wraps
 visible: a shrink drops rows below the cursor first, then moves rows above
 it into history (or drops them, on the alternate screen); a grow pulls rows
 back from history, then adds blank rows below. Both cursors move with
-their rows and are clamped; a pending wrap is dropped.
+their rows and are clamped, and keep a pending wrap, at any width, as xterm
+keeps it.
 
 With `reflow`, each line is laid out a run of cells at a time (as many as
 fit before a row ends, a wide glyph moves or a spacer is skipped), in two

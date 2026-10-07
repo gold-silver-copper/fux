@@ -1636,27 +1636,22 @@ impl Grid {
             let row = index.map_or(usize::MAX, |i| i.saturating_sub(live_top));
             u16::try_from(row).map_or(rows.last(), |row| row.min(rows.last()))
         };
+        // The cursors keep their columns, as far as the new width allows,
+        // and a wrap they wait on, as xterm keeps it at any width (DEC STD
+        // 070, Appendix D.6.1: a resize is no movement that ends it). The
+        // scroll region is reset, as xterm does, and as `reflowed` does.
         let mut replacement = Self {
-            // A pending wrap is dropped: the cursor goes one past where it
-            // waited, as far as the new width allows.
-            cursor: (shifted(self.cursor.0), self.next_column().min(cols.last())),
+            cursor: (shifted(self.cursor.0), self.cursor.1.min(cols.last())),
+            pending_wrap: self.pending_wrap,
             saved_cursor: (
                 shifted(self.saved_cursor.0),
-                past(self.saved_cursor.1, self.saved_pending_wrap).min(cols.last()),
+                self.saved_cursor.1.min(cols.last()),
             ),
+            saved_pending_wrap: self.saved_pending_wrap,
             origin: self.origin,
             saved_origin: self.saved_origin,
-            top: self.top,
-            bottom: if self.bottom == self.rows.last() {
-                rows.last()
-            } else {
-                self.bottom.min(rows.last())
-            },
             ..self.successor(rows, cols)
         };
-        if replacement.top > replacement.bottom {
-            replacement.top = 0;
-        }
         replacement.reserve_screen()?;
         let end = base.checked_add(keep_total).ok_or(Error::Capacity)?;
         // Each row is laid out whole in `row`, as wide as it is, then kept.
