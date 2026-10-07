@@ -277,15 +277,21 @@ impl Conn {
         }
     }
 
-    /// Hands the terminal back: what waits for it written as far as it
-    /// takes it at once, the rest dropped, its title restored if the
-    /// paints saved it, and the server's descriptor for it closed.
+    /// Hands the terminal back: its title restored if the paints saved it,
+    /// what waits for it written as far as it takes it at once and the
+    /// rest sent to the client to write, and the server's descriptor for
+    /// it closed.
     fn give_back_tty(&mut self) {
         if let Some(mut tty) = self.tty.take() {
             if tty.title_saved {
                 tty.out.push(crate::outer::TITLE_POP);
             }
-            tty.flush();
+            // What it does not take at once, the title's restore with it,
+            // goes to the client in paint frames, before the `Exit` that
+            // follows: it writes them to the terminal as it writes paints.
+            if tty.flush() && !tty.out.is_empty() {
+                Stream::Paint.encode_into(tty.out.as_slice(), &mut self.out);
+            }
         }
     }
 
@@ -1255,6 +1261,35 @@ mod tests {
         conn.client = Some(ClientId(1));
         conn.tty = Some(Terminal::new(OwnedFd::from(tty)));
         Ok((conn, client, far))
+    }
+
+    /// A terminal given back that takes no more at once (a slow link) has
+    /// what it did not take, its title's restore last, sent to the client
+    /// in paint frames before the `Exit`, rather than dropped.
+    #[test]
+    fn what_a_terminal_given_back_did_not_take_goes_to_the_client() -> std::io::Result<()> {
+        let (mut conn, _client, _far) = with_terminal()?;
+        // Fill the stand-in until it takes no more.
+        if let Some(tty) = &mut conn.tty {
+            tty.out.push(&vec![b'x'; 4 << 20]);
+            tty.title_saved = true;
+        }
+        conn.flush_tty();
+        conn.send(&Frame::Exit("detached".into()));
+        let mut decoder = crate::protocol::Decoder::default();
+        decoder.push(conn.out.as_slice());
+        let mut painted = Vec::new();
+        let mut exit = None;
+        while let Ok(Some(raw)) = decoder.raw() {
+            if let Some(bytes) = raw.paint() {
+                painted.extend_from_slice(bytes);
+            } else if let Ok(Frame::Exit(reason)) = raw.decode() {
+                exit = Some(reason);
+            }
+        }
+        assert!(painted.ends_with(crate::outer::TITLE_POP), "the title's restore");
+        assert_eq!(exit.as_deref(), Some("detached"));
+        Ok(())
     }
 
     /// A terminal that can no longer be written is given up and its client
