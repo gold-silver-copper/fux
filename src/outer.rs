@@ -394,7 +394,16 @@ impl Session {
             return out;
         };
         let tab = view.tab();
-        let wanted = self.config.titles.then(|| self.title_of(view));
+        // The title, made only when it is not the one the terminal has:
+        // `Some(None)` for the same.
+        let wanted = self.config.titles.then(|| {
+            let title = self.title_of(view);
+            let same = view
+                .title
+                .as_deref()
+                .is_some_and(|shown| shown.chars().eq(clean(title)));
+            (!same).then(|| clean(title).collect::<String>())
+        });
         let Some(view) = self.views.get_mut(&client) else {
             return out;
         };
@@ -402,7 +411,7 @@ impl Session {
             view.bells.remove(&tab);
         }
         match wanted {
-            Some(title) if view.title.as_ref() != Some(&title) => {
+            Some(Some(title)) => {
                 if !view.title_pushed {
                     out.extend_from_slice(TITLE_PUSH);
                     view.title_pushed = true;
@@ -417,14 +426,14 @@ impl Session {
                 view.title_pushed = false;
                 view.title = None;
             }
-            Some(_) | None => {}
+            Some(None) | None => {}
         }
         out
     }
 
     /// The title a view's terminal is given: its focused pane's, else its
-    /// tab's name, without control characters.
-    fn title_of(&self, view: &View) -> String {
+    /// tab's name, without control characters (`clean`).
+    fn title_of<'a>(&'a self, view: &View) -> &'a str {
         let pane = view
             .focus()
             .and_then(|f| self.panes.get(&f))
@@ -434,12 +443,13 @@ impl Session {
             .tab()
             .and_then(|t| self.tab(t))
             .map(|t| t.name.as_str());
-        pane.or(tab)
-            .unwrap_or_default()
-            .chars()
-            .filter(|c| !c.is_control())
-            .collect()
+        pane.or(tab).unwrap_or_default()
     }
+}
+
+/// A title without its control characters, as a terminal is given it.
+fn clean(title: &str) -> impl Iterator<Item = char> + '_ {
+    title.chars().filter(|c| !c.is_control())
 }
 
 #[cfg(test)]
