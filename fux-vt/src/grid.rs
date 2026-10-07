@@ -108,8 +108,8 @@ struct Meta {
     prompt: bool,
 }
 
-// The two flags fit where the struct had padding: a row without links costs
-// no more than it did before links.
+// `linked` and `prompt` fit where the struct had padding: a row costs
+// no more for them.
 const _: () = assert!(std::mem::size_of::<Meta>() == 24);
 
 impl Meta {
@@ -591,8 +591,9 @@ impl Grid {
     }
     /// Edits a live row's cells with `f`, which says whether it changed any
     /// of them; only then does the row take `version`. An edit that leaves
-    /// the row as it was leaves its version alone. A blank cell `f` makes
-    /// anything else is before `end`.
+    /// the row as it was leaves its version alone. Every cell `f` makes
+    /// other than a blank in the default style is before `end`, which the
+    /// row's `used` mark is raised to.
     pub fn mutate_row(
         &mut self,
         row: u16,
@@ -1543,8 +1544,9 @@ impl Grid {
         if to >= self.order.len() {
             return None;
         }
-        // Usually the rows from `from` to `to` lie in one of the deque's two
-        // slices: there the move turns that run by one.
+        // The order is a ring, read as two slices from its top. Usually the
+        // rows from `from` to `to` lie in one of them: there the move shifts
+        // that run by one.
         let (low, high) = (from.min(to), from.max(to));
         let (front, back) = self.order.as_mut_slices();
         let split = front.len();
@@ -1557,9 +1559,8 @@ impl Grid {
             }
         };
         if let Some(run) = run {
-            // The run holds `from` and `to`, so at least one row: a turn by
-            // one never passes its end.
-            // One move of the rest, not the general rotation's.
+            // The rest of the run moves over by one, and the row goes in at
+            // the end it moved to: one copy, not the general rotation's.
             let end = run.len().saturating_sub(1);
             if from < to {
                 run.copy_within(1.., 0);
@@ -1586,7 +1587,10 @@ impl Grid {
         Some(slot)
     }
 
-    /// Build replacement storage first, so allocation failure leaves this grid unchanged.
+    /// This grid at `rows` by `cols` without reflow: each row keeps its
+    /// cells, cut or padded to the new width (`reflowed` rewraps them). The
+    /// new storage is built before anything changes, so a failed allocation
+    /// leaves this grid as it was.
     pub fn resized(
         &self,
         rows: u16,
@@ -1596,8 +1600,8 @@ impl Grid {
     ) -> Result<Self, Error> {
         let (rows, cols) = Self::check_size(rows, cols, self.history_limit)?;
         let history = self.history_len();
-        // Reflow around the cursor so the line it is on stays visible (hunt 8
-        // finding 017). A shrink drops rows below the cursor first, and only
+        // Rows are placed around the cursor, so that the line it is on stays
+        // in view (finding 017 of the Bevy version, docs/breaks-audit.md). A shrink drops rows below the cursor first, and only
         // then scrolls rows above it into history: a screen with its content at
         // the top keeps it, and a full screen keeps its bottom line. A grow
         // pulls rows back from history above, as xterm does, and pads the rest
@@ -2872,7 +2876,7 @@ impl Hasher for SlotHasher {
 
 /// Drops slot `slot`'s links, which its cells no longer have. Out of line,
 /// so that the paths that recycle and erase rows, which only call it for a
-/// row with links, stay as small as they were before links.
+/// row with links, carry none of it.
 #[cold]
 #[inline(never)]
 fn forget(linked: &mut Linked, links: &mut Links, slot: usize) {

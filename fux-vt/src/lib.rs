@@ -168,9 +168,10 @@ impl<'a> Row<'a> {
     pub fn starts_prompt(&self) -> bool {
         self.prompt
     }
-    /// Bytes of text the row keeps for clusters too long to hold inline,
-    /// overwritten ones included until the row is compacted: at most
-    /// [`Cells::text_limit`] of its length. For memory diagnostics.
+    /// Bytes of text the row keeps for clusters over 17 bytes, overwritten
+    /// ones included until the row is compacted: at most
+    /// [`Cells::text_limit`] of its length. Shorter clusters held off the
+    /// cells are not counted. For memory diagnostics.
     pub fn text_len(&self) -> usize {
         self.spill.len()
     }

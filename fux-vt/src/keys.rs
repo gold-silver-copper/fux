@@ -24,7 +24,8 @@ pub enum Direction {
 impl Direction {
     /// Every direction, left, right, up, down.
     pub const ALL: [Direction; 4] = [Self::Left, Self::Right, Self::Up, Self::Down];
-    /// The direction's name in a key name (`Left`, `Right`, `Up`, `Down`).
+    /// The direction's name, lower case (`left`, `right`, `up`, `down`), as
+    /// messages write it; key names are `Left` and so on (`NAMED`).
     pub fn name(self) -> &'static str {
         match self {
             Self::Left => "left",
@@ -100,8 +101,9 @@ impl Modifiers {
 }
 
 /// A key with its modifiers, normalized so that equal key presses compare
-/// equal: a character carries its own shift (`A`, not `S-a`), and a control
-/// letter is lower case (`C-b`), as terminals cannot tell the two apart.
+/// equal: a character's shift is dropped, as the character says it already
+/// (Shift and `a` arrive as `A`; `S-a` is `a`), and a control letter is
+/// lower case (`C-b`), as terminals cannot tell the two apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeyPress {
     /// The key.
@@ -171,8 +173,7 @@ pub struct Kitty {
     /// point, or a functional key's (keypad keys from 57399); none for a
     /// key sent as `CSI 1 ; m A` or `CSI n ~`.
     pub code: Option<u32>,
-    /// The shifted key and the base-layout key, as reported (alternate
-    /// keys).
+    /// The shifted key, as reported (alternate keys).
     pub shifted: Option<u32>,
     /// The base-layout key, as reported (alternate keys).
     pub base: Option<u32>,

@@ -62,7 +62,7 @@ fn narrowing_live_rows_uses_the_new_width() -> Result<(), Error> {
 }
 
 /// `move_row` is `remove(from)` then `insert(to)`, for every pair of rows,
-/// in a deque that is one slice and in one that has wrapped round into two;
+/// in an order that is one slice and in one that has wrapped round into two;
 /// and it moves nothing for an index out of range.
 #[test]
 fn moving_a_row_is_a_removal_then_an_insertion() -> Result<(), Error> {
@@ -73,7 +73,7 @@ fn moving_a_row_is_a_removal_then_an_insertion() -> Result<(), Error> {
         wrapped.scroll((0, 4), 1, UP, 0, &mut next, version)?;
     }
     let (front, back) = wrapped.order.as_slices();
-    assert!(!front.is_empty() && !back.is_empty(), "the deque wraps");
+    assert!(!front.is_empty() && !back.is_empty(), "the order wraps");
     moves_are_removals_then_insertions(&contiguous);
     moves_are_removals_then_insertions(&wrapped);
     Ok(())

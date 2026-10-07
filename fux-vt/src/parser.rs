@@ -218,8 +218,8 @@ enum State {
     SosPmApcString,
 }
 
-/// The most OSC payload bytes retained for [`Event`] delivery and
-/// hyperlinks. A longer OSC string is consumed without an event or a link;
+/// The most OSC payload bytes retained for [`Event`] delivery, hyperlinks
+/// and the palette. A longer OSC string is consumed without an event or a link;
 /// nothing beyond this is ever buffered.
 pub const OSC_PAYLOAD_LIMIT: usize = 64 * 1024;
 
@@ -342,9 +342,11 @@ pub struct Options {
     /// xterm does (its ctlseqs, "Operating System Commands"): the 256-colour
     /// palette (OSC 4 sets and queries an entry, OSC 104 resets it), the
     /// special colours (OSC 5, OSC 105), and the dynamic colours (OSC 10 to
-    /// 19 set them, OSC 110 to 119 reset them). An entry the program has
-    /// not set is answered with xterm's default; a dynamic colour it has
-    /// not set is asked of the host, an [`Event::ColorQuery`] with
+    /// 19 set them, OSC 110 to 119 reset them). A palette entry the program
+    /// has not set is answered with the host's colour for it
+    /// ([`Parser::set_host_color`]), else xterm's default; a special colour
+    /// it has not set is not answered; a dynamic colour it has not set is
+    /// asked of the host, an [`Event::ColorQuery`] with
     /// [`Options::events`], as without this option. The colours are
     /// state: drawing a cell in the colour its entry was set to is the
     /// host's to do. OSC payloads are buffered, up to
@@ -596,8 +598,9 @@ pub struct Parser {
     options: Options,
     /// OSC payload, at most `osc_limit` bytes.
     osc: Vec<u8>,
-    /// `OSC_PAYLOAD_LIMIT` with `options.events` or `options.hyperlinks`,
-    /// else `OSC_PREFIX`: set once, as it is asked for every byte of an OSC.
+    /// `OSC_PAYLOAD_LIMIT` with `options.events`, `options.hyperlinks` or
+    /// `options.palette`, else `OSC_PREFIX` with `options.prompt_marks`,
+    /// else 0: set once, as it is asked for every byte of an OSC.
     osc_limit: usize,
     osc_overflow: bool,
     /// The DECRQSS the DCS string being read is, with
@@ -727,8 +730,8 @@ impl Parser {
         self.run::<true>(bytes, sink)
     }
     /// Processes `bytes`, stopping after a BSU if `UNTIL_FRAME`; how many
-    /// bytes it took if it stopped. A constant, so that `process_with`
-    /// compiles as it did before frames were looked for.
+    /// bytes it took if it stopped. A constant, so that `process_with`,
+    /// which does not stop, compiles without the check for one.
     fn run<const UNTIL_FRAME: bool>(
         &mut self,
         bytes: &[u8],

@@ -126,9 +126,9 @@ impl std::fmt::Debug for Attributes {
 }
 
 impl Attributes {
-    // The bits of `flags`, one a style, but the underline's: three bits
-    // from `UNDERLINE_SHIFT` hold its style's number (`UnderlineStyle`), 0
-    // for none. Bit 3, the underline's while it had no style, is spare.
+    // The bits of `flags`: one for each style, but the underline, whose
+    // style's number (`UnderlineStyle`, 0 for none) takes three bits from
+    // `UNDERLINE_SHIFT`. Bit 3, the underline's while it had no style, is spare.
     pub(crate) const BOLD: u16 = 1;
     pub(crate) const DIM: u16 = 2;
     pub(crate) const ITALIC: u16 = 4;

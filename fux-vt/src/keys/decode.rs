@@ -35,8 +35,8 @@
 //! ST`) begins `ESC P`, as Alt-P does, so it is one only while an answer is
 //! expected, and once it has begun as fux's answers do, `ESC P`, `0` or
 //! `1`, then `$` or `+`. While one is expected, `ESC P` and `ESC P 1` wait
-//! for the rest, as `ESC ]` does; otherwise `ESC P` is Alt-P at once, as
-//! before, costing no wait, however the bytes are split. fux's questions
+//! for the rest, as `ESC ]` does; otherwise `ESC P` is Alt-P at once,
+//! costing no wait, however the bytes are split. fux's questions
 //! are always expected (`Decoder::expect`), and a terminal answers them
 //! before DA1, whose answer ends the expecting.
 //!
@@ -54,8 +54,9 @@ pub const ESCAPE_DELAY: Duration = Duration::from_millis(35);
 /// of it. Answers are not typed, so the wait delays no key; it only keeps a
 /// split one from being taken for keys.
 pub const REPLY_DELAY: Duration = Duration::from_secs(1);
-/// How long after fux asks the terminal a bare `ESC ]` is taken for the
-/// start of an answer, unless the answer to DA1, asked last, comes first.
+/// How long after fux asks the terminal a bare `ESC ]`, `ESC P`, `ESC P0`
+/// or `ESC P1` waits as long as an answer begun (`REPLY_DELAY`), unless the
+/// answer to DA1, asked last, comes first.
 pub const REPLY_WINDOW: Duration = Duration::from_secs(1);
 /// The longest OSC answer kept: `OSC 11 ; rgb:RRRR/GGGG/BBBB ST` is 29
 /// bytes. A longer string is dropped.
@@ -186,8 +187,8 @@ impl Decoder {
         }
     }
 
-    /// Whether decoding is waiting on a timeout: a lone Escape or an
-    /// incomplete sequence, outside a paste.
+    /// Whether decoding is waiting on a timeout, outside a paste: a lone
+    /// Escape, an incomplete sequence, or an over-long string being dropped.
     pub fn waiting(&self) -> bool {
         self.paste.is_none() && (!self.pending.is_empty() || self.discarding.is_some())
     }
@@ -202,8 +203,8 @@ impl Decoder {
 
     /// When `timeout` is due: `ESCAPE_DELAY` after decoding began waiting,
     /// as marked, or `REPLY_DELAY` if what waits is an answer begun, or a
-    /// bare `ESC ]` while an answer is expected; none while it is not
-    /// waiting.
+    /// bare `ESC ]`, `ESC P`, `ESC P0` or `ESC P1` while an answer is
+    /// expected; none while it is not waiting.
     pub fn deadline(&self) -> Option<Instant> {
         let since = self.since.filter(|_| self.waiting())?;
         let pending = self.pending.as_slice();
@@ -219,8 +220,8 @@ impl Decoder {
     }
 
     /// Fux has asked the terminal questions, ending with DA1, at `now`: until
-    /// DA1's answer comes, or `REPLY_WINDOW` passes, a bare `ESC ]` waits as
-    /// long as an answer begun.
+    /// DA1's answer comes, or `REPLY_WINDOW` passes, a bare `ESC ]` (or the
+    /// start of a DCS answer) waits as long as an answer begun.
     pub fn expect(&mut self, now: Instant) {
         self.expected = self.expected.saturating_add(1);
         self.expected_until = Some(after(now, REPLY_WINDOW));
@@ -1405,7 +1406,7 @@ mod tests {
         assert_eq!(out, vec![key("y")]);
     }
 
-    /// `ESC P` is Alt-P at once, as it always was, unless an answer is
+    /// `ESC P` is Alt-P at once, unless an answer is
     /// expected: then it, and `ESC P 1`, wait `REPLY_DELAY` for the rest of
     /// one, and are Alt-P and the key after, if it does not come. What
     /// does not begin as an answer is keys at once.
