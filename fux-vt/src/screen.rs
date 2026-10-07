@@ -2127,6 +2127,10 @@ impl Screen {
             (0, g.cols.last())
         };
         let offset = if g.origin { g.top } else { 0 };
+        // `clamp` panics on a lower bound past its upper; these never are:
+        // the top margin is above the bottom one (DECSTBM sets them so, a
+        // resize resets them), the left left of the right, and the screen's
+        // edges are 0 and its last row and column.
         let row = |index: usize, default: u16| match p.first(index, 0) {
             0 => default,
             n => n
