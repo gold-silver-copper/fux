@@ -410,14 +410,13 @@ fn fold(c: char, ignore_case: bool) -> char {
 pub fn find(screen: &Screen, query: &str, from: (usize, u16), seek: Seek) -> Option<(usize, u16)> {
     let ignore_case = !query.chars().any(char::is_uppercase);
     let needle: Vec<char> = query.chars().map(|c| fold(c, ignore_case)).collect();
-    if needle.is_empty() {
-        return None;
-    }
+    // An empty needle finds nothing.
     let &first = needle.first()?;
     let total = retained(screen);
     // One row's folded characters and their columns, and its matches,
     // reused row after row: a search over a long history allocates nothing
-    // per row, and tries the needle only where its first character is.
+    // for a row without a match, and tries the needle only where its first
+    // character is.
     let (mut folded, mut cols) = (Vec::new(), Vec::new());
     let mut matches_in = |index: usize, cols: &mut Vec<u16>| {
         cols.clear();
