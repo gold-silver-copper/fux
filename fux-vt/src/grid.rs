@@ -631,7 +631,7 @@ impl Grid {
         else {
             return false;
         };
-        if dst.iter().any(|c| c.is_wide() || c.is_wide_continuation()) {
+        if Compact::any_halves(dst) {
             return false;
         }
         // Already these very cells, as a redraw finds them: the row is as
@@ -640,9 +640,7 @@ impl Grid {
         if first.is_some_and(|(c, b)| c.is_ascii(*b, style)) && unchanged(dst, run, style) {
             return true;
         }
-        for (cell, byte) in dst.iter_mut().zip(run) {
-            *cell = Compact::ascii(*byte, style);
-        }
+        Compact::fill_ascii(dst, run, style);
         if let Some(m) = self.meta.get_mut(slot) {
             let end = u16::try_from(start.saturating_add(run.len())).unwrap_or(m.width);
             m.version = version;
