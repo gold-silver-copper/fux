@@ -701,6 +701,19 @@ fn sgr_mouse(params: &[u8], last: u8) -> Option<MouseEvent> {
 }
 
 /// A CSI sequence: `ESC [ params final`. Too long a sequence is dropped.
+/// A CSI ended unfinished by an ESC among `params`, its bytes after
+/// `ESC [`.
+#[cold]
+#[inline(never)]
+fn unfinished(params: &[u8]) -> Step {
+    let at = params.iter().position(|&b| b == 0x1b).unwrap_or(0);
+    if at == 0 {
+        Step::Done(2, press(Key::Char('['), alt()))
+    } else {
+        Step::Done(at.saturating_add(2), None)
+    }
+}
+
 /// A `CSI ?` answer longer than any answer, `body` its bytes after `ESC [`:
 /// dropped through its final byte once that is here, as an over-long OSC
 /// or DCS answer is dropped to its end; held until then, up to
@@ -757,6 +770,13 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     // `ESC [`, the parameters and the final byte; within `bytes`, so exact.
     let consumed = end.saturating_add(3);
     let params = body.get(..end).unwrap_or_default();
+    // An ESC among them ended the sequence unfinished there (ECMA-48,
+    // 5.5): `ESC [` alone is Alt-[, a sequence with parameters is dropped,
+    // and the ESC begins the next key. The byte taken for the final one
+    // then follows the ESC, so the byte before it is the one looked at.
+    if params.last() == Some(&0x1b) {
+        return unfinished(params);
+    }
     let last = body.get(end).copied().unwrap_or(0);
     if params.first() == Some(&b'<') {
         // An SGR mouse report: `CSI < code ; column ; row M`, `m` a release.
@@ -1332,6 +1352,16 @@ mod tests {
         long.extend(std::iter::repeat_n(b'x', 200));
         long.extend_from_slice(b"\x07y");
         assert_eq!(all(&long), vec![key("y")]);
+    }
+
+    /// An ESC inside a CSI ends it unfinished, as ECMA-48 (5.5) has it, and
+    /// begins what follows: `ESC [` with nothing
+    /// before it is Alt-[, a sequence with parameters is dropped. The key
+    /// after it is not lost.
+    #[test]
+    fn an_escape_inside_a_csi_ends_it_and_begins_the_next_key() {
+        assert_eq!(all(b"\x1b[\x1b[A"), vec![key("M-["), key("Up")]);
+        assert_eq!(all(b"\x1b[12\x1b[A"), vec![key("Up")]);
     }
 
     /// `ESC O` and a byte no final key names is Alt-O, then that byte, as
