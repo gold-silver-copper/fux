@@ -79,7 +79,7 @@ struct Conn {
     closing: bool,
     dead: bool,
     /// The client's terminal, if the server took it.
-    tty: Option<Terminal>,
+    tty: Option<TakenTerminal>,
     /// A descriptor the client sent, until the `Attach` it came with.
     passed: Option<std::os::fd::OwnedFd>,
     /// The size the client's view was last given: its terminal's, which
@@ -117,7 +117,7 @@ impl PaintClock {
             .map_or(self.next, |settled| settled.min(self.next))
     }
     /// The next paint may be made now.
-    fn now(&mut self) {
+    fn paint_now(&mut self) {
         self.next = Instant::now();
     }
     /// A paint was made at `now`.
@@ -126,7 +126,7 @@ impl PaintClock {
         self.settled = None;
     }
     /// The client typed into `pane`, its focus, if any.
-    fn typed(&mut self, pane: Option<PaneId>) {
+    fn typed_into(&mut self, pane: Option<PaneId>) {
         self.echo = pane;
     }
     /// Pane `pane` wrote: if it is the pane typed into, its echo is painted
@@ -134,7 +134,7 @@ impl PaintClock {
     fn wrote(&mut self, pane: PaneId) {
         if self.echo == Some(pane) {
             self.echo = None;
-            self.now();
+            self.paint_now();
         }
     }
     /// Panes wrote, read at `now`: output held to `PAINT` is painted once
@@ -154,7 +154,7 @@ impl PaintClock {
 /// One is held only while its client is attached: every `Exit` gives it
 /// back first (`Conn::send`). So a connection being stopped or closed has
 /// nothing waiting for its terminal, and what waits on those is `out`'s.
-struct Terminal {
+struct TakenTerminal {
     fd: std::os::fd::OwnedFd,
     /// What waits to be written to it.
     out: ByteQueue,
@@ -164,9 +164,9 @@ struct Terminal {
     title_saved: bool,
 }
 
-impl Terminal {
-    fn new(fd: std::os::fd::OwnedFd) -> Terminal {
-        Terminal {
+impl TakenTerminal {
+    fn new(fd: std::os::fd::OwnedFd) -> TakenTerminal {
+        TakenTerminal {
             fd,
             out: ByteQueue::default(),
             title_saved: false,
@@ -190,7 +190,7 @@ impl Terminal {
 
 /// Input from a client's terminal, read at `now`, to the session; the pane
 /// it went to, the client's focus, is the one whose echo is painted at once.
-fn typed(
+fn take_input(
     session: &mut Session,
     clock: &mut PaintClock,
     client: ClientId,
@@ -198,7 +198,7 @@ fn typed(
     now: Instant,
 ) {
     session.input_at(client, bytes, now);
-    clock.typed(
+    clock.typed_into(
         session
             .views
             .get(&client)
@@ -870,7 +870,7 @@ impl Server {
             let all = n < self.read_buffer.len();
             let Some(client) = conn.client else { return };
             let bytes = self.read_buffer.get(..n).unwrap_or_default();
-            typed(&mut self.session, &mut conn.clock, client, bytes, now);
+            take_input(&mut self.session, &mut conn.clock, client, bytes, now);
             if all {
                 break;
             }
@@ -968,7 +968,7 @@ impl Server {
             // decoder, uncopied.
             if let (Some(Role::Attach), Some(bytes)) = (conn.role, raw.input()) {
                 if let Some(client) = conn.client {
-                    typed(&mut self.session, &mut conn.clock, client, bytes, now);
+                    take_input(&mut self.session, &mut conn.clock, client, bytes, now);
                 }
                 continue;
             }
@@ -1039,11 +1039,13 @@ impl Server {
                     Ok(client) => {
                         conn.client = Some(client);
                         conn.size = (rows, cols);
-                        conn.clock.now();
+                        conn.clock.paint_now();
                         // The client's terminal, if it sent it: taken, the
                         // client is told before anything is painted.
                         if let Some(passed) = conn.passed.take() {
-                            conn.tty = fuxix::terminal::reopen(&passed).ok().map(Terminal::new);
+                            conn.tty = fuxix::terminal::reopen(&passed)
+                                .ok()
+                                .map(TakenTerminal::new);
                             conn.send(&Frame::Terminal {
                                 taken: conn.tty.is_some(),
                             });
@@ -1260,7 +1262,7 @@ mod tests {
         tty.set_nonblocking(true)?;
         let mut conn = Conn::new(stream);
         conn.client = Some(ClientId(1));
-        conn.tty = Some(Terminal::new(OwnedFd::from(tty)));
+        conn.tty = Some(TakenTerminal::new(OwnedFd::from(tty)));
         Ok((conn, client, far))
     }
 
