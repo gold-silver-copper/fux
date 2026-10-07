@@ -856,9 +856,7 @@ impl Grid {
 
     /// Takes `links` as the grid's links, counting their cells: those of a
     /// grid that this one replaces in a resize, which copied its rows.
-    pub fn adopt_links(&mut self, links: Links) {
-        self.links = links;
-        let mut links = std::mem::take(&mut self.links);
+    pub fn adopt_links(&mut self, mut links: Links) {
         links.recount(self.every_link());
         self.links = links;
     }
@@ -1225,17 +1223,16 @@ impl Grid {
     /// Gives the blank cells of a row brought in style `blank`, the pen's
     /// colours. They are blanked first in the default style, all zeros,
     /// which compiles to a memset, much faster than storing any other cell;
-    /// this goes over them again only for another pen, and is kept out of
-    /// line so the two are never fused into one slower loop.
+    /// this goes over them again only for another pen: its callers call it
+    /// only for a `blank` that is not 0. Kept out of line so the two are
+    /// never fused into one slower loop.
     #[inline(never)]
     fn colour(&mut self, slot: usize, blank: u32) {
-        if blank != 0 {
-            for cell in self.slice_mut(slot) {
-                cell.set_style(blank);
-            }
-            if let Some(m) = self.meta.get_mut(slot) {
-                m.used = m.width;
-            }
+        for cell in self.slice_mut(slot) {
+            cell.set_style(blank);
+        }
+        if let Some(m) = self.meta.get_mut(slot) {
+            m.used = m.width;
         }
     }
 

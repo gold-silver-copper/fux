@@ -1048,13 +1048,12 @@ impl Screen {
             .checked_add(1)
             .ok_or(Error::IdentityExhausted)?;
         let mut next = self.next_id;
-        let primary = if reflow {
+        let mut primary = if reflow {
             self.primary.reflowed(rows, cols, &mut next, version)?
         } else {
             self.primary.resized(rows, cols, &mut next, version)?
         };
         let mut alternate = self.alternate.resized(rows, cols, &mut next, version)?;
-        let mut primary = primary;
         // The cells' links keep their numbers, so the links go along.
         primary.adopt_links(std::mem::take(&mut self.primary.links));
         alternate.adopt_links(std::mem::take(&mut self.alternate.links));
@@ -1262,9 +1261,6 @@ impl Screen {
         if self.extend_cluster(c) {
             return Ok(());
         }
-        if width != 0 {
-            self.repeat = Some(raw);
-        }
         if width == 0 {
             let g = self.grid();
             let (row, col) = (g.cursor.0, g.next_column());
@@ -1287,8 +1283,9 @@ impl Screen {
                 // A blank cell takes a space for the mark to follow, and
                 // with it the open link, as a glyph printed there would.
                 let blank = g.stored(row, col).is_some_and(|c| !c.has_contents());
-                // A cell already holding all it can takes no more.
                 let end = col.saturating_add(1);
+                // The mark joins the cell's cluster; a cell already holding
+                // all it can takes no more (`append`).
                 self.with_grid(|g, _, v| {
                     g.mutate_line(row, v, end, |line| line.append(usize::from(col), c))
                 });
@@ -1300,6 +1297,8 @@ impl Screen {
             }
             return Ok(());
         }
+        // What REP repeats: the last glyph printed, not a mark.
+        self.repeat = Some(raw);
         let end = self.wrap_for(width)?;
         if self.insert {
             // Room for the glyph, what was there moving right (ICH).

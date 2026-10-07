@@ -645,7 +645,10 @@ impl Line<'_> {
                 *cell = Cell::blank(cell.attributes);
                 continue;
             };
+            // Never: the range's length was a `u8`. Blanked as above, so
+            // that no cell points into the text just taken.
             let Ok(len) = u8::try_from(text.len()) else {
+                *cell = Cell::blank(cell.attributes);
                 continue;
             };
             self.spill.0.extend_from_slice(text);
