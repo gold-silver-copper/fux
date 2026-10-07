@@ -9,7 +9,7 @@ use crate::keys::KeyPress;
 use crate::layout::{Axis, PaneId, Placement, Rect, Separator};
 use crate::overlay::{self, ColumnRow};
 use crate::session::Session;
-use crate::view::{Mode, View};
+use crate::view::{List, Mode, View};
 use fux_vt::{Attributes, Cell, CellRef, Cells, Color, Row, UnderlineStyle};
 use std::borrow::Cow;
 use std::io::Write;
@@ -837,31 +837,7 @@ pub fn compose_into(
     bar(grid, session, view, copy);
     match &view.mode {
         Mode::Column { path, selected } => column(grid, session, view, path, *selected),
-        Mode::List(list) => {
-            let mut lines: Vec<Line<'_>> =
-                vec![(list.title.as_str().into(), panel().with_bold(true))];
-            let capacity = overlay::list_room(view.rows);
-            let start = overlay::window_start(list.items.len(), list.selected, capacity);
-            let ctx = crate::session::Ctx::client(view.id);
-            let shown = list.items.iter().enumerate().skip(start).take(capacity);
-            let shown = shown.map(|(i, item)| {
-                let dim = !list.chooser && session.unavailable(&item.command, &ctx).is_some();
-                let marker = if item.current { "*" } else { " " };
-                let attrs = panel().with_inverse(i == list.selected).with_dim(dim);
-                (format!("{marker} {}", item.label).into(), attrs)
-            });
-            windowed(&mut lines, list.items.len(), start, capacity, shown);
-            if list.items.is_empty() {
-                lines.push(("nothing to choose".into(), panel().with_dim(true)));
-            }
-            let help = if list.chooser {
-                "Enter selects · r renames · x closes · Esc"
-            } else {
-                "Enter runs · Esc cancels"
-            };
-            lines.push((help.into(), panel().with_dim(true)));
-            surface(grid, view, &lines);
-        }
+        Mode::List(list) => list_panel(grid, session, view, list),
         Mode::Prompt(prompt) => {
             // The panel's border takes a cell each side.
             let room = view.cols.saturating_sub(2);
@@ -1246,6 +1222,33 @@ fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
             view.cols.saturating_sub(1).max(text_x),
         );
     }
+}
+
+/// A list to choose from or run: the entries that fit, the selected one
+/// highlighted and, but in a chooser, those that cannot run now dimmed.
+fn list_panel(grid: &mut Grid, session: &Session, view: &View, list: &List) {
+    let mut lines: Vec<Line<'_>> = vec![(list.title.as_str().into(), panel().with_bold(true))];
+    let capacity = overlay::list_room(view.rows);
+    let start = overlay::window_start(list.items.len(), list.selected, capacity);
+    let ctx = crate::session::Ctx::client(view.id);
+    let shown = list.items.iter().enumerate().skip(start).take(capacity);
+    let shown = shown.map(|(i, item)| {
+        let dim = !list.chooser && session.unavailable(&item.command, &ctx).is_some();
+        let marker = if item.current { "*" } else { " " };
+        let attrs = panel().with_inverse(i == list.selected).with_dim(dim);
+        (format!("{marker} {}", item.label).into(), attrs)
+    });
+    windowed(&mut lines, list.items.len(), start, capacity, shown);
+    if list.items.is_empty() {
+        lines.push(("nothing to choose".into(), panel().with_dim(true)));
+    }
+    let help = if list.chooser {
+        "Enter selects · r renames · x closes · Esc"
+    } else {
+        "Enter runs · Esc cancels"
+    };
+    lines.push((help.into(), panel().with_dim(true)));
+    surface(grid, view, &lines);
 }
 
 /// The command column: the bindings and layers of the layer at `path`,
