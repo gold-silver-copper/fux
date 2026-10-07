@@ -346,6 +346,9 @@ pub struct Session {
     unsettled: bool,
 }
 
+/// The name of the first workspace, and of each workspace's first tab.
+const MAIN: &str = "main";
+
 /// Whether a command leaves every client's screen as it was: it reads the
 /// state, or hands a pane's program something whose effect, if any, comes
 /// back as output.
@@ -403,7 +406,7 @@ impl Session {
 
     /// One workspace, holding one tab with one shell.
     pub fn start(&mut self) -> Result<(), Error> {
-        self.create_workspace(Some("main".into()), &[], None)
+        self.create_workspace(Some(MAIN.into()), &[], None)
             .map(|_| ())
     }
 
@@ -721,16 +724,22 @@ impl Session {
         let pane = self.new_pane(&mut ids, cmd, &cwd, DEFAULT_SIZE)?;
         self.commit(ids);
         let name = name.unwrap_or_else(|| self.workspace_name(id));
+        self.push_workspace(id, name, tab, Some(Node::Pane(pane)));
+        Ok(id)
+    }
+
+    /// Adds workspace `id`, named `name`, last, with its first tab, `tab`,
+    /// holding `root`.
+    fn push_workspace(&mut self, id: WsId, name: String, tab: TabId, root: Option<Node>) {
         self.workspaces.push(Workspace {
             id,
             name,
             tabs: vec![Tab {
                 id: tab,
-                name: "main".into(),
-                root: Some(Node::Pane(pane)),
+                name: MAIN.into(),
+                root,
             }],
         });
-        Ok(id)
     }
 
     // ------------------------------------------------------------- clients
@@ -1209,16 +1218,7 @@ impl Session {
 
     /// Output from a pane's program.
     pub fn output(&mut self, id: PaneId, bytes: &[u8]) {
-        let place = self.locate(id);
-        let colours = self.colours_for(place.map(|(_, t)| t));
-        let palette = self.palette_for(place.map(|(_, t)| t));
-        let Some(pane) = self.panes.get_mut(&id) else {
-            return;
-        };
-        pane.colours = colours;
-        pane.set_host_palette(palette);
-        let dropped = pane.output(bytes);
-        self.read_into(id, place, dropped);
+        self.read_with(id, |pane| pane.output(bytes));
     }
 
     /// Reads the frames held past their timeout (see `Pane::output`).
@@ -1230,16 +1230,25 @@ impl Session {
             .map(|p| p.id)
             .collect();
         for id in due {
-            let place = self.locate(id);
-            let colours = self.colours_for(place.map(|(_, t)| t));
-            let palette = self.palette_for(place.map(|(_, t)| t));
-            if let Some(pane) = self.panes.get_mut(&id) {
-                pane.colours = colours;
-                pane.set_host_palette(palette);
-                let dropped = pane.release_frame();
-                self.read_into(id, place, dropped);
-            }
+            self.read_with(id, Pane::release_frame);
         }
+    }
+
+    /// Reads into pane `id` with `read`, which says whether it dropped rows,
+    /// as every read of a pane's output does: its tab's host colours and
+    /// palette given it first, what follows a read seen to after
+    /// (`read_into`).
+    fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut Pane) -> bool) {
+        let place = self.locate(id);
+        let colours = self.colours_for(place.map(|(_, t)| t));
+        let palette = self.palette_for(place.map(|(_, t)| t));
+        let Some(pane) = self.panes.get_mut(&id) else {
+            return;
+        };
+        pane.colours = colours;
+        pane.set_host_palette(palette);
+        let dropped = read(pane);
+        self.read_into(id, place, dropped);
     }
 
     /// The next moment a held frame is read anyway, for the poll timeout.
@@ -1864,7 +1873,7 @@ impl Session {
                     None => {
                         let mut ids = self.ids();
                         let id = ids.tab()?;
-                        self.add_tab(ws, id, Some("main".into()), None)?;
+                        self.add_tab(ws, id, Some(MAIN.into()), None)?;
                         self.commit(ids);
                         id
                     }
@@ -1885,15 +1894,7 @@ impl Session {
                 let tab = ids.tab()?;
                 self.commit(ids);
                 let name = self.workspace_name(id);
-                self.workspaces.push(Workspace {
-                    id,
-                    name,
-                    tabs: vec![Tab {
-                        id: tab,
-                        name: "main".into(),
-                        root: None,
-                    }],
-                });
+                self.push_workspace(id, name, tab, None);
                 (id, tab)
             }
         };
