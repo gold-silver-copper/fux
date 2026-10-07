@@ -45,6 +45,8 @@ fn recent(attributes: Attributes) -> usize {
 /// neither text nor links: its cells before its blank tail, which are
 /// blanked, as the row the slot takes next needs them, and what it is.
 /// Whether it did. Given the grid's parts, which it borrows apart.
+/// Inlined into its callers: without, scrolling counts 5% more
+/// instructions (vt/scrolling, fux-bench).
 #[inline(always)]
 fn take_row(
     history: &mut History,
@@ -754,7 +756,9 @@ impl Grid {
         self.find_table_style(attributes, at)
     }
 
-    /// `table_style` for attributes not found lately, which are then.
+    /// `table_style` for attributes not found lately, which are then. Out
+    /// of line, so that `table_style`, which finds a pen used lately in a
+    /// few compares, stays small where it is inlined.
     #[inline(never)]
     fn find_table_style(&mut self, attributes: Attributes, at: usize) -> u32 {
         let id = match self.styles.find(attributes) {
@@ -1045,7 +1049,7 @@ impl Grid {
     /// run of unprotected cells between them is erased, as xterm's
     /// `ClearInLine2` erases around them. A wide glyph's second half is
     /// protected if its first half is. Whether there was a protected glyph
-    /// in the span.
+    /// in the span. Out of line, as protection is rare.
     #[inline(never)]
     pub fn erase_unprotected(
         &mut self,

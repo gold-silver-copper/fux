@@ -297,8 +297,6 @@ impl History {
     /// doubling, until it holds a block; else a block to start, the spare
     /// if it holds the row, or a block, or for the first block as much as
     /// its first row needs.
-    #[cold]
-    #[inline(never)]
     fn make_room(&mut self, len: usize) -> Result<(), Error> {
         if self.rows.len() == self.rows.capacity() {
             let capacity = self
@@ -364,6 +362,8 @@ impl History {
 
     /// Room for a row of `len` cells, after the newest block's or in a
     /// block of its own (`make_room`); nothing changed if there is none.
+    /// Out of line, and `make_room` with it: a row arriving in history
+    /// usually fits where the last one ended.
     #[cold]
     #[inline(never)]
     fn room_for(&mut self, len: usize) -> Result<(), Error> {
@@ -375,7 +375,6 @@ impl History {
     }
 
     /// Notes `row`, its cells at `place`, after the rows there are.
-    #[inline(always)]
     fn keep(&mut self, row: Arriving<'_>, place: (u16, u16)) {
         let len = row.cells.len();
         let flags = (if row.wrapped { WRAPPED } else { 0 }) | (if row.prompt { PROMPT } else { 0 });
