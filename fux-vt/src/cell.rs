@@ -126,9 +126,9 @@ impl std::fmt::Debug for Attributes {
 }
 
 impl Attributes {
-    // The bits of `flags`, one a style, but the underline's: three bits
-    // from `UNDERLINE_SHIFT` hold its style's number (`UnderlineStyle`), 0
-    // for none. Bit 3, the underline's while it had no style, is spare.
+    // The bits of `flags`: one for each style, but the underline, whose
+    // style's number (`UnderlineStyle`, 0 for none) takes three bits from
+    // `UNDERLINE_SHIFT`. Bit 3, the underline's while it had no style, is spare.
     pub(crate) const BOLD: u16 = 1;
     pub(crate) const DIM: u16 = 2;
     pub(crate) const ITALIC: u16 = 4;
@@ -645,7 +645,10 @@ impl Line<'_> {
                 *cell = Cell::blank(cell.attributes);
                 continue;
             };
+            // Never: the range's length was a `u8`. Blanked as above, so
+            // that no cell points into the text just taken.
             let Ok(len) = u8::try_from(text.len()) else {
+                *cell = Cell::blank(cell.attributes);
                 continue;
             };
             self.spill.0.extend_from_slice(text);

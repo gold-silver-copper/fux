@@ -6,17 +6,22 @@
 # every allocation's: `Vec::with_capacity`, `reserve`, `resize` and `collect`.
 # Also left off: `slice::rotate_left` and `rotate_right`, which panic when
 # turning by more than the slice. Every other way to rotate without that panic
-# takes twice the time, and fux-vt turns rows and cells with them: inserting
-# and deleting characters clamps the count to the slice just before
-# (grid.rs, `edit_cells`), and moving a row turns a run of at least one by
-# one (grid.rs, `move_row`).
+# takes twice the time, and fux-vt turns cells and rows with them, each turn
+# within what it turns: inserting and deleting characters clamps the count to
+# the cells just before (grid.rs, `shift`); the screen's rows turn by their
+# top, which is always below their count (grid.rs, `Order::push_back`); and
+# the keyboard flags' stack and a key's bytes turn by one, never empty
+# (screen.rs, `KeyboardStack::push`; keys/encode.rs, `legacy`).
 # And `char::encode_utf8`, which panics only for a buffer under four bytes:
 # every call passes a buffer of fixed size, four bytes or a cell's text.
 # And `slice::copy_within` and `copy_from_slice`, which panic on a range out
 # of bounds and on slices of different lengths. The rule: each crate calls
 # them only in one small helper, after the helper has checked what they would
-# panic on, and nowhere else; grep finds no other call. They are fux-vt's
-# `copy_within` in src/bytes.rs and `copy_from` in its lib.rs.
+# panic on, and nowhere else but one: grep finds no other call. They are
+# fux-vt's `copy_within` in src/bytes.rs and `copy_from` in its lib.rs. The
+# one: moving a row (grid.rs, `move_row`) shifts a run by one with
+# `copy_within` directly, its ranges taken from the run's own length; the
+# checked helper there costs measurably more on the scroll-region path.
 disallowed-methods = [
   # Vec
   { path = "alloc::vec::Vec::insert", reason = "panics past the end: build the new Vec from iterators" },

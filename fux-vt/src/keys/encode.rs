@@ -263,7 +263,8 @@ fn kitty(stroke: Keystroke, flags: u8, out: &mut Vec<u8>) {
     }
 }
 
-/// The `CSI n ~` numbers of F5 to F12.
+/// F5 to F12's numbers in `CSI n ~`, with xterm's gaps; `decode.rs`
+/// (`csi`) reads them back.
 const F_CODES: [u8; 8] = [15, 17, 18, 19, 20, 21, 23, 24];
 
 /// Shift, Alt and Ctrl as xterm's and kitty's modifier bits.
@@ -471,17 +472,14 @@ fn allowed(sym: Sym, state: Modifiers) -> Modifiers {
     m
 }
 
-/// Legacy xterm bytes for a key, as fux has always sent them. Every key has
-/// an encoding.
+/// Legacy xterm bytes for a key: what xterm sends with its default
+/// resources, for a pane that asked for neither the kitty protocol nor
+/// modifyOtherKeys. Every key has an encoding.
 fn legacy(press: KeyPress, application: bool, out: &mut Vec<u8>) {
     let KeyPress { key, mods } = press;
     let Modifiers { ctrl, alt, shift } = mods;
     // xterm's modifier parameter: 1 plus a bit for each, so at most 8.
-    let bits = [(shift, 1), (alt, 2), (ctrl, 4)]
-        .into_iter()
-        .filter(|(on, _)| *on)
-        .fold(0usize, |bits, (_, bit)| bits | bit);
-    let modifier = bits.saturating_add(1);
+    let modifier = xterm_bits(mods).saturating_add(1);
     let csi = |out: &mut Vec<u8>, code: u8, final_byte: char| {
         let _ = if modifier > 1 {
             write!(out, "\x1b[{code};{modifier}{final_byte}")
@@ -695,7 +693,8 @@ mod tests {
         assert_eq!(stroke(keypad_enter, KeyMode::default()), "\r");
         let caps_ctrl_a = reported("C-a", 97, None, None, 4 | 64);
         assert_eq!(stroke(caps_ctrl_a, kitty_mode(1)), "\x1b[97;69u");
-        // A legacy pane gets the press's bytes, as before.
+        // A legacy pane gets the press's bytes alone, what was reported
+        // beside them unused.
         assert_eq!(stroke(ctrl_shift_i, KeyMode::default()), "\t");
         assert_eq!(stroke(cyrillic, KeyMode::default()), "\x03");
         // Alternate keys from a legacy press: a capital's shifted key.

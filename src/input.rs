@@ -19,8 +19,9 @@ impl Session {
         self.input_at(client, bytes, Instant::now());
     }
 
-    /// Raw bytes from a client's terminal, read at `now`: an Escape they
-    /// leave waiting is due `ESCAPE_DELAY` after it.
+    /// Raw bytes from a client's terminal, read at `now`: what they leave
+    /// waiting (a lone Escape, an answer begun) is due when the decoder's
+    /// deadline says (`Decoder::deadline`).
     ///
     /// The bytes are decoded and dispatched `INPUT_PIECE` at a time, so a
     /// large frame of input never becomes a key for every byte at once.
@@ -44,7 +45,8 @@ impl Session {
         }
     }
 
-    /// The first client, in their order, whose Escape was due by `now`.
+    /// The first client, in their order, whose decoder's wait was due by
+    /// `now`: a lone Escape's, or an answer's.
     pub fn escape_due(&self, now: Instant) -> Option<ClientId> {
         self.views
             .iter()
@@ -52,7 +54,8 @@ impl Session {
             .map(|(client, _)| *client)
     }
 
-    /// The Escape deadline passed for a client.
+    /// The decoder's wait passed for a client: what was waiting is taken as
+    /// it is.
     pub fn escape(&mut self, client: ClientId) {
         let mut inputs = Vec::new();
         match self.views.get_mut(&client) {
@@ -81,7 +84,8 @@ impl Session {
                 }
                 Input::PasteTooLong => {
                     shown = true;
-                    self.error_to(client, "paste exceeds 64 KiB; discarded");
+                    let limit = fux_vt::keys::decode::PASTE_LIMIT / 1024;
+                    self.error_to(client, format!("paste exceeds {limit} KiB; discarded"));
                 }
                 // A focus change or a mouse report for the program shows
                 // nothing until it answers.

@@ -58,7 +58,7 @@ version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "35e54efc7630384df6faff7863148e5bb28423fe6fe918b0a37ae7b16f039dc4"
 dependencies = [
- "fux-vt 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "fux-vt 0.3.3",
  "fuxix 0.1.6",
  "signal-hook",
  "unicode-width",
@@ -70,7 +70,7 @@ version = "0.0.0"
 dependencies = [
  "fux 0.20.0",
  "fux 0.20.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "fux-vt 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "fux-vt 0.3.3",
  "fux-vt 0.3.4",
  "fuxix 0.1.6",
  "fuxix 0.1.7",
@@ -87,8 +87,7 @@ dependencies = [
 
 [[package]]
 name = "fux-vt"
-version = "0.3.3"
-source = "git+https://github.com/gold-silver-copper/fux?rev=cfc39de4c23c6fc71e46c2d4f77e78417f7c4f49#cfc39de4c23c6fc71e46c2d4f77e78417f7c4f49"
+version = "0.3.4"
 dependencies = [
  "unicode-width",
 ]
@@ -96,6 +95,7 @@ dependencies = [
 [[package]]
 name = "fux-vt"
 version = "0.3.4"
+source = "git+https://github.com/gold-silver-copper/fux?rev=51f75d73b62186e14988dadb05c3c3e4b17f0b94#51f75d73b62186e14988dadb05c3c3e4b17f0b94"
 dependencies = [
  "unicode-width",
 ]
@@ -104,8 +104,8 @@ dependencies = [
 name = "fux-vt-oracle"
 version = "0.0.0"
 dependencies = [
- "fux-vt 0.3.3 (git+https://github.com/gold-silver-copper/fux?rev=cfc39de4c23c6fc71e46c2d4f77e78417f7c4f49)",
  "fux-vt 0.3.4",
+ "fux-vt 0.3.4 (git+https://github.com/gold-silver-copper/fux?rev=51f75d73b62186e14988dadb05c3c3e4b17f0b94)",
  "serde_json",
 ]
 

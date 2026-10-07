@@ -959,7 +959,8 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
     }
 }
 
-/// A key while a confirmation waits: `y` runs it, `n` or Escape cancels.
+/// A key while a confirmation waits: `y` runs it, `n`, `q` or Escape
+/// cancels.
 pub fn confirm_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let Some(view) = session.views.get_mut(&client) else {
         return;
@@ -991,21 +992,10 @@ mod tests {
     type Outcome = Result<(), String>;
 
     /// A session without processes, one client attached.
-    fn session() -> Result<(Session, ClientId), String> {
-        let mut session = Session::new(Config::default(), "/nonexistent/fux.sock".into(), false);
-        session.start().map_err(|e| e.to_string())?;
-        let client = session.attach(30, 100, None).map_err(|e| e.to_string())?;
-        Ok((session, client))
-    }
+    use crate::session::testing::run;
 
-    fn run(session: &mut Session, line: &str) -> Outcome {
-        let words = crate::words::split(line).map_err(|e| e.to_string())?;
-        let outcome = session.run(&words, &Ctx::default());
-        if outcome.status == 0 {
-            Ok(())
-        } else {
-            Err(outcome.stderr)
-        }
+    fn session() -> Result<(Session, ClientId), String> {
+        crate::session::testing::attached(30, 100)
     }
 
     fn mode(session: &Session, client: ClientId) -> String {
@@ -1059,8 +1049,8 @@ mod tests {
         Ok(())
     }
 
-    /// Prompt edits count chars, so none falls inside one: what Ctrl-U,
-    /// Backspace, Delete, typing and a paste do, on text with wide chars.
+    /// Prompt edits count chars, so none falls inside one: what Backspace,
+    /// Delete, typing and a paste do, on text with wide chars.
     #[test]
     fn prompt_edits_count_chars_not_bytes() {
         for (at, remove, insert, edited) in [
@@ -1193,7 +1183,7 @@ mod tests {
         run(s, "bind -g Grow -r y h resize-pane -L")
     }
 
-    fn width(s: &Session, pane: u32) -> u16 {
+    fn pane_width(s: &Session, pane: u32) -> u16 {
         s.panes
             .get(&crate::layout::PaneId(pane))
             .map_or(0, |p| p.screen().size().1)
@@ -1293,16 +1283,16 @@ mod tests {
         with_layers(&mut s)?;
         run(&mut s, "split -h -t %1")?;
         run(&mut s, "select-pane -c c1 -t %1")?;
-        let start = width(&s, 1);
+        let start = pane_width(&s, 1);
         s.input(c, b"\x02y");
         assert_eq!(mode(&s, c), "column y 0");
         s.input(c, b"l");
         assert_eq!(mode(&s, c), "repeat y");
         // No prefix: the mode's keys run again and again.
         s.input(c, b"ll");
-        assert_eq!(start.checked_add(3), Some(width(&s, 1)));
+        assert_eq!(start.checked_add(3), Some(pane_width(&s, 1)));
         s.input(c, b"h");
-        assert_eq!(start.checked_add(2), Some(width(&s, 1)));
+        assert_eq!(start.checked_add(2), Some(pane_width(&s, 1)));
         // The bar names the mode and its keys.
         let grid = crate::render::compose(&s, c).ok_or("a screen")?;
         let bar = grid.row_text(grid.rows.saturating_sub(1));
@@ -1314,7 +1304,7 @@ mod tests {
         std::thread::sleep(crate::decode::ESCAPE_DELAY);
         s.escape(c);
         assert_eq!(mode(&s, c), "normal");
-        assert_eq!(start.checked_add(3), Some(width(&s, 1)));
+        assert_eq!(start.checked_add(3), Some(pane_width(&s, 1)));
         Ok(())
     }
 
@@ -1642,11 +1632,11 @@ mod tests {
         let (mut s, c) = session()?;
         run(&mut s, "split -h -t %1")?;
         run(&mut s, "select-pane -c c1 -t %1")?;
-        let start = width(&s, 1);
+        let start = pane_width(&s, 1);
         run(&mut s, "bind -r r Enter resize-pane -R")?;
         s.input(c, &prefixed("r\r\r"));
         assert_eq!(mode(&s, c), "repeat r");
-        assert_eq!(start.checked_add(2), Some(width(&s, 1)));
+        assert_eq!(start.checked_add(2), Some(pane_width(&s, 1)));
         escape(&mut s, c);
         assert_eq!(mode(&s, c), "normal");
         Ok(())
@@ -1692,7 +1682,7 @@ mod tests {
         Ok(())
     }
 
-    /// The focused pane's rect on client `c`'s screen.
+    /// Pane `pane`'s rect on client `c`'s screen.
     fn rect_of(s: &Session, c: ClientId, pane: u32) -> Option<crate::layout::Rect> {
         let mut placement = crate::layout::Placement::default();
         s.placement_into(s.views.get(&c)?, &mut placement);
@@ -1700,7 +1690,7 @@ mod tests {
     }
 
     /// The mouse tracking client `c`'s terminal is asked for.
-    fn mouse_level(s: &Session, c: ClientId) -> Option<u16> {
+    fn asked_mouse_level(s: &Session, c: ClientId) -> Option<u16> {
         crate::render::compose(s, c).map(|g| g.mouse)
     }
 
@@ -1712,12 +1702,12 @@ mod tests {
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
         assert!(right.x > 1 && right.y == 0, "{right:?}");
         // Nothing asked: no reporting, and a report is dropped.
-        assert_eq!(mouse_level(&s, c), Some(0));
+        assert_eq!(asked_mouse_level(&s, c), Some(0));
         let press = |col: u16, row: u16| format!("\x1b[<0;{};{}M", col + 1, row + 1);
         s.input(c, press(right.x + 3, 2).as_bytes());
         assert!(queued(&mut s, 2).is_empty());
         s.output(crate::layout::PaneId(2), b"\x1b[?1000h\x1b[?1006h");
-        assert_eq!(mouse_level(&s, c), Some(1000));
+        assert_eq!(asked_mouse_level(&s, c), Some(1000));
         // Moved to the pane's cells.
         s.input(c, press(right.x + 3, 2).as_bytes());
         assert_eq!(queued(&mut s, 2), b"\x1b[<0;4;3M");
@@ -1731,7 +1721,7 @@ mod tests {
         assert_eq!(queued(&mut s, 2), [0x1b, b'[', b'M', 32, 33, 33]);
         // X10's presses come from asking for 1000, its releases dropped.
         s.output(crate::layout::PaneId(2), b"\x1b[?9h\x1b[?1006h");
-        assert_eq!(mouse_level(&s, c), Some(1000));
+        assert_eq!(asked_mouse_level(&s, c), Some(1000));
         s.input(
             c,
             format!("{}\x1b[<0;{};1m", press(right.x, 0), right.x + 1).as_bytes(),
@@ -1755,7 +1745,7 @@ mod tests {
         run(&mut s, "select-pane -c c1 -t %2")?;
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
         s.output(crate::layout::PaneId(2), b"\x1b[?1002h\x1b[?1006h");
-        assert_eq!(mouse_level(&s, c), Some(1002));
+        assert_eq!(asked_mouse_level(&s, c), Some(1002));
         let x = right.x + 1;
         // Pressed inside, dragged over the left pane and past the bottom,
         // released there: the pane hears all of it, at its edge.
@@ -1780,7 +1770,7 @@ mod tests {
         run(&mut s, "split -h -t %1")?;
         run(&mut s, "select-pane -c c1 -t %2")?;
         s.output(crate::layout::PaneId(2), b"\x1b[?1003h\x1b[?1006h");
-        assert_eq!(mouse_level(&s, c), Some(1003));
+        assert_eq!(asked_mouse_level(&s, c), Some(1003));
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
         let press = format!("\x1b[<0;{};2M", right.x + 2);
         // Copy mode, the column and a prompt have the keys: no reporting,
@@ -1791,18 +1781,18 @@ mod tests {
             ("command-prompt -c c1", b"\x1b"),
         ] {
             run(&mut s, open)?;
-            assert_eq!(mouse_level(&s, c), Some(0), "{open}");
+            assert_eq!(asked_mouse_level(&s, c), Some(0), "{open}");
             s.input(c, press.as_bytes());
             assert!(queued(&mut s, 2).is_empty(), "{open}");
             s.input(c, close);
             std::thread::sleep(crate::decode::ESCAPE_DELAY);
             s.escape(c);
             assert_eq!(mode(&s, c), "normal", "{open}");
-            assert_eq!(mouse_level(&s, c), Some(1003), "{open}");
+            assert_eq!(asked_mouse_level(&s, c), Some(1003), "{open}");
         }
         // Focus on a pane whose program did not ask: none.
         run(&mut s, "select-pane -c c1 -t %1")?;
-        assert_eq!(mouse_level(&s, c), Some(0));
+        assert_eq!(asked_mouse_level(&s, c), Some(0));
         s.input(c, b"\x1b[<0;2;2M");
         assert!(queued(&mut s, 1).is_empty() && queued(&mut s, 2).is_empty());
         // Zoomed, the pane fills the screen, and its cells are the screen's.
@@ -1818,17 +1808,17 @@ mod tests {
         let (mut s, c) = session()?;
         run(&mut s, "split -h -t %1")?;
         run(&mut s, "select-pane -c c1 -t %1")?;
-        let start = width(&s, 1);
+        let start = pane_width(&s, 1);
         s.input(c, &prefixed("rlll"));
         assert_eq!(mode(&s, c), "repeat r");
-        assert_eq!(start.checked_add(3), Some(width(&s, 1)));
+        assert_eq!(start.checked_add(3), Some(pane_width(&s, 1)));
         escape(&mut s, c);
         assert_eq!(mode(&s, c), "normal");
         // After Esc, `l` is the pane's again.
         let _ = queued(&mut s, 1);
         s.input(c, b"l");
         assert_eq!(queued(&mut s, 1), b"l");
-        assert_eq!(start.checked_add(3), Some(width(&s, 1)));
+        assert_eq!(start.checked_add(3), Some(pane_width(&s, 1)));
         Ok(())
     }
 
@@ -1942,9 +1932,7 @@ mod tests {
         assert_eq!(mode(&s, c), "prompt |0");
         s.input(c, b"\x1b[200~one\ntwo\x1b[201~");
         assert_eq!(mode(&s, c), "prompt one|3");
-        s.input(c, b"\x1b");
-        std::thread::sleep(crate::decode::ESCAPE_DELAY);
-        s.escape(c);
+        escape(&mut s, c);
         assert_eq!(mode(&s, c), "normal");
         Ok(())
     }

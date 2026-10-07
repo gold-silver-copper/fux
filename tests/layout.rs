@@ -20,19 +20,6 @@ fn size(server: &Server, pane: &str) -> Result<(u16, u16), String> {
     Ok((rows.parse().map_err(e)?, cols.parse().map_err(e)?))
 }
 
-fn focused(server: &Server) -> Result<String, String> {
-    let ls = server.ok(&["ls"])?;
-    let client = ls
-        .lines()
-        .find(|l| l.starts_with("client c1"))
-        .ok_or("no client")?;
-    Ok(client
-        .split_whitespace()
-        .last()
-        .unwrap_or_default()
-        .to_owned())
-}
-
 #[test]
 fn splitting_side_by_side_and_stacked_draws_separators_and_focuses_the_new_pane() -> Outcome {
     let server = Server::start("")?;

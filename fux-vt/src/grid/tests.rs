@@ -1,4 +1,6 @@
+use super::reflow::Lines;
 use super::*;
+use crate::test_rng::Rng;
 
 /// Up, the departing rows going into history.
 const UP: Scroll = Scroll::Up { history: true };
@@ -13,8 +15,12 @@ fn heap(grid: &Grid) -> [usize; 4] {
         grid.history.heap(),
     ]
 }
+/// A full history's storage, metadata included, stops growing: as much
+/// after 20,000 scrolls as after 10,000. The peak a resize reaches, with
+/// both screens' replacements built before either is assigned, is printed
+/// (`MEMORY-BOUNDS`), not asserted.
 #[test]
-fn measured_storage_plateau_and_transactional_resize_peak_include_metadata() -> Result<(), Error> {
+fn storage_with_history_full_stops_growing_and_the_resize_peak_is_printed() -> Result<(), Error> {
     let mut next = 0;
     let mut primary = Grid::new(24, 80, 10_000, &mut next, 0)?;
     let alternate = Grid::new(24, 80, 0, &mut next, 0)?;
@@ -62,7 +68,7 @@ fn narrowing_live_rows_uses_the_new_width() -> Result<(), Error> {
 }
 
 /// `move_row` is `remove(from)` then `insert(to)`, for every pair of rows,
-/// in a deque that is one slice and in one that has wrapped round into two;
+/// in an order that is one slice and in one that has wrapped round into two;
 /// and it moves nothing for an index out of range.
 #[test]
 fn moving_a_row_is_a_removal_then_an_insertion() -> Result<(), Error> {
@@ -73,7 +79,7 @@ fn moving_a_row_is_a_removal_then_an_insertion() -> Result<(), Error> {
         wrapped.scroll((0, 4), 1, UP, 0, &mut next, version)?;
     }
     let (front, back) = wrapped.order.as_slices();
-    assert!(!front.is_empty() && !back.is_empty(), "the deque wraps");
+    assert!(!front.is_empty() && !back.is_empty(), "the order wraps");
     moves_are_removals_then_insertions(&contiguous);
     moves_are_removals_then_insertions(&wrapped);
     Ok(())
@@ -170,8 +176,8 @@ impl Grid {
             && end >= cols
             && let Some(slot) = self.slot(row)
         {
-            if let Some(spill) = self.spill.get_mut(slot) {
-                spill.clear();
+            if let Some(text) = self.texts.get_mut(slot) {
+                text.clear();
             }
             self.unlink(slot);
         }
@@ -188,39 +194,13 @@ impl Grid {
                     .enumerate()
                     .map(|(col, c)| {
                         let link = row.links.and_then(|l| l.get(col)).copied().unwrap_or(0);
-                        let read = c.read(row.spill, row.styles);
+                        let read = c.read(row.text, row.styles);
                         (*c, read.attributes(), read.contents().to_owned(), link)
                     })
                     .collect();
                 (row.id, row.version, row.wrapped, row.prompt, cells)
             })
             .collect()
-    }
-}
-
-/// A small deterministic generator (splitmix64), so a failure names its case.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut x = self.0;
-        x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        x ^ (x >> 31)
-    }
-    /// Below `n`, or 0 for an `n` of 0.
-    fn below(&mut self, n: usize) -> usize {
-        let n = u64::try_from(n).unwrap_or(u64::MAX);
-        let value = self.next().checked_rem(n).unwrap_or(0);
-        usize::try_from(value).unwrap_or(0)
-    }
-    /// Below `n`, as a `u16`.
-    fn small(&mut self, n: u16) -> u16 {
-        u16::try_from(self.below(usize::from(n))).unwrap_or(0)
-    }
-    fn chance(&mut self, percent: usize) -> bool {
-        self.below(100) < percent
     }
 }
 

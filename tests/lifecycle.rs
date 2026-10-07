@@ -74,7 +74,10 @@ impl Bare {
         for (k, v) in &env {
             command.env(k, v);
         }
-        let child = command.spawn().map_err(e)?;
+        let child = {
+            let _guard = spawning()?;
+            command.spawn().map_err(e)?
+        };
         let bare = Bare {
             dir,
             child: Some(child),

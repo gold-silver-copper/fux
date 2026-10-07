@@ -33,7 +33,8 @@ pub struct Workspace {
 /// What the server must do outside the session.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outgoing {
-    /// Bytes for a client's terminal outside any paint (OSC 52).
+    /// Bytes for a client's terminal outside any paint: a copy (OSC 52),
+    /// questions for the terminal, the bell, the keyboard flags pushed.
     Bytes(ClientId, Vec<u8>),
     /// Detach a client, telling it why.
     Exit(ClientId, String),
@@ -345,6 +346,9 @@ pub struct Session {
     unsettled: bool,
 }
 
+/// The name of the first workspace, and of each workspace's first tab.
+const MAIN: &str = "main";
+
 /// Whether a command leaves every client's screen as it was: it reads the
 /// state, or hands a pane's program something whose effect, if any, comes
 /// back as output.
@@ -402,7 +406,7 @@ impl Session {
 
     /// One workspace, holding one tab with one shell.
     pub fn start(&mut self) -> Result<(), Error> {
-        self.create_workspace(Some("main".into()), &[], None)
+        self.create_workspace(Some(MAIN.into()), &[], None)
             .map(|_| ())
     }
 
@@ -720,16 +724,22 @@ impl Session {
         let pane = self.new_pane(&mut ids, cmd, &cwd, DEFAULT_SIZE)?;
         self.commit(ids);
         let name = name.unwrap_or_else(|| self.workspace_name(id));
+        self.push_workspace(id, name, tab, Some(Node::Pane(pane)));
+        Ok(id)
+    }
+
+    /// Adds workspace `id`, named `name`, last, with its first tab, `tab`,
+    /// holding `root`.
+    fn push_workspace(&mut self, id: WsId, name: String, tab: TabId, root: Option<Node>) {
         self.workspaces.push(Workspace {
             id,
             name,
             tabs: vec![Tab {
                 id: tab,
-                name: "main".into(),
-                root: Some(Node::Pane(pane)),
+                name: MAIN.into(),
+                root,
             }],
         });
-        Ok(id)
     }
 
     // ------------------------------------------------------------- clients
@@ -1208,16 +1218,7 @@ impl Session {
 
     /// Output from a pane's program.
     pub fn output(&mut self, id: PaneId, bytes: &[u8]) {
-        let place = self.locate(id);
-        let colours = self.colours_for(place.map(|(_, t)| t));
-        let palette = self.palette_for(place.map(|(_, t)| t));
-        let Some(pane) = self.panes.get_mut(&id) else {
-            return;
-        };
-        pane.colours = colours;
-        pane.set_host_palette(palette);
-        let dropped = pane.output(bytes);
-        self.read_into(id, place, dropped);
+        self.read_with(id, |pane| pane.output(bytes));
     }
 
     /// Reads the frames held past their timeout (see `Pane::output`).
@@ -1229,16 +1230,25 @@ impl Session {
             .map(|p| p.id)
             .collect();
         for id in due {
-            let place = self.locate(id);
-            let colours = self.colours_for(place.map(|(_, t)| t));
-            let palette = self.palette_for(place.map(|(_, t)| t));
-            if let Some(pane) = self.panes.get_mut(&id) {
-                pane.colours = colours;
-                pane.set_host_palette(palette);
-                let dropped = pane.release_frame();
-                self.read_into(id, place, dropped);
-            }
+            self.read_with(id, Pane::release_frame);
         }
+    }
+
+    /// Reads into pane `id` with `read`, which says whether it dropped rows,
+    /// as every read of a pane's output does: its tab's host colours and
+    /// palette given it first, what follows a read seen to after
+    /// (`read_into`).
+    fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut Pane) -> bool) {
+        let place = self.locate(id);
+        let colours = self.colours_for(place.map(|(_, t)| t));
+        let palette = self.palette_for(place.map(|(_, t)| t));
+        let Some(pane) = self.panes.get_mut(&id) else {
+            return;
+        };
+        pane.colours = colours;
+        pane.set_host_palette(palette);
+        let dropped = read(pane);
+        self.read_into(id, place, dropped);
     }
 
     /// The next moment a held frame is read anyway, for the poll timeout.
@@ -1612,11 +1622,10 @@ impl Session {
                 self.reorder(&target, toward).map(|()| String::new())
             }
             Command::Set { argv } | Command::Bind { argv } | Command::Unbind { argv } => {
+                // `run_command` marks every view to paint, as after any
+                // command that can show something new: `set titles`
+                // shows at each client's next paint.
                 self.config.apply(argv).map_err(Error::Config)?;
-                // `set titles` shows at each client's next paint.
-                for view in self.views.values_mut() {
-                    view.dirty = true;
-                }
                 Ok(String::new())
             }
             &Command::UnbindAll => {
@@ -1837,18 +1846,18 @@ impl Session {
     ) -> Result<String, Error> {
         let pane = self.pane_target(target, ctx)?;
         let (source_ws, source_tab) = self.locate(pane).ok_or(Error::NotInTab)?;
-        if let &MoveTo::Beside(direction) = to {
-            let destination = self.neighbor(pane, direction, ctx)?;
-            let tab = self.tab_mut(source_tab).ok_or(Error::TabGone)?;
-            layout::remove(&mut tab.root, pane);
-            let side = match direction {
-                Direction::Right | Direction::Down => Side::After,
-                Direction::Left | Direction::Up => Side::Before,
-            };
-            layout::split(&mut tab.root, destination, pane, Axis::of(direction), side);
-            return Ok(String::new());
-        }
         let (ws, tab) = match to {
+            &MoveTo::Beside(direction) => {
+                let destination = self.neighbor(pane, direction, ctx)?;
+                let tab = self.tab_mut(source_tab).ok_or(Error::TabGone)?;
+                layout::remove(&mut tab.root, pane);
+                let side = match direction {
+                    Direction::Right | Direction::Down => Side::After,
+                    Direction::Left | Direction::Up => Side::Before,
+                };
+                layout::split(&mut tab.root, destination, pane, Axis::of(direction), side);
+                return Ok(String::new());
+            }
             &MoveTo::Tab(tab) => {
                 let ws = self.tab_workspace(tab).ok_or(Error::NoTab(tab))?;
                 (ws, tab)
@@ -1864,7 +1873,7 @@ impl Session {
                     None => {
                         let mut ids = self.ids();
                         let id = ids.tab()?;
-                        self.add_tab(ws, id, Some("main".into()), None)?;
+                        self.add_tab(ws, id, Some(MAIN.into()), None)?;
                         self.commit(ids);
                         id
                     }
@@ -1885,18 +1894,9 @@ impl Session {
                 let tab = ids.tab()?;
                 self.commit(ids);
                 let name = self.workspace_name(id);
-                self.workspaces.push(Workspace {
-                    id,
-                    name,
-                    tabs: vec![Tab {
-                        id: tab,
-                        name: "main".into(),
-                        root: None,
-                    }],
-                });
+                self.push_workspace(id, name, tab, None);
                 (id, tab)
             }
-            MoveTo::Beside(_) => return Ok(String::new()),
         };
         if tab == source_tab {
             return Ok(String::new());
@@ -2234,7 +2234,8 @@ impl Ids {
 }
 
 /// Takes the next ID from `counter`. IDs are never reused, so one that
-/// would wrap round is an error instead.
+/// would wrap round is an error instead; so `u32::MAX` is never handed out,
+/// which `layout::swap` takes for a placeholder.
 fn advance(counter: &mut u32, what: &'static str) -> Result<u32, Error> {
     let id = *counter;
     *counter = counter.checked_add(1).ok_or(Error::IdsExhausted(what))?;
@@ -2321,6 +2322,37 @@ pub fn row_text(row: fux_vt::Row<'_>) -> String {
     let row = row.cells().filter(|c| !c.is_wide_continuation());
     let line: String = row.map(crate::render::shown).collect();
     line.trim_end_matches(' ').to_owned()
+}
+
+/// What the other modules' tests share: a session started with the default
+/// config, a client attached, and a command line run in it.
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::{Ctx, Session};
+    use crate::command::ClientId;
+    use crate::config::Config;
+
+    /// A session started with the default config, and a client of `rows`
+    /// by `cols` attached.
+    pub(crate) fn attached(rows: u16, cols: u16) -> Result<(Session, ClientId), String> {
+        let mut session = Session::new(Config::default(), "/nonexistent/fux.sock".into(), false);
+        session.start().map_err(|e| e.to_string())?;
+        let client = session
+            .attach(rows, cols, None)
+            .map_err(|e| e.to_string())?;
+        Ok((session, client))
+    }
+
+    /// Runs `line` as a command from no client; its error, if it fails.
+    pub(crate) fn run(session: &mut Session, line: &str) -> Result<(), String> {
+        let words = crate::words::split(line).map_err(|e| e.to_string())?;
+        let outcome = session.run(&words, &Ctx::default());
+        if outcome.status == 0 {
+            Ok(())
+        } else {
+            Err(outcome.stderr)
+        }
+    }
 }
 
 #[cfg(test)]
