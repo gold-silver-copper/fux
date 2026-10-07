@@ -70,7 +70,8 @@ cannot run now are dimmed.
 | `t`, `w` | tab and workspace layers | below |
 
 `r` and `m` are **repeat modes**: `h` `j` `k` `l` act again without the
-prefix until Esc or Enter; any other key ends the mode and is dropped.
+prefix until Esc or Enter; the prefix ends the mode and opens the command
+column; any other key ends it and is dropped, which the bar says.
 
 `t` and `w` are **layers**, sharing their verbs:
 

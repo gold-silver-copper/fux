@@ -154,10 +154,7 @@ pub enum Frame {
     /// client → server.
     Input(Vec<u8>),
     /// client → server.
-    Resize {
-        rows: u16,
-        cols: u16,
-    },
+    Resize { rows: u16, cols: u16 },
     /// client → server.
     Detach,
     /// client → server.
@@ -175,17 +172,13 @@ pub enum Frame {
     /// server → client.
     Stderr(Vec<u8>),
     /// server → client.
-    Done {
-        status: u8,
-    },
+    Done { status: u8 },
     /// server → client, first after an `Attach` sent with the client's
     /// terminal (`fuxix::socket::send_with_fd`): whether the server took
     /// it, and reads the keys and writes the paints there itself. If it did
     /// not, the client relays them in frames, as one that sent no terminal
     /// does.
-    Terminal {
-        taken: bool,
-    },
+    Terminal { taken: bool },
 }
 
 impl Frame {

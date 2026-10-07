@@ -86,8 +86,9 @@ pub struct View {
     pub workspace: WsId,
     /// Per workspace, the selected tab.
     pub tab_of: BTreeMap<WsId, TabId>,
-    /// Per tab, the focused pane and the one focused before it.
+    /// Per tab, the focused pane.
     pub focus_of: BTreeMap<TabId, PaneId>,
+    /// Per tab, the pane focused before it (`select-pane --last`).
     pub last_of: BTreeMap<TabId, PaneId>,
     pub zoom: bool,
     pub mode: Mode,

@@ -1503,6 +1503,9 @@ impl Session {
                 let pane = self.new_pane(&mut ids, cmd, &cwd, size)?;
                 self.commit(ids);
                 if let Some(t) = self.tab_mut(tab) {
+                    // True: `target` was just found in this tab. (False
+                    // would leave the new pane, its process started, in no
+                    // tab.)
                     layout::split(&mut t.root, target, pane, axis, Side::After);
                 }
                 // The splitting client follows the new pane; from the CLI,
@@ -1869,6 +1872,7 @@ impl Session {
                     Direction::Right | Direction::Down => Side::After,
                     Direction::Left | Direction::Up => Side::Before,
                 };
+                // True: `neighbor` found `destination` in this tab.
                 layout::split(&mut tab.root, destination, pane, Axis::of(direction), side);
                 return Ok(String::new());
             }

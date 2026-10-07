@@ -1,6 +1,8 @@
 //! The keyboard overlays: the command column, choosers, action menus, the
 //! command prompt, rename prompts and confirmations. Each belongs to the client
-//! that opened it.
+//! that opened it. And what keys run outside them: bindings after the
+//! prefix and without it (`run_root`), repeat modes (`repeat_key`), a key
+//! sent to a pane (`send_key`).
 use crate::command::{
     AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, Pick, Sibling, SwapWith, WsRef,
 };
