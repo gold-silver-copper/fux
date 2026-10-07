@@ -1560,7 +1560,9 @@ impl Grid {
         };
         if let Some(run) = run {
             // The rest of the run moves over by one, and the row goes in at
-            // the end it moved to: one copy, not the general rotation's.
+            // the end it moved to: one copy, not the general rotation's. The
+            // ranges are the run's own, so `copy_within` cannot panic: the
+            // one call outside `bytes::copy_within` (clippy.toml).
             let end = run.len().saturating_sub(1);
             if from < to {
                 run.copy_within(1.., 0);

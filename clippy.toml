@@ -17,8 +17,11 @@
 # And `slice::copy_within` and `copy_from_slice`, which panic on a range out
 # of bounds and on slices of different lengths. The rule: each crate calls
 # them only in one small helper, after the helper has checked what they would
-# panic on, and nowhere else; grep finds no other call. They are fux-vt's
-# `copy_within` in src/bytes.rs and `copy_from` in its lib.rs.
+# panic on, and nowhere else but one: grep finds no other call. They are
+# fux-vt's `copy_within` in src/bytes.rs and `copy_from` in its lib.rs. The
+# one: moving a row (grid.rs, `move_row`) shifts a run by one with
+# `copy_within` directly, its ranges taken from the run's own length; the
+# checked helper there costs measurably more on the scroll-region path.
 disallowed-methods = [
   # Vec
   { path = "alloc::vec::Vec::insert", reason = "panics past the end: build the new Vec from iterators" },
