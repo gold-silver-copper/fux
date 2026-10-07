@@ -1028,14 +1028,16 @@ mod tests {
     }
 
     /// A name typed into a rename prompt is the name, whatever it looks
-    /// like: one that starts with `-` is not taken for a flag.
+    /// like: one that starts with `-` is not taken for a flag. (A
+    /// workspace's may not start with one, as no target could read it
+    /// back: its flag-like word comes after.)
     #[test]
     fn a_rename_prompt_takes_any_name() -> Outcome {
         let (mut session, client) = session()?;
         for (open, name, read) in [
             ("rename-prompt -c c1 pane -t %1", "-dev", "%1"),
             ("rename-prompt -c c1 tab -t @1", "--", "@1"),
-            ("rename-prompt -c c1 workspace -t +1", "-w x", "+1"),
+            ("rename-prompt -c c1 workspace -t +1", "x -w --", "+1"),
         ] {
             run(&mut session, open)?;
             // Backspace clears what the prompt starts with, the current name.
