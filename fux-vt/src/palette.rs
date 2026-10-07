@@ -275,7 +275,7 @@ fn report(sink: &mut impl Sink, command: u16, index: Option<u16>, colour: Rgb, b
 }
 
 /// An answer being built: the longest, `OSC 4 ; 260 ; rgb:`, three
-/// channels and ST, is 31 bytes.
+/// channels and ST, is 28 bytes.
 #[derive(Default)]
 struct Answer {
     bytes: [u8; 32],

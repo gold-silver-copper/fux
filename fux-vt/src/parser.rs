@@ -265,8 +265,10 @@ impl Request {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Options {
-    /// Deliver OSC 0/1/2 (icon name / window title), OSC 52 (clipboard) and BEL
-    /// as [`Event`]s. OSC payloads are buffered up to [`OSC_PAYLOAD_LIMIT`].
+    /// Deliver OSC 0/1/2 (icon name / window title), OSC 52 (clipboard),
+    /// BEL, and the dynamic colours' queries (OSC 10 to 19, as
+    /// [`Event::ColorQuery`]) as [`Event`]s. OSC payloads are buffered up
+    /// to [`OSC_PAYLOAD_LIMIT`].
     pub events: bool,
     /// Also answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`), DECXCPR
     /// (`CSI ? 6 n`) and secondary device attributes (`CSI > c`).

@@ -5,13 +5,15 @@
 //! (`Attributes::inline_style`): no colour but the default and the 256
 //! indexed ones, no underline colour, no underline but a single one, and any
 //! other rendition but rapid blink; or a direct foreground on the default
-//! background, bold or italic or neither, as syntax highlighting prints.
+//! background, bold, italic, both or neither, as syntax highlighting
+//! prints.
 //! Their number says what they are, so printing in them costs no search,
 //! and reading them no table. The default attributes are style 0, so a
 //! blank cell is all zeros.
 //!
-//! Every other style (a direct background, an underline colour, a double or
-//! curly underline) is kept once in a grid's table, and its number, with
+//! Every other style (a direct background, an underline colour, a double,
+//! curly, dotted or dashed underline, rapid blink) is kept once in a grid's
+//! table, and its number, with
 //! [`TABLE`] set, is its place there. Nothing counts the cells of each:
 //! writing a cell costs no more than writing its number. Instead, when the
 //! table has grown to twice the styles in use at the last sweep, and past a

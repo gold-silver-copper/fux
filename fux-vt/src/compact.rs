@@ -322,8 +322,10 @@ impl Text {
             .unwrap_or("")
     }
     /// Bytes of long clusters kept, live or left behind, as a row of
-    /// [`Cell`]s keeps them: the row's `text_len`.
-    pub(crate) fn len(&self) -> usize {
+    /// [`Cell`]s keeps them: the row's `text_len`. The short clusters are
+    /// not counted, so a `Text` with none of these may still hold text
+    /// (`is_empty`).
+    pub(crate) fn long_len(&self) -> usize {
         self.long.len()
     }
     /// Whether the row keeps no text at all.

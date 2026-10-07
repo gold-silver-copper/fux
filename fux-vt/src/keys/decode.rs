@@ -1,9 +1,12 @@
 //! Decoding a client's raw terminal input into keys, pastes, focus changes
-//! and the terminal's answers to fux's questions (`outer`). The client is a
-//! dumb pipe; this is the only decoder.
+//! and the terminal's answers to fux's questions (`outer`), as the server
+//! reads it from the terminal or the client relays it; this is the only
+//! decoder.
 //!
-//! The outer terminal is in normal (not application) cursor and keypad mode,
-//! so each key has one xterm encoding. A lone Escape is only known to be one
+//! The outer terminal is put in normal (not application) cursor and keypad
+//! mode, so most keys arrive in one xterm encoding; the others a terminal
+//! may send (SS3, `CSI 1 ~` and `CSI 7 ~`, modifyOtherKeys, the kitty
+//! protocol) decode too. A lone Escape is only known to be one
 //! when no more bytes follow within `ESCAPE_DELAY`; the server calls
 //! `timeout` at the `deadline` the decoder reports. Mouse reports, in SGR
 //! or the default encoding, decode to [`MouseEvent`]s; a host that asked
@@ -44,6 +47,7 @@
 //! dropped to its end as it arrives, none of it typed.
 use crate::bytes::ByteQueue;
 use crate::keys::colour::{Rgb, Scheme};
+use crate::keys::encode::PASTE_END;
 use crate::keys::mouse::{self, MouseEvent};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
 use std::time::{Duration, Instant};
@@ -157,10 +161,9 @@ pub struct Decoder {
 struct Discarding {
     /// BEL ends it too (OSC; a DCS ends with ST alone).
     bel: bool,
+    /// Its last byte was an ESC: a `\` next ends it.
     escape: bool,
 }
-
-use crate::keys::encode::PASTE_END;
 
 enum Step {
     /// Consumed this many bytes, producing an input or nothing.
@@ -1423,9 +1426,12 @@ mod tests {
         for report in [&b"\x1b[u"[..], b"\x1b[1;5u", b"\x1b[0;5u", b"\x1b[27;5;1~"] {
             assert_eq!(all(report), vec![], "{report:?}");
         }
-        let pressed = |input: &Input| match input {
-            Input::Key(stroke) => Some(stroke.press),
-            _ => None,
+        let pressed = |input: &Input| {
+            if let Input::Key(stroke) = input {
+                Some(stroke.press)
+            } else {
+                None
+            }
         };
         let letter: Vec<_> = all(b"\x1b[97;5u").iter().map(pressed).collect();
         assert_eq!(

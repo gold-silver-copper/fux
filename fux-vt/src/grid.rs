@@ -1608,8 +1608,9 @@ impl Grid {
         let (rows, cols) = Self::check_size(rows, cols, self.history_limit)?;
         let history = self.history_len();
         // Rows are placed around the cursor, so that the line it is on stays
-        // in view (finding 017 of the Bevy version, docs/breaks-audit.md). A shrink drops rows below the cursor first, and only
-        // then scrolls rows above it into history: a screen with its content at
+        // in view (docs/breaks-audit.md, 017: a resized pane lost its bottom
+        // line). A shrink drops rows below the cursor first, and only then
+        // scrolls rows above it into history: a screen with its content at
         // the top keeps it, and a full screen keeps its bottom line. A grow
         // pulls rows back from history above, as xterm does, and pads the rest
         // with blank rows below. history_limit bounds history, oldest first.

@@ -105,7 +105,8 @@ impl Packed {
     }
 }
 
-/// Attributes are independent of glyph storage and copied onto erased cells.
+/// Attributes are independent of glyph storage. An erase fills cells with
+/// the pen's colours alone (`erased`).
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Attributes {
     foreground: Packed,
