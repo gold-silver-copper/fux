@@ -397,8 +397,8 @@ pub fn attach(socket: &Path, workspace: Option<String>) -> Result<(), Error> {
         Err(error) => Err(error),
     };
     let result = match taken {
-        Ok(true) => watch(&mut stream, &mut decoder),
-        Ok(false) => pump(&mut stream, &mut decoder),
+        Ok(true) => attached(&mut stream, &mut decoder, false),
+        Ok(false) => attached(&mut stream, &mut decoder, true),
         Err(error) => Err(error),
     };
     restore();
@@ -447,61 +447,13 @@ fn terminal_taken(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<bool
     }
 }
 
-/// While the server reads and writes the terminal itself: passes on the
-/// terminal's new size, detaches on a signal, and waits for the server to
-/// end the attachment. The reason.
-fn watch(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, Error> {
-    let mut winch = crate::signal_pipe(&[SIGWINCH]).map_err(Error::Signals)?;
-    let stops = crate::signal_pipe(&[SIGTERM, SIGHUP, SIGINT]).map_err(Error::Signals)?;
-    let _ = stream.set_read_timeout(None);
-    let mut buffer = vec![0u8; 64 * 1024];
-    let mut stdout = std::io::stdout();
-    loop {
-        let mut fds = [
-            PollFd::new(&*stream, PollFlags::IN),
-            PollFd::new(&winch, PollFlags::IN),
-            PollFd::new(&stops, PollFlags::IN),
-        ];
-        match fuxix::poll::poll(&mut fds, None) {
-            Ok(_) | Err(fuxix::Errno::INTR) => {}
-            Err(e) => return Err(Error::Poll(e)),
-        }
-        let ready = fds.each_ref().map(PollFd::revents);
-        let is = |i: usize| ready.get(i).is_some_and(|f| !f.is_empty());
-        if is(2) {
-            let _ = send(stream, &Frame::Detach);
-            return Ok("detached by a signal".into());
-        }
-        if is(1) {
-            crate::drain(&mut winch);
-            let (rows, cols) = window_size();
-            send(stream, &Frame::Resize { rows, cols })?;
-        }
-        if is(0) {
-            match stream.read(&mut buffer) {
-                Ok(0) => return Ok("the server closed the connection".into()),
-                Ok(n) => decoder.push(buffer.get(..n).unwrap_or_default()),
-                Err(e) if matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock) => {}
-                Err(e) => return Err(Error::Read(e)),
-            }
-            while let Some(raw) = decoder.raw()? {
-                // A paint relayed after all goes on to the terminal.
-                if let Some(bytes) = raw.paint() {
-                    note_title(bytes);
-                    stdout.write_all(bytes).map_err(Error::WriteTerminal)?;
-                    continue;
-                }
-                if let Frame::Exit(reason) = raw.decode()? {
-                    return Ok(reason);
-                }
-            }
-            let _ = stdout.flush();
-        }
-    }
-}
-
-/// Moves bytes both ways until the server ends the attachment. The reason.
-fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, Error> {
+/// Holds the attachment until the server ends it, and says why. With
+/// `relay`, the server kept the terminal, and bytes are moved both ways:
+/// the terminal's to the server in frames, the server's paints to the
+/// terminal. Without, the server reads and writes the terminal itself, and
+/// this only passes on the terminal's new size, a paint the server relays
+/// after all, and a signal that detaches.
+fn attached(stream: &mut UnixStream, decoder: &mut Decoder, relay: bool) -> Result<String, Error> {
     let mut winch = crate::signal_pipe(&[SIGWINCH]).map_err(Error::Signals)?;
     let stops = crate::signal_pipe(&[SIGTERM, SIGHUP, SIGINT]).map_err(Error::Signals)?;
     let _ = stream.set_read_timeout(None);
@@ -510,29 +462,35 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, Error>
     let mut buffer = vec![0u8; 64 * 1024];
     // Where each read from the terminal is framed; reused by every read.
     let mut input = Vec::new();
+    // The terminal is polled last, and only when relaying.
+    const STREAM: usize = 0;
+    const WINCH: usize = 1;
+    const STOPS: usize = 2;
+    const TERMINAL: usize = 3;
+    let polled = if relay { 4 } else { 3 };
     loop {
         let mut fds = [
-            PollFd::new(&stdin, PollFlags::IN),
             PollFd::new(&*stream, PollFlags::IN),
             PollFd::new(&winch, PollFlags::IN),
             PollFd::new(&stops, PollFlags::IN),
+            PollFd::new(&stdin, PollFlags::IN),
         ];
-        match fuxix::poll::poll(&mut fds, None) {
+        match fuxix::poll::poll(fds.get_mut(..polled).unwrap_or_default(), None) {
             Ok(_) | Err(fuxix::Errno::INTR) => {}
             Err(e) => return Err(Error::Poll(e)),
         }
         let ready = fds.each_ref().map(PollFd::revents);
-        let is = |i: usize| ready.get(i).is_some_and(|f| !f.is_empty());
-        if is(3) {
+        let is = |i: usize| i < polled && ready.get(i).is_some_and(|f| !f.is_empty());
+        if is(STOPS) {
             let _ = send(stream, &Frame::Detach);
             return Ok("detached by a signal".into());
         }
-        if is(2) {
+        if is(WINCH) {
             crate::drain(&mut winch);
             let (rows, cols) = window_size();
             send(stream, &Frame::Resize { rows, cols })?;
         }
-        if is(0) {
+        if is(TERMINAL) {
             match fuxix::io::read(&stdin, &mut buffer) {
                 Ok(0) => {
                     let _ = send(stream, &Frame::Detach);
@@ -547,7 +505,7 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, Error>
                 Err(e) => return Err(Error::ReadTerminal(e)),
             }
         }
-        if is(1) {
+        if is(STREAM) {
             match stream.read(&mut buffer) {
                 Ok(0) => return Ok("the server closed the connection".into()),
                 Ok(n) => decoder.push(buffer.get(..n).unwrap_or_default()),
