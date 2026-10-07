@@ -448,7 +448,8 @@ fn rgb(r: u16, g: u16, b: u16) -> Option<Color> {
 }
 
 /// Whether a glyph `width` wide at `i` has its second half after it, if it
-/// needs one. Kept out of line, as `unchanged` is.
+/// needs one. Kept out of line, as `unchanged` is (grid.rs), so that the
+/// print that usually follows compiles as if it were not there.
 #[inline(never)]
 fn whole(cells: &[Compact], i: usize, width: u16) -> bool {
     width != 2
@@ -1147,6 +1148,9 @@ impl Screen {
         g.cursor.1 = 0;
         self.linefeed()
     }
+    /// `new_line` with left and right margins: the line feed, then the
+    /// carriage to the left margin. Out of line, as margins are rare and
+    /// `new_line` is on every new line's way.
     #[inline(never)]
     fn new_line_in_margins(&mut self) -> Result<(), Error> {
         self.linefeed()?;
@@ -1845,7 +1849,9 @@ impl Screen {
     /// the left and right margins, as ICH and DCH insert and delete cells
     /// in one (DEC STD 070, 5.4.3; xterm's `xtermColScroll`). Nothing
     /// outside the margins. The cursor stays, and so does a pending wrap,
-    /// as in xterm; DECDC ends each line's soft wrap, as DCH does.
+    /// as in xterm; DECDC ends each line's soft wrap, as DCH does. Out of
+    /// line: inlined, the claude recordings count 0.01% more instructions
+    /// (fux-bench).
     #[inline(never)]
     fn edit_columns(&mut self, count: u16, insert: bool) {
         let g = self.grid();
@@ -1880,7 +1886,8 @@ impl Screen {
     }
 
     /// ECH under ISO protection: the columns `start` to `end` of row `row`
-    /// erased but for their protected glyphs.
+    /// erased but for their protected glyphs. Out of line, as protection is
+    /// rare and `csi` is on every CSI's way.
     #[inline(never)]
     fn erase_kept(&mut self, row: u16, start: u16, end: u16) {
         let blank = self.blank_style();
@@ -1890,7 +1897,9 @@ impl Screen {
     /// ED, EL, DECSED or DECSEL while glyphs may be protected: DECSED and
     /// DECSEL (`private`) leave them with any protection, ED and EL with
     /// ISO's alone (xterm's `do_erase_display`). Whether it erased: ED and
-    /// EL under DEC protection erase every cell, as `csi` does without.
+    /// EL under DEC protection erase every cell, as `csi` does without. Out
+    /// of line: inlined, the tmux recordings count up to 0.35% more
+    /// instructions (fux-bench).
     #[inline(never)]
     fn erase_protected(&mut self, private: bool, display: bool, mode: u16) -> bool {
         if private || self.protection == Protection::Iso {
@@ -1905,7 +1914,8 @@ impl Screen {
     /// `do_erase_display` and `do_erase_line`). The rest is as for ED and
     /// EL. As in xterm, an ED of the whole screen (2, or 0 from the first
     /// cell, or 1 from the last) that finds no protected glyph ends the
-    /// protection: until the next DECSCA or SPA, erases leave nothing.
+    /// protection: until the next DECSCA or SPA, erases leave nothing. Out
+    /// of line, as protection is rare and `csi` is on every CSI's way.
     #[inline(never)]
     fn selective_erase(&mut self, display: bool, mode: u16) {
         let blank = self.blank_style();
