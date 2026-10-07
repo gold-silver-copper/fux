@@ -151,7 +151,11 @@ impl Copy {
     /// Finds the rows it holds, once each.
     pub fn resolve(&self, screen: &Screen) -> Resolved {
         let at = |(id, col): (RowId, u16)| Some((index_of(screen, id)?, col));
-        let top = index_of(screen, self.top);
+        // The view's top row, as the window can show it: no lower than
+        // the end of history, which rows pulled back out of it, as a pane
+        // grows, can leave behind it. The cursor and the selection are
+        // placed from this top, as the window is.
+        let top = index_of(screen, self.top).map(|top| top.min(screen.history_len()));
         let cursor = at(self.cursor);
         let anchor = self.selection.and_then(|(_, anchor)| at(anchor));
         let ends = self
@@ -566,11 +570,11 @@ pub fn enter(session: &mut Session, client: ClientId) -> Result<String, Error> {
     let screen = session.panes.get(&pane).ok_or(Error::NoSuchPane)?.screen();
     let (cy, cx) = screen.cursor_position();
     let history = screen.history_len();
-    let cursor = history
+    let row = history
         .checked_add(usize::from(cy))
         .and_then(|i| row_at(screen, i))
-        .ok_or(Error::NoRows)?
-        .id();
+        .ok_or(Error::NoRows)?;
+    let (cursor, cx) = (row.id(), glyph_start(row, cx));
     let top = row_at(screen, history).ok_or(Error::NoRows)?.id();
     let copy = Copy {
         pane,
@@ -628,11 +632,15 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
     // The key may move the rows it holds.
     copy.held_at = None;
     let pane_id = copy.pane;
-    let height = placement.rect(pane_id).map_or(1, |r| r.h.max(1));
     let Some(pane) = session.panes.get(&pane_id) else {
         return;
     };
     let screen = pane.screen();
+    // The rows shown: the pane's rect, but no more than the screen has, as
+    // a smaller client can size the pane below this one's room for it.
+    let height = placement
+        .rect(pane_id)
+        .map_or(1, |r| r.h.min(screen.size().0).max(1));
     view.dirty = true;
     view.notice = None;
 
@@ -801,18 +809,27 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
     }
 }
 
+/// `col` of `row`, or the first half of the wide glyph whose second half it
+/// is: where copy mode's cursor goes, so that what it highlights is what
+/// `y` copies.
+fn glyph_start(row: fux_vt::Row<'_>, col: u16) -> u16 {
+    if row
+        .cell(usize::from(col))
+        .is_some_and(|c| c.is_wide_continuation())
+    {
+        col.saturating_sub(1)
+    } else {
+        col
+    }
+}
+
 /// Moves the cursor, scrolling the view, whose top row is at `top`, to keep
 /// it in sight.
 fn move_to(copy: &mut Copy, screen: &Screen, height: u16, top: usize, (row, col): (usize, u16)) {
     let last_col = screen.size().1.saturating_sub(1);
-    let mut col = col.min(last_col);
+    let col = col.min(last_col);
     if let Some(r) = row_at(screen, row) {
-        if r.cell(usize::from(col))
-            .is_some_and(|c| c.is_wide_continuation())
-        {
-            col = col.saturating_sub(1);
-        }
-        copy.cursor = (r.id(), col);
+        copy.cursor = (r.id(), glyph_start(r, col));
     }
     let height = usize::from(height).max(1);
     // Scroll just enough that the row shows; `height` is at least 1.
@@ -991,6 +1008,88 @@ mod tests {
         s.input(c, b"]]");
         let history = first.history_len();
         assert_eq!(at(&s), Some((15, 0, history)));
+        Ok(())
+    }
+
+    /// After the pane grows, pulling rows back out of history, the view's
+    /// top is past what history holds: the cursor and the selection are
+    /// drawn on the rows the window shows from there, the ones `y` copies.
+    #[test]
+    fn the_view_after_rows_leave_history_shows_the_cursor_where_it_is() -> Result<(), String> {
+        let mut text = Vec::new();
+        for n in 0..60 {
+            text.extend_from_slice(format!("line {n}\r\n").as_bytes());
+        }
+        let mut p = screen(&text, 11, 20)?;
+        let history = p.screen().history_len();
+        let id = |s: &Screen, i| row_at(s, i).map(|r| r.id()).ok_or("no row");
+        let cursor = history.saturating_add(8);
+        let copy = Copy {
+            pane: PaneId(1),
+            top: id(p.screen(), history.saturating_sub(2))?,
+            cursor: (id(p.screen(), cursor)?, 0),
+            selection: Some((Select::Line, (id(p.screen(), cursor)?, 0))),
+            search: None,
+            typing: None,
+            held_at: None,
+        };
+        p.resize(21, 20).map_err(|e| e.to_string())?;
+        let s = p.screen();
+        let r = copy.resolve(s);
+        let shown_top = s.history_len().saturating_sub(r.offset(s));
+        let (y, _) = r.cursor_in_view(21).ok_or("cursor not in view")?;
+        let cursor_now = index_of(s, copy.cursor.0).ok_or("cursor gone")?;
+        assert_eq!(shown_top.saturating_add(usize::from(y)), cursor_now);
+        assert!(
+            r.selected(y, 0),
+            "the selection is drawn on the cursor's row"
+        );
+        Ok(())
+    }
+
+    /// On a client larger than the pane (a smaller client sizes it), copy
+    /// mode moves within the rows shown, not the client's room for them:
+    /// its cursor stays on a row the client can see.
+    #[test]
+    fn copy_mode_moves_within_the_rows_shown() -> Result<(), String> {
+        let (mut s, big) = crate::session::testing::attached(16, 40)?;
+        s.attach(8, 40, None).map_err(|e| e.to_string())?;
+        let pane = PaneId(1);
+        let mut output = String::new();
+        for n in 0..60 {
+            output.push_str(&format!("line {n}\r\n"));
+        }
+        s.output(pane, output.as_bytes());
+        s.input(big, b"\x02c");
+        s.input(big, &[b'k'; 10]);
+        s.input(big, &[b'j'; 14]);
+        let screen = s.panes.get(&pane).ok_or("the pane")?.screen();
+        let shown = screen.size().0;
+        let view = s.views.get(&big).ok_or("the client")?;
+        let Mode::Copy(copy) = &view.mode else {
+            return Err("not in copy mode".into());
+        };
+        let r = copy.resolve(screen);
+        assert!(
+            r.cursor_in_view(shown).is_some(),
+            "the cursor on a row of the {shown} shown"
+        );
+        Ok(())
+    }
+
+    /// Entered with the program's cursor on a wide glyph's second half,
+    /// copy mode's cursor is on the glyph's first, as every move puts it:
+    /// what it highlights and what `y` copies agree.
+    #[test]
+    fn copy_mode_entered_on_a_wide_glyphs_second_half_starts_at_its_first() -> Result<(), String> {
+        let (mut s, c) = crate::session::testing::attached(5, 20)?;
+        s.output(PaneId(1), "a\u{754c}b\x1b[1;3H".as_bytes());
+        s.input(c, b"\x02c");
+        let view = s.views.get(&c).ok_or("the client")?;
+        let Mode::Copy(copy) = &view.mode else {
+            return Err("not in copy mode".into());
+        };
+        assert_eq!(copy.cursor.1, 1, "the glyph's first half");
         Ok(())
     }
 

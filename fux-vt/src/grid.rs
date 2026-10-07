@@ -97,6 +97,8 @@ pub(crate) const MAX_ROWS: usize = 1_048_576;
 struct Meta {
     id: RowId,
     version: u64,
+    /// The row's width: for a row of the screen, always the grid's; it goes
+    /// with a row into history, which keeps rows of the widths they had.
     width: u16,
     wrapped: bool,
     /// How far into the row a cell may differ from a blank in the default
@@ -104,7 +106,10 @@ struct Meta {
     /// slot clears only the cells before it, and a row scrolled into
     /// history is looked at no further.
     used: u16,
-    /// Whether the row has an array of links in `Grid::linked`.
+    /// Whether the row's links are its slot's array in `Grid::linked`. An
+    /// array for a slot whose row is not linked is a recycled row's: stale,
+    /// read by no one, and still counted until links are freed
+    /// (`free_links`).
     linked: bool,
     /// Whether a prompt starts on the row (OSC 133 ; A).
     prompt: bool,
@@ -851,8 +856,12 @@ impl Grid {
         (self.links.counts(), fresh.counts(), held)
     }
 
-    /// Forgets every link: RIS.
+    /// Forgets every link: RIS. No row is linked after, so a row given a
+    /// link again makes its array anew (`set_link`).
     pub fn reset_links(&mut self) {
+        for m in &mut self.meta {
+            m.linked = false;
+        }
         self.linked.clear();
         self.history.reset_links();
         self.links = Links::default();
@@ -913,7 +922,7 @@ impl Grid {
         for slot in left {
             forget(&mut self.linked, &mut self.links, slot);
         }
-        self.links.free_unused(&[]);
+        self.links.free_unused();
         if self.links.used_within_half() {
             return;
         }
@@ -923,7 +932,7 @@ impl Grid {
             }
             self.history.unlink(index, version, &mut self.links);
         }
-        self.links.free_unused(&[]);
+        self.links.free_unused();
     }
 
     /// Marks live row `row` as where a prompt starts (OSC 133 ; A).
@@ -1039,7 +1048,7 @@ impl Grid {
         // would never read them.
         if start == 0 && end >= cols {
             if let Some(text) = self.texts.get_mut(slot) {
-                text.clear();
+                text.release();
             }
             self.unlink(slot);
         }
@@ -1604,8 +1613,9 @@ impl Grid {
         let (rows, cols) = Self::check_size(rows, cols, self.history_limit)?;
         let history = self.history_len();
         // Rows are placed around the cursor, so that the line it is on stays
-        // in view (finding 017 of the Bevy version, docs/breaks-audit.md). A shrink drops rows below the cursor first, and only
-        // then scrolls rows above it into history: a screen with its content at
+        // in view (docs/breaks-audit.md, 017: a resized pane lost its bottom
+        // line). A shrink drops rows below the cursor first, and only then
+        // scrolls rows above it into history: a screen with its content at
         // the top keeps it, and a full screen keeps its bottom line. A grow
         // pulls rows back from history above, as xterm does, and pads the rest
         // with blank rows below. history_limit bounds history, oldest first.
@@ -1636,27 +1646,22 @@ impl Grid {
             let row = index.map_or(usize::MAX, |i| i.saturating_sub(live_top));
             u16::try_from(row).map_or(rows.last(), |row| row.min(rows.last()))
         };
+        // The cursors keep their columns, as far as the new width allows,
+        // and a wrap they wait on, as xterm keeps it at any width (DEC STD
+        // 070, Appendix D.6.1: a resize is no movement that ends it). The
+        // scroll region is reset, as xterm does, and as `reflowed` does.
         let mut replacement = Self {
-            // A pending wrap is dropped: the cursor goes one past where it
-            // waited, as far as the new width allows.
-            cursor: (shifted(self.cursor.0), self.next_column().min(cols.last())),
+            cursor: (shifted(self.cursor.0), self.cursor.1.min(cols.last())),
+            pending_wrap: self.pending_wrap,
             saved_cursor: (
                 shifted(self.saved_cursor.0),
-                past(self.saved_cursor.1, self.saved_pending_wrap).min(cols.last()),
+                self.saved_cursor.1.min(cols.last()),
             ),
+            saved_pending_wrap: self.saved_pending_wrap,
             origin: self.origin,
             saved_origin: self.saved_origin,
-            top: self.top,
-            bottom: if self.bottom == self.rows.last() {
-                rows.last()
-            } else {
-                self.bottom.min(rows.last())
-            },
             ..self.successor(rows, cols)
         };
-        if replacement.top > replacement.bottom {
-            replacement.top = 0;
-        }
         replacement.reserve_screen()?;
         let end = base.checked_add(keep_total).ok_or(Error::Capacity)?;
         // Each row is laid out whole in `row`, as wide as it is, then kept.

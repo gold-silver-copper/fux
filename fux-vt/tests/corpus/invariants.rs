@@ -15,14 +15,11 @@ pub fn check(p: &Parser) {
         row < rows && col < cols,
         "cursor {row},{col} outside {rows}x{cols}"
     );
-    // A wrap waits in the last column, or at a right margin: one set, or
-    // one a reset of DECLRMM (or DECSTR) left the wrap waiting at, as xterm
-    // keeps it. A right margin is never the first column.
+    // A wrap may wait at any column: the last, a right margin, one a
+    // reset of DECLRMM (or DECSTR) left it waiting at, or one a resize
+    // without reflow left it at, as xterm keeps it at any width (a screen
+    // one column wide made wider leaves it at the first).
     let (left, right) = s.left_right_margins();
-    assert!(
-        !s.pending_wrap() || col.checked_add(1) == Some(cols) || col >= 1,
-        "wrap pending at {row},{col} of {rows}x{cols}"
-    );
     let (top, bottom) = s.scroll_region();
     assert!(top <= bottom && bottom < rows);
     // The left margin is left of the right one, or they are the screen's

@@ -151,12 +151,13 @@ pub enum Frame {
         cols: u16,
         workspace: Option<String>,
     },
+    /// client → server.
     Input(Vec<u8>),
-    Resize {
-        rows: u16,
-        cols: u16,
-    },
+    /// client → server.
+    Resize { rows: u16, cols: u16 },
+    /// client → server.
     Detach,
+    /// client → server.
     Command {
         argv: Vec<String>,
         cwd: String,
@@ -164,20 +165,20 @@ pub enum Frame {
     },
     /// server → client.
     Paint(Vec<u8>),
+    /// server → client.
     Exit(String),
+    /// server → client.
     Stdout(Vec<u8>),
+    /// server → client.
     Stderr(Vec<u8>),
-    Done {
-        status: u8,
-    },
+    /// server → client.
+    Done { status: u8 },
     /// server → client, first after an `Attach` sent with the client's
     /// terminal (`fuxix::socket::send_with_fd`): whether the server took
     /// it, and reads the keys and writes the paints there itself. If it did
     /// not, the client relays them in frames, as one that sent no terminal
     /// does.
-    Terminal {
-        taken: bool,
-    },
+    Terminal { taken: bool },
 }
 
 impl Frame {
@@ -550,7 +551,8 @@ impl Decoder {
         checked
     }
 
-    /// Bytes held for a frame not yet complete.
+    /// Bytes held: whole frames not yet taken, and a frame not yet
+    /// complete.
     pub fn buffered(&self) -> usize {
         self.buffer.len()
     }

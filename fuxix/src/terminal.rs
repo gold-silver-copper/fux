@@ -121,6 +121,7 @@ pub fn reopen(fd: impl AsFd) -> Result<OwnedFd> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pty;
 
     /// A terminal reopened is the same terminal, through an open file of
     /// its own: nonblocking without making the original so. A socket is
@@ -140,7 +141,6 @@ mod tests {
         assert!(reopen(&a).is_err());
         Ok(())
     }
-    use crate::pty;
 
     #[test]
     fn modes_and_size_round_trip_on_a_pty() -> std::result::Result<(), String> {

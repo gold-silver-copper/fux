@@ -7,8 +7,9 @@
 //! failure is an [`Errno`] or `None`; a struct the kernel fills is read only
 //! after the call says it filled it.
 //!
-//! Only what fux, its tests, its fuzz targets, its walk and fux-diff use is
-//! here.
+//! Only what fux, its tests, its fuzz targets, its walk, its bench,
+//! fux-diff, fux-vt's compare and koh use is here: an item fux itself does
+//! not call may be theirs.
 //!
 //! **`EINTR`:** no function retries. A call a signal interrupts fails with
 //! [`Errno::INTR`], as the system call did, and the caller decides: fux's

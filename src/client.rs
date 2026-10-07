@@ -434,12 +434,22 @@ fn send_with_terminal(
 }
 
 /// The server's first answer to an `Attach` sent with the terminal: whether
-/// it took it. A server that ends the attachment first says why.
+/// it took it. A server that ends the attachment first says why. A paint
+/// first says it did not: the server sends `Frame::Terminal` before any
+/// paint, and one that never got the descriptor (lost on its way) sends
+/// none, and relays; the paint is written, as relaying writes it.
 fn terminal_taken(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<bool, Error> {
     let mut buffer = vec![0u8; 4096];
     loop {
         match read_frame(stream, decoder, &mut buffer, None)? {
             Some(Frame::Terminal { taken }) => return Ok(taken),
+            Some(Frame::Paint(bytes)) => {
+                note_title(&bytes);
+                let mut stdout = std::io::stdout();
+                stdout.write_all(&bytes).map_err(Error::WriteTerminal)?;
+                let _ = stdout.flush();
+                return Ok(false);
+            }
             Some(Frame::Exit(reason)) => return Err(Error::Refused(reason)),
             Some(_) => {}
             None => return Err(Error::Closed),
@@ -468,6 +478,11 @@ fn attached(stream: &mut UnixStream, decoder: &mut Decoder, relay: bool) -> Resu
     const STOPS: usize = 2;
     const TERMINAL: usize = 3;
     let polled = if relay { 4 } else { 3 };
+    // Frames read before this began, with the one that said whether the
+    // terminal was taken, are taken now: the socket may have no more.
+    if let Some(reason) = take_frames(decoder, &mut stdout)? {
+        return Ok(reason);
+    }
     loop {
         let mut fds = [
             PollFd::new(&*stream, PollFlags::IN),
@@ -512,27 +527,81 @@ fn attached(stream: &mut UnixStream, decoder: &mut Decoder, relay: bool) -> Resu
                 Err(e) if matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock) => {}
                 Err(e) => return Err(Error::Read(e)),
             }
-            while let Some(raw) = decoder.raw()? {
-                // A paint goes to the terminal straight from the decoder.
-                if let Some(bytes) = raw.paint() {
-                    note_title(bytes);
-                    stdout.write_all(bytes).map_err(Error::WriteTerminal)?;
-                    continue;
-                }
-                // Any other frame is decoded, so that a malformed one is an
-                // error; one that decodes is ignored, but `Exit`.
-                if let Frame::Exit(reason) = raw.decode()? {
-                    return Ok(reason);
-                }
+            if let Some(reason) = take_frames(decoder, &mut stdout)? {
+                return Ok(reason);
             }
-            let _ = stdout.flush();
         }
     }
+}
+
+/// Takes every whole frame `decoder` holds: a paint to the terminal, an
+/// `Exit` ending the attachment, with its reason.
+fn take_frames(decoder: &mut Decoder, stdout: &mut impl Write) -> Result<Option<String>, Error> {
+    while let Some(raw) = decoder.raw()? {
+        // A paint goes to the terminal straight from the decoder.
+        if let Some(bytes) = raw.paint() {
+            note_title(bytes);
+            stdout.write_all(bytes).map_err(Error::WriteTerminal)?;
+            continue;
+        }
+        // Any other frame is decoded, so that a malformed one is an error;
+        // one that decodes is ignored, but `Exit`.
+        if let Frame::Exit(reason) = raw.decode()? {
+            return Ok(Some(reason));
+        }
+    }
+    let _ = stdout.flush();
+    Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A server that never says whether it took the terminal (the
+    /// descriptor lost on its way) relays paints: the first one says the
+    /// terminal was not taken, and the client relays from there, rather
+    /// than waiting for a `Frame::Terminal` that does not come.
+    #[test]
+    fn a_paint_before_frame_terminal_says_the_terminal_was_not_taken() -> Result<(), String> {
+        let (mut client, mut server) = UnixStream::pair().map_err(|e| e.to_string())?;
+        let paint = Frame::Paint(Vec::new())
+            .encode()
+            .map_err(|e| e.to_string())?;
+        server.write_all(&paint).map_err(|e| e.to_string())?;
+        let (done, ended) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut decoder = Decoder::default();
+            let _ = done.send(terminal_taken(&mut client, &mut decoder).map_err(|e| e.to_string()));
+        });
+        let taken = ended
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| "still waiting for Frame::Terminal after 5 s")??;
+        assert!(!taken);
+        Ok(())
+    }
+
+    /// Frames read with `Frame::Terminal`, before the attachment's loop
+    /// began, are taken at once, though no more bytes come: a paint is
+    /// written, an `Exit` ends the attachment with its reason.
+    #[test]
+    fn frames_read_before_the_attachment_began_are_taken_at_once() -> Result<(), String> {
+        let (mut client, _server) = UnixStream::pair().map_err(|e| e.to_string())?;
+        let mut decoder = Decoder::default();
+        for frame in [Frame::Paint(Vec::new()), Frame::Exit("detached".into())] {
+            decoder.push(&frame.encode().map_err(|e| e.to_string())?);
+        }
+        let (done, ended) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ =
+                done.send(attached(&mut client, &mut decoder, false).map_err(|e| e.to_string()));
+        });
+        let reason = ended
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| "still waiting for the socket after 5 s")??;
+        assert_eq!(reason, "detached");
+        Ok(())
+    }
 
     /// The title fux saved is noted, and its restoring too, the later of
     /// the two in a paint winning.

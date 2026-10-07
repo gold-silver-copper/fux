@@ -32,8 +32,8 @@ impl fmt::Display for Pid {
     }
 }
 
-/// The signals fux sends, and `Tstp`, which koh's client sends itself to
-/// suspend: a shell reports a job `Tstp` stopped as "Stopped", and one
+/// The signals fux and its tests and walk send (fux itself: `Hup`, `Term`,
+/// `Kill`), and `Tstp`, which koh's client sends itself to suspend: a shell reports a job `Tstp` stopped as "Stopped", and one
 /// `Stop` stopped as "Stopped (signal)".
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Signal {

@@ -549,3 +549,70 @@ fn alternate_screen_shrink_discards_rows_above_the_cursor() -> Result {
     assert_eq!(p.screen().history_len(), 0);
     Ok(())
 }
+
+/// CUU, CUD, CPL and CNL stop at the margin they come to: up at the top
+/// margin from anywhere at or below it, down at the bottom margin from
+/// anywhere at or above it, else at the screen's edge (xterm's
+/// `CursorUp` and `CursorDown`; DEC STD 070). Each case replayed in xterm
+/// and Ghostty (`fux-vt-compare replay --engines xterm,ghostty --size 5x5
+/// 'BYTES'`): both put the cursor where the case does.
+#[test]
+fn vertical_moves_stop_at_the_margin_they_come_to() -> Result {
+    for (bytes, row) in [
+        // Up from below the region: at its top margin.
+        (&b"\x1b[2;3r\x1b[5;1H\x1b[9A"[..], 1),
+        // Down from above the region: at its bottom margin.
+        (b"\x1b[3;4r\x1b[1;1H\x1b[9B", 3),
+        // CPL and CNL alike.
+        (b"\x1b[2;3r\x1b[5;3H\x1b[9F", 1),
+        (b"\x1b[2;3r\x1b[1;3H\x1b[9E", 2),
+        // Up from above the region, down from below it: the screen's edge.
+        (b"\x1b[3;4r\x1b[2;1H\x1b[9A", 0),
+        (b"\x1b[2;3r\x1b[4;1H\x1b[9B", 4),
+        // Within the region: its margins.
+        (b"\x1b[2;4r\x1b[3;1H\x1b[9A", 1),
+        (b"\x1b[2;4r\x1b[3;1H\x1b[9B", 3),
+    ] {
+        let mut p = Parser::new(5, 5, 0)?;
+        p.process(bytes)?;
+        assert_eq!(
+            p.screen().cursor_position().0,
+            row,
+            "{}",
+            String::from_utf8_lossy(bytes)
+        );
+    }
+    Ok(())
+}
+
+/// A resize without reflow keeps a pending wrap, at any width, and resets
+/// the scroll region, as xterm and Ghostty do and as the resize with
+/// reflow does. Each case replayed in both (`fux-vt-compare replay
+/// --engines xterm,ghostty --no-reflow --size 3x5 'abcde' resize:RxC 'X'`,
+/// and `--size 10x5 '\e[2;5r' resize:12x5 '\e[5;1H\nX'`): both put X
+/// where the case does.
+#[test]
+fn a_resize_without_reflow_keeps_a_pending_wrap_and_resets_the_region() -> Result {
+    for (rows, cols) in [(4, 5), (3, 8), (3, 4)] {
+        let mut p = Parser::new(3, 5, 10)?;
+        p.process(b"abcde")?;
+        p.resize(rows, cols)?;
+        p.process(b"X")?;
+        assert_eq!(
+            p.screen().cursor_position(),
+            (1, 1),
+            "{rows}x{cols}: X wraps to the next row"
+        );
+        assert_eq!(cell(&p, 1, 0)?.contents(), "X", "{rows}x{cols}");
+    }
+    let mut p = Parser::new(10, 5, 0)?;
+    p.process(b"\x1b[2;5r")?;
+    p.resize(12, 5)?;
+    p.process(b"\x1b[5;1H\nX")?;
+    assert_eq!(
+        p.screen().cursor_position(),
+        (5, 1),
+        "no region: a line feed"
+    );
+    Ok(())
+}

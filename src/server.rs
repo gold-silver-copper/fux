@@ -1,5 +1,6 @@
-//! The server: one thread, one `poll` loop over the listening socket, a
-//! signal pipe, every client and every pane's PTY.
+//! The server: one thread (but for fuxix's watchdog while a PTY opens on
+//! macOS), one `poll` loop over the listening socket, a signal pipe, every
+//! client and every pane's PTY.
 use crate::bytes::ByteQueue;
 use crate::command::ClientId;
 use crate::config::Config;
@@ -78,7 +79,7 @@ struct Conn {
     closing: bool,
     dead: bool,
     /// The client's terminal, if the server took it.
-    tty: Option<Terminal>,
+    tty: Option<TakenTerminal>,
     /// A descriptor the client sent, until the `Attach` it came with.
     passed: Option<std::os::fd::OwnedFd>,
     /// The size the client's view was last given: its terminal's, which
@@ -116,7 +117,7 @@ impl PaintClock {
             .map_or(self.next, |settled| settled.min(self.next))
     }
     /// The next paint may be made now.
-    fn now(&mut self) {
+    fn paint_now(&mut self) {
         self.next = Instant::now();
     }
     /// A paint was made at `now`.
@@ -125,7 +126,7 @@ impl PaintClock {
         self.settled = None;
     }
     /// The client typed into `pane`, its focus, if any.
-    fn typed(&mut self, pane: Option<PaneId>) {
+    fn typed_into(&mut self, pane: Option<PaneId>) {
         self.echo = pane;
     }
     /// Pane `pane` wrote: if it is the pane typed into, its echo is painted
@@ -133,7 +134,7 @@ impl PaintClock {
     fn wrote(&mut self, pane: PaneId) {
         if self.echo == Some(pane) {
             self.echo = None;
-            self.now();
+            self.paint_now();
         }
     }
     /// Panes wrote, read at `now`: output held to `PAINT` is painted once
@@ -153,7 +154,7 @@ impl PaintClock {
 /// One is held only while its client is attached: every `Exit` gives it
 /// back first (`Conn::send`). So a connection being stopped or closed has
 /// nothing waiting for its terminal, and what waits on those is `out`'s.
-struct Terminal {
+struct TakenTerminal {
     fd: std::os::fd::OwnedFd,
     /// What waits to be written to it.
     out: ByteQueue,
@@ -163,9 +164,9 @@ struct Terminal {
     title_saved: bool,
 }
 
-impl Terminal {
-    fn new(fd: std::os::fd::OwnedFd) -> Terminal {
-        Terminal {
+impl TakenTerminal {
+    fn new(fd: std::os::fd::OwnedFd) -> TakenTerminal {
+        TakenTerminal {
             fd,
             out: ByteQueue::default(),
             title_saved: false,
@@ -189,7 +190,7 @@ impl Terminal {
 
 /// Input from a client's terminal, read at `now`, to the session; the pane
 /// it went to, the client's focus, is the one whose echo is painted at once.
-fn typed(
+fn take_input(
     session: &mut Session,
     clock: &mut PaintClock,
     client: ClientId,
@@ -197,7 +198,7 @@ fn typed(
     now: Instant,
 ) {
     session.input_at(client, bytes, now);
-    clock.typed(
+    clock.typed_into(
         session
             .views
             .get(&client)
@@ -267,19 +268,31 @@ impl Conn {
         if let Some(tty) = &mut self.tty
             && !tty.flush()
         {
+            // Given up, and its client detached, as one that can no longer
+            // be read is (`serve_tty`): no one would read its keys.
             self.tty = None;
+            if self.client.is_some() && !self.closing {
+                self.send(&Frame::Exit("detached: the terminal closed".into()));
+                self.closing = true;
+            }
         }
     }
 
-    /// Hands the terminal back: what waits for it written as far as it
-    /// takes it at once, the rest dropped, its title restored if the
-    /// paints saved it, and the server's descriptor for it closed.
+    /// Hands the terminal back: its title restored if the paints saved it,
+    /// what waits for it written as far as it takes it at once and the
+    /// rest sent to the client to write, and the server's descriptor for
+    /// it closed.
     fn give_back_tty(&mut self) {
         if let Some(mut tty) = self.tty.take() {
             if tty.title_saved {
                 tty.out.push(crate::outer::TITLE_POP);
             }
-            tty.flush();
+            // What it does not take at once, the title's restore with it,
+            // goes to the client in paint frames, before the `Exit` that
+            // follows: it writes them to the terminal as it writes paints.
+            if tty.flush() && !tty.out.is_empty() {
+                Stream::Paint.encode_into(tty.out.as_slice(), &mut self.out);
+            }
         }
     }
 
@@ -500,8 +513,9 @@ impl Server {
         });
     }
 
-    /// A lone Escape becomes a key once `ESCAPE_DELAY` passes with no byte
-    /// after it.
+    /// What a client's decoder waits on is taken as it is once its deadline
+    /// passes: a lone Escape becomes a key, an answer cut short is dropped
+    /// (`Decoder::deadline`).
     fn escapes(&mut self, now: Instant) {
         // One at a time, in the clients' order: an Escape runs whatever it
         // completes.
@@ -857,7 +871,7 @@ impl Server {
             let all = n < self.read_buffer.len();
             let Some(client) = conn.client else { return };
             let bytes = self.read_buffer.get(..n).unwrap_or_default();
-            typed(&mut self.session, &mut conn.clock, client, bytes, now);
+            take_input(&mut self.session, &mut conn.clock, client, bytes, now);
             if all {
                 break;
             }
@@ -895,7 +909,7 @@ impl Server {
     }
 
     /// Reads what a client sent until it has sent no more, or `CONN_READ`
-    /// bytes, or 256 whole frames, or a bad one; then handles each whole
+    /// bytes, or more than 256 whole frames, or a bad one; then handles each whole
     /// frame, in order.
     fn read_conn(&mut self, index: usize, now: Instant) {
         // The frames read and checked, and where they end in the decoder.
@@ -955,7 +969,7 @@ impl Server {
             // decoder, uncopied.
             if let (Some(Role::Attach), Some(bytes)) = (conn.role, raw.input()) {
                 if let Some(client) = conn.client {
-                    typed(&mut self.session, &mut conn.clock, client, bytes, now);
+                    take_input(&mut self.session, &mut conn.clock, client, bytes, now);
                 }
                 continue;
             }
@@ -1026,11 +1040,13 @@ impl Server {
                     Ok(client) => {
                         conn.client = Some(client);
                         conn.size = (rows, cols);
-                        conn.clock.now();
+                        conn.clock.paint_now();
                         // The client's terminal, if it sent it: taken, the
                         // client is told before anything is painted.
                         if let Some(passed) = conn.passed.take() {
-                            conn.tty = fuxix::terminal::reopen(&passed).ok().map(Terminal::new);
+                            conn.tty = fuxix::terminal::reopen(&passed)
+                                .ok()
+                                .map(TakenTerminal::new);
                             conn.send(&Frame::Terminal {
                                 taken: conn.tty.is_some(),
                             });
@@ -1231,4 +1247,77 @@ fn out_of_descriptors(error: &std::io::Error) -> bool {
         fuxix::Errno::from_io_error(error),
         Some(fuxix::Errno::MFILE | fuxix::Errno::NFILE)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::fd::OwnedFd;
+
+    /// A connection with a taken terminal, the other end of a socket pair
+    /// standing in for it: one end of the client's socket, the
+    /// terminal's, and the terminal's other end.
+    fn with_terminal() -> std::io::Result<(Conn, UnixStream, UnixStream)> {
+        let (stream, client) = UnixStream::pair()?;
+        let (tty, far) = UnixStream::pair()?;
+        tty.set_nonblocking(true)?;
+        let mut conn = Conn::new(stream);
+        conn.client = Some(ClientId(1));
+        conn.tty = Some(TakenTerminal::new(OwnedFd::from(tty)));
+        Ok((conn, client, far))
+    }
+
+    /// A terminal given back that takes no more at once (a slow link) has
+    /// what it did not take, its title's restore last, sent to the client
+    /// in paint frames before the `Exit`, rather than dropped.
+    #[test]
+    fn what_a_terminal_given_back_did_not_take_goes_to_the_client() -> std::io::Result<()> {
+        let (mut conn, _client, _far) = with_terminal()?;
+        // Fill the stand-in until it takes no more.
+        if let Some(tty) = &mut conn.tty {
+            tty.out.push(&vec![b'x'; 4 << 20]);
+            tty.title_saved = true;
+        }
+        conn.flush_tty();
+        conn.send(&Frame::Exit("detached".into()));
+        let mut decoder = crate::protocol::Decoder::default();
+        decoder.push(conn.out.as_slice());
+        let mut painted = Vec::new();
+        let mut exit = None;
+        while let Ok(Some(raw)) = decoder.raw() {
+            if let Some(bytes) = raw.paint() {
+                painted.extend_from_slice(bytes);
+            } else if let Ok(Frame::Exit(reason)) = raw.decode() {
+                exit = Some(reason);
+            }
+        }
+        assert!(
+            painted.ends_with(crate::outer::TITLE_POP),
+            "the title's restore"
+        );
+        assert_eq!(exit.as_deref(), Some("detached"));
+        Ok(())
+    }
+
+    /// A terminal that can no longer be written is given up and its client
+    /// detached, as one that can no longer be read is: no one would read
+    /// its keys.
+    #[test]
+    fn a_terminal_that_cannot_be_written_detaches_its_client() -> std::io::Result<()> {
+        let (mut conn, _client, far) = with_terminal()?;
+        drop(far);
+        if let Some(tty) = &mut conn.tty {
+            tty.out.push(b"paint");
+        }
+        conn.flush_tty();
+        assert!(conn.tty.is_none());
+        assert!(conn.closing, "the client is let go");
+        let mut decoder = crate::protocol::Decoder::default();
+        decoder.push(conn.out.as_slice());
+        let frame = decoder.raw().ok().flatten().map(|raw| raw.decode());
+        assert!(
+            matches!(frame, Some(Ok(Frame::Exit(reason))) if reason == "detached: the terminal closed")
+        );
+        Ok(())
+    }
 }

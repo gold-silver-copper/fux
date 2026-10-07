@@ -94,7 +94,11 @@ fn a_cluster_grows_inline_then_into_the_rows_text_up_to_its_capacity() {
     );
     // Short until 17 bytes, grown in place there; then long, grown in
     // place, as a row of `Cell`s grows it.
-    assert_eq!(line.text.len(), family.len(), "grown in place, not copied");
+    assert_eq!(
+        line.text.long_len(),
+        family.len(),
+        "grown in place, not copied"
+    );
     assert_eq!(line.text.short.len(), 14, "grown in place, not copied");
     assert_eq!(texts(&line), format!("{family}||x"));
 
@@ -130,11 +134,11 @@ fn a_row_out_of_room_compacts_then_cuts_to_what_a_cell_holds_inline() {
     // Overwritten clusters leave text behind, until the row compacts.
     for _ in 0..20 {
         assert!(line.set(0, Compact::default(), &cluster));
-        assert!(line.text.len() <= limit);
+        assert!(line.text.long_len() <= limit);
     }
     for _ in 0..20 {
         assert!(line.set(1, Compact::default(), &cluster));
-        assert!(line.text.len() <= limit);
+        assert!(line.text.long_len() <= limit);
         assert_eq!(line.text(0), cluster);
         assert_eq!(line.text(1), cluster);
     }
@@ -205,7 +209,7 @@ fn a_row_of_grid_cells_keeps_its_text_as_a_row_of_cells_does() {
                 );
             }
             assert_eq!(
-                line.text.len(),
+                line.text.long_len(),
                 cells_line.spill.len(),
                 "case {case} step {step}"
             );
@@ -228,6 +232,10 @@ fn a_row_of_grid_cells_keeps_its_text_as_a_row_of_cells_does() {
         for at in 0..narrow {
             assert_eq!(line.text(at), cells_line.text(at), "case {case} rebuilt");
         }
-        assert_eq!(rebuilt.len(), cells_line.spill.len(), "case {case} rebuilt");
+        assert_eq!(
+            rebuilt.long_len(),
+            cells_line.spill.len(),
+            "case {case} rebuilt"
+        );
     }
 }

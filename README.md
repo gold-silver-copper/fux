@@ -70,7 +70,8 @@ cannot run now are dimmed.
 | `t`, `w` | tab and workspace layers | below |
 
 `r` and `m` are **repeat modes**: `h` `j` `k` `l` act again without the
-prefix until Esc or Enter; any other key ends the mode and is dropped.
+prefix until Esc or Enter; the prefix ends the mode and opens the command
+column; any other key ends it and is dropped, which the bar says.
 
 `t` and `w` are **layers**, sharing their verbs:
 
@@ -155,7 +156,7 @@ From a key or the prompt, commands act on your focused pane.
 | `fux server [--socket PATH] [--config FILE]` | run a server in the foreground |
 | `fux kill-server` | stop the server |
 | `fux ls [--json]` | workspaces, tabs, panes and clients |
-| `fux new-workspace [-n NAME] [-- CMD…]` | a workspace with a shell, CMD typed into it; names are unique |
+| `fux new-workspace [-n NAME] [-- CMD…]` | a workspace with a shell, CMD typed into it; names are unique, and do not start with `+`, `%`, `@` or `-`, which targets read otherwise |
 | `fux new-tab [-t WS] [-n NAME] [-- CMD…]` | a tab with a shell, CMD typed into it |
 | `fux split -h\|-v [-t %N] [-- CMD…]` | split a pane: `-h` side by side, `-v` stacked |
 | `fux kill-pane\|kill-tab\|kill-workspace [-t …]` | close, without asking |

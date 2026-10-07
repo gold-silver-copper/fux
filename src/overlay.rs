@@ -1,6 +1,8 @@
 //! The keyboard overlays: the command column, choosers, action menus, the
 //! command prompt, rename prompts and confirmations. Each belongs to the client
-//! that opened it.
+//! that opened it. And what keys run outside them: bindings after the
+//! prefix and without it (`run_root`), repeat modes (`repeat_key`), a key
+//! sent to a pane (`send_key`).
 use crate::command::{
     AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, Pick, Sibling, SwapWith, WsRef,
 };
@@ -88,7 +90,7 @@ fn entries<'a>(session: &'a Session, path: &[KeyPress]) -> impl Iterator<Item = 
 
 /// Whether `binding` is in the layer that `key` opens in the layer at `path`.
 fn opens(binding: &Binding, path: &[KeyPress], key: &KeyPress) -> bool {
-    matches!(binding.keys.strip_prefix(path), Some([k, _, ..]) if k == key)
+    matches!(binding.in_layer(path), Some([k, _, ..]) if k == key)
 }
 
 /// The column's entries in its order, with their groups: groups in their
@@ -152,7 +154,7 @@ pub fn layer_title<'a>(session: &'a Session, path: &[KeyPress]) -> Option<&'a st
         .config
         .bindings
         .iter()
-        .find(|b| b.keys.len() > path.len() && b.keys.starts_with(path))
+        .find(|b| b.in_layer(path).is_some())
         .map(crate::config::Binding::group)
 }
 
@@ -678,11 +680,11 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
 /// Whether `press`, typed in the layer at `path`, is bound there or opens a
 /// layer inside it. Keys match as typed: `V` is not `v`.
 fn binds(session: &Session, path: &[KeyPress], press: KeyPress) -> bool {
-    session.config.bindings.iter().any(|b| {
-        b.keys.len() > path.len()
-            && b.keys.starts_with(path)
-            && b.keys.get(path.len()) == Some(&press)
-    })
+    session
+        .config
+        .bindings
+        .iter()
+        .any(|b| b.in_layer(path).and_then(<[_]>::first) == Some(&press))
 }
 
 /// A key typed in the layer at `path`: it runs its binding, entering the
@@ -703,9 +705,8 @@ fn follow(session: &mut Session, client: ClientId, path: &[KeyPress], press: Key
             },
         );
     } else {
-        let prefix = session.config.prefix;
-        let keys = crate::config::keys_text(&keys);
-        session.error_to(client, format!("{prefix} {keys} is not bound"));
+        let named = session.keys_named(&keys);
+        session.error_to(client, format!("{named} is not bound"));
     }
 }
 
@@ -751,7 +752,7 @@ pub fn repeat_key(session: &mut Session, client: ClientId, press: KeyPress) {
 /// Runs the binding without the prefix of `press`, if there is one, and
 /// says whether there was.
 pub fn run_root(session: &mut Session, client: ClientId, press: KeyPress) -> bool {
-    let Some(binding) = session.config.root.iter().find(|b| b.keys == [press]) else {
+    let Some(binding) = session.config.root_binding(press) else {
         return false;
     };
     let command = binding.parsed.clone();
@@ -883,11 +884,11 @@ pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
             if !press.mods.ctrl
                 && !press.mods.alt
                 && !c.is_control()
-                && prompt.text.len() < 4096 =>
+                && prompt.text.len().saturating_add(c.len_utf8()) <= 4096 =>
         {
             let mut buffer = [0u8; 4];
             prompt.text = splice(&prompt.text, prompt.cursor, 0, c.encode_utf8(&mut buffer));
-            // Exact: the text is under 4096 bytes.
+            // Exact: the text is at most 4096 bytes.
             prompt.cursor = prompt.cursor.saturating_add(1);
         }
         Key::Char(_)
@@ -1028,14 +1029,16 @@ mod tests {
     }
 
     /// A name typed into a rename prompt is the name, whatever it looks
-    /// like: one that starts with `-` is not taken for a flag.
+    /// like: one that starts with `-` is not taken for a flag. (A
+    /// workspace's may not start with one, as no target could read it
+    /// back: its flag-like word comes after.)
     #[test]
     fn a_rename_prompt_takes_any_name() -> Outcome {
         let (mut session, client) = session()?;
         for (open, name, read) in [
             ("rename-prompt -c c1 pane -t %1", "-dev", "%1"),
             ("rename-prompt -c c1 tab -t @1", "--", "@1"),
-            ("rename-prompt -c c1 workspace -t +1", "-w x", "+1"),
+            ("rename-prompt -c c1 workspace -t +1", "x -w --", "+1"),
         ] {
             run(&mut session, open)?;
             // Backspace clears what the prompt starts with, the current name.
@@ -1075,6 +1078,41 @@ mod tests {
     /// Like the keys after the prefix and copy mode's, a chooser's and a
     /// confirmation's letter keys work in either case: Caps Lock changes
     /// nothing.
+    /// On a screen too short for a list's lines, the selected entry stays
+    /// in view: the lines around it give way first.
+    #[test]
+    fn a_short_screen_keeps_the_selected_entry_in_view() -> Outcome {
+        let (mut s, c) = crate::session::testing::attached(3, 40)?;
+        for _ in 0..3 {
+            run(&mut s, "new-tab -t +1")?;
+        }
+        run(&mut s, "choose-tab -c c1")?;
+        s.input(c, b"\x1b[H");
+        let shown = screen_text(&s, c)?;
+        assert!(shown.contains("@1 main"), "{shown}");
+        Ok(())
+    }
+
+    /// A prompt's text is at most 4096 bytes, typed as pasted: a character
+    /// that would pass the limit is not typed.
+    #[test]
+    fn a_prompt_holds_at_most_4096_bytes_typed() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "rename-prompt -c c1 pane -t %1")?;
+        s.input(c, &[0x7f; 16]);
+        let mut paste = b"\x1b[200~".to_vec();
+        paste.extend(std::iter::repeat_n(b'a', 4095));
+        paste.extend_from_slice(b"\x1b[201~");
+        s.input(c, &paste);
+        s.input(c, "\u{754c}".as_bytes());
+        let len = match s.views.get(&c).map(|v| &v.mode) {
+            Some(Mode::Prompt(prompt)) => prompt.text.len(),
+            _ => return Err("no prompt".into()),
+        };
+        assert_eq!(len, 4095, "the three bytes of the glyph would pass 4096");
+        Ok(())
+    }
+
     #[test]
     fn list_and_confirm_keys_ignore_case() -> Outcome {
         let (mut s, c) = session()?;
