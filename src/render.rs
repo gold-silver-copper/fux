@@ -778,7 +778,8 @@ pub fn compose_into(
         let x = area.w.saturating_sub(width(&hint)) / 2;
         grid.text(y, x, &hint, style(Color::Idx(244), Color::Default), area.w);
     }
-    // The cursor: the focused pane's, unless an overlay or copy mode owns it.
+    // The cursor: copy mode's in its pane, else the focused pane's, but only
+    // in normal mode; under an overlay there is none.
     if let Some(focus) = focus
         && let Some(rect) = placement.rect(focus)
         && let Some(pane) = session.panes.get(&focus)
@@ -867,7 +868,6 @@ pub fn compose_into(
                 ("Enter accepts · Esc cancels".into(), panel().with_dim(true)),
             ];
             surface(grid, view, &lines);
-            grid.cursor = None;
         }
         Mode::Confirm(confirm) => {
             let lines: [Line<'_>; 2] = [
@@ -875,7 +875,6 @@ pub fn compose_into(
                 ("y confirms · n or Esc cancels".into(), panel()),
             ];
             surface(grid, view, &lines);
-            grid.cursor = None;
         }
         // A repeat mode shows in the bar, leaving the layout in view.
         Mode::Normal | Mode::Copy(_) | Mode::Repeat { .. } => {}
@@ -1677,9 +1676,10 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
     // Grids of one frame show the same cells on a pane row whose keys are
     // the same in both (`Memo`): no comparison needed.
     let memo = old.filter(|o| !full && o.memo.frame.is_some() && o.memo.frame == new.memo.frame);
+    // What the client shows, unless all is painted whole: a grid of the same
+    // size, so the two index their cells alike.
+    let before = old.filter(|_| !full);
     for y in 0..new.rows {
-        // What the client shows, unless the row is painted whole.
-        let before = old.filter(|_| !full);
         if memo.is_some_and(|o| same_keys(o, new, y)) {
             continue;
         }
@@ -1694,13 +1694,8 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
         let changed = |x: u16| {
             before.is_none_or(|o| {
                 let i = row_start.saturating_add(usize::from(x));
-                // Grids of a width index alike: compare in place.
-                let same = if o.cols == new.cols && y < o.rows {
-                    o.cells.range_eq(&new.cells, i..i.saturating_add(1))
-                } else {
-                    o.get(y, x) == cell(x)
-                };
-                !same || links && o.link(y, x) != new.link(y, x)
+                !o.cells.range_eq(&new.cells, i..i.saturating_add(1))
+                    || links && o.link(y, x) != new.link(y, x)
             })
         };
         let mut x = 0u16;
