@@ -24,6 +24,8 @@ pub struct Tab {
     pub root: Option<Node>,
 }
 
+/// A workspace and its tabs, of which it always has one or more: each is
+/// made with one, and `remove_tab` removes a workspace its last tab leaves.
 pub struct Workspace {
     pub id: WsId,
     pub name: String,
@@ -1876,20 +1878,12 @@ impl Session {
             }
             MoveTo::Workspace(r) => {
                 let ws = self.resolve_ws(r)?;
-                let first = self
+                // A workspace has a tab (`Workspace`).
+                let tab = self
                     .workspace(ws)
                     .and_then(|w| w.tabs.first())
-                    .map(|t| t.id);
-                let tab = match first {
-                    Some(tab) => tab,
-                    None => {
-                        let mut ids = self.ids();
-                        let id = ids.tab()?;
-                        self.add_tab(ws, id, Some(MAIN.into()), None)?;
-                        self.commit(ids);
-                        id
-                    }
-                };
+                    .map(|t| t.id)
+                    .ok_or(Error::WorkspaceGone)?;
                 (ws, tab)
             }
             MoveTo::NewTab => {

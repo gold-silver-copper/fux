@@ -349,8 +349,8 @@ pub fn swap(node: &mut Node, a: PaneId, b: PaneId) {
 /// Shares `len` cells among `children` by weight, into `sizes`, which are
 /// zeros, giving each at least its minimum in `mins`; `len` is at least
 /// their minimums together (`place_split` lays out a split too small for
-/// them without it). `mins` is spent: it ends up marking the children that
-/// got more than their minimum.
+/// them without it). `mins` is spent: it ends up 0 for the children that
+/// shared what was left, rather than being fixed at their minimum.
 fn distribute(len: u16, children: &[(u32, Node)], sizes: &mut [u16], mins: &mut [u16]) {
     let weight = |i: usize| u64::from(children.get(i).map_or(1, |(w, _)| *w).max(1));
     // A child whose share falls short of its minimum is fixed at it, and the
