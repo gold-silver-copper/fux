@@ -23,7 +23,7 @@ fux-vt = { path = "../../fux-vt" }
 # What it must behave as: fux-vt at a commit, the merge base with main
 # unless told another. diff/oracle.sh pins it (it rewrites this rev, and
 # Cargo.lock follows), so Cargo.lock says which commit was built.
-base-vt = { package = "fux-vt", git = "https://github.com/gold-silver-copper/fux", rev = "cfc39de4c23c6fc71e46c2d4f77e78417f7c4f49" }
+base-vt = { package = "fux-vt", git = "https://github.com/gold-silver-copper/fux", rev = "51f75d73b62186e14988dadb05c3c3e4b17f0b94" }
 # The corpus's manifests.
 serde_json = "1"
 
