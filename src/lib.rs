@@ -230,6 +230,70 @@ fn run(args: &[String]) -> Result<u8, Error> {
 mod tests {
     use super::*;
 
+    /// Every command the usage and the README name is one the parser knows,
+    /// and every command here is named in both: a command added to the
+    /// parser is added here, which holds the two to it.
+    #[test]
+    fn the_usage_and_the_readme_name_the_commands_the_parser_knows() {
+        const COMMANDS: &[&str] = &[
+            "ls",
+            "kill-server",
+            "new-workspace",
+            "new-tab",
+            "split",
+            "kill-pane",
+            "kill-tab",
+            "kill-workspace",
+            "rename",
+            "move-pane",
+            "swap-pane",
+            "resize-pane",
+            "reorder",
+            "terminate",
+            "send-keys",
+            "send-prefix",
+            "capture-pane",
+            "capture-client",
+            "set",
+            "bind",
+            "unbind",
+            "unbind-all",
+            "reload",
+            "list-buffers",
+            "show-buffer",
+            "paste-buffer",
+            "list-keys",
+            "detach",
+            "command-column",
+            "command-prompt",
+            "copy-mode",
+            "zoom",
+            "choose-tab",
+            "choose-workspace",
+            "choose-pane",
+            "menu",
+            "rename-prompt",
+            "confirm-close",
+            "select-pane",
+            "select-tab",
+            "select-workspace",
+        ];
+        let readme = include_str!("../README.md");
+        for name in COMMANDS {
+            let parsed = crate::command::parse(&[(*name).to_owned()]);
+            assert!(
+                !matches!(parsed, Err(crate::command::Usage::UnknownCommand(_))),
+                "{name}: the parser does not know it"
+            );
+            let named = |text: &str| {
+                text.split(|c: char| !(c.is_ascii_lowercase() || c == '-'))
+                    .any(|word| word == *name)
+            };
+            assert!(named(USAGE), "{name}: not in the usage");
+            assert!(named(readme), "{name}: not in the README");
+        }
+    }
+
     #[test]
     fn the_binary_says_what_it_said() {
         assert_eq!(
