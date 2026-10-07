@@ -7,7 +7,7 @@
 use crate::bytes::ByteQueue;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -147,6 +147,14 @@ pub enum Frame {
     Done {
         status: u8,
     },
+    /// server → client, first after an `Attach` sent with the client's
+    /// terminal (`fuxix::socket::send_with_fd`): whether the server took
+    /// it, and reads the keys and writes the paints there itself. If it did
+    /// not, the client relays them in frames, as one that sent no terminal
+    /// does.
+    Terminal {
+        taken: bool,
+    },
 }
 
 impl Frame {
@@ -163,6 +171,7 @@ impl Frame {
             Frame::Stdout(_) => Stream::Stdout.kind(),
             Frame::Stderr(_) => Stream::Stderr.kind(),
             Frame::Done { .. } => 11,
+            Frame::Terminal { .. } => 12,
         }
     }
 
@@ -224,6 +233,7 @@ impl Frame {
             }
             Frame::Exit(reason) => out.extend_from_slice(reason.as_bytes()),
             Frame::Done { status } => out.push(*status),
+            Frame::Terminal { taken } => out.push(u8::from(*taken)),
         }
         // The payload is what follows the four length bytes and the kind.
         let payload = out.len().saturating_sub(start).saturating_sub(5);
@@ -373,6 +383,13 @@ fn decode_frame(kind: u8, payload: &[u8]) -> Result<Frame, Error> {
         9 => return Ok(Frame::Stdout(payload.to_vec())),
         10 => return Ok(Frame::Stderr(payload.to_vec())),
         11 => Frame::Done { status: r.u8()? },
+        12 => Frame::Terminal {
+            taken: match r.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(Error::BadMarker),
+            },
+        },
         other => return Err(Error::UnknownKind(other)),
     };
     r.end()?;
@@ -663,6 +680,7 @@ mod tests {
             }
             Frame::Exit(reason) => payload.extend_from_slice(reason.as_bytes()),
             Frame::Done { status } => payload.push(*status),
+            Frame::Terminal { taken } => payload.push(u8::from(*taken)),
         }
         let length = u32::try_from(payload.len().saturating_add(1)).unwrap_or(u32::MAX);
         let mut out = length.to_be_bytes().to_vec();
