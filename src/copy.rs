@@ -570,11 +570,11 @@ pub fn enter(session: &mut Session, client: ClientId) -> Result<String, Error> {
     let screen = session.panes.get(&pane).ok_or(Error::NoSuchPane)?.screen();
     let (cy, cx) = screen.cursor_position();
     let history = screen.history_len();
-    let cursor = history
+    let row = history
         .checked_add(usize::from(cy))
         .and_then(|i| row_at(screen, i))
-        .ok_or(Error::NoRows)?
-        .id();
+        .ok_or(Error::NoRows)?;
+    let (cursor, cx) = (row.id(), glyph_start(row, cx));
     let top = row_at(screen, history).ok_or(Error::NoRows)?.id();
     let copy = Copy {
         pane,
@@ -809,18 +809,27 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
     }
 }
 
+/// `col` of `row`, or the first half of the wide glyph whose second half it
+/// is: where copy mode's cursor goes, so that what it highlights is what
+/// `y` copies.
+fn glyph_start(row: fux_vt::Row<'_>, col: u16) -> u16 {
+    if row
+        .cell(usize::from(col))
+        .is_some_and(|c| c.is_wide_continuation())
+    {
+        col.saturating_sub(1)
+    } else {
+        col
+    }
+}
+
 /// Moves the cursor, scrolling the view, whose top row is at `top`, to keep
 /// it in sight.
 fn move_to(copy: &mut Copy, screen: &Screen, height: u16, top: usize, (row, col): (usize, u16)) {
     let last_col = screen.size().1.saturating_sub(1);
-    let mut col = col.min(last_col);
+    let col = col.min(last_col);
     if let Some(r) = row_at(screen, row) {
-        if r.cell(usize::from(col))
-            .is_some_and(|c| c.is_wide_continuation())
-        {
-            col = col.saturating_sub(1);
-        }
-        copy.cursor = (r.id(), col);
+        copy.cursor = (r.id(), glyph_start(r, col));
     }
     let height = usize::from(height).max(1);
     // Scroll just enough that the row shows; `height` is at least 1.
@@ -1065,6 +1074,22 @@ mod tests {
             r.cursor_in_view(shown).is_some(),
             "the cursor on a row of the {shown} shown"
         );
+        Ok(())
+    }
+
+    /// Entered with the program's cursor on a wide glyph's second half,
+    /// copy mode's cursor is on the glyph's first, as every move puts it:
+    /// what it highlights and what `y` copies agree.
+    #[test]
+    fn copy_mode_entered_on_a_wide_glyphs_second_half_starts_at_its_first() -> Result<(), String> {
+        let (mut s, c) = crate::session::testing::attached(5, 20)?;
+        s.output(PaneId(1), "a\u{754c}b\x1b[1;3H".as_bytes());
+        s.input(c, b"\x02c");
+        let view = s.views.get(&c).ok_or("the client")?;
+        let Mode::Copy(copy) = &view.mode else {
+            return Err("not in copy mode".into());
+        };
+        assert_eq!(copy.cursor.1, 1, "the glyph's first half");
         Ok(())
     }
 
