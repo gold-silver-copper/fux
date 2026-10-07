@@ -160,7 +160,7 @@ struct Discarding {
     escape: bool,
 }
 
-const PASTE_END: &[u8] = b"\x1b[201~";
+use crate::keys::encode::PASTE_END;
 
 enum Step {
     /// Consumed this many bytes, producing an input or nothing.
@@ -461,7 +461,7 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
         b'O' => match bytes.get(2) {
             None if !flush => Step::Incomplete,
             None => Step::Done(2, press(Key::Char('O'), alt())),
-            Some(&last) => Step::Done(3, ss3(last, Modifiers::NONE)),
+            Some(&last) => Step::Done(3, final_key(last, Modifiers::NONE)),
         },
         // Escape Escape: an Escape, then decode the second one on its own.
         0x1b => Step::Done(1, press(Key::Escape, Modifiers::NONE)),
@@ -499,7 +499,11 @@ fn alt() -> Modifiers {
     }
 }
 
-fn ss3(last: u8, mods: Modifiers) -> Option<Input> {
+/// The key a final letter names, after `SS3` or a `CSI` with parameters
+/// (`CSI 1 ; m A`). The same letters are written in `encode.rs` (`legacy`
+/// and `kitty`), which send them; `M`, Enter here, comes only after SS3,
+/// as `CSI M` is a mouse report.
+fn final_key(last: u8, mods: Modifiers) -> Option<Input> {
     let key = match last {
         b'A' => Key::Arrow(Direction::Up),
         b'B' => Key::Arrow(Direction::Down),
@@ -754,13 +758,15 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     let mods = modifiers(modifier);
     // Every modifier bit, the kitty protocol's beyond xterm's three too.
     let bits = u8::try_from(modifier.saturating_sub(1)).unwrap_or(u8::MAX);
-    // `CSI n ~` numbers the function keys with gaps: F1 is `first - base`.
+    // `CSI n ~` numbers the function keys with gaps, each run from its
+    // base: the key is F(`first - base`). `encode.rs` sends the same
+    // numbers (`F_CODES`, and 2, 3, 5, 6 for Insert to PageDown).
     let function = |base: u32| {
         let n = u8::try_from(first.checked_sub(base)?).ok()?;
         press(Key::F(n), mods)
     };
     let input = match last {
-        b'A' | b'B' | b'C' | b'D' | b'H' | b'F' | b'P' | b'Q' | b'R' | b'S' => ss3(last, mods),
+        b'A' | b'B' | b'C' | b'D' | b'H' | b'F' | b'P' | b'Q' | b'R' | b'S' => final_key(last, mods),
         b'Z' => press(
             Key::Tab,
             Modifiers {
@@ -771,6 +777,7 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
         b'I' => Some(Input::FocusIn),
         b'O' => Some(Input::FocusOut),
         b'~' => match first {
+            // `PASTE_START`'s number.
             200 => return Step::PasteStart(consumed),
             1 | 7 => press(Key::Home, mods),
             2 => press(Key::Insert, mods),
