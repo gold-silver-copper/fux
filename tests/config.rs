@@ -2,19 +2,6 @@
 mod support;
 use support::*;
 
-fn focused(server: &Server) -> Result<String, String> {
-    let ls = server.ok(&["ls"])?;
-    let client = ls
-        .lines()
-        .find(|l| l.starts_with("client c1"))
-        .ok_or("no client")?;
-    Ok(client
-        .split_whitespace()
-        .last()
-        .unwrap_or_default()
-        .to_owned())
-}
-
 #[test]
 fn the_config_file_sets_the_prefix_and_bindings() -> Outcome {
     let server = Server::start(
