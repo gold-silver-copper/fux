@@ -158,7 +158,6 @@ impl InputQueue {
     }
 }
 
-/// Replies (DSR, DA) and events the parser produces while reading output.
 /// Where `needle` first ends in `hay`, looking from `from`.
 fn end_of(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     let mut i = from;
@@ -217,6 +216,7 @@ enum TitleOp {
     Pop,
 }
 
+/// Replies (DSR, DA) and events the parser produces while reading output.
 struct Sink<'a> {
     replies: &'a mut Vec<u8>,
     titles: &'a mut Vec<TitleOp>,
@@ -271,8 +271,8 @@ impl fux_vt::Sink for Sink<'_> {
                 self.titles.push(TitleOp::Set(text));
             }
             fux_vt::Event::ColorQuery { number, bel } => self.colour_query(number, bel),
-            // fux's clipboard policy: a program's OSC 52 is not taken.
             fux_vt::Event::Bell => *self.bell = true,
+            // fux's clipboard policy: a program's OSC 52 is not taken.
             fux_vt::Event::IconName(_) | fux_vt::Event::Clipboard { .. } | _ => {}
         }
     }

@@ -959,7 +959,8 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
     }
 }
 
-/// A key while a confirmation waits: `y` runs it, `n` or Escape cancels.
+/// A key while a confirmation waits: `y` runs it, `n`, `q` or Escape
+/// cancels.
 pub fn confirm_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let Some(view) = session.views.get_mut(&client) else {
         return;
@@ -1059,8 +1060,8 @@ mod tests {
         Ok(())
     }
 
-    /// Prompt edits count chars, so none falls inside one: what Ctrl-U,
-    /// Backspace, Delete, typing and a paste do, on text with wide chars.
+    /// Prompt edits count chars, so none falls inside one: what Backspace,
+    /// Delete, typing and a paste do, on text with wide chars.
     #[test]
     fn prompt_edits_count_chars_not_bytes() {
         for (at, remove, insert, edited) in [
@@ -1692,7 +1693,7 @@ mod tests {
         Ok(())
     }
 
-    /// The focused pane's rect on client `c`'s screen.
+    /// Pane `pane`'s rect on client `c`'s screen.
     fn rect_of(s: &Session, c: ClientId, pane: u32) -> Option<crate::layout::Rect> {
         let mut placement = crate::layout::Placement::default();
         s.placement_into(s.views.get(&c)?, &mut placement);
