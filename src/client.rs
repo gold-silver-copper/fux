@@ -1,4 +1,5 @@
-//! The clients: `fux attach`, a dumb pipe between a terminal and the server,
+//! The clients: `fux attach`, which hands its terminal to the server and
+//! watches it (or relays between them, if the server does not take it),
 //! and the one-shot command client every other `fux` command uses.
 use crate::protocol::{Decoder, Frame, PROTOCOL, Role};
 use fuxix::poll::{Events as PollFlags, PollFd};
@@ -560,8 +561,8 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, Error>
                     stdout.write_all(bytes).map_err(Error::WriteTerminal)?;
                     continue;
                 }
-                // Every other frame is decoded, so a bad one is an error,
-                // and ignored.
+                // Any other frame is decoded, so that a malformed one is an
+                // error; one that decodes is ignored, but `Exit`.
                 if let Frame::Exit(reason) = raw.decode()? {
                     return Ok(reason);
                 }

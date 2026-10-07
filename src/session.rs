@@ -33,7 +33,8 @@ pub struct Workspace {
 /// What the server must do outside the session.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outgoing {
-    /// Bytes for a client's terminal outside any paint (OSC 52).
+    /// Bytes for a client's terminal outside any paint: a copy (OSC 52),
+    /// questions for the terminal, the bell, the keyboard flags pushed.
     Bytes(ClientId, Vec<u8>),
     /// Detach a client, telling it why.
     Exit(ClientId, String),
