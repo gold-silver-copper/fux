@@ -584,3 +584,31 @@ fn vertical_moves_stop_at_the_margin_they_come_to() -> Result {
     }
     Ok(())
 }
+
+/// A resize without reflow keeps a pending wrap, at any width, and resets
+/// the scroll region, as xterm and Ghostty do and as the resize with
+/// reflow does. Each case replayed in both (`fux-vt-compare replay
+/// --engines xterm,ghostty --no-reflow --size 3x5 'abcde' resize:RxC 'X'`,
+/// and `--size 10x5 '\e[2;5r' resize:12x5 '\e[5;1H\nX'`): both put X
+/// where the case does.
+#[test]
+fn a_resize_without_reflow_keeps_a_pending_wrap_and_resets_the_region() -> Result {
+    for (rows, cols) in [(4, 5), (3, 8), (3, 4)] {
+        let mut p = Parser::new(3, 5, 10)?;
+        p.process(b"abcde")?;
+        p.resize(rows, cols)?;
+        p.process(b"X")?;
+        assert_eq!(
+            p.screen().cursor_position(),
+            (1, 1),
+            "{rows}x{cols}: X wraps to the next row"
+        );
+        assert_eq!(cell(&p, 1, 0)?.contents(), "X", "{rows}x{cols}");
+    }
+    let mut p = Parser::new(10, 5, 0)?;
+    p.process(b"\x1b[2;5r")?;
+    p.resize(12, 5)?;
+    p.process(b"\x1b[5;1H\nX")?;
+    assert_eq!(p.screen().cursor_position(), (5, 1), "no region: a line feed");
+    Ok(())
+}
