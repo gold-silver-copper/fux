@@ -2634,7 +2634,11 @@ impl Screen {
                     let stop = if row >= g.top { g.top } else { 0 };
                     row.saturating_sub(n).max(stop)
                 } else {
-                    let stop = if row <= g.bottom { g.bottom } else { g.rows.last() };
+                    let stop = if row <= g.bottom {
+                        g.bottom
+                    } else {
+                        g.rows.last()
+                    };
                     row.saturating_add(n).min(stop)
                 };
                 if matches!(byte, b'E' | b'F') {
