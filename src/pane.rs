@@ -319,7 +319,9 @@ pub struct Pane {
     /// terminal but has not exited. Its master reports the end on every
     /// poll, so it is no longer polled; its exit, by SIGCHLD, ends the pane.
     pub hung_up: bool,
-    /// The shell's program, to quote a typed command for it.
+    /// The shell's program the pane was started with. fux reads it nowhere
+    /// itself; a typed command is quoted for the shell before the pane is
+    /// made (`Session::new_pane`).
     pub shell: String,
     /// A command line waiting to be typed into the shell.
     pub typed: Option<Typed>,

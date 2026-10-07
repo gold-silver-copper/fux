@@ -1613,11 +1613,10 @@ impl Session {
                 self.reorder(&target, toward).map(|()| String::new())
             }
             Command::Set { argv } | Command::Bind { argv } | Command::Unbind { argv } => {
+                // `run_command` marks every view to paint, as after any
+                // command that can show something new: `set titles`
+                // shows at each client's next paint.
                 self.config.apply(argv).map_err(Error::Config)?;
-                // `set titles` shows at each client's next paint.
-                for view in self.views.values_mut() {
-                    view.dirty = true;
-                }
                 Ok(String::new())
             }
             &Command::UnbindAll => {
@@ -1838,18 +1837,18 @@ impl Session {
     ) -> Result<String, Error> {
         let pane = self.pane_target(target, ctx)?;
         let (source_ws, source_tab) = self.locate(pane).ok_or(Error::NotInTab)?;
-        if let &MoveTo::Beside(direction) = to {
-            let destination = self.neighbor(pane, direction, ctx)?;
-            let tab = self.tab_mut(source_tab).ok_or(Error::TabGone)?;
-            layout::remove(&mut tab.root, pane);
-            let side = match direction {
-                Direction::Right | Direction::Down => Side::After,
-                Direction::Left | Direction::Up => Side::Before,
-            };
-            layout::split(&mut tab.root, destination, pane, Axis::of(direction), side);
-            return Ok(String::new());
-        }
         let (ws, tab) = match to {
+            &MoveTo::Beside(direction) => {
+                let destination = self.neighbor(pane, direction, ctx)?;
+                let tab = self.tab_mut(source_tab).ok_or(Error::TabGone)?;
+                layout::remove(&mut tab.root, pane);
+                let side = match direction {
+                    Direction::Right | Direction::Down => Side::After,
+                    Direction::Left | Direction::Up => Side::Before,
+                };
+                layout::split(&mut tab.root, destination, pane, Axis::of(direction), side);
+                return Ok(String::new());
+            }
             &MoveTo::Tab(tab) => {
                 let ws = self.tab_workspace(tab).ok_or(Error::NoTab(tab))?;
                 (ws, tab)
@@ -1897,7 +1896,6 @@ impl Session {
                 });
                 (id, tab)
             }
-            MoveTo::Beside(_) => return Ok(String::new()),
         };
         if tab == source_tab {
             return Ok(String::new());
