@@ -673,10 +673,11 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
         }
         "swap-pane" => {
             let f = a.flags("-t -L -R -U -D", parse_pane)?;
-            // Another pane, if one is named, rather than a direction.
-            let with = match a.positional.pop() {
-                Some(other) => SwapWith::Pane(parse_pane(other)?),
-                None => f.direction.map(SwapWith::Toward).ok_or(Usage::SwapWith)?,
+            // Another pane or a direction: one, not both.
+            let with = match (a.positional.pop(), f.direction) {
+                (Some(other), None) => SwapWith::Pane(parse_pane(other)?),
+                (None, Some(direction)) => SwapWith::Toward(direction),
+                (Some(_), Some(_)) | (None, None) => return Err(Usage::SwapWith),
             };
             Command::SwapPane {
                 target: f.target,
@@ -1127,6 +1128,8 @@ mod tests {
             "menu -c c1 tab -t +1",
             "confirm-close -c c1 workspace -t @2",
             "reorder workspace -t %1 --next",
+            // Another pane and a direction: one or the other.
+            "swap-pane %2 -L",
             "list-keys --bogus",
             "unbind-all --nope",
             "reload extra words",
