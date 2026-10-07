@@ -405,6 +405,11 @@ impl Default for Config {
 pub const GROUPS: &[&str] = &["Panes", "Focus", "Tabs", "Workspaces", "Session"];
 
 impl Binding {
+    /// The keys after `path`, if the binding is in the layer at `path`:
+    /// one or more of them.
+    pub fn in_layer(&self, path: &[KeyPress]) -> Option<&[KeyPress]> {
+        self.keys.strip_prefix(path).filter(|rest| !rest.is_empty())
+    }
     /// The group this binding is listed under.
     pub fn group(&self) -> &str {
         self.group

@@ -1040,7 +1040,7 @@ impl Session {
         self.config
             .bindings
             .iter()
-            .any(|b| b.keys.len() > path.len() && b.keys.starts_with(path))
+            .any(|b| b.in_layer(path).is_some())
     }
 
     /// Whether the layer at `path` holds a repeating binding.
