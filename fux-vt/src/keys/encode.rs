@@ -263,7 +263,8 @@ fn kitty(stroke: Keystroke, flags: u8, out: &mut Vec<u8>) {
     }
 }
 
-/// The `CSI n ~` numbers of F5 to F12.
+/// F5 to F12's numbers in `CSI n ~`, with xterm's gaps; `decode.rs`
+/// (`csi`) reads them back.
 const F_CODES: [u8; 8] = [15, 17, 18, 19, 20, 21, 23, 24];
 
 /// Shift, Alt and Ctrl as xterm's and kitty's modifier bits.
@@ -478,11 +479,7 @@ fn legacy(press: KeyPress, application: bool, out: &mut Vec<u8>) {
     let KeyPress { key, mods } = press;
     let Modifiers { ctrl, alt, shift } = mods;
     // xterm's modifier parameter: 1 plus a bit for each, so at most 8.
-    let bits = [(shift, 1), (alt, 2), (ctrl, 4)]
-        .into_iter()
-        .filter(|(on, _)| *on)
-        .fold(0usize, |bits, (_, bit)| bits | bit);
-    let modifier = bits.saturating_add(1);
+    let modifier = xterm_bits(mods).saturating_add(1);
     let csi = |out: &mut Vec<u8>, code: u8, final_byte: char| {
         let _ = if modifier > 1 {
             write!(out, "\x1b[{code};{modifier}{final_byte}")

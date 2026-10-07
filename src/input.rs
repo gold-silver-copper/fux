@@ -84,7 +84,8 @@ impl Session {
                 }
                 Input::PasteTooLong => {
                     shown = true;
-                    self.error_to(client, "paste exceeds 64 KiB; discarded");
+                    let limit = fux_vt::keys::decode::PASTE_LIMIT / 1024;
+                    self.error_to(client, format!("paste exceeds {limit} KiB; discarded"));
                 }
                 // A focus change or a mouse report for the program shows
                 // nothing until it answers.
