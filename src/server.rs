@@ -14,7 +14,9 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// Paints are coalesced to at most one per client per this.
+/// The least time between two paints for a client, as a flood is painted.
+/// A keystroke's echo (`Conn::echo`) and panes gone quiet (`QUIET`) are
+/// painted sooner.
 const PAINT: Duration = Duration::from_millis(16);
 /// Panes quiet for this after their output: painted then, not held to
 /// `PAINT`. A program's output in a few bursts, as a screen redrawn is,
@@ -146,8 +148,10 @@ impl Conn {
         }
     }
 
-    /// Paints and the client terminal's questions: to the terminal if the
-    /// server writes to it, else framed for the client.
+    /// Bytes for a client in `stream`. The paint stream, which carries what
+    /// the session sends its terminal outside a paint too, goes to the
+    /// terminal if the server writes to it; the rest, and all of it for a
+    /// client that kept its terminal, is framed for the client.
     fn send_stream(&mut self, stream: Stream, bytes: &[u8]) {
         if self.tty.is_some() && stream == Stream::Paint {
             note_title(&mut self.title_saved, bytes);
@@ -233,10 +237,10 @@ pub struct Server {
     children: UnixStream,
     stops: UnixStream,
     stopping: Option<(Instant, String)>,
-    /// Where client bytes land before their decoder takes them; one for the
-    /// server, reused by every read.
+    /// Where bytes read from a client's connection or terminal land before
+    /// they are taken; one for the server, reused by every read.
     read_buffer: Vec<u8>,
-    /// Where a paint is written before it is framed; reused by every paint.
+    /// Where a paint is made before it is sent; reused by every paint.
     paint_buffer: Vec<u8>,
     /// What each descriptor polled is, and then what is ready; reused by
     /// every tick.
@@ -717,7 +721,6 @@ impl Server {
         }
     }
 
-    /// A client's connection is ready, as found at `now`.
     /// The terminal a client sent: room to write what waits for it, or
     /// keys to read. A terminal that closed detaches its client, as a
     /// client whose terminal closes detaches itself.
@@ -794,6 +797,7 @@ impl Server {
         }
     }
 
+    /// A client's connection is ready, as found at `now`.
     fn serve_conn(&mut self, index: usize, flags: PollFlags, now: Instant) {
         if flags.contains(PollFlags::OUT) {
             self.write_conn(index);

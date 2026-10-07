@@ -6,6 +6,11 @@ and where they differ from this document, they are right. Fuzzing, which
 this document leaves for later, exists (`fuzz/`, `fux-vt/fuzz/`), as does a
 comparison with other terminals (`fux-vt/compare/`).
 
+Lines that no longer hold are corrected where they stand, each with what
+changed; the rest is the design as agreed. The largest change since: the
+server reads and writes the attach client's terminal itself, as tmux does,
+once the client hands it over (`Frame::Terminal`, PROTOCOL 2).
+
 **Scope of the first version (decided 2026-09-24): functionality only.** It
 builds everything below that a user sees and uses: panes, tabs, workspaces,
 independent views, the command column, choosers and menus, copy/select, the
@@ -96,7 +101,7 @@ in parentheses), so building to the design avoids them.
 ```
 fux (one binary, over a library crate so integration tests can speak the protocol)
  ├─ fux server         one thread, one poll loop
- ├─ fux attach         a thin client: raw bytes up, paint bytes down
+ ├─ fux attach         hands its terminal to the server (or relays: raw bytes up, paint bytes down)
  └─ fux <command>      one connection, one command, text (or --json) back
 ```
 
@@ -111,8 +116,11 @@ A single thread runs `fuxix::poll::poll` over:
   write when its input queue is not empty);
 - a self-pipe from `signal-hook`, for SIGCHLD, SIGTERM, SIGINT and SIGHUP.
 
-The poll timeout is the nearest deadline among three: paint coalescing
-(16 ms), a pending lone Escape (35 ms), and the kill grace after a hangup.
+The poll timeout is the nearest deadline among those pending: a paint
+held (16 ms after the last, or sooner once the panes are quiet), a lone
+Escape or an answer begun, the kill grace after a hangup, a typed line's
+next piece, a synchronized frame's release, the stop grace, and the rest
+after a refused connection. (Three, as first designed.)
 
 There are no threads, locks, channels or task pools, and nothing blocks the
 loop. The only blocking call is `fork`/`exec`, which is quick. The config file
@@ -139,8 +147,8 @@ A pane owns:
 
 - a PTY: `posix_openpt(RDWR | NOCTTY)`, `grantpt`, `unlockpt`, the slave's
   name, `TIOCSWINSZ`, through `fuxix::pty::open`. The master is opened
-  close-on-exec on Linux and Android; macOS has no flag for it, so it is set
-  straight after. The slave is opened `O_CLOEXEC` too. The server has one
+  close-on-exec, atomically with `O_CLOEXEC`; where a macOS release refuses
+  the flag, it is set straight after. The slave is opened `O_CLOEXEC` too. The server has one
   thread, so no fork can happen in between. Every descriptor the server holds
   is close-on-exec. And whatever the server itself inherited without the
   flag, the launcher marks every descriptor above stderr close-on-exec before
@@ -148,9 +156,11 @@ A pane owns:
   checks both;
 - a `fux_vt::Parser`;
 - a child process: the configured shell (`set shell`), always, started
-  through `std::process::Command` with the slave as stdio, `TERM=xterm-256color`, `FUX_PANE=%N` and `FUX_SOCKET`. A `pre_exec`
-  hook calls `setsid` and `ioctl_tiocsctty`, both async-signal-safe, and
-  resets the signal mask. std already restores SIGPIPE, and `exec` resets the
+  through the launcher in the `fux` binary (`process::launch`) with the slave
+  as stdio, `TERM=xterm-256color`, `FUX_PANE=%N` and `FUX_SOCKET`. The
+  launcher, a program of its own rather than a `pre_exec` hook (which needs
+  `unsafe`), calls `setsid`, takes the slave as its controlling terminal,
+  and resets the signal mask. std already restores SIGPIPE, and `exec` resets the
   handlers signal-hook installed. A test checks that a pane's program starts
   with an empty mask and ignores no signal fux ignores (on Linux, where
   /proc shows dispositions). A disposition fux itself inherited as ignored
@@ -274,7 +284,11 @@ reports a size from before the last change. A client's size is clamped to
 
 ### Input
 
-The client is a dumb pipe:
+The client, as first designed, was a dumb pipe; it still is for a server
+that does not take its terminal. Now it sends its terminal with `Attach`,
+and the server reads the keys and writes the paints there itself, while the
+client watches for signals and the end (`client::watch`). What follows holds
+for both:
 
 - It puts the outer terminal in raw mode, on the alternate screen, with normal
   (not application) cursor and keypad modes, so that each key has one
@@ -473,6 +487,7 @@ that advice always works.
 | client → server | `Input(bytes)`, `Resize { rows, cols }`, `Detach` |
 | client → server | `Command { argv, cwd, pane? }` |
 | server → client | `Paint(bytes)`, `Exit(reason)` |
+| server → client | `Terminal { taken }`: whether it took the terminal sent with `Attach` |
 | server → client | `Stdout(bytes)`, `Stderr(bytes)` (repeated as needed), then `Done { status }` |
 
 The server parses a command's argv, so there is one grammar, one binary, and
@@ -629,14 +644,14 @@ that ask for it.
 
 | Crate | Why |
 | --- | --- |
-| `fux-vt` (path, 0.3.0) | Emulator |
-| `fuxix` (path, 0.1.6) | fux's system calls over `libc`, each safe to call: PTYs, processes, poll, sockets, terminal modes; its README says why each is not std's |
+| `fux-vt` (path, 0.3.4) | Emulator |
+| `fuxix` (path, 0.1.7) | fux's system calls over `libc`, each safe to call: PTYs, processes, poll, sockets, terminal modes; its README says why each is not std's |
 | `signal-hook` | Signal → self-pipe (fuxix installs no handlers) |
 | `unicode-width` | Bar and overlay layout (already in the graph through fux-vt) |
 
 The lints stay as today: clippy forbids `unwrap`, `expect`, `panic!`,
-`unreachable!`, `todo!` and `unimplemented!`, and warns on
-`indexing_slicing`. CI runs clippy with `-D warnings` on macOS and Linux.
+`unreachable!`, `todo!` and `unimplemented!`, and forbids
+`indexing_slicing` (it warned, as first designed). CI runs clippy with `-D warnings` on macOS and Linux.
 `unsafe` appears only in `fuxix`, one call per block, each with a `SAFETY:`
 comment; fux itself forbids it. The toolchain pin stays in `rust-toolchain.toml`.
 

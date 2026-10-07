@@ -754,7 +754,7 @@ mod tests {
                 let mut queue = ByteQueue::default();
                 queue.push(b"before");
                 stream.encode_into(&bytes, &mut queue);
-                // The frames `Frame::chunked` made, each encoded.
+                // The frames `encode_into` made: whole ones, then the rest.
                 let (whole, rest) = bytes.as_chunks::<MAX_PAYLOAD>();
                 let expected: Vec<u8> = b"before"
                     .iter()
