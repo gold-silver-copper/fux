@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_rng::Rng;
 
 /// `input` in 8 KiB pieces, the last one shorter.
 fn pieces(input: &[u8]) -> impl Iterator<Item = &[u8]> {
@@ -141,29 +142,6 @@ fn ascii_run_path_equals_scalar_dispatch_around_grapheme_clusters() -> Result<()
     Ok(())
 }
 
-/// A small deterministic generator (splitmix64), so a failure names its case.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        test_corpus::splitmix(&mut self.0)
-    }
-    /// Below `n`, or 0 for an `n` of 0.
-    fn below(&mut self, n: usize) -> usize {
-        let n = u64::try_from(n).unwrap_or(u64::MAX);
-        usize::try_from(self.next().checked_rem(n).unwrap_or(0)).unwrap_or(0)
-    }
-    fn chance(&mut self, percent: usize) -> bool {
-        self.below(100) < percent
-    }
-    fn pick<T: Copy>(&mut self, items: &[T]) -> Option<T> {
-        items.get(self.below(items.len())).copied()
-    }
-    fn byte_in(&mut self, low: u8, high: u8) -> u8 {
-        let span = usize::from(high.saturating_sub(low)).saturating_add(1);
-        low.saturating_add(u8::try_from(self.below(span)).unwrap_or(0))
-    }
-}
 
 /// The final bytes of the CSIs programs send most, and of some they do
 /// not, with modes and queries among them.

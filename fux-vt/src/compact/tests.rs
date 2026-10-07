@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_rng::Rng;
 use crate::Attributes;
 
 /// The texts of a row's cells, joined by bars.
@@ -159,19 +160,6 @@ fn a_row_out_of_room_compacts_then_cuts_to_what_a_cell_holds_inline() {
     }
 }
 
-/// A small deterministic generator (splitmix64).
-struct Rng(u64);
-
-impl Rng {
-    fn below(&mut self, n: usize) -> usize {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut x = self.0;
-        x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        x ^= x >> 31;
-        usize::try_from(x.checked_rem(u64::try_from(n).unwrap_or(1)).unwrap_or(0)).unwrap_or(0)
-    }
-}
 
 /// A row of grid cells keeps and cuts its clusters as a row of [`Cell`]s
 /// does, and keeps as much long text: random clusters of every length,
