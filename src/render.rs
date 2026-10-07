@@ -1519,6 +1519,142 @@ pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
 /// Appends the bytes that turn `old` (what the client shows, or nothing)
 /// into `new` to `out`.
 pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
+    if let Some(old) = old
+        && echo(old, new, out)
+    {
+        return;
+    }
+    paint_whole(old, new, out);
+}
+
+/// The rows of two grids of a size that differ: those whose memo does not
+/// show them the same and whose cells or links differ.
+fn changed_rows_between<'a>(old: &'a Grid, new: &'a Grid) -> impl Iterator<Item = u16> + 'a {
+    let links = !new.link_of.is_empty() || !old.link_of.is_empty();
+    let memo = old.memo.frame.is_some() && old.memo.frame == new.memo.frame;
+    (0..new.rows).filter(move |&y| {
+        !(memo && same_keys(old, new, y))
+            && !(old.row_eq(new, y)
+                && (!links || (0..new.cols).all(|x| old.link(y, x) == new.link(y, x))))
+    })
+}
+
+/// A keystroke's echo, painted as a terminal shows it typed: when all that
+/// changed is a run of glyphs of one column on the cursor's row, ending
+/// where the cursor now is, short of the last column, the cursor is moved
+/// to the run (by a carriage return or a column on its row) and the glyphs
+/// alone are written, in their attributes. Nothing else changes for the terminal: not the
+/// cursor's shape or visibility, the mouse, a link, a wide glyph. Whether
+/// it was so; if not, nothing is written.
+fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
+    if (
+        old.rows,
+        old.cols,
+        old.underline_styles,
+        old.mouse,
+        old.cursor_shape,
+    ) != (
+        new.rows,
+        new.cols,
+        new.underline_styles,
+        new.mouse,
+        new.cursor_shape,
+    ) || !old.link_of.is_empty()
+        || !new.link_of.is_empty()
+    {
+        return false;
+    }
+    let (Some((oy, ox)), Some((y, to))) = (old.cursor, new.cursor) else {
+        return false;
+    };
+    if to == 0 || to >= new.cols {
+        return false;
+    }
+    let mut rows = changed_rows_between(old, new);
+    if rows.next() != Some(y) || rows.next().is_some() {
+        return false;
+    }
+    // The run is from the first changed cell of the row to the cursor's
+    // cell; nothing after it changed. Cells in it that did not change are
+    // written as they are.
+    let start = usize::from(y).saturating_mul(usize::from(new.cols));
+    let same = |x: u16| {
+        let i = start.saturating_add(usize::from(x));
+        old.cells.range_eq(&new.cells, i..i.saturating_add(1))
+    };
+    let Some(from) = (0..new.cols).find(|&x| !same(x)) else {
+        return false;
+    };
+    if from >= to || (to..new.cols).any(|x| !same(x)) {
+        return false;
+    }
+    // ASCII, as typing mostly is, moves every terminal's cursor one cell;
+    // another glyph of one column is written too, and the cursor put where
+    // it is after, should the terminal draw it at another width. Nothing
+    // that may join a neighbour: one character, not a regional indicator
+    // (two make a flag), and short of the emoji's planes.
+    let mut ascii = true;
+    let mut printable = |c: Option<CellRef<'_>>| {
+        c.is_some_and(|c| {
+            if c.is_wide() || c.is_wide_continuation() {
+                return false;
+            }
+            let text = c.contents();
+            if matches!(text.as_bytes(), [b' '..=b'~']) {
+                return true;
+            }
+            let mut chars = text.chars();
+            match (chars.next(), chars.next()) {
+                (Some(ch), None) => {
+                    ascii = false;
+                    u32::from(ch) < 0x1_F000
+                        && !('\u{1F1E6}'..='\u{1F1FF}').contains(&ch)
+                        && UnicodeWidthChar::width(ch) == Some(1)
+                }
+                _ => false,
+            }
+        })
+    };
+    // What the run overwrites is narrow too: no half of a wide glyph left.
+    if (from..to).any(|x| {
+        !printable(new.get(y, x))
+            || old
+                .get(y, x)
+                .is_some_and(|c| c.is_wide() || c.is_wide_continuation())
+    }) {
+        return false;
+    }
+    // To the run's first cell: from the cursor on its row by the shortest
+    // way, else by row and column.
+    if oy != y {
+        let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(from));
+    } else if from == 0 && ox != 0 {
+        out.push(b'\r');
+    } else if from != ox {
+        let _ = write!(out, "\x1b[{}G", one_based(from));
+    }
+    let mut current: Option<Attributes> = None;
+    for x in from..to {
+        let Some(cell) = new.get(y, x) else {
+            return false;
+        };
+        let attrs = cell.attributes();
+        if current.unwrap_or_default() != attrs {
+            sgr(out, attrs, new.underline_styles);
+            current = Some(attrs);
+        }
+        out.extend_from_slice(cell.contents().as_bytes());
+    }
+    if current.is_some() {
+        out.extend_from_slice(b"\x1b[0m");
+    }
+    if !ascii {
+        let _ = write!(out, "\x1b[{}G", one_based(to));
+    }
+    true
+}
+/// [`paint_into`] without the echo's short way.
+fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
     out.extend_from_slice(b"\x1b[?2026h\x1b[?25l");
     // Learning that the terminal draws underline styles repaints it whole,
     // so that what it shows takes them.
@@ -1658,6 +1794,111 @@ mod tests {
             x ^= x >> 31;
             usize::try_from(x.checked_rem(u64::try_from(n).unwrap_or(1)).unwrap_or(0)).unwrap_or(0)
         }
+    }
+
+    /// Each row's cells, text and attributes, and the cursor.
+    type Shown = (Vec<Vec<(String, Attributes)>>, (u16, u16));
+
+    /// What a terminal shows.
+    fn shown(parser: &fux_vt::Parser) -> Shown {
+        let screen = parser.screen();
+        let (rows, cols) = screen.size();
+        let window = screen.window(0, rows, cols);
+        let cells = (0..rows)
+            .map(|y| {
+                window.row(y).map_or_else(Vec::new, |row| {
+                    row.cells()
+                        .map(|c| (c.contents().to_owned(), c.attributes()))
+                        .collect()
+                })
+            })
+            .collect();
+        (cells, screen.cursor_position())
+    }
+
+    /// A terminal shown the paints as the server sends them, echoes the
+    /// short way (`echo`) and rows skipped by their memo, shows what one
+    /// shown every paint whole shows: random typing at a shell, in colour,
+    /// with the cursor moved, rows erased, wide glyphs and long lines.
+    #[test]
+    fn echoes_painted_the_short_way_show_what_whole_paints_show() -> Result<(), String> {
+        use crate::layout::PaneId;
+        let typed: [&[u8]; 20] = [
+            b"\rw",
+            "\r\u{24d1}".as_bytes(),
+            b"\x1b[5;3Hx",
+            "\u{e9}".as_bytes(),
+            "\u{24d0}".as_bytes(),
+            "\u{2500}\u{2502}".as_bytes(),
+            "\u{1f1e6}".as_bytes(),
+            // A glyph typed, and another row written meanwhile.
+            b"q\x1b7\x1b[8;1Hzz\x1b8\x1b[C",
+            b"a",
+            b"Z",
+            b"~",
+            b" ",
+            b"\x1b[32mg\x1b[m",
+            b"\x08\x1b[K",
+            b"\r\n$ ",
+            b"\xe7\x95\x8c",
+            b"\x1b[3D",
+            b"\x1b[H\x1b[2J$ ",
+            b"0123456789012345678901234567890123456789",
+            b"\x1b[7mR\x1b[m",
+        ];
+        let mut r = Rng(0x0ec4_0ec4);
+        let mut short = 0usize;
+        for case in 0..30 {
+            let config = crate::config::Config::default();
+            let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
+            s.start().map_err(|e| e.to_string())?;
+            let c = s.attach(10, 40, None).map_err(|e| e.to_string())?;
+            if r.below(3) == 0 {
+                let argv = [
+                    "split".to_owned(),
+                    "-h".to_owned(),
+                    "-t".to_owned(),
+                    "%1".to_owned(),
+                ];
+                s.run(&argv, &crate::session::Ctx::default());
+            }
+            let mut fast = fux_vt::Parser::new(10, 40, 0).map_err(|e| e.to_string())?;
+            let mut whole = fux_vt::Parser::new(10, 40, 0).map_err(|e| e.to_string())?;
+            let (mut spare, mut showing) = (Grid::new(0, 0), Grid::new(0, 0));
+            let mut placement = Placement::default();
+            let mut painted = false;
+            for step in 0..200 {
+                let out = typed.get(r.below(typed.len())).copied().unwrap_or(b"");
+                let panes: Vec<PaneId> = s.panes.keys().copied().collect();
+                if let Some(&id) = panes.get(r.below(panes.len().max(1))) {
+                    s.output(id, out);
+                }
+                s.settle_if_needed();
+                if !compose_into(&s, c, &mut spare, &mut placement) {
+                    continue;
+                }
+                let bytes = paint(painted.then_some(&showing), &spare);
+                let (mut plain_old, mut plain_new) = (showing.clone(), spare.clone());
+                plain_old.forget_memo();
+                plain_new.forget_memo();
+                let mut slow = Vec::new();
+                paint_whole(painted.then_some(&plain_old), &plain_new, &mut slow);
+                if !bytes.starts_with(b"\x1b[?2026h") {
+                    short += 1;
+                }
+                fast.process(&bytes).map_err(|e| e.to_string())?;
+                whole.process(&slow).map_err(|e| e.to_string())?;
+                assert_eq!(
+                    shown(&fast),
+                    shown(&whole),
+                    "case {case}, step {step}: {bytes:?}"
+                );
+                std::mem::swap(&mut spare, &mut showing);
+                painted = true;
+            }
+        }
+        assert!(short > 500, "{short} echoes painted the short way");
+        Ok(())
     }
 
     /// Composing into the grid composed last but one, as the server does,
