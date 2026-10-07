@@ -231,8 +231,12 @@ impl Decoder {
     }
 
     /// Forgets the answers expected if their window has passed by `now`.
+    /// A DCS answer already begun keeps them expected until it ends, so
+    /// that it is read as one however its pieces fall in time.
     pub fn expire(&mut self, now: Instant) {
-        if self.expected_until.is_some_and(|until| now >= until) {
+        if self.expected_until.is_some_and(|until| now >= until)
+            && !dcs_begun(self.pending.as_slice())
+        {
             self.expected = 0;
             self.expected_until = None;
         }
@@ -1381,6 +1385,28 @@ mod tests {
         long.extend(std::iter::repeat_n(b'1', 70));
         long.extend_from_slice(b"ck");
         assert_eq!(all(&long), vec![key("k")]);
+    }
+
+    /// A DCS answer begun while answers are expected is read whole though
+    /// the window for them passes before its end: what it decodes to does
+    /// not depend on where the time between its pieces falls.
+    #[test]
+    fn a_dcs_answer_begun_in_its_window_is_read_whole_after_it() {
+        let t0 = Instant::now();
+        let answer: &[u8] = b"\x1bP1$r0;4:3m\x1b\\";
+        let mut whole = Decoder::default();
+        let mut expected = Vec::new();
+        whole.expect(t0);
+        whole.bytes(answer, &mut expected);
+        let (first, rest) = answer.split_at_checked(8).unwrap_or((answer, &[]));
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.expect(t0);
+        d.expire(t0 + Duration::from_millis(900));
+        d.bytes(first, &mut out);
+        d.expire(t0 + REPLY_WINDOW + Duration::from_millis(50));
+        d.bytes(rest, &mut out);
+        assert_eq!(out, expected);
     }
 
     /// An answer's string longer than any answer, split by a pause, waits
