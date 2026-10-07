@@ -267,7 +267,13 @@ impl Conn {
         if let Some(tty) = &mut self.tty
             && !tty.flush()
         {
+            // Given up, and its client detached, as one that can no longer
+            // be read is (`serve_tty`): no one would read its keys.
             self.tty = None;
+            if self.client.is_some() && !self.closing {
+                self.send(&Frame::Exit("detached: the terminal closed".into()));
+                self.closing = true;
+            }
         }
     }
 
@@ -1231,4 +1237,45 @@ fn out_of_descriptors(error: &std::io::Error) -> bool {
         fuxix::Errno::from_io_error(error),
         Some(fuxix::Errno::MFILE | fuxix::Errno::NFILE)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::fd::OwnedFd;
+
+    /// A connection with a taken terminal, the other end of a socket pair
+    /// standing in for it: one end of the client's socket, the
+    /// terminal's, and the terminal's other end.
+    fn with_terminal() -> std::io::Result<(Conn, UnixStream, UnixStream)> {
+        let (stream, client) = UnixStream::pair()?;
+        let (tty, far) = UnixStream::pair()?;
+        tty.set_nonblocking(true)?;
+        let mut conn = Conn::new(stream);
+        conn.client = Some(ClientId(1));
+        conn.tty = Some(Terminal::new(OwnedFd::from(tty)));
+        Ok((conn, client, far))
+    }
+
+    /// A terminal that can no longer be written is given up and its client
+    /// detached, as one that can no longer be read is: no one would read
+    /// its keys.
+    #[test]
+    fn a_terminal_that_cannot_be_written_detaches_its_client() -> std::io::Result<()> {
+        let (mut conn, _client, far) = with_terminal()?;
+        drop(far);
+        if let Some(tty) = &mut conn.tty {
+            tty.out.push(b"paint");
+        }
+        conn.flush_tty();
+        assert!(conn.tty.is_none());
+        assert!(conn.closing, "the client is let go");
+        let mut decoder = crate::protocol::Decoder::default();
+        decoder.push(conn.out.as_slice());
+        let frame = decoder.raw().ok().flatten().map(|raw| raw.decode());
+        assert!(
+            matches!(frame, Some(Ok(Frame::Exit(reason))) if reason == "detached: the terminal closed")
+        );
+        Ok(())
+    }
 }
