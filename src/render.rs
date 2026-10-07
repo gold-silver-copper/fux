@@ -801,7 +801,9 @@ pub fn compose_into(
         let screen = pane.screen();
         match copy.filter(|(c, _)| c.pane == focus) {
             Some((_, at)) => {
-                if let Some((y, x)) = at.cursor_in_view(rect.h)
+                // Within the rows shown, which a smaller client can make
+                // fewer than the rect.
+                if let Some((y, x)) = at.cursor_in_view(rect.h.min(screen.size().0))
                     && x < rect.w
                     && let Some(at) = rect.at(y, x)
                 {

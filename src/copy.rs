@@ -632,11 +632,15 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
     // The key may move the rows it holds.
     copy.held_at = None;
     let pane_id = copy.pane;
-    let height = placement.rect(pane_id).map_or(1, |r| r.h.max(1));
     let Some(pane) = session.panes.get(&pane_id) else {
         return;
     };
     let screen = pane.screen();
+    // The rows shown: the pane's rect, but no more than the screen has, as
+    // a smaller client can size the pane below this one's room for it.
+    let height = placement
+        .rect(pane_id)
+        .map_or(1, |r| r.h.min(screen.size().0).max(1));
     view.dirty = true;
     view.notice = None;
 
@@ -1030,6 +1034,36 @@ mod tests {
         assert!(
             r.selected(y, 0),
             "the selection is drawn on the cursor's row"
+        );
+        Ok(())
+    }
+
+    /// On a client larger than the pane (a smaller client sizes it), copy
+    /// mode moves within the rows shown, not the client's room for them:
+    /// its cursor stays on a row the client can see.
+    #[test]
+    fn copy_mode_moves_within_the_rows_shown() -> Result<(), String> {
+        let (mut s, big) = crate::session::testing::attached(16, 40)?;
+        s.attach(8, 40, None).map_err(|e| e.to_string())?;
+        let pane = PaneId(1);
+        let mut output = String::new();
+        for n in 0..60 {
+            output.push_str(&format!("line {n}\r\n"));
+        }
+        s.output(pane, output.as_bytes());
+        s.input(big, b"\x02c");
+        s.input(big, &[b'k'; 10]);
+        s.input(big, &[b'j'; 14]);
+        let screen = s.panes.get(&pane).ok_or("the pane")?.screen();
+        let shown = screen.size().0;
+        let view = s.views.get(&big).ok_or("the client")?;
+        let Mode::Copy(copy) = &view.mode else {
+            return Err("not in copy mode".into());
+        };
+        let r = copy.resolve(screen);
+        assert!(
+            r.cursor_in_view(shown).is_some(),
+            "the cursor on a row of the {shown} shown"
         );
         Ok(())
     }
