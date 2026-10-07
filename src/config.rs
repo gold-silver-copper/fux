@@ -450,6 +450,11 @@ impl Binding {
 }
 
 impl Config {
+    /// The binding without the prefix (`bind -n`) for `press`, if one:
+    /// matched as typed, as the prefix is.
+    pub fn root_binding(&self, press: KeyPress) -> Option<&Binding> {
+        self.root.iter().find(|b| b.keys == [press])
+    }
     /// Applies `set`, `bind`, `unbind` or `unbind-all` given as words.
     pub fn apply(&mut self, argv: &[String]) -> Result<(), Error> {
         let (name, rest) = argv.split_first().ok_or(Error::Empty)?;
