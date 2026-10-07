@@ -367,8 +367,14 @@ impl Grid {
         {
             return false;
         }
-        let memo = self.memo.frame.is_some() && self.memo.frame == other.memo.frame;
+        let memo = self.same_frame(other);
         (0..self.rows).all(|y| memo && same_keys(self, other, y) || self.row_eq(other, y))
+    }
+    /// Whether the two grids were composed for one frame (`Memo`): then a
+    /// pane row whose keys are the same in both shows the same cells.
+    #[inline]
+    fn same_frame(&self, other: &Grid) -> bool {
+        self.memo.frame.is_some() && self.memo.frame == other.memo.frame
     }
     /// Whether row `y` has the same cells as `other`'s row `y`, as
     /// comparing `row(y)` of each does: two grids of a width compare by
@@ -1543,16 +1549,20 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
     paint_whole(old, new, out);
 }
 
+/// Whether row `y` of two grids of a size shows the same: its cells, and,
+/// if either grid has links (`links`), its cells' links.
+#[inline]
+fn same_row(old: &Grid, new: &Grid, y: u16, links: bool) -> bool {
+    old.row_eq(new, y) && (!links || (0..new.cols).all(|x| old.link(y, x) == new.link(y, x)))
+}
+
 /// The rows of two grids of a size that differ: those whose memo does not
 /// show them the same and whose cells or links differ.
 fn differing_rows<'a>(old: &'a Grid, new: &'a Grid) -> impl Iterator<Item = u16> + 'a {
     let links = !new.link_of.is_empty() || !old.link_of.is_empty();
-    let memo = old.memo.frame.is_some() && old.memo.frame == new.memo.frame;
-    (0..new.rows).filter(move |&y| {
-        !(memo && same_keys(old, new, y))
-            && !(old.row_eq(new, y)
-                && (!links || (0..new.cols).all(|x| old.link(y, x) == new.link(y, x))))
-    })
+    let memo = old.same_frame(new);
+    (0..new.rows)
+        .filter(move |&y| !(memo && same_keys(old, new, y)) && !same_row(old, new, y, links))
 }
 
 /// A keystroke's echo, painted as a terminal shows it typed: when all that
@@ -1688,7 +1698,7 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
     let links = !new.link_of.is_empty() || old.is_some_and(|o| !o.link_of.is_empty());
     // Grids of one frame show the same cells on a pane row whose keys are
     // the same in both (`Memo`): no comparison needed.
-    let memo = old.filter(|o| !full && o.memo.frame.is_some() && o.memo.frame == new.memo.frame);
+    let memo = old.filter(|o| !full && o.same_frame(new));
     // What the client shows, unless all is painted whole: a grid of the same
     // size, so the two index their cells alike.
     let before = old.filter(|_| !full);
@@ -1697,9 +1707,7 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
             continue;
         }
         // An unchanged row costs this one comparison.
-        if before.is_some_and(|o| {
-            o.row_eq(new, y) && (!links || (0..new.cols).all(|x| o.link(y, x) == new.link(y, x)))
-        }) {
+        if before.is_some_and(|o| same_row(o, new, y, links)) {
             continue;
         }
         let cell = |x: u16| new.get(y, x);
