@@ -12,6 +12,8 @@ mod palette;
 mod parser;
 mod screen;
 mod style;
+#[cfg(test)]
+mod test_rng;
 mod unicode;
 
 pub use cell::{Attributes, Blink, Cell, CellRef, Cells, Color, UnderlineStyle};

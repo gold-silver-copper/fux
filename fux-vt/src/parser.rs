@@ -6,7 +6,7 @@ use crate::{Error, Reply, Screen, screen::Dispatch};
 
 #[cfg(test)]
 #[path = "../tests/corpus/mod.rs"]
-mod test_corpus;
+pub(crate) mod test_corpus;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Parameters {

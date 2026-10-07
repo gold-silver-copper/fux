@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_rng::Rng;
 
 /// Up, the departing rows going into history.
 const UP: Scroll = Scroll::Up { history: true };
@@ -198,31 +199,6 @@ impl Grid {
     }
 }
 
-/// A small deterministic generator (splitmix64), so a failure names its case.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut x = self.0;
-        x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        x ^ (x >> 31)
-    }
-    /// Below `n`, or 0 for an `n` of 0.
-    fn below(&mut self, n: usize) -> usize {
-        let n = u64::try_from(n).unwrap_or(u64::MAX);
-        let value = self.next().checked_rem(n).unwrap_or(0);
-        usize::try_from(value).unwrap_or(0)
-    }
-    /// Below `n`, as a `u16`.
-    fn small(&mut self, n: u16) -> u16 {
-        u16::try_from(self.below(usize::from(n))).unwrap_or(0)
-    }
-    fn chance(&mut self, percent: usize) -> bool {
-        self.below(100) < percent
-    }
-}
 
 /// Output leaving what a reflow keeps or moves: text, wide glyphs, clusters
 /// too long to hold inline, soft wraps, blank and coloured tails, erased
