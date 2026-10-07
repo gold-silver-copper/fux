@@ -50,13 +50,13 @@ fn take_row(
     history: &mut History,
     cells: &mut [Compact],
     meta: &mut [Meta],
-    spill: &[Text],
+    texts: &[Text],
     (slot, cols): (usize, usize),
 ) -> Result<bool, Error> {
     let Some(m) = meta.get_mut(slot) else {
         return Ok(false);
     };
-    if m.linked || spill.get(slot).is_some_and(|text| !text.is_empty()) {
+    if m.linked || texts.get(slot).is_some_and(|text| !text.is_empty()) {
         return Ok(false);
     }
     // Past its `used` mark the row is blank. A slot's cells are within
@@ -217,7 +217,7 @@ pub(crate) struct Grid {
     cells: Vec<Compact>,
     meta: Vec<Meta>,
     /// Each slot's text too long for its cells to hold inline.
-    spill: Vec<Text>,
+    texts: Vec<Text>,
     /// The links the cells point to.
     pub links: Links,
     /// The attributes of the cells' styles: shared with the grid a resize
@@ -378,7 +378,7 @@ impl Grid {
         Self {
             cells: Vec::new(),
             meta: Vec::new(),
-            spill: Vec::new(),
+            texts: Vec::new(),
             links: Links::default(),
             styles: Arc::default(),
             recent: [(Attributes::default(), 0); RECENT],
@@ -433,8 +433,8 @@ impl Grid {
         self.meta
             .try_reserve_exact(rows.saturating_sub(self.meta.len()))
             .map_err(|_| Error::Capacity)?;
-        self.spill
-            .try_reserve_exact(rows.saturating_sub(self.spill.len()))
+        self.texts
+            .try_reserve_exact(rows.saturating_sub(self.texts.len()))
             .map_err(|_| Error::Capacity)?;
         self.order
             .try_reserve_exact(rows.saturating_sub(self.order.len()))?;
@@ -465,7 +465,7 @@ impl Grid {
             self.linked.insert(slot, links);
         }
         self.meta.push(meta);
-        self.spill.push(text.unwrap_or_default());
+        self.texts.push(text.unwrap_or_default());
         self.order.push_back(slot);
     }
 
@@ -473,7 +473,7 @@ impl Grid {
         self.history.len()
     }
     /// The slot of the screen's row `row`, counted from 0 at the top.
-    fn kept_slot(&self, row: usize) -> Option<usize> {
+    fn screen_slot(&self, row: usize) -> Option<usize> {
         self.order.get(row).copied()
     }
     pub fn retained_len(&self) -> usize {
@@ -509,7 +509,7 @@ impl Grid {
         let cells = self.cells_of(slot)?;
         Some(Line {
             cells: self.cells.get_mut(cells)?,
-            text: self.spill.get_mut(slot)?,
+            text: self.texts.get_mut(slot)?,
         })
     }
     /// The row in slot `slot`.
@@ -527,7 +527,7 @@ impl Grid {
             prompt: m.prompt,
             cells: self.slice(slot),
             width: usize::from(m.width),
-            spill: self.spill.get(slot)?,
+            text: self.texts.get(slot)?,
             links,
             table: &self.links,
             styles: &self.styles,
@@ -543,13 +543,13 @@ impl Grid {
                 prompt: found.kept.prompt(),
                 cells: found.cells,
                 width: usize::from(found.kept.width()),
-                spill: found.text,
+                text: found.text,
                 links: found.links,
                 table: &self.links,
                 styles: &self.styles,
             });
         };
-        self.slot_row(self.kept_slot(row)?)
+        self.slot_row(self.screen_slot(row)?)
     }
     pub fn row_by_id(&self, id: RowId) -> Option<Row<'_>> {
         self.index_of(id).and_then(|index| self.row_at(index))
@@ -577,7 +577,7 @@ impl Grid {
     pub fn cell(&self, row: u16, col: u16) -> Option<CellRef<'_>> {
         let slot = self.slot(row)?;
         let cell = self.slice(slot).get(usize::from(col))?;
-        Some(cell.read(self.spill.get(slot)?, &self.styles))
+        Some(cell.read(self.texts.get(slot)?, &self.styles))
     }
     /// A live row's cells as stored.
     pub fn live_cells(&self, row: u16) -> &[Compact] {
@@ -863,7 +863,7 @@ impl Grid {
 
     /// The number of the link of `uri` and `id`, held as a new link with
     /// `key` if it is not held yet. With no room for it, room is made
-    /// (`make_room`), at most once in a while after that fails; `None` if
+    /// (`free_links`), at most once in a while after that fails; `None` if
     /// there is still none.
     pub fn intern(
         &mut self,
@@ -882,7 +882,7 @@ impl Grid {
             if !self.links.may_make_room() {
                 return None;
             }
-            self.make_room(version);
+            self.free_links(version);
             if !self.links.fits(uri, id_text) {
                 self.links.stall();
                 return None;
@@ -897,7 +897,7 @@ impl Grid {
     /// had are freed: history loses links before text, and the screen's
     /// rows never do. The links are counted (`link.rs`), so this walks the
     /// links and the history rows that lose theirs, never every cell.
-    fn make_room(&mut self, version: u64) {
+    fn free_links(&mut self, version: u64) {
         // The links of slots recycled since, which no row has now; a row
         // leaving history let its links go as it left.
         let left: Vec<usize> = self
@@ -1034,8 +1034,8 @@ impl Grid {
         // A whole row erased keeps no text, and no links: its blank cells
         // would never read them.
         if start == 0 && end >= cols {
-            if let Some(spill) = self.spill.get_mut(slot) {
-                spill.clear();
+            if let Some(text) = self.texts.get_mut(slot) {
+                text.clear();
             }
             self.unlink(slot);
         }
@@ -1198,7 +1198,7 @@ impl Grid {
     /// Gives a slot a new row: `id`, unwrapped, every cell blank. Only the
     /// cells that may not be blank already are cleared. The old row's
     /// links, if it had any, are left in `linked` for `set_link` or
-    /// `make_room` to let go (`Meta::linked` says they are no row's): a
+    /// `free_links` to let go (`Meta::linked` says they are no row's): a
     /// scroll costs what it did before links.
     #[inline]
     fn recycle(&mut self, slot: usize, id: RowId, version: u64) {
@@ -1215,8 +1215,8 @@ impl Grid {
                 cells.fill(BLANK);
             }
         }
-        if let Some(spill) = self.spill.get_mut(slot) {
-            spill.empty();
+        if let Some(text) = self.texts.get_mut(slot) {
+            text.empty();
         }
     }
 
@@ -1346,7 +1346,7 @@ impl Grid {
             .get(span.clone())
             .unwrap_or_default()
             .to_vec();
-        let text = self.spill.get(source).map(Text::exact).unwrap_or_default();
+        let text = self.texts.get(source).map(Text::exact).unwrap_or_default();
         let links: Option<Vec<u16>> = if self.meta.get(source).is_some_and(|m| m.linked) {
             self.linked
                 .get(&source)
@@ -1463,7 +1463,7 @@ impl Grid {
             &mut self.history,
             self.cells.as_mut_slice(),
             self.meta.as_mut_slice(),
-            self.spill.as_slice(),
+            self.texts.as_slice(),
             (slot, usize::from(self.cols.get())),
         )?;
         if !taken {
@@ -1518,7 +1518,7 @@ impl Grid {
     #[inline(never)]
     fn retire_extras(&mut self, slot: usize, linked: bool) {
         let text = self
-            .spill
+            .texts
             .get(slot)
             .filter(|text| !text.is_empty())
             .map(Text::exact);
@@ -1697,7 +1697,7 @@ impl Grid {
                 repair_wide(&mut row);
                 // The row's text comes along, stored again within the
                 // budget of the row's new width.
-                text = Some(Line::rebuilt(&mut row, old.spill));
+                text = Some(Line::rebuilt(&mut row, old.text));
             }
             let prompt = old.is_some_and(|r| r.prompt);
             if is_history {
@@ -1810,7 +1810,7 @@ impl Grid {
             ..self.successor(rows, cols)
         };
         replacement.reserve_screen()?;
-        let mut copy = Copy {
+        let mut copy = Fill {
             grid: &mut replacement,
             rows: base..end,
             screen: live_top,
@@ -1941,7 +1941,7 @@ impl Grid {
             length = length.saturating_add(used);
             if i == end && used == 0 {
                 // The tail runs back over earlier rows' blanks too.
-                length = self.trimmed(start, end);
+                length = self.line_length(start, end);
             }
         }
         let first = out.rows;
@@ -1953,13 +1953,13 @@ impl Grid {
         // next cell placed goes to.
         let (mut prompt, mut pending) = (false, false);
         let cells = line.flat_map(|r| {
-            let (links, spill) = (r.links, r.spill);
+            let (links, text) = (r.links, r.text);
             r.padded().enumerate().map(move |(i, cell)| {
                 let link = links.and_then(|l| l.get(i)).copied().unwrap_or(0);
-                (cell, spill, link)
+                (cell, text, link)
             })
         });
-        for (n, (cell, spill, link)) in cells.take(length).enumerate() {
+        for (n, (cell, text, link)) in cells.take(length).enumerate() {
             pending |= prompts.contains(&n);
             if spacers.contains(&n) {
                 // A cursor on a spacer goes with the glyph after it.
@@ -1993,7 +1993,7 @@ impl Grid {
             }
             prompt |= pending;
             pending = false;
-            target.cell(out.rows, used, cell, spill, link);
+            target.cell(out.rows, used, cell, text, link);
             used = used.saturating_add(1);
         }
         // A prompt starting past the line's text starts on its last row.
@@ -2166,7 +2166,7 @@ impl Grid {
     }
 
     /// The length of the line from row `start` through `end` without its
-    /// blank tail, which can run back over several rows: as `trimmed`
+    /// blank tail, which can run back over several rows: as `line_length`
     /// finds it, from the rows' widths and their cells back from their
     /// `used` marks.
     fn text_length(&self, start: usize, end: usize) -> usize {
@@ -2206,7 +2206,7 @@ impl Grid {
         match index.checked_sub(self.history.len()) {
             None => self.history.kept(index).is_some_and(|kept| kept.wrapped()),
             Some(row) => self
-                .kept_slot(row)
+                .screen_slot(row)
                 .and_then(|slot| self.meta.get(slot))
                 .is_some_and(|m| m.wrapped),
         }
@@ -2220,7 +2220,7 @@ impl Grid {
                 .kept(index)
                 .map_or(0, |kept| usize::from(kept.width())),
             Some(row) => self
-                .kept_slot(row)
+                .screen_slot(row)
                 .and_then(|slot| self.meta.get(slot))
                 .map_or(0, |m| usize::from(m.width)),
         }
@@ -2234,7 +2234,7 @@ impl Grid {
         Some(match index.checked_sub(self.history.len()) {
             None => self.history.cell(index, col),
             Some(row) => self
-                .kept_slot(row)
+                .screen_slot(row)
                 .and_then(|slot| self.slice(slot).get(col))
                 .copied()
                 .unwrap_or(BLANK),
@@ -2248,7 +2248,7 @@ impl Grid {
         let Some(row) = index.checked_sub(self.history.len()) else {
             return self.history.kept(index).map_or(0, |kept| kept.len());
         };
-        let Some(slot) = self.kept_slot(row) else {
+        let Some(slot) = self.screen_slot(row) else {
             return 0;
         };
         let used = self.meta.get(slot).map_or(0, |m| usize::from(m.used));
@@ -2263,7 +2263,7 @@ impl Grid {
 
     /// How many cells of the line from row `start` through `end` come before
     /// its blank tail, which can run back over several rows.
-    fn trimmed(&self, start: usize, end: usize) -> usize {
+    fn line_length(&self, start: usize, end: usize) -> usize {
         let mut length = 0usize;
         let mut kept = 0usize;
         for row in (start..=end).filter_map(|i| self.row_at(i)) {
@@ -2573,17 +2573,17 @@ fn past(col: u16, pending_wrap: bool) -> u16 {
     col.saturating_add(u16::from(pending_wrap))
 }
 
-/// Where a reflow's rows go: `Layout` only counts them; `Copy` writes the
+/// Where a reflow's rows go: `Layout` only counts them; `Fill` writes the
 /// ones kept into the replacement grid.
 trait Reflow {
-    /// `cell`, of a row whose text is in `spill`, with link `link`, is at
+    /// `cell`, of a row whose text is in `text`, with link `link`, is at
     /// `col` of reflowed row `row`.
-    fn cell(&mut self, row: usize, col: usize, cell: &Compact, spill: &Text, link: u16);
-    /// `cells`, of a row whose text is in `spill`, with links `links` (as
+    fn cell(&mut self, row: usize, col: usize, cell: &Compact, text: &Text, link: u16);
+    /// `cells`, of a row whose text is in `text`, with links `links` (as
     /// many as it has, the rest none), are at `col` on of reflowed row
     /// `row`, where they fit; the row's cells past them that the run
     /// covers, which it does not keep, are blank.
-    fn run(&mut self, row: usize, col: usize, cells: &[Compact], spill: &Text, links: &[u16]);
+    fn run(&mut self, row: usize, col: usize, cells: &[Compact], text: &Text, links: &[u16]);
     /// Reflowed row `row` is finished, its cells from `used` on blank;
     /// `wrapped` if its line goes on, the identity of its line's row in the
     /// same place before, if any, and whether a prompt starts on it.
@@ -2680,7 +2680,7 @@ impl Run {
                 .unwrap_or_default()
         });
         pass.target
-            .run(pass.out.rows, self.used, run, row.spill, links);
+            .run(pass.out.rows, self.used, run, row.text, links);
         self.used = self.used.saturating_add(cells.len());
     }
 }
@@ -2709,7 +2709,7 @@ impl Reflow for Layout {
 /// laid out in `cells`, `text` and `links`, then goes into the grid's
 /// history if it is above `screen`, else onto its screen. A cluster held in
 /// its old row's text is stored again in its new row's.
-struct Copy<'a> {
+struct Fill<'a> {
     grid: &'a mut Grid,
     rows: Range<usize>,
     screen: usize,
@@ -2722,7 +2722,7 @@ struct Copy<'a> {
     text: Text,
     links: Option<Box<[u16]>>,
 }
-impl Copy<'_> {
+impl Fill<'_> {
     /// The links of the row being laid out, none at first.
     fn links(&mut self) -> &mut [u16] {
         let width = self.cells.len();
@@ -2730,7 +2730,7 @@ impl Copy<'_> {
             .get_or_insert_with(|| vec![0; width].into_boxed_slice())
     }
 }
-impl Reflow for Copy<'_> {
+impl Reflow for Fill<'_> {
     fn cell(&mut self, row: usize, col: usize, cell: &Compact, text: &Text, link: u16) {
         if !self.rows.contains(&row) || col >= self.cells.len() {
             return;
@@ -2754,7 +2754,7 @@ impl Reflow for Copy<'_> {
         }
         .set(col, stored, text.of(cell));
     }
-    fn run(&mut self, row: usize, col: usize, cells: &[Compact], spill: &Text, links: &[u16]) {
+    fn run(&mut self, row: usize, col: usize, cells: &[Compact], text: &Text, links: &[u16]) {
         if !self.rows.contains(&row) {
             return;
         }
@@ -2769,7 +2769,7 @@ impl Reflow for Copy<'_> {
         // The clusters held in the row's text are stored again, left to
         // right, as placing the cells one at a time stores them: until
         // then, a cell locates nothing in the new row's text.
-        if !spill.is_empty() && cells.iter().any(Compact::is_spilled) {
+        if !text.is_empty() && cells.iter().any(Compact::is_spilled) {
             for (cell, src) in dst.iter_mut().zip(cells) {
                 if src.is_spilled() {
                     *cell = src.blanked();
@@ -2781,7 +2781,7 @@ impl Reflow for Copy<'_> {
             };
             for (i, cell) in cells.iter().enumerate() {
                 if cell.is_spilled() {
-                    line.set(col.saturating_add(i), *cell, spill.of(cell));
+                    line.set(col.saturating_add(i), *cell, text.of(cell));
                 }
             }
         }
@@ -2898,7 +2898,7 @@ fn unchanged(cells: &[Compact], run: &[u8], style: u32) -> bool {
 /// ICH and DCH on a row's cells, or on their links: what is at and after
 /// `col` turns `count` places right to insert, left to delete, and the
 /// places it leaves are `blank`.
-fn shift<T: std::marker::Copy>(cells: &mut [T], col: usize, count: usize, insert: bool, blank: T) {
+fn shift<T: Copy>(cells: &mut [T], col: usize, count: usize, insert: bool, blank: T) {
     let Some(tail) = cells.get_mut(col..) else {
         return;
     };
