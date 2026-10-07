@@ -287,7 +287,7 @@ reports a size from before the last change. A client's size is clamped to
 The client, as first designed, was a dumb pipe; it still is for a server
 that does not take its terminal. Now it sends its terminal with `Attach`,
 and the server reads the keys and writes the paints there itself, while the
-client watches for signals and the end (`client::watch`). What follows holds
+client watches for signals and the end (`client::attached`). What follows holds
 for both:
 
 - It puts the outer terminal in raw mode, on the alternate screen, with normal
