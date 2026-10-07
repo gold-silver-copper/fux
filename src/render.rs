@@ -842,23 +842,15 @@ pub fn compose_into(
                 vec![(list.title.as_str().into(), panel().with_bold(true))];
             let capacity = overlay::list_room(view.rows);
             let start = overlay::window_start(list.items.len(), list.selected, capacity);
-            if start > 0 {
-                lines.push((format!("▲ {start} more").into(), panel().with_dim(true)));
-            }
             let ctx = crate::session::Ctx::client(view.id);
-            for (i, item) in list.items.iter().enumerate().skip(start).take(capacity) {
+            let shown = list.items.iter().enumerate().skip(start).take(capacity);
+            let shown = shown.map(|(i, item)| {
                 let dim = !list.chooser && session.unavailable(&item.command, &ctx).is_some();
                 let marker = if item.current { "*" } else { " " };
                 let attrs = panel().with_inverse(i == list.selected).with_dim(dim);
-                lines.push((format!("{marker} {}", item.label).into(), attrs));
-            }
-            let below = list
-                .items
-                .len()
-                .saturating_sub(start.saturating_add(capacity));
-            if below > 0 {
-                lines.push((format!("▼ {below} more").into(), panel().with_dim(true)));
-            }
+                (format!("{marker} {}", item.label).into(), attrs)
+            });
+            windowed(&mut lines, list.items.len(), start, capacity, shown);
             if list.items.is_empty() {
                 lines.push(("nothing to choose".into(), panel().with_dim(true)));
             }
@@ -1201,6 +1193,26 @@ fn bar(
 /// A line of a panel: its text, borrowed where it can be, and its style.
 type Line<'a> = (Cow<'a, str>, Attributes);
 
+/// Adds the entries `shown`, those from `start` that fit `room` of
+/// `total`, to a panel's `lines`, with how many more there are above and
+/// below them.
+fn windowed<'a>(
+    lines: &mut Vec<Line<'a>>,
+    total: usize,
+    start: usize,
+    room: usize,
+    shown: impl Iterator<Item = Line<'a>>,
+) {
+    if start > 0 {
+        lines.push((format!("▲ {start} more").into(), panel().with_dim(true)));
+    }
+    lines.extend(shown);
+    let below = total.saturating_sub(start.saturating_add(room));
+    if below > 0 {
+        lines.push((format!("▼ {below} more").into(), panel().with_dim(true)));
+    }
+}
+
 /// A panel in the bottom-right corner, above the bar, sized to its lines.
 fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
     let available = view.rows.saturating_sub(1);
@@ -1296,16 +1308,9 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
         };
         lines.push((title, panel().with_bold(true)));
     }
-    if start > 0 {
-        lines.push((format!("▲ {start} more").into(), panel().with_dim(true)));
-    }
-    let below = entries
-        .len()
-        .saturating_sub(start.saturating_add(body_room));
-    lines.extend(entries.into_iter().skip(start).take(body_room));
-    if below > 0 {
-        lines.push((format!("▼ {below} more").into(), panel().with_dim(true)));
-    }
+    let total = entries.len();
+    let shown = entries.into_iter().skip(start).take(body_room);
+    windowed(&mut lines, total, start, body_room, shown);
     if rows.is_empty() {
         lines.push(("no bindings".into(), panel().with_dim(true)));
     }

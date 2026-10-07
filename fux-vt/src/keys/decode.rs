@@ -766,7 +766,9 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
         press(Key::F(n), mods)
     };
     let input = match last {
-        b'A' | b'B' | b'C' | b'D' | b'H' | b'F' | b'P' | b'Q' | b'R' | b'S' => final_key(last, mods),
+        b'A' | b'B' | b'C' | b'D' | b'H' | b'F' | b'P' | b'Q' | b'R' | b'S' => {
+            final_key(last, mods)
+        }
         b'Z' => press(
             Key::Tab,
             Modifiers {
