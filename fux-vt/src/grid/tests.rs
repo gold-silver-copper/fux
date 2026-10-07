@@ -170,8 +170,8 @@ impl Grid {
             && end >= cols
             && let Some(slot) = self.slot(row)
         {
-            if let Some(spill) = self.spill.get_mut(slot) {
-                spill.clear();
+            if let Some(text) = self.texts.get_mut(slot) {
+                text.clear();
             }
             self.unlink(slot);
         }
@@ -188,7 +188,7 @@ impl Grid {
                     .enumerate()
                     .map(|(col, c)| {
                         let link = row.links.and_then(|l| l.get(col)).copied().unwrap_or(0);
-                        let read = c.read(row.spill, row.styles);
+                        let read = c.read(row.text, row.styles);
                         (*c, read.attributes(), read.contents().to_owned(), link)
                     })
                     .collect();

@@ -90,7 +90,7 @@ pub struct Row<'a> {
     /// tail, a history row's; those past them, to `width`, are blank.
     pub(crate) cells: &'a [compact::Compact],
     pub(crate) width: usize,
-    pub(crate) spill: &'a compact::Text,
+    pub(crate) text: &'a compact::Text,
     /// Each cell's link, if any cell of the row has had one (`link.rs`).
     pub(crate) links: Option<&'a [u16]>,
     pub(crate) table: &'a link::Links,
@@ -139,8 +139,8 @@ impl<'a> Row<'a> {
     }
     /// The cell at column `col`.
     pub fn cell(&self, col: usize) -> Option<CellRef<'a>> {
-        let (spill, styles) = (self.spill, self.styles);
-        self.stored(col).map(|cell| cell.read(spill, styles))
+        let (text, styles) = (self.text, self.styles);
+        self.stored(col).map(|cell| cell.read(text, styles))
     }
     /// The hyperlink (OSC 8) of the cell at column `col`: the link that was
     /// open when its glyph was printed, if one was. A blank cell has none;
@@ -173,13 +173,13 @@ impl<'a> Row<'a> {
     /// [`Cells::text_limit`] of its length. Shorter clusters held off the
     /// cells are not counted. For memory diagnostics.
     pub fn text_len(&self) -> usize {
-        self.spill.len()
+        self.text.len()
     }
     /// The row's cells, left to right.
     pub fn cells(
         &self,
     ) -> impl DoubleEndedIterator<Item = CellRef<'a>> + ExactSizeIterator + Clone + use<'a> {
-        let (spill, styles) = (self.spill, self.styles);
+        let (text, styles) = (self.text, self.styles);
         // Cells side by side mostly share a style: its attributes are found
         // once for a run of them. Style 0 is the default attributes.
         let mut last = (0, Attributes::default());
@@ -188,7 +188,7 @@ impl<'a> Row<'a> {
             if style != last.0 {
                 last = (style, styles.get(style));
             }
-            cell.read_as(spill, last.1)
+            cell.read_as(text, last.1)
         })
     }
 }
