@@ -136,8 +136,11 @@ struct Place {
 }
 
 /// Puts a pane's window row on the grid at `place`, in the pane's own
-/// colours if it has them, blanking what it does not cover of the pane's
-/// width.
+/// colours if it has them. With `tiled`, what the row does not cover of the
+/// pane's width is blanked here, as nothing blanked the area first.
+/// Without, a whole composition blanked the area before; and the memo path
+/// (`put_changed_rows`) puts only live rows, each as wide as its window, so
+/// the cells past one are the blanks the frame before left there.
 fn draw_row(
     grid: &mut Grid,
     pane: PaneId,
@@ -153,8 +156,7 @@ fn draw_row(
         tiled,
         window_cols,
     } = *place;
-    // The pane's own row, well formed, goes whole onto cells that are blank,
-    // or are blanked after it.
+    // The pane's own row, well formed, goes whole onto the cells.
     let len = row.map_or(0, |row| row.len());
     if let Some(row) = row {
         grid.put_row(gy, gx, pane, row, width);
@@ -181,14 +183,20 @@ fn draw_row(
 }
 
 /// Puts again the pane rows that changed since `grid`, whose memo has the
-/// frame composed now, was composed: whether that was all there was to do;
-/// false if a row now has links, which only a whole composition numbers.
-fn changed_rows(grid: &mut Grid, session: &Session, placement: &Placement, tiled: bool) -> bool {
+/// frame composed now, was composed: whether that sufficed; false if the
+/// panes are not the memo's, or a row now has links, which only a whole
+/// composition numbers.
+fn put_changed_rows(
+    grid: &mut Grid,
+    session: &Session,
+    placement: &Placement,
+    tiled: bool,
+) -> bool {
     let mut keys = std::mem::take(&mut grid.memo.keys);
-    let mut whole = keys.len() == placement.panes.len();
+    let mut sufficed = keys.len() == placement.panes.len();
     for ((id, rect), (memo_id, pane_keys)) in placement.panes.iter().zip(&mut keys) {
-        let Some(pane) = session.panes.get(id).filter(|_| id == memo_id && whole) else {
-            whole = false;
+        let Some(pane) = session.panes.get(id).filter(|_| id == memo_id && sufficed) else {
+            sufficed = false;
             break;
         };
         let screen = pane.screen();
@@ -205,7 +213,7 @@ fn changed_rows(grid: &mut Grid, session: &Session, placement: &Placement, tiled
                 continue;
             };
             if row.is_some_and(|r| r.has_links()) {
-                whole = false;
+                sufficed = false;
                 break;
             }
             let place = Place {
@@ -221,7 +229,7 @@ fn changed_rows(grid: &mut Grid, session: &Session, placement: &Placement, tiled
         }
     }
     grid.memo.keys = keys;
-    whole
+    sufficed
 }
 
 /// A hyperlink of a pane's cells (OSC 8): the pane, the link's key there
@@ -665,7 +673,7 @@ pub fn compose_into(
     let reused = frame.is_some()
         && grid.memo.frame == frame
         && (grid.rows, grid.cols) == (view.rows, view.cols)
-        && changed_rows(grid, session, placement, tiled);
+        && put_changed_rows(grid, session, placement, tiled);
     if reused {
         grid.cursor = None;
         grid.cursor_shape = 0;
@@ -975,6 +983,8 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
             if axis_at(x, y) == Some(axis) { bit } else { 0 }
         };
         let (at_x, at_y) = (Some(x), Some(y));
+        // A separator's axis is its split's: a horizontal split's panes
+        // are side by side, divided by vertical lines.
         Some(match axis_at(at_x, at_y)? {
             // A vertical line.
             Axis::Horizontal => {
@@ -982,6 +992,7 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
                     | beside(LEFT, x.checked_sub(1), at_y, Axis::Vertical)
                     | beside(RIGHT, x.checked_add(1), at_y, Axis::Vertical)
             }
+            // A horizontal line.
             Axis::Vertical => {
                 LEFT | RIGHT
                     | beside(UP, at_x, y.checked_sub(1), Axis::Horizontal)
@@ -1043,10 +1054,12 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
     }
     // A tee can only be where a vertical line and a horizontal one meet or
     // cross, at the vertical one's column and the horizontal one's row.
+    // (The vertical lines are a horizontal split's, as above.)
     let vertical = lines.iter().filter(|s| s.axis == Axis::Horizontal);
+    let horizontal = || lines.iter().filter(|s| s.axis == Axis::Vertical);
     for v in vertical.map(Separator::rect) {
-        for h in lines.iter().filter(|s| s.axis == Axis::Vertical) {
-            let (x, y, h) = (v.x, h.y, h.rect());
+        for h in horizontal().map(Separator::rect) {
+            let (x, y) = (v.x, h.y);
             let near_x = [x.checked_sub(1), Some(x), x.checked_add(1)];
             let near_y = [y.checked_sub(1), Some(y), y.checked_add(1)];
             let meet = near_x.iter().flatten().any(|x| h.contains(*x, y))
@@ -1532,7 +1545,7 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
 
 /// The rows of two grids of a size that differ: those whose memo does not
 /// show them the same and whose cells or links differ.
-fn changed_rows_between<'a>(old: &'a Grid, new: &'a Grid) -> impl Iterator<Item = u16> + 'a {
+fn differing_rows<'a>(old: &'a Grid, new: &'a Grid) -> impl Iterator<Item = u16> + 'a {
     let links = !new.link_of.is_empty() || !old.link_of.is_empty();
     let memo = old.memo.frame.is_some() && old.memo.frame == new.memo.frame;
     (0..new.rows).filter(move |&y| {
@@ -1574,7 +1587,7 @@ fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
     if to == 0 || to >= new.cols {
         return false;
     }
-    let mut rows = changed_rows_between(old, new);
+    let mut rows = differing_rows(old, new);
     if rows.next() != Some(y) || rows.next().is_some() {
         return false;
     }
@@ -1800,7 +1813,7 @@ mod tests {
     type Shown = (Vec<Vec<(String, Attributes)>>, (u16, u16));
 
     /// What a terminal shows.
-    fn shown(parser: &fux_vt::Parser) -> Shown {
+    fn terminal_shows(parser: &fux_vt::Parser) -> Shown {
         let screen = parser.screen();
         let (rows, cols) = screen.size();
         let window = screen.window(0, rows, cols);
@@ -1889,8 +1902,8 @@ mod tests {
                 fast.process(&bytes).map_err(|e| e.to_string())?;
                 whole.process(&slow).map_err(|e| e.to_string())?;
                 assert_eq!(
-                    shown(&fast),
-                    shown(&whole),
+                    terminal_shows(&fast),
+                    terminal_shows(&whole),
                     "case {case}, step {step}: {bytes:?}"
                 );
                 std::mem::swap(&mut spare, &mut showing);
