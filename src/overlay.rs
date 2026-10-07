@@ -90,7 +90,7 @@ fn entries<'a>(session: &'a Session, path: &[KeyPress]) -> impl Iterator<Item = 
 
 /// Whether `binding` is in the layer that `key` opens in the layer at `path`.
 fn opens(binding: &Binding, path: &[KeyPress], key: &KeyPress) -> bool {
-    matches!(binding.keys.strip_prefix(path), Some([k, _, ..]) if k == key)
+    matches!(binding.in_layer(path), Some([k, _, ..]) if k == key)
 }
 
 /// The column's entries in its order, with their groups: groups in their
@@ -154,7 +154,7 @@ pub fn layer_title<'a>(session: &'a Session, path: &[KeyPress]) -> Option<&'a st
         .config
         .bindings
         .iter()
-        .find(|b| b.keys.len() > path.len() && b.keys.starts_with(path))
+        .find(|b| b.in_layer(path).is_some())
         .map(crate::config::Binding::group)
 }
 
@@ -680,11 +680,11 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
 /// Whether `press`, typed in the layer at `path`, is bound there or opens a
 /// layer inside it. Keys match as typed: `V` is not `v`.
 fn binds(session: &Session, path: &[KeyPress], press: KeyPress) -> bool {
-    session.config.bindings.iter().any(|b| {
-        b.keys.len() > path.len()
-            && b.keys.starts_with(path)
-            && b.keys.get(path.len()) == Some(&press)
-    })
+    session
+        .config
+        .bindings
+        .iter()
+        .any(|b| b.in_layer(path).and_then(<[_]>::first) == Some(&press))
 }
 
 /// A key typed in the layer at `path`: it runs its binding, entering the
