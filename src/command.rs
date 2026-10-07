@@ -595,8 +595,16 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
         "ls" | "list" => Command::Ls {
             json: a.flags("--json", Ok)?.json,
         },
-        "kill-server" => Command::KillServer,
-        "list-keys" => Command::ListKeys,
+        // A command that takes nothing reads its words with no flags, so
+        // that one given any is refused, not ignored.
+        "kill-server" => {
+            a.flags("", Ok)?;
+            Command::KillServer
+        }
+        "list-keys" => {
+            a.flags("", Ok)?;
+            Command::ListKeys
+        }
         "new-workspace" => Command::NewWorkspace {
             name: a.flags("-n", Ok)?.name.map(str::to_owned),
             cmd: std::mem::take(&mut a.rest),
@@ -783,9 +791,18 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                 _ => Command::Unbind { argv },
             });
         }
-        "unbind-all" => Command::UnbindAll,
-        "reload" => Command::Reload,
-        "list-buffers" => Command::ListBuffers,
+        "unbind-all" => {
+            a.flags("", Ok)?;
+            Command::UnbindAll
+        }
+        "reload" => {
+            a.flags("", Ok)?;
+            Command::Reload
+        }
+        "list-buffers" => {
+            a.flags("", Ok)?;
+            Command::ListBuffers
+        }
         "show-buffer" => Command::ShowBuffer {
             index: a.flags("-b", Ok)?.buffer.unwrap_or(0),
         },
@@ -1087,6 +1104,13 @@ mod tests {
             "kill-pane -- x",
             "detach -c zz",
             "new-tab -t %1",
+            // Commands that take nothing take nothing.
+            "kill-server now",
+            "list-keys --bogus",
+            "unbind-all --nope",
+            "reload extra words",
+            "reload -- x",
+            "list-buffers 1",
         ] {
             assert!(cmd(line).is_err(), "{line}");
         }
