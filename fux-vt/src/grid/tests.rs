@@ -499,3 +499,22 @@ fn scrolling_between_full_margins_is_scrolling_rows() -> Result<(), Error> {
     assert!(moved > 3_000, "{moved} rows changed");
     Ok(())
 }
+
+/// After `reset_links` (RIS), a row that had links is given them again as
+/// any row is: `Meta::linked` is cleared with the arrays it named, so a
+/// link printed there makes the row's array anew.
+#[test]
+fn a_row_given_links_after_reset_links_keeps_them() -> Result<(), Error> {
+    let mut next = 0;
+    let mut grid = Grid::new(2, 5, 0, &mut next, 0)?;
+    let uri: Arc<str> = Arc::from("https://example.com");
+    let link = grid.intern(&uri, None, 1, 1).ok_or(Error::Capacity)?;
+    grid.set_link(0, 0..2, link, 1);
+    grid.reset_links();
+    let link = grid.intern(&uri, None, 1, 2).ok_or(Error::Capacity)?;
+    grid.set_link(0, 0..2, link, 2);
+    let slot = grid.slot(0).ok_or(Error::Capacity)?;
+    let links = grid.linked.get(&slot).map(|links| links.to_vec());
+    assert_eq!(links, Some(vec![link, link, 0, 0, 0]));
+    Ok(())
+}

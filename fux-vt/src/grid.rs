@@ -851,8 +851,12 @@ impl Grid {
         (self.links.counts(), fresh.counts(), held)
     }
 
-    /// Forgets every link: RIS.
+    /// Forgets every link: RIS. No row is linked after, so a row given a
+    /// link again makes its array anew (`set_link`).
     pub fn reset_links(&mut self) {
+        for m in &mut self.meta {
+            m.linked = false;
+        }
         self.linked.clear();
         self.history.reset_links();
         self.links = Links::default();
