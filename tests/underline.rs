@@ -5,17 +5,6 @@
 mod support;
 use support::*;
 
-fn painted(client: &Client) -> String {
-    String::from_utf8_lossy(&client.painted).into_owned()
-}
-
-fn wait_painted(client: &mut Client, what: &str, count: usize) -> Outcome {
-    eventually(&format!("{count} of {what:?} painted"), || {
-        client.pump()?;
-        Ok(painted(client).matches(what).count() >= count)
-    })
-}
-
 /// How Ghostty answers the questions about styles (Ghostty at 7aa95917,
 /// `src/termio/stream_handler.zig`): XTGETTCAP from its terminfo, which has
 /// `Smulx` (hex `536d756c78`, its value `\E[4:%p1%dm` hex too), and DECRQSS

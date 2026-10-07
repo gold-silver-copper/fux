@@ -158,7 +158,6 @@ impl InputQueue {
     }
 }
 
-/// Replies (DSR, DA) and events the parser produces while reading output.
 /// Where `needle` first ends in `hay`, looking from `from`.
 fn end_of(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     let mut i = from;
@@ -217,6 +216,7 @@ enum TitleOp {
     Pop,
 }
 
+/// Replies (DSR, DA) and events the parser produces while reading output.
 struct Sink<'a> {
     replies: &'a mut Vec<u8>,
     titles: &'a mut Vec<TitleOp>,
@@ -271,8 +271,8 @@ impl fux_vt::Sink for Sink<'_> {
                 self.titles.push(TitleOp::Set(text));
             }
             fux_vt::Event::ColorQuery { number, bel } => self.colour_query(number, bel),
-            // fux's clipboard policy: a program's OSC 52 is not taken.
             fux_vt::Event::Bell => *self.bell = true,
+            // fux's clipboard policy: a program's OSC 52 is not taken.
             fux_vt::Event::IconName(_) | fux_vt::Event::Clipboard { .. } | _ => {}
         }
     }
@@ -319,7 +319,9 @@ pub struct Pane {
     /// terminal but has not exited. Its master reports the end on every
     /// poll, so it is no longer polled; its exit, by SIGCHLD, ends the pane.
     pub hung_up: bool,
-    /// The shell's program, to quote a typed command for it.
+    /// The shell's program the pane was started with. fux reads it nowhere
+    /// itself; a typed command is quoted for the shell before the pane is
+    /// made (`Session::new_pane`).
     pub shell: String,
     /// A command line waiting to be typed into the shell.
     pub typed: Option<Typed>,

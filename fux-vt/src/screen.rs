@@ -9,13 +9,15 @@ use crate::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-/// A pen style (`Screen::pen_style`) not asked for since the pen changed.
+/// The blank style (`Screen::blank_style`) not asked for since the pen
+/// changed. The pen's own style is found at once (`pen_changed`).
 const UNKNOWN: u32 = u32::MAX;
 /// A pen style that is no number of its own: the grid's table has it.
 const TABLED: u32 = u32::MAX - 1;
 
 /// The mouse reporting a program asked for, the latest set winning
-/// (`CSI ? 9 / 1000 / 1002 / 1003 h`). State only: fux-vt reports nothing.
+/// (`CSI ? 9 / 1000 / 1002 / 1003 h`). fux-vt sends no report of its own;
+/// the host encodes one with `Screen::encode_mouse`, which reads this.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MouseProtocolMode {
@@ -312,15 +314,17 @@ pub struct Screen {
     attributes: Attributes,
     /// The pen's style, and the style of its colours alone (what erasing
     /// fills with), if each is a style that is its own number (`style.rs`),
-    /// the same in either grid; else `TABLED`, or `UNKNOWN` until they are
-    /// first asked for after the pen changes (`pen_changed`). So printing
-    /// and erasing in the pen look nothing up.
+    /// the same in either grid; else `TABLED`. The pen's is found when the
+    /// pen changes (`pen_changed`); the colours' is `UNKNOWN` until it is
+    /// first asked for after that. So printing and erasing in the pen look
+    /// nothing up.
     pen_style: u32,
     blank_style: u32,
     /// The number each of those has in the grid's table, if it is
     /// `TABLED` and its number was found since it changed: with whether
-    /// the grid is the alternate screen's, and its styles' epoch then
-    /// (`Grid::epoch`), while which the number holds.
+    /// the grid was the alternate screen's, and the grid's styles' epoch
+    /// then (`Grid::epoch`). The number holds while both are still so
+    /// (`still`).
     pen_table: Option<(u32, bool, u64)>,
     blank_table: Option<(u32, bool, u64)>,
     saved_attributes: Attributes,
@@ -362,7 +366,8 @@ pub struct Screen {
     /// DECSCLM, smooth scroll (`CSI ? 4 h`), DECSCNM, reverse video
     /// (`CSI ? 5 h`), and DECBKM, the backarrow key sending BS (`CSI ? 67
     /// h`): kept as xterm keeps them, for DECRQM and XTSAVE. State only:
-    /// fux-vt scrolls at once, draws nothing and encodes no keys.
+    /// fux-vt scrolls at once, draws nothing, and encodes Backspace the
+    /// same whatever DECBKM says (`Screen::encode_key`).
     smooth_scroll: bool,
     reverse_video: bool,
     backarrow_sends_backspace: bool,
@@ -443,7 +448,8 @@ fn rgb(r: u16, g: u16, b: u16) -> Option<Color> {
 }
 
 /// Whether a glyph `width` wide at `i` has its second half after it, if it
-/// needs one. Kept out of line, as `unchanged` is.
+/// needs one. Kept out of line, as `unchanged` is (grid.rs), so that the
+/// print that usually follows compiles as if it were not there.
 #[inline(never)]
 fn whole(cells: &[Compact], i: usize, width: u16) -> bool {
     width != 2
@@ -640,12 +646,12 @@ impl Screen {
         self.hide_cursor
     }
     /// DECCKM (`CSI ? 1 h`): whether cursor keys are to send their
-    /// application sequences. State only: fux-vt encodes no keys.
+    /// application sequences, as `Screen::encode_key` sends them.
     pub fn application_cursor(&self) -> bool {
         self.application_cursor
     }
     /// DECKPAM (`ESC =`) / DECKPNM (`ESC >`) state. Tracked for consumers that
-    /// mirror it to another terminal; fux-vt itself encodes no keypad input.
+    /// mirror it to another terminal; `Screen::encode_key` does not read it.
     pub fn application_keypad(&self) -> bool {
         self.application_keypad
     }
@@ -684,7 +690,7 @@ impl Screen {
         self.frames_begun
     }
     /// `CSI ? 1004 h` / `l` state: whether the program wants focus-in and
-    /// focus-out reports. State only: fux-vt sends none.
+    /// focus-out reports, as `Screen::encode_focus` makes them.
     pub fn focus_reporting(&self) -> bool {
         self.focus_reporting
     }
@@ -881,7 +887,7 @@ impl Screen {
     /// Gives the cells `span` of row `row` of the grid shown the open link,
     /// if `open`, or none: what printing glyphs there does to their links,
     /// once a link has been opened (`links_seen`). Out of line, so that
-    /// printing, which never needs it until then, stays as it was.
+    /// printing, which never needs it until then, carries none of it.
     #[inline(never)]
     fn link_cells(&mut self, row: u16, span: std::ops::Range<usize>, open: bool) {
         let link = if open { self.pen_link() } else { 0 };
@@ -1043,13 +1049,12 @@ impl Screen {
             .checked_add(1)
             .ok_or(Error::IdentityExhausted)?;
         let mut next = self.next_id;
-        let primary = if reflow {
+        let mut primary = if reflow {
             self.primary.reflowed(rows, cols, &mut next, version)?
         } else {
             self.primary.resized(rows, cols, &mut next, version)?
         };
         let mut alternate = self.alternate.resized(rows, cols, &mut next, version)?;
-        let mut primary = primary;
         // The cells' links keep their numbers, so the links go along.
         primary.adopt_links(std::mem::take(&mut self.primary.links));
         alternate.adopt_links(std::mem::take(&mut self.alternate.links));
@@ -1132,8 +1137,9 @@ impl Screen {
     /// A line feed and a carriage return, NEL's and LNM's: the line feed
     /// first, from the column the cursor is in, which with left and right
     /// margins says whether it scrolls, then the return (xterm's
-    /// `CASE_NEL` and `CASE_VMOT`). Without margins the return comes
-    /// first, as it always did: the line feed does not look at the column.
+    /// `CASE_NEL` and `CASE_VMOT`). Without margins the order does not
+    /// matter, as the line feed does not look at the column, and the return
+    /// comes first.
     fn new_line(&mut self) -> Result<(), Error> {
         let g = self.grid_mut();
         if g.lr() {
@@ -1142,6 +1148,9 @@ impl Screen {
         g.cursor.1 = 0;
         self.linefeed()
     }
+    /// `new_line` with left and right margins: the line feed, then the
+    /// carriage to the left margin. Out of line, as margins are rare and
+    /// `new_line` is on every new line's way.
     #[inline(never)]
     fn new_line_in_margins(&mut self) -> Result<(), Error> {
         self.linefeed()?;
@@ -1256,9 +1265,6 @@ impl Screen {
         if self.extend_cluster(c) {
             return Ok(());
         }
-        if width != 0 {
-            self.repeat = Some(raw);
-        }
         if width == 0 {
             let g = self.grid();
             let (row, col) = (g.cursor.0, g.next_column());
@@ -1281,8 +1287,9 @@ impl Screen {
                 // A blank cell takes a space for the mark to follow, and
                 // with it the open link, as a glyph printed there would.
                 let blank = g.stored(row, col).is_some_and(|c| !c.has_contents());
-                // A cell already holding all it can takes no more.
                 let end = col.saturating_add(1);
+                // The mark joins the cell's cluster; a cell already holding
+                // all it can takes no more (`append`).
                 self.with_grid(|g, _, v| {
                     g.mutate_line(row, v, end, |line| line.append(usize::from(col), c))
                 });
@@ -1294,6 +1301,8 @@ impl Screen {
             }
             return Ok(());
         }
+        // What REP repeats: the last glyph printed, not a mark.
+        self.repeat = Some(raw);
         let end = self.wrap_for(width)?;
         if self.insert {
             // Room for the glyph, what was there moving right (ICH).
@@ -1373,8 +1382,8 @@ impl Screen {
     /// cluster one cell of its string width, so a narrow cell whose cluster
     /// becomes two columns wide is widened, the cell under the cursor
     /// becoming its second half, as kitty and Ghostty (mode 2027) do. A
-    /// zero-width mark joins the cell before the cursor even after a cursor
-    /// move, as it always has. Whether `c` was taken: joined, or dropped
+    /// zero-width mark joins the cell before the cursor, even after a
+    /// cursor move. Whether `c` was taken: joined, or dropped
     /// because the cluster is full, which never splits it.
     fn extend_cluster(&mut self, c: char) -> bool {
         let g = self.grid();
@@ -1741,11 +1750,11 @@ impl Screen {
             b'=' => self.application_keypad = true,
             b'>' => self.application_keypad = false,
             // IND (DEC STD 070; xterm's ctlseqs): a line feed, scrolling
-            // at the bottom margin. NEL (ECMA-48 8.3.86): the same, to the
-            // first column.
+            // at the bottom margin.
             b'D' => self.linefeed()?,
-            // NEL: the line feed's column says whether it scrolls, and the
-            // carriage goes back as CR takes it (xterm's `CASE_NEL`).
+            // NEL (ECMA-48 8.3.86): a line feed, whose column says whether
+            // it scrolls, then the carriage back as CR takes it, to the
+            // left margin (xterm's `CASE_NEL`).
             b'E' => self.new_line()?,
             // SPA and EPA (ECMA-48 8.3.140, 8.3.49): the glyphs printed
             // between them are protected, and every erase leaves them (ISO
@@ -1840,7 +1849,9 @@ impl Screen {
     /// the left and right margins, as ICH and DCH insert and delete cells
     /// in one (DEC STD 070, 5.4.3; xterm's `xtermColScroll`). Nothing
     /// outside the margins. The cursor stays, and so does a pending wrap,
-    /// as in xterm; DECDC ends each line's soft wrap, as DCH does.
+    /// as in xterm; DECDC ends each line's soft wrap, as DCH does. Out of
+    /// line: inlined, the claude recordings count 0.01% more instructions
+    /// (fux-bench).
     #[inline(never)]
     fn edit_columns(&mut self, count: u16, insert: bool) {
         let g = self.grid();
@@ -1875,7 +1886,8 @@ impl Screen {
     }
 
     /// ECH under ISO protection: the columns `start` to `end` of row `row`
-    /// erased but for their protected glyphs.
+    /// erased but for their protected glyphs. Out of line, as protection is
+    /// rare and `csi` is on every CSI's way.
     #[inline(never)]
     fn erase_kept(&mut self, row: u16, start: u16, end: u16) {
         let blank = self.blank_style();
@@ -1885,7 +1897,9 @@ impl Screen {
     /// ED, EL, DECSED or DECSEL while glyphs may be protected: DECSED and
     /// DECSEL (`private`) leave them with any protection, ED and EL with
     /// ISO's alone (xterm's `do_erase_display`). Whether it erased: ED and
-    /// EL under DEC protection erase every cell, as `csi` does without.
+    /// EL under DEC protection erase every cell, as `csi` does without. Out
+    /// of line: inlined, the tmux recordings count up to 0.35% more
+    /// instructions (fux-bench).
     #[inline(never)]
     fn erase_protected(&mut self, private: bool, display: bool, mode: u16) -> bool {
         if private || self.protection == Protection::Iso {
@@ -1900,7 +1914,8 @@ impl Screen {
     /// `do_erase_display` and `do_erase_line`). The rest is as for ED and
     /// EL. As in xterm, an ED of the whole screen (2, or 0 from the first
     /// cell, or 1 from the last) that finds no protected glyph ends the
-    /// protection: until the next DECSCA or SPA, erases leave nothing.
+    /// protection: until the next DECSCA or SPA, erases leave nothing. Out
+    /// of line, as protection is rare and `csi` is on every CSI's way.
     #[inline(never)]
     fn selective_erase(&mut self, display: bool, mode: u16) {
         let blank = self.blank_style();
@@ -2161,7 +2176,9 @@ impl Screen {
         }
     }
 
-    /// Whether DEC private mode `n` is set, if fux-vt keeps it.
+    /// Whether DEC private mode `n` is set, if DECRQM reports it: every mode
+    /// fux-vt keeps but focus reporting (1004), which DECRQM answers as not
+    /// recognized (0), as the README's row for it records.
     fn private_mode(&self, n: u16) -> Option<bool> {
         Some(match n {
             1 => self.application_cursor,

@@ -5,9 +5,10 @@
 //! A cell's link is a `u16` in its row's array, 0 for none and otherwise one
 //! more than the link's place in the table. Only a cell with contents has
 //! one: an erased cell keeps whatever number it had, unread, until a glyph
-//! is printed there, which always writes its link; so erasing, which blanks
-//! cells, never touches the arrays. The second half of a wide glyph has its
-//! first half's link.
+//! is printed there, which always writes its link; so erasing part of a
+//! row, which blanks cells, never touches its array. A whole row erased
+//! drops its array, as nothing in it could be read again (`Grid::erase`).
+//! The second half of a wide glyph has its first half's link.
 //!
 //! The table counts the numbers in the arrays (an erased cell's too), so the
 //! links no row has are found without reading the rows: every change to an

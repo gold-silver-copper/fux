@@ -338,7 +338,8 @@ pub fn normalize(node: &mut Node) {
 
 /// Swaps two panes' places in one tree.
 pub fn swap(node: &mut Node, a: PaneId, b: PaneId) {
-    // Via a placeholder no real pane uses.
+    // Via a placeholder no real pane uses: ids are handed out below
+    // u32::MAX, as `session::advance` refuses the one that would wrap.
     let hole = PaneId(u32::MAX);
     node.replace(a, hole);
     node.replace(b, a);
@@ -508,40 +509,45 @@ fn place_split(axis: Axis, children: &[(u32, Node)], area: Rect, out: &mut Place
             continue;
         }
         if !first {
-            let Some(x) = at else {
+            // Where along the split's axis: a column or a row.
+            let Some(pos) = at else {
                 break;
             };
             let separator = match axis {
                 Axis::Horizontal => Separator {
                     axis,
-                    x,
+                    x: pos,
                     y: area.y,
                     len: area.h,
                 },
                 Axis::Vertical => Separator {
                     axis,
                     x: area.x,
-                    y: x,
+                    y: pos,
                     len: area.w,
                 },
             };
             out.separators.push(separator);
-            at = x.checked_add(1);
+            at = pos.checked_add(1);
         }
         first = false;
-        let Some(x) = at else {
+        let Some(pos) = at else {
             break;
         };
         let rect = match axis {
-            Axis::Horizontal => Rect { x, w: size, ..area },
+            Axis::Horizontal => Rect {
+                x: pos,
+                w: size,
+                ..area
+            },
             Axis::Vertical => Rect {
-                y: x,
+                y: pos,
                 h: size,
                 ..area
             },
         };
         place_node(child, rect, out);
-        at = x.checked_add(size);
+        at = pos.checked_add(size);
     }
     out.scratch.truncate(base);
 }

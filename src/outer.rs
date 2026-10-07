@@ -21,9 +21,10 @@
 //! already knows. Not event types (2): fux uses no repeats or releases.
 //! The client pops the flags as it leaves (`client::LEAVE`).
 //!
-//! The client is a dumb pipe, so the server asks in the client's paint
-//! stream, as tmux asks its own terminal, and the answers come back in the
-//! client's input, where the decoder tells them from keys
+//! The server asks in the client's paint stream, as tmux asks its own
+//! terminal: written to the terminal itself once the client has handed it
+//! over, else relayed by the client. The answers come back with the keys,
+//! read from the terminal or relayed, where the decoder tells them apart
 //! ([`crate::decode::Reply`]). A terminal that answers nothing costs
 //! nothing: what is not known is not answered, as before.
 //!
@@ -99,9 +100,9 @@ pub const COLOUR_QUERIES: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\
 \x1b]4;12;?\x1b\\\x1b]4;13;?\x1b\\\x1b]4;14;?\x1b\\\x1b]4;15;?\x1b\\\x1b[c";
 
 /// Saves the terminal's title (xterm's title stack, `CSI 22 ; 0 t`), sent
-/// before fux first sets it. The client pops it however it leaves, if it
-/// passed this on (`client::LEAVE`); the server pops it when titles are
-/// turned off.
+/// before fux first sets it. It is popped when titles are turned off, and
+/// when the attachment ends: by the server as it gives a terminal it took
+/// back, else by the client as it leaves (`client::restore`).
 pub const TITLE_PUSH: &[u8] = b"\x1b[22;0t";
 /// Restores the title [`TITLE_PUSH`] saved.
 pub const TITLE_POP: &[u8] = b"\x1b[23;0t";
@@ -455,26 +456,13 @@ fn clean(title: &str) -> impl Iterator<Item = char> + '_ {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
-    use crate::session::Ctx;
 
     type Outcome = Result<(), String>;
 
-    fn session() -> Result<(Session, ClientId), String> {
-        let mut s = Session::new(Config::default(), "/nonexistent/fux.sock".into(), false);
-        s.start().map_err(|e| e.to_string())?;
-        let c = s.attach(10, 40, None).map_err(|e| e.to_string())?;
-        Ok((s, c))
-    }
+    use crate::session::testing::run;
 
-    fn run(s: &mut Session, line: &str) -> Outcome {
-        let words = crate::words::split(line).map_err(|e| e.to_string())?;
-        let out = s.run(&words, &Ctx::default());
-        if out.status == 0 {
-            Ok(())
-        } else {
-            Err(out.stderr)
-        }
+    fn session() -> Result<(Session, ClientId), String> {
+        crate::session::testing::attached(10, 40)
     }
 
     /// What pane `pane`'s program was answered, taken.
