@@ -9,7 +9,7 @@ use crate::render::{self, Grid};
 use crate::session::{Ctx, Outgoing, Session};
 use fuxix::poll::{Events as PollFlags, PollFd};
 use signal_hook::consts::{SIGCHLD, SIGHUP, SIGINT, SIGTERM};
-use std::io::{ErrorKind, Read, Write};
+use std::io::{ErrorKind, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -18,6 +18,9 @@ use std::time::{Duration, Instant};
 const PAINT: Duration = Duration::from_millis(16);
 /// A client's unsent output may grow to this before paints for it stop.
 const OUTPUT_CAP: usize = 4 << 20;
+/// A pane's read shorter than this, an echo's or a prompt's, is taken for
+/// all it had: the next is left to the poll.
+const SHORT_READ: usize = 512;
 /// Output read from one pane per tick, so one busy pane cannot starve others.
 const PANE_READ: usize = 64 * 1024;
 /// Bytes read from one client per tick, so one client cannot hold up the
@@ -72,22 +75,117 @@ struct Conn {
     /// Close once `out` is flushed.
     closing: bool,
     dead: bool,
+    /// The client's terminal, which it sent with its `Attach` and the
+    /// server reopened (`fuxix::terminal::reopen`): its keys are read and
+    /// its paints written here, not relayed in frames. tmux's server
+    /// writes to its client's terminal as well.
+    tty: Option<std::os::fd::OwnedFd>,
+    /// What waits to be written to `tty`.
+    tty_out: ByteQueue,
+    /// A descriptor the client sent, until the `Attach` it came with.
+    passed: Option<std::os::fd::OwnedFd>,
+    /// Whether the paints written to `tty` saved its title
+    /// (`outer::TITLE_PUSH`) and have not restored it: restored before the
+    /// `Exit`, as the client restores it after frames.
+    title_saved: bool,
 }
 
 impl Conn {
-    /// Encodes a frame straight into the output.
+    fn new(stream: UnixStream) -> Conn {
+        Conn {
+            stream,
+            decoder: Decoder::default(),
+            out: ByteQueue::default(),
+            role: None,
+            client: None,
+            shown: Grid::new(0, 0),
+            painted: false,
+            spare: Grid::new(0, 0),
+            placement: Placement::default(),
+            next_paint: Instant::now(),
+            echo: None,
+            starved: false,
+            closing: false,
+            dead: false,
+            tty: None,
+            tty_out: ByteQueue::default(),
+            passed: None,
+            title_saved: false,
+        }
+    }
+
+    /// Encodes a frame straight into the output. An `Exit` to a client
+    /// whose terminal the server writes to comes after what waits for the
+    /// terminal, as much as it takes at once, and its title restored:
+    /// then the terminal is the client's again.
     fn send(&mut self, frame: &Frame) {
+        if matches!(frame, Frame::Exit(_)) {
+            self.give_back_tty();
+        }
         if self.out.push_with(|out| frame.encode_into(out)).is_err() {
             self.dead = true;
         }
     }
+
+    /// Paints and the client terminal's questions: to the terminal if the
+    /// server writes to it, else framed for the client.
     fn send_stream(&mut self, stream: Stream, bytes: &[u8]) {
+        if self.tty.is_some() && stream == Stream::Paint {
+            note_title(&mut self.title_saved, bytes);
+            self.tty_out.push(bytes);
+            return;
+        }
         stream.encode_into(bytes, &mut self.out);
     }
 
+    /// Bytes waiting for the client, in frames or for its terminal.
+    fn pending(&self) -> usize {
+        self.out.len().saturating_add(self.tty_out.len())
+    }
+
+    /// Writes what waits for the client's terminal, as far as it takes it;
+    /// a terminal that fails is given up.
+    fn flush_tty(&mut self) {
+        let Some(tty) = &self.tty else {
+            self.tty_out = ByteQueue::default();
+            return;
+        };
+        while !self.tty_out.is_empty() {
+            match fuxix::io::write(tty, self.tty_out.as_slice()) {
+                Ok(0) | Err(fuxix::Errno::AGAIN) => break,
+                Ok(n) => self.tty_out.take(n),
+                Err(fuxix::Errno::INTR) => continue,
+                Err(_) => {
+                    self.tty = None;
+                    self.tty_out = ByteQueue::default();
+                    break;
+                }
+            }
+        }
+        self.tty_out.shrink(CONN_KEEP);
+    }
+
+    /// Hands the terminal back: what waits for it written as far as it
+    /// takes it at once, the rest dropped, its title restored if the
+    /// paints saved it, and the server's descriptor for it closed.
+    fn give_back_tty(&mut self) {
+        if self.tty.is_none() {
+            return;
+        }
+        if self.title_saved {
+            self.tty_out.push(crate::outer::TITLE_POP);
+            self.title_saved = false;
+        }
+        self.flush_tty();
+        self.tty = None;
+        self.tty_out = ByteQueue::default();
+    }
+
     /// Writes what waits for the client until it is all written or the
-    /// socket takes no more; a connection that fails is marked dead.
+    /// socket takes no more; a connection that fails is marked dead. What
+    /// waits for its terminal is written too.
     fn flush(&mut self) {
+        self.flush_tty();
         while !self.out.is_empty() {
             match self.stream.write(self.out.as_slice()) {
                 Ok(0) => {
@@ -135,6 +233,22 @@ pub struct Server {
     listen_after: Option<Instant>,
     /// When an `accept` failure other than a shortage was last logged.
     accept_logged: Option<Instant>,
+}
+
+/// Notes a title saved or restored in a paint for a client's terminal: the
+/// later of the two wins (`client::note_title` does the same for paints
+/// it relays).
+fn note_title(saved: &mut bool, paint: &[u8]) {
+    let last = |needle: &[u8]| {
+        (0..paint.len())
+            .rev()
+            .find(|&at| paint.get(at..).is_some_and(|rest| rest.starts_with(needle)))
+    };
+    let push = last(crate::outer::TITLE_PUSH);
+    let pop = last(crate::outer::TITLE_POP);
+    if push.is_some() || pop.is_some() {
+        *saved = push > pop;
+    }
 }
 
 fn log(message: &str) {
@@ -219,6 +333,8 @@ enum Slot {
     Children,
     Stops,
     Conn(usize),
+    /// The terminal a client sent, which the server reads and writes.
+    Tty(usize),
     Pane(PaneId),
 }
 
@@ -255,6 +371,7 @@ impl Server {
                         self.stop("stopped by a signal".into());
                     }
                     Slot::Conn(i) => self.serve_conn(i, flags, now),
+                    Slot::Tty(i) => self.serve_tty(i, flags, now),
                     Slot::Pane(id) => self.serve_pane(id, flags),
                 }
             }
@@ -342,6 +459,14 @@ impl Server {
             }
             fds.push(PollFd::new(&conn.stream, flags));
             slots.push(Slot::Conn(i));
+            if let Some(tty) = &conn.tty {
+                let mut flags = PollFlags::IN;
+                if !conn.tty_out.is_empty() {
+                    flags |= PollFlags::OUT;
+                }
+                fds.push(PollFd::new(tty, flags));
+                slots.push(Slot::Tty(i));
+            }
         }
         for (id, pane) in &self.session.panes {
             if pane.hung_up {
@@ -407,7 +532,7 @@ impl Server {
     fn paint(&mut self, now: Instant) {
         for conn in &mut self.conns {
             let Some(client) = conn.client else { continue };
-            if conn.out.len() > OUTPUT_CAP {
+            if conn.pending() > OUTPUT_CAP {
                 // A client that stops reading gets nothing more queued; once
                 // it drains, one full repaint.
                 conn.starved = true;
@@ -415,7 +540,7 @@ impl Server {
                 continue;
             }
             if conn.starved {
-                if !conn.out.is_empty() {
+                if conn.pending() != 0 {
                     continue;
                 }
                 conn.starved = false;
@@ -503,22 +628,7 @@ impl Server {
                     if stream.set_nonblocking(true).is_err() {
                         continue;
                     }
-                    self.conns.push(Conn {
-                        stream,
-                        decoder: Decoder::default(),
-                        out: ByteQueue::default(),
-                        role: None,
-                        client: None,
-                        shown: Grid::new(0, 0),
-                        painted: false,
-                        spare: Grid::new(0, 0),
-                        placement: Placement::default(),
-                        next_paint: Instant::now(),
-                        echo: None,
-                        starved: false,
-                        closing: false,
-                        dead: false,
-                    });
+                    self.conns.push(Conn::new(stream));
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => return,
                 // A peer that gave up before it was accepted: the next may
@@ -595,6 +705,67 @@ impl Server {
     }
 
     /// A client's connection is ready, as found at `now`.
+    /// The terminal a client sent: room to write what waits for it, or
+    /// keys to read. A terminal that closed detaches its client, as a
+    /// client whose terminal closes detaches itself.
+    fn serve_tty(&mut self, index: usize, flags: PollFlags, now: Instant) {
+        let Some(conn) = self.conns.get_mut(index) else {
+            return;
+        };
+        if flags.contains(PollFlags::OUT) {
+            conn.flush_tty();
+        }
+        if !flags.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
+            return;
+        }
+        let mut read = 0usize;
+        let mut gone = false;
+        while read < CONN_READ {
+            let Some(conn) = self.conns.get_mut(index) else {
+                return;
+            };
+            let Some(tty) = &conn.tty else { return };
+            let n = match fuxix::io::read(tty, &mut self.read_buffer) {
+                Ok(0) => {
+                    gone = true;
+                    break;
+                }
+                Ok(n) => n,
+                Err(fuxix::Errno::AGAIN) => break,
+                Err(fuxix::Errno::INTR) => continue,
+                Err(_) => {
+                    gone = true;
+                    break;
+                }
+            };
+            read = read.saturating_add(n);
+            // Less than the buffer holds: that was all there was, and the
+            // poll says when there is more, without a read to find none.
+            let all = n < self.read_buffer.len();
+            let Some(client) = conn.client else { return };
+            let bytes = self.read_buffer.get(..n).unwrap_or_default();
+            self.session.input_at(client, bytes, now);
+            if let Some(conn) = self.conns.get_mut(index) {
+                conn.echo = self
+                    .session
+                    .views
+                    .get(&client)
+                    .and_then(crate::view::View::focus);
+            }
+            if all {
+                break;
+            }
+        }
+        if gone
+            && let Some(conn) = self.conns.get_mut(index)
+            && let Some(client) = conn.client.take()
+        {
+            conn.send(&Frame::Exit("detached: the terminal closed".into()));
+            conn.closing = true;
+            self.session.detach(client);
+        }
+    }
+
     fn serve_conn(&mut self, index: usize, flags: PollFlags, now: Instant) {
         if flags.contains(PollFlags::OUT) {
             self.write_conn(index);
@@ -627,7 +798,17 @@ impl Server {
             return;
         };
         loop {
-            match conn.stream.read(&mut self.read_buffer) {
+            // A client may send its terminal with its `Attach`.
+            let got = match fuxix::socket::recv_with_fd(&conn.stream, &mut self.read_buffer) {
+                Ok((n, fd)) => {
+                    if fd.is_some() {
+                        conn.passed = fd;
+                    }
+                    Ok(n)
+                }
+                Err(errno) => Err(std::io::Error::from_raw_os_error(errno.raw())),
+            };
+            match got {
                 Ok(0) => {
                     closed = true;
                     break;
@@ -743,6 +924,14 @@ impl Server {
                     Ok(client) => {
                         conn.client = Some(client);
                         conn.next_paint = Instant::now();
+                        // The client's terminal, if it sent it: taken, the
+                        // client is told before anything is painted.
+                        if let Some(passed) = conn.passed.take() {
+                            conn.tty = fuxix::terminal::reopen(&passed).ok();
+                            conn.send(&Frame::Terminal {
+                                taken: conn.tty.is_some(),
+                            });
+                        }
                     }
                     Err(error) => {
                         conn.send(&Frame::Exit(error.to_string()));
@@ -853,6 +1042,12 @@ impl Server {
                             conn.echo = None;
                             conn.next_paint = Instant::now();
                         }
+                    }
+                    // A little, as an echo or a prompt is: that was all,
+                    // and the poll says when there is more, without a read
+                    // to find none. A flood's reads are larger, and go on.
+                    if n < SHORT_READ {
+                        break;
                     }
                 }
                 Err(fuxix::Errno::AGAIN) => break,
