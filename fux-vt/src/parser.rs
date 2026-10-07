@@ -471,8 +471,9 @@ impl Identity {
     /// The most bytes of name and version XTVERSION reports.
     pub const MAX_LEN: usize = 48;
 
-    /// The version as DA2's firmware field: each component weighted by a
-    /// power of 100, anything past a `-` or `+` dropped, as `0.5.0` is 500.
+    /// The version as DA2's firmware field: its parts, at most three, as
+    /// digits in base 100, anything past a `-` or `+` dropped: `0.5.0` is
+    /// 500, `1.2` is 102 (a test pins the short forms).
     fn encoded_version(&self) -> u32 {
         let release = self.version.split(['-', '+']).next().unwrap_or_default();
         release.split('.').take(3).fold(0u32, |sum, part| {
