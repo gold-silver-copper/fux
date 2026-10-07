@@ -245,6 +245,28 @@ fn process_until_frame_stops_after_the_sequence_that_sets_2026() -> Result {
     Ok(())
 }
 
+/// A frame begun by XTRESTORE (`CSI ? 2026 r`, the mode saved set) stops
+/// `process_until_frame` right after it, as one begun by BSU does; and an
+/// `h` read afterwards, inside a string or not, stops nothing.
+#[test]
+fn process_until_frame_stops_after_an_xtrestore_that_begins_a_frame() -> Result {
+    let mut p = Parser::new(2, 20, 0)?;
+    let mut sink = Record::default();
+    p.process(b"\x1b[?2026h\x1b[?2026s\x1b[?2026l")?;
+    assert_eq!(
+        p.process_until_frame(b"\x1b[?2026r\x1b]2;hello\x07", &mut sink)?,
+        Some(8)
+    );
+    assert!(p.screen().synchronized_output());
+    // An `h` in a string, or printed, after the frame's sequence is read.
+    p.process(b"\x1b[?2026l")?;
+    assert_eq!(
+        p.process_until_frame(b"\x1b[?1h\x1b]2;hhh\x07hh\x1bh", &mut sink)?,
+        None
+    );
+    Ok(())
+}
+
 /// In-band resize (`references/modern/mode_2048_in_band_resize.md`): with
 /// `Options::in_band_resize`, setting mode 2048 reports the size at once,
 /// every time it is set; DECRQM reports the mode; `Parser::resize_report`

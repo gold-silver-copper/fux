@@ -1,9 +1,12 @@
 //! Decoding a client's raw terminal input into keys, pastes, focus changes
-//! and the terminal's answers to fux's questions (`outer`). The client is a
-//! dumb pipe; this is the only decoder.
+//! and the terminal's answers to fux's questions (`outer`), as the server
+//! reads it from the terminal or the client relays it; this is the only
+//! decoder.
 //!
-//! The outer terminal is in normal (not application) cursor and keypad mode,
-//! so each key has one xterm encoding. A lone Escape is only known to be one
+//! The outer terminal is put in normal (not application) cursor and keypad
+//! mode, so most keys arrive in one xterm encoding; the others a terminal
+//! may send (SS3, `CSI 1 ~` and `CSI 7 ~`, modifyOtherKeys, the kitty
+//! protocol) decode too. A lone Escape is only known to be one
 //! when no more bytes follow within `ESCAPE_DELAY`; the server calls
 //! `timeout` at the `deadline` the decoder reports. Mouse reports, in SGR
 //! or the default encoding, decode to [`MouseEvent`]s; a host that asked
@@ -44,6 +47,7 @@
 //! dropped to its end as it arrives, none of it typed.
 use crate::bytes::ByteQueue;
 use crate::keys::colour::{Rgb, Scheme};
+use crate::keys::encode::PASTE_END;
 use crate::keys::mouse::{self, MouseEvent};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
 use std::time::{Duration, Instant};
@@ -157,10 +161,9 @@ pub struct Decoder {
 struct Discarding {
     /// BEL ends it too (OSC; a DCS ends with ST alone).
     bel: bool,
+    /// Its last byte was an ESC: a `\` next ends it.
     escape: bool,
 }
-
-use crate::keys::encode::PASTE_END;
 
 enum Step {
     /// Consumed this many bytes, producing an input or nothing.
@@ -208,14 +211,17 @@ impl Decoder {
     pub fn deadline(&self) -> Option<Instant> {
         let since = self.since.filter(|_| self.waiting())?;
         let pending = self.pending.as_slice();
-        let reply = match pending {
-            b"\x1b]" | b"\x1bP" | b"\x1bP0" | b"\x1bP1" => self.expected > 0,
-            _ => {
-                pending.starts_with(b"\x1b]")
-                    || pending.starts_with(b"\x1b[?")
-                    || dcs_begun(pending)
-            }
-        };
+        // A string being dropped is an answer too long, which waits for
+        // its end as an answer begun does.
+        let reply = self.discarding.is_some()
+            || match pending {
+                b"\x1b]" | b"\x1bP" | b"\x1bP0" | b"\x1bP1" => self.expected > 0,
+                _ => {
+                    pending.starts_with(b"\x1b]")
+                        || pending.starts_with(b"\x1b[?")
+                        || dcs_begun(pending)
+                }
+            };
         Some(after(since, if reply { REPLY_DELAY } else { ESCAPE_DELAY }))
     }
 
@@ -228,8 +234,12 @@ impl Decoder {
     }
 
     /// Forgets the answers expected if their window has passed by `now`.
+    /// A DCS answer already begun keeps them expected until it ends, so
+    /// that it is read as one however its pieces fall in time.
     pub fn expire(&mut self, now: Instant) {
-        if self.expected_until.is_some_and(|until| now >= until) {
+        if self.expected_until.is_some_and(|until| now >= until)
+            && !dcs_begun(self.pending.as_slice())
+        {
             self.expected = 0;
             self.expected_until = None;
         }
@@ -328,7 +338,8 @@ impl Decoder {
         None
     }
 
-    /// The Escape deadline passed: whatever is pending is complete as it is.
+    /// The deadline passed (`deadline`: an Escape's, or an answer's):
+    /// whatever is pending is complete as it is.
     pub fn timeout(&mut self, out: &mut Vec<Input>) {
         if self.paste.is_none() {
             // A string being dropped is cut short: what comes next is new.
@@ -461,7 +472,11 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
         b'O' => match bytes.get(2) {
             None if !flush => Step::Incomplete,
             None => Step::Done(2, press(Key::Char('O'), alt())),
-            Some(&last) => Step::Done(3, final_key(last, Modifiers::NONE)),
+            // A byte no final key names: Alt-O, then the byte.
+            Some(&last) => match final_key(last, Modifiers::NONE) {
+                Some(input) => Step::Done(3, Some(input)),
+                None => Step::Done(2, press(Key::Char('O'), alt())),
+            },
         },
         // Escape Escape: an Escape, then decode the second one on its own.
         0x1b => Step::Done(1, press(Key::Escape, Modifiers::NONE)),
@@ -694,6 +709,33 @@ fn sgr_mouse(params: &[u8], last: u8) -> Option<MouseEvent> {
 }
 
 /// A CSI sequence: `ESC [ params final`. Too long a sequence is dropped.
+/// A CSI ended unfinished by an ESC among `params`, its bytes after
+/// `ESC [`.
+#[cold]
+#[inline(never)]
+fn unfinished(params: &[u8]) -> Step {
+    let at = params.iter().position(|&b| b == 0x1b).unwrap_or(0);
+    if at == 0 {
+        Step::Done(2, press(Key::Char('['), alt()))
+    } else {
+        Step::Done(at.saturating_add(2), None)
+    }
+}
+
+/// A `CSI ?` answer longer than any answer, `body` its bytes after `ESC [`:
+/// dropped through its final byte once that is here, as an over-long OSC
+/// or DCS answer is dropped to its end; held until then, up to
+/// `DCS_LIMIT` bytes, past which (or at a timeout) what is held is dropped.
+#[cold]
+#[inline(never)]
+fn long_answer(body: &[u8], flush: bool) -> Step {
+    match body.iter().position(|b| (0x40..=0x7e).contains(b)) {
+        Some(end) => Step::Done(end.saturating_add(3), None),
+        None if flush || body.len() > DCS_LIMIT => Step::Done(body.len().saturating_add(2), None),
+        None => Step::Incomplete,
+    }
+}
+
 fn csi(bytes: &[u8], flush: bool) -> Step {
     let body = bytes.get(2..).unwrap_or_default();
     // A mouse report in the default encoding: `ESC [ M` and three raw
@@ -715,8 +757,12 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     let window = body.get(..=limit).unwrap_or(body);
     let Some(end) = window.iter().position(|b| (0x40..=0x7e).contains(b)) else {
         if window.len() > limit {
-            // Not a sequence fux can use: garbage.
-            return Step::Done(window.len().saturating_add(2), None);
+            return if answer {
+                long_answer(body, flush)
+            } else {
+                // Not a sequence fux can use: garbage.
+                Step::Done(window.len().saturating_add(2), None)
+            };
         }
         if !flush {
             return Step::Incomplete;
@@ -732,6 +778,13 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     // `ESC [`, the parameters and the final byte; within `bytes`, so exact.
     let consumed = end.saturating_add(3);
     let params = body.get(..end).unwrap_or_default();
+    // An ESC among them ended the sequence unfinished there (ECMA-48,
+    // 5.5): `ESC [` alone is Alt-[, a sequence with parameters is dropped,
+    // and the ESC begins the next key. The byte taken for the final one
+    // then follows the ESC, so the byte before it is the one looked at.
+    if params.last() == Some(&0x1b) {
+        return unfinished(params);
+    }
     let last = body.get(end).copied().unwrap_or(0);
     if params.first() == Some(&b'<') {
         // An SGR mouse report: `CSI < code ; column ; row M`, `m` a release.
@@ -791,8 +844,10 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
             17..=21 => function(11),
             23 | 24 => function(12),
             // xterm modifyOtherKeys: `CSI 27 ; mod ; code ~`.
+            // A control character's code names no key.
             27 => part(2, 0)
                 .and_then(char::from_u32)
+                .filter(|c| !c.is_control())
                 .and_then(|c| press(Key::Char(c), mods)),
             _ => None,
         },
@@ -813,7 +868,11 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
                 // The Unicode Private Use Area: the kitty protocol's
                 // functional keys.
                 0xe000..=0xf8ff => functional(first),
-                _ => char::from_u32(first).map(|c| Key::Char(typed(c, &kitty))),
+                // A control character's code names no key.
+                _ => char::from_u32(first)
+                    .map(|c| typed(c, &kitty))
+                    .filter(|c| !c.is_control())
+                    .map(Key::Char),
             };
             let stroke = key.map(|key| Keystroke {
                 press: KeyPress::new(key, mods),
@@ -1307,6 +1366,105 @@ mod tests {
         long.extend(std::iter::repeat_n(b'x', 200));
         long.extend_from_slice(b"\x07y");
         assert_eq!(all(&long), vec![key("y")]);
+    }
+
+    /// An ESC inside a CSI ends it unfinished, as ECMA-48 (5.5) has it, and
+    /// begins what follows: `ESC [` with nothing
+    /// before it is Alt-[, a sequence with parameters is dropped. The key
+    /// after it is not lost.
+    #[test]
+    fn an_escape_inside_a_csi_ends_it_and_begins_the_next_key() {
+        assert_eq!(all(b"\x1b[\x1b[A"), vec![key("M-["), key("Up")]);
+        assert_eq!(all(b"\x1b[12\x1b[A"), vec![key("Up")]);
+    }
+
+    /// `ESC O` and a byte no final key names is Alt-O, then that byte, as
+    /// `ESC` and any other byte is: neither is lost.
+    #[test]
+    fn escape_o_and_a_byte_it_does_not_name_is_alt_o_and_the_byte() {
+        assert_eq!(all(b"\x1bOx"), vec![key("M-O"), key("x")]);
+        assert_eq!(all(b"\x1bO\x1b[A"), vec![key("M-O"), key("Up")]);
+        assert_eq!(all(b"\x1bOA"), vec![key("Up")], "a key SS3 names");
+    }
+
+    /// A `CSI ?` answer longer than any answer is dropped through its
+    /// final byte, as an over-long OSC or DCS answer is: none of it typed.
+    #[test]
+    fn an_over_long_csi_answer_is_dropped_through_its_final_byte() {
+        let mut long = b"\x1b[?".to_vec();
+        long.extend(std::iter::repeat_n(b'1', 70));
+        long.extend_from_slice(b"ck");
+        assert_eq!(all(&long), vec![key("k")]);
+    }
+
+    /// A DCS answer begun while answers are expected is read whole though
+    /// the window for them passes before its end: what it decodes to does
+    /// not depend on where the time between its pieces falls.
+    #[test]
+    fn a_dcs_answer_begun_in_its_window_is_read_whole_after_it() {
+        let t0 = Instant::now();
+        let answer: &[u8] = b"\x1bP1$r0;4:3m\x1b\\";
+        let mut whole = Decoder::default();
+        let mut expected = Vec::new();
+        whole.expect(t0);
+        whole.bytes(answer, &mut expected);
+        let (first, rest) = answer.split_at_checked(8).unwrap_or((answer, &[]));
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.expect(t0);
+        d.expire(t0 + Duration::from_millis(900));
+        d.bytes(first, &mut out);
+        d.expire(t0 + REPLY_WINDOW + Duration::from_millis(50));
+        d.bytes(rest, &mut out);
+        assert_eq!(out, expected);
+    }
+
+    /// A key report whose code is a control character (`CSI u`, `CSI 1 ;
+    /// 5 u`, xterm's `CSI 27 ; 5 ; 1 ~`) is no key: a key name cannot say
+    /// it, so no binding could match it and nothing could name it back.
+    #[test]
+    fn a_key_report_of_a_control_character_is_no_key() {
+        for report in [&b"\x1b[u"[..], b"\x1b[1;5u", b"\x1b[0;5u", b"\x1b[27;5;1~"] {
+            assert_eq!(all(report), vec![], "{report:?}");
+        }
+        let pressed = |input: &Input| {
+            if let Input::Key(stroke) = input {
+                Some(stroke.press)
+            } else {
+                None
+            }
+        };
+        let letter: Vec<_> = all(b"\x1b[97;5u").iter().map(pressed).collect();
+        assert_eq!(
+            letter,
+            vec![Some(KeyPress::new(
+                Key::Char('a'),
+                Modifiers {
+                    ctrl: true,
+                    ..Modifiers::NONE
+                }
+            ))],
+            "a letter's code"
+        );
+    }
+
+    /// An answer's string longer than any answer, split by a pause, waits
+    /// `REPLY_DELAY` for the rest while it is dropped, as an answer cut
+    /// short does: the rest, arriving within it, is dropped too, none of it
+    /// typed.
+    #[test]
+    fn an_over_long_answer_split_by_a_pause_is_dropped_whole() {
+        let t0 = Instant::now();
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        let mut long = b"\x1b]11;".to_vec();
+        long.extend(std::iter::repeat_n(b'0', 200));
+        d.bytes(&long, &mut out);
+        d.mark(t0);
+        assert_eq!(d.deadline(), Some(t0 + REPLY_DELAY));
+        d.bytes(b"0000\x1b\\", &mut out);
+        d.bytes(b"k", &mut out);
+        assert_eq!(out, vec![key("k")]);
     }
 
     /// `ESC ]` alone is Alt-] once `ESCAPE_DELAY` passes, as `ESC [` is

@@ -132,9 +132,10 @@ impl KeyPress {
     pub fn char(c: char) -> Self {
         Self::plain(Key::Char(c))
     }
-    /// The key as fux matches letter keys everywhere -- bindings, choosers,
-    /// menus, confirmations, copy mode: a letter in lower case, whatever
-    /// Shift and Caps Lock did. A letter with Ctrl or Alt is left as it is,
+    /// The key as fux matches letter keys typed after the prefix, and in
+    /// choosers, menus, confirmations and copy mode: a letter in lower case,
+    /// whatever Shift and Caps Lock did. The prefix itself and root bindings
+    /// (`bind -n`) match the press as it is. A letter with Ctrl or Alt is left as it is,
     /// and matches no letter key.
     pub fn folded(self) -> Self {
         if let Key::Char(c) = self.key

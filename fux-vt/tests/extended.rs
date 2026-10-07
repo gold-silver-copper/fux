@@ -800,3 +800,30 @@ fn the_adversarial_corpus_with_every_option_is_chunk_invariant() -> Result {
     }
     Ok(())
 }
+
+/// A string ended by ST (`ESC \`) is a sequence fux-vt implements: the
+/// `ESC \` that ends it reaches no `Sink::unhandled`, whatever string it
+/// ends (an OSC, a DCS, an APC, a PM, an SOS), as with BEL; and a lone
+/// `ESC \` is no unhandled sequence either.
+#[test]
+fn a_string_ended_by_st_leaves_nothing_unhandled() -> Result {
+    for input in [
+        &b"\x1b]2;title\x1b\\"[..],
+        b"\x1b]8;;https://example.com\x1b\\",
+        b"\x1bP$qm\x1b\\",
+        b"\x1b_apc\x1b\\",
+        b"\x1b^pm\x1b\\",
+        b"\x1bXsos\x1b\\",
+        b"\x1b\\",
+    ] {
+        let mut p = Parser::new(2, 10, 0)?;
+        let record = run(&mut p, input)?;
+        assert!(
+            record.unhandled.is_empty(),
+            "{}: {:?}",
+            String::from_utf8_lossy(input),
+            record.unhandled
+        );
+    }
+    Ok(())
+}

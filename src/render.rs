@@ -772,16 +772,7 @@ pub fn compose_into(
                 .bindings
                 .iter()
                 .find(|b| b.command == argv)
-                .map_or_else(
-                    || argv.join(" "),
-                    |b| {
-                        format!(
-                            "{} {}",
-                            session.config.prefix,
-                            crate::config::keys_text(&b.keys)
-                        )
-                    },
-                )
+                .map_or_else(|| argv.join(" "), |b| session.keys_named(&b.keys))
         };
         let hint = format!(
             "empty tab: {} splits it, {} closes it",
@@ -793,7 +784,8 @@ pub fn compose_into(
         grid.text(y, x, &hint, style(Color::Idx(244), Color::Default), area.w);
     }
     // The cursor: copy mode's in its pane, else the focused pane's, but only
-    // in normal mode; under an overlay there is none.
+    // in normal mode: none under an overlay, nor in a repeat mode, whose
+    // keys are fux's.
     if let Some(focus) = focus
         && let Some(rect) = placement.rect(focus)
         && let Some(pane) = session.panes.get(&focus)
@@ -801,7 +793,9 @@ pub fn compose_into(
         let screen = pane.screen();
         match copy.filter(|(c, _)| c.pane == focus) {
             Some((_, at)) => {
-                if let Some((y, x)) = at.cursor_in_view(rect.h)
+                // Within the rows shown, which a smaller client can make
+                // fewer than the rect.
+                if let Some((y, x)) = at.cursor_in_view(rect.h.min(screen.size().0))
                     && x < rect.w
                     && let Some(at) = rect.at(y, x)
                 {
@@ -1045,8 +1039,9 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
     }
 }
 
-/// The bottom bar: the workspace and its tabs on the left; the focused
-/// pane, or copy mode's position, or a notice on the right.
+/// The bottom bar: the workspace and its tabs on the left; on the right, the
+/// first there is of a notice, copy mode's position, the keys typed in the
+/// command column, a repeat mode's keys, and the focused pane.
 fn bar(
     grid: &mut Grid,
     session: &Session,
@@ -1209,9 +1204,11 @@ fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
     let Some(text_x) = x.checked_add(1) else {
         return;
     };
-    // On a short screen the last lines (the selection and help) matter
-    // most, so the first lines give way.
+    // On a short screen the first lines give way, as the last (the help)
+    // matter more; but not past the selected entry, which stays in view.
     let skip = lines.len().saturating_sub(usize::from(height));
+    let selected = lines.iter().position(|(_, attrs)| attrs.inverse());
+    let skip = selected.map_or(skip, |selected| skip.min(selected));
     for (y, (text, attrs)) in (top..available).zip(lines.iter().skip(skip)) {
         grid.fill(y, x, view.cols, *attrs);
         grid.text(
@@ -1302,11 +1299,9 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
         // Right after the prefix, every command; in a layer, its keys so far
         // and its title.
         let title = match overlay::layer_title(session, path) {
-            Some(title) if !path.is_empty() => Cow::Owned(format!(
-                "{} {}: {title}",
-                session.config.prefix,
-                crate::config::keys_text(path)
-            )),
+            Some(title) if !path.is_empty() => {
+                Cow::Owned(format!("{}: {title}", session.keys_named(path)))
+            }
             Some(_) | None => Cow::Borrowed("Commands"),
         };
         lines.push((title, panel().with_bold(true)));

@@ -59,8 +59,9 @@ impl<'a> Hyperlink<'a> {
     /// A number that identifies the link among the parser's links, never
     /// given to another: cells with the same key are one link, as the spec
     /// groups them. Each `OSC 8` with a URI and no `id` opens a link of its
-    /// own; one with an `id` and a URI already open on the screen, the same
-    /// link again.
+    /// own; one with an `id` and a URI the screen still holds a link for
+    /// (in its history too; each screen holds its own), the same link
+    /// again.
     pub fn key(&self) -> u64 {
         self.key
     }
@@ -227,10 +228,10 @@ impl Links {
             }
         }
     }
-    /// Frees the links no cell has, but `keep`.
-    pub(crate) fn free_unused(&mut self, keep: &[u16]) {
-        for (n, slot) in (1..=u16::MAX).zip(self.entries.iter_mut()) {
-            if keep.contains(&n) || slot.as_ref().is_none_or(|e| e.cells > 0) {
+    /// Frees the links no cell has.
+    pub(crate) fn free_unused(&mut self) {
+        for slot in self.entries.iter_mut() {
+            if slot.as_ref().is_none_or(|e| e.cells > 0) {
                 continue;
             }
             let Some(entry) = slot.take() else {
@@ -384,12 +385,12 @@ mod tests {
             links.get(2).map(|l| (l.uri(), l.id(), l.key())),
             Some(("b", Some("x"), 2))
         );
-        // Held by cells, a link stays; held by none, it goes, unless kept.
+        // Held by cells, a link stays; held by none, it goes.
         links.hold(2, 3);
         links.release(2, 1);
         links.hold(0, 5);
         links.release_all(&[2, 0, 0]);
-        links.free_unused(&[]);
+        links.free_unused();
         assert_eq!(links.get(1), None);
         assert_eq!(links.len(), 1);
         assert_eq!(links.counts(), [0, 1]);
@@ -398,7 +399,10 @@ mod tests {
         assert_eq!(links.insert(&s("c"), None, 3), Some(1));
         links.release_all(&[2, 2]);
         assert_eq!(links.used, (0, 0));
-        links.free_unused(&[1]);
+        // A link a cell holds stays.
+        links.hold(1, 1);
+        links.free_unused();
+        links.release(1, 1);
         assert_eq!(links.find(&s("b"), &s("x")), None);
         assert_eq!(links.counts(), [0]);
         links.recount([&[1u16, 1, 0][..], &[1]].into_iter());

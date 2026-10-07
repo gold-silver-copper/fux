@@ -405,6 +405,11 @@ impl Default for Config {
 pub const GROUPS: &[&str] = &["Panes", "Focus", "Tabs", "Workspaces", "Session"];
 
 impl Binding {
+    /// The keys after `path`, if the binding is in the layer at `path`:
+    /// one or more of them.
+    pub fn in_layer(&self, path: &[KeyPress]) -> Option<&[KeyPress]> {
+        self.keys.strip_prefix(path).filter(|rest| !rest.is_empty())
+    }
     /// The group this binding is listed under.
     pub fn group(&self) -> &str {
         self.group
@@ -445,6 +450,11 @@ impl Binding {
 }
 
 impl Config {
+    /// The binding without the prefix (`bind -n`) for `press`, if one:
+    /// matched as typed, as the prefix is.
+    pub fn root_binding(&self, press: KeyPress) -> Option<&Binding> {
+        self.root.iter().find(|b| b.keys == [press])
+    }
     /// Applies `set`, `bind`, `unbind` or `unbind-all` given as words.
     pub fn apply(&mut self, argv: &[String]) -> Result<(), Error> {
         let (name, rest) = argv.split_first().ok_or(Error::Empty)?;

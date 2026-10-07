@@ -24,6 +24,8 @@ pub struct Tab {
     pub root: Option<Node>,
 }
 
+/// A workspace and its tabs, of which it always has one or more: each is
+/// made with one, and `remove_tab` removes a workspace its last tab leaves.
 pub struct Workspace {
     pub id: WsId,
     pub name: String,
@@ -135,6 +137,8 @@ pub enum Error {
     ControlInName,
     LongName,
     NameTaken(String),
+    /// A workspace name a target would read as a number, not a name.
+    NameReadAsTarget(String),
     /// A counter of IDs, never reused, that would wrap.
     IdsExhausted(&'static str),
     LineTooLong,
@@ -203,6 +207,10 @@ impl std::fmt::Display for Error {
             Error::ControlInName => f.write_str("a name cannot contain control characters"),
             Error::LongName => f.write_str("a name is at most 256 bytes"),
             Error::NameTaken(name) => write!(f, "another workspace is named {name:?}"),
+            Error::NameReadAsTarget(name) => write!(
+                f,
+                "{name:?} cannot name a workspace: a target would read it as a pane, tab or workspace number"
+            ),
             Error::IdsExhausted(what) => write!(f, "no {what} IDs are left"),
             Error::LineTooLong => f.write_str("the command line is too long to type"),
             Error::Usage(error) => error.fmt(f),
@@ -267,6 +275,7 @@ impl std::error::Error for Error {
             | Error::ControlInName
             | Error::LongName
             | Error::NameTaken(_)
+            | Error::NameReadAsTarget(_)
             | Error::IdsExhausted(_)
             | Error::LineTooLong => None,
         }
@@ -664,6 +673,11 @@ impl Session {
     /// being renamed: a workspace is found by its name.
     fn check_workspace_name(&self, name: &str, except: Option<WsId>) -> Result<(), Error> {
         self.check_name(name)?;
+        // A name a target reads back as itself, so that `-t NAME` finds
+        // this workspace and no other.
+        if command::parse_workspace(name) != Ok(WsRef::Name(name.to_owned())) {
+            return Err(Error::NameReadAsTarget(name.to_owned()));
+        }
         if self
             .workspaces
             .iter()
@@ -1026,7 +1040,7 @@ impl Session {
         self.config
             .bindings
             .iter()
-            .any(|b| b.keys.len() > path.len() && b.keys.starts_with(path))
+            .any(|b| b.in_layer(path).is_some())
     }
 
     /// Whether the layer at `path` holds a repeating binding.
@@ -1036,8 +1050,9 @@ impl Session {
         })
     }
 
-    /// Keys after the prefix as they are typed: `C-b t`.
-    fn keys_named(&self, path: &[KeyPress]) -> String {
+    /// Keys after the prefix as they are typed, `C-b t`: as the bar, the
+    /// column and messages write them.
+    pub(crate) fn keys_named(&self, path: &[KeyPress]) -> String {
         format!("{} {}", self.config.prefix, crate::config::keys_text(path))
     }
 
@@ -1489,6 +1504,9 @@ impl Session {
                 let pane = self.new_pane(&mut ids, cmd, &cwd, size)?;
                 self.commit(ids);
                 if let Some(t) = self.tab_mut(tab) {
+                    // True: `target` was just found in this tab. (False
+                    // would leave the new pane, its process started, in no
+                    // tab.)
                     layout::split(&mut t.root, target, pane, axis, Side::After);
                 }
                 // The splitting client follows the new pane; from the CLI,
@@ -1855,6 +1873,7 @@ impl Session {
                     Direction::Right | Direction::Down => Side::After,
                     Direction::Left | Direction::Up => Side::Before,
                 };
+                // True: `neighbor` found `destination` in this tab.
                 layout::split(&mut tab.root, destination, pane, Axis::of(direction), side);
                 return Ok(String::new());
             }
@@ -1864,20 +1883,12 @@ impl Session {
             }
             MoveTo::Workspace(r) => {
                 let ws = self.resolve_ws(r)?;
-                let first = self
+                // A workspace has a tab (`Workspace`).
+                let tab = self
                     .workspace(ws)
                     .and_then(|w| w.tabs.first())
-                    .map(|t| t.id);
-                let tab = match first {
-                    Some(tab) => tab,
-                    None => {
-                        let mut ids = self.ids();
-                        let id = ids.tab()?;
-                        self.add_tab(ws, id, Some(MAIN.into()), None)?;
-                        self.commit(ids);
-                        id
-                    }
-                };
+                    .map(|t| t.id)
+                    .ok_or(Error::WorkspaceGone)?;
                 (ws, tab)
             }
             MoveTo::NewTab => {
@@ -2614,6 +2625,27 @@ mod tests {
             ("zoom -c c9", 1, "no client c9"),
             ("show-buffer", 1, "no buffer 0"),
             ("paste-buffer -t %1", 1, "no buffer 0"),
+            // A workspace's name is what targets read as a name.
+            (
+                "new-workspace -n @logs",
+                1,
+                r#""@logs" cannot name a workspace: a target would read it as a pane, tab or workspace number"#,
+            ),
+            (
+                "rename -t +1 +2",
+                1,
+                r#""+2" cannot name a workspace: a target would read it as a pane, tab or workspace number"#,
+            ),
+            (
+                "rename -t +1 %x",
+                1,
+                r#""%x" cannot name a workspace: a target would read it as a pane, tab or workspace number"#,
+            ),
+            (
+                "rename -t +1 -- -x",
+                1,
+                r#""-x" cannot name a workspace: a target would read it as a pane, tab or workspace number"#,
+            ),
             ("reload", 1, "no config file to reload"),
             ("terminate -t %1", 1, "the pane has no process"),
             ("rename -t %1 ''", 1, "a name cannot be empty"),

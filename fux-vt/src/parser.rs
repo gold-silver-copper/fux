@@ -265,8 +265,10 @@ impl Request {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Options {
-    /// Deliver OSC 0/1/2 (icon name / window title), OSC 52 (clipboard) and BEL
-    /// as [`Event`]s. OSC payloads are buffered up to [`OSC_PAYLOAD_LIMIT`].
+    /// Deliver OSC 0/1/2 (icon name / window title), OSC 52 (clipboard),
+    /// BEL, and the dynamic colours' queries (OSC 10 to 19, as
+    /// [`Event::ColorQuery`]) as [`Event`]s. OSC payloads are buffered up
+    /// to [`OSC_PAYLOAD_LIMIT`].
     pub events: bool,
     /// Also answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`), DECXCPR
     /// (`CSI ? 6 n`) and secondary device attributes (`CSI > c`).
@@ -471,8 +473,9 @@ impl Identity {
     /// The most bytes of name and version XTVERSION reports.
     pub const MAX_LEN: usize = 48;
 
-    /// The version as DA2's firmware field: each component weighted by a
-    /// power of 100, anything past a `-` or `+` dropped, as `0.5.0` is 500.
+    /// The version as DA2's firmware field: its parts, at most three, as
+    /// digits in base 100, anything past a `-` or `+` dropped: `0.5.0` is
+    /// 500, `1.2` is 102 (a test pins the short forms).
     fn encoded_version(&self) -> u32 {
         let release = self.version.split(['-', '+']).next().unwrap_or_default();
         release.split('.').take(3).fold(0u32, |sum, part| {
@@ -606,8 +609,9 @@ pub struct Parser {
     /// The DECRQSS the DCS string being read is, with
     /// [`Options::setting_reports`]; `None` for any other string.
     request: Option<Request>,
-    /// Whether the last sequence dispatched set synchronized output, for
-    /// `Parser::process_until_frame`.
+    /// Whether the CSI just dispatched began a frame (set synchronized
+    /// output), for `Parser::process_until_frame`, which stops at once and
+    /// clears it.
     frame_begun: bool,
     state: State,
     params: Parameters,
@@ -761,25 +765,20 @@ impl Parser {
             {
                 remaining = remaining.get(length..).unwrap_or_default();
             } else if ground && byte == 0x1b {
-                // An `h` read with a frame begun stops the run (below), so
-                // until the next CSI clears it, an OSC string's bytes go
-                // through `byte`: only an XTRESTORE of synchronized output
-                // sets it and goes on.
-                let strings = !(UNTIL_FRAME && self.frame_begun);
-                let (length, ended) = self.sequence(remaining, strings, sink)?;
+                let (length, _) = self.sequence(remaining, true, sink)?;
                 remaining = remaining.get(length..).unwrap_or_default();
-                // As below: of the bytes `sequence` takes, only a final
-                // byte can be `h` (a string's are not taken with a frame
-                // begun).
-                if UNTIL_FRAME && ended == b'h' && self.frame_begun {
+                // A CSI that began a frame (BSU, or XTRESTORE of the mode)
+                // ends whatever `sequence` took: stop right after it.
+                if UNTIL_FRAME && self.frame_begun {
                     self.frame_begun = false;
                     return Ok(Some(bytes.len().saturating_sub(remaining.len())));
                 }
             } else {
                 self.byte(byte, sink)?;
                 remaining = tail;
-                // Every BSU ends in `h`: the byte in hand rules out the rest.
-                if UNTIL_FRAME && byte == b'h' && self.frame_begun {
+                // A frame is begun by a CSI, whose final byte this is:
+                // looked at first, as most bytes here are no final byte.
+                if UNTIL_FRAME && (0x40..=0x7e).contains(&byte) && self.frame_begun {
                     self.frame_begun = false;
                     return Ok(Some(bytes.len().saturating_sub(remaining.len())));
                 }

@@ -107,7 +107,9 @@ impl<'a> Row<'a> {
         self.id
     }
     /// The row's version: it changes with every edit that changes the
-    /// row's cells or its soft wrap, and with nothing else.
+    /// row's cells, its soft wrap or its cells' links, and with every
+    /// resize, which lays the row out anew. While it is the same, the row
+    /// shows the same.
     pub fn version(&self) -> u64 {
         self.version
     }
@@ -175,7 +177,7 @@ impl<'a> Row<'a> {
     /// [`Cells::text_limit`] of its length. Shorter clusters held off the
     /// cells are not counted. For memory diagnostics.
     pub fn text_len(&self) -> usize {
-        self.text.len()
+        self.text.long_len()
     }
     /// The row's cells, left to right.
     pub fn cells(
@@ -223,8 +225,10 @@ impl std::fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
-/// An immutable clipped window. Blank padding is represented by `None`; a
-/// clipped wide leader is also blank, never a half glyph. Offsets are clamped.
+/// An immutable clipped window. A cell past its row's width (a narrower
+/// history row's) reads as `None`, and so does a wide glyph the window's
+/// last column clips, never half a glyph; blank cells within a row read as
+/// blanks. Offsets are clamped.
 #[derive(Clone, Copy)]
 pub struct Window<'a> {
     grid: &'a grid::Grid,
@@ -369,7 +373,7 @@ mod tests {
     use std::fmt::Write;
 
     #[test]
-    fn a_reply_holds_the_longest_and_builds_in_pieces() {
+    fn a_reply_holds_what_it_can_and_builds_in_pieces() {
         let (row, col) = (u16::MAX, u16::MAX);
         let reply = super::Reply::of(format_args!("\x1b[?{row};{col}R"));
         assert_eq!(reply.as_bytes(), b"\x1b[?65535;65535R");
