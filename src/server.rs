@@ -16,6 +16,10 @@ use std::time::{Duration, Instant};
 
 /// Paints are coalesced to at most one per client per this.
 const PAINT: Duration = Duration::from_millis(16);
+/// Panes quiet for this after their output: painted then, not held to
+/// `PAINT`. A program's output in a few bursts, as a screen redrawn is,
+/// shows when it ends; a flood, never quiet so long, keeps to `PAINT`.
+const QUIET: Duration = Duration::from_millis(1);
 /// A client's unsent output may grow to this before paints for it stop.
 const OUTPUT_CAP: usize = 4 << 20;
 /// A pane's read shorter than this, an echo's or a prompt's, is taken for
@@ -65,6 +69,9 @@ struct Conn {
     spare: Grid,
     placement: Placement,
     next_paint: Instant,
+    /// When the panes will have been quiet for `QUIET`, if output came
+    /// before `next_paint`: the paint is made then, if sooner.
+    settled: Option<Instant>,
     /// The pane the client last typed into, until it writes: what it writes
     /// then, a keystroke's echo, is painted at once, not held to `PAINT`
     /// behind a pane that keeps the screen changing (tmux paints it at
@@ -94,6 +101,13 @@ struct Conn {
 }
 
 impl Conn {
+    /// When its next paint may be made: `PAINT` after the last, or sooner
+    /// once the panes are quiet.
+    fn paint_due(&self) -> Instant {
+        self.settled
+            .map_or(self.next_paint, |settled| settled.min(self.next_paint))
+    }
+
     fn new(stream: UnixStream) -> Conn {
         Conn {
             stream,
@@ -106,6 +120,7 @@ impl Conn {
             spare: Grid::new(0, 0),
             placement: Placement::default(),
             next_paint: Instant::now(),
+            settled: None,
             echo: None,
             starved: false,
             closing: false,
@@ -412,7 +427,7 @@ impl Server {
         let session = &self.session;
         let paints = self.conns.iter().filter_map(|conn| {
             let dirty = session.views.get(&conn.client?).is_some_and(|v| v.dirty);
-            (dirty && !conn.starved).then_some(conn.next_paint)
+            (dirty && !conn.starved).then_some(conn.paint_due())
         });
         let escapes = session.views.values().filter_map(|v| v.decoder.deadline());
         let stop = self
@@ -543,7 +558,7 @@ impl Server {
                 conn.starved = false;
             }
             let dirty = self.session.views.get(&client).is_some_and(|v| v.dirty);
-            if !dirty || now < conn.next_paint {
+            if !dirty || now < conn.paint_due() {
                 continue;
             }
             // The title and bell marks first: the bar shows the marks.
@@ -573,6 +588,7 @@ impl Server {
             std::mem::swap(&mut conn.shown, &mut conn.spare);
             conn.painted = true;
             conn.next_paint = crate::after(now, PAINT);
+            conn.settled = None;
             if let Some(view) = self.session.views.get_mut(&client) {
                 view.dirty = false;
             }
@@ -1070,6 +1086,15 @@ impl Server {
                 Err(_) => {
                     ended = true;
                     break;
+                }
+            }
+        }
+        // Output held to `PAINT` is painted once the panes are quiet.
+        if total > 0 {
+            let now = Instant::now();
+            for conn in &mut self.conns {
+                if now < conn.next_paint {
+                    conn.settled = Some(crate::after(now, QUIET));
                 }
             }
         }
