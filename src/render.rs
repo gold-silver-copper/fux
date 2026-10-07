@@ -772,16 +772,7 @@ pub fn compose_into(
                 .bindings
                 .iter()
                 .find(|b| b.command == argv)
-                .map_or_else(
-                    || argv.join(" "),
-                    |b| {
-                        format!(
-                            "{} {}",
-                            session.config.prefix,
-                            crate::config::keys_text(&b.keys)
-                        )
-                    },
-                )
+                .map_or_else(|| argv.join(" "), |b| session.keys_named(&b.keys))
         };
         let hint = format!(
             "empty tab: {} splits it, {} closes it",
@@ -1308,11 +1299,9 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
         // Right after the prefix, every command; in a layer, its keys so far
         // and its title.
         let title = match overlay::layer_title(session, path) {
-            Some(title) if !path.is_empty() => Cow::Owned(format!(
-                "{} {}: {title}",
-                session.config.prefix,
-                crate::config::keys_text(path)
-            )),
+            Some(title) if !path.is_empty() => {
+                Cow::Owned(format!("{}: {title}", session.keys_named(path)))
+            }
             Some(_) | None => Cow::Borrowed("Commands"),
         };
         lines.push((title, panel().with_bold(true)));

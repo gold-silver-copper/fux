@@ -1050,8 +1050,9 @@ impl Session {
         })
     }
 
-    /// Keys after the prefix as they are typed: `C-b t`.
-    fn keys_named(&self, path: &[KeyPress]) -> String {
+    /// Keys after the prefix as they are typed, `C-b t`: as the bar, the
+    /// column and messages write them.
+    pub(crate) fn keys_named(&self, path: &[KeyPress]) -> String {
         format!("{} {}", self.config.prefix, crate::config::keys_text(path))
     }
 
