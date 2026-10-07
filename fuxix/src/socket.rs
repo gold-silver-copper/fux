@@ -162,10 +162,14 @@ pub fn send_with_fd(socket: impl AsFd, bytes: &[u8], fd: impl AsFd) -> Result<us
     let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
     message.msg_iov = &mut iov;
     message.msg_iovlen = 1;
+    // The header and the descriptor fit the buffer, as the SAFETY below says.
+    if usize::try_from(space).map_or(true, |space| space > control.0.len()) {
+        return Err(Errno::INVAL);
+    }
     message.msg_control = control.0.as_mut_ptr().cast();
     message.msg_controllen = fit(space)?;
-    // SAFETY: `message` has a control buffer of `space` bytes, at most 64:
-    // its first header is in it, or null.
+    // SAFETY: `message` has a control buffer of `space` bytes, at most its
+    // 64 (checked above): its first header is in it, or null.
     let first = unsafe { libc::CMSG_FIRSTHDR(&message) };
     // SAFETY: a non-null first header points into `control`, aligned.
     let header = unsafe { first.as_mut() }.ok_or(Errno::INVAL)?;

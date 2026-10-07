@@ -151,12 +151,16 @@ pub enum Frame {
         cols: u16,
         workspace: Option<String>,
     },
+    /// client → server.
     Input(Vec<u8>),
+    /// client → server.
     Resize {
         rows: u16,
         cols: u16,
     },
+    /// client → server.
     Detach,
+    /// client → server.
     Command {
         argv: Vec<String>,
         cwd: String,
@@ -164,9 +168,13 @@ pub enum Frame {
     },
     /// server → client.
     Paint(Vec<u8>),
+    /// server → client.
     Exit(String),
+    /// server → client.
     Stdout(Vec<u8>),
+    /// server → client.
     Stderr(Vec<u8>),
+    /// server → client.
     Done {
         status: u8,
     },
@@ -550,7 +558,8 @@ impl Decoder {
         checked
     }
 
-    /// Bytes held for a frame not yet complete.
+    /// Bytes held: whole frames not yet taken, and a frame not yet
+    /// complete.
     pub fn buffered(&self) -> usize {
         self.buffer.len()
     }
