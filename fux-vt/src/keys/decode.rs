@@ -338,7 +338,8 @@ impl Decoder {
         None
     }
 
-    /// The Escape deadline passed: whatever is pending is complete as it is.
+    /// The deadline passed (`deadline`: an Escape's, or an answer's):
+    /// whatever is pending is complete as it is.
     pub fn timeout(&mut self, out: &mut Vec<Input>) {
         if self.paste.is_none() {
             // A string being dropped is cut short: what comes next is new.

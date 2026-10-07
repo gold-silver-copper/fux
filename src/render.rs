@@ -793,7 +793,8 @@ pub fn compose_into(
         grid.text(y, x, &hint, style(Color::Idx(244), Color::Default), area.w);
     }
     // The cursor: copy mode's in its pane, else the focused pane's, but only
-    // in normal mode; under an overlay there is none.
+    // in normal mode: none under an overlay, nor in a repeat mode, whose
+    // keys are fux's.
     if let Some(focus) = focus
         && let Some(rect) = placement.rect(focus)
         && let Some(pane) = session.panes.get(&focus)
@@ -1047,8 +1048,9 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
     }
 }
 
-/// The bottom bar: the workspace and its tabs on the left; the focused
-/// pane, or copy mode's position, or a notice on the right.
+/// The bottom bar: the workspace and its tabs on the left; on the right, the
+/// first there is of a notice, copy mode's position, the keys typed in the
+/// command column, a repeat mode's keys, and the focused pane.
 fn bar(
     grid: &mut Grid,
     session: &Session,

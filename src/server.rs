@@ -513,8 +513,9 @@ impl Server {
         });
     }
 
-    /// A lone Escape becomes a key once `ESCAPE_DELAY` passes with no byte
-    /// after it.
+    /// What a client's decoder waits on is taken as it is once its deadline
+    /// passes: a lone Escape becomes a key, an answer cut short is dropped
+    /// (`Decoder::deadline`).
     fn escapes(&mut self, now: Instant) {
         // One at a time, in the clients' order: an Escape runs whatever it
         // completes.
