@@ -155,7 +155,7 @@ From a key or the prompt, commands act on your focused pane.
 | `fux server [--socket PATH] [--config FILE]` | run a server in the foreground |
 | `fux kill-server` | stop the server |
 | `fux ls [--json]` | workspaces, tabs, panes and clients |
-| `fux new-workspace [-n NAME] [-- CMD…]` | a workspace with a shell, CMD typed into it; names are unique |
+| `fux new-workspace [-n NAME] [-- CMD…]` | a workspace with a shell, CMD typed into it; names are unique, and do not start with `+`, `%`, `@` or `-`, which targets read otherwise |
 | `fux new-tab [-t WS] [-n NAME] [-- CMD…]` | a tab with a shell, CMD typed into it |
 | `fux split -h\|-v [-t %N] [-- CMD…]` | split a pane: `-h` side by side, `-v` stacked |
 | `fux kill-pane\|kill-tab\|kill-workspace [-t …]` | close, without asking |
