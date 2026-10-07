@@ -840,8 +840,10 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
             17..=21 => function(11),
             23 | 24 => function(12),
             // xterm modifyOtherKeys: `CSI 27 ; mod ; code ~`.
+            // A control character's code names no key.
             27 => part(2, 0)
                 .and_then(char::from_u32)
+                .filter(|c| !c.is_control())
                 .and_then(|c| press(Key::Char(c), mods)),
             _ => None,
         },
@@ -862,7 +864,11 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
                 // The Unicode Private Use Area: the kitty protocol's
                 // functional keys.
                 0xe000..=0xf8ff => functional(first),
-                _ => char::from_u32(first).map(|c| Key::Char(typed(c, &kitty))),
+                // A control character's code names no key.
+                _ => char::from_u32(first)
+                    .map(|c| typed(c, &kitty))
+                    .filter(|c| !c.is_control())
+                    .map(Key::Char),
             };
             let stroke = key.map(|key| Keystroke {
                 press: KeyPress::new(key, mods),
@@ -1407,6 +1413,32 @@ mod tests {
         d.expire(t0 + REPLY_WINDOW + Duration::from_millis(50));
         d.bytes(rest, &mut out);
         assert_eq!(out, expected);
+    }
+
+    /// A key report whose code is a control character (`CSI u`, `CSI 1 ;
+    /// 5 u`, xterm's `CSI 27 ; 5 ; 1 ~`) is no key: a key name cannot say
+    /// it, so no binding could match it and nothing could name it back.
+    #[test]
+    fn a_key_report_of_a_control_character_is_no_key() {
+        for report in [&b"\x1b[u"[..], b"\x1b[1;5u", b"\x1b[0;5u", b"\x1b[27;5;1~"] {
+            assert_eq!(all(report), vec![], "{report:?}");
+        }
+        let pressed = |input: &Input| match input {
+            Input::Key(stroke) => Some(stroke.press),
+            _ => None,
+        };
+        let letter: Vec<_> = all(b"\x1b[97;5u").iter().map(pressed).collect();
+        assert_eq!(
+            letter,
+            vec![Some(KeyPress::new(
+                Key::Char('a'),
+                Modifiers {
+                    ctrl: true,
+                    ..Modifiers::NONE
+                }
+            ))],
+            "a letter's code"
+        );
     }
 
     /// An answer's string longer than any answer, split by a pause, waits
