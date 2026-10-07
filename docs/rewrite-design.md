@@ -122,8 +122,11 @@ Escape or an answer begun, the kill grace after a hangup, a typed line's
 next piece, a synchronized frame's release, the stop grace, and the rest
 after a refused connection. (Three, as first designed.)
 
-There are no threads, locks, channels or task pools, and nothing blocks the
-loop. The only blocking call is `fork`/`exec`, which is quick. The config file
+The loop has no threads, channels or task pools of its own, and nothing
+blocks it for long: starting a pane waits for its launcher to report
+(`process::launch`), and a stopping server waits a bounded time for its
+panes. (On macOS, opening a PTY can stall in the kernel; fuxix runs that one
+call beside a watchdog thread, `pty::watched`.) The config file
 is read once, bounded, at startup and on `fux reload`.
 
 **Lifetime.**
@@ -159,9 +162,9 @@ A pane owns:
   through the launcher in the `fux` binary (`process::launch`) with the slave
   as stdio, `TERM=xterm-256color`, `FUX_PANE=%N` and `FUX_SOCKET`. The
   launcher, a program of its own rather than a `pre_exec` hook (which needs
-  `unsafe`), calls `setsid`, takes the slave as its controlling terminal,
-  and resets the signal mask. std already restores SIGPIPE, and `exec` resets the
-  handlers signal-hook installed. A test checks that a pane's program starts
+  `unsafe`), calls `setsid` and takes the slave as its controlling terminal;
+  std's spawn of it clears the signal mask, and `exec` restores SIGPIPE and
+  the handlers signal-hook installed. A test checks that a pane's program starts
   with an empty mask and ignores no signal fux ignores (on Linux, where
   /proc shows dispositions). A disposition fux itself inherited as ignored
   passes on, as to any child: resetting every signal would need
@@ -357,8 +360,10 @@ Per client, on a 16 ms coalescing tick:
    full repaint. A slow client never grows the server and never stalls the
    loop.
 
-Pane titles (OSC 0/2) are shown in the bar, not passed to the outer terminal.
-Bells are not passed on either.
+Pane titles (OSC 0/2) are shown in the bar; with `set titles on`, the outer
+terminal's title follows the focused pane's. A pane's bell rings the outer
+terminal and marks its tab, unless `set bell off` (as first designed, neither
+was passed on).
 
 ### Menus and overlays
 
@@ -548,8 +553,9 @@ Key names, for `send-keys` and the prefix, are:
   `Space`, `BSpace`, `Up`, `Home`, `PageUp`, `F1`–`F12`, …;
 - plus any single character.
 
-The keys of `bind` and `unbind` are letters only, one or more, as they are
-typed after the prefix.
+The keys of `bind` and `unbind` are any keys, one or more, as they are typed
+after the prefix; `bind -n` binds one key with no prefix (as first designed,
+letters only).
 
 `keys.rs` defines the full list, and `fux list-keys` prints it.
 

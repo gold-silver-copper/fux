@@ -1,5 +1,6 @@
-//! The server: one thread, one `poll` loop over the listening socket, a
-//! signal pipe, every client and every pane's PTY.
+//! The server: one thread (but for fuxix's watchdog while a PTY opens on
+//! macOS), one `poll` loop over the listening socket, a signal pipe, every
+//! client and every pane's PTY.
 use crate::bytes::ByteQueue;
 use crate::command::ClientId;
 use crate::config::Config;
