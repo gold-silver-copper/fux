@@ -88,6 +88,9 @@ struct Conn {
     /// (`outer::TITLE_PUSH`) and have not restored it: restored before the
     /// `Exit`, as the client restores it after frames.
     title_saved: bool,
+    /// The size the client's view was last given: its terminal's, which
+    /// `serve_tty` looks at before the keys it reads.
+    size: (u16, u16),
 }
 
 impl Conn {
@@ -108,6 +111,7 @@ impl Conn {
             closing: false,
             dead: false,
             tty: None,
+            size: (0, 0),
             tty_out: ByteQueue::default(),
             passed: None,
             title_saved: false,
@@ -718,6 +722,21 @@ impl Server {
         if !flags.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
             return;
         }
+        // A terminal resized and then typed into: the keys come here, the
+        // size by the client's `Resize`, which may come after them. The
+        // size is read here first, so that a program sees the keys at the
+        // size they were typed at, as when both came by the client.
+        if let Some(tty) = &conn.tty
+            && let Some(client) = conn.client
+            && let Ok(size) = fuxix::terminal::window_size(tty)
+            && size.0 > 0
+            && size.1 > 0
+            && size != conn.size
+        {
+            conn.size = size;
+            conn.painted = false;
+            self.session.resize(client, size.0, size.1);
+        }
         let mut read = 0usize;
         let mut gone = false;
         while read < CONN_READ {
@@ -923,6 +942,7 @@ impl Server {
                 match self.session.attach(rows, cols, workspace.as_deref()) {
                     Ok(client) => {
                         conn.client = Some(client);
+                        conn.size = (rows, cols);
                         conn.next_paint = Instant::now();
                         // The client's terminal, if it sent it: taken, the
                         // client is told before anything is painted.
@@ -941,6 +961,7 @@ impl Server {
             }
             (Role::Attach, Frame::Resize { rows, cols }) => {
                 if let Some(client) = conn.client {
+                    conn.size = (rows, cols);
                     conn.painted = false;
                     self.session.resize(client, rows, cols);
                 }
