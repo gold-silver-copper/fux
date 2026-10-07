@@ -1,3 +1,4 @@
+use super::reflow::Lines;
 use super::*;
 use crate::test_rng::Rng;
 
