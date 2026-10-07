@@ -1,6 +1,9 @@
 //! Painting a client's screen: compose a grid of cells from its panes, the
 //! separators, the bar and any overlay; diff it against what the client has;
-//! send only the changed runs, inside synchronized output.
+//! send only the changed runs, inside synchronized output. A keystroke's
+//! echo, when it is all that changed, is written as a terminal shows it
+//! typed, without the synchronized envelope (`echo`). Every paint leaves
+//! the terminal's attributes at their default, which the next one assumes.
 use crate::command::ClientId;
 use crate::keys::KeyPress;
 use crate::layout::{Axis, PaneId, Placement, Rect, Separator};
@@ -623,7 +626,8 @@ pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
 
 /// Composes the client's screen as it should look now into `grid`, whatever
 /// it held, laying out its panes in `placement`; false if there is no such
-/// client. Neither allocates when used again.
+/// client. The grid's cells and the placement are reused, not made again;
+/// the frame's memo, the bar's text and the like are made each time.
 pub fn compose_into(
     session: &Session,
     client: ClientId,
@@ -1463,8 +1467,7 @@ fn one_based(n: u16) -> u32 {
     u32::from(n).saturating_add(1)
 }
 
-/// The bytes that turn `old` (what the client shows, or nothing) into `new`.
-/// Whether row `y` of two grids of one frame (see `paint_into`) is in the
+/// Whether row `y` of two grids of one frame (`Memo`) is in the
 /// pane area and has the same pane rows in both: then it shows the same
 /// cells.
 fn same_keys(a: &Grid, b: &Grid, y: u16) -> bool {
@@ -1510,6 +1513,7 @@ pub fn mouse_level(mode: fux_vt::MouseProtocolMode) -> u16 {
     }
 }
 
+/// The bytes that turn `old` (what the client shows, or nothing) into `new`.
 pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
     let mut out = Vec::new();
     paint_into(old, new, &mut out);
@@ -1542,10 +1546,11 @@ fn changed_rows_between<'a>(old: &'a Grid, new: &'a Grid) -> impl Iterator<Item 
 /// A keystroke's echo, painted as a terminal shows it typed: when all that
 /// changed is a run of glyphs of one column on the cursor's row, ending
 /// where the cursor now is, short of the last column, the cursor is moved
-/// to the run (by a carriage return or a column on its row) and the glyphs
-/// alone are written, in their attributes. Nothing else changes for the terminal: not the
-/// cursor's shape or visibility, the mouse, a link, a wide glyph. Whether
-/// it was so; if not, nothing is written.
+/// to the run (by nothing, a carriage return or a column if it is on the
+/// row, else by row and column) and the glyphs alone are written, in their
+/// attributes, from the default every paint leaves. Nothing else changes
+/// for the terminal: not the cursor's shape or visibility, the mouse, a
+/// link, a wide glyph. Whether it was so; if not, nothing is written.
 fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
     if (
         old.rows,
@@ -2048,8 +2053,6 @@ mod tests {
             .collect()
     }
 
-    /// At the widest a terminal can be, the last column is u16::MAX - 1:
-    /// one past it must stop a wide glyph, not overflow (in release, wrap).
     /// Copy mode's bar replaces the tabs with what it is doing and the keys
     /// that act now; a narrow bar drops the least important.
     #[test]
@@ -2263,6 +2266,8 @@ mod tests {
         Ok(())
     }
 
+    /// At the widest a terminal can be, the last column is u16::MAX - 1:
+    /// one past it must stop a wide glyph, not overflow (in release, wrap).
     #[test]
     fn a_wide_glyph_does_not_fit_the_widest_last_column() {
         let mut grid = Grid::new(1, u16::MAX);
@@ -2563,11 +2568,6 @@ mod tests {
         }
     }
 
-    /// A pane's hyperlinks reach the client: OSC 8 before the linked cells,
-    /// with an id made of the pane and the link's key, and an OSC 8 that
-    /// closes it after them. Two panes' links never share an id, though
-    /// each pane's first link has the same key; a terminal reading the
-    /// paint has each cell's link.
     /// A pane's colours are its own (`fux_vt::Options::palette`): a cell
     /// of an entry its program changed (OSC 4) is painted in the colour it
     /// set, and its default foreground and background in those it set (OSC
@@ -2655,6 +2655,11 @@ mod tests {
         Ok(())
     }
 
+    /// A pane's hyperlinks reach the client: OSC 8 before the linked cells,
+    /// with an id made of the pane and the link's key, and an OSC 8 that
+    /// closes it after them. Two panes' links never share an id, though
+    /// each pane's first link has the same key; a terminal reading the
+    /// paint has each cell's link.
     #[test]
     fn hyperlinks_are_painted_with_their_panes_ids() -> Result<(), Box<dyn std::error::Error>> {
         let mut s = Session::new(

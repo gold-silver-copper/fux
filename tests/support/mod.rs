@@ -24,8 +24,6 @@ static COUNT: AtomicUsize = AtomicUsize::new(0);
 /// another test's descriptors.
 static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// When a wait that starts now gives up. A time past what an `Instant`
-/// holds gives up at once.
 /// Where test servers make their directories: `/tmp` where it can be
 /// written, as a socket path must stay under 104 bytes and macOS's
 /// `temp_dir()` (`/var/folders/…/T/`) takes half of that; else `temp_dir()`.
@@ -40,6 +38,8 @@ pub fn short_temp_dir() -> Result<PathBuf, String> {
     base.canonicalize().map_err(e)
 }
 
+/// When a wait that starts now gives up. A time past what an `Instant`
+/// holds gives up at once.
 pub fn after(wait: Duration) -> Instant {
     let now = Instant::now();
     now.checked_add(wait).unwrap_or(now)
