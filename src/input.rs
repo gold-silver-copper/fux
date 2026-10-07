@@ -126,7 +126,7 @@ impl Session {
         let forwarded = matches!(view.mode, Mode::Normal)
             && view.notice.is_none()
             && press != self.config.prefix
-            && !self.config.root.iter().any(|b| b.keys == [press]);
+            && self.config.root_binding(press).is_none();
         if forwarded {
             overlay::send_key(self, client, stroke);
             return false;

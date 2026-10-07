@@ -752,7 +752,7 @@ pub fn repeat_key(session: &mut Session, client: ClientId, press: KeyPress) {
 /// Runs the binding without the prefix of `press`, if there is one, and
 /// says whether there was.
 pub fn run_root(session: &mut Session, client: ClientId, press: KeyPress) -> bool {
-    let Some(binding) = session.config.root.iter().find(|b| b.keys == [press]) else {
+    let Some(binding) = session.config.root_binding(press) else {
         return false;
     };
     let command = binding.parsed.clone();
