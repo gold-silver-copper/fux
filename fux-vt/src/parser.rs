@@ -607,8 +607,9 @@ pub struct Parser {
     /// The DECRQSS the DCS string being read is, with
     /// [`Options::setting_reports`]; `None` for any other string.
     request: Option<Request>,
-    /// Whether the last sequence dispatched set synchronized output, for
-    /// `Parser::process_until_frame`.
+    /// Whether the CSI just dispatched began a frame (set synchronized
+    /// output), for `Parser::process_until_frame`, which stops at once and
+    /// clears it.
     frame_begun: bool,
     state: State,
     params: Parameters,
@@ -762,25 +763,20 @@ impl Parser {
             {
                 remaining = remaining.get(length..).unwrap_or_default();
             } else if ground && byte == 0x1b {
-                // An `h` read with a frame begun stops the run (below), so
-                // until the next CSI clears it, an OSC string's bytes go
-                // through `byte`: only an XTRESTORE of synchronized output
-                // sets it and goes on.
-                let strings = !(UNTIL_FRAME && self.frame_begun);
-                let (length, ended) = self.sequence(remaining, strings, sink)?;
+                let (length, _) = self.sequence(remaining, true, sink)?;
                 remaining = remaining.get(length..).unwrap_or_default();
-                // As below: of the bytes `sequence` takes, only a final
-                // byte can be `h` (a string's are not taken with a frame
-                // begun).
-                if UNTIL_FRAME && ended == b'h' && self.frame_begun {
+                // A CSI that began a frame (BSU, or XTRESTORE of the mode)
+                // ends whatever `sequence` took: stop right after it.
+                if UNTIL_FRAME && self.frame_begun {
                     self.frame_begun = false;
                     return Ok(Some(bytes.len().saturating_sub(remaining.len())));
                 }
             } else {
                 self.byte(byte, sink)?;
                 remaining = tail;
-                // Every BSU ends in `h`: the byte in hand rules out the rest.
-                if UNTIL_FRAME && byte == b'h' && self.frame_begun {
+                // A frame is begun by a CSI, whose final byte this is:
+                // looked at first, as most bytes here are no final byte.
+                if UNTIL_FRAME && (0x40..=0x7e).contains(&byte) && self.frame_begun {
                     self.frame_begun = false;
                     return Ok(Some(bytes.len().saturating_sub(remaining.len())));
                 }

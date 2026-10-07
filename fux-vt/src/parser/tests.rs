@@ -343,9 +343,8 @@ fn scalar(
     parser.screen.begin()?;
     parser.frame_begun = false;
     for (i, &byte) in bytes.iter().enumerate() {
-        let printed = parser.state == State::Ground && parser.utf8_len == 0 && byte == b'h';
         parser.byte(byte, sink)?;
-        if until_frame && !printed && byte == b'h' && parser.frame_begun {
+        if until_frame && parser.frame_begun {
             parser.frame_begun = false;
             return Ok(Some(i.saturating_add(1)));
         }
