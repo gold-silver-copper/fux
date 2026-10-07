@@ -35,7 +35,6 @@ impl Errno {
     }
 
     /// The `errno` a call reported as its number rather than in `errno`.
-    #[cfg(any(target_os = "linux", target_os = "android", test))]
     pub(crate) const fn from_raw(raw: i32) -> Errno {
         Errno(raw)
     }

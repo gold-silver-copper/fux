@@ -631,7 +631,31 @@ impl Grid {
         else {
             return false;
         };
-        if dst.iter().any(|c| c.is_wide() || c.is_wide_continuation()) {
+        // One glyph, as at a cursor moved to it: the cell alone, without
+        // the set-up the loops below take for a run.
+        if let ([cell], [byte]) = (&mut *dst, run) {
+            if cell.is_wide() || cell.is_wide_continuation() {
+                return false;
+            }
+            if cell.is_ascii(*byte, style) {
+                return true;
+            }
+            *cell = Compact::ascii(*byte, style);
+            if let Some(m) = self.meta.get_mut(slot) {
+                let end = u16::try_from(start.saturating_add(1)).unwrap_or(m.width);
+                m.version = version;
+                m.used = m.used.max(end.min(m.width));
+            }
+            return true;
+        }
+        // A short run, a word between colours, cell by cell; a long one by the loops that move words,
+        // whose set-up a short one would not repay.
+        let halves = if run.len() < LONG_RUN {
+            dst.iter().any(|c| c.is_wide() || c.is_wide_continuation())
+        } else {
+            Compact::any_halves(dst)
+        };
+        if halves {
             return false;
         }
         // Already these very cells, as a redraw finds them: the row is as
@@ -640,8 +664,12 @@ impl Grid {
         if first.is_some_and(|(c, b)| c.is_ascii(*b, style)) && unchanged(dst, run, style) {
             return true;
         }
-        for (cell, byte) in dst.iter_mut().zip(run) {
-            *cell = Compact::ascii(*byte, style);
+        if run.len() < LONG_RUN {
+            for (cell, byte) in dst.iter_mut().zip(run) {
+                *cell = Compact::ascii(*byte, style);
+            }
+        } else {
+            Compact::fill_ascii(dst, run, style);
         }
         if let Some(m) = self.meta.get_mut(slot) {
             let end = u16::try_from(start.saturating_add(run.len())).unwrap_or(m.width);
@@ -2852,6 +2880,9 @@ fn forget(linked: &mut Linked, links: &mut Links, slot: usize) {
         links.release_all(&row);
     }
 }
+
+/// The run of ASCII from which `write_ascii` writes a word a cell.
+const LONG_RUN: usize = 8;
 
 /// Whether `cells` are already the ASCII `run` in style `style`. Kept out
 /// of line, so that the write that usually follows compiles as if it were

@@ -13,6 +13,11 @@
 //!   given every recording; after each read, the client's screen composed
 //!   (`render::compose_into`) and painted (`render::paint_into`) as the
 //!   server does. `paint/split`: the same into two panes side by side.
+//! - `session/keystroke`: a key typed at a client whose pane shows a full
+//!   screen, as the server takes it: decoded and given to the pane
+//!   (`Session::input`), the pane's echo read (`Session::output`), then the
+//!   client painted (`before_paint`, `compose_into`, `paint_into`): the
+//!   server's work for one keystroke, over and over.
 //! - `decode/legacy`, `decode/kitty`: fux's decoder of a client's
 //!   terminal (`fux::decode::Decoder`) on the keys typed in the recordings,
 //!   as a legacy terminal sends them and as a kitty-protocol terminal does
@@ -40,6 +45,8 @@ const RECORDING: usize = 4 << 20;
 const CORPUS: usize = 4 << 20;
 /// The keys typed in the recordings, over and over to this many bytes.
 const KEYS: usize = 1 << 20;
+/// Keystrokes through a session, this many.
+const KEYSTROKES: usize = 20_000;
 /// Keys encoded, over and over to this many.
 const STROKES: usize = 1 << 20;
 /// What fux keeps of a pane's history by default.
@@ -101,6 +108,12 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
             CORPUS >> 20
         ),
     ));
+    out.push(spec(
+        "session/keystroke".into(),
+        format!(
+            "{KEYSTROKES} keys typed at a client, each echoed by its pane and painted, at 40x120"
+        ),
+    ));
     for (name, about) in [
         (
             "decode/legacy",
@@ -156,6 +169,7 @@ fn run_shrunk(name: &str, dir: &Path, baseline: bool, shrink: usize) -> Result<D
     match name {
         "paint/corpus" => paint(&recordings, false, baseline, size(CORPUS)),
         "paint/split" => paint(&recordings, true, baseline, size(CORPUS)),
+        "session/keystroke" => keystroke(&recordings, baseline, size(KEYSTROKES)),
         "decode/legacy" => decode(&keys(&recordings, None), baseline, size(KEYS)),
         "decode/kitty" => decode(&keys(&recordings, Some(KITTY_CLIENT)), baseline, size(KEYS)),
         "encode/legacy" => encode(
@@ -336,6 +350,75 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
 
 /// Every recording in turn to the client of a session, as the server would
 /// give it, composed and painted after each read unless `baseline`.
+/// `session/keystroke`: a session whose client shows one 40x120 pane full
+/// of a recording's last screen; then `keys` keys typed at it, each given
+/// to the pane, the pane's echo of it read, and the client painted, as the
+/// server does for a keystroke. The baseline types nothing and paints
+/// nothing: the run is the server's whole work for the keys.
+fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Done, String> {
+    use fux::layout::PaneId;
+    let config = fux::config::Config {
+        history_lines: HISTORY,
+        ..fux::config::Config::default()
+    };
+    let mut s = fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false);
+    s.start().map_err(|e| e.to_string())?;
+    let c = s.attach(41, 120, None).map_err(|e| e.to_string())?;
+    // A full screen, as a pane at work shows: the recordings' output.
+    for r in recordings.iter().take(8) {
+        for (_, output) in &r.steps {
+            s.output(PaneId(1), output);
+        }
+    }
+    s.settle_if_needed();
+    let mut shown = fux::render::Grid::new(0, 0);
+    let mut spare = fux::render::Grid::new(0, 0);
+    let mut placement = fux::layout::Placement::default();
+    let mut buffer = Vec::new();
+    let mut have = false;
+    let (mut painted, mut frames) = (0usize, 0usize);
+    let mut echo = [0u8; 4];
+    for i in 0..keys {
+        if baseline {
+            black_box(i);
+            continue;
+        }
+        let key = b'a'.saturating_add(u8::try_from(i % 26).unwrap_or(0));
+        s.input(c, &[key]);
+        // What the PTY would carry to the program, and its echo back.
+        let typed = s
+            .panes
+            .get_mut(&PaneId(1))
+            .map(|p| p.input.drain_all())
+            .unwrap_or_default();
+        black_box(&typed);
+        let glyph = char::from(key).encode_utf8(&mut echo);
+        s.output(PaneId(1), glyph.as_bytes());
+        s.settle_if_needed();
+        buffer.clear();
+        buffer.extend_from_slice(&s.before_paint(c));
+        if let Some(view) = s.views.get_mut(&c) {
+            view.dirty = false;
+        }
+        if !fux::render::compose_into(&s, c, &mut spare, &mut placement) {
+            continue;
+        }
+        // Every key changes the screen: painted without asking whether it
+        // did, as `paint_into` finds what changed.
+        fux::render::paint_into(have.then_some(&shown), &spare, &mut buffer);
+        painted = painted.saturating_add(buffer.len());
+        frames = frames.saturating_add(1);
+        black_box(&buffer);
+        std::mem::swap(&mut shown, &mut spare);
+        have = true;
+    }
+    Ok(Done {
+        units: keys,
+        frames,
+        painted,
+    })
+}
+
 fn paint(
     recordings: &[Recording],
     split: bool,

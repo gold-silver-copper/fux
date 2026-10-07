@@ -2467,11 +2467,24 @@ mod tests {
             (outcome.status == 0).then_some(()).ok_or(outcome.stderr)
         };
         clean(&mut s);
+        // Keys for the pane's program show when it answers: its output
+        // marks every screen showing the pane.
         s.input(one, b"ls");
         assert!(
-            dirty(&s, one) && !dirty(&s, two),
-            "typing repaints the typist alone"
+            !dirty(&s, one) && !dirty(&s, two),
+            "typing into a pane repaints no one until the pane answers"
         );
+        s.output(crate::layout::PaneId(1), b"ls");
+        assert!(dirty(&s, one) && dirty(&s, two), "its echo repaints both");
+        clean(&mut s);
+        // A key that changes the typist's own screen repaints it alone.
+        s.input(one, b"\x02");
+        assert!(
+            dirty(&s, one) && !dirty(&s, two),
+            "the prefix repaints the typist alone"
+        );
+        s.input(one, b"\x1b");
+        s.escape(one);
         clean(&mut s);
         for line in ["ls", "capture-pane -t %1", "list-keys", "send-keys -t %1 x"] {
             run(&mut s, line)?;

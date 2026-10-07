@@ -369,7 +369,8 @@ impl Client {
                 | Frame::Command { .. }
                 | Frame::Stdout(_)
                 | Frame::Stderr(_)
-                | Frame::Done { .. } => {}
+                | Frame::Done { .. }
+                | Frame::Terminal { .. } => {}
             }
         }
         Ok(())
