@@ -151,7 +151,11 @@ impl Copy {
     /// Finds the rows it holds, once each.
     pub fn resolve(&self, screen: &Screen) -> Resolved {
         let at = |(id, col): (RowId, u16)| Some((index_of(screen, id)?, col));
-        let top = index_of(screen, self.top);
+        // The view's top row, as the window can show it: no lower than
+        // the end of history, which rows pulled back out of it, as a pane
+        // grows, can leave behind it. The cursor and the selection are
+        // placed from this top, as the window is.
+        let top = index_of(screen, self.top).map(|top| top.min(screen.history_len()));
         let cursor = at(self.cursor);
         let anchor = self.selection.and_then(|(_, anchor)| at(anchor));
         let ends = self
@@ -991,6 +995,42 @@ mod tests {
         s.input(c, b"]]");
         let history = first.history_len();
         assert_eq!(at(&s), Some((15, 0, history)));
+        Ok(())
+    }
+
+    /// After the pane grows, pulling rows back out of history, the view's
+    /// top is past what history holds: the cursor and the selection are
+    /// drawn on the rows the window shows from there, the ones `y` copies.
+    #[test]
+    fn the_view_after_rows_leave_history_shows_the_cursor_where_it_is() -> Result<(), String> {
+        let mut text = Vec::new();
+        for n in 0..60 {
+            text.extend_from_slice(format!("line {n}\r\n").as_bytes());
+        }
+        let mut p = screen(&text, 11, 20)?;
+        let history = p.screen().history_len();
+        let id = |s: &Screen, i| row_at(s, i).map(|r| r.id()).ok_or("no row");
+        let cursor = history.saturating_add(8);
+        let copy = Copy {
+            pane: PaneId(1),
+            top: id(p.screen(), history.saturating_sub(2))?,
+            cursor: (id(p.screen(), cursor)?, 0),
+            selection: Some((Select::Line, (id(p.screen(), cursor)?, 0))),
+            search: None,
+            typing: None,
+            held_at: None,
+        };
+        p.resize(21, 20).map_err(|e| e.to_string())?;
+        let s = p.screen();
+        let r = copy.resolve(s);
+        let shown_top = s.history_len().saturating_sub(r.offset(s));
+        let (y, _) = r.cursor_in_view(21).ok_or("cursor not in view")?;
+        let cursor_now = index_of(s, copy.cursor.0).ok_or("cursor gone")?;
+        assert_eq!(shown_top.saturating_add(usize::from(y)), cursor_now);
+        assert!(
+            r.selected(y, 0),
+            "the selection is drawn on the cursor's row"
+        );
         Ok(())
     }
 
