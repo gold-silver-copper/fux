@@ -1749,9 +1749,6 @@ impl Screen {
             b'8' => self.restore(),
             b'=' => self.application_keypad = true,
             b'>' => self.application_keypad = false,
-            // ST (ECMA-48 8.3.143): it ended the string before it, which
-            // the parser has dispatched, or ends nothing. Done either way.
-            b'\\' => {}
             // IND (DEC STD 070; xterm's ctlseqs): a line feed, scrolling
             // at the bottom margin.
             b'D' => self.linefeed()?,
@@ -1842,7 +1839,9 @@ impl Screen {
                 }
                 self.structural = self.version;
             }
-            _ => return Ok(false),
+            // ST (ECMA-48 8.3.143) is done too: it ended the string before
+            // it, which the parser has dispatched, or ends nothing.
+            _ => return Ok(byte == b'\\'),
         }
         Ok(true)
     }
