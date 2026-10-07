@@ -143,7 +143,6 @@ fn a_one_byte_cell_reads_its_ascii_character() {
     assert_eq!(CellRef::new(&Cell::default(), &spill).contents(), "");
 }
 
-
 /// `range_eq` is `range(..).eq(range(..))`, faster: on two rows of cells
 /// edited at random, every way cells are written (text short and long,
 /// wide halves, attributes, fills, whole cells, copies from the other

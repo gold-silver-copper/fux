@@ -44,17 +44,6 @@ fn probe(server: &Server, query: &str, until: &str) -> Outcome {
 const GHOSTTY_ANSWERS: &[u8] = b"\x1b[?2031;2$y\x1b]10;rgb:ffff/ffff/ffff\x1b\\\
     \x1b]11;rgb:1e1e/1e1e/2020\x1b\\\x1b[?62;22;52c";
 
-fn painted(client: &Client) -> String {
-    String::from_utf8_lossy(&client.painted).into_owned()
-}
-
-fn wait_painted(client: &mut Client, what: &str, count: usize) -> Outcome {
-    eventually(&format!("{count} of {what:?} painted"), || {
-        client.pump()?;
-        Ok(painted(client).matches(what).count() >= count)
-    })
-}
-
 #[test]
 fn a_panes_colour_query_gets_the_client_terminals_colours() -> Outcome {
     let server = Server::start("")?;

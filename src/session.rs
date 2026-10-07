@@ -2337,7 +2337,9 @@ pub(crate) mod testing {
     pub(crate) fn attached(rows: u16, cols: u16) -> Result<(Session, ClientId), String> {
         let mut session = Session::new(Config::default(), "/nonexistent/fux.sock".into(), false);
         session.start().map_err(|e| e.to_string())?;
-        let client = session.attach(rows, cols, None).map_err(|e| e.to_string())?;
+        let client = session
+            .attach(rows, cols, None)
+            .map_err(|e| e.to_string())?;
         Ok((session, client))
     }
 

@@ -1,6 +1,6 @@
 use super::*;
-use crate::test_rng::Rng;
 use crate::Attributes;
+use crate::test_rng::Rng;
 
 /// The texts of a row's cells, joined by bars.
 fn texts(line: &Line<'_>) -> String {
@@ -159,7 +159,6 @@ fn a_row_out_of_room_compacts_then_cuts_to_what_a_cell_holds_inline() {
         assert_eq!(line.text(n % 2), short);
     }
 }
-
 
 /// A row of grid cells keeps and cuts its clusters as a row of [`Cell`]s
 /// does, and keeps as much long text: random clusters of every length,

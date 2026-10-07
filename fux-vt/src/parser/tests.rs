@@ -142,7 +142,6 @@ fn ascii_run_path_equals_scalar_dispatch_around_grapheme_clusters() -> Result<()
     Ok(())
 }
 
-
 /// The final bytes of the CSIs programs send most, and of some they do
 /// not, with modes and queries among them.
 const FINALS: &[u8] = b"HABCDEFGJKdfmrsuhlbXLMPST@`aenctqpgxyzIZ~";

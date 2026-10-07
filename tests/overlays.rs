@@ -10,19 +10,6 @@ const DOWN: &str = "\x1b[B";
 /// that clears them.
 const CLEAR: &str = "\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f";
 
-fn focused(server: &Server) -> Result<String, String> {
-    let ls = server.ok(&["ls"])?;
-    let client = ls
-        .lines()
-        .find(|l| l.starts_with("client c1"))
-        .ok_or("no client")?;
-    Ok(client
-        .split_whitespace()
-        .last()
-        .unwrap_or_default()
-        .to_owned())
-}
-
 fn panes(server: &Server) -> Result<Vec<String>, String> {
     Ok(server
         .ok(&["ls"])?

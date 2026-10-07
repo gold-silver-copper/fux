@@ -14,8 +14,12 @@ fn heap(grid: &Grid) -> [usize; 4] {
         grid.history.heap(),
     ]
 }
+/// A full history's storage, metadata included, stops growing: as much
+/// after 20,000 scrolls as after 10,000. The peak a resize reaches, with
+/// both screens' replacements built before either is assigned, is printed
+/// (`MEMORY-BOUNDS`), not asserted.
 #[test]
-fn measured_storage_plateau_and_transactional_resize_peak_include_metadata() -> Result<(), Error> {
+fn storage_with_history_full_stops_growing_and_the_resize_peak_is_printed() -> Result<(), Error> {
     let mut next = 0;
     let mut primary = Grid::new(24, 80, 10_000, &mut next, 0)?;
     let alternate = Grid::new(24, 80, 0, &mut next, 0)?;
@@ -198,7 +202,6 @@ impl Grid {
             .collect()
     }
 }
-
 
 /// Output leaving what a reflow keeps or moves: text, wide glyphs, clusters
 /// too long to hold inline, soft wraps, blank and coloured tails, erased

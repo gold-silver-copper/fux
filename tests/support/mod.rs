@@ -24,6 +24,12 @@ static COUNT: AtomicUsize = AtomicUsize::new(0);
 /// another test's descriptors.
 static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Holds the lock every server start takes (`SPAWN`), for a test that
+/// starts one of its own, until the guard is dropped.
+pub fn spawning() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    SPAWN.lock().map_err(e)
+}
+
 /// Where test servers make their directories: `/tmp` where it can be
 /// written, as a socket path must stay under 104 bytes and macOS's
 /// `temp_dir()` (`/var/folders/…/T/`) takes half of that; else `temp_dir()`.
@@ -758,4 +764,31 @@ impl Drop for Terminal {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// The pane client c1 has in focus, as `fux ls` says.
+pub fn focused(server: &Server) -> Result<String, String> {
+    let ls = server.ok(&["ls"])?;
+    let client = ls
+        .lines()
+        .find(|l| l.starts_with("client c1"))
+        .ok_or("no client")?;
+    Ok(client
+        .split_whitespace()
+        .last()
+        .unwrap_or_default()
+        .to_owned())
+}
+
+/// What a client was painted, as text.
+pub fn painted(client: &Client) -> String {
+    String::from_utf8_lossy(&client.painted).into_owned()
+}
+
+/// Waits until `what` was painted `count` times.
+pub fn wait_painted(client: &mut Client, what: &str, count: usize) -> Outcome {
+    eventually(&format!("{count} of {what:?} painted"), || {
+        client.pump()?;
+        Ok(painted(client).matches(what).count() >= count)
+    })
 }
