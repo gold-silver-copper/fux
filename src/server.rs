@@ -1287,7 +1287,10 @@ mod tests {
                 exit = Some(reason);
             }
         }
-        assert!(painted.ends_with(crate::outer::TITLE_POP), "the title's restore");
+        assert!(
+            painted.ends_with(crate::outer::TITLE_POP),
+            "the title's restore"
+        );
         assert_eq!(exit.as_deref(), Some("detached"));
         Ok(())
     }
