@@ -763,15 +763,16 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
             });
         }
         "reorder" => {
-            let f = a.flags("-t --next --previous", parse_any)?;
-            let target = f.target;
-            let kind = match a.positional.pop() {
-                Some(k) => parse_kind(k).ok_or_else(|| a.not_kind(k))?,
-                None => target
-                    .as_ref()
-                    .map(AnyRef::kind)
-                    .ok_or(Usage::ReorderKind)?,
+            let f = a.flags("-t --next --previous", Ok)?;
+            let target = f.target.map(parse_any).transpose()?;
+            let given = match a.positional.pop() {
+                Some(k) => Some(parse_kind(k).ok_or_else(|| a.not_kind(k))?),
+                None => None,
             };
+            same_kind(given, f.target.zip(target.as_ref()))?;
+            let kind = given
+                .or(target.as_ref().map(AnyRef::kind))
+                .ok_or(Usage::ReorderKind)?;
             let toward = match f.pick {
                 Some("--next") => Sibling::Next,
                 Some(_) => Sibling::Previous,
@@ -850,6 +851,7 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
             };
             a.no_positional()?;
             let any = target.map(parse_any).transpose()?;
+            same_kind(kind, target.zip(any.as_ref()))?;
             // Given, or the target's; a pane's by default, but for a menu.
             let kind = kind.or(any.as_ref().map(AnyRef::kind));
             let moving_now = f.moving;
@@ -921,6 +923,20 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
         });
     }
     Ok(command)
+}
+
+/// A kind given beside a target, `text` as given, of another kind: refused,
+/// in the words a target of the wrong kind gets, rather than one of the
+/// two silently winning.
+fn same_kind(kind: Option<Kind>, target: Option<(&str, &AnyRef)>) -> Result<(), Usage> {
+    match (kind, target) {
+        (Some(kind), Some((text, any))) if any.kind() != kind => Err(match kind {
+            Kind::Pane => Usage::NotPane(text.to_owned()),
+            Kind::Tab => Usage::NotTab(text.to_owned()),
+            Kind::Workspace => Usage::NotWorkspace(text.to_owned()),
+        }),
+        _ => Ok(()),
+    }
 }
 
 /// A short description of a command line, for the command column and menus.
@@ -1106,6 +1122,11 @@ mod tests {
             "new-tab -t %1",
             // Commands that take nothing take nothing.
             "kill-server now",
+            // A kind beside a target of another kind.
+            "rename-prompt -c c1 tab -t %1",
+            "menu -c c1 tab -t +1",
+            "confirm-close -c c1 workspace -t @2",
+            "reorder workspace -t %1 --next",
             "list-keys --bogus",
             "unbind-all --nope",
             "reload extra words",
