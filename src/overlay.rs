@@ -1077,6 +1077,21 @@ mod tests {
     /// Like the keys after the prefix and copy mode's, a chooser's and a
     /// confirmation's letter keys work in either case: Caps Lock changes
     /// nothing.
+    /// On a screen too short for a list's lines, the selected entry stays
+    /// in view: the lines around it give way first.
+    #[test]
+    fn a_short_screen_keeps_the_selected_entry_in_view() -> Outcome {
+        let (mut s, c) = crate::session::testing::attached(3, 40)?;
+        for _ in 0..3 {
+            run(&mut s, "new-tab -t +1")?;
+        }
+        run(&mut s, "choose-tab -c c1")?;
+        s.input(c, b"\x1b[H");
+        let shown = screen_text(&s, c)?;
+        assert!(shown.contains("@1 main"), "{shown}");
+        Ok(())
+    }
+
     #[test]
     fn list_and_confirm_keys_ignore_case() -> Outcome {
         let (mut s, c) = session()?;
