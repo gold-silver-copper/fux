@@ -2324,6 +2324,35 @@ pub fn row_text(row: fux_vt::Row<'_>) -> String {
     line.trim_end_matches(' ').to_owned()
 }
 
+/// What the other modules' tests share: a session started with the default
+/// config, a client attached, and a command line run in it.
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::{Ctx, Session};
+    use crate::command::ClientId;
+    use crate::config::Config;
+
+    /// A session started with the default config, and a client of `rows`
+    /// by `cols` attached.
+    pub(crate) fn attached(rows: u16, cols: u16) -> Result<(Session, ClientId), String> {
+        let mut session = Session::new(Config::default(), "/nonexistent/fux.sock".into(), false);
+        session.start().map_err(|e| e.to_string())?;
+        let client = session.attach(rows, cols, None).map_err(|e| e.to_string())?;
+        Ok((session, client))
+    }
+
+    /// Runs `line` as a command from no client; its error, if it fails.
+    pub(crate) fn run(session: &mut Session, line: &str) -> Result<(), String> {
+        let words = crate::words::split(line).map_err(|e| e.to_string())?;
+        let outcome = session.run(&words, &Ctx::default());
+        if outcome.status == 0 {
+            Ok(())
+        } else {
+            Err(outcome.stderr)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

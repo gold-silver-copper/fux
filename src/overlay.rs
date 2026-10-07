@@ -992,21 +992,10 @@ mod tests {
     type Outcome = Result<(), String>;
 
     /// A session without processes, one client attached.
-    fn session() -> Result<(Session, ClientId), String> {
-        let mut session = Session::new(Config::default(), "/nonexistent/fux.sock".into(), false);
-        session.start().map_err(|e| e.to_string())?;
-        let client = session.attach(30, 100, None).map_err(|e| e.to_string())?;
-        Ok((session, client))
-    }
+    use crate::session::testing::run;
 
-    fn run(session: &mut Session, line: &str) -> Outcome {
-        let words = crate::words::split(line).map_err(|e| e.to_string())?;
-        let outcome = session.run(&words, &Ctx::default());
-        if outcome.status == 0 {
-            Ok(())
-        } else {
-            Err(outcome.stderr)
-        }
+    fn session() -> Result<(Session, ClientId), String> {
+        crate::session::testing::attached(30, 100)
     }
 
     fn mode(session: &Session, client: ClientId) -> String {
@@ -1943,9 +1932,7 @@ mod tests {
         assert_eq!(mode(&s, c), "prompt |0");
         s.input(c, b"\x1b[200~one\ntwo\x1b[201~");
         assert_eq!(mode(&s, c), "prompt one|3");
-        s.input(c, b"\x1b");
-        std::thread::sleep(crate::decode::ESCAPE_DELAY);
-        s.escape(c);
+        escape(&mut s, c);
         assert_eq!(mode(&s, c), "normal");
         Ok(())
     }

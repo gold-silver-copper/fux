@@ -456,26 +456,13 @@ fn clean(title: &str) -> impl Iterator<Item = char> + '_ {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
-    use crate::session::Ctx;
 
     type Outcome = Result<(), String>;
 
-    fn session() -> Result<(Session, ClientId), String> {
-        let mut s = Session::new(Config::default(), "/nonexistent/fux.sock".into(), false);
-        s.start().map_err(|e| e.to_string())?;
-        let c = s.attach(10, 40, None).map_err(|e| e.to_string())?;
-        Ok((s, c))
-    }
+    use crate::session::testing::run;
 
-    fn run(s: &mut Session, line: &str) -> Outcome {
-        let words = crate::words::split(line).map_err(|e| e.to_string())?;
-        let out = s.run(&words, &Ctx::default());
-        if out.status == 0 {
-            Ok(())
-        } else {
-            Err(out.stderr)
-        }
+    fn session() -> Result<(Session, ClientId), String> {
+        crate::session::testing::attached(10, 40)
     }
 
     /// What pane `pane`'s program was answered, taken.
