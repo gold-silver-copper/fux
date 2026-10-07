@@ -701,6 +701,20 @@ fn sgr_mouse(params: &[u8], last: u8) -> Option<MouseEvent> {
 }
 
 /// A CSI sequence: `ESC [ params final`. Too long a sequence is dropped.
+/// A `CSI ?` answer longer than any answer, `body` its bytes after `ESC [`:
+/// dropped through its final byte once that is here, as an over-long OSC
+/// or DCS answer is dropped to its end; held until then, up to
+/// `DCS_LIMIT` bytes, past which (or at a timeout) what is held is dropped.
+#[cold]
+#[inline(never)]
+fn long_answer(body: &[u8], flush: bool) -> Step {
+    match body.iter().position(|b| (0x40..=0x7e).contains(b)) {
+        Some(end) => Step::Done(end.saturating_add(3), None),
+        None if flush || body.len() > DCS_LIMIT => Step::Done(body.len().saturating_add(2), None),
+        None => Step::Incomplete,
+    }
+}
+
 fn csi(bytes: &[u8], flush: bool) -> Step {
     let body = bytes.get(2..).unwrap_or_default();
     // A mouse report in the default encoding: `ESC [ M` and three raw
@@ -722,8 +736,12 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     let window = body.get(..=limit).unwrap_or(body);
     let Some(end) = window.iter().position(|b| (0x40..=0x7e).contains(b)) else {
         if window.len() > limit {
-            // Not a sequence fux can use: garbage.
-            return Step::Done(window.len().saturating_add(2), None);
+            return if answer {
+                long_answer(body, flush)
+            } else {
+                // Not a sequence fux can use: garbage.
+                Step::Done(window.len().saturating_add(2), None)
+            };
         }
         if !flush {
             return Step::Incomplete;
@@ -1323,6 +1341,16 @@ mod tests {
         assert_eq!(all(b"\x1bOx"), vec![key("M-O"), key("x")]);
         assert_eq!(all(b"\x1bO\x1b[A"), vec![key("M-O"), key("Up")]);
         assert_eq!(all(b"\x1bOA"), vec![key("Up")], "a key SS3 names");
+    }
+
+    /// A `CSI ?` answer longer than any answer is dropped through its
+    /// final byte, as an over-long OSC or DCS answer is: none of it typed.
+    #[test]
+    fn an_over_long_csi_answer_is_dropped_through_its_final_byte() {
+        let mut long = b"\x1b[?".to_vec();
+        long.extend(std::iter::repeat_n(b'1', 70));
+        long.extend_from_slice(b"ck");
+        assert_eq!(all(&long), vec![key("k")]);
     }
 
     /// An answer's string longer than any answer, split by a pause, waits
