@@ -549,3 +549,38 @@ fn alternate_screen_shrink_discards_rows_above_the_cursor() -> Result {
     assert_eq!(p.screen().history_len(), 0);
     Ok(())
 }
+
+/// CUU, CUD, CPL and CNL stop at the margin they come to: up at the top
+/// margin from anywhere at or below it, down at the bottom margin from
+/// anywhere at or above it, else at the screen's edge (xterm's
+/// `CursorUp` and `CursorDown`; DEC STD 070). Each case replayed in xterm
+/// and Ghostty (`fux-vt-compare replay --engines xterm,ghostty --size 5x5
+/// 'BYTES'`): both put the cursor where the case does.
+#[test]
+fn vertical_moves_stop_at_the_margin_they_come_to() -> Result {
+    for (bytes, row) in [
+        // Up from below the region: at its top margin.
+        (&b"\x1b[2;3r\x1b[5;1H\x1b[9A"[..], 1),
+        // Down from above the region: at its bottom margin.
+        (b"\x1b[3;4r\x1b[1;1H\x1b[9B", 3),
+        // CPL and CNL alike.
+        (b"\x1b[2;3r\x1b[5;3H\x1b[9F", 1),
+        (b"\x1b[2;3r\x1b[1;3H\x1b[9E", 2),
+        // Up from above the region, down from below it: the screen's edge.
+        (b"\x1b[3;4r\x1b[2;1H\x1b[9A", 0),
+        (b"\x1b[2;3r\x1b[4;1H\x1b[9B", 4),
+        // Within the region: its margins.
+        (b"\x1b[2;4r\x1b[3;1H\x1b[9A", 1),
+        (b"\x1b[2;4r\x1b[3;1H\x1b[9B", 3),
+    ] {
+        let mut p = Parser::new(5, 5, 0)?;
+        p.process(bytes)?;
+        assert_eq!(
+            p.screen().cursor_position().0,
+            row,
+            "{}",
+            String::from_utf8_lossy(bytes)
+        );
+    }
+    Ok(())
+}

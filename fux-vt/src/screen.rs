@@ -2621,19 +2621,19 @@ impl Screen {
             self.grid_mut().pending_wrap = false;
         }
         match byte {
-            // CUU, CUD, CNL and CPL; CNL and CPL go to the column CR goes
-            // to, the left margin (xterm's `CursorNextLine`).
+            // CUU, CUD, CNL and CPL, each stopping at the margin it comes
+            // to: up at the top margin from at or below it, down at the
+            // bottom margin from at or above it, else at the screen's edge
+            // (xterm's `CursorUp` and `CursorDown`). CNL and CPL go to the
+            // column CR goes to, the left margin (xterm's `CursorNextLine`).
             b'A' | b'B' | b'E' | b'F' => {
                 let g = self.grid_mut();
-                let (top, bottom) = if g.in_region() {
-                    (g.top, g.bottom)
-                } else {
-                    (0, g.rows.last())
-                };
                 g.cursor.0 = if matches!(byte, b'A' | b'F') {
-                    row.saturating_sub(n).max(top)
+                    let stop = if row >= g.top { g.top } else { 0 };
+                    row.saturating_sub(n).max(stop)
                 } else {
-                    row.saturating_add(n).min(bottom)
+                    let stop = if row <= g.bottom { g.bottom } else { g.rows.last() };
+                    row.saturating_add(n).min(stop)
                 };
                 if matches!(byte, b'E' | b'F') {
                     g.cursor.1 = g.carriage_column();
