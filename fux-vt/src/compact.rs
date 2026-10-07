@@ -98,6 +98,26 @@ impl Compact {
             word: style & (STYLE | PROTECTED),
         }
     }
+    /// Cells `cells` set to the glyphs of `run`, ASCII, in style `style`, as
+    /// [`Compact::ascii`] makes each: each cell one 64-bit value, the glyph's
+    /// byte low and the style high, which a run of them stores as fast as
+    /// the machine moves words.
+    pub(crate) fn fill_ascii(cells: &mut [Compact], run: &[u8], style: u32) {
+        let high = u64::from(style & (STYLE | PROTECTED)) << 32;
+        for (cell, &byte) in cells.iter_mut().zip(run) {
+            let bits = high | u64::from(byte);
+            // Exact: the low half is the byte, the high half the word.
+            *cell = Compact {
+                text: u32::try_from(bits & 0xffff_ffff).unwrap_or(0).to_le_bytes(),
+                word: u32::try_from(bits >> 32).unwrap_or(0),
+            };
+        }
+    }
+    /// Whether any of `cells` is either half of a wide glyph: their words
+    /// or'd together, which a run of them does without a branch a cell.
+    pub(crate) fn any_halves(cells: &[Compact]) -> bool {
+        cells.iter().fold(0, |any, cell| any | cell.word) & HALVES != 0
+    }
     /// The second half of a wide glyph: no text, the default style.
     pub(crate) fn continuation() -> Self {
         Self {

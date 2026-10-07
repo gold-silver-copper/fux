@@ -105,6 +105,25 @@ pub const COLOUR_QUERIES: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\
 pub const TITLE_PUSH: &[u8] = b"\x1b[22;0t";
 /// Restores the title [`TITLE_PUSH`] saved.
 pub const TITLE_POP: &[u8] = b"\x1b[23;0t";
+
+/// Whether a paint leaves the terminal's title saved: `Some(true)` if its
+/// last [`TITLE_PUSH`] or [`TITLE_POP`] is a push, `Some(false)` if a pop,
+/// `None` if it has neither. One pass from the end, stopping at escapes
+/// alone: a paint is mostly text, and every paint is looked at.
+pub fn title_saved_by(paint: &[u8]) -> Option<bool> {
+    let mut end = paint.len();
+    while let Some(at) = paint.get(..end)?.iter().rposition(|&b| b == 0x1b) {
+        let rest = paint.get(at..)?;
+        if rest.starts_with(TITLE_PUSH) {
+            return Some(true);
+        }
+        if rest.starts_with(TITLE_POP) {
+            return Some(false);
+        }
+        end = at;
+    }
+    None
+}
 /// The bell, as a client's terminal is rung.
 pub const BELL: &[u8] = b"\x07";
 /// The least time between two bells sent to one terminal, so that a
@@ -375,7 +394,16 @@ impl Session {
             return out;
         };
         let tab = view.tab();
-        let wanted = self.config.titles.then(|| self.title_of(view));
+        // The title, made only when it is not the one the terminal has:
+        // `Some(None)` for the same.
+        let wanted = self.config.titles.then(|| {
+            let title = self.title_of(view);
+            let same = view
+                .title
+                .as_deref()
+                .is_some_and(|shown| shown.chars().eq(clean(title)));
+            (!same).then(|| clean(title).collect::<String>())
+        });
         let Some(view) = self.views.get_mut(&client) else {
             return out;
         };
@@ -383,7 +411,7 @@ impl Session {
             view.bells.remove(&tab);
         }
         match wanted {
-            Some(title) if view.title.as_ref() != Some(&title) => {
+            Some(Some(title)) => {
                 if !view.title_pushed {
                     out.extend_from_slice(TITLE_PUSH);
                     view.title_pushed = true;
@@ -398,14 +426,14 @@ impl Session {
                 view.title_pushed = false;
                 view.title = None;
             }
-            Some(_) | None => {}
+            Some(None) | None => {}
         }
         out
     }
 
     /// The title a view's terminal is given: its focused pane's, else its
-    /// tab's name, without control characters.
-    fn title_of(&self, view: &View) -> String {
+    /// tab's name, without control characters (`clean`).
+    fn title_of<'a>(&'a self, view: &View) -> &'a str {
         let pane = view
             .focus()
             .and_then(|f| self.panes.get(&f))
@@ -415,12 +443,13 @@ impl Session {
             .tab()
             .and_then(|t| self.tab(t))
             .map(|t| t.name.as_str());
-        pane.or(tab)
-            .unwrap_or_default()
-            .chars()
-            .filter(|c| !c.is_control())
-            .collect()
+        pane.or(tab).unwrap_or_default()
     }
+}
+
+/// A title without its control characters, as a terminal is given it.
+fn clean(title: &str) -> impl Iterator<Item = char> + '_ {
+    title.chars().filter(|c| !c.is_control())
 }
 
 #[cfg(test)]
@@ -640,6 +669,47 @@ mod tests {
         assert!(at(COLOUR_QUERIES, PALETTE_QUERIES).is_some());
         assert!(COLOUR_QUERIES.ends_with(b"\x1b[c"));
         assert!(STYLES.ends_with(b"\x1b[0m"));
+    }
+
+    /// `title_saved_by` decides as the later of a search for each from the
+    /// end did, which it replaced: over every paint of up to four pieces,
+    /// the sequences, their beginnings, a lone escape and text.
+    #[test]
+    fn the_last_title_push_or_pop_decides() {
+        let last = |paint: &[u8], needle: &[u8]| {
+            (0..paint.len())
+                .rev()
+                .find(|&at| paint.get(at..).is_some_and(|rest| rest.starts_with(needle)))
+        };
+        let pieces: [&[u8]; 7] = [
+            TITLE_PUSH,
+            TITLE_POP,
+            b"\x1b",
+            b"\x1b[22;0",
+            b"\x1b[23",
+            b"t",
+            b"text",
+        ];
+        let mut paints: Vec<Vec<u8>> = vec![Vec::new()];
+        for _ in 0..4 {
+            let longer: Vec<Vec<u8>> = paints
+                .iter()
+                .filter(|p| p.len() < 64)
+                .flat_map(|p| {
+                    pieces
+                        .iter()
+                        .map(move |piece| [p.as_slice(), piece].concat())
+                })
+                .collect();
+            paints.extend(longer);
+        }
+        paints.sort();
+        paints.dedup();
+        for paint in paints {
+            let (push, pop) = (last(&paint, TITLE_PUSH), last(&paint, TITLE_POP));
+            let expected = (push.is_some() || pop.is_some()).then_some(push > pop);
+            assert_eq!(title_saved_by(&paint), expected, "{paint:?}");
+        }
     }
 
     #[test]

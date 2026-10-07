@@ -36,6 +36,189 @@ pub struct Grid {
     /// Whether the client's terminal draws underline styles (`outer`):
     /// painted as they are, else as plain underlines (`sgr`).
     pub underline_styles: bool,
+    /// What composed the grid, so that composing it again puts only what
+    /// changed, and painting it compares only rows that may differ. Not
+    /// what the grid shows: grids compare equal whatever it holds.
+    memo: Memo,
+}
+
+/// What composed a grid in normal mode: its frame, everything that decides
+/// the grid but its panes' rows, and the identity and version of each pane
+/// row put in it. A row of a fux-vt screen keeps its identity while it is
+/// retained, no later row takes it, and its version changes with every
+/// edit of its cells or soft wrap; pane ids are never reused. So two grids
+/// of the same frame show the same cells on a row of the pane area whose
+/// pane rows have the same keys in both.
+#[derive(Clone, Debug, Default)]
+struct Memo {
+    frame: Option<Frame>,
+    /// For each pane of the frame's placement, in its order: each of its
+    /// window's rows on the grid, `None` where it has none.
+    keys: Vec<(PaneId, Vec<RowKey>)>,
+}
+
+/// A pane row's identity and version, `None` where the window has no row.
+type RowKey = Option<(fux_vt::RowId, u64)>;
+
+impl PartialEq for Memo {
+    fn eq(&self, _: &Memo) -> bool {
+        true
+    }
+}
+impl Eq for Memo {}
+
+/// Everything about a composed grid but its panes' rows: its size, where
+/// each pane and separator is and its window's size, the focus (which
+/// colours the separators), whether the panes cover the pane area, and how
+/// underlines are painted. Only in normal mode, with no overlay, no
+/// copy-mode selection, no empty-tab hint, and no pane in colours of its
+/// own (`recolour`), whose rows depend on more than their keys.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Frame {
+    rows: u16,
+    cols: u16,
+    panes: Vec<(PaneId, Rect, (u16, u16))>,
+    separators: Vec<crate::layout::Separator>,
+    focus: Option<PaneId>,
+    tiled: bool,
+    underline_styles: bool,
+}
+
+impl Frame {
+    fn of(
+        session: &Session,
+        view: &View,
+        placement: &Placement,
+        tiled: bool,
+        focus: Option<PaneId>,
+    ) -> Option<Frame> {
+        if !matches!(view.mode, Mode::Normal)
+            || view
+                .tab()
+                .and_then(|t| session.tab(t))
+                .is_none_or(|t| t.root.is_none())
+        {
+            return None;
+        }
+        let mut panes = Vec::with_capacity(placement.panes.len());
+        for (id, rect) in &placement.panes {
+            let screen = session.panes.get(id)?.screen();
+            if screen.colors_changed() {
+                return None;
+            }
+            panes.push((*id, *rect, screen.size()));
+        }
+        Some(Frame {
+            rows: view.rows,
+            cols: view.cols,
+            panes,
+            separators: placement.separators.clone(),
+            focus,
+            tiled,
+            underline_styles: view.terminal.underline_styles,
+        })
+    }
+}
+
+/// Where a pane row goes on the grid: its first cell, the width of the
+/// window put there, the pane's width, whether the panes cover the pane
+/// area, and the window's columns.
+struct Place {
+    gy: u16,
+    gx: u16,
+    width: u16,
+    rect_w: u16,
+    tiled: bool,
+    window_cols: u16,
+}
+
+/// Puts a pane's window row on the grid at `place`, in the pane's own
+/// colours if it has them, blanking what it does not cover of the pane's
+/// width.
+fn draw_row(
+    grid: &mut Grid,
+    pane: PaneId,
+    row: Option<Row<'_>>,
+    place: &Place,
+    colours: Option<&fux_vt::Screen>,
+) {
+    let Place {
+        gy,
+        gx,
+        width,
+        rect_w,
+        tiled,
+        window_cols,
+    } = *place;
+    // The pane's own row, well formed, goes whole onto cells that are blank,
+    // or are blanked after it.
+    let len = row.map_or(0, |row| row.len());
+    if let Some(row) = row {
+        grid.put_row(gy, gx, pane, row, width);
+        if let Some(screen) = colours {
+            grid.recolour(gy, gx, width, screen);
+        }
+    }
+    if tiled {
+        // At most `width`, which is at most the place's width.
+        let end = u16::try_from(len).unwrap_or(width).min(width);
+        grid.blank(gy, gx.saturating_add(end), gx.saturating_add(rect_w));
+    }
+    // A wide glyph in the window's last column is cut off, as `Window::cell`
+    // has it.
+    if let Some(last) = window_cols.checked_sub(1)
+        && last < width
+        && row
+            .and_then(|r| r.cell(usize::from(last)))
+            .is_some_and(|c| c.is_wide())
+        && let Some(x) = gx.checked_add(last)
+    {
+        grid.put(gy, x, Cell::default());
+    }
+}
+
+/// Puts again the pane rows that changed since `grid`, whose memo has the
+/// frame composed now, was composed: whether that was all there was to do;
+/// false if a row now has links, which only a whole composition numbers.
+fn changed_rows(grid: &mut Grid, session: &Session, placement: &Placement, tiled: bool) -> bool {
+    let mut keys = std::mem::take(&mut grid.memo.keys);
+    let mut whole = keys.len() == placement.panes.len();
+    for ((id, rect), (memo_id, pane_keys)) in placement.panes.iter().zip(&mut keys) {
+        let Some(pane) = session.panes.get(id).filter(|_| id == memo_id && whole) else {
+            whole = false;
+            break;
+        };
+        let screen = pane.screen();
+        let (rows, cols) = screen.size();
+        let window = screen.window(0, rows, cols);
+        let width = rect.w.min(window.cols());
+        for (y, key) in (0..rect.h.min(window.rows())).zip(pane_keys.iter_mut()) {
+            let row = window.row(y);
+            let now = row.map(|r| (r.id(), r.version()));
+            if now == *key {
+                continue;
+            }
+            let Some((gy, gx)) = rect.at(y, 0) else {
+                continue;
+            };
+            if row.is_some_and(|r| r.has_links()) {
+                whole = false;
+                break;
+            }
+            let place = Place {
+                gy,
+                gx,
+                width,
+                rect_w: rect.w,
+                tiled,
+                window_cols: window.cols(),
+            };
+            draw_row(grid, *id, row, &place, None);
+            *key = now;
+        }
+    }
+    grid.memo.keys = keys;
+    whole
 }
 
 /// A hyperlink of a pane's cells (OSC 8): the pane, the link's key there
@@ -62,6 +245,7 @@ impl Grid {
             cursor_shape: 0,
             mouse: 0,
             underline_styles: false,
+            memo: Memo::default(),
         }
     }
     /// The hyperlink of the cell at `y`, `x`: the pane whose it is, its key
@@ -130,6 +314,7 @@ impl Grid {
         self.cursor = None;
         self.cursor_shape = 0;
         self.mouse = 0;
+        self.memo = Memo::default();
     }
     fn index(&self, y: u16, x: u16) -> Option<usize> {
         if y >= self.rows || x >= self.cols {
@@ -141,6 +326,57 @@ impl Grid {
     }
     pub fn get(&self, y: u16, x: u16) -> Option<CellRef<'_>> {
         self.index(y, x).and_then(|i| self.cells.get(i))
+    }
+    /// Forgets what composed the grid (`Memo`): it shows the same, and is
+    /// composed whole next time and painted by comparing every row. For
+    /// the oracles that check the memo against working without it.
+    #[doc(hidden)]
+    pub fn forget_memo(&mut self) {
+        self.memo = Memo::default();
+    }
+    /// Whether the grid shows what `other` shows: the same as `==`, without
+    /// comparing the rows their memos show are the same (`Memo`).
+    pub fn same_as(&self, other: &Grid) -> bool {
+        if (
+            self.rows,
+            self.cols,
+            self.cursor,
+            self.cursor_shape,
+            self.mouse,
+        ) != (
+            other.rows,
+            other.cols,
+            other.cursor,
+            other.cursor_shape,
+            other.mouse,
+        ) || self.underline_styles != other.underline_styles
+            || self.link_of != other.link_of
+            || self.links != other.links
+            || self.uris != other.uris
+        {
+            return false;
+        }
+        let memo = self.memo.frame.is_some() && self.memo.frame == other.memo.frame;
+        (0..self.rows).all(|y| memo && same_keys(self, other, y) || self.row_eq(other, y))
+    }
+    /// Whether row `y` has the same cells as `other`'s row `y`, as
+    /// comparing `row(y)` of each does: two grids of a width compare by
+    /// `Cells::range_eq`, without reading each cell's text.
+    pub fn row_eq(&self, other: &Grid, y: u16) -> bool {
+        if self.cols != other.cols {
+            return self.row(y).eq(other.row(y));
+        }
+        let cols = usize::from(self.cols);
+        // Exact: a u16 by a u16 fits even a 32-bit usize.
+        let start = usize::from(y).saturating_mul(cols);
+        let rows = (y < self.rows, y < other.rows);
+        match rows {
+            (true, true) => self
+                .cells
+                .range_eq(&other.cells, start..start.saturating_add(cols)),
+            (false, false) => true,
+            (true, false) | (false, true) => self.row(y).eq(other.row(y)),
+        }
     }
     /// The cells of row `y`; none past the last row.
     pub fn row(&self, y: u16) -> impl Iterator<Item = CellRef<'_>> + Clone {
@@ -411,8 +647,6 @@ pub fn compose_into(
         .chain(placement.separators.iter().map(|s| u32::from(s.len)))
         .fold(0u32, u32::saturating_add);
     let tiled = covered == u32::from(area.w).saturating_mul(u32::from(area.h));
-    grid.reset(view.rows, view.cols, !tiled);
-    grid.underline_styles = view.terminal.underline_styles;
     let focus = view.focus();
     // Copy mode and its positions, their rows found once for the paint.
     let copy = if let Mode::Copy(copy) = &view.mode {
@@ -421,74 +655,91 @@ pub fn compose_into(
     } else {
         None
     };
-    for (id, rect) in &placement.panes {
-        let Some(pane) = session.panes.get(id) else {
-            for (gy, gx) in (0..rect.h).filter_map(|y| rect.at(y, 0)).filter(|_| tiled) {
-                grid.blank(gy, gx, gx.saturating_add(rect.w));
-            }
-            continue;
-        };
-        let screen = pane.screen();
-        // A pane whose program changed its colours is drawn in them.
-        let colours = screen.colors_changed().then_some(screen);
-        let at = copy.filter(|(c, _)| c.pane == *id).map(|(_, at)| at);
-        let offset = at.map_or(0, |at| at.offset(screen));
-        let (rows, cols) = screen.size();
-        let window = screen.window(offset, rows, cols);
-        let width = rect.w.min(window.cols());
-        let screen_rows = rect.h.min(window.rows());
-        // What the pane's screen does not cover of its place is blank.
-        for (gy, gx) in (screen_rows..rect.h)
-            .filter_map(|y| rect.at(y, 0))
-            .filter(|_| tiled)
-        {
-            grid.blank(gy, gx, gx.saturating_add(rect.w));
-        }
-        for y in 0..screen_rows {
-            // Past the largest position is off the grid anyway.
-            let Some((gy, gx)) = rect.at(y, 0) else {
+    // The grid holds this very frame: only the pane rows that changed since
+    // it was composed are put again (`Memo`).
+    let frame = Frame::of(session, view, placement, tiled, focus);
+    let reused = frame.is_some()
+        && grid.memo.frame == frame
+        && (grid.rows, grid.cols) == (view.rows, view.cols)
+        && changed_rows(grid, session, placement, tiled);
+    if reused {
+        grid.cursor = None;
+        grid.cursor_shape = 0;
+        grid.mouse = 0;
+    } else {
+        grid.reset(view.rows, view.cols, !tiled);
+        grid.underline_styles = view.terminal.underline_styles;
+        let mut keys = frame.as_ref().map(|_| Vec::new());
+        for (id, rect) in &placement.panes {
+            let Some(pane) = session.panes.get(id) else {
+                for (gy, gx) in (0..rect.h).filter_map(|y| rect.at(y, 0)).filter(|_| tiled) {
+                    grid.blank(gy, gx, gx.saturating_add(rect.w));
+                }
                 continue;
             };
-            // The pane's own row, well formed, goes whole onto cells that
-            // are blank, or are blanked after it.
-            let row = window.row(y);
-            let len = row.map_or(0, |row| row.len());
-            if let Some(row) = row {
-                grid.put_row(gy, gx, *id, row, width);
-                if let Some(screen) = colours {
-                    grid.recolour(gy, gx, width, screen);
-                }
-            }
-            if tiled {
-                // At most `width`, which is at most the place's width.
-                let end = u16::try_from(len).unwrap_or(width).min(width);
-                grid.blank(gy, gx.saturating_add(end), gx.saturating_add(rect.w));
-            }
-            // A wide glyph in the window's last column is cut off, as
-            // `Window::cell` has it.
-            if let Some(last) = window.cols().checked_sub(1)
-                && last < width
-                && row
-                    .and_then(|r| r.cell(usize::from(last)))
-                    .is_some_and(|c| c.is_wide())
-                && let Some(x) = gx.checked_add(last)
+            let screen = pane.screen();
+            // A pane whose program changed its colours is drawn in them.
+            let colours = screen.colors_changed().then_some(screen);
+            let at = copy.filter(|(c, _)| c.pane == *id).map(|(_, at)| at);
+            let offset = at.map_or(0, |at| at.offset(screen));
+            let (rows, cols) = screen.size();
+            let window = screen.window(offset, rows, cols);
+            let width = rect.w.min(window.cols());
+            let screen_rows = rect.h.min(window.rows());
+            // What the pane's screen does not cover of its place is blank.
+            for (gy, gx) in (screen_rows..rect.h)
+                .filter_map(|y| rect.at(y, 0))
+                .filter(|_| tiled)
             {
-                grid.put(gy, x, Cell::default());
+                grid.blank(gy, gx, gx.saturating_add(rect.w));
             }
-            let Some(at) = at else { continue };
-            for x in 0..width {
-                if at.selected(y, x)
-                    && let Some(i) = gx.checked_add(x).and_then(|x| grid.index(gy, x))
-                    && let Some(cell) = grid.cells.get(i)
-                    && !cell.is_wide_continuation()
-                {
-                    let attrs = cell.attributes().with_inverse(!cell.inverse());
-                    grid.cells.set_attributes(i, attrs);
+            let mut pane_keys = Vec::new();
+            for y in 0..screen_rows {
+                // Past the largest position is off the grid anyway.
+                let Some((gy, gx)) = rect.at(y, 0) else {
+                    pane_keys.push(None);
+                    continue;
+                };
+                let row = window.row(y);
+                if row.is_some_and(|r| r.has_links()) {
+                    // Links are numbered per paint: no memo for this grid.
+                    keys = None;
                 }
+                pane_keys.push(row.map(|r| (r.id(), r.version())));
+                let place = Place {
+                    gy,
+                    gx,
+                    width,
+                    rect_w: rect.w,
+                    tiled,
+                    window_cols: window.cols(),
+                };
+                draw_row(grid, *id, row, &place, colours);
+                let Some(at) = at else { continue };
+                for x in 0..width {
+                    if at.selected(y, x)
+                        && let Some(i) = gx.checked_add(x).and_then(|x| grid.index(gy, x))
+                        && let Some(cell) = grid.cells.get(i)
+                        && !cell.is_wide_continuation()
+                    {
+                        let attrs = cell.attributes().with_inverse(!cell.inverse());
+                        grid.cells.set_attributes(i, attrs);
+                    }
+                }
+            }
+            if let Some(keys) = &mut keys {
+                keys.push((*id, pane_keys));
             }
         }
+        separators(grid, placement, focus);
+        grid.memo = match (frame, keys) {
+            (Some(frame), Some(keys)) => Memo {
+                frame: Some(frame),
+                keys,
+            },
+            (None | Some(_), None) | (None, Some(_)) => Memo::default(),
+        };
     }
-    separators(grid, placement, focus);
     if view
         .tab()
         .and_then(|t| session.tab(t))
@@ -1213,6 +1464,33 @@ fn one_based(n: u16) -> u32 {
 }
 
 /// The bytes that turn `old` (what the client shows, or nothing) into `new`.
+/// Whether row `y` of two grids of one frame (see `paint_into`) is in the
+/// pane area and has the same pane rows in both: then it shows the same
+/// cells.
+fn same_keys(a: &Grid, b: &Grid, y: u16) -> bool {
+    let Some(frame) = &a.memo.frame else {
+        return false;
+    };
+    // The bar's row, and any row past the panes', are not memo'd.
+    if y >= frame.rows.saturating_sub(1) {
+        return false;
+    }
+    a.memo.keys.len() == frame.panes.len()
+        && b.memo.keys.len() == frame.panes.len()
+        && frame
+            .panes
+            .iter()
+            .zip(a.memo.keys.iter().zip(&b.memo.keys))
+            .all(|((_, rect, _), ((_, ka), (_, kb)))| {
+                if y < rect.y || u32::from(y) >= u32::from(rect.y).saturating_add(u32::from(rect.h))
+                {
+                    return true;
+                }
+                let i = usize::from(y.saturating_sub(rect.y));
+                ka.get(i) == kb.get(i)
+            })
+}
+
 /// Turns every mouse tracking mode and SGR encoding off, as `client::LEAVE`
 /// does too.
 pub const MOUSE_OFF: &str = "\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l";
@@ -1241,6 +1519,142 @@ pub fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
 /// Appends the bytes that turn `old` (what the client shows, or nothing)
 /// into `new` to `out`.
 pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
+    if let Some(old) = old
+        && echo(old, new, out)
+    {
+        return;
+    }
+    paint_whole(old, new, out);
+}
+
+/// The rows of two grids of a size that differ: those whose memo does not
+/// show them the same and whose cells or links differ.
+fn changed_rows_between<'a>(old: &'a Grid, new: &'a Grid) -> impl Iterator<Item = u16> + 'a {
+    let links = !new.link_of.is_empty() || !old.link_of.is_empty();
+    let memo = old.memo.frame.is_some() && old.memo.frame == new.memo.frame;
+    (0..new.rows).filter(move |&y| {
+        !(memo && same_keys(old, new, y))
+            && !(old.row_eq(new, y)
+                && (!links || (0..new.cols).all(|x| old.link(y, x) == new.link(y, x))))
+    })
+}
+
+/// A keystroke's echo, painted as a terminal shows it typed: when all that
+/// changed is a run of glyphs of one column on the cursor's row, ending
+/// where the cursor now is, short of the last column, the cursor is moved
+/// to the run (by a carriage return or a column on its row) and the glyphs
+/// alone are written, in their attributes. Nothing else changes for the terminal: not the
+/// cursor's shape or visibility, the mouse, a link, a wide glyph. Whether
+/// it was so; if not, nothing is written.
+fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
+    if (
+        old.rows,
+        old.cols,
+        old.underline_styles,
+        old.mouse,
+        old.cursor_shape,
+    ) != (
+        new.rows,
+        new.cols,
+        new.underline_styles,
+        new.mouse,
+        new.cursor_shape,
+    ) || !old.link_of.is_empty()
+        || !new.link_of.is_empty()
+    {
+        return false;
+    }
+    let (Some((oy, ox)), Some((y, to))) = (old.cursor, new.cursor) else {
+        return false;
+    };
+    if to == 0 || to >= new.cols {
+        return false;
+    }
+    let mut rows = changed_rows_between(old, new);
+    if rows.next() != Some(y) || rows.next().is_some() {
+        return false;
+    }
+    // The run is from the first changed cell of the row to the cursor's
+    // cell; nothing after it changed. Cells in it that did not change are
+    // written as they are.
+    let start = usize::from(y).saturating_mul(usize::from(new.cols));
+    let same = |x: u16| {
+        let i = start.saturating_add(usize::from(x));
+        old.cells.range_eq(&new.cells, i..i.saturating_add(1))
+    };
+    let Some(from) = (0..new.cols).find(|&x| !same(x)) else {
+        return false;
+    };
+    if from >= to || (to..new.cols).any(|x| !same(x)) {
+        return false;
+    }
+    // ASCII, as typing mostly is, moves every terminal's cursor one cell;
+    // another glyph of one column is written too, and the cursor put where
+    // it is after, should the terminal draw it at another width. Nothing
+    // that may join a neighbour: one character, not a regional indicator
+    // (two make a flag), and short of the emoji's planes.
+    let mut ascii = true;
+    let mut printable = |c: Option<CellRef<'_>>| {
+        c.is_some_and(|c| {
+            if c.is_wide() || c.is_wide_continuation() {
+                return false;
+            }
+            let text = c.contents();
+            if matches!(text.as_bytes(), [b' '..=b'~']) {
+                return true;
+            }
+            let mut chars = text.chars();
+            match (chars.next(), chars.next()) {
+                (Some(ch), None) => {
+                    ascii = false;
+                    u32::from(ch) < 0x1_F000
+                        && !('\u{1F1E6}'..='\u{1F1FF}').contains(&ch)
+                        && UnicodeWidthChar::width(ch) == Some(1)
+                }
+                _ => false,
+            }
+        })
+    };
+    // What the run overwrites is narrow too: no half of a wide glyph left.
+    if (from..to).any(|x| {
+        !printable(new.get(y, x))
+            || old
+                .get(y, x)
+                .is_some_and(|c| c.is_wide() || c.is_wide_continuation())
+    }) {
+        return false;
+    }
+    // To the run's first cell: from the cursor on its row by the shortest
+    // way, else by row and column.
+    if oy != y {
+        let _ = write!(out, "\x1b[{};{}H", one_based(y), one_based(from));
+    } else if from == 0 && ox != 0 {
+        out.push(b'\r');
+    } else if from != ox {
+        let _ = write!(out, "\x1b[{}G", one_based(from));
+    }
+    let mut current: Option<Attributes> = None;
+    for x in from..to {
+        let Some(cell) = new.get(y, x) else {
+            return false;
+        };
+        let attrs = cell.attributes();
+        if current.unwrap_or_default() != attrs {
+            sgr(out, attrs, new.underline_styles);
+            current = Some(attrs);
+        }
+        out.extend_from_slice(cell.contents().as_bytes());
+    }
+    if current.is_some() {
+        out.extend_from_slice(b"\x1b[0m");
+    }
+    if !ascii {
+        let _ = write!(out, "\x1b[{}G", one_based(to));
+    }
+    true
+}
+/// [`paint_into`] without the echo's short way.
+fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
     out.extend_from_slice(b"\x1b[?2026h\x1b[?25l");
     // Learning that the terminal draws underline styles repaints it whole,
     // so that what it shows takes them.
@@ -1255,19 +1669,34 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
     let mut open = 0u32;
     // Whether either grid has a link: if neither does, no cell's changed.
     let links = !new.link_of.is_empty() || old.is_some_and(|o| !o.link_of.is_empty());
+    // Grids of one frame show the same cells on a pane row whose keys are
+    // the same in both (`Memo`): no comparison needed.
+    let memo = old.filter(|o| !full && o.memo.frame.is_some() && o.memo.frame == new.memo.frame);
     for y in 0..new.rows {
         // What the client shows, unless the row is painted whole.
         let before = old.filter(|_| !full);
+        if memo.is_some_and(|o| same_keys(o, new, y)) {
+            continue;
+        }
         // An unchanged row costs this one comparison.
         if before.is_some_and(|o| {
-            o.row(y).eq(new.row(y))
-                && (!links || (0..new.cols).all(|x| o.link(y, x) == new.link(y, x)))
+            o.row_eq(new, y) && (!links || (0..new.cols).all(|x| o.link(y, x) == new.link(y, x)))
         }) {
             continue;
         }
         let cell = |x: u16| new.get(y, x);
+        let row_start = usize::from(y).saturating_mul(usize::from(new.cols));
         let changed = |x: u16| {
-            before.is_none_or(|o| o.get(y, x) != cell(x) || links && o.link(y, x) != new.link(y, x))
+            before.is_none_or(|o| {
+                let i = row_start.saturating_add(usize::from(x));
+                // Grids of a width index alike: compare in place.
+                let same = if o.cols == new.cols && y < o.rows {
+                    o.cells.range_eq(&new.cells, i..i.saturating_add(1))
+                } else {
+                    o.get(y, x) == cell(x)
+                };
+                !same || links && o.link(y, x) != new.link(y, x)
+            })
         };
         let mut x = 0u16;
         while x < new.cols {
@@ -1352,6 +1781,224 @@ pub fn paint_into(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A small deterministic generator (splitmix64).
+    struct Rng(u64);
+
+    impl Rng {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut x = self.0;
+            x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            x ^= x >> 31;
+            usize::try_from(x.checked_rem(u64::try_from(n).unwrap_or(1)).unwrap_or(0)).unwrap_or(0)
+        }
+    }
+
+    /// Each row's cells, text and attributes, and the cursor.
+    type Shown = (Vec<Vec<(String, Attributes)>>, (u16, u16));
+
+    /// What a terminal shows.
+    fn shown(parser: &fux_vt::Parser) -> Shown {
+        let screen = parser.screen();
+        let (rows, cols) = screen.size();
+        let window = screen.window(0, rows, cols);
+        let cells = (0..rows)
+            .map(|y| {
+                window.row(y).map_or_else(Vec::new, |row| {
+                    row.cells()
+                        .map(|c| (c.contents().to_owned(), c.attributes()))
+                        .collect()
+                })
+            })
+            .collect();
+        (cells, screen.cursor_position())
+    }
+
+    /// A terminal shown the paints as the server sends them, echoes the
+    /// short way (`echo`) and rows skipped by their memo, shows what one
+    /// shown every paint whole shows: random typing at a shell, in colour,
+    /// with the cursor moved, rows erased, wide glyphs and long lines.
+    #[test]
+    fn echoes_painted_the_short_way_show_what_whole_paints_show() -> Result<(), String> {
+        use crate::layout::PaneId;
+        let typed: [&[u8]; 20] = [
+            b"\rw",
+            "\r\u{24d1}".as_bytes(),
+            b"\x1b[5;3Hx",
+            "\u{e9}".as_bytes(),
+            "\u{24d0}".as_bytes(),
+            "\u{2500}\u{2502}".as_bytes(),
+            "\u{1f1e6}".as_bytes(),
+            // A glyph typed, and another row written meanwhile.
+            b"q\x1b7\x1b[8;1Hzz\x1b8\x1b[C",
+            b"a",
+            b"Z",
+            b"~",
+            b" ",
+            b"\x1b[32mg\x1b[m",
+            b"\x08\x1b[K",
+            b"\r\n$ ",
+            b"\xe7\x95\x8c",
+            b"\x1b[3D",
+            b"\x1b[H\x1b[2J$ ",
+            b"0123456789012345678901234567890123456789",
+            b"\x1b[7mR\x1b[m",
+        ];
+        let mut r = Rng(0x0ec4_0ec4);
+        let mut short = 0usize;
+        for case in 0..30 {
+            let config = crate::config::Config::default();
+            let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
+            s.start().map_err(|e| e.to_string())?;
+            let c = s.attach(10, 40, None).map_err(|e| e.to_string())?;
+            if r.below(3) == 0 {
+                let argv = [
+                    "split".to_owned(),
+                    "-h".to_owned(),
+                    "-t".to_owned(),
+                    "%1".to_owned(),
+                ];
+                s.run(&argv, &crate::session::Ctx::default());
+            }
+            let mut fast = fux_vt::Parser::new(10, 40, 0).map_err(|e| e.to_string())?;
+            let mut whole = fux_vt::Parser::new(10, 40, 0).map_err(|e| e.to_string())?;
+            let (mut spare, mut showing) = (Grid::new(0, 0), Grid::new(0, 0));
+            let mut placement = Placement::default();
+            let mut painted = false;
+            for step in 0..200 {
+                let out = typed.get(r.below(typed.len())).copied().unwrap_or(b"");
+                let panes: Vec<PaneId> = s.panes.keys().copied().collect();
+                if let Some(&id) = panes.get(r.below(panes.len().max(1))) {
+                    s.output(id, out);
+                }
+                s.settle_if_needed();
+                if !compose_into(&s, c, &mut spare, &mut placement) {
+                    continue;
+                }
+                let bytes = paint(painted.then_some(&showing), &spare);
+                let (mut plain_old, mut plain_new) = (showing.clone(), spare.clone());
+                plain_old.forget_memo();
+                plain_new.forget_memo();
+                let mut slow = Vec::new();
+                paint_whole(painted.then_some(&plain_old), &plain_new, &mut slow);
+                if !bytes.starts_with(b"\x1b[?2026h") {
+                    short += 1;
+                }
+                fast.process(&bytes).map_err(|e| e.to_string())?;
+                whole.process(&slow).map_err(|e| e.to_string())?;
+                assert_eq!(
+                    shown(&fast),
+                    shown(&whole),
+                    "case {case}, step {step}: {bytes:?}"
+                );
+                std::mem::swap(&mut spare, &mut showing);
+                painted = true;
+            }
+        }
+        assert!(short > 500, "{short} echoes painted the short way");
+        Ok(())
+    }
+
+    /// Composing into the grid composed last but one, as the server does,
+    /// puts again only the rows that changed (`Memo`), and paints only the
+    /// rows that may differ: through random output into split panes,
+    /// scrolling, the alternate screen, links, resizes, copy mode, a
+    /// notice and splits, after every step the grid is what composing
+    /// whole gives, its paint is the paint comparing every row, and
+    /// `same_as` is `==`.
+    #[test]
+    fn composing_in_part_is_composing_whole() -> Result<(), String> {
+        use crate::layout::PaneId;
+        let outputs: [&[u8]; 12] = [
+            b"x",
+            b"hello\r\n",
+            b"\x1b[2J\x1b[H",
+            b"\x1b[5;3Hmid\x1b[K",
+            b"line\r\nline\r\nline\r\nline\r\nline\r\nline\r\n",
+            b"\x1b[?1049h\x1b[Halt",
+            b"\x1b[?1049l",
+            b"\x1b[31mred\x1b[m \xe7\x95\x8c",
+            b"\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\",
+            b"\x1b]4;1;#00ff00\x07",
+            b"\x1b]104\x07",
+            b"\x1b[2;4r\x1b[4H\n\n\x1b[r",
+        ];
+        let commands = [
+            "split -h -t %1",
+            "split -v -t %1",
+            "zoom -c c1",
+            "copy-mode -c c1",
+            "command-column -c c1",
+            "select-pane -c c1 --next",
+            "kill-pane -t %2",
+        ];
+        let mut r = Rng(0x00c0_ffee);
+        for case in 0..40 {
+            let config = crate::config::Config::default();
+            let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
+            s.start().map_err(|e| e.to_string())?;
+            let c = s.attach(12, 50, None).map_err(|e| e.to_string())?;
+            let (mut spare, mut shown) = (Grid::new(0, 0), Grid::new(0, 0));
+            let mut placement = Placement::default();
+            let mut painted = false;
+            for step in 0..120 {
+                match r.below(12) {
+                    0 => {
+                        let line = commands.get(r.below(commands.len())).copied().unwrap_or("");
+                        let argv: Vec<String> = line.split(' ').map(str::to_owned).collect();
+                        s.run(&argv, &crate::session::Ctx::default());
+                    }
+                    1 => s.input(c, b"\x1b"),
+                    2 => {
+                        let rows = u16::try_from(4 + r.below(12)).unwrap_or(8);
+                        let cols = u16::try_from(10 + r.below(50)).unwrap_or(40);
+                        s.resize(c, rows, cols);
+                    }
+                    3 => {
+                        let argv = [
+                            "rename".to_owned(),
+                            "-t".to_owned(),
+                            "@1".to_owned(),
+                            "n".to_owned(),
+                        ];
+                        s.run(&argv, &crate::session::Ctx::default());
+                    }
+                    _ => {
+                        let panes: Vec<PaneId> = s.panes.keys().copied().collect();
+                        if let Some(&id) = panes.get(r.below(panes.len().max(1))) {
+                            let out = outputs.get(r.below(outputs.len())).copied().unwrap_or(b"");
+                            s.output(id, out);
+                        }
+                    }
+                }
+                s.settle_if_needed();
+                if !compose_into(&s, c, &mut spare, &mut placement) {
+                    continue;
+                }
+                let whole = compose(&s, c).ok_or("no client")?;
+                assert!(spare == whole, "case {case}, step {step}: composed in part");
+                let fast = paint(painted.then_some(&shown), &spare);
+                let (mut plain_old, mut plain_new) = (shown.clone(), spare.clone());
+                plain_old.forget_memo();
+                plain_new.forget_memo();
+                let slow = paint(painted.then_some(&plain_old), &plain_new);
+                assert!(
+                    fast == slow,
+                    "case {case}, step {step}: the memo's paint differs"
+                );
+                assert_eq!(
+                    spare.same_as(&shown),
+                    spare == shown,
+                    "case {case}, step {step}"
+                );
+                std::mem::swap(&mut spare, &mut shown);
+                painted = true;
+            }
+        }
+        Ok(())
+    }
 
     /// Mouse reporting is said from nothing, either way, and again only
     /// when it changes.

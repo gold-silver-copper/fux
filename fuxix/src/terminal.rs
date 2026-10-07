@@ -2,7 +2,7 @@
 //! session they control.
 use crate::errno::{Errno, Result, check};
 use crate::process::Pid;
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 
 /// The type of an `ioctl` request, which differs between C libraries.
 #[cfg(target_os = "macos")]
@@ -98,9 +98,48 @@ pub fn make_controlling(fd: impl AsFd) -> Result<()> {
     check(unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), set, steal) }).map(drop)
 }
 
+/// A new open file for the terminal `fd` is open on, read-write,
+/// nonblocking, close-on-exec, and never made this process's controlling
+/// terminal: its flags are its own, so making it nonblocking changes
+/// nothing for whoever else has the terminal open. `NOTTY` if `fd` is not a
+/// terminal.
+pub fn reopen(fd: impl AsFd) -> Result<OwnedFd> {
+    let mut name = [0 as libc::c_char; 256];
+    // SAFETY: the buffer is whole, of the length given, and ttyname_r
+    // NUL-terminates what it writes there.
+    let failed = unsafe { libc::ttyname_r(fd.as_fd().as_raw_fd(), name.as_mut_ptr(), name.len()) };
+    if failed != 0 {
+        return Err(Errno::from_raw(failed));
+    }
+    let flags = libc::O_RDWR | libc::O_NOCTTY | libc::O_NONBLOCK | libc::O_CLOEXEC;
+    // SAFETY: `name` is a NUL-terminated path.
+    let raw = check(unsafe { libc::open(name.as_ptr(), flags) })?;
+    // SAFETY: `raw` was just opened, is valid, and nothing else owns it.
+    Ok(unsafe { OwnedFd::from_raw_fd(raw) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A terminal reopened is the same terminal, through an open file of
+    /// its own: nonblocking without making the original so. A socket is
+    /// no terminal.
+    #[test]
+    fn a_terminal_reopens_nonblocking_on_its_own() -> std::result::Result<(), String> {
+        let (master, slave) = crate::pty::open(10, 20).map_err(|e| e.to_string())?;
+        let again = reopen(&slave).map_err(|e| e.to_string())?;
+        assert_eq!(window_size(&again), Ok((10, 20)));
+        // Nothing to read: the new file says so at once, not blocking.
+        let mut buffer = [0u8; 4];
+        assert_eq!(crate::io::read(&again, &mut buffer), Err(Errno::AGAIN));
+        crate::io::write(&master, b"hi\n").map_err(|e| e.to_string())?;
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(crate::io::read(&again, &mut buffer).is_ok_and(|n| n > 0));
+        let (a, _b) = std::os::unix::net::UnixStream::pair().map_err(|e| e.to_string())?;
+        assert!(reopen(&a).is_err());
+        Ok(())
+    }
     use crate::pty;
 
     #[test]

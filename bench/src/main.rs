@@ -2,7 +2,7 @@
 //! retired, on fixed workloads run in this process (`workloads`), each
 //! counted in a child process of its own (`count`), REF's built in a
 //! temporary worktree (`against`); and what a person feels through real
-//! servers beside tmux and zellij (`feel`).
+//! servers beside tmux, zellij and herdr (`feel`).
 mod against;
 mod corpus;
 mod count;
@@ -41,7 +41,7 @@ info       MB/s beside Ghostty and alacritty (fux-vt/compare's `run.sh
 feel       real servers on sockets of their own, each with a client on a
            PTY: keystroke latency idle and beside a flooding pane, throughput
            to the final screen and the bytes sent, idle CPU and memory.
-           LIST is joined by commas: muxes direct,fux,tmux,zellij (those
+           LIST is joined by commas: muxes direct,fux,tmux,zellij,herdr (those
            installed), parts latency,throughput,footprint; N keys per
            latency run (default 2000). Wall time; reported, not gated.
 
@@ -119,7 +119,7 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
         }),
     };
     let mut feel = feel::Options {
-        muxes: ["direct", "fux", "tmux", "zellij"]
+        muxes: ["direct", "fux", "tmux", "zellij", "herdr"]
             .map(str::to_owned)
             .to_vec(),
         parts: ["latency", "throughput", "footprint"]

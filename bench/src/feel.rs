@@ -1,5 +1,6 @@
 //! `feel`: what a person at the terminal feels, through real servers: fux,
-//! tmux and zellij (if installed), each beside no multiplexer at all. Each
+//! tmux, zellij and herdr (those installed), each beside no multiplexer at
+//! all. Each
 //! runs on a socket of its own, with a configuration of its own, and its
 //! client on a PTY this process holds (`terminal`), as a terminal holds
 //! it: the user's own servers are never touched. Wall time is what is
@@ -38,6 +39,10 @@ pub const FOREIGN: &[&str] = &[
     "ZELLIJ",
     "ZELLIJ_SESSION_NAME",
     "ZELLIJ_PANE_ID",
+    "HERDR_ENV",
+    "HERDR_WORKSPACE_ID",
+    "HERDR_TAB_ID",
+    "HERDR_PANE_ID",
 ];
 
 /// The pane's size, the corpus's.
@@ -60,6 +65,7 @@ pub enum Mux {
     Fux,
     Tmux,
     Zellij,
+    Herdr,
 }
 
 impl Mux {
@@ -69,11 +75,12 @@ impl Mux {
             Mux::Fux => "fux",
             Mux::Tmux => "tmux",
             Mux::Zellij => "zellij",
+            Mux::Herdr => "herdr",
         }
     }
 
     fn of(name: &str) -> Option<Mux> {
-        [Mux::Direct, Mux::Fux, Mux::Tmux, Mux::Zellij]
+        [Mux::Direct, Mux::Fux, Mux::Tmux, Mux::Zellij, Mux::Herdr]
             .into_iter()
             .find(|m| m.name() == name)
     }
@@ -152,7 +159,8 @@ struct Session {
     /// fux's server, which this process started.
     server: Option<std::process::Child>,
     server_pid: Option<u32>,
-    /// fux's socket, tmux's socket name, zellij's session name.
+    /// fux's socket, tmux's socket name, zellij's session name; herdr's
+    /// first pane.
     handle: String,
     env: Vec<(String, String)>,
     dir: PathBuf,
@@ -187,6 +195,16 @@ impl Session {
             Mux::Zellij => {
                 let mut c = clean("zellij");
                 c.args(["--session", &self.handle]).args(args);
+                c
+            }
+            Mux::Herdr => {
+                // Never the user's server: only the config directory, and
+                // with it the socket, this session made.
+                if !self.env.iter().any(|(k, _)| k == "XDG_CONFIG_HOME") {
+                    return Err("no config directory for herdr".into());
+                }
+                let mut c = clean("herdr");
+                c.args(args);
                 c
             }
         };
@@ -232,8 +250,34 @@ impl Session {
                         .map(drop)
                 }
             },
+            Mux::Herdr => {
+                let made = self.command(place, &["tab", "create", "--no-focus"])?;
+                let pane = herdr_pane(&made, &["result", "root_pane", "pane_id"])?;
+                if let Some(p) = program {
+                    self.herdr_run(place, &pane, p)?;
+                }
+                Ok(())
+            }
         }
     }
+
+    /// Runs `program` in herdr's pane `pane`, in place of its shell.
+    fn herdr_run(&self, place: &Place, pane: &str, program: &[String]) -> Result<(), String> {
+        let words: Vec<String> = program.iter().map(|w| quoted(w)).collect();
+        let line = format!("exec {}", words.join(" "));
+        self.command(place, &["pane", "run", pane, &line]).map(drop)
+    }
+}
+
+/// The pane id at `path` in a herdr command's JSON answer.
+fn herdr_pane(json: &str, path: &[&str]) -> Result<String, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("{e}: {json}"))?;
+    path.iter()
+        .try_fold(&value, |v, key| v.get(key))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or(format!("no {} in {json}", path.join(".")))
 }
 
 impl Drop for Session {
@@ -265,6 +309,7 @@ impl Drop for Session {
                 &["-L", &self.handle, "-f", "/dev/null", "kill-server"],
             ),
             Mux::Zellij => run("zellij", &["kill-session", &self.handle]),
+            Mux::Herdr => run("herdr", &["server", "stop"]),
         }
         if let Some(server) = &mut self.server {
             let deadline = Instant::now().checked_add(Duration::from_secs(2));
@@ -482,6 +527,7 @@ fn start(
                 .and_then(|p| p.parse().ok());
             Ok(s)
         }
+        Mux::Herdr => start_herdr(place, mux, programs, ready, dir, env),
         Mux::Zellij => {
             let handle = format!("fux-bench-{}-{}", std::process::id(), place.count.get());
             let config_dir = dir.join("config");
@@ -548,6 +594,115 @@ fn start(
             Ok(s)
         }
     }
+}
+
+/// herdr in a directory of its own: its config, socket and state there,
+/// through `HOME` and the XDG variables. Its chrome is turned off (no
+/// sidebar, tab bar, borders, gaps or scrollbars) so that its pane is the
+/// terminal's size less what it cannot hide, as tmux's is less its status
+/// line; its mouse capture and network checks are off. Its scrollback is
+/// bounded in bytes, not rows: its default, 10 MB, holds more than 10,000
+/// rows of the workloads here.
+fn start_herdr(
+    place: &Place,
+    mux: Mux,
+    programs: &[Vec<String>],
+    ready: Option<&[u8]>,
+    dir: PathBuf,
+    mut env: Vec<(String, String)>,
+) -> Result<Session, String> {
+    let config = dir.join("config");
+    let socket = config.join("herdr").join("herdr.sock");
+    std::fs::create_dir_all(config.join("herdr")).map_err(|e| e.to_string())?;
+    std::fs::write(
+        config.join("herdr").join("config.toml"),
+        "onboarding = false\n\
+         [update]\nversion_check = false\nmanifest_check = false\n\
+         [terminal]\ndefault_shell = \"/bin/sh\"\nshell_mode = \"non_login\"\n\
+         [ui]\nsidebar_start_collapsed = true\nsidebar_collapsed_mode = \"hidden\"\n\
+         mouse_capture = false\nconfirm_close = false\nprompt_new_tab_name = false\n\
+         pane_borders = false\npane_outer_borders = false\npane_scrollbars = false\n\
+         pane_gaps = false\nhide_tab_bar_when_single_tab = true\n\
+         mobile_width_threshold = 0\n",
+    )
+    .map_err(|e| e.to_string())?;
+    for (name, sub) in [
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_STATE_HOME", "state"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_RUNTIME_DIR", "run"),
+    ] {
+        let path = dir.join(sub);
+        private(&path)?;
+        env.push((name.into(), path.to_string_lossy().into_owned()));
+    }
+    let log = std::fs::File::create(dir.join("server.log")).map_err(|e| e.to_string())?;
+    let mut command = clean("herdr");
+    command
+        .arg("server")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(log);
+    for (k, v) in &env {
+        command.env(k, v);
+    }
+    let server = command.spawn().map_err(|e| format!("herdr server: {e}"))?;
+    let server_pid = server.id();
+    let deadline = Instant::now().checked_add(READY_WAIT).ok_or("a deadline")?;
+    while std::os::unix::net::UnixStream::connect(&socket).is_err() {
+        if Instant::now() > deadline {
+            let log = std::fs::read_to_string(dir.join("server.log")).unwrap_or_default();
+            return Err(format!("the herdr server did not start: {log}"));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let env_ref: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let terminal = Terminal::start(ROWS.saturating_add(1), COLS, "herdr", &[], &env_ref, ready)?;
+    let mut session = Session {
+        mux,
+        terminal,
+        server: Some(server),
+        server_pid: Some(server_pid),
+        handle: String::new(),
+        env,
+        dir,
+    };
+    // The client made the first workspace and its pane once it attached.
+    let first = loop {
+        let list = session
+            .command(place, &["pane", "list"])
+            .unwrap_or_default();
+        let pane = serde_json::from_str::<serde_json::Value>(&list)
+            .ok()
+            .and_then(|v| {
+                v.pointer("/result/panes/0/pane_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            });
+        if let Some(pane) = pane {
+            break pane;
+        }
+        if Instant::now() > deadline {
+            return Err(format!("herdr made no pane: {list}"));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    session.handle = first.clone();
+    for (i, p) in programs.iter().enumerate() {
+        let pane = if i == 0 {
+            first.clone()
+        } else {
+            // Focused, as tmux and fux focus a new pane: keys go to it.
+            let made = session.command(
+                place,
+                &["pane", "split", &first, "--direction", "right", "--focus"],
+            )?;
+            herdr_pane(&made, &["result", "pane", "pane_id"])?
+        };
+        session.herdr_run(place, &pane, p)?;
+    }
+    Ok(session)
 }
 
 /// zellij's server for the session `name`: `zellij --server …/name`.
@@ -787,7 +942,7 @@ pub fn run(options: &Options) -> Result<bool, String> {
         let mux = Mux::of(name).ok_or(format!("no multiplexer {name:?}"))?;
         let installed = match mux {
             Mux::Direct | Mux::Fux => true,
-            Mux::Tmux | Mux::Zellij => {
+            Mux::Tmux | Mux::Zellij | Mux::Herdr => {
                 output(Command::new("sh").args(["-c", &format!("command -v {}", mux.name())]))
                     .is_ok()
             }
@@ -816,6 +971,7 @@ pub fn run(options: &Options) -> Result<bool, String> {
             Mux::Fux => output(Command::new(&fux).arg("--version")),
             Mux::Tmux => output(Command::new("tmux").arg("-V")),
             Mux::Zellij => output(Command::new("zellij").arg("--version")),
+            Mux::Herdr => output(Command::new("herdr").arg("--version")),
         };
         versions.insert(
             mux.name().into(),

@@ -5,7 +5,7 @@ fux and fux-vt in process and counts the instructions each retires, on the
 working tree and on another commit (`main` by default), in one run: no
 stored baseline, and a busy machine moves the counts far less than times. `feel`
 measures wall-clock latency and throughput through real servers, beside
-tmux and zellij.
+tmux, zellij and herdr.
 
 CI does not run it; `fux-vt/compare/run.sh full` runs `--against main`, and
 `run.sh deep` runs `feel` and `info`. It forbids fux's lints and builds with
@@ -24,7 +24,7 @@ bench/target/release/fux-bench list          # the workloads
 bench/target/release/fux-bench time          # each one's thread CPU time here, and MB/s
 bench/target/release/fux-bench run vt/ascii  # one workload once, as --against counts it
 bench/target/release/fux-bench info          # MB/s beside Ghostty and alacritty, and fux-diff --speed
-bench/target/release/fux-bench feel          # latency, throughput and footprint beside tmux and zellij
+bench/target/release/fux-bench feel          # latency, throughput and footprint beside tmux, zellij and herdr
 ```
 
 | Command and flags | Meaning |
@@ -102,7 +102,7 @@ cargo run --release --manifest-path bench/Cargo.toml -- feel
 bench/target/release/fux-bench feel --muxes fux,tmux --parts latency --keys 500
 ```
 
-`--muxes` takes `direct,fux,tmux,zellij` (the default; any not installed is
+`--muxes` takes `direct,fux,tmux,zellij,herdr` (the default; any not installed is
 skipped; `direct` is the pane program on a PTY of this process, no
 multiplexer), `--parts` takes `latency,throughput,footprint`, and `--keys`
 the keys per latency run (default 2000). Wall time is measured; it is
@@ -113,8 +113,15 @@ own socket and configuration under `/tmp/fux-feel-PID` (removed after):
 fux as `fux server --socket … --config …` with `HOME` there; tmux as `tmux
 -L fux-bench-PID-N -f /dev/null`; zellij in its own session with its
 config, data, `HOME` and `ZELLIJ_SOCKET_DIR` there, without plugins or pane
-frames. `FUX_SOCKET`, `FUX_PANE`, `TMUX`, `TMUX_PANE` and zellij's
-variables are removed from all it starts. The client's PTY is 41×120 (a
+frames; herdr as `herdr server` and a `herdr` client with `HOME` and every
+XDG directory there (its socket is in its config directory), its sidebar,
+tab bar, borders, gaps, scrollbars, mobile layout, mouse capture and update
+checks off, `--focus` on the pane split for the echo. herdr bounds its
+scrollback in bytes (10 MB by default), not rows. `FUX_SOCKET`, `FUX_PANE`,
+`TMUX`, `TMUX_PANE`, and zellij's and herdr's variables are removed from
+all it starts. Patterns (the ready marker, the throughput markers, the
+echoed glyphs) are found in the text the client writes, escape sequences
+skipped, as herdr moves the cursor before each cell it paints. The client's PTY is 41×120 (a
 40×120 pane, the corpus's size, and a bar), `TERM=xterm-256color`. The
 pane programs are this binary's (`__echo`, `__flood`, `__serve`,
 `__fill`).

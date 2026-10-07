@@ -141,3 +141,85 @@ fn a_one_byte_cell_reads_its_ascii_character() {
     assert_eq!(CellRef::new(&cell, &spill).contents(), "é");
     assert_eq!(CellRef::new(&Cell::default(), &spill).contents(), "");
 }
+
+/// A small deterministic generator (splitmix64).
+struct Rng(u64);
+
+impl Rng {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut x = self.0;
+        x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        x ^= x >> 31;
+        usize::try_from(x.checked_rem(u64::try_from(n).unwrap_or(1)).unwrap_or(0)).unwrap_or(0)
+    }
+}
+
+/// `range_eq` is `range(..).eq(range(..))`, faster: on two rows of cells
+/// edited at random, every way cells are written (text short and long,
+/// wide halves, attributes, fills, whole cells, copies from the other
+/// row), over random ranges, in and past the rows. The rows start the
+/// same and drift, so both answers come up.
+#[test]
+fn range_eq_agrees_with_comparing_each_cell() {
+    let mut r = Rng(0x5eed_ce11);
+    let texts = [
+        "",
+        "a",
+        "b",
+        "é",
+        "\u{754c}",
+        "a\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}",
+        "a\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}",
+        "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}",
+    ];
+    let attributes = |r: &mut Rng| Attributes {
+        foreground: Packed::new(Color::Idx(u8::try_from(r.below(3)).unwrap_or(0))),
+        flags: if r.below(4) == 0 { Attributes::BOLD } else { 0 },
+        ..Attributes::default()
+    };
+    let (mut same, mut differ) = (0usize, 0usize);
+    for case in 0..3_000 {
+        let len = 1 + r.below(40);
+        let mut a = Cells::new(len);
+        let mut b = Cells::new(len);
+        for _ in 0..r.below(60) {
+            let row = if r.below(2) == 0 { &mut a } else { &mut b };
+            let i = r.below(len + 2);
+            let text = texts.get(r.below(texts.len())).copied().unwrap_or("");
+            let attrs = attributes(&mut r);
+            match r.below(6) {
+                0 | 1 => {
+                    row.set_text(i, text, r.below(5) == 0, attrs);
+                }
+                2 => row.set_attributes(i, attrs),
+                3 => {
+                    let end = i.saturating_add(r.below(5));
+                    row.fill(i..end, Cell::new(text, false, attrs).unwrap_or_default());
+                }
+                4 => row.set_cell(i, Cell::new(text, false, attrs).unwrap_or_default()),
+                _ => {
+                    // A copy of the other row's cell at `i`, both ways.
+                    if let Some(cell) = a.get(i).map(|c| (c.contents().to_owned(), c)) {
+                        let (text, cell) = cell;
+                        b.set_text(i, &text, cell.is_wide(), cell.attributes());
+                    }
+                }
+            }
+            for _ in 0..3 {
+                let start = r.below(len + 3);
+                let end = start.saturating_add(r.below(len + 3));
+                let slow = a.range(start..end).eq(b.range(start..end));
+                assert_eq!(
+                    a.range_eq(&b, start..end),
+                    slow,
+                    "case {case}, {start}..{end}"
+                );
+                if slow { same += 1 } else { differ += 1 }
+            }
+            assert_eq!(a == b, a.iter().eq(b.iter()), "case {case}");
+        }
+    }
+    assert!(same > 1000 && differ > 1000, "{same} alike, {differ} not");
+}

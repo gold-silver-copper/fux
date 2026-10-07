@@ -140,7 +140,7 @@ fn multiplexer(dir: &Path, rows: &mut Vec<Row>) {
                 .collect::<Vec<_>>()
                 .join("; ")
         })
-        .unwrap_or_else(|| "tmux and zellij: run.sh deep".into());
+        .unwrap_or_else(|| "tmux, zellij and herdr: run.sh deep".into());
     rows.push(row(
         "Multiplexer",
         "recordings identical through it (transparency)",
@@ -210,10 +210,10 @@ fn speed(dir: &Path, rows: &mut Vec<Row>) {
 }
 
 /// What `feel` measured of `mux`, as `what` renders it, for each of fux,
-/// tmux and zellij.
+/// tmux, zellij and herdr.
 fn per_mux(feel: &Value, what: &dyn Fn(&Value, &str) -> Option<String>) -> (String, String) {
     let fux = what(feel, "fux").unwrap_or_else(|| MISSING.into());
-    let beside = ["tmux", "zellij", "direct"]
+    let beside = ["tmux", "zellij", "herdr", "direct"]
         .iter()
         .filter_map(|m| what(feel, m).map(|v| format!("{m} {v}")))
         .collect::<Vec<_>>()
@@ -244,6 +244,19 @@ fn feel(dir: &Path, rows: &mut Vec<Row>) {
             &beside,
         ));
     }
+    // Every workload, corpus and synthetic, from the asking key to the
+    // final screen at the client: the sum of the seconds each took.
+    let (fux, beside) = per_mux(&feel, &|f, m| {
+        let loads = f.pointer(&format!("/throughput/{m}"))?.as_object()?;
+        let total: f64 = loads.values().filter_map(|l| number(l, "/seconds")).sum();
+        (!loads.is_empty()).then(|| format!("{total:.1} s"))
+    });
+    rows.push(row(
+        "Throughput",
+        "seconds to the final screen, every workload",
+        &fux,
+        &beside,
+    ));
     let footprint = [
         (
             "MiB per pane with full history",

@@ -421,11 +421,13 @@ fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
         | Frame::Paint(_)
         | Frame::Stdout(_)
         | Frame::Stderr(_)
-        | Frame::Done { .. } => None,
+        | Frame::Done { .. }
+        | Frame::Terminal { .. } => None,
     });
     let reason = exit.ok_or("no Exit frame")?;
     assert!(
-        reason.contains("protocol 1") && reason.contains("fux kill-server"),
+        reason.contains(&format!("protocol {}", fux::protocol::PROTOCOL))
+            && reason.contains("fux kill-server"),
         "{reason}"
     );
     // kill-server works whatever the version.
@@ -761,4 +763,121 @@ fn job_state(command: &str, test: fn(&str) -> bool) -> Result<bool, String> {
 /// (`N` on a runner that lowers its priority).
 fn foreground(stat: &str) -> bool {
     stat.starts_with(['R', 'S']) && stat.contains('+')
+}
+
+/// Connects a raw protocol client, says hello as an attach client, and
+/// sends `Attach` with `fd` attached; the frames the server answers with,
+/// read until `until` holds of them or the wait ends.
+fn attach_with(
+    server: &Server,
+    fd: impl std::os::fd::AsFd,
+    until: impl Fn(&[fux::protocol::Frame]) -> bool,
+) -> Result<(std::os::unix::net::UnixStream, Vec<fux::protocol::Frame>), String> {
+    use fux::protocol::{Decoder, Frame, PROTOCOL, Role};
+    use std::io::{Read, Write};
+    let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
+    let hello = Frame::Hello {
+        protocol: PROTOCOL,
+        version: "test".into(),
+        role: Role::Attach,
+    };
+    stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
+    let attach = Frame::Attach {
+        rows: 8,
+        cols: 30,
+        workspace: None,
+    };
+    let bytes = attach.encode().map_err(e)?;
+    let sent = fuxix::socket::send_with_fd(&stream, &bytes, fd).map_err(e)?;
+    stream
+        .write_all(bytes.get(sent..).unwrap_or_default())
+        .map_err(e)?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_millis(100)))
+        .map_err(e)?;
+    let mut decoder = Decoder::default();
+    let mut frames = Vec::new();
+    let mut buffer = vec![0u8; 65536];
+    let deadline = after(PATIENCE);
+    while !until(&frames) && std::time::Instant::now() < deadline {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => decoder.push(buffer.get(..n).unwrap_or_default()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
+                ) => {}
+            Err(error) => return Err(e(error)),
+        }
+        while let Some(frame) = decoder.frame().map_err(e)? {
+            frames.push(frame);
+        }
+    }
+    Ok((stream, frames))
+}
+
+/// A client that sends its terminal with its `Attach` is told the server
+/// took it, first; then the server writes the paints to the terminal
+/// itself, and reads the keys from it: none come in frames.
+#[test]
+fn the_server_takes_a_terminal_sent_with_attach() -> Outcome {
+    use fux::protocol::Frame;
+    let server = Server::start("")?;
+    let (master, slave) = fux::process::open_pty(8, 30).map_err(e)?;
+    let (stream, frames) = attach_with(&server, &slave, |f| {
+        f.iter().any(|f| matches!(f, Frame::Terminal { .. }))
+    })?;
+    // First after the server's hello.
+    let first = frames.iter().find(|f| !matches!(f, Frame::Hello { .. }));
+    assert!(
+        matches!(first, Some(Frame::Terminal { taken: true })),
+        "{frames:?}"
+    );
+    drop(slave);
+    // The paint, and the questions fux asks a terminal, come on the PTY.
+    let mut seen = Vec::new();
+    let mut buffer = vec![0u8; 65536];
+    eventually("the shell's prompt on the terminal", || {
+        if let Ok(n) = fuxix::io::read(&master, &mut buffer) {
+            seen.extend_from_slice(buffer.get(..n).unwrap_or_default());
+        }
+        Ok(String::from_utf8_lossy(&seen).contains("$ "))
+    })?;
+    let text = String::from_utf8_lossy(&seen).into_owned();
+    assert!(text.contains("\x1b[?2026h"), "a paint: {text:?}");
+    // Keys typed at the terminal reach the shell, and its echo comes back.
+    fuxix::io::write(&master, b"echo taken-ok\r").map_err(e)?;
+    eventually("the echo on the terminal", || {
+        if let Ok(n) = fuxix::io::read(&master, &mut buffer) {
+            seen.extend_from_slice(buffer.get(..n).unwrap_or_default());
+        }
+        Ok(String::from_utf8_lossy(&seen).matches("taken-ok").count() >= 2)
+    })?;
+    drop(stream);
+    Ok(())
+}
+
+/// A descriptor that is no terminal is not taken: the client is told so,
+/// and the paints come in frames, as to a client that sent none.
+#[test]
+fn a_descriptor_that_is_no_terminal_is_not_taken() -> Outcome {
+    use fux::protocol::Frame;
+    let server = Server::start("")?;
+    let (a, _b) = std::os::unix::net::UnixStream::pair().map_err(e)?;
+    let (_stream, frames) = attach_with(&server, &a, |f| {
+        f.iter().any(|f| matches!(f, Frame::Paint(_)))
+    })?;
+    let first = frames.iter().find(|f| !matches!(f, Frame::Hello { .. }));
+    assert!(
+        matches!(first, Some(Frame::Terminal { taken: false })),
+        "{frames:?}"
+    );
+    assert!(
+        frames.iter().any(|f| matches!(f, Frame::Paint(_))),
+        "{frames:?}"
+    );
+    Ok(())
 }

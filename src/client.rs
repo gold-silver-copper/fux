@@ -156,15 +156,8 @@ static TITLE_SAVED: AtomicBool = AtomicBool::new(false);
 /// Notes a title saved or restored in a paint: the later of the two wins.
 /// A pane's own title sequences never reach a paint, which fux composes.
 fn note_title(paint: &[u8]) {
-    let last = |needle: &[u8]| {
-        (0..paint.len())
-            .rev()
-            .find(|&at| paint.get(at..).is_some_and(|rest| rest.starts_with(needle)))
-    };
-    let push = last(crate::outer::TITLE_PUSH);
-    let pop = last(crate::outer::TITLE_POP);
-    if push.is_some() || pop.is_some() {
-        TITLE_SAVED.store(push > pop, Ordering::Relaxed);
+    if let Some(saved) = crate::outer::title_saved_by(paint) {
+        TITLE_SAVED.store(saved, Ordering::Relaxed);
     }
 }
 
@@ -370,14 +363,6 @@ pub fn attach(socket: &Path, workspace: Option<String>) -> Result<(), Error> {
     }
     let (mut stream, mut decoder) = connect(socket, Role::Attach)?;
     let (rows, cols) = window_size();
-    send(
-        &mut stream,
-        &Frame::Attach {
-            rows,
-            cols,
-            workspace,
-        },
-    )?;
 
     let original = fuxix::terminal::attributes(&stdin).map_err(Error::Modes)?;
     let mut raw = original.clone();
@@ -398,7 +383,23 @@ pub fn attach(socket: &Path, workspace: Option<String>) -> Result<(), Error> {
     let _ = stdout.write_all(ENTER.as_bytes());
     let _ = stdout.flush();
 
-    let result = pump(&mut stream, &mut decoder);
+    // The terminal goes with the `Attach`, now that it is set up: if the
+    // server takes it, it reads the keys and writes the paints there
+    // itself, and this client only passes on resizes and signals.
+    let attach = Frame::Attach {
+        rows,
+        cols,
+        workspace,
+    };
+    let taken = match send_with_terminal(&mut stream, &attach, &stdin) {
+        Ok(()) => terminal_taken(&mut stream, &mut decoder),
+        Err(error) => Err(error),
+    };
+    let result = match taken {
+        Ok(true) => watch(&mut stream, &mut decoder),
+        Ok(false) => pump(&mut stream, &mut decoder),
+        Err(error) => Err(error),
+    };
     restore();
     match result {
         Ok(reason) => {
@@ -406,6 +407,95 @@ pub fn attach(socket: &Path, workspace: Option<String>) -> Result<(), Error> {
             Ok(())
         }
         Err(error) => Err(error),
+    }
+}
+
+/// Sends `frame` with this process's terminal attached, its first bytes
+/// carrying it.
+fn send_with_terminal(
+    stream: &mut UnixStream,
+    frame: &Frame,
+    terminal: impl std::os::fd::AsFd,
+) -> Result<(), Error> {
+    let bytes = frame.encode()?;
+    let sent = loop {
+        match fuxix::socket::send_with_fd(&*stream, &bytes, &terminal) {
+            Ok(n) => break n,
+            Err(fuxix::Errno::INTR) => continue,
+            Err(errno) => {
+                return Err(Error::Write(std::io::Error::from_raw_os_error(errno.raw())));
+            }
+        }
+    };
+    stream
+        .write_all(bytes.get(sent..).unwrap_or_default())
+        .map_err(Error::Write)
+}
+
+/// The server's first answer to an `Attach` sent with the terminal: whether
+/// it took it. A server that ends the attachment first says why.
+fn terminal_taken(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<bool, Error> {
+    let mut buffer = vec![0u8; 4096];
+    loop {
+        match read_frame(stream, decoder, &mut buffer, None)? {
+            Some(Frame::Terminal { taken }) => return Ok(taken),
+            Some(Frame::Exit(reason)) => return Err(Error::Refused(reason)),
+            Some(_) => {}
+            None => return Err(Error::Closed),
+        }
+    }
+}
+
+/// While the server reads and writes the terminal itself: passes on the
+/// terminal's new size, detaches on a signal, and waits for the server to
+/// end the attachment. The reason.
+fn watch(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, Error> {
+    let mut winch = crate::signal_pipe(&[SIGWINCH]).map_err(Error::Signals)?;
+    let stops = crate::signal_pipe(&[SIGTERM, SIGHUP, SIGINT]).map_err(Error::Signals)?;
+    let _ = stream.set_read_timeout(None);
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut stdout = std::io::stdout();
+    loop {
+        let mut fds = [
+            PollFd::new(&*stream, PollFlags::IN),
+            PollFd::new(&winch, PollFlags::IN),
+            PollFd::new(&stops, PollFlags::IN),
+        ];
+        match fuxix::poll::poll(&mut fds, None) {
+            Ok(_) | Err(fuxix::Errno::INTR) => {}
+            Err(e) => return Err(Error::Poll(e)),
+        }
+        let ready = fds.each_ref().map(PollFd::revents);
+        let is = |i: usize| ready.get(i).is_some_and(|f| !f.is_empty());
+        if is(2) {
+            let _ = send(stream, &Frame::Detach);
+            return Ok("detached by a signal".into());
+        }
+        if is(1) {
+            crate::drain(&mut winch);
+            let (rows, cols) = window_size();
+            send(stream, &Frame::Resize { rows, cols })?;
+        }
+        if is(0) {
+            match stream.read(&mut buffer) {
+                Ok(0) => return Ok("the server closed the connection".into()),
+                Ok(n) => decoder.push(buffer.get(..n).unwrap_or_default()),
+                Err(e) if matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock) => {}
+                Err(e) => return Err(Error::Read(e)),
+            }
+            while let Some(raw) = decoder.raw()? {
+                // A paint relayed after all goes on to the terminal.
+                if let Some(bytes) = raw.paint() {
+                    note_title(bytes);
+                    stdout.write_all(bytes).map_err(Error::WriteTerminal)?;
+                    continue;
+                }
+                if let Frame::Exit(reason) = raw.decode()? {
+                    return Ok(reason);
+                }
+            }
+            let _ = stdout.flush();
+        }
     }
 }
 

@@ -67,24 +67,41 @@ impl Session {
             return;
         }
         let changes = self.changes();
+        // Whether any of the input may have changed what a client shows.
+        let mut shown = false;
         for input in inputs {
             if !self.views.contains_key(&client) {
                 break;
             }
             match input {
-                Input::Key(stroke) => self.key(client, stroke),
-                Input::Paste(text) => self.paste(client, &text),
-                Input::PasteTooLong => self.error_to(client, "paste exceeds 64 KiB; discarded"),
+                Input::Key(stroke) => shown |= self.key(client, stroke),
+                Input::Paste(text) => {
+                    shown = true;
+                    self.paste(client, &text);
+                }
+                Input::PasteTooLong => {
+                    shown = true;
+                    self.error_to(client, "paste exceeds 64 KiB; discarded");
+                }
+                // A focus change or a mouse report for the program shows
+                // nothing until it answers.
                 Input::FocusIn | Input::FocusOut => {
                     self.focus_event(client, input == Input::FocusIn)
                 }
-                Input::Reply(reply) => self.terminal_reply(client, reply),
+                Input::Reply(reply) => {
+                    shown = true;
+                    self.terminal_reply(client, reply);
+                }
                 Input::Mouse(event) => self.mouse(client, event),
             }
         }
+        // Keys a pane's program reads show when its output does: nothing
+        // to paint or settle until then.
+        if !shown && self.changes() == changes {
+            return;
+        }
         // A command the input ran repainted every client already; else only
-        // this client's screen changed: its mode, notice or overlay. A key
-        // a pane's program reads shows when its output does.
+        // this client's screen changed: its mode, notice or overlay.
         if self.changes() == changes
             && let Some(view) = self.views.get_mut(&client)
         {
@@ -94,11 +111,22 @@ impl Session {
     }
 
     /// A key: matched as its press, and given to a pane as it was typed.
-    fn key(&mut self, client: ClientId, stroke: Keystroke) {
+    /// Whether it may have changed what the client shows: a key given to
+    /// the focused pane's program in normal mode, no notice showing, shows
+    /// nothing until the program answers.
+    fn key(&mut self, client: ClientId, stroke: Keystroke) -> bool {
         let press = stroke.press;
         let Some(view) = self.views.get_mut(&client) else {
-            return;
+            return false;
         };
+        let forwarded = matches!(view.mode, Mode::Normal)
+            && view.notice.is_none()
+            && press != self.config.prefix
+            && !self.config.root.iter().any(|b| b.keys == [press]);
+        if forwarded {
+            overlay::send_key(self, client, stroke);
+            return false;
+        }
         view.dirty = true;
         match &view.mode {
             Mode::Copy(_) => crate::copy::key(self, client, press),
@@ -120,6 +148,7 @@ impl Session {
                 }
             }
         }
+        true
     }
 
     fn paste(&mut self, client: ClientId, text: &str) {
