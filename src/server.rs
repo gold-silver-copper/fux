@@ -908,7 +908,7 @@ impl Server {
     }
 
     /// Reads what a client sent until it has sent no more, or `CONN_READ`
-    /// bytes, or 256 whole frames, or a bad one; then handles each whole
+    /// bytes, or more than 256 whole frames, or a bad one; then handles each whole
     /// frame, in order.
     fn read_conn(&mut self, index: usize, now: Instant) {
         // The frames read and checked, and where they end in the decoder.
