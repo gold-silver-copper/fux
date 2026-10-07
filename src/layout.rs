@@ -338,7 +338,8 @@ pub fn normalize(node: &mut Node) {
 
 /// Swaps two panes' places in one tree.
 pub fn swap(node: &mut Node, a: PaneId, b: PaneId) {
-    // Via a placeholder no real pane uses.
+    // Via a placeholder no real pane uses: ids are handed out below
+    // u32::MAX, as `session::advance` refuses the one that would wrap.
     let hole = PaneId(u32::MAX);
     node.replace(a, hole);
     node.replace(b, a);
