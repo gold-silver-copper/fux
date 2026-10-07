@@ -414,7 +414,8 @@ impl Pane {
     }
 
     /// Reads program output into the screen. Returns whether a reply had to
-    /// be dropped because the program is not reading its input.
+    /// be dropped because the program is not reading its input, the first
+    /// time one is in the pane's life (`reply_dropped`).
     ///
     /// A frame the program draws in synchronized output (from `CSI ? 2026 h`,
     /// BSU, to `CSI ? 2026 l`, ESU) is held, unread, until it ends, then read
