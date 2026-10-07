@@ -434,12 +434,22 @@ fn send_with_terminal(
 }
 
 /// The server's first answer to an `Attach` sent with the terminal: whether
-/// it took it. A server that ends the attachment first says why.
+/// it took it. A server that ends the attachment first says why. A paint
+/// first says it did not: the server sends `Frame::Terminal` before any
+/// paint, and one that never got the descriptor (lost on its way) sends
+/// none, and relays; the paint is written, as relaying writes it.
 fn terminal_taken(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<bool, Error> {
     let mut buffer = vec![0u8; 4096];
     loop {
         match read_frame(stream, decoder, &mut buffer, None)? {
             Some(Frame::Terminal { taken }) => return Ok(taken),
+            Some(Frame::Paint(bytes)) => {
+                note_title(&bytes);
+                let mut stdout = std::io::stdout();
+                stdout.write_all(&bytes).map_err(Error::WriteTerminal)?;
+                let _ = stdout.flush();
+                return Ok(false);
+            }
             Some(Frame::Exit(reason)) => return Err(Error::Refused(reason)),
             Some(_) => {}
             None => return Err(Error::Closed),
@@ -547,6 +557,29 @@ fn take_frames(decoder: &mut Decoder, stdout: &mut impl Write) -> Result<Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A server that never says whether it took the terminal (the
+    /// descriptor lost on its way) relays paints: the first one says the
+    /// terminal was not taken, and the client relays from there, rather
+    /// than waiting for a `Frame::Terminal` that does not come.
+    #[test]
+    fn a_paint_before_frame_terminal_says_the_terminal_was_not_taken() -> Result<(), String> {
+        let (mut client, mut server) = UnixStream::pair().map_err(|e| e.to_string())?;
+        let paint = Frame::Paint(Vec::new())
+            .encode()
+            .map_err(|e| e.to_string())?;
+        server.write_all(&paint).map_err(|e| e.to_string())?;
+        let (done, ended) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut decoder = Decoder::default();
+            let _ = done.send(terminal_taken(&mut client, &mut decoder).map_err(|e| e.to_string()));
+        });
+        let taken = ended
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| "still waiting for Frame::Terminal after 5 s")??;
+        assert!(!taken);
+        Ok(())
+    }
 
     /// Frames read with `Frame::Terminal`, before the attachment's loop
     /// began, are taken at once, though no more bytes come: a paint is
