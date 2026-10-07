@@ -999,7 +999,8 @@ impl Screen {
     pub fn mark(&self) -> Mark {
         Mark(self.version)
     }
-    /// Whether anything a reader sees changed since `mark`.
+    /// Whether the screen may have changed since `mark`: true after any
+    /// processing at all, as the README says; false, nothing changed.
     pub fn changed_since(&self, mark: Mark) -> bool {
         mark.0 != self.version
     }
@@ -1532,8 +1533,10 @@ impl Screen {
         Ok(())
     }
 
-    /// Copy an ASCII run directly to cells until a wide-cell collision or right
-    /// margin requires the general glyph path. Never enters parser dispatch.
+    /// Prints a run of ASCII straight into cells, wrapping at the right
+    /// margin itself (`wrap_for`); a cell that needs the general glyph path
+    /// (a wide glyph's half there, a cluster to extend) takes `print`.
+    /// Never enters parser dispatch.
     pub(crate) fn ascii(&mut self, mut bytes: &[u8]) -> Result<(), Error> {
         // DEC Special Graphics print other characters, and insert mode
         // moves what is there, one glyph at a time.

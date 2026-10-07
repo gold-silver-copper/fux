@@ -59,8 +59,9 @@ impl<'a> Hyperlink<'a> {
     /// A number that identifies the link among the parser's links, never
     /// given to another: cells with the same key are one link, as the spec
     /// groups them. Each `OSC 8` with a URI and no `id` opens a link of its
-    /// own; one with an `id` and a URI already open on the screen, the same
-    /// link again.
+    /// own; one with an `id` and a URI the screen still holds a link for
+    /// (in its history too; each screen holds its own), the same link
+    /// again.
     pub fn key(&self) -> u64 {
         self.key
     }
