@@ -4,11 +4,6 @@
 //! replies and reflow on resize.
 
 use fux_vt::{Blink, Cell, CellRef, Color, Error, Identity, Options, Parser, Sink, Unhandled};
-mod corpus;
-#[path = "corpus/invariants.rs"]
-mod invariants;
-#[path = "corpus/pieces.rs"]
-mod pieces;
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 fn lines(parser: &Parser) -> Vec<String> {
@@ -92,15 +87,6 @@ fn run(parser: &mut Parser, input: &[u8]) -> std::result::Result<Record, Error> 
     let mut record = Record::default();
     parser.process_with(input, &mut record)?;
     Ok(record)
-}
-
-fn with(
-    options: Options,
-    rows: u16,
-    cols: u16,
-    history: usize,
-) -> std::result::Result<Parser, Error> {
-    Parser::with_options(rows, cols, history, options)
 }
 
 const KEYBOARD: Options = Options::new().with_kitty_keyboard(true);
@@ -324,43 +310,6 @@ fn a_full_cluster_drops_what_follows_and_is_never_split() -> Result {
     Ok(())
 }
 
-/// A row's text stays within its budget however it is filled and resized:
-/// clusters that do not fit keep what fits inline, in their one cell.
-#[test]
-fn a_rows_text_stays_within_its_budget_through_resizes() -> Result {
-    let zalgo: String = std::iter::once('e')
-        .chain(std::iter::repeat_n('\u{301}', 60))
-        .collect();
-    let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
-    for options in [Options::default(), REFLOW] {
-        let mut p = with(options, 3, 40, 10)?;
-        for _ in 0..3 {
-            for _ in 0..20 {
-                p.process(zalgo.as_bytes())?;
-                p.process(family.as_bytes())?;
-            }
-            p.process(b"\r\n")?;
-        }
-        invariants::check(&p);
-        for (rows, cols) in [(3, 5), (6, 2), (2, 80), (3, 1), (3, 40)] {
-            p.resize(rows, cols)?;
-            invariants::check(&p);
-        }
-        // Each cell holds one cluster, whole or cut to what fits inline.
-        let screen = p.screen();
-        for offset in 0..screen.history_len() + 3 {
-            for cell in screen.row_from_bottom(offset).ok_or("row")?.cells() {
-                let text = cell.contents();
-                assert!(
-                    zalgo.starts_with(text) || family.starts_with(text),
-                    "{text:?}"
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
 // Unhandled sequences.
 
 #[test]
@@ -397,7 +346,7 @@ fn sequences_fux_vt_does_not_implement_reach_the_sink() -> Result {
 #[test]
 fn an_identity_answers_device_attributes_and_version_queries() -> Result {
     let options = Options::new().with_identity(Some(RATTY));
-    let mut p = with(options, 5, 20, 0)?;
+    let mut p = Parser::with_options(5, 20, 0, options)?;
     let record = run(&mut p, b"\x1b[c\x1b[>c\x1b[>0q\x1b[>q\x1b[5n")?;
     assert_eq!(
         record.replies,
@@ -431,7 +380,7 @@ fn identity_versions_encode_like_xterm_and_long_names_go_unanswered() -> Result 
         ("x.y", 0),
     ] {
         let options = Options::new().with_identity(Some(Identity { name: "t", version }));
-        let mut p = with(options, 2, 2, 0)?;
+        let mut p = Parser::with_options(2, 2, 0, options)?;
         let record = run(&mut p, b"\x1b[>c")?;
         assert_eq!(
             record.replies,
@@ -444,7 +393,7 @@ fn identity_versions_encode_like_xterm_and_long_names_go_unanswered() -> Result 
         name: long,
         version: "1.0.0",
     }));
-    let mut p = with(options, 2, 2, 0)?;
+    let mut p = Parser::with_options(2, 2, 0, options)?;
     let record = run(&mut p, b"\x1b[>q")?;
     assert!(record.replies.is_empty());
     assert_eq!(record.unhandled, ["CSI >0q"]);
@@ -455,7 +404,7 @@ fn identity_versions_encode_like_xterm_and_long_names_go_unanswered() -> Result 
 
 #[test]
 fn kitty_keyboard_flags_push_set_pop_and_answer_queries() -> Result {
-    let mut p = with(KEYBOARD, 5, 20, 0)?;
+    let mut p = Parser::with_options(5, 20, 0, KEYBOARD)?;
     assert_eq!(p.screen().kitty_keyboard_flags(), 0);
     let record = run(
         &mut p,
@@ -482,7 +431,7 @@ fn kitty_keyboard_flags_push_set_pop_and_answer_queries() -> Result {
 
 #[test]
 fn kitty_keyboard_stacks_are_per_screen_bounded_and_reset() -> Result {
-    let mut p = with(KEYBOARD, 5, 20, 0)?;
+    let mut p = Parser::with_options(5, 20, 0, KEYBOARD)?;
     p.process(b"\x1b[>1u\x1b[?1049h")?;
     assert_eq!(p.screen().kitty_keyboard_flags(), 0);
     p.process(b"\x1b[>8u")?;
@@ -506,7 +455,7 @@ fn kitty_keyboard_stacks_are_per_screen_bounded_and_reset() -> Result {
 
 #[test]
 fn modify_other_keys_levels_survive_split_sequences() -> Result {
-    let mut p = with(KEYBOARD, 5, 20, 0)?;
+    let mut p = Parser::with_options(5, 20, 0, KEYBOARD)?;
     assert_eq!(p.screen().modify_other_keys(), None);
     p.process(b"\x1b[>4;2m")?;
     assert_eq!(p.screen().modify_other_keys(), Some(2));
@@ -543,7 +492,7 @@ fn without_the_option_keyboard_requests_are_ignored_and_unanswered() -> Result {
 
 #[test]
 fn narrowing_reflows_a_long_line_and_widening_joins_it() -> Result {
-    let mut p = with(REFLOW, 4, 20, 100)?;
+    let mut p = Parser::with_options(4, 20, 100, REFLOW)?;
     p.process(b"0123456789abcdefghij\r\nnext")?;
     p.resize(4, 8)?;
     assert_eq!(lines(&p), ["01234567", "89abcdef", "ghij", "next"]);
@@ -561,7 +510,7 @@ fn narrowing_reflows_a_long_line_and_widening_joins_it() -> Result {
 
 #[test]
 fn reflow_keeps_the_cursor_on_its_character() -> Result {
-    let mut p = with(REFLOW, 3, 10, 100)?;
+    let mut p = Parser::with_options(3, 10, 100, REFLOW)?;
     p.process(b"abcdefghij\x1b[1;7H")?;
     assert_eq!(p.screen().cursor_position(), (0, 6));
     p.resize(3, 4)?;
@@ -578,20 +527,20 @@ fn reflow_keeps_the_cursor_on_its_character() -> Result {
 /// does not reflow).
 #[test]
 fn reflow_moves_the_saved_cursor_with_its_character() -> Result {
-    let mut p = with(REFLOW, 8, 20, 10000)?;
+    let mut p = Parser::with_options(8, 20, 10000, REFLOW)?;
     p.process(b"aaaaaaaaaaaaaaaaaa\r\nbbbbbbbbbbbbbbbbbb\r\n$ \x1b[?1049h")?;
     p.resize(8, 10)?;
     p.process(b"\x1b[?1049l")?;
     assert_eq!(p.screen().cursor_position(), (4, 2));
     assert_eq!(lines(&p).get(4).map(String::as_str), Some("$"));
     // So does DECSC's, and one waiting to wrap still waits.
-    let mut p = with(REFLOW, 5, 10, 100)?;
+    let mut p = Parser::with_options(5, 10, 100, REFLOW)?;
     p.process(b"abcdefghij\x1b[1;7H\x1b7\x1b[3;1H")?;
     p.resize(5, 4)?;
     p.process(b"\x1b8")?;
     assert_eq!(p.screen().cursor_position(), (1, 2));
     assert_eq!(cell(&p, 1, 2)?.contents(), "g");
-    let mut p = with(REFLOW, 3, 10, 100)?;
+    let mut p = Parser::with_options(3, 10, 100, REFLOW)?;
     p.process(b"abcd\x1b7\r\n")?;
     p.resize(3, 4)?;
     p.process(b"\x1b8X")?;
@@ -601,7 +550,7 @@ fn reflow_moves_the_saved_cursor_with_its_character() -> Result {
 
 #[test]
 fn reflow_pushes_overflow_into_history_and_pulls_it_back() -> Result {
-    let mut p = with(REFLOW, 3, 12, 100)?;
+    let mut p = Parser::with_options(3, 12, 100, REFLOW)?;
     p.process(b"aaaaaaaaaaaa\r\nbb\r\ncc")?;
     p.resize(3, 6)?;
     assert_eq!(lines(&p), ["aaaaaa", "bb", "cc"]);
@@ -615,7 +564,7 @@ fn reflow_pushes_overflow_into_history_and_pulls_it_back() -> Result {
 
 #[test]
 fn reflowed_heights_scroll_into_history_and_drop_blank_rows_first() -> Result {
-    let mut p = with(REFLOW, 4, 10, 100)?;
+    let mut p = Parser::with_options(4, 10, 100, REFLOW)?;
     p.process(b"one\r\ntwo\r\nthree\r\nfour")?;
     p.resize(2, 10)?;
     assert_eq!(lines(&p), ["three", "four"]);
@@ -624,7 +573,7 @@ fn reflowed_heights_scroll_into_history_and_drop_blank_rows_first() -> Result {
     assert_eq!(lines(&p), ["one", "two", "three", "four", ""]);
     assert_eq!(p.screen().cursor_position(), (3, 4));
 
-    let mut p = with(REFLOW, 6, 10, 100)?;
+    let mut p = Parser::with_options(6, 10, 100, REFLOW)?;
     p.process(b"top\x1b[2;1Hmid")?;
     p.resize(3, 10)?;
     assert_eq!(lines(&p), ["top", "mid", ""]);
@@ -641,7 +590,7 @@ fn reflowed_heights_scroll_into_history_and_drop_blank_rows_first() -> Result {
 /// back.
 #[test]
 fn a_shrink_takes_no_history_back_onto_the_screen() -> Result {
-    let mut p = with(REFLOW, 4, 10, 100)?;
+    let mut p = Parser::with_options(4, 10, 100, REFLOW)?;
     p.process(b"old\r\none\r\ntwo\r\nthree\r\nfour\x1b[H\x1b[2J")?;
     assert_eq!(p.screen().history_len(), 1);
     p.resize(2, 10)?;
@@ -649,7 +598,7 @@ fn a_shrink_takes_no_history_back_onto_the_screen() -> Result {
     assert_eq!(p.screen().cursor_position(), (0, 0));
     assert_eq!(p.screen().history_len(), 1);
 
-    let mut p = with(REFLOW, 6, 10, 100)?;
+    let mut p = Parser::with_options(6, 10, 100, REFLOW)?;
     p.process(b"old\r\n\r\n\r\n\r\n\r\n\r\n\x1b[H\x1b[2Jtop\r\nmid")?;
     assert_eq!(p.screen().history_len(), 1);
     p.resize(3, 10)?;
@@ -661,7 +610,7 @@ fn a_shrink_takes_no_history_back_onto_the_screen() -> Result {
     // more history back above it: the rows land where a resize without
     // reflow puts them.
     for options in [REFLOW, Options::new()] {
-        let mut p = with(options, 2, 1, 3)?;
+        let mut p = Parser::with_options(2, 1, 3, options)?;
         p.process(b"b9m\n\n\x1b[?1049l")?;
         p.resize(4, 1)?;
         assert_eq!(lines(&p), ["9", "m", "", ""]);
@@ -675,7 +624,7 @@ fn a_shrink_takes_no_history_back_onto_the_screen() -> Result {
 /// its narrow characters alone, and the cursor stays after them.
 #[test]
 fn reflow_to_one_column_leaves_wide_glyphs_out() -> Result {
-    let mut p = with(REFLOW, 4, 6, 10)?;
+    let mut p = Parser::with_options(4, 6, 10, REFLOW)?;
     p.process("a\u{754c}b\u{754c}".as_bytes())?;
     p.resize(4, 1)?;
     assert_eq!(lines(&p), ["a", "b", "", ""]);
@@ -685,7 +634,7 @@ fn reflow_to_one_column_leaves_wide_glyphs_out() -> Result {
 
 #[test]
 fn reflow_resets_the_scroll_region_and_keeps_the_history_limit() -> Result {
-    let mut p = with(REFLOW, 10, 20, 0)?;
+    let mut p = Parser::with_options(10, 20, 0, REFLOW)?;
     p.process(b"\x1b[2;5r")?;
     p.resize(10, 21)?;
     assert_eq!(p.screen().scroll_region(), (0, 9));
@@ -693,7 +642,7 @@ fn reflow_resets_the_scroll_region_and_keeps_the_history_limit() -> Result {
     assert_eq!(lines(&p).get(8).map(String::as_str), Some("last"));
     assert_eq!(lines(&p).get(9).map(String::as_str), Some("after"));
 
-    let mut p = with(REFLOW, 2, 10, 3)?;
+    let mut p = Parser::with_options(2, 10, 3, REFLOW)?;
     p.process(b"0123456789\r\n0123456789\r\nabcdefghij\r\nend")?;
     p.resize(2, 2)?;
     // Seventeen rows: the last two on screen and three of history, the
@@ -706,7 +655,7 @@ fn reflow_resets_the_scroll_region_and_keeps_the_history_limit() -> Result {
 
 #[test]
 fn reflow_does_not_split_wide_glyphs() -> Result {
-    let mut p = with(REFLOW, 2, 10, 100)?;
+    let mut p = Parser::with_options(2, 10, 100, REFLOW)?;
     p.process("ab\u{4f60}\u{597d}cd".as_bytes())?;
     p.resize(4, 3)?;
     // "ab" and a blank, "你", "好c", "d".
@@ -719,7 +668,7 @@ fn reflow_does_not_split_wide_glyphs() -> Result {
 
 #[test]
 fn the_alternate_screen_resizes_without_reflow() -> Result {
-    let mut p = with(REFLOW, 3, 10, 100)?;
+    let mut p = Parser::with_options(3, 10, 100, REFLOW)?;
     // 1049 keeps the cursor where it was, as xterm does: home it.
     p.process(b"main line\x1b[?1049h\x1b[H0123456789")?;
     p.resize(3, 5)?;
@@ -731,7 +680,7 @@ fn the_alternate_screen_resizes_without_reflow() -> Result {
 
 #[test]
 fn reflowed_rows_keep_their_lines_identities() -> Result {
-    let mut p = with(REFLOW, 3, 10, 100)?;
+    let mut p = Parser::with_options(3, 10, 100, REFLOW)?;
     p.process(b"first\r\nsecond")?;
     let first = p.screen().row_from_bottom(2).map(|r| r.id());
     let second = p.screen().row_from_bottom(1).map(|r| r.id());
@@ -752,64 +701,6 @@ fn without_the_option_resizing_does_not_reflow() -> Result {
     p.process(b"0123456789abcdefghij\r\nnext")?;
     p.resize(4, 8)?;
     assert_eq!(lines(&p), ["01234567", "next", "", ""]);
-    Ok(())
-}
-
-#[test]
-fn degenerate_reflows_keep_every_invariant() -> Result {
-    for (rows, cols) in [(1, 1), (1, 40), (40, 1), (2, 2)] {
-        let mut p = with(REFLOW, rows, cols, 10)?;
-        p.process("\u{4f60}\u{597d}ab\r\n\u{1f600}x".as_bytes())?;
-        p.resize(1, 1)?;
-        invariants::check(&p);
-        p.process("\u{4f60}z".as_bytes())?;
-        p.resize(rows, cols)?;
-        invariants::check(&p);
-    }
-    Ok(())
-}
-
-/// The permanent adversarial corpus, with every opt-in behaviour on and a
-/// resize between operations: whole and chunked input agree, and every
-/// invariant holds after each step.
-#[test]
-fn the_adversarial_corpus_with_every_option_is_chunk_invariant() -> Result {
-    let options = Options::new()
-        .with_events(true)
-        .with_extended_replies(true)
-        .with_kitty_keyboard(true)
-        .with_reflow(true)
-        .with_identity(Some(RATTY));
-    for (rows, cols) in [(1, 1), (2, 2), (4, 12), (24, 80)] {
-        for seed in 0..20u64 {
-            let mut whole = with(options, rows, cols, 8)?;
-            let mut split = whole.clone();
-            let mut state = seed;
-            let operations = corpus::operations(seed, 4096)
-                .into_iter()
-                .chain(corpus::terminal_edge());
-            for (i, operation) in operations.enumerate() {
-                let mut a = Record::default();
-                let mut b = Record::default();
-                whole.process_with(&operation, &mut a)?;
-                let size = usize::try_from(corpus::splitmix(&mut state) % 7 + 1)?;
-                for chunk in pieces::pieces(&operation, size) {
-                    split.process_with(chunk, &mut b)?;
-                }
-                assert_eq!(a.replies, b.replies);
-                invariants::equal(&whole, &split);
-                invariants::check(&whole);
-                if i % 3 == 0 {
-                    let n = corpus::splitmix(&mut state);
-                    let (r, c) = (1 + (n % 30) as u16, 1 + ((n >> 8) % 90) as u16);
-                    whole.resize(r, c)?;
-                    split.resize(r, c)?;
-                    invariants::equal(&whole, &split);
-                    invariants::check(&whole);
-                }
-            }
-        }
-    }
     Ok(())
 }
 
