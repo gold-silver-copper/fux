@@ -9,7 +9,7 @@ use std::ops::Range;
 /// `copy_within` panics on a range out of bounds, so fux calls it here, after
 /// this check, and nowhere else but `Grid::move_row`, whose ranges are its
 /// run's own (clippy.toml says why).
-pub fn copy_within<T: Copy>(slice: &mut [T], src: Range<usize>, dest: usize) -> Option<()> {
+fn copy_within<T: Copy>(slice: &mut [T], src: Range<usize>, dest: usize) -> Option<()> {
     let fits = src.start <= src.end
         && src.end <= slice.len()
         && dest

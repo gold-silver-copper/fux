@@ -679,9 +679,9 @@ impl Parser {
     /// answered with it rather than with xterm's default. A colour the
     /// program set still wins, and no reset of the program's colours (OSC
     /// 104, DECSTR, RIS) clears the host's. It changes no cell and no
-    /// colour drawn: [`Screen::palette_color`] stays the program's, and
-    /// [`Screen::host_color`] reads it back. Entries 0 to 15 can be given,
-    /// the ones themes change; returns whether `index` is one.
+    /// colour drawn: [`Screen::palette_color`] stays the program's. Entries
+    /// 0 to 15 can be given, the ones themes change; returns whether `index`
+    /// is one.
     pub fn set_host_color(&mut self, index: u8, rgb: Option<(u8, u8, u8)>) -> bool {
         self.screen.set_host_color(index, rgb)
     }
