@@ -209,7 +209,8 @@ impl Compact {
     /// The halves, as [`CellRef`]'s.
     #[inline]
     fn halves(&self) -> u8 {
-        u8::try_from((self.word & HALVES) >> 22).unwrap_or(0)
+        let [halves, ..] = ((self.word & HALVES) >> 22).to_le_bytes();
+        halves
     }
     /// The inline text; empty for a spilled cell.
     #[inline]
@@ -268,6 +269,21 @@ impl Compact {
             word: self.word & KEPT,
         }
     }
+    /// The cell, keeping its halves and style, holding `text` inline, if
+    /// it fits: what `Line::set` stores, without the row's text.
+    #[inline]
+    pub(crate) fn holding(self, text: &str) -> Option<Self> {
+        let mut bytes = [0; 4];
+        match (text.as_bytes(), &mut bytes) {
+            // One byte, as most text is: stored without a copy's call.
+            ([byte], [first, ..]) => *first = *byte,
+            (text, bytes) => crate::copy_from(bytes.get_mut(..text.len())?, text)?,
+        }
+        Some(Self {
+            text: bytes,
+            word: self.word & KEPT,
+        })
+    }
     /// The cell, keeping its halves and style, locating `len` bytes of its
     /// row's text from `start`; blank if `start` takes more than 24 bits.
     fn with_spilled(self, start: u32, len: u8) -> Self {
@@ -292,12 +308,7 @@ impl Compact {
         text: &'a Text,
         attributes: crate::Attributes,
     ) -> CellRef<'a> {
-        CellRef::of(
-            text.of(self),
-            attributes,
-            self.halves(),
-            self.has_contents(),
-        )
+        CellRef::of(text.of(self), attributes, self.halves())
     }
 }
 
@@ -370,18 +381,30 @@ impl Text {
     }
 }
 
-/// A row's cells with their text, to write into.
-pub(crate) struct Line<'a> {
-    pub(crate) cells: &'a mut [Compact],
+impl AsRef<Compact> for Compact {
+    fn as_ref(&self) -> &Compact {
+        self
+    }
+}
+impl AsMut<Compact> for Compact {
+    fn as_mut(&mut self) -> &mut Compact {
+        self
+    }
+}
+
+/// A row's cells with their text, to write into: a grid's cells, or a
+/// host's with their attributes beside each (`Cells`).
+pub(crate) struct Line<'a, C = Compact> {
+    pub(crate) cells: &'a mut [C],
     pub(crate) text: &'a mut Text,
 }
 
-impl Line<'_> {
+impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
     /// Adds `c` to the cluster in cell `i`; an empty cell first takes a
     /// space for `c` to follow. Whether it was kept: a cluster at
     /// [`CLUSTER_CAPACITY`], or a row out of room, drops it.
     pub(crate) fn append(&mut self, i: usize, c: char) -> bool {
-        let Some(&cell) = self.cells.get(i) else {
+        let Some(&cell) = self.cells.get(i).map(AsRef::as_ref) else {
             return false;
         };
         let current = if cell.has_contents() {
@@ -407,7 +430,7 @@ impl Line<'_> {
                 && let (Ok(start), Ok(len)) = (u32::try_from(range.start), u8::try_from(end))
             {
                 self.text.short.extend_from_slice(encoded);
-                if let Some(slot) = self.cells.get_mut(i) {
+                if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                     *slot = cell.with_spilled(start, len);
                 }
                 return true;
@@ -450,7 +473,7 @@ impl Line<'_> {
             && let (Ok(start), Ok(len)) = (u32::try_from(range.start), u8::try_from(end))
         {
             long.extend_from_slice(encoded);
-            if let Some(slot) = self.cells.get_mut(i) {
+            if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                 *slot = cell.with_spilled(start, len);
             }
             return true;
@@ -468,7 +491,7 @@ impl Line<'_> {
             return false;
         }
         long.extend_from_slice(joined.as_bytes());
-        match self.cells.get_mut(i) {
+        match self.cells.get_mut(i).map(AsMut::as_mut) {
             // Compaction may have moved it; its halves and style are as
             // they were.
             Some(slot) => {
@@ -500,7 +523,7 @@ impl Line<'_> {
         let limit = Text::long_limit(self.cells.len());
         if self.text.long.len().saturating_add(text.len()) > limit {
             // The text the cell had goes too: it is being replaced.
-            if let Some(slot) = self.cells.get_mut(i) {
+            if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                 *slot = slot.blanked();
             }
             self.compact_long();
@@ -512,7 +535,7 @@ impl Line<'_> {
         match (start, len) {
             (Ok(start), Ok(len)) if room => {
                 long.extend_from_slice(text.as_bytes());
-                if let Some(slot) = self.cells.get_mut(i) {
+                if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                     *slot = cell.with_spilled(start, len);
                 }
                 true
@@ -529,7 +552,7 @@ impl Line<'_> {
     /// the row's short text, which always has room for it once compacted.
     fn store_short(&mut self, i: usize, cell: Compact, text: &[u8]) {
         if text.len() <= INLINE {
-            if let Some(slot) = self.cells.get_mut(i) {
+            if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                 *slot = cell.with_inline(text);
             }
             return;
@@ -537,7 +560,7 @@ impl Line<'_> {
         let limit = Text::short_limit(self.cells.len());
         if self.text.short.len().saturating_add(text.len()) > limit {
             // The text the cell had goes: it is being replaced.
-            if let Some(slot) = self.cells.get_mut(i) {
+            if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                 *slot = slot.blanked();
             }
             self.compact_short();
@@ -546,7 +569,7 @@ impl Line<'_> {
         if let (Ok(start), Ok(len), Some(slot)) = (
             u32::try_from(short.len()),
             u8::try_from(text.len()),
-            self.cells.get_mut(i),
+            self.cells.get_mut(i).map(AsMut::as_mut),
         ) {
             if short.capacity() == 0 {
                 // A row with one short cluster usually has more: room for
@@ -562,7 +585,7 @@ impl Line<'_> {
     fn compact_long(&mut self) {
         let old = std::mem::take(&mut self.text.long);
         let long = &mut self.text.long;
-        for cell in self.cells.iter_mut() {
+        for cell in self.cells.iter_mut().map(AsMut::as_mut) {
             let Some(range) = cell.long() else {
                 continue;
             };
@@ -585,7 +608,7 @@ impl Line<'_> {
     fn compact_short(&mut self) {
         let old = std::mem::take(&mut self.text.short);
         let short = &mut self.text.short;
-        for cell in self.cells.iter_mut() {
+        for cell in self.cells.iter_mut().map(AsMut::as_mut) {
             let Some(range) = cell.short() else {
                 continue;
             };
@@ -606,7 +629,7 @@ impl Line<'_> {
 
     /// The text of `cells`, whose text is in `old`, stored again within
     /// their budget, left to right; `cells` are relocated into it.
-    pub(crate) fn rebuilt(cells: &mut [Compact], old: &Text) -> Text {
+    pub(crate) fn rebuilt(cells: &mut [C], old: &Text) -> Text {
         let mut text = Text::default();
         if old.is_empty() {
             return text;
@@ -614,7 +637,7 @@ impl Line<'_> {
         // Every spilled cell blanked first: until stored again, none may
         // locate text in the new store, which a compaction would misread.
         let mut spilled = Vec::new();
-        for (i, cell) in cells.iter_mut().enumerate() {
+        for (i, cell) in cells.iter_mut().map(AsMut::as_mut).enumerate() {
             if cell.is_spilled() {
                 spilled.push((i, *cell));
                 *cell = cell.blanked();
@@ -632,7 +655,9 @@ impl Line<'_> {
 
     /// Cell `i`'s text.
     pub(crate) fn text(&self, i: usize) -> &str {
-        self.cells.get(i).map_or("", |cell| self.text.of(cell))
+        self.cells
+            .get(i)
+            .map_or("", |cell| self.text.of(cell.as_ref()))
     }
 }
 
