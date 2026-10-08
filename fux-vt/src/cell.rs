@@ -585,6 +585,12 @@ impl Stored {
     fn read<'a>(&'a self, text: &'a Text) -> CellRef<'a> {
         self.cell.read_as(text, self.attributes)
     }
+    /// Whether `a`, whose text is in `text`, looks as `b`, whose text is in
+    /// `b_text`: for cells either of which keeps its text in its row's.
+    #[cold]
+    fn read_eq(a: &Stored, text: &Text, b: &Stored, b_text: &Text) -> bool {
+        a.read(text) == b.read(b_text)
+    }
 }
 
 impl Cells {
@@ -648,7 +654,7 @@ impl Cells {
             if !a.cell.is_spilled() && !b.cell.is_spilled() {
                 a == b
             } else {
-                a.attributes == b.attributes && a.cell.same_as(&self.text, &b.cell, &other.text)
+                Stored::read_eq(a, &self.text, b, &other.text)
             }
         })
     }
