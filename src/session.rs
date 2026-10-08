@@ -394,7 +394,7 @@ impl Session {
 
     /// One workspace, holding one tab with one shell.
     pub fn start(&mut self) -> Result<(), Error> {
-        self.create_workspace(Some(MAIN.into()), &[], None)
+        self.create_workspace(Some(MAIN.into()), &[], &Ctx::default())
             .map(|_| ())
     }
 
@@ -702,10 +702,9 @@ impl Session {
         &mut self,
         name: Option<String>,
         cmd: &[String],
-        ctx: Option<&Ctx>,
+        ctx: &Ctx,
     ) -> Result<WsId, Error> {
-        let default_ctx = Ctx::default();
-        let cwd = self.cwd_for(ctx.unwrap_or(&default_ctx), None);
+        let cwd = self.cwd_for(ctx, None);
         if let Some(name) = &name {
             self.check_workspace_name(name, None)?;
         }
@@ -1445,7 +1444,7 @@ impl Session {
                 Ok(out)
             }
             Command::NewWorkspace { name, cmd } => {
-                let ws = self.create_workspace(name.clone(), cmd, Some(ctx))?;
+                let ws = self.create_workspace(name.clone(), cmd, ctx)?;
                 if let Some(view) = ctx.client.and_then(|c| self.views.get_mut(&c)) {
                     view.workspace = ws;
                     view.zoom = false;
