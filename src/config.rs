@@ -1,7 +1,7 @@
 //! The running configuration: options and key bindings, changed by `set`,
 //! `bind`, `unbind` and `unbind-all`, whether they come from the config file,
 //! the CLI or the command prompt.
-use crate::command::{self, ClientAction, Command, Kind, Usage};
+use crate::command::{self, Command, Usage};
 use crate::keys::{Key, KeyPress};
 use crate::words;
 use std::path::{Path, PathBuf};
@@ -394,10 +394,6 @@ impl Default for Config {
     }
 }
 
-/// The groups of the command column, in order; custom groups follow them,
-/// and `Other` is last.
-pub const GROUPS: &[&str] = &["Panes", "Focus", "Tabs", "Workspaces", "Session"];
-
 impl Binding {
     /// The keys after `path`, if the binding is in the layer at `path`:
     /// one or more of them.
@@ -413,41 +409,7 @@ impl Binding {
 
     /// The group its command belongs to, whatever `-g` said.
     pub fn derived_group(&self) -> &'static str {
-        let name = self.command.first().map(String::as_str).unwrap_or("");
-        // A command on any kind is listed by the kind it acts on, given or
-        // its target's.
-        let (Command::Reorder { kind, .. }
-        | Command::Client {
-            action:
-                ClientAction::Menu { kind, .. }
-                | ClientAction::RenamePrompt { kind, .. }
-                | ClientAction::ConfirmClose { kind, .. },
-            ..
-        }) = &self.parsed
-        else {
-            return group_by_name(name);
-        };
-        match kind {
-            Kind::Tab => "Tabs",
-            Kind::Workspace => "Workspaces",
-            Kind::Pane => group_by_name(name),
-        }
-    }
-}
-
-/// The group a command's name puts it in.
-fn group_by_name(name: &str) -> &'static str {
-    match name {
-        "select-pane" => "Focus",
-        "split" | "kill-pane" | "zoom" | "resize-pane" | "swap-pane" | "move-pane"
-        | "copy-mode" | "paste-buffer" | "menu" | "rename-prompt" | "confirm-close"
-        | "terminate" | "choose-pane" | "send-keys" | "send-prefix" | "reorder" => "Panes",
-        "new-tab" | "select-tab" | "choose-tab" | "kill-tab" => "Tabs",
-        "new-workspace" | "select-workspace" | "choose-workspace" | "kill-workspace" => {
-            "Workspaces"
-        }
-        "detach" | "command-prompt" | "command-column" | "reload" | "kill-server" => "Session",
-        _ => "Other",
+        command::group(&self.command, &self.parsed)
     }
 }
 
