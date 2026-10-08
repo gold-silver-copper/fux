@@ -651,7 +651,7 @@ that ask for it.
 | Crate | Why |
 | --- | --- |
 | `fux-vt` (path, 0.3.4) | Emulator |
-| `fuxix` (path, 0.1.7) | fux's system calls over `libc`, each safe to call: PTYs, processes, poll, sockets, terminal modes; its README says why each is not std's |
+| `fuxix` (path, 0.2.0) | fux's system calls over `libc`, each safe to call: PTYs, processes, poll, sockets, terminal modes; its README says why each is not std's |
 | `signal-hook` | Signal → self-pipe (fuxix installs no handlers) |
 | `unicode-width` | Bar and overlay layout (already in the graph through fux-vt) |
 

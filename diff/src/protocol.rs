@@ -141,7 +141,7 @@ macro_rules! stack {
         mod $name {
             use super::Spec;
             use $fux::bytes::ByteQueue;
-            use $fux::protocol::{self, Decoder, Frame, Role, Stream};
+            use $fux::protocol::{Decoder, Frame, Role, Stream};
 
             fn frame(spec: &Spec) -> Frame {
                 let role = |r: u8| match r {
@@ -206,11 +206,6 @@ macro_rules! stack {
                     stream.encode_into(&payload, &mut queue);
                     out.extend_from_slice(queue.as_slice());
                 }
-                let mut input = b"before".to_vec();
-                let framed =
-                    protocol::encode_input(&payload, &mut input).map_err(|e| format!("{e:?} {e}"));
-                out.extend(format!("{framed:?}").into_bytes());
-                out.extend(input);
                 out
             }
 
