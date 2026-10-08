@@ -180,13 +180,9 @@ pub enum Command {
         target: Option<AnyRef>,
         toward: Sibling,
     },
-    Set {
-        argv: Vec<String>,
-    },
-    Bind {
-        argv: Vec<String>,
-    },
-    Unbind {
+    /// `set`, `bind` or `unbind`, as the config file has them: the whole
+    /// line, for `Config::apply`.
+    Configure {
         argv: Vec<String>,
     },
     UnbindAll,
@@ -433,11 +429,6 @@ pub fn parse_client(text: &str) -> Result<ClientId, Usage> {
         None => Err(Usage::NotClient(text.to_owned())),
     }
 }
-fn parse_kind(text: &str) -> Option<Kind> {
-    [Kind::Pane, Kind::Tab, Kind::Workspace]
-        .into_iter()
-        .find(|k| k.name() == text)
-}
 fn direction_flag(flag: &str) -> Option<Direction> {
     Direction::ALL.into_iter().find(|d| d.flag() == flag)
 }
@@ -495,11 +486,19 @@ impl<'a> Args<'a> {
             None => Ok(()),
         }
     }
-    fn not_kind(&self, word: &str) -> Usage {
-        Usage::NotKind {
+    /// The kind a positional names, if one is given: `pane`, `tab` or
+    /// `workspace`.
+    fn kind(&mut self) -> Result<Option<Kind>, Usage> {
+        let Some(word) = self.positional.pop() else {
+            return Ok(None);
+        };
+        let kind = [Kind::Pane, Kind::Tab, Kind::Workspace]
+            .into_iter()
+            .find(|k| k.name() == word);
+        kind.map(Some).ok_or_else(|| Usage::NotKind {
             command: self.name.to_owned(),
             word: word.to_owned(),
-        }
+        })
     }
     /// The flags, in order, of those `takes` names (space-separated); any
     /// other is refused where it stands, and each value is parsed there,
@@ -519,6 +518,7 @@ impl<'a> Args<'a> {
             axis: None,
             direction: None,
             pick: None,
+            lines: None,
             json: false,
             moving: false,
         };
@@ -543,6 +543,11 @@ impl<'a> Args<'a> {
                         value: value.to_owned(),
                     })?);
                 }
+                "-S" => {
+                    let value = self.value(flag)?;
+                    let lines = value.strip_prefix('-').unwrap_or(value).parse();
+                    f.lines = Some(lines.map_err(|_| Usage::NotLines(value.to_owned()))?);
+                }
                 "--to" => f.to = Some(parse_move_to(self.value(flag)?)?),
                 "-h" => f.axis = Some(Axis::Horizontal),
                 "-v" => f.axis = Some(Axis::Vertical),
@@ -559,8 +564,8 @@ impl<'a> Args<'a> {
 /// What a command line's flags gave, as `Args::flags` found them: `-t`'s
 /// target, as the command parses it; `-c`'s client; `-n`'s name; `-b`'s
 /// buffer; where `--to` or a direction moves a pane; `-h` or `-v`; the
-/// last direction flag; `--next`, `--previous` or `--last`; `--json`;
-/// `--move`.
+/// last direction flag; `--next`, `--previous` or `--last`; `-S`'s lines;
+/// `--json`; `--move`.
 struct Flags<'a, T> {
     target: Option<T>,
     client: Option<ClientId>,
@@ -570,6 +575,7 @@ struct Flags<'a, T> {
     axis: Option<Axis>,
     direction: Option<Direction>,
     pick: Option<&'a str>,
+    lines: Option<usize>,
     json: bool,
     moving: bool,
 }
@@ -736,40 +742,17 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
             });
         }
         "capture-pane" => {
-            let (mut target, mut history, mut json) = (None, None, false);
-            let mut iter = words.iter();
-            while let Some(word) = iter.next() {
-                match word.as_str() {
-                    "-t" => {
-                        let value = iter.next().ok_or_else(|| needs_value(name, "-t"))?;
-                        target = Some(parse_pane(value)?);
-                    }
-                    "-S" => {
-                        let value = iter.next().ok_or_else(|| needs_value(name, "-S"))?;
-                        let lines = value
-                            .strip_prefix('-')
-                            .unwrap_or(value)
-                            .parse::<usize>()
-                            .map_err(|_| Usage::NotLines(value.clone()))?;
-                        history = Some(lines);
-                    }
-                    "--json" => json = true,
-                    other => return a.unknown(other),
-                }
+            let f = a.flags("-t -S --json", parse_pane)?;
+            Command::CapturePane {
+                target: f.target,
+                history: f.lines,
+                json: f.json,
             }
-            return Ok(Command::CapturePane {
-                target,
-                history,
-                json,
-            });
         }
         "reorder" => {
             let f = a.flags("-t --next --previous", Ok)?;
             let target = f.target.map(parse_any).transpose()?;
-            let given = match a.positional.pop() {
-                Some(k) => Some(parse_kind(k).ok_or_else(|| a.not_kind(k))?),
-                None => None,
-            };
+            let given = a.kind()?;
             same_kind(given, f.target.zip(target.as_ref()))?;
             let kind = given
                 .or(target.as_ref().map(AnyRef::kind))
@@ -786,11 +769,8 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
             }
         }
         "set" | "bind" | "unbind" => {
-            let argv = argv.to_vec();
-            return Ok(match name {
-                "set" => Command::Set { argv },
-                "bind" => Command::Bind { argv },
-                _ => Command::Unbind { argv },
+            return Ok(Command::Configure {
+                argv: argv.to_vec(),
             });
         }
         "unbind-all" => {
@@ -844,10 +824,7 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
             let (client, target, pick, direction) = (f.client, f.target, f.pick, f.direction);
             // Only these name a kind: pane, tab or workspace.
             let kind = match name {
-                "menu" | "rename-prompt" | "confirm-close" => match a.positional.pop() {
-                    Some(k) => Some(parse_kind(k).ok_or_else(|| a.not_kind(k))?),
-                    None => None,
-                },
+                "menu" | "rename-prompt" | "confirm-close" => a.kind()?,
                 _ => None,
             };
             a.no_positional()?;
@@ -1103,24 +1080,12 @@ mod tests {
 
     #[test]
     fn bad_command_lines_are_usage_errors() {
+        // Beside those `usage_errors_keep_their_words` words.
         for line in [
-            "",
-            "nope",
-            "split",
             "split -h -t 3",
-            "kill-tab -t %1",
-            "rename -t %1",
             "rename %1 x",
-            "move-pane",
             "resize-pane -t %1",
-            "resize-pane -L zero",
-            "send-keys -t %1",
-            "select-pane",
             "select-pane --next -L",
-            "ls extra",
-            "kill-pane -- x",
-            "detach -c zz",
-            "new-tab -t %1",
             // Commands that take nothing take nothing.
             "kill-server now",
             // A kind beside a target of another kind.
@@ -1190,6 +1155,11 @@ mod tests {
             ("capture-pane -t", "capture-pane -t needs a value"),
             ("capture-pane -S", "capture-pane -S needs a value"),
             ("capture-pane --nope", "capture-pane: unknown flag --nope"),
+            // An argument is not a flag, unknown or not.
+            (
+                "capture-pane foo",
+                r#"capture-pane: unexpected argument "foo""#,
+            ),
             ("send-keys -t", "send-keys -t needs a value"),
             ("kill-pane -- x", "kill-pane takes no command after --"),
             ("split", "split needs -h (side by side) or -v (stacked)"),
