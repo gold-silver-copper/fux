@@ -82,9 +82,6 @@ struct Conn {
     tty: Option<TakenTerminal>,
     /// A descriptor the client sent, until the `Attach` it came with.
     passed: Option<std::os::fd::OwnedFd>,
-    /// The size the client's view was last given: its terminal's, which
-    /// `serve_tty` looks at before the keys it reads.
-    size: (u16, u16),
 }
 
 /// When a client may be painted next: `PAINT` after its last paint, as a
@@ -224,7 +221,6 @@ impl Conn {
             dead: false,
             tty: None,
             passed: None,
-            size: (0, 0),
         }
     }
 
@@ -723,7 +719,7 @@ impl Server {
                         ));
                     }
                     let euid = fuxix::process::geteuid();
-                    match crate::socket::peer_uid(&stream) {
+                    match fuxix::socket::peer_uid(&stream) {
                         Ok(uid) if uid == euid => {}
                         Ok(uid) => {
                             log(&format!(
@@ -780,7 +776,7 @@ impl Server {
     /// shortage is logged when it starts, then at most every `REPORT_EVERY`.
     fn refuse(&mut self, stream: UnixStream) {
         let euid = fuxix::process::geteuid();
-        if crate::socket::peer_uid(&stream).is_ok_and(|uid| uid == euid)
+        if fuxix::socket::peer_uid(&stream).is_ok_and(|uid| uid == euid)
             && stream.set_nonblocking(true).is_ok()
             && let Ok(bytes) = Frame::Exit(NO_DESCRIPTORS.into()).encode()
         {
@@ -821,7 +817,9 @@ impl Server {
     /// keys to read. A terminal that closed detaches its client, as a
     /// client whose terminal closes detaches itself.
     fn serve_tty(&mut self, index: usize, flags: PollFlags, now: Instant) {
-        let Some(conn) = self.conns.get_mut(index) else {
+        // A connection that died this tick is closed at its end, its client
+        // detached: its keys are not taken.
+        let Some(conn) = self.conns.get_mut(index).filter(|c| !c.dead) else {
             return;
         };
         if flags.contains(PollFlags::OUT) {
@@ -839,9 +837,8 @@ impl Server {
             && let Ok(size) = fuxix::terminal::window_size(&tty.fd)
             && size.0 > 0
             && size.1 > 0
-            && size != conn.size
+            && self.session.views.get(&client).map(|v| (v.rows, v.cols)) != Some(size)
         {
-            conn.size = size;
             conn.painted = false;
             self.session.resize(client, size.0, size.1);
         }
@@ -897,14 +894,8 @@ impl Server {
     }
 
     fn write_conn(&mut self, index: usize) {
-        let Some(conn) = self.conns.get_mut(index) else {
-            return;
-        };
-        conn.flush();
-        if conn.dead
-            && let Some(client) = conn.client.take()
-        {
-            self.session.detach(client);
+        if let Some(conn) = self.conns.get_mut(index) {
+            conn.flush();
         }
     }
 
@@ -920,21 +911,15 @@ impl Server {
         };
         loop {
             // A client may send its terminal with its `Attach`.
-            let got = match fuxix::socket::recv_with_fd(&conn.stream, &mut self.read_buffer) {
+            match fuxix::socket::recv_with_fd(&conn.stream, &mut self.read_buffer) {
+                Ok((0, _)) => {
+                    closed = true;
+                    break;
+                }
                 Ok((n, fd)) => {
                     if fd.is_some() {
                         conn.passed = fd;
                     }
-                    Ok(n)
-                }
-                Err(errno) => Err(std::io::Error::from_raw_os_error(errno.raw())),
-            };
-            match got {
-                Ok(0) => {
-                    closed = true;
-                    break;
-                }
-                Ok(n) => {
                     read = read.saturating_add(n);
                     conn.decoder
                         .push(self.read_buffer.get(..n).unwrap_or_default());
@@ -949,8 +934,8 @@ impl Server {
                         break;
                     }
                 }
-                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(fuxix::Errno::AGAIN) => break,
+                Err(fuxix::Errno::INTR) => continue,
                 Err(_) => {
                     closed = true;
                     break;
@@ -980,12 +965,7 @@ impl Server {
         }
         if let Some(conn) = self.conns.get_mut(index) {
             conn.decoder.shrink(CONN_KEEP);
-            if closed {
-                conn.dead = true;
-                if let Some(client) = conn.client.take() {
-                    self.session.detach(client);
-                }
-            }
+            conn.dead |= closed;
         }
     }
 
@@ -1039,7 +1019,6 @@ impl Server {
                 match self.session.attach(rows, cols, workspace.as_deref()) {
                     Ok(client) => {
                         conn.client = Some(client);
-                        conn.size = (rows, cols);
                         conn.clock.paint_now();
                         // The client's terminal, if it sent it: taken, the
                         // client is told before anything is painted.
@@ -1060,7 +1039,6 @@ impl Server {
             }
             (Role::Attach, Frame::Resize { rows, cols }) => {
                 if let Some(client) = conn.client {
-                    conn.size = (rows, cols);
                     conn.painted = false;
                     self.session.resize(client, rows, cols);
                 }
@@ -1219,14 +1197,14 @@ impl Server {
         for mut dying in due {
             // The master closes first: a dying writer can hold on to it.
             dying.master = None;
-            if crate::process::finish(dying.pid).is_none() {
+            if !crate::process::finish(dying.pid) {
                 // Killed but not yet exited: reaped on a later tick. When the
                 // server itself is stopping, it waits for it here instead.
                 if all {
                     // At most a second: a process stuck in the kernel is
                     // left to init rather than hold the exit.
                     for _ in 0..500 {
-                        if crate::process::finish(dying.pid).is_some() {
+                        if crate::process::finish(dying.pid) {
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(2));
