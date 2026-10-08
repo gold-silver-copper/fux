@@ -319,7 +319,9 @@ pub struct Server {
     conns: Vec<Conn>,
     children: UnixStream,
     stops: UnixStream,
-    stopping: Option<(Instant, String)>,
+    /// When a server that is stopping stops waiting for its clients and
+    /// processes.
+    stop_by: Option<Instant>,
     /// Where bytes read from a client's connection or terminal land before
     /// they are taken; one for the server, reused by every read.
     read_buffer: Vec<u8>,
@@ -411,7 +413,7 @@ pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), Error> {
         conns: Vec::new(),
         children,
         stops,
-        stopping: None,
+        stop_by: None,
         read_buffer: vec![0u8; 64 * 1024],
         paint_buffer: Vec::new(),
         slots: Vec::new(),
@@ -449,8 +451,8 @@ impl Server {
             self.session.settle_if_needed();
             self.flush_outbox();
             let now = Instant::now();
-            if let Some((since, _)) = &self.stopping
-                && (now.duration_since(*since) >= STOP_WAIT
+            if let Some(by) = self.stop_by
+                && (now >= by
                     || (self.session.dying.is_empty()
                         && self.conns.iter().all(|c| c.out.is_empty())))
             {
@@ -522,16 +524,12 @@ impl Server {
             (dirty && !conn.starved).then_some(conn.clock.due())
         });
         let escapes = session.views.values().filter_map(|v| v.decoder.deadline());
-        let stop = self
-            .stopping
-            .as_ref()
-            .map(|(since, _)| crate::after(*since, STOP_WAIT));
         paints
             .chain(escapes)
             .chain(session.dying.iter().map(|d| d.deadline))
             .chain(session.next_typing())
             .chain(session.next_frame_release())
-            .chain(stop)
+            .chain(self.stop_by)
             .chain(self.listen_after)
             .min()
             .map(|d| d.saturating_duration_since(now))
@@ -548,7 +546,7 @@ impl Server {
         if self.listen_after.is_some_and(|at| Instant::now() >= at) {
             self.listen_after = None;
         }
-        if self.stopping.is_none() && self.listen_after.is_none() {
+        if self.stop_by.is_none() && self.listen_after.is_none() {
             fds.push(PollFd::new(&self.listener, PollFlags::IN));
             slots.push(Slot::Listener);
         }
@@ -599,7 +597,7 @@ impl Server {
     }
 
     fn stop(&mut self, reason: String) {
-        if self.stopping.is_some() {
+        if self.stop_by.is_some() {
             return;
         }
         log(&reason);
@@ -609,7 +607,7 @@ impl Server {
                 conn.end(&Frame::Exit(format!("the fux server stopped: {reason}")));
             }
         }
-        self.stopping = Some((Instant::now(), reason));
+        self.stop_by = Some(crate::after(Instant::now(), STOP_WAIT));
     }
 
     fn flush_outbox(&mut self) {
