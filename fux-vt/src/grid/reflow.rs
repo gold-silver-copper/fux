@@ -197,20 +197,25 @@ impl Grid {
                 }
                 taken = taken.min(len.saturating_sub(1));
             }
-            if pass.width < 2 {
-                let mut from = 0;
-                for col in 0..=taken {
-                    if col == taken
-                        || row
-                            .stored(col)
-                            .is_some_and(|c| c.is_wide() || c.is_wide_continuation())
-                    {
-                        self.lay_out_run(row, base, from..col, &mut line, pass)?;
-                        from = col.saturating_add(1);
-                    }
+            // At one column, the runs between wide glyphs, which it cannot
+            // show.
+            let mut from = 0;
+            loop {
+                let to = if pass.width < 2 {
+                    (from..taken)
+                        .find(|&c| {
+                            row.stored(c)
+                                .is_some_and(|c| c.is_wide() || c.is_wide_continuation())
+                        })
+                        .unwrap_or(taken)
+                } else {
+                    taken
+                };
+                self.lay_out_run(row, base, from..to, &mut line, pass)?;
+                if to >= taken {
+                    break;
                 }
-            } else {
-                self.lay_out_run(row, base, 0..taken, &mut line, pass)?;
+                from = to.saturating_add(1);
             }
             base = base.saturating_add(len);
         }
