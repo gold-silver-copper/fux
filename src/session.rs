@@ -971,7 +971,7 @@ impl Session {
         };
         // A column shorter than it was keeps its selection within it.
         let last = if let Mode::Column { path, .. } = &view.mode {
-            Some(crate::overlay::column_len(self, path).saturating_sub(1))
+            Some(crate::overlay::column(self, path).len().saturating_sub(1))
         } else {
             None
         };
