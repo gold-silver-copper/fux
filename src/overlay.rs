@@ -4,7 +4,7 @@
 //! prefix and without it (`run_root`), repeat modes (`repeat_key`), a key
 //! sent to a pane (`send_key`).
 use crate::command::{
-    AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, Pick, Sibling, SwapWith, WsRef,
+    AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, Pick, Sibling, Subject, SwapWith, WsRef,
 };
 use crate::config::Binding;
 use crate::keys::{Direction, Key, KeyPress, Keystroke};
@@ -89,7 +89,11 @@ fn opens(binding: &Binding, path: &[KeyPress], key: &KeyPress) -> bool {
 /// a heading with keys typed after the prefix.
 pub fn column<'a>(session: &'a Session, path: &[KeyPress]) -> Vec<Entry<'a>> {
     let mut entries: Vec<Entry<'a>> = entries(session, path).collect();
-    let mut groups: Vec<(bool, &str)> = crate::config::GROUPS.iter().map(|g| (false, *g)).collect();
+    let mut groups: Vec<(bool, &str)> = crate::command::COMMANDS
+        .iter()
+        .map(|(group, _)| (false, *group))
+        .filter(|g| *g != (false, "Other"))
+        .collect();
     for group in entries.iter().map(|e| (e.root, e.group())) {
         if !groups.contains(&group) && group != (false, "Other") {
             groups.push(group);
@@ -184,29 +188,14 @@ pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Res
     let kind = about.kind();
     let name = session.name_of(&about);
     let title = format!("{} {} {name}", kind.name(), describe(&about));
-    let target = Some(about.clone());
+    let subject = Subject::from(about.clone());
     let reorder = |toward| Command::Reorder {
-        kind,
-        target: target.clone(),
+        subject: subject.clone(),
         toward,
     };
     let mut items = vec![
-        item(
-            "rename",
-            ClientAction::RenamePrompt {
-                kind,
-                target: target.clone(),
-            }
-            .here(),
-        ),
-        item(
-            "close",
-            ClientAction::ConfirmClose {
-                kind,
-                target: target.clone(),
-            }
-            .here(),
-        ),
+        item("rename", ClientAction::RenamePrompt(subject.clone()).here()),
+        item("close", ClientAction::ConfirmClose(subject.clone()).here()),
     ];
     match &about {
         &AnyRef::Pane(p) => items.extend([
@@ -221,8 +210,7 @@ pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Res
             item(
                 "move to tab…",
                 ClientAction::ChooseTab {
-                    moving: Some(p),
-                    moving_now: false,
+                    moving: Some(Some(p)),
                 }
                 .here(),
             ),
@@ -236,8 +224,7 @@ pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Res
             item(
                 "move to workspace…",
                 ClientAction::ChooseWorkspace {
-                    moving: Some(p),
-                    moving_now: false,
+                    moving: Some(Some(p)),
                 }
                 .here(),
             ),
@@ -756,11 +743,10 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
                 .get(list.selected)
                 .and_then(|i| i.subject.clone())
             {
-                let (kind, target) = (subject.kind(), Some(subject));
                 let action = if key == 'r' {
-                    ClientAction::RenamePrompt { kind, target }
+                    ClientAction::RenamePrompt(subject.into())
                 } else {
-                    ClientAction::ConfirmClose { kind, target }
+                    ClientAction::ConfirmClose(subject.into())
                 };
                 run = Some(action.here());
             }
