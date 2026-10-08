@@ -3,7 +3,7 @@
 //! Cells are stored one way only (`compact.rs`), in a screen's rows and in
 //! a host's [`Cells`] alike, so a reader never sees half a cluster.
 
-use crate::compact::{BLANK, Compact, Line, Text};
+use crate::compact::{Compact, Line, Text};
 
 /// A default, indexed, or true-colour terminal colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -420,13 +420,11 @@ pub(crate) fn floor(text: &str, max: usize) -> &str {
 pub struct CellRef<'a> {
     text: &'a str,
     attributes: Attributes,
-    /// `WIDE`, `CONTINUATION`, and `CONTENTS` if the cell holds text.
-    flags: u8,
+    /// `WIDE` and `CONTINUATION`.
+    halves: u8,
 }
 
 impl<'a> CellRef<'a> {
-    /// Whether the cell holds text, among `flags`: a bit neither half's.
-    const CONTENTS: u8 = 1;
     /// The second half of a wide glyph; and its first.
     pub(crate) const CONTINUATION: u8 = 0b0100_0000;
     pub(crate) const WIDE: u8 = 0b1000_0000;
@@ -437,25 +435,25 @@ impl<'a> CellRef<'a> {
     /// never does.
     pub fn new(text: &'a str, wide: bool, attributes: Attributes) -> Self {
         let halves = if wide { Self::WIDE } else { 0 };
-        Self::of(text, attributes, halves, !text.is_empty())
+        Self::of(text, attributes, halves)
     }
     /// The second half of a wide glyph: empty, default attributes.
     pub fn wide_continuation() -> Self {
-        Self::of("", Attributes::default(), Self::CONTINUATION, false)
+        Self::of("", Attributes::default(), Self::CONTINUATION)
     }
     /// A cell with `text` and `attributes`, the halves of a wide glyph
-    /// `halves` says (`WIDE`, `CONTINUATION`), with contents or not.
+    /// `halves` says (`WIDE`, `CONTINUATION`).
     #[inline]
-    pub(crate) fn of(text: &'a str, attributes: Attributes, halves: u8, contents: bool) -> Self {
+    pub(crate) fn of(text: &'a str, attributes: Attributes, halves: u8) -> Self {
         Self {
             text,
             attributes,
-            flags: (halves & Self::HALVES) | u8::from(contents),
+            halves: halves & Self::HALVES,
         }
     }
     /// The halves, as `WIDE` and `CONTINUATION`.
     pub(crate) fn halves(&self) -> u8 {
-        self.flags & Self::HALVES
+        self.halves
     }
     /// The cell's grapheme cluster; empty for a blank cell or the second
     /// half of a wide glyph.
@@ -465,16 +463,16 @@ impl<'a> CellRef<'a> {
     /// Whether the cell holds text: neither blank nor the second half of a
     /// wide glyph.
     pub fn has_contents(&self) -> bool {
-        self.flags & Self::CONTENTS != 0
+        !self.text.is_empty()
     }
     /// Whether the cell holds a glyph two columns wide, the next cell being
     /// its second half.
     pub fn is_wide(&self) -> bool {
-        self.flags & Self::WIDE != 0
+        self.halves & Self::WIDE != 0
     }
     /// Whether the cell is the second half of the wide glyph before it.
     pub fn is_wide_continuation(&self) -> bool {
-        self.flags & Self::CONTINUATION != 0
+        self.halves & Self::CONTINUATION != 0
     }
     /// The cell's colours and rendition.
     pub fn attributes(&self) -> Attributes {
@@ -534,7 +532,7 @@ impl<'a> CellRef<'a> {
 /// keeps its text.
 impl PartialEq for CellRef<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.flags & CellRef::HALVES == other.flags & CellRef::HALVES
+        self.halves == other.halves
             && self.attributes == other.attributes
             && self.contents() == other.contents()
     }
@@ -554,16 +552,39 @@ impl std::fmt::Debug for CellRef<'_> {
 
 /// An owned run of cells, for a host that stores screen contents: a
 /// composed frame, a copy. It keeps its cells as a screen's rows keep
-/// theirs (`compact.rs`), with their attributes beside them, and so keeps
-/// and cuts text as a row does: 32 bytes a cell of long clusters, and one
-/// cluster more.
+/// theirs (`compact.rs`), each with its attributes beside it in place of a
+/// style, and so keeps and cuts text as a row does: 32 bytes a cell of long
+/// clusters, and one cluster more.
 #[derive(Clone, Debug, Default)]
 pub struct Cells {
-    /// Each cell's text and halves; its style number unused (always 0),
-    /// its attributes being in `attributes`, one for each cell.
-    cells: Vec<Compact>,
-    attributes: Vec<Attributes>,
+    cells: Vec<Stored>,
     text: Text,
+}
+
+/// A cell of [`Cells`]: its text and halves, its style number unused
+/// (always 0), and its attributes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Stored {
+    cell: Compact,
+    attributes: Attributes,
+}
+
+impl AsRef<Compact> for Stored {
+    fn as_ref(&self) -> &Compact {
+        &self.cell
+    }
+}
+impl AsMut<Compact> for Stored {
+    fn as_mut(&mut self) -> &mut Compact {
+        &mut self.cell
+    }
+}
+
+impl Stored {
+    #[inline]
+    fn read<'a>(&'a self, text: &'a Text) -> CellRef<'a> {
+        self.cell.read_as(text, self.attributes)
+    }
 }
 
 impl Cells {
@@ -580,8 +601,7 @@ impl Cells {
     /// `len` blank cells.
     pub fn new(len: usize) -> Self {
         Self {
-            cells: vec![BLANK; len],
-            attributes: vec![Attributes::default(); len],
+            cells: vec![Stored::default(); len],
             text: Text::default(),
         }
     }
@@ -595,8 +615,7 @@ impl Cells {
     }
     /// The cell at `i`.
     pub fn get(&self, i: usize) -> Option<CellRef<'_>> {
-        let (cell, attributes) = (self.cells.get(i)?, self.attributes.get(i)?);
-        Some(cell.read_as(&self.text, *attributes))
+        Some(self.cells.get(i)?.read(&self.text))
     }
     /// The cells, in order.
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = CellRef<'_>> + ExactSizeIterator + Clone {
@@ -611,11 +630,7 @@ impl Cells {
         let end = range.end.min(self.cells.len());
         let start = range.start.min(end);
         let cells = self.cells.get(start..end).unwrap_or_default();
-        let attributes = self.attributes.get(start..end).unwrap_or_default();
-        cells
-            .iter()
-            .zip(attributes)
-            .map(move |(cell, attributes)| cell.read_as(text, *attributes))
+        cells.iter().map(move |cell| cell.read(text))
     }
     /// Whether the cells in `range` of `self` and of `other` look the same,
     /// cell by cell, as their [`CellRef`]s compare: the same as
@@ -623,36 +638,40 @@ impl Cells {
     /// held one way only, so two that keep their text inline are the same
     /// if their bytes are.
     pub fn range_eq(&self, other: &Cells, range: std::ops::Range<usize>) -> bool {
-        let (Some(mine), Some(theirs), Some(my_attributes), Some(their_attributes)) = (
+        let (Some(mine), Some(theirs)) = (
             self.cells.get(range.clone()),
             other.cells.get(range.clone()),
-            self.attributes.get(range.clone()),
-            other.attributes.get(range.clone()),
         ) else {
             return self.range(range.clone()).eq(other.range(range));
         };
-        my_attributes == their_attributes
-            && mine
-                .iter()
-                .zip(theirs)
-                .all(|(a, b)| a.same_as(&self.text, b, &other.text))
+        mine.iter().zip(theirs).all(|(a, b)| {
+            if !a.cell.is_spilled() && !b.cell.is_spilled() {
+                a == b
+            } else {
+                a.attributes == b.attributes && a.cell.same_as(&self.text, &b.cell, &other.text)
+            }
+        })
     }
     /// Sets cell `i` to a copy of `cell`, from wherever it keeps its text.
     /// A cluster longer than [`CLUSTER_CAPACITY`] is cut there, and one the
     /// cells have no room left for to its first 17 bytes; whether the text
     /// was kept whole.
     pub fn set(&mut self, i: usize, cell: CellRef<'_>) -> bool {
-        let Some(attributes) = self.attributes.get_mut(i) else {
+        let Some(slot) = self.cells.get_mut(i) else {
             return false;
         };
-        *attributes = cell.attributes;
-        self.line()
-            .set(i, Compact::shaped(cell.halves()), cell.text)
+        slot.attributes = cell.attributes;
+        let shape = Compact::shaped(cell.halves());
+        if let Some(inline) = shape.holding(cell.text) {
+            slot.cell = inline;
+            return true;
+        }
+        self.line().set(i, shape, cell.text)
     }
     /// Gives cell `i` new attributes, keeping its text.
     pub fn set_attributes(&mut self, i: usize, attributes: Attributes) {
-        if let Some(at) = self.attributes.get_mut(i) {
-            *at = attributes;
+        if let Some(slot) = self.cells.get_mut(i) {
+            slot.attributes = attributes;
         }
     }
     /// Sets the cells in `range`, clipped to those there are, to `cell`.
@@ -662,23 +681,12 @@ impl Cells {
         if start == 0 && end == self.cells.len() {
             self.text.release();
         }
-        // The cell as one with its text inline, if it fits there.
-        let mut one = [BLANK];
-        let mut text = Text::default();
-        Line {
-            cells: &mut one,
-            text: &mut text,
-        }
-        .set(0, Compact::shaped(cell.halves()), cell.text);
-        let [inline] = one;
-        match (
-            self.cells.get_mut(start..end),
-            self.attributes.get_mut(start..end),
-        ) {
-            (Some(cells), Some(attributes)) if text.is_empty() => {
-                cells.fill(inline);
-                attributes.fill(cell.attributes);
-            }
+        let inline = Compact::shaped(cell.halves()).holding(cell.text);
+        match (inline, self.cells.get_mut(start..end)) {
+            (Some(inline), Some(run)) => run.fill(Stored {
+                cell: inline,
+                attributes: cell.attributes,
+            }),
             _ => {
                 for i in start..end {
                     self.set(i, cell);
@@ -691,15 +699,14 @@ impl Cells {
     /// right, and what no longer fits is cut to its first 17 bytes.
     pub fn resize(&mut self, len: usize, cell: CellRef<'_>) {
         let was = self.cells.len();
-        self.cells.resize(len, BLANK);
-        self.attributes.resize(len, Attributes::default());
+        self.cells.resize(len, Stored::default());
         if len < was {
             self.text = Line::rebuilt(&mut self.cells, &self.text);
         } else {
             self.fill(was..len, cell);
         }
     }
-    fn line(&mut self) -> Line<'_> {
+    fn line(&mut self) -> Line<'_, Stored> {
         Line {
             cells: &mut self.cells,
             text: &mut self.text,
