@@ -500,6 +500,7 @@ impl Session {
             .map(|v| v.workspace)
             .or_else(|| ctx.pane.and_then(|p| self.locate(p)).map(|(w, _)| w))
             .ok_or(Error::NoWorkspaceGiven)
+            .and_then(|id| self.resolve_ws(&WsRef::Id(id)))
     }
 
     fn any_target(&self, subject: &Subject, ctx: &Ctx) -> Result<AnyRef, Error> {
@@ -2675,6 +2676,19 @@ mod tests {
             let got = s.unavailable(&command, &ctx).map(|e| e.to_string());
             assert_eq!(got.as_deref(), reason, "{line}");
         }
+        Ok(())
+    }
+
+    /// With every workspace closed, a client's view still names the one it
+    /// was on: a command that defaults to it finds no workspace, and starts
+    /// no pane in no tab.
+    #[test]
+    fn a_closed_workspace_is_no_workspace() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, c) = attached(10, 40)?;
+        run(&mut s, "kill-workspace -t +1")?;
+        let outcome = s.run(&crate::words::split("new-tab")?, &Ctx::client(c));
+        assert_eq!(outcome.stderr, "no workspace +1");
+        assert!(s.panes.is_empty());
         Ok(())
     }
 
