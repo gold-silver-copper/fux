@@ -49,7 +49,7 @@ fn detach_and_reattach_keep_the_shell_and_its_screen() -> Outcome {
 /// is one that detaches and attaches again in one batch.
 #[test]
 fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
-    use fux::protocol::{Frame, PROTOCOL, Role};
+    use fux::protocol::{AttachFrame, Frame, Hello, PROTOCOL, Role};
     let server = Server::start("")?;
     let clients = || -> Result<usize, String> {
         Ok(server
@@ -60,21 +60,21 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
     };
     let mut keep = server.attach(10, 40)?;
     keep.wait_for("$")?;
-    let attach = Frame::Attach {
-        rows: 5,
-        cols: 20,
+    let attach = AttachFrame::Attach {
+        rows: nonzero(5)?,
+        cols: nonzero(20)?,
         workspace: None,
     };
-    let hello = Frame::Hello {
+    let hello = Hello {
         protocol: PROTOCOL,
-        version: "test".into(),
+        version: "test",
         role: Role::Attach,
     };
-    for broken in [&attach, &hello] {
+    for broken in [attach.encode().map_err(e)?, hello.encode().map_err(e)?] {
         let mut client = server.attach(5, 20)?;
         client.wait_for("$")?;
         eventually("two clients", || Ok(clients()? == 2))?;
-        client.frame(broken)?;
+        client.write(&broken)?;
         eventually("the broken client to go", || Ok(clients()? == 1))?;
     }
     // Detach and Attach together: the Attach comes after the end.
@@ -382,20 +382,20 @@ fn focus_events_reach_a_pane_that_asked_and_cursor_shapes_pass_through() -> Outc
 
 #[test]
 fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
-    use fux::protocol::Frame;
+    use fux::protocol::{Frame, Hello, ServerFrame};
     use std::io::{Read, Write};
     let server = Server::start("")?;
     let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
-    let hello = Frame::Hello {
+    let hello = Hello {
         protocol: 999,
-        version: "0.0.0".into(),
+        version: "0.0.0",
         role: fux::protocol::Role::Attach,
     };
     stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
     stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
     let mut decoder = fux::protocol::Decoder::default();
     let mut buffer = [0u8; 4096];
-    let mut frames = Vec::new();
+    let mut exit = None;
     loop {
         // A signal interrupts a read with a timeout rather than restarting
         // it; under emulation that happens nearly every run.
@@ -407,23 +407,11 @@ fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
         };
         decoder.push(buffer.get(..n).unwrap_or_default());
         while let Some(frame) = decoder.frame().map_err(e)? {
-            frames.push(frame);
+            if let ServerFrame::Exit(reason) = frame {
+                exit = Some(reason.to_owned());
+            }
         }
     }
-    let exit = frames.iter().find_map(|f| match f {
-        Frame::Exit(reason) => Some(reason.clone()),
-        Frame::Hello { .. }
-        | Frame::Attach { .. }
-        | Frame::Input(_)
-        | Frame::Resize { .. }
-        | Frame::Detach
-        | Frame::Command { .. }
-        | Frame::Paint(_)
-        | Frame::Stdout(_)
-        | Frame::Stderr(_)
-        | Frame::Done { .. }
-        | Frame::Terminal { .. } => None,
-    });
     let reason = exit.ok_or("no Exit frame")?;
     assert!(
         reason.contains(&format!("protocol {}", fux::protocol::PROTOCOL))
@@ -767,24 +755,25 @@ fn foreground(stat: &str) -> bool {
 
 /// Connects a raw protocol client, says hello as an attach client, and
 /// sends `Attach` with `fd` attached; the frames the server answers with,
-/// read until `until` holds of them or the wait ends.
+/// read, as their `Debug` text, until `until` holds of them or the wait
+/// ends.
 fn attach_with(
     server: &Server,
     fd: impl std::os::fd::AsFd,
-    until: impl Fn(&[fux::protocol::Frame]) -> bool,
-) -> Result<(std::os::unix::net::UnixStream, Vec<fux::protocol::Frame>), String> {
-    use fux::protocol::{Decoder, Frame, PROTOCOL, Role};
+    until: impl Fn(&[String]) -> bool,
+) -> Result<(std::os::unix::net::UnixStream, Vec<String>), String> {
+    use fux::protocol::{AttachFrame, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame};
     use std::io::{Read, Write};
     let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
-    let hello = Frame::Hello {
+    let hello = Hello {
         protocol: PROTOCOL,
-        version: "test".into(),
+        version: "test",
         role: Role::Attach,
     };
     stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
-    let attach = Frame::Attach {
-        rows: 8,
-        cols: 30,
+    let attach = AttachFrame::Attach {
+        rows: nonzero(8)?,
+        cols: nonzero(30)?,
         workspace: None,
     };
     let bytes = attach.encode().map_err(e)?;
@@ -812,8 +801,8 @@ fn attach_with(
                 ) => {}
             Err(error) => return Err(e(error)),
         }
-        while let Some(frame) = decoder.frame().map_err(e)? {
-            frames.push(frame);
+        while let Some(frame) = decoder.frame::<ServerFrame>().map_err(e)? {
+            frames.push(format!("{frame:?}"));
         }
     }
     Ok((stream, frames))
@@ -824,16 +813,16 @@ fn attach_with(
 /// itself, and reads the keys from it: none come in frames.
 #[test]
 fn the_server_takes_a_terminal_sent_with_attach() -> Outcome {
-    use fux::protocol::Frame;
     let server = Server::start("")?;
     let (master, slave) = fux::process::open_pty(8, 30).map_err(e)?;
     let (stream, frames) = attach_with(&server, &slave, |f| {
-        f.iter().any(|f| matches!(f, Frame::Terminal { .. }))
+        f.iter().any(|f| f.starts_with("Terminal"))
     })?;
     // First after the server's hello.
-    let first = frames.iter().find(|f| !matches!(f, Frame::Hello { .. }));
-    assert!(
-        matches!(first, Some(Frame::Terminal { taken: true })),
+    let first = frames.iter().find(|f| !f.starts_with("Hello"));
+    assert_eq!(
+        first.map(String::as_str),
+        Some("Terminal { taken: true }"),
         "{frames:?}"
     );
     drop(slave);
@@ -864,19 +853,13 @@ fn the_server_takes_a_terminal_sent_with_attach() -> Outcome {
 /// and the paints come in frames, as to a client that sent none.
 #[test]
 fn a_descriptor_that_is_no_terminal_is_not_taken() -> Outcome {
-    use fux::protocol::Frame;
     let server = Server::start("")?;
     let (a, _b) = std::os::unix::net::UnixStream::pair().map_err(e)?;
-    let (_stream, frames) = attach_with(&server, &a, |f| {
-        f.iter().any(|f| matches!(f, Frame::Paint(_)))
-    })?;
-    let first = frames.iter().find(|f| !matches!(f, Frame::Hello { .. }));
-    assert!(
-        matches!(first, Some(Frame::Terminal { taken: false })),
-        "{frames:?}"
-    );
-    assert!(
-        frames.iter().any(|f| matches!(f, Frame::Paint(_))),
+    let (_stream, frames) = attach_with(&server, &a, |f| f.iter().any(|f| f.starts_with("Paint")))?;
+    let first = frames.iter().find(|f| !f.starts_with("Hello"));
+    assert_eq!(
+        first.map(String::as_str),
+        Some("Terminal { taken: false }"),
         "{frames:?}"
     );
     Ok(())

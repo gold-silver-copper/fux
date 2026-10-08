@@ -332,7 +332,7 @@ fn a_program_that_closes_its_terminal_does_not_make_the_server_spin() -> Outcome
 #[test]
 fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
     let _alone = alone();
-    use fux::protocol::{Frame, PROTOCOL, Role};
+    use fux::protocol::{AttachFrame, Frame, Hello, PROTOCOL, Role};
     use std::io::Write;
     let server = Server::start("")?;
     let pid = server.pid().ok_or("the server's pid")?;
@@ -342,19 +342,21 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
     let socket = server.socket.clone();
     std::thread::spawn(move || -> Outcome {
         let mut stream = UnixStream::connect(&socket).map_err(e)?;
-        let hello = Frame::Hello {
+        let hello = Hello {
             protocol: PROTOCOL,
-            version: "flood".into(),
+            version: "flood",
             role: Role::Attach,
         };
-        let attach = Frame::Attach {
-            rows: 10,
-            cols: 40,
+        let attach = AttachFrame::Attach {
+            rows: nonzero(10)?,
+            cols: nonzero(40)?,
             workspace: None,
         };
         stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
         stream.write_all(&attach.encode().map_err(e)?).map_err(e)?;
-        let input = Frame::Input(vec![b'a'; 1_000_000]).encode().map_err(e)?;
+        let input = AttachFrame::Input(&vec![b'a'; 1_000_000])
+            .encode()
+            .map_err(e)?;
         // Until the server stops reading, or the test ends and it goes.
         for _ in 0..64 {
             stream.write_all(&input).map_err(e)?;

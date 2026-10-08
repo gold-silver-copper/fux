@@ -5,7 +5,9 @@ use crate::bytes::ByteQueue;
 use crate::command::ClientId;
 use crate::config::Config;
 use crate::layout::{PaneId, Placement};
-use crate::protocol::{Decoder, Frame, PROTOCOL, Role, Stream};
+use crate::protocol::{
+    AttachFrame, Command, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame, Stream,
+};
 use crate::render::{self, Grid};
 use crate::session::{Ctx, Outgoing, Session};
 use fuxix::poll::{Events as PollFlags, PollFd};
@@ -234,8 +236,8 @@ impl Conn {
     /// whose terminal the server writes to comes after what waits for the
     /// terminal, as much as it takes at once, and its title restored:
     /// then the terminal is the client's again.
-    fn send(&mut self, frame: &Frame) {
-        if matches!(frame, Frame::Exit(_)) {
+    fn send(&mut self, frame: &ServerFrame) {
+        if matches!(frame, ServerFrame::Exit(_)) {
             self.give_back_tty();
         }
         if self.out.push_with(|out| frame.encode_into(out)).is_err() {
@@ -245,7 +247,7 @@ impl Conn {
 
     /// Sends the connection's last frame: it closes once what waits is
     /// sent.
-    fn end(&mut self, frame: &Frame) {
+    fn end(&mut self, frame: &ServerFrame) {
         self.send(frame);
         self.closing = true;
     }
@@ -281,7 +283,7 @@ impl Conn {
             // be read is (`serve_tty`): no one would read its keys.
             self.tty = None;
             if self.client.is_some() && !self.closing {
-                self.end(&Frame::Exit("detached: the terminal closed".into()));
+                self.end(&ServerFrame::Exit("detached: the terminal closed"));
             }
         }
     }
@@ -604,7 +606,9 @@ impl Server {
         self.session.shutdown();
         for conn in &mut self.conns {
             if conn.role == Some(Role::Attach) {
-                conn.end(&Frame::Exit(format!("the fux server stopped: {reason}")));
+                conn.end(&ServerFrame::Exit(&format!(
+                    "the fux server stopped: {reason}"
+                )));
             }
         }
         self.stop_by = Some(crate::after(Instant::now(), STOP_WAIT));
@@ -620,7 +624,7 @@ impl Server {
                 }
                 Outgoing::Exit(client, reason) => {
                     if let Some(conn) = self.conns.iter_mut().find(|c| c.client == Some(client)) {
-                        conn.end(&Frame::Exit(reason));
+                        conn.end(&ServerFrame::Exit(&reason));
                         conn.client = None;
                     }
                 }
@@ -769,7 +773,7 @@ impl Server {
         let euid = fuxix::process::geteuid();
         if fuxix::socket::peer_uid(&stream).is_ok_and(|uid| uid == euid)
             && stream.set_nonblocking(true).is_ok()
-            && let Ok(bytes) = Frame::Exit(NO_DESCRIPTORS.into()).encode()
+            && let Ok(bytes) = ServerFrame::Exit(NO_DESCRIPTORS).encode()
         {
             // A fresh socket's buffer holds the frame; if not, the peer
             // sees the connection close.
@@ -868,7 +872,7 @@ impl Server {
             && let Some(conn) = self.conns.get_mut(index)
             && let Some(client) = conn.client.take()
         {
-            conn.end(&Frame::Exit("detached: the terminal closed".into()));
+            conn.end(&ServerFrame::Exit("detached: the terminal closed"));
             self.session.detach(client);
         }
     }
@@ -890,121 +894,129 @@ impl Server {
     }
 
     /// Reads what a client sent until it has sent no more, or `CONN_READ`
-    /// bytes, or more than 256 whole frames, or a bad one; then handles each whole
-    /// frame, in order.
+    /// bytes, or more than 256 whole frames, or a bad one; each whole frame
+    /// is decoded and handled as it arrives, in order, and nothing after a
+    /// bad one. So no whole frame is left in the decoder for a poll that
+    /// would not come.
     fn read_conn(&mut self, index: usize, now: Instant) {
-        // The frames read and checked, and where they end in the decoder.
-        let (mut end, mut frames, mut closed) = (0usize, 0usize, false);
-        let mut read = 0usize;
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
-        loop {
+        // Held apart while its frames, which borrow it, are handled.
+        let mut decoder = std::mem::take(&mut conn.decoder);
+        let (mut frames, mut read) = (0usize, 0usize);
+        let closed = loop {
+            let Some(conn) = self.conns.get_mut(index) else {
+                break false;
+            };
             // A client may send its terminal with its `Attach`.
             match fuxix::socket::recv_with_fd(&conn.stream, &mut self.read_buffer) {
-                Ok((0, _)) => {
-                    closed = true;
-                    break;
-                }
+                Ok((0, _)) => break true,
                 Ok((n, fd)) => {
                     if fd.is_some() {
                         conn.passed = fd;
                     }
                     read = read.saturating_add(n);
-                    conn.decoder
-                        .push(self.read_buffer.get(..n).unwrap_or_default());
-                    let checked = conn.decoder.check(end);
-                    (end, frames) = (checked.end, frames.saturating_add(checked.frames));
-                    if let Some(error) = checked.error {
-                        log(&format!("a client sent a bad frame: {error}"));
-                        closed = true;
-                        break;
+                    decoder.push(self.read_buffer.get(..n).unwrap_or_default());
+                    match self.take_frames(index, &mut decoder, now) {
+                        Ok(taken) => frames = frames.saturating_add(taken),
+                        Err(error) => {
+                            log(&format!("a client sent a bad frame: {error}"));
+                            break true;
+                        }
                     }
                     if frames > 256 || read >= CONN_READ {
-                        break;
+                        break false;
                     }
                 }
-                Err(fuxix::Errno::AGAIN) => break,
-                Err(fuxix::Errno::INTR) => continue,
-                Err(_) => {
-                    closed = true;
-                    break;
-                }
+                Err(fuxix::Errno::AGAIN) => break false,
+                Err(fuxix::Errno::INTR) => {}
+                Err(_) => break true,
             }
-        }
-        for _ in 0..frames {
-            let Some(conn) = self.conns.get_mut(index) else {
-                return;
-            };
-            // Checked above, so each is there and decodes.
-            let Ok(Some(raw)) = conn.decoder.raw() else {
-                break;
-            };
-            // An attached client's input goes to the session from the
-            // decoder, uncopied.
-            if let (Some(Role::Attach), Some(bytes)) = (conn.role, raw.input()) {
-                if let Some(client) = conn.client {
-                    take_input(&mut self.session, &mut conn.clock, client, bytes, now);
-                }
-                continue;
-            }
-            let Ok(frame) = raw.decode() else {
-                break;
-            };
-            self.frame(index, frame);
-        }
+        };
         if let Some(conn) = self.conns.get_mut(index) {
-            conn.decoder.shrink(CONN_KEEP);
+            decoder.shrink(CONN_KEEP);
+            conn.decoder = decoder;
             conn.dead |= closed;
         }
     }
 
-    /// Handles a frame from a client: any but an attached client's input,
-    /// which `read_conn` hands to the session itself.
-    fn frame(&mut self, index: usize, frame: Frame) {
+    /// Handles each whole frame `decoder` holds, decoded as what the
+    /// connection may send at its point: a `Hello`, then an attaching
+    /// client's frames or a command. How many there were.
+    fn take_frames(
+        &mut self,
+        index: usize,
+        decoder: &mut Decoder,
+        now: Instant,
+    ) -> Result<usize, crate::protocol::Error> {
+        let mut frames = 0usize;
+        loop {
+            let Some(conn) = self.conns.get_mut(index) else {
+                return Ok(frames);
+            };
+            let ending = conn.closing || conn.dead;
+            let handled = match conn.role {
+                None if !ending => decoder.frame()?.map(|hello| self.hello(index, hello)),
+                Some(Role::Attach) if !ending => decoder
+                    .frame()?
+                    .map(|frame| self.attaching(index, frame, now)),
+                Some(Role::Command) if !ending => {
+                    decoder.frame()?.map(|command| self.command(index, command))
+                }
+                // A connection that is ending has had its last word: what
+                // it sends after a Detach, a Command, a refused Hello or a
+                // bad frame is dropped unread. A Kill ends at its Hello,
+                // before its role is taken.
+                None | Some(Role::Attach | Role::Command | Role::Kill) => {
+                    *decoder = Decoder::default();
+                    None
+                }
+            };
+            if handled.is_none() {
+                return Ok(frames);
+            }
+            frames = frames.saturating_add(1);
+        }
+    }
+
+    /// A client's first frame: answered with the server's, and its role
+    /// taken unless it is to stop the server or speaks another protocol.
+    fn hello(&mut self, index: usize, hello: Hello) {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
-        // A connection that is ending has had its last word: a frame after
-        // a Detach, a Command, a refused Hello or a bad frame is ignored.
-        if conn.closing || conn.dead {
-            return;
+        conn.send(&ServerFrame::Hello(Hello {
+            protocol: PROTOCOL,
+            version: env!("CARGO_PKG_VERSION"),
+            role: hello.role,
+        }));
+        if hello.role == Role::Kill {
+            conn.end(&ServerFrame::Done { status: 0 });
+            self.stop("stopped by fux kill-server".into());
+        } else if hello.protocol != PROTOCOL {
+            conn.end(&ServerFrame::Exit(&format!(
+                "the server speaks protocol {PROTOCOL} (fux {}); restart it with `fux kill-server`",
+                env!("CARGO_PKG_VERSION")
+            )));
+        } else {
+            conn.role = Some(hello.role);
         }
-        let Some(role) = conn.role else {
-            let Frame::Hello { protocol, role, .. } = frame else {
-                conn.dead = true;
-                return;
-            };
-            conn.send(&Frame::Hello {
-                protocol: PROTOCOL,
-                version: env!("CARGO_PKG_VERSION").into(),
-                role,
-            });
-            if role == Role::Kill {
-                conn.end(&Frame::Done { status: 0 });
-                self.stop("stopped by fux kill-server".into());
-                return;
-            }
-            if protocol != PROTOCOL {
-                conn.end(&Frame::Exit(format!(
-                    "the server speaks protocol {PROTOCOL} (fux {}); restart it with `fux kill-server`",
-                    env!("CARGO_PKG_VERSION")
-                )));
-                return;
-            }
-            conn.role = Some(role);
+    }
+
+    /// An attaching client's frame. Its input goes to the session as it
+    /// was lent from the decoder.
+    fn attaching(&mut self, index: usize, frame: AttachFrame, now: Instant) {
+        let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
-        match (role, frame) {
-            (
-                Role::Attach,
-                Frame::Attach {
-                    rows,
-                    cols,
-                    workspace,
-                },
-            ) if conn.client.is_none() => {
-                match self.session.attach(rows, cols, workspace.as_deref()) {
+        match frame {
+            AttachFrame::Attach {
+                rows,
+                cols,
+                workspace,
+            } if conn.client.is_none() => {
+                match self.session.attach(rows.get(), cols.get(), workspace) {
                     Ok(client) => {
                         conn.client = Some(client);
                         conn.clock.paint_now();
@@ -1014,53 +1026,59 @@ impl Server {
                             conn.tty = fuxix::terminal::reopen(&passed)
                                 .ok()
                                 .map(TakenTerminal::new);
-                            conn.send(&Frame::Terminal {
+                            conn.send(&ServerFrame::Terminal {
                                 taken: conn.tty.is_some(),
                             });
                         }
                     }
-                    Err(error) => {
-                        conn.end(&Frame::Exit(error.to_string()));
-                    }
+                    Err(error) => conn.end(&ServerFrame::Exit(&error.to_string())),
                 }
             }
-            (Role::Attach, Frame::Resize { rows, cols }) => {
+            // Attached already.
+            AttachFrame::Attach { .. } => conn.dead = true,
+            AttachFrame::Input(bytes) => {
+                if let Some(client) = conn.client {
+                    take_input(&mut self.session, &mut conn.clock, client, bytes, now);
+                }
+            }
+            AttachFrame::Resize { rows, cols } => {
                 if let Some(client) = conn.client {
                     conn.painted = false;
-                    self.session.resize(client, rows, cols);
+                    self.session.resize(client, rows.get(), cols.get());
                 }
             }
-            (Role::Attach, Frame::Detach) => {
+            AttachFrame::Detach => {
                 if let Some(client) = conn.client.take() {
-                    conn.end(&Frame::Exit("detached".into()));
+                    conn.end(&ServerFrame::Exit("detached"));
                     self.session.detach(client);
                 }
             }
-            (Role::Command, Frame::Command { argv, cwd, pane }) => {
-                let ctx = Ctx {
-                    client: None,
-                    pane: pane.and_then(|p| crate::command::parse_pane(&p).ok()),
-                    cwd: Some(PathBuf::from(cwd)).filter(|p| p.is_dir()),
-                };
-                let outcome = self.session.run(&argv, &ctx);
-                let Some(conn) = self.conns.get_mut(index) else {
-                    return;
-                };
-                // Nothing is sent for no output.
-                conn.send_stream(Stream::Stdout, outcome.stdout.as_bytes());
-                if !outcome.stderr.is_empty() {
-                    let mut stderr = outcome.stderr;
-                    if !stderr.ends_with('\n') {
-                        stderr.push('\n');
-                    }
-                    conn.send_stream(Stream::Stderr, stderr.as_bytes());
-                }
-                conn.end(&Frame::Done {
-                    status: outcome.status,
-                });
-            }
-            _ => conn.dead = true,
         }
+    }
+
+    /// A command client's command: run, and its output and status sent.
+    fn command(&mut self, index: usize, Command { argv, cwd, pane }: Command) {
+        let ctx = Ctx {
+            client: None,
+            pane: pane.and_then(|p| crate::command::parse_pane(&p).ok()),
+            cwd: Some(PathBuf::from(cwd)).filter(|p| p.is_dir()),
+        };
+        let outcome = self.session.run(&argv, &ctx);
+        let Some(conn) = self.conns.get_mut(index) else {
+            return;
+        };
+        // Nothing is sent for no output.
+        conn.send_stream(Stream::Stdout, outcome.stdout.as_bytes());
+        if !outcome.stderr.is_empty() {
+            let mut stderr = outcome.stderr;
+            if !stderr.ends_with('\n') {
+                stderr.push('\n');
+            }
+            conn.send_stream(Stream::Stderr, stderr.as_bytes());
+        }
+        conn.end(&ServerFrame::Done {
+            status: outcome.status,
+        });
     }
 
     fn serve_pane(&mut self, id: PaneId, flags: PollFlags) {
@@ -1242,16 +1260,16 @@ mod tests {
             tty.title_saved = true;
         }
         conn.flush_tty();
-        conn.send(&Frame::Exit("detached".into()));
-        let mut decoder = crate::protocol::Decoder::default();
+        conn.send(&ServerFrame::Exit("detached"));
+        let mut decoder = Decoder::default();
         decoder.push(conn.out.as_slice());
         let mut painted = Vec::new();
         let mut exit = None;
-        while let Ok(Some(raw)) = decoder.raw() {
-            if let Some(bytes) = raw.paint() {
+        while let Ok(Some(frame)) = decoder.frame() {
+            if let ServerFrame::Paint(bytes) = frame {
                 painted.extend_from_slice(bytes);
-            } else if let Ok(Frame::Exit(reason)) = raw.decode() {
-                exit = Some(reason);
+            } else if let ServerFrame::Exit(reason) = frame {
+                exit = Some(reason.to_owned());
             }
         }
         assert!(
@@ -1275,11 +1293,11 @@ mod tests {
         conn.flush_tty();
         assert!(conn.tty.is_none());
         assert!(conn.closing, "the client is let go");
-        let mut decoder = crate::protocol::Decoder::default();
+        let mut decoder = Decoder::default();
         decoder.push(conn.out.as_slice());
-        let frame = decoder.raw().ok().flatten().map(|raw| raw.decode());
-        assert!(
-            matches!(frame, Some(Ok(Frame::Exit(reason))) if reason == "detached: the terminal closed")
+        assert_eq!(
+            decoder.frame(),
+            Ok(Some(ServerFrame::Exit("detached: the terminal closed")))
         );
         Ok(())
     }
