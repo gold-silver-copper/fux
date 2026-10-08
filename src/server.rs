@@ -172,17 +172,23 @@ impl TakenTerminal {
     /// Writes what waits, as far as the terminal takes it; false if it
     /// failed, and is to be given up.
     fn flush(&mut self) -> bool {
-        while !self.out.is_empty() {
-            match fuxix::io::write(&self.fd, self.out.as_slice()) {
-                Ok(0) | Err(fuxix::Errno::AGAIN) => break,
-                Ok(n) => self.out.take(n),
-                Err(fuxix::Errno::INTR) => continue,
-                Err(_) => return false,
-            }
-        }
-        self.out.shrink(CONN_KEEP);
-        true
+        write_out(&self.fd, &mut self.out)
     }
+}
+
+/// Writes `out` to `fd`, nonblocking, as far as it takes it; false if the
+/// write failed. The memory a large write took is given back.
+fn write_out(fd: impl std::os::fd::AsFd, out: &mut ByteQueue) -> bool {
+    while !out.is_empty() {
+        match fuxix::io::write(&fd, out.as_slice()) {
+            Ok(0) | Err(fuxix::Errno::AGAIN) => break,
+            Ok(n) => out.take(n),
+            Err(fuxix::Errno::INTR) => continue,
+            Err(_) => return false,
+        }
+    }
+    out.shrink(CONN_KEEP);
+    true
 }
 
 /// Input from a client's terminal, read at `now`, to the session; the pane
@@ -237,6 +243,13 @@ impl Conn {
         }
     }
 
+    /// Sends the connection's last frame: it closes once what waits is
+    /// sent.
+    fn end(&mut self, frame: &Frame) {
+        self.send(frame);
+        self.closing = true;
+    }
+
     /// Bytes for a client in `stream`. The paint stream, which carries what
     /// the session sends its terminal outside a paint too, goes to the
     /// terminal if the server writes to it; the rest, and all of it for a
@@ -268,8 +281,7 @@ impl Conn {
             // be read is (`serve_tty`): no one would read its keys.
             self.tty = None;
             if self.client.is_some() && !self.closing {
-                self.send(&Frame::Exit("detached: the terminal closed".into()));
-                self.closing = true;
+                self.end(&Frame::Exit("detached: the terminal closed".into()));
             }
         }
     }
@@ -297,24 +309,7 @@ impl Conn {
     /// waits for its terminal is written too.
     fn flush(&mut self) {
         self.flush_tty();
-        while !self.out.is_empty() {
-            match self.stream.write(self.out.as_slice()) {
-                Ok(0) => {
-                    self.dead = true;
-                    break;
-                }
-                Ok(n) => {
-                    self.out.take(n);
-                }
-                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                Err(_) => {
-                    self.dead = true;
-                    break;
-                }
-            }
-        }
-        self.out.shrink(CONN_KEEP);
+        self.dead |= !write_out(&self.stream, &mut self.out);
     }
 }
 
@@ -611,8 +606,7 @@ impl Server {
         self.session.shutdown();
         for conn in &mut self.conns {
             if conn.role == Some(Role::Attach) {
-                conn.send(&Frame::Exit(format!("the fux server stopped: {reason}")));
-                conn.closing = true;
+                conn.end(&Frame::Exit(format!("the fux server stopped: {reason}")));
             }
         }
         self.stopping = Some((Instant::now(), reason));
@@ -628,8 +622,7 @@ impl Server {
                 }
                 Outgoing::Exit(client, reason) => {
                     if let Some(conn) = self.conns.iter_mut().find(|c| c.client == Some(client)) {
-                        conn.send(&Frame::Exit(reason));
-                        conn.closing = true;
+                        conn.end(&Frame::Exit(reason));
                         conn.client = None;
                     }
                 }
@@ -877,8 +870,7 @@ impl Server {
             && let Some(conn) = self.conns.get_mut(index)
             && let Some(client) = conn.client.take()
         {
-            conn.send(&Frame::Exit("detached: the terminal closed".into()));
-            conn.closing = true;
+            conn.end(&Frame::Exit("detached: the terminal closed".into()));
             self.session.detach(client);
         }
     }
@@ -991,17 +983,15 @@ impl Server {
                 role,
             });
             if role == Role::Kill {
-                conn.send(&Frame::Done { status: 0 });
-                conn.closing = true;
+                conn.end(&Frame::Done { status: 0 });
                 self.stop("stopped by fux kill-server".into());
                 return;
             }
             if protocol != PROTOCOL {
-                conn.send(&Frame::Exit(format!(
+                conn.end(&Frame::Exit(format!(
                     "the server speaks protocol {PROTOCOL} (fux {}); restart it with `fux kill-server`",
                     env!("CARGO_PKG_VERSION")
                 )));
-                conn.closing = true;
                 return;
             }
             conn.role = Some(role);
@@ -1032,8 +1022,7 @@ impl Server {
                         }
                     }
                     Err(error) => {
-                        conn.send(&Frame::Exit(error.to_string()));
-                        conn.closing = true;
+                        conn.end(&Frame::Exit(error.to_string()));
                     }
                 }
             }
@@ -1045,8 +1034,7 @@ impl Server {
             }
             (Role::Attach, Frame::Detach) => {
                 if let Some(client) = conn.client.take() {
-                    conn.send(&Frame::Exit("detached".into()));
-                    conn.closing = true;
+                    conn.end(&Frame::Exit("detached".into()));
                     self.session.detach(client);
                 }
             }
@@ -1069,10 +1057,9 @@ impl Server {
                     }
                     conn.send_stream(Stream::Stderr, stderr.as_bytes());
                 }
-                conn.send(&Frame::Done {
+                conn.end(&Frame::Done {
                     status: outcome.status,
                 });
-                conn.closing = true;
             }
             _ => conn.dead = true,
         }
