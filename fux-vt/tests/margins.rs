@@ -10,21 +10,9 @@
 use fux_vt::{Color, Options, Parser};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
-fn lines(parser: &Parser) -> Vec<String> {
-    let screen = parser.screen();
-    let (rows, cols) = screen.size();
-    (0..rows)
-        .map(|y| {
-            (0..cols)
-                .filter_map(|x| screen.cell(y, x))
-                .filter(|c| !c.is_wide_continuation())
-                .map(|c| if c.has_contents() { c.contents() } else { " " })
-                .collect::<String>()
-                .trim_end()
-                .to_owned()
-        })
-        .collect()
-}
+#[path = "corpus/lines.rs"]
+mod lines;
+use lines::lines;
 
 fn run(rows: u16, cols: u16, bytes: &[u8]) -> std::result::Result<Parser, fux_vt::Error> {
     let mut parser = Parser::new(rows, cols, 0)?;
