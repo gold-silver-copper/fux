@@ -116,11 +116,6 @@ pub fn layer_title<'a>(session: &'a Session, path: &[KeyPress]) -> Option<&'a st
         .map(crate::config::Binding::group)
 }
 
-/// How many entries the column can select among in the layer at `path`.
-pub(crate) fn column_len(session: &Session, path: &[KeyPress]) -> usize {
-    entries(session, path).count()
-}
-
 pub fn open_prompt(
     session: &mut Session,
     client: ClientId,
@@ -567,7 +562,7 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
         return;
     };
     let (path, selected, rows) = (path.clone(), *selected, view.rows);
-    let len = column_len(session, &path);
+    let len = column(session, &path).len();
     let (_, page) = column_room(rows);
     let last = len.saturating_sub(1);
     // Escape always closes the column, and cannot be bound. Any other key
@@ -1302,7 +1297,7 @@ mod tests {
         assert_eq!(mode(&s, c), "normal");
         assert_eq!(notice(&s, c), "closed: the repeat mode C-b y is gone");
         s.input(c, b"\x02\x1b[F");
-        let last = column_len(&s, &[]).saturating_sub(1);
+        let last = column(&s, &[]).len().saturating_sub(1);
         assert_eq!(mode(&s, c), format!("column {last}"));
         run(&mut s, "unbind d")?;
         assert_eq!(mode(&s, c), format!("column {}", last.saturating_sub(1)));
@@ -1312,15 +1307,12 @@ mod tests {
     }
 
     /// The server settles after every read of a pane's output: an open
-    /// column keeps its layer and its selection, counted without building
-    /// its rows, and shows the output behind it.
+    /// column keeps its layer and its selection, and shows the output
+    /// behind it.
     #[test]
     fn a_column_stays_open_while_a_pane_writes() -> Outcome {
         let (mut s, c) = session()?;
         with_layers(&mut s)?;
-        for path in [&[][..], &[KeyPress::char('t')], &[KeyPress::char('y')]] {
-            assert_eq!(column_len(&s, path), column(&s, path).len(), "{path:?}");
-        }
         s.input(c, b"\x02\x1b[B\x1b[B\x1b[B");
         assert_eq!(mode(&s, c), "column 3");
         // What it was, kept past the output that changes the session.
@@ -1657,7 +1649,7 @@ mod tests {
         let last = entries.last().ok_or("an entry")?;
         assert!(last.root && last.group() == ROOT_GROUP, "{entries:?}");
         assert!(entries.iter().rev().nth(1).is_some_and(|e| !e.root));
-        let last = column_len(&s, &[]).saturating_sub(1);
+        let last = column(&s, &[]).len().saturating_sub(1);
         s.input(c, &prefixed(""));
         for _ in 0..last {
             s.input(c, b"\x1b[B");
