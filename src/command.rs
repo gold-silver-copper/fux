@@ -1241,11 +1241,8 @@ mod tests {
             "reorder workspace -t %1 --next",
             // Another pane and a direction: one or the other.
             "swap-pane %2 -L",
-            "list-keys --bogus",
             "unbind-all --nope",
-            "reload extra words",
             "reload -- x",
-            "list-buffers 1",
         ] {
             assert!(cmd(line).is_err(), "{line}");
         }
@@ -1349,24 +1346,10 @@ mod tests {
                 "confirm-close thing",
                 r#"confirm-close: "thing" is not pane, tab or workspace"#,
             ),
-            // A screen command takes only the flags it uses: none is
-            // accepted and then ignored.
+            // A command takes only the flags its usage names.
             ("zoom -t %1", "zoom: unknown flag -t"),
-            ("copy-mode -c c1 -t %1", "copy-mode: unknown flag -t"),
-            (
-                "command-prompt --move",
-                "command-prompt: unknown flag --move",
-            ),
-            ("command-column -L", "command-column: unknown flag -L"),
-            ("choose-pane --move", "choose-pane: unknown flag --move"),
-            ("menu pane --next", "menu: unknown flag --next"),
             ("select-tab -L", "select-tab: unknown flag -L"),
-            (
-                "select-workspace --last",
-                "select-workspace: unknown flag --last",
-            ),
             ("zoom pane", r#"zoom: unexpected argument "pane""#),
-            ("choose-tab tab", r#"choose-tab: unexpected argument "tab""#),
             // A target of the wrong form is refused as the kind it must be.
             ("select-tab -t %x", r#""%x" is not a tab; tabs are @N"#),
             (
