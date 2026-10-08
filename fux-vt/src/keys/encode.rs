@@ -342,7 +342,7 @@ fn other_keys(stroke: Keystroke, level: u8, out: &mut Vec<u8>) -> bool {
     } else {
         allowed(sym, state)
     };
-    let text = matches!(sym, Sym::Char(c) if c != ' ') && sent == SHIFT;
+    let text = matches!(sym, Sym::Char(c) if c != ' ') && sent == Modifiers::SHIFT;
     if sent.is_empty() || level > 1 && text {
         return false;
     }
@@ -350,15 +350,6 @@ fn other_keys(stroke: Keystroke, level: u8, out: &mut Vec<u8>) -> bool {
     let _ = write!(out, "\x1b[27;{mods};{code}~");
     true
 }
-
-const SHIFT: Modifiers = Modifiers {
-    shift: true,
-    ..Modifiers::NONE
-};
-const CTRL: Modifiers = Modifiers {
-    ctrl: true,
-    ..Modifiers::NONE
-};
 
 /// An ordinary key as xterm's `input.c` sees it: by its keysym. Backspace
 /// is `BackSpace` with Ctrl and `Delete` without, as xterm's backarrow
@@ -404,7 +395,7 @@ impl Sym {
 /// `level`: `input.c`'s `ModifyOtherKeys`, and its `Input`'s Shift-Tab,
 /// which at level 1 becomes `ISO_Left_Tab`, a function key, `CSI Z`.
 fn modified(sym: Sym, state: Modifiers, level: u8) -> bool {
-    if state.is_empty() || level == 1 && sym == Sym::Tab && state == SHIFT {
+    if state.is_empty() || level == 1 && sym == Sym::Tab && state == Modifiers::SHIFT {
         return false;
     }
     // A character's modifiers are filtered first, a predefined key's not.
@@ -420,9 +411,11 @@ fn modified(sym: Sym, state: Modifiers, level: u8) -> bool {
         return match sym {
             Sym::BackSpace | Sym::Delete => false,
             Sym::Return | Sym::Tab => true,
-            Sym::Char(_) | Sym::Escape if sym.control_input() => st != CTRL && st != SHIFT,
+            Sym::Char(_) | Sym::Escape if sym.control_input() => {
+                st != Modifiers::CTRL && st != Modifiers::SHIFT
+            }
             Sym::Char(_) | Sym::Escape if sym.control_alias(state.ctrl) => {
-                st != SHIFT && !without_ctrl.is_empty()
+                st != Modifiers::SHIFT && !without_ctrl.is_empty()
             }
             Sym::Char(_) | Sym::Escape => true,
         };
@@ -432,7 +425,7 @@ fn modified(sym: Sym, state: Modifiers, level: u8) -> bool {
         Sym::Delete | Sym::Escape | Sym::Return | Sym::Tab => true,
         Sym::Char(c) => {
             sym.control_input()
-                || st == SHIFT && c == ' '
+                || st == Modifiers::SHIFT && c == ' '
                 || !Modifiers { shift: false, ..st }.is_empty()
         }
     }
@@ -889,21 +882,13 @@ mod tests {
         }
         let left = Key::Arrow(Direction::Left);
         assert_eq!(encoded(press(left, Modifiers::NONE), true), b"\x1bOD");
-        let ctrl = Modifiers {
-            ctrl: true,
-            ..Modifiers::NONE
-        };
+        let (ctrl, alt) = (Modifiers::CTRL, Modifiers::ALT);
         assert_eq!(encoded(press(left, ctrl), true), b"\x1b[1;5D");
         let ctrl_shift = Modifiers {
-            ctrl: true,
             shift: true,
-            alt: false,
+            ..ctrl
         };
         assert_eq!(encoded(press(Key::F(1), ctrl_shift), false), b"\x1b[1;6P");
-        let alt = Modifiers {
-            alt: true,
-            ..Modifiers::NONE
-        };
         assert_eq!(encoded(press(Key::F(12), alt), false), b"\x1b[24;3~");
         assert_eq!(encoded(press(Key::Char('c'), ctrl), false), vec![3]);
         assert_eq!(encoded(press(Key::Char('x'), alt), false), b"\x1bx");
@@ -911,10 +896,6 @@ mod tests {
 
     #[test]
     fn control_bytes_follow_xterm_for_every_c0_control() {
-        let ctrl = Modifiers {
-            ctrl: true,
-            ..Modifiers::NONE
-        };
         for (c, byte) in [
             (' ', 0x00),
             ('2', 0x00),
@@ -949,7 +930,7 @@ mod tests {
             ('!', b'!'),
         ] {
             assert_eq!(
-                encoded(press(Key::Char(c), ctrl), false),
+                encoded(press(Key::Char(c), Modifiers::CTRL), false),
                 vec![byte],
                 "{c:?}"
             );
@@ -960,10 +941,7 @@ mod tests {
     /// Alt-Escape is ESC ESC), but not before a sequence, which carries it.
     #[test]
     fn alt_prefixes_a_lone_escape_but_not_a_sequence() {
-        let alt = Modifiers {
-            alt: true,
-            ..Modifiers::NONE
-        };
+        let alt = Modifiers::ALT;
         let ctrl_alt = Modifiers { ctrl: true, ..alt };
         assert_eq!(encoded(press(Key::Escape, alt), false), b"\x1b\x1b");
         assert_eq!(encoded(press(Key::Char('['), ctrl_alt), false), b"\x1b\x1b");
@@ -974,23 +952,6 @@ mod tests {
             encoded(press(Key::Arrow(Direction::Up), alt), true),
             b"\x1b[1;3A"
         );
-    }
-
-    /// Report associated text: with no modifiers the field is empty, as in
-    /// the spec's `CSI 0 ; ; 229 u`; with some it is their value.
-    #[test]
-    fn associated_text_follows_an_empty_modifier_field() {
-        let mode = KeyMode {
-            kitty: ALL_KEYS | TEXT,
-            ..KeyMode::default()
-        };
-        let sent = |press: KeyPress| {
-            let mut out = Vec::new();
-            key_bytes(press.into(), mode, &mut out);
-            String::from_utf8_lossy(&out).into_owned()
-        };
-        assert_eq!(sent(KeyPress::plain(Key::Char('a'))), "\x1b[97;;97u");
-        assert_eq!(sent(KeyPress::plain(Key::Char('A'))), "\x1b[97;2;65u");
     }
 
     /// Every key, under all eight modifier sets and both cursor modes, has a

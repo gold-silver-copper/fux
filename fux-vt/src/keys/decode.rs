@@ -57,11 +57,11 @@ pub const ESCAPE_DELAY: Duration = Duration::from_millis(35);
 /// How long an answer from the terminal that has begun waits for the rest
 /// of it. Answers are not typed, so the wait delays no key; it only keeps a
 /// split one from being taken for keys.
-pub const REPLY_DELAY: Duration = Duration::from_secs(1);
+const REPLY_DELAY: Duration = Duration::from_secs(1);
 /// How long after fux asks the terminal a bare `ESC ]`, `ESC P`, `ESC P0`
 /// or `ESC P1` waits as long as an answer begun (`REPLY_DELAY`), unless the
 /// answer to DA1, asked last, comes first.
-pub const REPLY_WINDOW: Duration = Duration::from_secs(1);
+const REPLY_WINDOW: Duration = Duration::from_secs(1);
 /// The longest OSC answer kept: `OSC 11 ; rgb:RRRR/GGGG/BBBB ST` is 29
 /// bytes. A longer string is dropped.
 const OSC_LIMIT: usize = 128;
@@ -405,22 +405,18 @@ fn single(bytes: &[u8], flush: bool) -> Step {
     let Some(&first) = bytes.first() else {
         return Step::Incomplete;
     };
-    let ctrl = Modifiers {
-        ctrl: true,
-        ..Modifiers::NONE
-    };
     let input = match first {
         0x0d => press(Key::Enter, Modifiers::NONE),
         0x09 => press(Key::Tab, Modifiers::NONE),
         0x7f => press(Key::Backspace, Modifiers::NONE),
         0x1b => press(Key::Escape, Modifiers::NONE),
-        0x00 => press(Key::Char(' '), ctrl),
+        0x00 => press(Key::Char(' '), Modifiers::CTRL),
         // Ctrl-A to Ctrl-Z are the letters with bits 5 and 6 cleared.
-        0x01..=0x1a => press(Key::Char(char::from(first | 0x60)), ctrl),
-        0x1c => press(Key::Char('\\'), ctrl),
-        0x1d => press(Key::Char(']'), ctrl),
-        0x1e => press(Key::Char('^'), ctrl),
-        0x1f => press(Key::Char('_'), ctrl),
+        0x01..=0x1a => press(Key::Char(char::from(first | 0x60)), Modifiers::CTRL),
+        0x1c => press(Key::Char('\\'), Modifiers::CTRL),
+        0x1d => press(Key::Char(']'), Modifiers::CTRL),
+        0x1e => press(Key::Char('^'), Modifiers::CTRL),
+        0x1f => press(Key::Char('_'), Modifiers::CTRL),
         0x20..=0x7e => press(Key::Char(char::from(first)), Modifiers::NONE),
         _ => {
             let need = match first {
@@ -471,11 +467,11 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
         b']' => osc(bytes, flush),
         b'O' => match bytes.get(2) {
             None if !flush => Step::Incomplete,
-            None => Step::Done(2, press(Key::Char('O'), alt())),
+            None => Step::Done(2, press(Key::Char('O'), Modifiers::ALT)),
             // A byte no final key names: Alt-O, then the byte.
             Some(&last) => match final_key(last, Modifiers::NONE) {
                 Some(input) => Step::Done(3, Some(input)),
-                None => Step::Done(2, press(Key::Char('O'), alt())),
+                None => Step::Done(2, press(Key::Char('O'), Modifiers::ALT)),
             },
         },
         // Escape Escape: an Escape, then decode the second one on its own.
@@ -504,13 +500,6 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
             Step::DiscardDcs(n) => Step::DiscardDcs(n.saturating_add(1)),
             Step::Incomplete => Step::Incomplete,
         },
-    }
-}
-
-fn alt() -> Modifiers {
-    Modifiers {
-        alt: true,
-        ..Modifiers::NONE
     }
 }
 
@@ -543,7 +532,7 @@ fn final_key(last: u8, mods: Modifiers) -> Option<Input> {
 /// the deadline or past `OSC_LIMIT`, is dropped.
 #[cold]
 fn osc(bytes: &[u8], flush: bool) -> Step {
-    let alt_bracket = || Step::Done(2, press(Key::Char(']'), alt()));
+    let alt_bracket = || Step::Done(2, press(Key::Char(']'), Modifiers::ALT));
     let body = bytes.get(2..).unwrap_or_default();
     match body.first() {
         None if !flush => return Step::Incomplete,
@@ -716,7 +705,7 @@ fn sgr_mouse(params: &[u8], last: u8) -> Option<MouseEvent> {
 fn unfinished(params: &[u8]) -> Step {
     let at = params.iter().position(|&b| b == 0x1b).unwrap_or(0);
     if at == 0 {
-        Step::Done(2, press(Key::Char('['), alt()))
+        Step::Done(2, press(Key::Char('['), Modifiers::ALT))
     } else {
         Step::Done(at.saturating_add(2), None)
     }
@@ -772,7 +761,7 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
         return if answer {
             Step::Done(bytes.len(), None)
         } else {
-            Step::Done(2, press(Key::Char('['), alt()))
+            Step::Done(2, press(Key::Char('['), Modifiers::ALT))
         };
     };
     // `ESC [`, the parameters and the final byte; within `bytes`, so exact.
@@ -1437,13 +1426,7 @@ mod tests {
         let letter: Vec<_> = all(b"\x1b[97;5u").iter().map(pressed).collect();
         assert_eq!(
             letter,
-            vec![Some(KeyPress::new(
-                Key::Char('a'),
-                Modifiers {
-                    ctrl: true,
-                    ..Modifiers::NONE
-                }
-            ))],
+            vec![Some(KeyPress::new(Key::Char('a'), Modifiers::CTRL))],
             "a letter's code"
         );
     }

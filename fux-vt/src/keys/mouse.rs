@@ -47,6 +47,19 @@ impl MouseButton {
         )
     }
 
+    /// Every button.
+    pub(crate) const ALL: [MouseButton; 9] = [
+        MouseButton::Left,
+        MouseButton::Middle,
+        MouseButton::Right,
+        MouseButton::WheelUp,
+        MouseButton::WheelDown,
+        MouseButton::WheelLeft,
+        MouseButton::WheelRight,
+        MouseButton::Back,
+        MouseButton::Forward,
+    ];
+
     /// The button's part of a report's button code.
     fn code(self) -> u32 {
         match self {
@@ -66,18 +79,8 @@ impl MouseButton {
     /// bits aside; `None` for 3 (a release or motion with no button named)
     /// and for codes no button has.
     fn from_code(code: u32) -> Option<MouseButton> {
-        Some(match code & !(SHIFT | ALT | CTRL | MOTION) {
-            0 => MouseButton::Left,
-            1 => MouseButton::Middle,
-            2 => MouseButton::Right,
-            64 => MouseButton::WheelUp,
-            65 => MouseButton::WheelDown,
-            66 => MouseButton::WheelLeft,
-            67 => MouseButton::WheelRight,
-            128 => MouseButton::Back,
-            129 => MouseButton::Forward,
-            _ => return None,
-        })
+        let code = code & !(SHIFT | ALT | CTRL | MOTION);
+        Self::ALL.into_iter().find(|button| button.code() == code)
     }
 }
 
