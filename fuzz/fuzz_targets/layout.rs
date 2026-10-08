@@ -2,8 +2,9 @@
 //! Input: four bytes for the area's width and height (a high byte below 0x80
 //! is a small size, `lo % 64`; ff is u16::MAX), a tree of splits and panes,
 //! then two-byte resizes.
+use fux::id::PaneId;
 use fux::keys::Direction;
-use fux::layout::{self, Axis, MIN, Node, PaneId, Placement, Rect};
+use fux::layout::{self, Axis, MIN, Node, Placement, Rect};
 use libfuzzer_sys::fuzz_target;
 
 struct Bytes<'a> {
@@ -43,7 +44,8 @@ impl Bytes<'_> {
         let b = self.next();
         if depth >= 4 || self.panes >= 16 || b & 0x80 == 0 {
             self.panes += 1;
-            return Node::Pane(PaneId(self.panes));
+            let pane: PaneId = format!("%{}", self.panes).parse().expect("a pane's number");
+            return Node::Pane(pane);
         }
         let axis = if b & 1 == 0 {
             Axis::Horizontal

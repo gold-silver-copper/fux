@@ -8,12 +8,11 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 
-use fux::command::ClientId;
 use fux::config::{Binding, Config};
 use fux::copy::MAX_CLIPBOARD;
 use fux::decode::{Decoder, Input};
+use fux::id::{ClientId, PaneId};
 use fux::keys::KeyPress;
-use fux::layout::PaneId;
 use fux::outer;
 use fux::overlay::column;
 use fux::render::{Grid, compose};
@@ -451,7 +450,7 @@ fn check(s: &Session) {
                 ws.tabs.iter().any(|t| t.id == tab),
                 "{id}'s tab is elsewhere"
             );
-            let panes = s.tab_panes(tab);
+            let panes = s.root(tab).map(|r| r.panes()).unwrap_or_default();
             match view.focus() {
                 Some(focus) => assert!(panes.contains(&focus), "{id} focuses {focus} elsewhere"),
                 None => assert!(panes.is_empty(), "{id} focuses nothing in {tab}"),

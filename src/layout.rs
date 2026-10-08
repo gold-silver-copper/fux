@@ -1,17 +1,8 @@
 //! A tab's layout: a tree of splits whose leaves are panes, and the
 //! rectangles it gives each pane at a given size.
+use crate::id::PaneId;
 use crate::keys::Direction;
 use std::num::NonZeroU64;
-
-/// A pane's number, `%N` on the command line.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PaneId(pub u32);
-
-impl std::fmt::Display for PaneId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "%{}", self.0)
-    }
-}
 
 /// How a split arranges its children.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -735,7 +726,7 @@ mod tests {
     use super::*;
 
     fn p(n: u32) -> PaneId {
-        PaneId(n)
+        PaneId::of(n)
     }
     fn area(w: u16, h: u16) -> Rect {
         Rect { x: 0, y: 0, w, h }

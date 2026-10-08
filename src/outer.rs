@@ -36,9 +36,9 @@
 //! then picks the theme it would pick in the foreground, rather than its
 //! default, and it is the best guess at the terminal the user will come back
 //! to. Before any terminal has answered, nothing is answered.
-use crate::command::{ClientId, TabId};
 use crate::decode::Reply;
-use crate::layout::PaneId;
+use crate::id::PaneId;
+use crate::id::{ClientId, TabId};
 use crate::session::{Outgoing, Session};
 use crate::view::View;
 pub use fux_vt::keys::colour::{Colours, Rgb, Scheme};
@@ -449,7 +449,7 @@ mod tests {
     fn answered(s: &mut Session, pane: u32) -> String {
         let bytes = s
             .panes
-            .get_mut(&PaneId(pane))
+            .get_mut(&PaneId::of(pane))
             .map(|p| p.input.drain_all())
             .unwrap_or_default();
         String::from_utf8_lossy(&bytes).into_owned()
@@ -458,7 +458,7 @@ mod tests {
     /// What pane `pane`'s program is answered to `OSC 4 ; n ; ?`.
     fn entry(s: &mut Session, pane: u32, n: u8) -> String {
         let _ = answered(s, pane);
-        s.output(PaneId(pane), format!("\x1b]4;{n};?\x07").as_bytes());
+        s.output(PaneId::of(pane), format!("\x1b]4;{n};?\x07").as_bytes());
         answered(s, pane)
     }
 
@@ -478,9 +478,9 @@ mod tests {
         // The program's own colour wins, and nothing the host gave is
         // painted.
         let before = crate::render::compose(&s, c);
-        s.output(PaneId(1), b"\x1b]4;1;#00ff00\x07");
+        s.output(PaneId::of(1), b"\x1b]4;1;#00ff00\x07");
         assert_eq!(entry(&mut s, 1, 1), "\x1b]4;1;rgb:0000/ffff/0000\x07");
-        s.output(PaneId(1), b"\x1b]104;1\x07");
+        s.output(PaneId::of(1), b"\x1b]104;1\x07");
         assert_eq!(entry(&mut s, 1, 1), "\x1b]4;1;rgb:1111/2222/3333\x07");
         assert_eq!(crate::render::compose(&s, c), before);
         Ok(())
@@ -528,13 +528,13 @@ mod tests {
     fn a_bell_rings_the_clients_showing_its_workspace_and_marks_its_tab() -> Outcome {
         let (mut s, c) = session()?;
         let _ = sent(&mut s, c);
-        s.output(PaneId(1), b"\x07");
+        s.output(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         // Again at once: not rung twice within the gap.
-        s.output(PaneId(1), b"\x07\x07");
+        s.output(PaneId::of(1), b"\x07\x07");
         assert!(sent(&mut s, c).is_empty());
         std::thread::sleep(BELL_GAP);
-        s.output(PaneId(1), b"\x07");
+        s.output(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         // In a tab the client does not show: its tab is marked until shown.
         run(&mut s, "new-tab -t +1 -n other")?;
@@ -542,7 +542,7 @@ mod tests {
         s.settle();
         let _ = s.before_paint(c);
         std::thread::sleep(BELL_GAP);
-        s.output(PaneId(1), b"\x07");
+        s.output(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         assert!(tab_label(&s, c).contains(" main! "), "{}", tab_label(&s, c));
         run(&mut s, "select-tab -c c1 -t @1")?;
@@ -558,13 +558,13 @@ mod tests {
         run(&mut s, "select-workspace -c c2 -t elsewhere")?;
         let _ = sent(&mut s, d);
         std::thread::sleep(BELL_GAP);
-        s.output(PaneId(1), b"\x07");
+        s.output(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         assert!(sent(&mut s, d).is_empty());
         // Off: no bell and no mark.
         run(&mut s, "set bell off")?;
         std::thread::sleep(BELL_GAP);
-        s.output(PaneId(1), b"\x07");
+        s.output(PaneId::of(1), b"\x07");
         assert!(sent(&mut s, c).is_empty());
         assert!(!tab_label(&s, c).contains('!'));
         Ok(())
@@ -574,14 +574,14 @@ mod tests {
     fn titles_follow_the_focused_pane_and_are_restored_when_turned_off() -> Outcome {
         let (mut s, c) = session()?;
         // Off by default: nothing.
-        s.output(PaneId(1), b"\x1b]2;vim notes\x07");
+        s.output(PaneId::of(1), b"\x1b]2;vim notes\x07");
         assert!(s.before_paint(c).is_empty());
         run(&mut s, "set titles on")?;
         let first = s.before_paint(c);
         assert_eq!(first, b"\x1b]2;vim notes\x1b\\");
         // Unchanged: nothing more; changed: the title alone.
         assert!(s.before_paint(c).is_empty());
-        s.output(PaneId(1), b"\x1b]2;make\x07");
+        s.output(PaneId::of(1), b"\x1b]2;make\x07");
         assert_eq!(s.before_paint(c), b"\x1b]2;make\x1b\\");
         // A pane with no title: its tab's name.
         run(&mut s, "split -h -t %1")?;
