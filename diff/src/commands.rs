@@ -4,54 +4,17 @@
 use crate::rng::Rng;
 use crate::{Outcome, bump, same, times};
 
-const NAMES: &[&str] = &[
-    "select-pane",
-    "select-pane",
-    "select-tab",
-    "select-tab",
-    "select-workspace",
-    "select-workspace",
-    "reorder",
-    "menu",
-    "choose-tab",
-    "choose-workspace",
-    "choose-pane",
-    "zoom",
-    "copy-mode",
-    "rename-prompt",
-    "confirm-close",
-    "command-column",
-    "command-prompt",
-    "split",
-    "move-pane",
-    "swap-pane",
-    "resize-pane",
-    "kill-pane",
-    "kill-tab",
-    "kill-workspace",
-    "new-tab",
-    "new-workspace",
-    "rename",
-    "send-keys",
-    "capture-pane",
-    "capture-client",
-    "detach",
-    "ls",
-    "list",
-    "paste-buffer",
-    "show-buffer",
-    "list-buffers",
-    "terminate",
-    "set",
-    "bind",
-    "unbind",
-    "unbind-all",
-    "reload",
-    "list-keys",
-    "kill-server",
-    "bogus",
-    "",
-];
+/// Every command's names, as the current fux has them, and two that are
+/// none.
+fn names() -> Vec<&'static str> {
+    let specs = fux::command::COMMANDS
+        .iter()
+        .flat_map(|(_, specs)| specs.iter());
+    specs
+        .flat_map(|spec| spec.names())
+        .chain(["bogus", ""])
+        .collect()
+}
 
 const WORDS: &[&str] = &[
     "--next",
@@ -131,7 +94,7 @@ fn line(r: &mut Rng) -> Vec<String> {
     if r.chance(5) {
         return Vec::new();
     }
-    let mut argv = vec![word(r, NAMES)];
+    let mut argv = vec![word(r, &names())];
     for _ in 0..r.below(6) {
         argv.push(word(r, WORDS));
     }
