@@ -565,9 +565,9 @@ pub fn text(
 
 /// Enters copy mode on the client's focused pane.
 pub fn enter(session: &mut Session, client: ClientId) -> Result<String, Error> {
-    let view = session.views.get(&client).ok_or(Error::NoSuchClient)?;
+    let view = session.views.get(&client).ok_or(Error::NoClient(client))?;
     let pane = view.focus().ok_or(Error::NoPaneToCopy)?;
-    let screen = session.panes.get(&pane).ok_or(Error::NoSuchPane)?.screen();
+    let screen = session.panes.get(&pane).ok_or(Error::NoPane(pane))?.screen();
     let (cy, cx) = screen.cursor_position();
     let history = screen.history_len();
     let row = history
@@ -585,7 +585,7 @@ pub fn enter(session: &mut Session, client: ClientId) -> Result<String, Error> {
         typing: None,
         held_at: None,
     };
-    let view = session.views.get_mut(&client).ok_or(Error::NoSuchClient)?;
+    let view = session.view_mut(client)?;
     view.mode = Mode::Copy(Box::new(copy));
     // The bar shows where the cursor is; a notice would hide it.
     view.notice = None;

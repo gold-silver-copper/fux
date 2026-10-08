@@ -183,7 +183,7 @@ pub fn open_prompt(
     title: String,
     text: String,
 ) -> Result<String, Error> {
-    let view = session.views.get_mut(&client).ok_or(Error::NoSuchClient)?;
+    let view = session.view_mut(client)?;
     let cursor = text.chars().count();
     view.mode = Mode::Prompt(Prompt {
         title,
@@ -216,7 +216,7 @@ pub fn open_confirm(
     };
     let name = session.name_of(&target);
     let question = format!("close {kind} {id} {name}?");
-    let view = session.views.get_mut(&client).ok_or(Error::NoSuchClient)?;
+    let view = session.view_mut(client)?;
     view.mode = Mode::Confirm(Confirm {
         question,
         command,
@@ -347,7 +347,7 @@ fn open_list(
     about: Option<AnyRef>,
 ) -> Result<String, Error> {
     let selected = items.iter().position(|i| i.current).unwrap_or(0);
-    let view = session.views.get_mut(&client).ok_or(Error::NoSuchClient)?;
+    let view = session.view_mut(client)?;
     view.mode = Mode::List(List {
         title,
         items,
@@ -382,7 +382,7 @@ pub fn open_tab_chooser(
     client: ClientId,
     moving: Option<PaneId>,
 ) -> Result<String, Error> {
-    let view = session.views.get(&client).ok_or(Error::NoSuchClient)?;
+    let view = session.views.get(&client).ok_or(Error::NoClient(client))?;
     let current = view.tab();
     let ws = session
         .workspace(view.workspace)
@@ -418,7 +418,7 @@ pub fn open_workspace_chooser(
     let current = session
         .views
         .get(&client)
-        .ok_or(Error::NoSuchClient)?
+        .ok_or(Error::NoClient(client))?
         .workspace;
     let items = session
         .workspaces
