@@ -3,7 +3,9 @@
 //! reported as unhandled; and the opt-in kitty keyboard protocol, identity
 //! replies and reflow on resize.
 
-use fux_vt::{Blink, Cell, CellRef, Color, Error, Identity, Options, Parser, Sink, Unhandled};
+use fux_vt::{
+    Blink, CLUSTER_CAPACITY, CellRef, Color, Error, Identity, Options, Parser, Sink, Unhandled,
+};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 #[path = "corpus/lines.rs"]
@@ -281,7 +283,7 @@ fn a_full_cluster_drops_what_follows_and_is_never_split() -> Result {
     // 'e' and 63 two-byte marks fill 127 of 128 bytes; the rest is dropped.
     let marks: String = std::iter::repeat_n('\u{301}', 100).collect();
     p.process(format!("e{marks}x").as_bytes())?;
-    assert_eq!(cell(&p, 0, 0)?.contents().len(), Cell::CLUSTER_CAPACITY - 1);
+    assert_eq!(cell(&p, 0, 0)?.contents().len(), CLUSTER_CAPACITY - 1);
     assert_eq!(cell(&p, 0, 1)?.contents(), "x");
     // A ZWJ sequence past the capacity still ends in its one cell: the
     // pictographs after it are dropped, not given cells of their own.
@@ -291,7 +293,7 @@ fn a_full_cluster_drops_what_follows_and_is_never_split() -> Result {
         .collect();
     p.process(format!("{long}|").as_bytes())?;
     assert!(cell(&p, 0, 0)?.is_wide());
-    assert!(cell(&p, 0, 0)?.contents().len() <= Cell::CLUSTER_CAPACITY);
+    assert!(cell(&p, 0, 0)?.contents().len() <= CLUSTER_CAPACITY);
     assert!(long.starts_with(cell(&p, 0, 0)?.contents()));
     assert_eq!(cell(&p, 0, 2)?.contents(), "|");
     assert_eq!(p.screen().cursor_position(), (0, 3));

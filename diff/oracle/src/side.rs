@@ -12,6 +12,11 @@
 //! asked and no colour changed. The palette's sequences are exempt
 //! (`exempt`), so with the option on the working tree sees none of them,
 //! and anything else that changed a colour would differ.
+//!
+//! And the cell a host makes: the commit's `Cell` (`Cell::new`, `None`
+//! past 17 bytes; `Cells::set_cell` and `set_text`), the working tree's
+//! `CellRef` (`CellRef::new`, given only what `Cell::new` takes;
+//! `Cells::set`), and `CLUSTER_CAPACITY`, on `Cell` in the commit.
 
 macro_rules! side {
     (
@@ -20,7 +25,14 @@ macro_rules! side {
         $name:literal,
         with_palette: $with_palette:expr,
         palette: $palette:expr,
-        colors_changed: $colors_changed:expr $(,)?
+        colors_changed: $colors_changed:expr,
+        cell: $cell:ty,
+        new_cell: $new_cell:expr,
+        blank: $blank:expr,
+        continuation: $continuation:expr,
+        set_cell: $set_cell:expr,
+        set_text: $set_text:expr,
+        cluster_capacity: $cluster_capacity:expr $(,)?
     ) => {
         pub mod $module {
             use crate::model::{
@@ -499,7 +511,7 @@ macro_rules! side {
             }
 
             /// A `Cell` as its own accessors show it.
-            fn stored(c: &vt::Cell) -> String {
+            fn stored(c: &$cell) -> String {
                 format!(
                     "contents {} wide {} continuation {} {:?}",
                     c.has_contents(),
@@ -521,14 +533,7 @@ macro_rules! side {
                         ("URI_LIMIT", vt::URI_LIMIT.to_string()),
                         ("ID_LIMIT", vt::ID_LIMIT.to_string()),
                         ("OSC_PAYLOAD_LIMIT", vt::OSC_PAYLOAD_LIMIT.to_string()),
-                        (
-                            "Cell::INLINE_CAPACITY",
-                            vt::Cell::INLINE_CAPACITY.to_string(),
-                        ),
-                        (
-                            "Cell::CLUSTER_CAPACITY",
-                            vt::Cell::CLUSTER_CAPACITY.to_string(),
-                        ),
+                        ("CLUSTER_CAPACITY", $cluster_capacity.to_string()),
                         ("Identity::MAX_LEN", vt::Identity::MAX_LEN.to_string()),
                         (
                             "Options::default is Options::new",
@@ -538,11 +543,8 @@ macro_rules! side {
                             "Attributes::default",
                             format!("{:?}", style(vt::Attributes::default())),
                         ),
-                        ("Cell::default", stored(&vt::Cell::default())),
-                        (
-                            "Cell::wide_continuation",
-                            stored(&vt::Cell::wide_continuation()),
-                        ),
+                        ("blank cell", stored(&$blank)),
+                        ("wide continuation", stored(&$continuation)),
                         (
                             "MouseProtocolMode::default",
                             format!("{:?}", vt::MouseProtocolMode::default()),
@@ -596,22 +598,22 @@ macro_rules! side {
                             text,
                             wide,
                             style,
-                        } => format!("{}", run.set_text(*i, text, *wide, attributes(style))),
+                        } => format!("{}", $set_text(run, *i, text, *wide, attributes(style))),
                         Edit::SetCell {
                             i,
                             text,
                             wide,
                             style,
-                        } => match vt::Cell::new(text, *wide, attributes(style)) {
+                        } => match $new_cell(text, *wide, attributes(style)) {
                             Some(cell) => {
                                 let shown = stored(&cell);
-                                run.set_cell(*i, cell);
+                                $set_cell(run, *i, cell);
                                 shown
                             }
                             None => "no cell".into(),
                         },
                         Edit::Continuation { i } => {
-                            run.set_cell(*i, vt::Cell::wide_continuation());
+                            $set_cell(run, *i, $continuation);
                             String::new()
                         }
                         Edit::SetAttributes { i, style } => {
@@ -624,7 +626,7 @@ macro_rules! side {
                             text,
                             wide,
                             style,
-                        } => match vt::Cell::new(text, *wide, attributes(style)) {
+                        } => match $new_cell(text, *wide, attributes(style)) {
                             Some(cell) => {
                                 run.fill(*start..*end, cell);
                                 stored(&cell)
@@ -636,7 +638,7 @@ macro_rules! side {
                             text,
                             wide,
                             style,
-                        } => match vt::Cell::new(text, *wide, attributes(style)) {
+                        } => match $new_cell(text, *wide, attributes(style)) {
                             Some(cell) => {
                                 run.resize(*len, cell);
                                 stored(&cell)
@@ -705,6 +707,21 @@ side!(
     with_palette: |o, on| o.with_palette(on),
     palette: |o, _| o.palette,
     colors_changed: |s| s.colors_changed(),
+    cell: vt::CellRef<'_>,
+    new_cell: {
+        fn made(text: &str, wide: bool, a: vt::Attributes) -> Option<vt::CellRef<'_>> {
+            (text.len() <= 17).then(|| vt::CellRef::new(text, wide, a))
+        }
+        made
+    },
+    blank: vt::CellRef::default(),
+    continuation: vt::CellRef::wide_continuation(),
+    set_cell: |run: &mut vt::Cells, i, cell| {
+        run.set(i, cell);
+    },
+    set_text: |run: &mut vt::Cells, i, text, wide, attributes| run
+        .set(i, vt::CellRef::new(text, wide, attributes)),
+    cluster_capacity: vt::CLUSTER_CAPACITY,
 );
 side!(
     base,
@@ -713,4 +730,11 @@ side!(
     with_palette: |o, _| o,
     palette: |_, asked| asked,
     colors_changed: |_| false,
+    cell: vt::Cell,
+    new_cell: vt::Cell::new,
+    blank: vt::Cell::default(),
+    continuation: vt::Cell::wide_continuation(),
+    set_cell: vt::Cells::set_cell,
+    set_text: vt::Cells::set_text,
+    cluster_capacity: vt::Cell::CLUSTER_CAPACITY,
 );
