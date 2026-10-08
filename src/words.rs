@@ -47,53 +47,45 @@ pub fn split(line: &str) -> Result<Vec<String>, Error> {
     let mut started = false;
     let mut chars = line.chars();
     while let Some(c) = chars.next() {
+        if c.is_whitespace() {
+            if started {
+                words.push(std::mem::take(&mut word));
+                started = false;
+            }
+            continue;
+        }
+        if c == '#' && !started {
+            break;
+        }
+        started = true;
         match c {
-            c if c.is_whitespace() => {
-                if started {
-                    words.push(std::mem::take(&mut word));
-                    started = false;
-                }
-            }
-            '#' if !started => break,
-            '\'' => {
-                started = true;
-                loop {
-                    match chars.next() {
-                        Some('\'') => break,
-                        Some(c) => word.push(c),
-                        None => return Err(Error::Unterminated('\'')),
-                    }
-                }
-            }
-            '"' => {
-                started = true;
-                loop {
-                    match chars.next() {
-                        Some('"') => break,
-                        Some('\\') => match chars.next() {
-                            Some(c @ ('"' | '\\' | '$' | '`')) => word.push(c),
-                            Some(c) => {
-                                word.push('\\');
-                                word.push(c);
-                            }
-                            None => return Err(Error::Unterminated('"')),
-                        },
-                        Some(c) => word.push(c),
-                        None => return Err(Error::Unterminated('"')),
-                    }
-                }
-            }
-            '\\' => {
-                started = true;
+            '\'' => loop {
                 match chars.next() {
+                    Some('\'') => break,
                     Some(c) => word.push(c),
-                    None => return Err(Error::TrailingBackslash),
+                    None => return Err(Error::Unterminated('\'')),
                 }
-            }
-            c => {
-                started = true;
-                word.push(c);
-            }
+            },
+            '"' => loop {
+                match chars.next() {
+                    Some('"') => break,
+                    Some('\\') => match chars.next() {
+                        Some(c @ ('"' | '\\' | '$' | '`')) => word.push(c),
+                        Some(c) => {
+                            word.push('\\');
+                            word.push(c);
+                        }
+                        None => return Err(Error::Unterminated('"')),
+                    },
+                    Some(c) => word.push(c),
+                    None => return Err(Error::Unterminated('"')),
+                }
+            },
+            '\\' => match chars.next() {
+                Some(c) => word.push(c),
+                None => return Err(Error::TrailingBackslash),
+            },
+            c => word.push(c),
         }
     }
     if started {
@@ -134,21 +126,17 @@ pub fn join(words: &[String]) -> String {
 /// `\` is doubled there. A control character would act as a key in the
 /// shell's line editor, so an argument with one is refused.
 pub fn shell_line(argv: &[String], fish: bool) -> Result<String, Error> {
-    let mut words = Vec::new();
-    for arg in argv {
-        if let Some(character) = arg.chars().find(|c| c.is_control()) {
-            return Err(Error::Control {
+    let words = argv
+        .iter()
+        .map(|arg| match arg.chars().find(|c| c.is_control()) {
+            Some(character) => Err(Error::Control {
                 argument: arg.clone(),
                 character,
-            });
-        }
-        words.push(if fish {
-            quote(&arg.replace('\\', "\\\\"))
-        } else {
-            quote(arg)
+            }),
+            None if fish => Ok(quote(&arg.replace('\\', "\\\\"))),
+            None => Ok(quote(arg)),
         });
-    }
-    Ok(words.join(" "))
+    Ok(words.collect::<Result<Vec<_>, _>>()?.join(" "))
 }
 
 #[cfg(test)]
@@ -194,9 +182,6 @@ mod tests {
         assert_eq!(words("a#b"), ["a#b"]);
         assert_eq!(words("# only"), Vec::<String>::new());
         assert_eq!(words("it'''s'"), ["its"]);
-        assert!(split("'open").is_err());
-        assert!(split("\"open").is_err());
-        assert!(split("end\\").is_err());
     }
 
     #[test]

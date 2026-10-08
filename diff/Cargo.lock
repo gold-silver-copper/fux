@@ -47,7 +47,7 @@ name = "fux"
 version = "0.20.0"
 dependencies = [
  "fux-vt 0.4.0",
- "fuxix 0.1.7",
+ "fuxix 0.2.0",
  "signal-hook",
  "unicode-width",
 ]
@@ -73,7 +73,7 @@ dependencies = [
  "fux-vt 0.3.3",
  "fux-vt 0.4.0",
  "fuxix 0.1.6",
- "fuxix 0.1.7",
+ "fuxix 0.2.0",
 ]
 
 [[package]]
@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "fuxix"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "libc",
 ]

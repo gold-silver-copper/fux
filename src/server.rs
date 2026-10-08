@@ -82,9 +82,6 @@ struct Conn {
     tty: Option<TakenTerminal>,
     /// A descriptor the client sent, until the `Attach` it came with.
     passed: Option<std::os::fd::OwnedFd>,
-    /// The size the client's view was last given: its terminal's, which
-    /// `serve_tty` looks at before the keys it reads.
-    size: (u16, u16),
 }
 
 /// When a client may be painted next: `PAINT` after its last paint, as a
@@ -175,17 +172,23 @@ impl TakenTerminal {
     /// Writes what waits, as far as the terminal takes it; false if it
     /// failed, and is to be given up.
     fn flush(&mut self) -> bool {
-        while !self.out.is_empty() {
-            match fuxix::io::write(&self.fd, self.out.as_slice()) {
-                Ok(0) | Err(fuxix::Errno::AGAIN) => break,
-                Ok(n) => self.out.take(n),
-                Err(fuxix::Errno::INTR) => continue,
-                Err(_) => return false,
-            }
-        }
-        self.out.shrink(CONN_KEEP);
-        true
+        write_out(&self.fd, &mut self.out)
     }
+}
+
+/// Writes `out` to `fd`, nonblocking, as far as it takes it; false if the
+/// write failed. The memory a large write took is given back.
+fn write_out(fd: impl std::os::fd::AsFd, out: &mut ByteQueue) -> bool {
+    while !out.is_empty() {
+        match fuxix::io::write(&fd, out.as_slice()) {
+            Ok(0) | Err(fuxix::Errno::AGAIN) => break,
+            Ok(n) => out.take(n),
+            Err(fuxix::Errno::INTR) => continue,
+            Err(_) => return false,
+        }
+    }
+    out.shrink(CONN_KEEP);
+    true
 }
 
 /// Input from a client's terminal, read at `now`, to the session; the pane
@@ -224,7 +227,6 @@ impl Conn {
             dead: false,
             tty: None,
             passed: None,
-            size: (0, 0),
         }
     }
 
@@ -239,6 +241,13 @@ impl Conn {
         if self.out.push_with(|out| frame.encode_into(out)).is_err() {
             self.dead = true;
         }
+    }
+
+    /// Sends the connection's last frame: it closes once what waits is
+    /// sent.
+    fn end(&mut self, frame: &Frame) {
+        self.send(frame);
+        self.closing = true;
     }
 
     /// Bytes for a client in `stream`. The paint stream, which carries what
@@ -272,8 +281,7 @@ impl Conn {
             // be read is (`serve_tty`): no one would read its keys.
             self.tty = None;
             if self.client.is_some() && !self.closing {
-                self.send(&Frame::Exit("detached: the terminal closed".into()));
-                self.closing = true;
+                self.end(&Frame::Exit("detached: the terminal closed".into()));
             }
         }
     }
@@ -301,24 +309,7 @@ impl Conn {
     /// waits for its terminal is written too.
     fn flush(&mut self) {
         self.flush_tty();
-        while !self.out.is_empty() {
-            match self.stream.write(self.out.as_slice()) {
-                Ok(0) => {
-                    self.dead = true;
-                    break;
-                }
-                Ok(n) => {
-                    self.out.take(n);
-                }
-                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                Err(_) => {
-                    self.dead = true;
-                    break;
-                }
-            }
-        }
-        self.out.shrink(CONN_KEEP);
+        self.dead |= !write_out(&self.stream, &mut self.out);
     }
 }
 
@@ -328,7 +319,9 @@ pub struct Server {
     conns: Vec<Conn>,
     children: UnixStream,
     stops: UnixStream,
-    stopping: Option<(Instant, String)>,
+    /// When a server that is stopping stops waiting for its clients and
+    /// processes.
+    stop_by: Option<Instant>,
     /// Where bytes read from a client's connection or terminal land before
     /// they are taken; one for the server, reused by every read.
     read_buffer: Vec<u8>,
@@ -420,7 +413,7 @@ pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), Error> {
         conns: Vec::new(),
         children,
         stops,
-        stopping: None,
+        stop_by: None,
         read_buffer: vec![0u8; 64 * 1024],
         paint_buffer: Vec::new(),
         slots: Vec::new(),
@@ -458,8 +451,8 @@ impl Server {
             self.session.settle_if_needed();
             self.flush_outbox();
             let now = Instant::now();
-            if let Some((since, _)) = &self.stopping
-                && (now.duration_since(*since) >= STOP_WAIT
+            if let Some(by) = self.stop_by
+                && (now >= by
                     || (self.session.dying.is_empty()
                         && self.conns.iter().all(|c| c.out.is_empty())))
             {
@@ -531,16 +524,12 @@ impl Server {
             (dirty && !conn.starved).then_some(conn.clock.due())
         });
         let escapes = session.views.values().filter_map(|v| v.decoder.deadline());
-        let stop = self
-            .stopping
-            .as_ref()
-            .map(|(since, _)| crate::after(*since, STOP_WAIT));
         paints
             .chain(escapes)
             .chain(session.dying.iter().map(|d| d.deadline))
             .chain(session.next_typing())
             .chain(session.next_frame_release())
-            .chain(stop)
+            .chain(self.stop_by)
             .chain(self.listen_after)
             .min()
             .map(|d| d.saturating_duration_since(now))
@@ -557,7 +546,7 @@ impl Server {
         if self.listen_after.is_some_and(|at| Instant::now() >= at) {
             self.listen_after = None;
         }
-        if self.stopping.is_none() && self.listen_after.is_none() {
+        if self.stop_by.is_none() && self.listen_after.is_none() {
             fds.push(PollFd::new(&self.listener, PollFlags::IN));
             slots.push(Slot::Listener);
         }
@@ -608,18 +597,17 @@ impl Server {
     }
 
     fn stop(&mut self, reason: String) {
-        if self.stopping.is_some() {
+        if self.stop_by.is_some() {
             return;
         }
         log(&reason);
         self.session.shutdown();
         for conn in &mut self.conns {
             if conn.role == Some(Role::Attach) {
-                conn.send(&Frame::Exit(format!("the fux server stopped: {reason}")));
-                conn.closing = true;
+                conn.end(&Frame::Exit(format!("the fux server stopped: {reason}")));
             }
         }
-        self.stopping = Some((Instant::now(), reason));
+        self.stop_by = Some(crate::after(Instant::now(), STOP_WAIT));
     }
 
     fn flush_outbox(&mut self) {
@@ -632,8 +620,7 @@ impl Server {
                 }
                 Outgoing::Exit(client, reason) => {
                     if let Some(conn) = self.conns.iter_mut().find(|c| c.client == Some(client)) {
-                        conn.send(&Frame::Exit(reason));
-                        conn.closing = true;
+                        conn.end(&Frame::Exit(reason));
                         conn.client = None;
                     }
                 }
@@ -723,7 +710,7 @@ impl Server {
                         ));
                     }
                     let euid = fuxix::process::geteuid();
-                    match crate::socket::peer_uid(&stream) {
+                    match fuxix::socket::peer_uid(&stream) {
                         Ok(uid) if uid == euid => {}
                         Ok(uid) => {
                             log(&format!(
@@ -780,7 +767,7 @@ impl Server {
     /// shortage is logged when it starts, then at most every `REPORT_EVERY`.
     fn refuse(&mut self, stream: UnixStream) {
         let euid = fuxix::process::geteuid();
-        if crate::socket::peer_uid(&stream).is_ok_and(|uid| uid == euid)
+        if fuxix::socket::peer_uid(&stream).is_ok_and(|uid| uid == euid)
             && stream.set_nonblocking(true).is_ok()
             && let Ok(bytes) = Frame::Exit(NO_DESCRIPTORS.into()).encode()
         {
@@ -821,7 +808,9 @@ impl Server {
     /// keys to read. A terminal that closed detaches its client, as a
     /// client whose terminal closes detaches itself.
     fn serve_tty(&mut self, index: usize, flags: PollFlags, now: Instant) {
-        let Some(conn) = self.conns.get_mut(index) else {
+        // A connection that died this tick is closed at its end, its client
+        // detached: its keys are not taken.
+        let Some(conn) = self.conns.get_mut(index).filter(|c| !c.dead) else {
             return;
         };
         if flags.contains(PollFlags::OUT) {
@@ -839,9 +828,8 @@ impl Server {
             && let Ok(size) = fuxix::terminal::window_size(&tty.fd)
             && size.0 > 0
             && size.1 > 0
-            && size != conn.size
+            && self.session.views.get(&client).map(|v| (v.rows, v.cols)) != Some(size)
         {
-            conn.size = size;
             conn.painted = false;
             self.session.resize(client, size.0, size.1);
         }
@@ -880,8 +868,7 @@ impl Server {
             && let Some(conn) = self.conns.get_mut(index)
             && let Some(client) = conn.client.take()
         {
-            conn.send(&Frame::Exit("detached: the terminal closed".into()));
-            conn.closing = true;
+            conn.end(&Frame::Exit("detached: the terminal closed".into()));
             self.session.detach(client);
         }
     }
@@ -897,14 +884,8 @@ impl Server {
     }
 
     fn write_conn(&mut self, index: usize) {
-        let Some(conn) = self.conns.get_mut(index) else {
-            return;
-        };
-        conn.flush();
-        if conn.dead
-            && let Some(client) = conn.client.take()
-        {
-            self.session.detach(client);
+        if let Some(conn) = self.conns.get_mut(index) {
+            conn.flush();
         }
     }
 
@@ -920,21 +901,15 @@ impl Server {
         };
         loop {
             // A client may send its terminal with its `Attach`.
-            let got = match fuxix::socket::recv_with_fd(&conn.stream, &mut self.read_buffer) {
+            match fuxix::socket::recv_with_fd(&conn.stream, &mut self.read_buffer) {
+                Ok((0, _)) => {
+                    closed = true;
+                    break;
+                }
                 Ok((n, fd)) => {
                     if fd.is_some() {
                         conn.passed = fd;
                     }
-                    Ok(n)
-                }
-                Err(errno) => Err(std::io::Error::from_raw_os_error(errno.raw())),
-            };
-            match got {
-                Ok(0) => {
-                    closed = true;
-                    break;
-                }
-                Ok(n) => {
                     read = read.saturating_add(n);
                     conn.decoder
                         .push(self.read_buffer.get(..n).unwrap_or_default());
@@ -949,8 +924,8 @@ impl Server {
                         break;
                     }
                 }
-                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(fuxix::Errno::AGAIN) => break,
+                Err(fuxix::Errno::INTR) => continue,
                 Err(_) => {
                     closed = true;
                     break;
@@ -980,12 +955,7 @@ impl Server {
         }
         if let Some(conn) = self.conns.get_mut(index) {
             conn.decoder.shrink(CONN_KEEP);
-            if closed {
-                conn.dead = true;
-                if let Some(client) = conn.client.take() {
-                    self.session.detach(client);
-                }
-            }
+            conn.dead |= closed;
         }
     }
 
@@ -1011,17 +981,15 @@ impl Server {
                 role,
             });
             if role == Role::Kill {
-                conn.send(&Frame::Done { status: 0 });
-                conn.closing = true;
+                conn.end(&Frame::Done { status: 0 });
                 self.stop("stopped by fux kill-server".into());
                 return;
             }
             if protocol != PROTOCOL {
-                conn.send(&Frame::Exit(format!(
+                conn.end(&Frame::Exit(format!(
                     "the server speaks protocol {PROTOCOL} (fux {}); restart it with `fux kill-server`",
                     env!("CARGO_PKG_VERSION")
                 )));
-                conn.closing = true;
                 return;
             }
             conn.role = Some(role);
@@ -1039,7 +1007,6 @@ impl Server {
                 match self.session.attach(rows, cols, workspace.as_deref()) {
                     Ok(client) => {
                         conn.client = Some(client);
-                        conn.size = (rows, cols);
                         conn.clock.paint_now();
                         // The client's terminal, if it sent it: taken, the
                         // client is told before anything is painted.
@@ -1053,22 +1020,19 @@ impl Server {
                         }
                     }
                     Err(error) => {
-                        conn.send(&Frame::Exit(error.to_string()));
-                        conn.closing = true;
+                        conn.end(&Frame::Exit(error.to_string()));
                     }
                 }
             }
             (Role::Attach, Frame::Resize { rows, cols }) => {
                 if let Some(client) = conn.client {
-                    conn.size = (rows, cols);
                     conn.painted = false;
                     self.session.resize(client, rows, cols);
                 }
             }
             (Role::Attach, Frame::Detach) => {
                 if let Some(client) = conn.client.take() {
-                    conn.send(&Frame::Exit("detached".into()));
-                    conn.closing = true;
+                    conn.end(&Frame::Exit("detached".into()));
                     self.session.detach(client);
                 }
             }
@@ -1091,10 +1055,9 @@ impl Server {
                     }
                     conn.send_stream(Stream::Stderr, stderr.as_bytes());
                 }
-                conn.send(&Frame::Done {
+                conn.end(&Frame::Done {
                     status: outcome.status,
                 });
-                conn.closing = true;
             }
             _ => conn.dead = true,
         }
@@ -1219,14 +1182,14 @@ impl Server {
         for mut dying in due {
             // The master closes first: a dying writer can hold on to it.
             dying.master = None;
-            if crate::process::finish(dying.pid).is_none() {
+            if !crate::process::finish(dying.pid) {
                 // Killed but not yet exited: reaped on a later tick. When the
                 // server itself is stopping, it waits for it here instead.
                 if all {
                     // At most a second: a process stuck in the kernel is
                     // left to init rather than hold the exit.
                     for _ in 0..500 {
-                        if crate::process::finish(dying.pid).is_some() {
+                        if crate::process::finish(dying.pid) {
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(2));

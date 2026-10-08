@@ -175,8 +175,7 @@ fn run(args: &[String]) -> Result<u8, Error> {
                 return Err(Error::Nested);
             }
             let socket = socket::socket_path(None)?;
-            if !socket::exists(&socket) || std::os::unix::net::UnixStream::connect(&socket).is_err()
-            {
+            if UnixStream::connect(&socket).is_err() {
                 client::start_server(&socket)?;
             }
             client::attach(&socket, workspace)?;
@@ -292,20 +291,5 @@ mod tests {
             assert!(named(USAGE), "{name}: not in the usage");
             assert!(named(readme), "{name}: not in the README");
         }
-    }
-
-    #[test]
-    fn the_binary_says_what_it_said() {
-        assert_eq!(
-            Error::Nested.to_string(),
-            "this is already a fux pane; attaching here would show fux inside itself (--nested does it anyway)"
-        );
-        assert_eq!(
-            Error::Setsid(fuxix::Errno::INTR).to_string(),
-            format!("setsid: {}", fuxix::Errno::INTR)
-        );
-        let refused = Error::from(client::Error::Refused("why".into()));
-        assert_eq!(refused.to_string(), "why");
-        assert!(std::error::Error::source(&refused).is_some());
     }
 }

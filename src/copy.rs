@@ -253,14 +253,14 @@ pub struct Bar {
 
 // ------------------------------------------------------------ text classes
 
-/// A row's cells as (column, class): 0 blank, 1 word, 2 other. With `big`,
-/// every non-blank is one class. The row end is a blank.
-fn classes(screen: &Screen, index: usize, big: bool) -> Vec<(u16, u8)> {
+/// A row's cells as (column, class): 0 blank, 1 word, 2 other. The row end
+/// is a blank.
+fn classes(screen: &Screen, index: usize) -> Vec<(u16, u8)> {
     let class = |cell: CellRef<'_>| {
         let c = cell.contents().chars().next().unwrap_or(' ');
         if c.is_whitespace() || !cell.has_contents() {
             0
-        } else if big || c.is_alphanumeric() || c == '_' {
+        } else if c.is_alphanumeric() || c == '_' {
             1
         } else {
             2
@@ -305,13 +305,13 @@ impl<'a> Walker<'a> {
         Self {
             screen,
             row,
-            cells: classes(screen, row, false),
+            cells: classes(screen, row),
         }
     }
     fn load(&mut self, row: usize) {
         if row != self.row {
             self.row = row;
-            self.cells = classes(self.screen, row, false);
+            self.cells = classes(self.screen, row);
         }
     }
     fn at(&mut self, p: Flat) -> (u16, u8) {
@@ -360,17 +360,16 @@ fn word_forward(screen: &Screen, row: usize, col: u16) -> (usize, u16) {
     let mut w = Walker::new(screen, row);
     let mut p = w.find(row, col);
     let start = w.class(p);
-    while start != 0 && w.class(p) == start {
-        match w.next(p) {
-            Some(n) => p = n,
-            None => return (p.row, w.at(p).0),
-        }
+    while start != 0
+        && w.class(p) == start
+        && let Some(n) = w.next(p)
+    {
+        p = n;
     }
-    while w.class(p) == 0 {
-        match w.next(p) {
-            Some(n) => p = n,
-            None => break,
-        }
+    while w.class(p) == 0
+        && let Some(n) = w.next(p)
+    {
+        p = n;
     }
     (p.row, w.at(p).0)
 }
@@ -379,21 +378,18 @@ fn word_forward(screen: &Screen, row: usize, col: u16) -> (usize, u16) {
 fn word_back(screen: &Screen, row: usize, col: u16) -> (usize, u16) {
     let mut w = Walker::new(screen, row);
     let mut p = w.find(row, col);
-    match w.prev(p) {
-        Some(n) => p = n,
-        None => return (p.row, w.at(p).0),
+    if let Some(n) = w.prev(p) {
+        p = n;
     }
-    while w.class(p) == 0 {
-        match w.prev(p) {
-            Some(n) => p = n,
-            None => return (p.row, w.at(p).0),
-        }
+    while w.class(p) == 0
+        && let Some(n) = w.prev(p)
+    {
+        p = n;
     }
     let class = w.class(p);
-    while let Some(n) = w.prev(p) {
-        if w.class(n) != class {
-            break;
-        }
+    while let Some(n) = w.prev(p)
+        && w.class(n) == class
+    {
         p = n;
     }
     (p.row, w.at(p).0)
@@ -429,20 +425,18 @@ pub fn find(screen: &Screen, query: &str, from: (usize, u16), seek: Seek) -> Opt
             glyphs(screen, index)
                 .flat_map(|(_, cell)| shown(cell).chars().map(|c| fold(c, ignore_case))),
         );
-        if folded.len() < needle.len() {
+        let starts: Vec<usize> = (0..folded.len())
+            .filter(|at| {
+                folded.get(*at) == Some(&first)
+                    && folded
+                        .get(*at..)
+                        .is_some_and(|rest| rest.starts_with(&needle))
+            })
+            .collect();
+        if starts.is_empty() {
             return;
         }
-        let mut found = folded.iter().enumerate().filter(|(at, c)| {
-            **c == first
-                && folded
-                    .get(*at..)
-                    .is_some_and(|rest| rest.starts_with(&needle))
-        });
-        let Some((at, _)) = found.next() else {
-            return;
-        };
         // A match: the columns of this row, then, and of each match in it.
-        let starts: Vec<usize> = std::iter::once(at).chain(found.map(|(at, _)| at)).collect();
         let columns: Vec<u16> = glyphs(screen, index)
             .flat_map(|(col, cell)| shown(cell).chars().map(move |_| col))
             .collect();
@@ -523,18 +517,9 @@ pub fn text(
             Select::Block => (left, right),
         };
         let mut line = String::new();
-        let mut col = from;
         // Starting on the second half of a wide glyph takes the glyph.
-        if row
-            .cell(usize::from(col))
-            .is_some_and(|c| c.is_wide_continuation())
-        {
-            col = col.saturating_sub(1);
-        }
-        while col <= to {
-            let Some(cell) = row.cell(usize::from(col)) else {
-                break;
-            };
+        let row_cells = glyph_start(row, from)..=to;
+        for cell in row_cells.map_while(|col| row.cell(usize::from(col))) {
             // Refused long before it could saturate.
             cells = cells.saturating_add(1);
             if cells > MAX_CELLS {
@@ -542,10 +527,6 @@ pub fn text(
             }
             if !cell.is_wide_continuation() {
                 line.push_str(shown(cell));
-            }
-            col = col.saturating_add(1);
-            if col == u16::MAX {
-                break;
             }
         }
         let joined = kind != Select::Block && row.wrapped() && index < end.0;
@@ -565,9 +546,13 @@ pub fn text(
 
 /// Enters copy mode on the client's focused pane.
 pub fn enter(session: &mut Session, client: ClientId) -> Result<String, Error> {
-    let view = session.views.get(&client).ok_or(Error::NoSuchClient)?;
+    let view = session.views.get(&client).ok_or(Error::NoClient(client))?;
     let pane = view.focus().ok_or(Error::NoPaneToCopy)?;
-    let screen = session.panes.get(&pane).ok_or(Error::NoSuchPane)?.screen();
+    let screen = session
+        .panes
+        .get(&pane)
+        .ok_or(Error::NoPane(pane))?
+        .screen();
     let (cy, cx) = screen.cursor_position();
     let history = screen.history_len();
     let row = history
@@ -585,7 +570,7 @@ pub fn enter(session: &mut Session, client: ClientId) -> Result<String, Error> {
         typing: None,
         held_at: None,
     };
-    let view = session.views.get_mut(&client).ok_or(Error::NoSuchClient)?;
+    let view = session.view_mut(client)?;
     view.mode = Mode::Copy(Box::new(copy));
     // The bar shows where the cursor is; a notice would hide it.
     view.notice = None;
@@ -679,19 +664,11 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
     let last_row = retained(screen).saturating_sub(1);
     let last_col = screen.size().1.saturating_sub(1);
     let half = usize::from(height / 2).max(1);
-    let page = usize::from(height).max(1);
-    let line_start = |r: usize| {
-        classes(screen, r, true)
-            .iter()
-            .find(|(_, k)| *k != 0)
-            .map_or(0, |(c, _)| *c)
-    };
-    let line_end = |r: usize| {
-        classes(screen, r, true)
-            .iter()
-            .rev()
-            .find(|(_, k)| *k != 0)
-            .map_or(0, |(c, _)| *c)
+    let page = usize::from(height);
+    // The columns of a row's glyphs that are not blank.
+    let ink = |r: usize| {
+        let classes = classes(screen, r).into_iter();
+        classes.filter(|(_, k)| *k != 0).map(|(c, _)| c)
     };
     // Keys are letters, in either case, and the brackets; one with Ctrl or
     // Alt is no key's. The arrows, paging keys, Home, End, Enter and Esc
@@ -727,8 +704,8 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
         }
         (Some('w'), _) => target = Some(word_forward(screen, row, col)),
         (Some('b'), _) => target = Some(word_back(screen, row, col)),
-        (Some('a'), _) => target = Some((row, line_start(row))),
-        (Some('e'), _) | (_, Key::End) => target = Some((row, line_end(row))),
+        (Some('a'), _) => target = Some((row, ink(row).next().unwrap_or(0))),
+        (Some('e'), _) | (_, Key::End) => target = Some((row, ink(row).next_back().unwrap_or(0))),
         (_, Key::Home) => target = Some((row, 0)),
         (Some('t'), _) => target = Some((0, 0)),
         (Some('z'), _) => target = Some((last_row, col)),
@@ -790,7 +767,13 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
             }
         }
         (Some('y'), _) | (_, Key::Enter) => {
-            yank(session, client, at.ends);
+            let copied = match at.ends {
+                Some((kind, start, end)) => {
+                    text(screen, kind, start, end).map_err(|e| e.to_string())
+                }
+                None => Err("nothing selected: v, s or x starts a selection".to_owned()),
+            };
+            yank(session, client, copied);
             return;
         }
         _ => {}
@@ -831,7 +814,7 @@ fn move_to(copy: &mut Copy, screen: &Screen, height: u16, top: usize, (row, col)
     if let Some(r) = row_at(screen, row) {
         copy.cursor = (r.id(), glyph_start(r, col));
     }
-    let height = usize::from(height).max(1);
+    let height = usize::from(height);
     // Scroll just enough that the row shows; `height` is at least 1.
     let new_top = if row < top {
         row
@@ -876,28 +859,13 @@ fn jump(
     }
 }
 
-/// Copies the selection, whose ends are `ends`, into the paste buffers, and
+/// Puts the text `copied` from the selection into the paste buffers, and
 /// to the client's clipboard through OSC 52 when allowed; then leaves copy
-/// mode.
-fn yank(session: &mut Session, client: ClientId, ends: Option<Ends>) {
-    let Some(view) = session.views.get(&client) else {
-        return;
-    };
-    let Mode::Copy(copy) = &view.mode else { return };
-    let Some(pane) = session.panes.get(&copy.pane) else {
-        return;
-    };
-    let screen = pane.screen();
-    let Some((kind, start, end)) = ends else {
-        session.error_to(client, "nothing selected: v, s or x starts a selection");
-        return;
-    };
-    let copied = match text(screen, kind, start, end) {
+/// mode. Why nothing was copied, if nothing was, is the client's notice.
+fn yank(session: &mut Session, client: ClientId, copied: Result<String, String>) {
+    let copied = match copied {
         Ok(copied) => copied,
-        Err(error) => {
-            session.error_to(client, error.to_string());
-            return;
-        }
+        Err(why) => return session.error_to(client, why),
     };
     let characters = copied.chars().count();
     let mut note = format!(
@@ -948,13 +916,7 @@ mod tests {
     /// the last one there is none to go to, and the bar says so.
     #[test]
     fn brackets_jump_between_prompts() -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = Session::new(
-            crate::config::Config::default(),
-            "/nonexistent/fux.sock".into(),
-            false,
-        );
-        s.start()?;
-        let c = s.attach(6, 30, None)?;
+        let (mut s, c) = crate::session::testing::attached(6, 30)?;
         let pane = PaneId(1);
         let mut output = String::new();
         for command in ["one", "two", "three"] {

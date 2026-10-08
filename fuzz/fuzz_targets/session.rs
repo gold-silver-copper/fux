@@ -15,7 +15,7 @@ use fux::decode::{Decoder, Input};
 use fux::keys::KeyPress;
 use fux::layout::PaneId;
 use fux::outer;
-use fux::overlay::{column_rows, column_selected};
+use fux::overlay::column;
 use fux::render::{Grid, compose};
 use fux::session::{Ctx, Outgoing, Session};
 use fux::view::Mode;
@@ -466,9 +466,10 @@ fn check(s: &Session) {
                     path.is_empty() || is_layer(bindings, path),
                     "{id}'s column shows a layer that is gone: {path:?}"
                 );
-                if !column_rows(s, path).is_empty() {
+                let entries = column(s, path);
+                if !entries.is_empty() {
                     assert!(
-                        column_selected(s, path, *selected).is_some(),
+                        entries.get(*selected).is_some(),
                         "{id}'s column selects {selected}, past its end"
                     );
                 }

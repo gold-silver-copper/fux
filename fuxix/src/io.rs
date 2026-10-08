@@ -42,8 +42,10 @@ pub fn set_nonblocking(fd: impl AsFd, nonblocking: bool) -> Result<()> {
     check(unsafe { libc::fcntl(raw, libc::F_SETFL, wanted) }).map(drop)
 }
 
-/// Closes `fd` when this process runs another program.
-pub fn set_cloexec(fd: impl AsFd) -> Result<()> {
+/// Closes `fd` when this process runs another program: on macOS, for what
+/// it cannot open close-on-exec at once.
+#[cfg(target_os = "macos")]
+pub(crate) fn set_cloexec(fd: impl AsFd) -> Result<()> {
     cloexec_raw(fd.as_fd().as_raw_fd())
 }
 

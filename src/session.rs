@@ -89,9 +89,6 @@ pub enum Error {
     },
     NoClientGiven,
     NoClient(ClientId),
-    /// The client a key, a menu or a prompt came from is gone.
-    NoSuchClient,
-    NoSuchWorkspace,
     NoWorkspaces,
     NoBuffer(usize),
     NoCopiedText,
@@ -104,14 +101,10 @@ pub enum Error {
     NoLastPane,
     /// The client focuses no pane.
     NoPaneToCopy,
-    // What changed under a command, or is not where it must be.
-    WorkspaceGone,
-    TabGone,
-    PaneGone,
-    NoSuchPane,
-    DestinationGone,
+    // What is not where the session's invariants put it: no command can
+    // meet these.
+    Gone(Kind),
     NotInTab,
-    OtherNotInTab,
     TabEmpty,
     /// A pane, tab or workspace alone of its kind, with nothing to move to.
     OnlyOne(Kind),
@@ -169,8 +162,6 @@ impl std::fmt::Display for Error {
                 "this command acts on a client's screen: use -c CLIENT (`fux ls` lists clients)",
             ),
             Error::NoClient(id) => write!(f, "no client {id}"),
-            Error::NoSuchClient => f.write_str("no such client"),
-            Error::NoSuchWorkspace => f.write_str("no such workspace"),
             Error::NoWorkspaces => f.write_str("the server has no workspace"),
             Error::NoBuffer(index) => write!(f, "no buffer {index}"),
             Error::NoCopiedText => f.write_str("no copied text yet"),
@@ -181,13 +172,8 @@ impl std::fmt::Display for Error {
             Error::NoCurrentWorkspace => f.write_str("no workspace"),
             Error::NoLastPane => f.write_str("no previously focused pane"),
             Error::NoPaneToCopy => f.write_str("no pane to copy from"),
-            Error::WorkspaceGone => f.write_str("the workspace is gone"),
-            Error::TabGone => f.write_str("the tab is gone"),
-            Error::PaneGone => f.write_str("the pane is gone"),
-            Error::NoSuchPane => f.write_str("no such pane"),
-            Error::DestinationGone => f.write_str("the destination tab is gone"),
+            Error::Gone(kind) => write!(f, "the {} is gone", kind.name()),
             Error::NotInTab => f.write_str("the pane is in no tab"),
-            Error::OtherNotInTab => f.write_str("the other pane is in no tab"),
             Error::TabEmpty => f.write_str("the tab is empty"),
             Error::OnlyOne(kind) => write!(f, "only one {}", kind.name()),
             Error::AtEnd(kind) => write!(f, "the {} is already at that end", kind.name()),
@@ -243,8 +229,6 @@ impl std::error::Error for Error {
             | Error::NoTarget { .. }
             | Error::NoClientGiven
             | Error::NoClient(_)
-            | Error::NoSuchClient
-            | Error::NoSuchWorkspace
             | Error::NoWorkspaces
             | Error::NoBuffer(_)
             | Error::NoCopiedText
@@ -255,13 +239,8 @@ impl std::error::Error for Error {
             | Error::NoCurrentWorkspace
             | Error::NoLastPane
             | Error::NoPaneToCopy
-            | Error::WorkspaceGone
-            | Error::TabGone
-            | Error::PaneGone
-            | Error::NoSuchPane
-            | Error::DestinationGone
+            | Error::Gone(_)
             | Error::NotInTab
-            | Error::OtherNotInTab
             | Error::TabEmpty
             | Error::OnlyOne(_)
             | Error::AtEnd(_)
@@ -415,7 +394,7 @@ impl Session {
 
     /// One workspace, holding one tab with one shell.
     pub fn start(&mut self) -> Result<(), Error> {
-        self.create_workspace(Some(MAIN.into()), &[], None)
+        self.create_workspace(Some(MAIN.into()), &[], &Ctx::default())
             .map(|_| ())
     }
 
@@ -558,7 +537,7 @@ impl Session {
         }
     }
 
-    fn view_mut(&mut self, id: ClientId) -> Result<&mut View, Error> {
+    pub(crate) fn view_mut(&mut self, id: ClientId) -> Result<&mut View, Error> {
         self.views.get_mut(&id).ok_or(Error::NoClient(id))
     }
 
@@ -712,7 +691,7 @@ impl Session {
         name: Option<String>,
         root: Option<Node>,
     ) -> Result<(), Error> {
-        let workspace = self.workspace_mut(ws).ok_or(Error::WorkspaceGone)?;
+        let workspace = self.workspace_mut(ws).ok_or(Error::Gone(Kind::Workspace))?;
         let number = workspace.tabs.len().saturating_add(1);
         let name = name.unwrap_or_else(|| format!("tab-{number}"));
         workspace.tabs.push(Tab { id, name, root });
@@ -723,10 +702,9 @@ impl Session {
         &mut self,
         name: Option<String>,
         cmd: &[String],
-        ctx: Option<&Ctx>,
+        ctx: &Ctx,
     ) -> Result<WsId, Error> {
-        let default_ctx = Ctx::default();
-        let cwd = self.cwd_for(ctx.unwrap_or(&default_ctx), None);
+        let cwd = self.cwd_for(ctx, None);
         if let Some(name) = &name {
             self.check_workspace_name(name, None)?;
         }
@@ -993,7 +971,7 @@ impl Session {
         };
         // A column shorter than it was keeps its selection within it.
         let last = if let Mode::Column { path, .. } = &view.mode {
-            Some(crate::overlay::column_len(self, path).saturating_sub(1))
+            Some(crate::overlay::column(self, path).len().saturating_sub(1))
         } else {
             None
         };
@@ -1050,10 +1028,11 @@ impl Session {
         })
     }
 
-    /// Keys after the prefix as they are typed, `C-b t`: as the bar, the
-    /// column and messages write them.
+    /// The prefix and keys after it as they are typed, `C-b t`: as the bar,
+    /// the column and messages write them.
     pub(crate) fn keys_named(&self, path: &[KeyPress]) -> String {
-        format!("{} {}", self.config.prefix, crate::config::keys_text(path))
+        let keys = std::iter::once(&self.config.prefix).chain(path);
+        keys.map(KeyPress::to_string).collect::<Vec<_>>().join(" ")
     }
 
     /// A PTY is the smallest rectangle any client shows it in; a pane nobody
@@ -1465,7 +1444,7 @@ impl Session {
                 Ok(out)
             }
             Command::NewWorkspace { name, cmd } => {
-                let ws = self.create_workspace(name.clone(), cmd, Some(ctx))?;
+                let ws = self.create_workspace(name.clone(), cmd, ctx)?;
                 if let Some(view) = ctx.client.and_then(|c| self.views.get_mut(&c)) {
                     view.workspace = ws;
                     view.zoom = false;
@@ -1639,7 +1618,7 @@ impl Session {
                 let target = self.any_target(kind, target.as_ref(), ctx)?;
                 self.reorder(&target, toward).map(|()| String::new())
             }
-            Command::Set { argv } | Command::Bind { argv } | Command::Unbind { argv } => {
+            Command::Configure { argv } => {
                 // `run_command` marks every view to paint, as after any
                 // command that can show something new: `set titles`
                 // shows at each client's next paint.
@@ -1820,7 +1799,9 @@ impl Session {
             AnyRef::Workspace(w) => {
                 let id = self.resolve_ws(w)?;
                 self.check_workspace_name(&name, Some(id))?;
-                self.workspace_mut(id).ok_or(Error::NoSuchWorkspace)?.name = name;
+                self.workspace_mut(id)
+                    .ok_or(Error::Gone(Kind::Workspace))?
+                    .name = name;
             }
         }
         Ok(())
@@ -1839,7 +1820,7 @@ impl Session {
             return Ok(());
         }
         let (_, ta) = self.locate(a).ok_or(Error::NotInTab)?;
-        let (_, tb) = self.locate(b).ok_or(Error::OtherNotInTab)?;
+        let (_, tb) = self.locate(b).ok_or(Error::NotInTab)?;
         if ta == tb {
             if let Some(root) = self.root_mut(ta) {
                 layout::swap(root, a, b);
@@ -1867,7 +1848,7 @@ impl Session {
         let (ws, tab) = match to {
             &MoveTo::Beside(direction) => {
                 let destination = self.neighbor(pane, direction, ctx)?;
-                let tab = self.tab_mut(source_tab).ok_or(Error::TabGone)?;
+                let tab = self.tab_mut(source_tab).ok_or(Error::Gone(Kind::Tab))?;
                 layout::remove(&mut tab.root, pane);
                 let side = match direction {
                     Direction::Right | Direction::Down => Side::After,
@@ -1888,7 +1869,7 @@ impl Session {
                     .workspace(ws)
                     .and_then(|w| w.tabs.first())
                     .map(|t| t.id)
-                    .ok_or(Error::WorkspaceGone)?;
+                    .ok_or(Error::Gone(Kind::Workspace))?;
                 (ws, tab)
             }
             MoveTo::NewTab => {
@@ -1915,7 +1896,7 @@ impl Session {
         if let Some(t) = self.tab_mut(source_tab) {
             layout::remove(&mut t.root, pane);
         }
-        let destination = self.tab_mut(tab).ok_or(Error::DestinationGone)?;
+        let destination = self.tab_mut(tab).ok_or(Error::Gone(Kind::Tab))?;
         destination.root = Some(match destination.root.take() {
             None => Node::Pane(pane),
             Some(root) => {
@@ -1948,7 +1929,10 @@ impl Session {
             AnyRef::Pane(p) => {
                 let (_, tab) = self.locate(*p).ok_or(Error::NotInTab)?;
                 let panes = self.tab_panes(tab);
-                let index = panes.iter().position(|x| x == p).ok_or(Error::PaneGone)?;
+                let index = panes
+                    .iter()
+                    .position(|x| x == p)
+                    .ok_or(Error::Gone(Kind::Pane))?;
                 let other = step(index, panes.len())
                     .and_then(|i| panes.get(i))
                     .copied()
@@ -1957,24 +1941,27 @@ impl Session {
             }
             AnyRef::Tab(t) => {
                 let (w, index) = self.find_tab(*t).ok_or(Error::NoTab(*t))?;
-                let ws = self.workspaces.get_mut(w).ok_or(Error::WorkspaceGone)?;
+                let ws = self
+                    .workspaces
+                    .get_mut(w)
+                    .ok_or(Error::Gone(Kind::Workspace))?;
                 let other = step(index, ws.tabs.len()).ok_or(Error::AtEnd(Kind::Tab))?;
                 let [a, b] = ws
                     .tabs
                     .get_disjoint_mut([index, other])
-                    .map_err(|_| Error::TabGone)?;
+                    .map_err(|_| Error::Gone(Kind::Tab))?;
                 std::mem::swap(a, b);
                 Ok(())
             }
             AnyRef::Workspace(r) => {
                 let id = self.resolve_ws(r)?;
-                let index = self.ws_index(id).ok_or(Error::WorkspaceGone)?;
+                let index = self.ws_index(id).ok_or(Error::Gone(Kind::Workspace))?;
                 let other =
                     step(index, self.workspaces.len()).ok_or(Error::AtEnd(Kind::Workspace))?;
                 let [a, b] = self
                     .workspaces
                     .get_disjoint_mut([index, other])
-                    .map_err(|_| Error::WorkspaceGone)?;
+                    .map_err(|_| Error::Gone(Kind::Workspace))?;
                 std::mem::swap(a, b);
                 Ok(())
             }
@@ -1982,7 +1969,7 @@ impl Session {
     }
 
     fn select_pane(&mut self, client: ClientId, pick: PanePick) -> Result<String, Error> {
-        let view = self.views.get(&client).ok_or(Error::NoSuchClient)?;
+        let view = self.views.get(&client).ok_or(Error::NoClient(client))?;
         let tab = view.tab().ok_or(Error::NoCurrentTab)?;
         let panes = self.tab_panes(tab);
         let current = view.focus();
@@ -2029,7 +2016,7 @@ impl Session {
     }
 
     fn select_tab(&mut self, client: ClientId, pick: Pick<TabId>) -> Result<String, Error> {
-        let view = self.views.get(&client).ok_or(Error::NoSuchClient)?;
+        let view = self.views.get(&client).ok_or(Error::NoClient(client))?;
         let ws = view.workspace;
         let tabs = self.workspace(ws).map_or(&[][..], |w| &w.tabs);
         let target_ws;
@@ -2062,7 +2049,7 @@ impl Session {
         let current = self
             .views
             .get(&client)
-            .ok_or(Error::NoSuchClient)?
+            .ok_or(Error::NoClient(client))?
             .workspace;
         let target = match pick {
             Pick::Id(r) => self.resolve_ws(r)?,
@@ -2343,73 +2330,77 @@ pub(crate) mod testing {
     use crate::command::ClientId;
     use crate::config::Config;
 
+    /// A session of `config`, but for its shell, `/bin/sh` (each pane is
+    /// named after it), started.
+    pub(crate) fn started(config: Config) -> Result<Session, String> {
+        let config = Config {
+            shell: vec!["/bin/sh".into()],
+            ..config
+        };
+        let mut session = Session::new(config, "/nonexistent/fux.sock".into(), false);
+        session.start().map_err(|e| e.to_string())?;
+        Ok(session)
+    }
+
     /// A session started with the default config, and a client of `rows`
     /// by `cols` attached.
     pub(crate) fn attached(rows: u16, cols: u16) -> Result<(Session, ClientId), String> {
-        let mut session = Session::new(Config::default(), "/nonexistent/fux.sock".into(), false);
-        session.start().map_err(|e| e.to_string())?;
+        let mut session = started(Config::default())?;
         let client = session
             .attach(rows, cols, None)
             .map_err(|e| e.to_string())?;
         Ok((session, client))
     }
 
-    /// Runs `line` as a command from no client; its error, if it fails.
-    pub(crate) fn run(session: &mut Session, line: &str) -> Result<(), String> {
+    /// Runs `line` as a command from no client: what it printed, or its
+    /// error if it fails.
+    pub(crate) fn output(session: &mut Session, line: &str) -> Result<String, String> {
         let words = crate::words::split(line).map_err(|e| e.to_string())?;
         let outcome = session.run(&words, &Ctx::default());
         if outcome.status == 0 {
-            Ok(())
+            Ok(outcome.stdout)
         } else {
             Err(outcome.stderr)
         }
+    }
+
+    /// Runs `line` as a command from no client; its error, if it fails.
+    pub(crate) fn run(session: &mut Session, line: &str) -> Result<(), String> {
+        output(session, line).map(|_| ())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::testing::{attached, output, run, started};
     use super::*;
 
     /// The `--json` outputs, byte for byte: escapes, borrowed names and
     /// formatted IDs alike.
     #[test]
     fn json_outputs_are_what_they_were() -> Result<(), Box<dyn std::error::Error>> {
-        let config = Config {
-            shell: vec!["/bin/sh".into()],
-            ..Config::default()
-        };
-        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
-        s.start()?;
-        s.attach(4, 30, None)?;
-        let run = |s: &mut Session, line: &str| -> Result<String, String> {
-            let words = crate::words::split(line).map_err(|e| e.to_string())?;
-            let outcome = s.run(&words, &Ctx::default());
-            match outcome.status {
-                0 => Ok(outcome.stdout),
-                _ => Err(outcome.stderr),
-            }
-        };
+        let (mut s, _) = attached(4, 30)?;
         run(&mut s, "split -h -t %1")?;
         run(&mut s, r#"rename -t %1 'say "hi" \ 界'"#)?;
         run(&mut s, "new-tab -t +1 -n two")?;
         run(&mut s, "select-tab -c c1 -t @1")?;
         s.output(PaneId(2), "a\tb \"q\" 界\x1b]2;tab\\title\x07".as_bytes());
         assert_eq!(
-            run(&mut s, "ls --json")?,
+            output(&mut s, "ls --json")?,
             concat!(
                 r#"{"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[{"id":"%1","name":"say \"hi\" \\ 界","title":"","rows":3,"cols":15,"pid":null},{"id":"%2","name":"sh","title":"tab\\title","rows":3,"cols":14,"pid":null}]},{"id":"@2","name":"two","panes":[{"id":"%3","name":"sh","title":"","rows":24,"cols":80,"pid":null}]}]}],"clients":[{"id":"c1","rows":4,"cols":30,"workspace":"+1","tab":"@1","pane":"%2","zoom":false}]}"#,
                 "\n"
             )
         );
         assert_eq!(
-            run(&mut s, "capture-pane -t %2 --json")?,
+            output(&mut s, "capture-pane -t %2 --json")?,
             concat!(
                 r#"{"pane":"%2","rows":3,"cols":14,"cursor":[1,2],"lines":["a       b \"q\"","界",""]}"#,
                 "\n"
             )
         );
         assert_eq!(
-            run(&mut s, "capture-client -c c1 --json")?,
+            output(&mut s, "capture-client -c c1 --json")?,
             concat!(
                 r#"{"client":"c1","rows":4,"cols":30,"cursor":[1,18],"lines":["               │a       b \"q\"","               │界","               │"," main  main  two %2 tab\\title"]}"#,
                 "\n"
@@ -2422,14 +2413,7 @@ mod tests {
     /// tab closes with it.
     #[test]
     fn an_exit_is_told_even_when_it_closes_the_tab() -> Result<(), Box<dyn std::error::Error>> {
-        let config = Config {
-            shell: vec!["/bin/sh".into()],
-            ..Config::default()
-        };
-        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
-        s.start()?;
-        let client = s.attach(10, 40, None)?;
-        let words = |line: &str| crate::words::split(line).map_err(|e| e.to_string());
+        let (mut s, client) = attached(10, 40)?;
         let notice = |s: &Session| {
             s.views
                 .get(&client)
@@ -2437,16 +2421,12 @@ mod tests {
                 .map(|n| n.text.clone())
         };
         // Two panes: the tab stays.
-        assert_eq!(s.run(&words("split -h -t %1")?, &Ctx::default()).status, 0);
+        run(&mut s, "split -h -t %1")?;
         s.exited(PaneId(2), 3);
         assert_eq!(notice(&s).as_deref(), Some("%2 sh exited with status 3"));
         // A second tab, shown; its only pane exits, and the tab with it.
-        assert_eq!(s.run(&words("new-tab -t +1")?, &Ctx::default()).status, 0);
-        assert_eq!(
-            s.run(&words("select-tab -c c1 -t @2")?, &Ctx::default())
-                .status,
-            0
-        );
+        run(&mut s, "new-tab -t +1")?;
+        run(&mut s, "select-tab -c c1 -t @2")?;
         s.exited(PaneId(3), 7);
         assert_eq!(notice(&s).as_deref(), Some("%3 sh exited with status 7"));
         Ok(())
@@ -2458,28 +2438,18 @@ mod tests {
     #[test]
     fn workspace_names_stay_unique_and_failures_use_no_ids()
     -> Result<(), Box<dyn std::error::Error>> {
-        let config = Config {
-            shell: vec!["/bin/sh".into()],
-            ..Config::default()
-        };
-        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
-        s.start()?;
-        let run = |s: &mut Session, line: &str| -> Result<Outcome, String> {
-            let words = crate::words::split(line).map_err(|e| e.to_string())?;
-            Ok(s.run(&words, &Ctx::default()))
-        };
-        assert_eq!(run(&mut s, "new-workspace -n main")?.status, 1);
-        assert_eq!(run(&mut s, "new-workspace -n workspace-3")?.stdout, "+2\n");
+        let mut s = started(Config::default())?;
+        assert!(run(&mut s, "new-workspace -n main").is_err());
+        assert_eq!(output(&mut s, "new-workspace -n workspace-3")?, "+2\n");
         // +3 would be workspace-3, which is taken.
-        assert_eq!(run(&mut s, "new-workspace")?.stdout, "+3\n");
+        assert_eq!(output(&mut s, "new-workspace")?, "+3\n");
         let names: Vec<&str> = s.workspaces.iter().map(|w| w.name.as_str()).collect();
         assert_eq!(names, ["main", "workspace-3", "workspace-4"]);
         // A move to a new workspace with no tab ID left takes no workspace
         // ID either.
         s.next_tab = u32::MAX;
         let ws = s.next_ws;
-        let moved = run(&mut s, "move-pane -t %1 --to new-workspace")?;
-        assert_eq!(moved.status, 1, "{}", moved.stderr);
+        assert!(run(&mut s, "move-pane -t %1 --to new-workspace").is_err());
         assert_eq!(s.next_ws, ws);
         Ok(())
     }
@@ -2491,24 +2461,14 @@ mod tests {
     #[test]
     fn only_screens_that_may_change_are_marked_for_painting()
     -> Result<(), Box<dyn std::error::Error>> {
-        let config = Config {
-            shell: vec!["/bin/sh".into()],
-            ..Config::default()
-        };
-        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
-        s.start()?;
-        let (one, two) = (s.attach(10, 40, None)?, s.attach(10, 40, None)?);
+        let (mut s, one) = attached(10, 40)?;
+        let two = s.attach(10, 40, None)?;
         let clean = |s: &mut Session| {
             for view in s.views.values_mut() {
                 view.dirty = false;
             }
         };
         let dirty = |s: &Session, c: ClientId| s.views.get(&c).is_some_and(|v| v.dirty);
-        let run = |s: &mut Session, line: &str| -> Result<(), String> {
-            let words = crate::words::split(line).map_err(|e| e.to_string())?;
-            let outcome = s.run(&words, &Ctx::default());
-            (outcome.status == 0).then_some(()).ok_or(outcome.stderr)
-        };
         clean(&mut s);
         // Keys for the pane's program show when it answers: its output
         // marks every screen showing the pane.
@@ -2561,18 +2521,14 @@ mod tests {
     /// settle that follows ends copy mode when the rows go.
     #[test]
     fn output_asks_for_a_settle_only_under_copy_mode() -> Result<(), Box<dyn std::error::Error>> {
-        let config = Config {
-            shell: vec!["/bin/sh".into()],
+        let mut s = started(Config {
             history_lines: 2,
             ..Config::default()
-        };
-        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
-        s.start()?;
+        })?;
         let client = s.attach(6, 20, None)?;
         s.output(PaneId(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
         assert!(!s.unsettled(), "no copy mode: nothing to repair");
-        let words = |line: &str| crate::words::split(line).map_err(|e| e.to_string());
-        assert_eq!(s.run(&words("copy-mode -c c1")?, &Ctx::default()).status, 0);
+        run(&mut s, "copy-mode -c c1")?;
         // To the oldest row, which the next lines of output push out.
         s.input(client, b"g");
         s.output(PaneId(1), b"g\r\nh\r\ni\r\nj\r\n");
@@ -2595,13 +2551,7 @@ mod tests {
     /// as they were before commands failed with `Error`.
     #[test]
     fn command_errors_keep_their_words() -> Result<(), Box<dyn std::error::Error>> {
-        let config = Config {
-            shell: vec!["/bin/sh".into()],
-            ..Config::default()
-        };
-        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
-        s.start()?;
-        s.attach(10, 40, None)?;
+        let (mut s, _) = attached(10, 40)?;
         for (line, status, message) in [
             ("kill-pane -t %99", 1, "no pane %99"),
             ("kill-tab -t @99", 1, "no tab @99"),
@@ -2760,9 +2710,7 @@ mod tests {
     /// What a caller tells apart, it tells by variant.
     #[test]
     fn failures_are_told_apart_by_kind() -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = Session::new(Config::default(), "/nonexistent/fux.sock".into(), false);
-        s.start()?;
-        let c = s.attach(10, 40, None)?;
+        let (mut s, c) = attached(10, 40)?;
         let ctx = Ctx::client(c);
         let mut run = |line: &str| -> Result<Result<String, Error>, Box<dyn std::error::Error>> {
             let command = command::parse(&crate::words::split(line)?)?;

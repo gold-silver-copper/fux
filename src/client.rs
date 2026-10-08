@@ -392,23 +392,12 @@ pub fn attach(socket: &Path, workspace: Option<String>) -> Result<(), Error> {
         cols,
         workspace,
     };
-    let taken = match send_with_terminal(&mut stream, &attach, &stdin) {
-        Ok(()) => terminal_taken(&mut stream, &mut decoder),
-        Err(error) => Err(error),
-    };
-    let result = match taken {
-        Ok(true) => attached(&mut stream, &mut decoder, false),
-        Ok(false) => attached(&mut stream, &mut decoder, true),
-        Err(error) => Err(error),
-    };
+    let result = send_with_terminal(&mut stream, &attach, &stdin)
+        .and_then(|()| terminal_taken(&mut stream, &mut decoder))
+        .and_then(|taken| attached(&mut stream, &mut decoder, !taken));
     restore();
-    match result {
-        Ok(reason) => {
-            println!("[{reason}]");
-            Ok(())
-        }
-        Err(error) => Err(error),
-    }
+    println!("[{}]", result?);
+    Ok(())
 }
 
 /// Sends `frame` with this process's terminal attached, its first bytes
@@ -423,9 +412,7 @@ fn send_with_terminal(
         match fuxix::socket::send_with_fd(&*stream, &bytes, &terminal) {
             Ok(n) => break n,
             Err(fuxix::Errno::INTR) => continue,
-            Err(errno) => {
-                return Err(Error::Write(std::io::Error::from_raw_os_error(errno.raw())));
-            }
+            Err(errno) => return Err(Error::Write(errno.into())),
         }
     };
     stream
@@ -470,8 +457,6 @@ fn attached(stream: &mut UnixStream, decoder: &mut Decoder, relay: bool) -> Resu
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     let mut buffer = vec![0u8; 64 * 1024];
-    // Where each read from the terminal is framed; reused by every read.
-    let mut input = Vec::new();
     // The terminal is polled last, and only when relaying.
     const STREAM: usize = 0;
     const WINCH: usize = 1;
@@ -495,7 +480,8 @@ fn attached(stream: &mut UnixStream, decoder: &mut Decoder, relay: bool) -> Resu
             Err(e) => return Err(Error::Poll(e)),
         }
         let ready = fds.each_ref().map(PollFd::revents);
-        let is = |i: usize| i < polled && ready.get(i).is_some_and(|f| !f.is_empty());
+        // The terminal, unpolled when not relaying, is never ready.
+        let is = |i: usize| ready.get(i).is_some_and(|f| !f.is_empty());
         if is(STOPS) {
             let _ = send(stream, &Frame::Detach);
             return Ok("detached by a signal".into());
@@ -511,11 +497,10 @@ fn attached(stream: &mut UnixStream, decoder: &mut Decoder, relay: bool) -> Resu
                     let _ = send(stream, &Frame::Detach);
                     return Ok("detached: the terminal closed".into());
                 }
-                Ok(n) => {
-                    input.clear();
-                    crate::protocol::encode_input(buffer.get(..n).unwrap_or_default(), &mut input)?;
-                    stream.write_all(&input).map_err(Error::Write)?;
-                }
+                Ok(n) => send(
+                    stream,
+                    &Frame::Input(buffer.get(..n).unwrap_or_default().to_vec()),
+                )?,
                 Err(fuxix::Errno::INTR | fuxix::Errno::AGAIN) => {}
                 Err(e) => return Err(Error::ReadTerminal(e)),
             }

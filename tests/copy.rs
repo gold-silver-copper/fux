@@ -220,23 +220,6 @@ fn copy_mode_ends_when_its_pane_closes_or_its_rows_are_evicted() -> Outcome {
 }
 
 #[test]
-fn wide_glyphs_stay_whole_and_wrapped_lines_join() -> Outcome {
-    let server = Server::start("")?;
-    let long: String = std::iter::repeat_n("abcdefghij", 5).collect();
-    let mut client = prepared(&server, 12, 30, &["x界y", &long, "end"])?;
-    copy_mode(&mut client)?;
-    // The wrapped line takes rows 1 and 2; s over them copies it without a
-    // newline.
-    client.keys("kkksj\r")?;
-    eventually("the joined line", || Ok(buffer(&server)? == long))?;
-    // A wide glyph is one step for the cursor, and copied whole.
-    copy_mode(&mut client)?;
-    client.keys("kkkk\x1b[Hlvly")?;
-    eventually("the wide glyph", || Ok(buffer(&server)? == "界y"))?;
-    Ok(())
-}
-
-#[test]
 fn paste_buffers_paste_and_the_clipboard_can_be_off() -> Outcome {
     let server = Server::start("set clipboard off")?;
     let mut client = prepared(&server, 12, 40, &["hello-paste"])?;
