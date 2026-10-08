@@ -2204,8 +2204,7 @@ impl Ids {
 }
 
 /// Takes the next ID from `counter`. IDs are never reused, so one that
-/// would wrap round is an error instead; so `u32::MAX` is never handed out,
-/// which `layout::swap` takes for a placeholder.
+/// would wrap round is an error instead.
 fn advance(counter: &mut u32, what: &'static str) -> Result<u32, Error> {
     let id = *counter;
     *counter = counter.checked_add(1).ok_or(Error::IdsExhausted(what))?;

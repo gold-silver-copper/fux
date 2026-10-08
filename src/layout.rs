@@ -336,14 +336,19 @@ pub fn normalize(node: &mut Node) {
     }
 }
 
-/// Swaps two panes' places in one tree.
+/// Swaps two panes' places in one tree, or, given two trees in turn, each
+/// takes the other's place.
 pub fn swap(node: &mut Node, a: PaneId, b: PaneId) {
-    // Via a placeholder no real pane uses: ids are handed out below
-    // u32::MAX, as `session::advance` refuses the one that would wrap.
-    let hole = PaneId(u32::MAX);
-    node.replace(a, hole);
-    node.replace(b, a);
-    node.replace(hole, b);
+    match node {
+        Node::Pane(p) if *p == a => *p = b,
+        Node::Pane(p) if *p == b => *p = a,
+        Node::Pane(_) => {}
+        Node::Split { children, .. } => {
+            for (_, child) in children {
+                swap(child, a, b);
+            }
+        }
+    }
 }
 
 /// Shares `len` cells among `children` by weight, into `sizes`, which are
