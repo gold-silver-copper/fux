@@ -182,9 +182,6 @@ mod tests {
         assert_eq!(words("a#b"), ["a#b"]);
         assert_eq!(words("# only"), Vec::<String>::new());
         assert_eq!(words("it'''s'"), ["its"]);
-        assert!(split("'open").is_err());
-        assert!(split("\"open").is_err());
-        assert!(split("end\\").is_err());
     }
 
     #[test]

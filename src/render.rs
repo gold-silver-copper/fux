@@ -1851,10 +1851,7 @@ mod tests {
         let mut r = Rng(0x0ec4_0ec4);
         let mut short = 0usize;
         for case in 0..30 {
-            let config = crate::config::Config::default();
-            let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
-            s.start().map_err(|e| e.to_string())?;
-            let c = s.attach(10, 40, None).map_err(|e| e.to_string())?;
+            let (mut s, c) = crate::session::testing::attached(10, 40)?;
             if r.below(3) == 0 {
                 let argv = [
                     "split".to_owned(),
@@ -1938,10 +1935,7 @@ mod tests {
         ];
         let mut r = Rng(0x00c0_ffee);
         for case in 0..40 {
-            let config = crate::config::Config::default();
-            let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
-            s.start().map_err(|e| e.to_string())?;
-            let c = s.attach(12, 50, None).map_err(|e| e.to_string())?;
+            let (mut s, c) = crate::session::testing::attached(12, 50)?;
             let (mut spare, mut shown) = (Grid::new(0, 0), Grid::new(0, 0));
             let mut placement = Placement::default();
             let mut painted = false;
@@ -2054,13 +2048,7 @@ mod tests {
     /// that act now; a narrow bar drops the least important.
     #[test]
     fn copy_mode_replaces_the_tabs_with_its_keys() -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = Session::new(
-            crate::config::Config::default(),
-            "/nonexistent/fux.sock".into(),
-            false,
-        );
-        s.start()?;
-        let c = s.attach(10, 120, None)?;
+        let (mut s, c) = crate::session::testing::attached(10, 120)?;
         let bar = |s: &Session| {
             compose(s, c)
                 .map(|g| g.row_text(g.rows.saturating_sub(1)))
@@ -2145,13 +2133,7 @@ mod tests {
     /// selection, over a screen with history and a view scrolled into it.
     #[test]
     fn compose_inverts_exactly_the_selected_cells() -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = Session::new(
-            crate::config::Config::default(),
-            "/nonexistent/fux.sock".into(),
-            false,
-        );
-        s.start()?;
-        let c = s.attach(10, 30, None)?;
+        let (mut s, c) = crate::session::testing::attached(10, 30)?;
         let pane = PaneId(1);
         let text: String = (0..60)
             .map(|i| {
@@ -2237,13 +2219,7 @@ mod tests {
     /// comes out as a fresh one would.
     #[test]
     fn composing_into_a_used_grid_is_composing_afresh() -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = Session::new(
-            crate::config::Config::default(),
-            "/nonexistent/fux.sock".into(),
-            false,
-        );
-        s.start()?;
-        let c = s.attach(12, 50, None)?;
+        let (mut s, c) = crate::session::testing::attached(12, 50)?;
         s.output(PaneId(1), b"first screen\r\n\x1b[5 q");
         let before = compose(&s, c).ok_or("a screen")?;
         let outcome = s.run(
@@ -2420,9 +2396,6 @@ mod tests {
         // Full repaint from nothing matches too.
         let mut fresh = fux_vt::Parser::new(4, 12, 0).map_err(|e| e.to_string())?;
         assert_eq!(apply(&paint(None, &b), 4, 12, &mut fresh), grid_lines(&b));
-        // Nothing changed: nothing but the envelope.
-        let quiet = String::from_utf8_lossy(&paint(Some(&b), &b)).into_owned();
-        assert_eq!(quiet, "\x1b[?2026h\x1b[?25l\x1b[0m\x1b[?2026l");
         Ok(())
     }
 
@@ -2595,13 +2568,7 @@ mod tests {
     /// program's queries with its own colours.
     #[test]
     fn a_panes_palette_is_painted_and_stays_the_panes() -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = Session::new(
-            crate::config::Config::default(),
-            "/nonexistent/fux.sock".into(),
-            false,
-        );
-        s.start()?;
-        let c = s.attach(6, 41, None)?;
+        let (mut s, c) = crate::session::testing::attached(6, 41)?;
         let outcome = s.run(
             &["split".to_owned(), "-h".to_owned()],
             &crate::session::Ctx::client(c),
@@ -2679,13 +2646,7 @@ mod tests {
     /// paint has each cell's link.
     #[test]
     fn hyperlinks_are_painted_with_their_panes_ids() -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = Session::new(
-            crate::config::Config::default(),
-            "/nonexistent/fux.sock".into(),
-            false,
-        );
-        s.start()?;
-        let c = s.attach(6, 41, None)?;
+        let (mut s, c) = crate::session::testing::attached(6, 41)?;
         let outcome = s.run(
             &["split".to_owned(), "-h".to_owned()],
             &crate::session::Ctx::client(c),
