@@ -838,12 +838,6 @@ impl Screen {
         }
         self.colours.get_or_insert_default().set_host(index, colour)
     }
-    /// What the host said its terminal shows for palette entry `index`
-    /// ([`crate::Parser::set_host_color`]).
-    pub fn host_color(&self, index: u8) -> Option<(u8, u8, u8)> {
-        let [r, g, b] = self.colours.as_ref()?.host(index)?;
-        Some((r, g, b))
-    }
     /// The colour dynamic colour `number` shows if the program set it (OSC
     /// 10 to 19, with `Options::palette`): 10 the text foreground and 11
     /// the background, which a cell of `Color::Default` shows, 12 the

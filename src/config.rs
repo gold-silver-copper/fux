@@ -374,13 +374,7 @@ impl Default for Config {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "/bin/sh".into());
         let mut config = Self {
-            prefix: KeyPress::new(
-                crate::keys::Key::Char('b'),
-                crate::keys::Modifiers {
-                    ctrl: true,
-                    ..crate::keys::Modifiers::NONE
-                },
-            ),
+            prefix: KeyPress::new(crate::keys::Key::Char('b'), crate::keys::Modifiers::CTRL),
             shell: vec![shell],
             history_lines: 10_000,
             clipboard: true,

@@ -11,21 +11,9 @@
 use fux_vt::{Color, Parser};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
-fn lines(parser: &Parser) -> Vec<String> {
-    let screen = parser.screen();
-    let (rows, cols) = screen.size();
-    (0..rows)
-        .map(|y| {
-            (0..cols)
-                .filter_map(|x| screen.cell(y, x))
-                .filter(|c| !c.is_wide_continuation())
-                .map(|c| if c.has_contents() { c.contents() } else { " " })
-                .collect::<String>()
-                .trim_end()
-                .to_owned()
-        })
-        .collect()
-}
+#[path = "corpus/lines.rs"]
+mod lines;
+use lines::lines;
 
 /// The screen's two rows after `bytes`, on a screen of two rows of ten.
 fn after(bytes: &str) -> std::result::Result<Vec<String>, fux_vt::Error> {
