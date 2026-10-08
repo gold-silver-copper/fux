@@ -1799,7 +1799,9 @@ impl Session {
             AnyRef::Workspace(w) => {
                 let id = self.resolve_ws(w)?;
                 self.check_workspace_name(&name, Some(id))?;
-                self.workspace_mut(id).ok_or(Error::Gone(Kind::Workspace))?.name = name;
+                self.workspace_mut(id)
+                    .ok_or(Error::Gone(Kind::Workspace))?
+                    .name = name;
             }
         }
         Ok(())
@@ -1927,7 +1929,10 @@ impl Session {
             AnyRef::Pane(p) => {
                 let (_, tab) = self.locate(*p).ok_or(Error::NotInTab)?;
                 let panes = self.tab_panes(tab);
-                let index = panes.iter().position(|x| x == p).ok_or(Error::Gone(Kind::Pane))?;
+                let index = panes
+                    .iter()
+                    .position(|x| x == p)
+                    .ok_or(Error::Gone(Kind::Pane))?;
                 let other = step(index, panes.len())
                     .and_then(|i| panes.get(i))
                     .copied()
@@ -1936,7 +1941,10 @@ impl Session {
             }
             AnyRef::Tab(t) => {
                 let (w, index) = self.find_tab(*t).ok_or(Error::NoTab(*t))?;
-                let ws = self.workspaces.get_mut(w).ok_or(Error::Gone(Kind::Workspace))?;
+                let ws = self
+                    .workspaces
+                    .get_mut(w)
+                    .ok_or(Error::Gone(Kind::Workspace))?;
                 let other = step(index, ws.tabs.len()).ok_or(Error::AtEnd(Kind::Tab))?;
                 let [a, b] = ws
                     .tabs
