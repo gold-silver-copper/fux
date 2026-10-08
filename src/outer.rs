@@ -2,7 +2,7 @@
 //! colours (OSC 10 and 11), its palette entries 0 to 15 (OSC 4), and colour scheme (dark or light, `CSI ? 996 n`),
 //! whether it reports changes to the scheme (mode 2031), whether it
 //! speaks the kitty keyboard protocol (`CSI ? u`), and whether it draws
-//! underline styles (`STYLES`). Programs in panes ask the same of their
+//! underline styles (`styles!`). Programs in panes ask the same of their
 //! terminal, which is fux, and are answered from what the client terminal
 //! said; the styles are what fux paints the client.
 //!
@@ -44,21 +44,20 @@ use crate::view::View;
 pub use fux_vt::keys::colour::{Colours, Rgb, Scheme};
 use std::time::Instant;
 
-/// What the server asks a client's terminal when the client attaches:
-/// whether it knows mode 2031 (DECRQM), its foreground and background, its
-/// palette entries 0 to 15 (each its own OSC 4, as not every terminal reads
-/// several in one),
-/// whether it draws underline styles (`STYLES`), its kitty keyboard flags,
-/// and last the primary device attributes, which every terminal answers: once
-/// that answer is in, any other the terminal will give is in too
-/// (terminals answer in order), so the decoder stops waiting for them. The
-/// kitty spec detects the protocol so: an answer to `CSI ? u` before DA1's.
-pub const QUERIES: &[u8] = b"\x1b[?2031$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\
-\x1b]4;0;?\x1b\\\x1b]4;1;?\x1b\\\x1b]4;2;?\x1b\\\x1b]4;3;?\x1b\\\
-\x1b]4;4;?\x1b\\\x1b]4;5;?\x1b\\\x1b]4;6;?\x1b\\\x1b]4;7;?\x1b\\\
-\x1b]4;8;?\x1b\\\x1b]4;9;?\x1b\\\x1b]4;10;?\x1b\\\x1b]4;11;?\x1b\\\
-\x1b]4;12;?\x1b\\\x1b]4;13;?\x1b\\\x1b]4;14;?\x1b\\\x1b]4;15;?\x1b\\\
-\x1bP+q536d756c78\x1b\\\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\\x1b[0m\x1b[?u\x1b[c";
+/// The colours asked one by one, each its own OSC: the foreground, the
+/// background, and the palette entries 0 to 15. Part of [`QUERIES`] and
+/// [`COLOUR_QUERIES`].
+macro_rules! colours {
+    () => {
+        concat!(
+            "\x1b]10;?\x1b\\\x1b]11;?\x1b\\",
+            "\x1b]4;0;?\x1b\\\x1b]4;1;?\x1b\\\x1b]4;2;?\x1b\\\x1b]4;3;?\x1b\\",
+            "\x1b]4;4;?\x1b\\\x1b]4;5;?\x1b\\\x1b]4;6;?\x1b\\\x1b]4;7;?\x1b\\",
+            "\x1b]4;8;?\x1b\\\x1b]4;9;?\x1b\\\x1b]4;10;?\x1b\\\x1b]4;11;?\x1b\\",
+            "\x1b]4;12;?\x1b\\\x1b]4;13;?\x1b\\\x1b]4;14;?\x1b\\\x1b]4;15;?\x1b\\",
+        )
+    };
+}
 /// How fux learns whether a terminal draws underline styles (kitty's
 /// `4:n`, `references/modern/kitty_underlines.html`): it asks two ways,
 /// and either answer is enough (`decode::Reply::UnderlineStyles`).
@@ -81,23 +80,27 @@ pub const QUERIES: &[u8] = b"\x1b[?2031$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\
 /// semicolon, underline and italic. Neither question changes what a
 /// terminal shows, and both come before DA1, whose answer ends the
 /// waiting for them.
-pub const STYLES: &[u8] = b"\x1bP+q536d756c78\x1b\\\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\\x1b[0m";
-/// The palette entries 0 to 15, asked one by one: part of [`QUERIES`] and
-/// [`COLOUR_QUERIES`].
-pub const PALETTE_QUERIES: &[u8] =
-    b"\x1b]4;0;?\x1b\\\x1b]4;1;?\x1b\\\x1b]4;2;?\x1b\\\x1b]4;3;?\x1b\\\
-\x1b]4;4;?\x1b\\\x1b]4;5;?\x1b\\\x1b]4;6;?\x1b\\\x1b]4;7;?\x1b\\\
-\x1b]4;8;?\x1b\\\x1b]4;9;?\x1b\\\x1b]4;10;?\x1b\\\x1b]4;11;?\x1b\\\
-\x1b]4;12;?\x1b\\\x1b]4;13;?\x1b\\\x1b]4;14;?\x1b\\\x1b]4;15;?\x1b\\";
+macro_rules! styles {
+    () => {
+        "\x1bP+q536d756c78\x1b\\\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\\x1b[0m"
+    };
+}
+/// What the server asks a client's terminal when the client attaches:
+/// whether it knows mode 2031 (DECRQM), its foreground and background, its
+/// palette entries 0 to 15 (each its own OSC 4, as not every terminal reads
+/// several in one),
+/// whether it draws underline styles (`styles!`), its kitty keyboard flags,
+/// and last the primary device attributes, which every terminal answers: once
+/// that answer is in, any other the terminal will give is in too
+/// (terminals answer in order), so the decoder stops waiting for them. The
+/// kitty spec detects the protocol so: an answer to `CSI ? u` before DA1's.
+pub const QUERIES: &[u8] =
+    concat!("\x1b[?2031$p", colours!(), styles!(), "\x1b[?u\x1b[c").as_bytes();
 /// Pushes disambiguate and alternate keys (see the module documentation).
 pub const KITTY_PUSH: &[u8] = b"\x1b[>5u";
 /// Asked again after the terminal reports that its scheme changed: a theme
 /// that changes changes the palette too.
-pub const COLOUR_QUERIES: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\
-\x1b]4;0;?\x1b\\\x1b]4;1;?\x1b\\\x1b]4;2;?\x1b\\\x1b]4;3;?\x1b\\\
-\x1b]4;4;?\x1b\\\x1b]4;5;?\x1b\\\x1b]4;6;?\x1b\\\x1b]4;7;?\x1b\\\
-\x1b]4;8;?\x1b\\\x1b]4;9;?\x1b\\\x1b]4;10;?\x1b\\\x1b]4;11;?\x1b\\\
-\x1b]4;12;?\x1b\\\x1b]4;13;?\x1b\\\x1b]4;14;?\x1b\\\x1b]4;15;?\x1b\\\x1b[c";
+pub const COLOUR_QUERIES: &[u8] = concat!(colours!(), "\x1b[c").as_bytes();
 
 /// Saves the terminal's title (xterm's title stack, `CSI 22 ; 0 t`), sent
 /// before fux first sets it. It is popped when titles are turned off, and
@@ -162,7 +165,7 @@ pub struct Terminal {
     change: Option<Scheme>,
     /// Whether the kitty keyboard flags were pushed.
     pub kitty: bool,
-    /// Whether the terminal draws underline styles (see `STYLES`): the
+    /// Whether the terminal draws underline styles (see `styles!`): the
     /// client is painted them (`render::sgr`), else plain underlines.
     pub underline_styles: bool,
     /// Its palette entries 0 to 15, answered to the panes it answers for.
@@ -640,23 +643,6 @@ mod tests {
         ] {
             assert_eq!(Rgb::parse(bad), None, "{bad:?}");
         }
-    }
-
-    /// The questions about underline styles are asked at attach, before the
-    /// kitty query and DA1, whose answer ends the waiting for theirs, and
-    /// leave the pen reset.
-    #[test]
-    fn the_questions_about_styles_come_before_da1() {
-        assert!(QUERIES.ends_with(&[STYLES, b"\x1b[?u\x1b[c"].concat()));
-        // The palette is asked with the colours, before them.
-        let at = |bytes: &[u8], part: &[u8]| {
-            (0..bytes.len()).find(|&i| bytes.get(i..).is_some_and(|r| r.starts_with(part)))
-        };
-        let palette = at(QUERIES, PALETTE_QUERIES);
-        assert!(palette.is_some_and(|p| at(QUERIES, STYLES).is_some_and(|s| p < s)));
-        assert!(at(COLOUR_QUERIES, PALETTE_QUERIES).is_some());
-        assert!(COLOUR_QUERIES.ends_with(b"\x1b[c"));
-        assert!(STYLES.ends_with(b"\x1b[0m"));
     }
 
     /// `title_saved_by` decides as the later of a search for each from the

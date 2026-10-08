@@ -1296,7 +1296,7 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
 // ------------------------------------------------------------------ paint
 
 /// The SGR that sets `a` from nothing: an underline style (kitty's `4:n`)
-/// as it is if the client's terminal draws them (`styles`, `outer::STYLES`),
+/// as it is if the client's terminal draws them (`styles`, `outer::styles!`),
 /// else a plain underline, as a terminal that does not know `4:3` draws no
 /// underline at all (xterm, avt) or reads the colon as a semicolon,
 /// underline and italic, and one that does not know 21 may read it as bold

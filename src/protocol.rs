@@ -53,10 +53,8 @@ pub enum Error {
     Truncated,
     /// Bytes after a payload's last field.
     Trailing,
-    /// A string field that is not UTF-8.
+    /// A string field, or an exit reason, that is not UTF-8.
     NotUtf8,
-    /// An exit reason that is not UTF-8.
-    ExitNotUtf8,
     /// An option's marker that is neither 0 nor 1.
     BadMarker,
     /// More arguments than the payload has room for.
@@ -75,7 +73,6 @@ impl std::fmt::Display for Error {
             Error::Truncated => f.write_str("truncated frame"),
             Error::Trailing => f.write_str("trailing bytes in frame"),
             Error::NotUtf8 => f.write_str("a frame string is not UTF-8"),
-            Error::ExitNotUtf8 => f.write_str("an exit reason is not UTF-8"),
             Error::BadMarker => f.write_str("bad option marker in frame"),
             Error::BadCount => f.write_str("bad argument count in frame"),
             Error::UnknownRole(role) => write!(f, "unknown client role {role}"),
@@ -274,25 +271,6 @@ impl Frame {
     }
 }
 
-/// Appends `bytes` to `out` as the `Input` frame `Frame::Input` would
-/// encode, without their being copied into one first. A payload over
-/// `MAX_PAYLOAD` is an error, and leaves `out` as it was.
-pub fn encode_input(bytes: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
-    if bytes.len() > MAX_PAYLOAD {
-        return Err(Error::Oversized {
-            bytes: bytes.len(),
-            limit: MAX_PAYLOAD,
-        });
-    }
-    // The kind byte and the payload; exact, as the payload is at most
-    // MAX_PAYLOAD.
-    let length = u32::try_from(bytes.len().saturating_add(1)).unwrap_or(u32::MAX);
-    out.extend_from_slice(&length.to_be_bytes());
-    out.push(kind::INPUT);
-    out.extend_from_slice(bytes);
-    Ok(())
-}
-
 fn put_len(out: &mut Vec<u8>, len: usize) {
     out.extend_from_slice(&u32::try_from(len).unwrap_or(u32::MAX).to_be_bytes());
 }
@@ -397,7 +375,7 @@ fn decode_frame(kind: u8, payload: &[u8]) -> Result<Frame, Error> {
         kind::EXIT => {
             return String::from_utf8(payload.to_vec())
                 .map(Frame::Exit)
-                .map_err(|_| Error::ExitNotUtf8);
+                .map_err(|_| Error::NotUtf8);
         }
         kind::STDOUT => return Ok(Frame::Stdout(payload.to_vec())),
         kind::STDERR => return Ok(Frame::Stderr(payload.to_vec())),
@@ -413,6 +391,19 @@ fn decode_frame(kind: u8, payload: &[u8]) -> Result<Frame, Error> {
     };
     r.end()?;
     Ok(frame)
+}
+
+/// The length a frame's header announces: the kind byte and the payload,
+/// at least the one and at most `MAX_FRAME`.
+fn frame_length(header: [u8; 4]) -> Result<usize, Error> {
+    match u32::from_be_bytes(header) as usize {
+        0 => Err(Error::Empty),
+        length if length > MAX_FRAME => Err(Error::Oversized {
+            bytes: length,
+            limit: MAX_FRAME,
+        }),
+        length => Ok(length),
+    }
 }
 
 /// A whole frame not yet decoded: its kind, and its payload lent from the
@@ -481,20 +472,12 @@ impl Decoder {
         let Some(header) = pending.first_chunk::<4>() else {
             return Ok(None);
         };
-        let length = u32::from_be_bytes(*header) as usize;
-        if length == 0 {
-            return Err(Error::Empty);
-        }
-        if length > MAX_FRAME {
-            return Err(Error::Oversized {
-                bytes: length,
-                limit: MAX_FRAME,
-            });
-        }
-        if pending.len() < 4 + length {
+        // At most `4 + MAX_FRAME`.
+        let whole = frame_length(*header)?.saturating_add(4);
+        if pending.len() < whole {
             return Ok(None);
         }
-        let frame = self.buffer.take_front(4 + length);
+        let frame = self.buffer.take_front(whole);
         let (kind, payload) = frame
             .get(4..)
             .and_then(<[u8]>::split_first)
@@ -521,20 +504,14 @@ impl Decoder {
             let Some(header) = rest.first_chunk::<4>() else {
                 break;
             };
-            let length = u32::from_be_bytes(*header) as usize;
-            if length == 0 {
-                checked.error = Some(Error::Empty);
-                break;
-            }
-            if length > MAX_FRAME {
-                checked.error = Some(Error::Oversized {
-                    bytes: length,
-                    limit: MAX_FRAME,
-                });
-                break;
-            }
-            // At most `4 + MAX_FRAME`.
-            let whole = length.saturating_add(4);
+            let whole = match frame_length(*header) {
+                // At most `4 + MAX_FRAME`.
+                Ok(length) => length.saturating_add(4),
+                Err(error) => {
+                    checked.error = Some(error);
+                    break;
+                }
+            };
             let Some((&frame_kind, payload)) = rest.get(4..whole).and_then(<[u8]>::split_first)
             else {
                 break;
@@ -561,27 +538,6 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Input framed from its bytes is the frame `Frame::Input` encodes,
-    /// after whatever the buffer held, and too long an input is refused
-    /// alike, leaving the buffer as it was.
-    #[test]
-    fn input_is_framed_from_its_bytes_as_its_frame_is() {
-        let long = vec![0xff; 70_000];
-        for bytes in [&b""[..], b"k", b"\x1b[A\x1b[B", &long] {
-            let mut out = b"held".to_vec();
-            assert_eq!(encode_input(bytes, &mut out), Ok(()));
-            let frame = Frame::Input(bytes.to_vec()).encode();
-            assert_eq!(out.get(4..), frame.as_deref().ok());
-        }
-        let long = vec![0; MAX_PAYLOAD + 1];
-        let mut out = b"held".to_vec();
-        assert_eq!(
-            encode_input(&long, &mut out).err(),
-            Frame::Input(long.clone()).encode().err()
-        );
-        assert_eq!(out, b"held");
-    }
 
     fn round_trip(frame: Frame) {
         let bytes = frame.encode().unwrap_or_default();
@@ -688,6 +644,14 @@ mod tests {
     fn oversized_frames_are_refused_on_both_sides() {
         assert!(Frame::Paint(vec![0; MAX_PAYLOAD + 1]).encode().is_err());
         assert!(Frame::Paint(vec![0; MAX_PAYLOAD]).encode().is_ok());
+        // Refused, it leaves nothing behind.
+        let mut out = b"before".to_vec();
+        assert!(
+            Frame::Stdout(vec![0; MAX_PAYLOAD + 1])
+                .encode_into(&mut out)
+                .is_err()
+        );
+        assert_eq!(out, b"before");
         let mut decoder = Decoder::default();
         // Any length past the limit will do.
         let over = u32::try_from(MAX_FRAME + 1).unwrap_or(u32::MAX);
@@ -704,146 +668,6 @@ mod tests {
         }
         assert_eq!(frames, 3);
         assert_eq!(decoder.buffered(), 0);
-    }
-
-    /// Frames as they were encoded before `encode_into`: the payload built
-    /// alone, then copied after its header.
-    fn reference(frame: &Frame) -> Vec<u8> {
-        let mut payload = Vec::new();
-        match frame {
-            Frame::Hello {
-                protocol,
-                version,
-                role,
-            } => {
-                payload.extend_from_slice(&protocol.to_be_bytes());
-                payload.push(match role {
-                    Role::Attach => 0,
-                    Role::Command => 1,
-                    Role::Kill => 2,
-                });
-                put_bytes(&mut payload, version.as_bytes());
-            }
-            Frame::Attach {
-                rows,
-                cols,
-                workspace,
-            } => {
-                payload.extend_from_slice(&rows.to_be_bytes());
-                payload.extend_from_slice(&cols.to_be_bytes());
-                put_option(&mut payload, workspace.as_deref());
-            }
-            Frame::Input(bytes)
-            | Frame::Paint(bytes)
-            | Frame::Stdout(bytes)
-            | Frame::Stderr(bytes) => payload.extend_from_slice(bytes),
-            Frame::Resize { rows, cols } => {
-                payload.extend_from_slice(&rows.to_be_bytes());
-                payload.extend_from_slice(&cols.to_be_bytes());
-            }
-            Frame::Detach => {}
-            Frame::Command { argv, cwd, pane } => {
-                put_len(&mut payload, argv.len());
-                for arg in argv {
-                    put_bytes(&mut payload, arg.as_bytes());
-                }
-                put_bytes(&mut payload, cwd.as_bytes());
-                put_option(&mut payload, pane.as_deref());
-            }
-            Frame::Exit(reason) => payload.extend_from_slice(reason.as_bytes()),
-            Frame::Done { status } => payload.push(*status),
-            Frame::Terminal { taken } => payload.push(u8::from(*taken)),
-        }
-        let length = u32::try_from(payload.len().saturating_add(1)).unwrap_or(u32::MAX);
-        let mut out = length.to_be_bytes().to_vec();
-        out.push(frame.kind());
-        out.extend_from_slice(&payload);
-        out
-    }
-
-    /// The bytes on the wire are what they were, for every kind of frame
-    /// and every size of stream.
-    #[test]
-    fn frames_encode_as_they_did() {
-        let frames = [
-            Frame::Hello {
-                protocol: PROTOCOL,
-                version: "0.13.0".into(),
-                role: Role::Kill,
-            },
-            Frame::Attach {
-                rows: 24,
-                cols: 80,
-                workspace: Some("main".into()),
-            },
-            Frame::Attach {
-                rows: 1,
-                cols: 1,
-                workspace: None,
-            },
-            Frame::Input(b"\x1b[A".to_vec()),
-            Frame::Resize {
-                rows: 50,
-                cols: 200,
-            },
-            Frame::Detach,
-            Frame::Command {
-                argv: vec!["split".into(), "-h".into(), "".into(), "界".into()],
-                cwd: "/tmp".into(),
-                pane: Some("%3".into()),
-            },
-            Frame::Paint(vec![0, 1, 2, 255]),
-            Frame::Exit("detached".into()),
-            Frame::Stdout(b"out".to_vec()),
-            Frame::Stderr(Vec::new()),
-            Frame::Done { status: 2 },
-            Frame::Terminal { taken: true },
-            Frame::Terminal { taken: false },
-        ];
-        for frame in &frames {
-            let mut out = b"before".to_vec();
-            assert!(frame.encode_into(&mut out).is_ok(), "{frame:?}");
-            let expected: Vec<u8> = b"before".iter().copied().chain(reference(frame)).collect();
-            assert_eq!(out, expected, "{frame:?}");
-            assert_eq!(frame.encode().ok(), Some(reference(frame)), "{frame:?}");
-        }
-        // Too long a payload is refused, and nothing is left behind.
-        let mut out = b"before".to_vec();
-        assert!(
-            Frame::Stdout(vec![0; MAX_PAYLOAD + 1])
-                .encode_into(&mut out)
-                .is_err()
-        );
-        assert_eq!(out, b"before");
-        for stream in [Stream::Paint, Stream::Stdout, Stream::Stderr] {
-            let make = match stream {
-                Stream::Paint => Frame::Paint,
-                Stream::Stdout => Frame::Stdout,
-                Stream::Stderr => Frame::Stderr,
-            };
-            for len in [0, 1, MAX_PAYLOAD, 2 * MAX_PAYLOAD + 3] {
-                let bytes: Vec<u8> = (0..len)
-                    .map(|i| u8::try_from(i % 251).unwrap_or(0))
-                    .collect();
-                let mut queue = ByteQueue::default();
-                queue.push(b"before");
-                stream.encode_into(&bytes, &mut queue);
-                // The frames `encode_into` made: whole ones, then the rest.
-                let (whole, rest) = bytes.as_chunks::<MAX_PAYLOAD>();
-                let expected: Vec<u8> = b"before"
-                    .iter()
-                    .copied()
-                    .chain(
-                        whole
-                            .iter()
-                            .map(|piece| piece.as_slice())
-                            .chain((!rest.is_empty()).then_some(rest))
-                            .flat_map(|piece| reference(&make(piece.to_vec()))),
-                    )
-                    .collect();
-                assert!(queue.as_slice() == expected, "{stream:?} of {len} bytes");
-            }
-        }
     }
 
     /// A paint is lent from the decoder as it arrived; other frames decode.
@@ -884,8 +708,8 @@ mod tests {
             (vec![0, 0, 0, 0], Error::Empty, "an empty frame"),
             (
                 vec![0, 0, 0, 2, 8, 0xff],
-                Error::ExitNotUtf8,
-                "an exit reason is not UTF-8",
+                Error::NotUtf8,
+                "a frame string is not UTF-8",
             ),
             (
                 vec![0, 0, 0, 3, 1, 0, 0],

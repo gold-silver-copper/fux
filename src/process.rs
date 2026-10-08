@@ -236,29 +236,25 @@ pub fn exited(pid: Pid) -> Option<i32> {
 /// 013). The leader is unreaped, so its pid, pgid and sid cannot be reused.
 pub fn hangup(leader: Pid) {
     let _ = fuxix::process::kill_group(leader, Signal::Hup);
-    let in_session = |pid: Pid| pid != leader && fuxix::process::session(pid) == Some(leader);
-    for pid in fuxix::process::processes()
-        .into_iter()
-        .filter(|pid| in_session(*pid))
-    {
-        // Re-checked just before the signal: a process that left is skipped.
-        if in_session(pid) {
+    // Checked just before each signal: a process that left is skipped.
+    for pid in fuxix::process::processes() {
+        if pid != leader && fuxix::process::session(pid) == Some(leader) {
             let _ = fuxix::process::kill(pid, Signal::Hup);
         }
     }
 }
 
-/// Ends the leader's group and reaps the leader, without waiting: `None`
+/// Ends the leader's group and reaps the leader, without waiting: false
 /// if the leader has not exited yet, to try again shortly. Called after
 /// `hangup` and a grace period, with the master already closed.
-pub fn finish(leader: Pid) -> Option<i32> {
+pub fn finish(leader: Pid) -> bool {
     let _ = fuxix::process::kill_group(leader, Signal::Kill);
     loop {
         match fuxix::process::reap(leader) {
-            Ok(status) => return status.map(shell_status),
+            Ok(status) => return status.is_some(),
             Err(fuxix::Errno::INTR) => continue,
             // Already reaped, or not ours: nothing left to wait for.
-            Err(_) => return Some(0),
+            Err(_) => return true,
         }
     }
 }
