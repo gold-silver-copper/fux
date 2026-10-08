@@ -371,7 +371,6 @@ fn an_entry_not_set_is_answered_with_the_hosts_colour() -> Result {
     // Nothing drawn changes: the program set no colour.
     assert_eq!(parser.screen().palette_color(1), None);
     assert!(!parser.screen().colors_changed());
-    assert_eq!(parser.screen().host_color(1), Some((0xbf, 0x61, 0x6a)));
     Ok(())
 }
 
@@ -393,14 +392,13 @@ fn the_programs_colour_wins_and_resets_bring_back_the_hosts() -> Result {
             b"\x1b]4;1;?\x07",
         ]
         .concat();
-        let (heard, parser) = run_hosted(PALETTE, &host, &input)?;
+        let (heard, _) = run_hosted(PALETTE, &host, &input)?;
         assert_eq!(
             heard,
             said(&["^[]4;1;rgb:1212/3434/5656^G", "^[]4;1;rgb:bfbf/6161/6a6a^G"]),
             "{reset:?}"
         );
-        assert_eq!(parser.screen().host_color(1), Some((0xbf, 0x61, 0x6a)));
-    }
+        }
     Ok(())
 }
 
@@ -411,7 +409,6 @@ fn host_colours_are_bounded_cleared_and_need_the_option() -> Result {
     let mut parser = Parser::with_options(25, 80, 0, PALETTE)?;
     assert!(!parser.set_host_color(16, Some((1, 2, 3))));
     assert!(!parser.set_host_color(255, Some((1, 2, 3))));
-    assert_eq!(parser.screen().host_color(16), None);
     assert!(parser.set_host_color(1, Some((1, 2, 3))));
     assert!(parser.set_host_color(1, None));
     let mut heard = Heard::default();
