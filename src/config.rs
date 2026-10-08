@@ -633,6 +633,14 @@ impl Config {
             }
             Ok(n)
         };
+        let on = || match one()? {
+            "on" => Ok(true),
+            "off" => Ok(false),
+            other => Err(Error::NotOnOff {
+                option: option_name(),
+                value: other.to_owned(),
+            }),
+        };
         match option {
             "prefix" => {
                 let prefix = one()?;
@@ -657,35 +665,9 @@ impl Config {
                 self.shell = argv;
             }
             "history-lines" => self.history_lines = number(MAX_HISTORY)?,
-            "clipboard" => {
-                self.clipboard = match one()? {
-                    "on" | "write-only" => true,
-                    "off" => false,
-                    other => {
-                        return Err(Error::NotOnOff {
-                            option: option_name(),
-                            value: other.to_owned(),
-                        });
-                    }
-                }
-            }
-            "bell" | "titles" => {
-                let on = match one()? {
-                    "on" => true,
-                    "off" => false,
-                    other => {
-                        return Err(Error::NotOnOff {
-                            option: option_name(),
-                            value: other.to_owned(),
-                        });
-                    }
-                };
-                if option == "bell" {
-                    self.bell = on;
-                } else {
-                    self.titles = on;
-                }
-            }
+            "clipboard" => self.clipboard = one()? == "write-only" || on()?,
+            "bell" => self.bell = on()?,
+            "titles" => self.titles = on()?,
             "buffers" => {
                 let n = number(MAX_BUFFERS)?;
                 if n == 0 {
