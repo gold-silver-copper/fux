@@ -398,7 +398,7 @@ fn the_programs_colour_wins_and_resets_bring_back_the_hosts() -> Result {
             said(&["^[]4;1;rgb:1212/3434/5656^G", "^[]4;1;rgb:bfbf/6161/6a6a^G"]),
             "{reset:?}"
         );
-        }
+    }
     Ok(())
 }
 

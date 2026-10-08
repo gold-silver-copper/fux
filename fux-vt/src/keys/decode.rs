@@ -963,6 +963,22 @@ mod tests {
         d.timeout(&mut out);
         out
     }
+    /// `stream` split in two at every byte decodes to `expected`, an answer
+    /// to a question asked just before awaited if `expecting`.
+    fn split_anywhere(stream: &[u8], expecting: bool, expected: &[Input]) {
+        for split in 1..stream.len() {
+            let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
+            let mut d = Decoder::default();
+            if expecting {
+                d.expect(Instant::now());
+            }
+            let mut out = Vec::new();
+            d.bytes(a, &mut out);
+            d.bytes(b, &mut out);
+            d.timeout(&mut out);
+            assert_eq!(out, expected, "split at {split}, expecting {expecting}");
+        }
+    }
     fn key(name: &str) -> Input {
         Input::Key(name.parse().unwrap_or(KeyPress::char('?')).into())
     }
@@ -1106,15 +1122,7 @@ mod tests {
                 key("z"),
             ]
         );
-        for split in 1..stream.len() {
-            let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
-            let mut d = Decoder::default();
-            let mut out = Vec::new();
-            d.bytes(a, &mut out);
-            d.bytes(b, &mut out);
-            d.timeout(&mut out);
-            assert_eq!(out, whole, "split at {split}");
-        }
+        split_anywhere(stream, false, &whole);
     }
 
     fn colour(number: u8, r: u16, g: u16, b: u16) -> Input {
@@ -1214,15 +1222,7 @@ mod tests {
         let stream: &[u8] = b"\x1b[98;5ud\x1b[200~p\x1b[201~\x1b[I\x1b[13;2u\x1b[27u";
         let whole = all(stream);
         assert_eq!(whole.len(), 6);
-        for split in 1..stream.len() {
-            let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
-            let mut d = Decoder::default();
-            let mut out = Vec::new();
-            d.bytes(a, &mut out);
-            d.bytes(b, &mut out);
-            d.timeout(&mut out);
-            assert_eq!(out, whole, "split at {split}");
-        }
+        split_anywhere(stream, false, &whole);
     }
 
     /// fux's prefix, bindings, overlays and copy mode match decoded presses,
@@ -1303,18 +1303,7 @@ mod tests {
         ];
         assert_eq!(all(stream), expected);
         for expecting in [false, true] {
-            for split in 1..stream.len() {
-                let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
-                let mut d = Decoder::default();
-                if expecting {
-                    d.expect(Instant::now());
-                }
-                let mut out = Vec::new();
-                d.bytes(a, &mut out);
-                d.bytes(b, &mut out);
-                d.timeout(&mut out);
-                assert_eq!(out, expected, "split at {split}, expecting {expecting}");
-            }
+            split_anywhere(stream, expecting, &expected);
         }
         // Colours fux does not ask for or cannot read are dropped; answers
         // it does not use reach the session, which ignores them: no keys.
@@ -1513,29 +1502,12 @@ mod tests {
             styles(),
             key("d"),
         ];
-        for split in 1..=stream.len() {
-            let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
-            let mut d = Decoder::default();
-            d.expect(Instant::now());
-            let mut out = Vec::new();
-            d.bytes(a, &mut out);
-            d.bytes(b, &mut out);
-            d.timeout(&mut out);
-            assert_eq!(out, expected, "split at {split}");
-        }
+        split_anywhere(stream, true, &expected);
         // Not expected, they are keys, however they are split: an answer
         // read whole would else be one, and read in pieces keys.
         let keys = all(stream);
         assert!(keys.contains(&key("M-P")), "{keys:?}");
-        for split in 1..stream.len() {
-            let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
-            let mut d = Decoder::default();
-            let mut out = Vec::new();
-            d.bytes(a, &mut out);
-            d.bytes(b, &mut out);
-            d.timeout(&mut out);
-            assert_eq!(out, keys, "split at {split}, not expecting");
-        }
+        split_anywhere(stream, false, &keys);
         // An answer cut short waits `REPLY_DELAY`, then is dropped; one past
         // `DCS_LIMIT` is dropped as it arrives.
         let t0 = Instant::now();

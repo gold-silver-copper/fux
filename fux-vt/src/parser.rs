@@ -319,14 +319,10 @@ pub struct Options {
     /// and `L` start a fresh line. An OSC string's first bytes are kept to
     /// tell one. Off, OSC 133 is ignored.
     pub prompt_marks: bool,
-    /// Answer DECRQCRA (`CSI Pi ; Pp ; Pt ; Pl ; Pb ; Pr * y`), a checksum
-    /// of a rectangle of the screen, with DECCKSR (`DCS Pi ! ~ xxxx ST`):
-    /// each cell's character and VT100 attributes, summed and negated as
-    /// xterm and the VT520 sum them (the README's "Opt-in outputs"). It is
-    /// how esctest reads the screen back. With it a program can read what
-    /// its screen shows, so xterm refuses it by default
-    /// (`disallowedWindowOps`); no program in fux's corpus asks for it, and
-    /// fux's panes leave it off.
+    /// Answer DECRQCRA, a checksum of a rectangle of the screen, with
+    /// DECCKSR, as xterm and the VT520 sum it (`Screen::rectangle_checksum`).
+    /// It lets a program read what its screen shows, so xterm refuses it by
+    /// default, and fux's panes leave it off; esctest reads the screen so.
     pub rectangle_checksums: bool,
     /// Answer DECRQSS (`DCS $ q Pt ST`, xterm's ctlseqs; DECRPSS in the
     /// VT510 manual) for the pen (`m`, SGR), the cursor shape (` q`,
@@ -339,19 +335,11 @@ pub struct Options {
     /// underline and asks, and draws its diagnostics curly only if `4:3`
     /// comes back. Off, DECRQSS is ignored, as every other DCS.
     pub setting_reports: bool,
-    /// Keep the colours a program sets (`crate::Screen::palette_color`,
-    /// `crate::Screen::dynamic_color`) and answer its queries of them, as
-    /// xterm does (its ctlseqs, "Operating System Commands"): the 256-colour
-    /// palette (OSC 4 sets and queries an entry, OSC 104 resets it), the
-    /// special colours (OSC 5, OSC 105), and the dynamic colours (OSC 10 to
-    /// 19 set them, OSC 110 to 119 reset them). A palette entry the program
-    /// has not set is answered with the host's colour for it
-    /// ([`Parser::set_host_color`]), else xterm's default; a special colour
-    /// it has not set is not answered; a dynamic colour it has not set is
-    /// asked of the host, an [`Event::ColorQuery`] with
-    /// [`Options::events`], as without this option. The colours are
-    /// state: drawing a cell in the colour its entry was set to is the
-    /// host's to do. OSC payloads are buffered, up to
+    /// Keep the colours a program sets and answer its queries of them, as
+    /// xterm does: the palette (OSC 4, 104), the special colours (OSC 5,
+    /// 105) and the dynamic colours (OSC 10 to 19, 110 to 119); `palette.rs`
+    /// says how. Read with [`Screen::palette_color`] and
+    /// [`Screen::dynamic_color`]. OSC payloads are buffered, up to
     /// [`OSC_PAYLOAD_LIMIT`]. Off, these OSCs are ignored, and OSC 10 to 19
     /// queries are events, with [`Options::events`].
     pub palette: bool,
