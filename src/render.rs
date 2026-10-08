@@ -735,10 +735,14 @@ pub fn compose_into(
                 draw_row(grid, *id, row, &place, colours);
                 let Some(at) = at else { continue };
                 for x in 0..width {
-                    if at.selected(y, x)
-                        && let Some(i) = gx.checked_add(x).and_then(|x| grid.index(gy, x))
+                    // A wide glyph is selected if either half is, as `y`
+                    // copies it whole.
+                    if let Some(i) = gx.checked_add(x).and_then(|x| grid.index(gy, x))
                         && let Some(cell) = grid.cells.get(i)
                         && !cell.is_wide_continuation()
+                        && (at.selected(y, x)
+                            || cell.is_wide()
+                                && x.checked_add(1).is_some_and(|x| at.selected(y, x)))
                     {
                         let attrs = cell.attributes().with_inverse(!cell.inverse());
                         grid.cells.set_attributes(i, attrs);
@@ -2206,7 +2210,10 @@ mod tests {
                 for x in 0..rect.w {
                     let cell = rect.at(y, x).and_then(|(gy, gx)| grid.get(gy, gx));
                     let continuation = cell.is_some_and(|c| c.is_wide_continuation());
-                    let expected = reference_selected(copy, screen, y, x) && !continuation;
+                    let wide = cell.is_some_and(|c| c.is_wide());
+                    let expected = !continuation
+                        && (reference_selected(copy, screen, y, x)
+                            || wide && reference_selected(copy, screen, y, x + 1));
                     let inverse = cell.is_some_and(|c| c.inverse());
                     assert_eq!(inverse, expected, "{keys:?} at {y},{x}");
                     selected += usize::from(expected);
@@ -2220,6 +2227,23 @@ mod tests {
         for kind in [Select::Char, Select::Line, Select::Block] {
             assert!(kinds.contains(&Some(kind)), "{kind:?}: {kinds:?}");
         }
+        Ok(())
+    }
+
+    /// A block whose edge falls on a wide glyph's second half in one of its
+    /// rows highlights that glyph, as `y` copies it whole.
+    #[test]
+    fn a_block_highlights_the_wide_glyphs_it_copies() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, c) = crate::session::testing::attached(10, 30)?;
+        s.output(PaneId(1), "xab\r\n界b".as_bytes());
+        // A block from `a` above to `b` below, its left edge on 界's second
+        // half.
+        s.input(c, b"\x02ckhhxjl");
+        let grid = compose(&s, c).ok_or("a screen")?;
+        let inverse = |y, x| grid.get(y, x).is_some_and(|cell| cell.inverse());
+        assert!(inverse(1, 0) && inverse(1, 2) && !inverse(0, 0));
+        s.input(c, b"y");
+        assert_eq!(s.buffers.front().map(String::as_str), Some("ab\n界b"));
         Ok(())
     }
 
