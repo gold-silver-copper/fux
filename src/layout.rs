@@ -631,7 +631,7 @@ fn resize_by(
     if *axis != Axis::of(direction) {
         return false;
     }
-    let sizes: Vec<u16> = child_area
+    let mut sizes: Vec<u16> = child_area
         .iter()
         .map(|r| match axis {
             Axis::Horizontal => r.w,
@@ -643,14 +643,11 @@ fn resize_by(
     // shrink from the far side, moving the other border the same way.
     let before = index.checked_sub(1);
     let after = index.checked_add(1).filter(|i| *i < children.len());
-    let neighbour = if toward_start { before } else { after };
-    if toward && neighbour.is_none() {
-        return false;
-    }
     let (grow, shrink) = match (toward_start, before, after) {
         (true, Some(before), _) => (index, before),
-        (true, None, Some(after)) => (after, index),
         (false, _, Some(after)) => (index, after),
+        _ if toward => return false,
+        (true, None, Some(after)) => (after, index),
         (false, Some(before), None) => (before, index),
         (_, None, None) => return false,
     };
@@ -666,15 +663,13 @@ fn resize_by(
     let (Some(grown), Some(shrunk)) = (grown, shrunk) else {
         return false;
     };
-    for (i, ((weight, _), size)) in children.iter_mut().zip(&sizes).enumerate() {
-        let size = if i == grow {
-            grown
-        } else if i == shrink {
-            shrunk
-        } else {
-            *size
-        };
-        *weight = u32::from(size).max(1);
+    for (i, size) in [(grow, grown), (shrink, shrunk)] {
+        if let Some(at) = sizes.get_mut(i) {
+            *at = size;
+        }
+    }
+    for ((weight, _), size) in children.iter_mut().zip(&sizes) {
+        *weight = u32::from(*size).max(1);
     }
     true
 }

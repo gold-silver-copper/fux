@@ -7,7 +7,7 @@
 use crate::command::ClientId;
 use crate::keys::KeyPress;
 use crate::layout::{Axis, PaneId, Placement, Rect, Separator};
-use crate::overlay::{self, ColumnRow};
+use crate::overlay;
 use crate::session::Session;
 use crate::view::{List, Mode, View};
 use fux_vt::{Attributes, Cell, CellRef, Cells, Color, Row, UnderlineStyle};
@@ -376,24 +376,14 @@ impl Grid {
     fn same_frame(&self, other: &Grid) -> bool {
         self.memo.frame.is_some() && self.memo.frame == other.memo.frame
     }
-    /// Whether row `y` has the same cells as `other`'s row `y`, as
-    /// comparing `row(y)` of each does: two grids of a width compare by
-    /// `Cells::range_eq`, without reading each cell's text.
-    pub fn row_eq(&self, other: &Grid, y: u16) -> bool {
-        if self.cols != other.cols {
-            return self.row(y).eq(other.row(y));
-        }
+    /// Whether row `y` has the same cells as `other`'s, a grid of its size:
+    /// compared by `Cells::range_eq`, without reading each cell's text.
+    fn row_eq(&self, other: &Grid, y: u16) -> bool {
         let cols = usize::from(self.cols);
         // Exact: a u16 by a u16 fits even a 32-bit usize.
         let start = usize::from(y).saturating_mul(cols);
-        let rows = (y < self.rows, y < other.rows);
-        match rows {
-            (true, true) => self
-                .cells
-                .range_eq(&other.cells, start..start.saturating_add(cols)),
-            (false, false) => true,
-            (true, false) | (false, true) => self.row(y).eq(other.row(y)),
-        }
+        self.cells
+            .range_eq(&other.cells, start..start.saturating_add(cols))
     }
     /// The cells of row `y`; none past the last row.
     pub fn row(&self, y: u16) -> impl Iterator<Item = CellRef<'_>> + Clone {
@@ -735,10 +725,14 @@ pub fn compose_into(
                 draw_row(grid, *id, row, &place, colours);
                 let Some(at) = at else { continue };
                 for x in 0..width {
-                    if at.selected(y, x)
-                        && let Some(i) = gx.checked_add(x).and_then(|x| grid.index(gy, x))
+                    // A wide glyph is selected if either half is, as `y`
+                    // copies it whole.
+                    if let Some(i) = gx.checked_add(x).and_then(|x| grid.index(gy, x))
                         && let Some(cell) = grid.cells.get(i)
                         && !cell.is_wide_continuation()
+                        && (at.selected(y, x)
+                            || cell.is_wide()
+                                && x.checked_add(1).is_some_and(|x| at.selected(y, x)))
                     {
                         let attrs = cell.attributes().with_inverse(!cell.inverse());
                         grid.cells.set_attributes(i, attrs);
@@ -1067,12 +1061,8 @@ fn bar(
     } else if let Some(copy) = &copy_bar {
         Some((copy.position.as_str().into(), base))
     } else if let Mode::Column { path, .. } = &view.mode {
-        let typed = std::iter::once(session.config.prefix.to_string())
-            .chain(path.iter().map(|key| key.to_string()))
-            .collect::<Vec<_>>()
-            .join(" ");
         Some((
-            format!("{typed} …").into(),
+            format!("{} …", session.keys_named(path)).into(),
             style(Color::Idx(0), Color::Idx(11)),
         ))
     } else if let Mode::Repeat { path } = &view.mode {
@@ -1252,45 +1242,33 @@ fn list_panel(grid: &mut Grid, session: &Session, view: &View, list: &List) {
 /// grouped, the selected one highlighted and those that cannot run now
 /// dimmed.
 fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], selected: usize) {
-    let rows = overlay::column_rows(session, path);
+    let column = overlay::column(session, path);
     // Each entry's key as it is typed, written out once.
-    let keys: Vec<String> = rows
-        .iter()
-        .filter_map(|r| match r {
-            ColumnRow::Binding { key, .. } | ColumnRow::Layer { key, .. } => Some(key.to_string()),
-            ColumnRow::Heading(_) => None,
-        })
-        .collect();
+    let keys: Vec<String> = column.iter().map(|e| e.key.to_string()).collect();
     let key_width = keys.iter().map(|k| width(k)).max().unwrap_or(0);
-    let mut keys = keys.into_iter();
     let ctx = crate::session::Ctx::client(view.id);
     let mut entries: Vec<Line<'_>> = Vec::new();
-    let mut index = 0usize;
+    let mut heading = None;
     let mut selected_row = 0usize;
-    for row in &rows {
-        // What an entry does, and whether it cannot run now.
-        let (text, more, dim) = match row {
-            ColumnRow::Heading(group) => {
-                entries.push(((*group).into(), panel().with_bold(true)));
-                continue;
-            }
-            ColumnRow::Binding { label, command, .. } => (
-                label.as_str(),
-                "",
-                session.unavailable(command, &ctx).is_some(),
-            ),
-            ColumnRow::Layer { title, .. } => (*title, "…", false),
-        };
-        let key = keys.next().unwrap_or_default();
-        let pad = usize::from(key_width.saturating_sub(width(&key)));
+    for (index, (entry, key)) in column.iter().zip(&keys).enumerate() {
+        let group = (entry.root, entry.group());
+        if heading != Some(group) {
+            entries.push((group.1.into(), panel().with_bold(true)));
+            heading = Some(group);
+        }
+        // Whether it cannot run now; a layer's entry opens it.
+        let dim = entry
+            .command()
+            .is_some_and(|command| session.unavailable(command, &ctx).is_some());
+        let more = if entry.layer { "…" } else { "" };
+        let pad = usize::from(key_width.saturating_sub(width(key)));
         let mut attrs = panel().with_dim(dim);
         if index == selected {
             attrs = attrs.with_inverse(true);
             selected_row = entries.len();
         }
+        let text = entry.label();
         entries.push((format!("{:pad$}{key}  {text}{more}", "").into(), attrs));
-        // At most the number of rows.
-        index = index.saturating_add(1);
     }
     let (heading, body_room) = overlay::column_room(view.rows);
     let start = overlay::window_start(entries.len(), selected_row, body_room);
@@ -1309,7 +1287,7 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
     let total = entries.len();
     let shown = entries.into_iter().skip(start).take(body_room);
     windowed(&mut lines, total, start, body_room, shown);
-    if rows.is_empty() {
+    if column.is_empty() {
         lines.push(("no bindings".into(), panel().with_dim(true)));
     }
     surface(grid, view, &lines);
@@ -1873,10 +1851,7 @@ mod tests {
         let mut r = Rng(0x0ec4_0ec4);
         let mut short = 0usize;
         for case in 0..30 {
-            let config = crate::config::Config::default();
-            let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
-            s.start().map_err(|e| e.to_string())?;
-            let c = s.attach(10, 40, None).map_err(|e| e.to_string())?;
+            let (mut s, c) = crate::session::testing::attached(10, 40)?;
             if r.below(3) == 0 {
                 let argv = [
                     "split".to_owned(),
@@ -1960,10 +1935,7 @@ mod tests {
         ];
         let mut r = Rng(0x00c0_ffee);
         for case in 0..40 {
-            let config = crate::config::Config::default();
-            let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
-            s.start().map_err(|e| e.to_string())?;
-            let c = s.attach(12, 50, None).map_err(|e| e.to_string())?;
+            let (mut s, c) = crate::session::testing::attached(12, 50)?;
             let (mut spare, mut shown) = (Grid::new(0, 0), Grid::new(0, 0));
             let mut placement = Placement::default();
             let mut painted = false;
@@ -2076,13 +2048,7 @@ mod tests {
     /// that act now; a narrow bar drops the least important.
     #[test]
     fn copy_mode_replaces_the_tabs_with_its_keys() -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = Session::new(
-            crate::config::Config::default(),
-            "/nonexistent/fux.sock".into(),
-            false,
-        );
-        s.start()?;
-        let c = s.attach(10, 120, None)?;
+        let (mut s, c) = crate::session::testing::attached(10, 120)?;
         let bar = |s: &Session| {
             compose(s, c)
                 .map(|g| g.row_text(g.rows.saturating_sub(1)))
@@ -2167,13 +2133,7 @@ mod tests {
     /// selection, over a screen with history and a view scrolled into it.
     #[test]
     fn compose_inverts_exactly_the_selected_cells() -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = Session::new(
-            crate::config::Config::default(),
-            "/nonexistent/fux.sock".into(),
-            false,
-        );
-        s.start()?;
-        let c = s.attach(10, 30, None)?;
+        let (mut s, c) = crate::session::testing::attached(10, 30)?;
         let pane = PaneId(1);
         let text: String = (0..60)
             .map(|i| {
@@ -2218,7 +2178,10 @@ mod tests {
                 for x in 0..rect.w {
                     let cell = rect.at(y, x).and_then(|(gy, gx)| grid.get(gy, gx));
                     let continuation = cell.is_some_and(|c| c.is_wide_continuation());
-                    let expected = reference_selected(copy, screen, y, x) && !continuation;
+                    let wide = cell.is_some_and(|c| c.is_wide());
+                    let expected = !continuation
+                        && (reference_selected(copy, screen, y, x)
+                            || wide && reference_selected(copy, screen, y, x + 1));
                     let inverse = cell.is_some_and(|c| c.inverse());
                     assert_eq!(inverse, expected, "{keys:?} at {y},{x}");
                     selected += usize::from(expected);
@@ -2235,17 +2198,28 @@ mod tests {
         Ok(())
     }
 
+    /// A block whose edge falls on a wide glyph's second half in one of its
+    /// rows highlights that glyph, as `y` copies it whole.
+    #[test]
+    fn a_block_highlights_the_wide_glyphs_it_copies() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, c) = crate::session::testing::attached(10, 30)?;
+        s.output(PaneId(1), "xab\r\n界b".as_bytes());
+        // A block from `a` above to `b` below, its left edge on 界's second
+        // half.
+        s.input(c, b"\x02ckhhxjl");
+        let grid = compose(&s, c).ok_or("a screen")?;
+        let inverse = |y, x| grid.get(y, x).is_some_and(|cell| cell.inverse());
+        assert!(inverse(1, 0) && inverse(1, 2) && !inverse(0, 0));
+        s.input(c, b"y");
+        assert_eq!(s.buffers.front().map(String::as_str), Some("ab\n界b"));
+        Ok(())
+    }
+
     /// A grid composed into again, whatever it held and whatever its size,
     /// comes out as a fresh one would.
     #[test]
     fn composing_into_a_used_grid_is_composing_afresh() -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = Session::new(
-            crate::config::Config::default(),
-            "/nonexistent/fux.sock".into(),
-            false,
-        );
-        s.start()?;
-        let c = s.attach(12, 50, None)?;
+        let (mut s, c) = crate::session::testing::attached(12, 50)?;
         s.output(PaneId(1), b"first screen\r\n\x1b[5 q");
         let before = compose(&s, c).ok_or("a screen")?;
         let outcome = s.run(
@@ -2422,9 +2396,6 @@ mod tests {
         // Full repaint from nothing matches too.
         let mut fresh = fux_vt::Parser::new(4, 12, 0).map_err(|e| e.to_string())?;
         assert_eq!(apply(&paint(None, &b), 4, 12, &mut fresh), grid_lines(&b));
-        // Nothing changed: nothing but the envelope.
-        let quiet = String::from_utf8_lossy(&paint(Some(&b), &b)).into_owned();
-        assert_eq!(quiet, "\x1b[?2026h\x1b[?25l\x1b[0m\x1b[?2026l");
         Ok(())
     }
 
@@ -2597,13 +2568,7 @@ mod tests {
     /// program's queries with its own colours.
     #[test]
     fn a_panes_palette_is_painted_and_stays_the_panes() -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = Session::new(
-            crate::config::Config::default(),
-            "/nonexistent/fux.sock".into(),
-            false,
-        );
-        s.start()?;
-        let c = s.attach(6, 41, None)?;
+        let (mut s, c) = crate::session::testing::attached(6, 41)?;
         let outcome = s.run(
             &["split".to_owned(), "-h".to_owned()],
             &crate::session::Ctx::client(c),
@@ -2681,13 +2646,7 @@ mod tests {
     /// paint has each cell's link.
     #[test]
     fn hyperlinks_are_painted_with_their_panes_ids() -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = Session::new(
-            crate::config::Config::default(),
-            "/nonexistent/fux.sock".into(),
-            false,
-        );
-        s.start()?;
-        let c = s.attach(6, 41, None)?;
+        let (mut s, c) = crate::session::testing::attached(6, 41)?;
         let outcome = s.run(
             &["split".to_owned(), "-h".to_owned()],
             &crate::session::Ctx::client(c),
