@@ -7,7 +7,7 @@
 use crate::command::ClientId;
 use crate::keys::KeyPress;
 use crate::layout::{Axis, PaneId, Placement, Rect, Separator};
-use crate::overlay::{self, ColumnRow};
+use crate::overlay;
 use crate::session::Session;
 use crate::view::{List, Mode, View};
 use fux_vt::{Attributes, Cell, CellRef, Cells, Color, Row, UnderlineStyle};
@@ -1252,45 +1252,33 @@ fn list_panel(grid: &mut Grid, session: &Session, view: &View, list: &List) {
 /// grouped, the selected one highlighted and those that cannot run now
 /// dimmed.
 fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], selected: usize) {
-    let rows = overlay::column_rows(session, path);
+    let column = overlay::column(session, path);
     // Each entry's key as it is typed, written out once.
-    let keys: Vec<String> = rows
-        .iter()
-        .filter_map(|r| match r {
-            ColumnRow::Binding { key, .. } | ColumnRow::Layer { key, .. } => Some(key.to_string()),
-            ColumnRow::Heading(_) => None,
-        })
-        .collect();
+    let keys: Vec<String> = column.iter().map(|e| e.key.to_string()).collect();
     let key_width = keys.iter().map(|k| width(k)).max().unwrap_or(0);
-    let mut keys = keys.into_iter();
     let ctx = crate::session::Ctx::client(view.id);
     let mut entries: Vec<Line<'_>> = Vec::new();
-    let mut index = 0usize;
+    let mut heading = None;
     let mut selected_row = 0usize;
-    for row in &rows {
-        // What an entry does, and whether it cannot run now.
-        let (text, more, dim) = match row {
-            ColumnRow::Heading(group) => {
-                entries.push(((*group).into(), panel().with_bold(true)));
-                continue;
-            }
-            ColumnRow::Binding { label, command, .. } => (
-                label.as_str(),
-                "",
-                session.unavailable(command, &ctx).is_some(),
-            ),
-            ColumnRow::Layer { title, .. } => (*title, "…", false),
-        };
-        let key = keys.next().unwrap_or_default();
-        let pad = usize::from(key_width.saturating_sub(width(&key)));
+    for (index, (entry, key)) in column.iter().zip(&keys).enumerate() {
+        let group = (entry.root, entry.group());
+        if heading != Some(group) {
+            entries.push((group.1.into(), panel().with_bold(true)));
+            heading = Some(group);
+        }
+        // Whether it cannot run now; a layer's entry opens it.
+        let dim = entry
+            .command()
+            .is_some_and(|command| session.unavailable(command, &ctx).is_some());
+        let more = if entry.layer { "…" } else { "" };
+        let pad = usize::from(key_width.saturating_sub(width(key)));
         let mut attrs = panel().with_dim(dim);
         if index == selected {
             attrs = attrs.with_inverse(true);
             selected_row = entries.len();
         }
+        let text = entry.label();
         entries.push((format!("{:pad$}{key}  {text}{more}", "").into(), attrs));
-        // At most the number of rows.
-        index = index.saturating_add(1);
     }
     let (heading, body_room) = overlay::column_room(view.rows);
     let start = overlay::window_start(entries.len(), selected_row, body_room);
@@ -1309,7 +1297,7 @@ fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], se
     let total = entries.len();
     let shown = entries.into_iter().skip(start).take(body_room);
     windowed(&mut lines, total, start, body_room, shown);
-    if rows.is_empty() {
+    if column.is_empty() {
         lines.push(("no bindings".into(), panel().with_dim(true)));
     }
     surface(grid, view, &lines);
