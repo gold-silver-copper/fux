@@ -1478,7 +1478,7 @@ mod tests {
         assert_eq!(waits(&mut d, b"\x1b]", &mut out), Some(ESCAPE_DELAY));
     }
 
-    /// The DCS answers fux asks for (`outer::STYLES`), in the forms
+    /// The DCS answers fux asks for (`outer::styles!`), in the forms
     /// terminals give them: XTGETTCAP's (ctlseqs: `DCS 1 + r Pt ST`, the
     /// name in hex, `=` and the value in hex; `DCS 0 + r Pt ST` for a name
     /// the terminal does not have) and DECRPSS's (`DCS 1 $ r Pt ST`, the
