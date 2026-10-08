@@ -182,7 +182,8 @@ pub const IDENTITY: fux_vt::Identity = fux_vt::Identity {
 };
 
 /// How every pane's terminal is set up: events (titles, colour queries),
-/// DECRQM, in-band resize, the size query, colour-scheme reports, the kitty
+/// DECRQM (programs ask it whether synchronized output is known before
+/// they use it), in-band resize, the size query, colour-scheme reports, the kitty
 /// keyboard protocol (fux encodes keys as each pane asks), hyperlinks,
 /// prompt marks, DECRQSS (neovim asks it whether the terminal keeps
 /// underline styles: a pane keeps them, and each client is painted them as
@@ -345,7 +346,7 @@ pub struct Pane {
 /// waiting at its prompt. Output within one burst -- a prompt drawn in
 /// pieces, lines of a startup message -- comes much closer together than
 /// this, while a person notices nothing shorter.
-pub const QUIET: std::time::Duration = std::time::Duration::from_millis(50);
+pub const QUIET: Duration = Duration::from_millis(50);
 
 /// A command line held until the new shell is ready for it: until its output
 /// has been quiet for `QUIET` after it first wrote, or at `deadline` if it
@@ -354,14 +355,14 @@ pub const QUIET: std::time::Duration = std::time::Duration::from_millis(50);
 /// discards pending input would lose it.
 pub struct Typed {
     pub line: Vec<u8>,
-    pub deadline: std::time::Instant,
+    pub deadline: Instant,
     /// When the shell last wrote, once it has.
-    pub last_output: Option<std::time::Instant>,
+    pub last_output: Option<Instant>,
 }
 
 impl Typed {
     /// The moment the line is to be typed, as things stand.
-    pub fn due_at(&self) -> std::time::Instant {
+    pub fn due_at(&self) -> Instant {
         match self.last_output {
             Some(at) => at
                 .checked_add(QUIET)
@@ -380,13 +381,7 @@ impl Pane {
         cols: u16,
         history: usize,
     ) -> Result<Pane, Error> {
-        // DECRQM answered: programs ask it whether synchronized output is
-        // known before they use it. Hyperlinks kept, to paint them.
-        // Colour-scheme reports: the session sends them (`outer`). The kitty
-        // keyboard protocol and modifyOtherKeys: keys are encoded as each
-        // screen asks (`encode::key_bytes`). See `OPTIONS`.
-        let options = OPTIONS;
-        let parser = fux_vt::Parser::with_options(rows.max(1), cols.max(1), history, options)
+        let parser = fux_vt::Parser::with_options(rows.max(1), cols.max(1), history, OPTIONS)
             .map_err(|source| Error::Terminal {
                 rows,
                 cols,
@@ -522,7 +517,7 @@ impl Pane {
             }
         }
         if let Some(typed) = &mut self.typed {
-            typed.last_output = Some(std::time::Instant::now());
+            typed.last_output = Some(Instant::now());
         }
         if !replies.is_empty() && self.input.push(replies).is_err() && !self.reply_dropped {
             self.reply_dropped = true;
