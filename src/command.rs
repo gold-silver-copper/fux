@@ -180,13 +180,9 @@ pub enum Command {
         target: Option<AnyRef>,
         toward: Sibling,
     },
-    Set {
-        argv: Vec<String>,
-    },
-    Bind {
-        argv: Vec<String>,
-    },
-    Unbind {
+    /// `set`, `bind` or `unbind`, as the config file has them: the whole
+    /// line, for `Config::apply`.
+    Configure {
         argv: Vec<String>,
     },
     UnbindAll,
@@ -773,11 +769,8 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
             }
         }
         "set" | "bind" | "unbind" => {
-            let argv = argv.to_vec();
-            return Ok(match name {
-                "set" => Command::Set { argv },
-                "bind" => Command::Bind { argv },
-                _ => Command::Unbind { argv },
+            return Ok(Command::Configure {
+                argv: argv.to_vec(),
             });
         }
         "unbind-all" => {

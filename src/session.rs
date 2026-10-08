@@ -1619,7 +1619,7 @@ impl Session {
                 let target = self.any_target(kind, target.as_ref(), ctx)?;
                 self.reorder(&target, toward).map(|()| String::new())
             }
-            Command::Set { argv } | Command::Bind { argv } | Command::Unbind { argv } => {
+            Command::Configure { argv } => {
                 // `run_command` marks every view to paint, as after any
                 // command that can show something new: `set titles`
                 // shows at each client's next paint.
