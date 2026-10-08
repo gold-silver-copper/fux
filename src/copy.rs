@@ -4,11 +4,12 @@
 //! anchored to fux-vt row IDs, so new output does not move them, while other
 //! clients see the pane live. The mode ends if the pane closes or its history
 //! drops the rows it holds.
-use crate::id::{ClientId, PaneId};
+use crate::id::ClientId;
+use crate::id::PaneId;
 use crate::keys::{Direction, Key, KeyPress};
 use crate::render::shown;
 use crate::session::{Error, Outgoing, Session};
-use crate::view::{Mode, Notice};
+use crate::view::{Mode, Notice, View};
 use fux_vt::{CellRef, RowId, Screen};
 use std::num::NonZeroUsize;
 
@@ -544,8 +545,7 @@ pub fn text(
 // ------------------------------------------------------------------- keys
 
 /// Enters copy mode on the client's focused pane.
-pub fn enter(session: &mut Session, client: ClientId) -> Result<String, Error> {
-    let view = session.views.get(&client).ok_or(Error::NoClient(client))?;
+pub fn enter(session: &Session, view: &mut View) -> Result<String, Error> {
     let pane = view.focus().ok_or(Error::NoPaneToCopy)?;
     let screen = session
         .panes
@@ -569,7 +569,6 @@ pub fn enter(session: &mut Session, client: ClientId) -> Result<String, Error> {
         typing: None,
         held_at: None,
     };
-    let view = session.view_mut(client)?;
     view.mode = Mode::Copy(Box::new(copy));
     // The bar shows where the cursor is; a notice would hide it.
     view.notice = None;

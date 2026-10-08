@@ -174,18 +174,6 @@ impl Node {
             }
         }
     }
-
-    /// Replaces `old` with `new` wherever it is.
-    pub fn replace(&mut self, old: PaneId, new: PaneId) -> bool {
-        match self {
-            Node::Pane(p) if *p == old => {
-                *p = new;
-                true
-            }
-            Node::Pane(_) => false,
-            Node::Split { children, .. } => children.iter_mut().any(|(_, c)| c.replace(old, new)),
-        }
-    }
 }
 
 /// Which side of its target a split puts the new pane: before it, left or

@@ -4,7 +4,8 @@
 //! echo, when it is all that changed, is written as a terminal shows it
 //! typed, without the synchronized envelope (`echo`). Every paint leaves
 //! the terminal's attributes at their default, which the next one assumes.
-use crate::id::{ClientId, PaneId};
+use crate::id::ClientId;
+use crate::id::PaneId;
 use crate::keys::KeyPress;
 use crate::layout::{Axis, Placement, Rect, Separator};
 use crate::overlay;
@@ -638,9 +639,13 @@ pub fn compose_into(
     grid: &mut Grid,
     placement: &mut Placement,
 ) -> bool {
-    let Some(view) = session.views.get(&client) else {
-        return false;
-    };
+    let view = session.views.get(&client);
+    view.map(|view| compose_view(session, view, grid, placement))
+        .is_some()
+}
+
+/// Composes a view's screen, as `compose_into` a client's.
+pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: &mut Placement) {
     let area = Session::pane_area(view);
     session.placement_into(view, placement);
     let placement = &*placement;
@@ -849,7 +854,6 @@ pub fn compose_into(
         // A repeat mode shows in the bar, leaving the layout in view.
         Mode::Normal | Mode::Copy(_) | Mode::Repeat { .. } => {}
     }
-    true
 }
 
 /// A prompt's text with its cursor bar, in at most `room` cells: when it is

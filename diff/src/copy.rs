@@ -136,16 +136,10 @@ macro_rules! stack {
                 // No such client, and no such pane, straight to copy mode.
                 let (mut s, c) = session(10, 24, 80)?;
                 s.detach(c);
-                out.push(format!(
-                    "{:?}",
-                    copy::enter(&mut s, c).map_err(|e| e.to_string())
-                ));
+                out.push(run(&mut s, c, "copy-mode"));
                 let (mut s, c) = session(10, 24, 80)?;
                 s.panes.clear();
-                out.push(format!(
-                    "{:?}",
-                    copy::enter(&mut s, c).map_err(|e| e.to_string())
-                ));
+                out.push(run(&mut s, c, "copy-mode"));
                 Ok(out)
             }
         }

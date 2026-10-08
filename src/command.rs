@@ -1110,7 +1110,10 @@ mod tests {
         );
         assert_eq!(
             cmd("confirm-close -t +1"),
-            Ok(ClientAction::ConfirmClose(Subject::Workspace(Some(WsRef::Id("+1".parse()?)))).here())
+            Ok(
+                ClientAction::ConfirmClose(Subject::Workspace(Some(WsRef::Id("+1".parse()?))))
+                    .here()
+            )
         );
         assert_eq!(
             cmd("paste-buffer -b 2 -t %4"),

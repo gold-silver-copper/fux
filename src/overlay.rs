@@ -11,7 +11,7 @@ use crate::id::{ClientId, PaneId};
 use crate::keys::{Direction, Key, KeyPress, Keystroke};
 use crate::layout::Node;
 use crate::session::{Ctx, Error, Session, describe};
-use crate::view::{Confirm, Item, List, Mode, Prompt, PromptFor};
+use crate::view::{Confirm, Item, List, Mode, Prompt, PromptFor, View};
 
 /// An entry of the command column: a key of its layer, and the binding it
 /// runs or, for a key that opens a layer inside it, that layer's first
@@ -121,14 +121,7 @@ pub fn layer_title<'a>(session: &'a Session, path: &[KeyPress]) -> Option<&'a st
         .map(crate::config::Binding::group)
 }
 
-pub fn open_prompt(
-    session: &mut Session,
-    client: ClientId,
-    purpose: PromptFor,
-    title: String,
-    text: String,
-) -> Result<String, Error> {
-    let view = session.view_mut(client)?;
+pub fn open_prompt(view: &mut View, purpose: PromptFor, title: String, text: String) -> String {
     let cursor = text.chars().count();
     view.mode = Mode::Prompt(Prompt {
         title,
@@ -136,14 +129,10 @@ pub fn open_prompt(
         text,
         cursor,
     });
-    Ok(String::new())
+    String::new()
 }
 
-pub fn open_confirm(
-    session: &mut Session,
-    client: ClientId,
-    target: AnyRef,
-) -> Result<String, Error> {
+pub fn open_confirm(session: &Session, view: &mut View, target: AnyRef) -> Result<String, Error> {
     let (kind, id, command) = match &target {
         AnyRef::Pane(p) => (
             "pane",
@@ -161,7 +150,6 @@ pub fn open_confirm(
     };
     let name = session.name_of(&target);
     let question = format!("close {kind} {id} {name}?");
-    let view = session.view_mut(client)?;
     view.mode = Mode::Confirm(Confirm {
         question,
         command,
@@ -180,7 +168,7 @@ fn item(label: &str, command: Command) -> Item {
 }
 
 /// An action menu for a pane, tab or workspace: what has no default key.
-pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Result<String, Error> {
+pub fn open_menu(session: &Session, view: &mut View, target: AnyRef) -> Result<String, Error> {
     // What the menu is for, which every item names.
     let about = match target {
         AnyRef::Workspace(r) => AnyRef::Workspace(WsRef::Id(session.resolve_ws(&r)?)),
@@ -238,14 +226,10 @@ pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Res
             ),
         ]),
         &AnyRef::Tab(tab) => {
-            let ws = session
-                .find_tab(tab)
-                .and_then(|(w, _)| session.workspaces.get(w))
-                .map(|w| WsRef::Id(w.id));
             items.push(item(
                 "new tab",
                 Command::NewTab {
-                    target: ws,
+                    target: session.tab_workspace(tab).ok().map(WsRef::Id),
                     name: None,
                     cmd: Vec::new(),
                 },
@@ -263,19 +247,17 @@ pub fn open_menu(session: &mut Session, client: ClientId, target: AnyRef) -> Res
         item("reorder previous", reorder(Sibling::Previous)),
         item("reorder next", reorder(Sibling::Next)),
     ]);
-    open_list(session, client, title, items, false, Some(about))
+    Ok(open_list(view, title, items, false, Some(about)))
 }
 
 fn open_list(
-    session: &mut Session,
-    client: ClientId,
+    view: &mut View,
     title: String,
     items: Vec<Item>,
     chooser: bool,
     about: Option<AnyRef>,
-) -> Result<String, Error> {
+) -> String {
     let selected = items.iter().position(|i| i.current).unwrap_or(0);
-    let view = session.view_mut(client)?;
     view.mode = Mode::List(List {
         title,
         items,
@@ -283,7 +265,7 @@ fn open_list(
         chooser,
         about,
     });
-    Ok(String::new())
+    String::new()
 }
 
 /// The names of the panes in `roots`, for a chooser row, shortened.
@@ -306,11 +288,10 @@ fn pane_names<'a>(session: &Session, roots: impl IntoIterator<Item = &'a Node>) 
 /// The tabs of the client's workspace. Enter selects one, or moves `moving`
 /// there; `r` renames and `x` closes.
 pub fn open_tab_chooser(
-    session: &mut Session,
-    client: ClientId,
+    session: &Session,
+    view: &mut View,
     moving: Option<PaneId>,
 ) -> Result<String, Error> {
-    let view = session.views.get(&client).ok_or(Error::NoClient(client))?;
     let current = view.tab();
     let ws = session
         .workspace(view.workspace)
@@ -334,20 +315,16 @@ pub fn open_tab_chooser(
             }
         })
         .collect();
-    open_chooser(session, client, "tab", items, moving)
+    Ok(open_chooser(view, "tab", items, moving))
 }
 
 /// Every workspace, with its tabs' panes.
 pub fn open_workspace_chooser(
-    session: &mut Session,
-    client: ClientId,
+    session: &Session,
+    view: &mut View,
     moving: Option<PaneId>,
-) -> Result<String, Error> {
-    let current = session
-        .views
-        .get(&client)
-        .ok_or(Error::NoClient(client))?
-        .workspace;
+) -> String {
+    let current = view.workspace;
     let items = session
         .workspaces
         .iter()
@@ -367,41 +344,30 @@ pub fn open_workspace_chooser(
             }
         })
         .collect();
-    open_chooser(session, client, "workspace", items, moving)
+    open_chooser(view, "workspace", items, moving)
 }
 
 /// A chooser of tabs or workspaces, `what`, to select one or to move a pane
 /// to.
-fn open_chooser(
-    session: &mut Session,
-    client: ClientId,
-    what: &str,
-    items: Vec<Item>,
-    moving: Option<PaneId>,
-) -> Result<String, Error> {
+fn open_chooser(view: &mut View, what: &str, items: Vec<Item>, moving: Option<PaneId>) -> String {
     let title = match moving {
         Some(p) => format!("move {p} to {what}"),
         None => format!("{what}s"),
     };
-    open_list(
-        session,
-        client,
-        title,
-        items,
-        true,
-        moving.map(AnyRef::Pane),
-    )
+    open_list(view, title, items, true, moving.map(AnyRef::Pane))
 }
 
 /// The other panes of the client's tab, to swap `source` with.
 pub fn open_pane_chooser(
-    session: &mut Session,
-    client: ClientId,
+    session: &Session,
+    view: &mut View,
     source: PaneId,
 ) -> Result<String, Error> {
-    let (_, tab) = session.locate(source).ok_or(Error::NotInTab)?;
     let mut items: Vec<Item> = Vec::new();
-    if let Some(root) = session.root(tab) {
+    let root = session
+        .locate(source)
+        .and_then(|(_, tab)| session.root(tab));
+    if let Some(root) = root {
         root.for_each_pane(&mut |id| {
             let Some(p) = session.panes.get(&id).filter(|_| id != source) else {
                 return;
@@ -420,14 +386,14 @@ pub fn open_pane_chooser(
     if items.is_empty() {
         return Err(Error::OnlyOne(Kind::Pane));
     }
-    open_list(
-        session,
-        client,
+    let about = Some(AnyRef::Pane(source));
+    Ok(open_list(
+        view,
         format!("swap {source} with"),
         items,
         true,
-        Some(AnyRef::Pane(source)),
-    )
+        about,
+    ))
 }
 
 // ----------------------------------------------------------------- input
@@ -1560,7 +1526,7 @@ mod tests {
         let pane = s
             .views
             .get(&c)
-            .and_then(crate::view::View::focus)
+            .and_then(View::focus)
             .map_or(0, PaneId::number);
         let _ = queued(&mut s, pane);
         s.input(c, &[0x02, 0x02]);
@@ -1571,7 +1537,7 @@ mod tests {
         let pane = s
             .views
             .get(&c)
-            .and_then(crate::view::View::focus)
+            .and_then(View::focus)
             .map_or(0, PaneId::number);
         assert!(queued(&mut s, pane).is_empty());
         // `send-prefix` sends it from anywhere.
@@ -1625,7 +1591,7 @@ mod tests {
         let pane = s
             .views
             .get(&c)
-            .and_then(crate::view::View::focus)
+            .and_then(View::focus)
             .map_or(0, PaneId::number);
         assert!(queued(&mut s, pane).is_empty());
         // A chord bound to nothing reaches the pane as it was typed.
