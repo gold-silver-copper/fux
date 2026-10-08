@@ -317,7 +317,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
     let units = loads.iter().map(|l| l.bytes.len()).sum();
     let first = loads.first().ok_or("no bytes")?;
     let mut pane = fux::pane::Pane::new(
-        fux::layout::PaneId(1),
+        fux::command::parse_pane("%1").map_err(|e| e.to_string())?,
         "bench".into(),
         "/bin/sh".into(),
         first.rows,
@@ -356,7 +356,6 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
 /// server does for a keystroke. The baseline types nothing and paints
 /// nothing: the run is the server's whole work for the keys.
 fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Done, String> {
-    use fux::layout::PaneId;
     let config = fux::config::Config {
         history_lines: HISTORY,
         ..fux::config::Config::default()
@@ -364,10 +363,11 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
     let mut s = fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false);
     s.start().map_err(|e| e.to_string())?;
     let c = s.attach(41, 120, None).map_err(|e| e.to_string())?;
+    let pane = s.panes.keys().next().copied().ok_or("no pane")?;
     // A full screen, as a pane at work shows: the recordings' output.
     for r in recordings.iter().take(8) {
         for (_, output) in &r.steps {
-            s.output(PaneId(1), output);
+            s.output(pane, output);
         }
     }
     s.settle_if_needed();
@@ -388,12 +388,12 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         // What the PTY would carry to the program, and its echo back.
         let typed = s
             .panes
-            .get_mut(&PaneId(1))
+            .get_mut(&pane)
             .map(|p| p.input.drain_all())
             .unwrap_or_default();
         black_box(&typed);
         let glyph = char::from(key).encode_utf8(&mut echo);
-        s.output(PaneId(1), glyph.as_bytes());
+        s.output(pane, glyph.as_bytes());
         s.settle_if_needed();
         buffer.clear();
         buffer.extend_from_slice(&s.before_paint(c));
@@ -425,7 +425,6 @@ fn paint(
     baseline: bool,
     total: usize,
 ) -> Result<Done, String> {
-    use fux::layout::PaneId;
     let config = fux::config::Config {
         history_lines: HISTORY,
         ..fux::config::Config::default()
@@ -437,12 +436,11 @@ fn paint(
     let c = s
         .attach(first.rows.saturating_add(1), first.cols, None)
         .map_err(|e| e.to_string())?;
-    let mut panes = vec![PaneId(1)];
     if split {
         let argv = ["split".to_owned(), "-h".to_owned()];
         s.run(&argv, &fux::session::Ctx::client(c));
-        panes = s.panes.keys().copied().collect();
     }
+    let panes: Vec<_> = s.panes.keys().copied().collect();
     let mut shown = fux::render::Grid::new(0, 0);
     let mut spare = fux::render::Grid::new(0, 0);
     let mut placement = fux::layout::Placement::default();

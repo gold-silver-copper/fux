@@ -4,11 +4,12 @@
 //! prefix and without it (`run_root`), repeat modes (`repeat_key`), a key
 //! sent to a pane (`send_key`).
 use crate::command::{
-    AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, Pick, Sibling, Subject, SwapWith, WsRef,
+    AnyRef, ClientAction, Command, Kind, MoveTo, Pick, Sibling, Subject, SwapWith, WsRef,
 };
 use crate::config::Binding;
+use crate::id::{ClientId, PaneId};
 use crate::keys::{Direction, Key, KeyPress, Keystroke};
-use crate::layout::{Node, PaneId};
+use crate::layout::Node;
 use crate::session::{Ctx, Error, Session, describe};
 use crate::view::{Confirm, Item, List, Mode, Prompt, PromptFor};
 
@@ -912,8 +913,8 @@ pub fn confirm_key(session: &mut Session, client: ClientId, press: KeyPress) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::ClientId;
     use crate::config::Config;
+    use crate::id::ClientId;
     use crate::view::Mode;
 
     type Outcome = Result<(), String>;
@@ -1056,10 +1057,8 @@ mod tests {
         assert_eq!(mode(&s, c), "normal", "Q cancels");
         run(&mut s, "confirm-close -c c1 tab -t @2")?;
         s.input(c, b"Y");
-        assert!(
-            !s.exists(&AnyRef::Tab(crate::command::TabId(2))),
-            "Y confirms"
-        );
+        let gone = crate::command::parse_any("@2").is_ok_and(|t| !s.exists(&t));
+        assert!(gone, "Y confirms");
         Ok(())
     }
 
@@ -1142,7 +1141,7 @@ mod tests {
 
     fn pane_width(s: &Session, pane: u32) -> u16 {
         s.panes
-            .get(&crate::layout::PaneId(pane))
+            .get(&crate::id::PaneId::of(pane))
             .map_or(0, |p| p.screen().size().1)
     }
 
@@ -1158,7 +1157,7 @@ mod tests {
     /// The input waiting for a pane, taken.
     fn queued(s: &mut Session, pane: u32) -> Vec<u8> {
         s.panes
-            .get_mut(&crate::layout::PaneId(pane))
+            .get_mut(&crate::id::PaneId::of(pane))
             .map(|p| p.input.drain_all())
             .unwrap_or_default()
     }
@@ -1306,7 +1305,7 @@ mod tests {
         assert!(selected.is_some());
         for i in 0..50 {
             s.output(
-                crate::layout::PaneId(1),
+                crate::id::PaneId::of(1),
                 format!("output {i}\r\n").as_bytes(),
             );
             s.settle();
@@ -1324,7 +1323,7 @@ mod tests {
         s.escape(c);
         s.input(c, b"\x02t\x1b[B");
         assert_eq!(mode(&s, c), "column t 1");
-        s.output(crate::layout::PaneId(1), b"more\r\n");
+        s.output(crate::id::PaneId::of(1), b"more\r\n");
         s.settle();
         assert_eq!(mode(&s, c), "column t 1");
         Ok(())
@@ -1558,14 +1557,22 @@ mod tests {
         assert_eq!(mode(&s, c), "column 1");
         escape(&mut s, c);
         // The prefix twice sends it, until the layer binds it.
-        let pane = s.views.get(&c).and_then(|v| v.focus()).map_or(0, |p| p.0);
+        let pane = s
+            .views
+            .get(&c)
+            .and_then(crate::view::View::focus)
+            .map_or(0, PaneId::number);
         let _ = queued(&mut s, pane);
         s.input(c, &[0x02, 0x02]);
         assert_eq!(queued(&mut s, pane), b"\x02");
         run(&mut s, "bind C-b new-tab")?;
         s.input(c, &[0x02, 0x02]);
         assert_eq!(tabs(&s), Some(3));
-        let pane = s.views.get(&c).and_then(|v| v.focus()).map_or(0, |p| p.0);
+        let pane = s
+            .views
+            .get(&c)
+            .and_then(crate::view::View::focus)
+            .map_or(0, PaneId::number);
         assert!(queued(&mut s, pane).is_empty());
         // `send-prefix` sends it from anywhere.
         run(&mut s, &format!("send-prefix -t %{pane}"))?;
@@ -1615,7 +1622,11 @@ mod tests {
         run(&mut s, "bind -n M-t new-tab")?;
         s.input(c, b"\x1bt");
         assert_eq!(tabs(&s), Some(2));
-        let pane = s.views.get(&c).and_then(|v| v.focus()).map_or(0, |p| p.0);
+        let pane = s
+            .views
+            .get(&c)
+            .and_then(crate::view::View::focus)
+            .map_or(0, PaneId::number);
         assert!(queued(&mut s, pane).is_empty());
         // A chord bound to nothing reaches the pane as it was typed.
         s.input(c, b"\x1bl");
@@ -1649,7 +1660,7 @@ mod tests {
     fn rect_of(s: &Session, c: ClientId, pane: u32) -> Option<crate::layout::Rect> {
         let mut placement = crate::layout::Placement::default();
         s.placement_into(s.views.get(&c)?, &mut placement);
-        placement.rect(crate::layout::PaneId(pane))
+        placement.rect(crate::id::PaneId::of(pane))
     }
 
     /// The mouse tracking client `c`'s terminal is asked for.
@@ -1669,7 +1680,7 @@ mod tests {
         let press = |col: u16, row: u16| format!("\x1b[<0;{};{}M", col + 1, row + 1);
         s.input(c, press(right.x + 3, 2).as_bytes());
         assert!(queued(&mut s, 2).is_empty());
-        s.output(crate::layout::PaneId(2), b"\x1b[?1000h\x1b[?1006h");
+        s.output(crate::id::PaneId::of(2), b"\x1b[?1000h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1000));
         // Moved to the pane's cells.
         s.input(c, press(right.x + 3, 2).as_bytes());
@@ -1679,11 +1690,11 @@ mod tests {
         s.input(c, press(right.x - 1, 2).as_bytes());
         assert!(queued(&mut s, 2).is_empty() && queued(&mut s, 1).is_empty());
         // In the encoding the program asked for: here the default.
-        s.output(crate::layout::PaneId(2), b"\x1b[?1006l");
+        s.output(crate::id::PaneId::of(2), b"\x1b[?1006l");
         s.input(c, press(right.x, 0).as_bytes());
         assert_eq!(queued(&mut s, 2), [0x1b, b'[', b'M', 32, 33, 33]);
         // X10's presses come from asking for 1000, its releases dropped.
-        s.output(crate::layout::PaneId(2), b"\x1b[?9h\x1b[?1006h");
+        s.output(crate::id::PaneId::of(2), b"\x1b[?9h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1000));
         s.input(
             c,
@@ -1695,7 +1706,7 @@ mod tests {
         run(&mut s, "select-pane -c c1 -t %3")?;
         let below = rect_of(&s, c, 3).ok_or("no rect for %3")?;
         assert!(below.y > 1, "{below:?}");
-        s.output(crate::layout::PaneId(3), b"\x1b[?1000h\x1b[?1006h");
+        s.output(crate::id::PaneId::of(3), b"\x1b[?1000h\x1b[?1006h");
         s.input(c, press(below.x + 1, below.y + 2).as_bytes());
         assert_eq!(queued(&mut s, 3), b"\x1b[<0;2;3M");
         Ok(())
@@ -1707,7 +1718,7 @@ mod tests {
         run(&mut s, "split -h -t %1")?;
         run(&mut s, "select-pane -c c1 -t %2")?;
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
-        s.output(crate::layout::PaneId(2), b"\x1b[?1002h\x1b[?1006h");
+        s.output(crate::id::PaneId::of(2), b"\x1b[?1002h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1002));
         let x = right.x + 1;
         // Pressed inside, dragged over the left pane and past the bottom,
@@ -1732,7 +1743,7 @@ mod tests {
         let (mut s, c) = session()?;
         run(&mut s, "split -h -t %1")?;
         run(&mut s, "select-pane -c c1 -t %2")?;
-        s.output(crate::layout::PaneId(2), b"\x1b[?1003h\x1b[?1006h");
+        s.output(crate::id::PaneId::of(2), b"\x1b[?1003h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1003));
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
         let press = format!("\x1b[<0;{};2M", right.x + 2);
@@ -1799,12 +1810,12 @@ mod tests {
         s.input(c, &prefixed("tmll"));
         assert_eq!(mode(&s, c), "repeat t m");
         escape(&mut s, c);
-        let order: Vec<u32> = s
+        let order: Vec<String> = s
             .workspaces
             .first()
-            .map(|w| w.tabs.iter().map(|t| t.id.0).collect())
+            .map(|w| w.tabs.iter().map(|t| t.id.to_string()).collect())
             .unwrap_or_default();
-        assert_eq!(order, [2, 3, 1]);
+        assert_eq!(order, ["@2", "@3", "@1"]);
         Ok(())
     }
 

@@ -2,9 +2,9 @@
 //! macOS), one `poll` loop over the listening socket, a signal pipe, every
 //! client and every pane's PTY.
 use crate::bytes::ByteQueue;
-use crate::command::ClientId;
 use crate::config::Config;
-use crate::layout::{PaneId, Placement};
+use crate::id::{ClientId, PaneId};
+use crate::layout::Placement;
 use crate::protocol::{Decoder, Frame, PROTOCOL, Role, Stream};
 use crate::render::{self, Grid};
 use crate::session::{Ctx, Outgoing, Session};

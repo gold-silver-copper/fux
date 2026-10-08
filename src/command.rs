@@ -1,33 +1,8 @@
 //! The command grammar: the one set of commands that the CLI, key bindings,
 //! the command prompt and the config file all speak.
+use crate::id::{ClientId, PaneId, TabId, WsId, number};
 use crate::keys::Direction;
-use crate::layout::{Axis, PaneId};
-
-/// A tab's number, `@N`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TabId(pub u32);
-/// A workspace's number, `+N`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct WsId(pub u32);
-/// An attached client's number, `cN`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ClientId(pub u32);
-
-impl std::fmt::Display for TabId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "@{}", self.0)
-    }
-}
-impl std::fmt::Display for WsId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "+{}", self.0)
-    }
-}
-impl std::fmt::Display for ClientId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "c{}", self.0)
-    }
-}
+use crate::layout::Axis;
 
 /// A workspace named on the command line: `+N` or its name.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -388,31 +363,15 @@ impl std::fmt::Display for Usage {
 
 impl std::error::Error for Usage {}
 
-fn number(text: &str) -> Option<u32> {
-    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    text.parse().ok()
-}
-
 pub fn parse_pane(text: &str) -> Result<PaneId, Usage> {
-    match text.strip_prefix('%').and_then(number) {
-        Some(n) => Ok(PaneId(n)),
-        None => Err(Usage::Not(Kind::Pane, text.to_owned())),
-    }
+    text.parse()
 }
 pub fn parse_tab(text: &str) -> Result<TabId, Usage> {
-    match text.strip_prefix('@').and_then(number) {
-        Some(n) => Ok(TabId(n)),
-        None => Err(Usage::Not(Kind::Tab, text.to_owned())),
-    }
+    text.parse()
 }
 pub fn parse_workspace(text: &str) -> Result<WsRef, Usage> {
-    if let Some(rest) = text.strip_prefix('+') {
-        return match number(rest) {
-            Some(n) => Ok(WsRef::Id(WsId(n))),
-            None => Err(Usage::Not(Kind::Workspace, text.to_owned())),
-        };
+    if text.starts_with('+') {
+        return text.parse().map(WsRef::Id);
     }
     if text.is_empty() || text.starts_with(['%', '@', '-']) {
         return Err(Usage::Not(Kind::Workspace, text.to_owned()));
@@ -429,14 +388,7 @@ pub fn parse_any(text: &str) -> Result<AnyRef, Usage> {
     }
 }
 pub fn parse_client(text: &str) -> Result<ClientId, Usage> {
-    match text
-        .strip_prefix('c')
-        .and_then(number)
-        .or_else(|| number(text))
-    {
-        Some(n) => Ok(ClientId(n)),
-        None => Err(Usage::NotClient(text.to_owned())),
-    }
+    text.parse()
 }
 fn direction_flag(flag: &str) -> Option<Direction> {
     Direction::ALL.into_iter().find(|d| d.flag() == flag)
@@ -1082,13 +1034,13 @@ mod tests {
     }
 
     #[test]
-    fn the_cli_table_parses() {
+    fn the_cli_table_parses() -> Result<(), Usage> {
         assert_eq!(cmd("ls --json"), Ok(Command::Ls { json: true }));
         assert_eq!(
             cmd("split -h -t %3 -- htop -d 5"),
             Ok(Command::Split {
                 axis: Axis::Horizontal,
-                target: Some(PaneId(3)),
+                target: Some(PaneId::of(3)),
                 cmd: vec!["htop".into(), "-d".into(), "5".into()]
             })
         );
@@ -1103,21 +1055,21 @@ mod tests {
         assert_eq!(
             cmd("move-pane -t %1 --to +2"),
             Ok(Command::MovePane {
-                target: Some(PaneId(1)),
-                to: MoveTo::Workspace(WsRef::Id(WsId(2)))
+                target: Some(PaneId::of(1)),
+                to: MoveTo::Workspace(WsRef::Id("+2".parse()?))
             })
         );
         assert_eq!(
             cmd("swap-pane -t %1 %2"),
             Ok(Command::SwapPane {
-                target: Some(PaneId(1)),
-                with: SwapWith::Pane(PaneId(2))
+                target: Some(PaneId::of(1)),
+                with: SwapWith::Pane(PaneId::of(2))
             })
         );
         assert_eq!(
             cmd("resize-pane -t %1 -L 5"),
             Ok(Command::ResizePane {
-                target: Some(PaneId(1)),
+                target: Some(PaneId::of(1)),
                 direction: Direction::Left,
                 amount: 5
             })
@@ -1125,7 +1077,7 @@ mod tests {
         assert_eq!(
             cmd("send-keys -t %1 -l -x"),
             Ok(Command::SendKeys {
-                target: Some(PaneId(1)),
+                target: Some(PaneId::of(1)),
                 literal: true,
                 keys: vec!["-x".into()]
             })
@@ -1133,7 +1085,7 @@ mod tests {
         assert_eq!(
             cmd("capture-pane -t %1 -S -100 --json"),
             Ok(Command::CapturePane {
-                target: Some(PaneId(1)),
+                target: Some(PaneId::of(1)),
                 history: Some(100),
                 json: true
             })
@@ -1141,14 +1093,14 @@ mod tests {
         assert_eq!(
             cmd("rename -t @2 'two words'"),
             Ok(Command::Rename {
-                target: AnyRef::Tab(TabId(2)),
+                target: AnyRef::Tab("@2".parse()?),
                 name: "two words".into()
             })
         );
         assert_eq!(
             cmd("select-pane -c c1 --last"),
             Ok(Command::Client {
-                client: Some(ClientId(1)),
+                client: Some("c1".parse()?),
                 action: ClientAction::SelectPane(PanePick::Last)
             })
         );
@@ -1158,15 +1110,16 @@ mod tests {
         );
         assert_eq!(
             cmd("confirm-close -t +1"),
-            Ok(ClientAction::ConfirmClose(Subject::Workspace(Some(WsRef::Id(WsId(1))))).here())
+            Ok(ClientAction::ConfirmClose(Subject::Workspace(Some(WsRef::Id("+1".parse()?)))).here())
         );
         assert_eq!(
             cmd("paste-buffer -b 2 -t %4"),
             Ok(Command::PasteBuffer {
                 index: 2,
-                target: Some(PaneId(4))
+                target: Some(PaneId::of(4))
             })
         );
+        Ok(())
     }
 
     #[test]

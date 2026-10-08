@@ -1,14 +1,15 @@
 //! The server's state: workspaces, tabs, panes and the clients' views, and
 //! every command that changes them.
 use crate::command::{
-    self, AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, PanePick, Pick, Sibling, Subject,
-    SwapWith, TabId, WsId, WsRef,
+    self, AnyRef, ClientAction, Command, Kind, MoveTo, PanePick, Pick, Sibling, Subject, SwapWith,
+    WsRef,
 };
 use crate::config::Config;
 use crate::copy::MAX_CELLS;
+use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::Json;
 use crate::keys::{Direction, KeyPress};
-use crate::layout::{self, Axis, Node, PaneId, Placement, Rect, Side};
+use crate::layout::{self, Axis, Node, Placement, Rect, Side};
 use crate::pane::Pane;
 use crate::process::Pid;
 use crate::view::{Mode, View};
@@ -319,10 +320,7 @@ pub struct Session {
     /// lays out each view to find them; reused by every settle.
     shown_sizes: Vec<(PaneId, (u16, u16))>,
     placed: Placement,
-    next_pane: u32,
-    next_tab: u32,
-    next_ws: u32,
-    next_client: u32,
+    ids: Ids,
     /// Commands run that may change what any client shows; input that runs
     /// one repaints every client, input that runs none only its own.
     changes: u64,
@@ -380,10 +378,7 @@ impl Session {
             last_palette: crate::outer::Palette::default(),
             shown_sizes: Vec::new(),
             placed: Placement::default(),
-            next_pane: 1,
-            next_tab: 1,
-            next_ws: 1,
-            next_client: 1,
+            ids: Ids::default(),
             changes: 0,
             unsettled: false,
         }
@@ -622,22 +617,6 @@ impl Session {
         Ok(id)
     }
 
-    /// The IDs to take for something being made; see [`Ids`].
-    fn ids(&self) -> Ids {
-        Ids {
-            pane: self.next_pane,
-            tab: self.next_tab,
-            workspace: self.next_ws,
-        }
-    }
-
-    /// The IDs taken for something now made are used up.
-    fn commit(&mut self, ids: Ids) {
-        self.next_pane = ids.pane;
-        self.next_tab = ids.tab;
-        self.next_ws = ids.workspace;
-    }
-
     /// Refuses a workspace name another workspace has, `except` the one
     /// being renamed: a workspace is found by its name.
     fn check_workspace_name(&self, name: &str, except: Option<WsId>) -> Result<(), Error> {
@@ -660,7 +639,7 @@ impl Session {
     /// The name a workspace gets when none is given: `workspace-N` after
     /// its ID, or the next number up that no workspace is named.
     fn workspace_name(&self, id: WsId) -> String {
-        let mut n = id.0;
+        let mut n = id.number();
         loop {
             let name = format!("workspace-{n}");
             if !self.workspaces.iter().any(|ws| ws.name == name) {
@@ -700,11 +679,11 @@ impl Session {
         }
         // The IDs are taken before the pane starts, so that none can run out
         // after, and are committed once it has.
-        let mut ids = self.ids();
+        let mut ids = self.ids;
         let id = ids.workspace()?;
         let tab = ids.tab()?;
         let pane = self.new_pane(&mut ids, cmd, &cwd, DEFAULT_SIZE)?;
-        self.commit(ids);
+        self.ids = ids;
         let name = name.unwrap_or_else(|| self.workspace_name(id));
         self.push_workspace(id, name, tab, Some(Node::Pane(pane)));
         Ok(id)
@@ -743,7 +722,7 @@ impl Session {
                 .map(|w| w.id)
                 .ok_or(Error::NoWorkspaces)?,
         };
-        let id = ClientId(advance(&mut self.next_client, "client")?);
+        let id = self.ids.client()?;
         let mut view = View::new(id, rows.clamp(1, 4096), cols.clamp(1, 4096), ws);
         if let Some(error) = &self.config_error {
             let error = error.to_string();
@@ -1448,10 +1427,10 @@ impl Session {
                 }
                 let cwd = self.cwd_for(ctx, None);
                 // As for a workspace: the ID first, committed after the pane.
-                let mut ids = self.ids();
+                let mut ids = self.ids;
                 let id = ids.tab()?;
                 let pane = self.new_pane(&mut ids, cmd, &cwd, DEFAULT_SIZE)?;
-                self.commit(ids);
+                self.ids = ids;
                 self.add_tab(ws, id, name.clone(), Some(Node::Pane(pane)))?;
                 if let Some(view) = ctx.client.and_then(|c| self.views.get_mut(&c)) {
                     view.workspace = ws;
@@ -1469,9 +1448,9 @@ impl Session {
                 let (_, tab) = self.locate(target).ok_or(Error::NotInTab)?;
                 let size = self.panes.get(&target).map_or(DEFAULT_SIZE, |p| p.size);
                 let cwd = self.cwd_for(ctx, Some(target));
-                let mut ids = self.ids();
+                let mut ids = self.ids;
                 let pane = self.new_pane(&mut ids, cmd, &cwd, size)?;
-                self.commit(ids);
+                self.ids = ids;
                 if let Some(t) = self.tab_mut(tab) {
                     // True: `target` was just found in this tab. (False
                     // would leave the new pane, its process started, in no
@@ -1845,18 +1824,18 @@ impl Session {
                 (ws, tab)
             }
             MoveTo::NewTab => {
-                let mut ids = self.ids();
+                let mut ids = self.ids;
                 let id = ids.tab()?;
                 self.add_tab(source_ws, id, None, None)?;
-                self.commit(ids);
+                self.ids = ids;
                 (source_ws, id)
             }
             MoveTo::NewWorkspace => {
                 // Both IDs or neither: one taken alone would be lost.
-                let mut ids = self.ids();
+                let mut ids = self.ids;
                 let id = ids.workspace()?;
                 let tab = ids.tab()?;
-                self.commit(ids);
+                self.ids = ids;
                 let name = self.workspace_name(id);
                 self.push_workspace(id, name, tab, None);
                 (id, tab)
@@ -2180,37 +2159,6 @@ pub fn describe(target: &AnyRef) -> String {
     }
 }
 
-/// The IDs taken for something being made: a pane, a tab and its pane, a
-/// workspace and its first tab and pane. They are taken from a copy of the
-/// counters and committed with `Session::commit` once it is made, so a
-/// failure part way uses none of them up.
-#[derive(Clone, Copy)]
-struct Ids {
-    pane: u32,
-    tab: u32,
-    workspace: u32,
-}
-
-impl Ids {
-    fn pane(&mut self) -> Result<PaneId, Error> {
-        advance(&mut self.pane, "pane").map(PaneId)
-    }
-    fn tab(&mut self) -> Result<TabId, Error> {
-        advance(&mut self.tab, "tab").map(TabId)
-    }
-    fn workspace(&mut self) -> Result<WsId, Error> {
-        advance(&mut self.workspace, "workspace").map(WsId)
-    }
-}
-
-/// Takes the next ID from `counter`. IDs are never reused, so one that
-/// would wrap round is an error instead.
-fn advance(counter: &mut u32, what: &'static str) -> Result<u32, Error> {
-    let id = *counter;
-    *counter = counter.checked_add(1).ok_or(Error::IdsExhausted(what))?;
-    Ok(id)
-}
-
 /// The index after `index` among `len`, or before it, going round.
 fn round(index: usize, len: usize, toward: Sibling) -> usize {
     match toward {
@@ -2298,8 +2246,8 @@ pub fn row_text(row: fux_vt::Row<'_>) -> String {
 #[cfg(test)]
 pub(crate) mod testing {
     use super::{Ctx, Session};
-    use crate::command::ClientId;
     use crate::config::Config;
+    use crate::id::ClientId;
 
     /// A session of `config`, but for its shell, `/bin/sh` (each pane is
     /// named after it), started.
@@ -2355,7 +2303,10 @@ mod tests {
         run(&mut s, r#"rename -t %1 'say "hi" \ 界'"#)?;
         run(&mut s, "new-tab -t +1 -n two")?;
         run(&mut s, "select-tab -c c1 -t @1")?;
-        s.output(PaneId(2), "a\tb \"q\" 界\x1b]2;tab\\title\x07".as_bytes());
+        s.output(
+            PaneId::of(2),
+            "a\tb \"q\" 界\x1b]2;tab\\title\x07".as_bytes(),
+        );
         assert_eq!(
             output(&mut s, "ls --json")?,
             concat!(
@@ -2393,12 +2344,12 @@ mod tests {
         };
         // Two panes: the tab stays.
         run(&mut s, "split -h -t %1")?;
-        s.exited(PaneId(2), 3);
+        s.exited(PaneId::of(2), 3);
         assert_eq!(notice(&s).as_deref(), Some("%2 sh exited with status 3"));
         // A second tab, shown; its only pane exits, and the tab with it.
         run(&mut s, "new-tab -t +1")?;
         run(&mut s, "select-tab -c c1 -t @2")?;
-        s.exited(PaneId(3), 7);
+        s.exited(PaneId::of(3), 7);
         assert_eq!(notice(&s).as_deref(), Some("%3 sh exited with status 7"));
         Ok(())
     }
@@ -2418,10 +2369,10 @@ mod tests {
         assert_eq!(names, ["main", "workspace-3", "workspace-4"]);
         // A move to a new workspace with no tab ID left takes no workspace
         // ID either.
-        s.next_tab = u32::MAX;
-        let ws = s.next_ws;
+        s.ids.exhaust_tabs();
+        let ids = s.ids;
         assert!(run(&mut s, "move-pane -t %1 --to new-workspace").is_err());
-        assert_eq!(s.next_ws, ws);
+        assert_eq!(s.ids, ids);
         Ok(())
     }
 
@@ -2448,7 +2399,7 @@ mod tests {
             !dirty(&s, one) && !dirty(&s, two),
             "typing into a pane repaints no one until the pane answers"
         );
-        s.output(crate::layout::PaneId(1), b"ls");
+        s.output(crate::id::PaneId::of(1), b"ls");
         assert!(dirty(&s, one) && dirty(&s, two), "its echo repaints both");
         clean(&mut s);
         // A key that changes the typist's own screen repaints it alone.
@@ -2497,12 +2448,12 @@ mod tests {
             ..Config::default()
         })?;
         let client = s.attach(6, 20, None)?;
-        s.output(PaneId(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
+        s.output(PaneId::of(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
         assert!(!s.unsettled(), "no copy mode: nothing to repair");
         run(&mut s, "copy-mode -c c1")?;
         // To the oldest row, which the next lines of output push out.
         s.input(client, b"g");
-        s.output(PaneId(1), b"g\r\nh\r\ni\r\nj\r\n");
+        s.output(PaneId::of(1), b"g\r\nh\r\ni\r\nj\r\n");
         assert!(s.unsettled());
         s.settle_if_needed();
         assert!(!s.unsettled());
@@ -2661,7 +2612,7 @@ mod tests {
             )
         );
         // Why a menu entry or a binding cannot run now.
-        let ctx = Ctx::client(ClientId(1));
+        let ctx = Ctx::client("c1".parse()?);
         for (line, reason) in [
             ("select-pane --next", Some("only one pane")),
             ("select-tab --next", Some("only one tab")),
@@ -2702,7 +2653,7 @@ mod tests {
         };
         assert!(matches!(
             run("kill-pane -t %9")?,
-            Err(Error::NoPane(PaneId(9)))
+            Err(Error::NoPane(p)) if p == PaneId::of(9)
         ));
         assert!(matches!(
             run("select-pane --next")?,

@@ -70,14 +70,14 @@ pub struct World {
 
 /// The same code for the baseline's crates and the current ones.
 macro_rules! stack {
-    ($name:ident, $fux:ident) => {
+    ($name:ident, $fux:ident, $id:ident, $layout:ident) => {
         pub mod $name {
             use super::Event;
             use std::collections::BTreeMap;
             use std::fmt::Write;
-            use $fux::command::ClientId;
+            use $fux::$id::ClientId;
+            use $fux::$layout::PaneId;
             use $fux::config::Config;
-            use $fux::layout::PaneId;
             use $fux::render::Grid;
             use $fux::session::{Ctx, Session};
             use $fux::view::Mode;
@@ -92,42 +92,55 @@ macro_rules! stack {
                 Ok(s)
             }
 
+            /// Client `n` as a person names it, which both sides read alike:
+            /// the current side makes IDs from nothing else.
+            fn client(n: &u32) -> Option<ClientId> {
+                $fux::command::parse_client(&n.to_string()).ok()
+            }
+
+            /// Pane `n`, likewise.
+            fn pane(n: &u32) -> Option<PaneId> {
+                $fux::command::parse_pane(&format!("%{n}")).ok()
+            }
+
             /// Applies an event; what it returned, if anything.
             pub fn apply(s: &mut Session, e: &Event) -> String {
                 match e {
-                    Event::Key(c, bytes) => s.input(ClientId(*c), bytes),
-                    Event::Escape(c) => s.escape(ClientId(*c)),
-                    Event::Run(argv, client, pane) => {
+                    Event::Key(c, bytes) => client(c).into_iter().for_each(|c| s.input(c, bytes)),
+                    Event::Escape(c) => client(c).into_iter().for_each(|c| s.escape(c)),
+                    Event::Run(argv, c, p) => {
                         let ctx = Ctx {
-                            client: client.map(ClientId),
-                            pane: pane.map(PaneId),
+                            client: c.as_ref().and_then(client),
+                            pane: p.as_ref().and_then(pane),
                             cwd: Some("/".into()),
                         };
                         return format!("{:?}", s.run(argv, &ctx));
                     }
-                    Event::Output(p, bytes) => s.output(PaneId(*p), bytes),
-                    Event::Resize(c, rows, cols) => s.resize(ClientId(*c), *rows, *cols),
+                    Event::Output(p, bytes) => pane(p).into_iter().for_each(|p| s.output(p, bytes)),
+                    Event::Resize(c, rows, cols) => {
+                        client(c).into_iter().for_each(|c| s.resize(c, *rows, *cols))
+                    }
                     Event::Attach(rows, cols, ws) => {
                         return match s.attach(*rows, *cols, ws.as_deref()) {
                             Ok(id) => id.to_string(),
                             Err(error) => format!("error: {error}"),
                         };
                     }
-                    Event::Detach(c) => s.detach(ClientId(*c)),
-                    Event::Exited(p, status) => s.exited(PaneId(*p), *status),
+                    Event::Detach(c) => client(c).into_iter().for_each(|c| s.detach(c)),
+                    Event::Exited(p, status) => pane(p).into_iter().for_each(|p| s.exited(p, *status)),
                     Event::Drain(p, n) => {
-                        if let Some(pane) = s.panes.get_mut(&PaneId(*p)) {
+                        if let Some(pane) = pane(p).and_then(|p| s.panes.get_mut(&p)) {
                             let queued = pane.input.front().map_or(0, <[u8]>::len);
                             pane.input.advance((*n).min(queued));
                         }
                     }
                     Event::Painted(c) => {
-                        if let Some(view) = s.views.get_mut(&ClientId(*c)) {
+                        if let Some(view) = client(c).and_then(|c| s.views.get_mut(&c)) {
                             view.dirty = false;
                         }
                     }
                     Event::Notice(c, error, text) => {
-                        if let Some(view) = s.views.get_mut(&ClientId(*c)) {
+                        if let Some(view) = client(c).and_then(|c| s.views.get_mut(&c)) {
                             if *error {
                                 view.error(text.clone());
                             } else {
@@ -217,14 +230,14 @@ macro_rules! stack {
 
             /// Every client's paint, from nothing and from the screen it was
             /// last painted, each after its client's number.
-            pub fn paints(s: &Session, shown: &mut BTreeMap<u32, Grid>) -> Vec<u8> {
+            pub fn paints(s: &Session, shown: &mut BTreeMap<ClientId, Grid>) -> Vec<u8> {
                 let mut out = Vec::new();
                 for c in s.views.keys() {
                     out.extend_from_slice(c.to_string().as_bytes());
                     if let Some(grid) = $fux::render::compose(s, *c) {
                         out.extend($fux::render::paint(None, &grid));
-                        out.extend($fux::render::paint(shown.get(&c.0), &grid));
-                        shown.insert(c.0, grid);
+                        out.extend($fux::render::paint(shown.get(c), &grid));
+                        shown.insert(*c, grid);
                     }
                 }
                 out
@@ -234,8 +247,8 @@ macro_rules! stack {
     };
 }
 
-stack!(base, baseline);
-stack!(cur, fux);
+stack!(base, baseline, command, layout);
+stack!(cur, fux, id, id);
 
 /// Whether any of the baseline's clients is in copy mode, a list or a
 /// repeat mode: for the summary.

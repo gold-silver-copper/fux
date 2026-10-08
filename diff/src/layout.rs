@@ -85,11 +85,12 @@ enum Change {
 }
 
 macro_rules! stack {
-    ($name:ident, $fux:ident) => {
+    ($name:ident, $fux:ident, $ids:ident) => {
         mod $name {
             use super::{Change, Tree};
             use $fux::keys::Direction;
-            use $fux::layout::{self, Axis, Node, PaneId, Placement, Rect, Side};
+            use $fux::layout::{self, Axis, Node, Placement, Rect, Side};
+            use $fux::$ids::PaneId;
 
             fn axis(horizontal: bool) -> Axis {
                 if horizontal {
@@ -99,14 +100,23 @@ macro_rules! stack {
                 }
             }
 
-            fn node(tree: &Tree) -> Node {
-                match tree {
-                    Tree::Pane(p) => Node::Pane(PaneId(*p)),
+            /// Pane `n` as a person names it, which both sides read alike:
+            /// the current side makes IDs from nothing else.
+            fn pane(n: u32) -> Option<PaneId> {
+                $fux::command::parse_pane(&format!("%{n}")).ok()
+            }
+
+            fn node(tree: &Tree) -> Option<Node> {
+                Some(match tree {
+                    Tree::Pane(p) => Node::Pane(pane(*p)?),
                     Tree::Split(horizontal, children) => Node::Split {
                         axis: axis(*horizontal),
-                        children: children.iter().map(|(w, c)| (*w, node(c))).collect(),
+                        children: children
+                            .iter()
+                            .map(|(w, c)| Some((*w, node(c)?)))
+                            .collect::<Option<_>>()?,
                     },
-                }
+                })
             }
 
             pub struct Laid {
@@ -118,7 +128,7 @@ macro_rules! stack {
             impl Laid {
                 pub fn new(tree: &Tree, (x, y, w, h): (u16, u16, u16, u16)) -> Laid {
                     Laid {
-                        root: Some(node(tree)),
+                        root: node(tree),
                         area: Rect { x, y, w, h },
                         placed: Placement::default(),
                     }
@@ -146,7 +156,7 @@ macro_rules! stack {
                         .map(Node::panes)
                         .unwrap_or_default()
                         .iter()
-                        .map(|p| p.0)
+                        .filter_map(|p| p.to_string().get(1..)?.parse().ok())
                         .collect()
                 }
 
@@ -154,7 +164,7 @@ macro_rules! stack {
                 pub fn change(&mut self, change: Change) -> String {
                     match change {
                         Change::Resize {
-                            pane,
+                            pane: p,
                             direction,
                             amount,
                         } => {
@@ -162,12 +172,12 @@ macro_rules! stack {
                                 .get(direction)
                                 .copied()
                                 .unwrap_or(Direction::Left);
-                            match &mut self.root {
-                                Some(root) => {
-                                    layout::resize(root, self.area, PaneId(pane), direction, amount)
+                            match (&mut self.root, pane(p)) {
+                                (Some(root), Some(p)) => {
+                                    layout::resize(root, self.area, p, direction, amount)
                                         .to_string()
                                 }
-                                None => String::new(),
+                                _ => String::new(),
                             }
                         }
                         Change::Split {
@@ -177,21 +187,18 @@ macro_rules! stack {
                             after,
                         } => {
                             let side = if after { Side::After } else { Side::Before };
-                            layout::split(
-                                &mut self.root,
-                                PaneId(target),
-                                PaneId(new),
-                                axis(horizontal),
-                                side,
-                            )
-                            .to_string()
+                            let axis = axis(horizontal);
+                            let split = |(t, n)| layout::split(&mut self.root, t, n, axis, side);
+                            pane(target).zip(pane(new)).is_some_and(split).to_string()
                         }
-                        Change::Remove(pane) => {
-                            layout::remove(&mut self.root, PaneId(pane)).to_string()
-                        }
+                        Change::Remove(p) => pane(p)
+                            .is_some_and(|p| layout::remove(&mut self.root, p))
+                            .to_string(),
                         Change::Swap(a, b) => {
-                            if let Some(root) = &mut self.root {
-                                layout::swap(root, PaneId(a), PaneId(b));
+                            if let (Some(root), Some(a), Some(b)) =
+                                (&mut self.root, pane(a), pane(b))
+                            {
+                                layout::swap(root, a, b);
                             }
                             String::new()
                         }
@@ -216,8 +223,8 @@ macro_rules! stack {
     };
 }
 
-stack!(base, baseline);
-stack!(cur, fux);
+stack!(base, baseline, layout);
+stack!(cur, fux, id);
 
 fn change(r: &mut Rng, panes: &[u32], next: &mut u32) -> Change {
     let pane = |r: &mut Rng| {

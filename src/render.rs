@@ -4,9 +4,9 @@
 //! echo, when it is all that changed, is written as a terminal shows it
 //! typed, without the synchronized envelope (`echo`). Every paint leaves
 //! the terminal's attributes at their default, which the next one assumes.
-use crate::command::ClientId;
+use crate::id::{ClientId, PaneId};
 use crate::keys::KeyPress;
-use crate::layout::{Axis, PaneId, Placement, Rect, Separator};
+use crate::layout::{Axis, Placement, Rect, Separator};
 use crate::overlay;
 use crate::session::Session;
 use crate::view::{List, Mode, View};
@@ -1391,7 +1391,7 @@ fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
 fn hyperlink(out: &mut Vec<u8>, link: Option<(PaneId, u64, &str)>) {
     match link {
         Some((pane, key, uri)) => {
-            let _ = write!(out, "\x1b]8;id=fux{}-{key};{uri}\x1b\\", pane.0);
+            let _ = write!(out, "\x1b]8;id=fux{}-{key};{uri}\x1b\\", pane.number());
         }
         None => out.extend_from_slice(b"\x1b]8;;\x1b\\"),
     }
@@ -1824,7 +1824,7 @@ mod tests {
     /// with the cursor moved, rows erased, wide glyphs and long lines.
     #[test]
     fn echoes_painted_the_short_way_show_what_whole_paints_show() -> Result<(), String> {
-        use crate::layout::PaneId;
+        use crate::id::PaneId;
         let typed: [&[u8]; 20] = [
             b"\rw",
             "\r\u{24d1}".as_bytes(),
@@ -1909,7 +1909,7 @@ mod tests {
     /// `same_as` is `==`.
     #[test]
     fn composing_in_part_is_composing_whole() -> Result<(), String> {
-        use crate::layout::PaneId;
+        use crate::id::PaneId;
         let outputs: [&[u8]; 12] = [
             b"x",
             b"hello\r\n",
@@ -2134,7 +2134,7 @@ mod tests {
     #[test]
     fn compose_inverts_exactly_the_selected_cells() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(10, 30)?;
-        let pane = PaneId(1);
+        let pane = PaneId::of(1);
         let text: String = (0..60)
             .map(|i| {
                 let tail: String = std::iter::repeat_n('x', i % 20).collect();
@@ -2203,7 +2203,7 @@ mod tests {
     #[test]
     fn a_block_highlights_the_wide_glyphs_it_copies() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(10, 30)?;
-        s.output(PaneId(1), "xab\r\n界b".as_bytes());
+        s.output(PaneId::of(1), "xab\r\n界b".as_bytes());
         // A block from `a` above to `b` below, its left edge on 界's second
         // half.
         s.input(c, b"\x02ckhhxjl");
@@ -2220,7 +2220,7 @@ mod tests {
     #[test]
     fn composing_into_a_used_grid_is_composing_afresh() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(12, 50)?;
-        s.output(PaneId(1), b"first screen\r\n\x1b[5 q");
+        s.output(PaneId::of(1), b"first screen\r\n\x1b[5 q");
         let before = compose(&s, c).ok_or("a screen")?;
         let outcome = s.run(
             &["split".to_owned(), "-h".to_owned()],
@@ -2229,7 +2229,7 @@ mod tests {
         assert_eq!(outcome.status, 0, "{}", outcome.stderr);
         // The focused pane hides its cursor, and a smaller client makes the
         // panes smaller than their places: compose leaves cells untouched.
-        s.output(PaneId(2), "界 second\r\n\x1b[?25l".as_bytes());
+        s.output(PaneId::of(2), "界 second\r\n\x1b[?25l".as_bytes());
         s.attach(8, 30, None)?;
         let fresh = compose(&s, c).ok_or("a screen")?;
         assert_ne!(before, fresh);
@@ -2575,8 +2575,8 @@ mod tests {
         );
         assert_eq!(outcome.status, 0, "{}", outcome.stderr);
         let set = b"\x1b]4;1;#ff0000\x1b\\\x1b]10;rgb:11/22/33;#000080\x07";
-        s.output(PaneId(1), &[&set[..], b"\x1b[31mR\x1b[39mD"].concat());
-        s.output(PaneId(2), b"\x1b[31mR\x1b[39mD");
+        s.output(PaneId::of(1), &[&set[..], b"\x1b[31mR\x1b[39mD"].concat());
+        s.output(PaneId::of(2), b"\x1b[31mR\x1b[39mD");
         let grid = compose(&s, c).ok_or("a screen")?;
         let bytes = paint(None, &grid);
         let text = String::from_utf8_lossy(&bytes);
@@ -2613,7 +2613,7 @@ mod tests {
             Some(("D".into(), Color::Default, Color::Default))
         );
         // Reset, the entry and the defaults are the client's again.
-        s.output(PaneId(1), b"\x1b]104;1\x07\x1b]110\x07\x1b]111\x07");
+        s.output(PaneId::of(1), b"\x1b]104;1\x07\x1b]110\x07\x1b]111\x07");
         let reset = compose(&s, c).ok_or("a screen")?;
         let diff = paint(Some(&grid), &reset);
         assert!(!String::from_utf8_lossy(&diff).contains("\x1b]"));
@@ -2627,9 +2627,9 @@ mod tests {
             Some(("D".into(), Color::Default, Color::Default))
         );
         // Each pane answers its program with its own colours.
-        s.output(PaneId(1), b"\x1b]4;1;#00ff00\x07");
+        s.output(PaneId::of(1), b"\x1b]4;1;#00ff00\x07");
         for (id, answer) in [(1, "0000/ffff/0000"), (2, "cdcd/0000/0000")] {
-            let pane = s.panes.get_mut(&PaneId(id)).ok_or("a pane")?;
+            let pane = s.panes.get_mut(&PaneId::of(id)).ok_or("a pane")?;
             pane.input.drain_all();
             pane.output(b"\x1b]4;1;?\x07");
             let asked = pane.input.drain_all();
@@ -2653,8 +2653,8 @@ mod tests {
         );
         assert_eq!(outcome.status, 0, "{}", outcome.stderr);
         let linked = b"a\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\b";
-        s.output(PaneId(1), linked);
-        s.output(PaneId(2), linked);
+        s.output(PaneId::of(1), linked);
+        s.output(PaneId::of(2), linked);
         let grid = compose(&s, c).ok_or("a screen")?;
         let bytes = paint(None, &grid);
         let text = String::from_utf8_lossy(&bytes);
@@ -2685,9 +2685,9 @@ mod tests {
         // A link the program takes off its cells is taken off the client's:
         // only that row is painted again, and nothing more for no change.
         let mut quiet = s;
-        quiet.output(PaneId(1), b"\r\x1b[Babc");
+        quiet.output(PaneId::of(1), b"\r\x1b[Babc");
         let same = compose(&quiet, c).ok_or("a screen")?;
-        quiet.output(PaneId(1), b"\x1b[A\ra\x1b[0Klink");
+        quiet.output(PaneId::of(1), b"\x1b[A\ra\x1b[0Klink");
         let unlinked = compose(&quiet, c).ok_or("a screen")?;
         let diff = paint(Some(&same), &unlinked);
         assert_eq!(rows_written(&diff), [0]);

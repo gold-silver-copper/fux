@@ -8,6 +8,7 @@ pub mod client;
 pub mod command;
 pub mod config;
 pub mod copy;
+pub mod id;
 pub mod input;
 pub mod json;
 pub mod layout;
