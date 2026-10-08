@@ -1020,9 +1020,6 @@ mod tests {
         }
     }
 
-    /// Like the keys after the prefix and copy mode's, a chooser's and a
-    /// confirmation's letter keys work in either case: Caps Lock changes
-    /// nothing.
     /// On a screen too short for a list's lines, the selected entry stays
     /// in view: the lines around it give way first.
     #[test]
@@ -1058,6 +1055,9 @@ mod tests {
         Ok(())
     }
 
+    /// Like the keys after the prefix and copy mode's, a chooser's and a
+    /// confirmation's letter keys work in either case: Caps Lock changes
+    /// nothing.
     #[test]
     fn list_and_confirm_keys_ignore_case() -> Outcome {
         let (mut s, c) = session()?;
@@ -1276,6 +1276,10 @@ mod tests {
         s.escape(c);
         assert_eq!(mode(&s, c), "normal");
         assert_eq!(start.checked_add(3), Some(pane_width(&s, 1)));
+        // After it, `l` is the pane's again.
+        let _ = queued(&mut s, 1);
+        s.input(c, b"l");
+        assert_eq!(queued(&mut s, 1), b"l");
         Ok(())
     }
 
@@ -1368,10 +1372,15 @@ mod tests {
     fn list_keys_shows_sequences_and_repeats() -> Outcome {
         let (mut s, _) = session()?;
         with_layers(&mut s)?;
+        run(&mut s, "bind -n M-t new-tab")?;
         let out = s.run(&["list-keys".to_owned()], &Ctx::default()).stdout;
         assert!(out.contains("\n     g n  new-tab\n"), "{out}");
         assert!(
             out.contains("\n     y l  resize-pane -R (repeats)\n"),
+            "{out}"
+        );
+        assert!(
+            out.ends_with("\nWithout the prefix (bind -n):\n     M-t  new-tab\n"),
             "{out}"
         );
         Ok(())
@@ -1766,25 +1775,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn resize_mode_repeats_its_keys_until_esc() -> Outcome {
-        let (mut s, c) = session()?;
-        run(&mut s, "split -h -t %1")?;
-        run(&mut s, "select-pane -c c1 -t %1")?;
-        let start = pane_width(&s, 1);
-        s.input(c, &prefixed("rlll"));
-        assert_eq!(mode(&s, c), "repeat r");
-        assert_eq!(start.checked_add(3), Some(pane_width(&s, 1)));
-        escape(&mut s, c);
-        assert_eq!(mode(&s, c), "normal");
-        // After Esc, `l` is the pane's again.
-        let _ = queued(&mut s, 1);
-        s.input(c, b"l");
-        assert_eq!(queued(&mut s, 1), b"l");
-        assert_eq!(start.checked_add(3), Some(pane_width(&s, 1)));
-        Ok(())
-    }
-
     /// The panes of the client's tab, left to right.
     fn pane_order(s: &mut Session) -> Vec<String> {
         let ls = s.run(&["ls".to_owned()], &Ctx::default()).stdout;
@@ -1824,27 +1814,6 @@ mod tests {
             .map(|w| w.tabs.iter().map(|t| t.id.0).collect())
             .unwrap_or_default();
         assert_eq!(order, [2, 3, 1]);
-        Ok(())
-    }
-
-    #[test]
-    fn a_menu_acts_on_the_item_it_was_opened_for() -> Outcome {
-        let (mut s, c) = session()?;
-        run(&mut s, "split -h -t %1")?;
-        run(&mut s, "select-pane -c c1 -t %2")?;
-        s.input(c, b"\x02a");
-        assert!(mode(&s, c).starts_with("list pane %2"), "{}", mode(&s, c));
-        // Focus moves; the menu still means %2: its "close" asks about %2.
-        run(&mut s, "select-pane -c c1 -t %1")?;
-        s.input(c, b"\x1b[B\r");
-        assert!(
-            mode(&s, c).starts_with("confirm close pane %2"),
-            "{}",
-            mode(&s, c)
-        );
-        s.input(c, b"y");
-        assert!(!s.panes.contains_key(&crate::layout::PaneId(2)));
-        assert!(s.panes.contains_key(&crate::layout::PaneId(1)));
         Ok(())
     }
 

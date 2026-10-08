@@ -1087,24 +1087,12 @@ mod tests {
 
     #[test]
     fn bad_command_lines_are_usage_errors() {
+        // Beside those `usage_errors_keep_their_words` words.
         for line in [
-            "",
-            "nope",
-            "split",
             "split -h -t 3",
-            "kill-tab -t %1",
-            "rename -t %1",
             "rename %1 x",
-            "move-pane",
             "resize-pane -t %1",
-            "resize-pane -L zero",
-            "send-keys -t %1",
-            "select-pane",
             "select-pane --next -L",
-            "ls extra",
-            "kill-pane -- x",
-            "detach -c zz",
-            "new-tab -t %1",
             // Commands that take nothing take nothing.
             "kill-server now",
             // A kind beside a target of another kind.

@@ -916,13 +916,7 @@ mod tests {
     /// the last one there is none to go to, and the bar says so.
     #[test]
     fn brackets_jump_between_prompts() -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = Session::new(
-            crate::config::Config::default(),
-            "/nonexistent/fux.sock".into(),
-            false,
-        );
-        s.start()?;
-        let c = s.attach(6, 30, None)?;
+        let (mut s, c) = crate::session::testing::attached(6, 30)?;
         let pane = PaneId(1);
         let mut output = String::new();
         for command in ["one", "two", "three"] {

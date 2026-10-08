@@ -2331,73 +2331,77 @@ pub(crate) mod testing {
     use crate::command::ClientId;
     use crate::config::Config;
 
+    /// A session of `config`, but for its shell, `/bin/sh` (each pane is
+    /// named after it), started.
+    pub(crate) fn started(config: Config) -> Result<Session, String> {
+        let config = Config {
+            shell: vec!["/bin/sh".into()],
+            ..config
+        };
+        let mut session = Session::new(config, "/nonexistent/fux.sock".into(), false);
+        session.start().map_err(|e| e.to_string())?;
+        Ok(session)
+    }
+
     /// A session started with the default config, and a client of `rows`
     /// by `cols` attached.
     pub(crate) fn attached(rows: u16, cols: u16) -> Result<(Session, ClientId), String> {
-        let mut session = Session::new(Config::default(), "/nonexistent/fux.sock".into(), false);
-        session.start().map_err(|e| e.to_string())?;
+        let mut session = started(Config::default())?;
         let client = session
             .attach(rows, cols, None)
             .map_err(|e| e.to_string())?;
         Ok((session, client))
     }
 
-    /// Runs `line` as a command from no client; its error, if it fails.
-    pub(crate) fn run(session: &mut Session, line: &str) -> Result<(), String> {
+    /// Runs `line` as a command from no client: what it printed, or its
+    /// error if it fails.
+    pub(crate) fn output(session: &mut Session, line: &str) -> Result<String, String> {
         let words = crate::words::split(line).map_err(|e| e.to_string())?;
         let outcome = session.run(&words, &Ctx::default());
         if outcome.status == 0 {
-            Ok(())
+            Ok(outcome.stdout)
         } else {
             Err(outcome.stderr)
         }
+    }
+
+    /// Runs `line` as a command from no client; its error, if it fails.
+    pub(crate) fn run(session: &mut Session, line: &str) -> Result<(), String> {
+        output(session, line).map(|_| ())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::testing::{attached, output, run, started};
     use super::*;
 
     /// The `--json` outputs, byte for byte: escapes, borrowed names and
     /// formatted IDs alike.
     #[test]
     fn json_outputs_are_what_they_were() -> Result<(), Box<dyn std::error::Error>> {
-        let config = Config {
-            shell: vec!["/bin/sh".into()],
-            ..Config::default()
-        };
-        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
-        s.start()?;
-        s.attach(4, 30, None)?;
-        let run = |s: &mut Session, line: &str| -> Result<String, String> {
-            let words = crate::words::split(line).map_err(|e| e.to_string())?;
-            let outcome = s.run(&words, &Ctx::default());
-            match outcome.status {
-                0 => Ok(outcome.stdout),
-                _ => Err(outcome.stderr),
-            }
-        };
+        let (mut s, _) = attached(4, 30)?;
         run(&mut s, "split -h -t %1")?;
         run(&mut s, r#"rename -t %1 'say "hi" \ 界'"#)?;
         run(&mut s, "new-tab -t +1 -n two")?;
         run(&mut s, "select-tab -c c1 -t @1")?;
         s.output(PaneId(2), "a\tb \"q\" 界\x1b]2;tab\\title\x07".as_bytes());
         assert_eq!(
-            run(&mut s, "ls --json")?,
+            output(&mut s, "ls --json")?,
             concat!(
                 r#"{"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[{"id":"%1","name":"say \"hi\" \\ 界","title":"","rows":3,"cols":15,"pid":null},{"id":"%2","name":"sh","title":"tab\\title","rows":3,"cols":14,"pid":null}]},{"id":"@2","name":"two","panes":[{"id":"%3","name":"sh","title":"","rows":24,"cols":80,"pid":null}]}]}],"clients":[{"id":"c1","rows":4,"cols":30,"workspace":"+1","tab":"@1","pane":"%2","zoom":false}]}"#,
                 "\n"
             )
         );
         assert_eq!(
-            run(&mut s, "capture-pane -t %2 --json")?,
+            output(&mut s, "capture-pane -t %2 --json")?,
             concat!(
                 r#"{"pane":"%2","rows":3,"cols":14,"cursor":[1,2],"lines":["a       b \"q\"","界",""]}"#,
                 "\n"
             )
         );
         assert_eq!(
-            run(&mut s, "capture-client -c c1 --json")?,
+            output(&mut s, "capture-client -c c1 --json")?,
             concat!(
                 r#"{"client":"c1","rows":4,"cols":30,"cursor":[1,18],"lines":["               │a       b \"q\"","               │界","               │"," main  main  two %2 tab\\title"]}"#,
                 "\n"
@@ -2410,14 +2414,7 @@ mod tests {
     /// tab closes with it.
     #[test]
     fn an_exit_is_told_even_when_it_closes_the_tab() -> Result<(), Box<dyn std::error::Error>> {
-        let config = Config {
-            shell: vec!["/bin/sh".into()],
-            ..Config::default()
-        };
-        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
-        s.start()?;
-        let client = s.attach(10, 40, None)?;
-        let words = |line: &str| crate::words::split(line).map_err(|e| e.to_string());
+        let (mut s, client) = attached(10, 40)?;
         let notice = |s: &Session| {
             s.views
                 .get(&client)
@@ -2425,16 +2422,12 @@ mod tests {
                 .map(|n| n.text.clone())
         };
         // Two panes: the tab stays.
-        assert_eq!(s.run(&words("split -h -t %1")?, &Ctx::default()).status, 0);
+        run(&mut s, "split -h -t %1")?;
         s.exited(PaneId(2), 3);
         assert_eq!(notice(&s).as_deref(), Some("%2 sh exited with status 3"));
         // A second tab, shown; its only pane exits, and the tab with it.
-        assert_eq!(s.run(&words("new-tab -t +1")?, &Ctx::default()).status, 0);
-        assert_eq!(
-            s.run(&words("select-tab -c c1 -t @2")?, &Ctx::default())
-                .status,
-            0
-        );
+        run(&mut s, "new-tab -t +1")?;
+        run(&mut s, "select-tab -c c1 -t @2")?;
         s.exited(PaneId(3), 7);
         assert_eq!(notice(&s).as_deref(), Some("%3 sh exited with status 7"));
         Ok(())
@@ -2446,28 +2439,18 @@ mod tests {
     #[test]
     fn workspace_names_stay_unique_and_failures_use_no_ids()
     -> Result<(), Box<dyn std::error::Error>> {
-        let config = Config {
-            shell: vec!["/bin/sh".into()],
-            ..Config::default()
-        };
-        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
-        s.start()?;
-        let run = |s: &mut Session, line: &str| -> Result<Outcome, String> {
-            let words = crate::words::split(line).map_err(|e| e.to_string())?;
-            Ok(s.run(&words, &Ctx::default()))
-        };
-        assert_eq!(run(&mut s, "new-workspace -n main")?.status, 1);
-        assert_eq!(run(&mut s, "new-workspace -n workspace-3")?.stdout, "+2\n");
+        let mut s = started(Config::default())?;
+        assert!(run(&mut s, "new-workspace -n main").is_err());
+        assert_eq!(output(&mut s, "new-workspace -n workspace-3")?, "+2\n");
         // +3 would be workspace-3, which is taken.
-        assert_eq!(run(&mut s, "new-workspace")?.stdout, "+3\n");
+        assert_eq!(output(&mut s, "new-workspace")?, "+3\n");
         let names: Vec<&str> = s.workspaces.iter().map(|w| w.name.as_str()).collect();
         assert_eq!(names, ["main", "workspace-3", "workspace-4"]);
         // A move to a new workspace with no tab ID left takes no workspace
         // ID either.
         s.next_tab = u32::MAX;
         let ws = s.next_ws;
-        let moved = run(&mut s, "move-pane -t %1 --to new-workspace")?;
-        assert_eq!(moved.status, 1, "{}", moved.stderr);
+        assert!(run(&mut s, "move-pane -t %1 --to new-workspace").is_err());
         assert_eq!(s.next_ws, ws);
         Ok(())
     }
@@ -2479,24 +2462,14 @@ mod tests {
     #[test]
     fn only_screens_that_may_change_are_marked_for_painting()
     -> Result<(), Box<dyn std::error::Error>> {
-        let config = Config {
-            shell: vec!["/bin/sh".into()],
-            ..Config::default()
-        };
-        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
-        s.start()?;
-        let (one, two) = (s.attach(10, 40, None)?, s.attach(10, 40, None)?);
+        let (mut s, one) = attached(10, 40)?;
+        let two = s.attach(10, 40, None)?;
         let clean = |s: &mut Session| {
             for view in s.views.values_mut() {
                 view.dirty = false;
             }
         };
         let dirty = |s: &Session, c: ClientId| s.views.get(&c).is_some_and(|v| v.dirty);
-        let run = |s: &mut Session, line: &str| -> Result<(), String> {
-            let words = crate::words::split(line).map_err(|e| e.to_string())?;
-            let outcome = s.run(&words, &Ctx::default());
-            (outcome.status == 0).then_some(()).ok_or(outcome.stderr)
-        };
         clean(&mut s);
         // Keys for the pane's program show when it answers: its output
         // marks every screen showing the pane.
@@ -2549,18 +2522,14 @@ mod tests {
     /// settle that follows ends copy mode when the rows go.
     #[test]
     fn output_asks_for_a_settle_only_under_copy_mode() -> Result<(), Box<dyn std::error::Error>> {
-        let config = Config {
-            shell: vec!["/bin/sh".into()],
+        let mut s = started(Config {
             history_lines: 2,
             ..Config::default()
-        };
-        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
-        s.start()?;
+        })?;
         let client = s.attach(6, 20, None)?;
         s.output(PaneId(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
         assert!(!s.unsettled(), "no copy mode: nothing to repair");
-        let words = |line: &str| crate::words::split(line).map_err(|e| e.to_string());
-        assert_eq!(s.run(&words("copy-mode -c c1")?, &Ctx::default()).status, 0);
+        run(&mut s, "copy-mode -c c1")?;
         // To the oldest row, which the next lines of output push out.
         s.input(client, b"g");
         s.output(PaneId(1), b"g\r\nh\r\ni\r\nj\r\n");
@@ -2583,13 +2552,7 @@ mod tests {
     /// as they were before commands failed with `Error`.
     #[test]
     fn command_errors_keep_their_words() -> Result<(), Box<dyn std::error::Error>> {
-        let config = Config {
-            shell: vec!["/bin/sh".into()],
-            ..Config::default()
-        };
-        let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
-        s.start()?;
-        s.attach(10, 40, None)?;
+        let (mut s, _) = attached(10, 40)?;
         for (line, status, message) in [
             ("kill-pane -t %99", 1, "no pane %99"),
             ("kill-tab -t @99", 1, "no tab @99"),
@@ -2748,9 +2711,7 @@ mod tests {
     /// What a caller tells apart, it tells by variant.
     #[test]
     fn failures_are_told_apart_by_kind() -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = Session::new(Config::default(), "/nonexistent/fux.sock".into(), false);
-        s.start()?;
-        let c = s.attach(10, 40, None)?;
+        let (mut s, c) = attached(10, 40)?;
         let ctx = Ctx::client(c);
         let mut run = |line: &str| -> Result<Result<String, Error>, Box<dyn std::error::Error>> {
             let command = command::parse(&crate::words::split(line)?)?;
