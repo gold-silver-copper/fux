@@ -75,15 +75,11 @@ flags, tags, Indic, Hangul, Prepend) and fux-vt's sequences.
 `corpus/terminal` holds the permanent seeds, cut to 4,096 bytes:
 `adversarial-*`, generator seeds 0–19 at the six sizes of
 `tests/invariants.rs` (the header's modulus shrinks the larger ones); and
-`fixture-*`, each ending with a resize and a copy, for the golden fixtures,
+`fixture-*`, each ending with a resize and a copy, for short fixtures,
 the terminal-edge streams, tiny grids, a history copy, long clusters
 (narrow, wide and through reflows), the `fd` operation, the keyboard
 protocol with an identity, the newer SGR and cursor sequences, and a row's
-text budget. The invariant tests write them:
-
-```sh
-FUX_VT_FUZZ_CORPUS="$PWD/fux-vt/fuzz/corpus/terminal" cargo test -p fux-vt --test invariants --locked
-```
+text budget. They are kept as they were written; nothing regenerates them.
 
 What a run adds, and the `graphemes` and `cells` corpora, stay local (git
 ignores them); a crash becomes a named regression test.
