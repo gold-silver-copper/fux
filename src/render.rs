@@ -1071,12 +1071,8 @@ fn bar(
     } else if let Some(copy) = &copy_bar {
         Some((copy.position.as_str().into(), base))
     } else if let Mode::Column { path, .. } = &view.mode {
-        let typed = std::iter::once(session.config.prefix.to_string())
-            .chain(path.iter().map(|key| key.to_string()))
-            .collect::<Vec<_>>()
-            .join(" ");
         Some((
-            format!("{typed} …").into(),
+            format!("{} …", session.keys_named(path)).into(),
             style(Color::Idx(0), Color::Idx(11)),
         ))
     } else if let Mode::Repeat { path } = &view.mode {
