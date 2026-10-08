@@ -53,14 +53,16 @@ impl FromStr for PaneId {
     type Err = Usage;
     fn from_str(text: &str) -> Result<PaneId, Usage> {
         let n = text.strip_prefix('%').and_then(number);
-        n.map(PaneId).ok_or_else(|| Usage::Not(Kind::Pane, text.to_owned()))
+        n.map(PaneId)
+            .ok_or_else(|| Usage::Not(Kind::Pane, text.to_owned()))
     }
 }
 impl FromStr for TabId {
     type Err = Usage;
     fn from_str(text: &str) -> Result<TabId, Usage> {
         let n = text.strip_prefix('@').and_then(number);
-        n.map(TabId).ok_or_else(|| Usage::Not(Kind::Tab, text.to_owned()))
+        n.map(TabId)
+            .ok_or_else(|| Usage::Not(Kind::Tab, text.to_owned()))
     }
 }
 impl FromStr for WsId {

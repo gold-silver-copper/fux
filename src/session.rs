@@ -33,6 +33,15 @@ pub struct Workspace {
     pub tabs: Vec<Tab>,
 }
 
+impl Workspace {
+    /// Adds a tab, named after its place if no name is given.
+    fn add_tab(&mut self, id: TabId, name: Option<String>, root: Option<Node>) {
+        let number = self.tabs.len().saturating_add(1);
+        let name = name.unwrap_or_else(|| format!("tab-{number}"));
+        self.tabs.push(Tab { id, name, root });
+    }
+}
+
 /// What the server must do outside the session.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outgoing {
@@ -73,6 +82,42 @@ impl Ctx {
     }
 }
 
+/// What a command acts on when it names no pane, tab or workspace.
+#[derive(Clone, Copy, Default)]
+struct Here {
+    pane: Option<PaneId>,
+    tab: Option<TabId>,
+    workspace: Option<WsId>,
+}
+
+/// A client's focused pane, its tab and workspace.
+impl From<&View> for Here {
+    fn from(view: &View) -> Here {
+        Here {
+            pane: view.focus(),
+            tab: view.tab(),
+            workspace: Some(view.workspace),
+        }
+    }
+}
+
+impl WsRef {
+    fn names(&self, ws: &Workspace) -> bool {
+        match self {
+            WsRef::Id(id) => ws.id == *id,
+            WsRef::Name(name) => ws.name == *name,
+        }
+    }
+
+    /// Why no workspace is the one this names.
+    fn missing(&self) -> Error {
+        match self {
+            WsRef::Id(id) => Error::NoWorkspace(*id),
+            WsRef::Name(name) => Error::NoWorkspaceNamed(name.clone()),
+        }
+    }
+}
+
 /// Why a command, or attaching a client, failed: exit status 1.
 #[derive(Debug)]
 pub enum Error {
@@ -99,10 +144,7 @@ pub enum Error {
     NoLastPane,
     /// The client focuses no pane.
     NoPaneToCopy,
-    // What is not where the session's invariants put it: no command can
-    // meet these.
-    Gone(Kind),
-    NotInTab,
+    /// The client's tab, its panes moved out.
     TabEmpty,
     /// A pane, tab or workspace alone of its kind, with nothing to move to.
     OnlyOne(Kind),
@@ -170,8 +212,6 @@ impl std::fmt::Display for Error {
             Error::NoCurrentWorkspace => f.write_str("no workspace"),
             Error::NoLastPane => f.write_str("no previously focused pane"),
             Error::NoPaneToCopy => f.write_str("no pane to copy from"),
-            Error::Gone(kind) => write!(f, "the {} is gone", kind.name()),
-            Error::NotInTab => f.write_str("the pane is in no tab"),
             Error::TabEmpty => f.write_str("the tab is empty"),
             Error::OnlyOne(kind) => write!(f, "only one {}", kind.name()),
             Error::AtEnd(kind) => write!(f, "the {} is already at that end", kind.name()),
@@ -237,8 +277,6 @@ impl std::error::Error for Error {
             | Error::NoCurrentWorkspace
             | Error::NoLastPane
             | Error::NoPaneToCopy
-            | Error::Gone(_)
-            | Error::NotInTab
             | Error::TabEmpty
             | Error::OnlyOne(_)
             | Error::AtEnd(_)
@@ -302,9 +340,9 @@ pub struct Session {
     pub config_error: Option<crate::config::Error>,
     /// Paste buffers, newest first.
     pub buffers: VecDeque<String>,
-    pub socket: PathBuf,
-    /// Start real processes; tests of the state alone do not.
-    pub launch: bool,
+    /// The socket a started pane is told of, if panes start real
+    /// processes; tests of the state alone start none.
+    launch: Option<PathBuf>,
     pub outbox: Vec<Outgoing>,
     pub dying: Vec<Dying>,
     /// Per tab, the client that last typed into it, whose terminal answers
@@ -369,8 +407,7 @@ impl Session {
             config_path: None,
             config_error: None,
             buffers: VecDeque::new(),
-            socket,
-            launch,
+            launch: launch.then_some(socket),
             outbox: Vec::new(),
             dying: Vec::new(),
             typists: BTreeMap::new(),
@@ -392,71 +429,43 @@ impl Session {
 
     // ---------------------------------------------------------------- lookup
 
-    pub fn ws_index(&self, id: WsId) -> Option<usize> {
-        self.workspaces.iter().position(|w| w.id == id)
-    }
     pub fn workspace(&self, id: WsId) -> Option<&Workspace> {
         self.workspaces.iter().find(|w| w.id == id)
     }
-    fn workspace_mut(&mut self, id: WsId) -> Option<&mut Workspace> {
-        self.workspaces.iter_mut().find(|w| w.id == id)
-    }
-    /// The workspace and tab indexes of a tab.
-    pub fn find_tab(&self, id: TabId) -> Option<(usize, usize)> {
+    pub fn tab(&self, id: TabId) -> Option<&Tab> {
         self.workspaces
             .iter()
-            .enumerate()
-            .find_map(|(w, ws)| ws.tabs.iter().position(|t| t.id == id).map(|t| (w, t)))
-    }
-    pub fn tab(&self, id: TabId) -> Option<&Tab> {
-        let (w, t) = self.find_tab(id)?;
-        self.workspaces.get(w)?.tabs.get(t)
-    }
-    fn tab_mut(&mut self, id: TabId) -> Option<&mut Tab> {
-        let (w, t) = self.find_tab(id)?;
-        self.workspaces.get_mut(w)?.tabs.get_mut(t)
+            .flat_map(|w| &w.tabs)
+            .find(|t| t.id == id)
     }
     /// A tab's layout, unless it is empty.
     pub fn root(&self, tab: TabId) -> Option<&Node> {
         self.tab(tab)?.root.as_ref()
     }
-    fn root_mut(&mut self, tab: TabId) -> Option<&mut Node> {
-        self.tab_mut(tab)?.root.as_mut()
-    }
     /// The workspace and tab that hold a pane.
     pub fn locate(&self, pane: PaneId) -> Option<(WsId, TabId)> {
-        self.workspaces.iter().find_map(|ws| {
-            ws.tabs
-                .iter()
-                .find(|t| t.root.as_ref().is_some_and(|r| r.contains(pane)))
-                .map(|t| (ws.id, t.id))
-        })
+        let mut tabs = self
+            .workspaces
+            .iter()
+            .flat_map(|w| w.tabs.iter().map(|t| (w.id, t)));
+        tabs.find(|(_, t)| holds(t, pane)).map(|(w, t)| (w, t.id))
     }
-    fn tab_workspace(&self, tab: TabId) -> Option<WsId> {
-        let (w, _) = self.find_tab(tab)?;
-        self.workspaces.get(w).map(|ws| ws.id)
+    /// The workspace a tab is in.
+    pub fn tab_workspace(&self, tab: TabId) -> Result<WsId, Error> {
+        let ws = self
+            .workspaces
+            .iter()
+            .find(|w| w.tabs.iter().any(|t| t.id == tab));
+        ws.map(|w| w.id).ok_or(Error::NoTab(tab))
     }
     pub fn resolve_ws(&self, r: &WsRef) -> Result<WsId, Error> {
-        match r {
-            WsRef::Id(id) => self
-                .workspace(*id)
-                .map(|w| w.id)
-                .ok_or(Error::NoWorkspace(*id)),
-            WsRef::Name(name) => self
-                .workspaces
-                .iter()
-                .find(|w| &w.name == name)
-                .map(|w| w.id)
-                .ok_or_else(|| Error::NoWorkspaceNamed(name.clone())),
-        }
-    }
-    pub fn tab_panes(&self, tab: TabId) -> Vec<PaneId> {
-        self.root(tab).map(Node::panes).unwrap_or_default()
+        let found = self.workspaces.iter().find(|w| r.names(w));
+        found.map(|w| w.id).ok_or_else(|| r.missing())
     }
     pub fn exists(&self, what: &AnyRef) -> bool {
         match what {
             AnyRef::Pane(p) => self.panes.contains_key(p),
-            AnyRef::Tab(t) => self.find_tab(*t).is_some(),
+            AnyRef::Tab(t) => self.tab(*t).is_some(),
             AnyRef::Workspace(w) => self.resolve_ws(w).is_ok(),
         }
     }
@@ -467,38 +476,41 @@ impl Session {
         ctx.client.and_then(|c| self.views.get(&c))
     }
 
-    fn pane_target(&self, explicit: Option<PaneId>, ctx: &Ctx) -> Result<PaneId, Error> {
-        let id = explicit
-            .or_else(|| self.view_of(ctx).and_then(View::focus))
-            .or(ctx.pane)
-            .ok_or(Error::NoPaneGiven)?;
-        if self.panes.contains_key(&id) {
-            Ok(id)
-        } else {
-            Err(Error::NoPane(id))
+    /// What a command that names nothing acts on: its client's, else the
+    /// CLI caller's pane's.
+    fn here(&self, ctx: &Ctx) -> Here {
+        let view = self.view_of(ctx).map_or_else(Here::default, Here::from);
+        let caller = ctx.pane.and_then(|p| self.locate(p));
+        Here {
+            pane: view.pane.or(ctx.pane),
+            tab: view.tab.or(caller.map(|(_, t)| t)),
+            workspace: view.workspace.or(caller.map(|(w, _)| w)),
         }
     }
 
-    fn tab_target(&self, explicit: Option<TabId>, ctx: &Ctx) -> Result<TabId, Error> {
-        let id = explicit
-            .or_else(|| self.view_of(ctx).and_then(View::tab))
-            .or_else(|| ctx.pane.and_then(|p| self.locate(p)).map(|(_, t)| t))
-            .ok_or(Error::NoTabGiven)?;
-        self.find_tab(id).map(|_| id).ok_or(Error::NoTab(id))
+    fn pane(&self, explicit: Option<PaneId>, here: Here) -> Result<&Pane, Error> {
+        let id = explicit.or(here.pane).ok_or(Error::NoPaneGiven)?;
+        self.panes.get(&id).ok_or(Error::NoPane(id))
     }
 
-    fn ws_target(&self, explicit: Option<&WsRef>, ctx: &Ctx) -> Result<WsId, Error> {
-        if let Some(r) = explicit {
-            return self.resolve_ws(r);
-        }
-        self.view_of(ctx)
-            .map(|v| v.workspace)
-            .or_else(|| ctx.pane.and_then(|p| self.locate(p)).map(|(w, _)| w))
+    fn pane_mut(&mut self, explicit: Option<PaneId>, here: Here) -> Result<&mut Pane, Error> {
+        let id = explicit.or(here.pane).ok_or(Error::NoPaneGiven)?;
+        self.panes.get_mut(&id).ok_or(Error::NoPane(id))
+    }
+
+    fn tab_target(&self, explicit: Option<TabId>, here: Here) -> Result<TabId, Error> {
+        let id = explicit.or(here.tab).ok_or(Error::NoTabGiven)?;
+        self.tab(id).map(|t| t.id).ok_or(Error::NoTab(id))
+    }
+
+    fn ws_target(&self, explicit: Option<&WsRef>, here: Here) -> Result<WsRef, Error> {
+        explicit
+            .cloned()
+            .or(here.workspace.map(WsRef::Id))
             .ok_or(Error::NoWorkspaceGiven)
-            .and_then(|id| self.resolve_ws(&WsRef::Id(id)))
     }
 
-    fn any_target(&self, subject: &Subject, ctx: &Ctx) -> Result<AnyRef, Error> {
+    fn any_target(&self, subject: &Subject, here: Here) -> Result<AnyRef, Error> {
         if let Some(target) = subject.target() {
             return if self.exists(&target) {
                 Ok(target)
@@ -507,23 +519,13 @@ impl Session {
             };
         }
         Ok(match subject.kind() {
-            Kind::Pane => AnyRef::Pane(self.pane_target(None, ctx)?),
-            Kind::Tab => AnyRef::Tab(self.tab_target(None, ctx)?),
-            Kind::Workspace => AnyRef::Workspace(WsRef::Id(self.ws_target(None, ctx)?)),
+            Kind::Pane => AnyRef::Pane(self.pane(None, here)?.id),
+            Kind::Tab => AnyRef::Tab(self.tab_target(None, here)?),
+            Kind::Workspace => {
+                let id = self.resolve_ws(&self.ws_target(None, here)?)?;
+                AnyRef::Workspace(WsRef::Id(id))
+            }
         })
-    }
-
-    fn client_target(&self, explicit: Option<ClientId>, ctx: &Ctx) -> Result<ClientId, Error> {
-        let id = explicit.or(ctx.client).ok_or(Error::NoClientGiven)?;
-        if self.views.contains_key(&id) {
-            Ok(id)
-        } else {
-            Err(Error::NoClient(id))
-        }
-    }
-
-    pub(crate) fn view_mut(&mut self, id: ClientId) -> Result<&mut View, Error> {
-        self.views.get_mut(&id).ok_or(Error::NoClient(id))
     }
 
     // ------------------------------------------------------------ creation
@@ -546,96 +548,6 @@ impl Session {
             .unwrap_or_else(|| PathBuf::from("/"))
     }
 
-    /// A new pane running the shell, with `cmd` typed into it if given.
-    fn new_pane(
-        &mut self,
-        ids: &mut Ids,
-        cmd: &[String],
-        cwd: &Path,
-        size: (u16, u16),
-    ) -> Result<PaneId, Error> {
-        let shell_program = self
-            .config
-            .shell
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "/bin/sh".into());
-        let fish = basename(&shell_program) == "fish";
-        // The line to type is measured before anything is made: a line too
-        // long to type must not leave a process behind.
-        let typed = if cmd.is_empty() {
-            None
-        } else {
-            let mut typed = crate::words::shell_line(cmd, fish)?.into_bytes();
-            typed.push(b'\r');
-            if typed
-                .len()
-                .checked_add(crate::pane::ENTRY_COST)
-                .is_none_or(|cost| cost > crate::pane::INPUT_BYTES)
-            {
-                return Err(Error::LineTooLong);
-            }
-            Some(typed)
-        };
-        let id = ids.pane()?;
-        let name = cmd
-            .first()
-            .map(|c| basename(c))
-            .unwrap_or_else(|| basename(&shell_program));
-        let mut pane = Pane::new(
-            id,
-            name,
-            shell_program,
-            size.0,
-            size.1,
-            self.config.history_lines,
-        )?;
-        if self.launch {
-            let env = [
-                ("FUX_PANE", id.to_string()),
-                ("FUX_SOCKET", self.socket.to_string_lossy().into_owned()),
-            ];
-            pane.child = Some(crate::process::spawn(
-                &self.config.shell,
-                cwd,
-                &env,
-                size.0,
-                size.1,
-            )?);
-        }
-        if let Some(typed) = typed {
-            pane.typed = Some(crate::pane::Typed {
-                line: typed,
-                deadline: crate::after(Instant::now(), TYPE_WAIT),
-                last_output: None,
-            });
-            if pane.child.is_none() {
-                pane.type_now();
-            }
-        }
-        self.panes.insert(id, pane);
-        Ok(id)
-    }
-
-    /// Refuses a workspace name another workspace has, `except` the one
-    /// being renamed: a workspace is found by its name.
-    fn check_workspace_name(&self, name: &str, except: Option<WsId>) -> Result<(), Error> {
-        self.check_name(name)?;
-        // A name a target reads back as itself, so that `-t NAME` finds
-        // this workspace and no other.
-        if command::parse_workspace(name) != Ok(WsRef::Name(name.to_owned())) {
-            return Err(Error::NameReadAsTarget(name.to_owned()));
-        }
-        if self
-            .workspaces
-            .iter()
-            .any(|ws| ws.name == name && Some(ws.id) != except)
-        {
-            return Err(Error::NameTaken(name.to_owned()));
-        }
-        Ok(())
-    }
-
     /// The name a workspace gets when none is given: `workspace-N` after
     /// its ID, or the next number up that no workspace is named.
     fn workspace_name(&self, id: WsId) -> String {
@@ -652,21 +564,6 @@ impl Session {
         }
     }
 
-    /// Adds a tab to a workspace, named after its place if no name is given.
-    fn add_tab(
-        &mut self,
-        ws: WsId,
-        id: TabId,
-        name: Option<String>,
-        root: Option<Node>,
-    ) -> Result<(), Error> {
-        let workspace = self.workspace_mut(ws).ok_or(Error::Gone(Kind::Workspace))?;
-        let number = workspace.tabs.len().saturating_add(1);
-        let name = name.unwrap_or_else(|| format!("tab-{number}"));
-        workspace.tabs.push(Tab { id, name, root });
-        Ok(())
-    }
-
     fn create_workspace(
         &mut self,
         name: Option<String>,
@@ -675,17 +572,19 @@ impl Session {
     ) -> Result<WsId, Error> {
         let cwd = self.cwd_for(ctx, None);
         if let Some(name) = &name {
-            self.check_workspace_name(name, None)?;
+            check_workspace_name(name, &self.workspaces)?;
         }
         // The IDs are taken before the pane starts, so that none can run out
         // after, and are committed once it has.
         let mut ids = self.ids;
         let id = ids.workspace()?;
         let tab = ids.tab()?;
-        let pane = self.new_pane(&mut ids, cmd, &cwd, DEFAULT_SIZE)?;
+        let launch = self.launch.as_deref();
+        let pane = new_pane(&self.config, launch, &mut ids, cmd, &cwd, DEFAULT_SIZE)?;
         self.ids = ids;
         let name = name.unwrap_or_else(|| self.workspace_name(id));
-        self.push_workspace(id, name, tab, Some(Node::Pane(pane)));
+        self.push_workspace(id, name, tab, Some(Node::Pane(pane.id)));
+        self.panes.insert(pane.id, pane);
         Ok(id)
     }
 
@@ -821,13 +720,13 @@ impl Session {
 
     /// The area to lay out a tab in for a command without a client: a
     /// client showing it, else any client, else a typical terminal.
-    fn reference_area(&self, tab: TabId, ctx: &Ctx) -> Rect {
-        let view = self
-            .view_of(ctx)
+    fn reference_area(views: &BTreeMap<ClientId, View>, tab: TabId, ctx: &Ctx) -> Rect {
+        let own = ctx.client.and_then(|c| views.get(&c));
+        let view = own
             .filter(|v| v.tab() == Some(tab))
-            .or_else(|| self.views.values().find(|v| v.tab() == Some(tab)))
-            .or_else(|| self.view_of(ctx))
-            .or_else(|| self.views.values().next());
+            .or_else(|| views.values().find(|v| v.tab() == Some(tab)))
+            .or(own)
+            .or_else(|| views.values().next());
         view.map_or(
             Rect {
                 x: 0,
@@ -1071,13 +970,12 @@ impl Session {
             .filter(|(_, view)| place.is_some_and(|(_, t)| view.tab() == Some(t)))
             .map(|(client, _)| *client)
             .collect();
-        if let Some((_, tab)) = place
-            && let Some(t) = self.tab_mut(tab)
-        {
+        let emptied = tab_of(&mut self.workspaces, id).ok().and_then(|t| {
             layout::remove(&mut t.root, id);
-            if t.root.is_none() {
-                self.remove_tab(tab);
-            }
+            t.root.is_none().then_some(t.id)
+        });
+        if let Some(tab) = emptied {
+            self.remove_tab(tab);
         }
         if let Some(pane) = self.panes.remove(&id) {
             if let Some(why) = why {
@@ -1092,10 +990,9 @@ impl Session {
 
     /// Removes a tab and whatever panes are in it.
     fn remove_tab(&mut self, tab: TabId) {
-        let Some((w, t)) = self.find_tab(tab) else {
-            return;
-        };
-        let Some(ws) = self.workspaces.get_mut(w) else {
+        let found = (self.workspaces.iter_mut())
+            .find_map(|ws| Some((ws.tabs.iter().position(|t| t.id == tab)?, ws)));
+        let Some((t, ws)) = found else {
             return;
         };
         // Its panes go with it.
@@ -1358,12 +1255,10 @@ impl Session {
                 .is_none()
                 .then_some(Error::NoCopiedText);
         }
+        let here = self.here(ctx);
         if let Command::Terminate { target } = command {
-            return match self.pane_target(*target, ctx) {
-                Ok(pane) => {
-                    let idle = self.panes.get(&pane).is_none_or(Pane::idle);
-                    idle.then_some(Error::OnlyShell(pane))
-                }
+            return match self.pane(*target, here) {
+                Ok(pane) => pane.idle().then_some(Error::OnlyShell(pane.id)),
                 Err(error) => Some(error),
             };
         }
@@ -1371,12 +1266,13 @@ impl Session {
         | Command::SwapPane { target, .. }
         | Command::MovePane { target, .. } = command
         {
-            return self.pane_target(*target, ctx).err();
+            return self.pane(*target, here).err();
         }
         None
     }
 
     fn execute(&mut self, command: &Command, ctx: &Ctx) -> Result<String, Error> {
+        let here = self.here(ctx);
         match command {
             &Command::Ls { json } => Ok(if json { self.ls_json() } else { self.ls_text() }),
             &Command::KillServer => {
@@ -1421,17 +1317,22 @@ impl Session {
                 Ok(format!("{ws}\n"))
             }
             Command::NewTab { target, name, cmd } => {
-                let ws = self.ws_target(target.as_ref(), ctx)?;
-                if let Some(name) = &name {
-                    self.check_name(name)?;
-                }
+                let named = self.ws_target(target.as_ref(), here)?;
                 let cwd = self.cwd_for(ctx, None);
+                let ws = self.workspaces.iter_mut().find(|w| named.names(w));
+                let ws = ws.ok_or_else(|| named.missing())?;
+                if let Some(name) = &name {
+                    check_name(name)?;
+                }
                 // As for a workspace: the ID first, committed after the pane.
                 let mut ids = self.ids;
                 let id = ids.tab()?;
-                let pane = self.new_pane(&mut ids, cmd, &cwd, DEFAULT_SIZE)?;
+                let launch = self.launch.as_deref();
+                let pane = new_pane(&self.config, launch, &mut ids, cmd, &cwd, DEFAULT_SIZE)?;
                 self.ids = ids;
-                self.add_tab(ws, id, name.clone(), Some(Node::Pane(pane)))?;
+                ws.add_tab(id, name.clone(), Some(Node::Pane(pane.id)));
+                let ws = ws.id;
+                self.panes.insert(pane.id, pane);
                 if let Some(view) = ctx.client.and_then(|c| self.views.get_mut(&c)) {
                     view.workspace = ws;
                     view.tab_of.insert(ws, id);
@@ -1444,19 +1345,16 @@ impl Session {
                 target,
                 ref cmd,
             } => {
-                let target = self.pane_target(target, ctx)?;
-                let (_, tab) = self.locate(target).ok_or(Error::NotInTab)?;
-                let size = self.panes.get(&target).map_or(DEFAULT_SIZE, |p| p.size);
+                let (target, size) = self.pane(target, here).map(|p| (p.id, p.size))?;
                 let cwd = self.cwd_for(ctx, Some(target));
+                let tab = tab_of(&mut self.workspaces, target)?;
                 let mut ids = self.ids;
-                let pane = self.new_pane(&mut ids, cmd, &cwd, size)?;
+                let launch = self.launch.as_deref();
+                let pane = new_pane(&self.config, launch, &mut ids, cmd, &cwd, size)?;
                 self.ids = ids;
-                if let Some(t) = self.tab_mut(tab) {
-                    // True: `target` was just found in this tab. (False
-                    // would leave the new pane, its process started, in no
-                    // tab.)
-                    layout::split(&mut t.root, target, pane, axis, Side::After);
-                }
+                layout::split(&mut tab.root, target, pane.id, axis, Side::After);
+                let (tab, new) = (tab.id, pane.id);
+                self.panes.insert(new, pane);
                 // The splitting client follows the new pane; from the CLI,
                 // clients focused on the split pane do.
                 for view in self.views.values_mut() {
@@ -1465,25 +1363,25 @@ impl Session {
                         None => view.focus_of.get(&tab) == Some(&target),
                     };
                     if follows {
-                        view.set_focus(tab, pane);
+                        view.set_focus(tab, new);
                         view.zoom = false;
                     }
                 }
-                Ok(format!("{pane}\n"))
+                Ok(format!("{new}\n"))
             }
             &Command::KillPane { target } => {
-                let pane = self.pane_target(target, ctx)?;
+                let pane = self.pane(target, here)?.id;
                 self.close_pane(pane, None);
                 Ok(String::new())
             }
             &Command::KillTab { target } => {
-                let tab = self.tab_target(target, ctx)?;
+                let tab = self.tab_target(target, here)?;
                 self.remove_tab(tab);
                 self.after_close();
                 Ok(String::new())
             }
             Command::KillWorkspace { target } => {
-                let ws = self.ws_target(target.as_ref(), ctx)?;
+                let ws = self.resolve_ws(&self.ws_target(target.as_ref(), here)?)?;
                 self.remove_workspace(ws);
                 self.after_close();
                 Ok(String::new())
@@ -1491,19 +1389,14 @@ impl Session {
             Command::Rename { target, name } => {
                 self.rename(target, name.clone()).map(|()| String::new())
             }
-            &Command::MovePane { target, ref to } => self.move_pane(target, to, ctx),
+            &Command::MovePane { target, ref to } => self.move_pane(target, to, ctx, here),
             &Command::SwapPane { target, with } => {
-                let source = self.pane_target(target, ctx)?;
+                let source = self.pane(target, here)?.id;
                 let other = match with {
-                    SwapWith::Pane(p) => {
-                        if !self.panes.contains_key(&p) {
-                            return Err(Error::NoPane(p));
-                        }
-                        p
-                    }
+                    SwapWith::Pane(p) => self.pane(Some(p), here)?.id,
                     SwapWith::Toward(direction) => self.neighbor(source, direction, ctx)?,
                 };
-                self.swap(source, other)?;
+                self.swap(source, other);
                 Ok(String::new())
             }
             &Command::ResizePane {
@@ -1511,24 +1404,19 @@ impl Session {
                 direction,
                 amount,
             } => {
-                let pane = self.pane_target(target, ctx)?;
-                let (_, tab) = self.locate(pane).ok_or(Error::NotInTab)?;
-                let area = self.reference_area(tab, ctx);
-                let Some(root) = self.root_mut(tab) else {
-                    return Err(Error::TabEmpty);
-                };
-                if layout::resize(root, area, pane, direction, amount) {
+                let pane = self.pane(target, here)?.id;
+                let tab = tab_of(&mut self.workspaces, pane)?;
+                let area = Self::reference_area(&self.views, tab.id, ctx);
+                let root = tab.root.as_mut();
+                if root.is_some_and(|root| layout::resize(root, area, pane, direction, amount)) {
                     Ok(String::new())
                 } else {
                     Err(Error::NoBorder { pane, direction })
                 }
             }
             &Command::SendPrefix { target } => {
-                let pane = self.pane_target(target, ctx)?;
                 let prefix = self.config.prefix;
-                let Some(p) = self.panes.get_mut(&pane) else {
-                    return Err(Error::NoPane(pane));
-                };
+                let p = self.pane_mut(target, here)?;
                 let mode = p.screen().key_mode();
                 p.input
                     .push_with(|out| crate::encode::key_bytes(prefix.into(), mode, out))?;
@@ -1539,10 +1427,7 @@ impl Session {
                 literal,
                 ref keys,
             } => {
-                let pane = self.pane_target(target, ctx)?;
-                let Some(p) = self.panes.get_mut(&pane) else {
-                    return Err(Error::NoPane(pane));
-                };
+                let p = self.pane_mut(target, here)?;
                 // Each argument is a key name (`C-c`, `Enter`, `a`), or, as in
                 // tmux, text sent as it is; `-l` makes every argument text.
                 let mode = p.screen().key_mode();
@@ -1562,28 +1447,23 @@ impl Session {
                 target,
                 history,
                 json,
-            } => {
-                let pane = self.pane_target(target, ctx)?;
-                let p = self.panes.get(&pane).ok_or(Error::NoPane(pane))?;
-                Ok(capture(p, history, json))
-            }
+            } => Ok(capture(self.pane(target, here)?, history, json)),
             &Command::Terminate { target } => {
-                let pane = self.pane_target(target, ctx)?;
-                let p = self.panes.get(&pane).ok_or(Error::NoPane(pane))?;
+                let p = self.pane(target, here)?;
                 let child = p.child.as_ref().ok_or(Error::NoProcess)?;
                 match crate::process::foreground(&child.master) {
                     Some(group) if group != child.pid => {
                         crate::process::terminate(group).map_err(Error::Terminate)?;
                         Ok(String::new())
                     }
-                    _ => Err(Error::OnlyShell(pane)),
+                    _ => Err(Error::OnlyShell(p.id)),
                 }
             }
             &Command::Reorder {
                 ref subject,
                 toward,
             } => {
-                let target = self.any_target(subject, ctx)?;
+                let target = self.any_target(subject, here)?;
                 self.reorder(&target, toward).map(|()| String::new())
             }
             Command::Configure { argv } => {
@@ -1623,106 +1503,99 @@ impl Session {
                 .cloned()
                 .ok_or(Error::NoBuffer(index)),
             &Command::PasteBuffer { index, target } => {
-                if self.buffers.get(index).is_none() {
-                    return Err(Error::NoBuffer(index));
-                }
-                let pane = self.pane_target(target, ctx)?;
-                let p = self.panes.get_mut(&pane).ok_or(Error::NoPane(pane))?;
-                let text = self.buffers.get(index).ok_or(Error::NoBuffer(index))?;
+                let text = self.buffers.get(index).cloned();
+                let text = text.ok_or(Error::NoBuffer(index))?;
+                let p = self.pane_mut(target, here)?;
                 let bracketed = p.screen().bracketed_paste();
                 p.input
-                    .push_with(|out| crate::encode::paste(text, bracketed, out))?;
+                    .push_with(|out| crate::encode::paste(&text, bracketed, out))?;
                 Ok(String::new())
             }
             &Command::Client { client, ref action } => {
-                let client = self.client_target(client, ctx)?;
-                self.on_client(client, action)
+                let client = client.or(ctx.client).ok_or(Error::NoClientGiven)?;
+                // The client's view is the command's while it runs: out of
+                // the map, so that nothing looks it up again.
+                let mut view = self.views.remove(&client).ok_or(Error::NoClient(client))?;
+                let done = self.on_client(&mut view, action);
+                if let ClientAction::Detach = action {
+                    self.outbox.push(Outgoing::Exit(client, "detached".into()));
+                } else {
+                    self.views.insert(client, view);
+                }
+                done
             }
         }
     }
 
-    /// A command on a client's screen, once the client is known. Targets it
-    /// leaves out are the client's own.
-    fn on_client(&mut self, client: ClientId, action: &ClientAction) -> Result<String, Error> {
-        let ctx = Ctx::client(client);
+    /// A command on a client's screen, its view in hand. Targets it leaves
+    /// out are the client's own.
+    fn on_client(&mut self, view: &mut View, action: &ClientAction) -> Result<String, Error> {
+        let here = Here::from(&*view);
         match *action {
-            ClientAction::Detach => {
-                self.views.remove(&client);
-                self.outbox.push(Outgoing::Exit(client, "detached".into()));
-                Ok(String::new())
-            }
+            // `execute` does not put the view back.
+            ClientAction::Detach => Ok(String::new()),
             ClientAction::Capture { json } => {
-                let grid = crate::render::compose(self, client).ok_or(Error::NoClient(client))?;
-                Ok(capture_client(client, &grid, json))
+                let mut grid = crate::render::Grid::new(0, 0);
+                crate::render::compose_view(self, view, &mut grid, &mut Placement::default());
+                Ok(capture_client(view.id, &grid, json))
             }
             ClientAction::Zoom => {
-                let view = self.view_mut(client)?;
                 view.zoom = !view.zoom;
                 Ok(String::new())
             }
-            ClientAction::SelectPane(pick) => self.select_pane(client, pick),
-            ClientAction::SelectTab(pick) => self.select_tab(client, pick),
-            ClientAction::SelectWorkspace(ref pick) => self.select_workspace(client, pick),
+            ClientAction::SelectPane(pick) => self.select_pane(view, pick),
+            ClientAction::SelectTab(pick) => self.select_tab(view, pick),
+            ClientAction::SelectWorkspace(ref pick) => self.select_workspace(view, pick),
             ClientAction::CommandColumn => {
-                self.view_mut(client)?.mode = Mode::Column {
+                view.mode = Mode::Column {
                     path: Vec::new(),
                     selected: 0,
                 };
                 Ok(String::new())
             }
-            ClientAction::CommandPrompt => crate::overlay::open_prompt(
-                self,
-                client,
-                crate::view::PromptFor::Command,
-                ":".into(),
-                String::new(),
-            ),
+            ClientAction::CommandPrompt => {
+                let purpose = crate::view::PromptFor::Command;
+                Ok(crate::overlay::open_prompt(
+                    view,
+                    purpose,
+                    ":".into(),
+                    String::new(),
+                ))
+            }
             ClientAction::RenamePrompt(ref subject) => {
-                let target = self.any_target(subject, &ctx)?;
+                let target = self.any_target(subject, here)?;
                 let current = self.name_of(&target);
-                crate::overlay::open_prompt(
-                    self,
-                    client,
-                    crate::view::PromptFor::Rename(target.clone()),
-                    format!("rename {} {}", subject.kind().name(), describe(&target)),
-                    current,
-                )
+                let title = format!("rename {} {}", subject.kind().name(), describe(&target));
+                let purpose = crate::view::PromptFor::Rename(target);
+                Ok(crate::overlay::open_prompt(view, purpose, title, current))
             }
             ClientAction::ConfirmClose(ref subject) => {
-                let target = self.any_target(subject, &ctx)?;
-                crate::overlay::open_confirm(self, client, target)
+                let target = self.any_target(subject, here)?;
+                crate::overlay::open_confirm(self, view, target)
             }
             ClientAction::Menu(ref subject) => {
-                let target = self.any_target(subject, &ctx)?;
-                crate::overlay::open_menu(self, client, target)
+                let target = self.any_target(subject, here)?;
+                crate::overlay::open_menu(self, view, target)
             }
             ClientAction::ChooseTab { moving } => {
-                let moving = moving.map(|p| self.pane_target(p, &ctx)).transpose()?;
-                crate::overlay::open_tab_chooser(self, client, moving)
+                let moving = self.moving(moving, here)?;
+                crate::overlay::open_tab_chooser(self, view, moving)
             }
             ClientAction::ChooseWorkspace { moving } => {
-                let moving = moving.map(|p| self.pane_target(p, &ctx)).transpose()?;
-                crate::overlay::open_workspace_chooser(self, client, moving)
+                let moving = self.moving(moving, here)?;
+                Ok(crate::overlay::open_workspace_chooser(self, view, moving))
             }
             ClientAction::ChoosePane { target } => {
-                let source = self.pane_target(target, &ctx)?;
-                crate::overlay::open_pane_chooser(self, client, source)
+                let source = self.pane(target, here)?.id;
+                crate::overlay::open_pane_chooser(self, view, source)
             }
-            ClientAction::CopyMode => crate::copy::enter(self, client),
+            ClientAction::CopyMode => crate::copy::enter(self, view),
         }
     }
 
-    fn check_name(&self, name: &str) -> Result<(), Error> {
-        if name.is_empty() {
-            return Err(Error::EmptyName);
-        }
-        if name.chars().any(char::is_control) {
-            return Err(Error::ControlInName);
-        }
-        if name.len() > 256 {
-            return Err(Error::LongName);
-        }
-        Ok(())
+    /// The pane a chooser moves: none, the one named, or the client's.
+    fn moving(&self, moving: Option<Option<PaneId>>, here: Here) -> Result<Option<PaneId>, Error> {
+        moving.map(|p| self.pane(p, here).map(|p| p.id)).transpose()
     }
 
     pub fn name_of(&self, target: &AnyRef) -> String {
@@ -1730,62 +1603,75 @@ impl Session {
             AnyRef::Pane(p) => self.panes.get(p).map(|p| p.name.clone()),
             AnyRef::Tab(t) => self.tab(*t).map(|t| t.name.clone()),
             AnyRef::Workspace(w) => self
-                .resolve_ws(w)
-                .ok()
-                .and_then(|w| self.workspace(w))
+                .workspaces
+                .iter()
+                .find(|ws| w.names(ws))
                 .map(|w| w.name.clone()),
         }
         .unwrap_or_default()
     }
 
     fn rename(&mut self, target: &AnyRef, name: String) -> Result<(), Error> {
-        self.check_name(&name)?;
+        check_name(&name)?;
         match target {
             AnyRef::Pane(p) => {
                 self.panes.get_mut(p).ok_or(Error::NoPane(*p))?.name = name;
             }
             AnyRef::Tab(t) => {
-                self.tab_mut(*t).ok_or(Error::NoTab(*t))?.name = name;
+                let tab = tabs_mut(&mut self.workspaces).find(|tab| tab.id == *t);
+                tab.ok_or(Error::NoTab(*t))?.name = name;
             }
-            AnyRef::Workspace(w) => {
-                let id = self.resolve_ws(w)?;
-                self.check_workspace_name(&name, Some(id))?;
-                self.workspace_mut(id)
-                    .ok_or(Error::Gone(Kind::Workspace))?
-                    .name = name;
+            AnyRef::Workspace(r) => {
+                // The one named, and the others, whose names it cannot take.
+                let (named, others): (Vec<_>, Vec<_>) =
+                    self.workspaces.iter_mut().partition(|w| r.names(w));
+                let ws = named.into_iter().next().ok_or_else(|| r.missing())?;
+                check_workspace_name(&name, others.iter().map(|w| &**w))?;
+                ws.name = name;
             }
         }
         Ok(())
     }
 
+    /// The pane beside `from` toward `direction`, its tab laid out as for
+    /// the command.
     fn neighbor(&self, from: PaneId, direction: Direction, ctx: &Ctx) -> Result<PaneId, Error> {
-        let (_, tab) = self.locate(from).ok_or(Error::NotInTab)?;
-        let area = self.reference_area(tab, ctx);
-        let root = self.root(tab).ok_or(Error::TabEmpty)?;
-        let placement = layout::place(root, area);
-        layout::neighbor(&placement, from, direction).ok_or(Error::NoNeighbor { from, direction })
+        let found = self.locate(from).and_then(|(_, tab)| {
+            let area = Self::reference_area(&self.views, tab, ctx);
+            layout::neighbor(&layout::place(self.root(tab)?, area), from, direction)
+        });
+        found.ok_or(Error::NoNeighbor { from, direction })
     }
 
-    fn swap(&mut self, a: PaneId, b: PaneId) -> Result<(), Error> {
-        if a == b {
-            return Ok(());
+    /// Swaps two panes' places: in one tab, or each in the other's.
+    fn swap(&mut self, a: PaneId, b: PaneId) {
+        for root in tabs_mut(&mut self.workspaces).filter_map(|t| t.root.as_mut()) {
+            layout::swap(root, a, b);
         }
-        let (_, ta) = self.locate(a).ok_or(Error::NotInTab)?;
-        let (_, tb) = self.locate(b).ok_or(Error::NotInTab)?;
-        if ta == tb {
-            if let Some(root) = self.root_mut(ta) {
-                layout::swap(root, a, b);
-            }
-        } else {
-            // In different trees, each takes the other's place.
-            if let Some(root) = self.root_mut(ta) {
-                root.replace(a, b);
-            }
-            if let Some(root) = self.root_mut(tb) {
-                root.replace(b, a);
+    }
+
+    /// Moves `pane` from its tab to the end of tab `to`: every tab lets go
+    /// of it, and `to` takes it.
+    fn relocate(&mut self, pane: PaneId, to: TabId) {
+        for tab in tabs_mut(&mut self.workspaces) {
+            layout::remove(&mut tab.root, pane);
+            if tab.id == to {
+                tab.root = Some(match tab.root.take() {
+                    None => Node::Pane(pane),
+                    Some(root) => {
+                        let mut node = Node::Split {
+                            axis: Axis::Horizontal,
+                            children: vec![
+                                (layout::WEIGHT, root),
+                                (layout::WEIGHT, Node::Pane(pane)),
+                            ],
+                        };
+                        layout::normalize(&mut node);
+                        node
+                    }
+                });
             }
         }
-        Ok(())
     }
 
     fn move_pane(
@@ -1793,42 +1679,39 @@ impl Session {
         target: Option<PaneId>,
         to: &MoveTo,
         ctx: &Ctx,
+        here: Here,
     ) -> Result<String, Error> {
-        let pane = self.pane_target(target, ctx)?;
-        let (source_ws, source_tab) = self.locate(pane).ok_or(Error::NotInTab)?;
+        let pane = self.pane(target, here)?.id;
         let (ws, tab) = match to {
             &MoveTo::Beside(direction) => {
                 let destination = self.neighbor(pane, direction, ctx)?;
-                let tab = self.tab_mut(source_tab).ok_or(Error::Gone(Kind::Tab))?;
-                layout::remove(&mut tab.root, pane);
                 let side = match direction {
                     Direction::Right | Direction::Down => Side::After,
                     Direction::Left | Direction::Up => Side::Before,
                 };
-                // True: `neighbor` found `destination` in this tab.
-                layout::split(&mut tab.root, destination, pane, Axis::of(direction), side);
+                for tab in tabs_mut(&mut self.workspaces) {
+                    layout::remove(&mut tab.root, pane);
+                    layout::split(&mut tab.root, destination, pane, Axis::of(direction), side);
+                }
                 return Ok(String::new());
             }
-            &MoveTo::Tab(tab) => {
-                let ws = self.tab_workspace(tab).ok_or(Error::NoTab(tab))?;
-                (ws, tab)
-            }
+            &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, tab),
             MoveTo::Workspace(r) => {
-                let ws = self.resolve_ws(r)?;
-                // A workspace has a tab (`Workspace`).
-                let tab = self
-                    .workspace(ws)
-                    .and_then(|w| w.tabs.first())
-                    .map(|t| t.id)
-                    .ok_or(Error::Gone(Kind::Workspace))?;
-                (ws, tab)
+                let mut named = self.workspaces.iter().filter(|w| r.names(w));
+                let first = named.find_map(|w| Some((w.id, w.tabs.first()?.id)));
+                first.ok_or_else(|| r.missing())?
             }
             MoveTo::NewTab => {
+                let ws = self
+                    .workspaces
+                    .iter_mut()
+                    .find(|w| w.tabs.iter().any(|t| holds(t, pane)));
+                let ws = ws.ok_or(Error::NoPane(pane))?;
                 let mut ids = self.ids;
                 let id = ids.tab()?;
-                self.add_tab(source_ws, id, None, None)?;
+                ws.add_tab(id, None, None);
                 self.ids = ids;
-                (source_ws, id)
+                (ws.id, id)
             }
             MoveTo::NewWorkspace => {
                 // Both IDs or neither: one taken alone would be lost.
@@ -1841,24 +1724,10 @@ impl Session {
                 (id, tab)
             }
         };
-        if tab == source_tab {
+        if self.locate(pane).is_some_and(|(_, source)| source == tab) {
             return Ok(String::new());
         }
-        if let Some(t) = self.tab_mut(source_tab) {
-            layout::remove(&mut t.root, pane);
-        }
-        let destination = self.tab_mut(tab).ok_or(Error::Gone(Kind::Tab))?;
-        destination.root = Some(match destination.root.take() {
-            None => Node::Pane(pane),
-            Some(root) => {
-                let mut node = Node::Split {
-                    axis: Axis::Horizontal,
-                    children: vec![(layout::WEIGHT, root), (layout::WEIGHT, Node::Pane(pane))],
-                };
-                layout::normalize(&mut node);
-                node
-            }
-        });
+        self.relocate(pane, tab);
         // The moving client follows its pane.
         if let Some(view) = ctx.client.and_then(|c| self.views.get_mut(&c)) {
             view.workspace = ws;
@@ -1870,64 +1739,39 @@ impl Session {
     }
 
     fn reorder(&mut self, target: &AnyRef, toward: Sibling) -> Result<(), Error> {
-        let step = |index: usize, len: usize| -> Option<usize> {
-            match toward {
-                Sibling::Next => index.checked_add(1).filter(|next| *next < len),
-                Sibling::Previous => index.checked_sub(1),
-            }
-        };
-        match target {
+        let moved = match target {
             AnyRef::Pane(p) => {
-                let (_, tab) = self.locate(*p).ok_or(Error::NotInTab)?;
-                let panes = self.tab_panes(tab);
-                let index = panes
-                    .iter()
-                    .position(|x| x == p)
-                    .ok_or(Error::Gone(Kind::Pane))?;
-                let other = step(index, panes.len())
-                    .and_then(|i| panes.get(i))
-                    .copied()
-                    .ok_or(Error::AtEnd(Kind::Pane))?;
-                self.swap(*p, other)
+                let panes = self.locate(*p).and_then(|(_, t)| self.root(t));
+                let panes = panes.map_or_else(Vec::new, Node::panes);
+                let index = panes.iter().position(|x| x == p);
+                let other = index
+                    .and_then(|i| sibling(i, toward))
+                    .and_then(|i| panes.get(i));
+                let other = other.copied().ok_or(Error::AtEnd(Kind::Pane))?;
+                self.swap(*p, other);
+                return Ok(());
             }
-            AnyRef::Tab(t) => {
-                let (w, index) = self.find_tab(*t).ok_or(Error::NoTab(*t))?;
-                let ws = self
-                    .workspaces
-                    .get_mut(w)
-                    .ok_or(Error::Gone(Kind::Workspace))?;
-                let other = step(index, ws.tabs.len()).ok_or(Error::AtEnd(Kind::Tab))?;
-                let [a, b] = ws
-                    .tabs
-                    .get_disjoint_mut([index, other])
-                    .map_err(|_| Error::Gone(Kind::Tab))?;
-                std::mem::swap(a, b);
-                Ok(())
-            }
-            AnyRef::Workspace(r) => {
-                let id = self.resolve_ws(r)?;
-                let index = self.ws_index(id).ok_or(Error::Gone(Kind::Workspace))?;
-                let other =
-                    step(index, self.workspaces.len()).ok_or(Error::AtEnd(Kind::Workspace))?;
-                let [a, b] = self
-                    .workspaces
-                    .get_disjoint_mut([index, other])
-                    .map_err(|_| Error::Gone(Kind::Workspace))?;
-                std::mem::swap(a, b);
-                Ok(())
-            }
+            AnyRef::Tab(t) => self
+                .workspaces
+                .iter_mut()
+                .find_map(|w| swap_sibling(&mut w.tabs, |tab| tab.id == *t, toward)),
+            AnyRef::Workspace(r) => swap_sibling(&mut self.workspaces, |w| r.names(w), toward),
+        };
+        match moved {
+            Some(true) => Ok(()),
+            Some(false) => Err(Error::AtEnd(target.kind())),
+            None => Err(Error::NoTarget(target.clone())),
         }
     }
 
-    fn select_pane(&mut self, client: ClientId, pick: PanePick) -> Result<String, Error> {
-        let view = self.views.get(&client).ok_or(Error::NoClient(client))?;
+    fn select_pane(&self, view: &mut View, pick: PanePick) -> Result<String, Error> {
         let tab = view.tab().ok_or(Error::NoCurrentTab)?;
-        let panes = self.tab_panes(tab);
+        let root = self.root(tab);
+        let panes = root.map_or_else(Vec::new, Node::panes);
         let current = view.focus();
         let target = match pick {
             PanePick::Id(p) => {
                 let (ws, tab) = self.locate(p).ok_or(Error::NoPane(p))?;
-                let view = self.view_mut(client)?;
                 view.workspace = ws;
                 view.tab_of.insert(ws, tab);
                 view.set_focus(tab, p);
@@ -1935,14 +1779,9 @@ impl Session {
                 return Ok(String::new());
             }
             PanePick::Step(toward) => {
-                if panes.len() < 2 {
-                    return Err(Error::OnlyOne(Kind::Pane));
-                }
-                let index = current
-                    .and_then(|c| panes.iter().position(|p| *p == c))
-                    .unwrap_or(0);
-                let next = round(index, panes.len(), toward);
-                panes.get(next).copied().ok_or(Error::NoCurrentPane)?
+                let index = current.and_then(|c| panes.iter().position(|p| *p == c));
+                let next = round(&panes, index.unwrap_or(0), toward);
+                *next.ok_or(Error::OnlyOne(Kind::Pane))?
             }
             PanePick::Last => view
                 .last_of
@@ -1951,74 +1790,44 @@ impl Session {
                 .filter(|p| panes.contains(p) && Some(*p) != current)
                 .ok_or(Error::NoLastPane)?,
             PanePick::Toward(direction) => {
-                let placement = layout::place(
-                    self.root(tab).ok_or(Error::TabEmpty)?,
-                    Self::pane_area(view),
-                );
+                let root = root.ok_or(Error::TabEmpty)?;
+                let placement = layout::place(root, Self::pane_area(view));
                 let from = current.ok_or(Error::NoCurrentPane)?;
                 layout::neighbor(&placement, from, direction)
                     .ok_or(Error::NoNeighbor { from, direction })?
             }
         };
-        let view = self.view_mut(client)?;
         view.set_focus(tab, target);
         view.zoom = false;
         Ok(String::new())
     }
 
-    fn select_tab(&mut self, client: ClientId, pick: Pick<TabId>) -> Result<String, Error> {
-        let view = self.views.get(&client).ok_or(Error::NoClient(client))?;
-        let ws = view.workspace;
-        let tabs = self.workspace(ws).map_or(&[][..], |w| &w.tabs);
-        let target_ws;
-        let target = match pick {
-            Pick::Id(t) => {
-                target_ws = self.tab_workspace(t).ok_or(Error::NoTab(t))?;
-                t
-            }
+    fn select_tab(&self, view: &mut View, pick: Pick<TabId>) -> Result<String, Error> {
+        let (ws, target) = match pick {
+            Pick::Id(t) => (self.tab_workspace(t)?, t),
             Pick::Step(toward) => {
-                if tabs.len() < 2 {
-                    return Err(Error::OnlyOne(Kind::Tab));
-                }
-                target_ws = ws;
-                let index = view
-                    .tab()
-                    .and_then(|c| tabs.iter().position(|t| t.id == c))
-                    .unwrap_or(0);
-                let next = round(index, tabs.len(), toward);
-                tabs.get(next).map(|t| t.id).ok_or(Error::NoCurrentTab)?
+                let tabs = self.workspace(view.workspace).map_or(&[][..], |w| &w.tabs);
+                let index = view.tab().and_then(|c| tabs.iter().position(|t| t.id == c));
+                let next = round(tabs, index.unwrap_or(0), toward);
+                (view.workspace, next.ok_or(Error::OnlyOne(Kind::Tab))?.id)
             }
         };
-        let view = self.view_mut(client)?;
-        view.workspace = target_ws;
-        view.tab_of.insert(target_ws, target);
+        view.workspace = ws;
+        view.tab_of.insert(ws, target);
         view.zoom = false;
         Ok(String::new())
     }
 
-    fn select_workspace(&mut self, client: ClientId, pick: &Pick<WsRef>) -> Result<String, Error> {
-        let current = self
-            .views
-            .get(&client)
-            .ok_or(Error::NoClient(client))?
-            .workspace;
-        let target = match pick {
+    fn select_workspace(&self, view: &mut View, pick: &Pick<WsRef>) -> Result<String, Error> {
+        view.workspace = match pick {
             Pick::Id(r) => self.resolve_ws(r)?,
             Pick::Step(toward) => {
-                let len = self.workspaces.len();
-                if len < 2 {
-                    return Err(Error::OnlyOne(Kind::Workspace));
-                }
-                let index = self.ws_index(current).unwrap_or(0);
-                let next = round(index, len, *toward);
-                self.workspaces
-                    .get(next)
-                    .map(|w| w.id)
-                    .ok_or(Error::NoCurrentWorkspace)?
+                let workspaces = &self.workspaces;
+                let index = workspaces.iter().position(|w| w.id == view.workspace);
+                let next = round(workspaces, index.unwrap_or(0), *toward);
+                next.ok_or(Error::OnlyOne(Kind::Workspace))?.id
             }
         };
-        let view = self.view_mut(client)?;
-        view.workspace = target;
         view.zoom = false;
         Ok(String::new())
     }
@@ -2159,14 +1968,151 @@ pub fn describe(target: &AnyRef) -> String {
     }
 }
 
-/// The index after `index` among `len`, or before it, going round.
-fn round(index: usize, len: usize, toward: Sibling) -> usize {
-    match toward {
-        Sibling::Next => index.checked_add(1).filter(|next| *next < len).unwrap_or(0),
-        Sibling::Previous => index
-            .checked_sub(1)
-            .unwrap_or_else(|| len.saturating_sub(1)),
+/// A new pane running the shell, with `cmd` typed into it if given.
+fn new_pane(
+    config: &Config,
+    launch: Option<&Path>,
+    ids: &mut Ids,
+    cmd: &[String],
+    cwd: &Path,
+    size: (u16, u16),
+) -> Result<Pane, Error> {
+    let shell_program = config
+        .shell
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "/bin/sh".into());
+    let fish = basename(&shell_program) == "fish";
+    // The line to type is measured before anything is made: a line too
+    // long to type must not leave a process behind.
+    let typed = if cmd.is_empty() {
+        None
+    } else {
+        let mut typed = crate::words::shell_line(cmd, fish)?.into_bytes();
+        typed.push(b'\r');
+        if typed
+            .len()
+            .checked_add(crate::pane::ENTRY_COST)
+            .is_none_or(|cost| cost > crate::pane::INPUT_BYTES)
+        {
+            return Err(Error::LineTooLong);
+        }
+        Some(typed)
+    };
+    let id = ids.pane()?;
+    let name = cmd
+        .first()
+        .map(|c| basename(c))
+        .unwrap_or_else(|| basename(&shell_program));
+    let mut pane = Pane::new(
+        id,
+        name,
+        shell_program,
+        size.0,
+        size.1,
+        config.history_lines,
+    )?;
+    if let Some(socket) = launch {
+        let env = [
+            ("FUX_PANE", id.to_string()),
+            ("FUX_SOCKET", socket.to_string_lossy().into_owned()),
+        ];
+        pane.child = Some(crate::process::spawn(
+            &config.shell,
+            cwd,
+            &env,
+            size.0,
+            size.1,
+        )?);
     }
+    if let Some(typed) = typed {
+        pane.typed = Some(crate::pane::Typed {
+            line: typed,
+            deadline: crate::after(Instant::now(), TYPE_WAIT),
+            last_output: None,
+        });
+        if pane.child.is_none() {
+            pane.type_now();
+        }
+    }
+    Ok(pane)
+}
+
+fn check_name(name: &str) -> Result<(), Error> {
+    if name.is_empty() {
+        return Err(Error::EmptyName);
+    }
+    if name.chars().any(char::is_control) {
+        return Err(Error::ControlInName);
+    }
+    if name.len() > 256 {
+        return Err(Error::LongName);
+    }
+    Ok(())
+}
+
+/// Refuses a workspace name any of `others` has: a workspace is found by
+/// its name.
+fn check_workspace_name<'a>(
+    name: &str,
+    others: impl IntoIterator<Item = &'a Workspace>,
+) -> Result<(), Error> {
+    check_name(name)?;
+    // A name a target reads back as itself, so that `-t NAME` finds this
+    // workspace and no other.
+    if command::parse_workspace(name) != Ok(WsRef::Name(name.to_owned())) {
+        return Err(Error::NameReadAsTarget(name.to_owned()));
+    }
+    if others.into_iter().any(|ws| ws.name == name) {
+        return Err(Error::NameTaken(name.to_owned()));
+    }
+    Ok(())
+}
+
+/// The item after the one at `index` among `items`, or before it, going
+/// round; none if it is alone.
+fn round<T>(items: &[T], index: usize, toward: Sibling) -> Option<&T> {
+    let len = items.len();
+    let next = match toward {
+        Sibling::Next => index.checked_add(1).filter(|next| *next < len).unwrap_or(0),
+        Sibling::Previous => index.checked_sub(1).unwrap_or(len.saturating_sub(1)),
+    };
+    items.get(next).filter(|_| len > 1)
+}
+
+/// The index after `index`, or before it.
+fn sibling(index: usize, toward: Sibling) -> Option<usize> {
+    match toward {
+        Sibling::Next => index.checked_add(1),
+        Sibling::Previous => index.checked_sub(1),
+    }
+}
+
+/// Swaps the item `is` picks with its sibling `toward`: none if `is` picks
+/// none, false if it has no sibling that way.
+fn swap_sibling<T>(items: &mut [T], is: impl Fn(&T) -> bool, toward: Sibling) -> Option<bool> {
+    let index = items.iter().position(is)?;
+    let first = match toward {
+        Sibling::Next => Some(index),
+        Sibling::Previous => index.checked_sub(1),
+    };
+    let pair = first.and_then(|i| items.get_mut(i..i.checked_add(2)?));
+    Some(pair.map(<[T]>::reverse).is_some())
+}
+
+fn holds(tab: &Tab, pane: PaneId) -> bool {
+    tab.root.as_ref().is_some_and(|r| r.contains(pane))
+}
+
+fn tabs_mut(workspaces: &mut [Workspace]) -> impl Iterator<Item = &mut Tab> {
+    workspaces.iter_mut().flat_map(|w| &mut w.tabs)
+}
+
+/// The tab pane `id` is in: a pane in no tab is no pane.
+fn tab_of(workspaces: &mut [Workspace], id: PaneId) -> Result<&mut Tab, Error> {
+    tabs_mut(workspaces)
+        .find(|t| holds(t, id))
+        .ok_or(Error::NoPane(id))
 }
 
 /// The text of a pane's screen, and `history` lines before it.
