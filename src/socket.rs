@@ -84,23 +84,10 @@ pub enum Error {
     InUse(PathBuf),
     /// Another server answers on the socket.
     Listening(PathBuf),
+    /// A call about `path` that failed: what it was doing, as the message
+    /// begins ("locking "), and why.
     Io {
-        path: PathBuf,
-        source: io::Error,
-    },
-    Parent {
-        path: PathBuf,
-        source: io::Error,
-    },
-    Create {
-        path: PathBuf,
-        source: io::Error,
-    },
-    Lock {
-        path: PathBuf,
-        source: io::Error,
-    },
-    RemoveStale {
+        doing: &'static str,
         path: PathBuf,
         source: io::Error,
     },
@@ -108,15 +95,6 @@ pub enum Error {
     Probe {
         path: PathBuf,
         source: io::Error,
-    },
-    Socket(fuxix::Errno),
-    Bind {
-        path: PathBuf,
-        source: fuxix::Errno,
-    },
-    Listen {
-        path: PathBuf,
-        source: fuxix::Errno,
     },
 }
 
@@ -202,25 +180,16 @@ impl std::fmt::Display for Error {
                 "another fux server is already listening on {}",
                 path.display()
             ),
-            Error::Io { path, source } => write!(f, "{}: {source}", path.display()),
-            Error::Parent { path, source } => {
-                write!(f, "socket directory parent {}: {source}", path.display())
-            }
-            Error::Create { path, source } => write!(f, "creating {}: {source}", path.display()),
-            Error::Lock { path, source } => write!(f, "locking {}: {source}", path.display()),
-            Error::RemoveStale { path, source } => {
-                write!(f, "removing stale socket {}: {source}", path.display())
-            }
+            Error::Io {
+                doing,
+                path,
+                source,
+            } => write!(f, "{doing}{}: {source}", path.display()),
             Error::Probe { path, source } => write!(
                 f,
                 "cannot tell whether {} is in use ({source}); it was left in place",
                 path.display()
             ),
-            Error::Socket(source) => write!(f, "socket: {source}"),
-            Error::Bind { path, source } => write!(f, "binding {}: {source}", path.display()),
-            Error::Listen { path, source } => {
-                write!(f, "listening on {}: {source}", path.display())
-            }
         }
     }
 }
@@ -228,15 +197,7 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::Io { source, .. }
-            | Error::Parent { source, .. }
-            | Error::Create { source, .. }
-            | Error::Lock { source, .. }
-            | Error::RemoveStale { source, .. }
-            | Error::Probe { source, .. } => Some(source),
-            Error::Socket(source) | Error::Bind { source, .. } | Error::Listen { source, .. } => {
-                Some(source)
-            }
+            Error::Io { source, .. } | Error::Probe { source, .. } => Some(source),
             Error::NotUtf8 { .. }
             | Error::NoLocation
             | Error::EmptyVariable { .. }
@@ -260,10 +221,19 @@ impl std::error::Error for Error {
 }
 
 /// An I/O error about `path`.
-fn io(path: &Path) -> impl FnOnce(io::Error) -> Error + '_ {
+fn io<'a>(path: &'a Path) -> impl FnOnce(io::Error) -> Error + 'a {
+    failed("", path)
+}
+
+/// An error about `path`, while `doing` what the message begins with.
+fn failed<'a, E: Into<io::Error>>(
+    doing: &'static str,
+    path: &'a Path,
+) -> impl FnOnce(E) -> Error + 'a {
     move |source| Error::Io {
+        doing,
         path: path.to_owned(),
-        source,
+        source: source.into(),
     }
 }
 
@@ -349,10 +319,9 @@ fn private_directory(directory: &Path, create: bool) -> Result<(), Error> {
     let above = directory
         .parent()
         .ok_or_else(|| Error::NoParent(directory.to_owned()))?;
-    let canonical = above.canonicalize().map_err(|source| Error::Parent {
-        path: above.to_owned(),
-        source,
-    })?;
+    let canonical = above
+        .canonicalize()
+        .map_err(failed("socket directory parent ", above))?;
     for ancestor in canonical.ancestors() {
         let meta = fs::metadata(ancestor).map_err(io(ancestor))?;
         let mode = meta.permissions().mode();
@@ -373,12 +342,7 @@ fn private_directory(directory: &Path, create: bool) -> Result<(), Error> {
                 Ok(()) => fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
                     .map_err(io(directory))?,
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(source) => {
-                    return Err(Error::Create {
-                        path: directory.to_owned(),
-                        source,
-                    });
-                }
+                Err(error) => return Err(failed("creating ", directory)(error)),
             }
         }
         Err(error) => return Err(io(directory)(error)),
@@ -523,10 +487,7 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), Error> {
         .map_err(io(&lock_path))?;
     lock.try_lock().map_err(|error| match error {
         fs::TryLockError::WouldBlock => Error::InUse(path.to_owned()),
-        fs::TryLockError::Error(source) => Error::Lock {
-            path: lock_path.clone(),
-            source,
-        },
+        fs::TryLockError::Error(error) => failed("locking ", &lock_path)(error),
     })?;
     // Pinned before the probe, so the file found dead is the one removed.
     let stale = Pinned::new(path);
@@ -538,10 +499,7 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), Error> {
             Ok(()) => return Err(Error::Listening(path.to_owned())),
             Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
                 if stale.as_ref().is_ok_and(|stale| stale.still_at(path)) {
-                    fs::remove_file(path).map_err(|source| Error::RemoveStale {
-                        path: path.to_owned(),
-                        source,
-                    })?;
+                    fs::remove_file(path).map_err(failed("removing stale socket ", path))?;
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -553,11 +511,8 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), Error> {
             }
         },
     }
-    let fd = fuxix::socket::stream().map_err(Error::Socket)?;
-    fuxix::socket::bind(&fd, path).map_err(|source| Error::Bind {
-        path: path.to_owned(),
-        source,
-    })?;
+    let fd = fuxix::socket::stream().map_err(failed("a socket for ", path))?;
+    fuxix::socket::bind(&fd, path).map_err(failed("binding ", path))?;
     let endpoint = Endpoint {
         path: path.to_owned(),
         socket: Pinned::new(path).map_err(io(path))?,
@@ -566,10 +521,7 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), Error> {
     // From here a failure drops `endpoint`, which removes the socket. The mode
     // is set before `listen`, so no connection is accepted on an open socket.
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(io(path))?;
-    fuxix::socket::listen(&fd, 128).map_err(|source| Error::Listen {
-        path: path.to_owned(),
-        source,
-    })?;
+    fuxix::socket::listen(&fd, 128).map_err(failed("listening on ", path))?;
     Ok((endpoint, UnixListener::from(fd)))
 }
 
