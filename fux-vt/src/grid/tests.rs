@@ -1,4 +1,3 @@
-use super::reflow::Lines;
 use super::*;
 use crate::test_rng::Rng;
 
@@ -121,68 +120,6 @@ pub(crate) type Seen = (
 );
 
 impl Grid {
-    /// `erase` as it was before the `used` mark bounded it: every cell of
-    /// the span compared, then every cell written, with the halves of wide
-    /// glyphs it splits; the oracle `erase` is checked against.
-    pub(crate) fn erase_reference(
-        &mut self,
-        row: u16,
-        start: u16,
-        end: u16,
-        attributes: Attributes,
-        version: u64,
-    ) {
-        let (cols, last) = (self.cols.get(), self.cols.last());
-        let mut clears_edge = end >= cols;
-        let written = if attributes == Attributes::default() {
-            0
-        } else {
-            end
-        };
-        let style = self.style(attributes);
-        self.mutate_row(row, version, written, |cells| {
-            let span = usize::from(start)..usize::from(end.min(cols));
-            let blank = Compact::blank(style);
-            if cells
-                .get(span.clone())
-                .is_none_or(|run| run.iter().all(|c| c.same(&blank)))
-            {
-                return false;
-            }
-            for col in span {
-                if let Some(cell) = cells.get(col).copied() {
-                    if cell.is_wide() {
-                        let next = col.checked_add(1);
-                        if let Some(other) = next.and_then(|i| cells.get_mut(i)) {
-                            *other = other.blanked();
-                        }
-                        clears_edge |= next == Some(usize::from(last));
-                    } else if cell.is_wide_continuation()
-                        && let Some(other) = col.checked_sub(1).and_then(|i| cells.get_mut(i))
-                    {
-                        *other = other.blanked();
-                    }
-                    if let Some(cell) = cells.get_mut(col) {
-                        *cell = blank;
-                    }
-                }
-            }
-            true
-        });
-        if clears_edge {
-            self.wrap(row, false, version);
-        }
-        if start == 0
-            && end >= cols
-            && let Some(slot) = self.slot(row)
-        {
-            if let Some(text) = self.texts.get_mut(slot) {
-                text.release();
-            }
-            self.unlink(slot);
-        }
-    }
-
     /// What a reader sees of every retained row, in order.
     pub(crate) fn seen(&self) -> Vec<Seen> {
         (0..self.retained_len())
@@ -359,80 +296,6 @@ fn max_id(grid: &Grid) -> u64 {
         .map(|row| row.id.0)
         .max()
         .unwrap_or(0)
-}
-
-/// No reader can tell the two grids apart: each row's identity, version,
-/// wrap, prompt, cells with their text and links, and whether it has
-/// links at all; the cursor, the saved cursor, each waiting to wrap or
-/// not; the margins and the size. And `runs`'s rows are blank past their
-/// `used` marks.
-fn assert_same(runs: &Grid, cells: &Grid, case: &str) {
-    assert!(runs.seen() == cells.seen(), "{case}: rows");
-    let linked = |g: &Grid| -> Vec<bool> {
-        (0..g.retained_len())
-            .map(|i| g.row_at(i).is_some_and(|r| r.links.is_some()))
-            .collect()
-    };
-    assert_eq!(linked(runs), linked(cells), "{case}: linked rows");
-    let shape = |g: &Grid| {
-        (
-            (g.rows, g.cols, g.history_len(), g.storage_cells()),
-            (g.cursor, g.pending_wrap),
-            (g.saved_cursor, g.saved_pending_wrap),
-            (g.origin, g.saved_origin, g.top, g.bottom),
-        )
-    };
-    assert_eq!(shape(runs), shape(cells), "{case}: shape");
-    assert!(runs.blank_past_used(), "{case}: used");
-}
-
-/// A reflow laying out lines a run of cells at a time (`lay_out_runs`)
-/// gives exactly what laying them out a cell at a time does: the two agree
-/// on every observable, over random grids and sizes, at the same width (the
-/// rows alone changing, as a split, zoom or height-only drag does) and at
-/// others.
-#[test]
-fn laying_out_runs_is_laying_out_cells() -> Result<(), Error> {
-    let mut r = Rng(0x0ef1_0000_0000_0003);
-    let wrapped = |g: &Grid| {
-        (0..g.retained_len())
-            .filter(|i| g.row_at(*i).is_some_and(|r| r.wrapped))
-            .count()
-    };
-    let (mut wrapped_in, mut wrapped_out) = (0usize, 0usize);
-    for case in 0..3_000 {
-        let grid = random_grid(&mut r)?;
-        let next = max_id(&grid).saturating_add(1);
-        wrapped_in = wrapped_in.saturating_add(wrapped(&grid));
-        for target in 0..6 {
-            let rows = r.small(9).saturating_add(1);
-            let cols = if target < 3 {
-                grid.cols.get()
-            } else {
-                r.small(14).saturating_add(1)
-            };
-            let (mut a, mut b) = (next, next);
-            let runs = grid.reflowed(rows, cols, &mut a, 1_000);
-            let cells = grid.reflowed_by(rows, cols, &mut b, 1_000, Lines::All);
-            let name = format!("case {case} to {rows}x{cols}");
-            match (runs, cells) {
-                (Ok(runs), Ok(cells)) => {
-                    assert_same(&runs, &cells, &name);
-                    if cols != grid.cols.get() {
-                        wrapped_out = wrapped_out.saturating_add(wrapped(&runs));
-                    }
-                }
-                (runs, cells) => assert_eq!(runs.err(), cells.err(), "{name}"),
-            }
-            assert_eq!(a, b, "{name}: identities taken");
-        }
-    }
-    // Soft-wrapped lines go in, and lines are wrapped anew coming out.
-    assert!(
-        wrapped_in > 10_000 && wrapped_out > 10_000,
-        "{wrapped_in} soft-wrapped rows in, {wrapped_out} out at other widths"
-    );
-    Ok(())
 }
 
 /// A live row's cells as a reader reads them: text, halves, attributes

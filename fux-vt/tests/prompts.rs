@@ -3,10 +3,6 @@
 //! starts on, after a fresh line; the mark goes with its row.
 
 use fux_vt::{Options, Parser};
-#[path = "corpus/mod.rs"]
-mod corpus;
-#[path = "corpus/invariants.rs"]
-mod invariants;
 #[path = "corpus/pieces.rs"]
 mod pieces;
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
@@ -144,48 +140,6 @@ fn marks_survive_resize_and_reflow() -> Result {
     assert_eq!(marks(&p), [0]);
     p.resize(3, 2)?;
     assert_eq!(marks(&p), [0]);
-    Ok(())
-}
-
-/// The adversarial corpus with prompts marked and fresh lines among its
-/// operations, resized now and then: marks read the same whatever pieces
-/// the output came in, and the invariants hold.
-#[test]
-fn marks_are_chunk_invariant_under_adversarial_output() -> Result {
-    let extra: [&[u8]; 4] = [
-        b"\x1b]133;A\x07",
-        b"\x1b]133;A;aid=1;cl=m\x1b\\",
-        b"\x1b]133;L\x07",
-        b"\x1b]133;C\x07",
-    ];
-    for seed in 0..6 {
-        for (rows, cols) in [(1, 1), (2, 3), (4, 12), (24, 80)] {
-            let options = MARKS.with_reflow(seed % 2 == 0);
-            let mut whole = Parser::with_options(rows, cols, 8, options)?;
-            let mut split = Parser::with_options(rows, cols, 8, options)?;
-            let mut state = seed;
-            let streams = corpus::terminal_edge().into_iter();
-            for operation in streams.chain(corpus::operations(seed, 4096)) {
-                let r = corpus::splitmix(&mut state);
-                let mut bytes = operation;
-                if let Some(more) = extra.get(usize::try_from(r % 8)?) {
-                    bytes.extend_from_slice(more);
-                }
-                whole.process(&bytes)?;
-                let size = usize::try_from(r % 7)?.saturating_add(1);
-                for chunk in pieces::pieces(&bytes, size) {
-                    split.process(chunk)?;
-                }
-                if r.is_multiple_of(97) {
-                    let (rows, cols) = (u16::try_from(r % 9)? + 1, u16::try_from(r % 31)? + 1);
-                    whole.resize(rows, cols)?;
-                    split.resize(rows, cols)?;
-                }
-                invariants::equal(&whole, &split);
-                invariants::check(&whole);
-            }
-        }
-    }
     Ok(())
 }
 

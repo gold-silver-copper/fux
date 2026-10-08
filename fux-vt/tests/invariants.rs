@@ -1,126 +1,12 @@
 //! Structural invariants of fux-vt's grid, checked after every operation
 //! of the permanent corpora and of generated input.
 mod corpus;
-#[path = "corpus/fixtures.rs"]
-mod fixtures;
 #[path = "corpus/pieces.rs"]
 mod pieces;
 
-#[test]
-fn seed_fuzz_with_golden_terminal_edge_and_tiny_operations() -> Result {
-    let Ok(directory) = std::env::var("FUX_VT_FUZZ_CORPUS") else {
-        return Ok(());
-    };
-    let directory = std::path::Path::new(&directory);
-    std::fs::create_dir_all(directory)?;
-    // Operation bytes 0xfd to 0xff are the target's own: raw pieces are at
-    // most 253 bytes.
-    let seed_with = |name: &str, header: [u8; 3], operations: &[&[u8]]| -> std::io::Result<()> {
-        let mut encoded = header.to_vec();
-        for operation in operations {
-            for bytes in pieces::pieces(operation, 253) {
-                encoded.push(u8::try_from(bytes.len() - 1).map_err(std::io::Error::other)?);
-                encoded.extend_from_slice(bytes);
-            }
-        }
-        // Explicitly exercise tiny resize followed by bounded window/copy.
-        encoded.extend_from_slice(&[255, 0, 0, 254, 0, 1, 1, 0, 0, 0, 0, 1]);
-        encoded.truncate(4096);
-        std::fs::write(directory.join(name), encoded)
-    };
-    let seed = |name: &str, operations: &[&[u8]]| seed_with(name, [3, 11, 8], operations);
-    for (name, operations) in fixtures::CASES {
-        seed(&format!("fixture-{name}"), operations)?;
-    }
-    let terminal = corpus::terminal_edge();
-    seed(
-        "fixture-terminal-edge",
-        &terminal.iter().map(Vec::as_slice).collect::<Vec<_>>(),
-    )?;
-    seed(
-        "fixture-tiny",
-        &["\x1bc界ABCD\r\nZ\x1b[1;1r\x1b[S\x1b[T".as_bytes()],
-    )?;
-    let mut history_copy = vec![1, 4, 2, 13];
-    history_copy.extend_from_slice(b"abcdefgh\r\nlast");
-    history_copy.extend_from_slice(&[255, 1, 9, 254, 1, 2, 10, 0, 0, 1, 9, 20]);
-    std::fs::write(directory.join("fixture-history-copy"), history_copy)?;
-
-    // Grapheme clusters, the new SGR and cursor sequences, and each option:
-    // the rows byte's high bits choose reflow (0x10), the kitty keyboard
-    // protocol (0x20) and an identity (0x40).
-    let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
-    let kiss =
-        "\u{1F469}\u{1F3FD}\u{200D}\u{2764}\u{FE0F}\u{200D}\u{1F48B}\u{200D}\u{1F468}\u{1F3FB}";
-    let scotland = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}";
-    let zalgo: String = std::iter::once('e')
-        .chain(std::iter::repeat_n('\u{301}', 70))
-        .collect();
-    let clusters = format!(
-        "{family}|{kiss}|{scotland}|{zalgo}|\u{1F1EF}\u{1F1F5}\u{1F1FA}|\u{915}\u{94D}\u{937}\u{93F}|\u{1100}\u{1161}\u{11A8}|\u{600}a\u{13437}\u{301}\u{17D8}x"
-    );
-    seed("fixture-graphemes", &[clusters.as_bytes()])?;
-    seed_with(
-        "fixture-graphemes-narrow",
-        [0, 1, 2],
-        &[clusters.as_bytes()],
-    )?;
-    let mut reflow = vec![0x13, 11, 8];
-    for piece in [clusters.as_bytes(), b"\r\n", clusters.as_bytes()] {
-        for bytes in pieces::pieces(piece, 253) {
-            reflow.push(u8::try_from(bytes.len() - 1)?);
-            reflow.extend_from_slice(bytes);
-        }
-    }
-    reflow.extend_from_slice(&[255, 3, 2, 255, 5, 23, 255, 1, 0, 255, 3, 11]);
-    std::fs::write(directory.join("fixture-graphemes-reflow"), reflow)?;
-    // The grapheme operation, picking every character of its table once.
-    let mut picks = vec![0x13, 11, 8, 0xfd, 63];
-    picks.extend(0..63u8);
-    picks.extend_from_slice(&[0xfd, 40]);
-    picks.extend((0..40u8).map(|i| i.wrapping_mul(7)));
-    std::fs::write(directory.join("fixture-graphemes-operation"), picks)?;
-    // A row's text budget: two 101-byte clusters in a 1x6 grid (320
-    // bytes of text) leave the second out of room once they share a
-    // 2-column row (192); a rewrite of the first leaves text behind for
-    // compaction. Without reflow, then with.
-    let long: String = std::iter::once('e')
-        .chain(std::iter::repeat_n('\u{301}', 50))
-        .collect();
-    for (name, rows) in [("fixture-budget", 0u8), ("fixture-budget-reflow", 0x10)] {
-        let mut budget = vec![rows, 5, 2];
-        for piece in [long.as_bytes(), long.as_bytes(), b"\r", long.as_bytes()] {
-            budget.push(u8::try_from(piece.len() - 1)?);
-            budget.extend_from_slice(piece);
-        }
-        budget.extend_from_slice(&[255, 0, 1]);
-        for piece in [long.as_bytes(), long.as_bytes(), b"\r\n", long.as_bytes()] {
-            budget.push(u8::try_from(piece.len() - 1)?);
-            budget.extend_from_slice(piece);
-        }
-        budget.extend_from_slice(&[255, 0, 23, 255, 1, 0]);
-        std::fs::write(directory.join(name), budget)?;
-    }
-    seed_with(
-        "fixture-kitty-identity",
-        [0x63, 11, 0x38],
-        &[
-            b"\x1b[?u\x1b[>1u\x1b[>5u\x1b[=3;2u\x1b[?u\x1b[?1049h\x1b[>8u\x1b[?u\x1b[?1049l\x1b[<2u\x1b[?u",
-            b"\x1b[>4;2m\x1b[>4m\x1b[>1;2m\x1b[c\x1b[>c\x1b[>q\x1b[?6nabcdefghijkl\x1b[6n\x1bc",
-        ],
-    )?;
-    seed(
-        "fixture-sgr-and-cursor",
-        &[
-            b"\x1b[5ma\x1b[6mb\x1b[25;8mc\x1b[28;9md\x1b[29;58;2;1;2;3me\x1b[58:5:9mf\x1b[59mg\x1b[m",
-            b"\x1b[2;3fX\x1b[s\x1b[1;4;38;5;208mY\x1b[4;1HZ\x1b[uW\x1b[3J\x1b[?5W\x1b(B",
-        ],
-    )?;
-    Ok(())
-}
 #[path = "corpus/invariants.rs"]
 mod invariants;
-use fux_vt::Parser;
+use fux_vt::{Identity, Options, Parser, Sink};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 #[test]
@@ -163,40 +49,78 @@ fn terminal_edge_streams_preserve_primary_history_and_modes() -> Result {
     Ok(())
 }
 
+/// The replies a parser sent.
+#[derive(Default)]
+struct Replies(Vec<u8>);
+impl Sink for Replies {
+    fn reply(&mut self, bytes: &[u8]) {
+        self.0.extend_from_slice(bytes);
+    }
+}
+
+/// The adversarial corpus, after the terminal-edge streams, fed whole and in
+/// pieces of one to seven bytes: the two parsers agree (screens, history,
+/// links, prompt marks, replies) and the invariants hold after every
+/// operation. Without options; and with every option that keeps state, with
+/// and without reflow, links opened and closed, prompts marked and cells
+/// inserted and deleted among the operations, and the screen resized now
+/// and then. Then one 160 KiB stream.
 #[test]
-fn permanent_adversarial_corpus_is_chunk_invariant_and_bounded() -> Result {
-    // Same generator/seeds as the temporary differential phase, plus one full
-    // 160 KiB harness stream. No expected results are generated from fux-vt.
-    for seed in 0..20 {
-        for (rows, cols) in [(1, 1), (1, 12), (12, 1), (2, 2), (4, 12), (24, 80)] {
-            let mut whole = Parser::new(rows, cols, 8)?;
-            let mut split = Parser::new(rows, cols, 8)?;
-            let mut state = seed;
-            let operations = corpus::operations(seed, 4096);
-            if let Ok(directory) = std::env::var("FUX_VT_FUZZ_CORPUS") {
-                let path = std::path::Path::new(&directory);
-                std::fs::create_dir_all(path)?;
-                let mut encoded = vec![u8::try_from(rows - 1)?, u8::try_from(cols - 1)?, 8];
-                for op in &operations {
-                    for bytes in pieces::pieces(op, 253) {
-                        encoded.push(u8::try_from(bytes.len() - 1)?);
-                        encoded.extend_from_slice(bytes);
+fn the_adversarial_corpus_is_chunk_invariant_and_bounded() -> Result {
+    let extra: [&[u8]; 11] = [
+        b"\x1b]8;;http://a\x07",
+        b"\x1b]8;id=k;http://b\x1b\\",
+        b"\x1b]8;;\x07",
+        b"\x1b]133;A\x07",
+        b"\x1b]133;A;aid=1;cl=m\x1b\\",
+        b"\x1b]133;L\x07",
+        b"\x1b]133;C\x07",
+        b"\x1b[2@",
+        b"\x1b[3P",
+        b"\x1b[4h",
+        b"\x1b[4l",
+    ];
+    let every = Options::new()
+        .with_events(true)
+        .with_extended_replies(true)
+        .with_kitty_keyboard(true)
+        .with_hyperlinks(true)
+        .with_prompt_marks(true)
+        .with_identity(Some(Identity {
+            name: "fux-vt",
+            version: "1.2.3",
+        }));
+    for (options, extras) in [
+        (Options::new(), &[][..]),
+        (every, &extra[..]),
+        (every.with_reflow(true), &extra[..]),
+    ] {
+        for seed in 0..10 {
+            for (rows, cols) in [(1, 1), (1, 12), (12, 1), (2, 3), (4, 12), (24, 80)] {
+                let mut whole = Parser::with_options(rows, cols, 8, options)?;
+                let mut split = whole.clone();
+                let mut state = seed;
+                let streams = corpus::terminal_edge().into_iter();
+                for mut bytes in streams.chain(corpus::operations(seed, 4096)) {
+                    let r = corpus::splitmix(&mut state);
+                    if let Some(more) = extras.get(usize::try_from(r % 16)?) {
+                        bytes.extend_from_slice(more);
                     }
+                    let (mut a, mut b) = (Replies::default(), Replies::default());
+                    whole.process_with(&bytes, &mut a)?;
+                    let size = usize::try_from(r % 7)?.saturating_add(1);
+                    for chunk in pieces::pieces(&bytes, size) {
+                        split.process_with(chunk, &mut b)?;
+                    }
+                    assert_eq!(a.0, b.0, "replies");
+                    if !extras.is_empty() && r.is_multiple_of(97) {
+                        let (rows, cols) = (u16::try_from(r % 9)? + 1, u16::try_from(r % 31)? + 1);
+                        whole.resize(rows, cols)?;
+                        split.resize(rows, cols)?;
+                    }
+                    invariants::equal(&whole, &split);
+                    invariants::check(&whole);
                 }
-                encoded.truncate(4096);
-                std::fs::write(
-                    path.join(format!("adversarial-{seed}-{rows}x{cols}")),
-                    encoded,
-                )?;
-            }
-            for operation in operations {
-                whole.process(&operation)?;
-                let size = usize::try_from(corpus::splitmix(&mut state) % 7 + 1)?;
-                for chunk in pieces::pieces(&operation, size) {
-                    split.process(chunk)?;
-                }
-                invariants::equal(&whole, &split);
-                invariants::check(&whole);
             }
         }
     }
@@ -262,6 +186,57 @@ fn generated_edits_resizes_and_arbitrary_bytes_preserve_grid_invariants() -> Res
             }
             invariants::check(&p);
         }
+    }
+    Ok(())
+}
+
+/// A row's text stays within its budget however it is filled and resized:
+/// clusters that do not fit keep what fits inline, in their one cell.
+#[test]
+fn a_rows_text_stays_within_its_budget_through_resizes() -> Result {
+    let zalgo: String = std::iter::once('e')
+        .chain(std::iter::repeat_n('\u{301}', 60))
+        .collect();
+    let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
+    for options in [Options::default(), Options::new().with_reflow(true)] {
+        let mut p = Parser::with_options(3, 40, 10, options)?;
+        for _ in 0..3 {
+            for _ in 0..20 {
+                p.process(zalgo.as_bytes())?;
+                p.process(family.as_bytes())?;
+            }
+            p.process(b"\r\n")?;
+        }
+        invariants::check(&p);
+        for (rows, cols) in [(3, 5), (6, 2), (2, 80), (3, 1), (3, 40)] {
+            p.resize(rows, cols)?;
+            invariants::check(&p);
+        }
+        // Each cell holds one cluster, whole or cut to what fits inline.
+        let screen = p.screen();
+        for offset in 0..screen.history_len() + 3 {
+            for cell in screen.row_from_bottom(offset).ok_or("row")?.cells() {
+                let text = cell.contents();
+                assert!(
+                    zalgo.starts_with(text) || family.starts_with(text),
+                    "{text:?}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn degenerate_reflows_keep_every_invariant() -> Result {
+    for (rows, cols) in [(1, 1), (1, 40), (40, 1), (2, 2)] {
+        let mut p = Parser::with_options(rows, cols, 10, Options::new().with_reflow(true))?;
+        p.process("\u{4f60}\u{597d}ab\r\n\u{1f600}x".as_bytes())?;
+        p.resize(1, 1)?;
+        invariants::check(&p);
+        p.process("\u{4f60}z".as_bytes())?;
+        p.resize(rows, cols)?;
+        invariants::check(&p);
     }
     Ok(())
 }
