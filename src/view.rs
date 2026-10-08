@@ -106,10 +106,9 @@ pub struct View {
     pub bells: BTreeSet<TabId>,
     /// When its terminal was last rung.
     pub last_bell: Option<std::time::Instant>,
-    /// The title its terminal was last given, with `titles` on.
+    /// The title its terminal was last given, with `titles` on; `None`
+    /// while it shows its own.
     pub title: Option<String>,
-    /// Whether its terminal's own title was saved (`outer::TITLE_PUSH`).
-    pub title_pushed: bool,
 }
 
 impl View {
@@ -132,7 +131,6 @@ impl View {
             bells: BTreeSet::new(),
             last_bell: None,
             title: None,
-            title_pushed: false,
         }
     }
 

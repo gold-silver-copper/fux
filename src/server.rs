@@ -155,10 +155,6 @@ struct TakenTerminal {
     fd: std::os::fd::OwnedFd,
     /// What waits to be written to it.
     out: ByteQueue,
-    /// Whether the paints written to it saved its title
-    /// (`outer::TITLE_PUSH`) and have not restored it: restored as it is
-    /// given back, as the client restores it after frames.
-    title_saved: bool,
 }
 
 impl TakenTerminal {
@@ -166,7 +162,6 @@ impl TakenTerminal {
         TakenTerminal {
             fd,
             out: ByteQueue::default(),
-            title_saved: false,
         }
     }
     /// Writes what waits, as far as the terminal takes it; false if it
@@ -232,8 +227,8 @@ impl Conn {
 
     /// Encodes a frame straight into the output. An `Exit` to a client
     /// whose terminal the server writes to comes after what waits for the
-    /// terminal, as much as it takes at once, and its title restored:
-    /// then the terminal is the client's again.
+    /// terminal, as much as it takes at once: then the terminal is the
+    /// client's again.
     fn send(&mut self, frame: &Frame) {
         if matches!(frame, Frame::Exit(_)) {
             self.give_back_tty();
@@ -258,7 +253,6 @@ impl Conn {
         if let Some(tty) = &mut self.tty
             && stream == Stream::Paint
         {
-            note_title(&mut tty.title_saved, bytes);
             tty.out.push(bytes);
             return;
         }
@@ -286,18 +280,14 @@ impl Conn {
         }
     }
 
-    /// Hands the terminal back: its title restored if the paints saved it,
-    /// what waits for it written as far as it takes it at once and the
-    /// rest sent to the client to write, and the server's descriptor for
-    /// it closed.
+    /// Hands the terminal back: what waits for it written as far as it
+    /// takes it at once and the rest sent to the client to write, and the
+    /// server's descriptor for it closed.
     fn give_back_tty(&mut self) {
         if let Some(mut tty) = self.tty.take() {
-            if tty.title_saved {
-                tty.out.push(crate::outer::TITLE_POP);
-            }
-            // What it does not take at once, the title's restore with it,
-            // goes to the client in paint frames, before the `Exit` that
-            // follows: it writes them to the terminal as it writes paints.
+            // What it does not take at once goes to the client in paint
+            // frames, before the `Exit` that follows: it writes them to the
+            // terminal as it writes paints.
             if tty.flush() && !tty.out.is_empty() {
                 Stream::Paint.encode_into(tty.out.as_slice(), &mut self.out);
             }
@@ -341,15 +331,6 @@ pub struct Server {
     listen_after: Option<Instant>,
     /// When an `accept` failure other than a shortage was last logged.
     accept_logged: Option<Instant>,
-}
-
-/// Notes a title saved or restored in a paint for a client's terminal: the
-/// later of the two wins (`client::note_title` does the same for paints
-/// it relays).
-fn note_title(saved: &mut bool, paint: &[u8]) {
-    if let Some(now) = crate::outer::title_saved_by(paint) {
-        *saved = now;
-    }
 }
 
 fn log(message: &str) {
@@ -1231,15 +1212,15 @@ mod tests {
     }
 
     /// A terminal given back that takes no more at once (a slow link) has
-    /// what it did not take, its title's restore last, sent to the client
-    /// in paint frames before the `Exit`, rather than dropped.
+    /// what it did not take sent to the client in paint frames before the
+    /// `Exit`, rather than dropped.
     #[test]
     fn what_a_terminal_given_back_did_not_take_goes_to_the_client() -> std::io::Result<()> {
         let (mut conn, _client, _far) = with_terminal()?;
         // Fill the stand-in until it takes no more.
         if let Some(tty) = &mut conn.tty {
             tty.out.push(&vec![b'x'; 4 << 20]);
-            tty.title_saved = true;
+            tty.out.push(b"end");
         }
         conn.flush_tty();
         conn.send(&Frame::Exit("detached".into()));
@@ -1254,10 +1235,7 @@ mod tests {
                 exit = Some(reason);
             }
         }
-        assert!(
-            painted.ends_with(crate::outer::TITLE_POP),
-            "the title's restore"
-        );
+        assert!(painted.ends_with(b"end"), "the last of what waited");
         assert_eq!(exit.as_deref(), Some("detached"));
         Ok(())
     }
