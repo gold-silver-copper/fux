@@ -1,7 +1,7 @@
 //! The running configuration: options and key bindings, changed by `set`,
 //! `bind`, `unbind` and `unbind-all`, whether they come from the config file,
 //! the CLI or the command prompt.
-use crate::command::{self, Command, Usage};
+use crate::command::{self, ClientAction, Command, Kind, Usage};
 use crate::keys::{Key, KeyPress};
 use crate::words;
 use std::path::{Path, PathBuf};
@@ -414,32 +414,40 @@ impl Binding {
     /// The group its command belongs to, whatever `-g` said.
     pub fn derived_group(&self) -> &'static str {
         let name = self.command.first().map(String::as_str).unwrap_or("");
-        let second = self.command.get(1).map(String::as_str);
-        match (name, second) {
-            ("select-pane", _) => "Focus",
-            ("menu", Some("tab"))
-            | ("rename-prompt", Some("tab"))
-            | ("confirm-close", Some("tab"))
-            | ("reorder", Some("tab")) => "Tabs",
-            ("menu", Some("workspace"))
-            | ("rename-prompt", Some("workspace"))
-            | ("confirm-close", Some("workspace"))
-            | ("reorder", Some("workspace")) => "Workspaces",
-            (
-                "split" | "kill-pane" | "zoom" | "resize-pane" | "swap-pane" | "move-pane"
-                | "copy-mode" | "paste-buffer" | "menu" | "rename-prompt" | "confirm-close"
-                | "terminate" | "choose-pane" | "send-keys" | "send-prefix" | "reorder",
-                _,
-            ) => "Panes",
-            ("new-tab" | "select-tab" | "choose-tab" | "kill-tab", _) => "Tabs",
-            ("new-workspace" | "select-workspace" | "choose-workspace" | "kill-workspace", _) => {
-                "Workspaces"
-            }
-            ("detach" | "command-prompt" | "command-column" | "reload" | "kill-server", _) => {
-                "Session"
-            }
-            _ => "Other",
+        // A command on any kind is listed by the kind it acts on, given or
+        // its target's.
+        let (Command::Reorder { kind, .. }
+        | Command::Client {
+            action:
+                ClientAction::Menu { kind, .. }
+                | ClientAction::RenamePrompt { kind, .. }
+                | ClientAction::ConfirmClose { kind, .. },
+            ..
+        }) = &self.parsed
+        else {
+            return group_by_name(name);
+        };
+        match kind {
+            Kind::Tab => "Tabs",
+            Kind::Workspace => "Workspaces",
+            Kind::Pane => group_by_name(name),
         }
+    }
+}
+
+/// The group a command's name puts it in.
+fn group_by_name(name: &str) -> &'static str {
+    match name {
+        "select-pane" => "Focus",
+        "split" | "kill-pane" | "zoom" | "resize-pane" | "swap-pane" | "move-pane"
+        | "copy-mode" | "paste-buffer" | "menu" | "rename-prompt" | "confirm-close"
+        | "terminate" | "choose-pane" | "send-keys" | "send-prefix" | "reorder" => "Panes",
+        "new-tab" | "select-tab" | "choose-tab" | "kill-tab" => "Tabs",
+        "new-workspace" | "select-workspace" | "choose-workspace" | "kill-workspace" => {
+            "Workspaces"
+        }
+        "detach" | "command-prompt" | "command-column" | "reload" | "kill-server" => "Session",
+        _ => "Other",
     }
 }
 
@@ -1180,6 +1188,23 @@ mod tests {
             );
             let back = read_back(&c);
             assert_eq!(back.as_ref().map(|b| &b.shell), Ok(&c.shell), "{shell}");
+        }
+    }
+
+    /// A command on any kind is listed under the kind it acts on, given or
+    /// its target's.
+    #[test]
+    fn a_binding_is_grouped_by_the_kind_it_acts_on() {
+        let mut c = Config::default();
+        for (keys, command, group) in [
+            ("g a", "menu -t @2", "Tabs"),
+            ("g b", "confirm-close -t +1", "Workspaces"),
+            ("g c", "reorder workspace --next", "Workspaces"),
+            ("g d", "menu pane", "Panes"),
+        ] {
+            assert_eq!(apply(&mut c, &format!("bind {keys} {command}")), Ok(()));
+            let b = c.bindings.iter().find(|b| keys_text(&b.keys) == keys);
+            assert_eq!(b.map(Binding::group), Some(group), "{command}");
         }
     }
 
