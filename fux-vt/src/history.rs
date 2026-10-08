@@ -239,12 +239,6 @@ impl History {
             links,
         })
     }
-    /// Row `index`'s cell `col`, blank past those it keeps.
-    pub(crate) fn cell(&self, index: usize, col: usize) -> Compact {
-        self.get(index)
-            .and_then(|row| row.cells.get(col).copied())
-            .unwrap_or(BLANK)
-    }
     /// Where the row with identity `id` is, oldest first.
     pub(crate) fn position(&self, id: RowId) -> Option<usize> {
         self.rows.iter().position(|kept| kept.id == id)

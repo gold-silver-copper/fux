@@ -446,7 +446,10 @@ impl Cell {
     }
     /// The trailing half of a wide glyph: empty, default attributes.
     pub fn wide_continuation() -> Self {
-        Self::continuation()
+        Self {
+            length: Self::CONTINUATION,
+            ..Self::default()
+        }
     }
     /// Whether the cell holds text: neither blank nor the second half of a
     /// wide glyph.
@@ -470,12 +473,6 @@ impl Cell {
     pub(crate) fn blank(attributes: Attributes) -> Self {
         Self {
             attributes,
-            ..Self::default()
-        }
-    }
-    pub(crate) fn continuation() -> Self {
-        Self {
-            length: Self::CONTINUATION,
             ..Self::default()
         }
     }
@@ -946,14 +943,11 @@ impl Cells {
         }
         self.line().set(i, cell.template(), text)
     }
-    /// Sets cell `i` to `cell`, which holds its text inline.
+    /// Sets cell `i` to `cell`. A `Cell` a host holds keeps its text
+    /// inline: only cells in a `Cells` keep theirs in its text.
     pub fn set_cell(&mut self, i: usize, cell: Cell) {
         if let Some(slot) = self.cells.get_mut(i) {
-            *slot = if cell.is_spilled() {
-                Cell::blank(cell.attributes)
-            } else {
-                cell
-            };
+            *slot = cell;
         }
     }
     /// Sets cell `i` to `text`, `wide` or not, in `attributes`. A cluster
@@ -978,11 +972,6 @@ impl Cells {
     pub fn fill(&mut self, range: std::ops::Range<usize>, cell: Cell) {
         let end = range.end.min(self.cells.len());
         let start = range.start.min(end);
-        let cell = if cell.is_spilled() {
-            Cell::blank(cell.attributes)
-        } else {
-            cell
-        };
         if let Some(run) = self.cells.get_mut(start..end) {
             run.fill(cell);
         }
@@ -994,11 +983,6 @@ impl Cells {
     /// a shorter run's budget: its cells' text is stored again, left to
     /// right, and what no longer fits is cut to what fits inline.
     pub fn resize(&mut self, len: usize, cell: Cell) {
-        let cell = if cell.is_spilled() {
-            Cell::blank(cell.attributes)
-        } else {
-            cell
-        };
         let shorter = len < self.cells.len();
         self.cells.resize(len, cell);
         if shorter {

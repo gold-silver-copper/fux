@@ -95,10 +95,7 @@ fn rows_read_back_as_they_came_while_the_oldest_go() -> Result<(), Error> {
         let kept: usize = expected.iter().map(|row| row.5.len()).sum();
         assert_eq!(history.kept_cells(), kept);
     }
-    // Past its cells, a row reads blank.
     let last = history.len().saturating_sub(1);
-    let len = history.kept(last).map_or(0, Kept::len);
-    assert_eq!(history.cell(last, len), BLANK);
     assert_eq!(history.position(RowId(2999)), Some(last));
     assert_eq!(history.position(RowId(0)), None);
     Ok(())

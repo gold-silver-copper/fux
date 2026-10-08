@@ -187,7 +187,7 @@ impl Grid {
                 }
             }
             let mut taken = len.min(length.saturating_sub(base));
-            if i != end && self.spacer(i) {
+            if i != end && self.spacer(row, i) {
                 // A cursor on a spacer goes with the glyph after it.
                 let spacer = base.saturating_add(len).saturating_sub(1);
                 for offset in &mut line.offsets {
@@ -310,15 +310,17 @@ impl Grid {
         0
     }
 
-    /// Whether retained row `index`, soft-wrapped, ends in a spacer: a
-    /// blank that a wide glyph starting the next row did not fit in.
-    fn spacer(&self, index: usize) -> bool {
-        let last = self.width_at(index).checked_sub(1);
-        last.and_then(|col| self.cell_at(index, col))
+    /// Whether `row`, retained row `index`, soft-wrapped, ends in a spacer:
+    /// a blank that a wide glyph starting the next row did not fit in.
+    fn spacer(&self, row: Row<'_>, index: usize) -> bool {
+        row.width
+            .checked_sub(1)
+            .and_then(|col| row.stored(col))
             .is_some_and(|c| c.is_blank(0))
             && self
-                .cell_at(index.saturating_add(1), 0)
-                .is_some_and(|c| c.is_wide())
+                .row_at(index.saturating_add(1))
+                .and_then(|next| next.stored(0))
+                .is_some_and(Compact::is_wide)
     }
 
     /// The identity of retained row `index`, if it is at most `end`: the
@@ -353,21 +355,6 @@ impl Grid {
                 .and_then(|slot| self.meta.get(slot))
                 .map_or(0, |m| usize::from(m.width)),
         }
-    }
-
-    /// Retained row `index`'s cell `col`, if it has one.
-    fn cell_at(&self, index: usize, col: usize) -> Option<Compact> {
-        if col >= self.width_at(index) {
-            return None;
-        }
-        Some(match index.checked_sub(self.history.len()) {
-            None => self.history.cell(index, col),
-            Some(row) => self
-                .screen_slot(row)
-                .and_then(|slot| self.slice(slot).get(col))
-                .copied()
-                .unwrap_or(BLANK),
-        })
     }
 
     /// How many of retained row `index`'s cells come before its blank
