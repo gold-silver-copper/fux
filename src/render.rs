@@ -376,24 +376,14 @@ impl Grid {
     fn same_frame(&self, other: &Grid) -> bool {
         self.memo.frame.is_some() && self.memo.frame == other.memo.frame
     }
-    /// Whether row `y` has the same cells as `other`'s row `y`, as
-    /// comparing `row(y)` of each does: two grids of a width compare by
-    /// `Cells::range_eq`, without reading each cell's text.
-    pub fn row_eq(&self, other: &Grid, y: u16) -> bool {
-        if self.cols != other.cols {
-            return self.row(y).eq(other.row(y));
-        }
+    /// Whether row `y` has the same cells as `other`'s, a grid of its size:
+    /// compared by `Cells::range_eq`, without reading each cell's text.
+    fn row_eq(&self, other: &Grid, y: u16) -> bool {
         let cols = usize::from(self.cols);
         // Exact: a u16 by a u16 fits even a 32-bit usize.
         let start = usize::from(y).saturating_mul(cols);
-        let rows = (y < self.rows, y < other.rows);
-        match rows {
-            (true, true) => self
-                .cells
-                .range_eq(&other.cells, start..start.saturating_add(cols)),
-            (false, false) => true,
-            (true, false) | (false, true) => self.row(y).eq(other.row(y)),
-        }
+        self.cells
+            .range_eq(&other.cells, start..start.saturating_add(cols))
     }
     /// The cells of row `y`; none past the last row.
     pub fn row(&self, y: u16) -> impl Iterator<Item = CellRef<'_>> + Clone {
