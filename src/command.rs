@@ -458,33 +458,30 @@ pub struct Spec {
     /// Its name (`ls|list`: and another), the words after it, and after two
     /// spaces what it does. Every flag here is one the command takes, and
     /// it takes no other; one followed by a placeholder (`-t %N`, unlike
-    /// `-h [-t %N]` or `[--json]`) takes a value.
+    /// `-h [-t %N]` or `[--json]`) takes a value. With `pane|tab|workspace`
+    /// in it, the last positional names a kind.
     pub usage: &'static str,
     read: Read,
 }
 
+/// How a command's words become a [`Command`]. With `Flags` and `Screen`,
+/// flags come anywhere, as the usage names them, among positionals and
+/// before `--`; what the reader leaves is refused.
 enum Read {
     Flags(fn(&mut Args<'_>) -> Result<Command, Usage>),
+    /// An action on the screen of the client `-c` names, if it names one,
+    /// else of the client whose key, menu or prompt ran it.
+    Screen(fn(&mut Args<'_>) -> Result<ClientAction, Usage>),
+    /// The words as they are: keys that may look like flags, or a config
+    /// line, which `Config::apply` reads.
     Line(fn(&[String]) -> Result<Command, Usage>),
 }
 
-/// A command whose flags come anywhere, as its usage names them, among
-/// positionals, and whatever follows `--`. What `read` leaves is refused.
-const fn flags(usage: &'static str, read: fn(&mut Args<'_>) -> Result<Command, Usage>) -> Spec {
-    Spec {
-        usage,
-        read: Read::Flags(read),
-    }
+const fn spec(usage: &'static str, read: Read) -> Spec {
+    Spec { usage, read }
 }
 
-/// A command `read` takes as it is: keys that may look like flags, or a
-/// config line, which `Config::apply` reads.
-const fn line(usage: &'static str, read: fn(&[String]) -> Result<Command, Usage>) -> Spec {
-    Spec {
-        usage,
-        read: Read::Line(read),
-    }
-}
+use Read::{Flags, Line, Screen};
 
 /// Every command, under the command-column group its bindings are listed
 /// in, in the column's order: `Other`, which it lists last, holds the rest.
@@ -497,192 +494,111 @@ pub const COMMANDS: &[(&str, &[Spec])] = &[
     ("Other", OTHER),
 ];
 
+#[rustfmt::skip]
 const PANES: &[Spec] = &[
-    flags(
-        "split -h|-v [-t %N] [-- CMD...]  -h side by side, -v stacked",
-        split,
-    ),
-    flags("kill-pane [-t %N]  close, without asking", |a| {
+    spec("split -h|-v [-t %N] [-- CMD...]  -h side by side, -v stacked", Flags(split)),
+    spec("kill-pane [-t %N]  close, without asking", Flags(|a| {
         Ok(Command::KillPane { target: a.pane()? })
-    }),
-    flags("zoom [-c CLIENT]", |a| screen(a, ClientAction::Zoom)),
-    flags(
-        "resize-pane [-t %N] -L|-R|-U|-D [CELLS]  move a border (one cell)",
-        resize,
-    ),
-    flags("swap-pane [-t %N] (%M | -L|-R|-U|-D)", swap),
-    flags(
-        "move-pane [-t %N] (--to @N|+N|new-tab|new-workspace | -L|-R|-U|-D)",
-        move_pane,
-    ),
-    flags("copy-mode [-c CLIENT]", |a| {
-        screen(a, ClientAction::CopyMode)
-    }),
-    flags("paste-buffer [-b N] [-t %N]", |a| {
-        Ok(Command::PasteBuffer {
-            index: a.buffer()?,
-            target: a.pane()?,
-        })
-    }),
-    flags("menu pane|tab|workspace [-c CLIENT] [-t TARGET]", |a| {
-        let subject = a.subject()?;
-        let subject = subject.ok_or(Usage::Needs("usage: menu pane|tab|workspace [-t TARGET]"))?;
-        screen(a, ClientAction::Menu(subject))
-    }),
-    flags(
-        "rename-prompt [pane|tab|workspace] [-c CLIENT] [-t TARGET]",
-        |a| {
-            let subject = a.subject()?.unwrap_or(Subject::Pane(None));
-            screen(a, ClientAction::RenamePrompt(subject))
-        },
-    ),
-    flags(
-        "confirm-close [pane|tab|workspace] [-c CLIENT] [-t TARGET]",
-        |a| {
-            let subject = a.subject()?.unwrap_or(Subject::Pane(None));
-            screen(a, ClientAction::ConfirmClose(subject))
-        },
-    ),
-    flags(
-        "terminate [-t %N]  SIGTERM to the pane's foreground job",
-        |a| Ok(Command::Terminate { target: a.pane()? }),
-    ),
-    flags(
-        "choose-pane [-c CLIENT] [-t %N]  a pane to swap with",
-        |a| {
-            let target = a.pane()?;
-            screen(a, ClientAction::ChoosePane { target })
-        },
-    ),
-    line(
-        "send-keys [-t %N] [-l] KEYS...  keys, or with -l text",
-        send_keys,
-    ),
-    flags("send-prefix [-t %N]  the prefix key, to the pane", |a| {
+    })),
+    spec("zoom [-c CLIENT]", Screen(|_| Ok(ClientAction::Zoom))),
+    spec("resize-pane [-t %N] -L|-R|-U|-D [CELLS]  move a border (one cell)", Flags(resize)),
+    spec("swap-pane [-t %N] (%M | -L|-R|-U|-D)", Flags(swap)),
+    spec("move-pane [-t %N] (--to @N|+N|new-tab|new-workspace | -L|-R|-U|-D)", Flags(move_pane)),
+    spec("copy-mode [-c CLIENT]", Screen(|_| Ok(ClientAction::CopyMode))),
+    spec("paste-buffer [-b N] [-t %N]", Flags(|a| {
+        Ok(Command::PasteBuffer { index: a.buffer()?, target: a.pane()? })
+    })),
+    spec("menu pane|tab|workspace [-c CLIENT] [-t TARGET]", Screen(|a| {
+        let needs = Usage::Needs("usage: menu pane|tab|workspace [-t TARGET]");
+        a.subject()?.map(ClientAction::Menu).ok_or(needs)
+    })),
+    spec("rename-prompt [pane|tab|workspace] [-c CLIENT] [-t TARGET]", Screen(|a| {
+        Ok(ClientAction::RenamePrompt(a.subject()?.unwrap_or(Subject::Pane(None))))
+    })),
+    spec("confirm-close [pane|tab|workspace] [-c CLIENT] [-t TARGET]", Screen(|a| {
+        Ok(ClientAction::ConfirmClose(a.subject()?.unwrap_or(Subject::Pane(None))))
+    })),
+    spec("terminate [-t %N]  SIGTERM to the pane's foreground job", Flags(|a| {
+        Ok(Command::Terminate { target: a.pane()? })
+    })),
+    spec("choose-pane [-c CLIENT] [-t %N]  a pane to swap with", Screen(|a| {
+        Ok(ClientAction::ChoosePane { target: a.pane()? })
+    })),
+    spec("send-keys [-t %N] [-l] KEYS...  keys, or with -l text", Line(send_keys)),
+    spec("send-prefix [-t %N]  the prefix key, to the pane", Flags(|a| {
         Ok(Command::SendPrefix { target: a.pane()? })
-    }),
-    flags(
-        "reorder pane|tab|workspace [-t TARGET] --next|--previous",
-        reorder,
-    ),
+    })),
+    spec("reorder pane|tab|workspace [-t TARGET] --next|--previous", Flags(reorder)),
 ];
 
-const FOCUS: &[Spec] = &[flags(
+#[rustfmt::skip]
+const FOCUS: &[Spec] = &[spec(
     "select-pane [-c CLIENT] -t %N|--next|--previous|--last|-L|-R|-U|-D",
-    select_pane,
+    Screen(select_pane),
 )];
 
+#[rustfmt::skip]
 const TABS: &[Spec] = &[
-    flags("new-tab [-t WS] [-n NAME] [-- CMD...]", |a| {
+    spec("new-tab [-t WS] [-n NAME] [-- CMD...]", Flags(|a| {
         let target = a.target(parse_workspace)?;
-        Ok(Command::NewTab {
-            target,
-            name: a.name(),
-            cmd: a.rest(),
-        })
-    }),
-    flags("select-tab [-c CLIENT] -t @N|--next|--previous", |a| {
-        let pick = a.pick(
-            parse_tab,
-            "select-tab needs one of -t @N, --next, --previous",
-        )?;
-        screen(a, ClientAction::SelectTab(pick))
-    }),
-    flags(
-        "choose-tab [-c CLIENT] [-t %N] [--move]  where to go, or move the pane",
-        |a| {
-            let moving = a.moving()?;
-            screen(a, ClientAction::ChooseTab { moving })
-        },
-    ),
-    flags("kill-tab [-t @N]", |a| {
-        Ok(Command::KillTab {
-            target: a.target(parse_tab)?,
-        })
-    }),
+        Ok(Command::NewTab { target, name: a.name(), cmd: a.rest() })
+    })),
+    spec("select-tab [-c CLIENT] -t @N|--next|--previous", Screen(|a| {
+        let needs = "select-tab needs one of -t @N, --next, --previous";
+        a.pick(parse_tab, needs).map(ClientAction::SelectTab)
+    })),
+    spec("choose-tab [-c CLIENT] [-t %N] [--move]  where to go, or move the pane", Screen(|a| {
+        Ok(ClientAction::ChooseTab { moving: a.moving()? })
+    })),
+    spec("kill-tab [-t @N]", Flags(|a| Ok(Command::KillTab { target: a.target(parse_tab)? }))),
 ];
 
+#[rustfmt::skip]
 const WORKSPACES: &[Spec] = &[
-    flags("new-workspace [-n NAME] [-- CMD...]", |a| {
-        Ok(Command::NewWorkspace {
-            name: a.name(),
-            cmd: a.rest(),
-        })
-    }),
-    flags(
-        "select-workspace [-c CLIENT] -t WS|--next|--previous",
-        |a| {
-            let needs = "select-workspace needs one of -t +N, --next, --previous";
-            let pick = a.pick(parse_workspace, needs)?;
-            screen(a, ClientAction::SelectWorkspace(pick))
-        },
-    ),
-    flags("choose-workspace [-c CLIENT] [-t %N] [--move]", |a| {
-        let moving = a.moving()?;
-        screen(a, ClientAction::ChooseWorkspace { moving })
-    }),
-    flags("kill-workspace [-t WS]", |a| {
-        Ok(Command::KillWorkspace {
-            target: a.target(parse_workspace)?,
-        })
-    }),
+    spec("new-workspace [-n NAME] [-- CMD...]", Flags(|a| {
+        Ok(Command::NewWorkspace { name: a.name(), cmd: a.rest() })
+    })),
+    spec("select-workspace [-c CLIENT] -t WS|--next|--previous", Screen(|a| {
+        let needs = "select-workspace needs one of -t +N, --next, --previous";
+        a.pick(parse_workspace, needs).map(ClientAction::SelectWorkspace)
+    })),
+    spec("choose-workspace [-c CLIENT] [-t %N] [--move]", Screen(|a| {
+        Ok(ClientAction::ChooseWorkspace { moving: a.moving()? })
+    })),
+    spec("kill-workspace [-t WS]", Flags(|a| {
+        Ok(Command::KillWorkspace { target: a.target(parse_workspace)? })
+    })),
 ];
 
+#[rustfmt::skip]
 const SESSION: &[Spec] = &[
-    flags("detach [-c CLIENT]", |a| screen(a, ClientAction::Detach)),
-    flags("command-prompt [-c CLIENT]", |a| {
-        screen(a, ClientAction::CommandPrompt)
-    }),
-    flags("command-column [-c CLIENT]", |a| {
-        screen(a, ClientAction::CommandColumn)
-    }),
-    flags("reload  run the config file again", |_| Ok(Command::Reload)),
-    flags("kill-server", |_| Ok(Command::KillServer)),
+    spec("detach [-c CLIENT]", Screen(|_| Ok(ClientAction::Detach))),
+    spec("command-prompt [-c CLIENT]", Screen(|_| Ok(ClientAction::CommandPrompt))),
+    spec("command-column [-c CLIENT]", Screen(|_| Ok(ClientAction::CommandColumn))),
+    spec("reload  run the config file again", Flags(|_| Ok(Command::Reload))),
+    spec("kill-server", Flags(|_| Ok(Command::KillServer))),
 ];
 
+#[rustfmt::skip]
 const OTHER: &[Spec] = &[
-    flags(
-        "ls|list [--json]  workspaces, tabs, panes and clients",
-        |a| {
-            Ok(Command::Ls {
-                json: a.has("--json"),
-            })
-        },
-    ),
-    flags(
-        "rename -t TARGET [--] NAME  TARGET: %N, @N, +N or a name",
-        rename,
-    ),
-    flags("capture-pane [-t %N] [-S LINES] [--json]", |a| {
+    spec("ls|list [--json]  workspaces, tabs, panes and clients", Flags(|a| {
+        Ok(Command::Ls { json: a.has("--json") })
+    })),
+    spec("rename -t TARGET [--] NAME  TARGET: %N, @N, +N or a name", Flags(rename)),
+    spec("capture-pane [-t %N] [-S LINES] [--json]", Flags(|a| {
         let (target, history, json) = (a.pane()?, a.lines()?, a.has("--json"));
-        Ok(Command::CapturePane {
-            target,
-            history,
-            json,
-        })
-    }),
-    flags("capture-client [-c CLIENT] [--json]", |a| {
-        let json = a.has("--json");
-        screen(a, ClientAction::Capture { json })
-    }),
-    line("set OPTION VALUE", configure),
-    line(
-        "bind [-n] [-g GROUP] [-r] KEY... COMMAND...  keys after the prefix; V is Shift-v",
-        configure,
-    ),
-    line("unbind [-n] KEY...", configure),
-    flags("unbind-all", |_| {
-        Ok(Command::Configure {
-            argv: vec!["unbind-all".to_owned()],
-        })
-    }),
-    flags("list-buffers", |_| Ok(Command::ListBuffers)),
-    flags("show-buffer [-b N]", |a| {
-        Ok(Command::ShowBuffer { index: a.buffer()? })
-    }),
-    flags("list-keys  key names and bindings", |_| {
-        Ok(Command::ListKeys)
-    }),
+        Ok(Command::CapturePane { target, history, json })
+    })),
+    spec("capture-client [-c CLIENT] [--json]", Screen(|a| {
+        Ok(ClientAction::Capture { json: a.has("--json") })
+    })),
+    spec("set OPTION VALUE", Line(configure)),
+    spec("bind [-n] [-g GROUP] [-r] KEY... COMMAND...  V is Shift-v", Line(configure)),
+    spec("unbind [-n] KEY...", Line(configure)),
+    spec("unbind-all", Flags(|_| Ok(Command::Configure { argv: vec!["unbind-all".to_owned()] }))),
+    spec("list-buffers", Flags(|_| Ok(Command::ListBuffers))),
+    spec("show-buffer [-b N]", Flags(|a| Ok(Command::ShowBuffer { index: a.buffer()? }))),
+    spec("list-keys  key names and bindings", Flags(|_| Ok(Command::ListKeys))),
 ];
 
 /// The command named `name`: the name as the table has it, its group, and
@@ -731,10 +647,13 @@ impl Spec {
     pub fn names(&self) -> impl Iterator<Item = &'static str> {
         self.usage.split(' ').next().unwrap_or_default().split('|')
     }
+    /// The usage before what the command does.
+    fn grammar(&self) -> &'static str {
+        self.usage.split("  ").next().unwrap_or_default()
+    }
     /// Whether the usage names `flag`, and if so, whether a value follows it.
     fn flag(&self, flag: &str) -> Option<bool> {
-        let grammar = self.usage.split("  ").next().unwrap_or_default();
-        let mut words = grammar.split(' ').skip(1).peekable();
+        let mut words = self.grammar().split(' ').skip(1).peekable();
         while let Some(word) = words.next() {
             let bare = word.trim_matches(['[', ']', '(', ')']);
             if bare.split('|').any(|f| f == flag) {
@@ -756,6 +675,8 @@ struct Args<'a> {
     name: &'static str,
     flags: Vec<(&'a str, Option<&'a str>)>,
     positional: Vec<&'a str>,
+    /// The last positional, for a command whose usage names a kind.
+    kind: Option<&'a str>,
     rest: Vec<String>,
 }
 
@@ -766,6 +687,7 @@ impl<'a> Args<'a> {
             name,
             flags: Vec::new(),
             positional: Vec::new(),
+            kind: None,
             rest: Vec::new(),
         };
         let mut words = words.iter();
@@ -793,7 +715,32 @@ impl<'a> Args<'a> {
             };
             args.flags.push((word, value.map(String::as_str)));
         }
+        if spec.grammar().contains("pane|tab|workspace") {
+            args.kind = args.positional.pop();
+        }
         Ok(args)
+    }
+    /// The kind the usage's last positional names, if given.
+    fn kind(&self) -> Result<Option<Kind>, Usage> {
+        let Some(word) = self.kind else {
+            return Ok(None);
+        };
+        let kind = [Kind::Pane, Kind::Tab, Kind::Workspace]
+            .into_iter()
+            .find(|k| k.name() == word);
+        kind.map(Some).ok_or_else(|| Usage::NotKind {
+            command: self.name,
+            word: word.to_owned(),
+        })
+    }
+    fn no_positional(&self) -> Result<(), Usage> {
+        match self.positional.first() {
+            Some(word) => Err(Usage::Unexpected {
+                command: self.name,
+                word: (*word).to_owned(),
+            }),
+            None => Ok(()),
+        }
     }
     fn has(&self, flag: &str) -> bool {
         self.flags.iter().any(|(f, _)| *f == flag)
@@ -822,8 +769,18 @@ impl<'a> Args<'a> {
     fn direction(&self) -> Option<Direction> {
         self.flags.iter().rev().find_map(|(f, _)| direction_flag(f))
     }
+    /// `flag`'s value as `parse` reads it: each one given is read, in
+    /// order, and the last counts.
+    fn parsed<T>(
+        &self,
+        flag: &str,
+        parse: impl Fn(&'a str) -> Result<T, Usage>,
+    ) -> Result<Option<T>, Usage> {
+        let mut values = self.flags.iter().filter(|(f, _)| *f == flag);
+        values.try_fold(None, |_, (_, v)| v.map(&parse).transpose())
+    }
     fn target<T>(&self, parse: fn(&str) -> Result<T, Usage>) -> Result<Option<T>, Usage> {
-        self.value("-t").map(parse).transpose()
+        self.parsed("-t", parse)
     }
     fn pane(&self) -> Result<Option<PaneId>, Usage> {
         self.target(parse_pane)
@@ -832,23 +789,19 @@ impl<'a> Args<'a> {
         self.value("-n").map(str::to_owned)
     }
     fn buffer(&self) -> Result<usize, Usage> {
-        let Some(value) = self.value("-b") else {
-            return Ok(0);
-        };
-        number(value)
-            .map(|n| n as usize)
-            .ok_or_else(|| Usage::NotBuffer {
+        let buffer = self.parsed("-b", |v| {
+            number(v).ok_or_else(|| Usage::NotBuffer {
                 command: self.name,
-                value: value.to_owned(),
+                value: v.to_owned(),
             })
+        })?;
+        Ok(buffer.map_or(0, |n| n as usize))
     }
     fn lines(&self) -> Result<Option<usize>, Usage> {
-        self.value("-S")
-            .map(|v| {
-                let lines = v.strip_prefix('-').unwrap_or(v).parse();
-                lines.map_err(|_| Usage::NotLines(v.to_owned()))
-            })
-            .transpose()
+        self.parsed("-S", |v| {
+            let lines = v.strip_prefix('-').unwrap_or(v).parse();
+            lines.map_err(|_| Usage::NotLines(v.to_owned()))
+        })
     }
     fn rest(&mut self) -> Vec<String> {
         std::mem::take(&mut self.rest)
@@ -857,23 +810,11 @@ impl<'a> Args<'a> {
     /// either does: of another kind than the kind given, `-t` is refused in
     /// the words a target of the wrong kind gets, rather than one of the
     /// two silently winning.
-    fn subject(&mut self) -> Result<Option<Subject>, Usage> {
-        let kind = match self.positional.pop() {
-            Some(word) => Some(
-                [Kind::Pane, Kind::Tab, Kind::Workspace]
-                    .into_iter()
-                    .find(|k| k.name() == word)
-                    .ok_or_else(|| Usage::NotKind {
-                        command: self.name,
-                        word: word.to_owned(),
-                    })?,
-            ),
-            None => None,
-        };
-        let Some(text) = self.value("-t") else {
+    fn subject(&self) -> Result<Option<Subject>, Usage> {
+        let (target, kind) = (self.target(parse_any)?, self.kind()?);
+        let (Some(text), Some(target)) = (self.value("-t"), target) else {
             return Ok(kind.map(Subject::own));
         };
-        let target = parse_any(text)?;
         match kind {
             Some(kind) if kind != target.kind() => Err(Usage::Not(kind, text.to_owned())),
             _ => Ok(Some(target.into())),
@@ -898,12 +839,6 @@ impl<'a> Args<'a> {
             None => self.has("--move").then_some(None),
         })
     }
-}
-
-/// An action on the screen of the client `-c` names, if it names one.
-fn screen(a: &Args<'_>, action: ClientAction) -> Result<Command, Usage> {
-    let client = a.value("-c").map(parse_client).transpose()?;
-    Ok(Command::Client { client, action })
 }
 
 fn configure(argv: &[String]) -> Result<Command, Usage> {
@@ -950,13 +885,17 @@ fn rename(a: &mut Args<'_>) -> Result<Command, Usage> {
 
 fn move_pane(a: &mut Args<'_>) -> Result<Command, Usage> {
     let target = a.pane()?;
-    let to = a.flags.iter().rev().find_map(|&(flag, value)| match value {
-        Some(value) if flag == "--to" => Some(parse_move_to(value)),
-        _ => direction_flag(flag).map(|d| Ok(MoveTo::Beside(d))),
-    });
+    // The last of `--to` and the directions, each `--to` read.
+    let to = a
+        .flags
+        .iter()
+        .try_fold(None, |to, &(flag, value)| match value {
+            Some(value) if flag == "--to" => parse_move_to(value).map(Some),
+            _ => Ok(direction_flag(flag).map(MoveTo::Beside).or(to)),
+        })?;
     let to = to.ok_or(Usage::Needs(
         "move-pane needs --to @N|+N|new-tab|new-workspace or -L/-R/-U/-D",
-    ))??;
+    ))?;
     Ok(Command::MovePane { target, to })
 }
 
@@ -1004,7 +943,7 @@ fn reorder(a: &mut Args<'_>) -> Result<Command, Usage> {
     Ok(Command::Reorder { subject, toward })
 }
 
-fn select_pane(a: &mut Args<'_>) -> Result<Command, Usage> {
+fn select_pane(a: &mut Args<'_>) -> Result<ClientAction, Usage> {
     let step = a.last(&["--next", "--previous", "--last"]);
     let pick = match (step, a.direction(), a.value("-t")) {
         (Some("--next"), None, None) => PanePick::Step(Sibling::Next),
@@ -1018,7 +957,7 @@ fn select_pane(a: &mut Args<'_>) -> Result<Command, Usage> {
             ));
         }
     };
-    screen(a, ClientAction::SelectPane(pick))
+    Ok(ClientAction::SelectPane(pick))
 }
 
 /// Keys may look like flags (`-`), so only leading flags count.
@@ -1053,19 +992,25 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
 pub fn parse(argv: &[String]) -> Result<Command, Usage> {
     let (name, words) = argv.split_first().ok_or(Usage::NoCommand)?;
     let (name, _, spec) = find(name).ok_or_else(|| Usage::UnknownCommand(name.clone()))?;
-    let read = match spec.read {
+    let (command, a) = match spec.read {
         Read::Line(read) => return read(argv),
-        Read::Flags(read) => read,
+        Read::Flags(read) => {
+            let mut a = Args::read(name, spec, words)?;
+            (read(&mut a)?, a)
+        }
+        // `-c` is read first, then the kind, and then no other word may
+        // stand.
+        Read::Screen(read) => {
+            let mut a = Args::read(name, spec, words)?;
+            let client = a.parsed("-c", parse_client)?;
+            a.kind()?;
+            a.no_positional()?;
+            let action = read(&mut a)?;
+            (Command::Client { client, action }, a)
+        }
     };
-    let mut args = Args::read(name, spec, words)?;
-    let command = read(&mut args)?;
-    if let Some(word) = args.positional.first() {
-        return Err(Usage::Unexpected {
-            command: name,
-            word: (*word).to_owned(),
-        });
-    }
-    if !args.rest.is_empty() {
+    a.no_positional()?;
+    if !a.rest.is_empty() {
         return Err(Usage::NoCommandAfter { command: name });
     }
     Ok(command)
@@ -1369,8 +1314,7 @@ mod tests {
     fn a_flag_takes_a_value_in_every_usage_or_in_none() {
         let specs = COMMANDS.iter().flat_map(|(_, specs)| specs.iter());
         for spec in specs.filter(|spec| matches!(spec.read, Read::Flags(_))) {
-            let grammar = spec.usage.split("  ").next().unwrap_or_default();
-            for flag in grammar.split([' ', '|', '[', ']', '(', ')']) {
+            for flag in spec.grammar().split([' ', '|', '[', ']', '(', ')']) {
                 if flag.starts_with('-') && flag != "--" {
                     let value = ["-t", "-c", "-n", "-b", "-S", "--to"].contains(&flag);
                     assert_eq!(spec.flag(flag), Some(value), "{}: {flag}", spec.usage);
