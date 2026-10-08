@@ -11,8 +11,6 @@ pub type Result<T> = std::result::Result<T, Errno>;
 impl Errno {
     pub const INTR: Errno = Errno(libc::EINTR);
     pub const AGAIN: Errno = Errno(libc::EAGAIN);
-    /// The same value as `AGAIN` on every platform fuxix supports.
-    pub const WOULDBLOCK: Errno = Errno(libc::EWOULDBLOCK);
     pub const INPROGRESS: Errno = Errno(libc::EINPROGRESS);
     pub const MFILE: Errno = Errno(libc::EMFILE);
     pub const NFILE: Errno = Errno(libc::ENFILE);
@@ -101,7 +99,6 @@ mod tests {
         );
         let io: std::io::Error = Errno::MFILE.into();
         assert_eq!(Errno::from_io_error(&io), Some(Errno::MFILE));
-        assert_eq!(Errno::AGAIN, Errno::WOULDBLOCK);
         assert_eq!(Errno::from_raw(libc::EINTR), Errno::INTR);
         assert_eq!(check(3), Ok(3));
         assert_eq!(check_size(7), Ok(7));
