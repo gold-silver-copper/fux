@@ -4,7 +4,7 @@ use std::num::NonZeroU16;
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::compact::{BLANK, Compact, Line, NO_TEXT, Text};
+use crate::compact::{BLANK, Compact, Line, Text};
 use crate::history::{Arriving, History, trimmed};
 use crate::link::Links;
 use crate::style::Styles;

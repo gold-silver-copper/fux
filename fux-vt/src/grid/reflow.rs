@@ -25,18 +25,6 @@ impl Grid {
         next: &mut u64,
         version: u64,
     ) -> Result<Self, Error> {
-        self.reflowed_by(rows, cols, next, version, Lines::Changed)
-    }
-
-    /// `reflowed`, laying out cell by cell the lines `lines` says.
-    pub(super) fn reflowed_by(
-        &self,
-        rows: u16,
-        cols: u16,
-        next: &mut u64,
-        version: u64,
-        lines: Lines,
-    ) -> Result<Self, Error> {
         let (rows, cols) = Self::check_size(rows, cols, self.history_limit)?;
         // The cursor and the saved cursor go with their characters; one
         // waiting to wrap is laid out one past its glyph.
@@ -49,7 +37,7 @@ impl Grid {
             at(self.cursor, self.pending_wrap),
             at(self.saved_cursor, self.saved_pending_wrap),
         ];
-        let layout = self.reflow(usize::from(cols.get()), marks, &mut Layout, lines)?;
+        let layout = self.reflow(usize::from(cols.get()), marks, &mut Layout)?;
         // Blank lines below the cursor are dropped before any line scrolls
         // into history: a mostly empty screen keeps its text on screen.
         let screen = usize::from(rows.get());
@@ -103,7 +91,7 @@ impl Grid {
             text: Text::default(),
             links: None,
         };
-        self.reflow(usize::from(cols.get()), marks, &mut copy, lines)?;
+        self.reflow(usize::from(cols.get()), marks, &mut copy)?;
         // Blank rows under the last line, if the lines do not fill the screen.
         while replacement.order.len() < screen {
             let meta = Meta::new(next_id(next)?, version, cols.get(), false, 0);
@@ -115,16 +103,12 @@ impl Grid {
     /// Lays every retained row out again at `width` columns, one logical
     /// line after another, giving each run of cells and each finished row
     /// to `target`. `marks` are retained rows and columns, the cursor's and
-    /// the saved cursor's, each laid out as the cursor is. A line is laid
-    /// out a run of cells at a time (`lay_out_runs`); at a width under two,
-    /// or for every line if `lines` is `Lines::All`, a cell at a time
-    /// (`lay_out_cells`), which says what the runs must come to.
+    /// the saved cursor's, each laid out as the cursor is.
     fn reflow(
         &self,
         width: usize,
         marks: [Option<(usize, usize)>; 2],
         target: &mut impl Reflow,
-        lines: Lines,
     ) -> Result<Reflowed, Error> {
         let retained = self.retained_len();
         let mut pass = Pass {
@@ -149,11 +133,7 @@ impl Grid {
             if (start..=end).contains(&self.history_len()) {
                 pass.out.screen_line = pass.out.rows;
             }
-            if lines == Lines::Changed && width >= 2 {
-                self.lay_out_runs(start, end, &mut pass)?;
-            } else {
-                self.lay_out_cells(start, end, &mut pass)?;
-            }
+            self.lay_out_runs(start, end, &mut pass)?;
             start = end.saturating_add(1);
         }
         let mut out = pass.out;
@@ -165,155 +145,11 @@ impl Grid {
         Ok(out)
     }
 
-    /// Lays out the line of rows `start` through `end` a cell at a time.
-    fn lay_out_cells(
-        &self,
-        start: usize,
-        end: usize,
-        pass: &mut Pass<'_, impl Reflow>,
-    ) -> Result<(), Error> {
-        let Pass {
-            width,
-            marks,
-            out,
-            found,
-            target,
-        } = pass;
-        let width = *width;
-        let line = (start..=end).filter_map(|i| self.row_at(i));
-        // Its length without the blank tail, where the cursor is in it,
-        // and the spacers in it: the blank a reflow left at the end of a
-        // row when a wide glyph did not fit, which is no part of the text.
-        let mut length = 0usize;
-        let mut offsets = [None; 2];
-        let mut spacers = Vec::new();
-        // Where each row a prompt starts on begins in the line: the row
-        // its first cell goes to is where the prompt starts after.
-        let mut prompts = Vec::new();
-        for (i, row) in (start..=end).zip(line.clone()) {
-            if row.prompt {
-                prompts.push(length);
-            }
-            for (offset, mark) in offsets.iter_mut().zip(*marks) {
-                if let Some((row_index, col)) = mark
-                    && row_index == i
-                {
-                    *offset = length.checked_add(col);
-                }
-            }
-            if i != end
-                && row.padded().next_back().is_some_and(|c| c.same(&BLANK))
-                && self
-                    .row_at(i.saturating_add(1))
-                    .and_then(|next| next.padded().next())
-                    .is_some_and(Compact::is_wide)
-                && let Some(at) = length
-                    .checked_add(row.width)
-                    .and_then(|end| end.checked_sub(1))
-            {
-                spacers.push(at);
-            }
-            let used = if i == end {
-                row.padded()
-                    .rposition(|c| !c.same(&BLANK))
-                    .map_or(0, |last| last.saturating_add(1))
-            } else {
-                row.width
-            };
-            length = length.saturating_add(used);
-            if i == end && used == 0 {
-                // The tail runs back over earlier rows' blanks too.
-                length = self.line_length(start, end);
-            }
-        }
-        let first = out.rows;
-        let mut used = 0usize;
-        let mut placed = [false; 2];
-        let ids = line.clone().map(|r| r.id);
-        let mut ids = ids.fuse();
-        // A prompt starts on the row being laid out, or on the row the
-        // next cell placed goes to.
-        let (mut prompt, mut pending) = (false, false);
-        let cells = line.flat_map(|r| {
-            let (links, text) = (r.links, r.text);
-            r.padded().enumerate().map(move |(i, cell)| {
-                let link = links.and_then(|l| l.get(i)).copied().unwrap_or(0);
-                (cell, text, link)
-            })
-        });
-        for (n, (cell, text, link)) in cells.take(length).enumerate() {
-            pending |= prompts.contains(&n);
-            if spacers.contains(&n) {
-                // A cursor on a spacer goes with the glyph after it.
-                for offset in &mut offsets {
-                    if *offset == Some(n) {
-                        *offset = n.checked_add(1);
-                    }
-                }
-                continue;
-            }
-            if width < 2 && (cell.is_wide() || cell.is_wide_continuation()) {
-                // A wide glyph cannot be drawn in one column.
-                continue;
-            }
-            let full = used >= width;
-            let padded = !full && cell.is_wide() && used.saturating_add(1) == width;
-            if full || padded {
-                if padded {
-                    target.cell(out.rows, used, &BLANK, &NO_TEXT, 0);
-                }
-                target.row(out.rows, used, true, ids.next(), prompt)?;
-                out.rows = out.rows.saturating_add(1);
-                used = 0;
-                prompt = false;
-            }
-            for ((offset, mark), placed) in offsets.iter().zip(&mut out.marks).zip(&mut placed) {
-                if *offset == Some(n) {
-                    *mark = (out.rows, used);
-                    *placed = true;
-                }
-            }
-            prompt |= pending;
-            pending = false;
-            target.cell(out.rows, used, cell, text, link);
-            used = used.saturating_add(1);
-        }
-        // A prompt starting past the line's text starts on its last row.
-        prompt |= pending || prompts.iter().any(|at| *at >= length);
-        for (((offset, mark), placed), found) in offsets
-            .iter()
-            .zip(&mut out.marks)
-            .zip(&mut placed)
-            .zip(found.iter_mut())
-        {
-            if let Some(offset) = offset
-                && !*placed
-            {
-                // At or past the end of the line's text: as far past it
-                // on the last row, at most waiting to wrap after the
-                // last column.
-                let past = offset.saturating_sub(length);
-                *mark = (out.rows, used.saturating_add(past).min(width));
-                *placed = true;
-            }
-            *found |= *placed;
-        }
-        target.row(out.rows, used, false, ids.next(), prompt)?;
-        out.rows = out.rows.saturating_add(1);
-        out.trailing_blank = if length == 0 {
-            out.trailing_blank
-                .saturating_add(out.rows.saturating_sub(first))
-        } else {
-            0
-        };
-        Ok(())
-    }
-
-    /// Lays out the line of rows `start` through `end` as `lay_out_cells`
-    /// does, `width` being at least two, but a run of cells at a time: as
-    /// many of a row's as fit in the row being laid out, short of a wide
-    /// glyph that would end in its last column, or a spacer, which no cell
-    /// is laid out from. So a line costs its rows and the rows it is laid
+    /// Lays out the line of rows `start` through `end`, a run of cells at a
+    /// time: as many of a row's as fit in the row being laid out, short of a
+    /// wide glyph that would end in its last column, or a spacer, which no
+    /// cell is laid out from. At a width under two, wide glyphs are left out,
+    /// as one column cannot show them. So a line costs its rows and the rows it is laid
     /// out in, not its cells; one whose rows stay as they are (every line
     /// but a few, when only the rows change) costs a run a row. The line's
     /// length comes from its rows' widths and `used` marks.
@@ -361,7 +197,21 @@ impl Grid {
                 }
                 taken = taken.min(len.saturating_sub(1));
             }
-            self.lay_out_run(row, base, taken, &mut line, pass)?;
+            if pass.width < 2 {
+                let mut from = 0;
+                for col in 0..=taken {
+                    if col == taken
+                        || row
+                            .stored(col)
+                            .is_some_and(|c| c.is_wide() || c.is_wide_continuation())
+                    {
+                        self.lay_out_run(row, base, from..col, &mut line, pass)?;
+                        from = col.saturating_add(1);
+                    }
+                }
+            } else {
+                self.lay_out_run(row, base, 0..taken, &mut line, pass)?;
+            }
             base = base.saturating_add(len);
         }
         line.prompt |= line.pending;
@@ -398,18 +248,18 @@ impl Grid {
         Ok(())
     }
 
-    /// Lays out the first `taken` cells of `row`, which starts `base` cells
-    /// into its line, after the line's cells laid out so far.
+    /// Lays out cells `cells` of `row`, which starts `base` cells into its
+    /// line, after the line's cells laid out so far.
     fn lay_out_run(
         &self,
         row: Row<'_>,
         base: usize,
-        taken: usize,
+        cells: Range<usize>,
         line: &mut Run,
         pass: &mut Pass<'_, impl Reflow>,
     ) -> Result<(), Error> {
-        let width = pass.width;
-        let mut at = 0usize;
+        let (width, taken) = (pass.width, cells.end);
+        let mut at = cells.start;
         while at < taken {
             if line.used >= width {
                 self.end_row(line, pass)?;
@@ -418,13 +268,11 @@ impl Grid {
             let take = room.min(taken.saturating_sub(at));
             let next = at.saturating_add(take);
             // A wide glyph ending the run in the last column goes to the
-            // next row, a blank left in its place.
+            // next row, leaving that column blank.
             let last = next.saturating_sub(1);
             let padded = take == room && row.stored(last).is_some_and(Compact::is_wide);
             if padded {
                 line.place(row, base, at..last, pass);
-                pass.target
-                    .cell(pass.out.rows, line.used, &BLANK, &NO_TEXT, 0);
                 self.end_row(line, pass)?;
                 line.place(row, base, last..next, pass);
             } else {
@@ -448,9 +296,8 @@ impl Grid {
     }
 
     /// The length of the line from row `start` through `end` without its
-    /// blank tail, which can run back over several rows: as `line_length`
-    /// finds it, from the rows' widths and their cells back from their
-    /// `used` marks.
+    /// blank tail, which can run back over several rows: found from the
+    /// rows' widths and their cells back from their `used` marks.
     fn text_length(&self, start: usize, end: usize) -> usize {
         let mut length = (start..=end).fold(0usize, |sum, i| sum.saturating_add(self.width_at(i)));
         for i in (start..=end).rev() {
@@ -542,30 +389,11 @@ impl Grid {
             .rposition(|c| !c.is_blank(0))
             .map_or(0, |last| last.saturating_add(1))
     }
-
-    /// How many cells of the line from row `start` through `end` come before
-    /// its blank tail, which can run back over several rows.
-    fn line_length(&self, start: usize, end: usize) -> usize {
-        let mut length = 0usize;
-        let mut kept = 0usize;
-        for row in (start..=end).filter_map(|i| self.row_at(i)) {
-            for cell in row.padded() {
-                length = length.saturating_add(1);
-                if !cell.same(&BLANK) {
-                    kept = length;
-                }
-            }
-        }
-        kept
-    }
 }
 
 /// Where a reflow's rows go: `Layout` only counts them; `Fill` writes the
 /// ones kept into the replacement grid.
 trait Reflow {
-    /// `cell`, of a row whose text is in `text`, with link `link`, is at
-    /// `col` of reflowed row `row`.
-    fn cell(&mut self, row: usize, col: usize, cell: &Compact, text: &Text, link: u16);
     /// `cells`, of a row whose text is in `text`, with links `links` (as
     /// many as it has, the rest none), are at `col` on of reflowed row
     /// `row`, where they fit; the row's cells past them that the run
@@ -582,15 +410,6 @@ trait Reflow {
         id: Option<RowId>,
         prompt: bool,
     ) -> Result<(), Error>;
-}
-
-/// How a reflow lays out lines: a run of cells at a time where it can, or
-/// every line a cell at a time, as the oracle the runs are checked against.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Lines {
-    Changed,
-    #[cfg(test)]
-    All,
 }
 
 /// A reflow under way: the width it lays out at, the marks it places, what
@@ -685,7 +504,6 @@ struct Reflowed {
 
 struct Layout;
 impl Reflow for Layout {
-    fn cell(&mut self, _: usize, _: usize, _: &Compact, _: &Text, _: u16) {}
     fn run(&mut self, _: usize, _: usize, _: &[Compact], _: &Text, _: &[u16]) {}
     fn row(&mut self, _: usize, _: usize, _: bool, _: Option<RowId>, _: bool) -> Result<(), Error> {
         Ok(())
@@ -718,29 +536,6 @@ impl Fill<'_> {
     }
 }
 impl Reflow for Fill<'_> {
-    fn cell(&mut self, row: usize, col: usize, cell: &Compact, text: &Text, link: u16) {
-        if !self.rows.contains(&row) || col >= self.cells.len() {
-            return;
-        }
-        self.written = self.written.max(col.saturating_add(1));
-        if link != 0
-            && let Some(at) = self.links().get_mut(col)
-        {
-            *at = link;
-        }
-        let stored = *cell;
-        if !stored.is_spilled() {
-            if let Some(target) = self.cells.get_mut(col) {
-                *target = stored;
-            }
-            return;
-        }
-        Line {
-            cells: &mut self.cells,
-            text: &mut self.text,
-        }
-        .set(col, stored, text.of(cell));
-    }
     fn run(&mut self, row: usize, col: usize, cells: &[Compact], text: &Text, links: &[u16]) {
         if !self.rows.contains(&row) {
             return;

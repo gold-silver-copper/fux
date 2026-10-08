@@ -671,6 +671,18 @@ fn a_shrink_takes_no_history_back_onto_the_screen() -> Result {
     Ok(())
 }
 
+/// One column cannot show a wide glyph: reflowed to it, the line keeps
+/// its narrow characters alone, and the cursor stays after them.
+#[test]
+fn reflow_to_one_column_leaves_wide_glyphs_out() -> Result {
+    let mut p = with(REFLOW, 4, 6, 10)?;
+    p.process("a\u{754c}b\u{754c}".as_bytes())?;
+    p.resize(4, 1)?;
+    assert_eq!(lines(&p), ["a", "b", "", ""]);
+    assert_eq!(p.screen().cursor_position(), (1, 0));
+    Ok(())
+}
+
 #[test]
 fn reflow_resets_the_scroll_region_and_keeps_the_history_limit() -> Result {
     let mut p = with(REFLOW, 10, 20, 0)?;
