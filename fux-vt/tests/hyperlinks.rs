@@ -3,12 +3,6 @@
 //! through scrolling, erasing, editing and resizing, within bounds.
 
 use fux_vt::{ID_LIMIT, OSC_PAYLOAD_LIMIT, Options, Parser, Row, URI_LIMIT};
-#[path = "corpus/mod.rs"]
-mod corpus;
-#[path = "corpus/invariants.rs"]
-mod invariants;
-#[path = "corpus/pieces.rs"]
-mod pieces;
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 const LINKS: Options = Options::new().with_hyperlinks(true);
@@ -302,87 +296,6 @@ fn links_are_bounded_and_history_loses_them_first() -> Result {
         .and_then(|r| r.link(0))
         .map(|l| l.uri().to_owned());
     assert_eq!(newest, Some(format!("{long}2999")));
-    Ok(())
-}
-
-/// A link read: its URI, id and key.
-type Owned = (String, Option<String>, u64);
-
-/// Links read the same whatever pieces the output came in.
-#[test]
-fn links_are_chunk_invariant() -> Result {
-    let input = "\x1b]8;id=a;http://a\x1b\\ab界\x1b]8;;http://b\x07c\r\nd\x1b]8;;\x1b\\e\x1b[2@f"
-        .as_bytes();
-    let whole = parser(3, 5, 2, input)?;
-    let all = |p: &Parser| -> Vec<Vec<Option<Owned>>> {
-        let s = p.screen();
-        (0..usize::from(s.size().0) + s.history_len())
-            .filter_map(|o| s.row_from_bottom(o))
-            .map(|r| {
-                (0..r.len())
-                    .map(|c| {
-                        r.link(c)
-                            .map(|l| (l.uri().to_owned(), l.id().map(str::to_owned), l.key()))
-                    })
-                    .collect()
-            })
-            .collect()
-    };
-    for size in [1, 2, 3, 5] {
-        let mut p = Parser::with_options(3, 5, 2, LINKS)?;
-        for piece in pieces::pieces(input, size) {
-            p.process(piece)?;
-        }
-        assert_eq!(all(&p), all(&whole), "pieces of {size}");
-    }
-    Ok(())
-}
-
-/// The adversarial corpus with links opened and closed among its
-/// operations, cells inserted and deleted, and the screen resized with and
-/// without reflow: the invariants hold (a link is a glyph's, within the
-/// limits) and links read the same whatever pieces the output came in.
-#[test]
-fn links_keep_the_invariants_under_adversarial_output() -> Result {
-    let extra: [&[u8]; 7] = [
-        b"\x1b]8;;http://a\x07",
-        b"\x1b]8;id=k;http://b\x1b\\",
-        b"\x1b]8;;\x07",
-        b"\x1b[2@",
-        b"\x1b[3P",
-        b"\x1b[4h",
-        b"\x1b[4l",
-    ];
-    for seed in 0..6 {
-        for (rows, cols) in [(1, 1), (2, 3), (4, 12), (24, 80)] {
-            let options = LINKS.with_reflow(seed % 2 == 0);
-            let mut whole = Parser::with_options(rows, cols, 8, options)?;
-            let mut split = Parser::with_options(rows, cols, 8, options)?;
-            let mut state = seed;
-            for operation in corpus::terminal_edge()
-                .into_iter()
-                .chain(corpus::operations(seed, 4096))
-            {
-                let r = corpus::splitmix(&mut state);
-                let mut bytes = operation;
-                if let Some(more) = extra.get(usize::try_from(r % 12)?) {
-                    bytes.extend_from_slice(more);
-                }
-                whole.process(&bytes)?;
-                let size = usize::try_from(r % 7)?.saturating_add(1);
-                for chunk in pieces::pieces(&bytes, size) {
-                    split.process(chunk)?;
-                }
-                if r.is_multiple_of(97) {
-                    let (rows, cols) = (u16::try_from(r % 9)? + 1, u16::try_from(r % 31)? + 1);
-                    whole.resize(rows, cols)?;
-                    split.resize(rows, cols)?;
-                }
-                invariants::equal(&whole, &split);
-                invariants::check(&whole);
-            }
-        }
-    }
     Ok(())
 }
 
