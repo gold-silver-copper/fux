@@ -1618,6 +1618,19 @@ mod tests {
         Ok(())
     }
 
+    /// Keys bound without the prefix are listed under headings of their
+    /// own, even one named as a group of keys typed after it is.
+    #[test]
+    fn keys_without_the_prefix_share_no_heading() -> Outcome {
+        let (mut s, c) = crate::session::testing::attached(100, 100)?;
+        run(&mut s, "bind -n -g Session F2 zoom")?;
+        s.input(c, b"\x02");
+        let text = screen_text(&s, c)?;
+        let headings = text.lines().filter(|l| l.trim() == "Session").count();
+        assert_eq!(headings, 2, "{text}");
+        Ok(())
+    }
+
     #[test]
     fn a_key_bound_without_the_prefix_runs_at_once_and_reaches_no_pane() -> Outcome {
         let (mut s, c) = session()?;
