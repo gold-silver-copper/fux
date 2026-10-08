@@ -1029,10 +1029,11 @@ impl Session {
         })
     }
 
-    /// Keys after the prefix as they are typed, `C-b t`: as the bar, the
-    /// column and messages write them.
+    /// The prefix and keys after it as they are typed, `C-b t`: as the bar,
+    /// the column and messages write them.
     pub(crate) fn keys_named(&self, path: &[KeyPress]) -> String {
-        format!("{} {}", self.config.prefix, crate::config::keys_text(path))
+        let keys = std::iter::once(&self.config.prefix).chain(path);
+        keys.map(KeyPress::to_string).collect::<Vec<_>>().join(" ")
     }
 
     /// A PTY is the smallest rectangle any client shows it in; a pane nobody
