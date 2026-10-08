@@ -3,7 +3,7 @@
 //! `Options::mode_reports` (DECRQM alone). The default must
 //! stay fux's policy: no events and the original reply set.
 
-use fux_vt::{Attributes, Cell, Cells, Color, Event, OSC_PAYLOAD_LIMIT, Options, Parser, Sink};
+use fux_vt::{Attributes, CellRef, Cells, Color, Event, OSC_PAYLOAD_LIMIT, Options, Parser, Sink};
 #[path = "corpus/pieces.rs"]
 mod pieces;
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
@@ -547,7 +547,7 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
     for col in 0..6 {
         let original = screen.cell(0, col).ok_or("cell")?;
         if original.is_wide_continuation() {
-            copy.set_cell(usize::from(col), Cell::wide_continuation());
+            copy.set(usize::from(col), CellRef::wide_continuation());
             continue;
         }
         let a = original.attributes();
@@ -558,16 +558,16 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
             .with_underline_style(a.underline_style())
             .with_inverse(a.inverse());
         let text = original.contents();
-        assert!(copy.set_text(usize::from(col), text, original.is_wide(), attributes));
+        assert!(copy.set(
+            usize::from(col),
+            CellRef::new(text, original.is_wide(), attributes)
+        ));
     }
     let row = screen.row_from_bottom(1).ok_or("row")?;
     let original: Cells = row.cells().take(6).collect();
     assert_eq!(copy, original);
     assert_eq!(copy.get(4).map(|c| c.contents()), Some(family));
     let attributes = Attributes::new(Color::Idx(1), Color::Default);
-    let xs = |n: usize| std::iter::repeat_n('x', n).collect::<String>();
-    assert!(Cell::new(&xs(Cell::INLINE_CAPACITY), false, attributes).is_some());
-    assert!(Cell::new(&xs(Cell::INLINE_CAPACITY + 1), false, attributes).is_none());
     assert!(!attributes.with_bold(true).with_bold(false).bold());
     Ok(())
 }

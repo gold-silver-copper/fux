@@ -1,26 +1,25 @@
-//! The cell a grid stores, eight bytes: a [`Cell`]'s text and halves, with
-//! its style's number (`style.rs`) in place of its attributes. Readers
-//! never see it: a [`CellRef`] reads it with its row's text and the grid's
-//! styles.
+//! The one way cells are stored, eight bytes each: a cell's text and
+//! halves, with its style's number (`style.rs`) beside them. A screen's
+//! rows and a host's [`Cells`](crate::Cells) store cells so, and readers
+//! never see one: a [`CellRef`] reads it with its row's text, and the
+//! grid's styles or the `Cells`' attributes.
 //!
 //! A cell holds up to four bytes of text, one character, inline. A longer
-//! cluster goes in its row's text ([`Text`]), as a [`Cell`]'s longer than
-//! [`Cell::INLINE_CAPACITY`] goes in its row's spill: those of 5 to 17
-//! bytes, which a [`Cell`] held inline, in a part of their own, and the
-//! longer ones, the clusters a [`Cell`] spilled, in a [`Spill`] that keeps
-//! them exactly as a row of [`Cell`]s keeps them, within the same budget,
-//! so what is kept and what is cut is what it always was.
+//! cluster goes in its row's text ([`Text`]): those of 5 to 17 bytes, the
+//! short ones, in a part of their own that always has room, and the long
+//! ones in a part bounded at 32 bytes a cell and one cluster more.
 
-use crate::cell::{ASCII, Spill, floor};
+use crate::CellRef;
+use crate::cell::{ASCII, CLUSTER_CAPACITY, floor};
 use crate::style::Styles;
-use crate::{Cell, CellRef};
 
-/// A grid's cell. Inline, `text` is the cell's text, zeros after it (a
-/// grid's text has no NUL, which is never printed). Spilled, it is where
+/// A stored cell. Inline, `text` is the cell's text, zeros after it (a
+/// cell's text has no NUL, which is never printed). Spilled, it is where
 /// the text is in its row's [`Text`]: an offset of 24 bits, little-endian,
 /// then a length, of 5 to 17 bytes in the short clusters and more in the
 /// long ones. `word` is the style's number (`style.rs`, 28 bits) and the
-/// flags. All zeros is a blank cell in the default attributes.
+/// flags; in a `Cells`, whose attributes are beside its cells, the style
+/// is 0. All zeros is a blank cell in the default attributes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Compact {
     text: [u8; 4],
@@ -38,14 +37,14 @@ pub(crate) const BLANK: Compact = Compact {
 
 /// The text of a row that keeps none.
 pub(crate) static NO_TEXT: Text = Text {
-    long: Spill(Vec::new()),
+    long: Vec::new(),
     short: Vec::new(),
 };
 
 /// The style's number, in `word`.
 const STYLE: u32 = (1 << 28) - 1;
 /// The second half of a wide glyph; and its first. Their bits, shifted
-/// down 22, are [`Cell::CONTINUATION`] and [`Cell::WIDE`].
+/// down 22, are [`CellRef`]'s.
 const CONTINUATION: u32 = 1 << 28;
 const WIDE: u32 = 1 << 29;
 const HALVES: u32 = WIDE | CONTINUATION;
@@ -59,10 +58,11 @@ pub(crate) const PROTECTED: u32 = 1 << 31;
 /// What a cell keeps of its word when its text changes: all but where
 /// the text is.
 const KEPT: u32 = STYLE | HALVES | PROTECTED;
-const _: () = assert!(HALVES >> 22 == Cell::HALVES as u32);
+const _: () = assert!(HALVES >> 22 == CellRef::HALVES as u32);
 
-/// The longest cluster a short one is: what a [`Cell`] holds inline.
-const SHORT: usize = Cell::INLINE_CAPACITY;
+/// The longest cluster a short one is. A long cluster the row has no room
+/// for is cut to this.
+const SHORT: usize = 17;
 /// The longest text a cell holds inline.
 const INLINE: usize = 4;
 /// The bytes a row's short text first takes room for.
@@ -117,6 +117,14 @@ impl Compact {
     /// or'd together, which a run of them does without a branch a cell.
     pub(crate) fn any_halves(cells: &[Compact]) -> bool {
         cells.iter().fold(0, |any, cell| any | cell.word) & HALVES != 0
+    }
+    /// A blank cell in style 0, the halves `halves` says ([`CellRef`]'s).
+    #[inline]
+    pub(crate) fn shaped(halves: u8) -> Self {
+        Self {
+            text: [0; 4],
+            word: (u32::from(halves) << 22) & HALVES,
+        }
     }
     /// The second half of a wide glyph: no text, the default style.
     pub(crate) fn continuation() -> Self {
@@ -198,7 +206,7 @@ impl Compact {
     pub(crate) fn is_ascii(&self, byte: u8, style: u32) -> bool {
         *self == Self::ascii(byte, style)
     }
-    /// The halves, as [`Cell::WIDE`] and [`Cell::CONTINUATION`].
+    /// The halves, as [`CellRef`]'s.
     #[inline]
     fn halves(&self) -> u8 {
         u8::try_from((self.word & HALVES) >> 22).unwrap_or(0)
@@ -293,13 +301,13 @@ impl Compact {
     }
 }
 
-/// The text of a row's cells that is not inline: the long clusters in a
-/// [`Spill`], as a row of [`Cell`]s keeps them, and the short ones, of 5
-/// to 17 bytes, one after another. Overwritten clusters leave their text
-/// behind until the row runs out of room for more and is compacted.
+/// The text of a row's cells that is not inline: the long clusters, and
+/// the short ones, of 5 to 17 bytes, each kind one after another in its own
+/// part. Overwritten clusters leave their text behind until the row runs
+/// out of room for more and is compacted.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Text {
-    long: Spill,
+    long: Vec<u8>,
     short: Vec<u8>,
 }
 
@@ -310,19 +318,15 @@ impl Text {
         let Some((start, len)) = cell.locator() else {
             return cell.inline();
         };
-        let held = if len > SHORT {
-            &self.long.0
-        } else {
-            &self.short
-        };
+        let held = if len > SHORT { &self.long } else { &self.short };
         start
             .checked_add(len)
             .and_then(|end| held.get(start..end))
             .and_then(|s| std::str::from_utf8(s).ok())
             .unwrap_or("")
     }
-    /// Bytes of long clusters kept, live or left behind, as a row of
-    /// [`Cell`]s keeps them: the row's `text_len`. The short clusters are
+    /// Bytes of long clusters kept, live or left behind: the row's
+    /// `text_len`, at most `long_limit` of its cells. The short clusters are
     /// not counted, so a `Text` with none of these may still hold text
     /// (`is_empty`).
     pub(crate) fn long_len(&self) -> usize {
@@ -334,23 +338,29 @@ impl Text {
     }
     /// Forgets all the text, releasing its memory.
     pub(crate) fn release(&mut self) {
-        self.long.clear();
-        if self.short.capacity() != 0 {
-            self.short = Vec::new();
-        }
+        *self = Text::default();
     }
     /// Forgets all the text, keeping its memory for the row's next: a slot
     /// of the screen, which rows pass through.
     pub(crate) fn empty(&mut self) {
-        self.long.0.clear();
+        self.long.clear();
         self.short.clear();
     }
     /// A copy, in no more memory than it needs: what history keeps.
     pub(crate) fn exact(&self) -> Text {
         Text {
-            long: Spill(self.long.0.as_slice().to_vec()),
+            long: self.long.as_slice().to_vec(),
             short: self.short.as_slice().to_vec(),
         }
+    }
+    /// The most bytes of long clusters `cells` cells keep: 32 a cell, about
+    /// as much as the cells themselves, and one whole cluster more, so that
+    /// even a one-column row holds its longest.
+    pub(crate) fn long_limit(cells: usize) -> usize {
+        cells
+            .saturating_mul(32)
+            .saturating_add(CLUSTER_CAPACITY)
+            .min(usize::try_from(u32::MAX).unwrap_or(usize::MAX))
     }
     /// The most bytes of short clusters `cells` cells keep: one each. A
     /// cluster grown in place (`Line::append`) may pass it by its growth,
@@ -369,7 +379,7 @@ pub(crate) struct Line<'a> {
 impl Line<'_> {
     /// Adds `c` to the cluster in cell `i`; an empty cell first takes a
     /// space for `c` to follow. Whether it was kept: a cluster at
-    /// [`Cell::CLUSTER_CAPACITY`], or a row out of room, drops it.
+    /// [`CLUSTER_CAPACITY`], or a row out of room, drops it.
     pub(crate) fn append(&mut self, i: usize, c: char) -> bool {
         let Some(&cell) = self.cells.get(i) else {
             return false;
@@ -382,13 +392,13 @@ impl Line<'_> {
         let Some(end) = current
             .len()
             .checked_add(c.len_utf8())
-            .filter(|end| *end <= Cell::CLUSTER_CAPACITY)
+            .filter(|end| *end <= CLUSTER_CAPACITY)
         else {
             return false;
         };
         let mut encoded = [0; 4];
         let encoded = c.encode_utf8(&mut encoded).as_bytes();
-        // A cluster a `Cell` holds inline is short: never out of room.
+        // A short cluster is never out of room.
         if end <= SHORT {
             // In place, when the cluster is the last short text the row
             // keeps.
@@ -415,7 +425,7 @@ impl Line<'_> {
             }
             return false;
         }
-        let mut buffer = [0u8; Cell::CLUSTER_CAPACITY];
+        let mut buffer = [0u8; CLUSTER_CAPACITY];
         let Some(joined) = buffer.get_mut(..end) else {
             return false;
         };
@@ -431,7 +441,7 @@ impl Line<'_> {
         let Ok(joined) = std::str::from_utf8(joined) else {
             return false;
         };
-        let limit = Spill::limit(self.cells.len());
+        let limit = Text::long_limit(self.cells.len());
         let long = &mut self.text.long;
         // In place, when the cluster is the last long text the row keeps.
         if let Some(range) = cell.long()
@@ -439,7 +449,7 @@ impl Line<'_> {
             && long.len().saturating_add(encoded.len()) <= limit
             && let (Ok(start), Ok(len)) = (u32::try_from(range.start), u8::try_from(end))
         {
-            long.0.extend_from_slice(encoded);
+            long.extend_from_slice(encoded);
             if let Some(slot) = self.cells.get_mut(i) {
                 *slot = cell.with_spilled(start, len);
             }
@@ -457,7 +467,7 @@ impl Line<'_> {
         if long.len().saturating_add(joined.len()) > limit {
             return false;
         }
-        long.0.extend_from_slice(joined.as_bytes());
+        long.extend_from_slice(joined.as_bytes());
         match self.cells.get_mut(i) {
             // Compaction may have moved it; its halves and style are as
             // they were.
@@ -471,11 +481,11 @@ impl Line<'_> {
 
     /// Sets cell `i` to `cell`'s halves and style holding `text`: inline
     /// if it fits, else in the row's text. A cluster longer than
-    /// [`Cell::CLUSTER_CAPACITY`] is cut there; a long one the row has no
-    /// room for, even compacted, is cut to what a [`Cell`] holds inline.
+    /// [`CLUSTER_CAPACITY`] is cut there; a long one the row has no
+    /// room for, even compacted, is cut to a short one.
     /// Whether the text was kept whole.
     pub(crate) fn set(&mut self, i: usize, cell: Compact, text: &str) -> bool {
-        let kept = floor(text, Cell::CLUSTER_CAPACITY);
+        let kept = floor(text, CLUSTER_CAPACITY);
         self.store(i, cell, kept) && kept.len() == text.len()
     }
 
@@ -487,7 +497,7 @@ impl Line<'_> {
             self.store_short(i, cell, text.as_bytes());
             return true;
         }
-        let limit = Spill::limit(self.cells.len());
+        let limit = Text::long_limit(self.cells.len());
         if self.text.long.len().saturating_add(text.len()) > limit {
             // The text the cell had goes too: it is being replaced.
             if let Some(slot) = self.cells.get_mut(i) {
@@ -501,7 +511,7 @@ impl Line<'_> {
         let room = long.len().saturating_add(text.len()) <= limit;
         match (start, len) {
             (Ok(start), Ok(len)) if room => {
-                long.0.extend_from_slice(text.as_bytes());
+                long.extend_from_slice(text.as_bytes());
                 if let Some(slot) = self.cells.get_mut(i) {
                     *slot = cell.with_spilled(start, len);
                 }
@@ -515,7 +525,7 @@ impl Line<'_> {
     }
 
     /// Sets cell `i` to `cell`'s halves and style holding `text`, whole
-    /// UTF-8 of at most [`Cell::INLINE_CAPACITY`] bytes: inline, or with
+    /// UTF-8 of at most [`SHORT`] bytes: inline, or with
     /// the row's short text, which always has room for it once compacted.
     fn store_short(&mut self, i: usize, cell: Compact, text: &[u8]) {
         if text.len() <= INLINE {
@@ -550,8 +560,8 @@ impl Line<'_> {
 
     /// Keeps only the text of long clusters, relocating their cells.
     fn compact_long(&mut self) {
-        let old = std::mem::take(&mut self.text.long.0);
-        let long = &mut self.text.long.0;
+        let old = std::mem::take(&mut self.text.long);
+        let long = &mut self.text.long;
         for cell in self.cells.iter_mut() {
             let Some(range) = cell.long() else {
                 continue;
