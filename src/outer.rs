@@ -102,32 +102,14 @@ pub const KITTY_PUSH: &[u8] = b"\x1b[>5u";
 /// that changes changes the palette too.
 pub const COLOUR_QUERIES: &[u8] = concat!(colours!(), "\x1b[c").as_bytes();
 
-/// Saves the terminal's title (xterm's title stack, `CSI 22 ; 0 t`), sent
-/// before fux first sets it. It is popped when titles are turned off, and
-/// when the attachment ends: by the server as it gives a terminal it took
-/// back, else by the client as it leaves (`client::restore`).
+/// Saves the terminal's title (xterm's title stack, `CSI 22 ; 0 t`). The
+/// attach client saves it as it enters (`client::ENTER`) and restores it as
+/// it leaves, however the attachment ends; titles turned off restore it
+/// and save it again.
 pub const TITLE_PUSH: &[u8] = b"\x1b[22;0t";
 /// Restores the title [`TITLE_PUSH`] saved.
 pub const TITLE_POP: &[u8] = b"\x1b[23;0t";
 
-/// Whether a paint leaves the terminal's title saved: `Some(true)` if its
-/// last [`TITLE_PUSH`] or [`TITLE_POP`] is a push, `Some(false)` if a pop,
-/// `None` if it has neither. One pass from the end, stopping at escapes
-/// alone: a paint is mostly text, and every paint is looked at.
-pub fn title_saved_by(paint: &[u8]) -> Option<bool> {
-    let mut end = paint.len();
-    while let Some(at) = paint.get(..end)?.iter().rposition(|&b| b == 0x1b) {
-        let rest = paint.get(at..)?;
-        if rest.starts_with(TITLE_PUSH) {
-            return Some(true);
-        }
-        if rest.starts_with(TITLE_POP) {
-            return Some(false);
-        }
-        end = at;
-    }
-    None
-}
 /// The bell, as a client's terminal is rung.
 pub const BELL: &[u8] = b"\x07";
 /// The least time between two bells sent to one terminal, so that a
@@ -391,7 +373,7 @@ impl Session {
     /// What client `client`'s terminal is sent before it is painted: the
     /// tab it shows loses its bell mark, and with `titles` on its title
     /// becomes its focused pane's, or the tab's name for a pane with none;
-    /// turned off, the title fux saved is restored.
+    /// turned off, its own title is restored, and saved again for leaving.
     pub fn before_paint(&mut self, client: ClientId) -> Vec<u8> {
         let mut out = Vec::new();
         let Some(view) = self.views.get(&client) else {
@@ -416,19 +398,14 @@ impl Session {
         }
         match wanted {
             Some(Some(title)) => {
-                if !view.title_pushed {
-                    out.extend_from_slice(TITLE_PUSH);
-                    view.title_pushed = true;
-                }
                 out.extend_from_slice(b"\x1b]2;");
                 out.extend_from_slice(title.as_bytes());
                 out.extend_from_slice(b"\x1b\\");
                 view.title = Some(title);
             }
-            None if view.title_pushed => {
+            None if view.title.take().is_some() => {
                 out.extend_from_slice(TITLE_POP);
-                view.title_pushed = false;
-                view.title = None;
+                out.extend_from_slice(TITLE_PUSH);
             }
             Some(None) | None => {}
         }
@@ -601,7 +578,7 @@ mod tests {
         assert!(s.before_paint(c).is_empty());
         run(&mut s, "set titles on")?;
         let first = s.before_paint(c);
-        assert_eq!(first, [TITLE_PUSH, b"\x1b]2;vim notes\x1b\\"].concat());
+        assert_eq!(first, b"\x1b]2;vim notes\x1b\\");
         // Unchanged: nothing more; changed: the title alone.
         assert!(s.before_paint(c).is_empty());
         s.output(PaneId(1), b"\x1b]2;make\x07");
@@ -611,9 +588,10 @@ mod tests {
         run(&mut s, "select-pane -c c1 -t %2")?;
         run(&mut s, "rename -t @1 notes")?;
         assert_eq!(s.before_paint(c), b"\x1b]2;notes\x1b\\");
-        // Off again: the title fux saved is restored, once.
+        // Off again: the terminal's own title is restored, once, and saved
+        // again for the client's leaving.
         run(&mut s, "set titles off")?;
-        assert_eq!(s.before_paint(c), TITLE_POP);
+        assert_eq!(s.before_paint(c), [TITLE_POP, TITLE_PUSH].concat());
         assert!(s.before_paint(c).is_empty());
         Ok(())
     }
@@ -642,47 +620,6 @@ mod tests {
             b"rgba:ff/ff/ff/ff",
         ] {
             assert_eq!(Rgb::parse(bad), None, "{bad:?}");
-        }
-    }
-
-    /// `title_saved_by` decides as the later of a search for each from the
-    /// end did, which it replaced: over every paint of up to four pieces,
-    /// the sequences, their beginnings, a lone escape and text.
-    #[test]
-    fn the_last_title_push_or_pop_decides() {
-        let last = |paint: &[u8], needle: &[u8]| {
-            (0..paint.len())
-                .rev()
-                .find(|&at| paint.get(at..).is_some_and(|rest| rest.starts_with(needle)))
-        };
-        let pieces: [&[u8]; 7] = [
-            TITLE_PUSH,
-            TITLE_POP,
-            b"\x1b",
-            b"\x1b[22;0",
-            b"\x1b[23",
-            b"t",
-            b"text",
-        ];
-        let mut paints: Vec<Vec<u8>> = vec![Vec::new()];
-        for _ in 0..4 {
-            let longer: Vec<Vec<u8>> = paints
-                .iter()
-                .filter(|p| p.len() < 64)
-                .flat_map(|p| {
-                    pieces
-                        .iter()
-                        .map(move |piece| [p.as_slice(), piece].concat())
-                })
-                .collect();
-            paints.extend(longer);
-        }
-        paints.sort();
-        paints.dedup();
-        for paint in paints {
-            let (push, pop) = (last(&paint, TITLE_PUSH), last(&paint, TITLE_POP));
-            let expected = (push.is_some() || pop.is_some()).then_some(push > pop);
-            assert_eq!(title_saved_by(&paint), expected, "{paint:?}");
         }
     }
 
