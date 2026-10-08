@@ -828,7 +828,11 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
                 _ => None,
             };
             a.no_positional()?;
-            let any = target.map(parse_any).transpose()?;
+            // Read as any kind only where any kind may be given.
+            let any = match name {
+                "menu" | "rename-prompt" | "confirm-close" => target.map(parse_any).transpose()?,
+                _ => None,
+            };
             same_kind(kind, target.zip(any.as_ref()))?;
             // Given, or the target's; a pane's by default, but for a menu.
             let kind = kind.or(any.as_ref().map(AnyRef::kind));
@@ -1221,6 +1225,13 @@ mod tests {
             ),
             ("zoom pane", r#"zoom: unexpected argument "pane""#),
             ("choose-tab tab", r#"choose-tab: unexpected argument "tab""#),
+            // A target of the wrong form is refused as the kind it must be.
+            ("select-tab -t %x", r#""%x" is not a tab; tabs are @N"#),
+            (
+                "select-workspace -t @x",
+                r#""@x" is not a workspace; workspaces are +N or a name"#,
+            ),
+            ("choose-pane -t @x", r#""@x" is not a pane; panes are %N"#),
         ] {
             let usage = cmd(line).err().map(|u| u.to_string());
             assert_eq!(usage.as_deref(), Some(message), "{line:?}");
