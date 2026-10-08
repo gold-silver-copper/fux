@@ -2,13 +2,14 @@
 //! watches it (or relays between them, if the server does not take it),
 //! and the one-shot command client every other `fux` command uses.
 use crate::protocol::{AttachFrame, Command, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame};
+use crate::socket::SocketPath;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use fuxix::terminal::Termios;
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGWINCH};
 use std::io::{ErrorKind, Read, Write};
 use std::num::NonZeroU16;
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -49,7 +50,6 @@ pub enum Error {
     Read(std::io::Error),
     // Starting a server.
     Exe(std::io::Error),
-    NoDirectory,
     Log(std::io::Error),
     Spawn(std::io::Error),
     Exited {
@@ -85,7 +85,6 @@ impl std::fmt::Display for Error {
             Error::Write(error) => write!(f, "writing to the server: {error}"),
             Error::Read(error) => write!(f, "reading from the server: {error}"),
             Error::Exe(error) => write!(f, "finding the fux binary: {error}"),
-            Error::NoDirectory => f.write_str("the socket has no directory"),
             Error::Log(error) => write!(f, "opening the server log: {error}"),
             Error::Spawn(error) => write!(f, "starting a server: {error}"),
             Error::Exited { status, log } => {
@@ -128,7 +127,6 @@ impl std::error::Error for Error {
             | Error::NoAnswer
             | Error::Timeout
             | Error::Closed
-            | Error::NoDirectory
             | Error::Exited { .. }
             | Error::NotStarted { .. }
             | Error::NotATerminal => None,
@@ -176,10 +174,10 @@ fn restore() {
     }
 }
 
-fn connect(socket: &Path, role: Role) -> Result<(UnixStream, Decoder), Error> {
+fn connect(socket: &SocketPath, role: Role) -> Result<(UnixStream, Decoder), Error> {
     crate::socket::check_client_socket(socket)?;
-    let mut stream = UnixStream::connect(socket).map_err(|source| Error::Connect {
-        path: socket.to_owned(),
+    let mut stream = UnixStream::connect(socket.path()).map_err(|source| Error::Connect {
+        path: socket.path().to_owned(),
         source,
     })?;
     let sent = send(
@@ -247,7 +245,7 @@ fn read_frame<'d>(
 }
 
 /// Runs one command on the server; its output goes to ours. The exit status.
-pub fn command(socket: &Path, argv: &[String]) -> Result<u8, Error> {
+pub fn command(socket: &SocketPath, argv: &[String]) -> Result<u8, Error> {
     let (mut stream, mut decoder) = connect(socket, Role::Command)?;
     let cwd = std::env::current_dir()
         .map(|d| d.to_string_lossy().into_owned())
@@ -283,7 +281,7 @@ pub fn command(socket: &Path, argv: &[String]) -> Result<u8, Error> {
 }
 
 /// Stops the server, whatever fux version it is.
-pub fn kill_server(socket: &Path) -> Result<(), Error> {
+pub fn kill_server(socket: &SocketPath) -> Result<(), Error> {
     let (mut stream, mut decoder) = connect(socket, Role::Kill)?;
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
@@ -307,11 +305,10 @@ pub const SETSID: &str = "--setsid";
 
 /// Starts a server in the background, in a new session with its output in
 /// `fux.log` beside the socket, and waits for it to answer.
-pub fn start_server(socket: &Path) -> Result<(), Error> {
+pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
     let exe = std::env::current_exe().map_err(Error::Exe)?;
-    let directory = socket.parent().ok_or(Error::NoDirectory)?;
-    crate::socket::prepare_directory(directory)?;
-    let log = directory.join("fux.log");
+    crate::socket::prepare_directory(socket)?;
+    let log = socket.directory().join("fux.log");
     let output = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -322,7 +319,7 @@ pub fn start_server(socket: &Path) -> Result<(), Error> {
     command
         .arg("server")
         .arg("--socket")
-        .arg(socket)
+        .arg(socket.path())
         .arg(SETSID)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -330,7 +327,7 @@ pub fn start_server(socket: &Path) -> Result<(), Error> {
     let mut child = command.spawn().map_err(Error::Spawn)?;
     let deadline = crate::after(Instant::now(), Duration::from_secs(2));
     loop {
-        if UnixStream::connect(socket).is_ok() {
+        if UnixStream::connect(socket.path()).is_ok() {
             // The child is left to run; it is not ours to wait for, and
             // dropping a `Child` neither waits for nor kills it.
             drop(child);
@@ -339,7 +336,7 @@ pub fn start_server(socket: &Path) -> Result<(), Error> {
         if let Ok(Some(status)) = child.try_wait() {
             // It lost a race to another server, or failed: connect to the
             // winner if there is one.
-            if UnixStream::connect(socket).is_ok() {
+            if UnixStream::connect(socket.path()).is_ok() {
                 return Ok(());
             }
             return Err(Error::Exited { status, log });
@@ -363,7 +360,7 @@ fn window_size() -> (NonZeroU16, NonZeroU16) {
 }
 
 /// Attaches this terminal to the server until detach or the server's end.
-pub fn attach(socket: &Path, workspace: Option<String>) -> Result<(), Error> {
+pub fn attach(socket: &SocketPath, workspace: Option<String>) -> Result<(), Error> {
     let stdin = std::io::stdin();
     if !std::io::IsTerminal::is_terminal(&stdin) {
         return Err(Error::NotATerminal);

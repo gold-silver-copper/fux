@@ -10,11 +10,12 @@ use crate::protocol::{
 };
 use crate::render::{self, Grid};
 use crate::session::{Ctx, Outgoing, Session};
+use crate::socket::SocketPath;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use signal_hook::consts::{SIGCHLD, SIGHUP, SIGINT, SIGTERM};
 use std::io::{ErrorKind, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// The least time between two paints for a client, as a flood is painted.
@@ -390,7 +391,7 @@ impl std::error::Error for Error {
 
 /// Runs a server on `socket` until it is told to stop or its last pane
 /// closes.
-pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), Error> {
+pub fn serve(socket: &SocketPath, config_path: Option<PathBuf>) -> Result<(), Error> {
     let (config, error) = match &config_path {
         Some(path) => match Config::from_file(path) {
             Ok(config) => (config, None),
@@ -405,7 +406,7 @@ pub fn serve(socket: &Path, config_path: Option<PathBuf>) -> Result<(), Error> {
     listener.set_nonblocking(true).map_err(Error::Setup)?;
     let children = crate::signal_pipe(&[SIGCHLD]).map_err(Error::Setup)?;
     let stops = crate::signal_pipe(&[SIGTERM, SIGINT, SIGHUP]).map_err(Error::Setup)?;
-    let mut session = Session::new(config, endpoint.path().to_owned(), true);
+    let mut session = Session::new(config, socket.path().to_owned(), true);
     session.config_path = config_path;
     session.config_error = error;
     session.start().map_err(Error::Start)?;
