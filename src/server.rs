@@ -5,9 +5,7 @@ use crate::bytes::ByteQueue;
 use crate::command::ClientId;
 use crate::config::Config;
 use crate::layout::{PaneId, Placement};
-use crate::protocol::{
-    AttachFrame, Command, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame, Stream,
-};
+use crate::protocol::{AttachFrame, Command, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame};
 use crate::render::{self, Grid};
 use crate::session::{Ctx, Outgoing, Session};
 use crate::socket::SocketPath;
@@ -253,19 +251,16 @@ impl Conn {
         self.closing = true;
     }
 
-    /// Bytes for a client in `stream`. The paint stream, which carries what
-    /// the session sends its terminal outside a paint too, goes to the
-    /// terminal if the server writes to it; the rest, and all of it for a
-    /// client that kept its terminal, is framed for the client.
-    fn send_stream(&mut self, stream: Stream, bytes: &[u8]) {
-        if let Some(tty) = &mut self.tty
-            && stream == Stream::Paint
-        {
+    /// Bytes for a client's terminal: a paint, or what the session sends
+    /// it outside a paint. They go to the terminal if the server writes to
+    /// it, and are framed for the client if it kept its terminal.
+    fn send_paint(&mut self, bytes: &[u8]) {
+        if let Some(tty) = &mut self.tty {
             note_title(&mut tty.title_saved, bytes);
             tty.out.push(bytes);
-            return;
+        } else {
+            ServerFrame::split_into(bytes, ServerFrame::Paint, &mut self.out);
         }
-        stream.encode_into(bytes, &mut self.out);
     }
 
     /// Bytes waiting for the client, in frames or for its terminal.
@@ -302,7 +297,7 @@ impl Conn {
             // goes to the client in paint frames, before the `Exit` that
             // follows: it writes them to the terminal as it writes paints.
             if tty.flush() && !tty.out.is_empty() {
-                Stream::Paint.encode_into(tty.out.as_slice(), &mut self.out);
+                ServerFrame::split_into(tty.out.as_slice(), ServerFrame::Paint, &mut self.out);
             }
         }
     }
@@ -620,7 +615,7 @@ impl Server {
             match outgoing {
                 Outgoing::Bytes(client, bytes) => {
                     if let Some(conn) = self.conns.iter_mut().find(|c| c.client == Some(client)) {
-                        conn.send_stream(Stream::Paint, &bytes);
+                        conn.send_paint(&bytes);
                     }
                 }
                 Outgoing::Exit(client, reason) => {
@@ -660,7 +655,7 @@ impl Server {
                 continue;
             }
             if !before.is_empty() {
-                conn.send_stream(Stream::Paint, &before);
+                conn.send_paint(&before);
             }
             // The same screen as the client shows: nothing to send, not even
             // the envelope, whose cursor hide and show would restart a
@@ -674,7 +669,7 @@ impl Server {
             self.paint_buffer.clear();
             let shown = conn.painted.then_some(&conn.shown);
             render::paint_into(shown, &conn.spare, &mut self.paint_buffer);
-            conn.send_stream(Stream::Paint, &self.paint_buffer);
+            conn.send_paint(&self.paint_buffer);
             // Written now rather than when the next poll says it can be: a
             // keystroke's echo goes out a round sooner.
             conn.flush();
@@ -906,7 +901,7 @@ impl Server {
         // Held apart while its frames, which borrow it, are handled.
         let mut decoder = std::mem::take(&mut conn.decoder);
         let (mut frames, mut read) = (0usize, 0usize);
-        let closed = loop {
+        let closed = 'read: loop {
             let Some(conn) = self.conns.get_mut(index) else {
                 break false;
             };
@@ -919,11 +914,14 @@ impl Server {
                     }
                     read = read.saturating_add(n);
                     decoder.push(self.read_buffer.get(..n).unwrap_or_default());
-                    match self.take_frames(index, &mut decoder, now) {
-                        Ok(taken) => frames = frames.saturating_add(taken),
-                        Err(error) => {
-                            log(&format!("a client sent a bad frame: {error}"));
-                            break true;
+                    loop {
+                        match self.take_frame(index, &mut decoder, now) {
+                            Ok(true) => frames = frames.saturating_add(1),
+                            Ok(false) => break,
+                            Err(error) => {
+                                log(&format!("a client sent a bad frame: {error}"));
+                                break 'read true;
+                            }
                         }
                     }
                     if frames > 256 || read >= CONN_READ {
@@ -942,43 +940,37 @@ impl Server {
         }
     }
 
-    /// Handles each whole frame `decoder` holds, decoded as what the
+    /// Handles the next whole frame `decoder` holds, decoded as what the
     /// connection may send at its point: a `Hello`, then an attaching
-    /// client's frames or a command. How many there were.
-    fn take_frames(
+    /// client's frames or a command. Whether there was one.
+    fn take_frame(
         &mut self,
         index: usize,
         decoder: &mut Decoder,
         now: Instant,
-    ) -> Result<usize, crate::protocol::Error> {
-        let mut frames = 0usize;
-        loop {
-            let Some(conn) = self.conns.get_mut(index) else {
-                return Ok(frames);
-            };
-            let ending = conn.closing || conn.dead;
-            let handled = match conn.role {
-                None if !ending => decoder.frame()?.map(|hello| self.hello(index, hello)),
-                Some(Role::Attach) if !ending => decoder
-                    .frame()?
-                    .map(|frame| self.attaching(index, frame, now)),
-                Some(Role::Command) if !ending => {
-                    decoder.frame()?.map(|command| self.command(index, command))
-                }
-                // A connection that is ending has had its last word: what
-                // it sends after a Detach, a Command, a refused Hello or a
-                // bad frame is dropped unread. A Kill ends at its Hello,
-                // before its role is taken.
-                None | Some(Role::Attach | Role::Command | Role::Kill) => {
-                    *decoder = Decoder::default();
-                    None
-                }
-            };
-            if handled.is_none() {
-                return Ok(frames);
+    ) -> Result<bool, crate::protocol::Error> {
+        let Some(conn) = self.conns.get_mut(index) else {
+            return Ok(false);
+        };
+        let ending = conn.closing || conn.dead;
+        let handled = match conn.role {
+            None if !ending => decoder.frame()?.map(|hello| self.hello(index, hello)),
+            Some(Role::Attach) if !ending => decoder
+                .frame()?
+                .map(|frame| self.attaching(index, frame, now)),
+            Some(Role::Command) if !ending => {
+                decoder.frame()?.map(|command| self.command(index, command))
             }
-            frames = frames.saturating_add(1);
-        }
+            // A connection that is ending has had its last word: what it
+            // sends after a Detach, a Command, a refused Hello or a bad
+            // frame is dropped unread. A Kill ends at its Hello, before its
+            // role is taken.
+            None | Some(Role::Attach | Role::Command | Role::Kill) => {
+                *decoder = Decoder::default();
+                None
+            }
+        };
+        Ok(handled.is_some())
     }
 
     /// A client's first frame: answered with the server's, and its role
@@ -1069,13 +1061,14 @@ impl Server {
             return;
         };
         // Nothing is sent for no output.
-        conn.send_stream(Stream::Stdout, outcome.stdout.as_bytes());
+        let stdout = outcome.stdout.as_bytes();
+        ServerFrame::split_into(stdout, ServerFrame::Stdout, &mut conn.out);
         if !outcome.stderr.is_empty() {
             let mut stderr = outcome.stderr;
             if !stderr.ends_with('\n') {
                 stderr.push('\n');
             }
-            conn.send_stream(Stream::Stderr, stderr.as_bytes());
+            ServerFrame::split_into(stderr.as_bytes(), ServerFrame::Stderr, &mut conn.out);
         }
         conn.end(&ServerFrame::Done {
             status: outcome.status,

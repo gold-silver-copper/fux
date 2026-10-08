@@ -182,112 +182,92 @@ fn refused(held: &[u8], at: At) -> Option<String> {
     (matches!(kind, 2 | 4) && zero).then(|| "ZeroSize".into())
 }
 
-/// A side's decoder.
-trait Side: Default {
-    fn push(&mut self, bytes: &[u8]);
-    fn buffered(&self) -> usize;
-    /// The next frame decoded `at`, encoded again; or the error, as the
-    /// current fux names it.
-    fn next(&mut self, at: At) -> Result<Option<Vec<u8>>, String>;
+/// `$name`: every frame `$decoder` decodes `at`, by `$next`, encoded
+/// again, and the first error, as the current fux names it, with what is
+/// held after each push, from `bytes` pushed in pieces of `size` (all at
+/// once for 0).
+macro_rules! decoded {
+    ($name:ident, $decoder:ty, |$d:ident, $at:ident| $next:expr) => {
+        fn $name(bytes: &[u8], size: usize, $at: At) -> String {
+            let mut $d = <$decoder>::default();
+            let mut out = String::new();
+            let mut pushed = 0usize;
+            let mut rest = bytes;
+            while !rest.is_empty() {
+                let take = if size == 0 {
+                    rest.len()
+                } else {
+                    size.min(rest.len())
+                };
+                let (piece, after) = rest.split_at_checked(take).unwrap_or((rest, &[]));
+                rest = after;
+                $d.push(piece);
+                pushed = pushed.saturating_add(piece.len());
+                loop {
+                    let held = bytes.get(pushed.saturating_sub($d.buffered())..pushed);
+                    if let Some(error) = refused(held.unwrap_or_default(), $at) {
+                        return format!("{out}{error}");
+                    }
+                    let mut next = || -> Result<Option<Vec<u8>>, String> { $next };
+                    match next() {
+                        Ok(Some(frame)) => out.push_str(&format!("{frame:?}\n")),
+                        Ok(None) => break,
+                        Err(error) => return format!("{out}{error}"),
+                    }
+                }
+                out.push_str(&format!("held {}\n", $d.buffered()));
+            }
+            out
+        }
+    };
 }
 
-impl Side for baseline::protocol::Decoder {
-    fn push(&mut self, bytes: &[u8]) {
-        self.push(bytes);
-    }
-    fn buffered(&self) -> usize {
-        self.buffered()
-    }
-    fn next(&mut self, _: At) -> Result<Option<Vec<u8>>, String> {
-        // An unknown kind is one not expected, and an exit reason not
-        // UTF-8 is a frame string that is not.
-        let frame = self.frame().map_err(|e| {
-            format!("{e:?}")
-                .replace("UnknownKind", "UnexpectedKind")
-                .replace("ExitNotUtf8", "NotUtf8")
-        })?;
+// An unknown kind is one not expected, and an exit reason not UTF-8 is a
+// frame string that is not.
+decoded!(base, baseline::protocol::Decoder, |d, _at| d
+    .frame()
+    .map_err(|e| {
+        format!("{e:?}")
+            .replace("UnknownKind", "UnexpectedKind")
+            .replace("ExitNotUtf8", "NotUtf8")
+    })?
+    .map(|f| f.encode().map_err(|e| format!("{e:?}")))
+    .transpose());
+
+decoded!(cur, fux::protocol::Decoder, |d, at| {
+    use fux::protocol::{AttachFrame, Command, Frame, Hello, ServerFrame};
+    fn again<'a>(frame: Option<impl Frame<'a>>) -> Result<Option<Vec<u8>>, String> {
         frame
             .map(|f| f.encode().map_err(|e| format!("{e:?}")))
             .transpose()
     }
-}
-
-impl Side for fux::protocol::Decoder {
-    fn push(&mut self, bytes: &[u8]) {
-        self.push(bytes);
+    let error = |e| format!("{e:?}");
+    match at {
+        At::Greeting => again(d.frame::<Hello>().map_err(error)?),
+        At::Attaching => again(d.frame::<AttachFrame>().map_err(error)?),
+        At::Commanding => again(d.frame::<Command>().map_err(error)?),
+        At::Client => again(d.frame::<ServerFrame>().map_err(error)?),
     }
-    fn buffered(&self) -> usize {
-        self.buffered()
-    }
-    fn next(&mut self, at: At) -> Result<Option<Vec<u8>>, String> {
-        use fux::protocol::{AttachFrame, Command, Frame, Hello, ServerFrame};
-        fn again<'a>(frame: Option<impl Frame<'a>>) -> Result<Option<Vec<u8>>, String> {
-            frame
-                .map(|f| f.encode().map_err(|e| format!("{e:?}")))
-                .transpose()
-        }
-        let error = |e| format!("{e:?}");
-        match at {
-            At::Greeting => again(self.frame::<Hello>().map_err(error)?),
-            At::Attaching => again(self.frame::<AttachFrame>().map_err(error)?),
-            At::Commanding => again(self.frame::<Command>().map_err(error)?),
-            At::Client => again(self.frame::<ServerFrame>().map_err(error)?),
-        }
-    }
-}
-
-/// Every frame decoded `at`, encoded again, and the first error, with what
-/// is held after each push, from `bytes` pushed in pieces of `size` (all at
-/// once for 0).
-fn decoded<D: Side>(bytes: &[u8], size: usize, at: At) -> String {
-    let mut decoder = D::default();
-    let mut out = String::new();
-    let mut pushed = 0usize;
-    let mut rest = bytes;
-    while !rest.is_empty() {
-        let take = if size == 0 {
-            rest.len()
-        } else {
-            size.min(rest.len())
-        };
-        let (piece, after) = rest.split_at_checked(take).unwrap_or((rest, &[]));
-        rest = after;
-        decoder.push(piece);
-        pushed = pushed.saturating_add(piece.len());
-        loop {
-            let held = bytes.get(pushed.saturating_sub(decoder.buffered())..pushed);
-            if let Some(error) = refused(held.unwrap_or_default(), at) {
-                return format!("{out}{error}");
-            }
-            match decoder.next(at) {
-                Ok(Some(frame)) => out.push_str(&format!("{frame:?}\n")),
-                Ok(None) => break,
-                Err(error) => return format!("{out}{error}"),
-            }
-        }
-        out.push_str(&format!("held {}\n", decoder.buffered()));
-    }
-    out
-}
+});
 
 /// What each stream writes for `payload`, after other bytes: the
 /// baseline's, then the current fux's.
 fn streamed(payload: &[u8]) -> (Vec<u8>, Vec<u8>) {
     use baseline::protocol::Stream as Base;
-    use fux::protocol::Stream as Cur;
+    use fux::protocol::ServerFrame as Cur;
     let (mut a, mut b) = (Vec::new(), Vec::new());
-    for (base, cur) in [
-        (Base::Paint, Cur::Paint),
-        (Base::Stdout, Cur::Stdout),
-        (Base::Stderr, Cur::Stderr),
-    ] {
+    for base in [Base::Paint, Base::Stdout, Base::Stderr] {
         let mut queue = baseline::bytes::ByteQueue::default();
         queue.push(b"before");
         base.encode_into(payload, &mut queue);
         a.extend_from_slice(queue.as_slice());
         let mut queue = fux::bytes::ByteQueue::default();
         queue.push(b"before");
-        cur.encode_into(payload, &mut queue);
+        match base {
+            Base::Paint => Cur::split_into(payload, Cur::Paint, &mut queue),
+            Base::Stdout => Cur::split_into(payload, Cur::Stdout, &mut queue),
+            Base::Stderr => Cur::split_into(payload, Cur::Stderr, &mut queue),
+        }
         b.extend_from_slice(queue.as_slice());
     }
     (a, b)
@@ -347,11 +327,7 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
                 bytes.len()
             );
             for size in [0, size] {
-                same(
-                    &context,
-                    decoded::<baseline::protocol::Decoder>(&bytes, size, at),
-                    decoded::<fux::protocol::Decoder>(&bytes, size, at),
-                )?;
+                same(&context, base(&bytes, size, at), cur(&bytes, size, at))?;
             }
         }
         bump(&mut streams);

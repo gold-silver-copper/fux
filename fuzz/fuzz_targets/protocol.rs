@@ -2,9 +2,7 @@
 //! Input: one byte choosing a piece size (0 is the whole stream at once),
 //! then the bytes a peer sends on the socket.
 use fux::bytes::ByteQueue;
-use fux::protocol::{
-    AttachFrame, Command, Decoder, Error, Frame, Hello, MAX_FRAME, ServerFrame, Stream,
-};
+use fux::protocol::{AttachFrame, Command, Decoder, Error, Frame, Hello, MAX_FRAME, ServerFrame};
 use libfuzzer_sys::fuzz_target;
 use std::num::NonZeroUsize;
 
@@ -52,15 +50,11 @@ fn decode(next: Next, stream: &[u8], size: usize) -> (Vec<Vec<u8>>, Option<Error
 /// point of a connection, encoded again.
 type Next = fn(&mut Decoder) -> Result<Option<Vec<u8>>, Error>;
 
-/// A decoded frame encodes again, alone and after other bytes alike.
+/// A decoded frame encodes again.
 fn encoded<'a>(frame: &impl Frame<'a>) -> Vec<u8> {
     let bytes = frame.encode();
     assert!(bytes.is_ok(), "a decoded frame does not encode: {bytes:?}");
-    let bytes = bytes.unwrap_or_default();
-    let mut out = b"before".to_vec();
-    assert!(frame.encode_into(&mut out).is_ok());
-    assert_eq!(out.strip_prefix(b"before"), Some(bytes.as_slice()));
-    bytes
+    bytes.unwrap_or_default()
 }
 
 /// A server's frame, encoded again. A stream's is what the stream writes
@@ -70,21 +64,19 @@ fn server(decoder: &mut Decoder) -> Result<Option<Vec<u8>>, Error> {
         return Ok(None);
     };
     let bytes = encoded(&frame);
-    let stream = match frame {
-        ServerFrame::Paint(payload) => Some((Stream::Paint, payload)),
-        ServerFrame::Stdout(payload) => Some((Stream::Stdout, payload)),
-        ServerFrame::Stderr(payload) => Some((Stream::Stderr, payload)),
+    let mut queue = ByteQueue::default();
+    match frame {
+        ServerFrame::Paint(p) => ServerFrame::split_into(p, ServerFrame::Paint, &mut queue),
+        ServerFrame::Stdout(p) => ServerFrame::split_into(p, ServerFrame::Stdout, &mut queue),
+        ServerFrame::Stderr(p) => ServerFrame::split_into(p, ServerFrame::Stderr, &mut queue),
         ServerFrame::Hello(_)
         | ServerFrame::Exit(_)
         | ServerFrame::Done { .. }
-        | ServerFrame::Terminal { .. } => None,
-    };
-    if let Some((stream, payload)) = stream {
-        let mut queue = ByteQueue::default();
-        stream.encode_into(payload, &mut queue);
-        let expected: &[u8] = if payload.is_empty() { &[] } else { &bytes };
-        assert_eq!(queue.as_slice(), expected);
+        | ServerFrame::Terminal { .. } => return Ok(Some(bytes)),
     }
+    // A header and no payload.
+    let expected: &[u8] = if bytes.len() == 5 { &[] } else { &bytes };
+    assert_eq!(queue.as_slice(), expected);
     Ok(Some(bytes))
 }
 

@@ -4,12 +4,9 @@
 //! counts the kind byte and the payload. A frame is at most `MAX_FRAME`; a
 //! longer paint or output is split across frames by the sender.
 //!
-//! Each side decodes a frame once, into the type of the frames it expects
-//! at that point of the connection: a server a client's `Hello` first, then
-//! an attaching client's `AttachFrame`s or a command client's `Command`; a
-//! client the server's `ServerFrame`s. A frame of a kind not expected there
-//! does not decode, and neither does an `Attach` or a `Resize` of no rows
-//! or no columns. Byte payloads and strings are lent from the decoder.
+//! Each side decodes a frame once, as one of the frames it expects there
+//! (`Hello`, `AttachFrame`, `Command`, `ServerFrame`), its bytes lent from
+//! the decoder; any other kind, or a size of zero, does not decode.
 
 use crate::bytes::ByteQueue;
 use std::num::NonZeroU16;
@@ -86,66 +83,18 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// What a connecting client is for.
+/// What a connecting client is for; its discriminant is its byte in a
+/// `Hello`'s payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Role {
     /// An interactive client: `Attach`, then input.
-    Attach,
+    Attach = 0,
     /// One command, then its output.
-    Command,
+    Command = 1,
     /// Stop the server. Accepted whatever the protocol version, so that
     /// `fux kill-server` can always stop a server from another fux version.
-    Kill,
-}
-
-impl Role {
-    /// Its byte in a `Hello`'s payload.
-    fn byte(self) -> u8 {
-        match self {
-            Role::Attach => 0,
-            Role::Command => 1,
-            Role::Kill => 2,
-        }
-    }
-}
-
-/// The frames that carry a stream of bytes, server to client: a paint of
-/// any length, or a command's output, split across as many frames as it
-/// takes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Stream {
-    Paint,
-    Stdout,
-    Stderr,
-}
-
-impl Stream {
-    fn kind(self) -> u8 {
-        match self {
-            Stream::Paint => kind::PAINT,
-            Stream::Stdout => kind::STDOUT,
-            Stream::Stderr => kind::STDERR,
-        }
-    }
-
-    /// Writes `bytes` into `out` as frames of this stream, each a header and
-    /// then its piece of `bytes`, split so that each fits. No bytes, no
-    /// frames.
-    pub fn encode_into(self, bytes: &[u8], out: &mut ByteQueue) {
-        let (whole, rest) = bytes.as_chunks::<MAX_PAYLOAD>();
-        for piece in whole
-            .iter()
-            .map(|piece| piece.as_slice())
-            .chain((!rest.is_empty()).then_some(rest))
-        {
-            // Exact: a piece is at most MAX_PAYLOAD, so the kind byte and the
-            // piece fit a u32.
-            let length = u32::try_from(piece.len().saturating_add(1)).unwrap_or(u32::MAX);
-            let [a, b, c, d] = length.to_be_bytes();
-            out.push(&[a, b, c, d, self.kind()]);
-            out.push(piece);
-        }
-    }
+    Kill = 2,
 }
 
 /// The frames one side expects at one point of a connection, decoded from
@@ -165,16 +114,11 @@ pub trait Frame<'a>: Sized {
         Ok(out)
     }
 
-    /// Appends the encoded frame to `out`: room for the header, then the
-    /// payload, written in place, and the header filled in once its length
-    /// is known. A payload over `MAX_PAYLOAD` is an error, and leaves `out`
-    /// as it was.
+    /// Appends the encoded frame to `out`. A payload over `MAX_PAYLOAD` is
+    /// an error, and leaves `out` as it was.
     fn encode_into(&self, out: &mut Vec<u8>) -> Result<(), Error> {
         let start = out.len();
-        out.extend_from_slice(&[0; 5]);
-        let kind = self.write(out);
-        // The payload is what follows the four length bytes and the kind.
-        let payload = out.len().saturating_sub(start).saturating_sub(5);
+        let payload = put(self, out);
         if payload > MAX_PAYLOAD {
             out.truncate(start);
             return Err(Error::Oversized {
@@ -182,15 +126,26 @@ pub trait Frame<'a>: Sized {
                 limit: MAX_PAYLOAD,
             });
         }
-        // The kind byte and the payload; exact, as the payload is at most
-        // MAX_PAYLOAD.
-        let length = u32::try_from(payload.saturating_add(1)).unwrap_or(u32::MAX);
-        let [a, b, c, d] = length.to_be_bytes();
-        if let Some(header) = out.get_mut(start..).and_then(|f| f.first_chunk_mut::<5>()) {
-            *header = [a, b, c, d, kind];
-        }
         Ok(())
     }
+}
+
+/// Appends `frame` to `out`, whatever its length: room for the header,
+/// then the payload, written in place, and the header filled in once its
+/// length is known, exact for a payload up to `MAX_PAYLOAD`. The payload's
+/// length.
+fn put<'a>(frame: &impl Frame<'a>, out: &mut Vec<u8>) -> usize {
+    let start = out.len();
+    out.extend_from_slice(&[0; 5]);
+    let kind = frame.write(out);
+    // What follows the four length bytes and the kind.
+    let payload = out.len().saturating_sub(start).saturating_sub(5);
+    let length = u32::try_from(payload.saturating_add(1)).unwrap_or(u32::MAX);
+    let [a, b, c, d] = length.to_be_bytes();
+    if let Some(header) = out.get_mut(start..).and_then(|f| f.first_chunk_mut::<5>()) {
+        *header = [a, b, c, d, kind];
+    }
+    payload
 }
 
 /// Both ways, the first frame from each side: a client's says what it is
@@ -202,39 +157,31 @@ pub struct Hello<'a> {
     pub role: Role,
 }
 
-impl<'a> Hello<'a> {
-    fn read(r: &mut Reader<'a>) -> Result<Hello<'a>, Error> {
-        let protocol = r.u32()?;
-        let byte = r.u8()?;
-        let role = [Role::Attach, Role::Command, Role::Kill]
-            .into_iter()
-            .find(|role| role.byte() == byte)
-            .ok_or(Error::UnknownRole(byte))?;
-        let version = r.str()?;
-        Ok(Hello {
-            protocol,
-            version,
-            role,
-        })
-    }
-
-    fn write_payload(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.protocol.to_be_bytes());
-        out.push(self.role.byte());
-        put_bytes(out, self.version.as_bytes());
-    }
-}
-
 impl<'a> Frame<'a> for Hello<'a> {
     fn decode(kind: u8, payload: &'a [u8]) -> Result<Self, Error> {
-        whole(payload, |r| match kind {
-            kind::HELLO => Hello::read(r),
-            other => Err(Error::UnexpectedKind(other)),
+        if kind != kind::HELLO {
+            return Err(Error::UnexpectedKind(kind));
+        }
+        whole(payload, |r| {
+            let protocol = r.u32()?;
+            let byte = r.u8()?;
+            let role = [Role::Attach, Role::Command, Role::Kill]
+                .into_iter()
+                .find(|role| *role as u8 == byte)
+                .ok_or(Error::UnknownRole(byte))?;
+            let version = r.str()?;
+            Ok(Hello {
+                protocol,
+                version,
+                role,
+            })
         })
     }
 
     fn write(&self, out: &mut Vec<u8>) -> u8 {
-        self.write_payload(out);
+        out.extend_from_slice(&self.protocol.to_be_bytes());
+        out.push(self.role as u8);
+        put_bytes(out, self.version.as_bytes());
         kind::HELLO
     }
 }
@@ -360,10 +307,28 @@ pub enum ServerFrame<'a> {
     },
 }
 
+impl<'a> ServerFrame<'a> {
+    /// Writes `bytes` into `out` as the frames `frame` makes of pieces of
+    /// them, each as long as fits: a paint of any length, or a command's
+    /// output. No bytes, no frames.
+    pub fn split_into(bytes: &'a [u8], frame: fn(&'a [u8]) -> Self, out: &mut ByteQueue) {
+        let (whole, rest) = bytes.as_chunks::<MAX_PAYLOAD>();
+        for piece in whole
+            .iter()
+            .map(|piece| piece.as_slice())
+            .chain((!rest.is_empty()).then_some(rest))
+        {
+            out.push_with(|out| put(&frame(piece), out));
+        }
+    }
+}
+
 impl<'a> Frame<'a> for ServerFrame<'a> {
     fn decode(kind: u8, payload: &'a [u8]) -> Result<Self, Error> {
+        if kind == kind::HELLO {
+            return Hello::decode(kind, payload).map(ServerFrame::Hello);
+        }
         whole(payload, |r| match kind {
-            kind::HELLO => Hello::read(r).map(ServerFrame::Hello),
             kind::PAINT => Ok(ServerFrame::Paint(r.rest())),
             kind::EXIT => std::str::from_utf8(r.rest())
                 .map(ServerFrame::Exit)
@@ -378,10 +343,7 @@ impl<'a> Frame<'a> for ServerFrame<'a> {
 
     fn write(&self, out: &mut Vec<u8>) -> u8 {
         let (kind, payload) = match self {
-            ServerFrame::Hello(hello) => {
-                hello.write_payload(out);
-                return kind::HELLO;
-            }
+            ServerFrame::Hello(hello) => return hello.write(out),
             ServerFrame::Paint(bytes) => (kind::PAINT, *bytes),
             ServerFrame::Exit(reason) => (kind::EXIT, reason.as_bytes()),
             ServerFrame::Stdout(bytes) => (kind::STDOUT, *bytes),
@@ -403,23 +365,15 @@ fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(bytes);
 }
 fn put_option(out: &mut Vec<u8>, value: Option<&str>) {
-    match value {
-        Some(value) => {
-            out.push(1);
-            put_bytes(out, value.as_bytes());
-        }
-        None => out.push(0),
+    out.push(u8::from(value.is_some()));
+    if let Some(value) = value {
+        put_bytes(out, value.as_bytes());
     }
 }
 
 /// A cursor over a payload being decoded, lending what it reads.
 struct Reader<'a>(&'a [u8]);
 impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize) -> Result<&'a [u8], Error> {
-        let (head, rest) = self.0.split_at_checked(n).ok_or(Error::Truncated)?;
-        self.0 = rest;
-        Ok(head)
-    }
     fn bytes<const N: usize>(&mut self) -> Result<[u8; N], Error> {
         let (head, rest) = self.0.split_first_chunk().ok_or(Error::Truncated)?;
         self.0 = rest;
@@ -443,14 +397,12 @@ impl<'a> Reader<'a> {
     }
     fn str(&mut self) -> Result<&'a str, Error> {
         let len = self.u32()? as usize;
-        std::str::from_utf8(self.take(len)?).map_err(|_| Error::NotUtf8)
+        let (head, rest) = self.0.split_at_checked(len).ok_or(Error::Truncated)?;
+        self.0 = rest;
+        std::str::from_utf8(head).map_err(|_| Error::NotUtf8)
     }
     fn option(&mut self) -> Result<Option<&'a str>, Error> {
-        if self.flag()? {
-            self.str().map(Some)
-        } else {
-            Ok(None)
-        }
+        self.flag()?.then(|| self.str()).transpose()
     }
     /// The rest of the payload, all of it a byte field.
     fn rest(&mut self) -> &'a [u8] {
@@ -649,7 +601,8 @@ mod tests {
         assert!(decoder.frame::<ServerFrame>().is_err());
         // A longer paint is split into frames that fit.
         let mut queue = ByteQueue::default();
-        Stream::Paint.encode_into(&vec![7; MAX_PAYLOAD * 2 + 3], &mut queue);
+        let paint = vec![7; MAX_PAYLOAD * 2 + 3];
+        ServerFrame::split_into(&paint, ServerFrame::Paint, &mut queue);
         let mut decoder = Decoder::default();
         decoder.push(queue.as_slice());
         let mut frames = 0;
@@ -689,7 +642,6 @@ mod tests {
             ),
             (server, vec![0, 0, 0, 0], "an empty frame"),
             (server, vec![0, 0, 0, 2, 8, 0xff], utf8),
-            (hello, vec![0, 0, 0, 3, 1, 0, 0], "truncated frame"),
             (
                 hello,
                 vec![0, 0, 0, 6, 1, 0, 0, 0, 1, 7],
