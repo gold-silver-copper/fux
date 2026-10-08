@@ -94,6 +94,21 @@ impl Modifiers {
         alt: false,
         shift: false,
     };
+    /// Control alone.
+    pub const CTRL: Modifiers = Modifiers {
+        ctrl: true,
+        ..Modifiers::NONE
+    };
+    /// Alt alone.
+    pub const ALT: Modifiers = Modifiers {
+        alt: true,
+        ..Modifiers::NONE
+    };
+    /// Shift alone.
+    pub const SHIFT: Modifiers = Modifiers {
+        shift: true,
+        ..Modifiers::NONE
+    };
     /// Whether no modifier is held.
     pub fn is_empty(self) -> bool {
         self == Self::NONE

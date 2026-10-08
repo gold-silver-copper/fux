@@ -63,22 +63,10 @@ const ENCODINGS: [MouseProtocolEncoding; 3] = [
     MouseProtocolEncoding::Sgr,
 ];
 
-const BUTTONS: [MouseButton; 9] = [
-    MouseButton::Left,
-    MouseButton::Middle,
-    MouseButton::Right,
-    MouseButton::WheelUp,
-    MouseButton::WheelDown,
-    MouseButton::WheelLeft,
-    MouseButton::WheelRight,
-    MouseButton::Back,
-    MouseButton::Forward,
-];
-
 #[test]
 fn with_no_mode_nothing_is_reported() {
     for encoding in ENCODINGS {
-        for button in BUTTONS {
+        for button in MouseButton::ALL {
             for event in [press(button, 0, 0), release(button, 0, 0)] {
                 assert_eq!(report(event, MouseProtocolMode::None, encoding), None);
             }
@@ -115,7 +103,7 @@ fn x10_reports_presses_alone_without_modifiers() {
     assert_eq!(default(release(MouseButton::Left, 0, 0), mode), None);
     assert_eq!(default(motion(Some(MouseButton::Left), 0, 0), mode), None);
     // Buttons 1 to 3 alone.
-    for button in BUTTONS.into_iter().skip(3) {
+    for button in MouseButton::ALL.into_iter().skip(3) {
         assert_eq!(default(press(button, 0, 0), mode), None, "{button:?}");
     }
     assert_eq!(
@@ -152,15 +140,9 @@ fn normal_tracking_reports_presses_releases_and_the_wheel_with_modifiers() {
     assert_eq!(default(release(MouseButton::WheelUp, 0, 0), mode), None);
     // Shift 4, Meta 8, Control 16.
     for (mods, code) in [
-        (
-            Modifiers {
-                shift: true,
-                ..NONE
-            },
-            4u8,
-        ),
-        (Modifiers { alt: true, ..NONE }, 8),
-        (Modifiers { ctrl: true, ..NONE }, 16),
+        (Modifiers::SHIFT, 4u8),
+        (Modifiers::ALT, 8),
+        (Modifiers::CTRL, 16),
         (
             Modifiers {
                 ctrl: true,
@@ -318,7 +300,7 @@ fn a_position_the_encoding_cannot_carry_sends_nothing() {
 fn every_report_decodes_to_its_event() {
     for mode in MODES {
         for encoding in [MouseProtocolEncoding::Default, MouseProtocolEncoding::Sgr] {
-            for button in BUTTONS.iter().copied().map(Some).chain([None]) {
+            for button in MouseButton::ALL.iter().copied().map(Some).chain([None]) {
                 for action in [
                     MouseAction::Press,
                     MouseAction::Release,
