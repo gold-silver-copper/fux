@@ -349,7 +349,11 @@ impl Text {
     }
     /// Forgets all the text, releasing its memory.
     pub(crate) fn release(&mut self) {
-        *self = Text::default();
+        for part in [&mut self.long, &mut self.short] {
+            if part.capacity() != 0 {
+                *part = Vec::new();
+            }
+        }
     }
     /// Forgets all the text, keeping its memory for the row's next: a slot
     /// of the screen, which rows pass through.
