@@ -119,7 +119,9 @@ impl InputQueue {
         fits.then_some(()).ok_or(Error::NotReading)
     }
     /// Queues a terminal reply, as `push`: a program that is not reading
-    /// loses it.
+    /// loses it. Kept out of the parser's loop, which calls it from many
+    /// places for what is rare: inlined, scrolling output was 0.5% slower.
+    #[inline(never)]
     fn reply(&mut self, bytes: &[u8]) {
         if self.push(bytes).is_err() && self.lost == Lost::None {
             self.lost = Lost::Untold;
@@ -138,10 +140,11 @@ impl InputQueue {
     pub fn due_at(&self) -> Option<Instant> {
         self.held.as_ref().map(Typed::due_at)
     }
-    /// The shell wrote at `now`: a held line waits for it to be quiet.
-    pub fn heard(&mut self, now: Instant) {
+    /// The shell wrote at `now`: a held line waits for it to be quiet. The
+    /// clock is read only while one is held.
+    pub fn heard(&mut self, now: impl FnOnce() -> Instant) {
         if let Some(typed) = &mut self.held {
-            typed.last_output = Some(now);
+            typed.last_output = Some(now());
         }
     }
     /// Types the held command line now, into the room kept for it.
@@ -550,7 +553,7 @@ impl Pane {
             }
             rest = rest.get(taken..).unwrap_or_default();
         }
-        self.input.heard(Instant::now());
+        self.input.heard(Instant::now);
         begun
     }
 
