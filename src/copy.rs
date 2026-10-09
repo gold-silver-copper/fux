@@ -529,7 +529,7 @@ pub fn text(
 
 /// Enters copy mode on the client's focused pane.
 pub fn enter(session: &Session, view: &mut View) -> Result<String, Error> {
-    let pane = view.focus().ok_or(Error::NoPaneToCopy)?;
+    let pane = session.focused(view.id).ok_or(Error::NoPaneToCopy)?;
     let screen = session
         .panes
         .get(&pane)

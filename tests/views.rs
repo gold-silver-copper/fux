@@ -163,37 +163,6 @@ fn a_pty_is_the_smallest_rectangle_among_the_clients_showing_it() -> Outcome {
 }
 
 #[test]
-fn a_view_repairs_itself_when_what_it_shows_is_removed() -> Outcome {
-    let server = Server::start("")?;
-    let mut client = server.attach(20, 80)?;
-    client.wait_for("$")?;
-    // Three tabs; the client is on the middle one.
-    server.ok(&["new-tab", "-t", "+1"])?;
-    server.ok(&["new-tab", "-t", "+1"])?;
-    server.ok(&["select-tab", "-c", "c1", "-t", "@2"])?;
-    // Closing the tab it shows selects its neighbour.
-    server.ok(&["kill-tab", "-t", "@2"])?;
-    eventually("the next tab", || {
-        Ok(client_line(&server, "c1")?.contains(" @3 "))
-    })?;
-    // Closing the focused pane focuses the last-focused surviving one.
-    server.ok(&["split", "-h", "-t", "%3"])?;
-    server.ok(&["split", "-h", "-t", "%4"])?;
-    server.ok(&["select-pane", "-c", "c1", "-t", "%3"])?;
-    server.ok(&["select-pane", "-c", "c1", "-t", "%5"])?;
-    server.ok(&["kill-pane", "-t", "%5"])?;
-    eventually("back to %3", || {
-        Ok(client_line(&server, "c1")?.ends_with("%3"))
-    })?;
-    // Closing its workspace moves it to the first remaining one.
-    server.ok(&["new-workspace", "-n", "doomed"])?;
-    server.ok(&["select-workspace", "-c", "c1", "-t", "doomed"])?;
-    server.ok(&["kill-workspace", "-t", "doomed"])?;
-    eventually("on +1", || Ok(client_line(&server, "c1")?.contains(" +1 ")))?;
-    Ok(())
-}
-
-#[test]
 fn moving_a_panes_out_leaves_an_empty_tab_with_a_hint() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 80)?;

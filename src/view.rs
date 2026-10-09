@@ -2,9 +2,8 @@
 use crate::command::{AnyRef, Command};
 use crate::copy::Copy;
 use crate::decode::Decoder;
-use crate::id::{ClientId, PaneId, TabId, WsId};
+use crate::id::ClientId;
 use crate::overlay::{Column, Repeat};
-use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notice {
@@ -225,13 +224,6 @@ pub struct View {
     pub id: ClientId,
     pub rows: u16,
     pub cols: u16,
-    pub workspace: WsId,
-    /// Per workspace, the selected tab.
-    pub tab_of: BTreeMap<WsId, TabId>,
-    /// Per tab, the focused pane.
-    pub focus_of: BTreeMap<TabId, PaneId>,
-    /// Per tab, the pane focused before it (`select-pane --last`).
-    pub last_of: BTreeMap<TabId, PaneId>,
     pub zoom: bool,
     pub mode: Mode,
     pub notice: Option<Notice>,
@@ -240,12 +232,6 @@ pub struct View {
     pub terminal: crate::outer::Terminal,
     /// Something this view shows may have changed since its last paint.
     pub dirty: bool,
-    /// The pane a mouse button was pressed in and not yet released: its
-    /// motion and release go to it, kept to its edge (`Session::mouse`).
-    pub mouse_held: Option<PaneId>,
-    /// Tabs of its workspace whose panes rang the bell while it showed
-    /// another, marked in its bar until it shows them (`Session::ring`).
-    pub bells: BTreeSet<TabId>,
     /// When its terminal was last rung.
     pub last_bell: Option<std::time::Instant>,
     /// The title its terminal was last given, with `titles` on; `None`
@@ -254,34 +240,20 @@ pub struct View {
 }
 
 impl View {
-    pub fn new(id: ClientId, rows: u16, cols: u16, workspace: WsId) -> View {
+    pub fn new(id: ClientId, rows: u16, cols: u16) -> View {
         View {
             id,
             rows,
             cols,
-            workspace,
-            tab_of: BTreeMap::new(),
-            focus_of: BTreeMap::new(),
-            last_of: BTreeMap::new(),
             zoom: false,
             mode: Mode::Normal,
             notice: None,
             decoder: Decoder::default(),
             terminal: crate::outer::Terminal::default(),
             dirty: true,
-            mouse_held: None,
-            bells: BTreeSet::new(),
             last_bell: None,
             title: None,
         }
-    }
-
-    pub fn tab(&self) -> Option<TabId> {
-        self.tab_of.get(&self.workspace).copied()
-    }
-
-    pub fn focus(&self) -> Option<PaneId> {
-        self.tab().and_then(|t| self.focus_of.get(&t)).copied()
     }
 
     pub fn info(&mut self, text: impl Into<String>) {
@@ -298,14 +270,5 @@ impl View {
             error: true,
         });
         self.dirty = true;
-    }
-
-    /// Focuses `pane` in `tab`, remembering the pane it replaces.
-    pub fn set_focus(&mut self, tab: TabId, pane: PaneId) {
-        if let Some(old) = self.focus_of.insert(tab, pane)
-            && old != pane
-        {
-            self.last_of.insert(tab, old);
-        }
     }
 }

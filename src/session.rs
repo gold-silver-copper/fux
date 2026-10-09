@@ -14,34 +14,11 @@ use crate::overlay::{Column, Repeat};
 use crate::pane::Pane;
 use crate::process::Pid;
 use crate::view::{Choice, Mode, View};
+use crate::workspace::{Seat, Tab, Workspace};
 use std::collections::{BTreeMap, VecDeque};
-use std::ops::Bound;
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-
-pub struct Tab {
-    pub id: TabId,
-    pub name: String,
-    pub root: Option<Node>,
-}
-
-/// A workspace and its tabs, of which it always has one or more: each is
-/// made with one, and `remove_tab` removes a workspace its last tab leaves.
-pub struct Workspace {
-    pub id: WsId,
-    pub name: String,
-    pub tabs: Vec<Tab>,
-}
-
-impl Workspace {
-    /// Adds a tab, named after its place if no name is given.
-    fn add_tab(&mut self, id: TabId, name: Option<String>, root: Option<Node>) {
-        let number = self.tabs.len().saturating_add(1);
-        let name = name.unwrap_or_else(|| format!("tab-{number}"));
-        self.tabs.push(Tab { id, name, root });
-    }
-}
 
 /// What the server must do outside the session.
 #[derive(Debug, PartialEq, Eq)]
@@ -91,17 +68,6 @@ struct Here {
     workspace: Option<WsId>,
 }
 
-/// A client's focused pane, its tab and workspace.
-impl From<&View> for Here {
-    fn from(view: &View) -> Here {
-        Here {
-            pane: view.focus(),
-            tab: view.tab(),
-            workspace: Some(view.workspace),
-        }
-    }
-}
-
 impl WsRef {
     fn names(&self, ws: &Workspace) -> bool {
         match self {
@@ -139,7 +105,6 @@ pub enum Error {
     NoConfigFile,
     NoProcess,
     // What the client's view has none of.
-    NoCurrentPane,
     NoCurrentTab,
     NoCurrentWorkspace,
     NoLastPane,
@@ -206,7 +171,6 @@ impl std::fmt::Display for Error {
             Error::NoCopiedText => f.write_str("no copied text yet"),
             Error::NoConfigFile => f.write_str("no config file to reload"),
             Error::NoProcess => f.write_str("the pane has no process"),
-            Error::NoCurrentPane => f.write_str("no pane"),
             Error::NoCurrentTab => f.write_str("no tab"),
             Error::NoCurrentWorkspace => f.write_str("no workspace"),
             Error::NoLastPane => f.write_str("no previously focused pane"),
@@ -268,7 +232,6 @@ impl std::error::Error for Error {
             | Error::NoCopiedText
             | Error::NoConfigFile
             | Error::NoProcess
-            | Error::NoCurrentPane
             | Error::NoCurrentTab
             | Error::NoCurrentWorkspace
             | Error::NoLastPane
@@ -340,9 +303,6 @@ pub struct Session {
     launch: Option<PathBuf>,
     pub outbox: Vec<Outgoing>,
     pub dying: Vec<Dying>,
-    /// Per tab, the client that last typed into it, whose terminal answers
-    /// its panes' colour queries (`outer`).
-    pub typists: BTreeMap<TabId, ClientId>,
     /// The colours a client's terminal last said, for panes no attached
     /// client answers for (`outer`).
     pub last_colours: crate::outer::Colours,
@@ -363,7 +323,7 @@ pub struct Session {
 }
 
 /// The name of the first workspace, and of each workspace's first tab.
-const MAIN: &str = "main";
+pub(crate) const MAIN: &str = "main";
 
 /// Whether a command leaves every client's screen as it was: it reads the
 /// state, or hands a pane's program something whose effect, if any, comes
@@ -405,7 +365,6 @@ impl Session {
             launch: launch.then_some(socket),
             outbox: Vec::new(),
             dying: Vec::new(),
-            typists: BTreeMap::new(),
             last_colours: crate::outer::Colours::default(),
             last_palette: crate::outer::Palette::default(),
             shown_sizes: Vec::new(),
@@ -430,28 +389,42 @@ impl Session {
     pub fn tab(&self, id: TabId) -> Option<&Tab> {
         self.workspaces
             .iter()
-            .flat_map(|w| &w.tabs)
+            .flat_map(Workspace::tabs)
             .find(|t| t.id == id)
     }
     /// A tab's layout, unless it is empty.
     pub fn root(&self, tab: TabId) -> Option<&Node> {
-        self.tab(tab)?.root.as_ref()
+        self.tab(tab)?.root()
     }
     /// The workspace and tab that hold a pane.
     pub fn locate(&self, pane: PaneId) -> Option<(WsId, TabId)> {
-        let mut tabs = self
-            .workspaces
-            .iter()
-            .flat_map(|w| w.tabs.iter().map(|t| (w.id, t)));
-        tabs.find(|(_, t)| holds(t, pane)).map(|(w, t)| (w, t.id))
+        let mut tabs = (self.workspaces.iter()).flat_map(|w| w.tabs().iter().map(|t| (w.id, t)));
+        tabs.find(|(_, t)| t.holds(pane)).map(|(w, t)| (w, t.id))
     }
     /// The workspace a tab is in.
     pub fn tab_workspace(&self, tab: TabId) -> Result<WsId, Error> {
-        let ws = self
-            .workspaces
-            .iter()
-            .find(|w| w.tabs.iter().any(|t| t.id == tab));
+        let ws = (self.workspaces.iter()).find(|w| w.tabs().iter().any(|t| t.id == tab));
         ws.map(|w| w.id).ok_or(Error::NoTab(tab))
+    }
+    /// The workspace client `client` shows.
+    pub fn shown_workspace(&self, client: ClientId) -> Option<&Workspace> {
+        self.workspaces.iter().find(|w| w.viewers.contains(&client))
+    }
+    /// The tab client `client` shows.
+    pub fn shown_tab(&self, client: ClientId) -> Option<&Tab> {
+        shown_tab(&self.workspaces, client)
+    }
+    pub(crate) fn shown_tab_mut(&mut self, client: ClientId) -> Option<&mut Tab> {
+        let ws = (self.workspaces.iter_mut()).find(|w| w.viewers.contains(&client))?;
+        ws.tabs_mut().iter_mut().find(|t| t.shown_to(client))
+    }
+    /// The pane client `client` focuses.
+    pub fn focused(&self, client: ClientId) -> Option<PaneId> {
+        self.shown_tab(client)?.focus(client)
+    }
+    /// Whether client `client` shows tab `tab`.
+    pub(crate) fn shows(&self, client: ClientId, tab: TabId) -> bool {
+        self.shown_tab(client).is_some_and(|t| t.id == tab)
     }
     pub fn resolve_ws(&self, r: &WsRef) -> Result<WsId, Error> {
         let found = self.workspaces.iter().find(|w| r.names(w));
@@ -467,19 +440,26 @@ impl Session {
 
     // ------------------------------------------------------------- targets
 
-    fn view_of(&self, ctx: &Ctx) -> Option<&View> {
-        ctx.client.and_then(|c| self.views.get(&c))
-    }
-
     /// What a command that names nothing acts on: its client's, else the
     /// CLI caller's pane's.
     fn here(&self, ctx: &Ctx) -> Here {
-        let view = self.view_of(ctx).map_or_else(Here::default, Here::from);
+        let view = ctx.client.map_or_else(Here::default, |c| self.here_of(c));
         let caller = ctx.pane.and_then(|p| self.locate(p));
         Here {
             pane: view.pane.or(ctx.pane),
             tab: view.tab.or(caller.map(|(_, t)| t)),
             workspace: view.workspace.or(caller.map(|(w, _)| w)),
+        }
+    }
+
+    /// A client's focused pane, its tab and workspace.
+    fn here_of(&self, client: ClientId) -> Here {
+        let ws = self.shown_workspace(client);
+        let tab = ws.and_then(|w| w.tab_of(client));
+        Here {
+            pane: tab.and_then(|t| t.focus(client)),
+            tab: tab.map(|t| t.id),
+            workspace: ws.map(|w| w.id),
         }
     }
 
@@ -529,7 +509,7 @@ impl Session {
         if let Some(cwd) = &ctx.cwd {
             return cwd.clone();
         }
-        let near = near.or_else(|| self.view_of(ctx).and_then(View::focus));
+        let near = near.or_else(|| ctx.client.and_then(|c| self.focused(c)));
         if let Some(cwd) = near
             .and_then(|p| self.panes.get(&p))
             .and_then(|p| p.child.as_ref())
@@ -578,23 +558,11 @@ impl Session {
         let pane = new_pane(&self.config, launch, &mut ids, cmd, &cwd, DEFAULT_SIZE)?;
         self.ids = ids;
         let name = name.unwrap_or_else(|| self.workspace_name(id));
-        self.push_workspace(id, name, tab, Some(Node::Pane(pane.id)));
+        let root = Some(Node::Pane(pane.id));
+        let clients = self.views.keys().copied();
+        (self.workspaces).push(Workspace::new(id, name, tab, root, clients));
         self.panes.insert(pane.id, pane);
         Ok(id)
-    }
-
-    /// Adds workspace `id`, named `name`, last, with its first tab, `tab`,
-    /// holding `root`.
-    fn push_workspace(&mut self, id: WsId, name: String, tab: TabId, root: Option<Node>) {
-        self.workspaces.push(Workspace {
-            id,
-            name,
-            tabs: vec![Tab {
-                id: tab,
-                name: MAIN.into(),
-                root,
-            }],
-        });
     }
 
     // ------------------------------------------------------------- clients
@@ -617,7 +585,7 @@ impl Session {
                 .ok_or(Error::NoWorkspaces)?,
         };
         let id = self.ids.client()?;
-        let mut view = View::new(id, rows.clamp(1, 4096), cols.clamp(1, 4096), ws);
+        let mut view = View::new(id, rows.clamp(1, 4096), cols.clamp(1, 4096));
         if let Some(error) = &self.config_error {
             let error = error.to_string();
             // The bar is narrow: the file's name, not its whole path, which
@@ -634,6 +602,8 @@ impl Session {
             view.error(format!("config: {shown}"));
         }
         self.views.insert(id, view);
+        self.workspaces.iter_mut().for_each(|w| w.attach(id));
+        self.show(id, ws, None, None);
         self.ask_terminal(id);
         self.settle();
         Ok(id)
@@ -641,7 +611,30 @@ impl Session {
 
     pub fn detach(&mut self, id: ClientId) {
         self.views.remove(&id);
+        self.workspaces.iter_mut().for_each(|w| w.forget(id));
         self.settle();
+    }
+
+    /// Shows `client` workspace `ws`, one there is, and there tab `tab` and
+    /// in it pane `pane`, each if given and there.
+    fn show(&mut self, client: ClientId, ws: WsId, tab: Option<TabId>, pane: Option<PaneId>) {
+        for w in &mut self.workspaces {
+            w.viewers.remove(&client);
+            if w.id == ws {
+                w.viewers.insert(client);
+                w.show(client, tab, pane);
+            }
+        }
+    }
+
+    /// The command's client, if it is attached, follows what it made or
+    /// moved: it is shown it, unzoomed.
+    fn follow(&mut self, ctx: &Ctx, ws: WsId, tab: Option<TabId>, pane: Option<PaneId>) {
+        if let Some(view) = ctx.client.and_then(|c| self.views.get_mut(&c)) {
+            view.zoom = false;
+            let client = view.id;
+            self.show(client, ws, tab, pane);
+        }
     }
 
     pub fn resize(&mut self, id: ClientId, rows: u16, cols: u16) {
@@ -698,12 +691,12 @@ impl Session {
     /// `out`, whatever it held, reusing its buffers.
     pub fn placement_into(&self, view: &View, out: &mut Placement) {
         let area = Self::pane_area(view);
-        let Some(root) = view.tab().and_then(|t| self.root(t)) else {
+        let tab = self.shown_tab(view.id);
+        let Some(root) = tab.and_then(Tab::root) else {
             return out.clear();
         };
         if view.zoom
-            && let Some(focus) = view.focus()
-            && root.contains(focus)
+            && let Some(focus) = tab.and_then(|t| t.focus(view.id))
             && area.w > 0
             && area.h > 0
         {
@@ -715,13 +708,13 @@ impl Session {
 
     /// The area to lay out a tab in for a command without a client: a
     /// client showing it, else any client, else a typical terminal.
-    fn reference_area(views: &BTreeMap<ClientId, View>, tab: TabId, ctx: &Ctx) -> Rect {
-        let own = ctx.client.and_then(|c| views.get(&c));
-        let view = own
-            .filter(|v| v.tab() == Some(tab))
-            .or_else(|| views.values().find(|v| v.tab() == Some(tab)))
+    fn reference_area(&self, tab: TabId, ctx: &Ctx) -> Rect {
+        let own = ctx.client.and_then(|c| self.views.get(&c));
+        let shows = |v: &&View| self.shows(v.id, tab);
+        let view = (own.filter(shows))
+            .or_else(|| self.views.values().find(shows))
             .or(own)
-            .or_else(|| views.values().next());
+            .or_else(|| self.views.values().next());
         view.map_or(
             Rect {
                 x: 0,
@@ -735,22 +728,14 @@ impl Session {
 
     // -------------------------------------------------------------- repair
 
-    /// Brings every view back to something that exists, then sizes the PTYs:
+    /// Ends each view's mode if what it shows is gone, then sizes the PTYs:
     /// run after every event.
     pub fn settle(&mut self) {
         self.unsettled = false;
-        let first_ws = self.workspaces.first().map(|w| w.id);
-        // Each client after the one before: repairing a view changes no
-        // other, and adds or removes none.
-        let mut next = self.views.keys().next().copied();
-        while let Some(id) = next {
-            self.repair(id, first_ws);
-            next = self
-                .views
-                .range((Bound::Excluded(id), Bound::Unbounded))
-                .next()
-                .map(|(id, _)| *id);
-        }
+        // Out of the session while they are repaired, which reads no view.
+        let mut views = std::mem::take(&mut self.views);
+        views.values_mut().for_each(|view| self.repair(view));
+        self.views = views;
         self.size_panes();
         self.hold_copies();
     }
@@ -778,32 +763,8 @@ impl Session {
         }
     }
 
-    fn repair(&mut self, id: ClientId, first_ws: Option<WsId>) {
-        let Some(view) = self.views.get(&id) else {
-            return;
-        };
-        let mut workspace = view.workspace;
-        if self.workspace(workspace).is_none() {
-            let Some(first) = first_ws else { return };
-            workspace = first;
-        }
-        let tabs = self.workspace(workspace).map_or(&[][..], |w| &w.tabs);
-        let tab = view
-            .tab_of
-            .get(&workspace)
-            .copied()
-            .filter(|t| tabs.iter().any(|tab| tab.id == *t))
-            .or_else(|| tabs.first().map(|t| t.id));
-        let root = tab.and_then(|t| tabs.iter().find(|tab| tab.id == t)?.root.as_ref());
-        let shown = |p: &PaneId| root.is_some_and(|r| r.contains(*p));
-        let focus = tab.and_then(|t| {
-            view.focus_of
-                .get(&t)
-                .copied()
-                .filter(shown)
-                .or_else(|| view.last_of.get(&t).copied().filter(shown))
-                .or_else(|| root.and_then(Node::first_pane))
-        });
+    fn repair(&self, view: &mut View) {
+        let focus = self.focused(view.id);
         // What the view's mode refers to must still exist. Copy mode's rows
         // are looked for once the panes are sized (`hold_copies`).
         let gone: Option<String> = match &view.mode {
@@ -829,29 +790,6 @@ impl Session {
             // Found again whenever the bindings change (`rebind`).
             Mode::Normal | Mode::Column(_) | Mode::Repeat(_) | Mode::Copy(_) => None,
         };
-        let Some(view) = self.views.get_mut(&id) else {
-            return;
-        };
-        if view.workspace != workspace {
-            view.workspace = workspace;
-            view.dirty = true;
-        }
-        if let Some(tab) = tab {
-            if view.tab_of.get(&workspace) != Some(&tab) {
-                view.tab_of.insert(workspace, tab);
-                view.dirty = true;
-            }
-            match focus {
-                Some(focus) if view.focus_of.get(&tab) != Some(&focus) => {
-                    view.focus_of.insert(tab, focus);
-                    view.dirty = true;
-                }
-                None => {
-                    view.focus_of.remove(&tab);
-                }
-                _ => {}
-            }
-        }
         if let Some(reason) = gone {
             view.mode = Mode::Normal;
             view.error(reason);
@@ -954,15 +892,12 @@ impl Session {
         let place = self.locate(id);
         // Who sees the pane is known before its tab can go: a tab its
         // closing empties takes its viewers elsewhere.
-        let viewers: Vec<ClientId> = self
-            .views
-            .iter()
-            .filter(|(_, view)| place.is_some_and(|(_, t)| view.tab() == Some(t)))
-            .map(|(client, _)| *client)
+        let viewers: Vec<ClientId> = (self.views.keys().copied())
+            .filter(|c| place.is_some_and(|(_, t)| self.shows(*c, t)))
             .collect();
         let emptied = tab_of(&mut self.workspaces, id).ok().and_then(|t| {
-            layout::remove(&mut t.root, id);
-            t.root.is_none().then_some(t.id)
+            t.edit(|root| layout::remove(root, id));
+            t.root().is_none().then_some(t.id)
         });
         if let Some(tab) = emptied {
             self.remove_tab(tab);
@@ -978,41 +913,22 @@ impl Session {
         self.after_close();
     }
 
-    /// Removes a tab and whatever panes are in it.
+    /// Removes a tab and whatever panes are in it. A workspace it leaves
+    /// with none goes too, its viewers shown the first workspace left.
     fn remove_tab(&mut self, tab: TabId) {
-        let found = (self.workspaces.iter_mut())
-            .find_map(|ws| Some((ws.tabs.iter().position(|t| t.id == tab)?, ws)));
-        let Some((t, ws)) = found else {
+        let ws = (self.workspaces.iter_mut()).find(|w| w.tabs().iter().any(|t| t.id == tab));
+        let Some(ws) = ws else {
             return;
         };
-        // Its panes go with it.
-        let root = ws.tabs.get_mut(t).and_then(|tab| tab.root.take());
-        let ws_id = ws.id;
-        // Tab IDs are unique: this removes the tab at `t`.
-        ws.tabs.retain(|other| other.id != tab);
-        self.typists.remove(&tab);
-        // Views on the closed tab select its neighbour.
-        let neighbour = ws
-            .tabs
-            .get(t)
-            .or_else(|| t.checked_sub(1).and_then(|i| ws.tabs.get(i)))
-            .map(|t| t.id);
-        let empty = ws.tabs.is_empty();
-        for view in self.views.values_mut() {
-            if view.tab_of.get(&ws_id) == Some(&tab) {
-                match neighbour {
-                    Some(n) => {
-                        view.tab_of.insert(ws_id, n);
-                    }
-                    None => {
-                        view.tab_of.remove(&ws_id);
-                    }
-                }
+        let root = ws.remove_tab(tab);
+        if ws.tabs().is_empty() {
+            let (id, viewers) = (ws.id, std::mem::take(&mut ws.viewers));
+            self.workspaces.retain(|w| w.id != id);
+            if let Some(first) = self.workspaces.first_mut() {
+                first.viewers.extend(viewers);
             }
         }
-        if empty {
-            self.workspaces.retain(|w| w.id != ws_id);
-        }
+        // Its panes go with it.
         if let Some(root) = root {
             root.for_each_pane(&mut |pane| {
                 if let Some(pane) = self.panes.remove(&pane) {
@@ -1025,12 +941,11 @@ impl Session {
     fn remove_workspace(&mut self, ws: WsId) {
         let tabs: Vec<TabId> = self
             .workspace(ws)
-            .map(|w| w.tabs.iter().map(|t| t.id).collect())
+            .map(|w| w.tabs().iter().map(|t| t.id).collect())
             .unwrap_or_default();
         for tab in tabs {
             self.remove_tab(tab);
         }
-        self.workspaces.retain(|w| w.id != ws);
     }
 
     fn after_close(&mut self) {
@@ -1124,7 +1039,8 @@ impl Session {
             .values()
             .any(|view| matches!(&view.mode, Mode::Copy(copy) if copy.pane == id));
         for view in self.views.values_mut() {
-            if place.is_some_and(|(_, t)| view.tab() == Some(t)) {
+            let shown = shown_tab(&self.workspaces, view.id).map(|t| t.id);
+            if place.is_some_and(|(_, t)| shown == Some(t)) {
                 view.dirty = true;
                 if dropped {
                     view.error(format!(
@@ -1210,7 +1126,7 @@ impl Session {
     /// Why a command cannot run now, if it cannot: menus and the command
     /// column dim such entries, and running one says why.
     pub fn unavailable(&self, command: &Command, ctx: &Ctx) -> Option<Error> {
-        let view = self.view_of(ctx);
+        let ws = ctx.client.and_then(|c| self.shown_workspace(c));
         // Going to the next or previous one needs another.
         let alone = |kind, count: usize| (count < 2).then_some(Error::OnlyOne(kind));
         let action = if let Command::Client { action, .. } = command {
@@ -1226,14 +1142,14 @@ impl Session {
             )
         ) {
             let mut panes = 0usize;
-            if let Some(root) = view.and_then(View::tab).and_then(|t| self.root(t)) {
+            let tab = ctx.client.zip(ws).and_then(|(c, w)| w.tab_of(c));
+            if let Some(root) = tab.and_then(Tab::root) {
                 root.for_each_pane(&mut |_| panes = panes.saturating_add(1));
             }
             return alone(Kind::Pane, panes);
         }
         if let Some(ClientAction::SelectTab(Pick::Step(_))) = action {
-            let tabs = view.and_then(|v| self.workspace(v.workspace));
-            return alone(Kind::Tab, tabs.map_or(0, |w| w.tabs.len()));
+            return alone(Kind::Tab, ws.map_or(0, |w| w.tabs().len()));
         }
         if let Some(ClientAction::SelectWorkspace(Pick::Step(_))) = action {
             return alone(Kind::Workspace, self.workspaces.len());
@@ -1300,10 +1216,7 @@ impl Session {
             }
             Command::NewWorkspace { name, cmd } => {
                 let ws = self.create_workspace(name.clone(), cmd, ctx)?;
-                if let Some(view) = ctx.client.and_then(|c| self.views.get_mut(&c)) {
-                    view.workspace = ws;
-                    view.zoom = false;
-                }
+                self.follow(ctx, ws, None, None);
                 Ok(format!("{ws}\n"))
             }
             Command::NewTab { target, name, cmd } => {
@@ -1323,11 +1236,7 @@ impl Session {
                 ws.add_tab(id, name.clone(), Some(Node::Pane(pane.id)));
                 let ws = ws.id;
                 self.panes.insert(pane.id, pane);
-                if let Some(view) = ctx.client.and_then(|c| self.views.get_mut(&c)) {
-                    view.workspace = ws;
-                    view.tab_of.insert(ws, id);
-                    view.zoom = false;
-                }
+                self.follow(ctx, ws, Some(id), None);
                 Ok(format!("{id}\n"))
             }
             &Command::Split {
@@ -1337,23 +1246,24 @@ impl Session {
             } => {
                 let (target, size) = self.pane(target, here).map(|p| (p.id, p.size))?;
                 let cwd = self.cwd_for(ctx, Some(target));
+                // From the CLI, the clients showing the split pane follow it.
+                let shown = |c: &ClientId| self.focused(*c) == Some(target);
+                let watching: Vec<ClientId> = self.views.keys().copied().filter(shown).collect();
                 let tab = tab_of(&mut self.workspaces, target)?;
                 let mut ids = self.ids;
                 let launch = self.launch.as_deref();
                 let pane = new_pane(&self.config, launch, &mut ids, cmd, &cwd, size)?;
                 self.ids = ids;
-                layout::split(&mut tab.root, target, pane.id, axis, Side::After);
-                let (tab, new) = (tab.id, pane.id);
+                let new = pane.id;
+                tab.edit(|root| layout::split(root, target, new, axis, Side::After));
                 self.panes.insert(new, pane);
-                // The splitting client follows the new pane; from the CLI,
-                // clients focused on the split pane do.
+                // The splitting client follows the new pane.
                 for view in self.views.values_mut() {
-                    let follows = match ctx.client {
-                        Some(client) => view.id == client,
-                        None => view.focus_of.get(&tab) == Some(&target),
-                    };
+                    let follows = ctx
+                        .client
+                        .map_or(watching.contains(&view.id), |c| view.id == c);
                     if follows {
-                        view.set_focus(tab, new);
+                        tab.set_focus(view.id, new);
                         view.zoom = false;
                     }
                 }
@@ -1395,10 +1305,14 @@ impl Session {
                 amount,
             } => {
                 let pane = self.pane(target, here)?.id;
+                let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
+                let area = self.reference_area(tab, ctx);
                 let tab = tab_of(&mut self.workspaces, pane)?;
-                let area = Self::reference_area(&self.views, tab.id, ctx);
-                let root = tab.root.as_mut();
-                if root.is_some_and(|root| layout::resize(root, area, pane, direction, amount)) {
+                let resize = |root: &mut Option<Node>| {
+                    let root = root.as_mut();
+                    root.is_some_and(|root| layout::resize(root, area, pane, direction, amount))
+                };
+                if tab.edit(resize) {
                     Ok(String::new())
                 } else {
                     Err(Error::NoBorder { pane, direction })
@@ -1510,6 +1424,7 @@ impl Session {
                 let mut view = self.views.remove(&client).ok_or(Error::NoClient(client))?;
                 let done = self.on_client(&mut view, action);
                 if let ClientAction::Detach = action {
+                    self.workspaces.iter_mut().for_each(|w| w.forget(client));
                     self.outbox.push(Outgoing::Exit(client, "detached".into()));
                 } else {
                     self.views.insert(client, view);
@@ -1522,7 +1437,7 @@ impl Session {
     /// A command on a client's screen, its view in hand. Targets it leaves
     /// out are the client's own.
     fn on_client(&mut self, view: &mut View, action: &ClientAction) -> Result<String, Error> {
-        let here = Here::from(&*view);
+        let here = self.here_of(view.id);
         match *action {
             // `execute` does not put the view back.
             ClientAction::Detach => Ok(String::new()),
@@ -1626,7 +1541,7 @@ impl Session {
     /// the command.
     fn neighbor(&self, from: PaneId, direction: Direction, ctx: &Ctx) -> Result<PaneId, Error> {
         let found = self.locate(from).and_then(|(_, tab)| {
-            let area = Self::reference_area(&self.views, tab, ctx);
+            let area = self.reference_area(tab, ctx);
             layout::neighbor(&layout::place(self.root(tab)?, area), from, direction)
         });
         found.ok_or(Error::NoNeighbor { from, direction })
@@ -1634,8 +1549,8 @@ impl Session {
 
     /// Swaps two panes' places: in one tab, or each in the other's.
     fn swap(&mut self, a: PaneId, b: PaneId) {
-        for root in tabs_mut(&mut self.workspaces).filter_map(|t| t.root.as_mut()) {
-            layout::swap(root, a, b);
+        for tab in tabs_mut(&mut self.workspaces) {
+            tab.edit(|root| root.as_mut().map(|r| layout::swap(r, a, b)));
         }
     }
 
@@ -1643,23 +1558,26 @@ impl Session {
     /// of it, and `to` takes it.
     fn relocate(&mut self, pane: PaneId, to: TabId) {
         for tab in tabs_mut(&mut self.workspaces) {
-            layout::remove(&mut tab.root, pane);
-            if tab.id == to {
-                tab.root = Some(match tab.root.take() {
-                    None => Node::Pane(pane),
-                    Some(root) => {
-                        let mut node = Node::Split {
-                            axis: Axis::Horizontal,
-                            children: vec![
-                                (layout::WEIGHT, root),
-                                (layout::WEIGHT, Node::Pane(pane)),
-                            ],
-                        };
-                        layout::normalize(&mut node);
-                        node
-                    }
-                });
-            }
+            let takes = tab.id == to;
+            tab.edit(|root| {
+                layout::remove(root, pane);
+                if takes {
+                    *root = Some(match root.take() {
+                        None => Node::Pane(pane),
+                        Some(root) => {
+                            let mut node = Node::Split {
+                                axis: Axis::Horizontal,
+                                children: vec![
+                                    (layout::WEIGHT, root),
+                                    (layout::WEIGHT, Node::Pane(pane)),
+                                ],
+                            };
+                            layout::normalize(&mut node);
+                            node
+                        }
+                    });
+                }
+            });
         }
     }
 
@@ -1679,22 +1597,24 @@ impl Session {
                     Direction::Left | Direction::Up => Side::Before,
                 };
                 for tab in tabs_mut(&mut self.workspaces) {
-                    layout::remove(&mut tab.root, pane);
-                    layout::split(&mut tab.root, destination, pane, Axis::of(direction), side);
+                    tab.edit(|root| {
+                        layout::remove(root, pane);
+                        layout::split(root, destination, pane, Axis::of(direction), side)
+                    });
                 }
                 return Ok(String::new());
             }
             &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, tab),
             MoveTo::Workspace(r) => {
                 let mut named = self.workspaces.iter().filter(|w| r.names(w));
-                let first = named.find_map(|w| Some((w.id, w.tabs.first()?.id)));
+                let first = named.find_map(|w| Some((w.id, w.tabs().first()?.id)));
                 first.ok_or_else(|| r.missing())?
             }
             MoveTo::NewTab => {
                 let ws = self
                     .workspaces
                     .iter_mut()
-                    .find(|w| w.tabs.iter().any(|t| holds(t, pane)));
+                    .find(|w| w.tabs().iter().any(|t| t.holds(pane)));
                 let ws = ws.ok_or(Error::NoPane(pane))?;
                 let mut ids = self.ids;
                 let id = ids.tab()?;
@@ -1709,7 +1629,8 @@ impl Session {
                 let tab = ids.tab()?;
                 self.ids = ids;
                 let name = self.workspace_name(id);
-                self.push_workspace(id, name, tab, None);
+                let clients = self.views.keys().copied();
+                (self.workspaces).push(Workspace::new(id, name, tab, None, clients));
                 (id, tab)
             }
         };
@@ -1718,12 +1639,7 @@ impl Session {
         }
         self.relocate(pane, tab);
         // The moving client follows its pane.
-        if let Some(view) = ctx.client.and_then(|c| self.views.get_mut(&c)) {
-            view.workspace = ws;
-            view.tab_of.insert(ws, tab);
-            view.set_focus(tab, pane);
-            view.zoom = false;
-        }
+        self.follow(ctx, ws, Some(tab), Some(pane));
         Ok(format!("{tab}\n"))
     }
 
@@ -1743,7 +1659,7 @@ impl Session {
             AnyRef::Tab(t) => self
                 .workspaces
                 .iter_mut()
-                .find_map(|w| swap_sibling(&mut w.tabs, |tab| tab.id == *t, toward)),
+                .find_map(|w| swap_sibling(w.tabs_mut(), |tab| tab.id == *t, toward)),
             AnyRef::Workspace(r) => swap_sibling(&mut self.workspaces, |w| r.names(w), toward),
         };
         match moved {
@@ -1753,70 +1669,60 @@ impl Session {
         }
     }
 
-    fn select_pane(&self, view: &mut View, pick: PanePick) -> Result<String, Error> {
-        let tab = view.tab().ok_or(Error::NoCurrentTab)?;
-        let root = self.root(tab);
-        let panes = root.map_or_else(Vec::new, Node::panes);
-        let current = view.focus();
+    fn select_pane(&mut self, view: &mut View, pick: PanePick) -> Result<String, Error> {
+        let client = view.id;
+        let tab = self.shown_tab(client).ok_or(Error::NoCurrentTab)?;
+        let panes = tab.root().map_or_else(Vec::new, Node::panes);
+        let (current, last) = (tab.focus(client), tab.seat(client).and_then(Seat::last));
         let target = match pick {
-            PanePick::Id(p) => {
-                let (ws, tab) = self.locate(p).ok_or(Error::NoPane(p))?;
-                view.workspace = ws;
-                view.tab_of.insert(ws, tab);
-                view.set_focus(tab, p);
-                view.zoom = false;
-                return Ok(String::new());
-            }
+            PanePick::Id(p) => p,
             PanePick::Step(toward) => {
                 let index = current.and_then(|c| panes.iter().position(|p| *p == c));
                 let next = round(&panes, index.unwrap_or(0), toward);
                 *next.ok_or(Error::OnlyOne(Kind::Pane))?
             }
-            PanePick::Last => view
-                .last_of
-                .get(&tab)
-                .copied()
-                .filter(|p| panes.contains(p) && Some(*p) != current)
-                .ok_or(Error::NoLastPane)?,
+            PanePick::Last => last.ok_or(Error::NoLastPane)?,
             PanePick::Toward(direction) => {
-                let root = root.ok_or(Error::TabEmpty)?;
+                let (root, from) = tab.root().zip(current).ok_or(Error::TabEmpty)?;
                 let placement = layout::place(root, Self::pane_area(view));
-                let from = current.ok_or(Error::NoCurrentPane)?;
                 layout::neighbor(&placement, from, direction)
                     .ok_or(Error::NoNeighbor { from, direction })?
             }
         };
-        view.set_focus(tab, target);
+        let (ws, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
+        self.show(client, ws, Some(tab), Some(target));
         view.zoom = false;
         Ok(String::new())
     }
 
-    fn select_tab(&self, view: &mut View, pick: Pick<TabId>) -> Result<String, Error> {
+    fn select_tab(&mut self, view: &mut View, pick: Pick<TabId>) -> Result<String, Error> {
         let (ws, target) = match pick {
             Pick::Id(t) => (self.tab_workspace(t)?, t),
             Pick::Step(toward) => {
-                let tabs = self.workspace(view.workspace).map_or(&[][..], |w| &w.tabs);
-                let index = view.tab().and_then(|c| tabs.iter().position(|t| t.id == c));
+                let ws = self.shown_workspace(view.id);
+                let tabs = ws.map_or(&[][..], Workspace::tabs);
+                let index = tabs.iter().position(|t| t.shown_to(view.id));
                 let next = round(tabs, index.unwrap_or(0), toward);
-                (view.workspace, next.ok_or(Error::OnlyOne(Kind::Tab))?.id)
+                let next = ws.zip(next).map(|(w, t)| (w.id, t.id));
+                next.ok_or(Error::OnlyOne(Kind::Tab))?
             }
         };
-        view.workspace = ws;
-        view.tab_of.insert(ws, target);
+        self.show(view.id, ws, Some(target), None);
         view.zoom = false;
         Ok(String::new())
     }
 
-    fn select_workspace(&self, view: &mut View, pick: &Pick<WsRef>) -> Result<String, Error> {
-        view.workspace = match pick {
+    fn select_workspace(&mut self, view: &mut View, pick: &Pick<WsRef>) -> Result<String, Error> {
+        let ws = match pick {
             Pick::Id(r) => self.resolve_ws(r)?,
             Pick::Step(toward) => {
                 let workspaces = &self.workspaces;
-                let index = workspaces.iter().position(|w| w.id == view.workspace);
+                let index = workspaces.iter().position(|w| w.viewers.contains(&view.id));
                 let next = round(workspaces, index.unwrap_or(0), *toward);
                 next.ok_or(Error::OnlyOne(Kind::Workspace))?.id
             }
         };
+        self.show(view.id, ws, None, None);
         view.zoom = false;
         Ok(String::new())
     }
@@ -1827,14 +1733,14 @@ impl Session {
         let mut out = String::new();
         for ws in &self.workspaces {
             out.push_str(&format!("{} {}\n", ws.id, ws.name));
-            for tab in &ws.tabs {
+            for tab in ws.tabs() {
                 out.push_str(&format!(
                     "  {} {}{}\n",
                     tab.id,
                     tab.name,
-                    if tab.root.is_none() { " (empty)" } else { "" }
+                    if tab.root().is_none() { " (empty)" } else { "" }
                 ));
-                let Some(root) = &tab.root else { continue };
+                let Some(root) = tab.root() else { continue };
                 root.for_each_pane(&mut |pane| {
                     if let Some(p) = self.panes.get(&pane) {
                         out.push_str(&format!(
@@ -1852,19 +1758,17 @@ impl Session {
                 });
             }
         }
+        let shown = |id: Option<String>| id.unwrap_or_else(|| "-".into());
         for view in self.views.values() {
+            let here = self.here_of(view.id);
             out.push_str(&format!(
                 "client {} {}x{} {} {} {}\n",
                 view.id,
                 view.cols,
                 view.rows,
-                view.workspace,
-                view.tab()
-                    .map(|t| t.to_string())
-                    .unwrap_or_else(|| "-".into()),
-                view.focus()
-                    .map(|p| p.to_string())
-                    .unwrap_or_else(|| "-".into()),
+                shown(here.workspace.map(|w| w.to_string())),
+                shown(here.tab.map(|t| t.to_string())),
+                shown(here.pane.map(|p| p.to_string())),
             ));
         }
         out
@@ -1873,7 +1777,7 @@ impl Session {
     fn ls_json(&self) -> String {
         let panes = |tab: &Tab| {
             let mut panes = Vec::new();
-            let Some(root) = &tab.root else {
+            let Some(root) = tab.root() else {
                 return Json::Array(panes);
             };
             root.for_each_pane(&mut |id| {
@@ -1906,7 +1810,7 @@ impl Session {
                     (
                         "tabs",
                         Json::Array(
-                            ws.tabs
+                            ws.tabs()
                                 .iter()
                                 .map(|t| {
                                     Json::Object(vec![
@@ -1926,13 +1830,14 @@ impl Session {
             .views
             .values()
             .map(|v| {
+                let here = self.here_of(v.id);
                 Json::Object(vec![
                     ("id", Json::str(v.id.to_string())),
                     ("rows", Json::Number(i64::from(v.rows))),
                     ("cols", Json::Number(i64::from(v.cols))),
-                    ("workspace", Json::str(v.workspace.to_string())),
-                    ("tab", opt(v.tab().map(|t| t.to_string()))),
-                    ("pane", opt(v.focus().map(|p| p.to_string()))),
+                    ("workspace", opt(here.workspace.map(|w| w.to_string()))),
+                    ("tab", opt(here.tab.map(|t| t.to_string()))),
+                    ("pane", opt(here.pane.map(|p| p.to_string()))),
                     ("zoom", Json::Bool(v.zoom)),
                 ])
             })
@@ -2089,18 +1994,22 @@ fn swap_sibling<T>(items: &mut [T], is: impl Fn(&T) -> bool, toward: Sibling) ->
     Some(pair.map(<[T]>::reverse).is_some())
 }
 
-fn holds(tab: &Tab, pane: PaneId) -> bool {
-    tab.root.as_ref().is_some_and(|r| r.contains(pane))
+/// The tab client `client` shows.
+fn shown_tab(workspaces: &[Workspace], client: ClientId) -> Option<&Tab> {
+    workspaces
+        .iter()
+        .find(|w| w.viewers.contains(&client))?
+        .tab_of(client)
 }
 
 fn tabs_mut(workspaces: &mut [Workspace]) -> impl Iterator<Item = &mut Tab> {
-    workspaces.iter_mut().flat_map(|w| &mut w.tabs)
+    workspaces.iter_mut().flat_map(|w| w.tabs_mut().iter_mut())
 }
 
 /// The tab pane `id` is in: a pane in no tab is no pane.
 fn tab_of(workspaces: &mut [Workspace], id: PaneId) -> Result<&mut Tab, Error> {
     tabs_mut(workspaces)
-        .find(|t| holds(t, id))
+        .find(|t| t.holds(id))
         .ok_or(Error::NoPane(id))
 }
 
@@ -2581,19 +2490,6 @@ mod tests {
             let got = s.unavailable(&command, &ctx).map(|e| e.to_string());
             assert_eq!(got.as_deref(), reason, "{line}");
         }
-        Ok(())
-    }
-
-    /// With every workspace closed, a client's view still names the one it
-    /// was on: a command that defaults to it finds no workspace, and starts
-    /// no pane in no tab.
-    #[test]
-    fn a_closed_workspace_is_no_workspace() -> Result<(), Box<dyn std::error::Error>> {
-        let (mut s, c) = attached(10, 40)?;
-        run(&mut s, "kill-workspace -t +1")?;
-        let outcome = s.run(&crate::words::split("new-tab")?, &Ctx::client(c));
-        assert_eq!(outcome.stderr, "no workspace +1");
-        assert!(s.panes.is_empty());
         Ok(())
     }
 
