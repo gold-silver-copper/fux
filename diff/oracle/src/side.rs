@@ -7,17 +7,7 @@
 //! read both into the same model; say so in the README's list of adapters.
 //!
 //! Adapters today: the options, a set of `Feature`s in the working tree
-//! and a field each in the commit; `Feature::Palette` and
-//! `Screen::colors_changed`, which the commit has not. The working tree is
-//! given the option the case asks for; the commit, which has no palette,
-//! reports the option as asked and no colour changed. The palette's sequences are exempt
-//! (`exempt`), so with the option on the working tree sees none of them,
-//! and anything else that changed a colour would differ.
-//!
-//! And the cell a host makes: the commit's `Cell` (`Cell::new`, `None`
-//! past 17 bytes; `Cells::set_cell` and `set_text`), the working tree's
-//! `CellRef` (`CellRef::new`, given only what `Cell::new` takes;
-//! `Cells::set`), and `CLUSTER_CAPACITY`, on `Cell` in the commit.
+//! and a field each in the commit.
 
 macro_rules! side {
     (
@@ -25,15 +15,7 @@ macro_rules! side {
         $vt:ident,
         $name:literal,
         options: $options:expr,
-        setup: $setup:expr,
-        colors_changed: $colors_changed:expr,
-        cell: $cell:ty,
-        new_cell: $new_cell:expr,
-        blank: $blank:expr,
-        continuation: $continuation:expr,
-        set_cell: $set_cell:expr,
-        set_text: $set_text:expr,
-        cluster_capacity: $cluster_capacity:expr $(,)?
+        setup: $setup:expr $(,)?
     ) => {
         pub mod $module {
             use crate::model::{
@@ -46,8 +28,6 @@ macro_rules! side {
             #[derive(Clone)]
             pub struct Terminal {
                 parser: vt::Parser,
-                /// `Feature::Palette` as the case asked for it.
-                palette: bool,
                 marks: Vec<vt::Mark>,
                 /// The oldest row seen at the last lookup, to ask for again
                 /// once it may be gone.
@@ -149,11 +129,10 @@ macro_rules! side {
                 )
             }
 
-            /// The options back, as the parser reports them; `palette` as
-            /// the case asked for it.
-            fn setup(o: vt::Options, palette: bool) -> Setup {
-                let setup: fn(vt::Options, bool) -> Setup = $setup;
-                setup(o, palette)
+            /// The options back, as the parser reports them.
+            fn setup(o: vt::Options) -> Setup {
+                let setup: fn(vt::Options) -> Setup = $setup;
+                setup(o)
             }
 
             /// Everything the parser gives the host, in order.
@@ -207,7 +186,6 @@ macro_rules! side {
                         .map_err(error)?;
                     Ok(Terminal {
                         parser,
-                        palette: setup.palette,
                         marks: Vec::new(),
                         oldest: None,
                     })
@@ -282,11 +260,8 @@ macro_rules! side {
                         storage_cells: s.storage_cells(),
                         mark: number(s.mark()),
                         resize_report: self.parser.resize_report(),
-                        options: setup(self.parser.options(), self.palette),
-                        colors_changed: {
-                            let changed: fn(&vt::Screen) -> bool = $colors_changed;
-                            changed(s)
-                        },
+                        options: setup(self.parser.options()),
+                        colors_changed: s.colors_changed(),
                         rows_end_there: retained
                             .checked_sub(1)
                             .is_none_or(|last| s.row_from_bottom(last).is_some())
@@ -484,7 +459,7 @@ macro_rules! side {
             }
 
             /// A `Cell` as its own accessors show it.
-            fn stored(c: &$cell) -> String {
+            fn stored(c: &vt::CellRef<'_>) -> String {
                 format!(
                     "contents {} wide {} continuation {} {:?}",
                     c.has_contents(),
@@ -506,7 +481,7 @@ macro_rules! side {
                         ("URI_LIMIT", vt::URI_LIMIT.to_string()),
                         ("ID_LIMIT", vt::ID_LIMIT.to_string()),
                         ("OSC_PAYLOAD_LIMIT", vt::OSC_PAYLOAD_LIMIT.to_string()),
-                        ("CLUSTER_CAPACITY", $cluster_capacity.to_string()),
+                        ("CLUSTER_CAPACITY", vt::CLUSTER_CAPACITY.to_string()),
                         ("Identity::MAX_LEN", vt::Identity::MAX_LEN.to_string()),
                         (
                             "Options::default is Options::new",
@@ -516,8 +491,11 @@ macro_rules! side {
                             "Attributes::default",
                             format!("{:?}", style(vt::Attributes::default())),
                         ),
-                        ("blank cell", stored(&$blank)),
-                        ("wide continuation", stored(&$continuation)),
+                        ("blank cell", stored(&vt::CellRef::default())),
+                        (
+                            "wide continuation",
+                            stored(&vt::CellRef::wide_continuation()),
+                        ),
                         (
                             "MouseProtocolMode::default",
                             format!("{:?}", vt::MouseProtocolMode::default()),
@@ -566,27 +544,17 @@ macro_rules! side {
                 fn apply(run: &mut vt::Cells, edit: &crate::cells::Edit) -> String {
                     use crate::cells::Edit;
                     match edit {
-                        Edit::SetText {
+                        Edit::Set {
                             i,
                             text,
                             wide,
                             style,
-                        } => format!("{}", $set_text(run, *i, text, *wide, attributes(style))),
-                        Edit::SetCell {
-                            i,
-                            text,
-                            wide,
-                            style,
-                        } => match $new_cell(text, *wide, attributes(style)) {
-                            Some(cell) => {
-                                let shown = stored(&cell);
-                                $set_cell(run, *i, cell);
-                                shown
-                            }
-                            None => "no cell".into(),
-                        },
+                        } => {
+                            let cell = vt::CellRef::new(text, *wide, attributes(style));
+                            format!("{} {}", run.set(*i, cell), stored(&cell))
+                        }
                         Edit::Continuation { i } => {
-                            $set_cell(run, *i, $continuation);
+                            run.set(*i, vt::CellRef::wide_continuation());
                             String::new()
                         }
                         Edit::SetAttributes { i, style } => {
@@ -599,25 +567,21 @@ macro_rules! side {
                             text,
                             wide,
                             style,
-                        } => match $new_cell(text, *wide, attributes(style)) {
-                            Some(cell) => {
-                                run.fill(*start..*end, cell);
-                                stored(&cell)
-                            }
-                            None => "no cell".into(),
-                        },
+                        } => {
+                            let cell = vt::CellRef::new(text, *wide, attributes(style));
+                            run.fill(*start..*end, cell);
+                            stored(&cell)
+                        }
                         Edit::Resize {
                             len,
                             text,
                             wide,
                             style,
-                        } => match $new_cell(text, *wide, attributes(style)) {
-                            Some(cell) => {
-                                run.resize(*len, cell);
-                                stored(&cell)
-                            }
-                            None => "no cell".into(),
-                        },
+                        } => {
+                            let cell = vt::CellRef::new(text, *wide, attributes(style));
+                            run.resize(*len, cell);
+                            stored(&cell)
+                        }
                         Edit::Copy { i, from } => {
                             let was = run.clone();
                             match was.get(*from) {
@@ -683,7 +647,7 @@ side!(
         let flags = vt::Feature::ALL.into_iter().zip(setup.flags());
         flags.filter_map(|(f, (_, on))| on.then_some(f)).collect()
     },
-    setup: |o, _| {
+    setup: |o| {
         let mut setup = Setup::default();
         for (f, (_, on)) in vt::Feature::ALL.into_iter().zip(setup.flags()) {
             *on = o.has(f);
@@ -691,22 +655,6 @@ side!(
         setup.identity = o.identity().map(|i| (i.name, i.version));
         setup
     },
-    colors_changed: |s| s.colors_changed(),
-    cell: vt::CellRef<'_>,
-    new_cell: {
-        fn made(text: &str, wide: bool, a: vt::Attributes) -> Option<vt::CellRef<'_>> {
-            (text.len() <= 17).then(|| vt::CellRef::new(text, wide, a))
-        }
-        made
-    },
-    blank: vt::CellRef::default(),
-    continuation: vt::CellRef::wide_continuation(),
-    set_cell: |run: &mut vt::Cells, i, cell| {
-        run.set(i, cell);
-    },
-    set_text: |run: &mut vt::Cells, i, text, wide, attributes| run
-        .set(i, vt::CellRef::new(text, wide, attributes)),
-    cluster_capacity: vt::CLUSTER_CAPACITY,
 );
 side!(
     base,
@@ -724,9 +672,10 @@ side!(
         .with_hyperlinks(setup.hyperlinks)
         .with_prompt_marks(setup.prompt_marks)
         .with_rectangle_checksums(setup.rectangle_checksums)
-        .with_setting_reports(setup.setting_reports),
-    setup: |o, palette| Setup {
-        palette,
+        .with_setting_reports(setup.setting_reports)
+        .with_palette(setup.palette),
+    setup: |o| Setup {
+        palette: o.palette,
         events: o.events,
         extended_replies: o.extended_replies,
         mode_reports: o.mode_reports,
@@ -741,12 +690,4 @@ side!(
         setting_reports: o.setting_reports,
         identity: o.identity.map(|i| (i.name, i.version)),
     },
-    colors_changed: |_| false,
-    cell: vt::Cell,
-    new_cell: vt::Cell::new,
-    blank: vt::Cell::default(),
-    continuation: vt::Cell::wide_continuation(),
-    set_cell: vt::Cells::set_cell,
-    set_text: vt::Cells::set_text,
-    cluster_capacity: vt::Cell::CLUSTER_CAPACITY,
 );

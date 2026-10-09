@@ -16,7 +16,7 @@ fn ascii_run_path_equals_scalar_dispatch_around_grapheme_clusters() -> Result<()
         let mut slow = fast.clone();
         fast.process(text.as_bytes())?;
         scalar(&mut slow, text.as_bytes(), false, &mut Log::default())?;
-        let difference = first_difference(&state(&fast), &state(&slow));
+        let difference = first_difference(&format!("{fast:?}"), &format!("{slow:?}"));
         assert_eq!(difference, None, "{cols} columns");
     }
     Ok(())
@@ -221,11 +221,8 @@ fn scalar(
         return Ok(None);
     }
     parser.screen.begin()?;
-    parser.frame_begun = false;
     for (i, &byte) in bytes.iter().enumerate() {
-        parser.byte(byte, sink)?;
-        if until_frame && parser.frame_begun {
-            parser.frame_begun = false;
+        if parser.byte(byte, sink)? && until_frame {
             return Ok(Some(i.saturating_add(1)));
         }
     }
@@ -269,7 +266,7 @@ fn fast_paths_equal_the_general_path_on_the_permanent_corpus() -> Result<(), Err
                 fast.process_with(&operation, &mut a)?;
                 scalar(&mut slow, &operation, false, &mut b)?;
                 assert_eq!(a.0, b.0, "{rows}x{cols} seed {seed}");
-                let difference = first_difference(&state(&fast), &state(&slow));
+                let difference = first_difference(&format!("{fast:?}"), &format!("{slow:?}"));
                 assert_eq!(difference, None, "{rows}x{cols} seed {seed}");
             }
         }
@@ -329,26 +326,11 @@ fn equal_to_the_general_path(cases: std::ops::Range<u64>, long: bool) -> Result<
             }
             let shown = input.escape_ascii().to_string();
             assert_eq!(a.0, b.0, "case {case}: {shown}");
-            let difference = first_difference(&state(&fast), &state(&slow));
+            let difference = first_difference(&format!("{fast:?}"), &format!("{slow:?}"));
             assert_eq!(difference, None, "case {case}: {shown}");
         }
     }
     Ok(())
-}
-
-/// The parser's whole state as `Debug` shows it, less what no path reads:
-/// the bytes of a character past those read of it (`utf8_len`), and its
-/// length once none are, which the UTF-8 text path never writes.
-fn state(parser: &Parser) -> String {
-    let mut parser = parser.clone();
-    let len = parser.utf8_len;
-    for byte in parser.utf8.iter_mut().skip(len) {
-        *byte = 0;
-    }
-    if len == 0 {
-        parser.utf8_need = 0;
-    }
-    format!("{parser:?}")
 }
 
 /// Where `a` and `b` first differ, with some of each around it.
@@ -431,7 +413,7 @@ fn the_alternate_screen_made_late_is_the_one_made_at_once() -> Result<(), Error>
             eager.screen_mut().make_alternate()?;
             let mut made = lazy.clone();
             made.screen_mut().make_alternate()?;
-            let difference = first_difference(&state(&made), &state(&eager));
+            let difference = first_difference(&format!("{made:?}"), &format!("{eager:?}"));
             assert_eq!(difference, None, "case {case} step {step}");
         }
     }
