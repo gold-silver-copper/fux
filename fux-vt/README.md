@@ -35,7 +35,7 @@ and `src/*/tests.rs`.
 | Sequence | Behaviour | Tests |
 | --- | --- | --- |
 | Text, UTF-8 | Printed in ground state; widths from unicode-width 0.2; a character split across calls is completed. Invalid UTF-8 prints one U+FFFD, one column wide, per maximal subpart (Unicode 3.9), then rereads the byte that broke it off, and one per byte that starts no sequence (0xc0, 0xc1, 0xf5–0xff); overlong and surrogate forms are invalid. A lone continuation byte is Latin-1: 0x80–0x9f (C1) are ignored, 0xa0–0xbf print U+00A0–U+00BF (see Departures). UTF-8-encoded C1 characters are ignored. | `conformance::invalid_utf8_*` |
-| Grapheme clusters | A character that continues the grapheme cluster of the cell just printed joins that cell (UAX #29, one character at a time, from tables `gen/` makes; nothing joins after a Prepend). A narrow cell whose cluster becomes two columns wide is widened over the cell under the cursor, except in the last column. Cursor moves and row edits end the cluster; SGR, modes and queries do not. A cluster keeps at most `Cell::CLUSTER_CAPACITY` (128) bytes and what its row's text budget allows; the rest is dropped, never split into another cell. `continues_cluster` tells a host what would join. | `unicode::tests`, `properties::printed_text_*`, `extended::*cluster*` |
+| Grapheme clusters | A character that continues the grapheme cluster of the cell just printed joins that cell (UAX #29, one character at a time, from tables `gen/` makes; nothing joins after a Prepend). A narrow cell whose cluster becomes two columns wide is widened over the cell under the cursor, except in the last column. Cursor moves and row edits end the cluster; SGR, modes and queries do not. A cluster keeps at most `CLUSTER_CAPACITY` (128) bytes and what its row's text budget allows; the rest is dropped, never split into another cell. `continues_cluster` tells a host what would join. | `unicode::tests`, `properties::printed_text_*`, `extended::*cluster*` |
 | C0 controls | BS: back a column, stopping at the left margin unless already left of it (see CSI ? 45). HT: the next tab stop, else the last column (the right margin with DECLRMM). LF, VT, FF: down a line, scrolling at the bottom margin (between left and right margins only), CR too under LNM. CR: column 0, or the left margin if the cursor is at or right of it, or in origin mode. SO, SI: G1, G0 into GL. BEL and the rest: nothing visible. BS, LF, VT, FF and CR end a pending wrap; HT keeps it. | `semantics::text_controls_*` |
 | ESC 7 / 8, CSI s / u | DECSC/SCOSC save and DECRC/SCORC restore the position with its pending wrap, origin mode, the pen, protection and the character sets. `CSI s` is DECSLRM while DECLRMM is set. In origin mode the restored column is at most the right margin. Each screen has its own saved position, clamped by a resize. | `extended::scosc_*` |
 | ESC = / > | DECKPAM, DECKPNM: `application_keypad()`, off; RIS and DECSTR reset it. State only. | `opt_in::keypad_mode_*` |
@@ -211,10 +211,11 @@ A grid stores a cell in 8 bytes (`compact.rs`):
 Readers never see a stored cell: `Screen::cell`, `Window::cell`,
 `Row::cell` and `Row::cells` return `CellRef`s, which carry the cluster's
 text and the style's attributes. A host that stores screen contents uses
-`Cells` (`row.cells().collect::<Cells>()`, `Cells::set`,
-`Cells::set_text`), which keeps long clusters within the same budget, and
-`Cell` (32 bytes, `Cell::INLINE_CAPACITY` = 17 bytes inline). `Cells`
-holds no links.
+`Cells` (`row.cells().collect::<Cells>()`, `Cells::set`), which stores
+cells as rows do, with each cell's attributes beside it in place of a
+style, so it keeps and cuts text as a row does. A host makes a cell to
+store with `CellRef::new` or `CellRef::wide_continuation`. `Cells` holds
+no links.
 
 A zero-width character after an empty cell joins it as a space and the
 character; in the first column it joins the row above only if that row is

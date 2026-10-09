@@ -10,7 +10,7 @@ use crate::layout::{Axis, PaneId, Placement, Rect, Separator};
 use crate::overlay;
 use crate::session::Session;
 use crate::view::{List, Mode, View};
-use fux_vt::{Attributes, Cell, CellRef, Cells, Color, Row, UnderlineStyle};
+use fux_vt::{Attributes, CellRef, Cells, Color, Row, UnderlineStyle};
 use std::borrow::Cow;
 use std::io::Write;
 use unicode_width::UnicodeWidthChar;
@@ -178,7 +178,7 @@ fn draw_row(
             .is_some_and(|c| c.is_wide())
         && let Some(x) = gx.checked_add(last)
     {
-        grid.put(gy, x, Cell::default());
+        grid.put(gy, x, CellRef::default());
     }
 }
 
@@ -312,15 +312,15 @@ impl Grid {
         self.uris.clear();
         if (self.rows, self.cols) == (rows, cols) {
             if blank {
-                self.cells.fill(0..self.cells.len(), Cell::default());
+                self.cells.fill(0..self.cells.len(), CellRef::default());
             }
         } else {
             self.rows = rows;
             self.cols = cols;
-            self.cells.resize(0, Cell::default());
+            self.cells.resize(0, CellRef::default());
             // Exact: a u16 by a u16 fits even a 32-bit usize.
             let len = usize::from(rows).saturating_mul(usize::from(cols));
-            self.cells.resize(len, Cell::default());
+            self.cells.resize(len, CellRef::default());
         }
         self.cursor = None;
         self.cursor_shape = 0;
@@ -457,9 +457,9 @@ impl Grid {
         }
     }
     /// Sets one cell as it is, without `set`'s repairs.
-    fn put(&mut self, y: u16, x: u16, cell: Cell) {
+    fn put(&mut self, y: u16, x: u16, cell: CellRef<'_>) {
         if let Some(i) = self.index(y, x) {
-            self.cells.set_cell(i, cell);
+            self.cells.set(i, cell);
             self.unlink(i..i.saturating_add(1));
         }
     }
@@ -470,12 +470,12 @@ impl Grid {
         };
         let count = usize::from(to.min(self.cols).saturating_sub(from));
         let cells = start..start.saturating_add(count);
-        self.cells.fill(cells.clone(), Cell::default());
+        self.cells.fill(cells.clone(), CellRef::default());
         self.unlink(cells);
     }
     /// Sets a cell, keeping wide glyphs whole: overwriting either half of
     /// one blanks the other, as a terminal would.
-    fn set(&mut self, y: u16, x: u16, cell: Cell) {
+    fn set(&mut self, y: u16, x: u16, cell: CellRef<'_>) {
         let Some(index) = self.index(y, x) else {
             return;
         };
@@ -487,7 +487,7 @@ impl Grid {
             && let Some(leader) = index.checked_sub(1).filter(|_| x > 0)
             && self.cells.get(leader).is_some_and(|c| c.is_wide())
         {
-            self.cells.set_cell(leader, Cell::default());
+            self.cells.set(leader, CellRef::default());
             self.unlink(leader..index);
         }
         if was_wide
@@ -498,10 +498,10 @@ impl Grid {
                 .get(rest)
                 .is_some_and(|c| c.is_wide_continuation())
         {
-            self.cells.set_cell(rest, Cell::default());
+            self.cells.set(rest, CellRef::default());
             self.unlink(rest..rest.saturating_add(1));
         }
-        self.cells.set_cell(index, cell);
+        self.cells.set(index, cell);
         self.unlink(index..index.saturating_add(1));
     }
     /// The text of a row, trailing blanks trimmed: for `capture-client`.
@@ -529,12 +529,12 @@ impl Grid {
                 break;
             };
             let mut buffer = [0u8; 4];
-            let cell = Cell::new(c.encode_utf8(&mut buffer), width == 2, style).unwrap_or_default();
+            let cell = CellRef::new(c.encode_utf8(&mut buffer), width == 2, style);
             self.set(y, x, cell);
             if width == 2
                 && let Some(second) = x.checked_add(1)
             {
-                self.set(y, second, Cell::wide_continuation());
+                self.set(y, second, CellRef::wide_continuation());
             }
             x = end;
         }
@@ -542,7 +542,7 @@ impl Grid {
     }
 
     fn fill(&mut self, y: u16, from: u16, to: u16, style: Attributes) {
-        let blank = Cell::new(" ", false, style).unwrap_or_default();
+        let blank = CellRef::new(" ", false, style);
         for x in from..to.min(self.cols) {
             self.set(y, x, blank);
         }
@@ -991,7 +991,7 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
         grid.put(
             y,
             x,
-            Cell::new(glyph, false, style(color, Color::Default)).unwrap_or_default(),
+            CellRef::new(glyph, false, style(color, Color::Default)),
         );
     };
     // Each line plain, in order, so the last one drawn at a cell is its.
@@ -2272,7 +2272,7 @@ mod tests {
     #[test]
     fn painting_the_widest_last_column_ends() {
         let mut grid = Grid::new(1, u16::MAX);
-        let wide = Cell::new("界", true, Attributes::default()).unwrap_or_default();
+        let wide = CellRef::new("界", true, Attributes::default());
         grid.set(0, u16::MAX.saturating_sub(1), wide);
         // The glyph is painted as a blank, and moving past it stops the run.
         let bytes = paint(None, &grid);
@@ -2312,7 +2312,7 @@ mod tests {
     /// the last column itself, a cluster is painted as it is.
     #[test]
     fn marks_short_of_the_edge_are_painted_with_autowrap() -> Result<(), String> {
-        let marked = |text| Cell::new(text, false, Attributes::default()).unwrap_or_default();
+        let marked = |text| CellRef::new(text, false, Attributes::default());
         let painted = |x: u16, text| {
             let mut grid = Grid::new(1, 6);
             grid.fill(0, 0, 6, Attributes::default());

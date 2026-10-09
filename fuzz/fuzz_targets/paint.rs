@@ -5,7 +5,7 @@
 //! bytes, so that the paint is a full one. Bit 3 paints for a terminal that
 //! draws underline styles, and bit 4 says the old grid was painted for one.
 use fux::render::{Grid, paint};
-use fux_vt::{Attributes, Cell, CellRef, Color, Parser, UnderlineStyle};
+use fux_vt::{Attributes, CellRef, Color, Parser, UnderlineStyle};
 use libfuzzer_sys::fuzz_target;
 
 /// A glyph: its text, whether it is wide. `None` is a cell never written.
@@ -81,12 +81,13 @@ fn write(grid: &mut Grid, y: u16, x: u16, kind: u8) {
     let attrs = attributes(kind / 8);
     let at = index(grid, y, x);
     match glyph {
-        None => grid.cells.set_cell(at, Cell::default()),
+        None => {
+            grid.cells.set(at, CellRef::default());
+        }
         Some((text, wide)) => {
-            grid.cells
-                .set_cell(at, Cell::new(text, wide, attrs).unwrap_or_default());
+            grid.cells.set(at, CellRef::new(text, wide, attrs));
             if wide && x + 1 < grid.cols {
-                grid.cells.set_cell(at + 1, Cell::wide_continuation());
+                grid.cells.set(at + 1, CellRef::wide_continuation());
             }
         }
     }
@@ -109,7 +110,7 @@ fn repair(grid: &mut Grid) {
             let broken =
                 (wide && !last && !cell(at + 1).1) || (continuation && (x == 0 || !cell(at - 1).0));
             if broken {
-                grid.cells.set_cell(at, Cell::default());
+                grid.cells.set(at, CellRef::default());
             }
         }
     }

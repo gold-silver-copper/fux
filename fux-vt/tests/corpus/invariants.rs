@@ -1,5 +1,5 @@
 //! Shared independent invariants for deterministic tests and cargo-fuzz.
-use fux_vt::{Cell, Cells, Parser};
+use fux_vt::{CLUSTER_CAPACITY, Cells, Parser};
 
 fn cells(row: fux_vt::Row<'_>) -> Vec<fux_vt::CellRef<'_>> {
     row.cells().collect()
@@ -52,7 +52,7 @@ pub fn check(p: &Parser) {
             "row {offset} copies differently"
         );
         for (i, cell) in row.cells().enumerate() {
-            assert!(cell.contents().len() <= Cell::CLUSTER_CAPACITY);
+            assert!(cell.contents().len() <= CLUSTER_CAPACITY);
             // A cell with contents shows them: its text is where it says.
             if cell.has_contents() {
                 assert!(
