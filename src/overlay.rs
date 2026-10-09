@@ -459,50 +459,6 @@ pub fn open_pane_chooser(
 
 // ----------------------------------------------------------------- input
 
-/// Runs a command for a client: output and errors become its notice.
-pub fn run_for(session: &mut Session, client: ClientId, command: &Command) {
-    let outcome = session.run_command(command, &Origin::Client(client));
-    if outcome.status != 0 {
-        let line = outcome.stderr.lines().next().unwrap_or("failed");
-        session.error_to(client, line);
-    } else if let Some(line) = outcome.stdout.lines().find(|l| !l.trim().is_empty())
-        && !matches!(
-            command,
-            Command::Split { .. }
-                | Command::NewTab { .. }
-                | Command::NewWorkspace { .. }
-                | Command::MovePane { .. }
-        )
-    {
-        let more = outcome
-            .stdout
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .count()
-            > 1;
-        session.info_to(
-            client,
-            if more {
-                format!("{line} …")
-            } else {
-                line.to_owned()
-            },
-        );
-    }
-}
-
-/// Runs a command line typed for a client, as `run_for` runs a command; one
-/// that does not parse says why.
-fn run_line(session: &mut Session, client: ClientId, argv: &[String]) {
-    match crate::command::parse(argv) {
-        Ok(command) => run_for(session, client, &command),
-        Err(usage) => {
-            let message = usage.to_string();
-            session.error_to(client, message.lines().next().unwrap_or("failed"));
-        }
-    }
-}
-
 /// Runs an entry of a list or the column, unless it cannot run now, in
 /// which case the reason is shown and nothing happens: a list closes, to
 /// `closed`, only if its entry runs.
@@ -513,7 +469,7 @@ fn run_entry(session: &mut Session, client: ClientId, command: &Command, closed:
     if let Some(mode) = closed {
         session.set_mode(client, mode);
     }
-    run_for(session, client, command);
+    session.run_command(command, &Origin::Client(client));
 }
 
 /// Runs the binding of `keys`, if there is one, entering its layer's repeat
@@ -809,7 +765,7 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
                 Ok(argv) => argv,
                 Err(error) => return session.error_to(client, error.to_string()),
             };
-            run_line(session, client, &argv);
+            session.run(&argv, &Origin::Client(client));
         }
         PromptFor::Rename(target) => {
             // The command is built, not parsed from words: a name is the
@@ -822,14 +778,9 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
                 },
                 other @ (AnyRef::Pane(_) | AnyRef::Tab(_)) => other,
             };
-            run_for(
-                session,
-                client,
-                &Command::Rename {
-                    target,
-                    name: prompt.line.text(),
-                },
-            );
+            let name = prompt.line.text();
+            let rename = Command::Rename { target, name };
+            session.run_command(&rename, &Origin::Client(client));
         }
     }
 }
@@ -848,7 +799,7 @@ pub fn confirm_key(session: &mut Session, client: ClientId, press: KeyPress) {
         Some(Key::Char('y')) => {
             let command = confirm.command.clone();
             view.mode = Mode::Normal;
-            run_for(session, client, &command);
+            session.run_command(&command, &Origin::Client(client));
         }
         Some(Key::Char('n')) | Some(Key::Escape) | Some(Key::Char('q')) => {
             view.mode = Mode::Normal;
