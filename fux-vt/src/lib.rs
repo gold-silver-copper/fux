@@ -106,7 +106,7 @@ pub struct Row<'a> {
     pub(crate) width: usize,
     pub(crate) text: &'a compact::Text,
     /// Each cell's link, if any cell of the row has had one (`link.rs`).
-    pub(crate) links: Option<&'a [u16]>,
+    pub(crate) links: Option<&'a link::RowLinks>,
 }
 
 impl std::fmt::Debug for Row<'_> {
@@ -203,7 +203,7 @@ impl<'a> Row<'a> {
     /// The hyperlink (OSC 8) of the cell at column `col`: the link that was
     /// open when its glyph was printed, if one was. A blank cell has none;
     /// the second half of a wide glyph has its first half's.
-    pub fn link(&self, col: usize) -> Option<Hyperlink<'a>> {
+    pub fn link(&self, col: usize) -> Option<&'a Hyperlink> {
         let links = self.links?;
         let col = if self.stored(col)?.is_wide_continuation() {
             col.checked_sub(1)?
@@ -213,7 +213,7 @@ impl<'a> Row<'a> {
         if !self.stored(col)?.has_contents() {
             return None;
         }
-        self.grid.links.get(*links.get(col)?)
+        links.get(col)
     }
     /// Whether any cell of the row may have a hyperlink: `false` means
     /// [`Row::link`] is `None` for every cell, and need not be asked.

@@ -113,14 +113,6 @@ macro_rules! side {
                 }
             }
 
-            fn link(l: vt::Hyperlink<'_>) -> model::Link {
-                model::Link {
-                    uri: l.uri().to_owned(),
-                    id: l.id().map(str::to_owned),
-                    key: l.key(),
-                }
-            }
-
             fn error(e: vt::Error) -> Error {
                 Error(format!("{e:?}: {e}"))
             }
@@ -333,7 +325,9 @@ macro_rules! side {
                             screen_link_agrees &= x.and_then(|x| s.link(y, x)) == l;
                         }
                         if let Some(l) = l {
-                            out.links.push((col, link(l)));
+                            let (uri, id) = (l.uri().to_owned(), l.id().map(str::to_owned));
+                            let key = l.key();
+                            out.links.push((col, model::Link { uri, id, key }));
                         }
                     }
                     cell_agrees &= row.cell(row.len()).is_none();

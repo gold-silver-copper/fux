@@ -21,13 +21,8 @@ pub struct Grid {
     pub cols: u16,
     /// Row after row; clusters too long to hold inline are kept whole.
     pub cells: Cells,
-    /// Each cell's hyperlink: one more than its place in `links`, 0 for
-    /// none. Empty while no cell has one, as most grids have none.
-    link_of: Vec<u32>,
-    /// The hyperlinks the cells have, each once.
-    links: Vec<Link>,
-    /// Their URIs, one after another.
-    uris: String,
+    /// Each cell's hyperlink.
+    links: Links,
     /// Where the terminal cursor is shown, if it is.
     pub cursor: Option<(u16, u16)>,
     /// DECSCUSR shape for the cursor; 0 is the terminal's default.
@@ -197,15 +192,61 @@ fn put_changed_rows(
     sufficed
 }
 
-/// A hyperlink of a pane's cells (OSC 8): the pane, the link's key there
-/// (`fux_vt::Hyperlink::key`, which no other link of the pane has), and
-/// where its URI is in the grid's `uris`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Link {
-    pane: PaneId,
-    key: u64,
-    uri: std::ops::Range<usize>,
+/// Each cell's hyperlink (OSC 8), with the pane whose it is: none past
+/// the end, so that a grid none of whose cells has one, as most, holds
+/// nothing; and two grids whose cells have the same links are equal.
+#[derive(Clone, Debug, Default)]
+struct Links(Vec<Option<(PaneId, fux_vt::Hyperlink)>>);
+
+impl Links {
+    /// The link of cell `i`.
+    fn get(&self, i: usize) -> Option<(PaneId, &fux_vt::Hyperlink)> {
+        let (pane, link) = self.0.get(i)?.as_ref()?;
+        Some((*pane, link))
+    }
+    /// Gives cell `i` of a grid of `len` cells `link`.
+    fn set(&mut self, i: usize, link: Option<(PaneId, &fux_vt::Hyperlink)>, len: usize) {
+        if link.is_some() && self.0.is_empty() {
+            self.0.resize(len, None);
+        }
+        if let Some(at) = self.0.get_mut(i) {
+            *at = link.map(|(pane, link)| (pane, link.clone()));
+        }
+    }
+    /// Cells `range` have no link. Inlined, as most grids have none: the
+    /// paths that set cells cost no call for them.
+    #[inline(always)]
+    fn unlink(&mut self, range: std::ops::Range<usize>) {
+        if !self.0.is_empty() {
+            self.unlink_some(range);
+        }
+    }
+    /// `unlink` for a grid whose cells may have links.
+    #[inline(never)]
+    fn unlink_some(&mut self, range: std::ops::Range<usize>) {
+        if let Some(run) = self.0.get_mut(range) {
+            run.fill(None);
+        }
+    }
+    /// Whether no cell has a link, as far as can be told without reading
+    /// them all: `false` if one may.
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
+
+impl PartialEq for Links {
+    fn eq(&self, other: &Links) -> bool {
+        let (long, short) = if self.0.len() < other.0.len() {
+            (&other.0, &self.0)
+        } else {
+            (&self.0, &other.0)
+        };
+        let short = short.iter().chain(std::iter::repeat(&None));
+        long.iter().zip(short).all(|(a, b)| a == b)
+    }
+}
+impl Eq for Links {}
 
 impl Grid {
     pub fn new(rows: u16, cols: u16) -> Grid {
@@ -213,9 +254,7 @@ impl Grid {
             rows,
             cols,
             cells: Cells::new(cell_count(rows, cols)),
-            link_of: Vec::new(),
-            links: Vec::new(),
-            uris: String::new(),
+            links: Links::default(),
             cursor: None,
             cursor_shape: 0,
             mouse: 0,
@@ -223,57 +262,15 @@ impl Grid {
             memo: Memo::default(),
         }
     }
-    /// The hyperlink of the cell at `y`, `x`: the pane whose it is, its key
-    /// there and its URI.
-    pub fn link(&self, y: u16, x: u16) -> Option<(PaneId, u64, &str)> {
-        let n = *self.link_of.get(self.index(y, x)?)?;
-        self.numbered(n)
-    }
-    /// Link `n` of the grid.
-    fn numbered(&self, n: u32) -> Option<(PaneId, u64, &str)> {
-        let link = self.links.get(usize::try_from(n).ok()?.checked_sub(1)?)?;
-        Some((link.pane, link.key, self.uris.get(link.uri.clone())?))
-    }
-    /// The number of pane `pane`'s link `link` in the grid, given one if it
-    /// has none yet.
-    fn number(&mut self, pane: PaneId, link: fux_vt::Hyperlink<'_>) -> u32 {
-        let found = self
-            .links
-            .iter()
-            .rposition(|l| l.pane == pane && l.key == link.key());
-        let at = found.unwrap_or_else(|| {
-            let start = self.uris.len();
-            self.uris.push_str(link.uri());
-            self.links.push(Link {
-                pane,
-                key: link.key(),
-                uri: start..self.uris.len(),
-            });
-            self.links.len().saturating_sub(1)
-        });
-        // A grid has at most a link a cell, far fewer than a u32 counts.
-        u32::try_from(at.saturating_add(1)).unwrap_or(0)
-    }
-    /// The number of the link of the cell at `y`, `x`; 0 for none.
-    fn number_at(&self, y: u16, x: u16) -> u32 {
-        self.index(y, x)
-            .and_then(|i| self.link_of.get(i))
-            .copied()
-            .unwrap_or(0)
-    }
-    /// Cells `range` of the grid have no link.
-    fn unlink(&mut self, range: std::ops::Range<usize>) {
-        if let Some(run) = self.link_of.get_mut(range) {
-            run.fill(0);
-        }
+    /// The hyperlink of the cell at `y`, `x`, and the pane whose it is.
+    pub fn link(&self, y: u16, x: u16) -> Option<(PaneId, &fux_vt::Hyperlink)> {
+        self.links.get(self.index(y, x)?)
     }
     /// Makes the grid `rows` by `cols`, resizing its cells only if the size
     /// changed, so that a grid composed into again allocates nothing; and
     /// blanks it if `blank`, as a resized grid is anyway.
     fn reset(&mut self, rows: u16, cols: u16, blank: bool) {
-        self.link_of.clear();
-        self.links.clear();
-        self.uris.clear();
+        self.links = Links::default();
         if (self.rows, self.cols) == (rows, cols) {
             if blank {
                 self.cells.fill(0..self.cells.len(), CellRef::default());
@@ -320,9 +317,7 @@ impl Grid {
             other.cursor_shape,
             other.mouse,
         ) || self.underline_styles != other.underline_styles
-            || self.link_of != other.link_of
             || self.links != other.links
-            || self.uris != other.uris
         {
             return false;
         }
@@ -363,27 +358,13 @@ impl Grid {
             self.cells.set(i, cell);
         }
         if !row.has_links() {
+            self.links.unlink(start..start.saturating_add(room));
             return;
         }
-        let mut last: Option<(u64, u32)> = None;
+        let len = self.cells.len();
         for (i, col) in (start..).zip(0..room) {
-            let n = match row.link(col) {
-                None => 0,
-                Some(link) => match last {
-                    Some((key, n)) if key == link.key() => n,
-                    Some(_) | None => {
-                        let n = self.number(pane, link);
-                        last = Some((link.key(), n));
-                        n
-                    }
-                },
-            };
-            if n != 0 && self.link_of.is_empty() {
-                self.link_of.resize(self.cells.len(), 0);
-            }
-            if let Some(at) = self.link_of.get_mut(i) {
-                *at = n;
-            }
+            let link = row.link(col).map(|link| (pane, link));
+            self.links.set(i, link, len);
         }
     }
     /// Draws the first `width` cells of row `y` from column `x`, a pane's
@@ -413,7 +394,7 @@ impl Grid {
     fn put(&mut self, y: u16, x: u16, cell: CellRef<'_>) {
         if let Some(i) = self.index(y, x) {
             self.cells.set(i, cell);
-            self.unlink(i..i.saturating_add(1));
+            self.links.unlink(i..i.saturating_add(1));
         }
     }
     /// Blanks `area`, clipped at the grid's edge.
@@ -425,7 +406,7 @@ impl Grid {
             };
             let cells = start..start.saturating_add(count);
             self.cells.fill(cells.clone(), CellRef::default());
-            self.unlink(cells);
+            self.links.unlink(cells);
         }
     }
     /// Sets a cell, keeping wide glyphs whole: overwriting either half of
@@ -443,7 +424,7 @@ impl Grid {
             && self.cells.get(leader).is_some_and(|c| c.is_wide())
         {
             self.cells.set(leader, CellRef::default());
-            self.unlink(leader..index);
+            self.links.unlink(leader..index);
         }
         if was_wide
             && !cell.is_wide()
@@ -454,10 +435,10 @@ impl Grid {
                 .is_some_and(|c| c.is_wide_continuation())
         {
             self.cells.set(rest, CellRef::default());
-            self.unlink(rest..rest.saturating_add(1));
+            self.links.unlink(rest..rest.saturating_add(1));
         }
         self.cells.set(index, cell);
-        self.unlink(index..index.saturating_add(1));
+        self.links.unlink(index..index.saturating_add(1));
     }
     /// The text of a row, trailing blanks trimmed: for `capture-client`.
     pub fn row_text(&self, y: u16) -> String {
@@ -667,7 +648,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             for (y, line) in (0..window.rows()).zip(rect.lines()) {
                 let row = window.row(y);
                 if row.is_some_and(|r| r.has_links()) {
-                    // Links are numbered per paint: no memo for this grid.
+                    // No memo for a grid with links, as before.
                     keys = None;
                 }
                 pane_keys.push(row.map(|r| (r.id(), r.version())));
@@ -1276,9 +1257,10 @@ fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
 /// spec asks a multiplexer to make it (`references/modern/osc8_hyperlinks.md`,
 /// "Hover underlining and the `id` parameter"). A terminal that does not
 /// know OSC 8 ignores it.
-fn hyperlink(out: &mut Vec<u8>, link: Option<(PaneId, u64, &str)>) {
+fn hyperlink(out: &mut Vec<u8>, link: Option<(PaneId, &fux_vt::Hyperlink)>) {
     match link {
-        Some((pane, key, uri)) => {
+        Some((pane, link)) => {
+            let (key, uri) = (link.key(), link.uri());
             let _ = write!(out, "\x1b]8;id=fux{}-{key};{uri}\x1b\\", pane.number());
         }
         None => out.extend_from_slice(b"\x1b]8;;\x1b\\"),
@@ -1424,7 +1406,7 @@ fn same_row(old: &Grid, new: &Grid, y: u16, links: bool) -> bool {
 /// The rows of two grids of a size that differ: those whose memo does not
 /// show them the same and whose cells or links differ.
 fn differing_rows<'a>(old: &'a Grid, new: &'a Grid) -> impl Iterator<Item = u16> + 'a {
-    let links = !new.link_of.is_empty() || !old.link_of.is_empty();
+    let links = !new.links.is_empty() || !old.links.is_empty();
     let memo = old.same_frame(new);
     (0..new.rows)
         .filter(move |&y| !(memo && same_keys(old, new, y)) && !same_row(old, new, y, links))
@@ -1451,8 +1433,8 @@ fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
         new.underline_styles,
         new.mouse,
         new.cursor_shape,
-    ) || !old.link_of.is_empty()
-        || !new.link_of.is_empty()
+    ) || !old.links.is_empty()
+        || !new.links.is_empty()
     {
         return false;
     }
@@ -1557,10 +1539,10 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
         out.extend_from_slice(b"\x1b[0m\x1b[H\x1b[2J");
     }
     let mut current: Option<Attributes> = None;
-    // The hyperlink the client's terminal has open: a number of `new`'s.
-    let mut open = 0u32;
+    // The hyperlink the client's terminal has open.
+    let mut open = None;
     // Whether either grid has a link: if neither does, no cell's changed.
-    let links = !new.link_of.is_empty() || old.is_some_and(|o| !o.link_of.is_empty());
+    let links = !new.links.is_empty() || old.is_some_and(|o| !o.links.is_empty());
     // Grids of one frame show the same cells on a pane row whose keys are
     // the same in both (`Memo`): no comparison needed.
     let memo = old.filter(|o| !full && o.same_frame(new));
@@ -1623,10 +1605,12 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
                     sgr(out, attrs, new.underline_styles);
                     current = Some(attrs);
                 }
-                let link = new.number_at(y, cx);
-                if link != open {
-                    hyperlink(out, new.numbered(link));
-                    open = link;
+                if links {
+                    let link = new.link(y, cx);
+                    if link != open {
+                        hyperlink(out, link);
+                        open = link;
+                    }
                 }
                 let width = if wide { 2 } else { 1 };
                 // Most cells hold one byte of ASCII, which neither joins the
@@ -1642,7 +1626,7 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
             x = cx.max(x.saturating_add(1));
         }
     }
-    if open != 0 {
+    if open.is_some() {
         hyperlink(out, None);
     }
     out.extend_from_slice(b"\x1b[0m");

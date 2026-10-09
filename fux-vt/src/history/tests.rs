@@ -60,7 +60,6 @@ fn a_row_keeps_the_cells_before_its_blank_tail() {
 fn rows_read_back_as_they_came_while_the_oldest_go() -> Result<(), Error> {
     let limit = 40;
     let mut history = History::new(limit);
-    let mut table = Links::default();
     let mut expected = std::collections::VecDeque::new();
     for id in 0..3000u64 {
         // Rows end anywhere in a block, now and then one longer than a
@@ -84,7 +83,7 @@ fn rows_read_back_as_they_came_while_the_oldest_go() -> Result<(), Error> {
             cells,
         ));
         if history.len() > limit {
-            history.pop(&mut table);
+            history.pop();
             expected.pop_front();
         }
         assert_eq!(
@@ -107,14 +106,13 @@ fn rows_read_back_as_they_came_while_the_oldest_go() -> Result<(), Error> {
 fn memory_stops_growing_at_the_limit() -> Result<(), Error> {
     let limit = 500;
     let mut history = History::new(limit);
-    let mut table = Links::default();
     let mut most = 0;
     for round in 0..4 {
         for id in 0..2000u64 {
             let cells = row(usize::try_from(id % 120).unwrap_or(0), b'a', 0);
             history.push(arriving(id, &cells, 120))?;
             if history.len() > limit {
-                history.pop(&mut table);
+                history.pop();
             }
         }
         if round == 0 {
