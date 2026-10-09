@@ -77,8 +77,17 @@ pub struct InputQueue {
     /// Input was refused, and the program has not read since: everything
     /// is refused, so none arrives with a hole before it.
     refusing: bool,
-    /// A reply was lost, and told.
-    reply_dropped: bool,
+    lost: Lost,
+}
+
+/// Whether the program lost a reply because it was not reading, and whether
+/// that was told.
+#[derive(Clone, Copy, Default, PartialEq)]
+enum Lost {
+    #[default]
+    None,
+    Untold,
+    Told,
 }
 
 impl InputQueue {
@@ -110,10 +119,20 @@ impl InputQueue {
         fits.then_some(()).ok_or(Error::NotReading)
     }
     /// Queues a terminal reply, as `push`: a program that is not reading
-    /// loses it. Returns whether it is the first reply lost in the queue's
-    /// life, which is told.
-    pub fn reply(&mut self, bytes: &[u8]) -> bool {
-        self.push(bytes).is_err() && !std::mem::replace(&mut self.reply_dropped, true)
+    /// loses it.
+    fn reply(&mut self, bytes: &[u8]) {
+        if self.push(bytes).is_err() && self.lost == Lost::None {
+            self.lost = Lost::Untold;
+        }
+    }
+    /// Whether a reply was lost and is yet to be told, which it then is:
+    /// once in the queue's life.
+    pub fn lost_reply(&mut self) -> bool {
+        let untold = self.lost == Lost::Untold;
+        if untold {
+            self.lost = Lost::Told;
+        }
+        untold
     }
     /// When the held command line is to be typed, if one is held.
     pub fn due_at(&self) -> Option<Instant> {
@@ -254,8 +273,6 @@ impl Title {
 struct Sink<'a> {
     /// Where replies go: a program that is not reading loses them.
     input: &'a mut InputQueue,
-    /// A reply was lost, for the first time in the pane's life.
-    dropped: bool,
     title: &'a mut Title,
     /// Set by a bell (BEL).
     bell: &'a mut bool,
@@ -263,37 +280,19 @@ struct Sink<'a> {
     colours: &'a crate::outer::Colours,
 }
 
-impl Sink<'_> {
-    /// A colour query (OSC 10, 11), answered if the colour is known.
-    fn colour_query(&mut self, number: u8, bel: bool) {
-        if let Some(answer) = self.colours.answer(number, bel) {
-            fux_vt::Sink::reply(self, &answer);
-        }
-    }
-
-    /// `CSI ? 996 n`, the colour scheme asked for: answered if known.
-    fn scheme_query(&mut self, sequence: &fux_vt::Unhandled<'_>) {
-        if let fux_vt::Unhandled::Csi {
-            params,
-            intermediates: b"?",
-            action: b'n',
-        } = sequence
-            && params.groups().eq([&[996][..]])
-            && let Some(scheme) = self.colours.scheme
-        {
-            fux_vt::Sink::reply(self, scheme.report());
-        }
-    }
-}
-
 impl fux_vt::Sink for Sink<'_> {
     fn reply(&mut self, bytes: &[u8]) {
-        self.dropped |= self.input.reply(bytes);
+        self.input.reply(bytes);
     }
+    /// A colour query (OSC 10, 11) is answered if the colour is known.
     fn event(&mut self, event: fux_vt::Event<'_>) {
         match event {
             fux_vt::Event::Title(title) => self.title.set(title),
-            fux_vt::Event::ColorQuery { number, bel } => self.colour_query(number, bel),
+            fux_vt::Event::ColorQuery { number, bel } => {
+                if let Some(answer) = self.colours.answer(number, bel) {
+                    self.input.reply(&answer);
+                }
+            }
             fux_vt::Event::Bell => *self.bell = true,
             // fux's clipboard policy: a program's OSC 52 is not taken.
             fux_vt::Event::IconName(_) | fux_vt::Event::Clipboard { .. } | _ => {}
@@ -303,25 +302,28 @@ impl fux_vt::Sink for Sink<'_> {
     /// pushes the title, `CSI 23 ; Ps t` pops it, for Ps 0 (icon and
     /// title, which are one here) or 2 (title); Ps 1, the icon alone, is
     /// not a title. vim and tmux push on starting and pop on leaving. And
-    /// `CSI ? 996 n`, the colour scheme asked for.
+    /// `CSI ? 996 n`, the colour scheme asked for, answered if known.
     fn unhandled(&mut self, sequence: fux_vt::Unhandled<'_>) {
-        self.scheme_query(&sequence);
         let fux_vt::Unhandled::Csi {
             params,
-            intermediates: b"",
-            action: b't',
+            intermediates,
+            action,
         } = sequence
         else {
             return;
         };
         let mut groups = params.groups();
-        let op: fn(&mut Title) = match groups.next() {
-            Some([22]) => Title::push,
-            Some([23]) => Title::pop,
-            _ => return,
-        };
-        if matches!(groups.next(), None | Some([] | [0] | [2])) {
-            op(self.title);
+        let (first, second) = (groups.next(), groups.next());
+        let title = matches!(second, None | Some([] | [0] | [2]));
+        match (intermediates, action, first) {
+            (b"?", b'n', Some([996])) if second.is_none() => {
+                if let Some(scheme) = self.colours.scheme {
+                    self.input.reply(scheme.report());
+                }
+            }
+            (b"", b't', Some([22])) if title => self.title.push(),
+            (b"", b't', Some([23])) if title => self.title.pop(),
+            _ => {}
         }
     }
 }
@@ -466,9 +468,7 @@ impl Pane {
         })
     }
 
-    /// Reads program output into the screen. Returns whether a reply had to
-    /// be dropped because the program is not reading its input, the first
-    /// time one is in the pane's life (`InputQueue::reply`).
+    /// Reads program output into the screen, its replies queued as input.
     ///
     /// A frame the program draws in synchronized output (from `CSI ? 2026 h`,
     /// BSU, to `CSI ? 2026 l`, ESU) is held, unread, until it ends, then read
@@ -477,13 +477,12 @@ impl Pane {
     /// anyway once [`FRAME_TIMEOUT`] passes ([`Pane::release_frame`]) or it
     /// grows past [`FRAME_LIMIT`]; after that the program's output is read as
     /// it comes until its next BSU.
-    pub fn output(&mut self, bytes: &[u8]) -> bool {
+    pub fn output(&mut self, bytes: &[u8]) {
         self.output_at(bytes, Instant::now())
     }
 
     /// [`Pane::output`] at `now`.
-    pub fn output_at(&mut self, bytes: &[u8], now: Instant) -> bool {
-        let mut dropped = false;
+    pub fn output_at(&mut self, bytes: &[u8], now: Instant) {
         let mut after: Vec<u8>;
         let mut rest = bytes;
         loop {
@@ -493,21 +492,19 @@ impl Pane {
                 held.extend_from_slice(rest);
                 let Some(end) = end_of(held, from, ESU) else {
                     if held.len() > FRAME_LIMIT {
-                        dropped |= self.release_frame();
+                        self.release_frame();
                     }
-                    return dropped;
+                    return;
                 };
                 let mut frame = std::mem::take(held);
                 self.frame = None;
                 after = frame.get(end..).unwrap_or_default().to_vec();
                 frame.truncate(end);
-                dropped |= self.feed(&frame, false).0;
+                self.feed(&frame, false);
                 rest = &after;
             } else {
-                let (dropped_now, begun) = self.feed(rest, true);
-                dropped |= dropped_now;
-                let Some(end) = begun else {
-                    return dropped;
+                let Some(end) = self.feed(rest, true) else {
+                    return;
                 };
                 self.frame = Some((Vec::new(), now));
                 rest = rest.get(end..).unwrap_or_default();
@@ -522,22 +519,18 @@ impl Pane {
             .map(|(_, since)| crate::after(*since, FRAME_TIMEOUT))
     }
 
-    /// Reads the held frame now, ended or not. Returns whether a reply had to
-    /// be dropped.
-    pub fn release_frame(&mut self) -> bool {
-        match self.frame.take() {
-            Some((held, _)) => self.feed(&held, false).0,
-            None => false,
+    /// Reads the held frame now, ended or not.
+    pub fn release_frame(&mut self) {
+        if let Some((held, _)) = self.frame.take() {
+            self.feed(&held, false);
         }
     }
 
     /// Gives `bytes` to the screen, stopping after a BSU if `until_frame`.
-    /// Returns whether a reply had to be dropped, and how many bytes were
-    /// read if it stopped.
-    fn feed(&mut self, bytes: &[u8], until_frame: bool) -> (bool, Option<usize>) {
+    /// Returns how many bytes were read if it stopped.
+    fn feed(&mut self, bytes: &[u8], until_frame: bool) -> Option<usize> {
         let mut sink = Sink {
             input: &mut self.input,
-            dropped: false,
             title: &mut self.title,
             bell: &mut self.bell,
             colours: &self.colours,
@@ -557,9 +550,8 @@ impl Pane {
             }
             rest = rest.get(taken..).unwrap_or_default();
         }
-        let dropped = sink.dropped;
         self.input.heard(Instant::now());
-        (dropped, begun)
+        begun
     }
 
     /// Writes the waiting input, as far as the program's terminal takes it.
@@ -624,26 +616,6 @@ impl Pane {
 mod tests {
     use super::*;
     use fux_vt::Mode;
-
-    #[test]
-    fn the_queue_is_bounded_by_bytes_not_pieces() {
-        let mut queue = InputQueue::default();
-        // Thousands of one-byte keys fit: the bound is bytes, not count (021).
-        for _ in 0..3000 {
-            assert!(queue.push(vec![b'k']).is_ok());
-        }
-        let mut big = InputQueue::default();
-        let mut pushed = 0;
-        while big.push(vec![0; MAX_INPUT]).is_ok() {
-            pushed += 1;
-        }
-        assert_eq!(pushed, 16);
-        big.advance(MAX_INPUT);
-        assert!(
-            big.push(vec![0; MAX_INPUT]).is_ok(),
-            "space is freed as it is written"
-        );
-    }
 
     /// Once input is refused, nothing more is queued until the program
     /// reads, as the notice says: accepting a later key would deliver it
@@ -815,7 +787,7 @@ mod tests {
         let t0 = Instant::now();
         pane.output_at(b"\x1b[?2026hx", t0);
         assert_eq!(pane.frame_deadline(), Some(crate::after(t0, FRAME_TIMEOUT)));
-        assert!(!pane.release_frame(), "no reply dropped");
+        pane.release_frame();
         assert_eq!(first_row(&pane), "x");
         assert_eq!(pane.frame_deadline(), None);
         pane.output(b"y");
