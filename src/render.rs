@@ -214,8 +214,7 @@ impl Grid {
         Grid {
             rows,
             cols,
-            // Exact: a u16 by a u16 fits even a 32-bit usize.
-            cells: Cells::new(usize::from(rows).saturating_mul(usize::from(cols))),
+            cells: Cells::new(cell_count(rows, cols)),
             link_of: Vec::new(),
             links: Vec::new(),
             uris: String::new(),
@@ -285,9 +284,8 @@ impl Grid {
             self.rows = rows;
             self.cols = cols;
             self.cells.resize(0, CellRef::default());
-            // Exact: a u16 by a u16 fits even a 32-bit usize.
-            let len = usize::from(rows).saturating_mul(usize::from(cols));
-            self.cells.resize(len, CellRef::default());
+            self.cells
+                .resize(cell_count(rows, cols), CellRef::default());
         }
         self.cursor = None;
         self.cursor_shape = 0;
@@ -295,12 +293,8 @@ impl Grid {
         self.memo = Memo::default();
     }
     fn index(&self, y: u16, x: u16) -> Option<usize> {
-        if y >= self.rows || x >= self.cols {
-            return None;
-        }
-        usize::from(y)
-            .checked_mul(usize::from(self.cols))?
-            .checked_add(usize::from(x))
+        (y < self.rows && x < self.cols)
+            .then(|| cell_count(y, self.cols).saturating_add(usize::from(x)))
     }
     pub fn get(&self, y: u16, x: u16) -> Option<CellRef<'_>> {
         self.index(y, x).and_then(|i| self.cells.get(i))
@@ -346,23 +340,17 @@ impl Grid {
     /// Whether row `y` has the same cells as `other`'s, a grid of its size:
     /// compared by `Cells::range_eq`, without reading each cell's text.
     fn row_eq(&self, other: &Grid, y: u16) -> bool {
-        let cols = usize::from(self.cols);
-        // Exact: a u16 by a u16 fits even a 32-bit usize.
-        let start = usize::from(y).saturating_mul(cols);
-        self.cells
-            .range_eq(&other.cells, start..start.saturating_add(cols))
+        self.cells.range_eq(&other.cells, self.span(y))
     }
     /// The cells of row `y`; none past the last row.
     pub fn row(&self, y: u16) -> impl Iterator<Item = CellRef<'_>> + Clone {
-        let cols = usize::from(self.cols);
-        // Exact: a u16 by a u16 fits even a 32-bit usize.
-        let start = usize::from(y).saturating_mul(cols);
-        let end = if y < self.rows {
-            start.saturating_add(cols)
-        } else {
-            start
-        };
-        self.cells.range(start..end)
+        self.cells
+            .range(if y < self.rows { self.span(y) } else { 0..0 })
+    }
+    /// Where row `y` is in `cells`, were the grid that tall.
+    fn span(&self, y: u16) -> std::ops::Range<usize> {
+        let start = cell_count(y, self.cols);
+        start..start.saturating_add(usize::from(self.cols))
     }
     /// Copies the first `width` cells of pane `pane`'s row `row` into row `y`
     /// from column `x`, with their links, clipped at the grid's edge,
@@ -554,6 +542,12 @@ fn style(foreground: Color, background: Color) -> Attributes {
 const GRAY_BG: Color = Color::Idx(236);
 const BAR_FG: Color = Color::Idx(250);
 const PANEL_BG: Color = Color::Idx(238);
+
+/// How many cells `rows` rows of `cols` are. Exact: a u16 by a u16 fits
+/// even a 32-bit usize.
+fn cell_count(rows: u16, cols: u16) -> usize {
+    usize::from(rows).saturating_mul(usize::from(cols))
+}
 
 /// A char's display width in cells.
 fn cells(c: char) -> u16 {
@@ -1479,7 +1473,7 @@ fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
     // The run is from the first changed cell of the row to the cursor's
     // cell; nothing after it changed. Cells in it that did not change are
     // written as they are.
-    let start = usize::from(y).saturating_mul(usize::from(new.cols));
+    let start = new.span(y).start;
     let same = |x: u16| {
         let i = start.saturating_add(usize::from(x));
         old.cells.range_eq(&new.cells, i..i.saturating_add(1))
@@ -1586,7 +1580,7 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
             continue;
         }
         let cell = |x: u16| new.get(y, x);
-        let row_start = usize::from(y).saturating_mul(usize::from(new.cols));
+        let row_start = new.span(y).start;
         let changed = |x: u16| {
             before.is_none_or(|o| {
                 let i = row_start.saturating_add(usize::from(x));
