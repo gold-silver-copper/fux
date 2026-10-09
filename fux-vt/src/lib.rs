@@ -107,8 +107,6 @@ pub struct Row<'a> {
     pub(crate) text: &'a compact::Text,
     /// Each cell's link, if any cell of the row has had one (`link.rs`).
     pub(crate) links: Option<&'a [u16]>,
-    /// The attributes of the cells' styles.
-    pub(crate) styles: &'a style::Styles,
 }
 
 impl std::fmt::Debug for Row<'_> {
@@ -199,7 +197,7 @@ impl<'a> Row<'a> {
     }
     /// The cell at column `col`.
     pub fn cell(&self, col: usize) -> Option<CellRef<'a>> {
-        let (text, styles) = (self.text, self.styles);
+        let (text, styles) = (self.text, self.grid.styles());
         self.stored(col).map(|cell| cell.read(text, styles))
     }
     /// The hyperlink (OSC 8) of the cell at column `col`: the link that was
@@ -239,7 +237,7 @@ impl<'a> Row<'a> {
     pub fn cells(
         &self,
     ) -> impl DoubleEndedIterator<Item = CellRef<'a>> + ExactSizeIterator + Clone + use<'a> {
-        let (text, styles) = (self.text, self.styles);
+        let (text, styles) = (self.text, self.grid.styles());
         // Cells side by side mostly share a style: its attributes are found
         // once for a run of them. Style 0 is the default attributes.
         let mut last = (0, Attributes::default());

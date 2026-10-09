@@ -854,7 +854,7 @@ impl Screen {
     /// Whether row `row` of the screen is soft-wrapped: its line goes on in
     /// the next row.
     pub fn row_wrapped(&self, row: u16) -> bool {
-        self.grid().live_row(row).is_some_and(|r| r.wrapped)
+        self.grid().live_wrapped(row)
     }
     /// How many rows of history the screen keeps now.
     pub fn history_len(&self) -> usize {
@@ -1148,7 +1148,7 @@ impl Screen {
             let previous = if let Some(left) = col.checked_sub(1) {
                 Some((row, left))
             } else if let Some(above) = above
-                && g.live_row(above).is_some_and(|r| r.wrapped)
+                && g.live_wrapped(above)
             {
                 Some((above, g.size().columns().last()))
             } else {
@@ -1565,8 +1565,7 @@ impl Screen {
                     row.checked_sub(1)
                 }
             } else {
-                row.checked_sub(1)
-                    .filter(|above| g.live_row(*above).is_some_and(|r| r.wrapped))
+                row.checked_sub(1).filter(|above| g.live_wrapped(*above))
             };
             let Some(before) = before else {
                 break;
