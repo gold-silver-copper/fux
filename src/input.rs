@@ -1,7 +1,7 @@
 //! Routing a client's input: to its overlay, its copy mode, the command
 //! column, or its focused pane.
-use crate::command::ClientId;
 use crate::decode::Input;
+use crate::id::ClientId;
 use crate::keys::Keystroke;
 use crate::keys::mouse::{MouseAction, MouseEvent};
 use crate::layout::Placement;

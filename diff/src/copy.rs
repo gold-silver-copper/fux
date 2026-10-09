@@ -25,13 +25,12 @@ const QUERIES: &[&str] = &[
 ];
 
 macro_rules! stack {
-    ($name:ident, $fux:ident, $vt:ident, |$row:ident| $id:expr) => {
+    ($name:ident, $fux:ident, $vt:ident, $ids:ident, |$row:ident| $id:expr) => {
         mod $name {
-            use $fux::command::ClientId;
             use $fux::config::Config;
             use $fux::copy::{self, Seek, Select};
-            use $fux::layout::PaneId;
             use $fux::session::{Ctx, Session};
+            use $fux::$ids::ClientId;
             use $vt::Parser;
 
             pub fn terminal(
@@ -116,7 +115,9 @@ macro_rules! stack {
                 out.push(run(&mut s, c, "copy-mode"));
                 s.input(c, b"kkkk");
                 let text: String = std::iter::repeat_n("line\r\n", lines).collect();
-                s.output(PaneId(1), text.as_bytes());
+                if let Ok(p) = $fux::command::parse_pane("%1") {
+                    s.output(p, text.as_bytes());
+                }
                 s.settle();
                 out.push(notice(&s, c));
                 // A selection past the most cells one copy takes.
@@ -125,7 +126,9 @@ macro_rules! stack {
                     .chain("\r\n".chars())
                     .collect();
                 let text: String = std::iter::repeat_n(row.as_str(), lines).collect();
-                s.output(PaneId(1), text.as_bytes());
+                if let Ok(p) = $fux::command::parse_pane("%1") {
+                    s.output(p, text.as_bytes());
+                }
                 out.push(run(&mut s, c, "copy-mode"));
                 s.input(c, b"tszy");
                 out.push(notice(&s, c));
@@ -133,16 +136,10 @@ macro_rules! stack {
                 // No such client, and no such pane, straight to copy mode.
                 let (mut s, c) = session(10, 24, 80)?;
                 s.detach(c);
-                out.push(format!(
-                    "{:?}",
-                    copy::enter(&mut s, c).map_err(|e| e.to_string())
-                ));
+                out.push(run(&mut s, c, "copy-mode"));
                 let (mut s, c) = session(10, 24, 80)?;
                 s.panes.clear();
-                out.push(format!(
-                    "{:?}",
-                    copy::enter(&mut s, c).map_err(|e| e.to_string())
-                ));
+                out.push(run(&mut s, c, "copy-mode"));
                 Ok(out)
             }
         }
@@ -150,8 +147,8 @@ macro_rules! stack {
 }
 
 // Rows give their identity through an accessor, in the baseline as now.
-stack!(base, baseline, baseline_vt, |row| row.id());
-stack!(cur, fux, fux_vt, |row| row.id());
+stack!(base, baseline, baseline_vt, command, |row| row.id());
+stack!(cur, fux, fux_vt, id, |row| row.id());
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
     let (mut searches, mut found) = (0u64, 0u64);

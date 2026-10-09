@@ -1,17 +1,8 @@
 //! A tab's layout: a tree of splits whose leaves are panes, and the
 //! rectangles it gives each pane at a given size.
+use crate::id::PaneId;
 use crate::keys::Direction;
 use std::num::NonZeroU64;
-
-/// A pane's number, `%N` on the command line.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PaneId(pub u32);
-
-impl std::fmt::Display for PaneId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "%{}", self.0)
-    }
-}
 
 /// How a split arranges its children.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,18 +174,6 @@ impl Node {
             }
         }
     }
-
-    /// Replaces `old` with `new` wherever it is.
-    pub fn replace(&mut self, old: PaneId, new: PaneId) -> bool {
-        match self {
-            Node::Pane(p) if *p == old => {
-                *p = new;
-                true
-            }
-            Node::Pane(_) => false,
-            Node::Split { children, .. } => children.iter_mut().any(|(_, c)| c.replace(old, new)),
-        }
-    }
 }
 
 /// Which side of its target a split puts the new pane: before it, left or
@@ -336,14 +315,19 @@ pub fn normalize(node: &mut Node) {
     }
 }
 
-/// Swaps two panes' places in one tree.
+/// Swaps two panes' places in one tree, or, given two trees in turn, each
+/// takes the other's place.
 pub fn swap(node: &mut Node, a: PaneId, b: PaneId) {
-    // Via a placeholder no real pane uses: ids are handed out below
-    // u32::MAX, as `session::advance` refuses the one that would wrap.
-    let hole = PaneId(u32::MAX);
-    node.replace(a, hole);
-    node.replace(b, a);
-    node.replace(hole, b);
+    match node {
+        Node::Pane(p) if *p == a => *p = b,
+        Node::Pane(p) if *p == b => *p = a,
+        Node::Pane(_) => {}
+        Node::Split { children, .. } => {
+            for (_, child) in children {
+                swap(child, a, b);
+            }
+        }
+    }
 }
 
 /// Shares `len` cells among `children` by weight, into `sizes`, which are
@@ -730,7 +714,7 @@ mod tests {
     use super::*;
 
     fn p(n: u32) -> PaneId {
-        PaneId(n)
+        PaneId::of(n)
     }
     fn area(w: u16, h: u16) -> Rect {
         Rect { x: 0, y: 0, w, h }

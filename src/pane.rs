@@ -1,6 +1,6 @@
 //! A pane: its terminal emulator, its process, and the input waiting for it.
 use crate::bytes::ByteQueue;
-use crate::layout::PaneId;
+use crate::id::PaneId;
 use crate::process::Child;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -654,13 +654,13 @@ mod tests {
         let stream = b"x\x1b[?1004;2004hy\x1b[5 qz\x1b[?25l";
         for split in 0..stream.len() {
             let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
-            let mut pane = Pane::new(PaneId(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
+            let mut pane = Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
             pane.output(a);
             pane.output(b);
             assert!(pane.screen().focus_reporting(), "split {split}");
             assert_eq!(pane.screen().cursor_shape(), 5, "split {split}");
         }
-        let mut pane = Pane::new(PaneId(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
+        let mut pane = Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
         pane.output(b"\x1b[?1004h\x1b[?1004l\x1b[2 q\x1b[ q");
         assert!(!pane.screen().focus_reporting());
         assert_eq!(pane.screen().cursor_shape(), 0);
@@ -692,7 +692,7 @@ mod tests {
 
     #[test]
     fn output_records_when_the_shell_wrote_and_types_nothing_itself() -> Result<(), Error> {
-        let mut pane = Pane::new(PaneId(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
+        let mut pane = Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
         let before = std::time::Instant::now();
         pane.typed = Some(Typed {
             line: b"x\r".to_vec(),
@@ -714,7 +714,7 @@ mod tests {
 
     #[test]
     fn output_answers_queries_and_takes_titles() -> Result<(), Error> {
-        let mut pane = Pane::new(PaneId(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
+        let mut pane = Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
         pane.output(b"hello\x1b]2;my title\x07\x1b[6n");
         assert_eq!(pane.title, "my title");
         assert_eq!(pane.label(), "my title");
@@ -773,7 +773,7 @@ mod tests {
     }
 
     fn pane() -> Result<Pane, Error> {
-        Pane::new(PaneId(1), "sh".into(), "/bin/sh".into(), 3, 30, 10)
+        Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 3, 30, 10)
     }
 
     /// A frame drawn in synchronized output reaches the screen whole, when

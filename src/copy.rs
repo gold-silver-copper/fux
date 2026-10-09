@@ -4,12 +4,12 @@
 //! anchored to fux-vt row IDs, so new output does not move them, while other
 //! clients see the pane live. The mode ends if the pane closes or its history
 //! drops the rows it holds.
-use crate::command::ClientId;
+use crate::id::ClientId;
+use crate::id::PaneId;
 use crate::keys::{Direction, Key, KeyPress};
-use crate::layout::PaneId;
 use crate::render::shown;
 use crate::session::{Error, Outgoing, Session};
-use crate::view::{Mode, Notice};
+use crate::view::{Mode, Notice, View};
 use fux_vt::{CellRef, RowId, Screen};
 use std::num::NonZeroUsize;
 
@@ -545,8 +545,7 @@ pub fn text(
 // ------------------------------------------------------------------- keys
 
 /// Enters copy mode on the client's focused pane.
-pub fn enter(session: &mut Session, client: ClientId) -> Result<String, Error> {
-    let view = session.views.get(&client).ok_or(Error::NoClient(client))?;
+pub fn enter(session: &Session, view: &mut View) -> Result<String, Error> {
     let pane = view.focus().ok_or(Error::NoPaneToCopy)?;
     let screen = session
         .panes
@@ -570,7 +569,6 @@ pub fn enter(session: &mut Session, client: ClientId) -> Result<String, Error> {
         typing: None,
         held_at: None,
     };
-    let view = session.view_mut(client)?;
     view.mode = Mode::Copy(Box::new(copy));
     // The bar shows where the cursor is; a notice would hide it.
     view.notice = None;
@@ -917,7 +915,7 @@ mod tests {
     #[test]
     fn brackets_jump_between_prompts() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 30)?;
-        let pane = PaneId(1);
+        let pane = PaneId::of(1);
         let mut output = String::new();
         for command in ["one", "two", "three"] {
             output.push_str(&format!("\x1b]133;A\x07$ {command}\r\n"));
@@ -987,7 +985,7 @@ mod tests {
         let id = |s: &Screen, i| row_at(s, i).map(|r| r.id()).ok_or("no row");
         let cursor = history.saturating_add(8);
         let copy = Copy {
-            pane: PaneId(1),
+            pane: PaneId::of(1),
             top: id(p.screen(), history.saturating_sub(2))?,
             cursor: (id(p.screen(), cursor)?, 0),
             selection: Some((Select::Line, (id(p.screen(), cursor)?, 0))),
@@ -1016,7 +1014,7 @@ mod tests {
     fn copy_mode_moves_within_the_rows_shown() -> Result<(), String> {
         let (mut s, big) = crate::session::testing::attached(16, 40)?;
         s.attach(8, 40, None).map_err(|e| e.to_string())?;
-        let pane = PaneId(1);
+        let pane = PaneId::of(1);
         let mut output = String::new();
         for n in 0..60 {
             output.push_str(&format!("line {n}\r\n"));
@@ -1045,7 +1043,7 @@ mod tests {
     #[test]
     fn copy_mode_entered_on_a_wide_glyphs_second_half_starts_at_its_first() -> Result<(), String> {
         let (mut s, c) = crate::session::testing::attached(5, 20)?;
-        s.output(PaneId(1), "a\u{754c}b\x1b[1;3H".as_bytes());
+        s.output(PaneId::of(1), "a\u{754c}b\x1b[1;3H".as_bytes());
         s.input(c, b"\x02c");
         let view = s.views.get(&c).ok_or("the client")?;
         let Mode::Copy(copy) = &view.mode else {
