@@ -31,13 +31,11 @@ pub enum Mode {
     MousePress,
     /// DECTCEM (`CSI ? 25 h`): the cursor is shown. Default.
     ShowCursor,
-    /// Reverse wraparound (`CSI ? 45 h`, XTREVWRAP): with DECAWM, BS and
-    /// CUB go on at the end of the soft-wrapped line before.
+    /// Reverse wraparound (`CSI ? 45 h`): BS and CUB go back over soft wraps.
     ReverseWrap,
     /// The alternate screen (`CSI ? 47 h`).
     AlternateScreen,
-    /// DECNKM (`CSI ? 66 h`), the keypad's application mode, which `ESC =`
-    /// and `ESC >` set too. `Screen::encode_key` does not read it.
+    /// DECNKM (`CSI ? 66 h`), the keypad mode `ESC =` and `ESC >` set too.
     ApplicationKeypad,
     /// DECBKM (`CSI ? 67 h`), the backarrow key sending BS. State only.
     BackarrowSendsBackspace,
@@ -55,8 +53,7 @@ pub enum Mode {
     MouseUtf8,
     /// Mouse encoding 1006, SGR.
     MouseSgr,
-    /// Extended reverse wraparound (`CSI ? 1045 h`, XTREVWRAP2): BS and CUB
-    /// go on at the end of any line before.
+    /// Extended reverse wraparound (`CSI ? 1045 h`): back over any line.
     ExtendedReverseWrap,
     /// The alternate screen (`CSI ? 1047 h`), cleared on leaving it.
     AlternateScreenCleared,
@@ -66,8 +63,7 @@ pub enum Mode {
     AlternateScreenSaveCursor,
     /// Bracketed paste (`CSI ? 2004 h`).
     BracketedPaste,
-    /// Synchronized output (`CSI ? 2026 h`): the program is drawing a frame
-    /// to be shown whole once it resets the mode, which the host holds.
+    /// Synchronized output (`CSI ? 2026 h`): a frame the host is to hold.
     SynchronizedOutput,
     /// Colour-scheme change reports (`CSI ? 2031 h`), which the host sends.
     ColorSchemeUpdates,
@@ -82,6 +78,7 @@ impl Mode {
     /// The mode SM and RM (`private` false: IRM and LNM alone) or DECSET
     /// and DECRST name by `n`, with `options`: without theirs, 2031 and
     /// 2048 are not recognized.
+    #[inline(always)]
     pub(crate) fn of(n: u16, private: bool, options: &Options) -> Option<Self> {
         Some(match (private, n) {
             (false, 4) => Self::Insert,
@@ -119,6 +116,7 @@ impl Mode {
     }
 
     /// Where its state is kept, and what setting it does.
+    #[inline(always)]
     pub(crate) fn kind(self) -> Kind {
         match self {
             Self::Origin => Kind::Origin,
@@ -143,14 +141,20 @@ impl Mode {
             | Self::ReverseWrap
             | Self::ApplicationKeypad
             | Self::BackarrowSendsBackspace
-            | Self::LeftRightMargins
             | Self::FocusReporting
             | Self::ExtendedReverseWrap
             | Self::BracketedPaste
-            | Self::SynchronizedOutput
-            | Self::ColorSchemeUpdates
-            | Self::InBandResize => Kind::Flag,
+            | Self::ColorSchemeUpdates => Kind::Flag,
+            Self::LeftRightMargins => Kind::Margins,
+            Self::SynchronizedOutput => Kind::Frame,
+            Self::InBandResize => Kind::SizeReport,
         }
+    }
+
+    /// Whether XTSAVE saves it and XTRESTORE restores it: not 1048, an
+    /// action, nor DECARM, permanently reset.
+    pub(crate) fn savable(self) -> bool {
+        !matches!(self.kind(), Kind::SaveCursor | Kind::Reset)
     }
 
     const fn bit(self) -> u32 {
@@ -161,8 +165,14 @@ impl Mode {
 /// Where a mode's state is kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
-    /// A bit of the screen's [`Modes`].
+    /// A bit of the screen's [`Modes`], and no more.
     Flag,
+    /// DECLRMM: a bit; reset, the margins go back to the screen's edges.
+    Margins,
+    /// Synchronized output: a bit; set, a frame begins.
+    Frame,
+    /// In-band resize: a bit; set, a size report is due.
+    SizeReport,
     /// The shown grid's DECOM.
     Origin,
     /// Whether the alternate screen is shown.
@@ -184,8 +194,7 @@ pub(crate) enum Switch {
     Plain,
     /// 1047: cleared on leaving it.
     ClearedOnLeaving,
-    /// 1049: DECSC, then the alternate screen, cleared first; and back,
-    /// then DECRC.
+    /// 1049: DECSC, then cleared; and back, then DECRC.
     SavingCursor,
 }
 
@@ -220,11 +229,7 @@ impl Modes {
     }
 
     pub(crate) fn set(&mut self, mode: Mode, on: bool) {
-        self.0 = if on {
-            self.0 | mode.bit()
-        } else {
-            self.0 & !mode.bit()
-        };
+        self.0 = (self.0 & !mode.bit()) | if on { mode.bit() } else { 0 };
     }
 
     /// The modes in `which` back as they are by default.
