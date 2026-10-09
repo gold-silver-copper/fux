@@ -86,9 +86,15 @@ pub struct RowId(pub(crate) u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mark(pub(crate) u64);
 
-/// A retained row. Attributes and text are immutable through this view.
-#[derive(Clone, Copy, Debug)]
+/// A retained row, and its place among the rows retained: history's,
+/// oldest first, then the screen's from its top. It borrows the screen, so
+/// no row is held past a change that could move it; to find a row again
+/// later, keep its [`RowId`]. Attributes and text are immutable through
+/// this view.
+#[derive(Clone, Copy)]
 pub struct Row<'a> {
+    pub(crate) grid: &'a grid::Grid,
+    pub(crate) index: usize,
     pub(crate) id: RowId,
     pub(crate) version: u64,
     pub(crate) wrapped: bool,
@@ -101,12 +107,54 @@ pub struct Row<'a> {
     pub(crate) text: &'a compact::Text,
     /// Each cell's link, if any cell of the row has had one (`link.rs`).
     pub(crate) links: Option<&'a [u16]>,
-    pub(crate) table: &'a link::Links,
-    /// The attributes of the cells' styles.
-    pub(crate) styles: &'a style::Styles,
+}
+
+impl std::fmt::Debug for Row<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Row")
+            .field("index", &self.index)
+            .field("id", &self.id)
+            .field("version", &self.version)
+            .field("wrapped", &self.wrapped)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> Row<'a> {
+    /// Where the row is among those retained: 0 is history's oldest, and
+    /// the screen's top row is [`Screen::history_len`].
+    pub fn index(&self) -> usize {
+        self.index
+    }
+    /// The row above it, older; none above the oldest.
+    pub fn above(&self) -> Option<Row<'a>> {
+        self.grid.row_at(self.index.checked_sub(1)?)
+    }
+    /// The row below it, newer; none below the screen's last.
+    pub fn below(&self) -> Option<Row<'a>> {
+        self.grid.row_at(self.index.checked_add(1)?)
+    }
+    /// The row `n` above it, or the oldest.
+    pub fn up(&self, n: usize) -> Row<'a> {
+        self.grid
+            .row_at(self.index.saturating_sub(n))
+            .unwrap_or(*self)
+    }
+    /// The row `n` below it, or the screen's last.
+    pub fn down(&self, n: usize) -> Row<'a> {
+        let last = self.grid.retained_len().saturating_sub(1);
+        self.grid
+            .row_at(self.index.saturating_add(n).min(last))
+            .unwrap_or(*self)
+    }
+    /// The window with the row at its top; for a row of the screen below
+    /// its top, where no window of the screen's height starts, the screen.
+    pub fn window(&self) -> Window<'a> {
+        Window {
+            grid: self.grid,
+            start: self.index.min(self.grid.history_len()),
+        }
+    }
     /// The row's identity, which it keeps as long as it is retained, edits
     /// and scrolls included, and which no later row takes.
     pub fn id(&self) -> RowId {
@@ -149,7 +197,7 @@ impl<'a> Row<'a> {
     }
     /// The cell at column `col`.
     pub fn cell(&self, col: usize) -> Option<CellRef<'a>> {
-        let (text, styles) = (self.text, self.styles);
+        let (text, styles) = (self.text, self.grid.styles());
         self.stored(col).map(|cell| cell.read(text, styles))
     }
     /// The hyperlink (OSC 8) of the cell at column `col`: the link that was
@@ -165,7 +213,7 @@ impl<'a> Row<'a> {
         if !self.stored(col)?.has_contents() {
             return None;
         }
-        self.table.get(*links.get(col)?)
+        self.grid.links.get(*links.get(col)?)
     }
     /// Whether any cell of the row may have a hyperlink: `false` means
     /// [`Row::link`] is `None` for every cell, and need not be asked.
@@ -189,7 +237,7 @@ impl<'a> Row<'a> {
     pub fn cells(
         &self,
     ) -> impl DoubleEndedIterator<Item = CellRef<'a>> + ExactSizeIterator + Clone + use<'a> {
-        let (text, styles) = (self.text, self.styles);
+        let (text, styles) = (self.text, self.grid.styles());
         // Cells side by side mostly share a style: its attributes are found
         // once for a run of them. Style 0 is the default attributes.
         let mut last = (0, Attributes::default());
@@ -228,49 +276,77 @@ impl std::fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
-/// An immutable clipped window. A cell past its row's width (a narrower
-/// history row's) reads as `None`, and so does a wide glyph the window's
-/// last column clips, never half a glyph; blank cells within a row read as
-/// blanks. Offsets are clamped.
+/// The rows the screen retained, in order, as history's oldest first,
+/// then the screen's (`Screen::rows`).
+#[derive(Clone)]
+pub struct Rows<'a> {
+    pub(crate) grid: &'a grid::Grid,
+    pub(crate) range: std::ops::Range<usize>,
+}
+impl<'a> Iterator for Rows<'a> {
+    type Item = Row<'a>;
+    fn next(&mut self) -> Option<Row<'a>> {
+        self.grid.row_at(self.range.next()?)
+    }
+    fn nth(&mut self, n: usize) -> Option<Row<'a>> {
+        self.grid.row_at(self.range.nth(n)?)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.range.size_hint()
+    }
+}
+impl<'a> DoubleEndedIterator for Rows<'a> {
+    fn next_back(&mut self) -> Option<Row<'a>> {
+        self.grid.row_at(self.range.next_back()?)
+    }
+    fn nth_back(&mut self, n: usize) -> Option<Row<'a>> {
+        self.grid.row_at(self.range.nth_back(n)?)
+    }
+}
+impl ExactSizeIterator for Rows<'_> {}
+
+/// An immutable window of the screen's size: the screen
+/// (`Screen::window`), or as many rows from a row of history
+/// (`Row::window`). A cell past its row's width (a narrower history row's)
+/// reads as `None`, and so does a wide glyph the window's last column
+/// clips, never half a glyph; blank cells within a row read as blanks.
 #[derive(Clone, Copy)]
 pub struct Window<'a> {
-    grid: &'a grid::Grid,
-    start: usize,
-    pub(crate) rows: u16,
-    pub(crate) cols: u16,
-    pub(crate) offset: usize,
+    pub(crate) grid: &'a grid::Grid,
+    /// The index of its top row: at most the screen's top's.
+    pub(crate) start: usize,
 }
 impl<'a> Window<'a> {
-    /// How many rows the window has: at most the screen's.
+    /// How many rows the window has: the screen's.
     pub fn rows(&self) -> u16 {
-        self.rows
+        self.grid.size().rows()
     }
-    /// How many columns the window has: at most the screen's.
+    /// How many columns the window has: the screen's.
     pub fn cols(&self) -> u16 {
-        self.cols
-    }
-    /// How many rows up into history the window starts, clamped to the
-    /// history there is.
-    pub fn offset(&self) -> usize {
-        self.offset
+        self.grid.size().cols()
     }
     /// Row `row` of the window, as it is retained: a history row keeps its
     /// own width.
     pub fn row(&self, row: u16) -> Option<Row<'a>> {
-        if row >= self.rows {
+        if row >= self.rows() {
             return None;
         }
         self.grid.row_at(self.start.checked_add(usize::from(row))?)
     }
+    /// Where `row` is in the window, if it shows there.
+    pub fn place(&self, row: &Row<'_>) -> Option<u16> {
+        let y = u16::try_from(row.index.checked_sub(self.start)?).ok()?;
+        (y < self.rows()).then_some(y)
+    }
     /// The cell at `row`, `col` of the window; `None` past its edges, and for
     /// a wide glyph whose second half the window's last column cuts off.
     pub fn cell(&self, row: u16, col: u16) -> Option<CellRef<'a>> {
-        if col >= self.cols {
+        if col >= self.cols() {
             return None;
         }
         let cell = self.row(row)?.cell(usize::from(col))?;
         // A wide glyph in the window's last column is clipped.
-        if cell.is_wide() && col.checked_add(1).is_none_or(|next| next >= self.cols) {
+        if cell.is_wide() && col.checked_add(1).is_none_or(|next| next >= self.cols()) {
             None
         } else {
             Some(cell)
@@ -280,7 +356,7 @@ impl<'a> Window<'a> {
     /// soft-wrapped row when the wide glyph after it did not fit: no part of
     /// the text.
     fn spacer(&self, row: u16, col: u16) -> bool {
-        col.checked_add(1) == Some(self.cols)
+        col.checked_add(1) == Some(self.cols())
             && self.row_wrapped(row)
             && self
                 .cell(row, col)
@@ -291,9 +367,9 @@ impl<'a> Window<'a> {
                 .is_some_and(|c| c.is_wide())
     }
     /// Whether row `row` of the window is soft-wrapped, its line going on in
-    /// the next row. Only a window as wide as the screen says so.
+    /// the next row.
     pub fn row_wrapped(&self, row: u16) -> bool {
-        self.cols == self.grid.size().cols() && self.row(row).is_some_and(|r| r.wrapped)
+        self.row(row).is_some_and(|r| r.wrapped)
     }
     /// Inclusive endpoints, normalized to wide leaders. Limits are checked
     /// before allocation and before every append; an oversized copy is refused.
@@ -305,7 +381,7 @@ impl<'a> Window<'a> {
         max_bytes: usize,
     ) -> Result<String, Error> {
         let point = |(y, x): (u16, u16)| -> Result<(u16, u16), Error> {
-            if y >= self.rows || x >= self.cols {
+            if y >= self.rows() || x >= self.cols() {
                 return Err(Error::InvalidRange);
             }
             let x = if self.cell(y, x).is_some_and(|c| c.is_wide_continuation()) {
@@ -318,10 +394,10 @@ impl<'a> Window<'a> {
         let (a, b) = (point(a)?, point(b)?);
         let (start, end) = if a <= b { (a, b) } else { (b, a) };
         // Exact: both points are in the window, so it has a last column.
-        let last = self.cols.saturating_sub(1);
+        let last = self.cols().saturating_sub(1);
         let count = (start.0..=end.0)
             .len()
-            .checked_mul(usize::from(self.cols))
+            .checked_mul(usize::from(self.cols()))
             .ok_or(Error::CopyLimit)?;
         if count > max_cells {
             return Err(Error::CopyLimit);

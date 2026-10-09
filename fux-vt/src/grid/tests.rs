@@ -131,7 +131,7 @@ impl Grid {
                     .enumerate()
                     .map(|(col, c)| {
                         let link = row.links.and_then(|l| l.get(col)).copied().unwrap_or(0);
-                        let read = c.read(row.text, row.styles);
+                        let read = c.read(row.text, row.grid.styles());
                         (*c, read.attributes(), read.contents().to_owned(), link)
                     })
                     .collect();

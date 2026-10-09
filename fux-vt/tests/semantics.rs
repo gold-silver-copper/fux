@@ -1,11 +1,18 @@
 //! The sequence matrix's behaviour, family by family, with expected values
 //! from the vt100-crate baseline and its corrections.
-use fux_vt::{CellRef, Color, Error, Mode, MouseProtocolEncoding, MouseProtocolMode, Parser, Size};
+use fux_vt::{
+    CellRef, Color, Error, Mode, MouseProtocolEncoding, MouseProtocolMode, Parser, Size, Window,
+};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[path = "corpus/lines.rs"]
 mod lines;
 use lines::lines;
+/// The window `n` rows up into history.
+fn above(parser: &Parser, n: usize) -> std::result::Result<Window<'_>, Error> {
+    let top = parser.screen().window().row(0).ok_or(Error::InvalidRange)?;
+    Ok(top.up(n).window())
+}
 fn cell(parser: &Parser, row: u16, col: u16) -> std::result::Result<CellRef<'_>, Error> {
     parser.screen().cell(row, col).ok_or(Error::InvalidRange)
 }
@@ -80,14 +87,10 @@ fn unicode_combining_and_clipping_are_cell_aware() -> Result {
     assert!(cell(&p, 0, 1)?.is_wide());
     assert!(cell(&p, 0, 2)?.is_wide_continuation());
     assert_eq!(cell(&p, 0, 3)?.contents(), "e\u{301}");
-    let w = p.screen().window(0, 3, 12);
+    let w = p.screen().window();
     assert_eq!(w.text((0, 2), (0, 3), 100, 100)?, "界e\u{301}");
     assert_eq!(w.text((0, 3), (0, 2), 100, 100)?, "界e\u{301}");
     assert_eq!(w.text((0, 1), (0, 1), 100, 100)?, "界");
-    let clipped = p.screen().window(0, 1, 2);
-    assert!(clipped.cell(0, 1).is_none());
-    assert_eq!(clipped.text((0, 0), (0, 1), 100, 100)?, "A");
-    assert!(clipped.cell(1, 0).is_none());
     Ok(())
 }
 
@@ -137,39 +140,29 @@ fn sgr_defaults_resets_and_colour_parameter_forms() -> Result {
 fn history_ids_survive_scrolling_and_recycled_slots_do_not_alias() -> Result {
     let mut p = Parser::new(Size::new(3, 8)?, 2)?;
     p.process(b"one\r\ntwo\r\nthree")?;
-    let id = p
-        .screen()
-        .window(0, 3, 8)
-        .row(0)
-        .ok_or(Error::InvalidRange)?
-        .id();
+    let id = p.screen().window().row(0).ok_or(Error::InvalidRange)?.id();
     let mark = p.screen().mark();
     p.process(b"\r\nfour\r\nfive")?;
     assert_eq!(p.screen().history_len(), 2);
-    assert_eq!(p.screen().offset_for_row(id), Some(2));
-    let w = p.screen().window(usize::MAX, 3, 8);
-    assert_eq!(w.offset(), 2);
+    let row = p.screen().row_by_id(id).ok_or(Error::InvalidRange)?;
+    assert_eq!(row.index(), 0);
+    assert_eq!(row.up(1).id(), id, "none above the oldest");
+    let w = row.window();
+    assert_eq!(w.place(&row), Some(0));
     assert_eq!(w.text((0, 0), (2, 7), 100, 100)?, "one\ntwo\nthree");
-    assert_eq!(
-        p.screen()
-            .row_by_id(id)
-            .ok_or(Error::InvalidRange)?
-            .cell(0)
-            .ok_or(Error::InvalidRange)?
-            .contents(),
-        "o"
-    );
+    assert_eq!(row.cell(0).ok_or(Error::InvalidRange)?.contents(), "o");
     assert!(p.screen().full_refresh_since(mark));
     assert_eq!(p.screen().dirty_rows_since(mark).count(), 5);
     assert_eq!(p.screen().dirty_rows_since(mark).count(), 5);
     assert_eq!(
         p.screen()
-            .row_from_bottom(4)
+            .rows()
+            .nth_back(4)
             .ok_or(Error::InvalidRange)?
             .id(),
         id
     );
-    assert!(p.screen().row_from_bottom(usize::MAX).is_none());
+    assert!(p.screen().rows().nth_back(usize::MAX).is_none());
     p.process(b"\r\nsix")?;
     assert!(p.screen().row_by_id(id).is_none());
     let allocation = p.screen().storage_cells();
@@ -187,7 +180,12 @@ fn copying_widened_history_joins_original_row_extents_without_padding() -> Resul
     p.process(b"abcdefgh\r\nlast")?;
     assert_eq!(p.screen().history_len(), 1);
     p.resize(Size::new(2, 10)?)?;
-    let window = p.screen().window(1, 2, 10);
+    let window = p
+        .screen()
+        .rows()
+        .next()
+        .ok_or(Error::InvalidRange)?
+        .window();
     assert!(window.row_wrapped(0));
     assert!(window.cell(0, 5).is_none());
     assert_eq!(window.text((0, 0), (1, 9), 20, 100)?, "abcdefgh");
@@ -198,13 +196,12 @@ fn copying_widened_history_joins_original_row_extents_without_padding() -> Resul
 fn copy_soft_wraps_trim_hard_padding_and_enforce_limits() -> Result {
     let mut p = Parser::new(Size::new(4, 5)?, 0)?;
     p.process(b"abcdefgh\r\nijk")?;
-    let w = p.screen().window(0, 4, 5);
+    let w = p.screen().window();
     assert_eq!(w.text((0, 0), (2, 2), 100, 100)?, "abcdefgh\nijk");
     assert_eq!(w.text((1, 0), (1, 4), 100, 100)?, "fgh");
     assert_eq!(w.text((0, 0), (2, 2), 10, 100), Err(Error::CopyLimit));
     assert_eq!(w.text((0, 0), (2, 2), 100, 5), Err(Error::CopyLimit));
     assert_eq!(w.text((0, 0), (4, 0), 100, 100), Err(Error::InvalidRange));
-    assert!(!p.screen().window(0, 4, 3).row_wrapped(0));
     assert_eq!(w.text((0, 0), (0, 0), 4, 100), Err(Error::CopyLimit));
     assert_eq!(w.text((0, 0), (0, 0), 5, 1)?, "a");
     assert_eq!(w.text((0, 0), (0, 0), 5, 0), Err(Error::CopyLimit));
@@ -267,19 +264,13 @@ fn resize_rejects_bad_capacity_without_mutating_state() -> Result {
     p.resize(Size::new(2, 3)?)?;
     assert_eq!(lines(&p), ["klm", "pqr"]);
     assert_eq!(p.screen().cursor_position(), (1, 2));
-    assert_eq!(
-        p.screen().window(1, 2, 3).text((0, 0), (0, 2), 100, 100)?,
-        "fgh"
-    );
+    assert_eq!(above(&p, 1)?.text((0, 0), (0, 2), 100, 100)?, "fgh");
     // Growing pulls rows back from history so the space shows older output,
     // as xterm does: `fghij` returns at full width, while `klm`/`pqr` keep the
     // three columns they were truncated to while the grid was narrow.
     p.resize(Size::new(3, 5)?)?;
     assert_eq!(lines(&p), ["fghij", "klm", "pqr"]);
-    assert_eq!(
-        p.screen().window(1, 3, 5).text((0, 0), (0, 4), 100, 100)?,
-        "abcde"
-    );
+    assert_eq!(above(&p, 1)?.text((0, 0), (0, 4), 100, 100)?, "abcde");
     Ok(())
 }
 
@@ -403,12 +394,7 @@ fn regions_origin_and_reset_have_explicit_history_semantics() -> Result {
     assert_eq!(p.screen().history_len(), 0);
     p.process(b"\x1b[H\x1bM")?;
     assert_eq!(lines(&p), ["a", "", "c", "d"]);
-    let id = p
-        .screen()
-        .window(0, 4, 4)
-        .row(0)
-        .ok_or(Error::InvalidRange)?
-        .id();
+    let id = p.screen().window().row(0).ok_or(Error::InvalidRange)?.id();
     p.process(b"\x1bc")?;
     assert_eq!(lines(&p), ["", "", "", ""]);
     assert!(!p.screen().mode(Mode::Origin));
@@ -487,7 +473,7 @@ fn shrink_keeps_the_newline_less_bottom_line() -> Result {
     p.process(out.as_bytes())?;
     p.resize(Size::new(23, 80)?)?;
     let s = p.screen();
-    let w = s.window(0, 23, 80);
+    let w = s.window();
     let bottom: String = (0..80)
         .filter_map(|c| w.cell(22, c))
         .flat_map(|c| c.contents().chars())

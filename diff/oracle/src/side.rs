@@ -6,18 +6,19 @@
 //! argument for that part, as `diff/src/terminal.rs`'s `stack!` does, and
 //! read both into the same model; say so in the README's list of adapters.
 //!
-//! Adapters today: making and resizing a parser, which the working tree
-//! does with a `Size` and the commit with rows and columns; and a direct
-//! colour, which the working tree holds as an `Rgb` and the commit as three
-//! bytes.
+//! Adapters today: reading rows and windows, which the working tree does
+//! from a row (`Screen::rows`, `Row::window`) and the commit by an offset
+//! from the bottom (`row_from_bottom`, `offset_for_row`, `window`); and a direct colour,
+//! which the working tree holds as an `Rgb` and the commit as three bytes.
 
 macro_rules! side {
     (
         $module:ident,
         $vt:ident,
         $name:literal,
-        made: $made:expr,
-        resized: $resized:expr,
+        back: $back:expr,
+        up: $up:expr,
+        window: $window:expr,
         rgb_of: $rgb_of:expr,
         rgb: $rgb:expr $(,)?
     ) => {
@@ -27,6 +28,25 @@ macro_rules! side {
                 Style, Underline,
             };
             use $vt as vt;
+
+            /// The row `offset` up from the bottom.
+            fn back(s: &vt::Screen, offset: usize) -> Option<vt::Row<'_>> {
+                let back: fn(&vt::Screen, usize) -> Option<vt::Row<'_>> = $back;
+                back(s, offset)
+            }
+
+            /// How many rows up into history a window starts at row `id`, if
+            /// one can.
+            fn up(s: &vt::Screen, id: vt::RowId) -> Option<usize> {
+                let up: fn(&vt::Screen, vt::RowId) -> Option<usize> = $up;
+                up(s, id)
+            }
+
+            /// The window `offset` rows up into history, at most all of it.
+            fn window(s: &vt::Screen, offset: usize) -> vt::Window<'_> {
+                let window: fn(&vt::Screen, usize) -> vt::Window<'_> = $window;
+                window(s, offset)
+            }
 
             /// A parser, and the marks taken of its screen.
             #[derive(Clone)]
@@ -212,8 +232,10 @@ macro_rules! side {
                 const NAME: &'static str = $name;
 
                 fn new(rows: u16, cols: u16, history: usize, setup: &Setup) -> Result<Self, Error> {
-                    let made: fn(u16, u16, usize, vt::Options) -> Result<vt::Parser, Error> = $made;
-                    let parser = made(rows, cols, history, options(setup))?;
+                    // A size of none is no `Size`: refused as such.
+                    let size = vt::Size::new(rows, cols).map_err(|_| crate::side::zero_size())?;
+                    let parser =
+                        vt::Parser::with_options(size, history, options(setup)).map_err(error)?;
                     Ok(Terminal {
                         parser,
                         marks: Vec::new(),
@@ -238,8 +260,8 @@ macro_rules! side {
                 }
 
                 fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error> {
-                    let resized: fn(&mut vt::Parser, u16, u16) -> Result<(), Error> = $resized;
-                    resized(&mut self.parser, rows, cols)
+                    let size = vt::Size::new(rows, cols).map_err(|_| crate::side::zero_size())?;
+                    self.parser.resize(size).map_err(error)
                 }
 
                 fn state(&self) -> State {
@@ -272,8 +294,8 @@ macro_rules! side {
                         colors_changed: s.colors_changed(),
                         rows_end_there: retained
                             .checked_sub(1)
-                            .is_none_or(|last| s.row_from_bottom(last).is_some())
-                            && s.row_from_bottom(retained).is_none(),
+                            .is_none_or(|last| back(s, last).is_some())
+                            && back(s, retained).is_none(),
                     }
                 }
 
@@ -285,7 +307,7 @@ macro_rules! side {
                 fn row(&self, offset: usize, out: &mut Row) -> bool {
                     out.clear();
                     let s = self.parser.screen();
-                    let Some(row) = s.row_from_bottom(offset) else {
+                    let Some(row) = back(s, offset) else {
                         return false;
                     };
                     out.id = number(row.id());
@@ -377,30 +399,29 @@ macro_rules! side {
                     let s = self.parser.screen();
                     let look = |id: vt::RowId| Lookup {
                         id: number(id),
-                        offset: s.offset_for_row(id),
+                        offset: up(s, id),
                         version: s.row_by_id(id).map(|r| r.version()),
                     };
                     let mut out: Vec<Lookup> = self.oldest.into_iter().map(look).collect();
                     out.extend(
                         offsets
                             .iter()
-                            .filter_map(|&offset| s.row_from_bottom(offset))
+                            .filter_map(|&offset| back(s, offset))
                             .map(|r| look(r.id())),
                     );
                     let retained = s.history_len().saturating_add(usize::from(size(s).0));
                     self.oldest = retained
                         .checked_sub(1)
-                        .and_then(|last| s.row_from_bottom(last))
+                        .and_then(|last| back(s, last))
                         .map(|r| r.id());
                     out
                 }
 
                 fn copy(&self, ask: &model::Selection, cells: bool) -> Seen {
-                    let w = self.parser.screen().window(ask.offset, ask.rows, ask.cols);
+                    let w = window(self.parser.screen(), ask.offset);
                     let mut seen = Seen {
                         rows: w.rows(),
                         cols: w.cols(),
-                        offset: w.offset(),
                         wrapped: Vec::new(),
                         row_ids: Vec::new(),
                         cells: Vec::new(),
@@ -651,14 +672,11 @@ side!(
     work,
     fux_vt,
     "work",
-    // A size of none is no `Size`: refused as the commit refuses it.
-    made: |rows, cols, history, options| {
-        let size = vt::Size::new(rows, cols).map_err(|_| crate::side::zero_size())?;
-        vt::Parser::with_options(size, history, options).map_err(error)
-    },
-    resized: |parser, rows, cols| {
-        let size = vt::Size::new(rows, cols).map_err(|_| crate::side::zero_size())?;
-        parser.resize(size).map_err(error)
+    back: |s, offset| s.rows().nth_back(offset),
+    up: |s, id| s.history_len().checked_sub(s.row_by_id(id)?.index()),
+    window: |s, offset| {
+        let window = s.window();
+        window.row(0).map_or(window, |top| top.up(offset).window())
     },
     rgb_of: |c| match c {
         vt::Color::Rgb(vt::Rgb { r, g, b }) => Some((r, g, b)),
@@ -670,10 +688,12 @@ side!(
     base,
     base_vt,
     "base",
-    made: |rows, cols, history, options| {
-        vt::Parser::with_options(rows, cols, history, options).map_err(error)
+    back: |s, offset| s.row_from_bottom(offset),
+    up: |s, id| s.offset_for_row(id),
+    window: |s, offset| {
+        let (rows, cols) = s.size().into();
+        s.window(offset, rows, cols)
     },
-    resized: |parser, rows, cols| parser.resize(rows, cols).map_err(error),
     rgb_of: |c| match c {
         vt::Color::Rgb(r, g, b) => Some((r, g, b)),
         _other => None,

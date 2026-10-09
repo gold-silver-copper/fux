@@ -84,12 +84,9 @@ fn piece(r: &mut Rng) -> String {
 
 /// Every retained row by identity: its version, wrap flag and cells.
 fn retained(parser: &Parser) -> HashMap<RowId, (u64, bool, Cells)> {
-    let screen = parser.screen();
-    let retained = screen
-        .history_len()
-        .saturating_add(usize::from(screen.size().rows()));
-    (0..retained)
-        .filter_map(|i| screen.row_from_bottom(i))
+    parser
+        .screen()
+        .rows()
         .map(|row| {
             (
                 row.id(),
@@ -157,9 +154,7 @@ fn no_op(parser: &Parser) -> String {
     // Positions are absolute, whatever the program set.
     let mut out = String::from("\x1b[?6l");
     for y in 0..rows {
-        let Some(row) =
-            screen.row_from_bottom(usize::from(rows.saturating_sub(y).saturating_sub(1)))
-        else {
+        let Some(row) = screen.window().row(y) else {
             continue;
         };
         let _ = write!(out, "\x1b[{};1H", u32::from(y).saturating_add(1));
@@ -281,13 +276,9 @@ fn dirty_live_rows_are_the_live_dirty_rows() -> Result {
                 parser.resize(r.size()?)?;
             }
             let screen = parser.screen();
-            let height = screen.size().rows();
-            // The live row at `y` is `height - 1 - y` rows from the bottom.
-            let live: HashMap<RowId, u16> = (0..height)
-                .filter_map(|y| {
-                    let from_bottom = usize::from(height.saturating_sub(y).saturating_sub(1));
-                    screen.row_from_bottom(from_bottom).map(|row| (row.id(), y))
-                })
+            let window = screen.window();
+            let live: HashMap<RowId, u16> = (0..window.rows())
+                .filter_map(|y| window.row(y).map(|row| (row.id(), y)))
                 .collect();
             let expected: Vec<(u16, RowId)> = screen
                 .dirty_rows_since(mark)
@@ -301,7 +292,7 @@ fn dirty_live_rows_are_the_live_dirty_rows() -> Result {
             // Top to bottom.
             assert!(got.iter().zip(got.iter().skip(1)).all(|(a, b)| a.0 < b.0));
             if screen.full_refresh_since(mark) {
-                assert_eq!(got.len(), usize::from(height), "{bytes:?}");
+                assert_eq!(got.len(), usize::from(window.rows()), "{bytes:?}");
                 refreshed = refreshed.saturating_add(1);
             }
             compared = compared.saturating_add(1);
@@ -319,11 +310,8 @@ fn the_common_redraw_changes_no_version() -> Result {
     let mut parser = Parser::new(Size::new(5, 20)?, 10)?;
     let redraw = "\x1b[H\x1b[1;1Hone\x1b[K\x1b[2;1H\x1b[1m界 two\x1b[0m\x1b[K\x1b[3;1Hthree\x1b[K";
     parser.process(redraw.as_bytes())?;
-    let versions = |p: &Parser| -> Vec<u64> {
-        (0..5)
-            .filter_map(|i| p.screen().row_from_bottom(i).map(|r| r.version()))
-            .collect()
-    };
+    let versions =
+        |p: &Parser| -> Vec<u64> { p.screen().rows().rev().map(|r| r.version()).collect() };
     let before = versions(&parser);
     let mark = parser.screen().mark();
     parser.process(redraw.as_bytes())?;

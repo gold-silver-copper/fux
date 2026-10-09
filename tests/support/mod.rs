@@ -376,8 +376,7 @@ impl Client {
 
     /// The screen's rows, as text.
     pub fn lines(&self) -> Vec<String> {
-        let screen = self.terminal.screen();
-        let window = screen.window(0, self.rows, self.cols);
+        let window = self.terminal.screen().window();
         (0..self.rows)
             .map(|y| {
                 let mut line = String::new();
@@ -663,10 +662,8 @@ impl Terminal {
     }
 
     pub fn text(&self) -> String {
-        let screen = self.screen.screen();
-        let (rows, cols) = screen.size().into();
-        let window = screen.window(0, rows, cols);
-        (0..rows)
+        let window = self.screen.screen().window();
+        (0..window.rows())
             .map(|y| {
                 window
                     .row(y)

@@ -15,9 +15,8 @@ use lines::lines;
 
 /// The rows of the window `offset` rows back into history.
 fn window_lines(parser: &Parser, offset: usize) -> Vec<String> {
-    let screen = parser.screen();
-    let (rows, cols) = screen.size().into();
-    let window = screen.window(offset, rows, cols);
+    let window = parser.screen().window();
+    let window = window.row(0).map_or(window, |top| top.up(offset).window());
     (0..window.rows())
         .map(|y| {
             (0..window.cols())
@@ -679,15 +678,15 @@ fn the_alternate_screen_resizes_without_reflow() -> Result {
 fn reflowed_rows_keep_their_lines_identities() -> Result {
     let mut p = Parser::with_options(Size::new(3, 10)?, 100, REFLOW)?;
     p.process(b"first\r\nsecond")?;
-    let first = p.screen().row_from_bottom(2).map(|r| r.id());
-    let second = p.screen().row_from_bottom(1).map(|r| r.id());
+    let first = p.screen().rows().nth_back(2).map(|r| r.id());
+    let second = p.screen().rows().nth_back(1).map(|r| r.id());
     let mark = p.screen().mark();
     p.resize(Size::new(3, 3)?)?;
     // "fir" keeps the first line's identity, "sec" the second's.
     assert_eq!(lines(&p), ["st", "sec", "ond"]);
     assert_eq!(window_lines(&p, 1).first().map(String::as_str), Some("fir"));
-    assert_eq!(p.screen().row_from_bottom(3).map(|r| r.id()), first);
-    assert_eq!(p.screen().row_from_bottom(1).map(|r| r.id()), second);
+    assert_eq!(p.screen().rows().nth_back(3).map(|r| r.id()), first);
+    assert_eq!(p.screen().rows().nth_back(1).map(|r| r.id()), second);
     assert!(p.screen().full_refresh_since(mark));
     Ok(())
 }

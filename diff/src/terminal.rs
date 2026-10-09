@@ -153,7 +153,9 @@ macro_rules! stack {
         |$meta:ident| $identity:expr,
         |$events:ident, $extended:ident| $options:expr,
         |$screen:ident| $modes:expr,
-        |$rows:ident, $cols:ident| [$($size:tt)*]
+        |$rows:ident, $cols:ident| [$($size:tt)*],
+        |$from:ident, $offset:ident| $back:expr,
+        |$at:ident, $id:ident| $up:expr
     ) => {
         mod $name {
             use std::fmt::Write;
@@ -265,7 +267,11 @@ macro_rules! stack {
                     );
                     let retained = s.history_len().saturating_add(usize::from(rows));
                     for offset in (0..retained).rev() {
-                        if let Some(row) = s.row_from_bottom(offset) {
+                        let row = {
+                            let ($from, $offset) = (s, offset);
+                            $back
+                        };
+                        if let Some(row) = row {
                             let (id, version, wrapped) = identity(row);
                             let _ = writeln!(
                                 out,
@@ -273,7 +279,10 @@ macro_rules! stack {
                                 id,
                                 version,
                                 wrapped,
-                                s.offset_for_row(id),
+                                {
+                                    let ($at, $id) = (s, id);
+                                    $up
+                                },
                                 cells(row)
                             );
                         }
@@ -316,7 +325,9 @@ stack!(
         s.autowrap(),
         s.origin_mode(),
     ],
-    |r, c| [r, c]
+    |r, c| [r, c],
+    |s, offset| s.row_from_bottom(offset),
+    |s, id| s.offset_for_row(id)
 );
 stack!(
     cur,
@@ -337,7 +348,11 @@ stack!(
         s.mode(fux_vt::Mode::Autowrap),
         s.mode(fux_vt::Mode::Origin),
     ],
-    |r, c| [crate::size(r, c)]
+    |r, c| [crate::size(r, c)],
+    |s, offset| s.rows().nth_back(offset),
+    |s, id| s
+        .row_by_id(id)
+        .and_then(|row| s.history_len().checked_sub(row.index()))
 );
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
