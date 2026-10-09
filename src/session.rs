@@ -11,12 +11,11 @@ use crate::json::Json;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::{self, Axis, Node, Placement, Rect, Side};
 use crate::overlay::{Column, Repeat};
-use crate::pane::Pane;
-use crate::process::Pid;
+use crate::pane::{Pane, Process};
+use crate::process::Child;
 use crate::view::{Choice, Mode, View};
 use crate::workspace::{Seat, Tab, Workspace};
 use std::collections::{BTreeMap, VecDeque};
-use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -32,11 +31,10 @@ pub enum Outgoing {
     Shutdown(String),
 }
 
-/// A process being ended: hung up, and killed and reaped at the deadline.
+/// A closed pane's program, hung up and given until the deadline to exit;
+/// then its terminal is closed and its group killed.
 pub struct Dying {
-    pub pid: Pid,
-    /// Closed before the group is killed.
-    pub master: Option<OwnedFd>,
+    pub child: Child,
     pub deadline: Instant,
 }
 
@@ -103,7 +101,6 @@ pub enum Error {
     NoBuffer(usize),
     NoCopiedText,
     NoConfigFile,
-    NoProcess,
     // What the client's view has none of.
     NoCurrentTab,
     NoCurrentWorkspace,
@@ -170,7 +167,6 @@ impl std::fmt::Display for Error {
             Error::NoBuffer(index) => write!(f, "no buffer {index}"),
             Error::NoCopiedText => f.write_str("no copied text yet"),
             Error::NoConfigFile => f.write_str("no config file to reload"),
-            Error::NoProcess => f.write_str("the pane has no process"),
             Error::NoCurrentTab => f.write_str("no tab"),
             Error::NoCurrentWorkspace => f.write_str("no workspace"),
             Error::NoLastPane => f.write_str("no previously focused pane"),
@@ -231,7 +227,6 @@ impl std::error::Error for Error {
             | Error::NoBuffer(_)
             | Error::NoCopiedText
             | Error::NoConfigFile
-            | Error::NoProcess
             | Error::NoCurrentTab
             | Error::NoCurrentWorkspace
             | Error::NoLastPane
@@ -512,8 +507,8 @@ impl Session {
         let near = near.or_else(|| ctx.client.and_then(|c| self.focused(c)));
         if let Some(cwd) = near
             .and_then(|p| self.panes.get(&p))
-            .and_then(|p| p.child.as_ref())
-            .and_then(|c| crate::process::cwd(c.pid))
+            .and_then(|p| p.process.child())
+            .and_then(|c| fuxix::process::cwd(c.leader.pid()))
         {
             return cwd;
         }
@@ -875,11 +870,10 @@ impl Session {
 
     /// Hangs up a pane's process; it is killed and reaped after `GRACE`.
     fn end(&mut self, pane: Pane) {
-        if let Some(child) = pane.child {
-            crate::process::hangup(child.pid);
+        if let Process::Reading(child) | Process::HungUp(child) = pane.process {
+            child.leader.hang_up();
             self.dying.push(Dying {
-                pid: child.pid,
-                master: Some(child.master),
+                child,
                 deadline: crate::after(Instant::now(), GRACE),
             });
         }
@@ -1070,11 +1064,8 @@ impl Session {
 
     /// Everything the server shuts down: every pane is hung up.
     pub fn shutdown(&mut self) {
-        let panes: Vec<PaneId> = self.panes.keys().copied().collect();
-        for id in panes {
-            if let Some(pane) = self.panes.remove(&id) {
-                self.end(pane);
-            }
+        for pane in std::mem::take(&mut self.panes).into_values() {
+            self.end(pane);
         }
     }
 
@@ -1164,7 +1155,7 @@ impl Session {
         let here = self.here(ctx);
         if let Command::Terminate { target } = command {
             return match self.pane(*target, here) {
-                Ok(pane) => pane.idle().then_some(Error::OnlyShell(pane.id)),
+                Ok(pane) => (pane.process.job().is_none()).then_some(Error::OnlyShell(pane.id)),
                 Err(error) => Some(error),
             };
         }
@@ -1354,14 +1345,9 @@ impl Session {
             } => Ok(capture(self.pane(target, here)?, history, json)),
             &Command::Terminate { target } => {
                 let p = self.pane(target, here)?;
-                let child = p.child.as_ref().ok_or(Error::NoProcess)?;
-                match crate::process::foreground(&child.master) {
-                    Some(group) if group != child.pid => {
-                        crate::process::terminate(group).map_err(Error::Terminate)?;
-                        Ok(String::new())
-                    }
-                    _ => Err(Error::OnlyShell(p.id)),
-                }
+                let group = p.process.job().ok_or(Error::OnlyShell(p.id))?;
+                crate::process::terminate(group).map_err(Error::Terminate)?;
+                Ok(String::new())
             }
             &Command::Reorder {
                 ref subject,
@@ -1749,9 +1735,9 @@ impl Session {
                             p.label(),
                             p.size.1,
                             p.size.0,
-                            p.child
-                                .as_ref()
-                                .map(|c| format!(" pid {}", c.pid))
+                            p.process
+                                .child()
+                                .map(|c| format!(" pid {}", c.leader.pid()))
                                 .unwrap_or_default()
                         ));
                     }
@@ -1792,9 +1778,9 @@ impl Session {
                     ("cols", Json::Number(i64::from(p.size.1))),
                     (
                         "pid",
-                        p.child
-                            .as_ref()
-                            .map_or(Json::Null, |c| Json::Number(i64::from(c.pid.as_raw()))),
+                        p.process.child().map_or(Json::Null, |c| {
+                            Json::Number(i64::from(c.leader.pid().as_raw()))
+                        }),
                     ),
                 ]));
             });
@@ -1911,7 +1897,7 @@ fn new_pane(
             ("FUX_PANE", id.to_string()),
             ("FUX_SOCKET", socket.to_string_lossy().into_owned()),
         ];
-        pane.child = Some(crate::process::spawn(
+        pane.process = Process::Reading(crate::process::spawn(
             &config.shell,
             cwd,
             &env,
@@ -1925,7 +1911,7 @@ fn new_pane(
             deadline: crate::after(Instant::now(), TYPE_WAIT),
             last_output: None,
         });
-        if pane.child.is_none() {
+        if let Process::Absent = pane.process {
             pane.type_now();
         }
     }
@@ -2383,7 +2369,6 @@ mod tests {
                 r#""-x" cannot name a workspace: a target would read it as a pane, tab or workspace number"#,
             ),
             ("reload", 1, "no config file to reload"),
-            ("terminate -t %1", 1, "the pane has no process"),
             ("rename -t %1 ''", 1, "a name cannot be empty"),
             (
                 "rename -t %1 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
