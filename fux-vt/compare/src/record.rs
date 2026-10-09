@@ -511,7 +511,7 @@ mod tests {
     /// it asked for (fux-vt/src/keys/encode.rs).
     #[test]
     fn keys_are_typed_in_the_programs_key_mode() -> Result<(), fux_vt::Error> {
-        let options = fux_vt::Options::new().with_kitty_keyboard(true);
+        let options = fux_vt::Options::new().with(fux_vt::Feature::KittyKeyboard);
         let mut parser = fux_vt::Parser::with_options(4, 20, 0, options)?;
         let keys = b"\x04:q\r\x1b";
         assert_eq!(super::typed(keys, parser.screen()), keys);

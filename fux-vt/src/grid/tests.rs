@@ -190,9 +190,9 @@ const PIECES: &[&[u8]] = &[
 /// anywhere, waiting to wrap or not.
 fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
     let options = crate::Options::new()
-        .with_reflow(r.chance(70))
-        .with_hyperlinks(true)
-        .with_prompt_marks(true);
+        .set(crate::Feature::Reflow, r.chance(70))
+        .with(crate::Feature::Hyperlinks)
+        .with(crate::Feature::PromptMarks);
     let (rows, cols) = (r.small(7).saturating_add(1), r.small(12).saturating_add(1));
     let mut p = crate::Parser::with_options(rows, cols, r.below(30), options)?;
     for _ in 0..r.below(80) {

@@ -2,7 +2,7 @@
 //! each test citing the section that sets its expected values. Where xterm
 //! departs from the specification, the test says so and follows xterm.
 
-use fux_vt::{CellRef, Color, Identity, Options, Parser};
+use fux_vt::{CellRef, Color, Feature, Identity, Options, Parser};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 #[path = "corpus/lines.rs"]
@@ -500,7 +500,7 @@ fn replies(
         version: "1.0.0",
     };
     let options = Options::new()
-        .with_extended_replies(true)
+        .with(Feature::ExtendedReplies)
         .with_identity(identity.then_some(fux));
     let mut parser = Parser::with_options(rows, cols, 0, options)?;
     let mut replies = Vec::new();

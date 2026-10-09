@@ -6,10 +6,10 @@
 //! terminal, xterm 411's, asked the same sequences under Xvfb (80 by 25,
 //! a VT420) and read back by DSR and DECRQM.
 
-use fux_vt::{Attributes, Color, Identity, Options, Parser};
+use fux_vt::{Attributes, Color, Feature, Identity, Options, Parser};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
-const MODES: Options = Options::new().with_mode_reports(true);
+const MODES: Options = Options::new().with(Feature::ModeReports);
 
 /// What `input` makes the parser answer, as text.
 fn replies(parser: &mut Parser, input: &[u8]) -> std::result::Result<String, fux_vt::Error> {
@@ -250,7 +250,7 @@ fn decaln_fills_the_screen_with_e() -> Result {
     let cell = p.screen().cell(0, 0).ok_or("a cell")?;
     assert_eq!((cell.contents(), cell.fgcolor()), ("X", Color::Idx(1)));
     // A prompt mark goes with the row's text, as ED's erase takes it.
-    let options = Options::new().with_prompt_marks(true);
+    let options = Options::new().with(Feature::PromptMarks);
     let mut p = Parser::with_options(2, 3, 0, options)?;
     p.process(b"\x1b]133;A\x07$ \x1b#8")?;
     assert!(!p.screen().starts_prompt(0));

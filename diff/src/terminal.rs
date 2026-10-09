@@ -314,8 +314,8 @@ stack!(
     |a| (a.foreground(), a.background()),
     |row| (row.id(), row.version(), row.wrapped()),
     |events, extended| Options::new()
-        .with_events(events)
-        .with_extended_replies(extended)
+        .set(fux_vt::Feature::Events, events)
+        .set(fux_vt::Feature::ExtendedReplies, extended)
 );
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {

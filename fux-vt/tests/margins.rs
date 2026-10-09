@@ -7,7 +7,7 @@
 //! agree, cell for cell, cursor and reports. Where xterm departs from DEC
 //! STD 070, the test says so and follows xterm.
 
-use fux_vt::{Color, Options, Parser};
+use fux_vt::{Color, Feature, Options, Parser};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 #[path = "corpus/lines.rs"]
@@ -22,7 +22,7 @@ fn run(rows: u16, cols: u16, bytes: &[u8]) -> std::result::Result<Parser, fux_vt
 
 /// The replies to `bytes`, with DECRQM and DECXCPR answered.
 fn replies(rows: u16, cols: u16, bytes: &[u8]) -> std::result::Result<Vec<String>, fux_vt::Error> {
-    let options = Options::new().with_extended_replies(true);
+    let options = Options::new().with(Feature::ExtendedReplies);
     let mut parser = Parser::with_options(rows, cols, 0, options)?;
     let mut replies = Vec::new();
     parser.process_with_replies(bytes, |r| {

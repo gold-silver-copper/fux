@@ -2562,7 +2562,7 @@ mod tests {
         }
     }
 
-    /// A pane's colours are its own (`fux_vt::Options::palette`): a cell
+    /// A pane's colours are its own (`fux_vt::Feature::Palette`): a cell
     /// of an entry its program changed (OSC 4) is painted in the colour it
     /// set, and its default foreground and background in those it set (OSC
     /// 10, 11), while the pane beside it, which changed nothing, is painted
@@ -2588,7 +2588,7 @@ mod tests {
             assert!(!text.contains(osc), "{osc:?} sent to the client: {text:?}");
         }
         // Read back by a terminal that keeps colours, as the client's.
-        let options = fux_vt::Options::new().with_palette(true);
+        let options = fux_vt::Options::from(fux_vt::Feature::Palette);
         let mut client = fux_vt::Parser::with_options(6, 41, 0, options)?;
         client.process(&bytes)?;
         let navy = Color::Rgb(0, 0, 0x80);
@@ -2668,7 +2668,7 @@ mod tests {
         }
         // Read back, each linked cell has its link, and only those do.
         let mut parser =
-            fux_vt::Parser::with_options(6, 41, 0, fux_vt::Options::new().with_hyperlinks(true))?;
+            fux_vt::Parser::with_options(6, 41, 0, fux_vt::Feature::Hyperlinks.into())?;
         parser.process(&bytes)?;
         let screen = parser.screen();
         let ids: Vec<Option<String>> = (0..41)
