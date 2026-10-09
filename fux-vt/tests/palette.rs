@@ -1,10 +1,10 @@
-//! `Options::palette`: the colours a program sets, queries and resets
+//! `Feature::Palette`: the colours a program sets, queries and resets
 //! (xterm's ctlseqs, "Operating System Commands": OSC 4, 5, 10 to 19, 104,
 //! 105, 110 to 119). The expected answers are xterm 411's, asked the same
 //! (under Xvfb, `-xrm 'XTerm*allowColorOps: true'`, 80 by 25): each
 //! sequence written, and what xterm wrote back.
 
-use fux_vt::{Event, Options, Parser, Sink};
+use fux_vt::{Event, Feature, Options, Parser, Sink};
 #[path = "corpus/pieces.rs"]
 mod pieces;
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
@@ -36,8 +36,8 @@ impl Sink for Heard {
     }
 }
 
-const PALETTE: Options = Options::new().with_palette(true);
-const BOTH: Options = Options::new().with_palette(true).with_events(true);
+const PALETTE: Options = Options::new().with(Feature::Palette);
+const BOTH: Options = Options::new().with(Feature::Palette).with(Feature::Events);
 
 /// What `options` give the host for `input`, and the parser after it; the
 /// same whatever pieces the input comes in.
@@ -319,7 +319,7 @@ fn without_the_option_colours_are_ignored() -> Result {
     assert_eq!(heard, Heard::default());
     assert!(!parser.screen().colors_changed());
     assert_eq!(parser.screen().palette_color(1), None);
-    let (heard, parser) = run(Options::new().with_events(true), input)?;
+    let (heard, parser) = run(Options::new().with(Feature::Events), input)?;
     assert_eq!(heard, said(&["ask 11 bel"]));
     assert_eq!(parser.screen().dynamic_color(10), None);
     Ok(())

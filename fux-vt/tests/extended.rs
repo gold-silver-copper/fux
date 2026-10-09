@@ -4,7 +4,8 @@
 //! replies and reflow on resize.
 
 use fux_vt::{
-    Blink, CLUSTER_CAPACITY, CellRef, Color, Error, Identity, Options, Parser, Sink, Unhandled,
+    Blink, CLUSTER_CAPACITY, CellRef, Color, Error, Feature, Identity, Options, Parser, Sink,
+    Unhandled,
 };
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
@@ -79,8 +80,8 @@ fn run(parser: &mut Parser, input: &[u8]) -> std::result::Result<Record, Error> 
     Ok(record)
 }
 
-const KEYBOARD: Options = Options::new().with_kitty_keyboard(true);
-const REFLOW: Options = Options::new().with_reflow(true);
+const KEYBOARD: Options = Options::new().with(Feature::KittyKeyboard);
+const REFLOW: Options = Options::new().with(Feature::Reflow);
 const RATTY: Identity = Identity {
     name: "ratty",
     version: "0.5.0",
