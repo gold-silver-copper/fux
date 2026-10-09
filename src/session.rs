@@ -667,12 +667,7 @@ impl Session {
 
     /// The area panes share on a client's screen: all but the bar.
     pub fn pane_area(view: &View) -> Rect {
-        Rect {
-            x: 0,
-            y: 0,
-            w: view.cols,
-            h: view.rows.saturating_sub(1),
-        }
+        Rect::screen(view.rows.saturating_sub(1), view.cols)
     }
 
     /// Where each pane of a view's current tab is on its screen.
@@ -692,8 +687,7 @@ impl Session {
         };
         if view.zoom
             && let Some(focus) = tab.and_then(|t| t.focus(view.id))
-            && area.w > 0
-            && area.h > 0
+            && !area.is_empty()
         {
             out.clear();
             return out.panes.push((focus, area));
@@ -711,12 +705,7 @@ impl Session {
             .or(own)
             .or_else(|| self.views.values().next());
         view.map_or(
-            Rect {
-                x: 0,
-                y: 0,
-                w: DEFAULT_SIZE.1,
-                h: DEFAULT_SIZE.0,
-            },
+            Rect::screen(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
             Self::pane_area,
         )
     }
@@ -834,7 +823,7 @@ impl Session {
         sizes.clear();
         for view in self.views.values() {
             self.placement_into(view, &mut placed);
-            sizes.extend(placed.panes.iter().map(|(p, r)| (*p, (r.h, r.w))));
+            sizes.extend(placed.panes.iter().map(|(p, r)| (*p, (r.h(), r.w()))));
         }
         self.placed = placed;
         // A pane's rectangles side by side, for the smallest.
