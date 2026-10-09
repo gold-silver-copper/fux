@@ -6,13 +6,16 @@
 //! argument for that part, as `diff/src/terminal.rs`'s `stack!` does, and
 //! read both into the same model; say so in the README's list of adapters.
 //!
-//! Adapters today: none.
+//! Adapters today: the options, a set of `Feature`s in the working tree
+//! and a field each in the commit.
 
 macro_rules! side {
     (
         $module:ident,
         $vt:ident,
-        $name:literal $(,)?
+        $name:literal,
+        options: $options:expr,
+        setup: $setup:expr $(,)?
     ) => {
         pub mod $module {
             use crate::model::{
@@ -118,21 +121,8 @@ macro_rules! side {
             }
 
             fn options(setup: &Setup) -> vt::Options {
-                let options = vt::Options::new()
-                    .with_events(setup.events)
-                    .with_extended_replies(setup.extended_replies)
-                    .with_mode_reports(setup.mode_reports)
-                    .with_in_band_resize(setup.in_band_resize)
-                    .with_size_reports(setup.size_reports)
-                    .with_color_scheme_updates(setup.color_scheme_updates)
-                    .with_kitty_keyboard(setup.kitty_keyboard)
-                    .with_reflow(setup.reflow)
-                    .with_hyperlinks(setup.hyperlinks)
-                    .with_prompt_marks(setup.prompt_marks)
-                    .with_rectangle_checksums(setup.rectangle_checksums)
-                    .with_setting_reports(setup.setting_reports)
-                    .with_palette(setup.palette);
-                options.with_identity(
+                let options: fn(&Setup) -> vt::Options = $options;
+                options(setup).with_identity(
                     setup
                         .identity
                         .map(|(name, version)| vt::Identity { name, version }),
@@ -141,22 +131,8 @@ macro_rules! side {
 
             /// The options back, as the parser reports them.
             fn setup(o: vt::Options) -> Setup {
-                Setup {
-                    palette: o.palette,
-                    events: o.events,
-                    extended_replies: o.extended_replies,
-                    mode_reports: o.mode_reports,
-                    in_band_resize: o.in_band_resize,
-                    size_reports: o.size_reports,
-                    color_scheme_updates: o.color_scheme_updates,
-                    kitty_keyboard: o.kitty_keyboard,
-                    reflow: o.reflow,
-                    hyperlinks: o.hyperlinks,
-                    prompt_marks: o.prompt_marks,
-                    rectangle_checksums: o.rectangle_checksums,
-                    setting_reports: o.setting_reports,
-                    identity: o.identity.map(|i| (i.name, i.version)),
-                }
+                let setup: fn(vt::Options) -> Setup = $setup;
+                setup(o)
             }
 
             /// Everything the parser gives the host, in order.
@@ -661,5 +637,57 @@ macro_rules! side {
     };
 }
 
-side!(work, fux_vt, "work");
-side!(base, base_vt, "base");
+side!(
+    work,
+    fux_vt,
+    "work",
+    options: |setup| {
+        let mut setup = *setup;
+        // `Setup::flags` is in `Feature::ALL`'s order.
+        let flags = vt::Feature::ALL.into_iter().zip(setup.flags());
+        flags.filter_map(|(f, (_, on))| on.then_some(f)).collect()
+    },
+    setup: |o| {
+        let mut setup = Setup::default();
+        for (f, (_, on)) in vt::Feature::ALL.into_iter().zip(setup.flags()) {
+            *on = o.has(f);
+        }
+        setup.identity = o.identity().map(|i| (i.name, i.version));
+        setup
+    },
+);
+side!(
+    base,
+    base_vt,
+    "base",
+    options: |setup| vt::Options::new()
+        .with_events(setup.events)
+        .with_extended_replies(setup.extended_replies)
+        .with_mode_reports(setup.mode_reports)
+        .with_in_band_resize(setup.in_band_resize)
+        .with_size_reports(setup.size_reports)
+        .with_color_scheme_updates(setup.color_scheme_updates)
+        .with_kitty_keyboard(setup.kitty_keyboard)
+        .with_reflow(setup.reflow)
+        .with_hyperlinks(setup.hyperlinks)
+        .with_prompt_marks(setup.prompt_marks)
+        .with_rectangle_checksums(setup.rectangle_checksums)
+        .with_setting_reports(setup.setting_reports)
+        .with_palette(setup.palette),
+    setup: |o| Setup {
+        palette: o.palette,
+        events: o.events,
+        extended_replies: o.extended_replies,
+        mode_reports: o.mode_reports,
+        in_band_resize: o.in_band_resize,
+        size_reports: o.size_reports,
+        color_scheme_updates: o.color_scheme_updates,
+        kitty_keyboard: o.kitty_keyboard,
+        reflow: o.reflow,
+        hyperlinks: o.hyperlinks,
+        prompt_marks: o.prompt_marks,
+        rectangle_checksums: o.rectangle_checksums,
+        setting_reports: o.setting_reports,
+        identity: o.identity.map(|i| (i.name, i.version)),
+    },
+);

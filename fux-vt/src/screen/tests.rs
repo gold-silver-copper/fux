@@ -95,7 +95,7 @@ fn cells_past_a_rows_used_mark_stay_blank() -> Result<(), Error> {
     ];
     let mut state = 0x5eed_u64;
     for reflow in [false, true] {
-        let options = crate::Options::new().with_reflow(reflow);
+        let options = crate::Options::new().set(crate::Feature::Reflow, reflow);
         let mut p = crate::Parser::with_options(6, 10, 4, options)?;
         for step in 0..3_000u32 {
             state = state
@@ -134,8 +134,8 @@ fn link_counts_follow_the_rows() -> Result<(), Error> {
     let long: String = std::iter::repeat_n('u', 2000).collect();
     for reflow in [false, true] {
         let options = crate::Options::new()
-            .with_hyperlinks(true)
-            .with_reflow(reflow);
+            .with(crate::Feature::Hyperlinks)
+            .set(crate::Feature::Reflow, reflow);
         let mut p = crate::Parser::with_options(4, 10, 6, options)?;
         let steps: [&[u8]; 12] = [
             b"\x1b]8;;a\x07abc\x1b]8;id=x;b\x07de\x1b]8;;\x07f\r\n",
@@ -230,8 +230,8 @@ fn sweeping_the_styles_changes_nothing_a_reader_sees() -> Result<(), Error> {
     };
     for reflow in [false, true] {
         let options = crate::Options::new()
-            .with_reflow(reflow)
-            .with_hyperlinks(true);
+            .set(crate::Feature::Reflow, reflow)
+            .with(crate::Feature::Hyperlinks);
         let mut plain = crate::Parser::with_options(5, 9, 6, options)?;
         let mut swept = crate::Parser::with_options(5, 9, 6, options)?;
         for step in 0..4_000u32 {

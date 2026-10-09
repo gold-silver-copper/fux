@@ -3,7 +3,7 @@
 //! every line's text; `Cells` behaves as a plain list of cells; the kitty
 //! keyboard flag stacks behave as plain stacks.
 
-use fux_vt::{Cells, Options, Parser};
+use fux_vt::{Cells, Feature, Options, Parser};
 use unicode_width::UnicodeWidthChar;
 #[path = "corpus/graphemes.rs"]
 mod graphemes;
@@ -208,7 +208,7 @@ fn lines(parser: &Parser) -> Vec<String> {
 /// cursor where it was; so does reflowing to the narrower width alone.
 #[test]
 fn reflow_narrower_and_back_keeps_every_line() -> Result {
-    let options = Options::new().with_reflow(true);
+    let options = Options::new().with(Feature::Reflow);
     let mut r = Rng(0x0ef1_0000_0000_0002);
     for case in 0..4_000 {
         let rows = u16::try_from(r.below(10).saturating_add(3))?;
@@ -309,7 +309,7 @@ fn cells_agree_with_a_plain_list_of_cells() -> Result {
 /// plain stacks, one a screen, of at most 32 flag sets.
 #[test]
 fn kitty_keyboard_flags_agree_with_two_plain_stacks() -> Result {
-    let options = Options::new().with_kitty_keyboard(true);
+    let options = Options::new().with(Feature::KittyKeyboard);
     let mut r = Rng(0x0c17_7700_0000_0004);
     for case in 0..300 {
         let mut parser = Parser::with_options(4, 10, 0, options)?;
