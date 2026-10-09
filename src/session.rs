@@ -752,6 +752,30 @@ impl Session {
                 .map(|(id, _)| *id);
         }
         self.size_panes();
+        self.hold_copies();
+    }
+
+    /// Output and sizing a pane can drop rows of its history: a copy mode
+    /// whose rows went ends. They are looked for only if the screen changed
+    /// since they were last found.
+    fn hold_copies(&mut self) {
+        for view in self.views.values_mut() {
+            let Mode::Copy(copy) = &mut view.mode else {
+                continue;
+            };
+            let Some(screen) = self.panes.get(&copy.pane).map(Pane::screen) else {
+                continue;
+            };
+            if copy.held_at.is_some_and(|at| !screen.changed_since(at)) {
+                continue;
+            }
+            if copy.resolve(screen).is_some() {
+                copy.held_at = Some(screen.mark());
+            } else {
+                view.mode = Mode::Normal;
+                view.error("copy mode ended: the history dropped the rows it held");
+            }
+        }
     }
 
     fn repair(&mut self, id: ClientId, first_ws: Option<WsId>) {
@@ -780,23 +804,15 @@ impl Session {
                 .or_else(|| view.last_of.get(&t).copied().filter(shown))
                 .or_else(|| root.and_then(Node::first_pane))
         });
-        // Copy mode's rows are looked for only if the screen changed since
-        // they were last found, and then it is noted.
-        let mut held_at = None;
-        // What the view's mode refers to must still exist.
+        // What the view's mode refers to must still exist. Copy mode's rows
+        // are looked for once the panes are sized (`hold_copies`).
         let gone: Option<String> = match &view.mode {
-            Mode::Copy(copy) => match self.panes.get(&copy.pane).map(Pane::screen) {
-                None => Some("copy mode ended: its pane closed".into()),
-                Some(_) if Some(copy.pane) != focus => {
-                    Some("copy mode ended: its pane is no longer focused".into())
-                }
-                Some(screen) if copy.held_at.is_some_and(|at| !screen.changed_since(at)) => None,
-                Some(screen) if copy.resolve(screen).is_some() => {
-                    held_at = Some(screen.mark());
-                    None
-                }
-                Some(_) => Some("copy mode ended: the history dropped the rows it held".into()),
-            },
+            Mode::Copy(copy) if !self.panes.contains_key(&copy.pane) => {
+                Some("copy mode ended: its pane closed".into())
+            }
+            Mode::Copy(copy) if Some(copy.pane) != focus => {
+                Some("copy mode ended: its pane is no longer focused".into())
+            }
             Mode::List(list) => list
                 .about
                 .as_ref()
@@ -811,7 +827,7 @@ impl Session {
                 crate::view::PromptFor::Command | crate::view::PromptFor::Rename(_) => None,
             },
             // Found again whenever the bindings change (`rebind`).
-            Mode::Normal | Mode::Column(_) | Mode::Repeat(_) => None,
+            Mode::Normal | Mode::Column(_) | Mode::Repeat(_) | Mode::Copy(_) => None,
         };
         let Some(view) = self.views.get_mut(&id) else {
             return;
@@ -835,9 +851,6 @@ impl Session {
                 }
                 _ => {}
             }
-        }
-        if let (Mode::Copy(copy), Some(at)) = (&mut view.mode, held_at) {
-            copy.held_at = Some(at);
         }
         if let Some(reason) = gone {
             view.mode = Mode::Normal;
@@ -2387,6 +2400,26 @@ mod tests {
                 .is_some_and(|n| n.text.contains("dropped the rows")),
             "and said why"
         );
+        Ok(())
+    }
+
+    /// A client shrinking the pane pushes rows into its history, which may
+    /// drop the ones copy mode holds: copy mode ends in the same settle, so
+    /// no paint shows it without them.
+    #[test]
+    fn copy_mode_ends_when_sizing_its_pane_drops_its_rows() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut s = started(Config {
+            history_lines: 2,
+            ..Config::default()
+        })?;
+        let client = s.attach(6, 20, None)?;
+        s.output(PaneId::of(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
+        run(&mut s, "copy-mode -c c1")?;
+        s.input(client, b"g");
+        s.resize(client, 3, 20);
+        let view = s.views.get(&client).ok_or("the view")?;
+        assert!(matches!(view.mode, Mode::Normal), "copy mode ended");
         Ok(())
     }
 
