@@ -60,8 +60,8 @@ quick() {
   # The corpus again with Ghostty judged as fux-vt is, fux-vt voting in its
   # place: both scores and where each departs alone (corpus-ghostty.json).
   # It runs beside the corpus, an xterm of its own, and still fits.
-  # The oracle (diff/oracle.sh) holds fux-vt to what it did at the merge
-  # base with main: every observable, after every step, over the corpus,
+  # The oracle (diff/oracle.sh) holds fux-vt to what it does at the latest
+  # main: every observable, after every step, over the corpus,
   # 10,000 random cases and 50 resize streams.
   # The input encoders beside libghostty-vt's (encoders.rs) take seconds.
   echo "quick: corpus beside xterm, with Ghostty judged too, transparency, 2,000 random cases, the named cases, the encoders, the oracle"
