@@ -118,10 +118,8 @@ impl InputQueue {
         self.refusing |= !fits;
         fits.then_some(()).ok_or(Error::NotReading)
     }
-    /// Queues a terminal reply, as `push`: a program that is not reading
-    /// loses it. Kept out of the parser's loop, which calls it from many
-    /// places for what is rare: inlined, scrolling output was 0.5% slower.
-    #[inline(never)]
+    /// Queues terminal replies, as `push`: a program that is not reading
+    /// loses them.
     fn reply(&mut self, bytes: &[u8]) {
         if self.push(bytes).is_err() && self.lost == Lost::None {
             self.lost = Lost::Untold;
@@ -274,8 +272,8 @@ impl Title {
 
 /// Replies (DSR, DA) and events the parser produces while reading output.
 struct Sink<'a> {
-    /// Where replies go: a program that is not reading loses them.
-    input: &'a mut InputQueue,
+    /// The replies to one read, queued together after it: at most 4 KiB.
+    replies: Vec<u8>,
     title: &'a mut Title,
     /// Set by a bell (BEL).
     bell: &'a mut bool,
@@ -285,7 +283,9 @@ struct Sink<'a> {
 
 impl fux_vt::Sink for Sink<'_> {
     fn reply(&mut self, bytes: &[u8]) {
-        self.input.reply(bytes);
+        if self.replies.len().saturating_add(bytes.len()) <= 4096 {
+            self.replies.extend_from_slice(bytes);
+        }
     }
     /// A colour query (OSC 10, 11) is answered if the colour is known.
     fn event(&mut self, event: fux_vt::Event<'_>) {
@@ -293,7 +293,7 @@ impl fux_vt::Sink for Sink<'_> {
             fux_vt::Event::Title(title) => self.title.set(title),
             fux_vt::Event::ColorQuery { number, bel } => {
                 if let Some(answer) = self.colours.answer(number, bel) {
-                    self.input.reply(&answer);
+                    fux_vt::Sink::reply(self, &answer);
                 }
             }
             fux_vt::Event::Bell => *self.bell = true,
@@ -321,7 +321,7 @@ impl fux_vt::Sink for Sink<'_> {
         match (intermediates, action, first) {
             (b"?", b'n', Some([996])) if second.is_none() => {
                 if let Some(scheme) = self.colours.scheme {
-                    self.input.reply(scheme.report());
+                    fux_vt::Sink::reply(self, scheme.report());
                 }
             }
             (b"", b't', Some([22])) if title => self.title.push(),
@@ -533,7 +533,7 @@ impl Pane {
     /// Returns how many bytes were read if it stopped.
     fn feed(&mut self, bytes: &[u8], until_frame: bool) -> Option<usize> {
         let mut sink = Sink {
-            input: &mut self.input,
+            replies: Vec::new(),
             title: &mut self.title,
             bell: &mut self.bell,
             colours: &self.colours,
@@ -552,6 +552,10 @@ impl Pane {
                 break;
             }
             rest = rest.get(taken..).unwrap_or_default();
+        }
+        let replies = sink.replies;
+        if !replies.is_empty() {
+            self.input.reply(&replies);
         }
         self.input.heard(Instant::now);
         begun
