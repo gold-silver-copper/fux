@@ -244,8 +244,6 @@ macro_rules! stack {
                     let s = self.parser.screen();
                     let mut out = String::new();
                     let (rows, cols) = s.size();
-                    // Hidden, application cursor and keypad, bracketed paste,
-                    // focus, alternate screen, autowrap and origin.
                     let modes: [bool; 8] = {
                         let $screen = s;
                         $modes
