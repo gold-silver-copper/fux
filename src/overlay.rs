@@ -1069,7 +1069,7 @@ mod tests {
     fn pane_width(s: &Session, pane: u32) -> u16 {
         s.panes
             .get(&crate::id::PaneId::of(pane))
-            .map_or(0, |p| p.screen().size().1)
+            .map_or(0, |p| p.screen().size().cols())
     }
 
     /// Everything the client's screen shows, row by row.

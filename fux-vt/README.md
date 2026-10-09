@@ -11,7 +11,8 @@ Luehrs's MIT-licensed [vt100](https://crates.io/crates/vt100) crate, whose
 license is kept in `LICENSE`; the parser and grid are fux-vt's own.
 
 ```rust
-let mut parser = fux_vt::Parser::new(24, 80, 10_000)?; // rows, columns, history lines
+let size = fux_vt::Size::new(24, 80)?; // rows and columns, neither zero
+let mut parser = fux_vt::Parser::new(size, 10_000)?; // and history lines
 parser.process_with_replies(b"\x1b[1mhi\x1b[6n", |reply| send_to_program(reply))?;
 let cell = parser.screen().cell(0, 0).unwrap();
 assert_eq!((cell.contents(), cell.bold()), ("h", true));
@@ -251,9 +252,9 @@ row's slot, and history.
   `Error::IdentityExhausted`. A row's version changes with each edit that
   changes its cells, links or soft wrap, and nothing else: erasing blanks,
   or rewriting a glyph as it was, keeps it; ICH and DCH always change it.
-- **Limits.** Zero sizes are refused (`Error::ZeroSize`), and so is a
-  screen whose rows plus history limit pass 1,048,576 rows or 64 Mi cells
-  (`Error::Capacity`); text budgets and link bounds cover the rest.
+- **Limits.** A `Size` has no zero to refuse: `Size::new` refuses one.
+  A screen whose rows plus history limit pass 1,048,576 rows or 64 Mi cells
+  is refused (`Error::Capacity`); text budgets and link bounds cover the rest.
   Arithmetic is checked. After an error the terminal stays usable: input
   already applied may stay, and a partial scroll still forces a refresh.
 - **Resize** builds the new grids first, so a failure changes nothing and

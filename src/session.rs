@@ -1991,7 +1991,7 @@ fn tab_of(workspaces: &mut [Workspace], id: PaneId) -> Result<&mut Tab, Error> {
 /// The text of a pane's screen, and `history` lines before it.
 fn capture(pane: &Pane, history: Option<usize>, json: bool) -> String {
     let screen = pane.screen();
-    let (rows, cols) = screen.size();
+    let (rows, cols) = screen.size().into();
     let back = history.unwrap_or(0).min(screen.history_len());
     // History rows above the screen, oldest first, then the screen itself.
     let history = (0..back).rev().filter_map(|offset| {

@@ -90,7 +90,8 @@ impl Client {
         if (rows, cols) == (self.rows, self.cols) {
             return Ok(());
         }
-        self.screen = fux_vt::Parser::new(rows, cols, 0).map_err(|e| e.to_string())?;
+        let size = fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())?;
+        self.screen = fux_vt::Parser::new(size, 0).map_err(|e| e.to_string())?;
         self.rows = rows;
         self.cols = cols;
         Ok(())
@@ -317,8 +318,9 @@ impl Fixture {
                 id: id.clone(),
                 master: Some(master),
                 child,
-                screen: fux_vt::Parser::new(rows.max(1), cols.max(1), 0)
-                    .map_err(|e| e.to_string())?,
+                screen: fux_vt::Size::new(rows.max(1), cols.max(1))
+                    .map_err(|e| e.to_string())
+                    .and_then(|size| fux_vt::Parser::new(size, 0).map_err(|e| e.to_string()))?,
                 rows: rows.max(1),
                 cols: cols.max(1),
             },

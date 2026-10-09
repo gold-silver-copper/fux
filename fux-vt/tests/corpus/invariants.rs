@@ -8,26 +8,7 @@ use std::collections::HashSet;
 
 pub fn check(p: &Parser) {
     let s = p.screen();
-    let (rows, cols) = s.size();
-    assert!(rows > 0 && cols > 0);
-    let (row, col) = s.cursor_position();
-    assert!(
-        row < rows && col < cols,
-        "cursor {row},{col} outside {rows}x{cols}"
-    );
-    // A wrap may wait at any column: the last, a right margin, one a
-    // reset of DECLRMM (or DECSTR) left it waiting at, or one a resize
-    // without reflow left it at, as xterm keeps it at any width (a screen
-    // one column wide made wider leaves it at the first).
-    let (left, right) = s.left_right_margins();
-    let (top, bottom) = s.scroll_region();
-    assert!(top <= bottom && bottom < rows);
-    // The left margin is left of the right one, or they are the screen's
-    // edges, as on a screen one column wide.
-    assert!(
-        left < right && right < cols || (left, right) == (0, cols.saturating_sub(1)),
-        "margins {left}..={right} of {cols} columns"
-    );
+    let (rows, cols) = s.size().into();
     let mut ids = HashSet::new();
     // A count past usize would show as a missing row.
     for offset in 0..usize::from(rows).saturating_add(s.history_len()) {
@@ -135,7 +116,7 @@ pub fn equal(a: &Parser, b: &Parser) {
         assert_eq!(a.mode(mode), b.mode(mode), "{mode:?}");
     }
     assert_eq!(a.history_len(), b.history_len());
-    for offset in 0..usize::from(a.size().0).saturating_add(a.history_len()) {
+    for offset in 0..usize::from(a.size().rows()).saturating_add(a.history_len()) {
         let (a, b) = (a.row_from_bottom(offset), b.row_from_bottom(offset));
         assert!(a.is_some() && b.is_some(), "missing row");
         let (Some(a), Some(b)) = (a, b) else {

@@ -21,21 +21,21 @@ fn heap(grid: &Grid) -> [usize; 4] {
 #[test]
 fn storage_with_history_full_stops_growing_and_the_resize_peak_is_printed() -> Result<(), Error> {
     let mut next = 0;
-    let mut primary = Grid::new(24, 80, 10_000, &mut next, 0)?;
-    let alternate = Grid::new(24, 80, 0, &mut next, 0)?;
+    let mut primary = Grid::new(Size::of(24, 80), 10_000, &mut next, 0)?;
+    let alternate = Grid::new(Size::of(24, 80), 0, &mut next, 0)?;
     let initial_primary = heap(&primary);
     let initial_alternate = heap(&alternate);
     for version in 1..=10_000 {
-        primary.scroll((0, 23), 1, UP, 0, &mut next, version)?;
+        primary.scroll(Size::of(24, 80).lines(), 1, UP, 0, &mut next, version)?;
     }
     let plateau = heap(&primary);
     for version in 10_001..=20_000 {
-        primary.scroll((0, 23), 1, UP, 0, &mut next, version)?;
+        primary.scroll(Size::of(24, 80).lines(), 1, UP, 0, &mut next, version)?;
     }
     assert_eq!(heap(&primary), plateau);
     assert_eq!(primary.history_len(), 10_000);
-    let resized_primary = primary.resized(60, 120, &mut next, 20_001)?;
-    let resized_alternate = alternate.resized(60, 120, &mut next, 20_001)?;
+    let resized_primary = primary.resized(Size::of(60, 120), &mut next, 20_001)?;
+    let resized_alternate = alternate.resized(Size::of(60, 120), &mut next, 20_001)?;
     let new_primary = heap(&resized_primary);
     let new_alternate = heap(&resized_alternate);
     // Screen::resize constructs BOTH replacements before assigning either.
@@ -58,8 +58,8 @@ fn storage_with_history_full_stops_growing_and_the_resize_peak_is_printed() -> R
 #[test]
 fn narrowing_live_rows_uses_the_new_width() -> Result<(), Error> {
     let mut next = 0;
-    let wide = Grid::new(24, 400, 100, &mut next, 0)?;
-    let narrow = wide.resized(23, 10, &mut next, 1)?;
+    let wide = Grid::new(Size::of(24, 400), 100, &mut next, 0)?;
+    let narrow = wide.resized(Size::of(23, 10), &mut next, 1)?;
     assert_eq!(narrow.history_len(), 0);
     assert_eq!(narrow.cells.capacity(), 23 * 10);
     assert_eq!(narrow.storage_cells(), 23 * 10);
@@ -72,10 +72,10 @@ fn narrowing_live_rows_uses_the_new_width() -> Result<(), Error> {
 #[test]
 fn moving_a_row_is_a_removal_then_an_insertion() -> Result<(), Error> {
     let mut next = 0;
-    let contiguous = Grid::new(5, 1, 0, &mut next, 0)?;
-    let mut wrapped = Grid::new(5, 1, 4, &mut next, 0)?;
+    let contiguous = Grid::new(Size::of(5, 1), 0, &mut next, 0)?;
+    let mut wrapped = Grid::new(Size::of(5, 1), 4, &mut next, 0)?;
     for version in 1..=11 {
-        wrapped.scroll((0, 4), 1, UP, 0, &mut next, version)?;
+        wrapped.scroll(Size::of(5, 1).lines(), 1, UP, 0, &mut next, version)?;
     }
     let (front, back) = wrapped.order.as_slices();
     assert!(!front.is_empty() && !back.is_empty(), "the order wraps");
@@ -194,13 +194,16 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
         .with(crate::Feature::Hyperlinks)
         .with(crate::Feature::PromptMarks);
     let (rows, cols) = (r.small(7).saturating_add(1), r.small(12).saturating_add(1));
-    let mut p = crate::Parser::with_options(rows, cols, r.below(30), options)?;
+    let mut p = crate::Parser::with_options(Size::of(rows, cols), r.below(30), options)?;
     for _ in 0..r.below(80) {
         match r.below(16) {
-            0 => p.resize(r.small(7).saturating_add(1), r.small(12).saturating_add(1))?,
+            0 => p.resize(Size::of(
+                r.small(7).saturating_add(1),
+                r.small(12).saturating_add(1),
+            ))?,
             // A line to the last column, waiting to wrap.
             1 => {
-                let cols = p.screen().size().1;
+                let cols = p.screen().size().cols();
                 let fill: Vec<u8> = std::iter::repeat_n(b'y', usize::from(cols)).collect();
                 p.process(b"\r")?;
                 p.process(&fill)?;
@@ -224,7 +227,7 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
     }
     let mut grid = p.screen().primary_grid().clone();
     // Rows of the screen are poked; some go into history after.
-    let rows = usize::from(grid.rows.get());
+    let rows = usize::from(grid.size.rows());
     for _ in 0..r.below(5) {
         let Some(&slot) = grid.order.get(r.below(rows)) else {
             continue;
@@ -274,17 +277,15 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
     }
     if grid.history_limit > 0 && r.chance(50) {
         let mut next = max_id(&grid).saturating_add(1);
-        let last = grid.rows.last();
-        grid.scroll((0, last), r.small(grid.rows.get()), UP, 0, &mut next, 999)?;
+        let (lines, rows) = (grid.size.lines(), grid.size.rows());
+        grid.scroll(lines, r.small(rows), UP, 0, &mut next, 999)?;
     }
-    let (rows, cols) = (grid.rows.get(), grid.cols.get());
-    if r.chance(50) {
-        grid.cursor = (r.small(rows), r.small(cols));
-        grid.pending_wrap = r.chance(30);
-    }
-    if r.chance(50) {
-        grid.saved_cursor = (r.small(rows), r.small(cols));
-        grid.saved_pending_wrap = r.chance(30);
+    let (rows, cols) = grid.size.into();
+    for cursor in [&mut grid.cursor, &mut grid.saved] {
+        if r.chance(50) {
+            (cursor.row, cursor.col) = (r.small(rows), r.small(cols));
+            cursor.pending_wrap = r.chance(30);
+        }
     }
     Ok(grid)
 }
@@ -334,7 +335,7 @@ fn scrolling_between_full_margins_is_scrolling_rows() -> Result<(), Error> {
     let mut moved = 0usize;
     for case in 0..3_000 {
         let grid = random_grid(&mut r)?;
-        let rows = grid.rows.get();
+        let rows = grid.size.rows();
         let top = r.small(rows);
         let bottom = top.saturating_add(r.small(rows.saturating_sub(top)));
         let count = r.small(rows.saturating_add(2)).saturating_add(1);
@@ -347,8 +348,9 @@ fn scrolling_between_full_margins_is_scrolling_rows() -> Result<(), Error> {
         } else {
             Scroll::Down
         };
-        by_rows.scroll_region((top, bottom), count, direction, blank, &mut next, 1_000)?;
-        by_cells.scroll_columns((top, bottom), count, up, blank, 1_000);
+        let region = Span::of(top, bottom);
+        by_rows.scroll_region(region, count, direction, blank, &mut next, 1_000)?;
+        by_cells.scroll_columns(region, count, up, blank, 1_000);
         for y in 0..rows {
             let (a, b) = (read_row(&by_rows, y), read_row(&by_cells, y));
             assert_eq!(
@@ -369,7 +371,7 @@ fn scrolling_between_full_margins_is_scrolling_rows() -> Result<(), Error> {
 #[test]
 fn a_row_given_links_after_reset_links_keeps_them() -> Result<(), Error> {
     let mut next = 0;
-    let mut grid = Grid::new(2, 5, 0, &mut next, 0)?;
+    let mut grid = Grid::new(Size::of(2, 5), 0, &mut next, 0)?;
     let uri: Arc<str> = Arc::from("https://example.com");
     let link = grid.intern(&uri, None, 1, 1).ok_or(Error::Capacity)?;
     grid.set_link(0, 0..2, link, 1);
