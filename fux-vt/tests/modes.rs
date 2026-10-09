@@ -65,6 +65,16 @@ fn decrqm_reports_the_modes_xterm_keeps() -> Result {
     Ok(())
 }
 
+/// Focus reporting (1004) is reported set or reset, as xterm 411 reports
+/// it.
+#[test]
+fn decrqm_reports_focus_reporting() -> Result {
+    let mut p = Parser::with_options(25, 80, 0, MODES)?;
+    let asked = replies(&mut p, b"\x1b[?1004$p\x1b[?1004h\x1b[?1004$p")?;
+    assert_eq!(asked, "^[[?1004;2$y^[[?1004;1$y");
+    Ok(())
+}
+
 /// Reverse wraparound (ctlseqs: `CSI ? 45 h`, XTREVWRAP, and `CSI ? 1045
 /// h`, XTREVWRAP2), with DECAWM: BS and CUB at the first column go on at
 /// the end of the line before. 45 goes back only over a line's soft wraps;
