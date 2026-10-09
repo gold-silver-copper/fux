@@ -215,7 +215,7 @@ impl Session {
         let Some(rect) = placement.rect(pane) else {
             return;
         };
-        let inside = rect.contains(event.col, event.row);
+        let inside = rect.contains(event.row, event.col);
         let seat = self.shown_tab(client).and_then(|t| t.seat(client));
         let held = seat.is_some_and(|s| s.held);
         let pressed =
@@ -230,19 +230,9 @@ impl Session {
                 seat.held = false;
             }
         }
-        // Kept to the pane: `rect` holds the press, so it is not empty.
-        let last = |start: u16, len: u16| start.saturating_add(len.saturating_sub(1));
-        let event = MouseEvent {
-            row: event
-                .row
-                .clamp(rect.y, last(rect.y, rect.h))
-                .saturating_sub(rect.y),
-            col: event
-                .col
-                .clamp(rect.x, last(rect.x, rect.w))
-                .saturating_sub(rect.x),
-            ..event
-        };
+        // Kept to the pane.
+        let (row, col) = rect.clamp(event.row, event.col);
+        let event = MouseEvent { row, col, ..event };
         self.typed(client);
         let Some(p) = self.panes.get_mut(&pane) else {
             return;

@@ -305,6 +305,43 @@ impl fux_vt::Sink for Sink<'_> {
     }
 }
 
+/// A pane's program, by how far along its life it is. A closed pane's
+/// goes on to `session::Dying`.
+pub enum Process {
+    /// None was started: tests of the session's state alone.
+    Absent,
+    /// Its terminal is polled, read and written.
+    Reading(Child),
+    /// It closed its terminal but has not exited. The master reports the
+    /// end on every poll, so it is neither polled nor written; its exit, by
+    /// SIGCHLD, ends the pane.
+    HungUp(Child),
+}
+
+impl Process {
+    pub fn child(&self) -> Option<&Child> {
+        match self {
+            Process::Absent => None,
+            Process::Reading(child) | Process::HungUp(child) => Some(child),
+        }
+    }
+
+    /// The terminal's foreground process group, if it is not the
+    /// program's own: a job the shell runs.
+    pub fn job(&self) -> Option<crate::process::Pid> {
+        let child = self.child()?;
+        let group = fuxix::terminal::foreground_group(&child.master)?;
+        (group != child.leader.pid()).then_some(group)
+    }
+
+    pub fn hang_up(&mut self) {
+        *self = match std::mem::replace(self, Process::Absent) {
+            Process::Reading(child) | Process::HungUp(child) => Process::HungUp(child),
+            Process::Absent => Process::Absent,
+        };
+    }
+}
+
 pub struct Pane {
     pub id: PaneId,
     pub name: String,
@@ -313,14 +350,10 @@ pub struct Pane {
     pub parser: fux_vt::Parser,
     /// The PTY size, the smallest rectangle any client shows the pane in.
     pub size: (u16, u16),
-    pub child: Option<Child>,
+    pub process: Process,
     pub input: InputQueue,
     /// Whether a reply was dropped because the queue was full; noticed once.
     pub reply_dropped: bool,
-    /// Whether the PTY hung up while the program lives on: it closed the
-    /// terminal but has not exited. Its master reports the end on every
-    /// poll, so it is no longer polled; its exit, by SIGCHLD, ends the pane.
-    pub hung_up: bool,
     /// The shell's program the pane was started with. fux reads it nowhere
     /// itself; a typed command is quoted for the shell before the pane is
     /// made (`Session::new_pane`).
@@ -403,10 +436,9 @@ impl Pane {
             title: String::new(),
             parser,
             size: (rows.max(1), cols.max(1)),
-            child: None,
+            process: Process::Absent,
             input: InputQueue::default(),
             reply_dropped: false,
-            hung_up: false,
             shell,
             typed: None,
             frame: None,
@@ -535,6 +567,21 @@ impl Pane {
         (false, begun)
     }
 
+    /// Writes the waiting input, as far as the program's terminal takes it.
+    pub fn write_input(&mut self) {
+        let Process::Reading(child) = &self.process else {
+            return;
+        };
+        while let Some(bytes) = self.input.front() {
+            match fuxix::io::write(&child.master, bytes) {
+                Ok(0) => break,
+                Ok(n) => self.input.advance(n),
+                Err(fuxix::Errno::INTR) => continue,
+                Err(_) => break,
+            }
+        }
+    }
+
     /// Types a held command line into the shell now.
     pub fn type_now(&mut self) {
         if let Some(typed) = self.typed.take() {
@@ -553,7 +600,7 @@ impl Pane {
         self.release_frame();
         if self.parser.resize(size(rows, cols)).is_ok() {
             self.size = (rows, cols);
-            if let Some(child) = &self.child {
+            if let Some(child) = self.process.child() {
                 crate::process::resize(&child.master, rows, cols);
             }
             // In-band resize: the report follows the PTY's new size, never
@@ -592,17 +639,6 @@ impl Pane {
             &self.name
         } else {
             &self.title
-        }
-    }
-
-    /// Whether the shell is the only thing running: nothing in the foreground
-    /// but the shell's own group.
-    pub fn idle(&self) -> bool {
-        match &self.child {
-            Some(child) => {
-                crate::process::foreground(&child.master).is_none_or(|group| group == child.pid)
-            }
-            None => true,
         }
     }
 }
