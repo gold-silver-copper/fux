@@ -111,6 +111,51 @@ pub enum SwapWith {
     Toward(Direction),
 }
 
+/// A pane, tab or workspace a command acts on: the one given, or (`None`)
+/// the client's or the pane's own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Subject {
+    Pane(Option<PaneId>),
+    Tab(Option<TabId>),
+    Workspace(Option<WsRef>),
+}
+
+impl Subject {
+    pub fn kind(&self) -> Kind {
+        match self {
+            Subject::Pane(_) => Kind::Pane,
+            Subject::Tab(_) => Kind::Tab,
+            Subject::Workspace(_) => Kind::Workspace,
+        }
+    }
+    /// The one given, if one was.
+    pub fn target(&self) -> Option<AnyRef> {
+        match self {
+            Subject::Pane(p) => p.map(AnyRef::Pane),
+            Subject::Tab(t) => t.map(AnyRef::Tab),
+            Subject::Workspace(w) => w.clone().map(AnyRef::Workspace),
+        }
+    }
+    /// The client's or the pane's own of `kind`.
+    fn own(kind: Kind) -> Subject {
+        match kind {
+            Kind::Pane => Subject::Pane(None),
+            Kind::Tab => Subject::Tab(None),
+            Kind::Workspace => Subject::Workspace(None),
+        }
+    }
+}
+
+impl From<AnyRef> for Subject {
+    fn from(target: AnyRef) -> Subject {
+        match target {
+            AnyRef::Pane(p) => Subject::Pane(Some(p)),
+            AnyRef::Tab(t) => Subject::Tab(Some(t)),
+            AnyRef::Workspace(w) => Subject::Workspace(Some(w)),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     Ls {
@@ -176,16 +221,14 @@ pub enum Command {
         target: Option<PaneId>,
     },
     Reorder {
-        kind: Kind,
-        target: Option<AnyRef>,
+        subject: Subject,
         toward: Sibling,
     },
-    /// `set`, `bind` or `unbind`, as the config file has them: the whole
-    /// line, for `Config::apply`.
+    /// `set`, `bind`, `unbind` or `unbind-all`, as the config file has
+    /// them: the whole line, for `Config::apply`.
     Configure {
         argv: Vec<String>,
     },
-    UnbindAll,
     Reload,
     ListBuffers,
     ShowBuffer {
@@ -203,6 +246,24 @@ pub enum Command {
     },
 }
 
+impl Command {
+    /// The pane, tab or workspace it acts on, for those that take any.
+    fn subject(&self) -> Option<&Subject> {
+        let (Command::Reorder { subject, .. }
+        | Command::Client {
+            action:
+                ClientAction::Menu(subject)
+                | ClientAction::RenamePrompt(subject)
+                | ClientAction::ConfirmClose(subject),
+            ..
+        }) = self
+        else {
+            return None;
+        };
+        Some(subject)
+    }
+}
+
 /// What a command does on a client's screen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClientAction {
@@ -213,31 +274,22 @@ pub enum ClientAction {
         json: bool,
     },
     CommandColumn,
+    /// `moving`: the pane to move to the tab chosen, if one: the one given,
+    /// or (`None`) the focused one.
     ChooseTab {
-        moving: Option<PaneId>,
-        moving_now: bool,
+        moving: Option<Option<PaneId>>,
     },
     ChooseWorkspace {
-        moving: Option<PaneId>,
-        moving_now: bool,
+        moving: Option<Option<PaneId>>,
     },
     ChoosePane {
         target: Option<PaneId>,
     },
-    Menu {
-        kind: Kind,
-        target: Option<AnyRef>,
-    },
+    Menu(Subject),
     CommandPrompt,
     CopyMode,
-    RenamePrompt {
-        kind: Kind,
-        target: Option<AnyRef>,
-    },
-    ConfirmClose {
-        kind: Kind,
-        target: Option<AnyRef>,
-    },
+    RenamePrompt(Subject),
+    ConfirmClose(Subject),
     Zoom,
     SelectPane(PanePick),
     SelectTab(Pick<TabId>),
@@ -260,53 +312,39 @@ impl ClientAction {
 pub enum Usage {
     NoCommand,
     UnknownCommand(String),
-    // A word that is not the target it must be.
-    NotPane(String),
-    NotTab(String),
-    NotWorkspace(String),
+    /// A word that is not the pane, tab or workspace it must be.
+    Not(Kind, String),
     NotClient(String),
     /// A flag of `command` given no value.
     NeedsValue {
-        command: String,
+        command: &'static str,
         flag: String,
     },
     UnknownFlag {
-        command: String,
+        command: &'static str,
         flag: String,
     },
     Unexpected {
-        command: String,
+        command: &'static str,
         word: String,
     },
     /// A word that is not `pane`, `tab` or `workspace`.
     NotKind {
-        command: String,
+        command: &'static str,
         word: String,
     },
     NotBuffer {
-        command: String,
+        command: &'static str,
         value: String,
     },
     NotCells(String),
     NotLines(String),
     /// Words after `--` for a command that takes none.
     NoCommandAfter {
-        command: String,
+        command: &'static str,
     },
-    // What a command needs and was not given.
-    SplitAxis,
-    RenameTarget,
-    RenameName,
-    MoveTo,
-    SwapWith,
-    ResizeDirection,
-    NoKeys,
-    ReorderKind,
-    ReorderDirection,
-    MenuKind,
-    SelectPane,
-    SelectTab,
-    SelectWorkspace,
+    /// What a command needs and was not given, in its own words.
+    Needs(&'static str),
 }
 
 impl std::fmt::Display for Usage {
@@ -316,14 +354,16 @@ impl std::fmt::Display for Usage {
             Usage::UnknownCommand(name) => {
                 write!(f, "unknown command {name:?}; `fux help` lists commands")
             }
-            Usage::NotPane(text) => write!(f, "{text:?} is not a pane; panes are %N"),
-            Usage::NotTab(text) => write!(f, "{text:?} is not a tab; tabs are @N"),
-            Usage::NotWorkspace(text) => {
-                write!(
-                    f,
-                    "{text:?} is not a workspace; workspaces are +N or a name"
-                )
-            }
+            Usage::Not(kind, text) => write!(
+                f,
+                "{text:?} is not a {}; {}",
+                kind.name(),
+                match kind {
+                    Kind::Pane => "panes are %N",
+                    Kind::Tab => "tabs are @N",
+                    Kind::Workspace => "workspaces are +N or a name",
+                }
+            ),
             Usage::NotClient(text) => {
                 write!(f, "{text:?} is not a client; `fux ls` lists clients as cN")
             }
@@ -341,43 +381,12 @@ impl std::fmt::Display for Usage {
             Usage::NotCells(text) => write!(f, "resize-pane: {text:?} is not a number of cells"),
             Usage::NotLines(text) => write!(f, "capture-pane -S: {text:?} is not -N"),
             Usage::NoCommandAfter { command } => write!(f, "{command} takes no command after --"),
-            Usage::SplitAxis => f.write_str("split needs -h (side by side) or -v (stacked)"),
-            Usage::RenameTarget => {
-                f.write_str("rename needs -t TARGET (%N, @N, +N or a workspace name)")
-            }
-            Usage::RenameName => {
-                f.write_str("usage: rename -t TARGET NAME (quote a name with spaces)")
-            }
-            Usage::MoveTo => {
-                f.write_str("move-pane needs --to @N|+N|new-tab|new-workspace or -L/-R/-U/-D")
-            }
-            Usage::SwapWith => f.write_str("swap-pane needs another pane (%N) or -L/-R/-U/-D"),
-            Usage::ResizeDirection => f.write_str("resize-pane needs -L, -R, -U or -D"),
-            Usage::NoKeys => f.write_str("send-keys needs keys to send"),
-            Usage::ReorderKind => {
-                f.write_str("usage: reorder pane|tab|workspace [-t TARGET] --next|--previous")
-            }
-            Usage::ReorderDirection => f.write_str("reorder needs --next or --previous"),
-            Usage::MenuKind => f.write_str("usage: menu pane|tab|workspace [-t TARGET]"),
-            Usage::SelectPane => f.write_str(
-                "select-pane needs one of -t %N, --next, --previous, --last, -L/-R/-U/-D",
-            ),
-            Usage::SelectTab => f.write_str("select-tab needs one of -t @N, --next, --previous"),
-            Usage::SelectWorkspace => {
-                f.write_str("select-workspace needs one of -t +N, --next, --previous")
-            }
+            Usage::Needs(what) => f.write_str(what),
         }
     }
 }
 
 impl std::error::Error for Usage {}
-
-fn needs_value(command: &str, flag: &str) -> Usage {
-    Usage::NeedsValue {
-        command: command.to_owned(),
-        flag: flag.to_owned(),
-    }
-}
 
 fn number(text: &str) -> Option<u32> {
     if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
@@ -389,24 +398,24 @@ fn number(text: &str) -> Option<u32> {
 pub fn parse_pane(text: &str) -> Result<PaneId, Usage> {
     match text.strip_prefix('%').and_then(number) {
         Some(n) => Ok(PaneId(n)),
-        None => Err(Usage::NotPane(text.to_owned())),
+        None => Err(Usage::Not(Kind::Pane, text.to_owned())),
     }
 }
 pub fn parse_tab(text: &str) -> Result<TabId, Usage> {
     match text.strip_prefix('@').and_then(number) {
         Some(n) => Ok(TabId(n)),
-        None => Err(Usage::NotTab(text.to_owned())),
+        None => Err(Usage::Not(Kind::Tab, text.to_owned())),
     }
 }
 pub fn parse_workspace(text: &str) -> Result<WsRef, Usage> {
     if let Some(rest) = text.strip_prefix('+') {
         return match number(rest) {
             Some(n) => Ok(WsRef::Id(WsId(n))),
-            None => Err(Usage::NotWorkspace(text.to_owned())),
+            None => Err(Usage::Not(Kind::Workspace, text.to_owned())),
         };
     }
     if text.is_empty() || text.starts_with(['%', '@', '-']) {
-        return Err(Usage::NotWorkspace(text.to_owned()));
+        return Err(Usage::Not(Kind::Workspace, text.to_owned()));
     }
     Ok(WsRef::Name(text.to_owned()))
 }
@@ -433,153 +442,6 @@ fn direction_flag(flag: &str) -> Option<Direction> {
     Direction::ALL.into_iter().find(|d| d.flag() == flag)
 }
 
-/// Words after the command name: flags (some taking a value), positionals,
-/// and whatever follows `--`.
-struct Args<'a> {
-    name: &'a str,
-    words: std::slice::Iter<'a, String>,
-    rest: Vec<String>,
-    positional: Vec<&'a str>,
-}
-
-impl<'a> Args<'a> {
-    fn new(name: &'a str, words: &'a [String]) -> Self {
-        Self {
-            name,
-            words: words.iter(),
-            rest: Vec::new(),
-            positional: Vec::new(),
-        }
-    }
-    /// The next flag, with positionals collected aside, until `--` or the end.
-    fn flag(&mut self) -> Option<&'a str> {
-        loop {
-            let word = self.words.next()?;
-            if word == "--" {
-                self.rest = self.words.by_ref().cloned().collect();
-                return None;
-            }
-            if word.starts_with('-') && word.len() > 1 {
-                return Some(word.as_str());
-            }
-            self.positional.push(word.as_str());
-        }
-    }
-    fn value(&mut self, flag: &str) -> Result<&'a str, Usage> {
-        match self.words.next() {
-            Some(v) => Ok(v.as_str()),
-            None => Err(needs_value(self.name, flag)),
-        }
-    }
-    fn unknown<T>(&self, flag: &str) -> Result<T, Usage> {
-        Err(Usage::UnknownFlag {
-            command: self.name.to_owned(),
-            flag: flag.to_owned(),
-        })
-    }
-    fn no_positional(&self) -> Result<(), Usage> {
-        match self.positional.first() {
-            Some(word) => Err(Usage::Unexpected {
-                command: self.name.to_owned(),
-                word: (*word).to_owned(),
-            }),
-            None => Ok(()),
-        }
-    }
-    /// The kind a positional names, if one is given: `pane`, `tab` or
-    /// `workspace`.
-    fn kind(&mut self) -> Result<Option<Kind>, Usage> {
-        let Some(word) = self.positional.pop() else {
-            return Ok(None);
-        };
-        let kind = [Kind::Pane, Kind::Tab, Kind::Workspace]
-            .into_iter()
-            .find(|k| k.name() == word);
-        kind.map(Some).ok_or_else(|| Usage::NotKind {
-            command: self.name.to_owned(),
-            word: word.to_owned(),
-        })
-    }
-    /// The flags, in order, of those `takes` names (space-separated); any
-    /// other is refused where it stands, and each value is parsed there,
-    /// `-t`'s by `target`, so a line with two mistakes reports the first.
-    /// A flag given twice counts the second time.
-    fn flags<T>(
-        &mut self,
-        takes: &str,
-        target: impl Fn(&'a str) -> Result<T, Usage>,
-    ) -> Result<Flags<'a, T>, Usage> {
-        let mut f = Flags {
-            target: None,
-            client: None,
-            name: None,
-            buffer: None,
-            to: None,
-            axis: None,
-            direction: None,
-            pick: None,
-            lines: None,
-            json: false,
-            moving: false,
-        };
-        while let Some(flag) = self.flag() {
-            if !takes.split(' ').any(|t| t == flag) {
-                return self.unknown(flag);
-            }
-            if let Some(d) = direction_flag(flag) {
-                f.direction = Some(d);
-                f.to = Some(MoveTo::Beside(d));
-                continue;
-            }
-            match flag {
-                "-t" => f.target = Some(target(self.value(flag)?)?),
-                "-c" => f.client = Some(parse_client(self.value(flag)?)?),
-                "-n" => f.name = Some(self.value(flag)?),
-                "-b" => {
-                    let value = self.value(flag)?;
-                    let index = number(value).map(|n| n as usize);
-                    f.buffer = Some(index.ok_or_else(|| Usage::NotBuffer {
-                        command: self.name.to_owned(),
-                        value: value.to_owned(),
-                    })?);
-                }
-                "-S" => {
-                    let value = self.value(flag)?;
-                    let lines = value.strip_prefix('-').unwrap_or(value).parse();
-                    f.lines = Some(lines.map_err(|_| Usage::NotLines(value.to_owned()))?);
-                }
-                "--to" => f.to = Some(parse_move_to(self.value(flag)?)?),
-                "-h" => f.axis = Some(Axis::Horizontal),
-                "-v" => f.axis = Some(Axis::Vertical),
-                "--json" => f.json = true,
-                "--move" => f.moving = true,
-                "--next" | "--previous" | "--last" => f.pick = Some(flag),
-                other => return self.unknown(other),
-            }
-        }
-        Ok(f)
-    }
-}
-
-/// What a command line's flags gave, as `Args::flags` found them: `-t`'s
-/// target, as the command parses it; `-c`'s client; `-n`'s name; `-b`'s
-/// buffer; where `--to` or a direction moves a pane; `-h` or `-v`; the
-/// last direction flag; `--next`, `--previous` or `--last`; `-S`'s lines;
-/// `--json`; `--move`.
-struct Flags<'a, T> {
-    target: Option<T>,
-    client: Option<ClientId>,
-    name: Option<&'a str>,
-    buffer: Option<usize>,
-    to: Option<MoveTo>,
-    axis: Option<Axis>,
-    direction: Option<Direction>,
-    pick: Option<&'a str>,
-    lines: Option<usize>,
-    json: bool,
-    moving: bool,
-}
-
 /// Where `move-pane --to` sends a pane.
 fn parse_move_to(value: &str) -> Result<MoveTo, Usage> {
     Ok(match value {
@@ -590,331 +452,568 @@ fn parse_move_to(value: &str) -> Result<MoveTo, Usage> {
     })
 }
 
-/// Parses one command line.
-pub fn parse(argv: &[String]) -> Result<Command, Usage> {
-    let Some((name, words)) = argv.split_first() else {
-        return Err(Usage::NoCommand);
-    };
-    let name = name.as_str();
-    let mut a = Args::new(name, words);
-    let command = match name {
-        "ls" | "list" => Command::Ls {
-            json: a.flags("--json", Ok)?.json,
-        },
-        // A command that takes nothing reads its words with no flags, so
-        // that one given any is refused, not ignored.
-        "kill-server" => {
-            a.flags("", Ok)?;
-            Command::KillServer
-        }
-        "list-keys" => {
-            a.flags("", Ok)?;
-            Command::ListKeys
-        }
-        "new-workspace" => Command::NewWorkspace {
-            name: a.flags("-n", Ok)?.name.map(str::to_owned),
-            cmd: std::mem::take(&mut a.rest),
-        },
-        "new-tab" => {
-            let f = a.flags("-n -t", parse_workspace)?;
-            Command::NewTab {
-                target: f.target,
-                name: f.name.map(str::to_owned),
-                cmd: std::mem::take(&mut a.rest),
-            }
-        }
-        "split" => {
-            let f = a.flags("-h -v -t", parse_pane)?;
-            Command::Split {
-                axis: f.axis.ok_or(Usage::SplitAxis)?,
-                target: f.target,
-                cmd: std::mem::take(&mut a.rest),
-            }
-        }
-        "kill-pane" | "kill-tab" | "kill-workspace" | "terminate" | "send-prefix" => {
-            // Kept as given, and parsed once every flag is known.
-            let target = a.flags("-t", Ok)?.target;
-            match name {
-                "kill-pane" => Command::KillPane {
-                    target: target.map(parse_pane).transpose()?,
-                },
-                "terminate" => Command::Terminate {
-                    target: target.map(parse_pane).transpose()?,
-                },
-                "send-prefix" => Command::SendPrefix {
-                    target: target.map(parse_pane).transpose()?,
-                },
-                "kill-tab" => Command::KillTab {
-                    target: target.map(parse_tab).transpose()?,
-                },
-                _ => Command::KillWorkspace {
-                    target: target.map(parse_workspace).transpose()?,
-                },
-            }
-        }
-        "rename" => {
-            let target = a.flags("-t", parse_any)?.target;
-            let target = target.ok_or(Usage::RenameTarget)?;
-            let name_words: Vec<String> = a
-                .positional
-                .iter()
-                .map(|s| (*s).to_owned())
-                .chain(a.rest.iter().cloned())
-                .collect();
-            let [new_name] = name_words.as_slice() else {
-                return Err(Usage::RenameName);
-            };
-            a.positional.clear();
-            Command::Rename {
-                target,
-                name: new_name.clone(),
-            }
-        }
-        "move-pane" => {
-            let f = a.flags("-t --to -L -R -U -D", parse_pane)?;
-            Command::MovePane {
-                target: f.target,
-                to: f.to.ok_or(Usage::MoveTo)?,
-            }
-        }
-        "swap-pane" => {
-            let f = a.flags("-t -L -R -U -D", parse_pane)?;
-            // Another pane or a direction: one, not both.
-            let with = match (a.positional.pop(), f.direction) {
-                (Some(other), None) => SwapWith::Pane(parse_pane(other)?),
-                (None, Some(direction)) => SwapWith::Toward(direction),
-                (Some(_), Some(_)) | (None, None) => return Err(Usage::SwapWith),
-            };
-            Command::SwapPane {
-                target: f.target,
-                with,
-            }
-        }
-        "resize-pane" => {
-            let f = a.flags("-t -L -R -U -D", parse_pane)?;
-            let (target, direction) = (f.target, f.direction.ok_or(Usage::ResizeDirection)?);
-            let amount = match a.positional.pop() {
-                Some(n) => match number(n).and_then(|n| u16::try_from(n).ok()) {
-                    Some(n) if n > 0 => n,
-                    _ => return Err(Usage::NotCells(n.to_owned())),
-                },
-                None => 1,
-            };
-            Command::ResizePane {
-                target,
-                direction,
-                amount,
-            }
-        }
-        "send-keys" => {
-            let (mut target, mut literal) = (None, false);
-            // Keys may look like flags (`-`), so only leading flags count.
-            let mut keys = Vec::new();
-            let mut iter = words.iter().peekable();
-            while let Some(word) = iter.peek() {
-                match word.as_str() {
-                    "-t" => {
-                        iter.next();
-                        let Some(value) = iter.next() else {
-                            return Err(needs_value(name, "-t"));
-                        };
-                        target = Some(parse_pane(value)?);
-                    }
-                    "-l" => {
-                        iter.next();
-                        literal = true;
-                    }
-                    "--" => {
-                        iter.next();
-                        break;
-                    }
-                    _ => break,
-                }
-            }
-            keys.extend(iter.cloned());
-            if keys.is_empty() {
-                return Err(Usage::NoKeys);
-            }
-            return Ok(Command::SendKeys {
-                target,
-                literal,
-                keys,
-            });
-        }
-        "capture-pane" => {
-            let f = a.flags("-t -S --json", parse_pane)?;
-            Command::CapturePane {
-                target: f.target,
-                history: f.lines,
-                json: f.json,
-            }
-        }
-        "reorder" => {
-            let f = a.flags("-t --next --previous", Ok)?;
-            let target = f.target.map(parse_any).transpose()?;
-            let given = a.kind()?;
-            same_kind(given, f.target.zip(target.as_ref()))?;
-            let kind = given
-                .or(target.as_ref().map(AnyRef::kind))
-                .ok_or(Usage::ReorderKind)?;
-            let toward = match f.pick {
-                Some("--next") => Sibling::Next,
-                Some(_) => Sibling::Previous,
-                None => return Err(Usage::ReorderDirection),
-            };
-            Command::Reorder {
-                kind,
-                target,
-                toward,
-            }
-        }
-        "set" | "bind" | "unbind" => {
-            return Ok(Command::Configure {
-                argv: argv.to_vec(),
-            });
-        }
-        "unbind-all" => {
-            a.flags("", Ok)?;
-            Command::UnbindAll
-        }
-        "reload" => {
-            a.flags("", Ok)?;
-            Command::Reload
-        }
-        "list-buffers" => {
-            a.flags("", Ok)?;
-            Command::ListBuffers
-        }
-        "show-buffer" => Command::ShowBuffer {
-            index: a.flags("-b", Ok)?.buffer.unwrap_or(0),
-        },
-        "paste-buffer" => {
-            let f = a.flags("-b -t", parse_pane)?;
-            Command::PasteBuffer {
-                index: f.buffer.unwrap_or(0),
-                target: f.target,
-            }
-        }
-        "detach" => Command::Client {
-            client: a.flags("-c", Ok)?.client,
-            action: ClientAction::Detach,
-        },
-        "capture-client" => {
-            let f = a.flags("-c --json", Ok)?;
-            a.no_positional()?;
-            Command::Client {
-                client: f.client,
-                action: ClientAction::Capture { json: f.json },
-            }
-        }
-        "command-column" | "command-prompt" | "copy-mode" | "zoom" | "choose-tab"
-        | "choose-workspace" | "choose-pane" | "menu" | "rename-prompt" | "confirm-close"
-        | "select-pane" | "select-tab" | "select-workspace" => {
-            // Each takes only the flags it uses, so none is accepted and
-            // then ignored. The target is kept as given, and parsed once
-            // every flag and the kind are known.
-            let takes = match name {
-                "choose-tab" | "choose-workspace" => "-c -t --move",
-                "choose-pane" | "menu" | "rename-prompt" | "confirm-close" => "-c -t",
-                "select-pane" => "-c -t --next --previous --last -L -R -U -D",
-                "select-tab" | "select-workspace" => "-c -t --next --previous",
-                _ => "-c",
-            };
-            let f = a.flags(takes, Ok)?;
-            let (client, target, pick, direction) = (f.client, f.target, f.pick, f.direction);
-            // Only these name a kind: pane, tab or workspace.
-            let kind = match name {
-                "menu" | "rename-prompt" | "confirm-close" => a.kind()?,
-                _ => None,
-            };
-            a.no_positional()?;
-            let any = target.map(parse_any).transpose()?;
-            same_kind(kind, target.zip(any.as_ref()))?;
-            // Given, or the target's; a pane's by default, but for a menu.
-            let kind = kind.or(any.as_ref().map(AnyRef::kind));
-            let moving_now = f.moving;
-            let action = match name {
-                "command-column" => ClientAction::CommandColumn,
-                "command-prompt" => ClientAction::CommandPrompt,
-                "copy-mode" => ClientAction::CopyMode,
-                "zoom" => ClientAction::Zoom,
-                "choose-tab" => ClientAction::ChooseTab {
-                    moving: target.map(parse_pane).transpose()?,
-                    moving_now,
-                },
-                "choose-workspace" => ClientAction::ChooseWorkspace {
-                    moving: target.map(parse_pane).transpose()?,
-                    moving_now,
-                },
-                "choose-pane" => ClientAction::ChoosePane {
-                    target: target.map(parse_pane).transpose()?,
-                },
-                "menu" => ClientAction::Menu {
-                    kind: kind.ok_or(Usage::MenuKind)?,
-                    target: any,
-                },
-                "rename-prompt" => ClientAction::RenamePrompt {
-                    kind: kind.unwrap_or(Kind::Pane),
-                    target: any,
-                },
-                "confirm-close" => ClientAction::ConfirmClose {
-                    kind: kind.unwrap_or(Kind::Pane),
-                    target: any,
-                },
-                "select-pane" => ClientAction::SelectPane(match (pick, direction, target) {
-                    (Some("--next"), None, None) => PanePick::Step(Sibling::Next),
-                    (Some("--previous"), None, None) => PanePick::Step(Sibling::Previous),
-                    (Some("--last"), None, None) => PanePick::Last,
-                    (None, Some(d), None) => PanePick::Toward(d),
-                    (None, None, Some(t)) => PanePick::Id(parse_pane(t)?),
-                    _ => return Err(Usage::SelectPane),
-                }),
-                "select-tab" => ClientAction::SelectTab(match (pick, target) {
-                    (Some("--next"), None) => Pick::Step(Sibling::Next),
-                    (Some("--previous"), None) => Pick::Step(Sibling::Previous),
-                    (None, Some(t)) => Pick::Id(parse_tab(t)?),
-                    _ => return Err(Usage::SelectTab),
-                }),
-                _ => ClientAction::SelectWorkspace(match (pick, target) {
-                    (Some("--next"), None) => Pick::Step(Sibling::Next),
-                    (Some("--previous"), None) => Pick::Step(Sibling::Previous),
-                    (None, Some(t)) => Pick::Id(parse_workspace(t)?),
-                    _ => return Err(Usage::SelectWorkspace),
-                }),
-            };
-            Command::Client { client, action }
-        }
-        other => return Err(Usage::UnknownCommand(other.to_owned())),
-    };
-    a.no_positional()?;
-    if !a.rest.is_empty()
-        && !matches!(
-            command,
-            Command::NewWorkspace { .. }
-                | Command::NewTab { .. }
-                | Command::Split { .. }
-                | Command::Rename { .. }
-        )
-    {
-        return Err(Usage::NoCommandAfter {
-            command: name.to_owned(),
-        });
-    }
-    Ok(command)
+/// A command, described once: how `fux help` shows it, and how its words
+/// become a [`Command`].
+pub struct Spec {
+    /// Its name (`ls|list`: and another), the words after it, and after two
+    /// spaces what it does. Every flag here is one the command takes, and
+    /// it takes no other; one followed by a placeholder (`-t %N`, unlike
+    /// `-h [-t %N]` or `[--json]`) takes a value. With `pane|tab|workspace`
+    /// in it, the last positional names a kind.
+    pub usage: &'static str,
+    read: Read,
 }
 
-/// A kind given beside a target, `text` as given, of another kind: refused,
-/// in the words a target of the wrong kind gets, rather than one of the
-/// two silently winning.
-fn same_kind(kind: Option<Kind>, target: Option<(&str, &AnyRef)>) -> Result<(), Usage> {
-    match (kind, target) {
-        (Some(kind), Some((text, any))) if any.kind() != kind => Err(match kind {
-            Kind::Pane => Usage::NotPane(text.to_owned()),
-            Kind::Tab => Usage::NotTab(text.to_owned()),
-            Kind::Workspace => Usage::NotWorkspace(text.to_owned()),
-        }),
-        _ => Ok(()),
+/// How a command's words become a [`Command`]. With `Flags` and `Screen`,
+/// flags come anywhere, as the usage names them, among positionals and
+/// before `--`; what the reader leaves is refused.
+enum Read {
+    Flags(fn(&mut Args<'_>) -> Result<Command, Usage>),
+    /// An action on the screen of the client `-c` names, if it names one,
+    /// else of the client whose key, menu or prompt ran it.
+    Screen(fn(&mut Args<'_>) -> Result<ClientAction, Usage>),
+    /// The words as they are: keys that may look like flags, or a config
+    /// line, which `Config::apply` reads.
+    Line(fn(&[String]) -> Result<Command, Usage>),
+}
+
+const fn spec(usage: &'static str, read: Read) -> Spec {
+    Spec { usage, read }
+}
+
+use Read::{Flags, Line, Screen};
+
+/// Every command, under the command-column group its bindings are listed
+/// in, in the column's order: `Other`, which it lists last, holds the rest.
+pub const COMMANDS: &[(&str, &[Spec])] = &[
+    ("Panes", PANES),
+    ("Focus", FOCUS),
+    ("Tabs", TABS),
+    ("Workspaces", WORKSPACES),
+    ("Session", SESSION),
+    ("Other", OTHER),
+];
+
+#[rustfmt::skip]
+const PANES: &[Spec] = &[
+    spec("split -h|-v [-t %N] [-- CMD...]  -h side by side, -v stacked", Flags(split)),
+    spec("kill-pane [-t %N]  close, without asking", Flags(|a| {
+        Ok(Command::KillPane { target: a.pane()? })
+    })),
+    spec("zoom [-c CLIENT]", Screen(|_| Ok(ClientAction::Zoom))),
+    spec("resize-pane [-t %N] -L|-R|-U|-D [CELLS]  move a border (one cell)", Flags(resize)),
+    spec("swap-pane [-t %N] (%M | -L|-R|-U|-D)", Flags(swap)),
+    spec("move-pane [-t %N] (--to @N|+N|new-tab|new-workspace | -L|-R|-U|-D)", Flags(move_pane)),
+    spec("copy-mode [-c CLIENT]", Screen(|_| Ok(ClientAction::CopyMode))),
+    spec("paste-buffer [-b N] [-t %N]", Flags(|a| {
+        Ok(Command::PasteBuffer { index: a.buffer()?, target: a.pane()? })
+    })),
+    spec("menu pane|tab|workspace [-c CLIENT] [-t TARGET]", Screen(|a| {
+        let needs = Usage::Needs("usage: menu pane|tab|workspace [-t TARGET]");
+        a.subject()?.map(ClientAction::Menu).ok_or(needs)
+    })),
+    spec("rename-prompt [pane|tab|workspace] [-c CLIENT] [-t TARGET]", Screen(|a| {
+        Ok(ClientAction::RenamePrompt(a.subject()?.unwrap_or(Subject::Pane(None))))
+    })),
+    spec("confirm-close [pane|tab|workspace] [-c CLIENT] [-t TARGET]", Screen(|a| {
+        Ok(ClientAction::ConfirmClose(a.subject()?.unwrap_or(Subject::Pane(None))))
+    })),
+    spec("terminate [-t %N]  SIGTERM to the pane's foreground job", Flags(|a| {
+        Ok(Command::Terminate { target: a.pane()? })
+    })),
+    spec("choose-pane [-c CLIENT] [-t %N]  a pane to swap with", Screen(|a| {
+        Ok(ClientAction::ChoosePane { target: a.pane()? })
+    })),
+    spec("send-keys [-t %N] [-l] KEYS...  keys, or with -l text", Line(send_keys)),
+    spec("send-prefix [-t %N]  the prefix key, to the pane", Flags(|a| {
+        Ok(Command::SendPrefix { target: a.pane()? })
+    })),
+    spec("reorder pane|tab|workspace [-t TARGET] --next|--previous", Flags(reorder)),
+];
+
+#[rustfmt::skip]
+const FOCUS: &[Spec] = &[spec(
+    "select-pane [-c CLIENT] -t %N|--next|--previous|--last|-L|-R|-U|-D",
+    Screen(select_pane),
+)];
+
+#[rustfmt::skip]
+const TABS: &[Spec] = &[
+    spec("new-tab [-t WS] [-n NAME] [-- CMD...]", Flags(|a| {
+        let target = a.target(parse_workspace)?;
+        Ok(Command::NewTab { target, name: a.name(), cmd: a.rest() })
+    })),
+    spec("select-tab [-c CLIENT] -t @N|--next|--previous", Screen(|a| {
+        let needs = "select-tab needs one of -t @N, --next, --previous";
+        a.pick(parse_tab, needs).map(ClientAction::SelectTab)
+    })),
+    spec("choose-tab [-c CLIENT] [-t %N] [--move]  where to go, or move the pane", Screen(|a| {
+        Ok(ClientAction::ChooseTab { moving: a.moving()? })
+    })),
+    spec("kill-tab [-t @N]", Flags(|a| Ok(Command::KillTab { target: a.target(parse_tab)? }))),
+];
+
+#[rustfmt::skip]
+const WORKSPACES: &[Spec] = &[
+    spec("new-workspace [-n NAME] [-- CMD...]", Flags(|a| {
+        Ok(Command::NewWorkspace { name: a.name(), cmd: a.rest() })
+    })),
+    spec("select-workspace [-c CLIENT] -t WS|--next|--previous", Screen(|a| {
+        let needs = "select-workspace needs one of -t +N, --next, --previous";
+        a.pick(parse_workspace, needs).map(ClientAction::SelectWorkspace)
+    })),
+    spec("choose-workspace [-c CLIENT] [-t %N] [--move]", Screen(|a| {
+        Ok(ClientAction::ChooseWorkspace { moving: a.moving()? })
+    })),
+    spec("kill-workspace [-t WS]", Flags(|a| {
+        Ok(Command::KillWorkspace { target: a.target(parse_workspace)? })
+    })),
+];
+
+#[rustfmt::skip]
+const SESSION: &[Spec] = &[
+    spec("detach [-c CLIENT]", Screen(|_| Ok(ClientAction::Detach))),
+    spec("command-prompt [-c CLIENT]", Screen(|_| Ok(ClientAction::CommandPrompt))),
+    spec("command-column [-c CLIENT]", Screen(|_| Ok(ClientAction::CommandColumn))),
+    spec("reload  run the config file again", Flags(|_| Ok(Command::Reload))),
+    spec("kill-server", Flags(|_| Ok(Command::KillServer))),
+];
+
+#[rustfmt::skip]
+const OTHER: &[Spec] = &[
+    spec("ls|list [--json]  workspaces, tabs, panes and clients", Flags(|a| {
+        Ok(Command::Ls { json: a.has("--json") })
+    })),
+    spec("rename -t TARGET [--] NAME  TARGET: %N, @N, +N or a name", Flags(rename)),
+    spec("capture-pane [-t %N] [-S LINES] [--json]", Flags(|a| {
+        let (target, history, json) = (a.pane()?, a.lines()?, a.has("--json"));
+        Ok(Command::CapturePane { target, history, json })
+    })),
+    spec("capture-client [-c CLIENT] [--json]", Screen(|a| {
+        Ok(ClientAction::Capture { json: a.has("--json") })
+    })),
+    spec("set OPTION VALUE", Line(configure)),
+    spec("bind [-n] [-g GROUP] [-r] KEY... COMMAND...  V is Shift-v", Line(configure)),
+    spec("unbind [-n] KEY...", Line(configure)),
+    spec("unbind-all", Flags(|_| Ok(Command::Configure { argv: vec!["unbind-all".to_owned()] }))),
+    spec("list-buffers", Flags(|_| Ok(Command::ListBuffers))),
+    spec("show-buffer [-b N]", Flags(|a| Ok(Command::ShowBuffer { index: a.buffer()? }))),
+    spec("list-keys  key names and bindings", Flags(|_| Ok(Command::ListKeys))),
+];
+
+/// The command named `name`: the name as the table has it, its group, and
+/// how it reads.
+fn find(name: &str) -> Option<(&'static str, &'static str, &'static Spec)> {
+    COMMANDS.iter().find_map(|(group, specs)| {
+        specs
+            .iter()
+            .find_map(|spec| spec.names().find(|n| *n == name).map(|n| (n, *group, spec)))
+    })
+}
+
+/// The command-column group of a command line that parsed as `command`:
+/// its subject's, for one that acts on any kind, else its command's.
+pub fn group(argv: &[String], command: &Command) -> &'static str {
+    match command.subject().map(Subject::kind) {
+        Some(Kind::Tab) => "Tabs",
+        Some(Kind::Workspace) => "Workspaces",
+        Some(Kind::Pane) | None => argv
+            .first()
+            .and_then(|name| find(name))
+            .map_or("Other", |(_, group, _)| group),
     }
+}
+
+/// The commands, as `fux help` lists them, under their groups.
+pub fn help() -> String {
+    let mut out = String::new();
+    for (group, specs) in COMMANDS {
+        out.push_str(&format!("{group}:\n"));
+        for spec in specs.iter() {
+            let line = match spec.usage.split_once("  ") {
+                Some((usage, about)) if usage.len() < 36 => format!("  {usage:<37}{about}"),
+                Some((usage, about)) => format!("  {usage}\n{:39}{about}", ""),
+                None => format!("  {}", spec.usage),
+            };
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+impl Spec {
+    /// Its name, and another it answers to, if any.
+    pub fn names(&self) -> impl Iterator<Item = &'static str> {
+        self.usage.split(' ').next().unwrap_or_default().split('|')
+    }
+    /// The usage before what the command does.
+    fn grammar(&self) -> &'static str {
+        self.usage.split("  ").next().unwrap_or_default()
+    }
+    /// Whether the usage names `flag`, and if so, whether a value follows it.
+    fn flag(&self, flag: &str) -> Option<bool> {
+        let mut words = self.grammar().split(' ').skip(1).peekable();
+        while let Some(word) = words.next() {
+            let bare = word.trim_matches(['[', ']', '(', ')']);
+            if bare.split('|').any(|f| f == flag) {
+                let value = bare.rsplit('|').next() == Some(flag)
+                    && !word.ends_with([']', ')'])
+                    && words
+                        .peek()
+                        .is_some_and(|w| !w.starts_with(['[', '(', '-', '|']));
+                return Some(value);
+            }
+        }
+        None
+    }
+}
+
+/// A command line's words, read as its usage says: each flag with its value
+/// if it takes one, in order; positionals; and the words after `--`.
+struct Args<'a> {
+    name: &'static str,
+    flags: Vec<(&'a str, Option<&'a str>)>,
+    positional: Vec<&'a str>,
+    /// The last positional, for a command whose usage names a kind.
+    kind: Option<&'a str>,
+    rest: Vec<String>,
+}
+
+impl<'a> Args<'a> {
+    /// Every flag is checked, in order, before any value is read.
+    fn read(name: &'static str, spec: &Spec, words: &'a [String]) -> Result<Self, Usage> {
+        let mut args = Args {
+            name,
+            flags: Vec::new(),
+            positional: Vec::new(),
+            kind: None,
+            rest: Vec::new(),
+        };
+        let mut words = words.iter();
+        while let Some(word) = words.next() {
+            if word == "--" {
+                args.rest = words.cloned().collect();
+                break;
+            }
+            if !(word.starts_with('-') && word.len() > 1) {
+                args.positional.push(word);
+                continue;
+            }
+            let value = match spec.flag(word) {
+                None => {
+                    return Err(Usage::UnknownFlag {
+                        command: name,
+                        flag: word.clone(),
+                    });
+                }
+                Some(false) => None,
+                Some(true) => Some(words.next().ok_or_else(|| Usage::NeedsValue {
+                    command: name,
+                    flag: word.clone(),
+                })?),
+            };
+            args.flags.push((word, value.map(String::as_str)));
+        }
+        if spec.grammar().contains("pane|tab|workspace") {
+            args.kind = args.positional.pop();
+        }
+        Ok(args)
+    }
+    /// The kind the usage's last positional names, if given.
+    fn kind(&self) -> Result<Option<Kind>, Usage> {
+        let Some(word) = self.kind else {
+            return Ok(None);
+        };
+        let kind = [Kind::Pane, Kind::Tab, Kind::Workspace]
+            .into_iter()
+            .find(|k| k.name() == word);
+        kind.map(Some).ok_or_else(|| Usage::NotKind {
+            command: self.name,
+            word: word.to_owned(),
+        })
+    }
+    fn no_positional(&self) -> Result<(), Usage> {
+        match self.positional.first() {
+            Some(word) => Err(Usage::Unexpected {
+                command: self.name,
+                word: (*word).to_owned(),
+            }),
+            None => Ok(()),
+        }
+    }
+    fn has(&self, flag: &str) -> bool {
+        self.flags.iter().any(|(f, _)| *f == flag)
+    }
+    /// The last given of `flags`: a flag given twice counts the second time.
+    fn last(&self, of: &[&str]) -> Option<&'a str> {
+        self.flags
+            .iter()
+            .rev()
+            .map(|(f, _)| *f)
+            .find(|f| of.contains(f))
+    }
+    fn value(&self, flag: &str) -> Option<&'a str> {
+        self.flags
+            .iter()
+            .rev()
+            .find(|(f, _)| *f == flag)
+            .and_then(|(_, v)| *v)
+    }
+    fn step(&self) -> Option<Sibling> {
+        match self.last(&["--next", "--previous"])? {
+            "--next" => Some(Sibling::Next),
+            _ => Some(Sibling::Previous),
+        }
+    }
+    fn direction(&self) -> Option<Direction> {
+        self.flags.iter().rev().find_map(|(f, _)| direction_flag(f))
+    }
+    /// `flag`'s value as `parse` reads it: each one given is read, in
+    /// order, and the last counts.
+    fn parsed<T>(
+        &self,
+        flag: &str,
+        parse: impl Fn(&'a str) -> Result<T, Usage>,
+    ) -> Result<Option<T>, Usage> {
+        let mut values = self.flags.iter().filter(|(f, _)| *f == flag);
+        values.try_fold(None, |_, (_, v)| v.map(&parse).transpose())
+    }
+    fn target<T>(&self, parse: fn(&str) -> Result<T, Usage>) -> Result<Option<T>, Usage> {
+        self.parsed("-t", parse)
+    }
+    fn pane(&self) -> Result<Option<PaneId>, Usage> {
+        self.target(parse_pane)
+    }
+    fn name(&self) -> Option<String> {
+        self.value("-n").map(str::to_owned)
+    }
+    fn buffer(&self) -> Result<usize, Usage> {
+        let buffer = self.parsed("-b", |v| {
+            number(v).ok_or_else(|| Usage::NotBuffer {
+                command: self.name,
+                value: v.to_owned(),
+            })
+        })?;
+        Ok(buffer.map_or(0, |n| n as usize))
+    }
+    fn lines(&self) -> Result<Option<usize>, Usage> {
+        self.parsed("-S", |v| {
+            let lines = v.strip_prefix('-').unwrap_or(v).parse();
+            lines.map_err(|_| Usage::NotLines(v.to_owned()))
+        })
+    }
+    fn rest(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.rest)
+    }
+    /// The pane, tab or workspace a positional kind and `-t` name, if
+    /// either does: of another kind than the kind given, `-t` is refused in
+    /// the words a target of the wrong kind gets, rather than one of the
+    /// two silently winning.
+    fn subject(&self) -> Result<Option<Subject>, Usage> {
+        let (target, kind) = (self.target(parse_any)?, self.kind()?);
+        let (Some(text), Some(target)) = (self.value("-t"), target) else {
+            return Ok(kind.map(Subject::own));
+        };
+        match kind {
+            Some(kind) if kind != target.kind() => Err(Usage::Not(kind, text.to_owned())),
+            _ => Ok(Some(target.into())),
+        }
+    }
+    /// `-t`, `--next` or `--previous`: one of them.
+    fn pick<T>(
+        &self,
+        parse: fn(&str) -> Result<T, Usage>,
+        needs: &'static str,
+    ) -> Result<Pick<T>, Usage> {
+        match (self.step(), self.value("-t")) {
+            (Some(step), None) => Ok(Pick::Step(step)),
+            (None, Some(t)) => parse(t).map(Pick::Id),
+            _ => Err(Usage::Needs(needs)),
+        }
+    }
+    /// What a chooser moves: `-t`'s pane, or with `--move` the focused one.
+    fn moving(&self) -> Result<Option<Option<PaneId>>, Usage> {
+        Ok(match self.pane()? {
+            Some(pane) => Some(Some(pane)),
+            None => self.has("--move").then_some(None),
+        })
+    }
+}
+
+fn configure(argv: &[String]) -> Result<Command, Usage> {
+    Ok(Command::Configure {
+        argv: argv.to_vec(),
+    })
+}
+
+fn split(a: &mut Args<'_>) -> Result<Command, Usage> {
+    let target = a.pane()?;
+    let axis = match a.last(&["-h", "-v"]) {
+        Some("-h") => Axis::Horizontal,
+        Some(_) => Axis::Vertical,
+        None => {
+            return Err(Usage::Needs(
+                "split needs -h (side by side) or -v (stacked)",
+            ));
+        }
+    };
+    Ok(Command::Split {
+        axis,
+        target,
+        cmd: a.rest(),
+    })
+}
+
+fn rename(a: &mut Args<'_>) -> Result<Command, Usage> {
+    let target = a.target(parse_any)?.ok_or(Usage::Needs(
+        "rename needs -t TARGET (%N, @N, +N or a workspace name)",
+    ))?;
+    let name = match (a.positional.as_slice(), a.rest.as_slice()) {
+        ([name], []) => (*name).to_owned(),
+        ([], [name]) => name.clone(),
+        _ => {
+            return Err(Usage::Needs(
+                "usage: rename -t TARGET NAME (quote a name with spaces)",
+            ));
+        }
+    };
+    a.positional.clear();
+    a.rest.clear();
+    Ok(Command::Rename { target, name })
+}
+
+fn move_pane(a: &mut Args<'_>) -> Result<Command, Usage> {
+    let target = a.pane()?;
+    // The last of `--to` and the directions, each `--to` read.
+    let to = a
+        .flags
+        .iter()
+        .try_fold(None, |to, &(flag, value)| match value {
+            Some(value) if flag == "--to" => parse_move_to(value).map(Some),
+            _ => Ok(direction_flag(flag).map(MoveTo::Beside).or(to)),
+        })?;
+    let to = to.ok_or(Usage::Needs(
+        "move-pane needs --to @N|+N|new-tab|new-workspace or -L/-R/-U/-D",
+    ))?;
+    Ok(Command::MovePane { target, to })
+}
+
+fn swap(a: &mut Args<'_>) -> Result<Command, Usage> {
+    let target = a.pane()?;
+    // Another pane or a direction: one, not both.
+    let with = match (a.positional.pop(), a.direction()) {
+        (Some(other), None) => SwapWith::Pane(parse_pane(other)?),
+        (None, Some(direction)) => SwapWith::Toward(direction),
+        (Some(_), Some(_)) | (None, None) => {
+            return Err(Usage::Needs(
+                "swap-pane needs another pane (%N) or -L/-R/-U/-D",
+            ));
+        }
+    };
+    Ok(Command::SwapPane { target, with })
+}
+
+fn resize(a: &mut Args<'_>) -> Result<Command, Usage> {
+    let target = a.pane()?;
+    let direction = a
+        .direction()
+        .ok_or(Usage::Needs("resize-pane needs -L, -R, -U or -D"))?;
+    let amount = match a.positional.pop() {
+        Some(n) => match number(n).and_then(|n| u16::try_from(n).ok()) {
+            Some(n) if n > 0 => n,
+            _ => return Err(Usage::NotCells(n.to_owned())),
+        },
+        None => 1,
+    };
+    Ok(Command::ResizePane {
+        target,
+        direction,
+        amount,
+    })
+}
+
+fn reorder(a: &mut Args<'_>) -> Result<Command, Usage> {
+    let subject = a.subject()?.ok_or(Usage::Needs(
+        "usage: reorder pane|tab|workspace [-t TARGET] --next|--previous",
+    ))?;
+    let toward = a
+        .step()
+        .ok_or(Usage::Needs("reorder needs --next or --previous"))?;
+    Ok(Command::Reorder { subject, toward })
+}
+
+fn select_pane(a: &mut Args<'_>) -> Result<ClientAction, Usage> {
+    let step = a.last(&["--next", "--previous", "--last"]);
+    let pick = match (step, a.direction(), a.value("-t")) {
+        (Some("--next"), None, None) => PanePick::Step(Sibling::Next),
+        (Some("--previous"), None, None) => PanePick::Step(Sibling::Previous),
+        (Some(_), None, None) => PanePick::Last,
+        (None, Some(d), None) => PanePick::Toward(d),
+        (None, None, Some(t)) => PanePick::Id(parse_pane(t)?),
+        _ => {
+            return Err(Usage::Needs(
+                "select-pane needs one of -t %N, --next, --previous, --last, -L/-R/-U/-D",
+            ));
+        }
+    };
+    Ok(ClientAction::SelectPane(pick))
+}
+
+/// Keys may look like flags (`-`), so only leading flags count.
+fn send_keys(argv: &[String]) -> Result<Command, Usage> {
+    let (mut target, mut literal) = (None, false);
+    let mut words = argv.iter().skip(1).peekable();
+    while let Some(word) = words.next_if(|w| ["-t", "-l", "--"].contains(&w.as_str())) {
+        match word.as_str() {
+            "-t" => {
+                let value = words.next().ok_or_else(|| Usage::NeedsValue {
+                    command: "send-keys",
+                    flag: word.clone(),
+                })?;
+                target = Some(parse_pane(value)?);
+            }
+            "-l" => literal = true,
+            _ => break,
+        }
+    }
+    let keys: Vec<String> = words.cloned().collect();
+    if keys.is_empty() {
+        return Err(Usage::Needs("send-keys needs keys to send"));
+    }
+    Ok(Command::SendKeys {
+        target,
+        literal,
+        keys,
+    })
+}
+
+/// Parses one command line.
+pub fn parse(argv: &[String]) -> Result<Command, Usage> {
+    let (name, words) = argv.split_first().ok_or(Usage::NoCommand)?;
+    let (name, _, spec) = find(name).ok_or_else(|| Usage::UnknownCommand(name.clone()))?;
+    let (command, a) = match spec.read {
+        Read::Line(read) => return read(argv),
+        Read::Flags(read) => {
+            let mut a = Args::read(name, spec, words)?;
+            (read(&mut a)?, a)
+        }
+        // `-c` is read first, then the kind, and then no other word may
+        // stand.
+        Read::Screen(read) => {
+            let mut a = Args::read(name, spec, words)?;
+            let client = a.parsed("-c", parse_client)?;
+            a.kind()?;
+            a.no_positional()?;
+            let action = read(&mut a)?;
+            (Command::Client { client, action }, a)
+        }
+    };
+    a.no_positional()?;
+    if !a.rest.is_empty() {
+        return Err(Usage::NoCommandAfter { command: name });
+    }
+    Ok(command)
 }
 
 /// A short description of a command line, for the command column and menus.
@@ -1055,19 +1154,11 @@ mod tests {
         );
         assert_eq!(
             cmd("menu tab"),
-            Ok(ClientAction::Menu {
-                kind: Kind::Tab,
-                target: None
-            }
-            .here())
+            Ok(ClientAction::Menu(Subject::Tab(None)).here())
         );
         assert_eq!(
             cmd("confirm-close -t +1"),
-            Ok(ClientAction::ConfirmClose {
-                kind: Kind::Workspace,
-                target: Some(AnyRef::Workspace(WsRef::Id(WsId(1))))
-            }
-            .here())
+            Ok(ClientAction::ConfirmClose(Subject::Workspace(Some(WsRef::Id(WsId(1))))).here())
         );
         assert_eq!(
             cmd("paste-buffer -b 2 -t %4"),
@@ -1095,11 +1186,8 @@ mod tests {
             "reorder workspace -t %1 --next",
             // Another pane and a direction: one or the other.
             "swap-pane %2 -L",
-            "list-keys --bogus",
             "unbind-all --nope",
-            "reload extra words",
             "reload -- x",
-            "list-buffers 1",
         ] {
             assert!(cmd(line).is_err(), "{line}");
         }
@@ -1203,30 +1291,36 @@ mod tests {
                 "confirm-close thing",
                 r#"confirm-close: "thing" is not pane, tab or workspace"#,
             ),
-            // A screen command takes only the flags it uses: none is
-            // accepted and then ignored.
+            // A command takes only the flags its usage names.
             ("zoom -t %1", "zoom: unknown flag -t"),
-            ("copy-mode -c c1 -t %1", "copy-mode: unknown flag -t"),
-            (
-                "command-prompt --move",
-                "command-prompt: unknown flag --move",
-            ),
-            ("command-column -L", "command-column: unknown flag -L"),
-            ("choose-pane --move", "choose-pane: unknown flag --move"),
-            ("menu pane --next", "menu: unknown flag --next"),
             ("select-tab -L", "select-tab: unknown flag -L"),
-            (
-                "select-workspace --last",
-                "select-workspace: unknown flag --last",
-            ),
             ("zoom pane", r#"zoom: unexpected argument "pane""#),
-            ("choose-tab tab", r#"choose-tab: unexpected argument "tab""#),
+            // A target of the wrong form is refused as the kind it must be.
+            ("select-tab -t %x", r#""%x" is not a tab; tabs are @N"#),
+            (
+                "select-workspace -t @x",
+                r#""@x" is not a workspace; workspaces are +N or a name"#,
+            ),
+            ("choose-pane -t @x", r#""@x" is not a pane; panes are %N"#),
         ] {
             let usage = cmd(line).err().map(|u| u.to_string());
             assert_eq!(usage.as_deref(), Some(message), "{line:?}");
         }
-        assert_eq!(cmd("split -t"), Err(needs_value("split", "-t")));
-        assert_eq!(cmd("kill-pane -t 3"), Err(Usage::NotPane("3".into())));
+    }
+
+    /// A flag takes a value wherever a usage names it, or nowhere: a usage
+    /// that lost a placeholder would read `-t %1` as a flag and a stray word.
+    #[test]
+    fn a_flag_takes_a_value_in_every_usage_or_in_none() {
+        let specs = COMMANDS.iter().flat_map(|(_, specs)| specs.iter());
+        for spec in specs.filter(|spec| matches!(spec.read, Read::Flags(_))) {
+            for flag in spec.grammar().split([' ', '|', '[', ']', '(', ')']) {
+                if flag.starts_with('-') && flag != "--" {
+                    let value = ["-t", "-c", "-n", "-b", "-S", "--to"].contains(&flag);
+                    assert_eq!(spec.flag(flag), Some(value), "{}: {flag}", spec.usage);
+                }
+            }
+        }
     }
 
     #[test]
