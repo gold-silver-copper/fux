@@ -96,12 +96,8 @@ impl Frame {
         tiled: bool,
         focus: Option<PaneId>,
     ) -> Option<Frame> {
-        if !matches!(view.mode, Mode::Normal)
-            || view
-                .tab()
-                .and_then(|t| session.tab(t))
-                .is_none_or(|t| t.root.is_none())
-        {
+        // A client focuses a pane of its tab unless the tab is empty.
+        if !matches!(view.mode, Mode::Normal) || focus.is_none() {
             return None;
         }
         let mut panes = Vec::with_capacity(placement.panes.len());
@@ -660,7 +656,8 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
         .chain(placement.separators.iter().map(|s| u32::from(s.len)))
         .fold(0u32, u32::saturating_add);
     let tiled = covered == u32::from(area.w).saturating_mul(u32::from(area.h));
-    let focus = view.focus();
+    let tab = session.shown_tab(view.id);
+    let focus = tab.and_then(|t| t.focus(view.id));
     // Copy mode and its positions, their rows found once for the paint.
     let copy = if let Mode::Copy(copy) = &view.mode {
         let pane = session.panes.get(&copy.pane);
@@ -757,12 +754,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             (None | Some(_), None) | (None, Some(_)) => Memo::default(),
         };
     }
-    if view
-        .tab()
-        .and_then(|t| session.tab(t))
-        .is_some_and(|t| t.root.is_none())
-        && area.h > 0
-    {
+    if tab.is_some_and(|t| t.root().is_none()) && area.h > 0 {
         // The keys bound to these commands, whatever they are; the command
         // itself if none is.
         let key_for = |argv: &[&str]| {
@@ -1086,13 +1078,15 @@ fn bar(
             style(Color::Idx(0), Color::Idx(11)).with_bold(true),
         ))
     } else {
-        view.focus().and_then(|f| session.panes.get(&f)).map(|p| {
-            let mut text = format!("{} {}", p.id, p.label());
-            if view.zoom {
-                text.push_str(" [zoom]");
-            }
-            (text.into(), base)
-        })
+        (session.focused(view.id))
+            .and_then(|f| session.panes.get(&f))
+            .map(|p| {
+                let mut text = format!("{} {}", p.id, p.label());
+                if view.zoom {
+                    text.push_str(" [zoom]");
+                }
+                (text.into(), base)
+            })
     };
     // At most three quarters of the bar, and a gap before it. Exact: the
     // quarters of a u16 add up to less than one.
@@ -1122,7 +1116,7 @@ fn bar(
             x = grid.text(y, x, key, base.with_bold(true), left_limit);
             x = grid.text(y, x, &format!(" {label}"), base, left_limit);
         }
-    } else if let Some(ws) = session.workspace(view.workspace) {
+    } else if let Some(ws) = session.shown_workspace(view.id) {
         let name = format!(" {} ", ws.name);
         x = grid.text(
             y,
@@ -1131,13 +1125,13 @@ fn bar(
             base.with_bold(true),
             left_limit,
         );
-        let current = view.tab();
-        for tab in &ws.tabs {
+        let current = ws.tab_of(view.id).map(|t| t.id);
+        for tab in ws.tabs() {
             let Some(room) = left_limit.checked_sub(x).filter(|r| *r > 0) else {
                 break;
             };
             // A bell rang in a tab the client does not show (`outer`).
-            let rang = view.bells.contains(&tab.id) && Some(tab.id) != current;
+            let rang = tab.seat(view.id).is_some_and(|s| s.rang) && Some(tab.id) != current;
             let label = format!(" {}{} ", tab.name, if rang { "!" } else { "" });
             let attrs = if Some(tab.id) == current {
                 style(Color::Idx(0), Color::Idx(2)).with_bold(true)
