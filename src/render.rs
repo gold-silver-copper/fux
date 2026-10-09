@@ -157,8 +157,7 @@ fn draw_row(
 
 /// Puts again the pane rows that changed since `grid`, whose memo has the
 /// frame composed now, was composed: whether that sufficed; false if the
-/// panes are not the memo's, or a row now has links, which only a whole
-/// composition numbers.
+/// panes are not the memo's.
 fn put_changed_rows(
     grid: &mut Grid,
     session: &Session,
@@ -179,10 +178,6 @@ fn put_changed_rows(
             let now = row.map(|r| (r.id(), r.version()));
             if now == *key {
                 continue;
-            }
-            if row.is_some_and(|r| r.has_links()) {
-                sufficed = false;
-                break;
             }
             draw_row(grid, *id, row, (line, window.cols()), tiled, None);
             *key = now;
@@ -647,10 +642,6 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             let mut pane_keys = Vec::new();
             for (y, line) in (0..window.rows()).zip(rect.lines()) {
                 let row = window.row(y);
-                if row.is_some_and(|r| r.has_links()) {
-                    // No memo for a grid with links, as before.
-                    keys = None;
-                }
                 pane_keys.push(row.map(|r| (r.id(), r.version())));
                 draw_row(grid, *id, row, (line, window.cols()), tiled, colours);
                 let (Some(at), Some(row)) = (at, row) else {
