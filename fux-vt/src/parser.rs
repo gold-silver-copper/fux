@@ -1376,13 +1376,12 @@ impl Parser {
                 Some(self.screen.rectangle_checksum(&self.params))
             }
             // DECRQM: 1 set, 2 reset, 0 not recognized (and 1048, an
-            // action), and 4 permanently reset for DECARM. Focus reporting
-            // (1004) is answered 0, as the README's row for it records.
+            // action), and 4 permanently reset for DECARM.
             (b"?$" | b"$", b'p') if modes => {
                 let private = intermediates == b"?$";
                 let mode = Mode::of(n, private, &self.options);
                 let status = match mode.map(|m| (m, m.kind())) {
-                    None | Some((Mode::FocusReporting, _) | (_, Kind::SaveCursor)) => 0,
+                    None | Some((_, Kind::SaveCursor)) => 0,
                     Some((_, Kind::Reset)) => 4,
                     Some((mode, _)) if self.screen.mode(mode) => 1,
                     Some(_) => 2,
