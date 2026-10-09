@@ -266,6 +266,23 @@ fn attach_starts_a_server_when_none_answers() -> Outcome {
         .spawn()
         .map_err(e)?;
     drop(slave);
+    // Read, as a terminal is: one never read fills (macOS's pty holds about
+    // a kilobyte), and the client's last writes, with the server's, block.
+    let mut terminal = std::fs::File::from(master.try_clone().map_err(e)?);
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        // The master is nonblocking: nothing to read yet is no end.
+        loop {
+            match std::io::Read::read(&mut terminal, &mut buffer) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
     let result = eventually("the auto-started server", || {
         let out = std::process::Command::new(FUX)
             .arg("ls")

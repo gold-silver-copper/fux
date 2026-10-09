@@ -9,16 +9,18 @@ use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// Modes the attach client sets on the outer terminal: the alternate
 /// screen, normal cursor and keypad keys, bracketed paste, focus events, no
-/// autowrap. Mouse reporting is the server's to turn on and off in its
+/// autowrap; and it saves the terminal's title (xterm's title stack,
+/// `outer::TITLE_PUSH`), which fux may set. Mouse reporting is the server's to turn on and off in its
 /// paints, while a program asks for it (`render::mouse_level`). Public for fux-vt-compare's
 /// `transparency`, which writes it to its terminal as this client does.
-pub const ENTER: &str = "\x1b[?1049h\x1b[?1l\x1b>\x1b[?2004h\x1b[?1004h\x1b[?7l\x1b[H\x1b[2J";
-/// And turns them off again, with what the server may have turned on in
+pub const ENTER: &str =
+    "\x1b[22;0t\x1b[?1049h\x1b[?1l\x1b>\x1b[?2004h\x1b[?1004h\x1b[?7l\x1b[H\x1b[2J";
+/// And turns them off again, the title saved restored
+/// (`outer::TITLE_POP`), with what the server may have turned on in
 /// its paints: mouse reporting (`render::MOUSE_OFF`), colour-scheme
 /// reports (mode 2031, `outer`), and the kitty
 /// keyboard flags it pushed, popped on the alternate screen they were
@@ -26,7 +28,7 @@ pub const ENTER: &str = "\x1b[?1049h\x1b[?1l\x1b>\x1b[?2004h\x1b[?1004h\x1b[?7l\
 /// however the attachment ends, the server gone or not; a terminal that
 /// never had them ignores both, and a pop of a stack the server pushed
 /// nothing on, the alternate screen's own, empties it.
-const LEAVE: &str = "\x1b[?2026l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[?7h\x1b[0m\x1b[0 q\x1b[?25h\x1b[?1049l";
+const LEAVE: &str = "\x1b[23;0t\x1b[?2026l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[?7h\x1b[0m\x1b[0 q\x1b[?25h\x1b[?1049l";
 
 /// Why a client could not reach the server, start one, or go on.
 #[derive(Debug)]
@@ -149,26 +151,10 @@ impl From<crate::protocol::Error> for Error {
 
 /// The terminal state to restore, shared with the panic hook.
 static SAVED: Mutex<Option<Termios>> = Mutex::new(None);
-/// Whether the server saved the terminal's title (`outer::TITLE_PUSH`) and
-/// has not restored it: then leaving restores it, however the attachment
-/// ends.
-static TITLE_SAVED: AtomicBool = AtomicBool::new(false);
-
-/// Notes a title saved or restored in a paint: the later of the two wins.
-/// A pane's own title sequences never reach a paint, which fux composes.
-fn note_title(paint: &[u8]) {
-    if let Some(saved) = crate::outer::title_saved_by(paint) {
-        TITLE_SAVED.store(saved, Ordering::Relaxed);
-    }
-}
-
 fn restore() {
     let saved = SAVED.lock().ok().and_then(|mut s| s.take());
     if let Some(termios) = saved {
         let mut out = std::io::stdout();
-        if TITLE_SAVED.swap(false, Ordering::Relaxed) {
-            let _ = out.write_all(crate::outer::TITLE_POP);
-        }
         let _ = out.write_all(LEAVE.as_bytes());
         let _ = out.flush();
         let _ = fuxix::terminal::set_attributes(std::io::stdin(), &termios);
@@ -431,7 +417,6 @@ fn terminal_taken(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<bool
         match read_frame(stream, decoder, &mut buffer, None)? {
             Some(Frame::Terminal { taken }) => return Ok(taken),
             Some(Frame::Paint(bytes)) => {
-                note_title(&bytes);
                 let mut stdout = std::io::stdout();
                 stdout.write_all(&bytes).map_err(Error::WriteTerminal)?;
                 let _ = stdout.flush();
@@ -525,7 +510,6 @@ fn take_frames(decoder: &mut Decoder, stdout: &mut impl Write) -> Result<Option<
     while let Some(raw) = decoder.raw()? {
         // A paint goes to the terminal straight from the decoder.
         if let Some(bytes) = raw.paint() {
-            note_title(bytes);
             stdout.write_all(bytes).map_err(Error::WriteTerminal)?;
             continue;
         }
@@ -586,25 +570,6 @@ mod tests {
             .map_err(|_| "still waiting for the socket after 5 s")??;
         assert_eq!(reason, "detached");
         Ok(())
-    }
-
-    /// The title fux saved is noted, and its restoring too, the later of
-    /// the two in a paint winning.
-    #[test]
-    fn a_saved_title_is_noted_from_the_paints() {
-        let push = crate::outer::TITLE_PUSH;
-        let pop = crate::outer::TITLE_POP;
-        note_title(b"no title here");
-        assert!(!TITLE_SAVED.load(Ordering::Relaxed));
-        note_title(&[b"x", push, b"\x1b]2;t\x1b\\"].concat());
-        assert!(TITLE_SAVED.load(Ordering::Relaxed));
-        note_title(b"a paint without either");
-        assert!(TITLE_SAVED.load(Ordering::Relaxed));
-        note_title(&[push, pop].concat());
-        assert!(!TITLE_SAVED.load(Ordering::Relaxed));
-        note_title(&[pop, push].concat());
-        assert!(TITLE_SAVED.load(Ordering::Relaxed));
-        TITLE_SAVED.store(false, Ordering::Relaxed);
     }
 
     /// What the client makes of the server's answer to Hello, as read from
