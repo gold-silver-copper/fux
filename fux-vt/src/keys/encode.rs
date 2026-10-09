@@ -292,8 +292,8 @@ enum Form {
 }
 
 impl From<Key> for Form {
+    #[inline]
     fn from(key: Key) -> Form {
-        let f_codes = [15, 17, 18, 19, 20, 21, 23, 24];
         match key {
             Key::Char(c) => Form::Text(c),
             Key::Enter => Form::Control(0x0d),
@@ -314,7 +314,7 @@ impl From<Key> for Form {
             Key::Delete => Form::Numbered(3, '~'),
             Key::PageUp => Form::Numbered(5, '~'),
             Key::PageDown => Form::Numbered(6, '~'),
-            Key::F(n) => match usize::from(n).checked_sub(5).and_then(|i| f_codes.get(i)) {
+            Key::F(n) => match usize::from(n).checked_sub(5).and_then(|i| F_CODES.get(i)) {
                 Some(&number) => Form::Numbered(number, '~'),
                 None => Form::Unnumbered(n),
             },
@@ -331,6 +331,9 @@ fn numbered(out: &mut Vec<u8>, number: u8, modifier: u16, final_byte: char) {
         (_, _) => write!(out, "\x1b[{number}{final_byte}"),
     };
 }
+
+/// F5 to F12's numbers, with xterm's gaps.
+const F_CODES: [u8; 8] = [15, 17, 18, 19, 20, 21, 23, 24];
 
 /// Shift, Alt and Ctrl as xterm's and kitty's modifier bits.
 fn xterm_bits(mods: Modifiers) -> u8 {
