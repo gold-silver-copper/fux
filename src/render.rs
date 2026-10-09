@@ -713,9 +713,10 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             session
                 .config
                 .bindings
-                .iter()
-                .find(|b| b.command == argv)
-                .map_or_else(|| argv.join(" "), |b| session.keys_named(&b.keys))
+                .all()
+                .into_iter()
+                .find(|(_, b, _)| b.command == argv)
+                .map_or_else(|| argv.join(" "), |(keys, ..)| session.keys_named(&keys))
         };
         let hint = format!(
             "empty tab: {} splits it, {} closes it",
