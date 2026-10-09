@@ -948,7 +948,8 @@ impl Parser {
     /// Begins an OSC string and takes its bytes `bytes` begins with, up to
     /// the BEL, CAN, SUB or ESC that ends it, at once rather than each
     /// through `byte`, keeping what `byte` would keep of them; how many it
-    /// took.
+    /// took. Out of line: inlined into `sequence`, it cost each OSC more.
+    #[inline(never)]
     fn osc_string(&mut self, bytes: &[u8]) -> usize {
         let length = bytes
             .iter()
@@ -1035,7 +1036,7 @@ impl Parser {
     /// Reads one byte; whether it ended a CSI that began a frame.
     fn byte(&mut self, byte: u8, sink: &mut impl Sink) -> Result<bool, Error> {
         let state = self.state;
-        if state == State::Ground {
+        if matches!(state, State::Ground) {
             return self.ground(byte, sink).map(|()| false);
         }
         if let State::Utf8(read) = state {
@@ -1151,7 +1152,7 @@ impl Parser {
         }
         // A sequence or string ended, REP's included: there is no character
         // for REP to repeat until one is printed.
-        if self.state == State::Ground {
+        if matches!(self.state, State::Ground) {
             self.screen.forget_repeat();
         }
         Ok(framed)
