@@ -194,8 +194,7 @@ fn overlay(lines: &[String]) -> bool {
 /// The error notice a client's bar shows, if one does: the run of cells
 /// in fux's error colour.
 fn error_notice(client: &crate::fixture::Client) -> Option<String> {
-    let screen = client.screen.screen();
-    let window = screen.window(0, client.rows, client.cols);
+    let window = client.screen.screen().window();
     let bar = window.row(client.rows.saturating_sub(1))?;
     let text: String = bar
         .cells()
@@ -448,8 +447,7 @@ impl Checker {
                 format!("{id} is {} wide: {wide:?}", client.cols),
             ));
         }
-        let screen = client.screen.screen();
-        let window = screen.window(0, client.rows, client.cols);
+        let window = client.screen.screen().window();
         for y in 0..client.rows {
             let last = window
                 .row(y)
@@ -532,8 +530,7 @@ impl Checker {
 
 /// Whether a client's bar shows any notice, error or not.
 fn has_notice(client: &crate::fixture::Client) -> bool {
-    let screen = client.screen.screen();
-    let window = screen.window(0, client.rows, client.cols);
+    let window = client.screen.screen().window();
     window
         .row(client.rows.saturating_sub(1))
         .is_some_and(|bar| {

@@ -10,8 +10,7 @@ use crate::keys::{Direction, Key, KeyPress};
 use crate::render::shown;
 use crate::session::{Error, Outgoing, Session};
 use crate::view::{Mode, Notice, View};
-use fux_vt::{CellRef, RowId, Screen};
-use std::num::NonZeroUsize;
+use fux_vt::{CellRef, Row, RowId, Screen};
 
 /// The most cells one copy takes.
 pub const MAX_CELLS: usize = 262_144;
@@ -24,9 +23,6 @@ pub enum Select {
     Line,
     Block,
 }
-
-/// A selection's two ends, in order, as (row, column).
-type Ends = ((usize, u16), (usize, u16));
 
 /// Which way a search goes: toward later rows, or earlier ones.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,67 +63,52 @@ pub struct Copy {
 
 // ------------------------------------------------------------- positions
 
-/// Rows the screen keeps: history, then the live screen.
-pub fn retained(screen: &Screen) -> usize {
-    // Exact: fux-vt bounds the rows it retains far below a usize.
-    screen
-        .history_len()
-        .saturating_add(usize::from(screen.size().rows()))
+/// A place in the rows retained: a row and a column of it.
+pub type Place<'a> = (Row<'a>, u16);
+
+/// Copy mode's positions, each row found once for the paint or key that
+/// needs them rather than at every use: all of them, as copy mode ends when
+/// any of its rows is gone.
+#[derive(Clone, Copy, Debug)]
+pub struct Resolved<'a> {
+    /// The row at the top of the view: no lower than the screen's top,
+    /// where its window starts (`Row::window`).
+    pub top: Row<'a>,
+    pub cursor: Place<'a>,
+    /// The selection: its kind and its anchor.
+    pub selection: Option<(Select, Place<'a>)>,
 }
 
-/// The row at `index`, counted from the oldest.
-pub fn row_at(screen: &Screen, index: usize) -> Option<fux_vt::Row<'_>> {
-    let last = retained(screen).checked_sub(1)?;
-    screen.row_from_bottom(last.checked_sub(index)?)
-}
-
-/// Where a row is, counted from the oldest.
-pub fn index_of(screen: &Screen, id: RowId) -> Option<usize> {
-    if let Some(offset) = screen.offset_for_row(id) {
-        return screen.history_len().checked_sub(offset);
-    }
-    let rows = usize::from(screen.size().rows());
-    (0..rows).find_map(|i| {
-        if screen.row_from_bottom(i)?.id() != id {
-            return None;
-        }
-        retained(screen).checked_sub(1)?.checked_sub(i)
-    })
-}
-
-/// Copy mode's positions as retained-row indexes, each row found once for
-/// the paint or key that needs them rather than at every use: all of them,
-/// as copy mode ends when any of its rows is gone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Resolved {
-    /// The row at the top of the view.
-    pub top: usize,
-    pub cursor: (usize, u16),
-    /// The selection: its kind, its anchor, and its two ends in order.
-    pub selection: Option<(Select, (usize, u16), Ends)>,
-}
-
-impl Resolved {
-    /// The history offset of the view, for `Screen::window`.
-    pub fn offset(&self, screen: &Screen) -> usize {
-        screen.history_len().saturating_sub(self.top)
-    }
-
-    /// The cursor, as a row and column of the view, if it is in view.
+impl<'a> Resolved<'a> {
+    /// The cursor, as a row and column of the view, if it is in its first
+    /// `height` rows.
     pub fn cursor_in_view(&self, height: u16) -> Option<(u16, u16)> {
         let (row, col) = self.cursor;
-        let y = u16::try_from(row.checked_sub(self.top)?).ok()?;
+        let y = self.top.window().place(&row)?;
         (y < height).then_some((y, col))
     }
 
-    /// Whether the cell at a view row and column is selected.
-    pub fn selected(&self, view_row: u16, col: u16) -> bool {
-        let Some((kind, _, (start, end))) = self.selection else {
+    /// The selection's kind and its two ends, in order.
+    fn ends(&self) -> Option<(Select, Place<'a>, Place<'a>)> {
+        let (kind, anchor) = self.selection?;
+        let place = |(row, col): Place<'_>| (row.index(), col);
+        Some(if place(anchor) <= place(self.cursor) {
+            (kind, anchor, self.cursor)
+        } else {
+            (kind, self.cursor, anchor)
+        })
+    }
+
+    /// Whether the cell at `col` of `row` is selected.
+    pub fn selected(&self, row: &Row<'_>, col: u16) -> bool {
+        let Some((kind, start, end)) = self.ends() else {
             return false;
         };
-        let Some(row) = self.top.checked_add(usize::from(view_row)) else {
-            return false;
-        };
+        let (row, start, end) = (
+            row.index(),
+            (start.0.index(), start.1),
+            (end.0.index(), end.1),
+        );
         if row < start.0 || row > end.0 {
             return false;
         }
@@ -144,24 +125,15 @@ impl Resolved {
 
 impl Copy {
     /// Finds the rows it holds, once each; none if any is gone.
-    pub fn resolve(&self, screen: &Screen) -> Option<Resolved> {
-        let at = |(id, col): (RowId, u16)| Some((index_of(screen, id)?, col));
-        // The view's top row, as the window can show it: no lower than
-        // the end of history, which rows pulled back out of it, as a pane
-        // grows, can leave behind it. The cursor and the selection are
-        // placed from this top, as the window is.
-        let top = index_of(screen, self.top)?.min(screen.history_len());
-        let cursor = at(self.cursor)?;
+    pub fn resolve<'a>(&self, screen: &'a Screen) -> Option<Resolved<'a>> {
+        let at = |(id, col): (RowId, u16)| Some((screen.row_by_id(id)?, col));
         let selection = match self.selection {
-            Some((kind, anchor)) => {
-                let anchor = at(anchor)?;
-                Some((kind, anchor, (anchor.min(cursor), anchor.max(cursor))))
-            }
+            Some((kind, anchor)) => Some((kind, at(anchor)?)),
             None => None,
         };
         Some(Resolved {
-            top,
-            cursor,
+            top: screen.row_by_id(self.top)?.window().row(0)?,
+            cursor: at(self.cursor)?,
             selection,
         })
     }
@@ -170,8 +142,8 @@ impl Copy {
     /// found it.
     pub fn bar(&self, screen: &Screen, at: &Resolved) -> Bar {
         // Counted from 1; exact, as rows are far fewer than a usize holds.
-        let line = at.cursor.0.saturating_add(1);
-        let position = format!("{line}/{}", retained(screen));
+        let line = at.cursor.0.index().saturating_add(1);
+        let position = format!("{line}/{}", screen.rows().len());
         if let Some((seek, text)) = &self.typing {
             let prompt = match seek {
                 Seek::Forward => "/",
@@ -238,7 +210,7 @@ pub struct Bar {
 
 /// A row's cells as (column, class): 0 blank, 1 word, 2 other. The row end
 /// is a blank.
-fn classes(screen: &Screen, index: usize) -> Vec<(u16, u8)> {
+fn classes(row: Row<'_>) -> Vec<(u16, u8)> {
     let class = |cell: CellRef<'_>| {
         let c = cell.contents().chars().next().unwrap_or(' ');
         if c.is_whitespace() || !cell.has_contents() {
@@ -249,9 +221,7 @@ fn classes(screen: &Screen, index: usize) -> Vec<(u16, u8)> {
             2
         }
     };
-    let mut out: Vec<(u16, u8)> = glyphs(screen, index)
-        .map(|(col, cell)| (col, class(cell)))
-        .collect();
+    let mut out: Vec<(u16, u8)> = glyphs(row).map(|(col, cell)| (col, class(cell))).collect();
     let end = out.last().map_or(0, |(c, _)| c.saturating_add(1));
     out.push((end, 0));
     out
@@ -259,89 +229,85 @@ fn classes(screen: &Screen, index: usize) -> Vec<(u16, u8)> {
 
 /// A row's cells and their columns, but for the second halves of wide
 /// glyphs.
-fn glyphs(screen: &Screen, index: usize) -> impl Iterator<Item = (u16, CellRef<'_>)> {
-    let cells = row_at(screen, index)
-        .into_iter()
-        .flat_map(|row| row.cells());
+fn glyphs(row: Row<'_>) -> impl Iterator<Item = (u16, CellRef<'_>)> {
     // A row is never wider than a u16 screen.
     (0..=u16::MAX)
-        .zip(cells)
+        .zip(row.cells())
         .filter(|(_, cell)| !cell.is_wide_continuation())
 }
 
 /// A position in the flat sequence of cells: a row and an index into its
 /// `classes`.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct Flat {
-    row: usize,
+#[derive(Clone, Copy)]
+struct Flat<'a> {
+    row: Row<'a>,
     k: usize,
 }
 
+/// The classes of the row a walk is on.
 struct Walker<'a> {
-    screen: &'a Screen,
-    row: usize,
+    row: Row<'a>,
     cells: Vec<(u16, u8)>,
 }
 
 impl<'a> Walker<'a> {
-    fn new(screen: &'a Screen, row: usize) -> Self {
+    fn new(row: Row<'a>) -> Self {
         Self {
-            screen,
             row,
-            cells: classes(screen, row),
+            cells: classes(row),
         }
     }
-    fn load(&mut self, row: usize) {
-        if row != self.row {
-            self.row = row;
-            self.cells = classes(self.screen, row);
+    fn load(&mut self, row: Row<'a>) {
+        if row.index() != self.row.index() {
+            *self = Self::new(row);
         }
     }
-    fn at(&mut self, p: Flat) -> (u16, u8) {
+    fn at(&mut self, p: Flat<'a>) -> (u16, u8) {
         self.load(p.row);
         self.cells.get(p.k).copied().unwrap_or((0, 0))
     }
-    fn len(&mut self, row: usize) -> usize {
+    fn len(&mut self, row: Row<'a>) -> usize {
         self.load(row);
         self.cells.len()
     }
-    fn next(&mut self, p: Flat) -> Option<Flat> {
+    fn next(&mut self, p: Flat<'a>) -> Option<Flat<'a>> {
         let k = p.k.checked_add(1)?;
         if k < self.len(p.row) {
             return Some(Flat { row: p.row, k });
         }
-        let row = p.row.checked_add(1)?;
-        (row < retained(self.screen)).then_some(Flat { row, k: 0 })
+        Some(Flat {
+            row: p.row.below()?,
+            k: 0,
+        })
     }
-    fn prev(&mut self, p: Flat) -> Option<Flat> {
+    fn prev(&mut self, p: Flat<'a>) -> Option<Flat<'a>> {
         if let Some(k) = p.k.checked_sub(1) {
             return Some(Flat { row: p.row, k });
         }
-        let row = p.row.checked_sub(1)?;
+        let row = p.row.above()?;
         let len = self.len(row);
         Some(Flat {
             row,
             k: len.saturating_sub(1),
         })
     }
-    fn find(&mut self, row: usize, col: u16) -> Flat {
-        self.load(row);
+    fn find(&mut self, col: u16) -> Flat<'a> {
         let k = self
             .cells
             .iter()
             .position(|(c, _)| *c >= col)
             .unwrap_or(self.cells.len().saturating_sub(1));
-        Flat { row, k }
+        Flat { row: self.row, k }
     }
-    fn class(&mut self, p: Flat) -> u8 {
+    fn class(&mut self, p: Flat<'a>) -> u8 {
         self.at(p).1
     }
 }
 
 /// `w`: the start of the next word.
-fn word_forward(screen: &Screen, row: usize, col: u16) -> (usize, u16) {
-    let mut w = Walker::new(screen, row);
-    let mut p = w.find(row, col);
+fn word_forward(row: Row<'_>, col: u16) -> Place<'_> {
+    let mut w = Walker::new(row);
+    let mut p = w.find(col);
     let start = w.class(p);
     while start != 0
         && w.class(p) == start
@@ -358,9 +324,9 @@ fn word_forward(screen: &Screen, row: usize, col: u16) -> (usize, u16) {
 }
 
 /// `b`: the start of this word, or of the previous one.
-fn word_back(screen: &Screen, row: usize, col: u16) -> (usize, u16) {
-    let mut w = Walker::new(screen, row);
-    let mut p = w.find(row, col);
+fn word_back(row: Row<'_>, col: u16) -> Place<'_> {
+    let mut w = Walker::new(row);
+    let mut p = w.find(col);
     if let Some(n) = w.prev(p) {
         p = n;
     }
@@ -390,23 +356,21 @@ fn fold(c: char, ignore_case: bool) -> char {
 
 /// The next match of `query` from the cursor, literal and smart-case, over
 /// the whole history, wrapping around.
-pub fn find(screen: &Screen, query: &str, from: (usize, u16), seek: Seek) -> Option<(usize, u16)> {
+pub fn find<'a>(query: &str, from: Place<'a>, seek: Seek) -> Option<Place<'a>> {
     let ignore_case = !query.chars().any(char::is_uppercase);
     let needle: Vec<char> = query.chars().map(|c| fold(c, ignore_case)).collect();
     // An empty needle finds nothing.
     let &first = needle.first()?;
-    let total = retained(screen);
     // One row's folded characters and their columns, and its matches,
     // reused row after row: a search over a long history allocates nothing
     // for a row without a match, and tries the needle only where its first
     // character is.
     let (mut folded, mut cols) = (Vec::new(), Vec::new());
-    let mut matches_in = |index: usize, cols: &mut Vec<u16>| {
+    let mut matches_in = |row: Row<'_>, cols: &mut Vec<u16>| {
         cols.clear();
         folded.clear();
         folded.extend(
-            glyphs(screen, index)
-                .flat_map(|(_, cell)| shown(cell).chars().map(|c| fold(c, ignore_case))),
+            glyphs(row).flat_map(|(_, cell)| shown(cell).chars().map(|c| fold(c, ignore_case))),
         );
         let starts: Vec<usize> = (0..folded.len())
             .filter(|at| {
@@ -420,7 +384,7 @@ pub fn find(screen: &Screen, query: &str, from: (usize, u16), seek: Seek) -> Opt
             return;
         }
         // A match: the columns of this row, then, and of each match in it.
-        let columns: Vec<u16> = glyphs(screen, index)
+        let columns: Vec<u16> = glyphs(row)
             .flat_map(|(col, cell)| shown(cell).chars().map(move |_| col))
             .collect();
         cols.extend(starts.iter().filter_map(|at| columns.get(*at).copied()));
@@ -430,44 +394,43 @@ pub fn find(screen: &Screen, query: &str, from: (usize, u16), seek: Seek) -> Opt
         Seek::Forward => col > from.1,
         Seek::Backward => col < from.1,
     };
-    // Around the rows and back to the start. Exact: row counts are far
-    // below a usize, and `rows` is at least 1.
-    let rows = NonZeroUsize::new(total).unwrap_or(NonZeroUsize::MIN);
-    for step in 0..=total {
-        let index = match seek {
-            Seek::Forward => from.0.saturating_add(step) % rows,
-            Seek::Backward => {
-                from.0
-                    .saturating_add(total.saturating_mul(2))
-                    .saturating_sub(step)
-                    % rows
-            }
-        };
-        matches_in(index, &mut cols);
+    // Around the rows and back to the cursor's.
+    let mut row = from.0;
+    let mut first_row = true;
+    loop {
+        matches_in(row, &mut cols);
         if seek == Seek::Backward {
             cols.reverse();
         }
         // On the cursor's row, what is past it; back at that row after
         // going round, the rest of it.
+        let back = !first_row && row.index() == from.0.index();
         let hit = cols
             .iter()
             .copied()
-            .find(|col| (step != 0 || past(*col)) && (step != total || !past(*col)));
+            .find(|col| (!first_row || past(*col)) && (!back || !past(*col)));
         if let Some(col) = hit {
-            return Some((index, col));
+            return Some((row, col));
         }
+        if back {
+            return None;
+        }
+        first_row = false;
+        row = match seek {
+            Seek::Forward => row.below().unwrap_or(row.up(usize::MAX)),
+            Seek::Backward => row.above().unwrap_or(row.down(usize::MAX)),
+        };
     }
-    None
 }
 
 /// The nearest row before `from`, or after it, where a prompt starts: one a
 /// shell marked with `OSC 133 ; A` (fux-vt's `Row::starts_prompt`).
-pub fn prompt(screen: &Screen, from: usize, seek: Seek) -> Option<usize> {
-    let starts = |index: &usize| row_at(screen, *index).is_some_and(|r| r.starts_prompt());
-    match seek {
-        Seek::Backward => (0..from).rev().find(starts),
-        Seek::Forward => (from.saturating_add(1)..retained(screen)).find(starts),
-    }
+pub fn prompt(from: Row<'_>, seek: Seek) -> Option<Row<'_>> {
+    let step = match seek {
+        Seek::Backward => Row::above,
+        Seek::Forward => Row::below,
+    };
+    std::iter::successors(step(&from), step).find(Row::starts_prompt)
 }
 
 /// The selected text. Wide glyphs and combining marks stay whole; a
@@ -476,21 +439,21 @@ pub fn prompt(screen: &Screen, from: usize, seek: Seek) -> Option<usize> {
 pub fn text(
     screen: &Screen,
     kind: Select,
-    start: (usize, u16),
-    end: (usize, u16),
+    start: Place<'_>,
+    end: Place<'_>,
 ) -> Result<String, Error> {
     let cols = screen.size().cols();
     let mut out = String::new();
     let mut cells = 0usize;
     let (left, right) = (start.1.min(end.1), start.1.max(end.1));
-    for index in start.0..=end.0 {
-        let Some(row) = row_at(screen, index) else {
-            continue;
-        };
+    let (first, last) = (start.0.index(), end.0.index());
+    let rows = std::iter::successors(Some(start.0), Row::below);
+    for row in rows.take_while(|row| row.index() <= last) {
+        let index = row.index();
         let (from, to) = match kind {
             Select::Char => (
-                if index == start.0 { start.1 } else { 0 },
-                if index == end.0 {
+                if index == first { start.1 } else { 0 },
+                if index == last {
                     end.1
                 } else {
                     cols.saturating_sub(1)
@@ -512,12 +475,12 @@ pub fn text(
                 line.push_str(shown(cell));
             }
         }
-        let joined = kind != Select::Block && row.wrapped() && index < end.0;
+        let joined = kind != Select::Block && row.wrapped() && index < last;
         if joined {
             out.push_str(&line);
         } else {
             out.push_str(line.trim_end_matches(' '));
-            if index < end.0 {
+            if index < last {
                 out.push('\n');
             }
         }
@@ -536,13 +499,10 @@ pub fn enter(session: &Session, view: &mut View) -> Result<String, Error> {
         .ok_or(Error::NoPane(pane))?
         .screen();
     let (cy, cx) = screen.cursor_position();
-    let history = screen.history_len();
-    let row = history
-        .checked_add(usize::from(cy))
-        .and_then(|i| row_at(screen, i))
-        .ok_or(Error::NoRows)?;
+    let window = screen.window();
+    let row = window.row(cy).ok_or(Error::NoRows)?;
     let (cursor, cx) = (row.id(), glyph_start(row, cx));
-    let top = row_at(screen, history).ok_or(Error::NoRows)?.id();
+    let top = window.row(0).ok_or(Error::NoRows)?.id();
     let copy = Copy {
         pane,
         top,
@@ -570,17 +530,6 @@ fn leave(session: &mut Session, client: ClientId) {
 enum Scroll {
     Up(usize),
     Down(usize),
-}
-
-impl Scroll {
-    /// Where a row index lands, stopping at 0 and at `last`.
-    fn from(self, at: usize, last: usize) -> usize {
-        match self {
-            Scroll::Up(n) => at.saturating_sub(n),
-            Scroll::Down(n) => at.saturating_add(n),
-        }
-        .min(last)
-    }
 }
 
 /// A key in copy mode.
@@ -623,7 +572,7 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
             if !search.query.is_empty() {
                 copy.search = Some(search.clone());
                 if let Some(at) = copy.resolve(screen) {
-                    jump(copy, screen, height, &at, &search, &mut view.notice);
+                    jump(copy, screen, height, at, &search, &mut view.notice);
                 }
             }
         } else if press.key == Key::Backspace {
@@ -643,13 +592,12 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
         return;
     };
     let ((row, col), mut top) = (at.cursor, at.top);
-    let last_row = retained(screen).saturating_sub(1);
     let last_col = screen.size().cols().saturating_sub(1);
     let half = usize::from(height / 2).max(1);
     let page = usize::from(height);
     // The columns of a row's glyphs that are not blank.
-    let ink = |r: usize| {
-        let classes = classes(screen, r).into_iter();
+    let ink = |r: Row<'_>| {
+        let classes = classes(r).into_iter();
         classes.filter(|(_, k)| *k != 0).map(|(c, _)| c)
     };
     // Keys are letters, in either case, and the brackets; one with Ctrl or
@@ -659,7 +607,7 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
         Some(Key::Char(c)) => Some(c),
         _ => None,
     };
-    let mut target: Option<(usize, u16)> = None;
+    let mut target: Option<Place<'_>> = None;
     let mut scroll: Option<Scroll> = None;
     match (letter, press.key) {
         (Some('q'), _) | (_, Key::Escape) => {
@@ -670,27 +618,21 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
             target = Some((row, col.saturating_sub(1)));
         }
         (Some('l'), _) | (_, Key::Arrow(Direction::Right)) => {
-            let wide = row_at(screen, row)
-                .and_then(|r| r.cell(usize::from(col)))
-                .is_some_and(|c| c.is_wide());
+            let wide = row.cell(usize::from(col)).is_some_and(|c| c.is_wide());
             target = Some((
                 row,
                 col.saturating_add(if wide { 2 } else { 1 }).min(last_col),
             ));
         }
-        (Some('j'), _) | (_, Key::Arrow(Direction::Down)) => {
-            target = Some((row.saturating_add(1).min(last_row), col))
-        }
-        (Some('k'), _) | (_, Key::Arrow(Direction::Up)) => {
-            target = Some((row.saturating_sub(1), col))
-        }
-        (Some('w'), _) => target = Some(word_forward(screen, row, col)),
-        (Some('b'), _) => target = Some(word_back(screen, row, col)),
+        (Some('j'), _) | (_, Key::Arrow(Direction::Down)) => target = Some((row.down(1), col)),
+        (Some('k'), _) | (_, Key::Arrow(Direction::Up)) => target = Some((row.up(1), col)),
+        (Some('w'), _) => target = Some(word_forward(row, col)),
+        (Some('b'), _) => target = Some(word_back(row, col)),
         (Some('a'), _) => target = Some((row, ink(row).next().unwrap_or(0))),
         (Some('e'), _) | (_, Key::End) => target = Some((row, ink(row).next_back().unwrap_or(0))),
         (_, Key::Home) => target = Some((row, 0)),
-        (Some('t'), _) => target = Some((0, 0)),
-        (Some('z'), _) => target = Some((last_row, col)),
+        (Some('t'), _) => target = Some((row.up(usize::MAX), 0)),
+        (Some('z'), _) => target = Some((row.down(usize::MAX), col)),
         (Some('u'), _) => scroll = Some(Scroll::Up(half)),
         (Some('d'), _) => scroll = Some(Scroll::Down(half)),
         (_, Key::PageUp) => scroll = Some(Scroll::Up(page)),
@@ -708,7 +650,7 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
                         },
                         ..search
                     };
-                    jump(copy, screen, height, &at, &search, &mut view.notice);
+                    jump(copy, screen, height, at, &search, &mut view.notice);
                 }
                 None => view.error("no search yet: f or r starts one"),
             }
@@ -720,13 +662,10 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
             } else {
                 Seek::Forward
             };
-            match prompt(screen, row, seek) {
+            match prompt(row, seek) {
                 // The prompt at the top of the view, what came of it below.
                 Some(found) => {
-                    top = found.min(screen.history_len());
-                    if let Some(r) = row_at(screen, top) {
-                        copy.top = r.id();
-                    }
+                    top = found;
                     target = Some((found, 0));
                 }
                 None => {
@@ -743,12 +682,12 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
             if let Some((kind, anchor)) = copy.selection {
                 copy.selection = Some((kind, copy.cursor));
                 copy.cursor = anchor;
-                target = at.selection.map(|(_, anchor, _)| anchor);
+                target = at.selection.map(|(_, anchor)| anchor);
             }
         }
         (Some('y'), _) | (_, Key::Enter) => {
-            let copied = match at.selection {
-                Some((kind, _, (start, end))) => {
+            let copied = match at.ends() {
+                Some((kind, start, end)) => {
                     text(screen, kind, start, end).map_err(|e| e.to_string())
                 }
                 None => Err("nothing selected: v, s or x starts a selection".to_owned()),
@@ -759,13 +698,12 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
         _ => {}
     }
     if let Some(scroll) = scroll {
-        let row = scroll.from(row, last_row);
-        let scrolled = scroll.from(top, screen.history_len());
-        if let Some(r) = row_at(screen, scrolled) {
-            copy.top = r.id();
-            top = scrolled;
-        }
-        target = Some((row, col));
+        let (moved, scrolled) = match scroll {
+            Scroll::Up(n) => (row.up(n), top.up(n)),
+            Scroll::Down(n) => (row.down(n), top.down(n)),
+        };
+        top = scrolled;
+        target = Some((moved, col));
     }
     if let Some(target) = target {
         move_to(copy, screen, height, top, target);
@@ -786,24 +724,22 @@ fn glyph_start(row: fux_vt::Row<'_>, col: u16) -> u16 {
     }
 }
 
-/// Moves the cursor, scrolling the view, whose top row is at `top`, to keep
+/// Moves the cursor, scrolling the view, whose top row is `top`, to keep
 /// it in sight.
-fn move_to(copy: &mut Copy, screen: &Screen, height: u16, top: usize, (row, col): (usize, u16)) {
-    let last_col = screen.size().cols().saturating_sub(1);
-    let col = col.min(last_col);
-    if let Some(r) = row_at(screen, row) {
-        copy.cursor = (r.id(), glyph_start(r, col));
-    }
+fn move_to(copy: &mut Copy, screen: &Screen, height: u16, top: Row<'_>, (row, col): Place<'_>) {
+    let col = col.min(screen.size().cols().saturating_sub(1));
+    copy.cursor = (row.id(), glyph_start(row, col));
     let height = usize::from(height);
     // Scroll just enough that the row shows; `height` is at least 1.
-    let new_top = if row < top {
+    let new_top = if row.index() < top.index() {
         row
-    } else if row >= top.saturating_add(height) {
-        row.saturating_add(1).saturating_sub(height)
+    } else if row.index() >= top.index().saturating_add(height) {
+        row.up(height.saturating_sub(1))
     } else {
         top
     };
-    if let Some(r) = row_at(screen, new_top.min(screen.history_len())) {
+    // The view's top as its window has it: no lower than the screen's.
+    if let Some(r) = new_top.window().row(0) {
         copy.top = r.id();
     }
 }
@@ -822,11 +758,11 @@ fn jump(
     copy: &mut Copy,
     screen: &Screen,
     height: u16,
-    at: &Resolved,
+    at: Resolved<'_>,
     search: &Search,
     notice: &mut Option<Notice>,
 ) {
-    match find(screen, &search.query, at.cursor, search.seek) {
+    match find(&search.query, at.cursor, search.seek) {
         Some(found) => move_to(copy, screen, height, at.top, found),
         None => {
             let text = format!("not found: {}", search.query);
@@ -877,15 +813,14 @@ mod tests {
         Ok(parser)
     }
 
-    #[test]
-    fn a_scroll_stops_at_both_ends() {
-        assert_eq!(Scroll::Up(3).from(5, 10), 2);
-        assert_eq!(Scroll::Up(9).from(5, 10), 0);
-        assert_eq!(Scroll::Down(3).from(5, 10), 8);
-        assert_eq!(Scroll::Down(9).from(5, 10), 10);
-        assert_eq!(Scroll::Down(usize::MAX).from(5, 10), 10);
-        // A row past the end, as after output shrank history, comes back.
-        assert_eq!(Scroll::Up(1).from(20, 10), 10);
+    /// Row `i`, counted from the oldest.
+    fn row(s: &Screen, i: usize) -> Result<Row<'_>, String> {
+        s.rows().nth(i).ok_or(format!("no row {i}"))
+    }
+
+    /// A place as a row counted from the oldest, and a column.
+    fn place((row, col): Place<'_>) -> (usize, u16) {
+        (row.index(), col)
     }
 
     /// `[` and `]` go to the previous and next prompt a shell marked (OSC
@@ -906,14 +841,18 @@ mod tests {
         s.output(pane, output.as_bytes());
         let screen = |s: &Session| s.panes.get(&pane).map(|p| p.screen().clone());
         let first = screen(&s).ok_or("the pane")?;
-        let starts: Vec<usize> = (0..retained(&first))
-            .filter(|i| row_at(&first, *i).is_some_and(|r| r.starts_prompt()))
+        let starts: Vec<usize> = first
+            .rows()
+            .filter(|r| r.starts_prompt())
+            .map(|r| r.index())
             .collect();
         assert_eq!(starts, [0, 5, 10, 15]);
-        assert_eq!(prompt(&first, 15, Seek::Backward), Some(10));
-        assert_eq!(prompt(&first, 7, Seek::Forward), Some(10));
-        assert_eq!(prompt(&first, 15, Seek::Forward), None);
-        assert_eq!(prompt(&first, 0, Seek::Backward), None);
+        let prompt =
+            |from, seek| Ok::<_, String>(prompt(row(&first, from)?, seek).map(|r| r.index()));
+        assert_eq!(prompt(15, Seek::Backward)?, Some(10));
+        assert_eq!(prompt(7, Seek::Forward)?, Some(10));
+        assert_eq!(prompt(15, Seek::Forward)?, None);
+        assert_eq!(prompt(0, Seek::Backward)?, None);
         // In copy mode, from the cursor on the last prompt.
         s.input(c, b"\x02c");
         let at = |s: &Session| -> Option<(usize, u16, usize)> {
@@ -923,7 +862,7 @@ mod tests {
             };
             let screen = s.panes.get(&pane)?.screen();
             let r = copy.resolve(screen)?;
-            Some((r.cursor.0, r.cursor.1, r.top))
+            Some((r.cursor.0.index(), r.cursor.1, r.top.index()))
         };
         assert_eq!(at(&s).map(|(row, _, _)| row), Some(15));
         s.input(c, b"[");
@@ -947,43 +886,6 @@ mod tests {
         s.input(c, b"]]");
         let history = first.history_len();
         assert_eq!(at(&s), Some((15, 0, history)));
-        Ok(())
-    }
-
-    /// After the pane grows, pulling rows back out of history, the view's
-    /// top is past what history holds: the cursor and the selection are
-    /// drawn on the rows the window shows from there, the ones `y` copies.
-    #[test]
-    fn the_view_after_rows_leave_history_shows_the_cursor_where_it_is() -> Result<(), String> {
-        let mut text = Vec::new();
-        for n in 0..60 {
-            text.extend_from_slice(format!("line {n}\r\n").as_bytes());
-        }
-        let mut p = screen(&text, 11, 20)?;
-        let history = p.screen().history_len();
-        let id = |s: &Screen, i| row_at(s, i).map(|r| r.id()).ok_or("no row");
-        let cursor = history.saturating_add(8);
-        let copy = Copy {
-            pane: PaneId::of(1),
-            top: id(p.screen(), history.saturating_sub(2))?,
-            cursor: (id(p.screen(), cursor)?, 0),
-            selection: Some((Select::Line, (id(p.screen(), cursor)?, 0))),
-            search: None,
-            typing: None,
-            held_at: None,
-        };
-        let size = fux_vt::Size::new(21, 20).map_err(|e| e.to_string())?;
-        p.resize(size).map_err(|e| e.to_string())?;
-        let s = p.screen();
-        let r = copy.resolve(s).ok_or("a row gone")?;
-        let shown_top = s.history_len().saturating_sub(r.offset(s));
-        let (y, _) = r.cursor_in_view(21).ok_or("cursor not in view")?;
-        let cursor_now = index_of(s, copy.cursor.0).ok_or("cursor gone")?;
-        assert_eq!(shown_top.saturating_add(usize::from(y)), cursor_now);
-        assert!(
-            r.selected(y, 0),
-            "the selection is drawn on the cursor's row"
-        );
         Ok(())
     }
 
@@ -1034,50 +936,45 @@ mod tests {
     }
 
     #[test]
-    fn rows_are_addressed_from_the_oldest() -> Result<(), String> {
-        let p = screen(b"one\r\ntwo\r\nthree\r\nfour", 2, 10)?;
-        let s = p.screen();
-        assert_eq!(retained(s), 4);
-        let text = |i| row_at(s, i).map(crate::session::row_text);
-        assert_eq!(text(0), Some("one".into()));
-        assert_eq!(text(3), Some("four".into()));
-        for i in 0..4 {
-            let id = row_at(s, i).map(|r| r.id());
-            assert_eq!(id.and_then(|id| index_of(s, id)), Some(i));
-        }
-        Ok(())
-    }
-
-    #[test]
     fn word_motions_cross_rows() -> Result<(), String> {
         let p = screen(b"foo.bar  baz\r\nqux", 2, 20)?;
         let s = p.screen();
-        assert_eq!(word_forward(s, 0, 0), (0, 3));
-        assert_eq!(word_forward(s, 0, 3), (0, 4));
-        assert_eq!(word_forward(s, 0, 9), (1, 0));
-        assert_eq!(word_back(s, 1, 0), (0, 9));
+        assert_eq!(place(word_forward(row(s, 0)?, 0)), (0, 3));
+        assert_eq!(place(word_forward(row(s, 0)?, 3)), (0, 4));
+        assert_eq!(place(word_forward(row(s, 0)?, 9)), (1, 0));
+        assert_eq!(place(word_back(row(s, 1)?, 0)), (0, 9));
         Ok(())
+    }
+
+    /// Where a search from row `from.0` and column `from.1` lands.
+    fn found(
+        s: &Screen,
+        query: &str,
+        from: (usize, u16),
+        seek: Seek,
+    ) -> Result<Option<(usize, u16)>, String> {
+        Ok(find(query, (row(s, from.0)?, from.1), seek).map(place))
     }
 
     #[test]
     fn search_is_literal_smart_case_and_wraps() -> Result<(), String> {
         let p = screen(b"Alpha beta\r\ngamma BETA\r\nx.y", 3, 20)?;
         let s = p.screen();
-        assert_eq!(find(s, "beta", (0, 0), Seek::Forward), Some((0, 6)));
-        assert_eq!(find(s, "beta", (0, 6), Seek::Forward), Some((1, 6)));
-        assert_eq!(find(s, "BETA", (0, 0), Seek::Forward), Some((1, 6)));
+        assert_eq!(found(s, "beta", (0, 0), Seek::Forward)?, Some((0, 6)));
+        assert_eq!(found(s, "beta", (0, 6), Seek::Forward)?, Some((1, 6)));
+        assert_eq!(found(s, "BETA", (0, 0), Seek::Forward)?, Some((1, 6)));
         assert_eq!(
-            find(s, "beta", (1, 6), Seek::Forward),
+            found(s, "beta", (1, 6), Seek::Forward)?,
             Some((0, 6)),
             "wraps"
         );
-        assert_eq!(find(s, "beta", (1, 6), Seek::Backward), Some((0, 6)));
+        assert_eq!(found(s, "beta", (1, 6), Seek::Backward)?, Some((0, 6)));
         assert_eq!(
-            find(s, ".", (0, 0), Seek::Forward),
+            found(s, ".", (0, 0), Seek::Forward)?,
             Some((2, 1)),
             "literal, not a regex"
         );
-        assert_eq!(find(s, "zzz", (0, 0), Seek::Forward), None);
+        assert_eq!(found(s, "zzz", (0, 0), Seek::Forward)?, None);
         Ok(())
     }
 
@@ -1088,12 +985,16 @@ mod tests {
     fn search_finds_each_match_in_a_row_at_its_column() -> Result<(), String> {
         let p = screen("ab 界ab e\u{301}ab 界x".as_bytes(), 1, 20)?;
         let s = p.screen();
-        assert_eq!(find(s, "ab", (0, 0), Seek::Forward), Some((0, 5)));
-        assert_eq!(find(s, "ab", (0, 5), Seek::Forward), Some((0, 9)));
-        assert_eq!(find(s, "ab", (0, 9), Seek::Forward), Some((0, 0)), "wraps");
-        assert_eq!(find(s, "ab", (0, 9), Seek::Backward), Some((0, 5)));
-        assert_eq!(find(s, "界x", (0, 0), Seek::Forward), Some((0, 12)));
-        assert_eq!(find(s, "AB", (0, 0), Seek::Forward), None, "smart case");
+        assert_eq!(found(s, "ab", (0, 0), Seek::Forward)?, Some((0, 5)));
+        assert_eq!(found(s, "ab", (0, 5), Seek::Forward)?, Some((0, 9)));
+        assert_eq!(
+            found(s, "ab", (0, 9), Seek::Forward)?,
+            Some((0, 0)),
+            "wraps"
+        );
+        assert_eq!(found(s, "ab", (0, 9), Seek::Backward)?, Some((0, 5)));
+        assert_eq!(found(s, "界x", (0, 0), Seek::Forward)?, Some((0, 12)));
+        assert_eq!(found(s, "AB", (0, 0), Seek::Forward)?, None, "smart case");
         Ok(())
     }
 
@@ -1107,14 +1008,14 @@ mod tests {
         let mut parser = fux_vt::Parser::new(fux_vt::Size::new(10, 100)?, 3000)?;
         parser.process(&lines)?;
         let s = parser.screen();
-        let last = retained(s).saturating_sub(1);
-        let copied = text(s, Select::Line, (0, 0), (last, 0));
+        let last = s.rows().next_back().ok_or("no rows")?;
+        let copied = text(s, Select::Line, (row(s, 0)?, 0), (last, 0));
         assert!(matches!(copied, Err(Error::SelectionTooLarge)));
         assert_eq!(
             copied.map_err(|e| e.to_string()),
             Err(format!("the selection is larger than {MAX_CELLS} cells"))
         );
-        assert!(text(s, Select::Line, (0, 0), (100, 0)).is_ok());
+        assert!(text(s, Select::Line, (row(s, 0)?, 0), (row(s, 100)?, 0)).is_ok());
         Ok(())
     }
 
@@ -1124,17 +1025,17 @@ mod tests {
         // "abcdef" wraps at 4 columns; then a line with a wide glyph.
         let p = screen("abcdef\r\n界x\r\nlast".as_bytes(), 3, 4)?;
         let s = p.screen();
-        let rows = retained(s);
-        let top = rows - 4;
-        assert_eq!(text(s, Select::Char, (top, 0), (top + 1, 1))?, "abcdef");
+        let top = s.rows().len() - 4;
+        let at = |i| row(s, top + i);
+        assert_eq!(text(s, Select::Char, (at(0)?, 0), (at(1)?, 1))?, "abcdef");
         assert_eq!(
-            text(s, Select::Line, (top, 0), (top + 2, 0))?,
+            text(s, Select::Line, (at(0)?, 0), (at(2)?, 0))?,
             "abcdef\n界x"
         );
         // Starting on the glyph's second half takes the whole glyph.
-        assert_eq!(text(s, Select::Char, (top + 2, 1), (top + 2, 2))?, "界x");
+        assert_eq!(text(s, Select::Char, (at(2)?, 1), (at(2)?, 2))?, "界x");
         assert_eq!(
-            text(s, Select::Block, (top, 1), (top + 3, 2))?,
+            text(s, Select::Block, (at(0)?, 1), (at(3)?, 2))?,
             "bc\nf\n界x\nas"
         );
         Ok(())

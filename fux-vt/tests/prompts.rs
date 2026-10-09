@@ -11,12 +11,9 @@ const MARKS: Options = Options::new().with(Feature::PromptMarks);
 /// The retained rows a prompt starts on, counted from the oldest.
 fn marks(p: &Parser) -> Vec<usize> {
     let s = p.screen();
-    let retained = usize::from(s.size().rows()).saturating_add(s.history_len());
-    (0..retained)
-        .filter(|i| {
-            let offset = retained.saturating_sub(i.saturating_add(1));
-            s.row_from_bottom(offset).is_some_and(|r| r.starts_prompt())
-        })
+    s.rows()
+        .filter(|r| r.starts_prompt())
+        .map(|r| r.index())
         .collect()
 }
 
