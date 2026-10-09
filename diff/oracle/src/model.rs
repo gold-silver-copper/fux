@@ -303,31 +303,15 @@ impl fmt::Display for Setup {
     }
 }
 
-/// The modes a program sets, which the two sides read through their own
-/// API (`side!`'s `modes`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Modes {
-    pub hide_cursor: bool,
-    pub application_cursor: bool,
-    pub application_keypad: bool,
-    pub bracketed_paste: bool,
-    pub synchronized_output: bool,
-    pub in_band_resize: bool,
-    pub color_scheme_updates: bool,
-    pub focus_reporting: bool,
-    pub alternate_screen: bool,
-    pub autowrap: bool,
-    pub insert_mode: bool,
-    pub origin_mode: bool,
-}
-
 /// Everything about the screen that is not its rows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct State {
     pub size: (u16, u16),
     pub cursor: (u16, u16),
     pub pending_wrap: bool,
-    pub modes: Modes,
+    /// The modes, each by its name in the working tree's `Mode`, and
+    /// whether it is set.
+    pub modes: Vec<(String, bool)>,
     pub cursor_shape: u16,
     pub scroll_region: (u16, u16),
     pub mouse: Mouse,

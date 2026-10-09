@@ -39,8 +39,8 @@ macro_rules! side {
     ) => {
         pub mod $module {
             use crate::model::{
-                self, Blink, Cell, Color, Encoding, Error, Heard, Lookup, Marked, Modes, Mouse,
-                Row, Seen, Setup, State, Style, Underline,
+                self, Blink, Cell, Color, Encoding, Error, Heard, Lookup, Marked, Mouse, Row, Seen,
+                Setup, State, Style, Underline,
             };
             use $vt as vt;
 
@@ -273,7 +273,7 @@ macro_rules! side {
                         cursor: s.cursor_position(),
                         pending_wrap: s.pending_wrap(),
                         modes: {
-                            let modes: fn(&vt::Screen) -> Modes = $modes;
+                            let modes: fn(&vt::Screen) -> Vec<(String, bool)> = $modes;
                             modes(s)
                         },
                         cursor_shape: s.cursor_shape(),
@@ -719,20 +719,13 @@ side!(
     cluster_capacity: vt::CLUSTER_CAPACITY,
     modes: |s| {
         use vt::Mode::*;
-        crate::model::Modes {
-            hide_cursor: !s.mode(ShowCursor),
-            application_cursor: s.mode(ApplicationCursor),
-            application_keypad: s.mode(ApplicationKeypad),
-            bracketed_paste: s.mode(BracketedPaste),
-            synchronized_output: s.mode(SynchronizedOutput),
-            in_band_resize: s.mode(InBandResize),
-            color_scheme_updates: s.mode(ColorSchemeUpdates),
-            focus_reporting: s.mode(FocusReporting),
-            alternate_screen: s.mode(AlternateScreen),
-            autowrap: s.mode(Autowrap),
-            insert_mode: s.mode(Insert),
-            origin_mode: s.mode(Origin),
-        }
+        [
+            ShowCursor, ApplicationCursor, ApplicationKeypad, BracketedPaste, SynchronizedOutput,
+            InBandResize, ColorSchemeUpdates, FocusReporting, AlternateScreen, Autowrap, Insert,
+            Origin,
+        ]
+        .map(|m| (format!("{m:?}"), s.mode(m)))
+        .into()
     },
 );
 side!(
@@ -749,18 +742,20 @@ side!(
     set_cell: vt::Cells::set_cell,
     set_text: vt::Cells::set_text,
     cluster_capacity: vt::Cell::CLUSTER_CAPACITY,
-    modes: |s| crate::model::Modes {
-        hide_cursor: s.hide_cursor(),
-        application_cursor: s.application_cursor(),
-        application_keypad: s.application_keypad(),
-        bracketed_paste: s.bracketed_paste(),
-        synchronized_output: s.synchronized_output(),
-        in_band_resize: s.in_band_resize(),
-        color_scheme_updates: s.color_scheme_updates(),
-        focus_reporting: s.focus_reporting(),
-        alternate_screen: s.alternate_screen(),
-        autowrap: s.autowrap(),
-        insert_mode: s.insert_mode(),
-        origin_mode: s.origin_mode(),
-    },
+    modes: |s| [
+        ("ShowCursor", !s.hide_cursor()),
+        ("ApplicationCursor", s.application_cursor()),
+        ("ApplicationKeypad", s.application_keypad()),
+        ("BracketedPaste", s.bracketed_paste()),
+        ("SynchronizedOutput", s.synchronized_output()),
+        ("InBandResize", s.in_band_resize()),
+        ("ColorSchemeUpdates", s.color_scheme_updates()),
+        ("FocusReporting", s.focus_reporting()),
+        ("AlternateScreen", s.alternate_screen()),
+        ("Autowrap", s.autowrap()),
+        ("Insert", s.insert_mode()),
+        ("Origin", s.origin_mode()),
+    ]
+    .map(|(name, on)| (name.to_owned(), on))
+    .into(),
 );

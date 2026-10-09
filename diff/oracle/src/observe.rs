@@ -293,7 +293,7 @@ fn glance<S: Side>(s: &S) -> Glance {
     Glance {
         cursor: state.cursor,
         pending_wrap: state.pending_wrap,
-        origin_mode: state.modes.origin_mode,
+        origin_mode: state.modes.contains(&("Origin".into(), true)),
         pen: state.pen,
         kitty_keyboard_flags: state.kitty_keyboard_flags,
         row,
