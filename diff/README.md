@@ -154,9 +154,8 @@ redesign changes on purpose (`RowId` and `Mark` are compared by number);
 kept.
 
 **Adapters.** Where the two APIs part, give `side!` an argument for that
-part, read both into the same model, and list it here. Today: the
-modes, which the working tree reads with `Screen::mode` and the base with a
-getter each. A commit without an adapter for its API does not build
+part, read both into the same model, and list it here. Today: none.
+A commit without an adapter for its API does not build
 (`oracle.sh 4f3975b`, before hosts made cells as `CellRef`, stops there).
 
 ### The inputs

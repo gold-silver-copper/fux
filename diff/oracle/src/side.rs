@@ -6,16 +6,10 @@
 //! argument for that part, as `diff/src/terminal.rs`'s `stack!` does, and
 //! read both into the same model; say so in the README's list of adapters.
 //!
-//! Adapters today: the modes, which the working tree reads with
-//! `Screen::mode` and the commit with a getter each.
+//! Adapters today: none.
 
 macro_rules! side {
-    (
-        $module:ident,
-        $vt:ident,
-        $name:literal,
-        modes: $modes:expr $(,)?
-    ) => {
+    ($module:ident, $vt:ident, $name:literal $(,)?) => {
         pub mod $module {
             use crate::model::{
                 self, Blink, Cell, Color, Error, Heard, Lookup, Marked, Row, Seen, Setup, State,
@@ -109,6 +103,19 @@ macro_rules! side {
 
             fn error(e: vt::Error) -> Error {
                 Error(format!("{e:?}: {e}"))
+            }
+
+    /// Every mode both read, by name.
+            #[rustfmt::skip]
+            fn modes(s: &vt::Screen) -> Vec<(String, bool)> {
+                use vt::Mode::*;
+                [
+                    ShowCursor, ApplicationCursor, ApplicationKeypad, BracketedPaste,
+                    SynchronizedOutput, InBandResize, ColorSchemeUpdates, FocusReporting,
+                    AlternateScreen, Autowrap, Insert, Origin,
+                ]
+                .map(|m| (format!("{m:?}"), s.mode(m)))
+                .into()
             }
 
             /// The number in a `RowId` or `Mark`, which shows it only in
@@ -226,10 +233,7 @@ macro_rules! side {
                         size: s.size(),
                         cursor: s.cursor_position(),
                         pending_wrap: s.pending_wrap(),
-                        modes: {
-                            let modes: fn(&vt::Screen) -> Vec<(String, bool)> = $modes;
-                            modes(s)
-                        },
+                        modes: modes(s),
                         cursor_shape: s.cursor_shape(),
                         scroll_region: s.scroll_region(),
                         mouse: format!("{:?}", s.mouse_protocol_mode()),
@@ -623,39 +627,5 @@ macro_rules! side {
     };
 }
 
-side!(
-    work,
-    fux_vt,
-    "work",
-    modes: |s| {
-        use vt::Mode::*;
-        [
-            ShowCursor, ApplicationCursor, ApplicationKeypad, BracketedPaste, SynchronizedOutput,
-            InBandResize, ColorSchemeUpdates, FocusReporting, AlternateScreen, Autowrap, Insert,
-            Origin,
-        ]
-        .map(|m| (format!("{m:?}"), s.mode(m)))
-        .into()
-    },
-);
-side!(
-    base,
-    base_vt,
-    "base",
-    modes: |s| [
-        ("ShowCursor", !s.hide_cursor()),
-        ("ApplicationCursor", s.application_cursor()),
-        ("ApplicationKeypad", s.application_keypad()),
-        ("BracketedPaste", s.bracketed_paste()),
-        ("SynchronizedOutput", s.synchronized_output()),
-        ("InBandResize", s.in_band_resize()),
-        ("ColorSchemeUpdates", s.color_scheme_updates()),
-        ("FocusReporting", s.focus_reporting()),
-        ("AlternateScreen", s.alternate_screen()),
-        ("Autowrap", s.autowrap()),
-        ("Insert", s.insert_mode()),
-        ("Origin", s.origin_mode()),
-    ]
-    .map(|(name, on)| (name.to_owned(), on))
-    .into(),
-);
+side!(work, fux_vt, "work");
+side!(base, base_vt, "base");
