@@ -1795,25 +1795,10 @@ impl Screen {
         let blank = self.blank_style();
         let version = self.version;
         let g = self.grid_mut();
-        g.cursor.pending_wrap = false;
-        let (row, col) = g.cursor.at();
-        let size = g.size();
-        let cols = size.cols();
-        let mut found = false;
-        if display {
-            for y in 0..size.rows() {
-                if (mode == 0 && y > row) || (mode == 1 && y < row) || mode == 2 {
-                    found |= g.erase_unprotected(y, 0, cols, blank, version);
-                    g.clear_prompt(y);
-                }
-            }
-        }
-        let (start, end) = match mode {
-            0 => (col, cols),
-            1 => (0, col.saturating_add(1).min(cols)),
-            _ => (0, cols),
-        };
-        found |= g.erase_unprotected(row, start, end, blank, version);
+        let ((row, col), size) = (g.cursor.at(), g.size());
+        let found = g.erase_in(display, mode, |g, y, start, end| {
+            g.erase_unprotected(y, start, end, blank, version)
+        });
         let whole = mode == 2
             || (mode == 0 && (row, col) == (0, 0))
             || (mode == 1 && (row, col) == (size.lines().last(), size.columns().last()));
@@ -2429,26 +2414,10 @@ impl Screen {
                 }
                 let a = self.blank_style();
                 self.with_grid(|g, _, v| {
-                    g.cursor.pending_wrap = false;
-                    let cols = g.size().cols();
-                    if byte == b'J' {
-                        for y in 0..g.size().rows() {
-                            if (mode == 0 && y > row) || (mode == 1 && y < row) || mode == 2 {
-                                g.erase(y, 0, cols, a, v);
-                                // A row ED erases whole is no prompt's, as in
-                                // Ghostty; EL, and ED's part of the cursor's
-                                // row, leave the mark (a shell redrawing its
-                                // prompt erases from it).
-                                g.clear_prompt(y);
-                            }
-                        }
-                    }
-                    let (start, end) = match mode {
-                        0 => (col, cols),
-                        1 => (0, col.saturating_add(1).min(cols)),
-                        _ => (0, cols),
-                    };
-                    g.erase(row, start, end, a, v);
+                    g.erase_in(byte == b'J', mode, |g, y, start, end| {
+                        g.erase(y, start, end, a, v);
+                        false
+                    })
                 });
             }
             // IL and DL, ignored outside the margins, leave the cursor in
