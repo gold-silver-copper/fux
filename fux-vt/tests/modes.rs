@@ -33,7 +33,7 @@ fn cursor_after(input: &[u8]) -> std::result::Result<(u16, u16), fux_vt::Error> 
 /// expects it settable: "xterm always returns 4"). DECNKM is the keypad
 /// mode ESC = and ESC > set (ctlseqs; xterm 411). xterm 411: DECSTR keeps
 /// 4, 5 and 67 and resets 66; RIS resets them all. DECRQM reads what
-/// `Screen::mode` reads.
+/// `Screen::mode` reads, focus reporting (1004) too, as xterm 411 does.
 #[test]
 fn decrqm_reports_the_modes_xterm_keeps() -> Result {
     let mut p = Parser::with_options(25, 80, 0, MODES)?;
@@ -62,16 +62,8 @@ fn decrqm_reports_the_modes_xterm_keeps() -> Result {
         replies(&mut p, all)?,
         "^[[?4;2$y^[[?5;2$y^[[?8;4$y^[[?66;2$y^[[?67;2$y"
     );
-    Ok(())
-}
-
-/// Focus reporting (1004) is reported set or reset, as xterm 411 reports
-/// it.
-#[test]
-fn decrqm_reports_focus_reporting() -> Result {
-    let mut p = Parser::with_options(25, 80, 0, MODES)?;
-    let asked = replies(&mut p, b"\x1b[?1004$p\x1b[?1004h\x1b[?1004$p")?;
-    assert_eq!(asked, "^[[?1004;2$y^[[?1004;1$y");
+    let focus = replies(&mut p, b"\x1b[?1004$p\x1b[?1004h\x1b[?1004$p")?;
+    assert_eq!(focus, "^[[?1004;2$y^[[?1004;1$y");
     Ok(())
 }
 
