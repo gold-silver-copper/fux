@@ -1,9 +1,10 @@
-//! The protocol, in the baseline and the current fux: random frames encode
-//! to the same bytes, alone and after others, a stream's payload and a
-//! client's input are framed alike; and random byte streams -- frames,
-//! broken frames, stray headers, empty and oversized lengths -- pushed
-//! whole and in pieces decode to the same frames and errors, check alike,
-//! and lend the same paints and inputs.
+//! The protocol, in the baseline and the current fux: a stream's payload
+//! is framed alike; and random byte streams -- frames, broken frames, stray
+//! headers, empty and oversized lengths -- pushed whole and in pieces
+//! decode to the same frames, which encode to the same bytes again, and the
+//! same errors. The current fux decodes each kind as the frame type of the
+//! stage it is allowed in, and refuses a size of zero and (as the baseline
+//! does not know it) a `Terminal` where the baseline is compared.
 use crate::rng::Rng;
 use crate::{Outcome, bump, same, times};
 
@@ -90,7 +91,7 @@ fn stream(r: &mut Rng) -> Vec<u8> {
         let noisy = r.chance(33);
         match r.below(if noisy { 10 } else { 6 }) {
             0..=5 => {
-                let Ok(mut frame) = base::encode(&spec(r, false)) else {
+                let Ok(mut frame) = encode(&spec(r, false)) else {
                     continue;
                 };
                 if r.chance(8) && frame.len() > 5 {
@@ -136,148 +137,157 @@ fn stream(r: &mut Rng) -> Vec<u8> {
     out
 }
 
-macro_rules! stack {
-    ($name:ident, $fux:ident) => {
-        mod $name {
-            use super::Spec;
-            use $fux::bytes::ByteQueue;
-            use $fux::protocol::{Decoder, Frame, Role, Stream};
+/// What the current fux refuses of the whole frame `held` begins with,
+/// whatever its payload, which the baseline takes: a `Terminal`, or a size
+/// of zero, read before the fields after it.
+fn refused(held: &[u8]) -> Option<String> {
+    let (header, rest) = held.split_first_chunk::<4>()?;
+    let length = usize::try_from(u32::from_be_bytes(*header)).ok()?;
+    let whole = rest.get(..length).filter(|_| length <= 1 << 20)?;
+    let (&kind, payload) = whole.split_first()?;
+    let rows = payload.first_chunk::<2>();
+    let cols = payload.get(2..).and_then(<[u8]>::first_chunk::<2>);
+    let zero = rows == Some(&[0, 0]) || (rows.is_some() && cols == Some(&[0, 0]));
+    match kind {
+        12 => Some("UnexpectedKind(12)".into()),
+        2 | 4 if zero => Some("ZeroSize".into()),
+        _ => None,
+    }
+}
 
-            fn frame(spec: &Spec) -> Frame {
-                let role = |r: u8| match r {
-                    0 => Role::Attach,
-                    1 => Role::Command,
-                    _ => Role::Kill,
+/// `$name`: every frame `$decoder` decodes, by `$next` from the kind byte
+/// held next, encoded again, and the first error, as the current fux names
+/// it, with what is held after each push, from `bytes` pushed in pieces of
+/// `size` (all at once for 0).
+macro_rules! decoded {
+    ($name:ident, $decoder:ty, |$d:ident, $kind:ident| $next:expr) => {
+        fn $name(bytes: &[u8], size: usize) -> String {
+            let mut $d = <$decoder>::default();
+            let mut out = String::new();
+            let mut pushed = 0usize;
+            let mut rest = bytes;
+            while !rest.is_empty() {
+                let take = if size == 0 {
+                    rest.len()
+                } else {
+                    size.min(rest.len())
                 };
-                match spec.clone() {
-                    Spec::Hello(protocol, version, r) => Frame::Hello {
-                        protocol,
-                        version,
-                        role: role(r),
-                    },
-                    Spec::Attach(rows, cols, workspace) => Frame::Attach {
-                        rows,
-                        cols,
-                        workspace,
-                    },
-                    Spec::Input(bytes) => Frame::Input(bytes),
-                    Spec::Resize(rows, cols) => Frame::Resize { rows, cols },
-                    Spec::Detach => Frame::Detach,
-                    Spec::Command(argv, cwd, pane) => Frame::Command { argv, cwd, pane },
-                    Spec::Paint(bytes) => Frame::Paint(bytes),
-                    Spec::Exit(reason) => Frame::Exit(reason),
-                    Spec::Stdout(bytes) => Frame::Stdout(bytes),
-                    Spec::Stderr(bytes) => Frame::Stderr(bytes),
-                    Spec::Done(status) => Frame::Done { status },
-                }
-            }
-
-            pub fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
-                frame(spec).encode().map_err(|e| format!("{e:?} {e}"))
-            }
-
-            /// Every way a frame, or its payload, is written: the bytes, each
-            /// after what it returned.
-            pub fn written(spec: &Spec) -> Vec<u8> {
-                let frame = frame(spec);
-                let mut out = format!("{:?}", encode(spec).map(|b| b.len())).into_bytes();
-                out.extend(encode(spec).unwrap_or_default());
-                let mut after = b"before".to_vec();
-                let into = frame
-                    .encode_into(&mut after)
-                    .map_err(|e| format!("{e:?} {e}"));
-                out.extend(format!("{into:?}").into_bytes());
-                out.extend(after);
-                let payload = match spec {
-                    Spec::Input(b) | Spec::Paint(b) | Spec::Stdout(b) | Spec::Stderr(b) => {
-                        b.clone()
-                    }
-                    Spec::Hello(..)
-                    | Spec::Attach(..)
-                    | Spec::Resize(..)
-                    | Spec::Detach
-                    | Spec::Command(..)
-                    | Spec::Exit(_)
-                    | Spec::Done(_) => Vec::new(),
-                };
-                for stream in [Stream::Paint, Stream::Stdout, Stream::Stderr] {
-                    let mut queue = ByteQueue::default();
-                    queue.push(b"before");
-                    stream.encode_into(&payload, &mut queue);
-                    out.extend_from_slice(queue.as_slice());
-                }
-                out
-            }
-
-            /// Every frame and the first error, with what is held after
-            /// each push, from `bytes` pushed in pieces of `size` (all at
-            /// once for 0).
-            pub fn decoded(bytes: &[u8], size: usize) -> String {
-                let mut decoder = Decoder::default();
-                let mut out = String::new();
-                let mut rest = bytes;
-                while !rest.is_empty() {
-                    let take = if size == 0 {
-                        rest.len()
-                    } else {
-                        size.min(rest.len())
-                    };
-                    let (piece, after) = rest.split_at_checked(take).unwrap_or((rest, &[]));
-                    rest = after;
-                    decoder.push(piece);
-                    loop {
-                        match decoder.frame() {
-                            Ok(Some(frame)) => out.push_str(&format!("{frame:?}\n")),
-                            Ok(None) => break,
-                            Err(error) => return format!("{out}{error:?} {error}"),
-                        }
-                    }
-                    out.push_str(&format!("held {}\n", decoder.buffered()));
-                }
-                out
-            }
-
-            /// What checking finds, and then each raw frame: the paint and
-            /// input it lends, and what it decodes to.
-            pub fn raw(bytes: &[u8]) -> String {
-                let mut decoder = Decoder::default();
-                decoder.push(bytes);
-                let checked = decoder.check(0);
-                let mut out = format!(
-                    "{} {} {:?}\n",
-                    checked.end,
-                    checked.frames,
-                    checked.error.map(|e| format!("{e:?} {e}"))
-                );
+                let (piece, after) = rest.split_at_checked(take).unwrap_or((rest, &[]));
+                rest = after;
+                $d.push(piece);
+                pushed = pushed.saturating_add(piece.len());
                 loop {
-                    match decoder.raw() {
-                        Ok(Some(raw)) => out.push_str(&format!(
-                            "{:?} {:?} {:?}\n",
-                            raw.paint(),
-                            raw.input(),
-                            raw.decode().map_err(|e| format!("{e:?} {e}"))
-                        )),
-                        Ok(None) => return out,
-                        Err(error) => return format!("{out}{error:?} {error}"),
+                    let held = bytes
+                        .get(pushed.saturating_sub($d.buffered())..pushed)
+                        .unwrap_or_default();
+                    if let Some(error) = refused(held) {
+                        return format!("{out}{error}");
+                    }
+                    let $kind = held.get(4).copied();
+                    let mut next = || -> Result<Option<Vec<u8>>, String> { $next };
+                    match next() {
+                        Ok(Some(frame)) => out.push_str(&format!("{frame:?}\n")),
+                        Ok(None) => break,
+                        Err(error) => return format!("{out}{error}"),
                     }
                 }
+                out.push_str(&format!("held {}\n", $d.buffered()));
             }
+            out
         }
     };
 }
 
-stack!(base, baseline);
-stack!(cur, fux);
+// An unknown kind is one not expected, and an exit reason not UTF-8 is a
+// frame string that is not.
+decoded!(base, baseline::protocol::Decoder, |d, _kind| d
+    .frame()
+    .map_err(|e| {
+        format!("{e:?}")
+            .replace("UnknownKind", "UnexpectedKind")
+            .replace("ExitNotUtf8", "NotUtf8")
+    })?
+    .map(|f| f.encode().map_err(|e| format!("{e:?}")))
+    .transpose());
+
+decoded!(cur, fux::protocol::Decoder, |d, kind| {
+    use fux::protocol::{Attach, AttachedFrame, Command, Frame, Hello, ServerFrame};
+    fn again<'a>(frame: Option<impl Frame<'a>>) -> Result<Option<Vec<u8>>, String> {
+        frame
+            .map(|f| f.encode().map_err(|e| format!("{e:?}")))
+            .transpose()
+    }
+    let error = |e| format!("{e:?}");
+    match kind {
+        Some(1) => again(d.frame::<Hello>().map_err(error)?),
+        Some(2) => again(d.frame::<Attach>().map_err(error)?),
+        Some(3..=5) => again(d.frame::<AttachedFrame>().map_err(error)?),
+        Some(6) => again(d.frame::<Command>().map_err(error)?),
+        _ => again(d.frame::<ServerFrame>().map_err(error)?),
+    }
+});
+
+/// What each stream writes for `payload`, after other bytes: the
+/// baseline's, then the current fux's.
+fn streamed(payload: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    use baseline::protocol::Stream as Base;
+    use fux::protocol::ServerFrame as Cur;
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    let streams: [(_, fn(_) -> _); 3] = [
+        (Base::Paint, Cur::Paint),
+        (Base::Stdout, Cur::Stdout),
+        (Base::Stderr, Cur::Stderr),
+    ];
+    for (base, cur) in streams {
+        let mut queue = baseline::bytes::ByteQueue::default();
+        queue.push(b"before");
+        base.encode_into(payload, &mut queue);
+        a.extend_from_slice(queue.as_slice());
+        let mut queue = fux::bytes::ByteQueue::default();
+        queue.push(b"before");
+        Cur::split_into(payload, cur, &mut queue);
+        b.extend_from_slice(queue.as_slice());
+    }
+    (a, b)
+}
+
+/// `spec`, encoded by the baseline.
+fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
+    use baseline::protocol::{Frame, Role};
+    let role = |r: u8| match r {
+        0 => Role::Attach,
+        1 => Role::Command,
+        _ => Role::Kill,
+    };
+    let frame = match spec.clone() {
+        Spec::Hello(protocol, version, r) => Frame::Hello {
+            protocol,
+            version,
+            role: role(r),
+        },
+        Spec::Attach(rows, cols, workspace) => Frame::Attach {
+            rows,
+            cols,
+            workspace,
+        },
+        Spec::Input(bytes) => Frame::Input(bytes),
+        Spec::Resize(rows, cols) => Frame::Resize { rows, cols },
+        Spec::Detach => Frame::Detach,
+        Spec::Command(argv, cwd, pane) => Frame::Command { argv, cwd, pane },
+        Spec::Paint(bytes) => Frame::Paint(bytes),
+        Spec::Exit(reason) => Frame::Exit(reason),
+        Spec::Stdout(bytes) => Frame::Stdout(bytes),
+        Spec::Stderr(bytes) => Frame::Stderr(bytes),
+        Spec::Done(status) => Frame::Done { status },
+    };
+    frame.encode().map_err(|e| format!("{e:?}"))
+}
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
-    let (mut frames, mut streams, mut refused) = (0u64, 0u64, 0u64);
+    let (mut frames, mut streams) = (0u64, 0u64);
     for case in 0..times(20_000, scale) {
-        let s = spec(r, true);
-        let (a, b) = (base::written(&s), cur::written(&s));
-        if base::encode(&s).is_err() {
-            bump(&mut refused);
-        }
-        crate::same_bytes(&format!("frame {case}"), &a, &b)?;
+        let (a, b) = streamed(&bytes(r, true));
+        crate::same_bytes(&format!("payload {case}, streamed"), &a, &b)?;
         bump(&mut frames);
     }
     for case in 0..times(50_000, scale) {
@@ -287,16 +297,11 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
             "stream {case}, {} bytes {bytes:?}, pieces of {size}",
             bytes.len()
         );
-        same(&context, base::decoded(&bytes, 0), cur::decoded(&bytes, 0))?;
-        same(
-            &context,
-            base::decoded(&bytes, size),
-            cur::decoded(&bytes, size),
-        )?;
-        same(&context, base::raw(&bytes), cur::raw(&bytes))?;
+        same(&context, base(&bytes, 0), cur(&bytes, 0))?;
+        same(&context, base(&bytes, size), cur(&bytes, size))?;
         bump(&mut streams);
     }
     Ok(format!(
-        "{frames} frames ({refused} too long to send), {streams} byte streams, whole and in pieces"
+        "{frames} payloads streamed, {streams} byte streams, whole and in pieces"
     ))
 }

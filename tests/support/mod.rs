@@ -4,8 +4,9 @@
     dead_code,
     reason = "each test binary uses a different part of this module"
 )]
-use fux::protocol::{Decoder, Frame, PROTOCOL, Role};
+use fux::protocol::{Attach, AttachedFrame, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame};
 use std::io::{Read, Write};
+use std::num::NonZeroU16;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 pub type Outcome = Result<(), String>;
+
+/// A size a frame carries: never zero.
+pub fn nonzero(n: u16) -> Result<NonZeroU16, String> {
+    NonZeroU16::new(n).ok_or_else(|| "a size of zero".to_owned())
+}
 
 pub const FUX: &str = env!("CARGO_BIN_EXE_fux");
 /// How long a test waits for something to show.
@@ -269,16 +275,16 @@ impl Client {
         workspace: Option<&str>,
     ) -> Result<Client, String> {
         let mut stream = UnixStream::connect(socket).map_err(e)?;
-        let hello = Frame::Hello {
+        let hello = Hello {
             protocol: PROTOCOL,
-            version: "test".into(),
+            version: "test",
             role: Role::Attach,
         };
         stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
-        let attach = Frame::Attach {
-            rows,
-            cols,
-            workspace: workspace.map(str::to_owned),
+        let attach = Attach {
+            rows: nonzero(rows)?,
+            cols: nonzero(cols)?,
+            workspace,
         };
         stream.write_all(&attach.encode().map_err(e)?).map_err(e)?;
         stream.set_nonblocking(true).map_err(e)?;
@@ -294,13 +300,7 @@ impl Client {
     }
 
     pub fn send(&mut self, bytes: &[u8]) -> Outcome {
-        self.stream.set_nonblocking(false).map_err(e)?;
-        let result = self
-            .stream
-            .write_all(&Frame::Input(bytes.to_vec()).encode().map_err(e)?)
-            .map_err(e);
-        self.stream.set_nonblocking(true).map_err(e)?;
-        result
+        self.frame(&AttachedFrame::Input(bytes))
     }
 
     /// Types text, as keys.
@@ -312,35 +312,27 @@ impl Client {
         self.rows = rows;
         self.cols = cols;
         self.terminal = fux_vt::Parser::new(rows, cols, 0).map_err(e)?;
-        self.stream.set_nonblocking(false).map_err(e)?;
-        let result = self
-            .stream
-            .write_all(&Frame::Resize { rows, cols }.encode().map_err(e)?)
-            .map_err(e);
-        self.stream.set_nonblocking(true).map_err(e)?;
-        result
+        self.frame(&AttachedFrame::Resize {
+            rows: nonzero(rows)?,
+            cols: nonzero(cols)?,
+        })
     }
 
-    /// Sends any frame, as a client that does not follow the protocol
+    pub fn frame<'a>(&mut self, frame: &impl Frame<'a>) -> Outcome {
+        self.write(&frame.encode().map_err(e)?)
+    }
+
+    /// Sends any bytes, as a client that does not follow the protocol
     /// might.
-    pub fn frame(&mut self, frame: &Frame) -> Outcome {
+    pub fn write(&mut self, bytes: &[u8]) -> Outcome {
         self.stream.set_nonblocking(false).map_err(e)?;
-        let result = self
-            .stream
-            .write_all(&frame.encode().map_err(e)?)
-            .map_err(e);
+        let result = self.stream.write_all(bytes).map_err(e);
         self.stream.set_nonblocking(true).map_err(e)?;
         result
     }
 
     pub fn detach(&mut self) -> Outcome {
-        self.stream.set_nonblocking(false).map_err(e)?;
-        let result = self
-            .stream
-            .write_all(&Frame::Detach.encode().map_err(e)?)
-            .map_err(e);
-        self.stream.set_nonblocking(true).map_err(e)?;
-        result
+        self.frame(&AttachedFrame::Detach)
     }
 
     /// Reads whatever the server has sent.
@@ -362,21 +354,16 @@ impl Client {
         }
         while let Some(frame) = self.decoder.frame().map_err(e)? {
             match frame {
-                Frame::Paint(bytes) => {
-                    self.painted.extend_from_slice(&bytes);
-                    self.terminal.process(&bytes).map_err(e)?;
+                ServerFrame::Paint(bytes) => {
+                    self.painted.extend_from_slice(bytes);
+                    self.terminal.process(bytes).map_err(e)?;
                 }
-                Frame::Exit(reason) => self.exit = Some(reason),
-                Frame::Hello { .. }
-                | Frame::Attach { .. }
-                | Frame::Input(_)
-                | Frame::Resize { .. }
-                | Frame::Detach
-                | Frame::Command { .. }
-                | Frame::Stdout(_)
-                | Frame::Stderr(_)
-                | Frame::Done { .. }
-                | Frame::Terminal { .. } => {}
+                ServerFrame::Exit(reason) => self.exit = Some(reason.to_owned()),
+                ServerFrame::Hello(_)
+                | ServerFrame::Stdout(_)
+                | ServerFrame::Stderr(_)
+                | ServerFrame::Done { .. }
+                | ServerFrame::Terminal { .. } => {}
             }
         }
         Ok(())
