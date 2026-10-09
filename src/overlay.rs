@@ -292,17 +292,13 @@ pub fn open_tab_chooser(
     view: &mut View,
     moving: Option<PaneId>,
 ) -> Result<String, Error> {
-    let current = view.tab();
-    let ws = session
-        .workspace(view.workspace)
-        .ok_or(Error::NoCurrentWorkspace)?;
-    let items = ws
-        .tabs
-        .iter()
+    let ws = (session.shown_workspace(view.id)).ok_or(Error::NoCurrentWorkspace)?;
+    let current = ws.tab_of(view.id).map(|t| t.id);
+    let items = (ws.tabs().iter())
         .map(|tab| {
             let (id, name) = (tab.id, &tab.name);
             Item {
-                label: format!("{id} {name} — {}", pane_names(session, &tab.root)),
+                label: format!("{id} {name} — {}", pane_names(session, tab.root())),
                 command: match moving {
                     Some(p) => Command::MovePane {
                         target: Some(p),
@@ -324,12 +320,12 @@ pub fn open_workspace_chooser(
     view: &mut View,
     moving: Option<PaneId>,
 ) -> String {
-    let current = view.workspace;
+    let current = session.shown_workspace(view.id).map(|w| w.id);
     let items = session
         .workspaces
         .iter()
         .map(|ws| {
-            let roots = ws.tabs.iter().filter_map(|t| t.root.as_ref());
+            let roots = ws.tabs().iter().filter_map(|t| t.root());
             Item {
                 label: format!("{} {} — {}", ws.id, ws.name, pane_names(session, roots)),
                 command: match moving {
@@ -339,7 +335,7 @@ pub fn open_workspace_chooser(
                     },
                     None => ClientAction::SelectWorkspace(Pick::Id(WsRef::Id(ws.id))).here(),
                 },
-                current: ws.id == current,
+                current: Some(ws.id) == current,
                 subject: Some(AnyRef::Workspace(WsRef::Id(ws.id))),
             }
         })
@@ -656,7 +652,7 @@ pub fn run_root(session: &mut Session, client: ClientId, press: KeyPress) -> boo
 
 /// Sends a key to the client's focused pane, encoded as its program asked.
 pub fn send_key(session: &mut Session, client: ClientId, stroke: Keystroke) {
-    let Some(pane) = session.views.get(&client).and_then(|v| v.focus()) else {
+    let Some(pane) = session.focused(client) else {
         return;
     };
     session.typed(client);
@@ -1163,7 +1159,7 @@ mod tests {
         );
         s.input(c, b"n");
         assert_eq!(mode(&s, c), "normal");
-        assert_eq!(s.workspaces.first().map(|w| w.tabs.len()), Some(2));
+        assert_eq!(s.workspaces.first().map(|w| w.tabs().len()), Some(2));
         // Enter on the layer's entry opens it too.
         s.input(c, b"\x02");
         s.input(
@@ -1485,7 +1481,7 @@ mod tests {
 
     /// How many tabs the first workspace has.
     fn tabs(s: &Session) -> Option<usize> {
-        s.workspaces.first().map(|w| w.tabs.len())
+        s.workspaces.first().map(|w| w.tabs().len())
     }
 
     #[test]
@@ -1523,22 +1519,14 @@ mod tests {
         assert_eq!(mode(&s, c), "column 1");
         escape(&mut s, c);
         // The prefix twice sends it, until the layer binds it.
-        let pane = s
-            .views
-            .get(&c)
-            .and_then(View::focus)
-            .map_or(0, PaneId::number);
+        let pane = s.focused(c).map_or(0, PaneId::number);
         let _ = queued(&mut s, pane);
         s.input(c, &[0x02, 0x02]);
         assert_eq!(queued(&mut s, pane), b"\x02");
         run(&mut s, "bind C-b new-tab")?;
         s.input(c, &[0x02, 0x02]);
         assert_eq!(tabs(&s), Some(3));
-        let pane = s
-            .views
-            .get(&c)
-            .and_then(View::focus)
-            .map_or(0, PaneId::number);
+        let pane = s.focused(c).map_or(0, PaneId::number);
         assert!(queued(&mut s, pane).is_empty());
         // `send-prefix` sends it from anywhere.
         run(&mut s, &format!("send-prefix -t %{pane}"))?;
@@ -1588,11 +1576,7 @@ mod tests {
         run(&mut s, "bind -n M-t new-tab")?;
         s.input(c, b"\x1bt");
         assert_eq!(tabs(&s), Some(2));
-        let pane = s
-            .views
-            .get(&c)
-            .and_then(View::focus)
-            .map_or(0, PaneId::number);
+        let pane = s.focused(c).map_or(0, PaneId::number);
         assert!(queued(&mut s, pane).is_empty());
         // A chord bound to nothing reaches the pane as it was typed.
         s.input(c, b"\x1bl");
@@ -1779,7 +1763,7 @@ mod tests {
         let order: Vec<String> = s
             .workspaces
             .first()
-            .map(|w| w.tabs.iter().map(|t| t.id.to_string()).collect())
+            .map(|w| w.tabs().iter().map(|t| t.id.to_string()).collect())
             .unwrap_or_default();
         assert_eq!(order, ["@2", "@3", "@1"]);
         Ok(())
