@@ -7,7 +7,9 @@
 //! read both into the same model; say so in the README's list of adapters.
 //!
 //! Adapters today: making and resizing a parser, which the working tree
-//! does with a `Size` and the commit with rows and columns.
+//! does with a `Size` and the commit with rows and columns; and a direct
+//! colour, which the working tree holds as an `Rgb` and the commit as three
+//! bytes.
 
 macro_rules! side {
     (
@@ -15,7 +17,9 @@ macro_rules! side {
         $vt:ident,
         $name:literal,
         made: $made:expr,
-        resized: $resized:expr $(,)?
+        resized: $resized:expr,
+        rgb_of: $rgb_of:expr,
+        rgb: $rgb:expr $(,)?
     ) => {
         pub mod $module {
             use crate::model::{
@@ -35,11 +39,12 @@ macro_rules! side {
             }
 
             fn color(c: vt::Color) -> Color {
-                match c {
-                    vt::Color::Default => Color::Default,
-                    vt::Color::Idx(n) => Color::Idx(n),
-                    vt::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
-                    other => Color::Other(format!("{other:?}")),
+                let rgb_of: fn(vt::Color) -> Option<(u8, u8, u8)> = $rgb_of;
+                match (c, rgb_of(c)) {
+                    (vt::Color::Default, _) => Color::Default,
+                    (vt::Color::Idx(n), _) => Color::Idx(n),
+                    (_, Some((r, g, b))) => Color::Rgb(r, g, b),
+                    (other, None) => Color::Other(format!("{other:?}")),
                 }
             }
 
@@ -431,7 +436,10 @@ macro_rules! side {
             fn to_color(c: &Color) -> vt::Color {
                 match c {
                     Color::Idx(n) => vt::Color::Idx(*n),
-                    Color::Rgb(r, g, b) => vt::Color::Rgb(*r, *g, *b),
+                    Color::Rgb(r, g, b) => {
+                        let rgb: fn(u8, u8, u8) -> vt::Color = $rgb;
+                        rgb(*r, *g, *b)
+                    }
                     Color::Default | Color::Other(_) => vt::Color::Default,
                 }
             }
@@ -652,6 +660,11 @@ side!(
         let size = vt::Size::new(rows, cols).map_err(|_| crate::side::zero_size())?;
         parser.resize(size).map_err(error)
     },
+    rgb_of: |c| match c {
+        vt::Color::Rgb(vt::Rgb { r, g, b }) => Some((r, g, b)),
+        _other => None,
+    },
+    rgb: |r, g, b| vt::Color::Rgb(vt::Rgb { r, g, b }),
 );
 side!(
     base,
@@ -661,6 +674,11 @@ side!(
         vt::Parser::with_options(rows, cols, history, options).map_err(error)
     },
     resized: |parser, rows, cols| parser.resize(rows, cols).map_err(error),
+    rgb_of: |c| match c {
+        vt::Color::Rgb(r, g, b) => Some((r, g, b)),
+        _other => None,
+    },
+    rgb: vt::Color::Rgb,
 );
 
 /// The commit's error for a size of no rows or no columns, as read.
