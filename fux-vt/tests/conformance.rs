@@ -121,23 +121,23 @@ fn styled(sgr: &str, check: impl FnOnce(CellRef<'_>)) -> Result {
 /// wezterm's and tmux's.
 #[test]
 fn sgr_colours_take_the_colon_forms_with_a_colour_space() -> Result {
-    let red = Color::Rgb(255, 0, 0);
+    let red = Color::Rgb([255, 0, 0].into());
     styled("\x1b[38:2::255:0:0m", |c| assert_eq!(c.fgcolor(), red))?;
     styled("\x1b[48:2::0:255:0m", |c| {
-        assert_eq!(c.bgcolor(), Color::Rgb(0, 255, 0));
+        assert_eq!(c.bgcolor(), Color::Rgb([0, 255, 0].into()));
     })?;
     styled("\x1b[58:2::9:8:7m", |c| {
-        assert_eq!(c.underline_color(), Color::Rgb(9, 8, 7));
+        assert_eq!(c.underline_color(), Color::Rgb([9, 8, 7].into()));
     })?;
     // The colour space is ignored, whatever it is; so is all after blue.
     styled("\x1b[38:2:9:1:2:3m", |c| {
-        assert_eq!(c.fgcolor(), Color::Rgb(1, 2, 3));
+        assert_eq!(c.fgcolor(), Color::Rgb([1, 2, 3].into()));
     })?;
     styled("\x1b[38:2:1:2:3:4:5:6m", |c| {
-        assert_eq!(c.fgcolor(), Color::Rgb(2, 3, 4));
+        assert_eq!(c.fgcolor(), Color::Rgb([2, 3, 4].into()));
     })?;
     styled("\x1b[38:2:1:2:3m", |c| {
-        assert_eq!(c.fgcolor(), Color::Rgb(1, 2, 3));
+        assert_eq!(c.fgcolor(), Color::Rgb([1, 2, 3].into()));
     })?;
     // Too few elements: no colour.
     styled("\x1b[38:2:1:2m", |c| {
@@ -145,7 +145,7 @@ fn sgr_colours_take_the_colon_forms_with_a_colour_space() -> Result {
     })?;
     styled("\x1b[38:5m", |c| assert_eq!(c.fgcolor(), Color::Default))?;
     styled("\x1b[1;38:2::10:20:30;4m", |c| {
-        assert_eq!(c.fgcolor(), Color::Rgb(10, 20, 30));
+        assert_eq!(c.fgcolor(), Color::Rgb([10, 20, 30].into()));
         assert!(c.bold() && c.underline());
     })?;
     Ok(())
@@ -172,7 +172,7 @@ fn an_invalid_sgr_colour_skips_only_itself() -> Result {
     })?;
     styled("\x1b[38;9;1m", |c| assert!(c.bold() && !c.strikeout()))?;
     styled("\x1b[38;2;1;2m", |c| {
-        assert_eq!(c.fgcolor(), Color::Rgb(1, 2, 0));
+        assert_eq!(c.fgcolor(), Color::Rgb([1, 2, 0].into()));
     })?;
     styled("\x1b[48;5m", |c| assert_eq!(c.bgcolor(), Color::Idx(0)))?;
     Ok(())

@@ -10,7 +10,7 @@ use crate::layout::{Axis, Placement, Rect};
 use crate::overlay;
 use crate::session::Session;
 use crate::view::{Choice, List, Mode, View};
-use fux_vt::{Attributes, CellRef, Cells, Color, Row, UnderlineStyle};
+use fux_vt::{Attributes, CellRef, Cells, Color, Rgb, Row, UnderlineStyle};
 use std::borrow::Cow;
 use std::io::Write;
 use unicode_width::UnicodeWidthChar;
@@ -513,10 +513,9 @@ impl Grid {
 /// is, for the client's terminal to draw in its own. A default underline
 /// colour is the foreground's, and stays.
 fn pane_colours(attributes: Attributes, screen: &fux_vt::Screen) -> Attributes {
-    let rgb = |(r, g, b): (u8, u8, u8)| Color::Rgb(r, g, b);
-    let colour = |c: Color, default: Option<(u8, u8, u8)>| match c {
-        Color::Idx(n) => screen.palette_color(n).map_or(c, rgb),
-        Color::Default => default.map_or(c, rgb),
+    let colour = |c: Color, default: Option<Rgb>| match c {
+        Color::Idx(n) => screen.palette_color(n).map_or(c, Color::Rgb),
+        Color::Default => default.map_or(c, Color::Rgb),
         Color::Rgb(..) | _ => c,
     };
     attributes
@@ -1242,7 +1241,7 @@ fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
         Color::Idx(n) => {
             let _ = write!(out, ";58:5:{n}");
         }
-        Color::Rgb(r, g, b) => {
+        Color::Rgb(Rgb { r, g, b }) => {
             let _ = write!(out, ";58:2::{r}:{g}:{b}");
         }
         // A kind of colour fux-vt does not know yet is drawn as the default.
@@ -1260,7 +1259,7 @@ fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
         Color::Idx(n) => {
             let _ = write!(out, ";{};5;{n}", base.saturating_add(8));
         }
-        Color::Rgb(r, g, b) => {
+        Color::Rgb(Rgb { r, g, b }) => {
             let _ = write!(out, ";{};2;{r};{g};{b}", base.saturating_add(8));
         }
         Color::Default | _ => {}
@@ -2213,7 +2212,7 @@ mod tests {
                 .with_underline_color(Color::Idx(9)),
             Attributes::default()
                 .with_underline(true)
-                .with_underline_color(Color::Rgb(1, 2, 3)),
+                .with_underline_color(Color::Rgb([1, 2, 3].into())),
             Attributes::default()
                 .with_bold(true)
                 .with_italic(true)
@@ -2262,7 +2261,7 @@ mod tests {
             let x = u16::try_from(x).map_err(|e| e.to_string())?;
             let a = Attributes::default()
                 .with_underline_style(*style)
-                .with_underline_color(Color::Rgb(255, 0, 0));
+                .with_underline_color(Color::Rgb([255, 0, 0].into()));
             grid.text(0, x, "x", a, 6);
         }
         let painted = |grid: &Grid| String::from_utf8_lossy(&paint(None, grid)).into_owned();
@@ -2292,7 +2291,7 @@ mod tests {
                 let x = u16::try_from(x).map_err(|e| e.to_string())?;
                 let cell = parser.screen().cell(0, x).ok_or("a cell")?;
                 assert_eq!(cell.underline_style(), *style, "cell {x}");
-                assert_eq!(cell.underline_color(), Color::Rgb(255, 0, 0));
+                assert_eq!(cell.underline_color(), Color::Rgb([255, 0, 0].into()));
             }
         }
         // The terminal turns out to draw styles: the screen is painted again
@@ -2339,7 +2338,7 @@ mod tests {
         let options = fux_vt::Options::from(fux_vt::Feature::Palette);
         let mut client = fux_vt::Parser::with_options(fux_vt::Size::new(6, 41)?, 0, options)?;
         client.process(&bytes)?;
-        let navy = Color::Rgb(0, 0, 0x80);
+        let navy = Color::Rgb([0, 0, 0x80].into());
         let right: u16 = 21;
         let cells = |p: &fux_vt::Parser, x: u16| {
             let c = p.screen().cell(0, x)?;
@@ -2348,11 +2347,11 @@ mod tests {
         assert!(!client.screen().colors_changed(), "the client's colours");
         assert_eq!(
             cells(&client, 0),
-            Some(("R".into(), Color::Rgb(0xff, 0, 0), navy))
+            Some(("R".into(), Color::Rgb([0xff, 0, 0].into()), navy))
         );
         assert_eq!(
             cells(&client, 1),
-            Some(("D".into(), Color::Rgb(0x11, 0x22, 0x33), navy))
+            Some(("D".into(), Color::Rgb([0x11, 0x22, 0x33].into()), navy))
         );
         // The pane's blanks are in its background too.
         assert_eq!(cells(&client, 2).map(|(_, _, bg)| bg), Some(navy));
