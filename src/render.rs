@@ -6,7 +6,7 @@
 //! the terminal's attributes at their default, which the next one assumes.
 use crate::id::ClientId;
 use crate::id::PaneId;
-use crate::layout::{Axis, Placement, Rect, Separator};
+use crate::layout::{Axis, Placement, Rect};
 use crate::overlay;
 use crate::session::Session;
 use crate::view::{Choice, List, Mode, View};
@@ -119,39 +119,22 @@ impl Frame {
     }
 }
 
-/// Where a pane row goes on the grid: its first cell, the width of the
-/// window put there, the pane's width, whether the panes cover the pane
-/// area, and the window's columns.
-struct Place {
-    gy: u16,
-    gx: u16,
-    width: u16,
-    rect_w: u16,
-    tiled: bool,
-    window_cols: u16,
-}
-
-/// Puts a pane's window row on the grid at `place`, in the pane's own
-/// colours if it has them. With `tiled`, what the row does not cover of the
-/// pane's width is blanked here, as nothing blanked the area first.
-/// Without, a whole composition blanked the area before; and the memo path
-/// (`put_changed_rows`) puts only live rows, each as wide as its window, so
-/// the cells past one are the blanks the frame before left there.
+/// Puts a pane's window row on the grid at `line`, the pane's row there, in
+/// the pane's own colours if it has them; the window is `window_cols` wide.
+/// With `tiled`, what the row does not cover of the pane's width is blanked
+/// here, as nothing blanked the area first. Without, a whole composition
+/// blanked the area before; and the memo path (`put_changed_rows`) puts only
+/// live rows, each as wide as its window, so the cells past one are the
+/// blanks the frame before left there.
 fn draw_row(
     grid: &mut Grid,
     pane: PaneId,
     row: Option<Row<'_>>,
-    place: &Place,
+    (line, window_cols): (Rect, u16),
+    tiled: bool,
     colours: Option<&fux_vt::Screen>,
 ) {
-    let Place {
-        gy,
-        gx,
-        width,
-        rect_w,
-        tiled,
-        window_cols,
-    } = *place;
+    let (gy, gx, width) = (line.y(), line.x(), line.w().min(window_cols));
     // The pane's own row, well formed, goes whole onto the cells.
     let len = row.map_or(0, |row| row.len());
     if let Some(row) = row {
@@ -161,18 +144,17 @@ fn draw_row(
         }
     }
     if tiled {
-        // At most `width`, which is at most the place's width.
+        // At most `width`, which is at most the line's.
         let end = u16::try_from(len).unwrap_or(width).min(width);
-        grid.blank(gy, gx.saturating_add(end), gx.saturating_add(rect_w));
+        grid.blank(line.split(Axis::Horizontal, end).1);
     }
-    // A wide glyph in the window's last column is cut off, as `Window::cell`
-    // has it.
+    // A wide glyph in the window's last column, if the line shows it, is
+    // cut off, as `Window::cell` has it.
     if let Some(last) = window_cols.checked_sub(1)
-        && last < width
         && row
             .and_then(|r| r.cell(usize::from(last)))
             .is_some_and(|c| c.is_wide())
-        && let Some(x) = gx.checked_add(last)
+        && let Some((gy, x)) = line.at(0, last)
     {
         grid.put(gy, x, CellRef::default());
     }
@@ -198,29 +180,18 @@ fn put_changed_rows(
         let screen = pane.screen();
         let (rows, cols) = screen.size();
         let window = screen.window(0, rows, cols);
-        let width = rect.w.min(window.cols());
-        for (y, key) in (0..rect.h.min(window.rows())).zip(pane_keys.iter_mut()) {
+        let lines = (0..window.rows()).zip(rect.lines());
+        for ((y, line), key) in lines.zip(pane_keys.iter_mut()) {
             let row = window.row(y);
             let now = row.map(|r| (r.id(), r.version()));
             if now == *key {
                 continue;
             }
-            let Some((gy, gx)) = rect.at(y, 0) else {
-                continue;
-            };
             if row.is_some_and(|r| r.has_links()) {
                 sufficed = false;
                 break;
             }
-            let place = Place {
-                gy,
-                gx,
-                width,
-                rect_w: rect.w,
-                tiled,
-                window_cols: window.cols(),
-            };
-            draw_row(grid, *id, row, &place, None);
+            draw_row(grid, *id, row, (line, window.cols()), tiled, None);
             *key = now;
         }
     }
@@ -243,8 +214,7 @@ impl Grid {
         Grid {
             rows,
             cols,
-            // Exact: a u16 by a u16 fits even a 32-bit usize.
-            cells: Cells::new(usize::from(rows).saturating_mul(usize::from(cols))),
+            cells: Cells::new(cell_count(rows, cols)),
             link_of: Vec::new(),
             links: Vec::new(),
             uris: String::new(),
@@ -314,9 +284,8 @@ impl Grid {
             self.rows = rows;
             self.cols = cols;
             self.cells.resize(0, CellRef::default());
-            // Exact: a u16 by a u16 fits even a 32-bit usize.
-            let len = usize::from(rows).saturating_mul(usize::from(cols));
-            self.cells.resize(len, CellRef::default());
+            self.cells
+                .resize(cell_count(rows, cols), CellRef::default());
         }
         self.cursor = None;
         self.cursor_shape = 0;
@@ -324,12 +293,8 @@ impl Grid {
         self.memo = Memo::default();
     }
     fn index(&self, y: u16, x: u16) -> Option<usize> {
-        if y >= self.rows || x >= self.cols {
-            return None;
-        }
-        usize::from(y)
-            .checked_mul(usize::from(self.cols))?
-            .checked_add(usize::from(x))
+        (y < self.rows && x < self.cols)
+            .then(|| cell_count(y, self.cols).saturating_add(usize::from(x)))
     }
     pub fn get(&self, y: u16, x: u16) -> Option<CellRef<'_>> {
         self.index(y, x).and_then(|i| self.cells.get(i))
@@ -375,23 +340,17 @@ impl Grid {
     /// Whether row `y` has the same cells as `other`'s, a grid of its size:
     /// compared by `Cells::range_eq`, without reading each cell's text.
     fn row_eq(&self, other: &Grid, y: u16) -> bool {
-        let cols = usize::from(self.cols);
-        // Exact: a u16 by a u16 fits even a 32-bit usize.
-        let start = usize::from(y).saturating_mul(cols);
-        self.cells
-            .range_eq(&other.cells, start..start.saturating_add(cols))
+        self.cells.range_eq(&other.cells, self.span(y))
     }
     /// The cells of row `y`; none past the last row.
     pub fn row(&self, y: u16) -> impl Iterator<Item = CellRef<'_>> + Clone {
-        let cols = usize::from(self.cols);
-        // Exact: a u16 by a u16 fits even a 32-bit usize.
-        let start = usize::from(y).saturating_mul(cols);
-        let end = if y < self.rows {
-            start.saturating_add(cols)
-        } else {
-            start
-        };
-        self.cells.range(start..end)
+        self.cells
+            .range(if y < self.rows { self.span(y) } else { 0..0 })
+    }
+    /// Where row `y` is in `cells`, were the grid that tall.
+    fn span(&self, y: u16) -> std::ops::Range<usize> {
+        let start = cell_count(y, self.cols);
+        start..start.saturating_add(usize::from(self.cols))
     }
     /// Copies the first `width` cells of pane `pane`'s row `row` into row `y`
     /// from column `x`, with their links, clipped at the grid's edge,
@@ -459,15 +418,17 @@ impl Grid {
             self.unlink(i..i.saturating_add(1));
         }
     }
-    /// Blanks row `y` from column `from` to `to`, clipped at the grid's edge.
-    fn blank(&mut self, y: u16, from: u16, to: u16) {
-        let Some(start) = self.index(y, from) else {
-            return;
-        };
-        let count = usize::from(to.min(self.cols).saturating_sub(from));
-        let cells = start..start.saturating_add(count);
-        self.cells.fill(cells.clone(), CellRef::default());
-        self.unlink(cells);
+    /// Blanks `area`, clipped at the grid's edge.
+    fn blank(&mut self, area: Rect) {
+        let count = usize::from(area.right().min(self.cols).saturating_sub(area.x()));
+        for y in area.rows() {
+            let Some(start) = self.index(y, area.x()) else {
+                return;
+            };
+            let cells = start..start.saturating_add(count);
+            self.cells.fill(cells.clone(), CellRef::default());
+            self.unlink(cells);
+        }
     }
     /// Sets a cell, keeping wide glyphs whole: overwriting either half of
     /// one blanks the other, as a terminal would.
@@ -537,10 +498,12 @@ impl Grid {
         x
     }
 
-    fn fill(&mut self, y: u16, from: u16, to: u16, style: Attributes) {
+    fn fill(&mut self, area: Rect, style: Attributes) {
         let blank = CellRef::new(" ", false, style);
-        for x in from..to.min(self.cols) {
-            self.set(y, x, blank);
+        for y in area.rows() {
+            for x in area.cols() {
+                self.set(y, x, blank);
+            }
         }
     }
 }
@@ -579,6 +542,12 @@ fn style(foreground: Color, background: Color) -> Attributes {
 const GRAY_BG: Color = Color::Idx(236);
 const BAR_FG: Color = Color::Idx(250);
 const PANEL_BG: Color = Color::Idx(238);
+
+/// How many cells `rows` rows of `cols` are. Exact: a u16 by a u16 fits
+/// even a 32-bit usize.
+fn cell_count(rows: u16, cols: u16) -> usize {
+    usize::from(rows).saturating_mul(usize::from(cols))
+}
 
 /// A char's display width in cells.
 fn cells(c: char) -> u16 {
@@ -648,13 +617,11 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
     // unless a split has no room for even its first child; the bar covers
     // its row. Covered, every cell is written below, and the grid needs no
     // blanking first.
-    let covered = placement
-        .panes
-        .iter()
-        .map(|(_, r)| u32::from(r.w).saturating_mul(u32::from(r.h)))
-        .chain(placement.separators.iter().map(|s| u32::from(s.len)))
+    let lines = placement.separators.iter().map(|s| &s.rect);
+    let covered = (placement.panes.iter().map(|(_, r)| r).chain(lines))
+        .map(Rect::area)
         .fold(0u32, u32::saturating_add);
-    let tiled = covered == u32::from(area.w).saturating_mul(u32::from(area.h));
+    let tiled = covered == area.area();
     let tab = session.shown_tab(view.id);
     let focus = tab.and_then(|t| t.focus(view.id));
     // Copy mode and its positions, their rows found once for the paint.
@@ -684,8 +651,8 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
         let mut keys = frame.as_ref().map(|_| Vec::new());
         for (id, rect) in &placement.panes {
             let Some(pane) = session.panes.get(id) else {
-                for (gy, gx) in (0..rect.h).filter_map(|y| rect.at(y, 0)).filter(|_| tiled) {
-                    grid.blank(gy, gx, gx.saturating_add(rect.w));
+                if tiled {
+                    grid.blank(*rect);
                 }
                 continue;
             };
@@ -696,42 +663,25 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             let offset = at.map_or(0, |at| at.offset(screen));
             let (rows, cols) = screen.size();
             let window = screen.window(offset, rows, cols);
-            let width = rect.w.min(window.cols());
-            let screen_rows = rect.h.min(window.rows());
+            let width = rect.w().min(window.cols());
             // What the pane's screen does not cover of its place is blank.
-            for (gy, gx) in (screen_rows..rect.h)
-                .filter_map(|y| rect.at(y, 0))
-                .filter(|_| tiled)
-            {
-                grid.blank(gy, gx, gx.saturating_add(rect.w));
+            if tiled {
+                grid.blank(rect.split(Axis::Vertical, window.rows()).1);
             }
             let mut pane_keys = Vec::new();
-            for y in 0..screen_rows {
-                // Past the largest position is off the grid anyway.
-                let Some((gy, gx)) = rect.at(y, 0) else {
-                    pane_keys.push(None);
-                    continue;
-                };
+            for (y, line) in (0..window.rows()).zip(rect.lines()) {
                 let row = window.row(y);
                 if row.is_some_and(|r| r.has_links()) {
                     // Links are numbered per paint: no memo for this grid.
                     keys = None;
                 }
                 pane_keys.push(row.map(|r| (r.id(), r.version())));
-                let place = Place {
-                    gy,
-                    gx,
-                    width,
-                    rect_w: rect.w,
-                    tiled,
-                    window_cols: window.cols(),
-                };
-                draw_row(grid, *id, row, &place, colours);
+                draw_row(grid, *id, row, (line, window.cols()), tiled, colours);
                 let Some(at) = at else { continue };
                 for x in 0..width {
                     // A wide glyph is selected if either half is, as `y`
                     // copies it whole.
-                    if let Some(i) = gx.checked_add(x).and_then(|x| grid.index(gy, x))
+                    if let Some(i) = line.at(0, x).and_then(|(gy, gx)| grid.index(gy, gx))
                         && let Some(cell) = grid.cells.get(i)
                         && !cell.is_wide_continuation()
                         && (at.selected(y, x)
@@ -756,7 +706,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             (None | Some(_), None) | (None, Some(_)) => Memo::default(),
         };
     }
-    if tab.is_some_and(|t| t.root().is_none()) && area.h > 0 {
+    if tab.is_some_and(|t| t.root().is_none()) && area.h() > 0 {
         // The keys bound to these commands, whatever they are; the command
         // itself if none is.
         let key_for = |argv: &[&str]| {
@@ -772,9 +722,15 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             key_for(&["split", "-h"]),
             key_for(&["confirm-close", "tab"])
         );
-        let y = area.h / 2;
-        let x = area.w.saturating_sub(width(&hint)) / 2;
-        grid.text(y, x, &hint, style(Color::Idx(244), Color::Default), area.w);
+        let y = area.h() / 2;
+        let x = area.w().saturating_sub(width(&hint)) / 2;
+        grid.text(
+            y,
+            x,
+            &hint,
+            style(Color::Idx(244), Color::Default),
+            area.w(),
+        );
     }
     // The cursor: copy mode's in its pane, else the focused pane's, but only
     // in normal mode: none under an overlay, nor in a repeat mode, whose
@@ -788,8 +744,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             Some((_, at)) => {
                 // Within the rows shown, which a smaller client can make
                 // fewer than the rect.
-                if let Some((y, x)) = at.cursor_in_view(rect.h.min(screen.size().0))
-                    && x < rect.w
+                if let Some((y, x)) = at.cursor_in_view(rect.h().min(screen.size().0))
                     && let Some(at) = rect.at(y, x)
                 {
                     grid.cursor = Some(at);
@@ -800,8 +755,6 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             None => {
                 let (y, x) = screen.cursor_position();
                 if screen.mode(fux_vt::Mode::ShowCursor)
-                    && y < rect.h
-                    && x < rect.w
                     && matches!(view.mode, Mode::Normal)
                     && let Some(at) = rect.at(y, x)
                 {
@@ -907,54 +860,39 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
     if lines.is_empty() {
         return;
     }
-    let (rows, cols) = (grid.rows, grid.cols);
-    // The axis of the line drawn at a cell on the grid, if one is: the last
-    // separator there, as it is drawn last.
-    let axis_at = |x: Option<u16>, y: Option<u16>| {
-        let (x, y) = (x?, y?);
-        if x >= cols || y >= rows {
-            return None;
-        }
-        lines
-            .iter()
-            .rev()
-            .find(|s| s.rect().contains(x, y))
-            .map(|s| s.axis)
+    // The axis of the line drawn at a cell, if one is: the last separator
+    // there, as it is drawn last.
+    let axis_at = |y: u16, x: u16| {
+        let at = lines.iter().rev().find(|s| s.rect.contains(y, x));
+        at.map(|s| s.axis)
     };
     // A line's own directions, and a tee toward each perpendicular line
-    // beside it.
-    let bits_at = |x: u16, y: u16| {
-        let beside = |bit: u8, x: Option<u16>, y: Option<u16>, axis: Axis| {
-            if axis_at(x, y) == Some(axis) { bit } else { 0 }
+    // beside it. A line's cell is short of the last column and row a u16
+    // counts, and the one before the first is past every rect: a step
+    // either way wraps to no line's cell or is exact.
+    let bits_at = |y: u16, x: u16| {
+        let beside = |bit: u8, y: u16, x: u16, axis: Axis| {
+            if axis_at(y, x) == Some(axis) { bit } else { 0 }
         };
-        let (at_x, at_y) = (Some(x), Some(y));
         // A separator's axis is its split's: a horizontal split's panes
         // are side by side, divided by vertical lines.
-        Some(match axis_at(at_x, at_y)? {
+        Some(match axis_at(y, x)? {
             // A vertical line.
             Axis::Horizontal => {
                 UP | DOWN
-                    | beside(LEFT, x.checked_sub(1), at_y, Axis::Vertical)
-                    | beside(RIGHT, x.checked_add(1), at_y, Axis::Vertical)
+                    | beside(LEFT, y, x.wrapping_sub(1), Axis::Vertical)
+                    | beside(RIGHT, y, x.wrapping_add(1), Axis::Vertical)
             }
             // A horizontal line.
             Axis::Vertical => {
                 LEFT | RIGHT
-                    | beside(UP, at_x, y.checked_sub(1), Axis::Horizontal)
-                    | beside(DOWN, at_x, y.checked_add(1), Axis::Horizontal)
+                    | beside(UP, y.wrapping_sub(1), x, Axis::Horizontal)
+                    | beside(DOWN, y.wrapping_add(1), x, Axis::Horizontal)
             }
         })
     };
     let focused = focus.and_then(|f| placement.rect(f));
-    // Within a cell of the rect. Exact: values from u16s never saturate an i32.
-    let near = |x: u16, y: u16, r: &Rect| {
-        let (x, y, rx, ry) = (i32::from(x), i32::from(y), i32::from(r.x), i32::from(r.y));
-        x >= rx.saturating_sub(1)
-            && x <= rx.saturating_add(i32::from(r.w))
-            && y >= ry.saturating_sub(1)
-            && y <= ry.saturating_add(i32::from(r.h))
-    };
-    let draw = |grid: &mut Grid, x: u16, y: u16, bits: u8| {
+    let draw = |grid: &mut Grid, y: u16, x: u16, bits: u8| {
         let glyph = match bits {
             b if b == UP | DOWN => "│",
             b if b == LEFT | RIGHT => "─",
@@ -964,7 +902,7 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
             b if b == LEFT | RIGHT | UP => "┴",
             _ => "┼",
         };
-        let color = if focused.is_some_and(|r| near(x, y, &r)) {
+        let color = if focused.is_some_and(|r| r.near(y, x)) {
             Color::Idx(2)
         } else {
             Color::Idx(240)
@@ -983,34 +921,26 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
             Axis::Horizontal => UP | DOWN,
             Axis::Vertical => LEFT | RIGHT,
         };
-        for i in 0..s.len {
-            let at = match s.axis {
-                Axis::Horizontal => s.y.checked_add(i).map(|y| (s.x, y)),
-                Axis::Vertical => s.x.checked_add(i).map(|x| (x, s.y)),
-            };
-            // Past the largest position is off the grid.
-            let Some((x, y)) = at else {
-                break;
-            };
-            if x < cols && y < rows {
-                draw(grid, x, y, bits);
+        for y in s.rect.rows() {
+            for x in s.rect.cols() {
+                draw(grid, y, x, bits);
             }
         }
     }
     // A tee can only be where a vertical line and a horizontal one meet or
-    // cross, at the vertical one's column and the horizontal one's row.
-    // (The vertical lines are a horizontal split's, as above.)
+    // cross, at the vertical one's column and the horizontal one's row:
+    // where each is within a cell of that point. (The vertical lines are a
+    // horizontal split's, as above.)
     let vertical = lines.iter().filter(|s| s.axis == Axis::Horizontal);
     let horizontal = || lines.iter().filter(|s| s.axis == Axis::Vertical);
-    for v in vertical.map(Separator::rect) {
-        for h in horizontal().map(Separator::rect) {
-            let (x, y) = (v.x, h.y);
-            let near_x = [x.checked_sub(1), Some(x), x.checked_add(1)];
-            let near_y = [y.checked_sub(1), Some(y), y.checked_add(1)];
-            let meet = near_x.iter().flatten().any(|x| h.contains(*x, y))
-                && near_y.iter().flatten().any(|y| v.contains(x, *y));
-            if meet && let Some(bits) = bits_at(x, y) {
-                draw(grid, x, y, bits);
+    for v in vertical.map(|s| s.rect) {
+        for h in horizontal().map(|s| s.rect) {
+            let (y, x) = (h.y(), v.x());
+            if h.near(y, x)
+                && v.near(y, x)
+                && let Some(bits) = bits_at(y, x)
+            {
+                draw(grid, y, x, bits);
             }
         }
     }
@@ -1029,7 +959,10 @@ fn bar(
         return;
     };
     let base = style(BAR_FG, GRAY_BG);
-    grid.fill(y, 0, view.cols, base);
+    grid.fill(
+        Rect::screen(view.rows, view.cols).corner(1, view.cols),
+        base,
+    );
     let copy_bar =
         copy.and_then(|(c, at)| session.panes.get(&c.pane).map(|p| c.bar(p.screen(), &at)));
     let right: Option<(Cow<'_, str>, Attributes)> = if let Some(notice) = &view.notice {
@@ -1150,37 +1083,31 @@ fn windowed<'a>(
 
 /// A panel in the bottom-right corner, above the bar, sized to its lines.
 fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
-    let available = view.rows.saturating_sub(1);
-    if available == 0 || view.cols == 0 || lines.is_empty() {
+    let area = Session::pane_area(view);
+    if area.is_empty() || lines.is_empty() {
         return;
     }
     // More lines than rows is the same as exactly as many.
-    let height = u16::try_from(lines.len())
-        .unwrap_or(u16::MAX)
-        .min(available);
+    let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     let inner = lines.iter().map(|(t, _)| width(t)).max().unwrap_or(0);
-    let w = inner.saturating_add(2).min(view.cols);
-    // The panel fits: `w` is at most the width and `height` the rows above
-    // the bar, and the text starts inside it.
-    let (Some(x), Some(top)) = (view.cols.checked_sub(w), available.checked_sub(height)) else {
-        return;
-    };
-    let Some(text_x) = x.checked_add(1) else {
-        return;
-    };
+    // A border cell each side of the text.
+    let panel = area.corner(height, inner.saturating_add(2));
     // On a short screen the first lines give way, as the last (the help)
     // matter more; but not past the selected entry, which stays in view.
-    let skip = lines.len().saturating_sub(usize::from(height));
+    let skip = lines.len().saturating_sub(usize::from(panel.h()));
     let selected = lines.iter().position(|(_, attrs)| attrs.inverse());
     let skip = selected.map_or(skip, |selected| skip.min(selected));
-    for (y, (text, attrs)) in (top..available).zip(lines.iter().skip(skip)) {
-        grid.fill(y, x, view.cols, *attrs);
+    for (line, (text, attrs)) in panel.lines().zip(lines.iter().skip(skip)) {
+        grid.fill(line, *attrs);
+        // Exact: the panel is at least a cell wide, inside the screen.
+        let text_x = line.x().saturating_add(1);
+        let text = fit(text, line.w().saturating_sub(2));
         grid.text(
-            y,
+            line.y(),
             text_x,
-            &fit(text, w.saturating_sub(2)),
+            &text,
             *attrs,
-            view.cols.saturating_sub(1).max(text_x),
+            line.right().saturating_sub(1),
         );
     }
 }
@@ -1449,12 +1376,8 @@ fn same_keys(a: &Grid, b: &Grid, y: u16) -> bool {
             .iter()
             .zip(a.memo.keys.iter().zip(&b.memo.keys))
             .all(|((_, rect, _), ((_, ka), (_, kb)))| {
-                if y < rect.y || u32::from(y) >= u32::from(rect.y).saturating_add(u32::from(rect.h))
-                {
-                    return true;
-                }
-                let i = usize::from(y.saturating_sub(rect.y));
-                ka.get(i) == kb.get(i)
+                let i = y.checked_sub(rect.y()).filter(|i| *i < rect.h());
+                i.is_none_or(|i| ka.get(usize::from(i)) == kb.get(usize::from(i)))
             })
 }
 
@@ -1550,7 +1473,7 @@ fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
     // The run is from the first changed cell of the row to the cursor's
     // cell; nothing after it changed. Cells in it that did not change are
     // written as they are.
-    let start = usize::from(y).saturating_mul(usize::from(new.cols));
+    let start = new.span(y).start;
     let same = |x: u16| {
         let i = start.saturating_add(usize::from(x));
         old.cells.range_eq(&new.cells, i..i.saturating_add(1))
@@ -1657,7 +1580,7 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
             continue;
         }
         let cell = |x: u16| new.get(y, x);
-        let row_start = usize::from(y).saturating_mul(usize::from(new.cols));
+        let row_start = new.span(y).start;
         let changed = |x: u16| {
             before.is_none_or(|o| {
                 let i = row_start.saturating_add(usize::from(x));
@@ -2174,7 +2097,7 @@ mod tests {
         let marked = |text| CellRef::new(text, false, Attributes::default());
         let painted = |x: u16, text| {
             let mut grid = Grid::new(1, 6);
-            grid.fill(0, 0, 6, Attributes::default());
+            grid.fill(Rect::screen(1, 6), Attributes::default());
             grid.set(0, x, marked(text));
             (
                 String::from_utf8_lossy(&paint(None, &grid)).into_owned(),

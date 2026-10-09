@@ -48,9 +48,16 @@ impl std::error::Error for Error {
     }
 }
 
-/// A running child and the master side of its PTY.
+/// A pane's program: the leader of a session of its own, started by fux
+/// and not yet reaped. Unreaped, its pid is its group's and its session's
+/// ID and cannot be reused, so it is signalled through this alone; reaping
+/// it takes it.
+#[must_use = "a leader dropped unreaped is a zombie no one reaps"]
+pub struct Leader(Pid);
+
+/// A pane's program and the master side of its PTY.
 pub struct Child {
-    pub pid: Pid,
+    pub leader: Leader,
     pub master: OwnedFd,
 }
 
@@ -96,7 +103,10 @@ pub fn spawn(
     // The std handle is dropped without waiting: fux reaps the pid itself, and
     // std never waits on a dropped child.
     drop(child);
-    Ok(Child { pid, master })
+    Ok(Child {
+        leader: Leader(pid),
+        master,
+    })
 }
 
 /// The hidden `fux` subcommand that starts a program for `launch`:
@@ -203,11 +213,6 @@ pub fn resize(master: impl AsFd, rows: u16, cols: u16) {
     let _ = fuxix::terminal::set_window_size(master, rows.max(1), cols.max(1));
 }
 
-/// The pid of the PTY's foreground process group, if there is one.
-pub fn foreground(master: impl AsFd) -> Option<Pid> {
-    fuxix::terminal::foreground_group(master)
-}
-
 /// The status a shell reports for a process: its exit code, or 128 plus the
 /// signal that killed it, whose numbers are small.
 fn shell_status(status: Status) -> i32 {
@@ -217,44 +222,41 @@ fn shell_status(status: Status) -> i32 {
     }
 }
 
-/// Whether `pid` has exited, without reaping it: its exit status, or `None`
-/// while it lives, stopped or not (bevy-final finding 020).
-pub fn exited(pid: Pid) -> Option<i32> {
-    loop {
-        match fuxix::process::ended(pid) {
-            Ok(status) => return status.map(shell_status),
-            Err(fuxix::Errno::INTR) => continue,
-            // Not our child any more (already reaped): treat as gone.
-            Err(_) => return Some(0),
+impl Leader {
+    pub fn pid(&self) -> Pid {
+        self.0
+    }
+
+    /// Whether it has exited, without reaping it: its exit status, or
+    /// `None` while it lives, stopped or not (bevy-final finding 020). The
+    /// check does not wait, so no signal interrupts it, and it fails only
+    /// for a pid that is not an unreaped child, which this always is.
+    pub fn exited(&self) -> Option<i32> {
+        fuxix::process::ended(self.0).map_or(Some(0), |status| status.map(shell_status))
+    }
+
+    /// Signals its process group and every other process in its session.
+    /// A background job started by dash sits in its own group, out of reach
+    /// of the group signal, but stays in the session (bevy-final finding
+    /// 013).
+    pub fn hang_up(&self) {
+        let _ = fuxix::process::kill_group(self.0, Signal::Hup);
+        // Checked just before each signal: a process that left is skipped.
+        for pid in fuxix::process::processes() {
+            if pid != self.0 && fuxix::process::session(pid) == Some(self.0) {
+                let _ = fuxix::process::kill(pid, Signal::Hup);
+            }
         }
     }
-}
 
-/// Signals the leader's process group and every other process in its
-/// session. A background job started by dash sits in its own group, out of
-/// reach of the group signal, but stays in the session (bevy-final finding
-/// 013). The leader is unreaped, so its pid, pgid and sid cannot be reused.
-pub fn hangup(leader: Pid) {
-    let _ = fuxix::process::kill_group(leader, Signal::Hup);
-    // Checked just before each signal: a process that left is skipped.
-    for pid in fuxix::process::processes() {
-        if pid != leader && fuxix::process::session(pid) == Some(leader) {
-            let _ = fuxix::process::kill(pid, Signal::Hup);
-        }
-    }
-}
-
-/// Ends the leader's group and reaps the leader, without waiting: false
-/// if the leader has not exited yet, to try again shortly. Called after
-/// `hangup` and a grace period, with the master already closed.
-pub fn finish(leader: Pid) -> bool {
-    let _ = fuxix::process::kill_group(leader, Signal::Kill);
-    loop {
-        match fuxix::process::reap(leader) {
-            Ok(status) => return status.is_some(),
-            Err(fuxix::Errno::INTR) => continue,
-            // Already reaped, or not ours: nothing left to wait for.
-            Err(_) => return true,
+    /// Ends its group and reaps it, without waiting, so uninterrupted:
+    /// itself back if it has not exited yet, to try again once it has.
+    /// Called after `hang_up` and a grace period, with the master closed.
+    pub fn finish(self) -> Result<(), Leader> {
+        let _ = fuxix::process::kill_group(self.0, Signal::Kill);
+        match fuxix::process::reap(self.0) {
+            Ok(None) => Err(self),
+            Ok(Some(_)) | Err(_) => Ok(()),
         }
     }
 }
@@ -262,9 +264,4 @@ pub fn finish(leader: Pid) -> bool {
 /// Sends SIGTERM to a process group.
 pub fn terminate(group: Pid) -> Result<(), fuxix::Errno> {
     fuxix::process::kill_group(group, Signal::Term)
-}
-
-/// The current directory of a process, when the system says.
-pub fn cwd(pid: Pid) -> Option<std::path::PathBuf> {
-    fuxix::process::cwd(pid)
 }

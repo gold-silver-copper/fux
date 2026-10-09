@@ -2,7 +2,7 @@
 //! changed by the baseline and the current fux: the same placements, the
 //! same resizes (what they return and the trees they leave), and the same
 //! trees after random splits and removals. Areas run from empty to
-//! `u16::MAX` wide, on the screen and past its edge.
+//! `u16::MAX` wide, anywhere on the screen (none can be past its edge).
 use crate::rng::Rng;
 use crate::{Outcome, bump, same, times};
 
@@ -70,11 +70,11 @@ enum Change {
 }
 
 macro_rules! stack {
-    ($name:ident, $fux:ident, $ids:ident, $tree:ident) => {
+    ($name:ident, $fux:ident, $ids:ident, $tree:ident, $area:expr, $line:expr) => {
         mod $name {
             use super::{Change, Shape};
             use $fux::keys::Direction;
-            use $fux::layout::{self, Axis, Placement, Rect, Side, $tree as Tree};
+            use $fux::layout::{self, Axis, Placement, Rect, Separator, Side, $tree as Tree};
             use $fux::$ids::PaneId;
 
             fn axis(horizontal: bool) -> Axis {
@@ -102,7 +102,7 @@ macro_rules! stack {
                 pub fn new(splits: &[Change], (x, y, w, h): (u16, u16, u16, u16)) -> Laid {
                     let mut laid = Laid {
                         root: pane(1).map(Tree::Pane),
-                        area: Rect { x, y, w, h },
+                        area: $area(x, y, w, h),
                         placed: Placement::default(),
                     };
                     for split in splits {
@@ -120,7 +120,7 @@ macro_rules! stack {
                                 "{}\n{:?}\n{:?}\n{:?}",
                                 root.shape(),
                                 self.placed.panes,
-                                self.placed.separators,
+                                self.placed.separators.iter().map($line).collect::<Vec<_>>(),
                                 layout::place(root, self.area).panes
                             )
                         }
@@ -201,8 +201,34 @@ macro_rules! stack {
     };
 }
 
-stack!(base, baseline, layout, Node);
-stack!(cur, fux, id, Tree);
+// A separator as the baseline has it: its axis, first cell and length.
+stack!(
+    base,
+    baseline,
+    layout,
+    Node,
+    |x, y, w, h| Rect { x, y, w, h },
+    |s: &Separator| (s.axis, s.x, s.y, s.len)
+);
+// A rect is cut from a screen, so it fits one.
+stack!(
+    cur,
+    fux,
+    id,
+    Tree,
+    |x: u16, y: u16, w: u16, h: u16| {
+        let screen = Rect::screen(y.saturating_add(h), x.saturating_add(w));
+        let (_, below) = screen.split(Axis::Vertical, y);
+        below.split(Axis::Horizontal, x).1
+    },
+    |s: &Separator| {
+        let len = match s.axis {
+            Axis::Horizontal => s.rect.h(),
+            Axis::Vertical => s.rect.w(),
+        };
+        (s.axis, s.rect.x(), s.rect.y(), len)
+    }
+);
 
 fn change(r: &mut Rng, panes: &[u32], next: &mut u32) -> Change {
     let pane = |r: &mut Rng| {
@@ -261,22 +287,18 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
         let t = splits(r);
         let mut next = u32::try_from(t.len()).unwrap_or(0).saturating_add(1);
         let (w, h) = (length(r), length(r));
-        // Anywhere its far edge still fits a u16 screen, or anywhere.
-        let (x, y) = if r.chance(90) {
-            let near = r.chance(50);
-            let at = |r: &mut Rng, len: u16| {
-                let room = u16::MAX.saturating_sub(len);
-                let n = if near {
-                    r.below(4)
-                } else {
-                    r.below(usize::from(room).saturating_add(1))
-                };
-                u16::try_from(n).unwrap_or(0).min(room)
+        // Anywhere its far edge still fits a u16 screen: no rect is past it.
+        let near = r.chance(50);
+        let at = |r: &mut Rng, len: u16| {
+            let room = u16::MAX.saturating_sub(len);
+            let n = if near {
+                r.below(4)
+            } else {
+                r.below(usize::from(room).saturating_add(1))
             };
-            (at(r, w), at(r, h))
-        } else {
-            (length(r), length(r))
+            u16::try_from(n).unwrap_or(0).min(room)
         };
+        let (x, y) = (at(r, w), at(r, h));
         let area = (x, y, w, h);
         let (mut a, mut b) = (base::Laid::new(&t, area), cur::Laid::new(&t, area));
         let context = |log: &[Change]| format!("tree {case} from {t:?} in {area:?}, after {log:?}");

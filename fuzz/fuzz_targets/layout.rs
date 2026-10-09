@@ -55,20 +55,13 @@ fn pane(n: u32) -> PaneId {
     format!("%{n}").parse().expect("a pane's number")
 }
 
-/// A rect's cells as x and y ranges, in u32 so that no end overflows.
-fn span(r: &Rect) -> (std::ops::Range<u32>, std::ops::Range<u32>) {
-    let (x, y) = (u32::from(r.x), u32::from(r.y));
-    (x..x + u32::from(r.w), y..y + u32::from(r.h))
-}
-
 fn overlap(a: &Rect, b: &Rect) -> bool {
-    let ((ax, ay), (bx, by)) = (span(a), span(b));
-    ax.start < bx.end && bx.start < ax.end && ay.start < by.end && by.start < ay.end
+    a.x() < b.right() && b.x() < a.right() && a.y() < b.bottom() && b.y() < a.bottom()
 }
 
 /// Everything `place` promises about `placement` of `root` in `area`.
 fn check(root: &Tree, area: Rect, placement: &Placement) {
-    if area.w == 0 || area.h == 0 {
+    if area.is_empty() {
         assert!(placement.panes.is_empty() && placement.separators.is_empty());
         return;
     }
@@ -81,39 +74,40 @@ fn check(root: &Tree, area: Rect, placement: &Placement) {
             1,
             "{id} placed twice"
         );
-        assert!(r.w > 0 && r.h > 0, "{id} placed empty: {r:?}");
+        assert!(!r.is_empty(), "{id} placed empty: {r:?}");
         // As large as the minimum, where the area has room for it.
         assert!(
-            r.w >= MIN.min(area.w) && r.h >= MIN.min(area.h),
+            r.w() >= MIN.min(area.w()) && r.h() >= MIN.min(area.h()),
             "{id} too small: {r:?} in {area:?}"
         );
         pieces.push(*r);
     }
     for s in &placement.separators {
-        assert!(s.len > 0, "an empty separator: {s:?}");
-        pieces.push(s.rect());
+        assert!(!s.rect.is_empty(), "an empty separator: {s:?}");
+        pieces.push(s.rect);
     }
-    let (ax, ay) = span(&area);
     let mut covered = 0u64;
     for (i, piece) in pieces.iter().enumerate() {
-        let (px, py) = span(piece);
         assert!(
-            px.start >= ax.start && px.end <= ax.end && py.start >= ay.start && py.end <= ay.end,
+            piece.x() >= area.x()
+                && piece.right() <= area.right()
+                && piece.y() >= area.y()
+                && piece.bottom() <= area.bottom(),
             "{piece:?} is outside {area:?}"
         );
         for other in &pieces[i + 1..] {
             assert!(!overlap(piece, other), "{piece:?} overlaps {other:?}");
         }
-        covered += u64::from(piece.w) * u64::from(piece.h);
+        covered += u64::from(piece.area());
     }
     // Disjoint, so never more than the area. Room for 16 panes side by side
     // is room for any tree of them, and every pane shown; and with every
     // pane shown they tile the area exactly. (Where it is too small, a split
     // without room for even its first child shows nothing.)
-    let whole = u64::from(area.w) * u64::from(area.h);
+    let whole = u64::from(area.area());
     assert!(covered <= whole);
     let room = 16 * MIN + 15;
-    if area.w >= room && area.h >= room {
+    if area.w() >= room && area.h() >= room {
         assert_eq!(placement.panes.len(), panes.len(), "a pane is hidden");
     }
     if placement.panes.len() == panes.len() {
@@ -133,12 +127,13 @@ fuzz_target!(|data: &[u8]| {
     let (x, y) = (u16::from(bytes.next() % 4), u16::from(bytes.next() % 4));
     let (w, h) = (bytes.length(), bytes.length());
     // The area may sit anywhere its far edge still fits a u16 screen.
-    let area = Rect {
-        x: x.min(u16::MAX - w),
-        y: y.min(u16::MAX - h),
-        w,
-        h,
-    };
+    let (x, y) = (x.min(u16::MAX - w), y.min(u16::MAX - h));
+    let screen = Rect::screen(y + h, x + w);
+    let area = screen
+        .split(Axis::Vertical, y)
+        .1
+        .split(Axis::Horizontal, x)
+        .1;
     let Some(mut root) = bytes.tree() else {
         return;
     };
