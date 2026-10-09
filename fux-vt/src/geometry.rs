@@ -22,6 +22,10 @@ impl Size {
     pub fn cols(self) -> u16 {
         self.cols.get()
     }
+    /// Rows and columns, as the numbers they are: never zero.
+    pub fn nonzero(self) -> (NonZeroU16, NonZeroU16) {
+        (self.rows, self.cols)
+    }
     /// How many cells: two u16s multiply within a usize.
     pub(crate) fn cells(self) -> usize {
         usize::from(self.rows()).saturating_mul(usize::from(self.cols()))

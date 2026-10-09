@@ -884,17 +884,15 @@ impl Server {
         // size is read here first, so that a program sees the keys at the
         // size they were typed at, as when both came by the client.
         let Some(tty) = &attached.tty else { return };
-        if let Ok(size) = fuxix::terminal::window_size(&tty.fd)
-            && size.0 > 0
-            && size.1 > 0
+        if let Some(size) = fuxix::terminal::window_size(&tty.fd)
             && session
                 .views
                 .get(&attached.client)
                 .map(|v| (v.rows, v.cols))
-                != Some(size)
+                != Some((size.rows.get(), size.cols.get()))
         {
             attached.screen.forget();
-            session.resize(attached.client, size.0, size.1);
+            session.resize(attached.client, size.rows.get(), size.cols.get());
         }
         let mut read = 0usize;
         let mut gone = false;

@@ -1,10 +1,21 @@
-//! Pseudoterminals.
+//! Pseudoterminals, and starting a program on one.
+//!
+//! [`open`] gives the two ends as handles that keep what their users must
+//! not get wrong: the [`Master`] is close-on-exec and nonblocking, and the
+//! [`Slave`] is given up to [`Slave::spawn`], which starts a program on it
+//! as the leader of a session of its own with the PTY as its controlling
+//! terminal, and leaves the parent without it.
 use crate::errno::{Errno, check};
-use crate::terminal;
+use crate::process::Pid;
+use crate::terminal::{self, Size};
+use std::ffi::OsStr;
 use std::fmt;
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::io::{Read, Write};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command};
 
 /// A step of opening a PTY that failed, and why.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -26,8 +37,138 @@ fn at(call: &'static str) -> impl FnOnce(Errno) -> Error {
     move |errno| Error { call, errno }
 }
 
-/// Opens a PTY of `rows` by `cols`: its master and its slave, both
-/// close-on-exec, neither the controlling terminal of this process.
+/// A PTY's master: close-on-exec, so no program this process starts holds
+/// the PTY open, and nonblocking, so a read or write that would wait fails
+/// with `AGAIN` instead. Read and write it with [`crate::io`], and wait for
+/// it with [`crate::poll`].
+#[derive(Debug)]
+pub struct Master(OwnedFd);
+
+/// A PTY's slave, not yet given to the program that runs on it
+/// ([`Slave::spawn`]). It is close-on-exec, and not this process's
+/// controlling terminal.
+#[derive(Debug)]
+pub struct Slave(OwnedFd);
+
+impl AsFd for Master {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
+impl AsFd for Slave {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
+/// The master as a plain descriptor, for a caller that wants it otherwise:
+/// blocking, say.
+impl From<Master> for OwnedFd {
+    fn from(master: Master) -> OwnedFd {
+        master.0
+    }
+}
+
+/// The hidden argument a program that starts others on PTYs takes to be
+/// their launcher: `PROGRAM __launch ARGV...` calls [`launched`] with ARGV.
+/// It is fixed, as an older server may run a newer binary.
+pub const LAUNCH: &str = "__launch";
+
+impl Slave {
+    /// Starts `argv` on this PTY, as the leader of a new session with the
+    /// PTY as its controlling terminal and its stdin, stdout and stderr;
+    /// `setup` sets its directory and environment. Returns once the program
+    /// runs, with its pid, or once it cannot, with why.
+    ///
+    /// Starting a process in a new session needs code between `fork` and
+    /// `exec`, which std allows only through `unsafe`. So `launcher`, a
+    /// binary that calls [`launched`] when run with [`LAUNCH`], runs that
+    /// code as a program of its own, and reports a failure, its `exec`'s
+    /// included, on a pipe that `exec` closes: as std reports its own.
+    pub fn spawn<S: AsRef<OsStr>>(
+        self,
+        launcher: &Path,
+        argv: &[S],
+        setup: impl FnOnce(&mut Command),
+    ) -> std::io::Result<(Child, Pid)> {
+        let (mut failures, report) = std::io::pipe()?;
+        let mut child = {
+            let mut command = Command::new(launcher);
+            command.arg(LAUNCH).args(argv);
+            setup(&mut command);
+            command
+                .stdin(self.0.try_clone()?)
+                .stdout(report)
+                .stderr(self.0);
+            // Dropping `command` closes this side's ends of the pipe and
+            // the PTY.
+            command.spawn()?
+        };
+        let mut failure = String::new();
+        let read = failures.read_to_string(&mut failure);
+        if let (Ok(_), true, Some(pid)) = (&read, failure.is_empty(), Pid::of(&child)) {
+            return Ok((child, pid));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        Err(read.err().unwrap_or_else(|| std::io::Error::other(failure)))
+    }
+}
+
+/// The launcher: what a binary run as `BINARY __launch ARGV...` by
+/// [`Slave::spawn`] calls with ARGV, before anything else. It makes ARGV the
+/// leader of a new session on the PTY and becomes it, returning only if it
+/// could not, with the exit status to use.
+pub fn launched<S: AsRef<OsStr>>(argv: &[S]) -> u8 {
+    // Whatever the spawner inherited without close-on-exec, from a shell
+    // that leaks descriptors or a thread that raced its spawn, it passed on
+    // to here: marked, it goes no further, and the program gets stdio and
+    // nothing else.
+    let marked = crate::io::cloexec_from(3);
+    // A close-on-exec copy, so a successful `exec` closes the pipe; the
+    // program's stdout is the PTY.
+    let report = std::io::stdout().as_fd().try_clone_to_owned();
+    let failure = match marked {
+        Ok(()) => become_program(argv),
+        Err(errno) => std::io::Error::other(format!(
+            "marking inherited descriptors close-on-exec: {errno}"
+        )),
+    };
+    if let Ok(report) = report {
+        let _ = std::fs::File::from(report).write_all(failure.to_string().as_bytes());
+    }
+    127
+}
+
+/// Makes this process the leader of a new session with its stdin as the
+/// controlling terminal, then replaces it with `argv`; the error, if any
+/// step fails. The spawn cleared the signal mask, and `exec` restores the
+/// dispositions Rust and signal handlers changed, so the program starts
+/// as it would from a shell.
+fn become_program<S: AsRef<OsStr>>(argv: &[S]) -> std::io::Error {
+    let Some((program, args)) = argv.split_first() else {
+        return std::io::Error::other("no program to run");
+    };
+    if let Err(errno) = crate::process::setsid() {
+        return errno.into();
+    }
+    let terminal = std::io::stdin();
+    let steal: libc::c_int = 0;
+    let controlling = terminal::request(libc::TIOCSCTTY).and_then(|set| {
+        // SAFETY: TIOCSCTTY takes an int and touches no memory.
+        check(unsafe { libc::ioctl(terminal.as_fd().as_raw_fd(), set, steal) })
+    });
+    if let Err(errno) = controlling {
+        return errno.into();
+    }
+    match terminal.as_fd().try_clone_to_owned() {
+        Ok(stdout) => Command::new(program).args(args).stdout(stdout).exec(),
+        Err(error) => error,
+    }
+}
+
+/// Opens a PTY of `size`: its master and its slave.
 ///
 /// macOS, when PTYs are allocated and freed quickly, by any processes, has
 /// two races this works around (`docs/apple-feedback-ptmx-eredriveopen.md` in
@@ -52,7 +193,7 @@ fn at(call: &'static str) -> impl FnOnce(Errno) -> Error {
 ///   looked up first, and `grantpt` is watched: a master without a replica,
 ///   or whose grant stalls, is closed, and another PTY opened in its place;
 ///   after `ALLOCATE_TRIES` of those, the error is `AGAIN` from `grantpt`.
-pub fn open(rows: u16, cols: u16) -> Result<(OwnedFd, OwnedFd), Error> {
+pub fn open(size: Size) -> Result<(Master, Slave), Error> {
     let master = granted_master()?;
     // SAFETY: unlockpt takes a descriptor and touches no memory.
     check(unsafe { libc::unlockpt(master.as_raw_fd()) }).map_err(at("unlockpt"))?;
@@ -65,8 +206,9 @@ pub fn open(rows: u16, cols: u16) -> Result<(OwnedFd, OwnedFd), Error> {
         .open(&name)
         .map_err(|e| Errno::from_io_error(&e).unwrap_or(Errno::INVAL))
         .map_err(at("opening the PTY slave"))?;
-    terminal::set_window_size(&master, rows.max(1), cols.max(1)).map_err(at("TIOCSWINSZ"))?;
-    Ok((master, OwnedFd::from(slave)))
+    terminal::set_window_size(&master, size).map_err(at("TIOCSWINSZ"))?;
+    crate::io::set_nonblocking(&master, true).map_err(at("O_NONBLOCK"))?;
+    Ok((Master(master), Slave(OwnedFd::from(slave))))
 }
 
 /// A new PTY master, granted.
@@ -346,20 +488,28 @@ mod tests {
         flags >= 0 && flags & libc::FD_CLOEXEC != 0
     }
 
-    /// Bytes written to the master arrive at the slave and back, and both
-    /// ends are close-on-exec.
+    fn size() -> Size {
+        Size::from((std::num::NonZeroU16::MIN, std::num::NonZeroU16::MAX))
+    }
+
+    /// Bytes written to the master arrive at the slave and back; both ends
+    /// are close-on-exec, and the master does not wait.
     #[test]
     fn a_pty_carries_bytes_both_ways() -> std::result::Result<(), String> {
-        let (master, slave) = open(10, 40).map_err(|e| e.to_string())?;
+        let (master, slave) = open(size()).map_err(|e| e.to_string())?;
         assert!(is_cloexec(&master) && is_cloexec(&slave));
+        let mut buffer = [0u8; 8];
+        assert_eq!(crate::io::read(&master, &mut buffer), Err(Errno::AGAIN));
         let mut modes = terminal::attributes(&slave).map_err(|e| e.to_string())?;
         modes.make_raw();
         terminal::set_attributes(&slave, &modes).map_err(|e| e.to_string())?;
         assert_eq!(crate::io::write(&master, b"in"), Ok(2));
-        let mut buffer = [0u8; 8];
         assert_eq!(crate::io::read(&slave, &mut buffer), Ok(2));
         assert_eq!(buffer.get(..2), Some(&b"in"[..]));
         assert_eq!(crate::io::write(&slave, b"out"), Ok(3));
+        let mut ready = [crate::poll::PollFd::new(&master, crate::poll::Events::IN)];
+        crate::poll::poll(&mut ready, Some(std::time::Duration::from_secs(5)))
+            .map_err(|e| e.to_string())?;
         assert_eq!(crate::io::read(&master, &mut buffer), Ok(3));
         assert_eq!(buffer.get(..3), Some(&b"out"[..]));
         Ok(())
@@ -559,7 +709,7 @@ mod tests {
                         let started = std::time::Instant::now();
                         // The pair closes as soon as the open returns, as a
                         // short-lived process's would.
-                        let failure = open(24, 80).err();
+                        let failure = open(size()).err();
                         let took = started.elapsed();
                         let mut all = seen
                             .lock()
