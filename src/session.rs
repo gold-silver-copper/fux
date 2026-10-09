@@ -1912,11 +1912,7 @@ fn new_pane(
     } else {
         let mut typed = crate::words::shell_line(cmd, fish)?.into_bytes();
         typed.push(b'\r');
-        if typed
-            .len()
-            .checked_add(crate::pane::ENTRY_COST)
-            .is_none_or(|cost| cost > crate::pane::INPUT_BYTES)
-        {
+        if typed.len() > crate::pane::INPUT_BYTES {
             return Err(Error::LineTooLong);
         }
         Some(typed)
