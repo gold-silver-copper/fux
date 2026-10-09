@@ -580,6 +580,24 @@ pub enum Event<'a> {
     },
 }
 
+/// The colour queries of an OSC 10 to 19, `command` its number and `rest`
+/// what follows it: each parameter is the next colour, and each `?` among
+/// them asks for that one (ctlseqs, "Operating System Commands").
+fn color_queries(command: &[u8], rest: &[u8], bel: bool, sink: &mut impl Sink) {
+    let Some(first) = std::str::from_utf8(command)
+        .ok()
+        .and_then(|n| n.parse::<u8>().ok())
+        .filter(|n| (10..=19).contains(n))
+    else {
+        return;
+    };
+    for (number, parameter) in (first..=19).zip(rest.split(|b| *b == b';')) {
+        if parameter == b"?" {
+            sink.event(Event::ColorQuery { number, bel });
+        }
+    }
+}
+
 /// A complete sequence fux-vt parsed but does not implement, so a host can
 /// log or answer it. Sequences cut short by their bounds (too many
 /// parameters or intermediates) are dropped without being reported.
@@ -1287,14 +1305,7 @@ impl Parser {
                     }
                 }
             }
-            // The colour queries of OSC 10 to 19: each `?` asks for its colour.
-            _ => {
-                for (number, parameter) in crate::palette::dynamic_parameters(command, rest) {
-                    if parameter == b"?" {
-                        sink.event(Event::ColorQuery { number, bel });
-                    }
-                }
-            }
+            _ => color_queries(command, rest, bel, sink),
         }
         Ok(())
     }
