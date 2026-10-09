@@ -1,9 +1,9 @@
 //! One attached client's own view of the shared state.
-use crate::command::{AnyRef, ClientId, Command, TabId, WsId};
+use crate::command::{AnyRef, Command};
 use crate::copy::Copy;
 use crate::decode::Decoder;
+use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keys::KeyPress;
-use crate::layout::PaneId;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
