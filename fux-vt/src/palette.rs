@@ -239,6 +239,7 @@ impl Rgb {
 /// a dynamic colour), each channel's byte twice, ended as the query was.
 /// Built byte by byte rather than formatted: zellij asks all 256 entries
 /// as it starts, and formatting cost more than the rest of the work.
+#[inline]
 pub(crate) fn answer(command: u16, index: Option<u16>, colour: Rgb, bel: bool) -> Answer {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = Answer::default();
