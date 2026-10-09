@@ -302,8 +302,8 @@ impl Session {
     /// Client `client` typed into the tab it shows: its terminal answers for
     /// the tab's panes.
     pub(crate) fn typed(&mut self, client: ClientId) {
-        if let Some(tab) = self.views.get(&client).and_then(|v| v.tab()) {
-            self.typists.insert(tab, client);
+        if let Some(tab) = self.shown_tab_mut(client) {
+            tab.typist = Some(client);
         }
     }
 
@@ -313,17 +313,8 @@ impl Session {
     fn colour_client(&self, tab: Option<TabId>) -> Option<ClientId> {
         let tab = tab?;
         let told = |client: &ClientId| self.views.get(client).is_some_and(|v| v.terminal.said());
-        self.typists
-            .get(&tab)
-            .filter(|c| told(c))
-            .copied()
-            .or_else(|| {
-                self.views
-                    .values()
-                    .filter(|v| v.tab() == Some(tab))
-                    .map(|v| v.id)
-                    .find(told)
-            })
+        let typist = self.tab(tab)?.typist.filter(told);
+        typist.or_else(|| (self.views.keys().copied()).find(|c| self.shows(*c, tab) && told(c)))
     }
 
     /// The colours the panes of `tab` are answered with (see the module
@@ -350,14 +341,21 @@ impl Session {
         if !self.config.bell {
             return;
         }
-        let Some((ws, tab)) = self.locate(id) else {
+        let Some(ws) = (self.workspaces.iter_mut()).find(|w| w.tabs().iter().any(|t| t.holds(id)))
+        else {
+            return;
+        };
+        let viewers = ws.viewers.clone();
+        let Some(tab) = ws.tabs_mut().iter_mut().find(|t| t.holds(id)) else {
             return;
         };
         for view in self.views.values_mut() {
-            if view.workspace != ws {
+            if !viewers.contains(&view.id) {
                 continue;
             }
-            if view.tab() != Some(tab) && view.bells.insert(tab) {
+            let shown = tab.shown_to(view.id);
+            if let Some(seat) = tab.seat_mut(view.id).filter(|s| !shown && !s.rang) {
+                seat.rang = true;
                 view.dirty = true;
             }
             if view
@@ -379,7 +377,6 @@ impl Session {
         let Some(view) = self.views.get(&client) else {
             return out;
         };
-        let tab = view.tab();
         // The title, made only when it is not the one the terminal has:
         // `Some(None)` for the same.
         let wanted = self.config.titles.then(|| {
@@ -390,12 +387,12 @@ impl Session {
                 .is_some_and(|shown| shown.chars().eq(clean(title)));
             (!same).then(|| clean(title).collect::<String>())
         });
+        if let Some(seat) = self.shown_tab_mut(client).and_then(|t| t.seat_mut(client)) {
+            seat.rang = false;
+        }
         let Some(view) = self.views.get_mut(&client) else {
             return out;
         };
-        if let Some(tab) = tab {
-            view.bells.remove(&tab);
-        }
         match wanted {
             Some(Some(title)) => {
                 out.extend_from_slice(b"\x1b]2;");
@@ -415,15 +412,11 @@ impl Session {
     /// The title a view's terminal is given: its focused pane's, else its
     /// tab's name, without control characters (`clean`).
     fn title_of<'a>(&'a self, view: &View) -> &'a str {
-        let pane = view
-            .focus()
+        let pane = (self.focused(view.id))
             .and_then(|f| self.panes.get(&f))
             .map(|p| p.title.as_str())
             .filter(|t| !t.is_empty());
-        let tab = view
-            .tab()
-            .and_then(|t| self.tab(t))
-            .map(|t| t.name.as_str());
+        let tab = self.shown_tab(view.id).map(|t| t.name.as_str());
         pane.or(tab).unwrap_or_default()
     }
 }
