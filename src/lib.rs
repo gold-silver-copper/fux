@@ -23,6 +23,7 @@ pub mod session;
 pub mod socket;
 pub mod view;
 pub mod words;
+pub mod workspace;
 
 use std::io::Read;
 use std::os::unix::net::UnixStream;
