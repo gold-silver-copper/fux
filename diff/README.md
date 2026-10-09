@@ -143,7 +143,7 @@ public API (`oracle/src/side.rs`) after every step:
   (DECRQM, DSR, DA1/2/3, XTVERSION, DECRQSS, DECRQCRA, colour queries and
   more), the saved cursor, character sets, tab stops, the cluster the next
   character would join, REP, the kitty keyboard stacks.
-- **The standalone types:** `Cells` under random edits, `Cell::new`,
+- **The standalone types:** `Cells` under random edits, `CellRef::new`,
   `continues_cluster`, and the constants and limits.
 
 Not compared: allocation failure itself (forcing one needs `unsafe`; the
@@ -154,12 +154,9 @@ redesign changes on purpose (`RowId` and `Mark` are compared by number);
 kept.
 
 **Adapters.** Where the two APIs part, give `side!` an argument for that
-part, read both into the same model, and list it here. Today:
-`Options::palette` and `Screen::colors_changed`, which the merge base lacks.
-The working tree gets the option the case asks for; the base reports the
-option as asked and no colour changed. A commit without an adapter for its
-API does not build (`oracle.sh dfe1ffb`, before
-`Options::setting_reports`, stops there).
+part, read both into the same model, and list it here. Today: none. A
+commit without an adapter for its API does not build (`oracle.sh 4f3975b`,
+before hosts made cells as `CellRef`, stops there).
 
 ### The inputs
 
