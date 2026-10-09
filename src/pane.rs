@@ -67,7 +67,8 @@ impl std::error::Error for Error {
 
 /// Input and terminal replies waiting for the pane's program to read them,
 /// end to end, to be written together: at most [`INPUT_BYTES`] of them,
-/// however many pieces they came in.
+/// however many pieces they came in, with room kept for a command line
+/// held until the shell is ready, which is then typed whatever else came.
 #[derive(Default)]
 pub struct InputQueue {
     bytes: ByteQueue,
@@ -102,10 +103,11 @@ impl InputQueue {
     }
     /// How many more bytes are taken.
     fn room(&self) -> usize {
+        let held = self.held.as_ref().map_or(0, |typed| typed.line.len());
         if self.refusing {
             0
         } else {
-            INPUT_BYTES.saturating_sub(self.bytes.len())
+            INPUT_BYTES.saturating_sub(self.bytes.len().saturating_add(held))
         }
     }
     /// When the held command line is to be typed, if one is held.
@@ -118,11 +120,10 @@ impl InputQueue {
             typed.last_output = Some(now);
         }
     }
-    /// Types the held command line now.
+    /// Types the held command line now, into the room kept for it.
     pub fn type_now(&mut self) {
         if let Some(typed) = self.held.take() {
-            // The queue is empty this early, so the line fits.
-            let _ = self.push(typed.line);
+            self.bytes.push(&typed.line);
         }
     }
     pub fn is_empty(&self) -> bool {
@@ -728,8 +729,10 @@ mod tests {
         pane.output(b"$ ");
         assert!(pane.input.due_at().is_some_and(|at| at < deadline));
         assert!(pane.input.is_empty(), "output alone types nothing");
+        // Input that comes first fills the queue but for the line's room.
+        while pane.input.push(vec![b'k'; MAX_INPUT]).is_ok() {}
         pane.input.type_now();
-        assert_eq!(pane.input.drain_all(), b"x\r");
+        assert!(pane.input.drain_all().ends_with(b"kx\r"));
         assert_eq!(pane.input.due_at(), None);
         Ok(())
     }
