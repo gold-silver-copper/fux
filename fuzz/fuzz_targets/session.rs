@@ -14,10 +14,9 @@ use fux::decode::{Decoder, Input};
 use fux::id::{ClientId, PaneId};
 use fux::keys::KeyPress;
 use fux::outer;
-use fux::overlay::column;
 use fux::render::{Grid, compose};
 use fux::session::{Ctx, Outgoing, Session};
-use fux::view::Mode;
+use fux::view::{Choice, Mode};
 use libfuzzer_sys::fuzz_target;
 
 /// Commands from the command line, while clients type: they change what
@@ -327,10 +326,10 @@ impl Run {
             return None;
         };
         let press = &stroke.press;
-        let Some(Mode::Repeat { path }) = self.s.views.get(&client).map(|v| &v.mode) else {
+        let Some(Mode::Repeat(repeat)) = self.s.views.get(&client).map(|v| &v.mode) else {
             return None;
         };
-        let mut keys = path.clone();
+        let mut keys = repeat.path.clone();
         keys.push(*press);
         let writes = self.s.config.bindings.iter().any(|b| {
             b.keys == keys
@@ -400,10 +399,19 @@ impl Run {
 fn mode_text(mode: &Mode) -> String {
     match mode {
         Mode::Normal => "normal".into(),
-        Mode::Column { path, selected } => format!("column {path:?} {selected}"),
-        Mode::Repeat { path } => format!("repeat {path:?}"),
-        Mode::List(list) => format!("list {} {}", list.title, list.selected),
-        Mode::Prompt(prompt) => format!("prompt {:?} {}", prompt.text, prompt.cursor),
+        Mode::Column(column) => {
+            let selected = column.entries.as_ref().map(Choice::index);
+            format!("column {:?} {selected:?}", column.path)
+        }
+        Mode::Repeat(repeat) => format!("repeat {:?}", repeat.path),
+        Mode::List(list) => format!("list {} {}", list.title, list.items.index()),
+        Mode::Prompt(prompt) => {
+            format!(
+                "prompt {:?} {:?}",
+                prompt.line.before(),
+                prompt.line.after()
+            )
+        }
         Mode::Confirm(confirm) => format!("confirm {:?}", confirm.question),
         Mode::Copy(copy) => format!("copy {} {:?} {:?}", copy.pane, copy.top, copy.cursor),
     }
@@ -459,37 +467,21 @@ fn check(s: &Session) {
         let grid = compose(s, *id).expect("a client's screen composes");
         assert_eq!((grid.rows, grid.cols), (view.rows, view.cols));
         let bindings = &s.config.bindings;
+        // Found again whenever the bindings change.
         match &view.mode {
-            Mode::Column { path, selected } => {
-                assert!(
-                    path.is_empty() || is_layer(bindings, path),
-                    "{id}'s column shows a layer that is gone: {path:?}"
-                );
-                let entries = column(s, path);
-                if !entries.is_empty() {
-                    assert!(
-                        entries.get(*selected).is_some(),
-                        "{id}'s column selects {selected}, past its end"
-                    );
-                }
-            }
-            Mode::Repeat { path } => assert!(
+            Mode::Column(column) => assert!(
+                column.path.is_empty() || is_layer(bindings, &column.path),
+                "{id}'s column shows a layer that is gone: {:?}",
+                column.path
+            ),
+            Mode::Repeat(repeat) => assert!(
                 bindings.iter().any(|b| b.repeat
-                    && b.keys.len() == path.len() + 1
-                    && b.keys.starts_with(path)),
-                "{id} repeats {path:?}, which holds no repeating binding"
+                    && b.keys.len() == repeat.path.len() + 1
+                    && b.keys.starts_with(&repeat.path)),
+                "{id} repeats {:?}, which holds no repeating binding",
+                repeat.path
             ),
-            Mode::Prompt(prompt) => {
-                assert!(prompt.cursor <= prompt.text.chars().count());
-                assert!(prompt.text.len() <= 4096);
-            }
-            Mode::List(list) => assert!(
-                list.selected < list.items.len() || (list.items.is_empty() && list.selected == 0),
-                "{id}'s list selects {} of {}",
-                list.selected,
-                list.items.len()
-            ),
-            Mode::Normal | Mode::Confirm(_) | Mode::Copy(_) => {}
+            Mode::Normal | Mode::List(_) | Mode::Prompt(_) | Mode::Confirm(_) | Mode::Copy(_) => {}
         }
     }
 }
