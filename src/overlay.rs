@@ -11,7 +11,7 @@ use crate::id::{ClientId, PaneId};
 use crate::keys::{Direction, Key, KeyPress, Keystroke};
 use crate::layout::Node;
 use crate::session::{Ctx, Error, Session, describe};
-use crate::view::{Confirm, Item, List, Mode, Prompt, PromptFor, View};
+use crate::view::{Confirm, Item, Line, List, Mode, Prompt, PromptFor, View};
 
 /// An entry of the command column: a key of its layer, and the binding it
 /// runs or, for a key that opens a layer inside it, that layer's first
@@ -122,12 +122,10 @@ pub fn layer_title<'a>(session: &'a Session, path: &[KeyPress]) -> Option<&'a st
 }
 
 pub fn open_prompt(view: &mut View, purpose: PromptFor, title: String, text: String) -> String {
-    let cursor = text.chars().count();
     view.mode = Mode::Prompt(Prompt {
         title,
         purpose,
-        text,
-        cursor,
+        line: Line::new(text),
     });
     String::new()
 }
@@ -729,17 +727,6 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
     }
 }
 
-/// `text` with the `remove` chars from char `at` replaced by `insert`:
-/// positions count chars, so no edit can fall inside one. A prompt's text is
-/// at most 4096 bytes, so building it afresh costs nothing.
-fn splice(text: &str, at: usize, remove: usize, insert: &str) -> String {
-    text.chars()
-        .take(at)
-        .chain(insert.chars())
-        .chain(text.chars().skip(at).skip(remove))
-        .collect()
-}
-
 /// A key in a prompt: a one-line editor.
 pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let Some(view) = session.views.get_mut(&client) else {
@@ -749,7 +736,7 @@ pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
         return;
     };
     view.dirty = true;
-    let len = prompt.text.chars().count();
+    let line = &mut prompt.line;
     match press.key {
         Key::Escape => view.mode = Mode::Normal,
         Key::Enter => {
@@ -757,32 +744,15 @@ pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
             view.mode = Mode::Normal;
             submit(session, client, prompt);
         }
-        Key::Backspace => {
-            if let Some(before) = prompt.cursor.checked_sub(1) {
-                prompt.text = splice(&prompt.text, before, 1, "");
-                prompt.cursor = before;
-            }
-        }
-        Key::Delete => {
-            if prompt.cursor < len {
-                prompt.text = splice(&prompt.text, prompt.cursor, 1, "");
-            }
-        }
-        Key::Arrow(Direction::Left) => prompt.cursor = prompt.cursor.saturating_sub(1),
-        Key::Arrow(Direction::Right) => prompt.cursor = prompt.cursor.saturating_add(1).min(len),
-        Key::Home => prompt.cursor = 0,
-        Key::End => prompt.cursor = len,
+        Key::Backspace => line.backspace(),
+        Key::Delete => line.delete(),
+        Key::Arrow(Direction::Left) => line.left(),
+        Key::Arrow(Direction::Right) => line.right(),
+        Key::Home => line.home(),
+        Key::End => line.end(),
         // Text: a letter with Ctrl or Alt types nothing.
-        Key::Char(c)
-            if !press.mods.ctrl
-                && !press.mods.alt
-                && !c.is_control()
-                && prompt.text.len().saturating_add(c.len_utf8()) <= 4096 =>
-        {
-            let mut buffer = [0u8; 4];
-            prompt.text = splice(&prompt.text, prompt.cursor, 0, c.encode_utf8(&mut buffer));
-            // Exact: the text is at most 4096 bytes.
-            prompt.cursor = prompt.cursor.saturating_add(1);
+        Key::Char(c) if !press.mods.ctrl && !press.mods.alt && !c.is_control() => {
+            line.insert(c.encode_utf8(&mut [0u8; 4]));
         }
         Key::Char(_)
         | Key::Tab
@@ -807,15 +777,7 @@ pub fn prompt_paste(session: &mut Session, client: ClientId, text: &str) {
         .take_while(|c| *c != '\n' && *c != '\r')
         .filter(|c| !c.is_control())
         .collect();
-    if prompt
-        .text
-        .len()
-        .checked_add(line.len())
-        .is_some_and(|len| len <= 4096)
-    {
-        prompt.text = splice(&prompt.text, prompt.cursor, 0, &line);
-        // Exact: the text is at most 4096 bytes.
-        prompt.cursor = prompt.cursor.saturating_add(line.chars().count());
+    if prompt.line.insert(&line) {
         view.dirty = true;
     }
 }
@@ -823,7 +785,7 @@ pub fn prompt_paste(session: &mut Session, client: ClientId, text: &str) {
 fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
     match prompt.purpose {
         PromptFor::Command => {
-            let argv = match crate::words::split(&prompt.text) {
+            let argv = match crate::words::split(&prompt.line.text()) {
                 Ok(argv) if argv.is_empty() => return,
                 Ok(argv) => argv,
                 Err(error) => return session.error_to(client, error.to_string()),
@@ -846,7 +808,7 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
                 client,
                 &Command::Rename {
                     target,
-                    name: prompt.text,
+                    name: prompt.line.text(),
                 },
             );
         }
@@ -905,7 +867,9 @@ mod tests {
                 format!("repeat {}", crate::config::keys_text(path))
             }
             Some(Mode::List(list)) => format!("list {} {}", list.title, list.selected),
-            Some(Mode::Prompt(prompt)) => format!("prompt {}|{}", prompt.text, prompt.cursor),
+            Some(Mode::Prompt(prompt)) => {
+                format!("prompt {}|{}", prompt.line.before(), prompt.line.after())
+            }
             Some(Mode::Confirm(confirm)) => format!("confirm {}", confirm.question),
             Some(Mode::Copy(_)) => "copy".into(),
             None => "gone".into(),
@@ -945,29 +909,6 @@ mod tests {
         Ok(())
     }
 
-    /// Prompt edits count chars, so none falls inside one: what Backspace,
-    /// Delete, typing and a paste do, on text with wide chars.
-    #[test]
-    fn prompt_edits_count_chars_not_bytes() {
-        for (at, remove, insert, edited) in [
-            (0, 2, "", "llo界"),
-            (1, 1, "", "hllo界"),
-            (4, 1, "", "héll界"),
-            (5, 1, "", "héllo"),
-            (6, 1, "", "héllo界"),
-            (2, 0, "ü", "héüllo界"),
-            (6, 0, "x", "héllo界x"),
-            (9, 0, "x", "héllo界x"),
-            (3, 0, "p a", "hélp alo界"),
-        ] {
-            assert_eq!(
-                splice("héllo界", at, remove, insert),
-                edited,
-                "{at} {remove} {insert:?}"
-            );
-        }
-    }
-
     /// On a screen too short for a list's lines, the selected entry stays
     /// in view: the lines around it give way first.
     #[test]
@@ -996,7 +937,7 @@ mod tests {
         s.input(c, &paste);
         s.input(c, "\u{754c}".as_bytes());
         let len = match s.views.get(&c).map(|v| &v.mode) {
-            Some(Mode::Prompt(prompt)) => prompt.text.len(),
+            Some(Mode::Prompt(prompt)) => prompt.line.clone().text().len(),
             _ => return Err("no prompt".into()),
         };
         assert_eq!(len, 4095, "the three bytes of the glyph would pass 4096");
@@ -1475,7 +1416,7 @@ mod tests {
         // A chooser's `r` and `x` act on the selected item.
         run(&mut s, "choose-tab -c c1")?;
         s.input(c, b"r");
-        assert_eq!(mode(&s, c), "prompt main|4");
+        assert_eq!(mode(&s, c), "prompt main|");
         s.input(c, b"\r");
         run(&mut s, "choose-tab -c c1")?;
         s.input(c, b"x");
@@ -1818,20 +1759,20 @@ mod tests {
         let (mut s, c) = session()?;
         s.input(c, b"\x02e");
         s.input(c, "abc界".as_bytes());
-        assert_eq!(mode(&s, c), "prompt abc界|4");
+        assert_eq!(mode(&s, c), "prompt abc界|");
         s.input(c, b"\x1b[D\x1b[D\x7fX");
-        assert_eq!(mode(&s, c), "prompt aXc界|2");
+        assert_eq!(mode(&s, c), "prompt aX|c界");
         s.input(c, b"\x1b[3~");
-        assert_eq!(mode(&s, c), "prompt aX界|2");
+        assert_eq!(mode(&s, c), "prompt aX|界");
         // Home and End; Ctrl keys type and do nothing.
         s.input(c, b"\x1b[HY\x1b[FZ");
-        assert_eq!(mode(&s, c), "prompt YaX界Z|5");
+        assert_eq!(mode(&s, c), "prompt YaX界Z|");
         s.input(c, b"\x01\x05\x15\x03\x07");
-        assert_eq!(mode(&s, c), "prompt YaX界Z|5");
+        assert_eq!(mode(&s, c), "prompt YaX界Z|");
         s.input(c, b"\x7f\x7f\x7f\x7f\x7f");
-        assert_eq!(mode(&s, c), "prompt |0");
+        assert_eq!(mode(&s, c), "prompt |");
         s.input(c, b"\x1b[200~one\ntwo\x1b[201~");
-        assert_eq!(mode(&s, c), "prompt one|3");
+        assert_eq!(mode(&s, c), "prompt one|");
         escape(&mut s, c);
         assert_eq!(mode(&s, c), "normal");
         Ok(())
