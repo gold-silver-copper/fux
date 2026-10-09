@@ -77,6 +77,8 @@ pub struct InputQueue {
     /// Input was refused, and the program has not read since: everything
     /// is refused, so none arrives with a hole before it.
     refusing: bool,
+    /// A reply was lost, and told.
+    reply_dropped: bool,
 }
 
 impl InputQueue {
@@ -100,6 +102,12 @@ impl InputQueue {
         });
         self.refusing |= !fits;
         fits.then_some(()).ok_or(Error::NotReading)
+    }
+    /// Queues a terminal reply, as `push`: a program that is not reading
+    /// loses it. Returns whether it is the first reply lost in the queue's
+    /// life, which is told.
+    pub fn reply(&mut self, bytes: &[u8]) -> bool {
+        self.push(bytes).is_err() && !std::mem::replace(&mut self.reply_dropped, true)
     }
     /// How many more bytes are taken.
     fn room(&self) -> usize {
@@ -212,17 +220,46 @@ pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
 /// The most titles a pane's program can push (`CSI 22 t`): xterm's bound.
 const TITLE_STACK: usize = 10;
 
-/// What a program did to its title, in order: set it, push it, pop it.
-enum TitleOp {
-    Set(String),
-    Push,
-    Pop,
+/// A pane's title, as its program sets it with OSC 0 or 2, and the titles
+/// it pushed (`CSI 22 t`) to pop (`CSI 23 t`), at most xterm's ten: a push
+/// past them forgets the oldest.
+#[derive(Default)]
+pub struct Title {
+    now: String,
+    pushed: VecDeque<String>,
+}
+
+impl Title {
+    pub fn as_str(&self) -> &str {
+        &self.now
+    }
+    /// The title a program set, without control characters, at most 256
+    /// characters of it.
+    fn set(&mut self, title: &[u8]) {
+        let text = String::from_utf8_lossy(title);
+        self.now = text.chars().filter(|c| !c.is_control()).take(256).collect();
+    }
+    fn push(&mut self) {
+        if self.pushed.len() >= TITLE_STACK {
+            self.pushed.pop_front();
+        }
+        self.pushed.push_back(self.now.clone());
+    }
+    /// The title last pushed comes back; with none, nothing changes.
+    fn pop(&mut self) {
+        if let Some(title) = self.pushed.pop_back() {
+            self.now = title;
+        }
+    }
 }
 
 /// Replies (DSR, DA) and events the parser produces while reading output.
 struct Sink<'a> {
-    replies: &'a mut Vec<u8>,
-    titles: &'a mut Vec<TitleOp>,
+    /// Where replies go: a program that is not reading loses them.
+    input: &'a mut InputQueue,
+    /// A reply was lost, for the first time in the pane's life.
+    dropped: bool,
+    title: &'a mut Title,
     /// Set by a bell (BEL).
     bell: &'a mut bool,
     /// What colour queries are answered with (`outer`).
@@ -254,25 +291,11 @@ impl Sink<'_> {
 
 impl fux_vt::Sink for Sink<'_> {
     fn reply(&mut self, bytes: &[u8]) {
-        if self
-            .replies
-            .len()
-            .checked_add(bytes.len())
-            .is_some_and(|len| len <= 4096)
-        {
-            self.replies.extend_from_slice(bytes);
-        }
+        self.dropped |= self.input.reply(bytes);
     }
     fn event(&mut self, event: fux_vt::Event<'_>) {
         match event {
-            fux_vt::Event::Title(title) => {
-                let text: String = String::from_utf8_lossy(title)
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .take(256)
-                    .collect();
-                self.titles.push(TitleOp::Set(text));
-            }
+            fux_vt::Event::Title(title) => self.title.set(title),
             fux_vt::Event::ColorQuery { number, bel } => self.colour_query(number, bel),
             fux_vt::Event::Bell => *self.bell = true,
             // fux's clipboard policy: a program's OSC 52 is not taken.
@@ -295,13 +318,13 @@ impl fux_vt::Sink for Sink<'_> {
             return;
         };
         let mut groups = params.groups();
-        let op = match groups.next() {
-            Some([22]) => TitleOp::Push,
-            Some([23]) => TitleOp::Pop,
+        let op: fn(&mut Title) = match groups.next() {
+            Some([22]) => Title::push,
+            Some([23]) => Title::pop,
             _ => return,
         };
         if matches!(groups.next(), None | Some([] | [0] | [2])) {
-            self.titles.push(op);
+            op(self.title);
         }
     }
 }
@@ -346,21 +369,16 @@ impl Process {
 pub struct Pane {
     pub id: PaneId,
     pub name: String,
-    /// Set by the program with OSC 0 or 2.
-    pub title: String,
+    pub title: Title,
     pub parser: fux_vt::Parser,
     /// The PTY size, the smallest rectangle any client shows the pane in.
     pub size: (u16, u16),
     pub process: Process,
     pub input: InputQueue,
-    /// Whether a reply was dropped because the queue was full; noticed once.
-    pub reply_dropped: bool,
     /// The shell's program the pane was started with. fux reads it nowhere
     /// itself; a typed command is quoted for the shell before the pane is
     /// made (`Session::new_pane`).
     pub shell: String,
-    /// Titles the program pushed (`CSI 22 t`), to pop (`CSI 23 t`).
-    title_stack: VecDeque<String>,
     /// The output of a frame the program is drawing in synchronized output,
     /// from BSU on, and since when; see [`Pane::output`].
     frame: Option<(Vec<u8>, Instant)>,
@@ -439,15 +457,13 @@ impl Pane {
         Ok(Pane {
             id,
             name,
-            title: String::new(),
+            title: Title::default(),
             parser,
             size: (rows.max(1), cols.max(1)),
             process: Process::Absent,
             input: InputQueue::default(),
-            reply_dropped: false,
             shell,
             frame: None,
-            title_stack: VecDeque::new(),
             colours: crate::outer::Colours::default(),
             bell: false,
         })
@@ -455,7 +471,7 @@ impl Pane {
 
     /// Reads program output into the screen. Returns whether a reply had to
     /// be dropped because the program is not reading its input, the first
-    /// time one is in the pane's life (`reply_dropped`).
+    /// time one is in the pane's life (`InputQueue::reply`).
     ///
     /// A frame the program draws in synchronized output (from `CSI ? 2026 h`,
     /// BSU, to `CSI ? 2026 l`, ESU) is held, unread, until it ends, then read
@@ -522,11 +538,10 @@ impl Pane {
     /// Returns whether a reply had to be dropped, and how many bytes were
     /// read if it stopped.
     fn feed(&mut self, bytes: &[u8], until_frame: bool) -> (bool, Option<usize>) {
-        let mut replies = Vec::new();
-        let mut titles = Vec::new();
         let mut sink = Sink {
-            replies: &mut replies,
-            titles: &mut titles,
+            input: &mut self.input,
+            dropped: false,
+            title: &mut self.title,
             bell: &mut self.bell,
             colours: &self.colours,
         };
@@ -545,28 +560,9 @@ impl Pane {
             }
             rest = rest.get(taken..).unwrap_or_default();
         }
-        for op in titles {
-            match op {
-                TitleOp::Set(title) => self.title = title,
-                TitleOp::Push => {
-                    if self.title_stack.len() >= TITLE_STACK {
-                        self.title_stack.pop_front();
-                    }
-                    self.title_stack.push_back(self.title.clone());
-                }
-                TitleOp::Pop => {
-                    if let Some(title) = self.title_stack.pop_back() {
-                        self.title = title;
-                    }
-                }
-            }
-        }
+        let dropped = sink.dropped;
         self.input.heard(Instant::now());
-        if !replies.is_empty() && self.input.push(replies).is_err() && !self.reply_dropped {
-            self.reply_dropped = true;
-            return (true, begun);
-        }
-        (false, begun)
+        (dropped, begun)
     }
 
     /// Writes the waiting input, as far as the program's terminal takes it.
@@ -620,10 +616,9 @@ impl Pane {
 
     /// The name the bar shows: the program's title, else the pane's name.
     pub fn label(&self) -> &str {
-        if self.title.is_empty() {
-            &self.name
-        } else {
-            &self.title
+        match self.title.as_str() {
+            "" => &self.name,
+            title => title,
         }
     }
 }
@@ -741,7 +736,7 @@ mod tests {
     fn output_answers_queries_and_takes_titles() -> Result<(), Error> {
         let mut pane = Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
         pane.output(b"hello\x1b]2;my title\x07\x1b[6n");
-        assert_eq!(pane.title, "my title");
+        assert_eq!(pane.title.as_str(), "my title");
         assert_eq!(pane.label(), "my title");
         assert_eq!(pane.input.drain_all(), b"\x1b[1;6R");
         pane.resize(3, 10);
@@ -881,20 +876,32 @@ mod tests {
     fn a_pushed_title_comes_back_when_popped() -> Result<(), Error> {
         let mut pane = pane()?;
         pane.output(b"\x1b]2;shell\x07\x1b[22;0t\x1b]2;vim\x07");
-        assert_eq!(pane.title, "vim");
+        assert_eq!(pane.title.as_str(), "vim");
         pane.output(b"\x1b[23;0t");
-        assert_eq!(pane.title, "shell");
+        assert_eq!(pane.title.as_str(), "shell");
         pane.output(b"\x1b[22;2t\x1b]2;tmux\x07\x1b[23;2t\x1b[23;0t");
-        assert_eq!(pane.title, "shell", "a pop with none left changes nothing");
+        assert_eq!(
+            pane.title.as_str(),
+            "shell",
+            "a pop with none left changes nothing"
+        );
         pane.output(b"\x1b[22;1t\x1b]2;other\x07\x1b[23;1t");
-        assert_eq!(pane.title, "other", "the icon's stack is not the title's");
+        assert_eq!(
+            pane.title.as_str(),
+            "other",
+            "the icon's stack is not the title's"
+        );
         for n in 0..12 {
             pane.output(format!("\x1b]2;t{n}\x07\x1b[22t").as_bytes());
         }
         for _ in 0..12 {
             pane.output(b"\x1b[23t");
         }
-        assert_eq!(pane.title, "t2", "ten kept: the first two pushes dropped");
+        assert_eq!(
+            pane.title.as_str(),
+            "t2",
+            "ten kept: the first two pushes dropped"
+        );
         Ok(())
     }
 
