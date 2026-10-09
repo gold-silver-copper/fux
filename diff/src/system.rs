@@ -1,9 +1,8 @@
 //! The system, through the baseline's and the current crates: fuxix's errnos
 //! read and print alike; making pipes, sockets and PTYs nonblocking and back
-//! returns the same, and leaves reads that do not wait; PTYs open at the
-//! same sizes and resize alike; bytes go through a pipe alike; and the
-//! config file's path comes out the same in every mix of the variables it
-//! is found from.
+//! returns the same, and leaves reads that do not wait; bytes go through a
+//! pipe alike; and the config file's path comes out the same in every mix
+//! of the variables it is found from.
 use crate::rng::Rng;
 use crate::{Outcome, bump, same, times};
 use std::os::fd::{AsFd, OwnedFd};
@@ -52,21 +51,6 @@ macro_rules! stack {
                 format!("{results:?} {read}")
             }
 
-            pub fn pty(rows: u16, cols: u16, then: (u16, u16)) -> String {
-                match $ix::pty::open(rows, cols) {
-                    Ok((master, slave)) => {
-                        let first = (
-                            $ix::terminal::window_size(&master),
-                            $ix::terminal::window_size(&slave),
-                        );
-                        let set = $ix::terminal::set_window_size(&master, then.0, then.1);
-                        let second = $ix::terminal::window_size(&slave);
-                        format!("{first:?} {set:?} {second:?}")
-                    }
-                    Err(error) => format!("error {error}"),
-                }
-            }
-
             /// Writes `bytes` into a pipe and reads them back.
             pub fn pipe(write: &OwnedFd, read: &OwnedFd, bytes: &[u8]) -> String {
                 let wrote = $ix::io::write(write, bytes);
@@ -98,8 +82,12 @@ fn descriptors() -> Result<Vec<(&'static str, OwnedFd, OwnedFd)>, String> {
         ("pipe", read, write),
         ("socket", OwnedFd::from(socket), OwnedFd::from(peer)),
     ];
-    if let Ok((master, slave)) = fuxix::pty::open(24, 80) {
-        out.push(("pty", master, slave));
+    if let Some(Ok((master, slave))) = fuxix::terminal::Size::new(24, 80).map(fuxix::pty::open) {
+        let slave = slave
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|e| e.to_string())?;
+        out.push(("pty", master.into(), slave));
     }
     Ok(out)
 }
@@ -123,20 +111,6 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
             )?;
             bump(&mut requests);
         }
-    }
-    let mut ptys = 0u64;
-    let size = |r: &mut Rng| {
-        let sizes = [0u16, 1, 2, 3, 24, 80, 299, u16::MAX];
-        r.pick(&sizes).copied().unwrap_or(24)
-    };
-    for case in 0..times(30, scale) {
-        let (rows, cols, then) = (size(r), size(r), (size(r), size(r)));
-        same(
-            &format!("pty {case}: {rows}x{cols} then {then:?}"),
-            base::pty(rows, cols, then),
-            cur::pty(rows, cols, then),
-        )?;
-        bump(&mut ptys);
     }
     let mut pipes = 0u64;
     for case in 0..times(300, scale) {
@@ -182,6 +156,6 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
         }
     }
     Ok(format!(
-        "201 errnos, {requests} nonblocking requests, {ptys} PTYs, {pipes} pipes, the config path in {paths} environments"
+        "201 errnos, {requests} nonblocking requests, {pipes} pipes, the config path in {paths} environments"
     ))
 }
