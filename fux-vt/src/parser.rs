@@ -11,20 +11,17 @@ pub(crate) mod test_corpus;
 #[derive(Clone, Debug)]
 pub(crate) struct Parameters {
     values: [u16; 32],
-    /// True when this value continues the previous colon-delimited group.
-    sub: [bool; 32],
+    /// Bit `i` set when value `i` continues the previous colon-delimited
+    /// group: none until a `:` is read, and each value a group of its own.
+    sub: u32,
     len: usize,
-    /// Whether any value continues a group (a `:` was read): until one
-    /// does, each value is a group of its own, and `sub` is not read.
-    colons: bool,
 }
 impl Default for Parameters {
     fn default() -> Self {
         Self {
             values: [0; 32],
-            sub: [false; 32],
+            sub: 0,
             len: 1,
-            colons: false,
         }
     }
 }
@@ -43,15 +40,26 @@ impl Parameters {
         };
         // The new parameter starts empty: `clear` left what a sequence
         // before put there.
-        if let Some(sub) = self.sub.get_mut(self.len) {
-            *sub = colon;
-        }
         if let Some(value) = self.values.get_mut(self.len) {
             *value = 0;
         }
+        self.continue_group(self.len, colon);
         self.len = len;
-        self.colons |= colon;
         true
+    }
+    /// Marks value `index` as continuing the previous group if `colon`.
+    #[inline]
+    fn continue_group(&mut self, index: usize, colon: bool) {
+        if colon && let Ok(index) = u32::try_from(index) {
+            self.sub |= 1u32.wrapping_shl(index);
+        }
+    }
+    /// Whether value `index` continues the previous group.
+    fn continues(&self, index: usize) -> bool {
+        u32::try_from(index)
+            .ok()
+            .and_then(|i| self.sub.checked_shr(i))
+            .is_some_and(|bits| bits & 1 != 0)
     }
     /// `separator` for a reader that keeps the parameter being read and
     /// how many there are itself (`Parser::sequence`): the parameter
@@ -62,10 +70,7 @@ impl Parameters {
     fn next(&mut self, len: usize, value: u16, colon: bool) -> Option<usize> {
         let more = len.checked_add(1).filter(|n| *n <= self.values.len())?;
         self.end(len, value);
-        if let Some(sub) = self.sub.get_mut(len) {
-            *sub = colon;
-        }
-        self.colons |= colon;
+        self.continue_group(len, colon);
         Some(more)
     }
     /// The parameters as such a reader leaves them: `len` of them, the
@@ -78,11 +83,11 @@ impl Parameters {
         self.len = len;
     }
     /// Back to one empty parameter, touching only what `separator` and
-    /// `digit` read: a sequence is begun on every ESC, so this is kept to
+    /// `digit` read: a CSI or DCS is begun often, so this is kept to
     /// three stores rather than rewriting all the parameters.
     fn clear(&mut self) {
         self.len = 1;
-        self.colons = false;
+        self.sub = 0;
         if let Some(value) = self.values.first_mut() {
             *value = 0;
         }
@@ -94,7 +99,7 @@ impl Parameters {
                 return None;
             }
             let mut end = start.checked_add(1)?;
-            while self.colons && end < self.len && self.sub.get(end).copied().unwrap_or(false) {
+            while self.sub != 0 && end < self.len && self.continues(end) {
                 end = end.checked_add(1)?;
             }
             let result = self.values.get(start..end);
@@ -112,7 +117,7 @@ impl Parameters {
     /// `grouped` out of line.
     #[inline(always)]
     pub fn first(&self, index: usize, default: u16) -> u16 {
-        let value = if self.colons {
+        let value = if self.sub != 0 {
             self.grouped(index)
         } else {
             self.values
@@ -199,23 +204,129 @@ fn printable(bytes: &[u8]) -> usize {
     )
 }
 
+/// Where the parser is in what it reads, and what it keeps of that: each
+/// state holds exactly what is read in it, and nothing outlives it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum State {
     #[default]
     Ground,
-    Escape,
-    EscapeIntermediate,
-    CsiEntry,
-    CsiParam,
-    CsiIntermediate,
+    /// A character's first bytes, its lead byte first.
+    Utf8(Bytes<4>),
+    /// An escape sequence and its intermediates: none yet, at its ESC.
+    Escape(Intermediates),
+    /// An escape sequence with more intermediates than are kept: read to
+    /// its final byte, and not carried out.
+    EscapeIgnore,
+    /// A CSI; its parameters are the parser's.
+    Csi(Phase),
+    /// A CSI that will not be carried out, read to its final byte.
     CsiIgnore,
-    DcsEntry,
-    DcsParam,
-    DcsIntermediate,
-    DcsIgnore,
-    DcsString,
-    OscString,
-    SosPmApcString,
+    /// A DCS before its final byte; its parameters are the parser's.
+    Dcs(Phase),
+    /// A string read to its end and dropped: a DCS fux-vt does not
+    /// answer, SOS, PM or APC.
+    IgnoreString,
+    /// A DECRQSS (`DCS $ q Pt ST`) with [`Options::setting_reports`]: its
+    /// request so far, `None` once it ran past any setting fux-vt knows.
+    Request(Option<Bytes<REQUEST_LIMIT>>),
+    /// An OSC string, its payload the parser's: `whole` until it ran past
+    /// what is kept of one.
+    Osc { whole: bool },
+}
+
+/// Up to `N` bytes, as many as were read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Bytes<const N: usize> {
+    bytes: [u8; N],
+    len: u8,
+}
+
+/// The intermediates (and private marker) a sequence keeps: xterm's
+/// longest are two (`?$`).
+type Intermediates = Bytes<2>;
+
+impl<const N: usize> Default for Bytes<N> {
+    fn default() -> Self {
+        Self {
+            bytes: [0; N],
+            len: 0,
+        }
+    }
+}
+
+impl<const N: usize> Bytes<N> {
+    /// `byte` alone.
+    fn of(byte: u8) -> Self {
+        Self::default().push(byte).unwrap_or_default()
+    }
+    /// These bytes and `byte`, or `None` if there is no room for it.
+    fn push(mut self, byte: u8) -> Option<Self> {
+        *self.bytes.get_mut(usize::from(self.len))? = byte;
+        self.len = self.len.checked_add(1)?;
+        Some(self)
+    }
+    fn as_slice(&self) -> &[u8] {
+        self.bytes.get(..usize::from(self.len)).unwrap_or_default()
+    }
+}
+
+/// How far a CSI or DCS has come, and its intermediates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    /// Nothing read after its introducer.
+    Entry,
+    /// Reading parameters, after a private marker if there is one.
+    Param(Intermediates),
+    /// Reading intermediates.
+    Intermediate(Intermediates),
+}
+
+/// What a byte makes of a CSI or DCS in a [`Phase`].
+enum Next {
+    /// It goes on, in this phase.
+    Phase(Phase),
+    /// It is malformed or past the bounds kept, and is read to its end
+    /// without being carried out.
+    Ignore,
+    /// The byte is a C0 control, executed within a CSI.
+    Control,
+    /// The byte is its final byte, these its intermediates.
+    Final(Intermediates),
+}
+
+impl Phase {
+    /// What `byte` makes of a CSI or DCS in this phase, its digits and
+    /// separators read into `params`.
+    fn next(self, byte: u8, params: &mut Parameters) -> Next {
+        let read = match self {
+            Phase::Entry => Intermediates::default(),
+            Phase::Param(read) | Phase::Intermediate(read) => read,
+        };
+        match byte {
+            0x00..=0x1f => Next::Control,
+            0x20..=0x2f => read
+                .push(byte)
+                .map_or(Next::Ignore, |read| Next::Phase(Phase::Intermediate(read))),
+            0x30..=0x3f if matches!(self, Phase::Intermediate(_)) => Next::Ignore,
+            b'0'..=b'9' => {
+                params.digit(byte);
+                Next::Phase(Phase::Param(read))
+            }
+            b';' | b':' => {
+                if params.separator(byte == b':') {
+                    Next::Phase(Phase::Param(read))
+                } else {
+                    Next::Ignore
+                }
+            }
+            0x3c..=0x3f if self == Phase::Entry => {
+                Next::Phase(Phase::Param(Intermediates::of(byte)))
+            }
+            0x3c..=0x3f => Next::Ignore,
+            0x40..=0x7e => Next::Final(read),
+            0x7f..=0xff => Next::Phase(self),
+        }
+    }
 }
 
 /// The most OSC payload bytes retained for [`Event`] delivery, hyperlinks
@@ -230,32 +341,6 @@ const OSC_PREFIX: usize = 16;
 /// The most bytes of a DECRQSS request kept: xterm's longest are two
 /// (` q`, `$|`, `"p`). A longer request is no setting fux-vt knows.
 const REQUEST_LIMIT: usize = 4;
-
-/// A DECRQSS request (`DCS $ q Pt ST`) as far as it has come, with
-/// [`Feature::SettingReports`].
-#[derive(Clone, Copy, Debug, Default)]
-struct Request {
-    bytes: [u8; REQUEST_LIMIT],
-    len: usize,
-    /// Whether it ran past `REQUEST_LIMIT`.
-    long: bool,
-}
-
-impl Request {
-    fn push(&mut self, byte: u8) {
-        match (self.bytes.get_mut(self.len), self.len.checked_add(1)) {
-            (Some(slot), Some(len)) => {
-                *slot = byte;
-                self.len = len;
-            }
-            _ => self.long = true,
-        }
-    }
-    /// The request, unless it was too long to be one fux-vt knows.
-    fn text(&self) -> Option<&[u8]> {
-        self.bytes.get(..self.len).filter(|_| !self.long)
-    }
-}
 
 /// A piece of opt-in behaviour that needs the host's cooperation, turned on
 /// in [`Options`].
@@ -573,28 +658,17 @@ impl<F: FnMut(&[u8])> Sink for Replies<F> {
 pub struct Parser {
     screen: Screen,
     options: Options,
-    /// OSC payload, at most `osc_limit` bytes.
+    /// The OSC string's payload, at most `osc_limit` bytes: read only in
+    /// `State::Osc`, emptied as one begins, its allocation kept.
     osc: Vec<u8>,
     /// `OSC_PAYLOAD_LIMIT` with `options.has(Feature::Events)`, `options.has(Feature::Hyperlinks)` or
     /// `options.has(Feature::Palette)`, else `OSC_PREFIX` with `options.has(Feature::PromptMarks)`,
     /// else 0: set once, as it is asked for every byte of an OSC.
     osc_limit: usize,
-    osc_overflow: bool,
-    /// The DECRQSS the DCS string being read is, with
-    /// [`Feature::SettingReports`]; `None` for any other string.
-    request: Option<Request>,
-    /// Whether the CSI just dispatched began a frame (set synchronized
-    /// output), for `Parser::process_until_frame`, which stops at once and
-    /// clears it.
-    frame_begun: bool,
     state: State,
+    /// The CSI's or DCS's parameters: read only in `State::Csi` and
+    /// `State::Dcs`, cleared as one begins.
     params: Parameters,
-    intermediates: [u8; 2],
-    intermediate_len: usize,
-    ignoring: bool,
-    utf8: [u8; 4],
-    utf8_len: usize,
-    utf8_need: usize,
 }
 #[cfg(test)]
 mod tests;
@@ -628,17 +702,8 @@ impl Parser {
             } else {
                 0
             },
-            osc_overflow: false,
-            request: None,
-            frame_begun: false,
             state: State::Ground,
             params: Parameters::default(),
-            intermediates: [0; 2],
-            intermediate_len: 0,
-            ignoring: false,
-            utf8: [0; 4],
-            utf8_len: 0,
-            utf8_need: 0,
         })
     }
     /// The screen, for a test to reach into.
@@ -723,43 +788,39 @@ impl Parser {
             return Ok(None);
         }
         self.screen.begin()?;
-        self.frame_begun = false;
         let mut remaining = bytes;
         while let Some((&byte, tail)) = remaining.split_first() {
-            let ground = self.state == State::Ground && self.utf8_len == 0;
-            if ground && (0x20..=0x7e).contains(&byte) {
+            let ground = matches!(self.state, State::Ground);
+            let framed = if ground && (0x20..=0x7e).contains(&byte) {
                 let length = printable(remaining);
                 self.screen
                     .ascii(remaining.get(..length).unwrap_or_default())?;
                 remaining = remaining.get(length..).unwrap_or_default();
+                false
             } else if ground && byte < 0x20 && byte != 0x1b {
                 // A C0 control, as `ground` carries it out.
                 self.control(byte, sink)?;
                 self.screen.forget_repeat();
                 remaining = tail;
+                false
             } else if ground
                 && byte >= 0x80
                 && let Some(length) = self.text(remaining)?
             {
                 remaining = remaining.get(length..).unwrap_or_default();
+                false
             } else if ground && byte == 0x1b {
-                let (length, _) = self.sequence(remaining, true, sink)?;
+                let (length, framed) = self.sequence(remaining, sink)?;
                 remaining = remaining.get(length..).unwrap_or_default();
-                // A CSI that began a frame (BSU, or XTRESTORE of the mode)
-                // ends whatever `sequence` took: stop right after it.
-                if UNTIL_FRAME && self.frame_begun {
-                    self.frame_begun = false;
-                    return Ok(Some(bytes.len().saturating_sub(remaining.len())));
-                }
+                framed
             } else {
-                self.byte(byte, sink)?;
                 remaining = tail;
-                // A frame is begun by a CSI, whose final byte this is:
-                // looked at first, as most bytes here are no final byte.
-                if UNTIL_FRAME && (0x40..=0x7e).contains(&byte) && self.frame_begun {
-                    self.frame_begun = false;
-                    return Ok(Some(bytes.len().saturating_sub(remaining.len())));
-                }
+                self.byte(byte, sink)?
+            };
+            // A CSI that began a frame (BSU, or XTRESTORE of the mode)
+            // ends whatever was taken: stop right after it.
+            if UNTIL_FRAME && framed {
+                return Ok(Some(bytes.len().saturating_sub(remaining.len())));
             }
         }
         Ok(None)
@@ -777,73 +838,62 @@ impl Parser {
         Ok((taken > 0).then_some(taken))
     }
     /// Reads the escape sequence `bytes` begins with (its ESC read in
-    /// ground state, no character half read) as far as it is one programs
-    /// send most: an escape sequence of intermediates and a final byte, or
-    /// a CSI of parameters alone (a private marker, digits, `;` and `:`,
-    /// and a final byte). The bytes are taken in a loop of their own rather
-    /// than each through `byte`, but each is done exactly as `byte` does
-    /// it. With `strings`, an OSC string it begins is taken too, up to what
-    /// ends it (`osc_string`). It stops before any other byte, or at the
-    /// end, with the parser in the state `byte` would have left it in, for
+    /// ground state) as far as it is one programs send most: an escape
+    /// sequence of intermediates and a final byte, a CSI of parameters
+    /// alone (a private marker, digits, `;` and `:`, and a final byte), or
+    /// an OSC string up to what ends it. The bytes are taken in a loop of
+    /// their own rather than each through `byte`, but each is done exactly
+    /// as `byte` does it. It stops before any other byte, or at the end,
+    /// with the parser in the state `byte` would have left it in, for
     /// `byte` to go on from. Says how many bytes it took, at least the ESC,
-    /// and the final byte of the sequence it carried out, if it did, else 0.
-    fn sequence(
-        &mut self,
-        bytes: &[u8],
-        strings: bool,
-        sink: &mut impl Sink,
-    ) -> Result<(usize, u8), Error> {
-        debug_assert!(self.state == State::Ground && self.utf8_len == 0);
-        self.reset_sequence();
-        self.state = State::Escape;
+    /// and whether the sequence it carried out began a frame.
+    fn sequence(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(usize, bool), Error> {
         if bytes.get(1) == Some(&b'[') {
             return self.csi_sequence(bytes, sink);
         }
+        // The intermediates, kept here rather than in `state` until the
+        // sequence ends or this does.
+        let mut read = Intermediates::default();
         let mut at = 1usize;
         while let Some(&byte) = bytes.get(at) {
             let next = at.wrapping_add(1);
+            let first = read.as_slice().is_empty();
             match byte {
-                0x20..=0x2f => {
-                    self.collect(byte);
-                    self.state = State::EscapeIntermediate;
-                }
-                b']' if self.state == State::Escape => {
-                    self.osc.clear();
-                    self.osc_overflow = false;
-                    self.state = State::OscString;
-                    let payload = bytes.get(next..).unwrap_or_default();
-                    let taken = if strings {
-                        self.osc_string(payload).unwrap_or(0)
-                    } else {
-                        0
-                    };
-                    return Ok((next.saturating_add(taken), 0));
+                0x20..=0x2f => match read.push(byte) {
+                    Some(more) => read = more,
+                    // One too many, which `byte` reads.
+                    None => break,
+                },
+                b']' if first => {
+                    let taken = self.osc_string(bytes.get(next..).unwrap_or_default());
+                    return Ok((next.saturating_add(taken), false));
                 }
                 // The other strings, which `byte` begins.
-                b'P' | b'X' | b'^' | b'_' if self.state == State::Escape => break,
+                b'P' | b'X' | b'^' | b'_' if first => break,
                 0x30..=0x7e => {
                     self.state = State::Ground;
-                    if !self.ignoring {
-                        self.escape_dispatch(byte, sink)?;
-                    }
+                    self.escape_dispatch(read.as_slice(), byte, sink)?;
                     self.screen.forget_repeat();
-                    return Ok((next, byte));
+                    return Ok((next, false));
                 }
                 _ => break,
             }
             at = next;
         }
-        Ok((at, 0))
+        self.state = State::Escape(read);
+        Ok((at, false))
     }
     /// `sequence` for a CSI, `bytes` beginning with `ESC [`.
-    fn csi_sequence(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(usize, u8), Error> {
+    fn csi_sequence(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(usize, bool), Error> {
+        self.params.clear();
         // The parameter being read and how many there are, kept here
         // rather than in `params` until the sequence ends or this does: one
-        // empty one, as `reset_sequence` left them. The value is read as
+        // empty one, as `clear` left them. The value is read as
         // `Parameters::digit` reads it, staying at u16::MAX once past it:
         // `(v * 10).min(MAX) + d` saturated is `(v * 10 + d).min(MAX)`.
         let (mut len, mut value) = (1usize, 0u32);
         let max = u32::from(u16::MAX);
+        let mut marker = Intermediates::default();
         let mut at = 2usize;
         while let Some(&byte) = bytes.get(at) {
             let next = at.wrapping_add(1);
@@ -859,18 +909,18 @@ impl Parser {
                         None => {
                             self.params.end(len, ended);
                             self.state = State::CsiIgnore;
-                            return Ok((next, 0));
+                            return Ok((next, false));
                         }
                     }
                 }
-                0x3c..=0x3f if at == 2 => self.collect(byte),
+                0x3c..=0x3f if at == 2 => marker = Intermediates::of(byte),
                 0x40..=0x7e => {
                     self.params
                         .end(len, u16::try_from(value).unwrap_or(u16::MAX));
                     self.state = State::Ground;
-                    self.csi_dispatch(byte, sink)?;
+                    let framed = self.csi_dispatch(marker.as_slice(), byte, sink)?;
                     self.screen.forget_repeat();
-                    return Ok((next, byte));
+                    return Ok((next, framed));
                 }
                 _ => break,
             }
@@ -878,116 +928,89 @@ impl Parser {
         }
         self.params
             .end(len, u16::try_from(value).unwrap_or(u16::MAX));
-        self.state = if at == 2 {
-            State::CsiEntry
+        self.state = State::Csi(if at == 2 {
+            Phase::Entry
         } else {
-            State::CsiParam
-        };
-        Ok((at, 0))
+            Phase::Param(marker)
+        });
+        Ok((at, false))
     }
-    /// Takes the OSC string's bytes `bytes` begins with, up to the BEL,
-    /// CAN, SUB or ESC that ends it, at once rather than each through
-    /// `byte`, keeping what `byte` would keep of them; how many it took,
-    /// `None` if `bytes` begins with one of those, for `byte` to read.
-    fn osc_string(&mut self, bytes: &[u8]) -> Option<usize> {
+    /// Begins an OSC string and takes its bytes `bytes` begins with, up to
+    /// the BEL, CAN, SUB or ESC that ends it, at once rather than each
+    /// through `byte`, keeping what `byte` would keep of them; how many it
+    /// took. Out of line: inlined into `sequence`, it cost each OSC more.
+    #[inline(never)]
+    fn osc_string(&mut self, bytes: &[u8]) -> usize {
         let length = bytes
             .iter()
             .position(|b| matches!(b, 0x07 | 0x18 | 0x1a | 0x1b))
             .unwrap_or(bytes.len());
-        if length == 0 {
-            return None;
-        }
-        if !self.osc_overflow {
-            let room = self.osc_limit.saturating_sub(self.osc.len());
-            let kept = bytes.get(..length.min(room)).unwrap_or_default();
-            self.osc.extend_from_slice(kept);
-            // The byte past the limit marks the string overflowed.
-            self.osc_overflow = length > room;
-        }
-        Some(length)
-    }
-    fn reset_sequence(&mut self) {
-        self.params.clear();
-        self.intermediate_len = 0;
-        self.ignoring = false;
-    }
-    fn collect(&mut self, byte: u8) {
-        if let Some(slot) = self.intermediates.get_mut(self.intermediate_len)
-            && let Some(len) = self.intermediate_len.checked_add(1)
-        {
-            *slot = byte;
-            self.intermediate_len = len;
-        } else {
-            self.ignoring = true;
-        }
+        self.osc.clear();
+        let kept = bytes.get(..length.min(self.osc_limit)).unwrap_or_default();
+        self.osc.extend_from_slice(kept);
+        // The byte past the limit marks the string overflowed.
+        self.state = State::Osc {
+            whole: length <= self.osc_limit,
+        };
+        length
     }
 
     fn ground(&mut self, byte: u8, sink: &mut impl Sink) -> Result<(), Error> {
-        if self.utf8_len != 0 {
-            let valid_continuation = (0x80..=0xbf).contains(&byte)
-                && (self.utf8_len != 1
-                    || match self.utf8.first().copied() {
-                        Some(0xe0) => byte >= 0xa0,
-                        Some(0xed) => byte < 0xa0,
-                        Some(0xf0) => byte >= 0x90,
-                        Some(0xf4) => byte < 0x90,
-                        _ => true,
-                    });
-            // `utf8_need` is at most 4, so a continuation always has a slot.
-            if valid_continuation
-                && let Some(len) = self.utf8_len.checked_add(1)
-                && let Some(slot) = self.utf8.get_mut(self.utf8_len)
-            {
-                *slot = byte;
-                self.utf8_len = len;
-                if self.utf8_len == self.utf8_need {
-                    let scalar = self
-                        .utf8
-                        .get(..self.utf8_len)
-                        .and_then(|s| std::str::from_utf8(s).ok())
-                        .and_then(|s| s.chars().next());
-                    self.utf8_len = 0;
-                    if let Some(c) = scalar {
-                        self.screen.print(c)?;
-                    }
-                }
-                return Ok(());
-            }
-            // An invalid sequence: what came of it is one U+FFFD (Unicode
-            // 17, 3.9, "U+FFFD Substitution of Maximal Subparts"), as in
-            // xterm. Then this byte is read again; it can be ESC.
-            self.utf8_len = 0;
-            self.screen.print(char::REPLACEMENT_CHARACTER)?;
-        }
         match byte {
-            0x1b => {
-                self.reset_sequence();
-                self.state = State::Escape;
-            }
+            0x1b => self.state = State::Escape(Intermediates::default()),
             0x00..=0x1f | 0x7f => {
                 self.control(byte, sink)?;
                 self.screen.forget_repeat();
             }
             0x20..=0x7e => self.screen.print(char::from(byte))?,
-            0xc2..=0xf4 => {
-                self.utf8_need = if byte < 0xe0 {
-                    2
-                } else if byte < 0xf0 {
-                    3
-                } else {
-                    4
-                };
-                if let Some(slot) = self.utf8.first_mut() {
-                    *slot = byte;
-                }
-                self.utf8_len = 1;
-            }
+            0xc2..=0xf4 => self.state = State::Utf8(Bytes::of(byte)),
             // A continuation byte alone is read as Latin-1, as xterm reads
             // it: a raw C1 control, 0x80 to 0x9f, is ignored, and 0xa0 to
             // 0xbf print U+00A0 to U+00BF.
             0x80..=0xbf => self.screen.print(char::from(byte))?,
             // A byte that starts no UTF-8 sequence: U+FFFD.
             _ => self.screen.print(char::REPLACEMENT_CHARACTER)?,
+        }
+        Ok(())
+    }
+
+    /// Reads `byte` after `read`, a character's first bytes.
+    fn continuation(
+        &mut self,
+        read: Bytes<4>,
+        byte: u8,
+        sink: &mut impl Sink,
+    ) -> Result<(), Error> {
+        let [lead, ..] = read.bytes;
+        let valid = (0x80..=0xbf).contains(&byte)
+            && (read.len != 1
+                || match lead {
+                    0xe0 => byte >= 0xa0,
+                    0xed => byte < 0xa0,
+                    0xf0 => byte >= 0x90,
+                    0xf4 => byte < 0x90,
+                    _ => true,
+                });
+        let need = match lead {
+            0xc2..=0xdf => 2,
+            0xe0..=0xef => 3,
+            _ => 4,
+        };
+        self.state = State::Ground;
+        match read.push(byte).filter(|_| valid) {
+            Some(read) if usize::from(read.len) < need => self.state = State::Utf8(read),
+            Some(read) => {
+                if let Some((c, _)) = decode(read.as_slice()) {
+                    self.screen.print(c)?;
+                }
+            }
+            // An invalid sequence: what came of it is one U+FFFD (Unicode
+            // 17, 3.9, "U+FFFD Substitution of Maximal Subparts"), as in
+            // xterm. Then this byte is read again; it can be ESC.
+            None => {
+                self.screen.print(char::REPLACEMENT_CHARACTER)?;
+                self.ground(byte, sink)?;
+            }
         }
         Ok(())
     }
@@ -1000,175 +1023,139 @@ impl Parser {
         self.screen.control(byte)
     }
 
-    fn byte(&mut self, byte: u8, sink: &mut impl Sink) -> Result<(), Error> {
-        if self.state == State::Ground {
-            return self.ground(byte, sink);
+    /// Reads one byte; whether it ended a CSI that began a frame.
+    fn byte(&mut self, byte: u8, sink: &mut impl Sink) -> Result<bool, Error> {
+        let state = self.state;
+        if matches!(state, State::Ground) {
+            return self.ground(byte, sink).map(|()| false);
+        }
+        if let State::Utf8(read) = state {
+            return self.continuation(read, byte, sink).map(|()| false);
         }
         // Anywhere transitions: CAN/SUB cancel, ESC starts a new sequence. ESC
-        // also begins ST, so it completes a pending OSC string.
+        // also begins ST, so it completes a pending OSC string or DECRQSS.
         if matches!(byte, 0x18 | 0x1a) {
             self.state = State::Ground;
             self.screen.forget_repeat();
-            return Ok(());
+            return Ok(false);
         }
         if byte == 0x1b {
-            if self.state == State::OscString {
-                self.dispatch_osc(false, sink)?;
-            } else if self.state == State::DcsString && self.request.is_some() {
-                self.dispatch_request(sink);
+            match state {
+                State::Osc { whole } => self.dispatch_osc(whole, false, sink)?,
+                State::Request(request) => self.dispatch_request(request, sink),
+                State::Ground
+                | State::Utf8(_)
+                | State::Escape(_)
+                | State::EscapeIgnore
+                | State::Csi(_)
+                | State::CsiIgnore
+                | State::Dcs(_)
+                | State::IgnoreString => {}
             }
-            self.reset_sequence();
-            self.state = State::Escape;
-            return Ok(());
+            self.state = State::Escape(Intermediates::default());
+            return Ok(false);
         }
-        match self.state {
-            // Ground returned above; named for the match to be whole.
-            State::Ground => self.ground(byte, sink)?,
-            State::OscString => {
-                if byte == 7 {
-                    self.dispatch_osc(true, sink)?;
+        let mut framed = false;
+        match state {
+            // Returned above; named for the match to be whole.
+            State::Ground | State::Utf8(_) => {}
+            State::Osc { whole } => match byte {
+                0x07 => {
+                    self.dispatch_osc(whole, true, sink)?;
                     self.state = State::Ground;
-                } else if !self.osc_overflow {
-                    if self.osc.len() < self.osc_limit {
-                        self.osc.push(byte);
-                    } else {
-                        // What came first stays: a prompt mark, and an OSC
-                        // 8 too long to keep, which closes the link, are
-                        // told by it.
-                        self.osc_overflow = true;
-                    }
                 }
-            }
+                _ if !whole => {}
+                _ if self.osc.len() < self.osc_limit => self.osc.push(byte),
+                // What came first stays: a prompt mark, and an OSC 8 too
+                // long to keep, which closes the link, are told by it.
+                _ => self.state = State::Osc { whole: false },
+            },
             // In UTF-8 a string ends only at ESC (ST is ESC \, ECMA-48
             // 8.3.143): the byte 0x9c, 8-bit ST, is part of a character
             // there, as in `\u{271c}` (e2 9c 9c).
-            State::DcsString => {
-                if let Some(request) = &mut self.request {
-                    request.push(byte);
-                }
+            State::Request(request) => {
+                self.state = State::Request(request.and_then(|r| r.push(byte)));
             }
-            State::SosPmApcString | State::DcsIgnore => {}
-            State::Escape | State::EscapeIntermediate => match byte {
+            State::IgnoreString => {}
+            State::Escape(read) => match byte {
                 0x00..=0x1f => self.control(byte, sink)?,
                 0x20..=0x2f => {
-                    self.collect(byte);
-                    self.state = State::EscapeIntermediate;
+                    self.state = read.push(byte).map_or(State::EscapeIgnore, State::Escape);
                 }
-                0x30..=0x7e => {
-                    if self.state == State::Escape {
-                        self.state = match byte {
-                            b'[' => State::CsiEntry,
-                            b'P' => State::DcsEntry,
-                            b']' => {
-                                self.osc.clear();
-                                self.osc_overflow = false;
-                                State::OscString
-                            }
-                            b'X' | b'^' | b'_' => State::SosPmApcString,
-                            _ => State::Ground,
-                        };
-                    } else {
+                0x30..=0x7e => match (read.as_slice(), byte) {
+                    ([], b'[') => {
+                        self.params.clear();
+                        self.state = State::Csi(Phase::Entry);
+                    }
+                    ([], b'P') => {
+                        self.params.clear();
+                        self.state = State::Dcs(Phase::Entry);
+                    }
+                    ([], b']') => {
+                        self.osc.clear();
+                        self.state = State::Osc { whole: true };
+                    }
+                    ([], b'X' | b'^' | b'_') => self.state = State::IgnoreString,
+                    (intermediates, _) => {
                         self.state = State::Ground;
+                        self.escape_dispatch(intermediates, byte, sink)?;
                     }
-                    if self.state == State::Ground && !self.ignoring {
-                        self.escape_dispatch(byte, sink)?;
-                    }
-                }
+                },
                 _ => {}
             },
-            State::CsiEntry
-            | State::CsiParam
-            | State::CsiIntermediate
-            | State::CsiIgnore
-            | State::DcsEntry
-            | State::DcsParam
-            | State::DcsIntermediate => {
-                let dcs = matches!(
-                    self.state,
-                    State::DcsEntry | State::DcsParam | State::DcsIntermediate
-                );
-                let entry = matches!(self.state, State::CsiEntry | State::DcsEntry);
-                let intermediate =
-                    matches!(self.state, State::CsiIntermediate | State::DcsIntermediate);
-                let ignore_state = if dcs {
-                    State::DcsIgnore
-                } else {
-                    State::CsiIgnore
-                };
-                let param_state = if dcs {
-                    State::DcsParam
-                } else {
-                    State::CsiParam
-                };
-                match byte {
-                    0x00..=0x1f => {
-                        if !dcs {
-                            self.control(byte, sink)?;
-                        }
-                    }
-                    0x20..=0x3f if self.state == State::CsiIgnore => {}
-                    0x20..=0x2f => {
-                        self.collect(byte);
-                        self.state = if dcs {
-                            State::DcsIntermediate
-                        } else {
-                            State::CsiIntermediate
-                        };
-                    }
-                    0x30..=0x3f if intermediate => self.state = ignore_state,
-                    b'0'..=b'9' => {
-                        self.params.digit(byte);
-                        self.state = param_state;
-                    }
-                    b';' | b':' => {
-                        self.state = if self.params.separator(byte == b':') {
-                            param_state
-                        } else {
-                            ignore_state
-                        };
-                    }
-                    0x3c..=0x3f if entry => {
-                        self.collect(byte);
-                        self.state = param_state;
-                    }
-                    0x3c..=0x3f => self.state = ignore_state,
-                    0x40..=0x7e => {
-                        if dcs {
-                            self.state = State::DcsString;
-                            // DECRQSS: `$ q` with no parameters.
-                            let decrqss = self.options.has(Feature::SettingReports)
-                                && byte == b'q'
-                                && !self.ignoring
-                                && self.intermediates.get(..self.intermediate_len) == Some(b"$")
-                                && self.params.is_empty();
-                            self.request = decrqss.then(Request::default);
-                        } else {
-                            let dispatch = self.state != State::CsiIgnore && !self.ignoring;
-                            self.state = State::Ground;
-                            if dispatch {
-                                self.csi_dispatch(byte, sink)?;
-                            }
-                        }
-                    }
-                    _ => {}
+            State::EscapeIgnore => match byte {
+                0x00..=0x1f => self.control(byte, sink)?,
+                0x30..=0x7e => self.state = State::Ground,
+                _ => {}
+            },
+            State::Csi(phase) => match phase.next(byte, &mut self.params) {
+                Next::Phase(phase) => self.state = State::Csi(phase),
+                Next::Ignore => self.state = State::CsiIgnore,
+                Next::Control => self.control(byte, sink)?,
+                Next::Final(read) => {
+                    self.state = State::Ground;
+                    framed = self.csi_dispatch(read.as_slice(), byte, sink)?;
                 }
-            }
+            },
+            State::CsiIgnore => match byte {
+                0x00..=0x1f => self.control(byte, sink)?,
+                0x40..=0x7e => self.state = State::Ground,
+                _ => {}
+            },
+            State::Dcs(phase) => match phase.next(byte, &mut self.params) {
+                Next::Phase(phase) => self.state = State::Dcs(phase),
+                Next::Ignore => self.state = State::IgnoreString,
+                Next::Control => {}
+                Next::Final(read) => {
+                    // DECRQSS: `$ q` with no parameters.
+                    let decrqss = self.options.has(Feature::SettingReports)
+                        && byte == b'q'
+                        && read.as_slice() == b"$"
+                        && self.params.is_empty();
+                    self.state = if decrqss {
+                        State::Request(Some(Bytes::default()))
+                    } else {
+                        State::IgnoreString
+                    };
+                }
+            },
         }
         // A sequence or string ended, REP's included: there is no character
         // for REP to repeat until one is printed.
-        if self.state == State::Ground {
+        if matches!(self.state, State::Ground) {
             self.screen.forget_repeat();
         }
-        Ok(())
+        Ok(framed)
     }
 
     /// Carries out the escape sequence whose final byte is `byte`, its
     /// intermediates collected.
-    fn escape_dispatch(&mut self, byte: u8, sink: &mut impl Sink) -> Result<(), Error> {
-        let intermediates = self.intermediates;
-        let intermediates = intermediates
-            .get(..self.intermediate_len)
-            .unwrap_or_default();
+    fn escape_dispatch(
+        &mut self,
+        intermediates: &[u8],
+        byte: u8,
+        sink: &mut impl Sink,
+    ) -> Result<(), Error> {
         // DECID, the VT100's request for its identity, which the VT220
         // replaced by DA (ctlseqs: "Obsolete form of CSI c"): answered as
         // DA1 is.
@@ -1185,17 +1172,19 @@ impl Parser {
     }
 
     /// Carries out the CSI sequence whose final byte is `byte`, its
-    /// parameters and intermediates collected.
-    fn csi_dispatch(&mut self, byte: u8, sink: &mut impl Sink) -> Result<(), Error> {
-        let intermediates = self.intermediates;
-        let intermediates = intermediates
-            .get(..self.intermediate_len)
-            .unwrap_or_default();
+    /// parameters collected; whether it began a frame (set synchronized
+    /// output), for `Parser::process_until_frame` to stop after.
+    fn csi_dispatch(
+        &mut self,
+        intermediates: &[u8],
+        byte: u8,
+        sink: &mut impl Sink,
+    ) -> Result<bool, Error> {
         let begun = self.screen.frames_begun();
         let dispatch = self
             .screen
             .csi(&self.params, intermediates, byte, &self.options)?;
-        self.frame_begun = self.screen.frames_begun() != begun;
+        let framed = self.screen.frames_begun() != begun;
         match dispatch {
             Dispatch::Done => {}
             Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
@@ -1207,7 +1196,7 @@ impl Parser {
                         Dispatch::Done
                     )
                 {
-                    return Ok(());
+                    return Ok(framed);
                 }
                 match self.query_reply(intermediates, byte) {
                     Some(reply) => sink.reply(reply.as_bytes()),
@@ -1219,10 +1208,11 @@ impl Parser {
                 }
             }
         }
-        Ok(())
+        Ok(framed)
     }
 
-    /// Carries out the completed OSC string, ended by BEL if `bel`, else
+    /// Carries out the completed OSC string, cut short by what is kept of
+    /// one unless `whole`, ended by BEL if `bel`, else
     /// by ESC (ST): 133 (prompt marks), from its first bytes, with
     /// [`Feature::PromptMarks`]; 8 (hyperlinks) with [`Feature::Hyperlinks`];
     /// the colours (4, 5, 10 to 19, 104, 105, 110 to 119) with
@@ -1234,9 +1224,9 @@ impl Parser {
     /// handling, it made `byte` too large to inline into the parser's loop,
     /// and escape-heavy output slower.
     #[inline(never)]
-    fn dispatch_osc(&mut self, bel: bool, sink: &mut impl Sink) -> Result<(), Error> {
+    fn dispatch_osc(&mut self, whole: bool, bel: bool, sink: &mut impl Sink) -> Result<(), Error> {
         let payload = std::mem::take(&mut self.osc);
-        let result = self.osc_command(&payload, bel, sink);
+        let result = self.osc_command(&payload, whole, bel, sink);
         // Reuse the allocation for the next OSC string.
         self.osc = payload;
         self.osc.clear();
@@ -1246,13 +1236,10 @@ impl Parser {
     /// Answers the DECRQSS whose string just ended (see
     /// [`Feature::SettingReports`]). Out of line, as `dispatch_osc` is.
     #[inline(never)]
-    fn dispatch_request(&mut self, sink: &mut impl Sink) {
-        let Some(request) = self.request.take() else {
-            return;
-        };
+    fn dispatch_request(&mut self, request: Option<Bytes<REQUEST_LIMIT>>, sink: &mut impl Sink) {
         let mut setting = String::new();
-        let valid = match request.text() {
-            Some(text) => self.screen.setting_report(text, &mut setting),
+        let valid = match request {
+            Some(request) => self.screen.setting_report(request.as_slice(), &mut setting),
             None => Some(false),
         };
         let Some(valid) = valid else {
@@ -1265,6 +1252,7 @@ impl Parser {
     fn osc_command(
         &mut self,
         payload: &[u8],
+        whole: bool,
         bel: bool,
         sink: &mut impl Sink,
     ) -> Result<(), Error> {
@@ -1285,14 +1273,13 @@ impl Parser {
             // A link too long to keep is no link: what follows is printed
             // without one.
             b"8" if self.options.has(Feature::Hyperlinks) => {
-                let whole = if self.osc_overflow { &[][..] } else { rest };
-                self.screen.hyperlink_osc(whole);
+                self.screen.hyperlink_osc(if whole { rest } else { &[] });
                 return Ok(());
             }
             _ => {}
         }
         if self.options.has(Feature::Palette)
-            && !self.osc_overflow
+            && whole
             && crate::palette::osc(
                 self.screen.colours_mut(),
                 command,
@@ -1304,7 +1291,7 @@ impl Parser {
         {
             return Ok(());
         }
-        if !self.options.has(Feature::Events) || self.osc_overflow {
+        if !self.options.has(Feature::Events) || !whole {
             return Ok(());
         }
         match command {
