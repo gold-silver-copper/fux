@@ -92,7 +92,7 @@ fn printed_text_is_segmented_as_the_model_says() -> Result {
             rest = tail;
         }
         let screen = parser.screen();
-        let row = screen.row_from_bottom(1).ok_or("row")?;
+        let row = screen.rows().nth_back(1).ok_or("row")?;
         let mut col = 0usize;
         for (text_expected, wide) in &expected {
             let cell = row.cell(col).ok_or("cell")?;
@@ -165,14 +165,7 @@ const PIECES: &[&str] = &[
 /// the next row is no part of it, nor are blanks ending a line, nor blank
 /// lines at the end.
 fn lines(parser: &Parser) -> Vec<String> {
-    let screen = parser.screen();
-    let retained = screen
-        .history_len()
-        .saturating_add(usize::from(screen.size().rows()));
-    let rows: Vec<_> = (0..retained)
-        .rev()
-        .filter_map(|offset| screen.row_from_bottom(offset))
-        .collect();
+    let rows: Vec<_> = parser.screen().rows().collect();
     let mut out = vec![String::new()];
     for (i, row) in rows.iter().enumerate() {
         let next_wide = rows

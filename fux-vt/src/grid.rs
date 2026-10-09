@@ -500,8 +500,8 @@ impl Grid {
             text: self.texts.get_mut(slot)?,
         })
     }
-    /// The row in slot `slot`.
-    fn slot_row(&self, slot: usize) -> Option<Row<'_>> {
+    /// The row in slot `slot`, row `row` of the screen.
+    fn slot_row(&self, slot: usize, row: usize) -> Option<Row<'_>> {
         let m = self.meta.get(slot)?;
         let links = if m.linked {
             self.linked.get(&slot).map(|links| &**links)
@@ -509,6 +509,8 @@ impl Grid {
             None
         };
         Some(Row {
+            grid: self,
+            index: self.history.len().checked_add(row)?,
             id: m.id,
             version: m.version,
             wrapped: m.wrapped,
@@ -517,7 +519,6 @@ impl Grid {
             width: usize::from(m.width),
             text: self.texts.get(slot)?,
             links,
-            table: &self.links,
             styles: &self.styles,
         })
     }
@@ -525,6 +526,8 @@ impl Grid {
         let Some(row) = index.checked_sub(self.history.len()) else {
             let found = self.history.get(index)?;
             return Some(Row {
+                grid: self,
+                index,
                 id: found.kept.id,
                 version: found.kept.version,
                 wrapped: found.kept.wrapped(),
@@ -533,11 +536,10 @@ impl Grid {
                 width: usize::from(found.kept.width()),
                 text: found.text,
                 links: found.links,
-                table: &self.links,
                 styles: &self.styles,
             });
         };
-        self.slot_row(self.screen_slot(row)?)
+        self.slot_row(self.screen_slot(row)?, row)
     }
     pub fn row_by_id(&self, id: RowId) -> Option<Row<'_>> {
         self.index_of(id).and_then(|index| self.row_at(index))
@@ -551,7 +553,7 @@ impl Grid {
         })
     }
     pub fn live_row(&self, row: u16) -> Option<Row<'_>> {
-        self.slot_row(self.slot(row)?)
+        self.slot_row(self.slot(row)?, usize::from(row))
     }
     #[inline]
     fn slot(&self, row: u16) -> Option<usize> {

@@ -91,7 +91,7 @@ fn a_glyph_that_wraps_marks_its_row_soft_wrapped() -> Result {
     let p = run(2, 5, "あいう".as_bytes())?;
     assert_eq!(lines(&p), ["あい", "う"]);
     assert!(p.screen().row_wrapped(0));
-    let window = p.screen().window(0, 2, 5);
+    let window = p.screen().window();
     assert_eq!(window.text((0, 0), (1, 1), 100, 100)?, "あいう");
     let p = run(2, 4, "abc界x".as_bytes())?;
     assert_eq!(lines(&p), ["abc", "界x"]);
@@ -413,7 +413,7 @@ fn rep_repeats_the_preceding_graphic_character() -> Result {
     assert_eq!(p.screen().cursor_position(), (1, 3));
     assert!(p.screen().pending_wrap());
     assert_eq!(p.screen().history_len(), 3);
-    let window = p.screen().window(3, 2, 4);
+    let window = p.screen().rows().next().ok_or("a row")?.window();
     assert_eq!(window.text((0, 0), (1, 3), 100, 100)?, "xxxxxxxx");
     let p = run(2, 5, "界\x1b[65533b".as_bytes())?;
     assert_eq!(lines(&p), ["界界", "界界"]);
