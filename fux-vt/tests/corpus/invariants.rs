@@ -10,13 +10,12 @@ pub fn check(p: &Parser) {
     let s = p.screen();
     let (rows, cols) = s.size().into();
     let mut ids = HashSet::new();
-    // A count past usize would show as a missing row.
-    for offset in 0..usize::from(rows).saturating_add(s.history_len()) {
-        let row = s.row_from_bottom(offset);
-        assert!(row.is_some(), "missing retained row");
-        let Some(row) = row else {
-            return;
-        };
+    assert_eq!(
+        s.rows().len(),
+        usize::from(rows).saturating_add(s.history_len())
+    );
+    for row in s.rows() {
+        let offset = row.index();
         assert!(ids.insert(row.id()), "row identities alias");
         assert!(!row.is_empty());
         // The row's text stays within its budget.
@@ -78,15 +77,11 @@ pub fn check(p: &Parser) {
         }
     }
     let mark = s.mark();
-    for offset in [0, 1, usize::MAX] {
-        for width in [0, 1, cols.saturating_sub(1), cols, u16::MAX] {
-            let w = s.window(offset, rows, width);
-            assert!(w.offset() <= s.history_len());
-            assert!(w.cols() <= cols && w.rows() <= rows);
-            if let Some(last) = w.cols().checked_sub(1) {
-                for y in 0..w.rows() {
-                    assert!(!w.cell(y, last).is_some_and(|c| c.is_wide()));
-                }
+    for w in s.rows().map(|row| row.window()) {
+        assert_eq!((w.rows(), w.cols()), (rows, cols));
+        if let Some(last) = cols.checked_sub(1) {
+            for y in 0..rows {
+                assert!(!w.cell(y, last).is_some_and(|c| c.is_wide()));
             }
         }
     }
@@ -116,20 +111,13 @@ pub fn equal(a: &Parser, b: &Parser) {
         assert_eq!(a.mode(mode), b.mode(mode), "{mode:?}");
     }
     assert_eq!(a.history_len(), b.history_len());
-    for offset in 0..usize::from(a.size().rows()).saturating_add(a.history_len()) {
-        let (a, b) = (a.row_from_bottom(offset), b.row_from_bottom(offset));
-        assert!(a.is_some() && b.is_some(), "missing row");
-        let (Some(a), Some(b)) = (a, b) else {
-            return;
-        };
-        assert_eq!(cells(a), cells(b), "row from bottom {offset}");
-        assert_eq!(a.wrapped(), b.wrapped(), "row from bottom {offset}");
-        assert_eq!(links(a), links(b), "row from bottom {offset}");
-        assert_eq!(
-            a.starts_prompt(),
-            b.starts_prompt(),
-            "row from bottom {offset}"
-        );
+    assert_eq!(a.rows().len(), b.rows().len());
+    for (a, b) in a.rows().zip(b.rows()) {
+        let offset = a.index();
+        assert_eq!(cells(a), cells(b), "row {offset}");
+        assert_eq!(a.wrapped(), b.wrapped(), "row {offset}");
+        assert_eq!(links(a), links(b), "row {offset}");
+        assert_eq!(a.starts_prompt(), b.starts_prompt(), "row {offset}");
     }
     assert_eq!(a.hyperlink(), b.hyperlink());
 }

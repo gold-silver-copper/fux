@@ -209,7 +209,7 @@ macro_rules! stack {
                     s.outbox,
                     s.buffers,
                     s.dying.len(),
-                    s.config.bindings.len(),
+                    s.config.describe().len(),
                     s.config.prefix
                 );
                 s.outbox.clear();

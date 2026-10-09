@@ -38,6 +38,29 @@ pub struct Dying {
     pub deadline: Instant,
 }
 
+impl Dying {
+    /// Kills the program, its terminal closed first (a dying writer can hold
+    /// on to it); its leader, if it has yet to exit.
+    pub fn kill(self) -> Option<crate::process::Leader> {
+        drop(self.child.master);
+        self.child.leader.finish().err()
+    }
+}
+
+/// Something the session waits for until a moment (`Session::timers`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Timer {
+    /// A client's decoder waits on a lone Escape or an answer cut short
+    /// (`Decoder::deadline`): what waits is taken as it is.
+    Escape(ClientId),
+    /// A pane's command line, held until its shell is ready, is typed
+    /// (`Typed::due_at`).
+    Type(PaneId),
+    /// A pane's frame of synchronized output is read, ended or not
+    /// (`Pane::frame_deadline`).
+    Frame(PaneId),
+}
+
 /// Where a command comes from, which says what it acts on when it names no
 /// pane, tab or workspace.
 #[derive(Clone, Debug, Default)]
@@ -314,7 +337,8 @@ pub struct Session {
     /// processes; tests of the state alone start none.
     launch: Option<PathBuf>,
     pub outbox: Vec<Outgoing>,
-    pub dying: Vec<Dying>,
+    /// Closed panes' programs, by the pane they were in.
+    pub dying: BTreeMap<PaneId, Dying>,
     /// The colours a client's terminal last said, for panes no attached
     /// client answers for (`outer`).
     pub last_colours: crate::outer::Colours,
@@ -376,7 +400,7 @@ impl Session {
             buffers: VecDeque::new(),
             launch: launch.then_some(socket),
             outbox: Vec::new(),
-            dying: Vec::new(),
+            dying: BTreeMap::new(),
             last_colours: crate::outer::Colours::default(),
             last_palette: crate::outer::Palette::default(),
             shown_sizes: Vec::new(),
@@ -879,10 +903,8 @@ impl Session {
     fn end(&mut self, pane: Pane) {
         if let Process::Reading(child) | Process::HungUp(child) = pane.process {
             child.leader.hang_up();
-            self.dying.push(Dying {
-                child,
-                deadline: crate::after(Instant::now(), GRACE),
-            });
+            let deadline = crate::after(Instant::now(), GRACE);
+            self.dying.insert(pane.id, Dying { child, deadline });
         }
     }
 
@@ -987,16 +1009,26 @@ impl Session {
         self.read_with(id, |pane| pane.output(bytes));
     }
 
-    /// Reads the frames held past their timeout (see `Pane::output`).
-    pub fn release_frames(&mut self, now: Instant) {
-        let due: Vec<PaneId> = self
-            .panes
-            .values()
-            .filter(|p| p.frame_deadline().is_some_and(|d| d <= now))
-            .map(|p| p.id)
-            .collect();
-        for id in due {
-            self.read_with(id, Pane::release_frame);
+    /// Everything the session waits for, each with when it is due: the
+    /// server polls no longer than the soonest, and fires those due
+    /// (`Session::fire`).
+    pub fn timers(&self) -> impl Iterator<Item = (Instant, Timer)> + '_ {
+        let escapes = (self.views.iter())
+            .filter_map(|(client, view)| Some((view.decoder.deadline()?, Timer::Escape(*client))));
+        let panes = self.panes.values().flat_map(|pane| {
+            let typed = (pane.typed.as_ref()).map(|t| (t.due_at(), Timer::Type(pane.id)));
+            let frame = pane.frame_deadline().map(|at| (at, Timer::Frame(pane.id)));
+            typed.into_iter().chain(frame)
+        });
+        escapes.chain(panes)
+    }
+
+    /// What `timer` waited for is done, now that it is due.
+    pub fn fire(&mut self, timer: Timer) {
+        match timer {
+            Timer::Escape(client) => self.escape(client),
+            Timer::Type(id) => self.panes.get_mut(&id).into_iter().for_each(Pane::type_now),
+            Timer::Frame(id) => self.read_with(id, Pane::release_frame),
         }
     }
 
@@ -1015,14 +1047,6 @@ impl Session {
         pane.set_host_palette(palette);
         let dropped = read(pane);
         self.read_into(id, place, dropped);
-    }
-
-    /// The next moment a held frame is read anyway, for the poll timeout.
-    pub fn next_frame_release(&self) -> Option<Instant> {
-        self.panes
-            .values()
-            .filter_map(crate::pane::Pane::frame_deadline)
-            .min()
     }
 
     /// After output was read into pane `id`'s screen, which is at `place`:
@@ -1050,23 +1074,6 @@ impl Session {
                 }
             }
         }
-    }
-
-    /// Types held command lines whose wait is over.
-    pub fn type_due(&mut self, now: Instant) {
-        for pane in self.panes.values_mut() {
-            if pane.typed.as_ref().is_some_and(|t| t.due_at() <= now) {
-                pane.type_now();
-            }
-        }
-    }
-
-    /// The next moment a held command line is due, for the poll timeout.
-    pub fn next_typing(&self) -> Option<Instant> {
-        self.panes
-            .values()
-            .filter_map(|p| p.typed.as_ref().map(crate::pane::Typed::due_at))
-            .min()
     }
 
     /// Everything the server shuts down: every pane is hung up.
@@ -1219,20 +1226,20 @@ impl Session {
                 out.push_str("\n\nBindings (after the prefix, ");
                 out.push_str(&self.config.prefix.to_string());
                 out.push_str("; case counts, V is Shift-v):\n");
-                for binding in &self.config.bindings {
+                for (keys, binding, repeat) in self.config.bindings.all() {
                     out.push_str(&format!(
                         "{:>8}  {}{}\n",
-                        crate::config::keys_text(&binding.keys),
+                        crate::config::keys_text(&keys),
                         crate::words::join(&binding.command),
-                        if binding.repeat { " (repeats)" } else { "" }
+                        if repeat { " (repeats)" } else { "" }
                     ));
                 }
                 if !self.config.root.is_empty() {
                     out.push_str("\nWithout the prefix (bind -n):\n");
-                    for binding in &self.config.root {
+                    for (key, binding) in &self.config.root {
                         out.push_str(&format!(
                             "{:>8}  {}\n",
-                            crate::config::keys_text(&binding.keys),
+                            key.to_string(),
                             crate::words::join(&binding.command),
                         ));
                     }
@@ -2037,20 +2044,18 @@ fn tab_of(workspaces: &mut [Workspace], id: PaneId) -> Result<&mut Tab, Error> {
 /// The text of a pane's screen, and `history` lines before it.
 fn capture(pane: &Pane, history: Option<usize>, json: bool) -> String {
     let screen = pane.screen();
-    let (rows, cols) = screen.size().into();
-    let back = history.unwrap_or(0).min(screen.history_len());
     // History rows above the screen, oldest first, then the screen itself.
-    let history = (0..back).rev().filter_map(|offset| {
-        let row = usize::from(rows).checked_add(offset)?;
-        Some(row_text(screen.row_from_bottom(row)?))
-    });
-    let live = screen.window(0, rows, cols);
-    let screen_rows = (0..rows).map(|y| live.row(y).map(row_text).unwrap_or_default());
-    let lines = history.chain(screen_rows).collect();
+    let top = screen
+        .window()
+        .row(0)
+        .map(|top| top.up(history.unwrap_or(0)));
+    let lines = std::iter::successors(top, fux_vt::Row::below)
+        .map(row_text)
+        .collect();
     let cursor = Some(screen.cursor_position());
     captured(
         ("pane", pane.id.to_string()),
-        (rows, cols),
+        screen.size().into(),
         cursor,
         lines,
         json,

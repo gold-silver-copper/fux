@@ -22,11 +22,12 @@ fn uris(row: Row<'_>) -> Vec<String> {
 
 /// The URIs of the screen's row `y`.
 fn uris_at(parser: &Parser, y: u16) -> Vec<String> {
-    let screen = parser.screen();
-    let rows = usize::from(screen.size().rows());
-    // Row `y` of the screen, counted from the bottom.
-    let offset = rows.saturating_sub(usize::from(y) + 1);
-    screen.row_from_bottom(offset).map(uris).unwrap_or_default()
+    parser
+        .screen()
+        .window()
+        .row(y)
+        .map(uris)
+        .unwrap_or_default()
 }
 
 fn expected(cells: &[&str]) -> Vec<String> {
@@ -93,7 +94,7 @@ fn without_the_option_links_are_ignored() -> Result {
     let s = p.screen();
     assert_eq!(s.link(0, 0), None);
     assert_eq!(s.hyperlink(), None);
-    assert!(s.row_from_bottom(0).is_some_and(|r| !r.has_links()));
+    assert!(s.rows().nth_back(0).is_some_and(|r| !r.has_links()));
     assert_eq!(s.cell(0, 0).map(|c| c.contents()), Some("a"));
     Ok(())
 }
@@ -128,7 +129,8 @@ fn links_scroll_with_their_rows() -> Result {
     let s = p.screen();
     assert_eq!(s.history_len(), 2);
     let uri = |offset: usize| {
-        s.row_from_bottom(offset)
+        s.rows()
+            .nth_back(offset)
             .and_then(|r| r.link(0))
             .map(|l| l.uri().to_owned())
     };
@@ -141,7 +143,7 @@ fn links_scroll_with_their_rows() -> Result {
     let mut p = p;
     p.process(b"\x1b]8;;\x07\r\ne\r\nf\r\ng\r\nh")?;
     let s = p.screen();
-    assert!((0..4).all(|o| s.row_from_bottom(o).is_some_and(|r| r.link(0).is_none())));
+    assert!((0..4).all(|o| s.rows().nth_back(o).is_some_and(|r| r.link(0).is_none())));
     // Scrolled within a region (IL, DL, SU, SD), links move with rows too.
     let p = parser(
         3,
@@ -172,7 +174,8 @@ fn erasing_and_overwriting_end_links() -> Result {
     assert_eq!(uris_at(&p, 0), expected(&["-"; 6]));
     assert!(
         p.screen()
-            .row_from_bottom(2)
+            .rows()
+            .nth_back(2)
             .is_some_and(|r| !r.has_links())
     );
     Ok(())
@@ -223,7 +226,7 @@ fn resizing_and_reflowing_keep_links() -> Result {
 #[test]
 fn a_new_link_is_a_new_version() -> Result {
     let mut p = parser(1, 4, 0, b"ab")?;
-    let version = |p: &Parser| p.screen().row_from_bottom(0).map(|r| r.version());
+    let version = |p: &Parser| p.screen().rows().nth_back(0).map(|r| r.version());
     let before = version(&p);
     p.process(b"\r\x1b]8;;u\x07ab")?;
     let linked = version(&p);
@@ -280,14 +283,15 @@ fn links_are_bounded_and_history_loses_them_first() -> Result {
         p.process(format!("\x1b]8;;{long}{n}\x07x\x1b]8;;\x07\r\n").as_bytes())?;
     }
     let s = p.screen();
-    let linked = |offset: usize| s.row_from_bottom(offset).and_then(|r| r.link(0)).is_some();
+    let linked = |offset: usize| s.rows().nth_back(offset).and_then(|r| r.link(0)).is_some();
     assert!(linked(1), "the newest link");
     assert!(!linked(2999), "the oldest link");
     let kept = (1..3001).filter(|o| linked(*o)).count();
     assert!((1000..3000).contains(&kept), "{kept} links kept");
     // The newest is the one printed last.
     let newest = s
-        .row_from_bottom(1)
+        .rows()
+        .nth_back(1)
         .and_then(|r| r.link(0))
         .map(|l| l.uri().to_owned());
     assert_eq!(newest, Some(format!("{long}2999")));

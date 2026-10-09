@@ -172,8 +172,6 @@ pub fn compare<A: Side, B: Side>(
     for offset in [0, sa.history_len] {
         let selection = Selection {
             offset,
-            rows,
-            cols,
             from: (0, 0),
             to: last,
             max_cells: usize::MAX,

@@ -165,17 +165,14 @@ fn setup(r: &mut Rng) -> Setup {
 }
 
 /// A window and a selection in it, now and then out of it, or past the
-/// copy's limits.
+/// copy's limits; `rows` and `cols` are the screen's.
 fn selection(r: &mut Rng, rows: u16, cols: u16, history: usize) -> Selection {
     let near =
         |r: &mut Rng, n: u16| u16::try_from(r.below(usize::from(n).saturating_add(3))).unwrap_or(0);
-    let (h, w) = (near(r, rows), near(r, cols));
     Selection {
         offset: r.below(history.saturating_add(3)),
-        rows: h,
-        cols: w,
-        from: (near(r, h), near(r, w)),
-        to: (near(r, h), near(r, w)),
+        from: (near(r, rows), near(r, cols)),
+        to: (near(r, rows), near(r, cols)),
         max_cells: if r.chance(30) {
             r.below(64)
         } else {

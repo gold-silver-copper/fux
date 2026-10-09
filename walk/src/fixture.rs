@@ -107,8 +107,7 @@ impl Client {
 
     /// The screen's rows, as `capture-client` prints them.
     pub fn lines(&self) -> Vec<String> {
-        let screen = self.screen.screen();
-        let window = screen.window(0, self.rows, self.cols);
+        let window = self.screen.screen().window();
         (0..self.rows)
             .map(|y| {
                 let mut line = String::new();

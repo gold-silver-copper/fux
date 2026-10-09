@@ -38,10 +38,10 @@ fn partially_completed_scroll_error_still_invalidates_every_window() -> Result<(
 #[test]
 fn identity_and_mark_exhaustion_never_alias_old_rows() -> Result<(), Error> {
     let mut s = Screen::new(Size::of(1, 1), 0)?;
-    let id = s.row_from_bottom(0).ok_or(Error::InvalidRange)?.id;
+    let id = s.rows().nth_back(0).ok_or(Error::InvalidRange)?.id;
     s.next_id = u64::MAX;
     assert_eq!(s.linefeed(), Err(Error::IdentityExhausted));
-    assert_eq!(s.row_from_bottom(0).ok_or(Error::InvalidRange)?.id, id);
+    assert_eq!(s.rows().nth_back(0).ok_or(Error::InvalidRange)?.id, id);
     assert_eq!(s.escape(&[], b'c'), Err(Error::IdentityExhausted));
     assert!(s.row_by_id(id).is_some());
     assert!(s.full_refresh_since(Mark(u64::MAX)));
