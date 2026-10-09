@@ -1174,20 +1174,20 @@ impl Session {
                 out.push_str("\n\nBindings (after the prefix, ");
                 out.push_str(&self.config.prefix.to_string());
                 out.push_str("; case counts, V is Shift-v):\n");
-                for binding in &self.config.bindings {
+                for (keys, binding, repeat) in self.config.bindings.all() {
                     out.push_str(&format!(
                         "{:>8}  {}{}\n",
-                        crate::config::keys_text(&binding.keys),
+                        crate::config::keys_text(&keys),
                         crate::words::join(&binding.command),
-                        if binding.repeat { " (repeats)" } else { "" }
+                        if repeat { " (repeats)" } else { "" }
                     ));
                 }
                 if !self.config.root.is_empty() {
                     out.push_str("\nWithout the prefix (bind -n):\n");
-                    for binding in &self.config.root {
+                    for (key, binding) in &self.config.root {
                         out.push_str(&format!(
                             "{:>8}  {}\n",
-                            crate::config::keys_text(&binding.keys),
+                            key.to_string(),
                             crate::words::join(&binding.command),
                         ));
                     }
