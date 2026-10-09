@@ -57,14 +57,14 @@ documented at the top of its file in `fuzz_targets/`.
   wide glyph in the last column is painted blank), and the cursor is
   `new`'s or hidden.
 
-**`layout`**: `layout::place` on normalized trees (up to 16 panes, four
-deep, weights 0 to `u32::MAX`), then `resize`. After every placement:
+**`layout`**: `layout::place` on trees grown from one pane by up to 15
+splits, then `resize`. After every placement:
 - every pane is placed once, not empty, and at least `MIN` each way where
   the area has room;
 - panes and separators lie in the area and never overlap;
-- when the tree fits (its minimum by `min_len`'s rule), they tile the area
-  exactly; where it does not, a split without room for its first child
-  shows nothing, by design;
+- with room for 16 panes side by side every pane is shown, and with every
+  pane shown they tile the area exactly; where it is too small, a split
+  without room for its first child shows nothing, by design;
 - `neighbor` names only another placed pane.
 
 **`config`**: `set`, `bind`, `unbind` and `unbind-all` lines into
