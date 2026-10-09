@@ -39,7 +39,7 @@ pub enum Error {
         value: String,
     },
     // A socket path, given by `from`, that is empty, has a NUL, is
-    // relative, names no file, or is too long.
+    // relative, names no file in a directory below /, or is too long.
     EmptyPath {
         from: &'static str,
     },
@@ -59,7 +59,6 @@ pub enum Error {
         value: String,
         limit: usize,
     },
-    NoParent(PathBuf),
     /// A directory above the socket's that another user could change.
     Shared {
         path: PathBuf,
@@ -122,7 +121,10 @@ impl std::fmt::Display for Error {
                 write!(f, "{from} is {value:?}; it must be an absolute path")
             }
             Error::NoFile { from, value } => {
-                write!(f, "{from} is {value:?}; it must name a socket file")
+                write!(
+                    f,
+                    "{from} is {value:?}; it must name a socket file in a directory below /"
+                )
             }
             Error::TooLong { from, value, limit } => write!(
                 f,
@@ -130,7 +132,6 @@ impl std::fmt::Display for Error {
                  domain socket on this platform (from {from}): {value}",
                 value.len()
             ),
-            Error::NoParent(path) => write!(f, "{} has no parent directory", path.display()),
             Error::Shared { path, mode, uid } => write!(
                 f,
                 "{} (mode {mode:04o}, owner uid {uid}) could be changed by another user, so the socket \
@@ -207,7 +208,6 @@ impl std::error::Error for Error {
             | Error::Relative { .. }
             | Error::NoFile { .. }
             | Error::TooLong { .. }
-            | Error::NoParent(_)
             | Error::Shared { .. }
             | Error::Symlink(_)
             | Error::NotPrivate { .. }
@@ -237,9 +237,30 @@ fn failed<'a, E: Into<io::Error>>(
     }
 }
 
+/// A socket's path, checked: absolute, short enough for `sockaddr_un`, and
+/// naming a file in a directory that has a parent, the directory's own
+/// privacy being checked against that parent's.
+#[derive(Clone, Debug)]
+pub struct SocketPath {
+    path: PathBuf,
+    directory: PathBuf,
+    above: PathBuf,
+}
+
+impl SocketPath {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The directory holding the socket, and its log.
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+}
+
 /// The socket a command uses: `flag` (a `--socket`), else `FUX_SOCKET`, else
 /// the default under `XDG_RUNTIME_DIR` or `TMPDIR`.
-pub fn socket_path(flag: Option<&str>) -> Result<PathBuf, Error> {
+pub fn socket_path(flag: Option<&str>) -> Result<SocketPath, Error> {
     if let Some(flag) = flag {
         return checked(flag, "--socket");
     }
@@ -265,7 +286,7 @@ pub fn max_path_bytes() -> usize {
     if cfg!(target_os = "linux") { 107 } else { 103 }
 }
 
-fn socket_path_from(base: &'static str, value: &str) -> Result<PathBuf, Error> {
+fn socket_path_from(base: &'static str, value: &str) -> Result<SocketPath, Error> {
     if value.is_empty() {
         return Err(Error::EmptyVariable { variable: base });
     }
@@ -279,7 +300,7 @@ fn socket_path_from(base: &'static str, value: &str) -> Result<PathBuf, Error> {
     checked(&path.to_string_lossy(), base)
 }
 
-fn checked(value: &str, from: &'static str) -> Result<PathBuf, Error> {
+fn checked(value: &str, from: &'static str) -> Result<SocketPath, Error> {
     if value.is_empty() {
         return Err(Error::EmptyPath { from });
     }
@@ -294,12 +315,16 @@ fn checked(value: &str, from: &'static str) -> Result<PathBuf, Error> {
             value: value(),
         });
     }
-    if path.file_name().is_none() || path.parent().is_none() {
+    let directories = path
+        .file_name()
+        .and(path.parent())
+        .and_then(|directory| Some((directory.to_owned(), directory.parent()?.to_owned())));
+    let Some((directory, above)) = directories else {
         return Err(Error::NoFile {
             from,
             value: value(),
         });
-    }
+    };
     let limit = max_path_bytes();
     if path.as_os_str().len() > limit {
         return Err(Error::TooLong {
@@ -308,17 +333,19 @@ fn checked(value: &str, from: &'static str) -> Result<PathBuf, Error> {
             limit,
         });
     }
-    Ok(path)
+    Ok(SocketPath {
+        path,
+        directory,
+        above,
+    })
 }
 
 /// The directory holding the socket must be ours, mode 0700, reached only
 /// through directories no other user can rewrite. `create` makes it when it
 /// is missing; nothing that already exists is modified.
-fn private_directory(directory: &Path, create: bool) -> Result<(), Error> {
+fn private_directory(socket: &SocketPath, create: bool) -> Result<(), Error> {
+    let (directory, above) = (socket.directory(), socket.above.as_path());
     let euid = geteuid();
-    let above = directory
-        .parent()
-        .ok_or_else(|| Error::NoParent(directory.to_owned()))?;
     let canonical = above
         .canonicalize()
         .map_err(failed("socket directory parent ", above))?;
@@ -367,13 +394,14 @@ fn private_directory(directory: &Path, create: bool) -> Result<(), Error> {
 
 /// Makes the socket's private directory if it is missing, checking it as a
 /// server does; for a client about to start one.
-pub fn prepare_directory(directory: &Path) -> Result<(), Error> {
-    private_directory(directory, true)
+pub fn prepare_directory(socket: &SocketPath) -> Result<(), Error> {
+    private_directory(socket, true)
 }
 
 /// A client refuses a socket that is not in a private directory of its own
 /// user, or not a socket of its own user.
-pub fn check_client_socket(path: &Path) -> Result<(), Error> {
+pub fn check_client_socket(socket: &SocketPath) -> Result<(), Error> {
+    let path = socket.path();
     let meta = match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Err(Error::NoServer(path.to_owned()));
@@ -381,10 +409,7 @@ pub fn check_client_socket(path: &Path) -> Result<(), Error> {
         Err(error) => return Err(io(path)(error)),
         Ok(meta) => meta,
     };
-    let directory = path
-        .parent()
-        .ok_or_else(|| Error::NoParent(path.to_owned()))?;
-    private_directory(directory, false)?;
+    private_directory(socket, false)?;
     if !meta.file_type().is_socket() || meta.uid() != geteuid() {
         return Err(Error::NotOurs(path.to_owned()));
     }
@@ -433,12 +458,6 @@ pub struct Endpoint {
     _lock: File,
 }
 
-impl Endpoint {
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
 impl Drop for Endpoint {
     fn drop(&mut self) {
         if self.socket.still_at(&self.path) {
@@ -461,11 +480,9 @@ fn probe(path: &Path) -> io::Result<()> {
 
 /// Takes ownership of `path` and binds it. Refuses a live server's socket and
 /// anything that is not a socket; replaces only a socket proven stale.
-pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), Error> {
-    let directory = path
-        .parent()
-        .ok_or_else(|| Error::NoParent(path.to_owned()))?;
-    private_directory(directory, true)?;
+pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Error> {
+    let path = socket.path();
+    private_directory(socket, true)?;
     let euid = geteuid();
     let foreign = |meta: &fs::Metadata| !meta.file_type().is_socket() || meta.uid() != euid;
     let refused = || Error::Foreign(path.to_owned());
@@ -535,6 +552,10 @@ mod tests {
         fs::symlink_metadata(path).is_ok()
     }
 
+    fn bind(path: &Path) -> Result<(Endpoint, UnixListener), Error> {
+        bind_socket(&checked(&path.to_string_lossy(), "test")?)
+    }
+
     fn scratch(name: &str) -> PathBuf {
         let base = std::env::temp_dir()
             .canonicalize()
@@ -547,7 +568,9 @@ mod tests {
         assert!(checked("", "X").is_err());
         assert!(checked("relative/s.sock", "X").is_err());
         assert!(checked("/", "X").is_err());
-        let long: String = std::iter::once('/')
+        assert!(checked("/s.sock", "X").is_err());
+        let long: String = "/d/"
+            .chars()
             .chain(std::iter::repeat_n('a', max_path_bytes()))
             .collect();
         let too_long = checked(&long, "X");
@@ -557,10 +580,12 @@ mod tests {
         assert!(socket_path_from("TMPDIR", "").is_err());
         assert!(socket_path_from("TMPDIR", "rel").is_err());
         assert_eq!(
-            socket_path_from("TMPDIR", "/t").ok(),
+            socket_path_from("TMPDIR", "/t")
+                .map(|s| s.path().to_owned())
+                .ok(),
             Some(PathBuf::from("/t/fux/server.sock"))
         );
-        let message = |r: Result<PathBuf, Error>| r.err().map(|e| e.to_string());
+        let message = |r: Result<SocketPath, Error>| r.err().map(|e| e.to_string());
         for (result, expected) in [
             (
                 checked("", "X"),
@@ -571,7 +596,10 @@ mod tests {
                 checked("relative/s.sock", "X"),
                 "X is \"relative/s.sock\"; it must be an absolute path",
             ),
-            (checked("/", "X"), "X is \"/\"; it must name a socket file"),
+            (
+                checked("/s", "X"),
+                "X is \"/s\"; it must name a socket file in a directory below /",
+            ),
             (
                 socket_path_from("TMPDIR", ""),
                 "TMPDIR is set but empty; set it to a directory or set FUX_SOCKET",
@@ -598,12 +626,12 @@ mod tests {
         fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
         let path = root.join("fux").join("s.sock");
-        let (endpoint, listener) = bind_socket(&path)?;
+        let (endpoint, listener) = bind(&path)?;
         let mode = |p: &Path| fs::metadata(p).map(|m| m.permissions().mode() & 0o777).ok();
         assert_eq!(mode(&path), Some(0o600));
         assert_eq!(mode(&root.join("fux")), Some(0o700));
         // A second server on the same path is refused while the first lives.
-        let second = bind_socket(&path);
+        let second = bind(&path);
         assert!(matches!(second, Err(Error::InUse(_))));
         assert_eq!(
             second.err().map(|e| e.to_string()),
@@ -621,7 +649,7 @@ mod tests {
         // A stale socket (nothing listening) is replaced.
         let stale = UnixListener::bind(&path).map_err(|e| e.to_string())?;
         drop(stale);
-        let (endpoint, _listener) = bind_socket(&path)?;
+        let (endpoint, _listener) = bind(&path)?;
         // A replacement bound by someone else at the same path is left alone.
         fs::remove_file(&path).map_err(|e| e.to_string())?;
         let replacement = UnixListener::bind(&path).map_err(|e| e.to_string())?;
@@ -689,7 +717,7 @@ mod tests {
         let path = root.join("fux").join("s.sock");
         // At exit: fux's listener closes, someone replaces the socket, then
         // fux's endpoint is dropped.
-        let (endpoint, listener) = bind_socket(&path)?;
+        let (endpoint, listener) = bind(&path)?;
         let ours = inode(&path)?;
         drop(listener);
         fs::remove_file(&path).map_err(|e| e.to_string())?;
@@ -723,7 +751,7 @@ mod tests {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
         fs::set_permissions(root.join("fux"), fs::Permissions::from_mode(0o755))
             .map_err(|e| e.to_string())?;
-        let error = bind_socket(&root.join("fux").join("s.sock"));
+        let error = bind(&root.join("fux").join("s.sock"));
         assert!(matches!(error, Err(Error::NotPrivate { mode: 0o755, .. })));
         let error = error.err().map(|e| e.to_string()).unwrap_or_default();
         assert!(
