@@ -247,7 +247,7 @@ stack!(
     |deadline, last_output| {
         let typed = fux::pane::Typed::new(Vec::new(), deadline)?;
         let mut queue = fux::pane::InputQueue::from(typed);
-        last_output.into_iter().for_each(|at| queue.heard(at));
+        last_output.into_iter().for_each(|at| queue.heard(|| at));
         queue.due_at()
     }
 );
