@@ -1035,6 +1035,37 @@ impl Grid {
         }
     }
 
+    /// ED (`display`) or EL in `mode`, 0 to 2, from the cursor, ending a
+    /// pending wrap: `erase` erases each row's span, and says whether it
+    /// found something it left; whether any did. A row ED erases whole is
+    /// no prompt's, as in Ghostty; EL, and ED's part of the cursor's row,
+    /// leave the mark (a shell redrawing its prompt erases from it).
+    #[inline]
+    pub fn erase_in(
+        &mut self,
+        display: bool,
+        mode: u16,
+        mut erase: impl FnMut(&mut Self, u16, u16, u16) -> bool,
+    ) -> bool {
+        self.cursor.pending_wrap = false;
+        let ((row, col), cols) = (self.cursor.at(), self.size.cols());
+        let mut found = false;
+        if display {
+            for y in 0..self.size.rows() {
+                if (mode == 0 && y > row) || (mode == 1 && y < row) || mode == 2 {
+                    found |= erase(self, y, 0, cols);
+                    self.clear_prompt(y);
+                }
+            }
+        }
+        let (start, end) = match mode {
+            0 => (col, cols),
+            1 => (0, col.saturating_add(1).min(cols)),
+            _ => (0, cols),
+        };
+        erase(self, row, start, end) | found
+    }
+
     /// `erase`, leaving protected glyphs (DECSCA, SPA) as they are: each
     /// run of unprotected cells between them is erased, as xterm's
     /// `ClearInLine2` erases around them. A wide glyph's second half is
