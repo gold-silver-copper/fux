@@ -1985,20 +1985,18 @@ fn tab_of(workspaces: &mut [Workspace], id: PaneId) -> Result<&mut Tab, Error> {
 /// The text of a pane's screen, and `history` lines before it.
 fn capture(pane: &Pane, history: Option<usize>, json: bool) -> String {
     let screen = pane.screen();
-    let (rows, cols) = screen.size().into();
-    let back = history.unwrap_or(0).min(screen.history_len());
     // History rows above the screen, oldest first, then the screen itself.
-    let history = (0..back).rev().filter_map(|offset| {
-        let row = usize::from(rows).checked_add(offset)?;
-        Some(row_text(screen.row_from_bottom(row)?))
-    });
-    let live = screen.window(0, rows, cols);
-    let screen_rows = (0..rows).map(|y| live.row(y).map(row_text).unwrap_or_default());
-    let lines = history.chain(screen_rows).collect();
+    let top = screen
+        .window()
+        .row(0)
+        .map(|top| top.up(history.unwrap_or(0)));
+    let lines = std::iter::successors(top, fux_vt::Row::below)
+        .map(row_text)
+        .collect();
     let cursor = Some(screen.cursor_position());
     captured(
         ("pane", pane.id.to_string()),
-        (rows, cols),
+        screen.size().into(),
         cursor,
         lines,
         json,

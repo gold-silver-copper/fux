@@ -177,9 +177,7 @@ fn put_changed_rows(
             sufficed = false;
             break;
         };
-        let screen = pane.screen();
-        let (rows, cols) = screen.size().into();
-        let window = screen.window(0, rows, cols);
+        let window = pane.screen().window();
         let lines = (0..window.rows()).zip(rect.lines());
         for ((y, line), key) in lines.zip(pane_keys.iter_mut()) {
             let row = window.row(y);
@@ -660,9 +658,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             // A pane whose program changed its colours is drawn in them.
             let colours = screen.colors_changed().then_some(screen);
             let at = copy.filter(|(c, _)| c.pane == *id).map(|(_, at)| at);
-            let offset = at.map_or(0, |at| at.offset(screen));
-            let (rows, cols) = screen.size().into();
-            let window = screen.window(offset, rows, cols);
+            let window = at.map_or_else(|| screen.window(), |at| at.top.window());
             let width = rect.w().min(window.cols());
             // What the pane's screen does not cover of its place is blank.
             if tiled {
@@ -677,16 +673,18 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
                 }
                 pane_keys.push(row.map(|r| (r.id(), r.version())));
                 draw_row(grid, *id, row, (line, window.cols()), tiled, colours);
-                let Some(at) = at else { continue };
+                let (Some(at), Some(row)) = (at, row) else {
+                    continue;
+                };
                 for x in 0..width {
                     // A wide glyph is selected if either half is, as `y`
                     // copies it whole.
                     if let Some(i) = line.at(0, x).and_then(|(gy, gx)| grid.index(gy, gx))
                         && let Some(cell) = grid.cells.get(i)
                         && !cell.is_wide_continuation()
-                        && (at.selected(y, x)
+                        && (at.selected(&row, x)
                             || cell.is_wide()
-                                && x.checked_add(1).is_some_and(|x| at.selected(y, x)))
+                                && x.checked_add(1).is_some_and(|x| at.selected(&row, x)))
                     {
                         let attrs = cell.attributes().with_inverse(!cell.inverse());
                         grid.cells.set_attributes(i, attrs);
@@ -1698,9 +1696,8 @@ mod tests {
 
     /// What a terminal shows.
     fn terminal_shows(parser: &fux_vt::Parser) -> Shown {
-        let screen = parser.screen();
-        let (rows, cols) = screen.size().into();
-        let window = screen.window(0, rows, cols);
+        let window = parser.screen().window();
+        let rows = window.rows();
         let cells = (0..rows)
             .map(|y| {
                 window.row(y).map_or_else(Vec::new, |row| {
@@ -1710,7 +1707,7 @@ mod tests {
                 })
             })
             .collect();
-        (cells, screen.cursor_position())
+        (cells, parser.screen().cursor_position())
     }
 
     /// A terminal shown the paints as the server sends them, echoes the
@@ -1925,12 +1922,11 @@ mod tests {
         assert_eq!(levels.map(mouse_level), [0, 1000, 1000, 1002, 1003]);
     }
 
-    fn apply(bytes: &[u8], rows: u16, cols: u16, parser: &mut fux_vt::Parser) -> Vec<String> {
+    fn apply(bytes: &[u8], parser: &mut fux_vt::Parser) -> Vec<String> {
         let _ = parser.process(bytes);
-        let screen = parser.screen();
-        (0..rows)
+        let window = parser.screen().window();
+        (0..window.rows())
             .map(|y| {
-                let window = screen.window(0, rows, cols);
                 window
                     .row(y)
                     .map(crate::session::row_text)
@@ -2086,7 +2082,7 @@ mod tests {
             "{text:?}"
         );
         let mut parser = terminal(1, 12)?;
-        assert_eq!(apply(&bytes, 1, 12, &mut parser), grid_lines(&grid));
+        assert_eq!(apply(&bytes, &mut parser), grid_lines(&grid));
         // Glyphs that do not join are painted in one run.
         let mut plain = Grid::new(1, 12);
         plain.text(0, 2, "\u{1F44D}\u{1F680}x", Attributes::default(), 12);
@@ -2117,7 +2113,7 @@ mod tests {
             "{text:?}"
         );
         let mut parser = terminal(1, 6)?;
-        assert_eq!(apply(text.as_bytes(), 1, 6, &mut parser), grid_lines(&grid));
+        assert_eq!(apply(text.as_bytes(), &mut parser), grid_lines(&grid));
         for (x, cluster) in [
             (3, "a\u{301}"),
             (5, "a\u{301}"),
@@ -2169,12 +2165,12 @@ mod tests {
         b.text(2, 4, "ab", Attributes::default(), 12);
         b.text(3, 10, "界", Attributes::default(), 12);
         let mut parser = terminal(4, 12)?;
-        apply(&paint(None, &a), 4, 12, &mut parser);
-        let lines = apply(&paint(Some(&a), &b), 4, 12, &mut parser);
+        apply(&paint(None, &a), &mut parser);
+        let lines = apply(&paint(Some(&a), &b), &mut parser);
         assert_eq!(lines, grid_lines(&b));
         // Full repaint from nothing matches too.
         let mut fresh = terminal(4, 12)?;
-        assert_eq!(apply(&paint(None, &b), 4, 12, &mut fresh), grid_lines(&b));
+        assert_eq!(apply(&paint(None, &b), &mut fresh), grid_lines(&b));
         Ok(())
     }
 
@@ -2206,15 +2202,15 @@ mod tests {
         let diff = paint(Some(&a), &b);
         assert_eq!(rows_written(&diff), [3]);
         let mut parser = terminal(6, 20)?;
-        apply(&paint(None, &a), 6, 20, &mut parser);
-        assert_eq!(apply(&diff, 6, 20, &mut parser), grid_lines(&b));
+        apply(&paint(None, &a), &mut parser);
+        assert_eq!(apply(&diff, &mut parser), grid_lines(&b));
         // The first and last rows, and a wide glyph's second half.
         let mut c = b.clone();
         c.text(0, 19, "!", Attributes::default(), 20);
         c.text(5, 7, "y", Attributes::default(), 20);
         let diff = paint(Some(&b), &c);
         assert_eq!(rows_written(&diff), [0, 5]);
-        assert_eq!(apply(&diff, 6, 20, &mut parser), grid_lines(&c));
+        assert_eq!(apply(&diff, &mut parser), grid_lines(&c));
         // Nothing changed: no row is written; painted whole, every row is.
         assert_eq!(rows_written(&paint(Some(&c), &c)), Vec::<u16>::new());
         assert_eq!(rows_written(&paint(None, &c)), [0, 1, 2, 3, 4, 5]);
