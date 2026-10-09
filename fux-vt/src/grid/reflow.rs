@@ -18,29 +18,21 @@ impl Grid {
     /// so no line is ever gathered in memory of its own. The k-th row of a
     /// reflowed line keeps the identity of the line's k-th row before, if it
     /// had one; every row takes `version`.
-    pub fn reflowed(
-        &self,
-        rows: u16,
-        cols: u16,
-        next: &mut u64,
-        version: u64,
-    ) -> Result<Self, Error> {
-        let (rows, cols) = Self::check_size(rows, cols, self.history_limit)?;
+    pub fn reflowed(&self, size: Size, next: &mut u64, version: u64) -> Result<Self, Error> {
+        Self::check_size(size, self.history_limit)?;
+        let cols = size.cols();
         // The cursor and the saved cursor go with their characters; one
         // waiting to wrap is laid out one past its glyph.
-        let at = |(row, col): (u16, u16), pending: bool| {
+        let at = |cursor: Cursor| {
             self.history_len()
-                .checked_add(usize::from(row))
-                .map(|row| (row, usize::from(past(col, pending))))
+                .checked_add(usize::from(cursor.row))
+                .map(|row| (row, usize::from(past(cursor.col, cursor.pending_wrap))))
         };
-        let marks = [
-            at(self.cursor, self.pending_wrap),
-            at(self.saved_cursor, self.saved_pending_wrap),
-        ];
-        let layout = self.reflow(usize::from(cols.get()), marks, &mut Layout)?;
+        let marks = [at(self.cursor), at(self.saved)];
+        let layout = self.reflow(usize::from(cols), marks, &mut Layout)?;
         // Blank lines below the cursor are dropped before any line scrolls
         // into history: a mostly empty screen keeps its text on screen.
-        let screen = usize::from(rows.get());
+        let screen = usize::from(size.rows());
         let [(cursor_row, cursor_col), (saved_row, saved_col)] = layout.marks;
         // Only as many as the screen's own lines are past the new height:
         // rows in history stay there, and a resize never brings one back
@@ -58,26 +50,26 @@ impl Grid {
         let live_top = total.saturating_sub(screen).min(cursor_row);
         let base = live_top.saturating_sub(self.history_limit);
         let end = total.min(live_top.checked_add(screen).ok_or(Error::Capacity)?);
-        // One past the last column is the last column, waiting to wrap.
-        let column = |col: usize| u16::try_from(col).map_or(cols.get(), |col| col.min(cols.get()));
-        let (cursor_col, saved_col) = (column(cursor_col), column(saved_col));
-        // A row on the screen, the first if above it, the last if below.
-        let row = |row: usize| {
-            u16::try_from(row.saturating_sub(live_top))
-                .map_or(rows.last(), |row| row.min(rows.last()))
+        // A row on the screen, the first if above it, the last if below;
+        // one past the last column is the last column, waiting to wrap.
+        let placed = |cursor: Cursor, (row, col): (usize, usize)| Cursor {
+            pending_wrap: col >= usize::from(cols),
+            ..cursor.placed(
+                (
+                    u16::try_from(row.saturating_sub(live_top)).unwrap_or(u16::MAX),
+                    u16::try_from(col).unwrap_or(u16::MAX),
+                ),
+                size,
+            )
         };
         let mut replacement = Self {
             // The cursor's row is on screen: `live_top` is at most its row,
             // and the screen reaches past it.
-            cursor: (row(cursor_row), cursor_col.min(cols.last())),
-            pending_wrap: cursor_col >= cols.get(),
+            cursor: placed(self.cursor, (cursor_row, cursor_col)),
             // The saved cursor moves with its character as the cursor
             // does, so DECRC (as 1049 leaves the alternate screen) finds it.
-            saved_cursor: (row(saved_row), saved_col.min(cols.last())),
-            saved_pending_wrap: saved_col >= cols.get(),
-            origin: self.origin,
-            saved_origin: self.saved_origin,
-            ..self.successor(rows, cols)
+            saved: placed(self.saved, (saved_row, saved_col)),
+            ..self.successor(size)
         };
         replacement.reserve_screen()?;
         let mut copy = Fill {
@@ -86,15 +78,15 @@ impl Grid {
             screen: live_top,
             next,
             version,
-            cells: vec![BLANK; usize::from(cols.get())],
+            cells: vec![BLANK; usize::from(cols)],
             written: 0,
             text: Text::default(),
             links: None,
         };
-        self.reflow(usize::from(cols.get()), marks, &mut copy)?;
+        self.reflow(usize::from(cols), marks, &mut copy)?;
         // Blank rows under the last line, if the lines do not fill the screen.
         while replacement.order.len() < screen {
-            let meta = Meta::new(next_id(next)?, version, cols.get(), false, 0);
+            let meta = Meta::new(next_id(next)?, version, cols, false, 0);
             replacement.push_screen_row(meta, &[], None, None);
         }
         Ok(replacement)
@@ -582,7 +574,7 @@ impl Reflow for Fill<'_> {
             Some(id) => id,
             None => next_id(self.next)?,
         };
-        let cols = self.grid.cols.get();
+        let cols = self.grid.size.cols();
         // The row's `used` mark is where its cells laid out end, so the
         // next reflow finds its text, and recycling clears it, from there.
         let used = u16::try_from(used).map_or(cols, |used| used.min(cols));

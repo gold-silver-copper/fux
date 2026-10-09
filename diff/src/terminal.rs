@@ -152,7 +152,8 @@ macro_rules! stack {
         |$attrs:ident| $colors:expr,
         |$meta:ident| $identity:expr,
         |$events:ident, $extended:ident| $options:expr,
-        |$screen:ident| $modes:expr
+        |$screen:ident| $modes:expr,
+        |$rows:ident, $cols:ident| [$($size:tt)*]
     ) => {
         mod $name {
             use std::fmt::Write;
@@ -223,7 +224,8 @@ macro_rules! stack {
                         let ($events, $extended) = (events, extended);
                         $options
                     };
-                    let parser = Parser::with_options(rows, cols, history, options).map_err(|e| format!("{e:?}"))?;
+                    let ($rows, $cols) = (rows, cols);
+                    let parser = Parser::with_options($($size)*, history, options).map_err(|e| format!("{e:?}"))?;
                     let mark = parser.screen().mark();
                     Ok(Terminal { parser, mark })
                 }
@@ -236,14 +238,15 @@ macro_rules! stack {
                 }
 
                 pub fn resize(&mut self, rows: u16, cols: u16) -> String {
-                    format!("{:?}", self.parser.resize(rows, cols))
+                    let ($rows, $cols) = (rows, cols);
+                    format!("{:?}", self.parser.resize($($size)*))
                 }
 
                 /// The screen, whole.
                 pub fn screen(&mut self) -> String {
                     let s = self.parser.screen();
                     let mut out = String::new();
-                    let (rows, cols) = s.size();
+                    let (rows, cols): (u16, u16) = s.size().into();
                     let modes: [bool; 8] = {
                         let $screen = s;
                         $modes
@@ -312,7 +315,8 @@ stack!(
         s.alternate_screen(),
         s.autowrap(),
         s.origin_mode(),
-    ]
+    ],
+    |r, c| [r, c]
 );
 stack!(
     cur,
@@ -332,7 +336,8 @@ stack!(
         s.mode(fux_vt::Mode::AlternateScreen),
         s.mode(fux_vt::Mode::Autowrap),
         s.mode(fux_vt::Mode::Origin),
-    ]
+    ],
+    |r, c| [crate::size(r, c)]
 );
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {

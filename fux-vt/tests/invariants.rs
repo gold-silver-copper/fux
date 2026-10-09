@@ -6,12 +6,12 @@ mod pieces;
 
 #[path = "corpus/invariants.rs"]
 mod invariants;
-use fux_vt::{Feature, Identity, Mode, Options, Parser, Sink};
-type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+use fux_vt::{Feature, Identity, Mode, Options, Parser, Sink, Size};
+type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[test]
 fn terminal_edge_streams_preserve_primary_history_and_modes() -> Result {
-    let mut p = Parser::new(23, 80, 40)?;
+    let mut p = Parser::new(Size::new(23, 80)?, 40)?;
     let mut main = None;
     for (i, bytes) in corpus::terminal_edge().iter().enumerate() {
         p.process(bytes)?;
@@ -92,7 +92,7 @@ fn the_adversarial_corpus_is_chunk_invariant_and_bounded() -> Result {
     ] {
         for seed in 0..10 {
             for (rows, cols) in [(1, 1), (1, 12), (12, 1), (2, 3), (4, 12), (24, 80)] {
-                let mut whole = Parser::with_options(rows, cols, 8, options)?;
+                let mut whole = Parser::with_options(Size::new(rows, cols)?, 8, options)?;
                 let mut split = whole.clone();
                 let mut state = seed;
                 let streams = corpus::terminal_edge().into_iter();
@@ -110,8 +110,8 @@ fn the_adversarial_corpus_is_chunk_invariant_and_bounded() -> Result {
                     assert_eq!(a.0, b.0, "replies");
                     if !extras.is_empty() && r.is_multiple_of(97) {
                         let (rows, cols) = (u16::try_from(r % 9)? + 1, u16::try_from(r % 31)? + 1);
-                        whole.resize(rows, cols)?;
-                        split.resize(rows, cols)?;
+                        whole.resize(Size::new(rows, cols)?)?;
+                        split.resize(Size::new(rows, cols)?)?;
                     }
                     invariants::equal(&whole, &split);
                     invariants::check(&whole);
@@ -119,7 +119,7 @@ fn the_adversarial_corpus_is_chunk_invariant_and_bounded() -> Result {
             }
         }
     }
-    let mut p = Parser::new(24, 80, 8)?;
+    let mut p = Parser::new(Size::new(24, 80)?, 8)?;
     for operation in corpus::operations(1, 160 * 1024) {
         p.process(&operation)?;
         invariants::check(&p);
@@ -164,11 +164,14 @@ fn generated_edits_resizes_and_arbitrary_bytes_preserve_grid_invariants() -> Res
     ];
     for seed in 0..100 {
         let mut state = seed;
-        let mut p = Parser::new(4, 8, (seed % 5) as usize)?;
+        let mut p = Parser::new(Size::new(4, 8)?, (seed % 5) as usize)?;
         for _ in 0..1000 {
             let n = corpus::splitmix(&mut state);
             match n % 8 {
-                0 => p.resize(1 + ((n >> 8) % 8) as u16, 1 + ((n >> 16) % 12) as u16)?,
+                0 => p.resize(Size::new(
+                    1 + ((n >> 8) % 8) as u16,
+                    1 + ((n >> 16) % 12) as u16,
+                )?)?,
                 1 => p.process(format!("\x1b[{};{}H", (n >> 8) % 10, (n >> 16) % 15).as_bytes())?,
                 2 => p.process(format!("\x1b[{};{}r", (n >> 8) % 10, (n >> 16) % 10).as_bytes())?,
                 3 => p.process(&n.to_le_bytes())?,
@@ -194,7 +197,7 @@ fn a_rows_text_stays_within_its_budget_through_resizes() -> Result {
         .collect();
     let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
     for options in [Options::default(), Options::new().with(Feature::Reflow)] {
-        let mut p = Parser::with_options(3, 40, 10, options)?;
+        let mut p = Parser::with_options(Size::new(3, 40)?, 10, options)?;
         for _ in 0..3 {
             for _ in 0..20 {
                 p.process(zalgo.as_bytes())?;
@@ -204,7 +207,7 @@ fn a_rows_text_stays_within_its_budget_through_resizes() -> Result {
         }
         invariants::check(&p);
         for (rows, cols) in [(3, 5), (6, 2), (2, 80), (3, 1), (3, 40)] {
-            p.resize(rows, cols)?;
+            p.resize(Size::new(rows, cols)?)?;
             invariants::check(&p);
         }
         // Each cell holds one cluster, whole or cut to what fits inline.
@@ -225,12 +228,13 @@ fn a_rows_text_stays_within_its_budget_through_resizes() -> Result {
 #[test]
 fn degenerate_reflows_keep_every_invariant() -> Result {
     for (rows, cols) in [(1, 1), (1, 40), (40, 1), (2, 2)] {
-        let mut p = Parser::with_options(rows, cols, 10, Options::new().with(Feature::Reflow))?;
+        let options = Options::new().with(Feature::Reflow);
+        let mut p = Parser::with_options(Size::new(rows, cols)?, 10, options)?;
         p.process("\u{4f60}\u{597d}ab\r\n\u{1f600}x".as_bytes())?;
-        p.resize(1, 1)?;
+        p.resize(Size::new(1, 1)?)?;
         invariants::check(&p);
         p.process("\u{4f60}z".as_bytes())?;
-        p.resize(rows, cols)?;
+        p.resize(Size::new(rows, cols)?)?;
         invariants::check(&p);
     }
     Ok(())

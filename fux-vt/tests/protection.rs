@@ -8,16 +8,16 @@
 //! in xterm beside fux-vt (`fux-vt-compare replay --engines xterm --size
 //! 2x10 'BYTES'`) and the two agree.
 
-use fux_vt::{Color, Parser};
-type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+use fux_vt::{Color, Parser, Size};
+type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[path = "corpus/lines.rs"]
 mod lines;
 use lines::lines;
 
 /// The screen's two rows after `bytes`, on a screen of two rows of ten.
-fn after(bytes: &str) -> std::result::Result<Vec<String>, fux_vt::Error> {
-    let mut parser = Parser::new(2, 10, 0)?;
+fn after(bytes: &str) -> Result<Vec<String>> {
+    let mut parser = Parser::new(Size::new(2, 10)?, 0)?;
     parser.process(bytes.as_bytes())?;
     Ok(lines(&parser))
 }
@@ -129,7 +129,7 @@ fn protection_goes_with_the_glyph() -> Result {
         )?,
         ["  abcd", "y"]
     );
-    let mut p = Parser::new(4, 10, 0)?;
+    let mut p = Parser::new(Size::new(4, 10)?, 0)?;
     p.process(b"\x1b[1\"qab\x1b[0\"qcd\x1b[2;1H\x1b[1\"qxy\x1b[0\"q\x1b[1;1H\x1b[L\x1b[?J")?;
     assert_eq!(lines(&p), ["", "ab", "xy", ""]);
     assert_eq!(
@@ -148,7 +148,7 @@ fn protection_goes_with_the_glyph() -> Result {
         after("\x1bVa\u{4e00}b\x1bWc\x1b[1;1H\x1b[?2K\x1b[1;1H\x1b[2K")?,
         ["a\u{4e00}b", ""]
     );
-    let mut p = Parser::new(2, 10, 0)?;
+    let mut p = Parser::new(Size::new(2, 10)?, 0)?;
     p.process(b"\x1b[44m\x1bVab\x1bWcd\x1b[1;1H\x1b[2K")?;
     assert_eq!(lines(&p), ["ab", ""]);
     let blue = |x: u16| {

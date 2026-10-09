@@ -77,7 +77,8 @@ fn cell(c: &CellRef<'_>) -> Cell {
 }
 
 pub fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
-    let parser = Parser::with_options(setup.rows, setup.cols, setup.history, options(setup.reflow))
+    let size = crate::vt_size(setup.rows, setup.cols)?;
+    let parser = Parser::with_options(size, setup.history, options(setup.reflow))
         .map_err(|e| format!("fux-vt: {e}"))?;
     Ok(Box::new(Vt {
         parser,
@@ -98,7 +99,7 @@ impl Engine for Vt {
 
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
         self.parser
-            .resize(rows, cols)
+            .resize(crate::vt_size(rows, cols)?)
             .map_err(|e| format!("fux-vt: {e}"))
     }
 
@@ -106,7 +107,7 @@ impl Engine for Vt {
     /// for as many rows as it keeps.
     fn snapshot(&mut self, _: usize) -> Result<Snapshot, String> {
         let s = self.parser.screen();
-        let (rows, cols) = s.size();
+        let (rows, cols) = s.size().into();
         let cursor = s.cursor_position();
         let pending_wrap = s.pending_wrap();
         let screen = (0..rows)

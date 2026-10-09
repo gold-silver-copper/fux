@@ -6,15 +6,16 @@
 //! argument for that part, as `diff/src/terminal.rs`'s `stack!` does, and
 //! read both into the same model; say so in the README's list of adapters.
 //!
-//! Adapters today: the modes, which the working tree reads with
-//! `Screen::mode` and the commit with a getter each.
+//! Adapters today: making and resizing a parser, which the working tree
+//! does with a `Size` and the commit with rows and columns.
 
 macro_rules! side {
     (
         $module:ident,
         $vt:ident,
         $name:literal,
-        modes: $modes:expr $(,)?
+        made: $made:expr,
+        resized: $resized:expr $(,)?
     ) => {
         pub mod $module {
             use crate::model::{
@@ -111,6 +112,24 @@ macro_rules! side {
                 Error(format!("{e:?}: {e}"))
             }
 
+            /// The screen's rows and columns (the working tree's `Size`).
+            fn size(s: &vt::Screen) -> (u16, u16) {
+                s.size().into()
+            }
+
+    /// Every mode both read, by name.
+            #[rustfmt::skip]
+            fn modes(s: &vt::Screen) -> Vec<(String, bool)> {
+                use vt::Mode::*;
+                [
+                    ShowCursor, ApplicationCursor, ApplicationKeypad, BracketedPaste,
+                    SynchronizedOutput, InBandResize, ColorSchemeUpdates, FocusReporting,
+                    AlternateScreen, Autowrap, Insert, Origin,
+                ]
+                .map(|m| (format!("{m:?}"), s.mode(m)))
+                .into()
+            }
+
             /// The number in a `RowId` or `Mark`, which shows it only in
             /// its `Debug` form; `u64::MAX` if it has none.
             fn number(value: impl std::fmt::Debug) -> u64 {
@@ -188,8 +207,8 @@ macro_rules! side {
                 const NAME: &'static str = $name;
 
                 fn new(rows: u16, cols: u16, history: usize, setup: &Setup) -> Result<Self, Error> {
-                    let parser = vt::Parser::with_options(rows, cols, history, options(setup))
-                        .map_err(error)?;
+                    let made: fn(u16, u16, usize, vt::Options) -> Result<vt::Parser, Error> = $made;
+                    let parser = made(rows, cols, history, options(setup))?;
                     Ok(Terminal {
                         parser,
                         marks: Vec::new(),
@@ -214,22 +233,20 @@ macro_rules! side {
                 }
 
                 fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error> {
-                    self.parser.resize(rows, cols).map_err(error)
+                    let resized: fn(&mut vt::Parser, u16, u16) -> Result<(), Error> = $resized;
+                    resized(&mut self.parser, rows, cols)
                 }
 
                 fn state(&self) -> State {
                     let s = self.parser.screen();
                     let pen = s.attributes();
-                    let (rows, _) = s.size();
+                    let (rows, cols) = size(s);
                     let retained = s.history_len().saturating_add(usize::from(rows));
                     State {
-                        size: s.size(),
+                        size: (rows, cols),
                         cursor: s.cursor_position(),
                         pending_wrap: s.pending_wrap(),
-                        modes: {
-                            let modes: fn(&vt::Screen) -> Vec<(String, bool)> = $modes;
-                            modes(s)
-                        },
+                        modes: modes(s),
                         cursor_shape: s.cursor_shape(),
                         scroll_region: s.scroll_region(),
                         mouse: format!("{:?}", s.mouse_protocol_mode()),
@@ -257,7 +274,7 @@ macro_rules! side {
 
                 fn retained(&self) -> usize {
                     let s = self.parser.screen();
-                    s.history_len().saturating_add(usize::from(s.size().0))
+                    s.history_len().saturating_add(usize::from(size(s).0))
                 }
 
                 fn row(&self, offset: usize, out: &mut Row) -> bool {
@@ -274,7 +291,7 @@ macro_rules! side {
                     out.is_empty = row.is_empty();
                     out.text_len = row.text_len();
                     out.has_links = row.has_links();
-                    let (rows, _) = s.size();
+                    let (rows, _) = size(s);
                     // The row's place on the screen, if it is a live row.
                     let live = usize::from(rows)
                         .checked_sub(offset.saturating_add(1))
@@ -365,7 +382,7 @@ macro_rules! side {
                             .filter_map(|&offset| s.row_from_bottom(offset))
                             .map(|r| look(r.id())),
                     );
-                    let retained = s.history_len().saturating_add(usize::from(s.size().0));
+                    let retained = s.history_len().saturating_add(usize::from(size(s).0));
                     self.oldest = retained
                         .checked_sub(1)
                         .and_then(|last| s.row_from_bottom(last))
@@ -508,7 +525,6 @@ macro_rules! side {
                         ));
                     }
                     for e in [
-                        vt::Error::ZeroSize,
                         vt::Error::Capacity,
                         vt::Error::IdentityExhausted,
                         vt::Error::CopyLimit,
@@ -627,35 +643,27 @@ side!(
     work,
     fux_vt,
     "work",
-    modes: |s| {
-        use vt::Mode::*;
-        [
-            ShowCursor, ApplicationCursor, ApplicationKeypad, BracketedPaste, SynchronizedOutput,
-            InBandResize, ColorSchemeUpdates, FocusReporting, AlternateScreen, Autowrap, Insert,
-            Origin,
-        ]
-        .map(|m| (format!("{m:?}"), s.mode(m)))
-        .into()
+    // A size of none is no `Size`: refused as the commit refuses it.
+    made: |rows, cols, history, options| {
+        let size = vt::Size::new(rows, cols).map_err(|_| crate::side::zero_size())?;
+        vt::Parser::with_options(size, history, options).map_err(error)
+    },
+    resized: |parser, rows, cols| {
+        let size = vt::Size::new(rows, cols).map_err(|_| crate::side::zero_size())?;
+        parser.resize(size).map_err(error)
     },
 );
 side!(
     base,
     base_vt,
     "base",
-    modes: |s| [
-        ("ShowCursor", !s.hide_cursor()),
-        ("ApplicationCursor", s.application_cursor()),
-        ("ApplicationKeypad", s.application_keypad()),
-        ("BracketedPaste", s.bracketed_paste()),
-        ("SynchronizedOutput", s.synchronized_output()),
-        ("InBandResize", s.in_band_resize()),
-        ("ColorSchemeUpdates", s.color_scheme_updates()),
-        ("FocusReporting", s.focus_reporting()),
-        ("AlternateScreen", s.alternate_screen()),
-        ("Autowrap", s.autowrap()),
-        ("Insert", s.insert_mode()),
-        ("Origin", s.origin_mode()),
-    ]
-    .map(|(name, on)| (name.to_owned(), on))
-    .into(),
+    made: |rows, cols, history, options| {
+        vt::Parser::with_options(rows, cols, history, options).map_err(error)
+    },
+    resized: |parser, rows, cols| parser.resize(rows, cols).map_err(error),
 );
+
+/// The commit's error for a size of no rows or no columns, as read.
+fn zero_size() -> crate::model::Error {
+    crate::model::Error("ZeroSize: terminal dimensions must be nonzero".to_owned())
+}

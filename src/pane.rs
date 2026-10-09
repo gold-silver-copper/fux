@@ -406,6 +406,12 @@ impl Typed {
     }
 }
 
+/// `rows` by `cols`, a zero taken as one: a pane always has a cell.
+fn size(rows: u16, cols: u16) -> fux_vt::Size {
+    let one = |n| std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN);
+    fux_vt::Size::from((one(rows), one(cols)))
+}
+
 impl Pane {
     pub fn new(
         id: PaneId,
@@ -415,12 +421,14 @@ impl Pane {
         cols: u16,
         history: usize,
     ) -> Result<Pane, Error> {
-        let parser = fux_vt::Parser::with_options(rows.max(1), cols.max(1), history, OPTIONS)
-            .map_err(|source| Error::Terminal {
-                rows,
-                cols,
-                history,
-                source,
+        let parser =
+            fux_vt::Parser::with_options(size(rows, cols), history, OPTIONS).map_err(|source| {
+                Error::Terminal {
+                    rows,
+                    cols,
+                    history,
+                    source,
+                }
             })?;
         Ok(Pane {
             id,
@@ -590,7 +598,7 @@ impl Pane {
             return;
         }
         self.release_frame();
-        if self.parser.resize(rows, cols).is_ok() {
+        if self.parser.resize(size(rows, cols)).is_ok() {
             self.size = (rows, cols);
             if let Some(child) = self.process.child() {
                 crate::process::resize(&child.master, rows, cols);
@@ -759,7 +767,7 @@ mod tests {
         assert_eq!(pane.input.drain_all(), b"\x1b[1;6R");
         pane.resize(3, 10);
         assert_eq!(pane.size, (3, 10));
-        assert_eq!(pane.screen().size(), (3, 10));
+        assert_eq!(<(u16, u16)>::from(pane.screen().size()), (3, 10));
         Ok(())
     }
 
@@ -801,7 +809,7 @@ mod tests {
 
     /// The first row's text, blanks as spaces, trimmed.
     fn first_row(pane: &Pane) -> String {
-        let (_, cols) = pane.screen().size();
+        let cols = pane.screen().size().cols();
         (0..cols)
             .filter_map(|x| pane.screen().cell(0, x))
             .map(|c| c.contents().chars().next().unwrap_or(' '))

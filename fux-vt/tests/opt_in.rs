@@ -5,11 +5,11 @@
 
 use fux_vt::{
     Attributes, CellRef, Cells, Color, Event, Feature, Mode, OSC_PAYLOAD_LIMIT, Options, Parser,
-    Sink,
+    Sink, Size,
 };
 #[path = "corpus/pieces.rs"]
 mod pieces;
-type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Record {
@@ -40,8 +40,8 @@ impl Sink for Record {
 const EVENTS: Options = Options::new().with(Feature::Events);
 const REPLIES: Options = Options::new().with(Feature::ExtendedReplies);
 
-fn run(options: Options, input: &[u8]) -> std::result::Result<Record, fux_vt::Error> {
-    let mut parser = Parser::with_options(24, 80, 0, options)?;
+fn run(options: Options, input: &[u8]) -> Result<Record> {
+    let mut parser = Parser::with_options(Size::new(24, 80)?, 0, options)?;
     let mut record = Record::default();
     parser.process_with(input, &mut record)?;
     Ok(record)
@@ -55,7 +55,8 @@ fn defaults_deliver_no_events_and_only_the_original_replies() -> Result {
     let record = run(Options::default(), SAMPLE)?;
     assert_eq!(record, Record::default());
     // `Parser::new` is exactly the default options.
-    assert_eq!(Parser::new(2, 2, 0)?.options(), Options::default());
+    let p = Parser::new(Size::new(2, 2)?, 0)?;
+    assert_eq!(p.options(), Options::default());
     // The original reply set is unchanged by default.
     let record = run(Options::default(), b"\x1b[5n\x1b[6n\x1b[c")?;
     assert_eq!(
@@ -91,7 +92,7 @@ fn events_report_titles_icons_bells_and_clipboard_sets() -> Result {
 fn events_are_chunk_invariant() -> Result {
     let whole = run(EVENTS, SAMPLE)?;
     for size in [1, 2, 3, 7] {
-        let mut parser = Parser::with_options(24, 80, 0, EVENTS)?;
+        let mut parser = Parser::with_options(Size::new(24, 80)?, 0, EVENTS)?;
         let mut record = Record::default();
         for chunk in pieces::pieces(SAMPLE, size) {
             parser.process_with(chunk, &mut record)?;
@@ -103,7 +104,7 @@ fn events_are_chunk_invariant() -> Result {
 
 #[test]
 fn osc_payloads_are_bounded_and_cancellable() -> Result {
-    let mut parser = Parser::with_options(4, 20, 0, EVENTS)?;
+    let mut parser = Parser::with_options(Size::new(4, 20)?, 0, EVENTS)?;
     let mut record = Record::default();
     // An over-limit title is consumed without an event.
     parser.process_with(b"\x1b]2;", &mut record)?;
@@ -200,7 +201,7 @@ fn mode_reports_answer_decrqm_alone() -> Result {
 /// Ghostty.
 #[test]
 fn synchronized_output_is_tracked_and_ended() -> Result {
-    let mut p = Parser::new(4, 10, 0)?;
+    let mut p = Parser::new(Size::new(4, 10)?, 0)?;
     assert!(!p.screen().mode(Mode::SynchronizedOutput));
     p.process(b"\x1b[?2026h")?;
     assert!(p.screen().mode(Mode::SynchronizedOutput));
@@ -212,13 +213,13 @@ fn synchronized_output_is_tracked_and_ended() -> Result {
         assert!(!p.screen().mode(Mode::SynchronizedOutput), "{what}");
     }
     p.process(b"\x1b[?2026h")?;
-    p.resize(4, 10)?;
+    p.resize(Size::new(4, 10)?)?;
     assert!(
         !p.screen().mode(Mode::SynchronizedOutput),
         "a resize to the same size"
     );
     p.process(b"\x1b[?2026h")?;
-    p.resize(5, 12)?;
+    p.resize(Size::new(5, 12)?)?;
     assert!(!p.screen().mode(Mode::SynchronizedOutput), "a resize");
     Ok(())
 }
@@ -228,7 +229,7 @@ fn synchronized_output_is_tracked_and_ended() -> Result {
 /// across calls; and reads everything when none does.
 #[test]
 fn process_until_frame_stops_after_the_sequence_that_sets_2026() -> Result {
-    let mut p = Parser::new(2, 20, 0)?;
+    let mut p = Parser::new(Size::new(2, 20)?, 0)?;
     let mut sink = Record::default();
     assert_eq!(
         p.process_until_frame(b"ab\x1b[?2026hcd", &mut sink)?,
@@ -253,7 +254,7 @@ fn process_until_frame_stops_after_the_sequence_that_sets_2026() -> Result {
 /// `h` read afterwards, inside a string or not, stops nothing.
 #[test]
 fn process_until_frame_stops_after_an_xtrestore_that_begins_a_frame() -> Result {
-    let mut p = Parser::new(2, 20, 0)?;
+    let mut p = Parser::new(Size::new(2, 20)?, 0)?;
     let mut sink = Record::default();
     p.process(b"\x1b[?2026h\x1b[?2026s\x1b[?2026l")?;
     assert_eq!(
@@ -280,7 +281,7 @@ fn in_band_resize_reports_the_size() -> Result {
     let options = Options::new()
         .with(Feature::ModeReports)
         .with(Feature::InBandResize);
-    let mut p = Parser::with_options(24, 80, 0, options)?;
+    let mut p = Parser::with_options(Size::new(24, 80)?, 0, options)?;
     let mut record = Record::default();
     p.process_with(
         b"\x1b[?2048$p\x1b[?2048h\x1b[?2048$p\x1b[?2048h\x1b[?2048;25h",
@@ -294,7 +295,7 @@ fn in_band_resize_reports_the_size() -> Result {
         b"\x1b[48;24;80;0;0t",
     ];
     assert_eq!(record.replies, expected.map(<[u8]>::to_vec));
-    p.resize(30, 100)?;
+    p.resize(Size::new(30, 100)?)?;
     assert_eq!(
         p.resize_report().as_deref(),
         Some(&b"\x1b[48;30;100;0;0t"[..])
@@ -304,7 +305,7 @@ fn in_band_resize_reports_the_size() -> Result {
     p.process(b"\x1b[?2048h\x1bc")?;
     assert_eq!(p.resize_report(), None, "RIS");
     // Without the option: not recognized, no report.
-    let mut p = Parser::with_options(24, 80, 0, Options::new().with(Feature::ModeReports))?;
+    let mut p = Parser::with_options(Size::new(24, 80)?, 0, Feature::ModeReports.into())?;
     let mut record = Record::default();
     p.process_with(b"\x1b[?2048h\x1b[?2048$p", &mut record)?;
     assert_eq!(record.replies, [b"\x1b[?2048;0$y".to_vec()]);
@@ -318,10 +319,10 @@ fn in_band_resize_reports_the_size() -> Result {
 #[test]
 fn size_reports_answer_the_text_area_in_characters() -> Result {
     let options = Options::new().with(Feature::SizeReports);
-    let mut p = Parser::with_options(24, 80, 0, options)?;
+    let mut p = Parser::with_options(Size::new(24, 80)?, 0, options)?;
     let mut record = Record::default();
     p.process_with(b"\x1b[18t\x1b[14t", &mut record)?;
-    p.resize(30, 100)?;
+    p.resize(Size::new(30, 100)?)?;
     p.process_with(b"\x1b[18t", &mut record)?;
     let expected: [&[u8]; 2] = [b"\x1b[8;24;80t", b"\x1b[8;30;100t"];
     assert_eq!(record.replies, expected.map(<[u8]>::to_vec));
@@ -345,7 +346,7 @@ const SETTINGS: Options = Options::new().with(Feature::SettingReports);
 /// `handle_term_response`).
 #[test]
 fn setting_reports_answer_the_pen_the_cursor_shape_and_the_margins() -> Result {
-    let ask = |input: &str| -> std::result::Result<Vec<String>, fux_vt::Error> {
+    let ask = |input: &str| -> Result<Vec<String>> {
         Ok(run(SETTINGS, input.as_bytes())?
             .replies
             .iter()
@@ -404,7 +405,7 @@ fn setting_reports_answer_the_pen_the_cursor_shape_and_the_margins() -> Result {
     }
     // The pen the reply reports is the one when the string ends, and
     // printing goes on as before after it.
-    let mut p = Parser::with_options(1, 10, 0, SETTINGS)?;
+    let mut p = Parser::with_options(Size::new(1, 10)?, 0, SETTINGS)?;
     let mut record = Record::default();
     p.process_with(b"a\x1bP$qm\x1b\\b\x1b[1m\x1bP$qm\x1b\\c", &mut record)?;
     let expected: [&[u8]; 2] = [b"\x1bP1$r0m\x1b\\", b"\x1bP1$r0;1m\x1b\\"];
@@ -441,7 +442,7 @@ fn setting_reports_are_the_same_in_any_pieces() -> Result {
     let whole = run(SETTINGS, input)?;
     assert_eq!(whole.replies.len(), 3);
     for size in 1..input.len() {
-        let mut parser = Parser::with_options(24, 80, 0, SETTINGS)?;
+        let mut parser = Parser::with_options(Size::new(24, 80)?, 0, SETTINGS)?;
         let mut record = Record::default();
         for piece in pieces::pieces(input, size) {
             parser.process_with(piece, &mut record)?;
@@ -474,7 +475,7 @@ fn colour_queries_are_events() -> Result {
     );
     assert!(record.replies.is_empty(), "the host answers");
     for size in [1, 2, 5] {
-        let mut parser = Parser::with_options(24, 80, 0, EVENTS)?;
+        let mut parser = Parser::with_options(Size::new(24, 80)?, 0, EVENTS)?;
         let mut pieces_record = Record::default();
         for chunk in pieces::pieces(input, size) {
             parser.process_with(chunk, &mut pieces_record)?;
@@ -505,7 +506,7 @@ fn colour_scheme_updates_are_tracked() -> Result {
     let options = Options::new()
         .with(Feature::ModeReports)
         .with(Feature::ColorSchemeUpdates);
-    let mut p = Parser::with_options(24, 80, 0, options)?;
+    let mut p = Parser::with_options(Size::new(24, 80)?, 0, options)?;
     let mut said = Said::default();
     p.process_with(b"\x1b[?2031$p\x1b[?2031h\x1b[?2031$p", &mut said)?;
     assert!(p.screen().mode(Mode::ColorSchemeUpdates));
@@ -518,7 +519,7 @@ fn colour_scheme_updates_are_tracked() -> Result {
     p.process_with(b"\x1b[?996n", &mut said)?;
     assert_eq!(said.0.len(), 1);
     assert!(said.0.iter().all(|s| s.starts_with("unhandled Csi")));
-    let mut p = Parser::with_options(24, 80, 0, Options::new().with(Feature::ModeReports))?;
+    let mut p = Parser::with_options(Size::new(24, 80)?, 0, Feature::ModeReports.into())?;
     let mut said = Said::default();
     p.process_with(b"\x1b[?2031h\x1b[?2031$p", &mut said)?;
     assert!(!p.screen().mode(Mode::ColorSchemeUpdates));
@@ -528,7 +529,7 @@ fn colour_scheme_updates_are_tracked() -> Result {
 
 #[test]
 fn consumers_can_reconstruct_cells_exactly() -> Result {
-    let mut parser = Parser::new(2, 10, 0)?;
+    let mut parser = Parser::new(Size::new(2, 10)?, 0)?;
     let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
     let input = format!("\x1b[1;4;38;5;208;48;2;1;2;3m界e\u{301}\x1b[m {family}");
     parser.process(input.as_bytes())?;
@@ -576,7 +577,7 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
 fn rectangle_checksums_sum_the_cells() -> Result {
     let checksum = |sum: u16| format!("{:04X}", sum.wrapping_neg());
     let options = Options::new().with(Feature::RectangleChecksums);
-    let mut p = Parser::with_options(3, 4, 0, options)?;
+    let mut p = Parser::with_options(Size::new(3, 4)?, 0, options)?;
     let mut record = Record::default();
     // Row 1: a, b, bold c, underlined and inverse d. Row 2: é, a wide
     // glyph, a line-drawing glyph.
