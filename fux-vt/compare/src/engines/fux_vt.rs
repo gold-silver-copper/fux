@@ -130,17 +130,17 @@ impl Engine for Vt {
                 wrapped: s.row_wrapped(y),
             })
             .collect();
-        let history = (0..s.history_len())
-            .rev()
-            .filter_map(|back| {
-                let row = s.row_from_bottom(usize::from(rows).checked_add(back)?)?;
+        let history = s
+            .rows()
+            .take(s.history_len())
+            .map(|row| {
                 let line = Line {
                     unread_from: None,
                     prompt: false,
                     cells: row.cells().map(|c| cell(&c)).collect(),
                     wrapped: row.wrapped(),
                 };
-                Some((line.text(), row.wrapped()))
+                (line.text(), row.wrapped())
             })
             .collect();
         Ok(Snapshot {

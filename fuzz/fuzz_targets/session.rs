@@ -8,14 +8,14 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 
-use fux::config::{Binding, Config};
+use fux::config::{Config, Node};
 use fux::copy::MAX_CLIPBOARD;
 use fux::decode::{Decoder, Input};
 use fux::id::{ClientId, PaneId};
 use fux::keys::KeyPress;
 use fux::outer;
 use fux::render::{Grid, compose};
-use fux::session::{Ctx, Outgoing, Session};
+use fux::session::{Origin, Outgoing, Session};
 use fux::view::{Choice, Mode};
 use libfuzzer_sys::fuzz_target;
 
@@ -329,14 +329,10 @@ impl Run {
         let Some(Mode::Repeat(repeat)) = self.s.views.get(&client).map(|v| &v.mode) else {
             return None;
         };
-        let mut keys = repeat.path.clone();
-        keys.push(*press);
-        let writes = self.s.config.bindings.iter().any(|b| {
-            b.keys == keys
-                && b.command
-                    .first()
-                    .is_some_and(|c| WRITES.contains(&c.as_str()))
-        });
+        let layer = self.s.config.bindings.layer(&repeat.path);
+        let writes = matches!(layer.and_then(|l| l.get(*press)),
+            Some(Node::Run { binding, .. }) if binding.command.first()
+                .is_some_and(|c| WRITES.contains(&c.as_str())));
         (!writes).then_some(*press)
     }
 
@@ -374,7 +370,7 @@ impl Run {
 
     /// What anyone can tell apart, as `State` lists it.
     fn state(&mut self) -> State {
-        let ls = self.s.run(&["ls".to_owned()], &Ctx::default()).stdout;
+        let ls = self.s.run(&["ls".to_owned()], &Origin::default()).stdout;
         let screens = self
             .s
             .views
@@ -416,13 +412,6 @@ fn mode_text(mode: &Mode) -> String {
     }
 }
 
-/// Whether `path` is a layer: some binding's keys go on past it.
-fn is_layer(bindings: &[Binding], path: &[KeyPress]) -> bool {
-    bindings
-        .iter()
-        .any(|b| b.keys.len() > path.len() && b.keys.starts_with(path))
-}
-
 /// Everything that must hold between events.
 fn check(s: &Session) {
     // Every pane is in exactly one tab's layout, and every pane there is.
@@ -454,14 +443,14 @@ fn check(s: &Session) {
         // Found again whenever the bindings change.
         match &view.mode {
             Mode::Column(column) => assert!(
-                column.path.is_empty() || is_layer(bindings, &column.path),
+                bindings.layer(&column.path).is_some(),
                 "{id}'s column shows a layer that is gone: {:?}",
                 column.path
             ),
             Mode::Repeat(repeat) => assert!(
-                bindings.iter().any(|b| b.repeat
-                    && b.keys.len() == repeat.path.len() + 1
-                    && b.keys.starts_with(&repeat.path)),
+                bindings.layer(&repeat.path).is_some_and(|l| l
+                    .iter()
+                    .any(|(_, node)| matches!(node, Node::Run { repeat: true, .. }))),
                 "{id} repeats {:?}, which holds no repeating binding",
                 repeat.path
             ),
@@ -539,8 +528,8 @@ fuzz_target!(|data: &[u8]| {
             11 | 12 => {
                 let line = SIDE[usize::from(input.next()) % SIDE.len()];
                 let argv: Vec<String> = line.split(' ').map(str::to_owned).collect();
-                let a = given.s.run(&argv, &Ctx::default());
-                let b = bytewise.s.run(&argv, &Ctx::default());
+                let a = given.s.run(&argv, &Origin::default());
+                let b = bytewise.s.run(&argv, &Origin::default());
                 assert_eq!(
                     (a.status, a.stdout, a.stderr),
                     (b.status, b.stdout, b.stderr)

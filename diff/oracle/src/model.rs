@@ -315,7 +315,8 @@ pub struct State {
     /// Whether the program changed a colour (`Screen::colors_changed`),
     /// which the pinned commit cannot: see `side`.
     pub colors_changed: bool,
-    /// Whether `row_from_bottom` ends where the history and screen do.
+    /// Whether the rows read from the bottom end where the history and
+    /// screen do.
     pub rows_end_there: bool,
 }
 
@@ -330,8 +331,8 @@ pub struct Marked {
     pub dirty_live: Vec<(u16, u64)>,
 }
 
-/// A row looked up by its identity: where `offset_for_row` puts it, and the
-/// version of the row `row_by_id` finds.
+/// A row looked up by its identity: how many rows up into history a window
+/// starts at it, if one can, and the version of the row `row_by_id` finds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Lookup {
     pub id: u64,
@@ -339,26 +340,23 @@ pub struct Lookup {
     pub version: Option<u64>,
 }
 
-/// A window to read, and a selection to copy from it (`Screen::window`,
-/// `Window::text`).
+/// A window to read, `offset` rows up into history (at most all of it), and
+/// a selection to copy from it (`Window::text`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Selection {
     pub offset: usize,
-    pub rows: u16,
-    pub cols: u16,
     pub from: (u16, u16),
     pub to: (u16, u16),
     pub max_cells: usize,
     pub max_bytes: usize,
 }
 
-/// What a window showed: its size and offset, each row's wrap flag and
-/// each cell as `Window::cell` gives it, and the copy.
+/// What a window showed: its size, each row's wrap flag and each cell as
+/// `Window::cell` gives it, and the copy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Seen {
     pub rows: u16,
     pub cols: u16,
-    pub offset: usize,
     pub wrapped: Vec<bool>,
     /// Each row's identity and width as `Window::row` gives it.
     pub row_ids: Vec<Option<(u64, usize)>>,

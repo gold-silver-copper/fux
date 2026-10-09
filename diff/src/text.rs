@@ -54,7 +54,7 @@ const CONFIG: &[&str] = &[
 ];
 
 macro_rules! stack {
-    ($name:ident, $fux:ident, $folded:expr) => {
+    ($name:ident, $fux:ident, $folded:expr, $bindings:expr) => {
         mod $name {
             use $fux::config::Config;
             use $fux::keys::KeyPress;
@@ -99,15 +99,11 @@ macro_rules! stack {
                     out.push(format!("{line:?}: {result:?}"));
                 }
                 out.extend(config.describe());
-                out.extend(config.bindings.iter().map(|b| {
-                    format!(
-                        "{:?} {} {} {:?}",
-                        b.keys,
-                        b.group(),
-                        b.derived_group(),
-                        b.parsed
-                    )
-                }));
+                out.extend(
+                    ($bindings)(&config)
+                        .iter()
+                        .map(|b| format!("{} {} {:?}", b.group(), b.derived_group(), b.parsed)),
+                );
                 out.push(format!(
                     "{:?} {:?} {} {} {}",
                     config.prefix,
@@ -141,10 +137,18 @@ macro_rules! stack {
     };
 }
 
-// How each folds a key typed after the prefix: KeyPress::folded, in the
-// baseline as in the current fux.
-stack!(base, baseline, |p: baseline::keys::KeyPress| p.folded());
-stack!(cur, fux, |p: fux::keys::KeyPress| p.folded());
+// How each folds a key typed after the prefix, KeyPress::folded, and lists
+// its bindings after the prefix (their keys are in `describe`).
+stack!(base, baseline, |p: KeyPress| p.folded(), |c: &Config| c
+    .bindings
+    .clone());
+stack!(cur, fux, |p: KeyPress| p.folded(), |c: &Config| {
+    c.bindings
+        .all()
+        .into_iter()
+        .map(|(_, b, _)| b.clone())
+        .collect::<Vec<_>>()
+});
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
     let mut lines = 0u64;

@@ -177,9 +177,7 @@ fn put_changed_rows(
             sufficed = false;
             break;
         };
-        let screen = pane.screen();
-        let (rows, cols) = screen.size().into();
-        let window = screen.window(0, rows, cols);
+        let window = pane.screen().window();
         let lines = (0..window.rows()).zip(rect.lines());
         for ((y, line), key) in lines.zip(pane_keys.iter_mut()) {
             let row = window.row(y);
@@ -659,9 +657,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             // A pane whose program changed its colours is drawn in them.
             let colours = screen.colors_changed().then_some(screen);
             let at = copy.filter(|(c, _)| c.pane == *id).map(|(_, at)| at);
-            let offset = at.map_or(0, |at| at.offset(screen));
-            let (rows, cols) = screen.size().into();
-            let window = screen.window(offset, rows, cols);
+            let window = at.map_or_else(|| screen.window(), |at| at.top.window());
             let width = rect.w().min(window.cols());
             // What the pane's screen does not cover of its place is blank.
             if tiled {
@@ -676,16 +672,18 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
                 }
                 pane_keys.push(row.map(|r| (r.id(), r.version())));
                 draw_row(grid, *id, row, (line, window.cols()), tiled, colours);
-                let Some(at) = at else { continue };
+                let (Some(at), Some(row)) = (at, row) else {
+                    continue;
+                };
                 for x in 0..width {
                     // A wide glyph is selected if either half is, as `y`
                     // copies it whole.
                     if let Some(i) = line.at(0, x).and_then(|(gy, gx)| grid.index(gy, gx))
                         && let Some(cell) = grid.cells.get(i)
                         && !cell.is_wide_continuation()
-                        && (at.selected(y, x)
+                        && (at.selected(&row, x)
                             || cell.is_wide()
-                                && x.checked_add(1).is_some_and(|x| at.selected(y, x)))
+                                && x.checked_add(1).is_some_and(|x| at.selected(&row, x)))
                     {
                         let attrs = cell.attributes().with_inverse(!cell.inverse());
                         grid.cells.set_attributes(i, attrs);
@@ -712,9 +710,10 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             session
                 .config
                 .bindings
-                .iter()
-                .find(|b| b.command == argv)
-                .map_or_else(|| argv.join(" "), |b| session.keys_named(&b.keys))
+                .all()
+                .into_iter()
+                .find(|(_, b, _)| b.command == argv)
+                .map_or_else(|| argv.join(" "), |(keys, ..)| session.keys_named(&keys))
         };
         let hint = format!(
             "empty tab: {} splits it, {} closes it",
@@ -1118,10 +1117,9 @@ fn list_panel(grid: &mut Grid, session: &Session, view: &View, list: &List) {
     let capacity = overlay::list_room(view.rows);
     let (len, chosen) = (list.items.iter().count(), list.items.index());
     let start = overlay::window_start(len, chosen, capacity);
-    let ctx = crate::session::Ctx::client(view.id);
     let shown = list.items.iter().enumerate().skip(start).take(capacity);
     let shown = shown.map(|(i, item)| {
-        let dim = item.subject.is_none() && session.unavailable(&item.command, &ctx).is_some();
+        let dim = item.subject.is_none() && session.unavailable(&item.command, view.id).is_some();
         let marker = if item.current { "*" } else { " " };
         let attrs = panel().with_inverse(i == chosen).with_dim(dim);
         (format!("{marker} {}", item.label).into(), attrs)
@@ -1144,7 +1142,6 @@ fn column(grid: &mut Grid, session: &Session, view: &View, column: &overlay::Col
     // Each entry's key as it is typed, written out once.
     let keys: Vec<String> = all.clone().map(|e| e.key.to_string()).collect();
     let key_width = keys.iter().map(|k| width(k)).max().unwrap_or(0);
-    let ctx = crate::session::Ctx::client(view.id);
     let mut entries: Vec<Line<'_>> = Vec::new();
     let mut heading = None;
     let mut selected_row = 0usize;
@@ -1158,7 +1155,7 @@ fn column(grid: &mut Grid, session: &Session, view: &View, column: &overlay::Col
         let dim = entry
             .command
             .as_ref()
-            .is_some_and(|command| session.unavailable(command, &ctx).is_some());
+            .is_some_and(|command| session.unavailable(command, view.id).is_some());
         let more = if entry.command.is_none() { "…" } else { "" };
         let pad = usize::from(key_width.saturating_sub(width(key)));
         let mut attrs = panel().with_dim(dim);
@@ -1696,9 +1693,8 @@ mod tests {
 
     /// What a terminal shows.
     fn terminal_shows(parser: &fux_vt::Parser) -> Shown {
-        let screen = parser.screen();
-        let (rows, cols) = screen.size().into();
-        let window = screen.window(0, rows, cols);
+        let window = parser.screen().window();
+        let rows = window.rows();
         let cells = (0..rows)
             .map(|y| {
                 window.row(y).map_or_else(Vec::new, |row| {
@@ -1708,7 +1704,7 @@ mod tests {
                 })
             })
             .collect();
-        (cells, screen.cursor_position())
+        (cells, parser.screen().cursor_position())
     }
 
     /// A terminal shown the paints as the server sends them, echoes the
@@ -1746,13 +1742,7 @@ mod tests {
         for case in 0..30 {
             let (mut s, c) = crate::session::testing::attached(10, 40)?;
             if r.below(3) == 0 {
-                let argv = [
-                    "split".to_owned(),
-                    "-h".to_owned(),
-                    "-t".to_owned(),
-                    "%1".to_owned(),
-                ];
-                s.run(&argv, &crate::session::Ctx::default());
+                crate::session::testing::run(&mut s, "split -h -t %1")?;
             }
             let mut fast = terminal(10, 40)?;
             let mut whole = terminal(10, 40)?;
@@ -1836,8 +1826,7 @@ mod tests {
                 match r.below(12) {
                     0 => {
                         let line = commands.get(r.below(commands.len())).copied().unwrap_or("");
-                        let argv: Vec<String> = line.split(' ').map(str::to_owned).collect();
-                        s.run(&argv, &crate::session::Ctx::default());
+                        let _ = crate::session::testing::run(&mut s, line);
                     }
                     1 => s.input(c, b"\x1b"),
                     2 => {
@@ -1846,13 +1835,7 @@ mod tests {
                         s.resize(c, rows, cols);
                     }
                     3 => {
-                        let argv = [
-                            "rename".to_owned(),
-                            "-t".to_owned(),
-                            "@1".to_owned(),
-                            "n".to_owned(),
-                        ];
-                        s.run(&argv, &crate::session::Ctx::default());
+                        crate::session::testing::run(&mut s, "rename -t @1 n")?;
                     }
                     _ => {
                         let panes: Vec<PaneId> = s.panes.keys().copied().collect();
@@ -1923,12 +1906,11 @@ mod tests {
         assert_eq!(levels.map(mouse_level), [0, 1000, 1000, 1002, 1003]);
     }
 
-    fn apply(bytes: &[u8], rows: u16, cols: u16, parser: &mut fux_vt::Parser) -> Vec<String> {
+    fn apply(bytes: &[u8], parser: &mut fux_vt::Parser) -> Vec<String> {
         let _ = parser.process(bytes);
-        let screen = parser.screen();
-        (0..rows)
+        let window = parser.screen().window();
+        (0..window.rows())
             .map(|y| {
-                let window = screen.window(0, rows, cols);
                 window
                     .row(y)
                     .map(crate::session::row_text)
@@ -2009,11 +1991,7 @@ mod tests {
         let (mut s, c) = crate::session::testing::attached(12, 50)?;
         s.output(PaneId::of(1), b"first screen\r\n\x1b[5 q");
         let before = compose(&s, c).ok_or("a screen")?;
-        let outcome = s.run(
-            &["split".to_owned(), "-h".to_owned()],
-            &crate::session::Ctx::client(c),
-        );
-        assert_eq!(outcome.status, 0, "{}", outcome.stderr);
+        crate::session::testing::run(&mut s, "split -h -t %1")?;
         // The focused pane hides its cursor, and a smaller client makes the
         // panes smaller than their places: compose leaves cells untouched.
         s.output(PaneId::of(2), "界 second\r\n\x1b[?25l".as_bytes());
@@ -2084,7 +2062,7 @@ mod tests {
             "{text:?}"
         );
         let mut parser = terminal(1, 12)?;
-        assert_eq!(apply(&bytes, 1, 12, &mut parser), grid_lines(&grid));
+        assert_eq!(apply(&bytes, &mut parser), grid_lines(&grid));
         // Glyphs that do not join are painted in one run.
         let mut plain = Grid::new(1, 12);
         plain.text(0, 2, "\u{1F44D}\u{1F680}x", Attributes::default(), 12);
@@ -2115,7 +2093,7 @@ mod tests {
             "{text:?}"
         );
         let mut parser = terminal(1, 6)?;
-        assert_eq!(apply(text.as_bytes(), 1, 6, &mut parser), grid_lines(&grid));
+        assert_eq!(apply(text.as_bytes(), &mut parser), grid_lines(&grid));
         for (x, cluster) in [
             (3, "a\u{301}"),
             (5, "a\u{301}"),
@@ -2167,12 +2145,12 @@ mod tests {
         b.text(2, 4, "ab", Attributes::default(), 12);
         b.text(3, 10, "界", Attributes::default(), 12);
         let mut parser = terminal(4, 12)?;
-        apply(&paint(None, &a), 4, 12, &mut parser);
-        let lines = apply(&paint(Some(&a), &b), 4, 12, &mut parser);
+        apply(&paint(None, &a), &mut parser);
+        let lines = apply(&paint(Some(&a), &b), &mut parser);
         assert_eq!(lines, grid_lines(&b));
         // Full repaint from nothing matches too.
         let mut fresh = terminal(4, 12)?;
-        assert_eq!(apply(&paint(None, &b), 4, 12, &mut fresh), grid_lines(&b));
+        assert_eq!(apply(&paint(None, &b), &mut fresh), grid_lines(&b));
         Ok(())
     }
 
@@ -2204,15 +2182,15 @@ mod tests {
         let diff = paint(Some(&a), &b);
         assert_eq!(rows_written(&diff), [3]);
         let mut parser = terminal(6, 20)?;
-        apply(&paint(None, &a), 6, 20, &mut parser);
-        assert_eq!(apply(&diff, 6, 20, &mut parser), grid_lines(&b));
+        apply(&paint(None, &a), &mut parser);
+        assert_eq!(apply(&diff, &mut parser), grid_lines(&b));
         // The first and last rows, and a wide glyph's second half.
         let mut c = b.clone();
         c.text(0, 19, "!", Attributes::default(), 20);
         c.text(5, 7, "y", Attributes::default(), 20);
         let diff = paint(Some(&b), &c);
         assert_eq!(rows_written(&diff), [0, 5]);
-        assert_eq!(apply(&diff, 6, 20, &mut parser), grid_lines(&c));
+        assert_eq!(apply(&diff, &mut parser), grid_lines(&c));
         // Nothing changed: no row is written; painted whole, every row is.
         assert_eq!(rows_written(&paint(Some(&c), &c)), Vec::<u16>::new());
         assert_eq!(rows_written(&paint(None, &c)), [0, 1, 2, 3, 4, 5]);
@@ -2346,11 +2324,7 @@ mod tests {
     #[test]
     fn a_panes_palette_is_painted_and_stays_the_panes() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 41)?;
-        let outcome = s.run(
-            &["split".to_owned(), "-h".to_owned()],
-            &crate::session::Ctx::client(c),
-        );
-        assert_eq!(outcome.status, 0, "{}", outcome.stderr);
+        crate::session::testing::run(&mut s, "split -h -t %1")?;
         let set = b"\x1b]4;1;#ff0000\x1b\\\x1b]10;rgb:11/22/33;#000080\x07";
         s.output(PaneId::of(1), &[&set[..], b"\x1b[31mR\x1b[39mD"].concat());
         s.output(PaneId::of(2), b"\x1b[31mR\x1b[39mD");
@@ -2424,11 +2398,7 @@ mod tests {
     #[test]
     fn hyperlinks_are_painted_with_their_panes_ids() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 41)?;
-        let outcome = s.run(
-            &["split".to_owned(), "-h".to_owned()],
-            &crate::session::Ctx::client(c),
-        );
-        assert_eq!(outcome.status, 0, "{}", outcome.stderr);
+        crate::session::testing::run(&mut s, "split -h -t %1")?;
         let linked = b"a\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\b";
         s.output(PaneId::of(1), linked);
         s.output(PaneId::of(2), linked);

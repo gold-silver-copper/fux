@@ -17,7 +17,7 @@ fn terminal_edge_streams_preserve_primary_history_and_modes() -> Result {
         p.process(bytes)?;
         invariants::check(&p);
         let s = p.screen();
-        let text = s.window(0, 23, 80).text((0, 0), (22, 79), 2000, 4000)?;
+        let text = s.window().text((0, 0), (22, 79), 2000, 4000)?;
         match i {
             0 => {
                 assert!(text.starts_with("LINE-09\n"));
@@ -213,7 +213,7 @@ fn a_rows_text_stays_within_its_budget_through_resizes() -> Result {
         // Each cell holds one cluster, whole or cut to what fits inline.
         let screen = p.screen();
         for offset in 0..screen.history_len() + 3 {
-            for cell in screen.row_from_bottom(offset).ok_or("row")?.cells() {
+            for cell in screen.rows().nth_back(offset).ok_or("row")?.cells() {
                 let text = cell.contents();
                 assert!(
                     zalgo.starts_with(text) || family.starts_with(text),

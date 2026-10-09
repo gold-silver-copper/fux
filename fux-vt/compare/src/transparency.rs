@@ -329,9 +329,7 @@ impl Through {
 
     /// Releases a held frame, as the server does once its timeout passes.
     pub fn release(&mut self) {
-        if let Some(due) = self.session.next_frame_release() {
-            self.session.release_frames(due);
-        }
+        self.session.fire(fux::session::Timer::Frame(self.pane));
     }
 
     /// One turn of the server's loop for this client: settle, send what is

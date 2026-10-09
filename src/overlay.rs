@@ -6,11 +6,11 @@
 use crate::command::{
     AnyRef, ClientAction, Command, Kind, MoveTo, Pick, Sibling, Subject, SwapWith, WsRef,
 };
-use crate::config::{Binding, Config};
+use crate::config::{Binding, Config, Layer, Node};
 use crate::id::{ClientId, PaneId};
 use crate::keys::{Direction, Key, KeyPress, Keystroke};
 use crate::layout::Tree;
-use crate::session::{Ctx, Error, Session, describe};
+use crate::session::{Error, Origin, Place, Session, describe};
 use crate::view::{Choice, Confirm, Item, Line, List, Mode, Prompt, PromptFor, View};
 
 /// An entry of the command column: a key of its layer, and the binding it
@@ -53,35 +53,25 @@ impl Entry {
     }
 }
 
-/// The column's entries for the layer at `path`, in the order of the
-/// bindings. A layer is an entry once, where its first binding is.
-fn entries<'a>(config: &'a Config, path: &'a [KeyPress]) -> impl Iterator<Item = Entry> + 'a {
-    let bindings = &config.bindings;
-    let root = config.root.iter().filter(|_| path.is_empty());
-    bindings
-        .iter()
-        .enumerate()
-        .filter_map(move |(i, binding)| match binding.keys.strip_prefix(path) {
-            Some([key]) => Some(Entry::new(*key, binding, false, false)),
-            Some([key, _, ..]) if !bindings.iter().take(i).any(|b| opens(b, path, key)) => {
-                Some(Entry::new(*key, binding, true, false))
-            }
-            Some(_) | None => None,
-        })
-        .chain(root.filter_map(|b| Some(Entry::new(*b.keys.first()?, b, false, true))))
-}
-
-/// Whether `binding` is in the layer that `key` opens in the layer at `path`.
-fn opens(binding: &Binding, path: &[KeyPress], key: &KeyPress) -> bool {
-    matches!(binding.in_layer(path), Some([k, _, ..]) if k == key)
-}
-
 /// The command column for the layer at `path`: its entries grouped, groups
 /// in their order, custom groups after them and `Other` last; then the
 /// bindings without the prefix, in groups of their own, so that none shares
 /// a heading with keys typed after the prefix.
 pub fn column(config: &Config, path: &[KeyPress]) -> Vec<Entry> {
-    let mut entries: Vec<Entry> = entries(config, path).collect();
+    // The keys of the layer, in their order; right after the prefix, then
+    // the keys without it.
+    let layer = config
+        .bindings
+        .layer(path)
+        .into_iter()
+        .flat_map(Layer::iter);
+    let root = config.root.iter().filter(|_| path.is_empty());
+    let mut entries: Vec<Entry> = (layer.filter_map(|(key, node)| match node {
+        Node::Run { binding, .. } => Some(Entry::new(*key, binding, false, false)),
+        Node::Layer(layer) => Some(Entry::new(*key, layer.first()?, true, false)),
+    }))
+    .chain(root.map(|(key, b)| Entry::new(*key, b, false, true)))
+    .collect();
     let mut groups: Vec<(bool, String)> = crate::command::COMMANDS
         .iter()
         .map(|(group, _)| (false, (*group).to_owned()))
@@ -101,16 +91,6 @@ pub fn column(config: &Config, path: &[KeyPress]) -> Vec<Entry> {
         (e.root, group)
     });
     entries
-}
-
-/// The title of the layer at `path`: the group of its first binding; none
-/// if it is not a layer.
-pub fn layer_title<'a>(config: &'a Config, path: &[KeyPress]) -> Option<&'a str> {
-    config
-        .bindings
-        .iter()
-        .find(|b| b.in_layer(path).is_some())
-        .map(Binding::group)
 }
 
 /// The command column, open on a layer that is bound: it is found in the
@@ -144,7 +124,7 @@ impl Column {
                 title: format!(
                     "{}: {}",
                     session.keys_named(&path),
-                    layer_title(&session.config, &path)?
+                    session.config.bindings.layer(&path)?.first()?.group()
                 ),
                 entries: Choice::new(column(&session.config, &path)),
                 path,
@@ -171,15 +151,16 @@ pub struct Repeat {
 impl Repeat {
     /// The repeat mode of the layer at `path`, if a binding there repeats.
     pub fn of(config: &Config, path: Vec<KeyPress>) -> Option<Repeat> {
+        let layer = config.bindings.layer(&path)?;
         let mut keys = Vec::new();
         let mut repeats = false;
-        for binding in &config.bindings {
-            if let Some([key]) = binding.keys.strip_prefix(path.as_slice()) {
+        for (key, node) in layer.iter() {
+            if let Node::Run { repeat, .. } = node {
                 keys.push(key.to_string());
-                repeats |= binding.repeat;
+                repeats |= repeat;
             }
         }
-        let title = layer_title(config, &path).filter(|_| repeats)?;
+        let title = layer.first().map(Binding::group).filter(|_| repeats)?;
         Some(Repeat {
             bar: format!("{}  {} · Esc", title.to_uppercase(), keys.join(" ")),
             title: title.to_owned(),
@@ -356,10 +337,10 @@ fn pane_names<'a>(session: &Session, roots: impl IntoIterator<Item = &'a Tree>) 
 pub fn open_tab_chooser(
     session: &Session,
     view: &mut View,
+    place: Place,
     moving: Option<PaneId>,
 ) -> Result<String, Error> {
-    let ws = (session.shown_workspace(view.id)).ok_or(Error::NoCurrentWorkspace)?;
-    let current = ws.tab_of(view.id).map(|t| t.id);
+    let ws = (session.workspace(place.ws)).ok_or(Error::NoWorkspace(place.ws))?;
     let items = (ws.tabs().iter())
         .map(|tab| {
             let (id, name) = (tab.id, &tab.name);
@@ -372,12 +353,12 @@ pub fn open_tab_chooser(
                     },
                     None => ClientAction::SelectTab(Pick::Id(id)).here(),
                 },
-                current: Some(id) == current,
+                current: id == place.tab,
                 subject: Some(AnyRef::Tab(id)),
             }
         })
         .collect();
-    let items = Choice::new(items).ok_or(Error::NoCurrentWorkspace)?;
+    let items = Choice::new(items).ok_or(Error::NoWorkspace(place.ws))?;
     Ok(open_chooser(view, "tab", items, moving))
 }
 
@@ -407,7 +388,7 @@ pub fn open_workspace_chooser(
             }
         })
         .collect();
-    let items = Choice::new(items).ok_or(Error::NoCurrentWorkspace)?;
+    let items = Choice::new(items).ok_or(Error::NoWorkspaces)?;
     Ok(open_chooser(view, "workspace", items, moving))
 }
 
@@ -459,74 +440,33 @@ pub fn open_pane_chooser(
 
 // ----------------------------------------------------------------- input
 
-/// Runs a command for a client: output and errors become its notice.
-pub fn run_for(session: &mut Session, client: ClientId, command: &Command) {
-    let outcome = session.run_command(command, &Ctx::client(client));
-    if outcome.status != 0 {
-        let line = outcome.stderr.lines().next().unwrap_or("failed");
-        session.error_to(client, line);
-    } else if let Some(line) = outcome.stdout.lines().find(|l| !l.trim().is_empty())
-        && !matches!(
-            command,
-            Command::Split { .. }
-                | Command::NewTab { .. }
-                | Command::NewWorkspace { .. }
-                | Command::MovePane { .. }
-        )
-    {
-        let more = outcome
-            .stdout
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .count()
-            > 1;
-        session.info_to(
-            client,
-            if more {
-                format!("{line} …")
-            } else {
-                line.to_owned()
-            },
-        );
-    }
-}
-
-/// Runs a command line typed for a client, as `run_for` runs a command; one
-/// that does not parse says why.
-fn run_line(session: &mut Session, client: ClientId, argv: &[String]) {
-    match crate::command::parse(argv) {
-        Ok(command) => run_for(session, client, &command),
-        Err(usage) => {
-            let message = usage.to_string();
-            session.error_to(client, message.lines().next().unwrap_or("failed"));
-        }
-    }
-}
-
 /// Runs an entry of a list or the column, unless it cannot run now, in
 /// which case the reason is shown and nothing happens: a list closes, to
 /// `closed`, only if its entry runs.
 fn run_entry(session: &mut Session, client: ClientId, command: &Command, closed: Option<Mode>) {
-    if let Some(reason) = session.unavailable(command, &Ctx::client(client)) {
+    if let Some(reason) = session.unavailable(command, client) {
         return session.error_to(client, reason.to_string());
     }
     if let Some(mode) = closed {
         session.set_mode(client, mode);
     }
-    run_for(session, client, command);
+    session.run_command(command, &Origin::Client(client));
 }
 
 /// Runs the binding of `keys`, if there is one, entering its layer's repeat
 /// mode if it repeats: whether there is one.
 fn run_binding(session: &mut Session, client: ClientId, keys: &[KeyPress]) -> bool {
-    let Some(binding) = session.config.bindings.iter().find(|b| b.keys == keys) else {
+    let Some((last, path)) = keys.split_last() else {
+        return false;
+    };
+    let layer = session.config.bindings.layer(path);
+    let Some(Node::Run { binding, repeat }) = layer.and_then(|l| l.get(*last)) else {
         return false;
     };
     let command = binding.parsed.clone();
-    let repeat = match keys.split_last() {
-        Some((_, path)) if binding.repeat => Repeat::of(&session.config, path.to_vec()),
-        Some(_) | None => None,
-    };
+    let repeat = repeat
+        .then(|| Repeat::of(&session.config, path.to_vec()))
+        .flatten();
     session.set_mode(client, repeat.map_or(Mode::Normal, Mode::Repeat));
     run_entry(session, client, &command, None);
     true
@@ -621,10 +561,7 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
 /// Whether `press`, typed in the layer at `path`, is bound there or opens a
 /// layer inside it. Keys match as typed: `V` is not `v`.
 fn binds(config: &Config, path: &[KeyPress], press: KeyPress) -> bool {
-    config
-        .bindings
-        .iter()
-        .any(|b| b.in_layer(path).and_then(<[_]>::first) == Some(&press))
+    (config.bindings.layer(path)).is_some_and(|layer| layer.get(press).is_some())
 }
 
 /// A key typed in the layer at `path`: it runs its binding, entering the
@@ -809,7 +746,7 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
                 Ok(argv) => argv,
                 Err(error) => return session.error_to(client, error.to_string()),
             };
-            run_line(session, client, &argv);
+            session.run(&argv, &Origin::Client(client));
         }
         PromptFor::Rename(target) => {
             // The command is built, not parsed from words: a name is the
@@ -822,14 +759,9 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
                 },
                 other @ (AnyRef::Pane(_) | AnyRef::Tab(_)) => other,
             };
-            run_for(
-                session,
-                client,
-                &Command::Rename {
-                    target,
-                    name: prompt.line.text(),
-                },
-            );
+            let name = prompt.line.text();
+            let rename = Command::Rename { target, name };
+            session.run_command(&rename, &Origin::Client(client));
         }
     }
 }
@@ -848,7 +780,7 @@ pub fn confirm_key(session: &mut Session, client: ClientId, press: KeyPress) {
         Some(Key::Char('y')) => {
             let command = confirm.command.clone();
             view.mode = Mode::Normal;
-            run_for(session, client, &command);
+            session.run_command(&command, &Origin::Client(client));
         }
         Some(Key::Char('n')) | Some(Key::Escape) | Some(Key::Char('q')) => {
             view.mode = Mode::Normal;
@@ -1241,7 +1173,7 @@ mod tests {
         let (mut s, _) = session()?;
         with_layers(&mut s)?;
         run(&mut s, "bind -n M-t new-tab")?;
-        let out = s.run(&["list-keys".to_owned()], &Ctx::default()).stdout;
+        let out = s.run(&["list-keys".to_owned()], &Origin::default()).stdout;
         assert!(out.contains("\n     g n  new-tab\n"), "{out}");
         assert!(
             out.contains("\n     y l  resize-pane -R (repeats)\n"),
@@ -1270,7 +1202,7 @@ mod tests {
     /// What a user can tell apart: every workspace, tab, pane and client,
     /// the client's mode, and its notice.
     fn state(s: &mut Session, c: ClientId) -> String {
-        let ls = s.run(&["ls".to_owned()], &Ctx::default()).stdout;
+        let ls = s.run(&["ls".to_owned()], &Origin::default()).stdout;
         format!("{ls}{}\n{}", mode(s, c), notice(s, c))
     }
 
@@ -1289,18 +1221,15 @@ mod tests {
     /// a repeating one also enters its mode.
     #[test]
     fn every_default_binding_runs_its_command() -> Outcome {
-        let bindings = Config::default().bindings;
+        let config = Config::default();
+        let bindings = config.bindings.all();
         assert!(!bindings.is_empty());
-        for binding in bindings {
-            let keys: String = binding.keys.iter().map(KeyPress::to_string).collect();
+        for (path, binding, repeat) in bindings {
+            let keys: String = path.iter().map(KeyPress::to_string).collect();
             let (mut typed, c) = busy()?;
             typed.input(c, &prefixed(&keys));
-            if binding.repeat {
-                let layer = binding
-                    .keys
-                    .split_last()
-                    .map(|(_, l)| l)
-                    .unwrap_or_default();
+            if repeat {
+                let layer = path.split_last().map(|(_, l)| l).unwrap_or_default();
                 let expected = format!("repeat {}", crate::config::keys_text(layer));
                 assert_eq!(mode(&typed, c), expected, "{keys}");
                 typed.input(c, b"\r");
@@ -1658,7 +1587,7 @@ mod tests {
 
     /// The panes of the client's tab, left to right.
     fn pane_order(s: &mut Session) -> Vec<String> {
-        let ls = s.run(&["ls".to_owned()], &Ctx::default()).stdout;
+        let ls = s.run(&["ls".to_owned()], &Origin::default()).stdout;
         ls.lines()
             .filter_map(|l| l.trim_start().split(' ').next())
             .filter(|w| w.starts_with('%'))
