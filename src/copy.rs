@@ -606,7 +606,7 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
     // a smaller client can size the pane below this one's room for it.
     let height = placement
         .rect(pane_id)
-        .map_or(1, |r| r.h.min(screen.size().0).max(1));
+        .map_or(1, |r| r.h().min(screen.size().0).max(1));
     view.dirty = true;
     view.notice = None;
 
