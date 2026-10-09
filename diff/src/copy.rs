@@ -27,12 +27,12 @@ const QUERIES: &[&str] = &[
 macro_rules! stack {
     (
         $name:ident, $fux:ident, $vt:ident, $ids:ident, |$row:ident| $id:expr,
-        |$rows:ident, $cols:ident| [$($size:tt)*]
+        |$rows:ident, $cols:ident| [$($size:tt)*], $from:ident::$client:ident
     ) => {
         mod $name {
             use $fux::config::Config;
             use $fux::copy::{self, Seek, Select};
-            use $fux::session::{Ctx, Session};
+            use $fux::session::{$from, Session};
             use $fux::$ids::ClientId;
             use $vt::Parser;
 
@@ -100,7 +100,7 @@ macro_rules! stack {
 
             fn run(s: &mut Session, c: ClientId, line: &str) -> String {
                 let argv: Vec<String> = line.split(' ').map(str::to_owned).collect();
-                format!("{:?}", s.run(&argv, &Ctx::client(c)))
+                format!("{:?}", s.run(&argv, &$from::$client(c)))
             }
 
             /// Every copy-mode error a session can reach, `lines` lines of
@@ -151,8 +151,8 @@ macro_rules! stack {
 }
 
 // Rows give their identity through an accessor, in the baseline as now.
-stack! { base, baseline, baseline_vt, command, |row| row.id(), |r, c| [r, c] }
-stack! { cur, fux, fux_vt, id, |row| row.id(), |r, c| [crate::size(r, c)] }
+stack! { base, baseline, baseline_vt, command, |row| row.id(), |r, c| [r, c], Ctx::client }
+stack! { cur, fux, fux_vt, id, |row| row.id(), |r, c| [crate::size(r, c)], Origin::Client }
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
     let (mut searches, mut found) = (0u64, 0u64);

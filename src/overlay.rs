@@ -10,7 +10,7 @@ use crate::config::{Binding, Config};
 use crate::id::{ClientId, PaneId};
 use crate::keys::{Direction, Key, KeyPress, Keystroke};
 use crate::layout::Tree;
-use crate::session::{Ctx, Error, Session, describe};
+use crate::session::{Error, Origin, Place, Session, describe};
 use crate::view::{Choice, Confirm, Item, Line, List, Mode, Prompt, PromptFor, View};
 
 /// An entry of the command column: a key of its layer, and the binding it
@@ -356,10 +356,10 @@ fn pane_names<'a>(session: &Session, roots: impl IntoIterator<Item = &'a Tree>) 
 pub fn open_tab_chooser(
     session: &Session,
     view: &mut View,
+    place: Place,
     moving: Option<PaneId>,
 ) -> Result<String, Error> {
-    let ws = (session.shown_workspace(view.id)).ok_or(Error::NoCurrentWorkspace)?;
-    let current = ws.tab_of(view.id).map(|t| t.id);
+    let ws = (session.workspace(place.ws)).ok_or(Error::NoWorkspace(place.ws))?;
     let items = (ws.tabs().iter())
         .map(|tab| {
             let (id, name) = (tab.id, &tab.name);
@@ -372,12 +372,12 @@ pub fn open_tab_chooser(
                     },
                     None => ClientAction::SelectTab(Pick::Id(id)).here(),
                 },
-                current: Some(id) == current,
+                current: id == place.tab,
                 subject: Some(AnyRef::Tab(id)),
             }
         })
         .collect();
-    let items = Choice::new(items).ok_or(Error::NoCurrentWorkspace)?;
+    let items = Choice::new(items).ok_or(Error::NoWorkspace(place.ws))?;
     Ok(open_chooser(view, "tab", items, moving))
 }
 
@@ -407,7 +407,7 @@ pub fn open_workspace_chooser(
             }
         })
         .collect();
-    let items = Choice::new(items).ok_or(Error::NoCurrentWorkspace)?;
+    let items = Choice::new(items).ok_or(Error::NoWorkspaces)?;
     Ok(open_chooser(view, "workspace", items, moving))
 }
 
@@ -461,7 +461,7 @@ pub fn open_pane_chooser(
 
 /// Runs a command for a client: output and errors become its notice.
 pub fn run_for(session: &mut Session, client: ClientId, command: &Command) {
-    let outcome = session.run_command(command, &Ctx::client(client));
+    let outcome = session.run_command(command, &Origin::Client(client));
     if outcome.status != 0 {
         let line = outcome.stderr.lines().next().unwrap_or("failed");
         session.error_to(client, line);
@@ -507,7 +507,7 @@ fn run_line(session: &mut Session, client: ClientId, argv: &[String]) {
 /// which case the reason is shown and nothing happens: a list closes, to
 /// `closed`, only if its entry runs.
 fn run_entry(session: &mut Session, client: ClientId, command: &Command, closed: Option<Mode>) {
-    if let Some(reason) = session.unavailable(command, &Ctx::client(client)) {
+    if let Some(reason) = session.unavailable(command, client) {
         return session.error_to(client, reason.to_string());
     }
     if let Some(mode) = closed {
@@ -1241,7 +1241,7 @@ mod tests {
         let (mut s, _) = session()?;
         with_layers(&mut s)?;
         run(&mut s, "bind -n M-t new-tab")?;
-        let out = s.run(&["list-keys".to_owned()], &Ctx::default()).stdout;
+        let out = s.run(&["list-keys".to_owned()], &Origin::default()).stdout;
         assert!(out.contains("\n     g n  new-tab\n"), "{out}");
         assert!(
             out.contains("\n     y l  resize-pane -R (repeats)\n"),
@@ -1270,7 +1270,7 @@ mod tests {
     /// What a user can tell apart: every workspace, tab, pane and client,
     /// the client's mode, and its notice.
     fn state(s: &mut Session, c: ClientId) -> String {
-        let ls = s.run(&["ls".to_owned()], &Ctx::default()).stdout;
+        let ls = s.run(&["ls".to_owned()], &Origin::default()).stdout;
         format!("{ls}{}\n{}", mode(s, c), notice(s, c))
     }
 
@@ -1658,7 +1658,7 @@ mod tests {
 
     /// The panes of the client's tab, left to right.
     fn pane_order(s: &mut Session) -> Vec<String> {
-        let ls = s.run(&["ls".to_owned()], &Ctx::default()).stdout;
+        let ls = s.run(&["ls".to_owned()], &Origin::default()).stdout;
         ls.lines()
             .filter_map(|l| l.trim_start().split(' ').next())
             .filter(|w| w.starts_with('%'))

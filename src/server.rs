@@ -11,7 +11,7 @@ use crate::protocol::{
     Attach, AttachedFrame, Command, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame,
 };
 use crate::render::{self, Grid};
-use crate::session::{Ctx, Outgoing, Session};
+use crate::session::{Origin, Outgoing, Session};
 use crate::socket::SocketPath;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use signal_hook::consts::{SIGCHLD, SIGHUP, SIGINT, SIGTERM};
@@ -1059,12 +1059,11 @@ impl Server {
                 let Some(Command { argv, cwd, pane }) = decoder.frame()? else {
                     return Ok(false);
                 };
-                let ctx = Ctx {
-                    client: None,
+                let origin = Origin::Cli {
                     pane: pane.and_then(|p| crate::command::parse_pane(&p).ok()),
                     cwd: Some(PathBuf::from(cwd)).filter(|p| p.is_dir()),
                 };
-                let outcome = session.run(&argv, &ctx);
+                let outcome = session.run(&argv, &origin);
                 // Nothing is sent for no output.
                 let stdout = outcome.stdout.as_bytes();
                 ServerFrame::split_into(stdout, ServerFrame::Stdout, &mut conn.out);

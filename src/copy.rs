@@ -8,7 +8,7 @@ use crate::id::ClientId;
 use crate::id::PaneId;
 use crate::keys::{Direction, Key, KeyPress};
 use crate::render::shown;
-use crate::session::{Error, Outgoing, Session};
+use crate::session::{Error, Outgoing, Place, Session};
 use crate::view::{Mode, Notice, View};
 use fux_vt::{CellRef, RowId, Screen};
 use std::num::NonZeroUsize;
@@ -528,8 +528,8 @@ pub fn text(
 // ------------------------------------------------------------------- keys
 
 /// Enters copy mode on the client's focused pane.
-pub fn enter(session: &Session, view: &mut View) -> Result<String, Error> {
-    let pane = session.focused(view.id).ok_or(Error::NoPaneToCopy)?;
+pub fn enter(session: &Session, view: &mut View, place: Place) -> Result<String, Error> {
+    let pane = place.pane.ok_or(Error::NoPaneToCopy)?;
     let screen = session
         .panes
         .get(&pane)
