@@ -376,16 +376,8 @@ impl Case {
                 Step::Frame(bytes) => out.push_str(&format!("frame {}\n", escape(bytes))),
                 Step::Resize(rows, cols) => out.push_str(&format!("resize {rows} {cols}\n")),
                 Step::Copy(s) => out.push_str(&format!(
-                    "copy {} {} {} {} {} {} {} {} {}\n",
-                    s.offset,
-                    s.rows,
-                    s.cols,
-                    s.from.0,
-                    s.from.1,
-                    s.to.0,
-                    s.to.1,
-                    s.max_cells,
-                    s.max_bytes
+                    "copy {} {} {} {} {} {} {}\n",
+                    s.offset, s.from.0, s.from.1, s.to.0, s.to.1, s.max_cells, s.max_bytes
                 )),
             }
         }
@@ -433,12 +425,10 @@ impl Case {
                     let get = |i: usize| n.get(i).copied().ok_or(at("too few numbers".into()));
                     case.steps.push(Step::Copy(Selection {
                         offset: get(0)?,
-                        rows: small(n.get(1))?,
-                        cols: small(n.get(2))?,
-                        from: (small(n.get(3))?, small(n.get(4))?),
-                        to: (small(n.get(5))?, small(n.get(6))?),
-                        max_cells: get(7)?,
-                        max_bytes: get(8)?,
+                        from: (small(n.get(1))?, small(n.get(2))?),
+                        to: (small(n.get(3))?, small(n.get(4))?),
+                        max_cells: get(5)?,
+                        max_bytes: get(6)?,
                     }));
                 }
                 "" => {}
@@ -490,8 +480,6 @@ mod tests {
                 Step::Resize(2, 9),
                 Step::Copy(Selection {
                     offset: 1,
-                    rows: 2,
-                    cols: 3,
                     from: (0, 1),
                     to: (1, 2),
                     max_cells: 10,
