@@ -39,8 +39,8 @@ macro_rules! side {
     ) => {
         pub mod $module {
             use crate::model::{
-                self, Blink, Cell, Color, Encoding, Error, Heard, Lookup, Marked, Mouse, Row, Seen,
-                Setup, State, Style, Underline,
+                self, Blink, Cell, Color, Error, Heard, Lookup, Marked, Row, Seen, Setup, State,
+                Style, Underline,
             };
             use $vt as vt;
 
@@ -278,20 +278,8 @@ macro_rules! side {
                         },
                         cursor_shape: s.cursor_shape(),
                         scroll_region: s.scroll_region(),
-                        mouse: match s.mouse_protocol_mode() {
-                            vt::MouseProtocolMode::None => Mouse::None,
-                            vt::MouseProtocolMode::Press => Mouse::Press,
-                            vt::MouseProtocolMode::PressRelease => Mouse::PressRelease,
-                            vt::MouseProtocolMode::ButtonMotion => Mouse::ButtonMotion,
-                            vt::MouseProtocolMode::AnyMotion => Mouse::AnyMotion,
-                            other => Mouse::Other(format!("{other:?}")),
-                        },
-                        encoding: match s.mouse_protocol_encoding() {
-                            vt::MouseProtocolEncoding::Default => Encoding::Default,
-                            vt::MouseProtocolEncoding::Utf8 => Encoding::Utf8,
-                            vt::MouseProtocolEncoding::Sgr => Encoding::Sgr,
-                            other => Encoding::Other(format!("{other:?}")),
-                        },
+                        mouse: format!("{:?}", s.mouse_protocol_mode()),
+                        encoding: format!("{:?}", s.mouse_protocol_encoding()),
                         kitty_keyboard_flags: s.kitty_keyboard_flags(),
                         modify_other_keys: s.modify_other_keys(),
                         pen: style(pen),

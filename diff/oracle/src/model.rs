@@ -192,26 +192,6 @@ pub enum Heard {
     OtherUnhandled(String),
 }
 
-/// The mouse reporting asked for.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Mouse {
-    None,
-    Press,
-    PressRelease,
-    ButtonMotion,
-    AnyMotion,
-    Other(String),
-}
-
-/// How mouse reports are to be encoded.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Encoding {
-    Default,
-    Utf8,
-    Sgr,
-    Other(String),
-}
-
 /// The options a parser is made with, as fux-vt names them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Setup {
@@ -314,8 +294,9 @@ pub struct State {
     pub modes: Vec<(String, bool)>,
     pub cursor_shape: u16,
     pub scroll_region: (u16, u16),
-    pub mouse: Mouse,
-    pub encoding: Encoding,
+    /// The mouse reporting and encoding, as their `Debug` names them.
+    pub mouse: String,
+    pub encoding: String,
     pub kitty_keyboard_flags: u8,
     pub modify_other_keys: Option<u8>,
     /// The pen, through `Screen::attributes`.
