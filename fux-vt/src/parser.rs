@@ -3,7 +3,7 @@
 //! Ignored control strings retain no payload. No parser dependency is used.
 
 use crate::mode::{Kind, Mode};
-use crate::{Error, Reply, Screen, Size, screen::Dispatch};
+use crate::{Error, Reply, Rgb, Screen, Size, screen::Dispatch};
 
 #[cfg(test)]
 #[path = "../tests/corpus/mod.rs"]
@@ -580,24 +580,6 @@ pub enum Event<'a> {
     },
 }
 
-/// The colour queries of an OSC 10 to 19, `command` its number and `rest`
-/// what follows it: each parameter is the next colour, and each `?` among
-/// them asks for that one (ctlseqs, "Operating System Commands").
-fn color_queries(command: &[u8], rest: &[u8], bel: bool, sink: &mut impl Sink) {
-    let Some(first) = std::str::from_utf8(command)
-        .ok()
-        .and_then(|n| n.parse::<u8>().ok())
-        .filter(|n| (10..=19).contains(n))
-    else {
-        return;
-    };
-    for (number, parameter) in (first..=19).zip(rest.split(|b| *b == b';')) {
-        if parameter == b"?" {
-            sink.event(Event::ColorQuery { number, bel });
-        }
-    }
-}
-
 /// A complete sequence fux-vt parsed but does not implement, so a host can
 /// log or answer it. Sequences cut short by their bounds (too many
 /// parameters or intermediates) are dropped without being reported.
@@ -711,17 +693,16 @@ impl Parser {
     pub fn screen(&self) -> &Screen {
         &self.screen
     }
-    /// Tells the parser what the host's terminal shows for palette entry
-    /// `index` (`None`: the host does not know), with `Feature::Palette`: a
+    /// Tells the parser what the host's terminal shows for palette entries
+    /// 0 to 15, the ones themes change (`None`: the host does not know
+    /// that one), replacing what it told before, with `Feature::Palette`: a
     /// program's query of an entry it has not set (`OSC 4 ; index ; ?`) is
     /// answered with it rather than with xterm's default. A colour the
     /// program set still wins, and no reset of the program's colours (OSC
     /// 104, DECSTR, RIS) clears the host's. It changes no cell and no
-    /// colour drawn: [`Screen::palette_color`] stays the program's. Entries
-    /// 0 to 15 can be given, the ones themes change; returns whether `index`
-    /// is one.
-    pub fn set_host_color(&mut self, index: u8, rgb: Option<(u8, u8, u8)>) -> bool {
-        self.screen.set_host_color(index, rgb)
+    /// colour drawn: [`Screen::palette_color`] stays the program's.
+    pub fn set_host_palette(&mut self, palette: [Option<Rgb>; 16]) {
+        self.screen.set_host_palette(palette);
     }
     /// Resizes the terminal, reflowing the primary screen with
     /// [`Feature::Reflow`].
@@ -1306,7 +1287,14 @@ impl Parser {
                     }
                 }
             }
-            _ => color_queries(command, rest, bel, sink),
+            // The colour queries of OSC 10 to 19: each `?` asks for its colour.
+            _ => {
+                for (number, parameter) in crate::palette::dynamic_parameters(command, rest) {
+                    if parameter == b"?" {
+                        sink.event(Event::ColorQuery { number, bel });
+                    }
+                }
+            }
         }
         Ok(())
     }

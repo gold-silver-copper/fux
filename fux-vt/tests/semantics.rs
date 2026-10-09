@@ -125,10 +125,10 @@ fn sgr_defaults_resets_and_colour_parameter_forms() -> Result {
     // '\e[1;2mX'`); this used to pin the vt100 crate's dim replacing bold.
     assert!(cell(&p, 0, 1)?.dim() && cell(&p, 0, 1)?.bold());
     assert_eq!(cell(&p, 0, 2)?.attributes(), Default::default());
-    assert_eq!(cell(&p, 0, 3)?.fgcolor(), Color::Rgb(1, 2, 3));
+    assert_eq!(cell(&p, 0, 3)?.fgcolor(), Color::Rgb([1, 2, 3].into()));
     assert_eq!(cell(&p, 0, 3)?.bgcolor(), Color::Idx(200));
     assert_eq!(cell(&p, 0, 4)?.fgcolor(), Color::Idx(255));
-    assert_eq!(cell(&p, 0, 4)?.bgcolor(), Color::Rgb(5, 6, 7));
+    assert_eq!(cell(&p, 0, 4)?.bgcolor(), Color::Rgb([5, 6, 7].into()));
     assert_eq!(cell(&p, 0, 5)?.attributes(), Default::default());
     Ok(())
 }

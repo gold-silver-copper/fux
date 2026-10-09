@@ -295,7 +295,7 @@ fn styles_in_use_survive_the_sweeps_that_new_ones_bring() -> Result<(), Error> {
         for cell in row.cells() {
             let (r, g, b) = colour(n);
             assert_eq!(cell.contents(), "x", "glyph {n}");
-            assert_eq!(cell.bgcolor(), Color::Rgb(r, g, b), "glyph {n}");
+            assert_eq!(cell.bgcolor(), Color::Rgb([r, g, b].into()), "glyph {n}");
             n = n.saturating_add(1);
         }
     }

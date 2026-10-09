@@ -83,7 +83,10 @@ fn palette_queries_are_answered_with_the_colour_or_xterms_default() -> Result {
             "^[]4;1;rgb:1212/3434/5656^[\\",
         ])
     );
-    assert_eq!(parser.screen().palette_color(1), Some((0x12, 0x34, 0x56)));
+    assert_eq!(
+        parser.screen().palette_color(1),
+        Some([0x12, 0x34, 0x56].into())
+    );
     assert_eq!(parser.screen().palette_color(0), None);
     assert!(parser.screen().colors_changed());
     Ok(())
@@ -127,19 +130,19 @@ fn specifications_are_kept_as_xterm_keeps_them() -> Result {
 fn a_list_of_colours_is_read_as_xterm_reads_it() -> Result {
     let (_, parser) = run(PALETTE, b"\x1b]4;3;#300;4;bogus;5;#123\x07")?;
     let screen = parser.screen();
-    assert_eq!(screen.palette_color(3), Some((0x30, 0, 0)));
+    assert_eq!(screen.palette_color(3), Some([0x30, 0, 0].into()));
     assert_eq!(
         (screen.palette_color(4), screen.palette_color(5)),
         (None, None)
     );
     let (_, parser) = run(PALETTE, b"\x1b]4;x;#fff;2;#fff\x07\x1b]4;1x;#ff0000\x07")?;
-    let white = Some((0xf0, 0xf0, 0xf0));
+    let white = Some([0xf0, 0xf0, 0xf0].into());
     let screen = parser.screen();
     assert_eq!(
         (screen.palette_color(0), screen.palette_color(2)),
         (white, white)
     );
-    assert_eq!(screen.palette_color(1), Some((0xff, 0, 0)));
+    assert_eq!(screen.palette_color(1), Some([0xff, 0, 0].into()));
     for list in [
         &b"\x1b]4;-1;#fff;2;#fff\x07"[..],
         b"\x1b]4;261;#fff;2;#fff\x07",
@@ -170,19 +173,22 @@ fn osc_104_resets_entries() -> Result {
     let s = parser.screen();
     assert_eq!(
         [s.palette_color(0), s.palette_color(1), s.palette_color(2)],
-        [Some((0x10, 0x10, 0x10)), None, None]
+        [Some([0x10, 0x10, 0x10].into()), None, None]
     );
     let (_, parser) = run(PALETTE, &[&set[..], b"\x1b]104;3x;0\x07"].concat())?;
     let s = parser.screen();
     assert_eq!(
         (s.palette_color(0), s.palette_color(3)),
-        (Some((0x10, 0x10, 0x10)), Some((0x40, 0x40, 0x40)))
+        (
+            Some([0x10, 0x10, 0x10].into()),
+            Some([0x40, 0x40, 0x40].into())
+        )
     );
     let (_, parser) = run(PALETTE, &[&set[..], b"\x1b]104;1;x;0\x07"].concat())?;
     let s = parser.screen();
     assert_eq!(
         (s.palette_color(0), s.palette_color(1)),
-        (Some((0x10, 0x10, 0x10)), None)
+        (Some([0x10, 0x10, 0x10].into()), None)
     );
     let (heard, parser) = run(PALETTE, &[&set[..], b"\x1b]104\x07\x1b]4;3;?\x07"].concat())?;
     assert!(!parser.screen().colors_changed());
@@ -266,8 +272,8 @@ fn dynamic_colours_are_set_queried_and_reset() -> Result {
         ])
     );
     let s = parser.screen();
-    assert_eq!(s.dynamic_color(10), Some((0x12, 0x34, 0x56)));
-    assert_eq!(s.dynamic_color(11), Some((1, 2, 3)));
+    assert_eq!(s.dynamic_color(10), Some([0x12, 0x34, 0x56].into()));
+    assert_eq!(s.dynamic_color(11), Some([1, 2, 3].into()));
     assert_eq!(s.dynamic_color(13), None);
     assert!(s.colors_changed());
     let set = b"\x1b]11;#010203\x07";
@@ -341,13 +347,15 @@ fn an_overlong_colour_request_is_ignored() -> Result {
 /// terminal shows `host` for some of palette entries 0 to 15.
 fn run_hosted(
     options: Options,
-    host: &[(u8, (u8, u8, u8))],
+    host: &[(usize, [u8; 3])],
     input: &[u8],
 ) -> Result<(Heard, Parser)> {
     let mut parser = Parser::with_options(Size::new(25, 80)?, 0, options)?;
+    let mut palette = [None; 16];
     for &(index, rgb) in host {
-        assert!(parser.set_host_color(index, Some(rgb)));
+        *palette.get_mut(index).ok_or("an entry 0 to 15")? = Some(rgb.into());
     }
+    parser.set_host_palette(palette);
     let mut heard = Heard::default();
     parser.process_with(input, &mut heard)?;
     Ok((heard, parser))
@@ -357,7 +365,7 @@ fn run_hosted(
 /// it, if the host gave one; xterm's default otherwise, and past 15 always.
 #[test]
 fn an_entry_not_set_is_answered_with_the_hosts_colour() -> Result {
-    let host = [(1, (0xbf, 0x61, 0x6a)), (15, (0xec, 0xef, 0xf4))];
+    let host = [(1, [0xbf, 0x61, 0x6a]), (15, [0xec, 0xef, 0xf4])];
     let (heard, parser) = run_hosted(PALETTE, &host, b"\x1b]4;1;?;2;?;15;?;17;?\x1b\\")?;
     assert_eq!(
         heard,
@@ -379,7 +387,7 @@ fn an_entry_not_set_is_answered_with_the_hosts_colour() -> Result {
 /// clears.
 #[test]
 fn the_programs_colour_wins_and_resets_bring_back_the_hosts() -> Result {
-    let host = [(1, (0xbf, 0x61, 0x6a))];
+    let host = [(1, [0xbf, 0x61, 0x6a])];
     for reset in [
         &b"\x1b]104;1\x07"[..],
         b"\x1b]104\x07",
@@ -402,24 +410,20 @@ fn the_programs_colour_wins_and_resets_bring_back_the_hosts() -> Result {
     Ok(())
 }
 
-/// Only entries 0 to 15 take a host colour; a cleared one is answered with
-/// xterm's default again; without the option nothing is answered.
+/// A cleared host colour is answered with xterm's default again; without
+/// the option nothing is answered.
 #[test]
-fn host_colours_are_bounded_cleared_and_need_the_option() -> Result {
-    let mut parser = Parser::with_options(Size::new(25, 80)?, 0, PALETTE)?;
-    assert!(!parser.set_host_color(16, Some((1, 2, 3))));
-    assert!(!parser.set_host_color(255, Some((1, 2, 3))));
-    assert!(parser.set_host_color(1, Some((1, 2, 3))));
-    assert!(parser.set_host_color(1, None));
+fn host_colours_are_cleared_and_need_the_option() -> Result {
+    let (_, mut parser) = run_hosted(PALETTE, &[(1, [1, 2, 3])], b"")?;
+    parser.set_host_palette([None; 16]);
     let mut heard = Heard::default();
     parser.process_with(b"\x1b]4;1;?\x07", &mut heard)?;
     assert_eq!(heard, said(&["^[]4;1;rgb:cdcd/0000/0000^G"]));
     // Clearing what was never set keeps no colours at all.
     let mut fresh = Parser::with_options(Size::new(25, 80)?, 0, PALETTE)?;
-    assert!(!fresh.set_host_color(16, None));
-    assert!(fresh.set_host_color(3, None));
+    fresh.set_host_palette([None; 16]);
     assert!(!fresh.screen().colors_changed());
-    let (heard, _) = run_hosted(Options::new(), &[(1, (1, 2, 3))], b"\x1b]4;1;?\x07")?;
+    let (heard, _) = run_hosted(Options::new(), &[(1, [1, 2, 3])], b"\x1b]4;1;?\x07")?;
     assert_eq!(heard, said(&[]));
     Ok(())
 }

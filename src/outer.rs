@@ -41,7 +41,8 @@ use crate::id::PaneId;
 use crate::id::{ClientId, TabId};
 use crate::session::{Outgoing, Session};
 use crate::view::View;
-pub use fux_vt::keys::colour::{Colours, Rgb, Scheme};
+pub use fux_vt::Rgb;
+pub use fux_vt::keys::colour::{Colours, Scheme};
 use std::time::Instant;
 
 /// The colours asked one by one, each its own OSC: the foreground, the
@@ -118,15 +119,7 @@ pub const BELL_GAP: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Palette entries 0 to 15 as a terminal said them (OSC 4), `None` for an
 /// entry it did not.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Palette(pub [Option<Rgb>; 16]);
-
-impl Palette {
-    /// Whether the terminal said any entry.
-    pub fn known(&self) -> bool {
-        self.0.iter().any(Option::is_some)
-    }
-}
+pub type Palette = [Option<Rgb>; 16];
 /// Turns on the terminal's scheme reports and asks for the scheme now. The
 /// client turns the reports off on every way out (`client::LEAVE`).
 pub const REPORTS_ON: &[u8] = b"\x1b[?2031h\x1b[?996n";
@@ -157,7 +150,7 @@ pub struct Terminal {
 impl Terminal {
     /// Whether the terminal said anything of its colours.
     fn said(&self) -> bool {
-        self.colours.known() || self.palette.known()
+        self.colours.known() || self.palette.iter().any(Option::is_some)
     }
 }
 
@@ -183,16 +176,14 @@ impl Session {
         };
         let terminal = &mut view.terminal;
         match reply {
-            Reply::Colour { number, rgb } => {
-                match number {
-                    10 => terminal.colours.foreground = Some(rgb),
-                    11 => terminal.colours.background = Some(rgb),
-                    _ => return,
-                }
+            Reply::Foreground(rgb) => {
+                terminal.colours.foreground = Some(rgb);
                 self.learned(client);
-                if number == 11 {
-                    self.tell_change(client);
-                }
+            }
+            Reply::Background(rgb) => {
+                terminal.colours.background = Some(rgb);
+                self.learned(client);
+                self.tell_change(client);
             }
             Reply::Scheme(scheme) => {
                 terminal.colours.scheme = Some(scheme);
@@ -243,7 +234,7 @@ impl Session {
                 }
             }
             Reply::Palette { index, rgb } => {
-                if let Some(entry) = terminal.palette.0.get_mut(usize::from(index)) {
+                if let Some(entry) = terminal.palette.get_mut(usize::from(index)) {
                     *entry = Some(rgb);
                     self.learned(client);
                 }
@@ -261,7 +252,7 @@ impl Session {
         else {
             return;
         };
-        for (last, said) in self.last_palette.0.iter_mut().zip(palette.0) {
+        for (last, said) in self.last_palette.iter_mut().zip(palette) {
             *last = said.or(*last);
         }
         let last = &mut self.last_colours;
@@ -587,62 +578,5 @@ mod tests {
         assert_eq!(s.before_paint(c), [TITLE_POP, TITLE_PUSH].concat());
         assert!(s.before_paint(c).is_empty());
         Ok(())
-    }
-
-    /// XParseColor's scaling: each channel's digits are a fraction of the
-    /// largest number of that many digits.
-    #[test]
-    fn colour_specifications_scale_to_sixteen_bits() {
-        let rgb = |r, g, b| Some(Rgb { r, g, b });
-        assert_eq!(Rgb::parse(b"rgb:ffff/0000/8080"), rgb(0xffff, 0, 0x8080));
-        assert_eq!(Rgb::parse(b"rgb:ff/00/80"), rgb(0xffff, 0, 0x8080));
-        assert_eq!(Rgb::parse(b"rgb:f/0/8"), rgb(0xffff, 0, 0x8888));
-        // 0x800 * 0xffff / 0xfff, truncated.
-        assert_eq!(Rgb::parse(b"rgb:fff/000/800"), rgb(0xffff, 0, 0x8007));
-        assert_eq!(
-            Rgb::parse(b"rgb:1E1E/1e1e/1E1E"),
-            rgb(0x1e1e, 0x1e1e, 0x1e1e)
-        );
-        for bad in [
-            &b"rgb:ff/00"[..],
-            b"rgb:ff/00/80/00",
-            b"rgb:fffff/0/0",
-            b"rgb://",
-            b"rgb:g/0/0",
-            b"#ffffff",
-            b"rgba:ff/ff/ff/ff",
-        ] {
-            assert_eq!(Rgb::parse(bad), None, "{bad:?}");
-        }
-    }
-
-    #[test]
-    fn answers_take_the_form_they_were_asked_in() {
-        let colours = Colours {
-            foreground: Some(Rgb {
-                r: 0xffff,
-                g: 0xffff,
-                b: 0xffff,
-            }),
-            background: Some(Rgb {
-                r: 0x1e1e,
-                g: 0,
-                b: 0xabcd,
-            }),
-            scheme: None,
-        };
-        assert_eq!(
-            colours.answer(11, true).as_deref(),
-            Some(&b"\x1b]11;rgb:1e1e/0000/abcd\x07"[..])
-        );
-        assert_eq!(
-            colours.answer(10, false).as_deref(),
-            Some(&b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\"[..])
-        );
-        assert_eq!(colours.answer(12, true), None, "the cursor colour");
-        assert_eq!(Colours::default().answer(11, true), None);
-        assert!(!Colours::default().known());
-        assert_eq!(Scheme::Dark.report(), b"\x1b[?997;1n");
-        assert_eq!(Scheme::Light.report(), b"\x1b[?997;2n");
     }
 }

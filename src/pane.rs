@@ -371,9 +371,6 @@ pub struct Pane {
     /// The program rang the bell since the session last looked
     /// (`Session::ring`).
     pub bell: bool,
-    /// The palette entries 0 to 15 its client's terminal said, given to the
-    /// parser to answer a program's `OSC 4 ; n ; ?` with.
-    host_palette: crate::outer::Palette,
 }
 
 /// After the shell's output has been quiet this long, it is taken to be
@@ -445,7 +442,6 @@ impl Pane {
             title_stack: VecDeque::new(),
             colours: crate::outer::Colours::default(),
             bell: false,
-            host_palette: crate::outer::Palette::default(),
         })
     }
 
@@ -615,18 +611,9 @@ impl Pane {
     /// Gives the parser `palette` as the host's colours for entries 0 to
     /// 15, replacing the last whole: an entry it lacks is cleared, so a
     /// program asking it gets xterm's default. The program's own colours
-    /// still win, and nothing drawn changes (`fux_vt::Parser::set_host_color`).
+    /// still win, and nothing drawn changes (`fux_vt::Parser::set_host_palette`).
     pub fn set_host_palette(&mut self, palette: crate::outer::Palette) {
-        if self.host_palette == palette {
-            return;
-        }
-        // A channel's top byte: OSC 4 answers in eight bits a channel.
-        let byte = |c: u16| u8::try_from(c >> 8).unwrap_or(u8::MAX);
-        for (index, rgb) in (0u8..).zip(palette.0) {
-            let rgb = rgb.map(|c| (byte(c.r), byte(c.g), byte(c.b)));
-            self.parser.set_host_color(index, rgb);
-        }
-        self.host_palette = palette;
+        self.parser.set_host_palette(palette);
     }
 
     pub fn screen(&self) -> &fux_vt::Screen {
@@ -778,21 +765,13 @@ mod tests {
     /// `CSI ? 996 n`, with the scheme. What is not known is not answered.
     #[test]
     fn colour_queries_are_answered_from_the_session_s_colours() -> Result<(), Error> {
-        use crate::outer::{Colours, Rgb, Scheme};
+        use crate::outer::{Colours, Scheme};
         let mut pane = pane()?;
         pane.output(b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b[?996n\x1b[c");
         assert_eq!(pane.input.drain_all(), b"\x1b[?62;22c", "nothing known");
         pane.colours = Colours {
-            foreground: Some(Rgb {
-                r: 0xc0c0,
-                g: 0xc0c0,
-                b: 0xc0c0,
-            }),
-            background: Some(Rgb {
-                r: 0,
-                g: 0x1010,
-                b: 0xffff,
-            }),
+            foreground: Some([0xc0; 3].into()),
+            background: Some([0, 0x10, 0xff].into()),
             scheme: Some(Scheme::Light),
         };
         pane.output(b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b[?996n\x1b[c\x1b]12;?\x07");
@@ -940,7 +919,10 @@ mod tests {
         pane.output(b"\x1b[0m\x1b[4:3m\x1b[58:2::255:0:0mx\x1b[0m");
         let cell = pane.screen().cell(0, 0).ok_or("no cell")?;
         assert_eq!(cell.underline_style(), fux_vt::UnderlineStyle::Curly);
-        assert_eq!(cell.underline_color(), fux_vt::Color::Rgb(255, 0, 0));
+        assert_eq!(
+            cell.underline_color(),
+            fux_vt::Color::Rgb([255, 0, 0].into())
+        );
         Ok(())
     }
 

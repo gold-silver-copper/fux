@@ -196,7 +196,7 @@ mod tests {
 
     /// A style no number holds: a direct colour.
     fn direct(n: u8) -> Attributes {
-        Attributes::new(Color::Idx(n), Color::Rgb(n, 0, n.wrapping_mul(3)))
+        Attributes::new(Color::Idx(n), Color::Rgb([n, 0, n.wrapping_mul(3)].into()))
     }
 
     #[test]
@@ -241,9 +241,9 @@ mod tests {
             Color::Idx(0),
             Color::Idx(7),
             Color::Idx(255),
-            Color::Rgb(0, 0, 0),
-            Color::Rgb(1, 2, 3),
-            Color::Rgb(255, 255, 255),
+            Color::Rgb([0, 0, 0].into()),
+            Color::Rgb([1, 2, 3].into()),
+            Color::Rgb([255, 255, 255].into()),
         ];
         let blinks = [Blink::None, Blink::Slow, Blink::Rapid];
         let underlines = [
@@ -293,7 +293,11 @@ mod tests {
                         // With an underline colour or a direct background,
                         // none.
                         assert_eq!(a.with_underline_color(Color::Idx(1)).inline_style(), None);
-                        assert_eq!(a.with_background(Color::Rgb(0, 0, 0)).inline_style(), None);
+                        assert_eq!(
+                            a.with_background(Color::Rgb([0, 0, 0].into()))
+                                .inline_style(),
+                            None
+                        );
                     }
                 }
             }
@@ -307,7 +311,7 @@ mod tests {
         while !styles.wants_sweep(0) {
             n = n.wrapping_add(1);
             let [_, r, g, b] = n.to_be_bytes();
-            let attributes = Attributes::new(Color::Rgb(r, g, b), Color::Default);
+            let attributes = Attributes::new(Color::Rgb([r, g, b].into()), Color::Default);
             assert!(styles.insert(attributes).is_some());
         }
         assert_eq!(styles.len(), FLOOR);
