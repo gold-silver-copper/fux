@@ -3,8 +3,8 @@ use crate::link::{Held, Pen};
 use crate::mode::{Kind, Mode, Modes, Switch};
 use crate::unicode::Cluster;
 use crate::{
-    Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Mark, Options, Reply, Row, RowId,
-    UnderlineStyle, Window,
+    Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Mark, Options, Reply, Rgb, Row,
+    RowId, UnderlineStyle, Window,
     geometry::{Size, Span},
     grid::{Cursor, Grid, Scroll},
     parser::Parameters,
@@ -401,11 +401,11 @@ fn colour_of(rest: &[u16]) -> Option<Color> {
 }
 
 fn rgb(r: u16, g: u16, b: u16) -> Option<Color> {
-    Some(Color::Rgb(
-        u8::try_from(r).ok()?,
-        u8::try_from(g).ok()?,
-        u8::try_from(b).ok()?,
-    ))
+    Some(Color::Rgb(Rgb {
+        r: u8::try_from(r).ok()?,
+        g: u8::try_from(g).ok()?,
+        b: u8::try_from(b).ok()?,
+    }))
 }
 
 /// Sets a mouse mode or encoding `value` in `slot`, the latest set
@@ -726,20 +726,14 @@ impl Screen {
     /// (OSC 4, with `Feature::Palette`), as red, green and blue; `None`
     /// while it is the terminal's own, and after OSC 104, DECSTR or RIS
     /// reset it. A cell of `Color::Idx(index)` shows this colour.
-    pub fn palette_color(&self, index: u8) -> Option<(u8, u8, u8)> {
-        let [r, g, b] = self.colours.as_ref()?.palette(index)?;
-        Some((r, g, b))
+    pub fn palette_color(&self, index: u8) -> Option<Rgb> {
+        self.colours.as_ref()?.palette(index)
     }
-    /// Sets the host's colour for palette entry `index` ([`crate::Parser::set_host_color`]).
-    pub(crate) fn set_host_color(&mut self, index: u8, rgb: Option<(u8, u8, u8)>) -> bool {
-        let colour = rgb.map(|(r, g, b)| [r, g, b]);
-        if usize::from(index) >= crate::palette::HOST_ENTRIES {
-            return false;
+    /// Sets the host's colours for palette entries 0 to 15 ([`crate::Parser::set_host_palette`]).
+    pub(crate) fn set_host_palette(&mut self, palette: [Option<Rgb>; 16]) {
+        if palette != [None; 16] || self.colours.is_some() {
+            self.colours.get_or_insert_default().host = palette;
         }
-        if colour.is_none() && self.colours.is_none() {
-            return true;
-        }
-        self.colours.get_or_insert_default().set_host(index, colour)
     }
     /// The colour dynamic colour `number` shows if the program set it (OSC
     /// 10 to 19, with `Feature::Palette`): 10 the text foreground and 11
@@ -747,9 +741,8 @@ impl Screen {
     /// cursor, and the others xterm's pointer, Tektronix and highlight
     /// colours. `None` while it is the terminal's own, and after OSC 110 to
     /// 119 reset it.
-    pub fn dynamic_color(&self, number: u8) -> Option<(u8, u8, u8)> {
-        let [r, g, b] = self.colours.as_ref()?.dynamic(number)?;
-        Some((r, g, b))
+    pub fn dynamic_color(&self, number: u8) -> Option<Rgb> {
+        self.colours.as_ref()?.dynamic(number)
     }
     /// Whether the program changed a palette entry or a dynamic colour, so
     /// that a host drawing the screen knows to ask `palette_color` and
@@ -2195,7 +2188,7 @@ impl Screen {
                     write!(out, ";{}", bright.saturating_add(n.saturating_sub(8)))
                 }
                 (Color::Idx(n), _) => write!(out, ";{long}:5:{n}"),
-                (Color::Rgb(r, g, b), _) => write!(out, ";{long}:2::{r}:{g}:{b}"),
+                (Color::Rgb(Rgb { r, g, b }), _) => write!(out, ";{long}:2::{r}:{g}:{b}"),
                 (Color::Default, _) => Ok(()),
             };
         };

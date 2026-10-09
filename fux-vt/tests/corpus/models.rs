@@ -191,7 +191,7 @@ pub fn texts() -> Vec<String> {
 /// Styles `Cells` operations set.
 pub const STYLES: [Attributes; 3] = [
     Attributes::new(Color::Default, Color::Default),
-    Attributes::new(Color::Idx(1), Color::Rgb(1, 2, 3)).with_bold(true),
+    Attributes::new(Color::Idx(1), Color::Rgb(fux_vt::Rgb { r: 1, g: 2, b: 3 })).with_bold(true),
     Attributes::new(Color::Default, Color::Default).with_underline_color(Color::Idx(9)),
 ];
 

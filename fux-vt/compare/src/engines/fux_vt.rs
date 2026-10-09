@@ -45,7 +45,7 @@ pub struct Vt {
 fn color(c: fux_vt::Color) -> Color {
     match c {
         fux_vt::Color::Idx(n) => Color::Idx(n),
-        fux_vt::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+        fux_vt::Color::Rgb(fux_vt::Rgb { r, g, b }) => Color::Rgb(r, g, b),
         // A kind fux-vt adds later reads as the default until named here.
         fux_vt::Color::Default | _ => Color::Default,
     }

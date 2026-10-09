@@ -28,7 +28,7 @@ fn attributes(index: u8) -> Attributes {
     match index % 12 {
         10 => plain
             .with_underline_style(UnderlineStyle::Curly)
-            .with_underline_color(Color::Rgb(255, 0, 0)),
+            .with_underline_color(Color::Rgb([255, 0, 0].into())),
         11 => plain.with_underline_style(UnderlineStyle::Double),
         0 => plain,
         1 => plain.with_bold(true),
@@ -40,8 +40,8 @@ fn attributes(index: u8) -> Attributes {
             .with_bold(true)
             .with_dim(true),
         7 => Attributes::new(Color::Idx(200), Color::Idx(17)),
-        8 => Attributes::new(Color::Rgb(1, 2, 3), Color::Default),
-        _ => Attributes::new(Color::Default, Color::Rgb(250, 128, 0))
+        8 => Attributes::new(Color::Rgb([1, 2, 3].into()), Color::Default),
+        _ => Attributes::new(Color::Default, Color::Rgb([250, 128, 0].into()))
             .with_dim(true)
             .with_inverse(true),
     }
