@@ -242,7 +242,8 @@ State that everyone shares, owned by the server:
 Server
  └─ Workspace +N (name)          ordered
      └─ Tab @N (name)            ordered
-         └─ Node = Split { axis, children: [(weight, Node)] } | Pane %N
+         └─ Tree = Split(axis, [(weight, child)]) | Pane %N, each child
+            a pane or a split along the other axis
 ```
 
 A plain tree of IDs is enough; nothing needs an ECS.

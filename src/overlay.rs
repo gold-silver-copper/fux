@@ -9,7 +9,7 @@ use crate::command::{
 use crate::config::{Binding, Config};
 use crate::id::{ClientId, PaneId};
 use crate::keys::{Direction, Key, KeyPress, Keystroke};
-use crate::layout::Node;
+use crate::layout::Tree;
 use crate::session::{Ctx, Error, Session, describe};
 use crate::view::{Choice, Confirm, Item, Line, List, Mode, Prompt, PromptFor, View};
 
@@ -335,7 +335,7 @@ fn open_list(
 }
 
 /// The names of the panes in `roots`, for a chooser row, shortened.
-fn pane_names<'a>(session: &Session, roots: impl IntoIterator<Item = &'a Node>) -> String {
+fn pane_names<'a>(session: &Session, roots: impl IntoIterator<Item = &'a Tree>) -> String {
     let mut names: Vec<String> = Vec::new();
     for root in roots {
         root.for_each_pane(&mut |id| {

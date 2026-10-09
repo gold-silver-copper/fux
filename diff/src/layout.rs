@@ -1,57 +1,42 @@
-//! Layout trees, laid out and changed by the baseline and the current fux:
-//! the same placements, the same resizes (what they return and the trees
-//! they leave), and the same trees after random splits and removals.
-//! Trees are both normalized, as fux keeps them, and not; weights run from
-//! 0 to `u32::MAX`, and areas from empty to `u16::MAX` wide, anywhere on
-//! the screen (none can be past its edge).
+//! Layout trees, grown from one pane by random splits, then laid out and
+//! changed by the baseline and the current fux: the same placements, the
+//! same resizes (what they return and the trees they leave), and the same
+//! trees after random splits and removals. Areas run from empty to
+//! `u16::MAX` wide, anywhere on the screen (none can be past its edge).
 use crate::rng::Rng;
 use crate::{Outcome, bump, same, times};
 
-/// A tree, for both to build.
-#[derive(Clone, Debug)]
-enum Tree {
-    Pane(u32),
-    Split(bool, Vec<(u32, Tree)>),
+/// A tree written alike by both sides, as the current fux's `Debug` has it.
+pub trait Shape {
+    fn shape(&self) -> String;
 }
 
-fn weight(r: &mut Rng) -> u32 {
-    match r.below(8) {
-        0 => 0,
-        1 => 1,
-        2 => 1000,
-        3 => u32::MAX,
-        4 => u32::MAX.saturating_sub(1),
-        5 => u32::try_from(r.next() >> 32).unwrap_or(0),
-        _ => u32::try_from(r.below(3000)).unwrap_or(0).saturating_add(1),
+impl Shape for fux::layout::Tree {
+    fn shape(&self) -> String {
+        format!("{self:?}")
     }
 }
 
-/// A tree of up to about 15 panes; a normalized one alternates its axes and
-/// gives every split at least two children.
-fn tree(r: &mut Rng, depth: u32, next: &mut u32, normal: bool, parent: Option<bool>) -> Tree {
-    let leaf = if depth == 0 { 12 } else { 33 };
-    if depth >= 4 || *next >= 14 || r.chance(leaf) {
-        *next = next.saturating_add(1);
-        return Tree::Pane(*next);
+impl Shape for baseline::layout::Node {
+    fn shape(&self) -> String {
+        /// A subtree, whose axis is not written: it is the other one.
+        fn inner(node: &baseline::layout::Node, axis: String) -> String {
+            match node {
+                baseline::layout::Node::Pane(p) => format!("Pane({p:?})"),
+                baseline::layout::Node::Split { children, .. } => {
+                    let children: Vec<String> = (children.iter())
+                        .map(|(w, c)| format!("({w}, {})", inner(c, "()".into())))
+                        .collect();
+                    format!("Split({axis}, Split([{}]))", children.join(", "))
+                }
+            }
+        }
+        let axis = match self {
+            baseline::layout::Node::Split { axis, .. } => format!("{axis:?}"),
+            baseline::layout::Node::Pane(_) => String::new(),
+        };
+        inner(self, axis)
     }
-    let horizontal = match (normal, parent) {
-        (true, Some(parent)) => !parent,
-        _ => r.chance(50),
-    };
-    let count = if normal {
-        r.below(3).saturating_add(2)
-    } else {
-        r.below(5)
-    };
-    let children = (0..count)
-        .map(|_| {
-            (
-                weight(r),
-                tree(r, depth.saturating_add(1), next, normal, Some(horizontal)),
-            )
-        })
-        .collect();
-    Tree::Split(horizontal, children)
 }
 
 fn length(r: &mut Rng) -> u16 {
@@ -85,11 +70,11 @@ enum Change {
 }
 
 macro_rules! stack {
-    ($name:ident, $fux:ident, $ids:ident, $area:expr, $line:expr) => {
+    ($name:ident, $fux:ident, $ids:ident, $tree:ident, $area:expr, $line:expr) => {
         mod $name {
-            use super::{Change, Tree};
+            use super::{Change, Shape};
             use $fux::keys::Direction;
-            use $fux::layout::{self, Axis, Node, Placement, Rect, Separator, Side};
+            use $fux::layout::{self, Axis, Placement, Rect, Separator, Side, $tree as Tree};
             use $fux::$ids::PaneId;
 
             fn axis(horizontal: bool) -> Axis {
@@ -106,32 +91,24 @@ macro_rules! stack {
                 $fux::command::parse_pane(&format!("%{n}")).ok()
             }
 
-            fn node(tree: &Tree) -> Option<Node> {
-                Some(match tree {
-                    Tree::Pane(p) => Node::Pane(pane(*p)?),
-                    Tree::Split(horizontal, children) => Node::Split {
-                        axis: axis(*horizontal),
-                        children: children
-                            .iter()
-                            .map(|(w, c)| Some((*w, node(c)?)))
-                            .collect::<Option<_>>()?,
-                    },
-                })
-            }
-
             pub struct Laid {
-                root: Option<Node>,
+                root: Option<Tree>,
                 area: Rect,
                 placed: Placement,
             }
 
             impl Laid {
-                pub fn new(tree: &Tree, (x, y, w, h): (u16, u16, u16, u16)) -> Laid {
-                    Laid {
-                        root: node(tree),
+                /// One pane, split by `splits` in turn.
+                pub fn new(splits: &[Change], (x, y, w, h): (u16, u16, u16, u16)) -> Laid {
+                    let mut laid = Laid {
+                        root: pane(1).map(Tree::Pane),
                         area: $area(x, y, w, h),
                         placed: Placement::default(),
+                    };
+                    for split in splits {
+                        laid.change(*split);
                     }
+                    laid
                 }
 
                 /// The tree and where its panes and separators are placed.
@@ -140,7 +117,8 @@ macro_rules! stack {
                         Some(root) => {
                             layout::place_into(root, self.area, &mut self.placed);
                             format!(
-                                "{root:?}\n{:?}\n{:?}\n{:?}",
+                                "{}\n{:?}\n{:?}\n{:?}",
+                                root.shape(),
                                 self.placed.panes,
                                 self.placed.separators.iter().map($line).collect::<Vec<_>>(),
                                 layout::place(root, self.area).panes
@@ -153,7 +131,7 @@ macro_rules! stack {
                 pub fn panes(&self) -> Vec<u32> {
                     self.root
                         .as_ref()
-                        .map(Node::panes)
+                        .map(Tree::panes)
                         .unwrap_or_default()
                         .iter()
                         .filter_map(|p| p.to_string().get(1..)?.parse().ok())
@@ -228,6 +206,7 @@ stack!(
     base,
     baseline,
     layout,
+    Node,
     |x, y, w, h| Rect { x, y, w, h },
     |s: &Separator| (s.axis, s.x, s.y, s.len)
 );
@@ -236,6 +215,7 @@ stack!(
     cur,
     fux,
     id,
+    Tree,
     |x: u16, y: u16, w: u16, h: u16| {
         let screen = Rect::screen(y.saturating_add(h), x.saturating_add(w));
         let (_, below) = screen.split(Axis::Vertical, y);
@@ -282,12 +262,30 @@ fn change(r: &mut Rng, panes: &[u32], next: &mut u32) -> Change {
     }
 }
 
+/// Splits that grow one pane into a tree of up to 15.
+fn splits(r: &mut Rng) -> Vec<Change> {
+    let mut panes = vec![1];
+    let count = r.below(15);
+    (2..)
+        .take(count)
+        .map(|new| {
+            let target = r.pick(&panes).copied().unwrap_or(1);
+            panes.push(new);
+            Change::Split {
+                target,
+                new,
+                horizontal: r.chance(50),
+                after: r.chance(50),
+            }
+        })
+        .collect()
+}
+
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
-    let (mut trees, mut changes, mut shown, mut unnormal) = (0u64, 0u64, 0u64, 0u64);
+    let (mut trees, mut changes, mut shown) = (0u64, 0u64, 0u64);
     for case in 0..times(20_000, scale) {
-        let normal = r.chance(75);
-        let mut next = 0;
-        let t = tree(r, 0, &mut next, normal, None);
+        let t = splits(r);
+        let mut next = u32::try_from(t.len()).unwrap_or(0).saturating_add(1);
         let (w, h) = (length(r), length(r));
         // Anywhere its far edge still fits a u16 screen: no rect is past it.
         let near = r.chance(50);
@@ -303,7 +301,7 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
         let (x, y) = (at(r, w), at(r, h));
         let area = (x, y, w, h);
         let (mut a, mut b) = (base::Laid::new(&t, area), cur::Laid::new(&t, area));
-        let context = |log: &[Change]| format!("tree {case} {t:?} in {area:?}, after {log:?}");
+        let context = |log: &[Change]| format!("tree {case} from {t:?} in {area:?}, after {log:?}");
         let mut log = Vec::new();
         same(&context(&log), a.shown(), b.shown())?;
         same(&context(&log), a.neighbors(), b.neighbors())?;
@@ -319,11 +317,8 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
             bump(&mut shown);
         }
         bump(&mut trees);
-        if !normal {
-            bump(&mut unnormal);
-        }
     }
     Ok(format!(
-        "{trees} trees ({unnormal} not normalized), {changes} resizes, splits, removals and swaps, {shown} placements after them"
+        "{trees} trees, {changes} resizes, splits, removals and swaps, {shown} placements after them"
     ))
 }
