@@ -1,10 +1,11 @@
-//! Opt-in outputs: `Options::events` (OSC 0/1/2/52 and BEL),
-//! `Options::extended_replies` (DECRQM, DECXCPR, secondary DA) and
-//! `Options::mode_reports` (DECRQM alone). The default must
+//! Opt-in outputs: `Feature::Events` (OSC 0/1/2/52 and BEL),
+//! `Feature::ExtendedReplies` (DECRQM, DECXCPR, secondary DA) and
+//! `Feature::ModeReports` (DECRQM alone). The default must
 //! stay fux's policy: no events and the original reply set.
 
 use fux_vt::{
-    Attributes, CellRef, Cells, Color, Event, Mode, OSC_PAYLOAD_LIMIT, Options, Parser, Sink,
+    Attributes, CellRef, Cells, Color, Event, Feature, Mode, OSC_PAYLOAD_LIMIT, Options, Parser,
+    Sink,
 };
 #[path = "corpus/pieces.rs"]
 mod pieces;
@@ -36,8 +37,8 @@ impl Sink for Record {
     }
 }
 
-const EVENTS: Options = Options::new().with_events(true);
-const REPLIES: Options = Options::new().with_extended_replies(true);
+const EVENTS: Options = Options::new().with(Feature::Events);
+const REPLIES: Options = Options::new().with(Feature::ExtendedReplies);
 
 fn run(options: Options, input: &[u8]) -> std::result::Result<Record, fux_vt::Error> {
     let mut parser = Parser::with_options(24, 80, 0, options)?;
@@ -165,14 +166,14 @@ fn extended_replies_answer_decrqm_decxcpr_and_secondary_da() -> Result {
     Ok(())
 }
 
-/// `Options::mode_reports` answers DECRQM, and nothing else the extended
+/// `Feature::ModeReports` answers DECRQM, and nothing else the extended
 /// replies would: no DA2, no DECXCPR. Synchronized output (2026) is how
 /// programs use it: they ask whether the terminal knows the mode
 /// (`references/modern/mode_2026_synchronized_output.md`, "Feature
 /// detection") before wrapping frames in it.
 #[test]
 fn mode_reports_answer_decrqm_alone() -> Result {
-    const MODES: Options = Options::new().with_mode_reports(true);
+    const MODES: Options = Options::new().with(Feature::ModeReports);
     let record = run(
         MODES,
         b"\x1b[?2026$p\x1b[?2026h\x1b[?2026$p\x1b[?2026l\x1b[?2026$p\x1b[4$p\x1b[>c\x1b[?6n",
@@ -270,15 +271,15 @@ fn process_until_frame_stops_after_an_xtrestore_that_begins_a_frame() -> Result 
 }
 
 /// In-band resize (`references/modern/mode_2048_in_band_resize.md`): with
-/// `Options::in_band_resize`, setting mode 2048 reports the size at once,
+/// `Feature::InBandResize`, setting mode 2048 reports the size at once,
 /// every time it is set; DECRQM reports the mode; `Parser::resize_report`
 /// gives the report for the new size after a resize while it is set; RIS
 /// ends it. Without the option the mode is not recognized, as DECRQM says.
 #[test]
 fn in_band_resize_reports_the_size() -> Result {
     let options = Options::new()
-        .with_mode_reports(true)
-        .with_in_band_resize(true);
+        .with(Feature::ModeReports)
+        .with(Feature::InBandResize);
     let mut p = Parser::with_options(24, 80, 0, options)?;
     let mut record = Record::default();
     p.process_with(
@@ -303,7 +304,7 @@ fn in_band_resize_reports_the_size() -> Result {
     p.process(b"\x1b[?2048h\x1bc")?;
     assert_eq!(p.resize_report(), None, "RIS");
     // Without the option: not recognized, no report.
-    let mut p = Parser::with_options(24, 80, 0, Options::new().with_mode_reports(true))?;
+    let mut p = Parser::with_options(24, 80, 0, Options::new().with(Feature::ModeReports))?;
     let mut record = Record::default();
     p.process_with(b"\x1b[?2048h\x1b[?2048$p", &mut record)?;
     assert_eq!(record.replies, [b"\x1b[?2048;0$y".to_vec()]);
@@ -311,12 +312,12 @@ fn in_band_resize_reports_the_size() -> Result {
     Ok(())
 }
 
-/// `Options::size_reports` answers xterm's text-area size query, `CSI 18 t`,
+/// `Feature::SizeReports` answers xterm's text-area size query, `CSI 18 t`,
 /// with the screen's size in characters; not the pixel query, `CSI 14 t`;
 /// and nothing without the option.
 #[test]
 fn size_reports_answer_the_text_area_in_characters() -> Result {
-    let options = Options::new().with_size_reports(true);
+    let options = Options::new().with(Feature::SizeReports);
     let mut p = Parser::with_options(24, 80, 0, options)?;
     let mut record = Record::default();
     p.process_with(b"\x1b[18t\x1b[14t", &mut record)?;
@@ -328,7 +329,7 @@ fn size_reports_answer_the_text_area_in_characters() -> Result {
     Ok(())
 }
 
-const SETTINGS: Options = Options::new().with_setting_reports(true);
+const SETTINGS: Options = Options::new().with(Feature::SettingReports);
 
 /// DECRQSS, `DCS $ q Pt ST` (xterm's ctlseqs, "Device-Control functions";
 /// DECRPSS in the VT510 manual): `DCS 1 $ r Pt ST`, `Pt` the control
@@ -416,7 +417,7 @@ fn setting_reports_answer_the_pen_the_cursor_shape_and_the_margins() -> Result {
     Ok(())
 }
 
-/// Without `Options::setting_reports`, DECRQSS is a DCS like any other:
+/// Without `Feature::SettingReports`, DECRQSS is a DCS like any other:
 /// consumed, unanswered.
 #[test]
 fn without_the_option_decrqss_is_ignored() -> Result {
@@ -424,9 +425,9 @@ fn without_the_option_decrqss_is_ignored() -> Result {
     let record = run(Options::default(), input)?;
     assert_eq!(record, Record::default());
     let all = Options::new()
-        .with_events(true)
-        .with_extended_replies(true)
-        .with_mode_reports(true);
+        .with(Feature::Events)
+        .with(Feature::ExtendedReplies)
+        .with(Feature::ModeReports);
     assert_eq!(run(all, input)?, Record::default());
     Ok(())
 }
@@ -454,7 +455,7 @@ fn setting_reports_are_the_same_in_any_pieces() -> Result {
 /// OSC 10 to 19): each `?` asks for the next colour from the one the OSC
 /// names, an event each, with how the query ended so the host answers in
 /// kind. Setting a colour and other OSC numbers are no query; nor is
-/// anything without `Options::events`.
+/// anything without `Feature::Events`.
 #[test]
 fn colour_queries_are_events() -> Result {
     let input = b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b]10;?;?\x07\x1b]12;red;?\x07\
@@ -486,7 +487,7 @@ fn colour_queries_are_events() -> Result {
 
 /// Colour-scheme change reports
 /// (`references/modern/mode_2031_color_scheme_updates.md`): with
-/// `Options::color_scheme_updates`, mode 2031 is tracked and DECRQM reports
+/// `Feature::ColorSchemeUpdates`, mode 2031 is tracked and DECRQM reports
 /// it; RIS ends it. `CSI ? 996 n`, the scheme asked for, is the host's to
 /// answer. Without the option the mode is not recognized.
 #[test]
@@ -502,8 +503,8 @@ fn colour_scheme_updates_are_tracked() -> Result {
         }
     }
     let options = Options::new()
-        .with_mode_reports(true)
-        .with_color_scheme_updates(true);
+        .with(Feature::ModeReports)
+        .with(Feature::ColorSchemeUpdates);
     let mut p = Parser::with_options(24, 80, 0, options)?;
     let mut said = Said::default();
     p.process_with(b"\x1b[?2031$p\x1b[?2031h\x1b[?2031$p", &mut said)?;
@@ -517,7 +518,7 @@ fn colour_scheme_updates_are_tracked() -> Result {
     p.process_with(b"\x1b[?996n", &mut said)?;
     assert_eq!(said.0.len(), 1);
     assert!(said.0.iter().all(|s| s.starts_with("unhandled Csi")));
-    let mut p = Parser::with_options(24, 80, 0, Options::new().with_mode_reports(true))?;
+    let mut p = Parser::with_options(24, 80, 0, Options::new().with(Feature::ModeReports))?;
     let mut said = Said::default();
     p.process_with(b"\x1b[?2031h\x1b[?2031$p", &mut said)?;
     assert!(!p.screen().mode(Mode::ColorSchemeUpdates));
@@ -562,7 +563,7 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
 }
 
 /// DECRQCRA (VT520 manual, 5-104; DEC STD 070, 5-180), with
-/// `Options::rectangle_checksums`: DECCKSR, `DCS Pi ! ~ xxxx ST`, gives the
+/// `Feature::RectangleChecksums`: DECCKSR, `DCS Pi ! ~ xxxx ST`, gives the
 /// checksum of the rectangle's cells as xterm and the VT520 sum them
 /// (`xtermCheckRect`; ctlseqs, XTCHECKSUM): each character, plus 0x10
 /// underlined, 0x20 inverse, 0x40 blinking and 0x80 bold, summed in 16 bits
@@ -574,7 +575,7 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
 #[test]
 fn rectangle_checksums_sum_the_cells() -> Result {
     let checksum = |sum: u16| format!("{:04X}", sum.wrapping_neg());
-    let options = Options::new().with_rectangle_checksums(true);
+    let options = Options::new().with(Feature::RectangleChecksums);
     let mut p = Parser::with_options(3, 4, 0, options)?;
     let mut record = Record::default();
     // Row 1: a, b, bold c, underlined and inverse d. Row 2: é, a wide

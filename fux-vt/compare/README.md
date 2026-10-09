@@ -517,7 +517,7 @@ fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt   # with fux-vt
 
 - **Directly** (`src/esctest.rs`): each area (a test class) is one esctest
   process on a 25×80 PTY. Its terminal is a fux-vt parser set up as fux's
-  panes are, plus rectangle checksums and DECXCPR (`extended_replies`),
+  panes are, plus rectangle checksums and DECXCPR (`ExtendedReplies`),
   which panes leave off. Areas start on a fresh terminal and run in
   parallel, up to `--jobs` (one per CPU by default). A read waits
   `--timeout` (1 s) for its reply, so a missing report fails only that

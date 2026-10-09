@@ -1,5 +1,7 @@
 #![no_main]
-use fux_vt::{Color, Event, Identity, OSC_PAYLOAD_LIMIT, Options, Parser, RowId, Sink, Unhandled};
+use fux_vt::{
+    Color, Event, Feature, Identity, OSC_PAYLOAD_LIMIT, Options, Parser, RowId, Sink, Unhandled,
+};
 use libfuzzer_sys::fuzz_target;
 #[path = "../../tests/corpus/graphemes.rs"]
 mod graphemes;
@@ -173,19 +175,19 @@ fuzz_target!(|data: &[u8]| {
     // reports (DECRQSS, 0x40) and rectangle checksums (0x80).
     // Each is fuzzed alone and with the others, alongside the default.
     let options = Options::new()
-        .with_events(history & 0x10 != 0)
-        .with_extended_replies(history & 0x20 != 0)
-        .with_hyperlinks(history & 0x40 != 0)
-        .with_prompt_marks(history & 0x80 != 0)
-        .with_reflow(r & 0x10 != 0)
-        .with_kitty_keyboard(r & 0x20 != 0)
+        .set(Feature::Events, history & 0x10 != 0)
+        .set(Feature::ExtendedReplies, history & 0x20 != 0)
+        .set(Feature::Hyperlinks, history & 0x40 != 0)
+        .set(Feature::PromptMarks, history & 0x80 != 0)
+        .set(Feature::Reflow, r & 0x10 != 0)
+        .set(Feature::KittyKeyboard, r & 0x20 != 0)
         .with_identity((r & 0x40 != 0).then_some(Identity {
             name: "fuzz",
             version: "1.2.3",
         }))
-        .with_color_scheme_updates(r & 0x80 != 0)
-        .with_setting_reports(c & 0x40 != 0)
-        .with_rectangle_checksums(c & 0x80 != 0);
+        .set(Feature::ColorSchemeUpdates, r & 0x80 != 0)
+        .set(Feature::SettingReports, c & 0x40 != 0)
+        .set(Feature::RectangleChecksums, c & 0x80 != 0);
     let Ok(mut whole) = Parser::with_options(
         1 + u16::from(r % 16),
         1 + u16::from(c % 24),

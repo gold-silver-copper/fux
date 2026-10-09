@@ -3,7 +3,7 @@ use crate::link::{Held, Pen};
 use crate::mode::{Kind, Mode, Modes, Switch};
 use crate::unicode::Cluster;
 use crate::{
-    Attributes, Blink, CellRef, Color, Error, Hyperlink, Mark, Options, Reply, Row, RowId,
+    Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Mark, Options, Reply, Row, RowId,
     UnderlineStyle, Window,
     grid::{Grid, Scroll},
     parser::Parameters,
@@ -364,7 +364,7 @@ pub struct Screen {
     links_seen: bool,
     /// The key the next link opened takes (`Hyperlink::key`).
     next_link: u64,
-    /// The colours the program set, with `Options::palette`: made when
+    /// The colours the program set, with `Feature::Palette`: made when
     /// the first is set, so a screen whose program sets none keeps none.
     colours: Option<Box<crate::palette::Colours>>,
 }
@@ -644,13 +644,13 @@ impl Screen {
     }
     /// The kitty keyboard protocol flags in force: the top of the current
     /// screen's stack, 0 (legacy key reporting) when it is empty. Always 0
-    /// without [`Options::kitty_keyboard`].
+    /// without [`Feature::KittyKeyboard`].
     pub fn kitty_keyboard_flags(&self) -> u8 {
         self.keyboard().top()
     }
     /// The xterm modifyOtherKeys level set by `CSI > 4 ; Pv m`, `None` when
     /// it is off (`Pv` 0 or absent). Always `None` without
-    /// [`Options::kitty_keyboard`].
+    /// [`Feature::KittyKeyboard`].
     pub fn modify_other_keys(&self) -> Option<u8> {
         self.modify_other_keys
     }
@@ -677,7 +677,7 @@ impl Screen {
     /// reported at the last column, as xterm does.
     pub(crate) fn reported_cursor(&self, options: &Options) -> (u32, u32) {
         let g = self.grid();
-        let col = if options.identity.is_some() {
+        let col = if options.identity().is_some() {
             g.cursor.1
         } else {
             g.next_column()
@@ -708,7 +708,7 @@ impl Screen {
         self.grid().cell(row, col)
     }
     /// The hyperlink of the cell at `row`, `col` of the screen (see
-    /// [`Row::link`]). Always `None` without [`Options::hyperlinks`].
+    /// [`Row::link`]). Always `None` without [`Feature::Hyperlinks`].
     pub fn link(&self, row: u16, col: u16) -> Option<Hyperlink<'_>> {
         self.grid().live_row(row)?.link(usize::from(col))
     }
@@ -724,7 +724,7 @@ impl Screen {
     }
 
     /// The colour palette entry `index` shows if the program changed it
-    /// (OSC 4, with `Options::palette`), as red, green and blue; `None`
+    /// (OSC 4, with `Feature::Palette`), as red, green and blue; `None`
     /// while it is the terminal's own, and after OSC 104, DECSTR or RIS
     /// reset it. A cell of `Color::Idx(index)` shows this colour.
     pub fn palette_color(&self, index: u8) -> Option<(u8, u8, u8)> {
@@ -743,7 +743,7 @@ impl Screen {
         self.colours.get_or_insert_default().set_host(index, colour)
     }
     /// The colour dynamic colour `number` shows if the program set it (OSC
-    /// 10 to 19, with `Options::palette`): 10 the text foreground and 11
+    /// 10 to 19, with `Feature::Palette`): 10 the text foreground and 11
     /// the background, which a cell of `Color::Default` shows, 12 the
     /// cursor, and the others xterm's pointer, Tektronix and highlight
     /// colours. `None` while it is the terminal's own, and after OSC 110 to
@@ -1971,7 +1971,7 @@ impl Screen {
     }
 
     /// DECRQCRA (`CSI Pi ; Pp ; Pt ; Pl ; Pb ; Pr * y`, VT420 and up), with
-    /// [`Options::rectangle_checksums`]: the checksum of the rectangle's
+    /// [`Feature::RectangleChecksums`]: the checksum of the rectangle's
     /// cells, as DECCKSR (`DCS Pi ! ~ xxxx ST`, four upper-case hex
     /// digits). DEC's manuals leave the sum to the terminal; this is
     /// xterm's default, which matches the VT520's (`xtermCheckRect`, ctlseqs'
@@ -2038,7 +2038,7 @@ impl Screen {
     /// a VT220 with ANSI colour with an identity, else a VT100 with
     /// advanced video, as the vt100 crate answered.
     pub(crate) fn primary_attributes(options: &Options) -> Reply {
-        if options.identity.is_some() {
+        if options.identity().is_some() {
             Reply::of(format_args!("\x1b[?62;22c"))
         } else {
             Reply::of(format_args!("\x1b[?1;2c"))
@@ -2271,7 +2271,7 @@ impl Screen {
     }
 
     /// The kitty keyboard protocol and modifyOtherKeys sequences, with
-    /// [`Options::kitty_keyboard`]; `None` for any other sequence.
+    /// [`Feature::KittyKeyboard`]; `None` for any other sequence.
     fn keyboard_protocol(
         &mut self,
         p: &Parameters,
@@ -2317,7 +2317,7 @@ impl Screen {
             self.cursor_shape = p.first(0, 0);
             return Ok(Dispatch::Done);
         }
-        if options.kitty_keyboard
+        if options.has(Feature::KittyKeyboard)
             && let Some(dispatch) = self.keyboard_protocol(p, intermediates, byte)
         {
             return Ok(dispatch);

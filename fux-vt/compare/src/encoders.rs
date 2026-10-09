@@ -8,7 +8,7 @@
 //! the recorded verdicts below, each with who decides it.
 use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent};
 use fux_vt::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
-use fux_vt::{Mode, Options, Parser};
+use fux_vt::{Feature, Options, Parser};
 use libghostty_vt::terminal::Mode;
 use libghostty_vt::{Terminal, TerminalOptions, focus, key as gkey, mouse as gmouse, paste};
 
@@ -176,8 +176,7 @@ struct Pair {
 
 impl Pair {
     fn new(setup: &[u8]) -> Result<Pair, String> {
-        let mut options = Options::default();
-        options.kitty_keyboard = true;
+        let options = Options::new().with(Feature::KittyKeyboard);
         let mut fux =
             Parser::with_options(ROWS, COLS, 0, options).map_err(|e| format!("fux-vt: {e:?}"))?;
         fux.process(setup).map_err(|e| format!("fux-vt: {e:?}"))?;
@@ -489,7 +488,9 @@ fn compare_keys(pair: &Pair, setup: &str, tally: &mut Tally) -> Result<(), Strin
         let mut legacy = Vec::new();
         fux_vt::keys::encode::key_bytes(
             stroke,
-            fux_vt::keys::encode::KeyMode::legacy(pair.fux.screen().mode(Mode::ApplicationCursor)),
+            fux_vt::keys::encode::KeyMode::legacy(
+                pair.fux.screen().mode(fux_vt::Mode::ApplicationCursor),
+            ),
             &mut legacy,
         );
         let verdict = key_verdict(setup, key, mods, &ours, &theirs, &legacy);

@@ -13,7 +13,7 @@
 //! here is passed on whole, byte for byte, so the oracle holds the rest of
 //! fux-vt to the commit exactly as it did.
 //!
-//! - **The palette** (`Options::palette`): OSC 4, 5, 104, 105 and 110 to
+//! - **The palette** (`Feature::Palette`): OSC 4, 5, 104, 105 and 110 to
 //!   119, which set, query and reset the palette, the special colours and
 //!   the dynamic colours; and OSC 10 to 19 when any of their parameters
 //!   sets a colour. A query of OSC 10 to 19 alone (every parameter `?`)

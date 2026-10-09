@@ -2,6 +2,7 @@
 use crate::bytes::ByteQueue;
 use crate::id::PaneId;
 use crate::process::Child;
+use fux_vt::Feature;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -194,17 +195,17 @@ pub const IDENTITY: fux_vt::Identity = fux_vt::Identity {
 /// lines re-wrap at its new width, its history with them, as in the
 /// terminals fux runs in) and fux's identity.
 pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
-    .with_events(true)
-    .with_mode_reports(true)
-    .with_in_band_resize(true)
-    .with_size_reports(true)
-    .with_color_scheme_updates(true)
-    .with_kitty_keyboard(true)
-    .with_hyperlinks(true)
-    .with_prompt_marks(true)
-    .with_setting_reports(true)
-    .with_palette(true)
-    .with_reflow(true)
+    .with(Feature::Events)
+    .with(Feature::ModeReports)
+    .with(Feature::InBandResize)
+    .with(Feature::SizeReports)
+    .with(Feature::ColorSchemeUpdates)
+    .with(Feature::KittyKeyboard)
+    .with(Feature::Hyperlinks)
+    .with(Feature::PromptMarks)
+    .with(Feature::SettingReports)
+    .with(Feature::Palette)
+    .with(Feature::Reflow)
     .with_identity(Some(IDENTITY));
 
 /// The most titles a pane's program can push (`CSI 22 t`): xterm's bound.

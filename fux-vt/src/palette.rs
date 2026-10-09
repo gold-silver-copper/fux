@@ -1,5 +1,5 @@
 //! The colours a program sets, queries and resets, with
-//! [`crate::Options::palette`]: the 256-colour palette (OSC 4, OSC 104),
+//! [`crate::Feature::Palette`]: the 256-colour palette (OSC 4, OSC 104),
 //! xterm's special colours (OSC 5, OSC 105, and OSC 4 past the palette) and
 //! the dynamic colours (OSC 10 to 19, OSC 110 to 119), as xterm's ctlseqs
 //! give them ("Operating System Commands") and xterm 411 reads them.

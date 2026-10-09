@@ -1,5 +1,5 @@
 //! fux-vt's standalone types, beside the parser: `Cells`, the run of cells
-//! fux composes frames in, given random edits of every kind; `Cell::new`;
+//! fux composes frames in, given random edits of every kind; `CellRef::new`;
 //! `continues_cluster`; and fux-vt's constants and limits. Compared after
 //! every edit.
 use crate::case::{Difference, same, same_list};
@@ -24,25 +24,18 @@ pub trait Standalone {
 /// An edit of a `Cells`.
 #[derive(Clone, Debug)]
 pub enum Edit {
-    /// `set_text`.
-    SetText {
+    /// `set` with a cell `CellRef::new` makes.
+    Set {
         i: usize,
         text: String,
         wide: bool,
         style: Style,
     },
-    /// `Cell::new`, then `set_cell` if it made one.
-    SetCell {
-        i: usize,
-        text: String,
-        wide: bool,
-        style: Style,
-    },
-    /// `set_cell` with `Cell::wide_continuation`.
+    /// `set` with `CellRef::wide_continuation`.
     Continuation { i: usize },
     /// `set_attributes`.
     SetAttributes { i: usize, style: Style },
-    /// `fill` with a cell `Cell::new` makes.
+    /// `fill` with a cell `CellRef::new` makes.
     Fill {
         start: usize,
         end: usize,
@@ -50,7 +43,7 @@ pub enum Edit {
         wide: bool,
         style: Style,
     },
-    /// `resize` with a cell `Cell::new` makes.
+    /// `resize` with a cell `CellRef::new` makes.
     Resize {
         len: usize,
         text: String,
@@ -145,13 +138,7 @@ fn text(r: &mut Rng) -> String {
 fn edit(r: &mut Rng, len: usize) -> Edit {
     let at = |r: &mut Rng| r.below(len.saturating_add(3));
     match r.below(9) {
-        0 | 1 => Edit::SetText {
-            i: at(r),
-            text: text(r),
-            wide: r.chance(30),
-            style: style(r),
-        },
-        2 => Edit::SetCell {
+        0..=2 => Edit::Set {
             i: at(r),
             text: text(r),
             wide: r.chance(30),

@@ -568,7 +568,7 @@ fn keep_first(params: &str) -> String {
 
 /// The row an OSC gives (`Parser::dispatch_osc`: 0, 1, 2 and 52 are
 /// events, 8 a hyperlink, 133's A and L prompt marks, the colours kept
-/// (Options::palette), the rest dropped).
+/// (Feature::Palette), the rest dropped).
 fn osc(body: &[u8]) -> (String, Does) {
     let body = text(body);
     let (number, rest) = body.split_once(';').unwrap_or((body.as_str(), ""));
@@ -597,17 +597,17 @@ fn osc(body: &[u8]) -> (String, Does) {
         ),
         "52" => Does::Implemented("a clipboard event"),
         "4" | "5" if rest.ends_with('?') => Does::Implemented(
-            "answered (Options::palette): the colour the program set, or xterm's default",
+            "answered (Feature::Palette): the colour the program set, or xterm's default",
         ),
         "4" | "5" | "104" | "105" => Does::Implemented(
-            "the palette kept (Options::palette); fux paints a changed entry's cells in its colour",
+            "the palette kept (Feature::Palette); fux paints a changed entry's cells in its colour",
         ),
         "10" | "11" | "12" | "13" | "14" | "15" | "16" | "17" | "18" | "19" | "110" | "111"
         | "112" | "113" | "114" | "115" | "116" | "117" | "118" | "119"
             if !rest.ends_with('?') =>
         {
             Does::Implemented(
-                "the dynamic colour kept (Options::palette); fux paints 10 and 11, the pane's \
+                "the dynamic colour kept (Feature::Palette); fux paints 10 and 11, the pane's \
                  foreground and background",
             )
         }
@@ -654,7 +654,7 @@ fn string(kind: u8, body: &[u8]) -> (String, Does) {
         _ => "SOS".to_owned(),
     };
     let does = if kind == b'P' && matches!(key.as_str(), "DCS $ q m" | "DCS $ q r") {
-        Does::Implemented("answered (Options::setting_reports)")
+        Does::Implemented("answered (Feature::SettingReports)")
     } else if kind == b'P' && key == "DCS $ q  q" {
         Does::Partly(
             "answered once the program set a cursor shape; the terminal's own is not known",
