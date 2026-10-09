@@ -307,21 +307,6 @@ fn parameters(rest: &[u8]) -> impl Iterator<Item = &[u8]> {
     rest.split(|b| *b == b';')
 }
 
-/// The parameters of OSC 10 to 19, `rest`, each with the number of the
-/// dynamic colour it is: the first `command`'s, each next one the next, up
-/// to 19 (ctlseqs, "Operating System Commands"); none for another command.
-pub(crate) fn dynamic_parameters<'a>(
-    command: &[u8],
-    rest: &'a [u8],
-) -> impl Iterator<Item = (u8, &'a [u8])> {
-    let first = std::str::from_utf8(command)
-        .ok()
-        .and_then(|n| n.parse::<u8>().ok())
-        .filter(|n| (10..=19).contains(n))
-        .unwrap_or(20);
-    (first..=19).zip(parameters(rest))
-}
-
 /// Carries out the colour OSC `command` with `rest` after it, if it is
 /// one, ended by BEL if `bel`; whether it was. `colours` is the screen's,
 /// made when a colour is first set; `events` says whether a dynamic colour
@@ -339,19 +324,16 @@ pub(crate) fn osc(
         b"5" => pairs(colours, rest, PAST_PALETTE, bel, sink),
         b"104" => reset(colours, rest, 0),
         b"105" => reset(colours, rest, PAST_PALETTE),
-        b"10" | b"11" | b"12" | b"13" | b"14" | b"15" | b"16" | b"17" | b"18" | b"19" => {
-            dynamic(colours, command, rest, bel, events, sink);
+        // OSC 10 to 19, and 110 to 119 with no parameter (with one, nothing,
+        // as in xterm and Ghostty): dynamic colour `d`, 0 to 9 from 10.
+        [b'1', d @ b'0'..=b'9'] => {
+            dynamic(colours, d.saturating_sub(b'0'), rest, bel, events, sink)
         }
-        b"110" | b"111" | b"112" | b"113" | b"114" | b"115" | b"116" | b"117" | b"118" | b"119" => {
-            // With a parameter, nothing, as in xterm and Ghostty.
+        [b'1', b'1', d @ b'0'..=b'9'] => {
             if rest.is_empty()
-                && let Some(c) = colours
-                && let Some(number) = command.get(1..)
-                && let Some(slot) = std::str::from_utf8(number)
-                    .ok()
-                    .and_then(|n| n.parse::<usize>().ok())
-                    .and_then(|n| n.checked_sub(10))
-                    .and_then(|i| c.dynamic.get_mut(i))
+                && let Some(slot) = colours
+                    .as_mut()
+                    .and_then(|c| c.dynamic.get_mut(usize::from(d.saturating_sub(b'0'))))
             {
                 *slot = None;
             }
@@ -445,20 +427,22 @@ fn reset(colours: &mut Option<Box<Colours>>, rest: &[u8], offset: u16) {
     }
 }
 
-/// OSC 10 to 19: each parameter the next dynamic colour from `command`'s,
+/// OSC 10 to 19: each parameter the next dynamic colour from `first`'s
+/// (0 to 9, numbered from 10),
 /// `?` asking for it, as xterm's `ChangeColorsRequest` reads them; a
 /// specification fux-vt cannot read leaves its colour and goes on to the
 /// next, as in xterm. A colour the program set is answered here; one it has
 /// not is asked of the host, with `events`.
 fn dynamic(
     colours: &mut Option<Box<Colours>>,
-    command: &[u8],
+    first: u8,
     rest: &[u8],
     bel: bool,
     events: bool,
     sink: &mut impl Sink,
 ) {
-    for (number, parameter) in dynamic_parameters(command, rest) {
+    for (i, parameter) in (first..10).zip(parameters(rest)) {
+        let number = i.saturating_add(10);
         if parameter == b"?" {
             match colours.as_ref().and_then(|c| c.dynamic(number)) {
                 Some(colour) => sink.reply(answer(u16::from(number), None, colour, bel).bytes()),
@@ -466,12 +450,10 @@ fn dynamic(
                 None => {}
             }
         } else if let Some(colour) = Rgb::parse(parameter)
-            && let Some(slot) = number.checked_sub(10).and_then(|i| {
-                colours
-                    .get_or_insert_default()
-                    .dynamic
-                    .get_mut(usize::from(i))
-            })
+            && let Some(slot) = colours
+                .get_or_insert_default()
+                .dynamic
+                .get_mut(usize::from(i))
         {
             *slot = Some(colour);
         }
