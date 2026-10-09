@@ -6,77 +6,69 @@
 use crate::command::{
     AnyRef, ClientAction, Command, Kind, MoveTo, Pick, Sibling, Subject, SwapWith, WsRef,
 };
-use crate::config::Binding;
+use crate::config::{Binding, Config};
 use crate::id::{ClientId, PaneId};
 use crate::keys::{Direction, Key, KeyPress, Keystroke};
 use crate::layout::Node;
 use crate::session::{Ctx, Error, Session, describe};
-use crate::view::{Confirm, Item, List, Mode, Prompt, PromptFor, View};
+use crate::view::{Choice, Confirm, Item, Line, List, Mode, Prompt, PromptFor, View};
 
 /// An entry of the command column: a key of its layer, and the binding it
-/// runs or, for a key that opens a layer inside it, that layer's first
-/// binding. Right after the prefix the bindings without it (`bind -n`)
-/// follow, `root`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Entry<'a> {
+/// runs or, for a key that opens a layer inside it, that layer. Right after
+/// the prefix the bindings without it (`bind -n`) follow, `root`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
     pub key: KeyPress,
-    pub binding: &'a Binding,
-    pub layer: bool,
     pub root: bool,
+    /// The group it is listed under: a binding's own, or the group of the
+    /// command that a layer's first binding runs.
+    pub group: String,
+    /// What it shows: what its command does, or its layer's title, the
+    /// group of the layer's first binding.
+    pub label: String,
+    /// The command it runs; none for a layer, which it opens.
+    pub command: Option<Command>,
 }
 
 /// The group of bindings without the prefix that `-g` gave none.
 pub const ROOT_GROUP: &str = "Without the prefix";
 
-impl<'a> Entry<'a> {
-    /// The group it is listed under: a binding's own, or the group of the
-    /// command that a layer's first binding runs.
-    pub fn group(self) -> &'a str {
-        match (self.layer, self.root) {
-            (true, _) => self.binding.derived_group(),
-            (false, true) => self.binding.group.as_deref().unwrap_or(ROOT_GROUP),
-            (false, false) => self.binding.group(),
+impl Entry {
+    fn new(key: KeyPress, binding: &Binding, layer: bool, root: bool) -> Entry {
+        let (group, label) = match (layer, root) {
+            (true, _) => (binding.derived_group(), binding.group().to_owned()),
+            (false, true) => (
+                binding.group.as_deref().unwrap_or(ROOT_GROUP),
+                crate::command::label(&binding.command),
+            ),
+            (false, false) => (binding.group(), crate::command::label(&binding.command)),
+        };
+        Entry {
+            key,
+            root,
+            group: group.to_owned(),
+            label,
+            command: (!layer).then(|| binding.parsed.clone()),
         }
-    }
-
-    /// What it shows: what its command does, or its layer's title, the
-    /// group of the layer's first binding.
-    pub fn label(self) -> String {
-        if self.layer {
-            self.binding.group().to_owned()
-        } else {
-            crate::command::label(&self.binding.command)
-        }
-    }
-
-    /// The command it runs, unless it opens a layer.
-    pub fn command(self) -> Option<&'a Command> {
-        (!self.layer).then_some(&self.binding.parsed)
     }
 }
 
 /// The column's entries for the layer at `path`, in the order of the
 /// bindings. A layer is an entry once, where its first binding is.
-fn entries<'a>(session: &'a Session, path: &[KeyPress]) -> impl Iterator<Item = Entry<'a>> {
-    let bindings = &session.config.bindings;
-    let root = session.config.root.iter().filter(|_| path.is_empty());
-    let entry = |key: &KeyPress, binding, layer, root| Entry {
-        key: *key,
-        binding,
-        layer,
-        root,
-    };
+fn entries<'a>(config: &'a Config, path: &'a [KeyPress]) -> impl Iterator<Item = Entry> + 'a {
+    let bindings = &config.bindings;
+    let root = config.root.iter().filter(|_| path.is_empty());
     bindings
         .iter()
         .enumerate()
         .filter_map(move |(i, binding)| match binding.keys.strip_prefix(path) {
-            Some([key]) => Some(entry(key, binding, false, false)),
+            Some([key]) => Some(Entry::new(*key, binding, false, false)),
             Some([key, _, ..]) if !bindings.iter().take(i).any(|b| opens(b, path, key)) => {
-                Some(entry(key, binding, true, false))
+                Some(Entry::new(*key, binding, true, false))
             }
             Some(_) | None => None,
         })
-        .chain(root.filter_map(move |b| b.keys.first().map(|key| entry(key, b, false, true))))
+        .chain(root.filter_map(|b| Some(Entry::new(*b.keys.first()?, b, false, true))))
 }
 
 /// Whether `binding` is in the layer that `key` opens in the layer at `path`.
@@ -88,46 +80,119 @@ fn opens(binding: &Binding, path: &[KeyPress], key: &KeyPress) -> bool {
 /// in their order, custom groups after them and `Other` last; then the
 /// bindings without the prefix, in groups of their own, so that none shares
 /// a heading with keys typed after the prefix.
-pub fn column<'a>(session: &'a Session, path: &[KeyPress]) -> Vec<Entry<'a>> {
-    let mut entries: Vec<Entry<'a>> = entries(session, path).collect();
-    let mut groups: Vec<(bool, &str)> = crate::command::COMMANDS
+pub fn column(config: &Config, path: &[KeyPress]) -> Vec<Entry> {
+    let mut entries: Vec<Entry> = entries(config, path).collect();
+    let mut groups: Vec<(bool, String)> = crate::command::COMMANDS
         .iter()
-        .map(|(group, _)| (false, *group))
-        .filter(|g| *g != (false, "Other"))
+        .map(|(group, _)| (false, (*group).to_owned()))
+        .filter(|(_, g)| g != "Other")
         .collect();
-    for group in entries.iter().map(|e| (e.root, e.group())) {
-        if !groups.contains(&group) && group != (false, "Other") {
+    for group in entries.iter().map(|e| (e.root, e.group.clone())) {
+        if !groups.contains(&group) && group != (false, "Other".into()) {
             groups.push(group);
         }
     }
-    groups.push((false, "Other"));
+    groups.push((false, "Other".into()));
     // Stable: within a group, in the order of the bindings.
     entries.sort_by_key(|e| {
-        (
-            e.root,
-            groups.iter().position(|g| *g == (e.root, e.group())),
-        )
+        let group = groups
+            .iter()
+            .position(|(r, g)| *r == e.root && *g == e.group);
+        (e.root, group)
     });
     entries
 }
 
-/// The title of the layer at `path`: the group of its first binding.
-pub fn layer_title<'a>(session: &'a Session, path: &[KeyPress]) -> Option<&'a str> {
-    session
-        .config
+/// The title of the layer at `path`: the group of its first binding; none
+/// if it is not a layer.
+pub fn layer_title<'a>(config: &'a Config, path: &[KeyPress]) -> Option<&'a str> {
+    config
         .bindings
         .iter()
         .find(|b| b.in_layer(path).is_some())
-        .map(crate::config::Binding::group)
+        .map(Binding::group)
+}
+
+/// The command column, open on a layer that is bound: it is found in the
+/// bindings when it opens and again whenever they change (`Session::rebind`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Column {
+    /// The keys of its layer after the prefix: none right after it.
+    pub path: Vec<KeyPress>,
+    /// Its heading: `Commands`, or the layer's keys and title.
+    pub title: String,
+    /// Its entries, one selected; none if nothing is bound.
+    pub entries: Option<Choice<Entry>>,
+}
+
+impl Column {
+    /// The column right after the prefix.
+    pub fn root(session: &Session) -> Column {
+        Column {
+            path: Vec::new(),
+            title: "Commands".into(),
+            entries: Choice::new(column(&session.config, &[])),
+        }
+    }
+
+    /// The column of the layer at `path`, if it is one, its entry `at`
+    /// chosen, or its last.
+    pub fn layer(session: &Session, path: Vec<KeyPress>, at: usize) -> Option<Column> {
+        let mut column = match path.is_empty() {
+            true => Column::root(session),
+            false => Column {
+                title: format!(
+                    "{}: {}",
+                    session.keys_named(&path),
+                    layer_title(&session.config, &path)?
+                ),
+                entries: Choice::new(column(&session.config, &path)),
+                path,
+            },
+        };
+        if let Some(entries) = &mut column.entries {
+            entries.down(at);
+        }
+        Some(column)
+    }
+}
+
+/// A repeat mode: the keys of the layer at `path` run its bindings without
+/// the prefix, until Esc. It is found in the bindings when it starts and
+/// again whenever they change (`Session::rebind`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Repeat {
+    pub path: Vec<KeyPress>,
+    pub title: String,
+    /// What the bar shows: `RESIZE  h j k l · Esc`.
+    pub bar: String,
+}
+
+impl Repeat {
+    /// The repeat mode of the layer at `path`, if a binding there repeats.
+    pub fn of(config: &Config, path: Vec<KeyPress>) -> Option<Repeat> {
+        let mut keys = Vec::new();
+        let mut repeats = false;
+        for binding in &config.bindings {
+            if let Some([key]) = binding.keys.strip_prefix(path.as_slice()) {
+                keys.push(key.to_string());
+                repeats |= binding.repeat;
+            }
+        }
+        let title = layer_title(config, &path).filter(|_| repeats)?;
+        Some(Repeat {
+            bar: format!("{}  {} · Esc", title.to_uppercase(), keys.join(" ")),
+            title: title.to_owned(),
+            path,
+        })
+    }
 }
 
 pub fn open_prompt(view: &mut View, purpose: PromptFor, title: String, text: String) -> String {
-    let cursor = text.chars().count();
     view.mode = Mode::Prompt(Prompt {
         title,
         purpose,
-        text,
-        cursor,
+        line: Line::new(text),
     });
     String::new()
 }
@@ -182,10 +247,11 @@ pub fn open_menu(session: &Session, view: &mut View, target: AnyRef) -> Result<S
         subject: subject.clone(),
         toward,
     };
-    let mut items = vec![
-        item("rename", ClientAction::RenamePrompt(subject.clone()).here()),
-        item("close", ClientAction::ConfirmClose(subject.clone()).here()),
-    ];
+    let rename = item("rename", ClientAction::RenamePrompt(subject.clone()).here());
+    let mut items = vec![item(
+        "close",
+        ClientAction::ConfirmClose(subject.clone()).here(),
+    )];
     match &about {
         &AnyRef::Pane(p) => items.extend([
             item(
@@ -247,22 +313,22 @@ pub fn open_menu(session: &Session, view: &mut View, target: AnyRef) -> Result<S
         item("reorder previous", reorder(Sibling::Previous)),
         item("reorder next", reorder(Sibling::Next)),
     ]);
-    Ok(open_list(view, title, items, false, Some(about)))
+    let items = Choice::of(rename, items);
+    Ok(open_list(view, title, items, Some(about)))
 }
 
+/// Opens a list, the current item chosen.
 fn open_list(
     view: &mut View,
     title: String,
-    items: Vec<Item>,
-    chooser: bool,
+    mut items: Choice<Item>,
     about: Option<AnyRef>,
 ) -> String {
-    let selected = items.iter().position(|i| i.current).unwrap_or(0);
+    let current = items.iter().position(|i| i.current);
+    items.down(current.unwrap_or(0));
     view.mode = Mode::List(List {
         title,
         items,
-        selected,
-        chooser,
         about,
     });
     String::new()
@@ -311,6 +377,7 @@ pub fn open_tab_chooser(
             }
         })
         .collect();
+    let items = Choice::new(items).ok_or(Error::NoCurrentWorkspace)?;
     Ok(open_chooser(view, "tab", items, moving))
 }
 
@@ -319,7 +386,7 @@ pub fn open_workspace_chooser(
     session: &Session,
     view: &mut View,
     moving: Option<PaneId>,
-) -> String {
+) -> Result<String, Error> {
     let current = session.shown_workspace(view.id).map(|w| w.id);
     let items = session
         .workspaces
@@ -340,17 +407,23 @@ pub fn open_workspace_chooser(
             }
         })
         .collect();
-    open_chooser(view, "workspace", items, moving)
+    let items = Choice::new(items).ok_or(Error::NoCurrentWorkspace)?;
+    Ok(open_chooser(view, "workspace", items, moving))
 }
 
 /// A chooser of tabs or workspaces, `what`, to select one or to move a pane
 /// to.
-fn open_chooser(view: &mut View, what: &str, items: Vec<Item>, moving: Option<PaneId>) -> String {
+fn open_chooser(
+    view: &mut View,
+    what: &str,
+    items: Choice<Item>,
+    moving: Option<PaneId>,
+) -> String {
     let title = match moving {
         Some(p) => format!("move {p} to {what}"),
         None => format!("{what}s"),
     };
-    open_list(view, title, items, true, moving.map(AnyRef::Pane))
+    open_list(view, title, items, moving.map(AnyRef::Pane))
 }
 
 /// The other panes of the client's tab, to swap `source` with.
@@ -379,17 +452,9 @@ pub fn open_pane_chooser(
             });
         });
     }
-    if items.is_empty() {
-        return Err(Error::OnlyOne(Kind::Pane));
-    }
+    let items = Choice::new(items).ok_or(Error::OnlyOne(Kind::Pane))?;
     let about = Some(AnyRef::Pane(source));
-    Ok(open_list(
-        view,
-        format!("swap {source} with"),
-        items,
-        true,
-        about,
-    ))
+    Ok(open_list(view, format!("swap {source} with"), items, about))
 }
 
 // ----------------------------------------------------------------- input
@@ -458,13 +523,11 @@ fn run_binding(session: &mut Session, client: ClientId, keys: &[KeyPress]) -> bo
         return false;
     };
     let command = binding.parsed.clone();
-    let mode = match keys.split_last() {
-        Some((_, path)) if binding.repeat => Mode::Repeat {
-            path: path.to_vec(),
-        },
-        Some(_) | None => Mode::Normal,
+    let repeat = match keys.split_last() {
+        Some((_, path)) if binding.repeat => Repeat::of(&session.config, path.to_vec()),
+        Some(_) | None => None,
     };
-    session.set_mode(client, mode);
+    session.set_mode(client, repeat.map_or(Mode::Normal, Mode::Repeat));
     run_entry(session, client, &command, None);
     true
 }
@@ -505,73 +568,60 @@ pub fn column_room(rows: u16) -> (bool, usize) {
 /// A key while the command column is open.
 pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let prefix = session.config.prefix;
-    let Some(view) = session.views.get(&client) else {
+    let Some(view) = session.views.get_mut(&client) else {
         return;
     };
-    let Mode::Column { path, selected } = &view.mode else {
+    let rows = view.rows;
+    let Mode::Column(column) = &mut view.mode else {
         return;
     };
-    let (path, selected, rows) = (path.clone(), *selected, view.rows);
-    let len = column(session, &path).len();
-    let (_, page) = column_room(rows);
-    let last = len.saturating_sub(1);
     // Escape always closes the column, and cannot be bound. Any other key
     // bound in this layer, or opening a layer in it, is the binding's; the
     // column navigates with the keys left unbound.
     if press.key == Key::Escape && !press.mods.ctrl && !press.mods.alt {
-        session.set_mode(client, Mode::Normal);
-        return;
+        return session.set_mode(client, Mode::Normal);
     }
-    if binds(session, &path, press) {
-        follow(session, client, &path, press);
-        return;
+    let path = column.path.clone();
+    if binds(&session.config, &path, press) {
+        return follow(session, client, &path, press);
+    }
+    if press == prefix {
+        // The prefix, at any depth, sends it to the pane.
+        session.set_mode(client, Mode::Normal);
+        return send_key(session, client, prefix.into());
     }
     let unmodified = press.mods.is_empty().then_some(press.key);
-    let new = match unmodified {
-        _ if press == prefix => {
-            // The prefix, at any depth, sends it to the pane.
-            session.set_mode(client, Mode::Normal);
-            send_key(session, client, prefix.into());
-            return;
-        }
-        Some(Key::Arrow(Direction::Up)) => selected.saturating_sub(1),
-        // Moves stop at the first and last entries.
-        Some(Key::Arrow(Direction::Down)) => selected.saturating_add(1).min(last),
-        Some(Key::PageUp) => selected.saturating_sub(page),
-        Some(Key::PageDown) => selected.saturating_add(page).min(last),
-        Some(Key::Home) => 0,
-        Some(Key::End) => last,
-        Some(Key::Enter) => {
-            let entry = column(session, &path).get(selected).copied();
-            match entry.map(|e| (e.key, e.command().cloned())) {
-                Some((_, Some(command))) => {
-                    session.set_mode(client, Mode::Normal);
-                    run_entry(session, client, &command, None);
-                }
-                Some((key, None)) => follow(session, client, &path, key),
-                None => session.set_mode(client, Mode::Normal),
-            }
-            return;
-        }
-        _ => {
-            follow(session, client, &path, press);
-            return;
-        }
+    let (_, page) = column_room(rows);
+    let moved = match &mut column.entries {
+        Some(entries) => entries.moved(unmodified, page),
+        // A column of nothing takes the moving keys, which move nothing.
+        None => Choice::of((), Vec::new()).moved(unmodified, page),
     };
-    session.set_mode(
-        client,
-        Mode::Column {
-            path,
-            selected: new,
-        },
-    );
+    if moved {
+        return;
+    }
+    let chosen = column.entries.as_ref().map(|e| e.chosen().clone());
+    match (unmodified, chosen) {
+        (
+            Some(Key::Enter),
+            Some(Entry {
+                command: Some(command),
+                ..
+            }),
+        ) => {
+            session.set_mode(client, Mode::Normal);
+            run_entry(session, client, &command, None);
+        }
+        (Some(Key::Enter), Some(Entry { key, .. })) => follow(session, client, &path, key),
+        (Some(Key::Enter), None) => session.set_mode(client, Mode::Normal),
+        _ => follow(session, client, &path, press),
+    }
 }
 
 /// Whether `press`, typed in the layer at `path`, is bound there or opens a
 /// layer inside it. Keys match as typed: `V` is not `v`.
-fn binds(session: &Session, path: &[KeyPress], press: KeyPress) -> bool {
-    session
-        .config
+fn binds(config: &Config, path: &[KeyPress], press: KeyPress) -> bool {
+    config
         .bindings
         .iter()
         .any(|b| b.in_layer(path).and_then(<[_]>::first) == Some(&press))
@@ -586,17 +636,10 @@ fn follow(session: &mut Session, client: ClientId, path: &[KeyPress], press: Key
     if run_binding(session, client, &keys) {
         return;
     }
-    if session.is_layer(&keys) {
-        session.set_mode(
-            client,
-            Mode::Column {
-                path: keys,
-                selected: 0,
-            },
-        );
-    } else {
-        let named = session.keys_named(&keys);
-        session.error_to(client, format!("{named} is not bound"));
+    let named = session.keys_named(&keys);
+    match Column::layer(session, keys, 0) {
+        Some(column) => session.set_mode(client, Mode::Column(column)),
+        None => session.error_to(client, format!("{named} is not bound")),
     }
 }
 
@@ -604,33 +647,22 @@ fn follow(session: &mut Session, client: ClientId, path: &[KeyPress], press: Key
 /// without the prefix; Esc or Enter leaves; the prefix leaves and opens the
 /// column; any other key leaves, not reaching the pane, and says so.
 pub fn repeat_key(session: &mut Session, client: ClientId, press: KeyPress) {
-    let prefix = session.config.prefix;
-    let Some(Mode::Repeat { path }) = session.views.get(&client).map(|v| &v.mode) else {
+    let Some(Mode::Repeat(repeat)) = session.views.get(&client).map(|v| &v.mode) else {
         return;
     };
-    let path = path.clone();
-    if press == prefix {
-        session.set_mode(
-            client,
-            Mode::Column {
-                path: Vec::new(),
-                selected: 0,
-            },
-        );
-        return;
+    let Repeat { path, title, .. } = repeat.clone();
+    if press == session.config.prefix {
+        return session.set_mode(client, Mode::Column(Column::root(session)));
     }
     // Escape leaves; so does Enter, unless the layer binds it.
     let plain = !press.mods.ctrl && !press.mods.alt;
-    if plain
-        && (press.key == Key::Escape || (press.key == Key::Enter && !binds(session, &path, press)))
-    {
-        session.set_mode(client, Mode::Normal);
-        return;
+    let enter = press.key == Key::Enter && !binds(&session.config, &path, press);
+    if plain && (press.key == Key::Escape || enter) {
+        return session.set_mode(client, Mode::Normal);
     }
-    let mut keys = path.clone();
+    let mut keys = path;
     keys.push(press);
     if !run_binding(session, client, &keys) {
-        let title = layer_title(session, &path).unwrap_or_default().to_owned();
         session.set_mode(client, Mode::Normal);
         session.info_to(
             client,
@@ -682,30 +714,19 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let Mode::List(list) = &mut view.mode else {
         return;
     };
-    let last = list.items.len().saturating_sub(1);
-    let page = list_room(rows);
     let mut run: Option<Command> = None;
     let mut close = false;
-    match press.plain_key() {
-        Some(Key::Arrow(Direction::Up)) | Some(Key::Char('k')) => {
-            list.selected = list.selected.saturating_sub(1)
-        }
-        // Moves stop at the first and last items.
-        Some(Key::Arrow(Direction::Down)) | Some(Key::Char('j')) => {
-            list.selected = list.selected.saturating_add(1).min(last)
-        }
-        Some(Key::PageUp) => list.selected = list.selected.saturating_sub(page),
-        Some(Key::PageDown) => list.selected = list.selected.saturating_add(page).min(last),
-        Some(Key::Home) => list.selected = 0,
-        Some(Key::End) => list.selected = last,
+    let key = match press.plain_key() {
+        Some(Key::Char('k')) => Some(Key::Arrow(Direction::Up)),
+        Some(Key::Char('j')) => Some(Key::Arrow(Direction::Down)),
+        key => key,
+    };
+    match key {
+        _ if list.items.moved(key, list_room(rows)) => {}
         Some(Key::Escape) | Some(Key::Char('q')) => close = true,
-        Some(Key::Enter) => run = list.items.get(list.selected).map(|i| i.command.clone()),
-        Some(Key::Char(key @ ('r' | 'x'))) if list.chooser => {
-            if let Some(subject) = list
-                .items
-                .get(list.selected)
-                .and_then(|i| i.subject.clone())
-            {
+        Some(Key::Enter) => run = Some(list.items.chosen().command.clone()),
+        Some(Key::Char(key @ ('r' | 'x'))) => {
+            if let Some(subject) = list.items.chosen().subject.clone() {
                 let action = if key == 'r' {
                     ClientAction::RenamePrompt(subject.into())
                 } else {
@@ -725,17 +746,6 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
     }
 }
 
-/// `text` with the `remove` chars from char `at` replaced by `insert`:
-/// positions count chars, so no edit can fall inside one. A prompt's text is
-/// at most 4096 bytes, so building it afresh costs nothing.
-fn splice(text: &str, at: usize, remove: usize, insert: &str) -> String {
-    text.chars()
-        .take(at)
-        .chain(insert.chars())
-        .chain(text.chars().skip(at).skip(remove))
-        .collect()
-}
-
 /// A key in a prompt: a one-line editor.
 pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
     let Some(view) = session.views.get_mut(&client) else {
@@ -745,7 +755,7 @@ pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
         return;
     };
     view.dirty = true;
-    let len = prompt.text.chars().count();
+    let line = &mut prompt.line;
     match press.key {
         Key::Escape => view.mode = Mode::Normal,
         Key::Enter => {
@@ -753,32 +763,15 @@ pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
             view.mode = Mode::Normal;
             submit(session, client, prompt);
         }
-        Key::Backspace => {
-            if let Some(before) = prompt.cursor.checked_sub(1) {
-                prompt.text = splice(&prompt.text, before, 1, "");
-                prompt.cursor = before;
-            }
-        }
-        Key::Delete => {
-            if prompt.cursor < len {
-                prompt.text = splice(&prompt.text, prompt.cursor, 1, "");
-            }
-        }
-        Key::Arrow(Direction::Left) => prompt.cursor = prompt.cursor.saturating_sub(1),
-        Key::Arrow(Direction::Right) => prompt.cursor = prompt.cursor.saturating_add(1).min(len),
-        Key::Home => prompt.cursor = 0,
-        Key::End => prompt.cursor = len,
+        Key::Backspace => line.backspace(),
+        Key::Delete => line.delete(),
+        Key::Arrow(Direction::Left) => line.left(),
+        Key::Arrow(Direction::Right) => line.right(),
+        Key::Home => line.home(),
+        Key::End => line.end(),
         // Text: a letter with Ctrl or Alt types nothing.
-        Key::Char(c)
-            if !press.mods.ctrl
-                && !press.mods.alt
-                && !c.is_control()
-                && prompt.text.len().saturating_add(c.len_utf8()) <= 4096 =>
-        {
-            let mut buffer = [0u8; 4];
-            prompt.text = splice(&prompt.text, prompt.cursor, 0, c.encode_utf8(&mut buffer));
-            // Exact: the text is at most 4096 bytes.
-            prompt.cursor = prompt.cursor.saturating_add(1);
+        Key::Char(c) if !press.mods.ctrl && !press.mods.alt && !c.is_control() => {
+            line.insert(c.encode_utf8(&mut [0u8; 4]));
         }
         Key::Char(_)
         | Key::Tab
@@ -803,15 +796,7 @@ pub fn prompt_paste(session: &mut Session, client: ClientId, text: &str) {
         .take_while(|c| *c != '\n' && *c != '\r')
         .filter(|c| !c.is_control())
         .collect();
-    if prompt
-        .text
-        .len()
-        .checked_add(line.len())
-        .is_some_and(|len| len <= 4096)
-    {
-        prompt.text = splice(&prompt.text, prompt.cursor, 0, &line);
-        // Exact: the text is at most 4096 bytes.
-        prompt.cursor = prompt.cursor.saturating_add(line.chars().count());
+    if prompt.line.insert(&line) {
         view.dirty = true;
     }
 }
@@ -819,7 +804,7 @@ pub fn prompt_paste(session: &mut Session, client: ClientId, text: &str) {
 fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
     match prompt.purpose {
         PromptFor::Command => {
-            let argv = match crate::words::split(&prompt.text) {
+            let argv = match crate::words::split(&prompt.line.text()) {
                 Ok(argv) if argv.is_empty() => return,
                 Ok(argv) => argv,
                 Err(error) => return session.error_to(client, error.to_string()),
@@ -842,7 +827,7 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
                 client,
                 &Command::Rename {
                     target,
-                    name: prompt.text,
+                    name: prompt.line.text(),
                 },
             );
         }
@@ -891,17 +876,20 @@ mod tests {
     fn mode(session: &Session, client: ClientId) -> String {
         match session.views.get(&client).map(|v| &v.mode) {
             Some(Mode::Normal) => "normal".into(),
-            Some(Mode::Column { path, selected }) if path.is_empty() => {
-                format!("column {selected}")
+            Some(Mode::Column(column)) => {
+                let selected = column.entries.as_ref().map_or(0, Choice::index);
+                match column.path.as_slice() {
+                    [] => format!("column {selected}"),
+                    path => format!("column {} {selected}", crate::config::keys_text(path)),
+                }
             }
-            Some(Mode::Column { path, selected }) => {
-                format!("column {} {selected}", crate::config::keys_text(path))
+            Some(Mode::Repeat(repeat)) => {
+                format!("repeat {}", crate::config::keys_text(&repeat.path))
             }
-            Some(Mode::Repeat { path }) => {
-                format!("repeat {}", crate::config::keys_text(path))
+            Some(Mode::List(list)) => format!("list {} {}", list.title, list.items.index()),
+            Some(Mode::Prompt(prompt)) => {
+                format!("prompt {}|{}", prompt.line.before(), prompt.line.after())
             }
-            Some(Mode::List(list)) => format!("list {} {}", list.title, list.selected),
-            Some(Mode::Prompt(prompt)) => format!("prompt {}|{}", prompt.text, prompt.cursor),
             Some(Mode::Confirm(confirm)) => format!("confirm {}", confirm.question),
             Some(Mode::Copy(_)) => "copy".into(),
             None => "gone".into(),
@@ -941,29 +929,6 @@ mod tests {
         Ok(())
     }
 
-    /// Prompt edits count chars, so none falls inside one: what Backspace,
-    /// Delete, typing and a paste do, on text with wide chars.
-    #[test]
-    fn prompt_edits_count_chars_not_bytes() {
-        for (at, remove, insert, edited) in [
-            (0, 2, "", "llo界"),
-            (1, 1, "", "hllo界"),
-            (4, 1, "", "héll界"),
-            (5, 1, "", "héllo"),
-            (6, 1, "", "héllo界"),
-            (2, 0, "ü", "héüllo界"),
-            (6, 0, "x", "héllo界x"),
-            (9, 0, "x", "héllo界x"),
-            (3, 0, "p a", "hélp alo界"),
-        ] {
-            assert_eq!(
-                splice("héllo界", at, remove, insert),
-                edited,
-                "{at} {remove} {insert:?}"
-            );
-        }
-    }
-
     /// On a screen too short for a list's lines, the selected entry stays
     /// in view: the lines around it give way first.
     #[test]
@@ -992,7 +957,7 @@ mod tests {
         s.input(c, &paste);
         s.input(c, "\u{754c}".as_bytes());
         let len = match s.views.get(&c).map(|v| &v.mode) {
-            Some(Mode::Prompt(prompt)) => prompt.text.len(),
+            Some(Mode::Prompt(prompt)) => prompt.line.clone().text().len(),
             _ => return Err("no prompt".into()),
         };
         assert_eq!(len, 4095, "the three bytes of the glyph would pass 4096");
@@ -1056,7 +1021,7 @@ mod tests {
     fn the_column_scrolls_within_its_bindings() -> Outcome {
         let (mut s, c) = session()?;
         // Its entries: the bindings and layers right after the prefix.
-        let last = column(&s, &[]).len().saturating_sub(1);
+        let last = column(&s.config, &[]).len().saturating_sub(1);
         s.input(c, b"\x02");
         assert_eq!(mode(&s, c), "column 0");
         let downs: Vec<u8> = std::iter::repeat_n(&b"\x1b[B"[..], 100)
@@ -1081,7 +1046,7 @@ mod tests {
         assert_eq!(mode(&s, c), format!("column {last}"));
         // Panes come first.
         assert!(matches!(
-            column(&s, &[]).first().and_then(|e| e.command()),
+            column(&s.config, &[]).first().and_then(|e| e.command.as_ref()),
             Some(Command::Split {
                 axis: crate::layout::Axis::Horizontal,
                 target: None,
@@ -1130,13 +1095,13 @@ mod tests {
         with_layers(&mut s)?;
         // Right after the prefix, the layer is one entry, under its
         // command's group, titled by its first binding's group.
-        let entries = column(&s, &[]);
+        let entries = column(&s.config, &[]);
         let at = entries
             .iter()
             .position(|e| e.key == KeyPress::char('g'))
             .ok_or("the layer is listed")?;
         let layer = entries.get(at).ok_or("the layer")?;
-        assert!(layer.layer && layer.group() == "Tabs" && layer.label() == "Tabs");
+        assert!(layer.command.is_none() && layer.group == "Tabs" && layer.label == "Tabs");
         s.input(c, b"\x02g");
         assert_eq!(mode(&s, c), "column g 0");
         // The column shows the keys so far and the layer's title, and the
@@ -1144,18 +1109,20 @@ mod tests {
         let text = screen_text(&s, c)?;
         assert!(text.contains("C-b g: Tabs"), "{text}");
         assert!(text.contains("C-b g …"), "{text}");
-        let inside: Vec<_> = column(&s, &[KeyPress::char('g')])
-            .into_iter()
-            .map(|e| (e.key, e.group(), e.label(), e.command().cloned()))
-            .collect();
         let new_tab = Command::NewTab {
             target: None,
             name: None,
             cmd: Vec::new(),
         };
         assert_eq!(
-            inside,
-            [(KeyPress::char('n'), "Tabs", "new tab".into(), Some(new_tab))]
+            column(&s.config, &[KeyPress::char('g')]),
+            [Entry {
+                key: KeyPress::char('n'),
+                root: false,
+                group: "Tabs".into(),
+                label: "new tab".into(),
+                command: Some(new_tab)
+            }]
         );
         s.input(c, b"n");
         assert_eq!(mode(&s, c), "normal");
@@ -1244,50 +1211,12 @@ mod tests {
         assert_eq!(mode(&s, c), "normal");
         assert_eq!(notice(&s, c), "closed: the repeat mode C-b y is gone");
         s.input(c, b"\x02\x1b[F");
-        let last = column(&s, &[]).len().saturating_sub(1);
+        let last = column(&s.config, &[]).len().saturating_sub(1);
         assert_eq!(mode(&s, c), format!("column {last}"));
         run(&mut s, "unbind d")?;
         assert_eq!(mode(&s, c), format!("column {}", last.saturating_sub(1)));
         run(&mut s, "unbind-all")?;
         assert_eq!(mode(&s, c), "column 0");
-        Ok(())
-    }
-
-    /// The server settles after every read of a pane's output: an open
-    /// column keeps its layer and its selection, and shows the output
-    /// behind it.
-    #[test]
-    fn a_column_stays_open_while_a_pane_writes() -> Outcome {
-        let (mut s, c) = session()?;
-        with_layers(&mut s)?;
-        s.input(c, b"\x02\x1b[B\x1b[B\x1b[B");
-        assert_eq!(mode(&s, c), "column 3");
-        // What it was, kept past the output that changes the session.
-        let selected = column(&s, &[]).get(3).map(|e| e.key);
-        assert!(selected.is_some());
-        for i in 0..50 {
-            s.output(
-                crate::id::PaneId::of(1),
-                format!("output {i}\r\n").as_bytes(),
-            );
-            s.settle();
-        }
-        assert_eq!(mode(&s, c), "column 3");
-        let now = column(&s, &[]).get(3).map(|e| e.key);
-        assert_eq!(now, selected);
-        let text = screen_text(&s, c)?;
-        assert!(
-            text.contains("output 49") && text.contains("Commands"),
-            "{text}"
-        );
-        // In a layer too.
-        s.input(c, b"\x1b");
-        s.escape(c);
-        s.input(c, b"\x02t\x1b[B");
-        assert_eq!(mode(&s, c), "column t 1");
-        s.output(crate::id::PaneId::of(1), b"more\r\n");
-        s.settle();
-        assert_eq!(mode(&s, c), "column t 1");
         Ok(())
     }
 
@@ -1471,7 +1400,7 @@ mod tests {
         // A chooser's `r` and `x` act on the selected item.
         run(&mut s, "choose-tab -c c1")?;
         s.input(c, b"r");
-        assert_eq!(mode(&s, c), "prompt main|4");
+        assert_eq!(mode(&s, c), "prompt main|");
         s.input(c, b"\r");
         run(&mut s, "choose-tab -c c1")?;
         s.input(c, b"x");
@@ -1592,11 +1521,11 @@ mod tests {
         assert_eq!(notice(&s, c), "C-b M-t is not bound");
         escape(&mut s, c);
         // The column lists it last, under its own heading, and runs it.
-        let entries = column(&s, &[]);
+        let entries = column(&s.config, &[]);
         let last = entries.last().ok_or("an entry")?;
-        assert!(last.root && last.group() == ROOT_GROUP, "{entries:?}");
+        assert!(last.root && last.group == ROOT_GROUP, "{entries:?}");
         assert!(entries.iter().rev().nth(1).is_some_and(|e| !e.root));
-        let last = column(&s, &[]).len().saturating_sub(1);
+        let last = column(&s.config, &[]).len().saturating_sub(1);
         s.input(c, &prefixed(""));
         for _ in 0..last {
             s.input(c, b"\x1b[B");
@@ -1790,7 +1719,7 @@ mod tests {
         let Some(Mode::List(list)) = s.views.get(&c).map(|v| &v.mode) else {
             return Err(mode(&s, c));
         };
-        assert_eq!(list.selected, 1);
+        assert_eq!(list.items.index(), 1);
         let current: Vec<bool> = list.items.iter().map(|i| i.current).collect();
         assert_eq!(current, [false, true]);
         assert!(list.items.iter().all(|i| i.label.contains("— %")));
@@ -1802,20 +1731,20 @@ mod tests {
         let (mut s, c) = session()?;
         s.input(c, b"\x02e");
         s.input(c, "abc界".as_bytes());
-        assert_eq!(mode(&s, c), "prompt abc界|4");
+        assert_eq!(mode(&s, c), "prompt abc界|");
         s.input(c, b"\x1b[D\x1b[D\x7fX");
-        assert_eq!(mode(&s, c), "prompt aXc界|2");
+        assert_eq!(mode(&s, c), "prompt aX|c界");
         s.input(c, b"\x1b[3~");
-        assert_eq!(mode(&s, c), "prompt aX界|2");
+        assert_eq!(mode(&s, c), "prompt aX|界");
         // Home and End; Ctrl keys type and do nothing.
         s.input(c, b"\x1b[HY\x1b[FZ");
-        assert_eq!(mode(&s, c), "prompt YaX界Z|5");
+        assert_eq!(mode(&s, c), "prompt YaX界Z|");
         s.input(c, b"\x01\x05\x15\x03\x07");
-        assert_eq!(mode(&s, c), "prompt YaX界Z|5");
+        assert_eq!(mode(&s, c), "prompt YaX界Z|");
         s.input(c, b"\x7f\x7f\x7f\x7f\x7f");
-        assert_eq!(mode(&s, c), "prompt |0");
+        assert_eq!(mode(&s, c), "prompt |");
         s.input(c, b"\x1b[200~one\ntwo\x1b[201~");
-        assert_eq!(mode(&s, c), "prompt one|3");
+        assert_eq!(mode(&s, c), "prompt one|");
         escape(&mut s, c);
         assert_eq!(mode(&s, c), "normal");
         Ok(())

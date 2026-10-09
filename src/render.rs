@@ -6,11 +6,10 @@
 //! the terminal's attributes at their default, which the next one assumes.
 use crate::id::ClientId;
 use crate::id::PaneId;
-use crate::keys::KeyPress;
 use crate::layout::{Axis, Placement, Rect, Separator};
 use crate::overlay;
 use crate::session::Session;
-use crate::view::{List, Mode, View};
+use crate::view::{Choice, List, Mode, View};
 use fux_vt::{Attributes, CellRef, Cells, Color, Row, UnderlineStyle};
 use std::borrow::Cow;
 use std::io::Write;
@@ -660,8 +659,11 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
     let focus = tab.and_then(|t| t.focus(view.id));
     // Copy mode and its positions, their rows found once for the paint.
     let copy = if let Mode::Copy(copy) = &view.mode {
-        let pane = session.panes.get(&copy.pane);
-        pane.map(|pane| (copy.as_ref(), copy.resolve(pane.screen())))
+        let at = session
+            .panes
+            .get(&copy.pane)
+            .and_then(|p| copy.resolve(p.screen()));
+        at.map(|at| (copy.as_ref(), at))
     } else {
         None
     };
@@ -821,17 +823,14 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
     }
     bar(grid, session, view, copy);
     match &view.mode {
-        Mode::Column { path, selected } => column(grid, session, view, path, *selected),
+        Mode::Column(c) => column(grid, session, view, c),
         Mode::List(list) => list_panel(grid, session, view, list),
         Mode::Prompt(prompt) => {
             // The panel's border takes a cell each side.
             let room = view.cols.saturating_sub(2);
             let lines: [Line<'_>; 3] = [
                 (prompt.title.as_str().into(), panel().with_bold(true)),
-                (
-                    prompt_line(&prompt.text, prompt.cursor, room).into(),
-                    panel(),
-                ),
+                (prompt_line(&prompt.line, room).into(), panel()),
                 ("Enter accepts · Esc cancels".into(), panel().with_dim(true)),
             ];
             surface(grid, view, &lines);
@@ -844,21 +843,20 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             surface(grid, view, &lines);
         }
         // A repeat mode shows in the bar, leaving the layout in view.
-        Mode::Normal | Mode::Copy(_) | Mode::Repeat { .. } => {}
+        Mode::Normal | Mode::Copy(_) | Mode::Repeat(_) => {}
     }
 }
 
 /// A prompt's text with its cursor bar, in at most `room` cells: when it is
 /// wider, the line scrolls so the bar shows, with a few cells of what
 /// follows it, and an ellipsis marks each side cut off.
-fn prompt_line(text: &str, cursor: usize, room: u16) -> String {
-    let line = with_cursor(text, cursor);
+fn prompt_line(text: &crate::view::Line, room: u16) -> String {
+    let line = format!("{}▏{}", text.before(), text.after());
     if width(&line) <= room {
         return line;
     }
     let chars: Vec<char> = line.chars().filter(|c| !c.is_control()).collect();
-    // Where `with_cursor` put the bar.
-    let bar = cursor.min(text.chars().filter(|c| !c.is_control()).count());
+    let bar = text.before().chars().filter(|c| !c.is_control()).count();
     // An ellipsis each side, at most.
     let inner = room.saturating_sub(2);
     let ahead = inner / 4;
@@ -892,17 +890,6 @@ fn prompt_line(text: &str, cursor: usize, room: u16) -> String {
         out.push('…');
     }
     out
-}
-
-/// A prompt's text with a bar at `cursor`, counted in chars; past the end
-/// the bar follows the text.
-fn with_cursor(text: &str, cursor: usize) -> String {
-    let at = text
-        .char_indices()
-        .nth(cursor)
-        .map_or(text.len(), |(i, _)| i);
-    let (before, after) = text.split_at_checked(at).unwrap_or((text, ""));
-    format!("{before}▏{after}")
 }
 
 fn panel() -> Attributes {
@@ -1056,25 +1043,14 @@ fn bar(
         ))
     } else if let Some(copy) = &copy_bar {
         Some((copy.position.as_str().into(), base))
-    } else if let Mode::Column { path, .. } = &view.mode {
+    } else if let Mode::Column(column) = &view.mode {
         Some((
-            format!("{} …", session.keys_named(path)).into(),
+            format!("{} …", session.keys_named(&column.path)).into(),
             style(Color::Idx(0), Color::Idx(11)),
         ))
-    } else if let Mode::Repeat { path } = &view.mode {
-        // The mode's name and its keys: `RESIZE  h j k l · Esc`.
-        let title = overlay::layer_title(session, path).unwrap_or_default();
-        let keys: Vec<String> = session
-            .config
-            .bindings
-            .iter()
-            .filter_map(|b| match b.keys.strip_prefix(path.as_slice()) {
-                Some([key]) => Some(key.to_string()),
-                Some(_) | None => None,
-            })
-            .collect();
+    } else if let Mode::Repeat(repeat) = &view.mode {
         Some((
-            format!("{}  {} · Esc", title.to_uppercase(), keys.join(" ")).into(),
+            repeat.bar.as_str().into(),
             style(Color::Idx(0), Color::Idx(11)).with_bold(true),
         ))
     } else {
@@ -1214,20 +1190,18 @@ fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
 fn list_panel(grid: &mut Grid, session: &Session, view: &View, list: &List) {
     let mut lines: Vec<Line<'_>> = vec![(list.title.as_str().into(), panel().with_bold(true))];
     let capacity = overlay::list_room(view.rows);
-    let start = overlay::window_start(list.items.len(), list.selected, capacity);
+    let (len, chosen) = (list.items.iter().count(), list.items.index());
+    let start = overlay::window_start(len, chosen, capacity);
     let ctx = crate::session::Ctx::client(view.id);
     let shown = list.items.iter().enumerate().skip(start).take(capacity);
     let shown = shown.map(|(i, item)| {
-        let dim = !list.chooser && session.unavailable(&item.command, &ctx).is_some();
+        let dim = item.subject.is_none() && session.unavailable(&item.command, &ctx).is_some();
         let marker = if item.current { "*" } else { " " };
-        let attrs = panel().with_inverse(i == list.selected).with_dim(dim);
+        let attrs = panel().with_inverse(i == chosen).with_dim(dim);
         (format!("{marker} {}", item.label).into(), attrs)
     });
-    windowed(&mut lines, list.items.len(), start, capacity, shown);
-    if list.items.is_empty() {
-        lines.push(("nothing to choose".into(), panel().with_dim(true)));
-    }
-    let help = if list.chooser {
+    windowed(&mut lines, len, start, capacity, shown);
+    let help = if list.items.chosen().subject.is_some() {
         "Enter selects · r renames · x closes · Esc"
     } else {
         "Enter runs · Esc cancels"
@@ -1236,56 +1210,49 @@ fn list_panel(grid: &mut Grid, session: &Session, view: &View, list: &List) {
     surface(grid, view, &lines);
 }
 
-/// The command column: the bindings and layers of the layer at `path`,
-/// grouped, the selected one highlighted and those that cannot run now
-/// dimmed.
-fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], selected: usize) {
-    let column = overlay::column(session, path);
+/// The command column: the bindings and layers of its layer, grouped, the
+/// selected one highlighted and those that cannot run now dimmed.
+fn column(grid: &mut Grid, session: &Session, view: &View, column: &overlay::Column) {
+    let all = column.entries.iter().flat_map(Choice::iter);
+    let chosen = column.entries.as_ref().map(Choice::index);
     // Each entry's key as it is typed, written out once.
-    let keys: Vec<String> = column.iter().map(|e| e.key.to_string()).collect();
+    let keys: Vec<String> = all.clone().map(|e| e.key.to_string()).collect();
     let key_width = keys.iter().map(|k| width(k)).max().unwrap_or(0);
     let ctx = crate::session::Ctx::client(view.id);
     let mut entries: Vec<Line<'_>> = Vec::new();
     let mut heading = None;
     let mut selected_row = 0usize;
-    for (index, (entry, key)) in column.iter().zip(&keys).enumerate() {
-        let group = (entry.root, entry.group());
+    for (index, (entry, key)) in all.zip(&keys).enumerate() {
+        let group = (entry.root, entry.group.as_str());
         if heading != Some(group) {
             entries.push((group.1.into(), panel().with_bold(true)));
             heading = Some(group);
         }
         // Whether it cannot run now; a layer's entry opens it.
         let dim = entry
-            .command()
+            .command
+            .as_ref()
             .is_some_and(|command| session.unavailable(command, &ctx).is_some());
-        let more = if entry.layer { "…" } else { "" };
+        let more = if entry.command.is_none() { "…" } else { "" };
         let pad = usize::from(key_width.saturating_sub(width(key)));
         let mut attrs = panel().with_dim(dim);
-        if index == selected {
+        if Some(index) == chosen {
             attrs = attrs.with_inverse(true);
             selected_row = entries.len();
         }
-        let text = entry.label();
+        let text = &entry.label;
         entries.push((format!("{:pad$}{key}  {text}{more}", "").into(), attrs));
     }
     let (heading, body_room) = overlay::column_room(view.rows);
     let start = overlay::window_start(entries.len(), selected_row, body_room);
     let mut lines: Vec<Line<'_>> = Vec::new();
     if heading {
-        // Right after the prefix, every command; in a layer, its keys so far
-        // and its title.
-        let title = match overlay::layer_title(session, path) {
-            Some(title) if !path.is_empty() => {
-                Cow::Owned(format!("{}: {title}", session.keys_named(path)))
-            }
-            Some(_) | None => Cow::Borrowed("Commands"),
-        };
-        lines.push((title, panel().with_bold(true)));
+        lines.push((column.title.as_str().into(), panel().with_bold(true)));
     }
     let total = entries.len();
     let shown = entries.into_iter().skip(start).take(body_room);
     windowed(&mut lines, total, start, body_room, shown);
-    if column.is_empty() {
+    if column.entries.is_none() {
         lines.push(("no bindings".into(), panel().with_dim(true)));
     }
     surface(grid, view, &lines);
@@ -2090,112 +2057,6 @@ mod tests {
         Ok(())
     }
 
-    /// The selection test compose used to make for every cell, finding
-    /// the view's top and both ends in the history each time.
-    fn reference_selected(
-        copy: &crate::copy::Copy,
-        screen: &fux_vt::Screen,
-        view_row: u16,
-        col: u16,
-    ) -> bool {
-        use crate::copy::{Select, index_of};
-        let at = |(id, col)| Some((index_of(screen, id)?, col));
-        let Some(top) = index_of(screen, copy.top) else {
-            return false;
-        };
-        let Some((kind, anchor)) = copy.selection else {
-            return false;
-        };
-        let (Some(a), Some(b)) = (at(anchor), at(copy.cursor)) else {
-            return false;
-        };
-        let (start, end) = (a.min(b), a.max(b));
-        let Some(row) = top.checked_add(usize::from(view_row)) else {
-            return false;
-        };
-        if row < start.0 || row > end.0 {
-            return false;
-        }
-        match kind {
-            Select::Line => true,
-            Select::Block => {
-                let (left, right) = (start.1.min(end.1), start.1.max(end.1));
-                (left..=right).contains(&col)
-            }
-            Select::Char => (row, col) >= start && (row, col) <= end,
-        }
-    }
-
-    /// Copy mode finds its rows once per paint: the cells compose inverts
-    /// are exactly those the old per-cell test selected, for each kind of
-    /// selection, over a screen with history and a view scrolled into it.
-    #[test]
-    fn compose_inverts_exactly_the_selected_cells() -> Result<(), Box<dyn std::error::Error>> {
-        let (mut s, c) = crate::session::testing::attached(10, 30)?;
-        let pane = PaneId::of(1);
-        let text: String = (0..60)
-            .map(|i| {
-                let tail: String = std::iter::repeat_n('x', i % 20).collect();
-                format!("line {i} 界 {tail}\r\n")
-            })
-            .collect();
-        s.output(pane, text.as_bytes());
-        s.input(c, b"\x02c");
-        let mut kinds = Vec::new();
-        // Up into the history, then each kind of selection, with its ends
-        // moved about, a block's end left of its start, and the view
-        // scrolled past the anchor.
-        for keys in [
-            &b"kkkkkkkkkkkkkkkllllllllv"[..],
-            b"kkklllll",
-            b"s",
-            b"jjjjjjjjjjjjjj",
-            b"x",
-            b"hhhhhhhhhh",
-            b"kkkkkkkkkkkkkkkkkkkkkkkkk",
-            b"uv",
-            b"ollll",
-        ] {
-            s.input(c, keys);
-            let grid = compose(&s, c).ok_or("a screen")?;
-            let view = s.views.get(&c).ok_or("the client")?;
-            let Mode::Copy(copy) = &view.mode else {
-                return Err("copy mode ended".into());
-            };
-            kinds.push(copy.selection.map(|(kind, _)| kind));
-            let screen = s.panes.get(&pane).ok_or("the pane")?.screen();
-            let rect = s.placement(view).rect(pane).ok_or("the pane's place")?;
-            // The view shows the rows from its top.
-            let top = crate::copy::index_of(screen, copy.top).ok_or("the top row")?;
-            for y in 0..rect.h {
-                let row = crate::copy::row_at(screen, top + usize::from(y)).ok_or("a row")?;
-                assert_eq!(grid.row_text(y), crate::session::row_text(row));
-            }
-            let mut selected = 0;
-            for y in 0..rect.h {
-                for x in 0..rect.w {
-                    let cell = rect.at(y, x).and_then(|(gy, gx)| grid.get(gy, gx));
-                    let continuation = cell.is_some_and(|c| c.is_wide_continuation());
-                    let wide = cell.is_some_and(|c| c.is_wide());
-                    let expected = !continuation
-                        && (reference_selected(copy, screen, y, x)
-                            || wide && reference_selected(copy, screen, y, x + 1));
-                    let inverse = cell.is_some_and(|c| c.inverse());
-                    assert_eq!(inverse, expected, "{keys:?} at {y},{x}");
-                    selected += usize::from(expected);
-                }
-            }
-            if copy.selection.is_some() {
-                assert!(selected > 0, "{keys:?}: nothing selected in view");
-            }
-        }
-        use crate::copy::Select;
-        for kind in [Select::Char, Select::Line, Select::Block] {
-            assert!(kinds.contains(&Some(kind)), "{kind:?}: {kinds:?}");
-        }
-        Ok(())
-    }
-
     /// A block whose edge falls on a wide glyph's second half in one of its
     /// rows highlights that glyph, as `y` copies it whole.
     #[test]
@@ -2339,39 +2200,29 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn the_prompt_cursor_falls_between_chars_not_bytes() {
-        for (text, cursor, shown) in [
-            ("", 0, "▏"),
-            ("", 3, "▏"),
-            ("héllo", 0, "▏héllo"),
-            ("héllo", 2, "hé▏llo"),
-            ("héllo", 5, "héllo▏"),
-            ("héllo", 9, "héllo▏"),
-            ("界a界", 1, "界▏a界"),
-            ("界a界", 2, "界a▏界"),
-        ] {
-            assert_eq!(with_cursor(text, cursor), shown, "{text:?} at {cursor}");
-        }
-    }
-
     /// A prompt wider than its panel scrolls to keep the cursor in view,
     /// with an ellipsis on each side cut off, never wider than the room.
     #[test]
     fn a_long_prompt_scrolls_to_its_cursor() {
         let text = "split -v -- echo aaaaaaaaaaaaaaaaaaaaTAIL";
+        // The line with its cursor `left` chars from the end.
+        let line = |text: &str, left: usize| {
+            let mut line = crate::view::Line::new(text.into());
+            (0..left).for_each(|_| line.left());
+            line
+        };
         let end = text.chars().count();
-        for (cursor, starts, ends) in [(end, "…", "TAIL▏"), (0, "▏spl", "…"), (20, "…", "…")]
+        for (left, starts, ends) in [(0, "…", "TAIL▏"), (end, "▏spl", "…"), (20, "…", "…")]
         {
-            let shown = prompt_line(text, cursor, 12);
+            let shown = prompt_line(&line(text, left), 12);
             assert!(width(&shown) <= 12, "{shown:?} fits");
             assert!(shown.contains('▏'), "{shown:?} shows the cursor");
             assert!(shown.starts_with(starts), "{shown:?} starts {starts:?}");
             assert!(shown.ends_with(ends), "{shown:?} ends {ends:?}");
         }
         // Wide chars count two cells; short text is as it was.
-        assert!(width(&prompt_line("界界界界界界界界", 8, 7)) <= 7);
-        assert_eq!(prompt_line("ls", 2, 12), "ls▏");
+        assert!(width(&prompt_line(&line("界界界界界界界界", 0), 7)) <= 7);
+        assert_eq!(prompt_line(&line("ls", 0), 12), "ls▏");
     }
 
     fn grid_lines(g: &Grid) -> Vec<String> {

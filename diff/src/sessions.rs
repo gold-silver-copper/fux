@@ -70,9 +70,9 @@ pub struct World {
 
 /// The same code for the baseline's crates and the current ones.
 macro_rules! stack {
-    ($name:ident, $fux:ident, $id:ident, $layout:ident, $place:path, $tabs:path, $root:path) => {
+    ($name:ident, $fux:ident, $id:ident, $layout:ident, $side:ident) => {
         pub mod $name {
-            use super::*;
+            use super::Event;
             use std::collections::BTreeMap;
             use std::fmt::Write;
             use $fux::$id::ClientId;
@@ -156,10 +156,6 @@ macro_rules! stack {
             fn mode(mode: &Mode) -> String {
                 match mode {
                     Mode::Normal => "normal".into(),
-                    Mode::Column { path, selected } => format!("column {path:?} {selected}"),
-                    Mode::Repeat { path } => format!("repeat {path:?}"),
-                    Mode::List(list) => format!("{list:?}"),
-                    Mode::Prompt(prompt) => format!("{prompt:?}"),
                     Mode::Confirm(confirm) => format!("{confirm:?}"),
                     Mode::Copy(c) => format!(
                         "copy {} top {:?} cursor {:?} selection {:?} search {:?} typing {:?} held {:?}",
@@ -171,6 +167,7 @@ macro_rules! stack {
                         c.typing.as_ref().map(|(seek, text)| (format!("{seek:?}"), text.clone())),
                         c.held_at
                     ),
+                    other => super::$side::overlay(other),
                 }
             }
 
@@ -185,7 +182,7 @@ macro_rules! stack {
                         v.id,
                         v.rows,
                         v.cols,
-                        $place(s, v),
+                        super::$side::place(s, v),
                         v.zoom,
                         v.dirty,
                         v.notice,
@@ -205,8 +202,8 @@ macro_rules! stack {
                 }
                 for ws in &s.workspaces {
                     let _ = writeln!(out, "workspace {} {:?}", ws.id, ws.name);
-                    for t in $tabs(ws) {
-                        let _ = writeln!(out, "  tab {} {:?} {:?}", t.id, t.name, $root(t));
+                    for (t, root) in super::$side::tabs(ws) {
+                        let _ = writeln!(out, "  tab {} {:?} {:?}", t.id, t.name, root);
                     }
                 }
                 let _ = writeln!(
@@ -242,31 +239,83 @@ macro_rules! stack {
     };
 }
 
-stack!(
-    base, baseline, command, layout, base_place, base_tabs, base_root
-);
-use fux::workspace::{Tab, Workspace};
-stack!(cur, fux, id, id, cur_place, Workspace::tabs, Tab::root);
+stack!(base, baseline, command, layout, base_side);
+stack!(cur, fux, id, id, cur_side);
 
-/// Where the baseline keeps what the current side keeps elsewhere: a
-/// client's place, in its view; a workspace's tabs and a tab's layout, in
-/// fields.
-fn base_place(s: &baseline::session::Session, v: &baseline::view::View) -> String {
-    let ws = s.workspace(v.workspace).map(|w| w.id);
-    format!("{ws:?} tab {:?} focus {:?}", v.tab(), v.focus())
-}
-fn base_tabs(w: &baseline::session::Workspace) -> &[baseline::session::Tab] {
-    &w.tabs
-}
-fn base_root(t: &baseline::session::Tab) -> Option<&baseline::layout::Node> {
-    t.root.as_ref()
+/// The column, a repeat mode, a list and a prompt as each side keeps them,
+/// a client's place and a workspace's tabs with their layouts, written alike.
+mod base_side {
+    use baseline::layout::Node;
+    use baseline::session::{Session, Tab, Workspace};
+    use baseline::view::{Mode, View};
+
+    pub fn place(s: &Session, v: &View) -> String {
+        let ws = s.workspace(v.workspace).map(|w| w.id);
+        format!("{ws:?} tab {:?} focus {:?}", v.tab(), v.focus())
+    }
+
+    pub fn tabs(w: &Workspace) -> impl Iterator<Item = (&Tab, Option<&Node>)> {
+        w.tabs.iter().map(|t| (t, t.root.as_ref()))
+    }
+
+    pub fn overlay(mode: &Mode) -> String {
+        match mode {
+            Mode::Column { path, selected } => format!("column {path:?} {selected}"),
+            Mode::Repeat { path } => format!("repeat {path:?}"),
+            Mode::List(l) => format!(
+                "list {:?} {:?} {} {:?}",
+                l.title, l.items, l.selected, l.about
+            ),
+            Mode::Prompt(p) => format!(
+                "prompt {:?} {:?} {:?} {}",
+                p.title, p.purpose, p.text, p.cursor
+            ),
+            Mode::Normal | Mode::Confirm(_) | Mode::Copy(_) => String::new(),
+        }
+    }
 }
 
-/// A client's place, in its workspace's and tab's seats.
-fn cur_place(s: &fux::session::Session, v: &fux::view::View) -> String {
-    let (ws, tab) = (s.shown_workspace(v.id), s.shown_tab(v.id));
-    let (ws, tab) = (ws.map(|w| w.id), tab.map(|t| t.id));
-    format!("{ws:?} tab {tab:?} focus {:?}", s.focused(v.id))
+mod cur_side {
+    use fux::layout::Node;
+    use fux::session::Session;
+    use fux::view::{Choice, Mode, View};
+    use fux::workspace::{Tab, Workspace};
+
+    pub fn place(s: &Session, v: &View) -> String {
+        let (ws, tab) = (s.shown_workspace(v.id), s.shown_tab(v.id));
+        let (ws, tab) = (ws.map(|w| w.id), tab.map(|t| t.id));
+        format!("{ws:?} tab {tab:?} focus {:?}", s.focused(v.id))
+    }
+
+    pub fn tabs(w: &Workspace) -> impl Iterator<Item = (&Tab, Option<&Node>)> {
+        w.tabs().iter().map(|t| (t, t.root()))
+    }
+
+    pub fn overlay(mode: &Mode) -> String {
+        match mode {
+            Mode::Column(c) => {
+                let selected = c.entries.as_ref().map_or(0, Choice::index);
+                format!("column {:?} {selected}", c.path)
+            }
+            Mode::Repeat(r) => format!("repeat {:?}", r.path),
+            Mode::List(l) => {
+                let items: Vec<_> = l.items.iter().collect();
+                format!(
+                    "list {:?} {items:?} {} {:?}",
+                    l.title,
+                    l.items.index(),
+                    l.about
+                )
+            }
+            Mode::Prompt(p) => {
+                let (before, after) = (p.line.before(), p.line.after());
+                let text = format!("{before}{after}");
+                let cursor = before.chars().count();
+                format!("prompt {:?} {:?} {text:?} {cursor}", p.title, p.purpose)
+            }
+            Mode::Normal | Mode::Confirm(_) | Mode::Copy(_) => String::new(),
+        }
+    }
 }
 
 /// Whether any of the baseline's clients is in copy mode, a list or a
