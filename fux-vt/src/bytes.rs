@@ -1,6 +1,5 @@
 //! Bytes that arrive at one end and are taken from the other: a socket's
-//! input waiting to be decoded, its output waiting to be written, a key
-//! sequence waiting to complete.
+//! input waiting to be decoded, its output waiting to be written.
 use std::ops::Range;
 
 /// `slice::copy_within`, checked: copies the run `src` of `slice` to start at
