@@ -1553,40 +1553,40 @@ mod tests {
         run(&mut s, "split -h -t %1")?;
         run(&mut s, "select-pane -c c1 -t %2")?;
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
-        assert!(right.x > 1 && right.y == 0, "{right:?}");
+        assert!(right.x() > 1 && right.y() == 0, "{right:?}");
         // Nothing asked: no reporting, and a report is dropped.
         assert_eq!(asked_mouse_level(&s, c), Some(0));
         let press = |col: u16, row: u16| format!("\x1b[<0;{};{}M", col + 1, row + 1);
-        s.input(c, press(right.x + 3, 2).as_bytes());
+        s.input(c, press(right.x() + 3, 2).as_bytes());
         assert!(queued(&mut s, 2).is_empty());
         s.output(crate::id::PaneId::of(2), b"\x1b[?1000h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1000));
         // Moved to the pane's cells.
-        s.input(c, press(right.x + 3, 2).as_bytes());
+        s.input(c, press(right.x() + 3, 2).as_bytes());
         assert_eq!(queued(&mut s, 2), b"\x1b[<0;4;3M");
         // On the other pane, or the border between them: dropped.
         s.input(c, press(1, 2).as_bytes());
-        s.input(c, press(right.x - 1, 2).as_bytes());
+        s.input(c, press(right.x() - 1, 2).as_bytes());
         assert!(queued(&mut s, 2).is_empty() && queued(&mut s, 1).is_empty());
         // In the encoding the program asked for: here the default.
         s.output(crate::id::PaneId::of(2), b"\x1b[?1006l");
-        s.input(c, press(right.x, 0).as_bytes());
+        s.input(c, press(right.x(), 0).as_bytes());
         assert_eq!(queued(&mut s, 2), [0x1b, b'[', b'M', 32, 33, 33]);
         // X10's presses come from asking for 1000, its releases dropped.
         s.output(crate::id::PaneId::of(2), b"\x1b[?9h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1000));
         s.input(
             c,
-            format!("{}\x1b[<0;{};1m", press(right.x, 0), right.x + 1).as_bytes(),
+            format!("{}\x1b[<0;{};1m", press(right.x(), 0), right.x() + 1).as_bytes(),
         );
         assert_eq!(queued(&mut s, 2), b"\x1b[<0;1;1M");
         // A pane below another: moved down too.
         run(&mut s, "split -v -t %2")?;
         run(&mut s, "select-pane -c c1 -t %3")?;
         let below = rect_of(&s, c, 3).ok_or("no rect for %3")?;
-        assert!(below.y > 1, "{below:?}");
+        assert!(below.y() > 1, "{below:?}");
         s.output(crate::id::PaneId::of(3), b"\x1b[?1000h\x1b[?1006h");
-        s.input(c, press(below.x + 1, below.y + 2).as_bytes());
+        s.input(c, press(below.x() + 1, below.y() + 2).as_bytes());
         assert_eq!(queued(&mut s, 3), b"\x1b[<0;2;3M");
         Ok(())
     }
@@ -1599,14 +1599,14 @@ mod tests {
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
         s.output(crate::id::PaneId::of(2), b"\x1b[?1002h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1002));
-        let x = right.x + 1;
+        let x = right.x() + 1;
         // Pressed inside, dragged over the left pane and past the bottom,
         // released there: the pane hears all of it, at its edge.
         s.input(c, format!("\x1b[<0;{};2M", x + 1).as_bytes());
         s.input(c, b"\x1b[<32;1;2M");
         s.input(c, b"\x1b[<32;1;200M");
         s.input(c, b"\x1b[<0;1;200m");
-        let bottom = right.h;
+        let bottom = right.h();
         assert_eq!(
             String::from_utf8_lossy(&queued(&mut s, 2)),
             format!("\x1b[<0;2;2M\x1b[<32;1;2M\x1b[<32;1;{bottom}M\x1b[<0;1;{bottom}m")
@@ -1625,7 +1625,7 @@ mod tests {
         s.output(crate::id::PaneId::of(2), b"\x1b[?1003h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1003));
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
-        let press = format!("\x1b[<0;{};2M", right.x + 2);
+        let press = format!("\x1b[<0;{};2M", right.x() + 2);
         // Copy mode, the column and a prompt have the keys: no reporting,
         // and a report in flight is dropped.
         for (open, close) in [

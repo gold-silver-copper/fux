@@ -3,6 +3,7 @@
 use crate::id::PaneId;
 use crate::keys::Direction;
 use std::num::NonZeroU64;
+use std::ops::Range;
 
 /// How a split arranges its children.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,65 +44,147 @@ fn separators(children: usize) -> u16 {
     u16::try_from(children.saturating_sub(1)).unwrap_or(u16::MAX)
 }
 
+/// A rectangle of cells on a screen. Its right and bottom edges are within a
+/// u16, as a screen's are: one is made only as a whole screen
+/// ([`Rect::screen`]) or cut from another ([`Rect::split`], [`Rect::corner`],
+/// [`Rect::lines`]), so every position inside one is exact.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Rect {
-    pub x: u16,
-    pub y: u16,
-    pub w: u16,
-    pub h: u16,
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
 }
 
 impl Rect {
-    /// Where (y, x) inside the rect is on the screen, if that is a position.
+    /// A whole screen of `rows` by `cols`.
+    pub fn screen(rows: u16, cols: u16) -> Rect {
+        Rect {
+            x: 0,
+            y: 0,
+            w: cols,
+            h: rows,
+        }
+    }
+    pub fn x(&self) -> u16 {
+        self.x
+    }
+    pub fn y(&self) -> u16 {
+        self.y
+    }
+    pub fn w(&self) -> u16 {
+        self.w
+    }
+    pub fn h(&self) -> u16 {
+        self.h
+    }
+    // Exact: a rect is inside a screen.
+    pub fn right(&self) -> u16 {
+        self.x.saturating_add(self.w)
+    }
+    pub fn bottom(&self) -> u16 {
+        self.y.saturating_add(self.h)
+    }
+    pub fn is_empty(&self) -> bool {
+        self.w == 0 || self.h == 0
+    }
+    /// How many cells it has; exact in a u32.
+    pub fn area(&self) -> u32 {
+        u32::from(self.w).saturating_mul(u32::from(self.h))
+    }
+    /// Its rows on the screen, top to bottom.
+    pub fn rows(&self) -> Range<u16> {
+        self.y..self.bottom()
+    }
+    /// Its columns on the screen, left to right.
+    pub fn cols(&self) -> Range<u16> {
+        self.x..self.right()
+    }
+    /// Each of its rows, as a rect one row high.
+    pub fn lines(self) -> impl Iterator<Item = Rect> {
+        self.rows().map(move |y| Rect { y, h: 1, ..self })
+    }
+    /// Where (y, x) of the rect is on the screen; none outside it.
     pub fn at(&self, y: u16, x: u16) -> Option<(u16, u16)> {
-        Some((self.y.checked_add(y)?, self.x.checked_add(x)?))
+        (y < self.h && x < self.w).then(|| (self.y.saturating_add(y), self.x.saturating_add(x)))
     }
-    // Sums of two u16s are exact in a u32.
-    fn right(&self) -> u32 {
-        u32::from(self.x).saturating_add(u32::from(self.w))
+    /// Whether (y, x) on the screen is inside the rect.
+    pub fn contains(&self, y: u16, x: u16) -> bool {
+        self.rows().contains(&y) && self.cols().contains(&x)
     }
-    fn bottom(&self) -> u32 {
-        u32::from(self.y).saturating_add(u32::from(self.h))
+    /// Whether (y, x) on the screen is inside the rect or beside it, edges
+    /// and corners: within a cell of it.
+    pub fn near(&self, y: u16, x: u16) -> bool {
+        y.saturating_add(1) >= self.y
+            && y <= self.bottom()
+            && x.saturating_add(1) >= self.x
+            && x <= self.right()
     }
-    /// Whether (x, y) is inside the rect.
-    pub fn contains(&self, x: u16, y: u16) -> bool {
-        x >= self.x && u32::from(x) < self.right() && y >= self.y && u32::from(y) < self.bottom()
+    /// (y, x) on the screen as a position of the rect, moved to its nearest
+    /// cell if outside; (0, 0) in an empty one.
+    pub fn clamp(&self, y: u16, x: u16) -> (u16, u16) {
+        let inside =
+            |at: u16, start: u16, len: u16| at.saturating_sub(start).min(len.saturating_sub(1));
+        (inside(y, self.y, self.h), inside(x, self.x, self.w))
+    }
+    /// Its length along `axis`.
+    fn len(&self, axis: Axis) -> u16 {
+        match axis {
+            Axis::Horizontal => self.w,
+            Axis::Vertical => self.h,
+        }
+    }
+    /// Its first `len` cells along `axis`, or all of it if it has fewer,
+    /// and the rest.
+    pub fn split(self, axis: Axis, len: u16) -> (Rect, Rect) {
+        let len = len.min(self.len(axis));
+        let rest = self.len(axis).saturating_sub(len);
+        match axis {
+            Axis::Horizontal => (
+                Rect { w: len, ..self },
+                Rect {
+                    x: self.x.saturating_add(len),
+                    w: rest,
+                    ..self
+                },
+            ),
+            Axis::Vertical => (
+                Rect { h: len, ..self },
+                Rect {
+                    y: self.y.saturating_add(len),
+                    h: rest,
+                    ..self
+                },
+            ),
+        }
+    }
+    /// Its bottom-right corner, at most `h` by `w`.
+    pub fn corner(self, h: u16, w: u16) -> Rect {
+        let (h, w) = (h.min(self.h), w.min(self.w));
+        Rect {
+            x: self.right().saturating_sub(w),
+            y: self.bottom().saturating_sub(h),
+            w,
+            h,
+        }
     }
     /// Twice the centre, so that it is whole.
     fn centre2(&self) -> (u32, u32) {
         (
-            u32::from(self.x).saturating_add(self.right()),
-            u32::from(self.y).saturating_add(self.bottom()),
+            u32::from(self.x).saturating_add(u32::from(self.right())),
+            u32::from(self.y).saturating_add(u32::from(self.bottom())),
         )
     }
 }
 
-/// A separator line: vertical between side-by-side children, horizontal
-/// between stacked ones.
+/// A separator line, a rect one cell wide or high: vertical between
+/// side-by-side children, horizontal between stacked ones.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Separator {
     /// The axis of the split it divides: a `Horizontal` split's line is
     /// vertical.
     pub axis: Axis,
-    pub x: u16,
-    pub y: u16,
-    pub len: u16,
-}
-
-impl Separator {
-    /// The cells it covers: a rectangle one cell wide or high.
-    pub fn rect(&self) -> Rect {
-        let (w, h) = match self.axis {
-            Axis::Horizontal => (1, self.len),
-            Axis::Vertical => (self.len, 1),
-        };
-        Rect {
-            x: self.x,
-            y: self.y,
-            w,
-            h,
-        }
-    }
+    pub rect: Rect,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -418,7 +501,7 @@ pub fn place(root: &Node, area: Rect) -> Placement {
 /// buffers: a placement made into again allocates nothing.
 pub fn place_into(root: &Node, area: Rect, out: &mut Placement) {
     out.clear();
-    if area.w > 0 && area.h > 0 {
+    if !area.is_empty() {
         place_node(root, area, out);
     }
 }
@@ -432,33 +515,45 @@ fn place_node(node: &Node, area: Rect, out: &mut Placement) {
 
 /// Places a split's `children`, side by side along `axis`, in `area`.
 fn place_split(axis: Axis, children: &[(u32, Node)], area: Rect, out: &mut Placement) {
-    let along = match axis {
-        Axis::Horizontal => area.w,
-        Axis::Vertical => area.h,
-    };
-    let separators = separators(children.len());
-    // The children's sizes, then their minimums, above those of the splits
-    // this one is inside, until it is placed.
+    // The children's sizes, above those of the splits this one is inside,
+    // until it is placed.
     let base = out.scratch.len();
-    out.scratch.extend(children.iter().map(|_| 0));
-    out.scratch
-        .extend(children.iter().map(|(_, c)| c.min_len(axis)));
-    let (sizes, mins) = out
-        .scratch
+    share(axis, children, area, &mut out.scratch);
+    let mut cut = Cut::new(axis, area);
+    for (i, (_, child)) in children.iter().enumerate() {
+        let size = out.scratch.get(base..).and_then(|s| s.get(i)).copied();
+        if let Some((separator, rect)) = cut.next(size.unwrap_or(0)) {
+            out.separators.extend(separator);
+            place_node(child, rect, out);
+        }
+    }
+    out.scratch.truncate(base);
+}
+
+/// Pushes the length along `axis` each of a split's `children` has in
+/// `area` onto `sizes`: 0 for those with no room.
+fn share(axis: Axis, children: &[(u32, Node)], area: Rect, sizes: &mut Vec<u16>) {
+    let along = if area.is_empty() { 0 } else { area.len(axis) };
+    let separators = separators(children.len());
+    // The sizes, then the minimums, until they are shared.
+    let base = sizes.len();
+    sizes.extend(children.iter().map(|_| 0));
+    sizes.extend(children.iter().map(|(_, c)| c.min_len(axis)));
+    let (sizes_now, mins) = sizes
         .get_mut(base..)
         .and_then(|s| s.split_at_mut_checked(children.len()))
         .unwrap_or_default();
     let needed = mins.iter().fold(separators, |a, m| a.saturating_add(*m));
     let room = along.checked_sub(separators).filter(|_| along >= needed);
     if let Some(room) = room {
-        distribute(room, children, sizes, mins);
+        distribute(room, children, sizes_now, mins);
     } else {
         // Too small for all: children in order while they fit, each after
         // the first needing a separator; the last one shown takes what is
         // left.
         let mut left = along;
         let mut last = None;
-        for (i, (size, min)) in sizes.iter_mut().zip(mins.iter()).enumerate() {
+        for (i, (size, min)) in sizes_now.iter_mut().zip(mins.iter()).enumerate() {
             let cost = min.saturating_add(u16::from(i > 0));
             let Some(rest) = left.checked_sub(cost) else {
                 break;
@@ -468,72 +563,47 @@ fn place_split(axis: Axis, children: &[(u32, Node)], area: Rect, out: &mut Place
             last = Some(i);
         }
         // What is left fits: the sizes add up to at most `along`.
-        if let Some(size) = last.and_then(|i| sizes.get_mut(i))
-            && let Some(grown) = size.checked_add(left)
-        {
-            *size = grown;
+        if let Some(size) = last.and_then(|i| sizes_now.get_mut(i)) {
+            *size = size.saturating_add(left);
         }
     }
-    // Where along the axis each child and separator starts. The sizes fit
-    // `area`, so past the largest position nothing is placed.
-    let start = match axis {
-        Axis::Horizontal => area.x,
-        Axis::Vertical => area.y,
-    };
-    let mut at = Some(start);
-    let mut first = true;
-    for (i, (_, child)) in children.iter().enumerate() {
-        let size = out
-            .scratch
-            .get(base..)
-            .and_then(|sizes| sizes.get(i))
-            .copied()
-            .unwrap_or(0);
+    sizes.truncate(base.saturating_add(children.len()));
+}
+
+/// Cuts a split's area into its children's, in order, with a separator
+/// before each but the first.
+struct Cut {
+    axis: Axis,
+    rest: Rect,
+    first: bool,
+}
+
+impl Cut {
+    fn new(axis: Axis, area: Rect) -> Cut {
+        Cut {
+            axis,
+            rest: area,
+            first: true,
+        }
+    }
+    /// The next child's rect, `size` long, and the separator before it;
+    /// none for a child with no room.
+    fn next(&mut self, size: u16) -> Option<(Option<Separator>, Rect)> {
         if size == 0 {
-            continue;
+            return None;
         }
-        if !first {
-            // Where along the split's axis: a column or a row.
-            let Some(pos) = at else {
-                break;
-            };
-            let separator = match axis {
-                Axis::Horizontal => Separator {
-                    axis,
-                    x: pos,
-                    y: area.y,
-                    len: area.h,
-                },
-                Axis::Vertical => Separator {
-                    axis,
-                    x: area.x,
-                    y: pos,
-                    len: area.w,
-                },
-            };
-            out.separators.push(separator);
-            at = pos.checked_add(1);
-        }
-        first = false;
-        let Some(pos) = at else {
-            break;
-        };
-        let rect = match axis {
-            Axis::Horizontal => Rect {
-                x: pos,
-                w: size,
-                ..area
-            },
-            Axis::Vertical => Rect {
-                y: pos,
-                h: size,
-                ..area
-            },
-        };
-        place_node(child, rect, out);
-        at = pos.checked_add(size);
+        let separator = (!std::mem::replace(&mut self.first, false)).then(|| {
+            let (line, rest) = self.rest.split(self.axis, 1);
+            self.rest = rest;
+            Separator {
+                axis: self.axis,
+                rect: line,
+            }
+        });
+        let (rect, rest) = self.rest.split(self.axis, size);
+        self.rest = rest;
+        Some((separator, rect))
     }
-    out.scratch.truncate(base);
 }
 
 /// The pane in `direction` from `from`, among the placed panes: rectangles
@@ -548,10 +618,10 @@ pub fn neighbor(placement: &Placement, from: PaneId, direction: Direction) -> Op
         .filter(|(p, _)| *p != from)
         .filter_map(|(p, r)| {
             let beyond = match direction {
-                Direction::Left => r.right() <= u32::from(source.x),
-                Direction::Right => u32::from(r.x) >= source.right(),
-                Direction::Up => r.bottom() <= u32::from(source.y),
-                Direction::Down => u32::from(r.y) >= source.bottom(),
+                Direction::Left => r.right() <= source.x,
+                Direction::Right => r.x >= source.right(),
+                Direction::Up => r.bottom() <= source.y,
+                Direction::Down => r.y >= source.bottom(),
             };
             if !beyond {
                 return None;
@@ -601,27 +671,24 @@ fn resize_by(
     let Some(index) = children.iter().position(|(_, c)| c.contains(pane)) else {
         return false;
     };
-    // Deeper splits first: the border nearest the pane moves.
-    let mut placement = Placement::default();
-    if area.w > 0 && area.h > 0 {
-        place_split(*axis, children, area, &mut placement);
-    }
-    let child_area = child_rects(*axis, children, area, &placement);
-    if let (Some((_, child)), Some(inner)) = (children.get_mut(index), child_area.get(index))
-        && resize_by(child, *inner, pane, direction, amount, toward)
+    let mut sizes = Vec::with_capacity(children.len());
+    share(*axis, children, area, &mut sizes);
+    // Deeper splits first: the border nearest the pane moves. A child with
+    // no room has none to resize in.
+    let mut cut = Cut::new(*axis, area);
+    let inner = (sizes.iter().take(index.saturating_add(1)))
+        .map(|size| cut.next(*size))
+        .last()
+        .flatten()
+        .map_or_else(Rect::default, |(_, rect)| rect);
+    if let Some((_, child)) = children.get_mut(index)
+        && resize_by(child, inner, pane, direction, amount, toward)
     {
         return true;
     }
     if *axis != Axis::of(direction) {
         return false;
     }
-    let mut sizes: Vec<u16> = child_area
-        .iter()
-        .map(|r| match axis {
-            Axis::Horizontal => r.w,
-            Axis::Vertical => r.h,
-        })
-        .collect();
     let toward_start = matches!(direction, Direction::Left | Direction::Up);
     // Grow toward the direction when there is a neighbour that way; else
     // shrink from the far side, moving the other border the same way.
@@ -636,77 +703,20 @@ fn resize_by(
         (_, None, None) => return false,
     };
     let min = children.get(shrink).map_or(MIN, |(_, c)| c.min_len(*axis));
-    let available = sizes.get(shrink).copied().unwrap_or(0).saturating_sub(min);
-    let moved = amount.min(available);
+    let Ok([grown, shrunk]) = sizes.get_disjoint_mut([grow, shrink]) else {
+        return false;
+    };
+    // One border moves: what one side gains, the other gives, within `area`.
+    let moved = amount.min(shrunk.saturating_sub(min));
     if moved == 0 {
         return true;
     }
-    // One border moves: what one side gains, the other gives, within `area`.
-    let grown = sizes.get(grow).and_then(|s| s.checked_add(moved));
-    let shrunk = sizes.get(shrink).and_then(|s| s.checked_sub(moved));
-    let (Some(grown), Some(shrunk)) = (grown, shrunk) else {
-        return false;
-    };
-    for (i, size) in [(grow, grown), (shrink, shrunk)] {
-        if let Some(at) = sizes.get_mut(i) {
-            *at = size;
-        }
-    }
+    *grown = grown.saturating_add(moved);
+    *shrunk = shrunk.saturating_sub(moved);
     for ((weight, _), size) in children.iter_mut().zip(&sizes) {
         *weight = u32::from(*size).max(1);
     }
     true
-}
-
-/// The rectangle each child of a split gets, from a placement of the split.
-fn child_rects(
-    axis: Axis,
-    children: &[(u32, Node)],
-    area: Rect,
-    placement: &Placement,
-) -> Vec<Rect> {
-    children
-        .iter()
-        .map(|(_, child)| {
-            // The span of the child's placed panes.
-            let mut span: Option<(u16, u16, u32, u32)> = None;
-            child.for_each_pane(&mut |p| {
-                if let Some(r) = placement.rect(p) {
-                    span = Some(match span {
-                        None => (r.x, r.y, r.right(), r.bottom()),
-                        Some((x0, y0, x1, y1)) => (
-                            x0.min(r.x),
-                            y0.min(r.y),
-                            x1.max(r.right()),
-                            y1.max(r.bottom()),
-                        ),
-                    });
-                }
-            });
-            let Some((x0, y0, x1, y1)) = span else {
-                return Rect { w: 0, h: 0, ..area };
-            };
-            // The children lie inside `area`, so their span fits its size.
-            match axis {
-                Axis::Horizontal => Rect {
-                    x: x0,
-                    w: x1
-                        .checked_sub(u32::from(x0))
-                        .and_then(|w| u16::try_from(w).ok())
-                        .unwrap_or(area.w),
-                    ..area
-                },
-                Axis::Vertical => Rect {
-                    y: y0,
-                    h: y1
-                        .checked_sub(u32::from(y0))
-                        .and_then(|h| u16::try_from(h).ok())
-                        .unwrap_or(area.h),
-                    ..area
-                },
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -717,7 +727,7 @@ mod tests {
         PaneId::of(n)
     }
     fn area(w: u16, h: u16) -> Rect {
-        Rect { x: 0, y: 0, w, h }
+        Rect::screen(h, w)
     }
     /// `0 | 1`.
     fn tree() -> Option<Node> {
@@ -758,9 +768,12 @@ mod tests {
             placed.separators,
             vec![Separator {
                 axis: Axis::Horizontal,
-                x: 40,
-                y: 0,
-                len: 24
+                rect: Rect {
+                    x: 40,
+                    y: 0,
+                    w: 1,
+                    h: 24
+                }
             }]
         );
         // A second split of the right pane shares its weight: 1000:500:500.
@@ -786,21 +799,11 @@ mod tests {
         let placed = place(node, area(81, 25));
         assert_eq!(placed.panes.len(), 5);
         let mut covered = vec![0u8; 81 * 25];
-        for (_, r) in &placed.panes {
-            for y in r.y..r.y + r.h {
-                for x in r.x..r.x + r.w {
-                    if let Some(c) = covered.get_mut(usize::from(y) * 81 + usize::from(x)) {
-                        *c += 1;
-                    }
-                }
-            }
-        }
-        for r in placed.separators.iter().map(Separator::rect) {
-            for y in r.y..r.y + r.h {
-                for x in r.x..r.x + r.w {
-                    if let Some(c) = covered.get_mut(usize::from(y) * 81 + usize::from(x)) {
-                        *c += 1;
-                    }
+        let separators = placed.separators.iter().map(|s| &s.rect);
+        for r in placed.panes.iter().map(|(_, r)| r).chain(separators) {
+            for (y, x) in r.rows().flat_map(|y| r.cols().map(move |x| (y, x))) {
+                if let Some(c) = covered.get_mut(usize::from(y) * 81 + usize::from(x)) {
+                    *c += 1;
                 }
             }
         }
