@@ -1165,10 +1165,7 @@ impl Server {
             .session
             .panes
             .iter()
-            .filter_map(|(id, pane)| {
-                let status = pane.process.child()?.leader.exited()?;
-                Some((*id, status))
-            })
+            .filter_map(|(id, pane)| Some((*id, pane.process.child()?.leader.exited()?)))
             .collect();
         for (id, status) in exited {
             self.session.exited(id, status);
