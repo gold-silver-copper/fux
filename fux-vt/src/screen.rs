@@ -325,7 +325,8 @@ pub struct Screen {
     charsets: Charsets,
     /// The character sets DECSC saved, which DECRC restores.
     saved_charsets: Charsets,
-    /// The modes of `Kind::Flag` set.
+    /// The modes kept as bits (`Kind::Flag`, `Margins`, `Frame`,
+    /// `SizeReport`) that are set.
     modes: Modes,
     /// The modes XTSAVE saved set. One never saved is reset, as in xterm,
     /// and RIS and DECSTR keep them, as xterm 411 does.
@@ -600,7 +601,9 @@ impl Screen {
     #[inline]
     pub fn mode(&self, mode: Mode) -> bool {
         match mode.kind() {
-            Kind::Flag => self.modes.contains(mode),
+            Kind::Flag | Kind::Margins | Kind::Frame | Kind::SizeReport => {
+                self.modes.contains(mode)
+            }
             Kind::Origin => self.grid().origin,
             Kind::Screen(_) => self.alternate_active,
             Kind::SaveCursor | Kind::Reset => false,
@@ -2042,24 +2045,92 @@ impl Screen {
         }
     }
 
+    /// SM and RM, DECSET and DECRST (`on` for `h`), and XTRESTORE
+    /// (`on` `None`: each mode as XTSAVE saved it, but 1048 and DECARM,
+    /// which it does not save). Of the ANSI modes, a sequence that names
+    /// none fux-vt keeps is unhandled.
+    #[inline(always)]
+    fn set_modes(
+        &mut self,
+        p: &Parameters,
+        private: bool,
+        on: Option<bool>,
+        options: &Options,
+    ) -> Result<Dispatch, Error> {
+        let (mut handled, mut report) = (private, false);
+        for group in p.groups() {
+            let [n] = group else { continue };
+            let Some(mode) = Mode::of(*n, private, options) else {
+                continue;
+            };
+            handled = true;
+            let on = match on {
+                Some(on) => on,
+                None if mode.savable() => self.saved_modes.contains(mode),
+                None => continue,
+            };
+            // A mode that is a bit and no more is set here, without a call.
+            if mode.kind() == Kind::Flag {
+                self.modes.set(mode, on);
+            } else {
+                report |= self.set_mode(mode, on)?;
+            }
+        }
+        Ok(match (handled, report) {
+            (_, true) => Dispatch::Reply(self.size_report()),
+            (true, false) => Dispatch::Done,
+            (false, false) => Dispatch::Unhandled,
+        })
+    }
+
+    /// XTSAVE (`CSI ? Pm s`, with `save`): each mode saved as it is; and
+    /// XTRESTORE (`CSI ? Pm r`): each set as it was saved.
+    #[inline(never)]
+    fn save_or_restore_modes(
+        &mut self,
+        p: &Parameters,
+        save: bool,
+        options: &Options,
+    ) -> Result<Dispatch, Error> {
+        if !save {
+            return self.set_modes(p, true, None, options);
+        }
+        for group in p.groups() {
+            if let [n] = group
+                && let Some(mode) = Mode::of(*n, true, options).filter(|m| m.savable())
+            {
+                self.saved_modes.set(mode, self.mode(mode));
+            }
+        }
+        Ok(Dispatch::Done)
+    }
+
     /// Sets or resets `mode`; whether a size report is due (setting
     /// in-band resize reports at once, however often it is set).
+    #[inline(never)]
     fn set_mode(&mut self, mode: Mode, on: bool) -> Result<bool, Error> {
         match mode.kind() {
-            Kind::Flag => {
+            Kind::Flag => self.modes.set(mode, on),
+            // DECLRMM: reset, the margins go back to the screen's edges (DEC
+            // STD 070, DECLRMM; xterm's `set_left_right_margin_mode`).
+            Kind::Margins => {
                 self.modes.set(mode, on);
-                // DECLRMM: reset, the margins go back to the screen's edges
-                // (DEC STD 070, DECLRMM; xterm's `set_left_right_margin_mode`).
-                if mode == Mode::LeftRightMargins && !on {
+                if !on {
                     for g in [&mut self.primary, &mut self.alternate] {
                         let last = g.cols.last();
                         g.set_columns(0, last);
                     }
                 }
-                if mode == Mode::SynchronizedOutput && on {
+            }
+            Kind::Frame => {
+                self.modes.set(mode, on);
+                if on {
                     self.frames_begun = self.frames_begun.wrapping_add(1);
                 }
-                return Ok(mode == Mode::InBandResize && on);
+            }
+            Kind::SizeReport => {
+                self.modes.set(mode, on);
+                return Ok(on);
             }
             Kind::Origin => {
                 let g = self.grid_mut();
@@ -2258,6 +2329,9 @@ impl Screen {
         if !intermediates.is_empty() && !private {
             return Ok(Dispatch::Unhandled);
         }
+        if matches!(byte, b'h' | b'l') {
+            return self.set_modes(p, private, Some(byte == b'h'), options);
+        }
         // Every sequence that moves the cursor or edits a row; not SGR,
         // modes or queries.
         if matches!(
@@ -2285,36 +2359,12 @@ impl Screen {
         ) {
             self.break_cluster();
         }
-        // SM and RM, DECSET and DECRST; and XTSAVE and XTRESTORE (ctlseqs),
-        // which their private marker tells from DECSLRM (`CSI Pl ; Pr s`)
-        // and SCOSC (`CSI s`), and from DECSTBM (`CSI Pt ; Pb r`); `CSI s`
-        // is DECSLRM below while DECLRMM is set, and SCOSC otherwise. Of
-        // the ANSI modes, a sequence that names none fux-vt keeps is
-        // unhandled. XTSAVE saves every private mode but 1048 and DECARM.
-        if matches!(byte, b'h' | b'l') || private && matches!(byte, b's' | b'r') {
-            let (mut handled, mut report) = (private, false);
-            for group in p.groups() {
-                let [n] = group else { continue };
-                let Some(mode) = Mode::of(*n, private, options) else {
-                    continue;
-                };
-                handled = true;
-                let on = match byte {
-                    b'h' | b'l' => byte == b'h',
-                    _ if matches!(mode.kind(), Kind::SaveCursor | Kind::Reset) => continue,
-                    b's' => {
-                        self.saved_modes.set(mode, self.mode(mode));
-                        continue;
-                    }
-                    _ => self.saved_modes.contains(mode),
-                };
-                report |= self.set_mode(mode, on)?;
-            }
-            return Ok(match (handled, report) {
-                (_, true) => Dispatch::Reply(self.size_report()),
-                (true, false) => Dispatch::Done,
-                (false, false) => Dispatch::Unhandled,
-            });
+        // XTSAVE and XTRESTORE (ctlseqs). Their private marker tells them
+        // from DECSLRM (`CSI Pl ; Pr s`) and SCOSC (`CSI s`), and from
+        // DECSTBM (`CSI Pt ; Pb r`); `CSI s` is DECSLRM below while DECLRMM
+        // is set, and SCOSC otherwise.
+        if private && matches!(byte, b's' | b'r') {
+            return self.save_or_restore_modes(p, byte == b's', options);
         }
         if private && !matches!(byte, b'J' | b'K') {
             return Ok(Dispatch::Unhandled);
