@@ -457,6 +457,10 @@ impl Grid {
     pub fn size(&self) -> Size {
         self.size
     }
+    /// The attributes of the cells' styles.
+    pub fn styles(&self) -> &Styles {
+        &self.styles
+    }
     pub fn history_len(&self) -> usize {
         self.history.len()
     }
@@ -510,7 +514,8 @@ impl Grid {
         };
         Some(Row {
             grid: self,
-            index: self.history.len().checked_add(row)?,
+            // Exact: rows are far fewer than a usize holds.
+            index: self.history.len().saturating_add(row),
             id: m.id,
             version: m.version,
             wrapped: m.wrapped,
@@ -519,7 +524,6 @@ impl Grid {
             width: usize::from(m.width),
             text: self.texts.get(slot)?,
             links,
-            styles: &self.styles,
         })
     }
     pub fn row_at(&self, index: usize) -> Option<Row<'_>> {
@@ -536,7 +540,6 @@ impl Grid {
                 width: usize::from(found.kept.width()),
                 text: found.text,
                 links: found.links,
-                styles: &self.styles,
             });
         };
         self.slot_row(self.screen_slot(row)?, row)
@@ -551,6 +554,13 @@ impl Grid {
                 .position(|slot| self.meta.get(*slot).is_some_and(|m| m.id == id))
                 .and_then(|row| row.checked_add(self.history.len()))
         })
+    }
+    /// Whether the screen's row `row` is soft-wrapped, read without making
+    /// its `Row`: printing asks on its way.
+    pub fn live_wrapped(&self, row: u16) -> bool {
+        self.slot(row)
+            .and_then(|slot| self.meta.get(slot))
+            .is_some_and(|m| m.wrapped)
     }
     pub fn live_row(&self, row: u16) -> Option<Row<'_>> {
         self.slot_row(self.slot(row)?, usize::from(row))
