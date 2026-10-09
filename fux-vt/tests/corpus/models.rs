@@ -4,7 +4,11 @@
 //! run of `Cells` holds after edits.
 #![allow(dead_code, reason = "each user takes the models it needs")]
 
-use fux_vt::{Attributes, Cell, Cells, Color};
+use fux_vt::{Attributes, CLUSTER_CAPACITY, CellRef, Cells, Color};
+
+/// The longest a short cluster is: what a long one `Cells` has no room
+/// for is cut to.
+const SHORT: usize = 17;
 use std::collections::VecDeque;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -47,12 +51,12 @@ pub fn clusters(text: &str) -> Vec<String> {
     out
 }
 
-/// Adds `c` to `text` if the result fits in `Cell::CLUSTER_CAPACITY` bytes.
+/// Adds `c` to `text` if the result fits in `CLUSTER_CAPACITY` bytes.
 pub fn append(text: &mut String, c: char) -> bool {
     let fits = text
         .len()
         .checked_add(c.len_utf8())
-        .is_some_and(|n| n <= Cell::CLUSTER_CAPACITY);
+        .is_some_and(|n| n <= CLUSTER_CAPACITY);
     if fits {
         text.push(c);
     }
@@ -61,7 +65,7 @@ pub fn append(text: &mut String, c: char) -> bool {
 
 /// The cells `text` printed on one line makes, as (text, wide): one a
 /// cluster, keeping its characters until one does not fit in
-/// `Cell::CLUSTER_CAPACITY` bytes, wide once a kept prefix is two columns
+/// `CLUSTER_CAPACITY` bytes, wide once a kept prefix is two columns
 /// wide. A cluster that starts with characters taking no columns (after a
 /// Control-class format character, which UAX #29 breaks after) has no cell
 /// for them: they join the cell before, as marks always have, without
@@ -138,19 +142,19 @@ pub fn floor(text: &str, max: usize) -> String {
 /// `CLUSTER_CAPACITY` bytes of it at most, in whole chars; and if what the
 /// others keep beyond their cells leaves no room, what fits inline.
 pub fn kept(model: &[Model], i: usize, text: &str) -> String {
-    let text = floor(text, Cell::CLUSTER_CAPACITY);
-    if text.len() <= Cell::INLINE_CAPACITY {
+    let text = floor(text, CLUSTER_CAPACITY);
+    if text.len() <= SHORT {
         return text;
     }
     let others = model
         .iter()
         .enumerate()
-        .filter(|(j, m)| *j != i && m.text.len() > Cell::INLINE_CAPACITY)
+        .filter(|(j, m)| *j != i && m.text.len() > SHORT)
         .fold(0usize, |sum, (_, m)| sum.saturating_add(m.text.len()));
     if others.saturating_add(text.len()) <= Cells::text_limit(model.len()) {
         text
     } else {
-        floor(&text, Cell::INLINE_CAPACITY)
+        floor(&text, SHORT)
     }
 }
 
@@ -234,7 +238,7 @@ pub fn apply(cells: &mut Cells, other: &mut Cells, model: &mut Vec<Model>, op: &
             wide,
             attributes,
         } => {
-            let whole = cells.set_text(*i, text, *wide, *attributes);
+            let whole = cells.set(*i, CellRef::new(text, *wide, *attributes));
             if *i < model.len() {
                 let keep = kept(model, *i, text);
                 assert_eq!(whole, keep == *text, "{text:?}");
@@ -254,7 +258,7 @@ pub fn apply(cells: &mut Cells, other: &mut Cells, model: &mut Vec<Model>, op: &
             wide,
             attributes,
         } => {
-            other.set_text(*j, text, *wide, *attributes);
+            other.set(*j, CellRef::new(text, *wide, *attributes));
             if let Some(from) = other.get(*j) {
                 let whole = cells.set(*i, from);
                 if *i < model.len() {
@@ -284,9 +288,9 @@ pub fn apply(cells: &mut Cells, other: &mut Cells, model: &mut Vec<Model>, op: &
         } => {
             let (a, b) = ((*a).min(*b), (*a).max(*b));
             let cell = if *continuation {
-                Cell::wide_continuation()
+                CellRef::wide_continuation()
             } else {
-                Cell::new("z", false, *attributes).unwrap_or_default()
+                CellRef::new("z", false, *attributes)
             };
             cells.fill(a..b, cell);
             for m in model.iter_mut().take(b).skip(a) {
@@ -306,7 +310,7 @@ pub fn apply(cells: &mut Cells, other: &mut Cells, model: &mut Vec<Model>, op: &
             }
         }
         CellsOp::Resize { len } => {
-            cells.resize(*len, Cell::default());
+            cells.resize(*len, CellRef::default());
             model.resize(*len, Model::blank());
             // A shorter run keeps a shorter run's budget: cells whose text
             // no longer fits, left to right, keep what fits inline.
