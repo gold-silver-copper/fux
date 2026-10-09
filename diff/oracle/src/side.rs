@@ -6,33 +6,13 @@
 //! argument for that part, as `diff/src/terminal.rs`'s `stack!` does, and
 //! read both into the same model; say so in the README's list of adapters.
 //!
-//! Adapters today: `Options::palette` and `Screen::colors_changed`, which
-//! the pinned commit has not. The working tree is given the option the
-//! case asks for; the commit, which has no palette, reports the option as
-//! asked and no colour changed. The palette's sequences are exempt
-//! (`exempt`), so with the option on the working tree sees none of them,
-//! and anything else that changed a colour would differ.
-//!
-//! And the cell a host makes: the commit's `Cell` (`Cell::new`, `None`
-//! past 17 bytes; `Cells::set_cell` and `set_text`), the working tree's
-//! `CellRef` (`CellRef::new`, given only what `Cell::new` takes;
-//! `Cells::set`), and `CLUSTER_CAPACITY`, on `Cell` in the commit.
+//! Adapters today: none.
 
 macro_rules! side {
     (
         $module:ident,
         $vt:ident,
-        $name:literal,
-        with_palette: $with_palette:expr,
-        palette: $palette:expr,
-        colors_changed: $colors_changed:expr,
-        cell: $cell:ty,
-        new_cell: $new_cell:expr,
-        blank: $blank:expr,
-        continuation: $continuation:expr,
-        set_cell: $set_cell:expr,
-        set_text: $set_text:expr,
-        cluster_capacity: $cluster_capacity:expr $(,)?
+        $name:literal $(,)?
     ) => {
         pub mod $module {
             use crate::model::{
@@ -45,8 +25,6 @@ macro_rules! side {
             #[derive(Clone)]
             pub struct Terminal {
                 parser: vt::Parser,
-                /// `Options::palette` as the case asked for it.
-                palette: bool,
                 marks: Vec<vt::Mark>,
                 /// The oldest row seen at the last lookup, to ask for again
                 /// once it may be gone.
@@ -152,21 +130,19 @@ macro_rules! side {
                     .with_hyperlinks(setup.hyperlinks)
                     .with_prompt_marks(setup.prompt_marks)
                     .with_rectangle_checksums(setup.rectangle_checksums)
-                    .with_setting_reports(setup.setting_reports);
-                let with_palette: fn(vt::Options, bool) -> vt::Options = $with_palette;
-                with_palette(options, setup.palette).with_identity(
+                    .with_setting_reports(setup.setting_reports)
+                    .with_palette(setup.palette);
+                options.with_identity(
                     setup
                         .identity
                         .map(|(name, version)| vt::Identity { name, version }),
                 )
             }
 
-            /// The options back, as the parser reports them; `palette` as
-            /// the case asked for it.
-            fn setup(o: vt::Options, palette: bool) -> Setup {
-                let reported: fn(vt::Options, bool) -> bool = $palette;
+            /// The options back, as the parser reports them.
+            fn setup(o: vt::Options) -> Setup {
                 Setup {
-                    palette: reported(o, palette),
+                    palette: o.palette,
                     events: o.events,
                     extended_replies: o.extended_replies,
                     mode_reports: o.mode_reports,
@@ -234,7 +210,6 @@ macro_rules! side {
                         .map_err(error)?;
                     Ok(Terminal {
                         parser,
-                        palette: setup.palette,
                         marks: Vec::new(),
                         oldest: None,
                     })
@@ -309,11 +284,8 @@ macro_rules! side {
                         storage_cells: s.storage_cells(),
                         mark: number(s.mark()),
                         resize_report: self.parser.resize_report(),
-                        options: setup(self.parser.options(), self.palette),
-                        colors_changed: {
-                            let changed: fn(&vt::Screen) -> bool = $colors_changed;
-                            changed(s)
-                        },
+                        options: setup(self.parser.options()),
+                        colors_changed: s.colors_changed(),
                         rows_end_there: retained
                             .checked_sub(1)
                             .is_none_or(|last| s.row_from_bottom(last).is_some())
@@ -511,7 +483,7 @@ macro_rules! side {
             }
 
             /// A `Cell` as its own accessors show it.
-            fn stored(c: &$cell) -> String {
+            fn stored(c: &vt::CellRef<'_>) -> String {
                 format!(
                     "contents {} wide {} continuation {} {:?}",
                     c.has_contents(),
@@ -533,7 +505,7 @@ macro_rules! side {
                         ("URI_LIMIT", vt::URI_LIMIT.to_string()),
                         ("ID_LIMIT", vt::ID_LIMIT.to_string()),
                         ("OSC_PAYLOAD_LIMIT", vt::OSC_PAYLOAD_LIMIT.to_string()),
-                        ("CLUSTER_CAPACITY", $cluster_capacity.to_string()),
+                        ("CLUSTER_CAPACITY", vt::CLUSTER_CAPACITY.to_string()),
                         ("Identity::MAX_LEN", vt::Identity::MAX_LEN.to_string()),
                         (
                             "Options::default is Options::new",
@@ -543,8 +515,11 @@ macro_rules! side {
                             "Attributes::default",
                             format!("{:?}", style(vt::Attributes::default())),
                         ),
-                        ("blank cell", stored(&$blank)),
-                        ("wide continuation", stored(&$continuation)),
+                        ("blank cell", stored(&vt::CellRef::default())),
+                        (
+                            "wide continuation",
+                            stored(&vt::CellRef::wide_continuation()),
+                        ),
                         (
                             "MouseProtocolMode::default",
                             format!("{:?}", vt::MouseProtocolMode::default()),
@@ -593,27 +568,17 @@ macro_rules! side {
                 fn apply(run: &mut vt::Cells, edit: &crate::cells::Edit) -> String {
                     use crate::cells::Edit;
                     match edit {
-                        Edit::SetText {
+                        Edit::Set {
                             i,
                             text,
                             wide,
                             style,
-                        } => format!("{}", $set_text(run, *i, text, *wide, attributes(style))),
-                        Edit::SetCell {
-                            i,
-                            text,
-                            wide,
-                            style,
-                        } => match $new_cell(text, *wide, attributes(style)) {
-                            Some(cell) => {
-                                let shown = stored(&cell);
-                                $set_cell(run, *i, cell);
-                                shown
-                            }
-                            None => "no cell".into(),
-                        },
+                        } => {
+                            let cell = vt::CellRef::new(text, *wide, attributes(style));
+                            format!("{} {}", run.set(*i, cell), stored(&cell))
+                        }
                         Edit::Continuation { i } => {
-                            $set_cell(run, *i, $continuation);
+                            run.set(*i, vt::CellRef::wide_continuation());
                             String::new()
                         }
                         Edit::SetAttributes { i, style } => {
@@ -626,25 +591,21 @@ macro_rules! side {
                             text,
                             wide,
                             style,
-                        } => match $new_cell(text, *wide, attributes(style)) {
-                            Some(cell) => {
-                                run.fill(*start..*end, cell);
-                                stored(&cell)
-                            }
-                            None => "no cell".into(),
-                        },
+                        } => {
+                            let cell = vt::CellRef::new(text, *wide, attributes(style));
+                            run.fill(*start..*end, cell);
+                            stored(&cell)
+                        }
                         Edit::Resize {
                             len,
                             text,
                             wide,
                             style,
-                        } => match $new_cell(text, *wide, attributes(style)) {
-                            Some(cell) => {
-                                run.resize(*len, cell);
-                                stored(&cell)
-                            }
-                            None => "no cell".into(),
-                        },
+                        } => {
+                            let cell = vt::CellRef::new(text, *wide, attributes(style));
+                            run.resize(*len, cell);
+                            stored(&cell)
+                        }
                         Edit::Copy { i, from } => {
                             let was = run.clone();
                             match was.get(*from) {
@@ -700,41 +661,5 @@ macro_rules! side {
     };
 }
 
-side!(
-    work,
-    fux_vt,
-    "work",
-    with_palette: |o, on| o.with_palette(on),
-    palette: |o, _| o.palette,
-    colors_changed: |s| s.colors_changed(),
-    cell: vt::CellRef<'_>,
-    new_cell: {
-        fn made(text: &str, wide: bool, a: vt::Attributes) -> Option<vt::CellRef<'_>> {
-            (text.len() <= 17).then(|| vt::CellRef::new(text, wide, a))
-        }
-        made
-    },
-    blank: vt::CellRef::default(),
-    continuation: vt::CellRef::wide_continuation(),
-    set_cell: |run: &mut vt::Cells, i, cell| {
-        run.set(i, cell);
-    },
-    set_text: |run: &mut vt::Cells, i, text, wide, attributes| run
-        .set(i, vt::CellRef::new(text, wide, attributes)),
-    cluster_capacity: vt::CLUSTER_CAPACITY,
-);
-side!(
-    base,
-    base_vt,
-    "base",
-    with_palette: |o, _| o,
-    palette: |_, asked| asked,
-    colors_changed: |_| false,
-    cell: vt::Cell,
-    new_cell: vt::Cell::new,
-    blank: vt::Cell::default(),
-    continuation: vt::Cell::wide_continuation(),
-    set_cell: vt::Cells::set_cell,
-    set_text: vt::Cells::set_text,
-    cluster_capacity: vt::Cell::CLUSTER_CAPACITY,
-);
+side!(work, fux_vt, "work");
+side!(base, base_vt, "base");

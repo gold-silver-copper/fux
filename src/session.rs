@@ -10,9 +10,10 @@ use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::Json;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::{self, Axis, Node, Placement, Rect, Side};
+use crate::overlay::{Column, Repeat};
 use crate::pane::Pane;
 use crate::process::Pid;
-use crate::view::{Mode, View};
+use crate::view::{Choice, Mode, View};
 use crate::workspace::{Seat, Tab, Workspace};
 use std::collections::{BTreeMap, VecDeque};
 use std::os::fd::OwnedFd;
@@ -126,8 +127,6 @@ pub enum Error {
     OnlyShell(PaneId),
     // What copy mode cannot do.
     NoRows,
-    /// The history no longer holds the rows copy mode was on.
-    RowsDropped,
     /// A selection of more than `MAX_CELLS` cells.
     SelectionTooLarge,
     // A name that cannot be given.
@@ -187,9 +186,6 @@ impl std::fmt::Display for Error {
             }
             Error::OnlyShell(pane) => write!(f, "nothing is running in {pane} but its shell"),
             Error::NoRows => f.write_str("the pane has no rows"),
-            Error::RowsDropped => {
-                f.write_str("copy mode ended: the history dropped the rows it held")
-            }
             Error::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
             Error::EmptyName => f.write_str("a name cannot be empty"),
             Error::ControlInName => f.write_str("a name cannot contain control characters"),
@@ -247,7 +243,6 @@ impl std::error::Error for Error {
             | Error::NoNeighbor { .. }
             | Error::OnlyShell(_)
             | Error::NoRows
-            | Error::RowsDropped
             | Error::SelectionTooLarge
             | Error::EmptyName
             | Error::ControlInName
@@ -742,37 +737,42 @@ impl Session {
         views.values_mut().for_each(|view| self.repair(view));
         self.views = views;
         self.size_panes();
+        self.hold_copies();
+    }
+
+    /// Output and sizing a pane can drop rows of its history: a copy mode
+    /// whose rows went ends. They are looked for only if the screen changed
+    /// since they were last found.
+    fn hold_copies(&mut self) {
+        for view in self.views.values_mut() {
+            let Mode::Copy(copy) = &mut view.mode else {
+                continue;
+            };
+            let Some(screen) = self.panes.get(&copy.pane).map(Pane::screen) else {
+                continue;
+            };
+            if copy.held_at.is_some_and(|at| !screen.changed_since(at)) {
+                continue;
+            }
+            if copy.resolve(screen).is_some() {
+                copy.held_at = Some(screen.mark());
+            } else {
+                view.mode = Mode::Normal;
+                view.error("copy mode ended: the history dropped the rows it held");
+            }
+        }
     }
 
     fn repair(&self, view: &mut View) {
         let focus = self.focused(view.id);
-        // Copy mode's rows are looked for only if the screen changed since
-        // they were last found, and then it is noted.
-        let mut held_at = None;
-        // What the view's mode refers to must still exist.
+        // What the view's mode refers to must still exist. Copy mode's rows
+        // are looked for once the panes are sized (`hold_copies`).
         let gone: Option<String> = match &view.mode {
-            Mode::Copy(copy) => {
-                if !self.panes.contains_key(&copy.pane) {
-                    Some("copy mode ended: its pane closed".into())
-                } else if Some(copy.pane) != focus {
-                    Some("copy mode ended: its pane is no longer focused".into())
-                } else {
-                    let screen = self.panes.get(&copy.pane).map(|p| p.screen());
-                    let unchanged = screen
-                        .zip(copy.held_at)
-                        .is_some_and(|(screen, at)| !screen.changed_since(at));
-                    let checked = screen
-                        .filter(|_| !unchanged)
-                        .map(|s| (s.mark(), copy.check(s)));
-                    match checked {
-                        Some((mark, Ok(()))) => {
-                            held_at = Some(mark);
-                            None
-                        }
-                        Some((_, Err(error))) => Some(error.to_string()),
-                        None => None,
-                    }
-                }
+            Mode::Copy(copy) if !self.panes.contains_key(&copy.pane) => {
+                Some("copy mode ended: its pane closed".into())
+            }
+            Mode::Copy(copy) if Some(copy.pane) != focus => {
+                Some("copy mode ended: its pane is no longer focused".into())
             }
             Mode::List(list) => list
                 .about
@@ -787,51 +787,41 @@ impl Session {
                 }
                 crate::view::PromptFor::Command | crate::view::PromptFor::Rename(_) => None,
             },
-            // Bindings change under a client from the command line.
-            Mode::Column { path, .. } if !path.is_empty() && !self.is_layer(path) => Some(format!(
-                "closed: the layer {} is gone",
-                self.keys_named(path)
-            )),
-            Mode::Repeat { path } if !self.repeats(path) => Some(format!(
-                "closed: the repeat mode {} is gone",
-                self.keys_named(path)
-            )),
-            Mode::Normal | Mode::Column { .. } | Mode::Repeat { .. } => None,
+            // Found again whenever the bindings change (`rebind`).
+            Mode::Normal | Mode::Column(_) | Mode::Repeat(_) | Mode::Copy(_) => None,
         };
-        // A column shorter than it was keeps its selection within it.
-        let last = if let Mode::Column { path, .. } = &view.mode {
-            Some(crate::overlay::column(self, path).len().saturating_sub(1))
-        } else {
-            None
-        };
-        if let (Mode::Column { selected, .. }, Some(last)) = (&mut view.mode, last)
-            && *selected > last
-        {
-            *selected = last;
-            view.dirty = true;
-        }
-        if let (Mode::Copy(copy), Some(at)) = (&mut view.mode, held_at) {
-            copy.held_at = Some(at);
-        }
         if let Some(reason) = gone {
             view.mode = Mode::Normal;
             view.error(reason);
         }
     }
 
-    /// Whether `path` is a layer: some binding's keys go on past it.
-    pub(crate) fn is_layer(&self, path: &[KeyPress]) -> bool {
-        self.config
-            .bindings
-            .iter()
-            .any(|b| b.in_layer(path).is_some())
-    }
-
-    /// Whether the layer at `path` holds a repeating binding.
-    fn repeats(&self, path: &[KeyPress]) -> bool {
-        self.config.bindings.iter().any(|b| {
-            b.repeat && b.keys.len() == path.len().saturating_add(1) && b.keys.starts_with(path)
-        })
+    /// The bindings changed: each client's command column and repeat mode
+    /// is found in them again, the column keeping its place; one whose
+    /// layer went closes, saying so.
+    fn rebind(&mut self) {
+        let clients: Vec<ClientId> = self.views.keys().copied().collect();
+        for id in clients {
+            let found = match self.views.get(&id).map(|v| &v.mode) {
+                Some(Mode::Column(old)) => {
+                    let at = old.entries.as_ref().map_or(0, Choice::index);
+                    Column::layer(self, old.path.clone(), at)
+                        .map(Mode::Column)
+                        .ok_or_else(|| format!("the layer {}", self.keys_named(&old.path)))
+                }
+                Some(Mode::Repeat(old)) => Repeat::of(&self.config, old.path.clone())
+                    .map(Mode::Repeat)
+                    .ok_or_else(|| format!("the repeat mode {}", self.keys_named(&old.path))),
+                _ => continue,
+            };
+            match found {
+                Ok(mode) => self.set_mode(id, mode),
+                Err(gone) => {
+                    self.set_mode(id, Mode::Normal);
+                    self.error_to(id, format!("closed: {gone} is gone"));
+                }
+            }
+        }
     }
 
     /// The prefix and keys after it as they are typed, `C-b t`: as the bar,
@@ -1385,6 +1375,7 @@ impl Session {
                 // command that can show something new: `set titles`
                 // shows at each client's next paint.
                 self.config.apply(argv).map_err(Error::Config)?;
+                self.rebind();
                 Ok(String::new())
             }
             &Command::Reload => {
@@ -1393,6 +1384,7 @@ impl Session {
                     Ok(config) => {
                         self.config = config;
                         self.config_error = None;
+                        self.rebind();
                         Ok(format!("reloaded {}\n", path.display()))
                     }
                     Err(error) => Err(Error::Reload(error)),
@@ -1462,10 +1454,7 @@ impl Session {
             ClientAction::SelectTab(pick) => self.select_tab(view, pick),
             ClientAction::SelectWorkspace(ref pick) => self.select_workspace(view, pick),
             ClientAction::CommandColumn => {
-                view.mode = Mode::Column {
-                    path: Vec::new(),
-                    selected: 0,
-                };
+                view.mode = Mode::Column(Column::root(self));
                 Ok(String::new())
             }
             ClientAction::CommandPrompt => {
@@ -1498,7 +1487,7 @@ impl Session {
             }
             ClientAction::ChooseWorkspace { moving } => {
                 let moving = self.moving(moving, here)?;
-                Ok(crate::overlay::open_workspace_chooser(self, view, moving))
+                crate::overlay::open_workspace_chooser(self, view, moving)
             }
             ClientAction::ChoosePane { target } => {
                 let source = self.pane(target, here)?.id;
@@ -2320,6 +2309,26 @@ mod tests {
                 .is_some_and(|n| n.text.contains("dropped the rows")),
             "and said why"
         );
+        Ok(())
+    }
+
+    /// A client shrinking the pane pushes rows into its history, which may
+    /// drop the ones copy mode holds: copy mode ends in the same settle, so
+    /// no paint shows it without them.
+    #[test]
+    fn copy_mode_ends_when_sizing_its_pane_drops_its_rows() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut s = started(Config {
+            history_lines: 2,
+            ..Config::default()
+        })?;
+        let client = s.attach(6, 20, None)?;
+        s.output(PaneId::of(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
+        run(&mut s, "copy-mode -c c1")?;
+        s.input(client, b"g");
+        s.resize(client, 3, 20);
+        let view = s.views.get(&client).ok_or("the view")?;
+        assert!(matches!(view.mode, Mode::Normal), "copy mode ended");
         Ok(())
     }
 
