@@ -57,10 +57,9 @@ const NO_DESCRIPTORS: &str =
 /// Running out of descriptors, while it lasts: connections are refused,
 /// each told why.
 struct Shortage {
-    reported: Instant,
-    /// Refused since the last report, and in all.
+    /// When it was last reported, and how many were refused by then.
+    reported: (Instant, u64),
     refused: u64,
-    total: u64,
 }
 
 /// Where the server is in its life, each stage holding the moment it waits
@@ -786,7 +785,7 @@ impl Server {
                     if let Some(shortage) = self.shortage.take() {
                         log(&format!(
                             "file descriptors available again; {} connections were refused while they were short",
-                            shortage.total
+                            shortage.refused
                         ));
                     }
                     let euid = fuxix::process::geteuid();
@@ -857,30 +856,22 @@ impl Server {
         }
         drop(stream);
         let now = Instant::now();
-        match &mut self.shortage {
-            None => {
-                log(
-                    "out of file descriptors: new connections are refused, each told why, until some close",
-                );
-                self.shortage = Some(Shortage {
-                    reported: now,
-                    refused: 1,
-                    total: 1,
-                });
+        let shortage = self.shortage.get_or_insert_with(|| {
+            log("out of file descriptors: new connections are refused, each told why, until some close");
+            Shortage {
+                reported: (now, 0),
+                refused: 0,
             }
-            Some(shortage) => {
-                shortage.refused = shortage.refused.saturating_add(1);
-                shortage.total = shortage.total.saturating_add(1);
-                if now.duration_since(shortage.reported) >= REPORT_EVERY {
-                    log(&format!(
-                        "still out of file descriptors: {} connections refused in the last {} s",
-                        shortage.refused,
-                        now.duration_since(shortage.reported).as_secs()
-                    ));
-                    shortage.reported = now;
-                    shortage.refused = 0;
-                }
-            }
+        });
+        shortage.refused = shortage.refused.saturating_add(1);
+        let (at, then) = shortage.reported;
+        if now.duration_since(at) >= REPORT_EVERY {
+            log(&format!(
+                "still out of file descriptors: {} connections refused in the last {} s",
+                shortage.refused.saturating_sub(then),
+                now.duration_since(at).as_secs()
+            ));
+            shortage.reported = (now, shortage.refused);
         }
     }
 
