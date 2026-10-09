@@ -159,7 +159,7 @@ fn run(args: &[String]) -> Result<u8, Error> {
                 return Err(Error::Nested);
             }
             let socket = socket::socket_path(None)?;
-            if UnixStream::connect(&socket).is_err() {
+            if UnixStream::connect(socket.path()).is_err() {
                 client::start_server(&socket)?;
             }
             client::attach(&socket, workspace)?;
