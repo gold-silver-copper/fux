@@ -11,8 +11,6 @@ pub const MAX_INPUT: usize = crate::decode::PASTE_LIMIT + 12;
 /// Input may wait for the program up to this many bytes, however many
 /// pieces it came in (bevy-final finding 021).
 pub const INPUT_BYTES: usize = 16 * MAX_INPUT;
-/// What one queued piece costs beyond its bytes.
-pub const ENTRY_COST: usize = 64;
 /// How long a frame drawn in synchronized output is held before it is
 /// shown anyway: Ghostty's choice. Long enough for a frame sent in pieces
 /// over a slow link; a program that dies mid-frame freezes its pane this
@@ -68,16 +66,11 @@ impl std::error::Error for Error {
 }
 
 /// Input and terminal replies waiting for the pane's program to read them,
-/// bounded by what they cost rather than by how many pieces they came in.
-/// The pieces wait end to end, to be written together.
+/// end to end, to be written together: at most [`INPUT_BYTES`] of them,
+/// however many pieces they came in.
 #[derive(Default)]
 pub struct InputQueue {
     bytes: ByteQueue,
-    /// The length of each piece, the first of them whole.
-    pieces: VecDeque<usize>,
-    /// Bytes of the first piece already written.
-    written: usize,
-    cost: usize,
     /// Input was refused, and the program has not read since: everything
     /// is refused, so none arrives with a hole before it.
     refusing: bool,
@@ -92,35 +85,29 @@ impl InputQueue {
     /// Queues what `write` appends to its vector as a piece, in place, or
     /// takes it back and refuses it whole, as `push` does.
     pub fn push_with(&mut self, write: impl FnOnce(&mut Vec<u8>)) -> Result<(), Error> {
-        let (queued, refusing) = (self.cost, self.refusing);
-        let added = self.bytes.push_with(|out| {
+        let room = self.room();
+        let fits = self.bytes.push_with(|out| {
             let start = out.len();
             write(out);
-            let added = out.len().saturating_sub(start);
-            let cost = added
-                .checked_add(ENTRY_COST)
-                .and_then(|cost| queued.checked_add(cost))
-                .filter(|cost| *cost <= INPUT_BYTES && !refusing);
-            if added > 0 && cost.is_none() {
+            let fits = out.len().saturating_sub(start) <= room;
+            if !fits {
                 out.truncate(start);
             }
-            cost.map(|cost| (added, cost)).ok_or(added)
+            fits
         });
-        match added {
-            Ok((0, _)) | Err(0) => Ok(()),
-            Ok((added, cost)) => {
-                self.cost = cost;
-                self.pieces.push_back(added);
-                Ok(())
-            }
-            Err(_) => {
-                self.refusing = true;
-                Err(Error::NotReading)
-            }
+        self.refusing |= !fits;
+        fits.then_some(()).ok_or(Error::NotReading)
+    }
+    /// How many more bytes are taken.
+    fn room(&self) -> usize {
+        if self.refusing {
+            0
+        } else {
+            INPUT_BYTES.saturating_sub(self.bytes.len())
         }
     }
     pub fn is_empty(&self) -> bool {
-        self.pieces.is_empty()
+        self.bytes.is_empty()
     }
     /// Whether input is refused until the program reads.
     pub fn refusing(&self) -> bool {
@@ -132,24 +119,8 @@ impl InputQueue {
     }
     /// `n` bytes of the front were written: the program is reading.
     pub fn advance(&mut self, n: usize) {
-        if n > 0 {
-            self.refusing = false;
-        }
-        // At most what is queued.
-        let mut n = n.min(self.bytes.len());
+        self.refusing &= n == 0;
         self.bytes.take(n);
-        while let Some(&front) = self.pieces.front() {
-            let rest = front.saturating_sub(self.written);
-            if n < rest {
-                self.written = self.written.saturating_add(n);
-                break;
-            }
-            n = n.saturating_sub(rest);
-            // What `push` added for it, which fitted.
-            self.cost = self.cost.saturating_sub(front.saturating_add(ENTRY_COST));
-            self.pieces.pop_front();
-            self.written = 0;
-        }
     }
     /// Everything queued, for tests and for a pane with no process.
     pub fn drain_all(&mut self) -> Vec<u8> {
@@ -638,7 +609,7 @@ mod tests {
     #[test]
     fn the_queue_is_bounded_by_bytes_not_pieces() {
         let mut queue = InputQueue::default();
-        // Thousands of one-byte keys fit: the bound is cost, not count (021).
+        // Thousands of one-byte keys fit: the bound is bytes, not count (021).
         for _ in 0..3000 {
             assert!(queue.push(vec![b'k']).is_ok());
         }
@@ -647,7 +618,7 @@ mod tests {
         while big.push(vec![0; MAX_INPUT]).is_ok() {
             pushed += 1;
         }
-        assert_eq!(pushed, 15);
+        assert_eq!(pushed, 16);
         big.advance(MAX_INPUT);
         assert!(
             big.push(vec![0; MAX_INPUT]).is_ok(),
