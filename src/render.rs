@@ -6,11 +6,10 @@
 //! the terminal's attributes at their default, which the next one assumes.
 use crate::id::ClientId;
 use crate::id::PaneId;
-use crate::keys::KeyPress;
 use crate::layout::{Axis, Placement, Rect, Separator};
 use crate::overlay;
 use crate::session::Session;
-use crate::view::{List, Mode, View};
+use crate::view::{Choice, List, Mode, View};
 use fux_vt::{Attributes, CellRef, Cells, Color, Row, UnderlineStyle};
 use std::borrow::Cow;
 use std::io::Write;
@@ -832,7 +831,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
     }
     bar(grid, session, view, copy);
     match &view.mode {
-        Mode::Column { path, selected } => column(grid, session, view, path, *selected),
+        Mode::Column(c) => column(grid, session, view, c),
         Mode::List(list) => list_panel(grid, session, view, list),
         Mode::Prompt(prompt) => {
             // The panel's border takes a cell each side.
@@ -852,7 +851,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             surface(grid, view, &lines);
         }
         // A repeat mode shows in the bar, leaving the layout in view.
-        Mode::Normal | Mode::Copy(_) | Mode::Repeat { .. } => {}
+        Mode::Normal | Mode::Copy(_) | Mode::Repeat(_) => {}
     }
 }
 
@@ -1052,25 +1051,14 @@ fn bar(
         ))
     } else if let Some(copy) = &copy_bar {
         Some((copy.position.as_str().into(), base))
-    } else if let Mode::Column { path, .. } = &view.mode {
+    } else if let Mode::Column(column) = &view.mode {
         Some((
-            format!("{} …", session.keys_named(path)).into(),
+            format!("{} …", session.keys_named(&column.path)).into(),
             style(Color::Idx(0), Color::Idx(11)),
         ))
-    } else if let Mode::Repeat { path } = &view.mode {
-        // The mode's name and its keys: `RESIZE  h j k l · Esc`.
-        let title = overlay::layer_title(session, path).unwrap_or_default();
-        let keys: Vec<String> = session
-            .config
-            .bindings
-            .iter()
-            .filter_map(|b| match b.keys.strip_prefix(path.as_slice()) {
-                Some([key]) => Some(key.to_string()),
-                Some(_) | None => None,
-            })
-            .collect();
+    } else if let Mode::Repeat(repeat) = &view.mode {
         Some((
-            format!("{}  {} · Esc", title.to_uppercase(), keys.join(" ")).into(),
+            repeat.bar.as_str().into(),
             style(Color::Idx(0), Color::Idx(11)).with_bold(true),
         ))
     } else {
@@ -1208,20 +1196,18 @@ fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
 fn list_panel(grid: &mut Grid, session: &Session, view: &View, list: &List) {
     let mut lines: Vec<Line<'_>> = vec![(list.title.as_str().into(), panel().with_bold(true))];
     let capacity = overlay::list_room(view.rows);
-    let start = overlay::window_start(list.items.len(), list.selected, capacity);
+    let (len, chosen) = (list.items.iter().count(), list.items.index());
+    let start = overlay::window_start(len, chosen, capacity);
     let ctx = crate::session::Ctx::client(view.id);
     let shown = list.items.iter().enumerate().skip(start).take(capacity);
     let shown = shown.map(|(i, item)| {
-        let dim = !list.chooser && session.unavailable(&item.command, &ctx).is_some();
+        let dim = item.subject.is_none() && session.unavailable(&item.command, &ctx).is_some();
         let marker = if item.current { "*" } else { " " };
-        let attrs = panel().with_inverse(i == list.selected).with_dim(dim);
+        let attrs = panel().with_inverse(i == chosen).with_dim(dim);
         (format!("{marker} {}", item.label).into(), attrs)
     });
-    windowed(&mut lines, list.items.len(), start, capacity, shown);
-    if list.items.is_empty() {
-        lines.push(("nothing to choose".into(), panel().with_dim(true)));
-    }
-    let help = if list.chooser {
+    windowed(&mut lines, len, start, capacity, shown);
+    let help = if list.items.chosen().subject.is_some() {
         "Enter selects · r renames · x closes · Esc"
     } else {
         "Enter runs · Esc cancels"
@@ -1230,56 +1216,49 @@ fn list_panel(grid: &mut Grid, session: &Session, view: &View, list: &List) {
     surface(grid, view, &lines);
 }
 
-/// The command column: the bindings and layers of the layer at `path`,
-/// grouped, the selected one highlighted and those that cannot run now
-/// dimmed.
-fn column(grid: &mut Grid, session: &Session, view: &View, path: &[KeyPress], selected: usize) {
-    let column = overlay::column(session, path);
+/// The command column: the bindings and layers of its layer, grouped, the
+/// selected one highlighted and those that cannot run now dimmed.
+fn column(grid: &mut Grid, session: &Session, view: &View, column: &overlay::Column) {
+    let all = column.entries.iter().flat_map(Choice::iter);
+    let chosen = column.entries.as_ref().map(Choice::index);
     // Each entry's key as it is typed, written out once.
-    let keys: Vec<String> = column.iter().map(|e| e.key.to_string()).collect();
+    let keys: Vec<String> = all.clone().map(|e| e.key.to_string()).collect();
     let key_width = keys.iter().map(|k| width(k)).max().unwrap_or(0);
     let ctx = crate::session::Ctx::client(view.id);
     let mut entries: Vec<Line<'_>> = Vec::new();
     let mut heading = None;
     let mut selected_row = 0usize;
-    for (index, (entry, key)) in column.iter().zip(&keys).enumerate() {
-        let group = (entry.root, entry.group());
+    for (index, (entry, key)) in all.zip(&keys).enumerate() {
+        let group = (entry.root, entry.group.as_str());
         if heading != Some(group) {
             entries.push((group.1.into(), panel().with_bold(true)));
             heading = Some(group);
         }
         // Whether it cannot run now; a layer's entry opens it.
         let dim = entry
-            .command()
+            .command
+            .as_ref()
             .is_some_and(|command| session.unavailable(command, &ctx).is_some());
-        let more = if entry.layer { "…" } else { "" };
+        let more = if entry.command.is_none() { "…" } else { "" };
         let pad = usize::from(key_width.saturating_sub(width(key)));
         let mut attrs = panel().with_dim(dim);
-        if index == selected {
+        if Some(index) == chosen {
             attrs = attrs.with_inverse(true);
             selected_row = entries.len();
         }
-        let text = entry.label();
+        let text = &entry.label;
         entries.push((format!("{:pad$}{key}  {text}{more}", "").into(), attrs));
     }
     let (heading, body_room) = overlay::column_room(view.rows);
     let start = overlay::window_start(entries.len(), selected_row, body_room);
     let mut lines: Vec<Line<'_>> = Vec::new();
     if heading {
-        // Right after the prefix, every command; in a layer, its keys so far
-        // and its title.
-        let title = match overlay::layer_title(session, path) {
-            Some(title) if !path.is_empty() => {
-                Cow::Owned(format!("{}: {title}", session.keys_named(path)))
-            }
-            Some(_) | None => Cow::Borrowed("Commands"),
-        };
-        lines.push((title, panel().with_bold(true)));
+        lines.push((column.title.as_str().into(), panel().with_bold(true)));
     }
     let total = entries.len();
     let shown = entries.into_iter().skip(start).take(body_room);
     windowed(&mut lines, total, start, body_room, shown);
-    if column.is_empty() {
+    if column.entries.is_none() {
         lines.push(("no bindings".into(), panel().with_dim(true)));
     }
     surface(grid, view, &lines);
