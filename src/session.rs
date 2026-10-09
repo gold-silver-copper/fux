@@ -1080,18 +1080,19 @@ impl Session {
 
     /// Runs a command line from the CLI or the prompt.
     pub fn run(&mut self, argv: &[String], origin: &Origin) -> Outcome {
-        match command::parse(argv) {
-            Ok(command) => self.run_command(&command, origin),
-            // Nothing ran, so nothing shows anything new.
-            Err(usage) => {
-                self.settle();
-                Outcome {
-                    status: 2,
-                    stdout: String::new(),
-                    stderr: usage.to_string(),
-                }
-            }
-        }
+        let usage = match command::parse(argv) {
+            Ok(command) => return self.run_command(&command, origin),
+            Err(usage) => usage,
+        };
+        let outcome = Outcome {
+            status: 2,
+            stdout: String::new(),
+            stderr: usage.to_string(),
+        };
+        self.tell(origin, &outcome, false);
+        // Nothing ran, so nothing shows anything new.
+        self.settle();
+        outcome
     }
 
     /// Runs a command, parsed already: from a line, a binding or a menu.
@@ -1113,7 +1114,31 @@ impl Session {
             self.touch();
         }
         self.settle();
+        let made = matches!(
+            command,
+            Command::Split { .. }
+                | Command::NewTab { .. }
+                | Command::NewWorkspace { .. }
+                | Command::MovePane { .. }
+        );
+        self.tell(origin, &outcome, made);
         outcome
+    }
+
+    /// A client's command tells the client how it went, in its notice: the
+    /// first line of its error, or of what it printed, with `…` if more
+    /// follow; but not the ID of what it `made`, which the client is shown.
+    fn tell(&mut self, origin: &Origin, outcome: &Outcome, made: bool) {
+        let &Origin::Client(client) = origin else {
+            return;
+        };
+        let mut lines = outcome.stdout.lines().filter(|l| !l.trim().is_empty());
+        if outcome.status != 0 {
+            self.error_to(client, outcome.stderr.lines().next().unwrap_or("failed"));
+        } else if let Some(line) = lines.next().filter(|_| !made) {
+            let more = if lines.next().is_some() { " …" } else { "" };
+            self.info_to(client, format!("{line}{more}"));
+        }
     }
 
     /// How many commands have run that may change what clients show.
