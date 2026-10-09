@@ -90,11 +90,10 @@ fn key(r: &mut Rng) -> String {
 }
 
 /// `$name` decodes and encodes with `$fux`; `$key_bytes` encodes a press
-/// in a cursor mode, `$shown` shows a decoded input, and `$due` says when a
-/// line held with a deadline is typed, given when the shell last wrote, all
-/// as each version takes them: the current fux's keys carry what a
-/// kitty-protocol terminal said beyond the press, its encoder the pane's
-/// key mode, and its held line is the input queue's.
+/// in a cursor mode, `$shown` shows a decoded input, and `$due` times a held
+/// line, all as each version takes them: the current fux's keys carry what
+/// a kitty-protocol terminal said beyond the press, and its encoder the
+/// pane's key mode.
 macro_rules! stack {
     ($name:ident, $fux:ident, $key_bytes:expr, $shown:expr, $due:expr) => {
         mod $name {
