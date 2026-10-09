@@ -71,6 +71,8 @@ impl std::error::Error for Error {
 #[derive(Default)]
 pub struct InputQueue {
     bytes: ByteQueue,
+    /// A command line held until the shell is ready.
+    held: Option<Typed>,
     /// Input was refused, and the program has not read since: everything
     /// is refused, so none arrives with a hole before it.
     refusing: bool,
@@ -106,6 +108,23 @@ impl InputQueue {
             INPUT_BYTES.saturating_sub(self.bytes.len())
         }
     }
+    /// When the held command line is to be typed, if one is held.
+    pub fn due_at(&self) -> Option<Instant> {
+        self.held.as_ref().map(Typed::due_at)
+    }
+    /// The shell wrote at `now`: a held line waits for it to be quiet.
+    pub fn heard(&mut self, now: Instant) {
+        if let Some(typed) = &mut self.held {
+            typed.last_output = Some(now);
+        }
+    }
+    /// Types the held command line now.
+    pub fn type_now(&mut self) {
+        if let Some(typed) = self.held.take() {
+            // The queue is empty this early, so the line fits.
+            let _ = self.push(typed.line);
+        }
+    }
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
@@ -127,6 +146,16 @@ impl InputQueue {
         let out = self.bytes.as_slice().to_vec();
         self.advance(out.len());
         out
+    }
+}
+
+impl From<Typed> for InputQueue {
+    /// A queue holding `typed` until the shell is ready.
+    fn from(typed: Typed) -> InputQueue {
+        InputQueue {
+            held: Some(typed),
+            ..InputQueue::default()
+        }
     }
 }
 
@@ -329,8 +358,6 @@ pub struct Pane {
     /// itself; a typed command is quoted for the shell before the pane is
     /// made (`Session::new_pane`).
     pub shell: String,
-    /// A command line waiting to be typed into the shell.
-    pub typed: Option<Typed>,
     /// Titles the program pushed (`CSI 22 t`), to pop (`CSI 23 t`).
     title_stack: VecDeque<String>,
     /// The output of a frame the program is drawing in synchronized output,
@@ -354,15 +381,25 @@ pub const QUIET: Duration = Duration::from_millis(50);
 /// has been quiet for `QUIET` after it first wrote, or at `deadline` if it
 /// writes nothing. Typed earlier, the terminal would echo the line before the
 /// shell had drawn its prompt, and a shell whose startup writes and then
-/// discards pending input would lose it.
+/// discards pending input would lose it. It always fits the input queue.
 pub struct Typed {
-    pub line: Vec<u8>,
-    pub deadline: Instant,
+    line: Vec<u8>,
+    deadline: Instant,
     /// When the shell last wrote, once it has.
-    pub last_output: Option<Instant>,
+    last_output: Option<Instant>,
 }
 
 impl Typed {
+    /// `line`, to be typed at `deadline` at the latest, unless it is too
+    /// long ever to fit the input queue.
+    pub fn new(line: Vec<u8>, deadline: Instant) -> Option<Typed> {
+        (line.len() <= INPUT_BYTES).then_some(Typed {
+            line,
+            deadline,
+            last_output: None,
+        })
+    }
+
     /// The moment the line is to be typed, as things stand.
     pub fn due_at(&self) -> Instant {
         match self.last_output {
@@ -408,7 +445,6 @@ impl Pane {
             input: InputQueue::default(),
             reply_dropped: false,
             shell,
-            typed: None,
             frame: None,
             title_stack: VecDeque::new(),
             colours: crate::outer::Colours::default(),
@@ -524,9 +560,7 @@ impl Pane {
                 }
             }
         }
-        if let Some(typed) = &mut self.typed {
-            typed.last_output = Some(Instant::now());
-        }
+        self.input.heard(Instant::now());
         if !replies.is_empty() && self.input.push(replies).is_err() && !self.reply_dropped {
             self.reply_dropped = true;
             return (true, begun);
@@ -546,14 +580,6 @@ impl Pane {
                 Err(fuxix::Errno::INTR) => continue,
                 Err(_) => break,
             }
-        }
-    }
-
-    /// Types a held command line into the shell now.
-    pub fn type_now(&mut self) {
-        if let Some(typed) = self.typed.take() {
-            // The queue is empty this early, so the line fits.
-            let _ = self.input.push(typed.line);
         }
     }
 
@@ -674,14 +700,11 @@ mod tests {
     }
 
     #[test]
-    fn a_typed_line_waits_for_quiet_output_or_the_deadline() {
+    fn a_typed_line_waits_for_quiet_output_or_the_deadline() -> Result<(), &'static str> {
         let t0 = std::time::Instant::now();
         let ms = std::time::Duration::from_millis;
-        let mut typed = Typed {
-            line: b"echo hi\r".to_vec(),
-            deadline: t0 + ms(1000),
-            last_output: None,
-        };
+        let mut typed = Typed::new(b"echo hi\r".to_vec(), t0 + ms(1000));
+        let typed = typed.as_mut().ok_or("too long")?;
         // Nothing written yet: only the deadline.
         assert_eq!(typed.due_at(), t0 + ms(1000));
         // Output keeps pushing it back while it keeps coming within QUIET.
@@ -692,27 +715,22 @@ mod tests {
         // Never past the deadline, however long the output lasts.
         typed.last_output = Some(t0 + ms(990));
         assert_eq!(typed.due_at(), t0 + ms(1000));
+        Ok(())
     }
 
     #[test]
     fn output_records_when_the_shell_wrote_and_types_nothing_itself() -> Result<(), Error> {
         let mut pane = Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
-        let before = std::time::Instant::now();
-        pane.typed = Some(Typed {
-            line: b"x\r".to_vec(),
-            deadline: before + std::time::Duration::from_secs(1),
-            last_output: None,
-        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        pane.input = Typed::new(b"x\r".to_vec(), deadline)
+            .map(InputQueue::from)
+            .ok_or(Error::NotReading)?;
         pane.output(b"$ ");
-        assert!(
-            pane.typed
-                .as_ref()
-                .is_some_and(|t| t.last_output.is_some_and(|at| at >= before))
-        );
+        assert!(pane.input.due_at().is_some_and(|at| at < deadline));
         assert!(pane.input.is_empty(), "output alone types nothing");
-        pane.type_now();
+        pane.input.type_now();
         assert_eq!(pane.input.drain_all(), b"x\r");
-        assert!(pane.typed.is_none());
+        assert_eq!(pane.input.due_at(), None);
         Ok(())
     }
 
