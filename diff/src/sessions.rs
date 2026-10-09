@@ -203,7 +203,8 @@ macro_rules! stack {
                 for ws in &s.workspaces {
                     let _ = writeln!(out, "workspace {} {:?}", ws.id, ws.name);
                     for (t, root) in super::$side::tabs(ws) {
-                        let _ = writeln!(out, "  tab {} {:?} {:?}", t.id, t.name, root);
+                        let root = root.map(crate::layout::Shape::shape);
+                        let _ = writeln!(out, "  tab {} {:?} {root:?}", t.id, t.name);
                     }
                 }
                 let _ = writeln!(
@@ -276,7 +277,7 @@ mod base_side {
 }
 
 mod cur_side {
-    use fux::layout::Node;
+    use fux::layout::Tree;
     use fux::session::Session;
     use fux::view::{Choice, Mode, View};
     use fux::workspace::{Tab, Workspace};
@@ -287,7 +288,7 @@ mod cur_side {
         format!("{ws:?} tab {tab:?} focus {:?}", s.focused(v.id))
     }
 
-    pub fn tabs(w: &Workspace) -> impl Iterator<Item = (&Tab, Option<&Node>)> {
+    pub fn tabs(w: &Workspace) -> impl Iterator<Item = (&Tab, Option<&Tree>)> {
         w.tabs().iter().map(|t| (t, t.root()))
     }
 
