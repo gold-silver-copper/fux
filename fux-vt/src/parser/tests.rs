@@ -12,7 +12,7 @@ fn ascii_run_path_equals_scalar_dispatch_around_grapheme_clusters() -> Result<()
         \u{1f1ef}\u{1f1f5}q\u{1f469}\u{200d}\u{1f52c}w\u{928}\u{93f}v\u{600}5\u{200d}k\
         \u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}!\r\n\x1b[1mA\u{301}\x1b[0m";
     for cols in 1..=12 {
-        let mut fast = Parser::new(6, cols, 8)?;
+        let mut fast = Parser::new(Size::of(6, cols), 8)?;
         let mut slow = fast.clone();
         fast.process(text.as_bytes())?;
         scalar(&mut slow, text.as_bytes(), false, &mut Log::default())?;
@@ -258,7 +258,7 @@ fn fast_paths_equal_the_general_path() -> Result<(), Error> {
 fn fast_paths_equal_the_general_path_on_the_permanent_corpus() -> Result<(), Error> {
     for (rows, cols) in [(1, 1), (4, 12), (24, 80)] {
         for seed in 0..6 {
-            let mut fast = Parser::new(rows, cols, 8)?;
+            let mut fast = Parser::new(Size::of(rows, cols), 8)?;
             let mut slow = fast.clone();
             let corpus = test_corpus::operations(seed, 4096).into_iter();
             for operation in corpus.chain(test_corpus::terminal_edge()) {
@@ -286,7 +286,7 @@ fn equal_to_the_general_path(cases: std::ops::Range<u64>, long: bool) -> Result<
         let mut r = Rng(case);
         let rows = u16::try_from(r.below(6)).unwrap_or(0).saturating_add(1);
         let cols = u16::try_from(r.below(12)).unwrap_or(0).saturating_add(1);
-        let mut fast = Parser::with_options(rows, cols, r.below(8), options(&mut r))?;
+        let mut fast = Parser::with_options(Size::of(rows, cols), r.below(8), options(&mut r))?;
         let mut slow = fast.clone();
         let fragments = r.below(80).saturating_add(1);
         let input = sequences(&mut r, fragments, long);
@@ -384,14 +384,14 @@ fn the_alternate_screen_made_late_is_the_one_made_at_once() -> Result<(), Error>
         let mut r = Rng(case.wrapping_add(1 << 32));
         let rows = u16::try_from(r.below(6)).unwrap_or(0).saturating_add(1);
         let cols = u16::try_from(r.below(12)).unwrap_or(0).saturating_add(1);
-        let mut lazy = Parser::with_options(rows, cols, r.below(8), options(&mut r))?;
+        let mut lazy = Parser::with_options(Size::of(rows, cols), r.below(8), options(&mut r))?;
         let mut eager = lazy.clone();
         eager.screen_mut().make_alternate()?;
         for step in 0..r.below(40) {
             let resize = r.chance(15).then(|| {
                 let rows = u16::try_from(r.below(7)).unwrap_or(0).saturating_add(1);
                 let cols = u16::try_from(r.below(13)).unwrap_or(0).saturating_add(1);
-                (rows, cols)
+                Size::of(rows, cols)
             });
             let output = if r.chance(40) {
                 r.pick(SCREENS).unwrap_or_default().to_vec()
@@ -400,7 +400,7 @@ fn the_alternate_screen_made_late_is_the_one_made_at_once() -> Result<(), Error>
                 sequences(&mut r, fragments, false)
             };
             let (a, b) = match resize {
-                Some((rows, cols)) => (lazy.resize(rows, cols), eager.resize(rows, cols)),
+                Some(size) => (lazy.resize(size), eager.resize(size)),
                 None => (lazy.process(&output), eager.process(&output)),
             };
             assert_eq!(a, b, "case {case} step {step}");
@@ -425,18 +425,18 @@ fn the_alternate_screen_made_late_is_the_one_made_at_once() -> Result<(), Error>
 /// restored unset; then as many as the screen.
 #[test]
 fn the_alternate_screen_holds_no_cells_until_shown() -> Result<(), Error> {
-    let mut parser = Parser::new(50, 200, 0)?;
+    let mut parser = Parser::new(Size::of(50, 200), 0)?;
     assert_eq!(parser.screen().storage_cells(), 50 * 200);
-    parser.resize(40, 120)?;
+    parser.resize(Size::of(40, 120))?;
     assert_eq!(parser.screen().storage_cells(), 40 * 120);
     parser.process(b"\x1bc\x1b[!p\x1b[?47l\x1b[?1047l\x1b[?1049l\x1b[?1049s\x1b[?1049r")?;
-    parser.resize(30, 100)?;
+    parser.resize(Size::of(30, 100))?;
     parser.process(b"\x1bc")?;
     assert_eq!(parser.screen().storage_cells(), 30 * 100);
     parser.process(b"\x1b[?1049h")?;
     assert_eq!(parser.screen().storage_cells(), 2 * 30 * 100);
     // RIS with history makes both grids afresh, the alternate unmade.
-    let mut parser = Parser::new(5, 10, 100)?;
+    let mut parser = Parser::new(Size::of(5, 10), 100)?;
     parser.process(b"\x1b[?1049h\x1b[?1049l")?;
     let lines: Vec<u8> = std::iter::repeat_n(*b"x\n", 20).flatten().collect();
     parser.process(&lines)?;

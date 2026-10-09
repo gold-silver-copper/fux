@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 pub fn check(p: &Parser) {
     let s = p.screen();
-    let (rows, cols) = s.size();
+    let (rows, cols) = s.size().into();
     assert!(rows > 0 && cols > 0);
     let (row, col) = s.cursor_position();
     assert!(
@@ -135,7 +135,7 @@ pub fn equal(a: &Parser, b: &Parser) {
         assert_eq!(a.mode(mode), b.mode(mode), "{mode:?}");
     }
     assert_eq!(a.history_len(), b.history_len());
-    for offset in 0..usize::from(a.size().0).saturating_add(a.history_len()) {
+    for offset in 0..usize::from(a.size().rows()).saturating_add(a.history_len()) {
         let (a, b) = (a.row_from_bottom(offset), b.row_from_bottom(offset));
         assert!(a.is_some() && b.is_some(), "missing row");
         let (Some(a), Some(b)) = (a, b) else {

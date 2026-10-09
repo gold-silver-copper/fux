@@ -105,7 +105,7 @@ impl Frame {
             if screen.colors_changed() {
                 return None;
             }
-            panes.push((*id, *rect, screen.size()));
+            panes.push((*id, *rect, screen.size().into()));
         }
         Some(Frame {
             rows: view.rows,
@@ -196,7 +196,7 @@ fn put_changed_rows(
             break;
         };
         let screen = pane.screen();
-        let (rows, cols) = screen.size();
+        let (rows, cols) = screen.size().into();
         let window = screen.window(0, rows, cols);
         let width = rect.w.min(window.cols());
         for (y, key) in (0..rect.h.min(window.rows())).zip(pane_keys.iter_mut()) {
@@ -694,7 +694,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             let colours = screen.colors_changed().then_some(screen);
             let at = copy.filter(|(c, _)| c.pane == *id).map(|(_, at)| at);
             let offset = at.map_or(0, |at| at.offset(screen));
-            let (rows, cols) = screen.size();
+            let (rows, cols) = screen.size().into();
             let window = screen.window(offset, rows, cols);
             let width = rect.w.min(window.cols());
             let screen_rows = rect.h.min(window.rows());
@@ -788,7 +788,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             Some((_, at)) => {
                 // Within the rows shown, which a smaller client can make
                 // fewer than the rect.
-                if let Some((y, x)) = at.cursor_in_view(rect.h.min(screen.size().0))
+                if let Some((y, x)) = at.cursor_in_view(rect.h.min(screen.size().rows()))
                     && x < rect.w
                     && let Some(at) = rect.at(y, x)
                 {
@@ -1749,6 +1749,12 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
 mod tests {
     use super::*;
 
+    /// A terminal of `rows` by `cols`, as a client's, without history.
+    fn terminal(rows: u16, cols: u16) -> Result<fux_vt::Parser, String> {
+        let size = fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())?;
+        fux_vt::Parser::new(size, 0).map_err(|e| e.to_string())
+    }
+
     /// A small deterministic generator (splitmix64).
     struct Rng(u64);
 
@@ -1769,7 +1775,7 @@ mod tests {
     /// What a terminal shows.
     fn terminal_shows(parser: &fux_vt::Parser) -> Shown {
         let screen = parser.screen();
-        let (rows, cols) = screen.size();
+        let (rows, cols) = screen.size().into();
         let window = screen.window(0, rows, cols);
         let cells = (0..rows)
             .map(|y| {
@@ -1826,8 +1832,8 @@ mod tests {
                 ];
                 s.run(&argv, &crate::session::Ctx::default());
             }
-            let mut fast = fux_vt::Parser::new(10, 40, 0).map_err(|e| e.to_string())?;
-            let mut whole = fux_vt::Parser::new(10, 40, 0).map_err(|e| e.to_string())?;
+            let mut fast = terminal(10, 40)?;
+            let mut whole = terminal(10, 40)?;
             let (mut spare, mut showing) = (Grid::new(0, 0), Grid::new(0, 0));
             let mut placement = Placement::default();
             let mut painted = false;
@@ -2155,7 +2161,7 @@ mod tests {
             text.contains("\u{1F44D}\x1b[1;5H\u{1F3FD}\x1b[1;7Hx"),
             "{text:?}"
         );
-        let mut parser = fux_vt::Parser::new(1, 12, 0).map_err(|e| e.to_string())?;
+        let mut parser = terminal(1, 12)?;
         assert_eq!(apply(&bytes, 1, 12, &mut parser), grid_lines(&grid));
         // Glyphs that do not join are painted in one run.
         let mut plain = Grid::new(1, 12);
@@ -2186,7 +2192,7 @@ mod tests {
             text.contains("\x1b[?7ha\u{301}\u{356}\x1b[?7l "),
             "{text:?}"
         );
-        let mut parser = fux_vt::Parser::new(1, 6, 0).map_err(|e| e.to_string())?;
+        let mut parser = terminal(1, 6)?;
         assert_eq!(apply(text.as_bytes(), 1, 6, &mut parser), grid_lines(&grid));
         for (x, cluster) in [
             (3, "a\u{301}"),
@@ -2238,12 +2244,12 @@ mod tests {
         b.text(0, 0, "he", Attributes::default().with_underline(true), 12);
         b.text(2, 4, "ab", Attributes::default(), 12);
         b.text(3, 10, "界", Attributes::default(), 12);
-        let mut parser = fux_vt::Parser::new(4, 12, 0).map_err(|e| e.to_string())?;
+        let mut parser = terminal(4, 12)?;
         apply(&paint(None, &a), 4, 12, &mut parser);
         let lines = apply(&paint(Some(&a), &b), 4, 12, &mut parser);
         assert_eq!(lines, grid_lines(&b));
         // Full repaint from nothing matches too.
-        let mut fresh = fux_vt::Parser::new(4, 12, 0).map_err(|e| e.to_string())?;
+        let mut fresh = terminal(4, 12)?;
         assert_eq!(apply(&paint(None, &b), 4, 12, &mut fresh), grid_lines(&b));
         Ok(())
     }
@@ -2275,7 +2281,7 @@ mod tests {
         b.text(3, 5, "X", Attributes::default().with_bold(true), 20);
         let diff = paint(Some(&a), &b);
         assert_eq!(rows_written(&diff), [3]);
-        let mut parser = fux_vt::Parser::new(6, 20, 0).map_err(|e| e.to_string())?;
+        let mut parser = terminal(6, 20)?;
         apply(&paint(None, &a), 6, 20, &mut parser);
         assert_eq!(apply(&diff, 6, 20, &mut parser), grid_lines(&b));
         // The first and last rows, and a wide glyph's second half.
@@ -2330,7 +2336,7 @@ mod tests {
             assert!(text.contains(sgr), "{sgr:?} in {text:?}");
         }
         // Read back by a terminal, each cell has what it was painted with.
-        let mut parser = fux_vt::Parser::new(1, 12, 0).map_err(|e| e.to_string())?;
+        let mut parser = terminal(1, 12)?;
         parser.process(&bytes).map_err(|e| e.to_string())?;
         for (x, a) in attributes.iter().enumerate().take(5) {
             let x = u16::try_from(x).map_err(|e| e.to_string())?;
@@ -2377,7 +2383,7 @@ mod tests {
         // Read back by a terminal that keeps styles, each cell has its own;
         // painted plain, each is a plain underline.
         for (grid, keeps) in [(&styled, true), (&grid, false)] {
-            let mut parser = fux_vt::Parser::new(1, 6, 0).map_err(|e| e.to_string())?;
+            let mut parser = terminal(1, 6)?;
             parser
                 .process(&paint(None, grid))
                 .map_err(|e| e.to_string())?;
@@ -2434,7 +2440,7 @@ mod tests {
         }
         // Read back by a terminal that keeps colours, as the client's.
         let options = fux_vt::Options::from(fux_vt::Feature::Palette);
-        let mut client = fux_vt::Parser::with_options(6, 41, 0, options)?;
+        let mut client = fux_vt::Parser::with_options(fux_vt::Size::new(6, 41)?, 0, options)?;
         client.process(&bytes)?;
         let navy = Color::Rgb(0, 0, 0x80);
         let right: u16 = 21;
@@ -2512,8 +2518,8 @@ mod tests {
             assert!(text.contains(&open), "{open:?} in {text:?}");
         }
         // Read back, each linked cell has its link, and only those do.
-        let mut parser =
-            fux_vt::Parser::with_options(6, 41, 0, fux_vt::Feature::Hyperlinks.into())?;
+        let options = fux_vt::Feature::Hyperlinks.into();
+        let mut parser = fux_vt::Parser::with_options(fux_vt::Size::new(6, 41)?, 0, options)?;
         parser.process(&bytes)?;
         let screen = parser.screen();
         let ids: Vec<Option<String>> = (0..41)

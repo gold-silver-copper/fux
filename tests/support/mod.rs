@@ -61,6 +61,11 @@ pub fn e(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+/// A terminal of `rows` by `cols`, without history.
+fn terminal(rows: u16, cols: u16) -> Result<fux_vt::Parser, String> {
+    fux_vt::Parser::new(fux_vt::Size::new(rows, cols).map_err(e)?, 0).map_err(e)
+}
+
 pub struct Server {
     pub dir: PathBuf,
     pub socket: PathBuf,
@@ -291,7 +296,7 @@ impl Client {
         Ok(Client {
             stream,
             decoder: Decoder::default(),
-            terminal: fux_vt::Parser::new(rows, cols, 0).map_err(e)?,
+            terminal: terminal(rows, cols)?,
             rows,
             cols,
             exit: None,
@@ -311,7 +316,7 @@ impl Client {
     pub fn resize(&mut self, rows: u16, cols: u16) -> Outcome {
         self.rows = rows;
         self.cols = cols;
-        self.terminal = fux_vt::Parser::new(rows, cols, 0).map_err(e)?;
+        self.terminal = terminal(rows, cols)?;
         self.frame(&AttachedFrame::Resize {
             rows: nonzero(rows)?,
             cols: nonzero(cols)?,
@@ -631,7 +636,7 @@ impl Terminal {
         Ok(Terminal {
             master: Some(master),
             child,
-            screen: fux_vt::Parser::new(rows, cols, 0).map_err(e)?,
+            screen: terminal(rows, cols)?,
             output: Vec::new(),
         })
     }
@@ -659,7 +664,7 @@ impl Terminal {
 
     pub fn text(&self) -> String {
         let screen = self.screen.screen();
-        let (rows, cols) = screen.size();
+        let (rows, cols) = screen.size().into();
         let window = screen.window(0, rows, cols);
         (0..rows)
             .map(|y| {
@@ -721,7 +726,7 @@ impl Terminal {
     pub fn resize(&mut self, rows: u16, cols: u16) -> Outcome {
         let master = self.master.as_ref().ok_or("the terminal is closed")?;
         fux::process::resize(master, rows, cols);
-        self.screen = fux_vt::Parser::new(rows, cols, 0).map_err(e)?;
+        self.screen = terminal(rows, cols)?;
         // The kernel signals the foreground group of the PTY: the client.
         Ok(())
     }

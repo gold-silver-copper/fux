@@ -4,10 +4,10 @@
 //! (under Xvfb, `-xrm 'XTerm*allowColorOps: true'`, 80 by 25): each
 //! sequence written, and what xterm wrote back.
 
-use fux_vt::{Event, Feature, Options, Parser, Sink};
+use fux_vt::{Event, Feature, Options, Parser, Sink, Size};
 #[path = "corpus/pieces.rs"]
 mod pieces;
-type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Everything the parser gave the host, in order, as text.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -41,12 +41,12 @@ const BOTH: Options = Options::new().with(Feature::Palette).with(Feature::Events
 
 /// What `options` give the host for `input`, and the parser after it; the
 /// same whatever pieces the input comes in.
-fn run(options: Options, input: &[u8]) -> std::result::Result<(Heard, Parser), fux_vt::Error> {
-    let mut parser = Parser::with_options(25, 80, 0, options)?;
+fn run(options: Options, input: &[u8]) -> Result<(Heard, Parser)> {
+    let mut parser = Parser::with_options(Size::new(25, 80)?, 0, options)?;
     let mut heard = Heard::default();
     parser.process_with(input, &mut heard)?;
     for size in [1, 2, 7] {
-        let mut again = Parser::with_options(25, 80, 0, options)?;
+        let mut again = Parser::with_options(Size::new(25, 80)?, 0, options)?;
         let mut pieces_heard = Heard::default();
         for chunk in pieces::pieces(input, size) {
             again.process_with(chunk, &mut pieces_heard)?;
@@ -343,8 +343,8 @@ fn run_hosted(
     options: Options,
     host: &[(u8, (u8, u8, u8))],
     input: &[u8],
-) -> std::result::Result<(Heard, Parser), fux_vt::Error> {
-    let mut parser = Parser::with_options(25, 80, 0, options)?;
+) -> Result<(Heard, Parser)> {
+    let mut parser = Parser::with_options(Size::new(25, 80)?, 0, options)?;
     for &(index, rgb) in host {
         assert!(parser.set_host_color(index, Some(rgb)));
     }
@@ -406,7 +406,7 @@ fn the_programs_colour_wins_and_resets_bring_back_the_hosts() -> Result {
 /// xterm's default again; without the option nothing is answered.
 #[test]
 fn host_colours_are_bounded_cleared_and_need_the_option() -> Result {
-    let mut parser = Parser::with_options(25, 80, 0, PALETTE)?;
+    let mut parser = Parser::with_options(Size::new(25, 80)?, 0, PALETTE)?;
     assert!(!parser.set_host_color(16, Some((1, 2, 3))));
     assert!(!parser.set_host_color(255, Some((1, 2, 3))));
     assert!(parser.set_host_color(1, Some((1, 2, 3))));
@@ -415,7 +415,7 @@ fn host_colours_are_bounded_cleared_and_need_the_option() -> Result {
     parser.process_with(b"\x1b]4;1;?\x07", &mut heard)?;
     assert_eq!(heard, said(&["^[]4;1;rgb:cdcd/0000/0000^G"]));
     // Clearing what was never set keeps no colours at all.
-    let mut fresh = Parser::with_options(25, 80, 0, PALETTE)?;
+    let mut fresh = Parser::with_options(Size::new(25, 80)?, 0, PALETTE)?;
     assert!(!fresh.set_host_color(16, None));
     assert!(fresh.set_host_color(3, None));
     assert!(!fresh.screen().colors_changed());

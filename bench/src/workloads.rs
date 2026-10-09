@@ -289,14 +289,15 @@ fn vt(loads: &[Load], baseline: bool) -> Done {
     }
     let mut parser: Option<fux_vt::Parser> = None;
     for load in loads {
+        let Ok(size) = fux_vt::Size::new(load.rows, load.cols) else {
+            continue;
+        };
         match &mut parser {
             Some(p) => {
-                let _ = p.resize(load.rows, load.cols);
+                let _ = p.resize(size);
             }
             None => {
-                parser =
-                    fux_vt::Parser::with_options(load.rows, load.cols, HISTORY, fux::pane::OPTIONS)
-                        .ok();
+                parser = fux_vt::Parser::with_options(size, HISTORY, fux::pane::OPTIONS).ok();
             }
         }
         if let Some(p) = &mut parser {

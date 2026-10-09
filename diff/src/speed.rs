@@ -53,9 +53,9 @@ fn cpu() -> Result<Duration, String> {
 }
 
 macro_rules! timed {
-    ($vt:ident, $bytes:expr, $size:expr) => {{
-        let (rows, cols) = $size;
-        let mut parser = $vt::Parser::new(rows, cols, 10_000).map_err(|e| format!("{e:?}"))?;
+    ($vt:ident, $bytes:expr, $size:expr, |$rows:ident, $cols:ident| [$($dims:tt)*]) => {{
+        let ($rows, $cols) = $size;
+        let mut parser = $vt::Parser::new($($dims)*, 10_000).map_err(|e| format!("{e:?}"))?;
         let start = cpu()?;
         for piece in pieces($bytes) {
             parser
@@ -110,8 +110,8 @@ pub fn run(scale: usize) -> Result<String, String> {
         let bytes = bytes.as_slice();
         let (mut baseline, mut current) = (Duration::MAX, Duration::MAX);
         for _ in 0..9 {
-            baseline = baseline.min(timed!(baseline_vt, bytes, *size));
-            current = current.min(timed!(fux_vt, bytes, *size));
+            baseline = baseline.min(timed!(baseline_vt, bytes, *size, |r, c| [r, c]));
+            current = current.min(timed!(fux_vt, bytes, *size, |r, c| [crate::size(r, c)]));
         }
         let ratio = current.as_secs_f64() / baseline.as_secs_f64().max(f64::MIN_POSITIVE);
         out.push_str(&format!(

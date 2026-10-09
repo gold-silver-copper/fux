@@ -5,7 +5,8 @@ use crate::unicode::Cluster;
 use crate::{
     Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Mark, Options, Reply, Row, RowId,
     UnderlineStyle, Window,
-    grid::{Grid, Scroll},
+    geometry::{Size, Span},
+    grid::{Cursor, Grid, Scroll},
     parser::Parameters,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -429,12 +430,12 @@ fn whole(cells: &[Compact], i: usize, width: u16) -> bool {
 }
 
 impl Screen {
-    pub(crate) fn new(rows: u16, cols: u16, history: usize) -> Result<Self, Error> {
+    pub(crate) fn new(size: Size, history: usize) -> Result<Self, Error> {
         let mut next_id = 1;
         Ok(Self {
-            primary: Grid::new(rows, cols, history, &mut next_id, 1)?,
+            primary: Grid::new(size, history, &mut next_id, 1)?,
             // Its cells are made when a program first shows it.
-            alternate: Grid::unmade(rows, cols, &mut next_id, 1)?,
+            alternate: Grid::unmade(size, &mut next_id, 1)?,
             next_id,
             version: 1,
             structural: 1,
@@ -577,14 +578,14 @@ impl Screen {
         Ok(())
     }
     /// The screen's rows and columns.
-    pub fn size(&self) -> (u16, u16) {
-        (self.grid().rows.get(), self.grid().cols.get())
+    pub fn size(&self) -> Size {
+        self.grid().size()
     }
     /// The cursor's row and column, always on the screen. A glyph printed
     /// in the last column (or at the right margin) leaves the cursor on
     /// it, with [`pending_wrap`](Self::pending_wrap) set, as xterm does.
     pub fn cursor_position(&self) -> (u16, u16) {
-        self.grid().cursor
+        self.grid().cursor.at()
     }
     /// DEC STD 070's Last Column Flag: a glyph went into the last column,
     /// or the right margin's ([`left_right_margins`](Self::left_right_margins)),
@@ -593,7 +594,7 @@ impl Screen {
     /// it where the margin was). Cursor movements, line feeds and edits
     /// end it; DECSC and SCOSC save it with the cursor.
     pub fn pending_wrap(&self) -> bool {
-        self.grid().pending_wrap
+        self.grid().cursor.pending_wrap
     }
     /// Whether `mode` is set, as DECRQM reports it. The alternate screen's
     /// three modes are set together, while it is shown; DECARM and 1048
@@ -604,7 +605,7 @@ impl Screen {
             Kind::Flag | Kind::Margins | Kind::Frame | Kind::SizeReport => {
                 self.modes.contains(mode)
             }
-            Kind::Origin => self.grid().origin,
+            Kind::Origin => self.grid().cursor.origin,
             Kind::Screen(_) => self.alternate_active,
             Kind::SaveCursor | Kind::Reset => false,
             Kind::Mouse(mouse) => self.mouse == mouse,
@@ -613,7 +614,7 @@ impl Screen {
     }
     /// The in-band resize report of the current size, pixels unknown.
     pub(crate) fn size_report(&self) -> Reply {
-        let (rows, cols) = self.size();
+        let (rows, cols) = self.size().into();
         Reply::of(format_args!("\x1b[48;{rows};{cols};0;0t"))
     }
     pub(crate) fn frames_begun(&self) -> u64 {
@@ -626,13 +627,15 @@ impl Screen {
     }
     /// The top and bottom margins (DECSTBM), zero-based and inclusive.
     pub fn scroll_region(&self) -> (u16, u16) {
-        (self.grid().top, self.grid().bottom)
+        let lines = self.grid().lines;
+        (lines.first(), lines.last())
     }
     /// The left and right margins (DECSLRM, with DECLRMM set), zero-based
     /// and inclusive: the first and last columns unless a program set
     /// them.
     pub fn left_right_margins(&self) -> (u16, u16) {
-        (self.grid().left, self.grid().right)
+        let columns = self.grid().columns();
+        (columns.first(), columns.last())
     }
     /// The mouse reporting the program asked for.
     pub fn mouse_protocol_mode(&self) -> MouseProtocolMode {
@@ -678,17 +681,13 @@ impl Screen {
     pub(crate) fn reported_cursor(&self, options: &Options) -> (u32, u32) {
         let g = self.grid();
         let col = if options.identity().is_some() {
-            g.cursor.1
+            g.cursor.col()
         } else {
             g.next_column()
         };
         // In origin mode the column counts from the left margin, as xterm
         // reports it.
-        let col = if g.origin {
-            col.saturating_sub(g.left)
-        } else {
-            col
-        };
+        let col = col.saturating_sub(g.addressed().1.first());
         (u32::from(g.cursor_line()) + 1, u32::from(col) + 1)
     }
     /// The pen: the colours and rendition of the next glyph printed.
@@ -831,7 +830,7 @@ impl Screen {
         if command == b"P" {
             let kind = parts.find_map(|option| option.strip_prefix(b"k="));
             if kind.is_none_or(|k| k == b"i") {
-                let row = self.grid().cursor.0;
+                let row = self.grid().cursor.row();
                 self.grid_mut().mark_prompt(row);
             }
             return Ok(());
@@ -842,12 +841,12 @@ impl Screen {
             return Ok(());
         }
         // CR, then IND, as Ghostty does it.
-        if self.grid().cursor.1 != 0 {
+        if self.grid().cursor.col() != 0 {
             self.control(b'\r')?;
             self.linefeed()?;
         }
         if command != b"L" {
-            let row = self.grid().cursor.0;
+            let row = self.grid().cursor.row();
             self.grid_mut().mark_prompt(row);
         }
         Ok(())
@@ -888,8 +887,8 @@ impl Screen {
             grid,
             // Exact: the offset is clamped to the history.
             start: history.saturating_sub(offset),
-            rows: rows.min(grid.rows.get()),
-            cols: cols.min(grid.cols.get()),
+            rows: rows.min(grid.size().rows()),
+            cols: cols.min(grid.size().cols()),
             offset,
         }
     }
@@ -923,7 +922,7 @@ impl Screen {
     pub fn dirty_live_rows_since(&self, mark: Mark) -> impl Iterator<Item = (u16, Row<'_>)> {
         let full = self.full_refresh_since(mark);
         let grid = self.grid();
-        (0..grid.rows.get())
+        (0..grid.size().rows())
             .filter_map(move |y| grid.live_row(y).map(|row| (y, row)))
             .filter(move |(_, row)| full || row.version > mark.0)
     }
@@ -935,11 +934,11 @@ impl Screen {
             .saturating_add(self.alternate.storage_cells())
     }
 
-    pub(crate) fn resize(&mut self, rows: u16, cols: u16, reflow: bool) -> Result<(), Error> {
+    pub(crate) fn resize(&mut self, size: Size, reflow: bool) -> Result<(), Error> {
         // A frame drawn for the old size is no frame for the new one; as in
         // Ghostty, any resize ends synchronized output.
         self.modes.set(Mode::SynchronizedOutput, false);
-        if self.size() == (rows, cols) {
+        if self.size() == size {
             return Ok(());
         }
         self.last_print = None;
@@ -949,11 +948,11 @@ impl Screen {
             .ok_or(Error::IdentityExhausted)?;
         let mut next = self.next_id;
         let mut primary = if reflow {
-            self.primary.reflowed(rows, cols, &mut next, version)?
+            self.primary.reflowed(size, &mut next, version)?
         } else {
-            self.primary.resized(rows, cols, &mut next, version)?
+            self.primary.resized(size, &mut next, version)?
         };
-        let mut alternate = self.alternate.resized(rows, cols, &mut next, version)?;
+        let mut alternate = self.alternate.resized(size, &mut next, version)?;
         // The cells' links keep their numbers, so the links go along.
         primary.adopt_links(std::mem::take(&mut self.primary.links));
         alternate.adopt_links(std::mem::take(&mut self.alternate.links));
@@ -965,25 +964,17 @@ impl Screen {
         Ok(())
     }
 
-    fn scroll(
-        &mut self,
-        top: u16,
-        bottom: u16,
-        count: u16,
-        up: bool,
-        history: bool,
-    ) -> Result<(), Error> {
+    fn scroll(&mut self, region: Span, count: u16, up: bool, history: bool) -> Result<(), Error> {
         if self.grid().lr() {
-            self.scroll_columns(top, bottom, count, up);
+            self.scroll_columns(region, count, up);
             return Ok(());
         }
-        self.scroll_rows(top, bottom, count, up, history)
+        self.scroll_rows(region, count, up, history)
     }
     /// `scroll` without left and right margins: the rows move.
     fn scroll_rows(
         &mut self,
-        top: u16,
-        bottom: u16,
+        region: Span,
         count: u16,
         up: bool,
         history: bool,
@@ -1000,36 +991,36 @@ impl Screen {
             } else {
                 Scroll::Down
             };
-            g.scroll((top, bottom), count, direction, blank, next, version)
+            g.scroll(region, count, direction, blank, next, version)
         })
     }
     /// A scroll inside left and right margins (`Grid::scroll_columns`),
     /// its blanks in the pen's colours. Out of line: without margins it is
     /// never reached.
     #[inline(never)]
-    fn scroll_columns(&mut self, top: u16, bottom: u16, count: u16, up: bool) {
+    fn scroll_columns(&mut self, region: Span, count: u16, up: bool) {
         let blank = self.blank_style();
-        self.with_grid(|g, _, version| g.scroll_columns((top, bottom), count, up, blank, version));
+        self.with_grid(|g, _, version| g.scroll_columns(region, count, up, blank, version));
     }
     /// IND, and LF, VT and FF: down a line, scrolling at the bottom margin;
     /// with left and right margins only while the cursor is between them,
     /// and outside them the cursor stays at the margin, as DEC STD 070
     /// (5.4.3) and xterm's `xtermIndex` have it.
     fn linefeed(&mut self) -> Result<(), Error> {
-        self.grid_mut().pending_wrap = false;
+        self.grid_mut().cursor.pending_wrap = false;
         let g = self.grid();
-        if g.cursor.0 == g.bottom {
+        if g.cursor.row() == g.lines.last() {
             if g.lr() {
                 if g.in_columns() {
-                    self.scroll_columns(g.top, g.bottom, 1, true);
+                    self.scroll_columns(g.lines, 1, true);
                 }
                 return Ok(());
             }
-            self.scroll_rows(g.top, g.bottom, 1, true, true)?;
+            self.scroll_rows(g.lines, 1, true, true)?;
         } else {
             // Down a row, stopping at the last.
-            let row = g.cursor.0.saturating_add(1).min(g.rows.last());
-            self.grid_mut().cursor.0 = row;
+            let g = self.grid_mut();
+            g.set_row(g.cursor.row().saturating_add(1));
         }
         Ok(())
     }
@@ -1044,7 +1035,7 @@ impl Screen {
         if g.lr() {
             return self.new_line_in_margins();
         }
-        g.cursor.1 = 0;
+        g.set_col(0);
         self.linefeed()
     }
     /// `new_line` with left and right margins: the line feed, then the
@@ -1053,20 +1044,20 @@ impl Screen {
     #[inline(never)]
     fn new_line_in_margins(&mut self) -> Result<(), Error> {
         self.linefeed()?;
-        let g = self.grid_mut();
-        g.cursor.1 = g.carriage_column();
+        self.grid_mut().carriage_return();
         Ok(())
     }
     /// RI: up a line, scrolling at the top margin, as `linefeed` goes down.
     fn reverse_index(&mut self) -> Result<(), Error> {
-        self.grid_mut().pending_wrap = false;
+        self.grid_mut().cursor.pending_wrap = false;
         let g = self.grid();
-        if g.cursor.0 == g.top {
+        if g.cursor.row() == g.lines.first() {
             if !g.lr() || g.in_columns() {
-                self.scroll(g.top, g.bottom, 1, false, false)?;
+                self.scroll(g.lines, 1, false, false)?;
             }
         } else {
-            self.grid_mut().cursor.0 = g.cursor.0.saturating_sub(1);
+            let g = self.grid_mut();
+            g.set_row(g.cursor.row().saturating_sub(1));
         }
         Ok(())
     }
@@ -1093,7 +1084,7 @@ impl Screen {
         // end, or where the right margin was before DECLRMM was reset (DEC
         // STD 070's Last Column Flag is no column; xterm and Ghostty wrap
         // there too).
-        if !g.pending_wrap && g.cursor.1 <= room {
+        if !g.cursor.pending_wrap && g.cursor.col() <= room {
             return Ok(end);
         }
         self.wrap(end, room)
@@ -1110,11 +1101,11 @@ impl Screen {
             // pending where a right margin was overwrites there, as xterm
             // does.
             let g = self.grid_mut();
-            g.cursor.1 = g.cursor.1.min(room);
-            g.pending_wrap = false;
+            g.set_col(g.cursor.col().min(room));
+            g.cursor.pending_wrap = false;
             return Ok(end);
         }
-        let row = g.cursor.0;
+        let row = g.cursor.row();
         // The glyph goes on to the next line, so this row is soft-wrapped,
         // whatever its last column holds: blank when a wide glyph did not
         // fit, or after an erase the wrap outlived; at the right margin
@@ -1122,10 +1113,10 @@ impl Screen {
         // cursor on its row (the last row, below the scroll region; the
         // bottom margin, right of the right margin) does the glyph stay on
         // the same row.
-        let wrapped = if g.lr() && row == g.bottom {
+        let wrapped = if g.lr() && row == g.lines.last() {
             g.in_columns()
         } else {
-            row < g.rows.last() || row == g.bottom
+            row < g.size().lines().last() || row == g.lines.last()
         };
         // Set before scrolling so a departing row carries its soft-wrap into history.
         self.with_grid(|g, _, v| g.wrap(row, wrapped, v));
@@ -1136,7 +1127,7 @@ impl Screen {
             self.new_line_in_margins()?;
             return Ok(self.grid().line_end());
         }
-        self.grid_mut().cursor.1 = 0;
+        self.grid_mut().set_col(0);
         self.linefeed()?;
         Ok(end)
     }
@@ -1158,7 +1149,7 @@ impl Screen {
         let Ok(width) = u16::try_from(width.unwrap_or(1)) else {
             return Ok(());
         };
-        if width > self.grid().cols.get() {
+        if width > self.grid().size().cols() {
             return Ok(());
         }
         if self.extend_cluster(c) {
@@ -1166,14 +1157,14 @@ impl Screen {
         }
         if width == 0 {
             let g = self.grid();
-            let (row, col) = (g.cursor.0, g.next_column());
+            let (row, col) = (g.cursor.row(), g.next_column());
             let above = row.checked_sub(1);
             let previous = if let Some(left) = col.checked_sub(1) {
                 Some((row, left))
             } else if let Some(above) = above
                 && g.live_row(above).is_some_and(|r| r.wrapped)
             {
-                Some((above, g.cols.last()))
+                Some((above, g.size().columns().last()))
             } else {
                 None
             };
@@ -1208,7 +1199,7 @@ impl Screen {
             let blank = self.blank_style();
             self.with_grid(|g, _, v| g.edit_cells(width, true, blank, v));
         }
-        let (row, col) = self.grid().cursor;
+        let (row, col) = self.grid().cursor.at();
         let style = self.pen_style();
         // The glyph is protected while the pen protects; what it clears
         // around it is not.
@@ -1286,7 +1277,7 @@ impl Screen {
     /// because the cluster is full, which never splits it.
     fn extend_cluster(&mut self, c: char) -> bool {
         let g = self.grid();
-        let (row, col) = (g.cursor.0, g.next_column());
+        let (row, col) = (g.cursor.row(), g.next_column());
         let anchor = self.last_print.or_else(|| {
             if c.width() != Some(0) {
                 return None;
@@ -1401,11 +1392,11 @@ impl Screen {
         let width = c.width().unwrap_or(1).max(1);
         // Copies to a row, between the margins once the copies wrap: a wide
         // glyph leaves an odd last column blank.
-        let line = g.right.saturating_sub(g.left).saturating_add(1);
+        let line = g.columns().len();
         let Some(per_row) = usize::from(line).checked_div(width).filter(|n| *n > 0) else {
             return Ok(());
         };
-        let lines = usize::from(g.rows.get())
+        let lines = usize::from(g.size().rows())
             .saturating_add(g.history_limit)
             .saturating_add(1);
         let full = lines.saturating_mul(per_row);
@@ -1446,7 +1437,7 @@ impl Screen {
         }
         while let Some((&first, tail)) = bytes.split_first() {
             let line = self.wrap_for(1)?;
-            let (row, col) = self.grid().cursor;
+            let (row, col) = self.grid().cursor.at();
             // `wrap_for` left room for at least one cell, before the right
             // margin or the screen's edge; without it, the run could not
             // advance.
@@ -1492,7 +1483,7 @@ impl Screen {
             self.break_cluster();
         }
         if byte == 8 && self.reverse_wraps() {
-            let pending = self.grid().pending_wrap;
+            let pending = self.grid().cursor.pending_wrap;
             self.cursor_back(1, pending);
             return Ok(());
         }
@@ -1502,7 +1493,7 @@ impl Screen {
         // D.6.1). HT does not: it leaves a cursor in the last column where
         // it is, still waiting to wrap, as xterm does.
         if matches!(byte, 8 | 13) {
-            g.pending_wrap = false;
+            g.cursor.pending_wrap = false;
         }
         match byte {
             // Back a column, stopping at the left margin unless the cursor
@@ -1512,7 +1503,7 @@ impl Screen {
             // LNM: a new line, the carriage returned too.
             10..=12 if new_line => self.new_line()?,
             10..=12 => self.linefeed()?,
-            13 => g.cursor.1 = g.carriage_column(),
+            13 => g.carriage_return(),
             // SO puts G1 in GL, SI G0.
             14 => self.charsets.shifted = true,
             15 => self.charsets.shifted = false,
@@ -1530,8 +1521,8 @@ impl Screen {
     /// right margin is the last column.
     fn tab(&mut self, count: u16, forward: bool) {
         let g = self.grid();
-        let (mut col, last) = (g.cursor.1, g.right);
-        let first = if g.origin { g.left } else { 0 };
+        let (mut col, last) = (g.cursor.col(), g.columns().last());
+        let first = g.addressed().1.first();
         for _ in 0..count {
             col = if forward {
                 self.tabs.next(col, last)
@@ -1539,7 +1530,7 @@ impl Screen {
                 self.tabs.previous(col).max(first)
             };
         }
-        self.grid_mut().cursor.1 = col;
+        self.grid_mut().set_col(col);
     }
     /// Whether BS and CUB wrap back: reverse wraparound, either kind, with
     /// DECAWM, as xterm has it.
@@ -1564,25 +1555,26 @@ impl Screen {
     fn cursor_back(&mut self, count: u16, pending: bool) {
         let extended = self.mode(Mode::ExtendedReverseWrap);
         let g = self.grid_mut();
-        g.pending_wrap = false;
+        g.cursor.pending_wrap = false;
         let mut count = if pending {
             count.saturating_sub(1)
         } else {
             count
         };
-        let first = if g.cursor.1 < g.left { 0 } else { g.left };
-        let (top, bottom, last) = (g.top, g.bottom, g.right);
+        let (lines, columns) = (g.lines, g.columns());
+        let left = columns.first();
+        let first = if g.cursor.col() < left { 0 } else { left };
         while count > 0 {
-            let moved = g.cursor.1.saturating_sub(first).min(count);
-            g.cursor.1 = g.cursor.1.saturating_sub(moved);
+            let moved = g.cursor.col().saturating_sub(first).min(count);
+            g.set_col(g.cursor.col().saturating_sub(moved));
             count = count.saturating_sub(moved);
             if count == 0 {
                 break;
             }
-            let row = g.cursor.0;
+            let row = g.cursor.row();
             let before = if extended {
-                if row == top {
-                    Some(bottom)
+                if row == lines.first() {
+                    Some(lines.last())
                 } else {
                     row.checked_sub(1)
                 }
@@ -1593,7 +1585,8 @@ impl Screen {
             let Some(before) = before else {
                 break;
             };
-            g.cursor = (before, last);
+            g.set_row(before);
+            g.set_col(columns.last());
             count = count.saturating_sub(1);
         }
     }
@@ -1604,9 +1597,7 @@ impl Screen {
     /// lists it and xterm saves it).
     fn save(&mut self) {
         let g = self.grid_mut();
-        g.saved_cursor = g.cursor;
-        g.saved_pending_wrap = g.pending_wrap;
-        g.saved_origin = g.origin;
+        g.saved = g.cursor;
         self.saved_attributes = self.attributes;
         self.saved_charsets = self.charsets;
         self.saved_protect = self.protect;
@@ -1615,12 +1606,8 @@ impl Screen {
     /// the right margin, as xterm's `CursorRestore` places it.
     fn restore(&mut self) {
         let g = self.grid_mut();
-        g.cursor = g.saved_cursor;
-        g.pending_wrap = g.saved_pending_wrap;
-        g.origin = g.saved_origin;
-        if g.origin {
-            g.cursor.1 = g.cursor.1.min(g.right);
-        }
+        g.cursor = g.saved;
+        g.set_col(g.cursor.col().min(g.addressed().1.last()));
         self.attributes = self.saved_attributes;
         self.pen_changed();
         self.charsets = self.saved_charsets;
@@ -1669,29 +1656,28 @@ impl Screen {
             b'W' => self.protect = 0,
             // HTS (ECMA-48 8.3.62): a tab stop at the cursor's column.
             b'H' => {
-                let col = self.grid().cursor.1;
+                let col = self.grid().cursor.col();
                 self.tabs.set(col, true);
             }
             b'M' => self.reverse_index()?,
             b'c' => {
-                let (rows, cols) = self.size();
+                let size = self.size();
                 let mut next = self.next_id;
                 // Both grids start again: in the storage they have, if both
                 // hold only their live rows at this size, else afresh. Either
                 // way nothing changes unless both can.
-                let same = |g: &Grid| (g.rows.get(), g.cols.get()) == (rows, cols);
                 let recycle = [&self.primary, &self.alternate]
                     .iter()
-                    .all(|g| g.recyclable() && same(g));
+                    .all(|g| g.recyclable() && g.size() == size);
                 if recycle {
-                    let needed = u64::from(rows).saturating_mul(2);
+                    let needed = u64::from(size.rows()).saturating_mul(2);
                     next.checked_add(needed).ok_or(Error::IdentityExhausted)?;
                     self.primary.clear(&mut next, self.version)?;
                     self.alternate.clear(&mut next, self.version)?;
                 } else {
                     let history = self.primary.history_limit;
-                    let primary = Grid::new(rows, cols, history, &mut next, self.version)?;
-                    let alternate = Grid::unmade(rows, cols, &mut next, self.version)?;
+                    let primary = Grid::new(size, history, &mut next, self.version)?;
+                    let alternate = Grid::unmade(size, &mut next, self.version)?;
                     self.primary = primary;
                     self.alternate = alternate;
                 }
@@ -1743,13 +1729,13 @@ impl Screen {
     #[inline(never)]
     fn edit_columns(&mut self, count: u16, insert: bool) {
         let g = self.grid();
-        if !g.in_region() || !g.in_columns() {
+        if !g.lines.contains(g.cursor.row()) || !g.in_columns() {
             return;
         }
-        let (col, top, bottom) = (g.cursor.1, g.top, g.bottom);
+        let (col, lines) = (g.cursor.col(), g.lines);
         let blank = self.blank_style();
         self.with_grid(|g, _, version| {
-            for y in top..=bottom {
+            for y in lines.first()..=lines.last() {
                 g.edit_row(y, col, count, insert, blank, version);
             }
         });
@@ -1763,12 +1749,12 @@ impl Screen {
     /// every CSI's way.
     #[inline(never)]
     fn set_left_right_margins(&mut self, p: &Parameters) {
-        let cols = self.grid().cols;
-        let right = p.first(1, cols.get()).min(cols.get()).saturating_sub(1);
+        let cols = self.grid().size().cols();
+        let right = p.first(1, cols).saturating_sub(1);
         let left = p.first(0, 1).saturating_sub(1);
-        if left < right {
+        if let Some(columns) = self.grid().size().columns().margins(left, right) {
             let g = self.grid_mut();
-            g.set_columns(left, right);
+            g.set_columns(columns);
             g.position(0, 0);
         }
     }
@@ -1809,27 +1795,28 @@ impl Screen {
         let blank = self.blank_style();
         let version = self.version;
         let g = self.grid_mut();
-        g.pending_wrap = false;
-        let (row, col) = g.cursor;
-        let (rows, cols) = (g.rows, g.cols);
+        g.cursor.pending_wrap = false;
+        let (row, col) = g.cursor.at();
+        let size = g.size();
+        let cols = size.cols();
         let mut found = false;
         if display {
-            for y in 0..rows.get() {
+            for y in 0..size.rows() {
                 if (mode == 0 && y > row) || (mode == 1 && y < row) || mode == 2 {
-                    found |= g.erase_unprotected(y, 0, cols.get(), blank, version);
+                    found |= g.erase_unprotected(y, 0, cols, blank, version);
                     g.clear_prompt(y);
                 }
             }
         }
         let (start, end) = match mode {
-            0 => (col, cols.get()),
-            1 => (0, col.saturating_add(1).min(cols.get())),
-            _ => (0, cols.get()),
+            0 => (col, cols),
+            1 => (0, col.saturating_add(1).min(cols)),
+            _ => (0, cols),
         };
         found |= g.erase_unprotected(row, start, end, blank, version);
         let whole = mode == 2
             || (mode == 0 && (row, col) == (0, 0))
-            || (mode == 1 && (row, col) == (rows.last(), cols.last()));
+            || (mode == 1 && (row, col) == (size.lines().last(), size.columns().last()));
         if display && whole && !found {
             self.protection = Protection::Off;
         }
@@ -1851,19 +1838,14 @@ impl Screen {
         self.pen_changed();
         let version = self.version;
         let g = self.grid_mut();
-        g.origin = false;
-        g.top = 0;
-        g.bottom = g.rows.last();
-        // The left and right margins too, as xterm resets them; DECLRMM
-        // stays as it is.
-        let last = g.cols.last();
-        g.set_columns(0, last);
-        g.cursor = (0, 0);
-        g.pending_wrap = false;
+        // Home, with origin mode off and no wrap pending, and the left and
+        // right margins too, as xterm resets them; DECLRMM stays as it is.
+        g.cursor = Cursor::default();
+        g.reset_margins();
         // The default attributes, style 0 (`style.rs`).
         let plain = 0;
-        let cols = g.cols.get();
-        for y in 0..g.rows.get() {
+        let cols = g.size().cols();
+        for y in 0..g.size().rows() {
             let filled = !g.live_row(y).is_some_and(|r| r.has_links())
                 && g.live_cells(y).iter().all(|c| c.is_ascii(b'E', plain));
             if !filled {
@@ -1906,16 +1888,10 @@ impl Screen {
         self.saved_protect = 0;
         self.protection = Protection::Off;
         for g in [&mut self.primary, &mut self.alternate] {
-            g.origin = false;
-            g.top = 0;
-            g.bottom = g.rows.last();
-            let last = g.cols.last();
-            g.set_columns(0, last);
+            g.cursor.origin = false;
+            g.reset_margins();
         }
-        let g = self.grid_mut();
-        g.saved_cursor = (0, 0);
-        g.saved_pending_wrap = false;
-        g.saved_origin = false;
+        self.grid_mut().saved = Cursor::default();
         // The palette, as xterm 411 resets it (in neither table); the
         // dynamic and special colours stay.
         if let Some(colours) = &mut self.colours {
@@ -1928,7 +1904,8 @@ impl Screen {
     /// mode, the margins and the screen's saved cursor stay, and a pending
     /// wrap ends, as ED's does (DEC STD 070, Appendix D.6.1).
     fn clear_alternate(&mut self) -> Result<(), Error> {
-        let kept = self.alternate.clone_cursor();
+        let g = &self.alternate;
+        let (cursor, saved, lines, columns) = (g.cursor, g.saved, g.lines, g.columns());
         self.alternate.clear(&mut self.next_id, self.version)?;
         let blank = self.attributes.erased();
         let blank = match blank.inline_style() {
@@ -1936,11 +1913,12 @@ impl Screen {
             None => self.alternate.style(blank),
         };
         let g = &mut self.alternate;
-        g.set_cursor(kept);
-        g.pending_wrap = false;
+        (g.cursor, g.saved, g.lines) = (cursor, saved, lines);
+        g.set_columns(columns);
+        g.cursor.pending_wrap = false;
         if blank != 0 {
-            let cols = g.cols.get();
-            for y in 0..g.rows.get() {
+            let cols = g.size().cols();
+            for y in 0..g.size().rows() {
                 g.erase(y, 0, cols, blank, self.version);
             }
         }
@@ -1959,12 +1937,8 @@ impl Screen {
             } else {
                 (&self.alternate, &mut self.primary)
             };
-            to.cursor = from.cursor;
-            to.pending_wrap = from.pending_wrap;
-            to.origin = from.origin;
-            to.top = from.top;
-            to.bottom = from.bottom;
-            to.set_columns(from.left, from.right);
+            (to.cursor, to.lines) = (from.cursor, from.lines);
+            to.set_columns(from.columns());
         }
         self.alternate_active = alternate;
         self.structural = self.version;
@@ -1989,38 +1963,14 @@ impl Screen {
     /// its whole extent; one whose top is below its bottom, or left past
     /// its right, sums nothing.
     pub(crate) fn rectangle_checksum(&self, p: &Parameters) -> Reply {
+        let (lines, columns) = self.grid().addressed();
+        let at = |span: Span, index: usize, default: u16| match p.first(index, 0) {
+            0 => default,
+            n => span.nth(n.saturating_sub(1)),
+        };
+        let (top, left) = (at(lines, 2, lines.first()), at(columns, 3, columns.first()));
+        let (bottom, right) = (at(lines, 4, lines.last()), at(columns, 5, columns.last()));
         let g = self.grid();
-        let (first_row, last_row) = if g.origin {
-            (g.top, g.bottom)
-        } else {
-            (0, g.rows.last())
-        };
-        let (first_col, last_col) = if g.origin {
-            (g.left, g.right)
-        } else {
-            (0, g.cols.last())
-        };
-        let offset = if g.origin { g.top } else { 0 };
-        // `clamp` panics on a lower bound past its upper; these never are:
-        // the top margin is above the bottom one (DECSTBM sets them so, a
-        // resize resets them), the left left of the right, and the screen's
-        // edges are 0 and its last row and column.
-        let row = |index: usize, default: u16| match p.first(index, 0) {
-            0 => default,
-            n => n
-                .saturating_sub(1)
-                .saturating_add(offset)
-                .clamp(first_row, last_row),
-        };
-        let col = |index: usize, default: u16| match p.first(index, 0) {
-            0 => default,
-            n => n
-                .saturating_sub(1)
-                .saturating_add(first_col)
-                .clamp(first_col, last_col),
-        };
-        let (top, left) = (row(2, first_row), col(3, first_col));
-        let (bottom, right) = (row(4, last_row), col(5, last_col));
         let mut sum = 0u16;
         for y in top..=bottom {
             for x in left..=right {
@@ -2117,8 +2067,7 @@ impl Screen {
                 self.modes.set(mode, on);
                 if !on {
                     for g in [&mut self.primary, &mut self.alternate] {
-                        let last = g.cols.last();
-                        g.set_columns(0, last);
+                        g.set_columns(g.size().columns());
                     }
                 }
             }
@@ -2134,7 +2083,7 @@ impl Screen {
             }
             Kind::Origin => {
                 let g = self.grid_mut();
-                g.origin = on;
+                g.cursor.origin = on;
                 g.position(0, 0);
             }
             // A switch of screens leaves the printed cell behind. The
@@ -2370,14 +2319,14 @@ impl Screen {
             return Ok(Dispatch::Unhandled);
         }
         let n = p.first(0, 1);
-        let (row, col) = self.grid().cursor;
-        let pending = self.grid().pending_wrap;
+        let (row, col) = self.grid().cursor.at();
+        let pending = self.grid().cursor.pending_wrap;
         // Every cursor movement, erase and edit ends a pending wrap (DEC STD
         // 070, Appendix D.6.1, which lists them), as xterm does; ED, EL, IL,
         // DL and DECSTBM below, once they are carried out. SU and SD are not
         // among them: the cursor stays waiting to wrap, as in xterm.
         if matches!(byte, b'A'..=b'H' | b'X' | b'`' | b'a' | b'd' | b'e' | b'f') {
-            self.grid_mut().pending_wrap = false;
+            self.grid_mut().cursor.pending_wrap = false;
         }
         match byte {
             // CUU, CUD, CNL and CPL, each stopping at the margin it comes
@@ -2387,50 +2336,40 @@ impl Screen {
             // column CR goes to, the left margin (xterm's `CursorNextLine`).
             b'A' | b'B' | b'E' | b'F' => {
                 let g = self.grid_mut();
-                g.cursor.0 = if matches!(byte, b'A' | b'F') {
-                    let stop = if row >= g.top { g.top } else { 0 };
-                    row.saturating_sub(n).max(stop)
-                } else {
-                    let stop = if row <= g.bottom {
-                        g.bottom
+                let lines = g.lines;
+                g.set_row(if matches!(byte, b'A' | b'F') {
+                    let stop = if row >= lines.first() {
+                        lines.first()
                     } else {
-                        g.rows.last()
+                        0
                     };
-                    row.saturating_add(n).min(stop)
-                };
+                    row.saturating_sub(n).max(stop)
+                } else if row <= lines.last() {
+                    row.saturating_add(n).min(lines.last())
+                } else {
+                    row.saturating_add(n)
+                });
                 if matches!(byte, b'E' | b'F') {
-                    g.cursor.1 = g.carriage_column();
+                    g.carriage_return();
                 }
             }
             // CUF: stops at the right margin, unless the cursor is past it
             // already, then at the last column (xterm's `CursorForward`;
             // DEC STD 070, 5.4.3).
-            b'C' => {
-                let g = self.grid_mut();
-                g.cursor.1 = g.forward(n, false);
-            }
+            b'C' => self.grid_mut().forward(n, false),
             // HPR: a position, as CUP sets it (VT520 manual, HPR), so it
             // passes the right margin outside origin mode, unlike CUF, and
             // stops there in it (xterm's `CASE_HPR`).
-            b'a' => {
-                let g = self.grid_mut();
-                g.cursor.1 = g.forward(n, true);
-            }
+            b'a' => self.grid_mut().forward(n, true),
             // CUB; with reverse wraparound, back over line ends too.
             b'D' if self.reverse_wraps() => self.cursor_back(n, pending),
             // CUB stops at the left margin, unless the cursor is left of it
             // already (xterm's `CursorBack`).
-            b'D' => {
-                let g = self.grid_mut();
-                g.cursor.1 = g.backward(n);
-            }
+            b'D' => self.grid_mut().backward(n),
             // CHA, and HPA: the column as CUP addresses it, from the left
             // margin in origin mode. Coordinates are one-based, and 0
             // means 1.
-            b'G' | b'`' => {
-                let g = self.grid_mut();
-                g.cursor.1 = g.column(n.saturating_sub(1));
-            }
+            b'G' | b'`' => self.grid_mut().column(n.saturating_sub(1)),
             // CUP, and HVP, which is CUP with another final byte.
             b'H' | b'f' => self
                 .grid_mut()
@@ -2490,10 +2429,10 @@ impl Screen {
                 }
                 let a = self.blank_style();
                 self.with_grid(|g, _, v| {
-                    g.pending_wrap = false;
-                    let cols = g.cols.get();
+                    g.cursor.pending_wrap = false;
+                    let cols = g.size().cols();
                     if byte == b'J' {
-                        for y in 0..g.rows.get() {
+                        for y in 0..g.size().rows() {
                             if (mode == 0 && y > row) || (mode == 1 && y < row) || mode == 2 {
                                 g.erase(y, 0, cols, a, v);
                                 // A row ED erases whole is no prompt's, as in
@@ -2517,30 +2456,29 @@ impl Screen {
             // With left and right margins, only between them, and the
             // cursor goes to the left margin (xterm's `InsertLine`).
             b'L' | b'M' => {
-                let g = self.grid();
-                if g.in_region() && g.in_columns() {
-                    let g = self.grid_mut();
-                    g.pending_wrap = false;
-                    g.cursor.1 = g.left;
-                    let bottom = g.bottom;
-                    self.scroll(row, bottom, n, byte == b'M', false)?;
+                let g = self.grid_mut();
+                if let Some(region) = g.lines.starting_at(row)
+                    && g.in_columns()
+                {
+                    g.cursor.pending_wrap = false;
+                    g.set_col(g.columns().first());
+                    self.scroll(region, n, byte == b'M', false)?;
                 }
             }
             b'S' | b'T' => {
-                let g = self.grid();
-                self.scroll(g.top, g.bottom, n, byte == b'S', true)?;
+                let lines = self.grid().lines;
+                self.scroll(lines, n, byte == b'S', true)?;
             }
             // DECSTBM (DEC STD 070, 5-25): margins with the top above the
             // bottom are set, and the cursor goes home, obeying DECOM;
             // others are ignored. A bottom past the screen is the last
             // line, as xterm reads it, where DEC STD 070 ignores it.
             b'r' => {
-                let rows = self.grid().rows;
-                let bottom = p.first(1, rows.get()).saturating_sub(1).min(rows.last());
-                let top = n.saturating_sub(1);
-                if top < bottom {
+                let lines = self.grid().size().lines();
+                let bottom = p.first(1, lines.end()).saturating_sub(1);
+                if let Some(lines) = lines.margins(n.saturating_sub(1), bottom) {
                     let g = self.grid_mut();
-                    (g.top, g.bottom) = (top, bottom);
+                    g.lines = lines;
                     g.position(0, 0);
                 }
             }
@@ -2555,7 +2493,7 @@ impl Screen {
             // CBT (ECMA-48 8.3.7): back n tab stops, or to the first
             // column. With a wrap pending it does nothing, as in xterm.
             b'Z' => {
-                if !self.grid().pending_wrap {
+                if !self.grid().cursor.pending_wrap {
                     self.tab(n, false);
                 }
             }
@@ -2563,7 +2501,7 @@ impl Screen {
             // every stop; xterm ignores the others, and so does fux-vt.
             b'g' => match p.first(0, 0) {
                 0 => {
-                    let col = self.grid().cursor.1;
+                    let col = self.grid().cursor.col();
                     self.tabs.set(col, false);
                 }
                 3 => self.tabs.clear(),

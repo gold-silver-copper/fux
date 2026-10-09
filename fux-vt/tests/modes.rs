@@ -6,13 +6,13 @@
 //! terminal, xterm 411's, asked the same sequences under Xvfb (80 by 25,
 //! a VT420) and read back by DSR and DECRQM.
 
-use fux_vt::{Attributes, Color, Feature, Identity, Mode, Options, Parser};
-type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+use fux_vt::{Attributes, Color, Feature, Identity, Mode, Options, Parser, Size};
+type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 const MODES: Options = Options::new().with(Feature::ModeReports);
 
 /// What `input` makes the parser answer, as text.
-fn replies(parser: &mut Parser, input: &[u8]) -> std::result::Result<String, fux_vt::Error> {
+fn replies(parser: &mut Parser, input: &[u8]) -> Result<String> {
     let mut out = Vec::new();
     parser.process_with_replies(input, |bytes| out.extend_from_slice(bytes))?;
     Ok(String::from_utf8_lossy(&out).replace('\x1b', "^["))
@@ -20,8 +20,8 @@ fn replies(parser: &mut Parser, input: &[u8]) -> std::result::Result<String, fux
 
 /// The cursor, one-based (row, column), as xterm's DSR reports it, after
 /// `input` on a fresh 25 by 80 screen.
-fn cursor_after(input: &[u8]) -> std::result::Result<(u16, u16), fux_vt::Error> {
-    let mut parser = Parser::new(25, 80, 0)?;
+fn cursor_after(input: &[u8]) -> Result<(u16, u16)> {
+    let mut parser = Parser::new(Size::new(25, 80)?, 0)?;
     parser.process(input)?;
     let (row, col) = parser.screen().cursor_position();
     Ok((row.saturating_add(1), col.saturating_add(1)))
@@ -36,7 +36,7 @@ fn cursor_after(input: &[u8]) -> std::result::Result<(u16, u16), fux_vt::Error> 
 /// `Screen::mode` reads, focus reporting (1004) too, as xterm 411 does.
 #[test]
 fn decrqm_reports_the_modes_xterm_keeps() -> Result {
-    let mut p = Parser::with_options(25, 80, 0, MODES)?;
+    let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
     let all = b"\x1b[?4$p\x1b[?5$p\x1b[?8$p\x1b[?66$p\x1b[?67$p";
     assert_eq!(
         replies(&mut p, all)?,
@@ -129,7 +129,7 @@ fn reverse_wraparound_stops_at_the_first_row() -> Result {
 /// 411 does.
 #[test]
 fn reverse_wraparound_is_a_mode() -> Result {
-    let mut p = Parser::with_options(25, 80, 0, MODES)?;
+    let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
     let both = b"\x1b[?45$p\x1b[?1045$p";
     assert_eq!(replies(&mut p, both)?, "^[[?45;2$y^[[?1045;2$y");
     p.process(b"\x1b[?45;1045h")?;
@@ -148,12 +148,12 @@ fn reverse_wraparound_is_a_mode() -> Result {
 /// XtermSave_SaveSetState and _SaveResetState: autowrap.
 #[test]
 fn xtsave_and_xtrestore_save_and_restore_modes() -> Result {
-    let mut p = Parser::with_options(25, 80, 0, MODES)?;
+    let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
     p.process(b"\x1b[?7h\x1b[?7s\x1b[?7l\x1b[?7r")?;
     assert!(p.screen().mode(Mode::Autowrap));
     p.process(b"\x1b[?7l\x1b[?7s\x1b[?7h\x1b[?7r")?;
     assert!(!p.screen().mode(Mode::Autowrap));
-    let mut p = Parser::with_options(25, 80, 0, MODES)?;
+    let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
     p.process(b"\x1b[?25;2004;1;45s\x1b[?25l\x1b[?2004h\x1b[?1h\x1b[?45h\x1b[?25;2004;1;45r")?;
     let s = p.screen();
     assert!(
@@ -163,11 +163,11 @@ fn xtsave_and_xtrestore_save_and_restore_modes() -> Result {
     );
     assert_eq!(replies(&mut p, b"\x1b[?45$p")?, "^[[?45;2$y");
     // Never saved: reset.
-    let mut p = Parser::with_options(25, 80, 0, MODES)?;
+    let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
     p.process(b"\x1b[?7r")?;
     assert!(!p.screen().mode(Mode::Autowrap));
     // RIS and DECSTR keep what was saved; a later save replaces it.
-    let mut p = Parser::with_options(25, 80, 0, MODES)?;
+    let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
     p.process(b"\x1b[?1h\x1b[?1s\x1bc\x1b[?1r")?;
     assert!(p.screen().mode(Mode::ApplicationCursor));
     p.process(b"\x1b[?1l\x1b[!p\x1b[?1r")?;
@@ -178,7 +178,7 @@ fn xtsave_and_xtrestore_save_and_restore_modes() -> Result {
     p.process(b"\x1b[?1049s\x1b[?1049h\x1b[?1049r")?;
     assert!(!p.screen().mode(Mode::AlternateScreen));
     // A mode fux-vt does not keep, or one with a colon, changes nothing.
-    let mut p = Parser::with_options(25, 80, 0, MODES)?;
+    let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
     p.process(b"\x1b[?7;12;9999s\x1b[?7l\x1b[?12;9999r\x1b[?7:1r")?;
     assert!(!p.screen().mode(Mode::Autowrap));
     Ok(())
@@ -191,13 +191,13 @@ fn xtsave_and_xtrestore_save_and_restore_modes() -> Result {
 #[test]
 fn lnm_makes_a_line_feed_a_new_line() -> Result {
     for control in [b'\n', 0x0b, 0x0c] {
-        let mut p = Parser::with_options(25, 80, 0, MODES)?;
+        let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
         p.process(&[b"\x1b[1;5H".as_slice(), &[control]].concat())?;
         assert_eq!(p.screen().cursor_position(), (1, 4));
         p.process(&[b"\x1b[20h\x1b[1;5H".as_slice(), &[control]].concat())?;
         assert_eq!(p.screen().cursor_position(), (1, 0));
     }
-    let mut p = Parser::with_options(25, 80, 0, MODES)?;
+    let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
     p.process(b"\x1b[20h\x1b[1;5H\x1bD")?;
     assert_eq!(p.screen().cursor_position(), (1, 4));
     assert_eq!(replies(&mut p, b"\x1b[20$p")?, "^[[20;1$y");
@@ -215,14 +215,14 @@ fn lnm_makes_a_line_feed_a_new_line() -> Result {
 /// is. esctest's DECID_Basic.
 #[test]
 fn decid_is_answered_as_da1() -> Result {
-    let mut p = Parser::new(25, 80, 0)?;
+    let mut p = Parser::new(Size::new(25, 80)?, 0)?;
     assert_eq!(replies(&mut p, b"\x1bZ")?, "^[[?1;2c");
     let identity = Identity {
         name: "fux",
         version: "1.2.3",
     };
     let options = Options::new().with_identity(Some(identity));
-    let mut p = Parser::with_options(25, 80, 0, options)?;
+    let mut p = Parser::with_options(Size::new(25, 80)?, 0, options)?;
     assert_eq!(replies(&mut p, b"\x1bZ\x1b[c")?, "^[[?62;22c^[[?62;22c");
     Ok(())
 }
@@ -236,7 +236,7 @@ fn decid_is_answered_as_da1() -> Result {
 /// DECALN_FillsScreen and _MovesCursorHome.
 #[test]
 fn decaln_fills_the_screen_with_e() -> Result {
-    let mut p = Parser::new(3, 4, 0)?;
+    let mut p = Parser::new(Size::new(3, 4)?, 0)?;
     p.process(b"abcdef\x1b[31;1;4;7m\x1b[2;3r\x1b[?6h\x1b[2;2H\x1b#8")?;
     let s = p.screen();
     assert_eq!(s.cursor_position(), (0, 0));
@@ -260,11 +260,11 @@ fn decaln_fills_the_screen_with_e() -> Result {
     assert_eq!((cell.contents(), cell.fgcolor()), ("X", Color::Idx(1)));
     // A prompt mark goes with the row's text, as ED's erase takes it.
     let options = Options::new().with(Feature::PromptMarks);
-    let mut p = Parser::with_options(2, 3, 0, options)?;
+    let mut p = Parser::with_options(Size::new(2, 3)?, 0, options)?;
     p.process(b"\x1b]133;A\x07$ \x1b#8")?;
     assert!(!p.screen().starts_prompt(0));
     // Rows already filled keep their version.
-    let mut p = Parser::new(2, 3, 0)?;
+    let mut p = Parser::new(Size::new(2, 3)?, 0)?;
     p.process(b"\x1b#8")?;
     let mark = p.screen().mark();
     p.process(b"\x1b#8")?;
