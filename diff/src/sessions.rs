@@ -70,9 +70,9 @@ pub struct World {
 
 /// The same code for the baseline's crates and the current ones.
 macro_rules! stack {
-    ($name:ident, $fux:ident, $id:ident, $layout:ident) => {
+    ($name:ident, $fux:ident, $id:ident, $layout:ident, $place:path, $tabs:path, $root:path) => {
         pub mod $name {
-            use super::Event;
+            use super::*;
             use std::collections::BTreeMap;
             use std::fmt::Write;
             use $fux::$id::ClientId;
@@ -181,19 +181,14 @@ macro_rules! stack {
                 for v in s.views.values() {
                     let _ = writeln!(
                         out,
-                        "view {} {}x{} {} tab {:?} focus {:?} zoom {} dirty {} notice {:?} tabs {:?} focus {:?} last {:?} {}",
+                        "view {} {}x{} {} zoom {} dirty {} notice {:?} {}",
                         v.id,
                         v.rows,
                         v.cols,
-                        v.workspace,
-                        v.tab(),
-                        v.focus(),
+                        $place(s, v),
                         v.zoom,
                         v.dirty,
                         v.notice,
-                        v.tab_of,
-                        v.focus_of,
-                        v.last_of,
                         mode(&v.mode)
                     );
                 }
@@ -210,8 +205,8 @@ macro_rules! stack {
                 }
                 for ws in &s.workspaces {
                     let _ = writeln!(out, "workspace {} {:?}", ws.id, ws.name);
-                    for t in &ws.tabs {
-                        let _ = writeln!(out, "  tab {} {:?} {:?}", t.id, t.name, t.root);
+                    for t in $tabs(ws) {
+                        let _ = writeln!(out, "  tab {} {:?} {:?}", t.id, t.name, $root(t));
                     }
                 }
                 let _ = writeln!(
@@ -247,8 +242,32 @@ macro_rules! stack {
     };
 }
 
-stack!(base, baseline, command, layout);
-stack!(cur, fux, id, id);
+stack!(
+    base, baseline, command, layout, base_place, base_tabs, base_root
+);
+use fux::workspace::{Tab, Workspace};
+stack!(cur, fux, id, id, cur_place, Workspace::tabs, Tab::root);
+
+/// Where the baseline keeps what the current side keeps elsewhere: a
+/// client's place, in its view; a workspace's tabs and a tab's layout, in
+/// fields.
+fn base_place(s: &baseline::session::Session, v: &baseline::view::View) -> String {
+    let ws = s.workspace(v.workspace).map(|w| w.id);
+    format!("{ws:?} tab {:?} focus {:?}", v.tab(), v.focus())
+}
+fn base_tabs(w: &baseline::session::Workspace) -> &[baseline::session::Tab] {
+    &w.tabs
+}
+fn base_root(t: &baseline::session::Tab) -> Option<&baseline::layout::Node> {
+    t.root.as_ref()
+}
+
+/// A client's place, in its workspace's and tab's seats.
+fn cur_place(s: &fux::session::Session, v: &fux::view::View) -> String {
+    let (ws, tab) = (s.shown_workspace(v.id), s.shown_tab(v.id));
+    let (ws, tab) = (ws.map(|w| w.id), tab.map(|t| t.id));
+    format!("{ws:?} tab {tab:?} focus {:?}", s.focused(v.id))
+}
 
 /// Whether any of the baseline's clients is in copy mode, a list or a
 /// repeat mode: for the summary.

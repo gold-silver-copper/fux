@@ -351,9 +351,8 @@ impl Run {
         }
         self.type_in(client, report, piece);
         let view = self.s.views.get(&client);
-        let focus = view
-            .filter(|v| matches!(v.mode, Mode::Normal))
-            .and_then(|v| v.focus());
+        let normal = view.is_some_and(|v| matches!(v.mode, Mode::Normal));
+        let focus = self.s.focused(client).filter(|_| normal);
         for (id, pane) in &mut self.s.panes {
             let heard = pane.input.drain_all();
             let asked = pane.screen().mouse_protocol_mode() != fux_vt::MouseProtocolMode::None;
@@ -421,8 +420,8 @@ fn check(s: &Session) {
     // Every pane is in exactly one tab's layout, and every pane there is.
     let mut seen: BTreeMap<PaneId, usize> = BTreeMap::new();
     for ws in &s.workspaces {
-        for tab in &ws.tabs {
-            for pane in tab.root.iter().flat_map(|r| r.panes()) {
+        for tab in ws.tabs() {
+            for pane in tab.root().iter().flat_map(|r| r.panes()) {
                 assert!(
                     s.panes.contains_key(&pane),
                     "{pane} is in {} but gone",
@@ -441,21 +440,6 @@ fn check(s: &Session) {
         );
     }
     for (id, view) in &s.views {
-        if !s.workspaces.is_empty() {
-            let ws = s
-                .workspace(view.workspace)
-                .expect("the view's workspace exists");
-            let tab = view.tab().expect("the view has a tab");
-            assert!(
-                ws.tabs.iter().any(|t| t.id == tab),
-                "{id}'s tab is elsewhere"
-            );
-            let panes = s.root(tab).map(|r| r.panes()).unwrap_or_default();
-            match view.focus() {
-                Some(focus) => assert!(panes.contains(&focus), "{id} focuses {focus} elsewhere"),
-                None => assert!(panes.is_empty(), "{id} focuses nothing in {tab}"),
-            }
-        }
         let grid = compose(s, *id).expect("a client's screen composes");
         assert_eq!((grid.rows, grid.cols), (view.rows, view.cols));
         let bindings = &s.config.bindings;

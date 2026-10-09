@@ -81,9 +81,8 @@ sleep: an act's marker shows in its pane, and every client's painted
 screen equals its `capture-client`. Then:
 
 - **the server** runs, answers, and its log has no panic;
-- **structure** (`ls --json`): ids are unique; every client's workspace,
-  tab and focused pane exist and belong together; a client of a tab with
-  panes focuses one;
+- **structure** (`ls --json`): ids are unique (a client's workspace, tab
+  and focused pane belong together by fux's types);
 - **processes:** a pane's shell ends within three seconds of its pane
   closing;
 - **sizes:** a pane a client surely shows fits that client's pane area;
