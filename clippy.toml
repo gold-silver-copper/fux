@@ -10,8 +10,7 @@
 # within what it turns: inserting and deleting characters clamps the count to
 # the cells just before (grid.rs, `shift`); the screen's rows turn by their
 # top, which is always below their count (grid.rs, `Order::push_back`); and
-# the keyboard flags' stack and a key's bytes turn by one, never empty
-# (screen.rs, `KeyboardStack::push`; keys/encode.rs, `legacy`).
+# a key's bytes turn by one, never empty (keys/encode.rs, `legacy`).
 # And `char::encode_utf8`, which panics only for a buffer under four bytes:
 # every call passes a buffer of fixed size, four bytes or a cell's text.
 # And `slice::copy_within` and `copy_from_slice`, which panic on a range out
