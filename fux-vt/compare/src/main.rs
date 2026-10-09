@@ -1082,11 +1082,9 @@ fn main() -> ExitCode {
     std::panic::set_hook(Box::new(|_| {}));
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if let Some((first, rest)) = argv.split_first()
-        && first == record::LAUNCH
+        && first == fuxix::pty::LAUNCH
     {
-        let error = record::launched(rest).err().unwrap_or_default();
-        eprintln!("fux-vt-compare: {error}");
-        return ExitCode::from(127);
+        return ExitCode::from(fuxix::pty::launched(rest));
     }
     if let Some((first, rest)) = argv.split_first()
         && first == instructions::CHILD
