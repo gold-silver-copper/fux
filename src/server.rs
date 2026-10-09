@@ -5,6 +5,8 @@ use crate::bytes::ByteQueue;
 use crate::config::Config;
 use crate::id::{ClientId, PaneId};
 use crate::layout::Placement;
+use crate::pane::{Pane, Process};
+use crate::process::Leader;
 use crate::protocol::{
     Attach, AttachedFrame, Command, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame,
 };
@@ -351,6 +353,9 @@ pub struct Server {
     listener: UnixListener,
     conns: Vec<Conn>,
     children: UnixStream,
+    /// Closed panes' programs killed but not yet exited, reaped once SIGCHLD
+    /// says they have.
+    killed: Vec<Leader>,
     stops: UnixStream,
     /// When a server that is stopping stops waiting for its clients and
     /// processes.
@@ -436,6 +441,7 @@ pub fn serve(socket: &SocketPath, config_path: Option<PathBuf>) -> Result<(), Er
         listener,
         conns: Vec::new(),
         children,
+        killed: Vec::new(),
         stops,
         stop_by: None,
         read_buffer: vec![0u8; 64 * 1024],
@@ -478,6 +484,7 @@ impl Server {
             if let Some(by) = self.stop_by
                 && (now >= by
                     || (self.session.dying.is_empty()
+                        && self.killed.is_empty()
                         && self.conns.iter().all(|c| c.out.is_empty())))
             {
                 self.finish_dying(true);
@@ -509,7 +516,7 @@ impl Server {
             self.session.type_due(now);
             // Input given to panes this tick is written now rather than
             // when the next poll says their terminals can take it.
-            self.write_waiting_panes();
+            self.session.panes.values_mut().for_each(Pane::write_input);
             self.session.release_frames(now);
             self.finish_dying(false);
             self.close_conns();
@@ -596,10 +603,7 @@ impl Server {
             }
         }
         for (id, pane) in &self.session.panes {
-            if pane.hung_up {
-                continue;
-            }
-            if let Some(child) = &pane.child {
+            if let Process::Reading(child) = &pane.process {
                 let mut flags = PollFlags::IN;
                 if !pane.input.is_empty() {
                     flags |= PollFlags::OUT;
@@ -1090,40 +1094,13 @@ impl Server {
     }
 
     fn serve_pane(&mut self, id: PaneId, flags: PollFlags) {
-        if flags.contains(PollFlags::OUT) {
-            self.write_pane(id);
+        if flags.contains(PollFlags::OUT)
+            && let Some(pane) = self.session.panes.get_mut(&id)
+        {
+            pane.write_input();
         }
         if flags.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
             self.read_pane(id);
-        }
-    }
-
-    /// Writes each pane's waiting input, as far as its terminal takes it.
-    fn write_waiting_panes(&mut self) {
-        let waiting: Vec<PaneId> = self
-            .session
-            .panes
-            .iter()
-            .filter(|(_, p)| !p.input.is_empty() && !p.hung_up && p.child.is_some())
-            .map(|(id, _)| *id)
-            .collect();
-        for id in waiting {
-            self.write_pane(id);
-        }
-    }
-
-    fn write_pane(&mut self, id: PaneId) {
-        let Some(pane) = self.session.panes.get_mut(&id) else {
-            return;
-        };
-        let Some(child) = &pane.child else { return };
-        while let Some(bytes) = pane.input.front() {
-            match fuxix::io::write(&child.master, bytes) {
-                Ok(0) => break,
-                Ok(n) => pane.input.advance(n),
-                Err(fuxix::Errno::INTR) => continue,
-                Err(_) => break,
-            }
         }
     }
 
@@ -1132,10 +1109,10 @@ impl Server {
         let mut buffer = [0u8; 16384];
         let mut ended = false;
         while total < PANE_READ {
-            let Some(pane) = self.session.panes.get(&id) else {
+            let Some(Process::Reading(child)) = self.session.panes.get(&id).map(|p| &p.process)
+            else {
                 return;
             };
-            let Some(child) = &pane.child else { return };
             match fuxix::io::read(&child.master, &mut buffer) {
                 Ok(0) => {
                     ended = true;
@@ -1174,24 +1151,23 @@ impl Server {
         }
         if ended {
             self.reap();
-            // A pane whose master reports the end but whose program has not
-            // exited stays until it does, unpolled: its master would report
-            // the end on every poll, and the loop would spin.
             if let Some(pane) = self.session.panes.get_mut(&id) {
-                pane.hung_up = true;
+                pane.process.hang_up();
             }
         }
     }
 
-    /// Checks every pane's process, since signals coalesce.
+    /// Checks every killed program and every pane's, since signals
+    /// coalesce.
     fn reap(&mut self) {
+        self.reap_killed();
         let exited: Vec<(PaneId, i32)> = self
             .session
             .panes
             .iter()
             .filter_map(|(id, pane)| {
-                let child = pane.child.as_ref()?;
-                crate::process::exited(child.pid).map(|status| (*id, status))
+                let status = pane.process.child()?.leader.exited()?;
+                Some((*id, status))
             })
             .collect();
         for (id, status) in exited {
@@ -1199,31 +1175,36 @@ impl Server {
         }
     }
 
+    fn reap_killed(&mut self) {
+        let killed = std::mem::take(&mut self.killed);
+        self.killed = killed
+            .into_iter()
+            .filter_map(|l| l.finish().err())
+            .collect();
+    }
+
+    /// Kills the programs whose grace is over, or every one if `all`, and
+    /// reaps those that have exited. When the server itself is stopping, it
+    /// waits for the rest, at most a second: a process stuck in the kernel
+    /// is left to init rather than hold the exit.
     fn finish_dying(&mut self, all: bool) {
         let now = Instant::now();
-        let (due, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.session.dying)
-            .into_iter()
-            .partition(|d| all || d.deadline <= now);
-        self.session.dying = rest;
-        for mut dying in due {
-            // The master closes first: a dying writer can hold on to it.
-            dying.master = None;
-            if !crate::process::finish(dying.pid) {
-                // Killed but not yet exited: reaped on a later tick. When the
-                // server itself is stopping, it waits for it here instead.
-                if all {
-                    // At most a second: a process stuck in the kernel is
-                    // left to init rather than hold the exit.
-                    for _ in 0..500 {
-                        if crate::process::finish(dying.pid) {
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(2));
-                    }
-                } else {
-                    dying.deadline = crate::after(now, Duration::from_millis(10));
-                    self.session.dying.push(dying);
+        for dying in std::mem::take(&mut self.session.dying) {
+            if all || dying.deadline <= now {
+                // The master closes first: a dying writer can hold on to it.
+                drop(dying.child.master);
+                self.killed.extend(dying.child.leader.finish().err());
+            } else {
+                self.session.dying.push(dying);
+            }
+        }
+        if all {
+            for _ in 0..500 {
+                self.reap_killed();
+                if self.killed.is_empty() {
+                    break;
                 }
+                std::thread::sleep(Duration::from_millis(2));
             }
         }
     }
