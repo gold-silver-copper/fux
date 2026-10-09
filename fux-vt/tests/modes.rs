@@ -6,7 +6,7 @@
 //! terminal, xterm 411's, asked the same sequences under Xvfb (80 by 25,
 //! a VT420) and read back by DSR and DECRQM.
 
-use fux_vt::{Attributes, Color, Identity, Options, Parser};
+use fux_vt::{Attributes, Color, Identity, Mode, Options, Parser};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 const MODES: Options = Options::new().with_mode_reports(true);
@@ -32,7 +32,8 @@ fn cursor_after(input: &[u8]) -> std::result::Result<(u16, u16), fux_vt::Error> 
 /// (8) is reported permanently reset, as xterm 411 reports it (esctest
 /// expects it settable: "xterm always returns 4"). DECNKM is the keypad
 /// mode ESC = and ESC > set (ctlseqs; xterm 411). xterm 411: DECSTR keeps
-/// 4, 5 and 67 and resets 66; RIS resets them all.
+/// 4, 5 and 67 and resets 66; RIS resets them all. DECRQM reads what
+/// `Screen::mode` reads.
 #[test]
 fn decrqm_reports_the_modes_xterm_keeps() -> Result {
     let mut p = Parser::with_options(25, 80, 0, MODES)?;
@@ -42,13 +43,15 @@ fn decrqm_reports_the_modes_xterm_keeps() -> Result {
         "^[[?4;2$y^[[?5;2$y^[[?8;4$y^[[?66;2$y^[[?67;2$y"
     );
     p.process(b"\x1b[?4;5;8;66;67h")?;
-    assert!(p.screen().application_keypad());
+    assert!(p.screen().mode(Mode::ApplicationKeypad));
     assert_eq!(
         replies(&mut p, all)?,
         "^[[?4;1$y^[[?5;1$y^[[?8;4$y^[[?66;1$y^[[?67;1$y"
     );
     p.process(b"\x1b>")?;
     assert_eq!(replies(&mut p, b"\x1b[?66$p")?, "^[[?66;2$y");
+    p.process(b"\x1b=")?;
+    assert_eq!(replies(&mut p, b"\x1b[?66$p")?, "^[[?66;1$y");
     p.process(b"\x1b=\x1b[!p")?;
     assert_eq!(
         replies(&mut p, all)?,
@@ -145,33 +148,37 @@ fn reverse_wraparound_is_a_mode() -> Result {
 fn xtsave_and_xtrestore_save_and_restore_modes() -> Result {
     let mut p = Parser::with_options(25, 80, 0, MODES)?;
     p.process(b"\x1b[?7h\x1b[?7s\x1b[?7l\x1b[?7r")?;
-    assert!(p.screen().autowrap());
+    assert!(p.screen().mode(Mode::Autowrap));
     p.process(b"\x1b[?7l\x1b[?7s\x1b[?7h\x1b[?7r")?;
-    assert!(!p.screen().autowrap());
+    assert!(!p.screen().mode(Mode::Autowrap));
     let mut p = Parser::with_options(25, 80, 0, MODES)?;
     p.process(b"\x1b[?25;2004;1;45s\x1b[?25l\x1b[?2004h\x1b[?1h\x1b[?45h\x1b[?25;2004;1;45r")?;
     let s = p.screen();
-    assert!(!s.hide_cursor() && !s.bracketed_paste() && !s.application_cursor());
+    assert!(
+        s.mode(Mode::ShowCursor)
+            && !s.mode(Mode::BracketedPaste)
+            && !s.mode(Mode::ApplicationCursor)
+    );
     assert_eq!(replies(&mut p, b"\x1b[?45$p")?, "^[[?45;2$y");
     // Never saved: reset.
     let mut p = Parser::with_options(25, 80, 0, MODES)?;
     p.process(b"\x1b[?7r")?;
-    assert!(!p.screen().autowrap());
+    assert!(!p.screen().mode(Mode::Autowrap));
     // RIS and DECSTR keep what was saved; a later save replaces it.
     let mut p = Parser::with_options(25, 80, 0, MODES)?;
     p.process(b"\x1b[?1h\x1b[?1s\x1bc\x1b[?1r")?;
-    assert!(p.screen().application_cursor());
+    assert!(p.screen().mode(Mode::ApplicationCursor));
     p.process(b"\x1b[?1l\x1b[!p\x1b[?1r")?;
-    assert!(p.screen().application_cursor());
+    assert!(p.screen().mode(Mode::ApplicationCursor));
     p.process(b"\x1b[?2004h\x1b[?2004s\x1b[?2004l\x1b[?2004s\x1b[?2004h\x1b[?2004r")?;
-    assert!(!p.screen().bracketed_paste());
+    assert!(!p.screen().mode(Mode::BracketedPaste));
     // The alternate screen, saved off and restored, is left.
     p.process(b"\x1b[?1049s\x1b[?1049h\x1b[?1049r")?;
-    assert!(!p.screen().alternate_screen());
+    assert!(!p.screen().mode(Mode::AlternateScreen));
     // A mode fux-vt does not keep, or one with a colon, changes nothing.
     let mut p = Parser::with_options(25, 80, 0, MODES)?;
     p.process(b"\x1b[?7;12;9999s\x1b[?7l\x1b[?12;9999r\x1b[?7:1r")?;
-    assert!(!p.screen().autowrap());
+    assert!(!p.screen().mode(Mode::Autowrap));
     Ok(())
 }
 
@@ -231,7 +238,7 @@ fn decaln_fills_the_screen_with_e() -> Result {
     p.process(b"abcdef\x1b[31;1;4;7m\x1b[2;3r\x1b[?6h\x1b[2;2H\x1b#8")?;
     let s = p.screen();
     assert_eq!(s.cursor_position(), (0, 0));
-    assert!(!s.pending_wrap() && !s.origin_mode());
+    assert!(!s.pending_wrap() && !s.mode(Mode::Origin));
     assert_eq!(s.scroll_region(), (0, 2));
     assert_eq!(
         s.attributes(),

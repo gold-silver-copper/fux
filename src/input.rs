@@ -172,7 +172,7 @@ impl Session {
         let Some(p) = self.panes.get_mut(&pane) else {
             return;
         };
-        let bracketed = p.screen().bracketed_paste();
+        let bracketed = p.screen().mode(fux_vt::Mode::BracketedPaste);
         if let Err(error) = p
             .input
             .push_with(|out| crate::encode::paste(text, bracketed, out))
@@ -188,7 +188,7 @@ impl Session {
             return;
         };
         if let Some(p) = self.panes.get_mut(&pane)
-            && p.screen().focus_reporting()
+            && p.screen().mode(fux_vt::Mode::FocusReporting)
         {
             let _ = p.input.push(if gained { b"\x1b[I" } else { b"\x1b[O" });
         }

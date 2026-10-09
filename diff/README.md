@@ -154,8 +154,9 @@ redesign changes on purpose (`RowId` and `Mark` are compared by number);
 kept.
 
 **Adapters.** Where the two APIs part, give `side!` an argument for that
-part, read both into the same model, and list it here. Today:
-`Options::palette` and `Screen::colors_changed`, which the merge base lacks.
+part, read both into the same model, and list it here. Today: the
+modes, which the working tree reads with `Screen::mode` and the merge base
+with a getter each; `Options::palette` and `Screen::colors_changed`, which the merge base lacks.
 The working tree gets the option the case asks for; the base reports the
 option as asked and no colour changed. A commit without an adapter for its
 API does not build (`oracle.sh dfe1ffb`, before

@@ -805,7 +805,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             }
             None => {
                 let (y, x) = screen.cursor_position();
-                if !screen.hide_cursor()
+                if screen.mode(fux_vt::Mode::ShowCursor)
                     && y < rect.h
                     && x < rect.w
                     && matches!(view.mode, Mode::Normal)

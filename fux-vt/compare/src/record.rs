@@ -357,7 +357,7 @@ fn typed(keys: &[u8], screen: &fux_vt::Screen) -> Vec<u8> {
         match input {
             fux::decode::Input::Key(stroke) => fux::encode::key_bytes(stroke, mode, &mut out),
             fux::decode::Input::Paste(text) => {
-                fux::encode::paste(&text, screen.bracketed_paste(), &mut out);
+                fux::encode::paste(&text, screen.mode(fux_vt::Mode::BracketedPaste), &mut out);
             }
             fux::decode::Input::PasteTooLong
             | fux::decode::Input::FocusIn

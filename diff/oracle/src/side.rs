@@ -6,7 +6,9 @@
 //! argument for that part, as `diff/src/terminal.rs`'s `stack!` does, and
 //! read both into the same model; say so in the README's list of adapters.
 //!
-//! Adapters today: `Options::palette` and `Screen::colors_changed`, which
+//! Adapters today: the modes, which the working tree reads with
+//! `Screen::mode` and the commit with a getter each. `Options::palette` and
+//! `Screen::colors_changed`, which
 //! the pinned commit has not. The working tree is given the option the
 //! case asks for; the commit, which has no palette, reports the option as
 //! asked and no colour changed. The palette's sequences are exempt
@@ -32,12 +34,13 @@ macro_rules! side {
         continuation: $continuation:expr,
         set_cell: $set_cell:expr,
         set_text: $set_text:expr,
-        cluster_capacity: $cluster_capacity:expr $(,)?
+        cluster_capacity: $cluster_capacity:expr,
+        modes: $modes:expr $(,)?
     ) => {
         pub mod $module {
             use crate::model::{
-                self, Blink, Cell, Color, Encoding, Error, Heard, Lookup, Marked, Mouse, Row, Seen,
-                Setup, State, Style, Underline,
+                self, Blink, Cell, Color, Encoding, Error, Heard, Lookup, Marked, Modes, Mouse,
+                Row, Seen, Setup, State, Style, Underline,
             };
             use $vt as vt;
 
@@ -269,19 +272,11 @@ macro_rules! side {
                         size: s.size(),
                         cursor: s.cursor_position(),
                         pending_wrap: s.pending_wrap(),
-                        hide_cursor: s.hide_cursor(),
-                        application_cursor: s.application_cursor(),
-                        application_keypad: s.application_keypad(),
-                        bracketed_paste: s.bracketed_paste(),
-                        synchronized_output: s.synchronized_output(),
-                        in_band_resize: s.in_band_resize(),
-                        color_scheme_updates: s.color_scheme_updates(),
-                        focus_reporting: s.focus_reporting(),
+                        modes: {
+                            let modes: fn(&vt::Screen) -> Modes = $modes;
+                            modes(s)
+                        },
                         cursor_shape: s.cursor_shape(),
-                        alternate_screen: s.alternate_screen(),
-                        autowrap: s.autowrap(),
-                        insert_mode: s.insert_mode(),
-                        origin_mode: s.origin_mode(),
                         scroll_region: s.scroll_region(),
                         mouse: match s.mouse_protocol_mode() {
                             vt::MouseProtocolMode::None => Mouse::None,
@@ -722,6 +717,23 @@ side!(
     set_text: |run: &mut vt::Cells, i, text, wide, attributes| run
         .set(i, vt::CellRef::new(text, wide, attributes)),
     cluster_capacity: vt::CLUSTER_CAPACITY,
+    modes: |s| {
+        use vt::Mode::*;
+        crate::model::Modes {
+            hide_cursor: !s.mode(ShowCursor),
+            application_cursor: s.mode(ApplicationCursor),
+            application_keypad: s.mode(ApplicationKeypad),
+            bracketed_paste: s.mode(BracketedPaste),
+            synchronized_output: s.mode(SynchronizedOutput),
+            in_band_resize: s.mode(InBandResize),
+            color_scheme_updates: s.mode(ColorSchemeUpdates),
+            focus_reporting: s.mode(FocusReporting),
+            alternate_screen: s.mode(AlternateScreen),
+            autowrap: s.mode(Autowrap),
+            insert_mode: s.mode(Insert),
+            origin_mode: s.mode(Origin),
+        }
+    },
 );
 side!(
     base,
@@ -737,4 +749,18 @@ side!(
     set_cell: vt::Cells::set_cell,
     set_text: vt::Cells::set_text,
     cluster_capacity: vt::Cell::CLUSTER_CAPACITY,
+    modes: |s| crate::model::Modes {
+        hide_cursor: s.hide_cursor(),
+        application_cursor: s.application_cursor(),
+        application_keypad: s.application_keypad(),
+        bracketed_paste: s.bracketed_paste(),
+        synchronized_output: s.synchronized_output(),
+        in_band_resize: s.in_band_resize(),
+        color_scheme_updates: s.color_scheme_updates(),
+        focus_reporting: s.focus_reporting(),
+        alternate_screen: s.alternate_screen(),
+        autowrap: s.autowrap(),
+        insert_mode: s.insert_mode(),
+        origin_mode: s.origin_mode(),
+    },
 );

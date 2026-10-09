@@ -5,7 +5,7 @@
 //! bytes, so that the paint is a full one. Bit 3 paints for a terminal that
 //! draws underline styles, and bit 4 says the old grid was painted for one.
 use fux::render::{Grid, paint};
-use fux_vt::{Attributes, CellRef, Color, Parser, UnderlineStyle};
+use fux_vt::{Attributes, CellRef, Color, Mode, Parser, UnderlineStyle};
 use libfuzzer_sys::fuzz_target;
 
 /// A glyph: its text, whether it is wide. `None` is a cell never written.
@@ -203,9 +203,9 @@ fuzz_target!(|data: &[u8]| {
     }
     match new.cursor {
         Some(at) => {
-            assert!(!screen.hide_cursor());
+            assert!(screen.mode(Mode::ShowCursor));
             assert_eq!(screen.cursor_position(), at);
         }
-        None => assert!(screen.hide_cursor()),
+        None => assert!(!screen.mode(Mode::ShowCursor)),
     }
 });

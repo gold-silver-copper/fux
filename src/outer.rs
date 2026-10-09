@@ -284,7 +284,7 @@ impl Session {
         let listening: Vec<PaneId> = self
             .panes
             .iter()
-            .filter(|(_, p)| p.screen().color_scheme_updates())
+            .filter(|(_, p)| p.screen().mode(fux_vt::Mode::ColorSchemeUpdates))
             .map(|(id, _)| *id)
             .filter(|id| {
                 let tab = self.locate(*id).map(|(_, t)| t);
