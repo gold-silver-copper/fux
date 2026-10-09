@@ -3,7 +3,7 @@
 //! Ignored control strings retain no payload. No parser dependency is used.
 
 use crate::mode::{Kind, Mode};
-use crate::{Error, Reply, Screen, screen::Dispatch};
+use crate::{Error, Reply, Screen, Size, screen::Dispatch};
 
 #[cfg(test)]
 #[path = "../tests/corpus/mod.rs"]
@@ -675,22 +675,17 @@ pub struct Parser {
 mod tests;
 
 impl Parser {
-    /// A parser with a `rows` by `cols` screen keeping up to `history_lines`
-    /// rows of history, and [`Options::default`]: see [`Parser::with_options`].
-    pub fn new(rows: u16, cols: u16, history_lines: usize) -> Result<Self, Error> {
-        Self::with_options(rows, cols, history_lines, Options::default())
+    /// A parser with a screen of `size` keeping up to `history_lines` rows
+    /// of history, and [`Options::default`]: see [`Parser::with_options`].
+    pub fn new(size: Size, history_lines: usize) -> Result<Self, Error> {
+        Self::with_options(size, history_lines, Options::default())
     }
-    /// A parser with a `rows` by `cols` screen keeping up to `history_lines`
-    /// rows of history (none on the alternate screen), with `options`.
-    /// Zero rows or columns, or more cells than a grid may hold, are refused.
-    pub fn with_options(
-        rows: u16,
-        cols: u16,
-        history_lines: usize,
-        options: Options,
-    ) -> Result<Self, Error> {
+    /// A parser with a screen of `size` keeping up to `history_lines` rows
+    /// of history (none on the alternate screen), with `options`. More
+    /// cells than a grid may hold are refused.
+    pub fn with_options(size: Size, history_lines: usize, options: Options) -> Result<Self, Error> {
         Ok(Self {
-            screen: Screen::new(rows, cols, history_lines)?,
+            screen: Screen::new(size, history_lines)?,
             options,
             osc: Vec::new(),
             osc_limit: if options.has(Feature::Events)
@@ -730,9 +725,8 @@ impl Parser {
     }
     /// Resizes the terminal, reflowing the primary screen with
     /// [`Feature::Reflow`].
-    pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error> {
-        self.screen
-            .resize(rows, cols, self.options.has(Feature::Reflow))
+    pub fn resize(&mut self, size: Size) -> Result<(), Error> {
+        self.screen.resize(size, self.options.has(Feature::Reflow))
     }
     /// The size report a program that set in-band resize (mode 2048) is to
     /// be sent after the terminal's size changed: `CSI 48 ; rows ; cols ; 0
@@ -1348,7 +1342,7 @@ impl Parser {
                 Some(Reply::of(format_args!("\x1bP>|{name} {version}\x1b\\")))
             }
             (b"", b't') if n == 18 && self.options.has(Feature::SizeReports) => {
-                let (rows, cols) = self.screen.size();
+                let (rows, cols) = self.screen.size().into();
                 Some(Reply::of(format_args!("\x1b[8;{rows};{cols}t")))
             }
             (b"*", b'y') if self.options.has(Feature::RectangleChecksums) => {

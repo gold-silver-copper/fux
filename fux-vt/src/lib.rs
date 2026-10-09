@@ -4,6 +4,7 @@
 pub mod bytes;
 mod cell;
 mod compact;
+mod geometry;
 mod grid;
 mod history;
 pub mod keys;
@@ -18,6 +19,7 @@ mod test_rng;
 mod unicode;
 
 pub use cell::{Attributes, Blink, CLUSTER_CAPACITY, CellRef, Cells, Color, UnderlineStyle};
+pub use geometry::Size;
 pub use link::{Hyperlink, ID_LIMIT, URI_LIMIT};
 pub use mode::Mode;
 pub use parser::{
@@ -205,8 +207,6 @@ impl<'a> Row<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
-    /// A size with no rows or no columns.
-    ZeroSize,
     /// More rows or cells than a grid may hold, or an allocation that failed.
     Capacity,
     /// Row identities or versions ran out: they are never reused.
@@ -219,7 +219,6 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::ZeroSize => "terminal dimensions must be nonzero",
             Self::Capacity => "terminal allocation limit exceeded",
             Self::IdentityExhausted => "terminal identity/version space exhausted",
             Self::CopyLimit => "copy cell or byte limit exceeded",
@@ -294,7 +293,7 @@ impl<'a> Window<'a> {
     /// Whether row `row` of the window is soft-wrapped, its line going on in
     /// the next row. Only a window as wide as the screen says so.
     pub fn row_wrapped(&self, row: u16) -> bool {
-        self.cols == self.grid.cols.get() && self.row(row).is_some_and(|r| r.wrapped)
+        self.cols == self.grid.size().cols() && self.row(row).is_some_and(|r| r.wrapped)
     }
     /// Inclusive endpoints, normalized to wide leaders. Limits are checked
     /// before allocation and before every append; an oversized copy is refused.
@@ -318,8 +317,8 @@ impl<'a> Window<'a> {
         };
         let (a, b) = (point(a)?, point(b)?);
         let (start, end) = if a <= b { (a, b) } else { (b, a) };
-        // Both points are in the window, so it has a last column.
-        let last = self.cols.checked_sub(1).ok_or(Error::InvalidRange)?;
+        // Exact: both points are in the window, so it has a last column.
+        let last = self.cols.saturating_sub(1);
         let count = (start.0..=end.0)
             .len()
             .checked_mul(usize::from(self.cols))

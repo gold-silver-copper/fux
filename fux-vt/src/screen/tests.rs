@@ -15,7 +15,8 @@ fn sgr_colour_parameters_name_the_sixteen_palette_colours() {
 
 #[test]
 fn partially_completed_scroll_error_still_invalidates_every_window() -> Result<(), Error> {
-    let mut s = Screen::new(2, 1, 2)?;
+    let size = Size::of(2, 1);
+    let mut s = Screen::new(size, 2)?;
     s.begin()?;
     s.print('A')?;
     s.control(10)?;
@@ -24,7 +25,8 @@ fn partially_completed_scroll_error_still_invalidates_every_window() -> Result<(
     let mark = s.mark();
     s.next_id = u64::MAX - 1;
     s.begin()?;
-    assert_eq!(s.scroll(0, 1, 2, true, true), Err(Error::IdentityExhausted));
+    let scrolled = s.scroll(size.lines(), 2, true, true);
+    assert_eq!(scrolled, Err(Error::IdentityExhausted));
     assert_eq!(s.history_len(), 1); // First row moved; second allocation failed.
     assert_eq!(s.cell(0, 0).ok_or(Error::InvalidRange)?.contents(), "B");
     assert!(s.full_refresh_since(mark));
@@ -35,7 +37,7 @@ fn partially_completed_scroll_error_still_invalidates_every_window() -> Result<(
 
 #[test]
 fn identity_and_mark_exhaustion_never_alias_old_rows() -> Result<(), Error> {
-    let mut s = Screen::new(1, 1, 0)?;
+    let mut s = Screen::new(Size::of(1, 1), 0)?;
     let id = s.row_from_bottom(0).ok_or(Error::InvalidRange)?.id;
     s.next_id = u64::MAX;
     assert_eq!(s.linefeed(), Err(Error::IdentityExhausted));
@@ -46,10 +48,6 @@ fn identity_and_mark_exhaustion_never_alias_old_rows() -> Result<(), Error> {
     s.version = u64::MAX;
     assert_eq!(s.begin(), Err(Error::IdentityExhausted));
     assert_eq!(s.mark(), Mark(u64::MAX));
-    assert_eq!(
-        Error::ZeroSize.to_string(),
-        "terminal dimensions must be nonzero"
-    );
     for error in [
         Error::Capacity,
         Error::IdentityExhausted,
@@ -96,7 +94,7 @@ fn cells_past_a_rows_used_mark_stay_blank() -> Result<(), Error> {
     let mut state = 0x5eed_u64;
     for reflow in [false, true] {
         let options = crate::Options::new().set(crate::Feature::Reflow, reflow);
-        let mut p = crate::Parser::with_options(6, 10, 4, options)?;
+        let mut p = crate::Parser::with_options(Size::of(6, 10), 4, options)?;
         for step in 0..3_000u32 {
             state = state
                 .wrapping_mul(6_364_136_223_846_793_005)
@@ -104,7 +102,7 @@ fn cells_past_a_rows_used_mark_stay_blank() -> Result<(), Error> {
             let pick = usize::try_from(state >> 59).unwrap_or(0);
             if step % 500 == 499 {
                 let cols = if step % 1000 == 999 { 10 } else { 7 };
-                p.resize(6, cols)?;
+                p.resize(Size::of(6, cols))?;
             } else if let Some(piece) = pieces.get(pick % pieces.len()) {
                 p.process(piece)?;
             }
@@ -136,7 +134,7 @@ fn link_counts_follow_the_rows() -> Result<(), Error> {
         let options = crate::Options::new()
             .with(crate::Feature::Hyperlinks)
             .set(crate::Feature::Reflow, reflow);
-        let mut p = crate::Parser::with_options(4, 10, 6, options)?;
+        let mut p = crate::Parser::with_options(Size::of(4, 10), 6, options)?;
         let steps: [&[u8]; 12] = [
             b"\x1b]8;;a\x07abc\x1b]8;id=x;b\x07de\x1b]8;;\x07f\r\n",
             b"\x1b]8;;c\x07ghij\x1b[1;2H\x1b[2@\x1b[3P",
@@ -154,9 +152,9 @@ fn link_counts_follow_the_rows() -> Result<(), Error> {
         for (i, step) in steps.iter().enumerate() {
             p.process(step)?;
             check(&p, &format!("step {i}"));
-            p.resize(3, 7)?;
+            p.resize(Size::of(3, 7))?;
             check(&p, &format!("step {i}, narrower"));
-            p.resize(4, 10)?;
+            p.resize(Size::of(4, 10))?;
             check(&p, &format!("step {i}, back"));
         }
         // More links than fit: room is made, history first.
@@ -232,8 +230,8 @@ fn sweeping_the_styles_changes_nothing_a_reader_sees() -> Result<(), Error> {
         let options = crate::Options::new()
             .set(crate::Feature::Reflow, reflow)
             .with(crate::Feature::Hyperlinks);
-        let mut plain = crate::Parser::with_options(5, 9, 6, options)?;
-        let mut swept = crate::Parser::with_options(5, 9, 6, options)?;
+        let mut plain = crate::Parser::with_options(Size::of(5, 9), 6, options)?;
+        let mut swept = crate::Parser::with_options(Size::of(5, 9), 6, options)?;
         for step in 0..4_000u32 {
             let piece: Vec<u8> = match below(8) {
                 0 => format!("\x1b[48;2;{};1;{}m", below(4), below(256)).into_bytes(),
@@ -241,8 +239,8 @@ fn sweeping_the_styles_changes_nothing_a_reader_sees() -> Result<(), Error> {
                 2 if below(10) == 0 => {
                     let rows = u16::try_from(below(6)).unwrap_or(0).saturating_add(1);
                     let cols = u16::try_from(below(10)).unwrap_or(0).saturating_add(1);
-                    plain.resize(rows, cols)?;
-                    swept.resize(rows, cols)?;
+                    plain.resize(Size::of(rows, cols))?;
+                    swept.resize(Size::of(rows, cols))?;
                     Vec::new()
                 }
                 _ => pieces
@@ -275,7 +273,7 @@ fn sweeping_the_styles_changes_nothing_a_reader_sees() -> Result<(), Error> {
 #[test]
 fn styles_in_use_survive_the_sweeps_that_new_ones_bring() -> Result<(), Error> {
     let (rows, cols, history) = (4u16, 16u16, 30usize);
-    let mut p = crate::Parser::new(rows, cols, history)?;
+    let mut p = crate::Parser::new(Size::of(rows, cols), history)?;
     let colour = |n: u32| {
         let [_, r, g, b] = n.to_be_bytes();
         (r, g, b)

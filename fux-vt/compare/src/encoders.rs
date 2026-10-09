@@ -177,8 +177,8 @@ struct Pair {
 impl Pair {
     fn new(setup: &[u8]) -> Result<Pair, String> {
         let options = Options::new().with(Feature::KittyKeyboard);
-        let mut fux =
-            Parser::with_options(ROWS, COLS, 0, options).map_err(|e| format!("fux-vt: {e:?}"))?;
+        let mut fux = Parser::with_options(crate::vt_size(ROWS, COLS)?, 0, options)
+            .map_err(|e| format!("fux-vt: {e:?}"))?;
         fux.process(setup).map_err(|e| format!("fux-vt: {e:?}"))?;
         let mut ghostty = Terminal::new(TerminalOptions {
             cols: COLS,

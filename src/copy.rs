@@ -72,7 +72,7 @@ pub fn retained(screen: &Screen) -> usize {
     // Exact: fux-vt bounds the rows it retains far below a usize.
     screen
         .history_len()
-        .saturating_add(usize::from(screen.size().0))
+        .saturating_add(usize::from(screen.size().rows()))
 }
 
 /// The row at `index`, counted from the oldest.
@@ -86,7 +86,7 @@ pub fn index_of(screen: &Screen, id: RowId) -> Option<usize> {
     if let Some(offset) = screen.offset_for_row(id) {
         return screen.history_len().checked_sub(offset);
     }
-    let rows = usize::from(screen.size().0);
+    let rows = usize::from(screen.size().rows());
     (0..rows).find_map(|i| {
         if screen.row_from_bottom(i)?.id() != id {
             return None;
@@ -479,7 +479,7 @@ pub fn text(
     start: (usize, u16),
     end: (usize, u16),
 ) -> Result<String, Error> {
-    let cols = screen.size().1;
+    let cols = screen.size().cols();
     let mut out = String::new();
     let mut cells = 0usize;
     let (left, right) = (start.1.min(end.1), start.1.max(end.1));
@@ -606,7 +606,7 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
     // a smaller client can size the pane below this one's room for it.
     let height = placement
         .rect(pane_id)
-        .map_or(1, |r| r.h.min(screen.size().0).max(1));
+        .map_or(1, |r| r.h.min(screen.size().rows()).max(1));
     view.dirty = true;
     view.notice = None;
 
@@ -644,7 +644,7 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
     };
     let ((row, col), mut top) = (at.cursor, at.top);
     let last_row = retained(screen).saturating_sub(1);
-    let last_col = screen.size().1.saturating_sub(1);
+    let last_col = screen.size().cols().saturating_sub(1);
     let half = usize::from(height / 2).max(1);
     let page = usize::from(height);
     // The columns of a row's glyphs that are not blank.
@@ -789,7 +789,7 @@ fn glyph_start(row: fux_vt::Row<'_>, col: u16) -> u16 {
 /// Moves the cursor, scrolling the view, whose top row is at `top`, to keep
 /// it in sight.
 fn move_to(copy: &mut Copy, screen: &Screen, height: u16, top: usize, (row, col): (usize, u16)) {
-    let last_col = screen.size().1.saturating_sub(1);
+    let last_col = screen.size().cols().saturating_sub(1);
     let col = col.min(last_col);
     if let Some(r) = row_at(screen, row) {
         copy.cursor = (r.id(), glyph_start(r, col));
@@ -871,7 +871,8 @@ mod tests {
     use super::*;
 
     fn screen(text: &[u8], rows: u16, cols: u16) -> Result<fux_vt::Parser, String> {
-        let mut parser = fux_vt::Parser::new(rows, cols, 100).map_err(|e| e.to_string())?;
+        let size = fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())?;
+        let mut parser = fux_vt::Parser::new(size, 100).map_err(|e| e.to_string())?;
         parser.process(text).map_err(|e| e.to_string())?;
         Ok(parser)
     }
@@ -971,7 +972,8 @@ mod tests {
             typing: None,
             held_at: None,
         };
-        p.resize(21, 20).map_err(|e| e.to_string())?;
+        let size = fux_vt::Size::new(21, 20).map_err(|e| e.to_string())?;
+        p.resize(size).map_err(|e| e.to_string())?;
         let s = p.screen();
         let r = copy.resolve(s).ok_or("a row gone")?;
         let shown_top = s.history_len().saturating_sub(r.offset(s));
@@ -1002,7 +1004,7 @@ mod tests {
         s.input(big, &[b'k'; 10]);
         s.input(big, &[b'j'; 14]);
         let screen = s.panes.get(&pane).ok_or("the pane")?.screen();
-        let shown = screen.size().0;
+        let shown = screen.size().rows();
         let view = s.views.get(&big).ok_or("the client")?;
         let Mode::Copy(copy) = &view.mode else {
             return Err("not in copy mode".into());
@@ -1102,7 +1104,7 @@ mod tests {
             .flatten()
             .copied()
             .collect();
-        let mut parser = fux_vt::Parser::new(10, 100, 3000)?;
+        let mut parser = fux_vt::Parser::new(fux_vt::Size::new(10, 100)?, 3000)?;
         parser.process(&lines)?;
         let s = parser.screen();
         let last = retained(s).saturating_sub(1);

@@ -220,7 +220,7 @@ impl Session {
     /// report for a program that asked for it.
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
         self.parser
-            .resize(rows, cols)
+            .resize(crate::vt_size(rows, cols)?)
             .map_err(|e| format!("fux-vt: {e}"))?;
         fuxix::terminal::set_window_size(&self.master, rows, cols)
             .map_err(|e| format!("resizing the PTY: {e}"))?;
@@ -376,8 +376,9 @@ pub fn record(request: &Request) -> Result<Recorded, String> {
     let (start, steps) = steps(&text)?;
     // As fux's panes are set up.
     let options = fux::pane::OPTIONS;
-    let parser = fux_vt::Parser::with_options(request.rows, request.cols, 10_000, options)
-        .map_err(|e| format!("fux-vt: {e}"))?;
+    let parser =
+        fux_vt::Parser::with_options(crate::vt_size(request.rows, request.cols)?, 10_000, options)
+            .map_err(|e| format!("fux-vt: {e}"))?;
     let (master, mut child) = spawn(request)?;
     let mut session = Session {
         master: File::from(master),
@@ -510,9 +511,9 @@ mod tests {
     /// Keys reach the program as fux gives them to a pane, in the key mode
     /// it asked for (fux-vt/src/keys/encode.rs).
     #[test]
-    fn keys_are_typed_in_the_programs_key_mode() -> Result<(), fux_vt::Error> {
+    fn keys_are_typed_in_the_programs_key_mode() -> Result<(), Box<dyn std::error::Error>> {
         let options = fux_vt::Options::new().with(fux_vt::Feature::KittyKeyboard);
-        let mut parser = fux_vt::Parser::with_options(4, 20, 0, options)?;
+        let mut parser = fux_vt::Parser::with_options(crate::vt_size(4, 20)?, 0, options)?;
         let keys = b"\x04:q\r\x1b";
         assert_eq!(super::typed(keys, parser.screen()), keys);
         parser.process(b"\x1b[>4;2m")?;

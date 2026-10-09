@@ -2,15 +2,15 @@
 //! each test citing the section that sets its expected values. Where xterm
 //! departs from the specification, the test says so and follows xterm.
 
-use fux_vt::{CellRef, Color, Feature, Identity, Mode, Options, Parser};
-type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+use fux_vt::{CellRef, Color, Feature, Identity, Mode, Options, Parser, Size};
+type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[path = "corpus/lines.rs"]
 mod lines;
 use lines::lines;
 
-fn run(rows: u16, cols: u16, bytes: &[u8]) -> std::result::Result<Parser, fux_vt::Error> {
-    let mut parser = Parser::new(rows, cols, 0)?;
+fn run(rows: u16, cols: u16, bytes: &[u8]) -> Result<Parser> {
+    let mut parser = Parser::new(Size::new(rows, cols)?, 0)?;
     parser.process(bytes)?;
     Ok(parser)
 }
@@ -302,7 +302,7 @@ fn blank_in_colours(p: &Parser, y: u16, cols: std::ops::Range<u16>) -> bool {
 fn blanks_brought_in_take_the_pens_colours() -> Result {
     let pen = "\x1b[1;4;32;41m";
     for history in [0, 10] {
-        let mut p = Parser::new(2, 5, history)?;
+        let mut p = Parser::new(Size::new(2, 5)?, history)?;
         p.process(format!("{pen}ab\r\n\n").as_bytes())?;
         assert!(blank_in_colours(&p, 1, 0..5), "LF, history {history}");
     }
@@ -322,7 +322,7 @@ fn blanks_brought_in_take_the_pens_colours() -> Result {
 }
 
 /// The first row's text, `bytes` printed on a screen one row high.
-fn row(cols: u16, bytes: &[u8]) -> std::result::Result<String, Box<dyn std::error::Error>> {
+fn row(cols: u16, bytes: &[u8]) -> Result<String> {
     let p = run(1, cols, bytes)?;
     Ok(lines(&p).into_iter().next().unwrap_or_default())
 }
@@ -362,7 +362,7 @@ fn dec_special_graphics_draw_lines() -> Result {
         );
     }
     // A long run, whatever the chunks it comes in.
-    let mut p = Parser::new(1, 80, 0)?;
+    let mut p = Parser::new(Size::new(1, 80)?, 0)?;
     p.process(b"\x1b(0")?;
     for chunk in [&b"qqqq"[..], b"q", b"qqqqqqqqqqqqqqq"] {
         p.process(chunk)?;
@@ -407,7 +407,7 @@ fn rep_repeats_the_preceding_graphic_character() -> Result {
     }
     // However many: 65536 in all fill the screen, and the history, ending
     // in the last column with a wrap pending, as in xterm.
-    let mut p = Parser::new(2, 4, 3)?;
+    let mut p = Parser::new(Size::new(2, 4)?, 3)?;
     p.process(b"x\x1b[65535b")?;
     assert_eq!(lines(&p), ["xxxx", "xxxx"]);
     assert_eq!(p.screen().cursor_position(), (1, 3));
@@ -489,12 +489,7 @@ fn line_and_column_addressing_obeys_origin_mode() -> Result {
 
 /// The replies to `bytes` on a `rows` by `cols` screen answering
 /// DECXCPR, with an identity if `identity`.
-fn replies(
-    rows: u16,
-    cols: u16,
-    identity: bool,
-    bytes: &[u8],
-) -> std::result::Result<Vec<String>, fux_vt::Error> {
+fn replies(rows: u16, cols: u16, identity: bool, bytes: &[u8]) -> Result<Vec<String>> {
     let fux = Identity {
         name: "fux",
         version: "1.0.0",
@@ -502,7 +497,7 @@ fn replies(
     let options = Options::new()
         .with(Feature::ExtendedReplies)
         .with_identity(identity.then_some(fux));
-    let mut parser = Parser::with_options(rows, cols, 0, options)?;
+    let mut parser = Parser::with_options(Size::new(rows, cols)?, 0, options)?;
     let mut replies = Vec::new();
     parser.process_with_replies(bytes, |r| {
         replies.push(String::from_utf8_lossy(r).into_owned());
@@ -593,14 +588,14 @@ fn tab_stops_are_set_cleared_and_kept() -> Result {
     let p = run(1, 20, b"\x1b[3g\x1b[5G\x1bH\x1b[?1049h\r\tX")?;
     assert_eq!(lines(&p), ["    X"]);
     // A resize keeps them, and the columns it adds have a reset's.
-    let mut p = Parser::new(1, 10, 0)?;
+    let mut p = Parser::new(Size::new(1, 10)?, 0)?;
     p.process(b"\x1b[3g\x1b[5G\x1bH")?;
-    p.resize(1, 30)?;
+    p.resize(Size::new(1, 30)?)?;
     p.process(b"\r\t\tX")?;
     assert_eq!(p.screen().cursor_position(), (0, 29));
-    let mut p = Parser::new(1, 10, 0)?;
+    let mut p = Parser::new(Size::new(1, 10)?, 0)?;
     p.process(b"\x1b[5G\x1bH")?;
-    p.resize(1, 30)?;
+    p.resize(Size::new(1, 30)?)?;
     p.process(b"\r\t\t\tX")?;
     assert_eq!(lines(&p), ["                X"]);
     // CBT with a wrap pending: the next glyph still wraps.
@@ -732,7 +727,7 @@ fn invalid_utf8_prints_a_replacement_character() -> Result {
     assert!(p.screen().cell(0, 2).ok_or("no cell")?.bold());
     // Across writes: a sequence completed later is one character, one
     // cut off later is U+FFFD.
-    let mut p = Parser::new(1, 12, 0)?;
+    let mut p = Parser::new(Size::new(1, 12)?, 0)?;
     p.process(b"a\xc3")?;
     p.process(b"\xa9b\xc3")?;
     p.process(b"c")?;
