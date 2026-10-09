@@ -2,7 +2,7 @@
 //! ([`Mode::of`]), one says where each is kept ([`Mode::kind`]), and
 //! `Screen::mode` and `Screen::set_mode` read and set every one by its kind.
 
-use crate::{MouseProtocolEncoding, MouseProtocolMode, Options};
+use crate::{Feature, MouseProtocolEncoding, MouseProtocolMode, Options};
 
 /// A mode a program sets and resets by number: an ANSI mode (SM and RM,
 /// `CSI Ps h` / `l`) or a DEC private mode (DECSET and DECRST, `CSI ? Ps h`
@@ -109,8 +109,8 @@ impl Mode {
             (true, 1049) => Self::AlternateScreenSaveCursor,
             (true, 2004) => Self::BracketedPaste,
             (true, 2026) => Self::SynchronizedOutput,
-            (true, 2031) if options.color_scheme_updates => Self::ColorSchemeUpdates,
-            (true, 2048) if options.in_band_resize => Self::InBandResize,
+            (true, 2031) if options.has(Feature::ColorSchemeUpdates) => Self::ColorSchemeUpdates,
+            (true, 2048) if options.has(Feature::InBandResize) => Self::InBandResize,
             (true, _) => return None,
         })
     }

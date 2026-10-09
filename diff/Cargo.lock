@@ -87,8 +87,7 @@ dependencies = [
 
 [[package]]
 name = "fux-vt"
-version = "0.3.4"
-source = "git+https://github.com/gold-silver-copper/fux?rev=4f3975b4c5d689f9ccf174ac0e68d7dd24797ae3#4f3975b4c5d689f9ccf174ac0e68d7dd24797ae3"
+version = "0.4.0"
 dependencies = [
  "unicode-width",
 ]
@@ -96,6 +95,7 @@ dependencies = [
 [[package]]
 name = "fux-vt"
 version = "0.4.0"
+source = "git+https://github.com/gold-silver-copper/fux?rev=34847ffab57ec73ae8878ca8955a660252280da3#34847ffab57ec73ae8878ca8955a660252280da3"
 dependencies = [
  "unicode-width",
 ]
@@ -104,8 +104,8 @@ dependencies = [
 name = "fux-vt-oracle"
 version = "0.0.0"
 dependencies = [
- "fux-vt 0.3.4",
  "fux-vt 0.4.0",
+ "fux-vt 0.4.0 (git+https://github.com/gold-silver-copper/fux?rev=34847ffab57ec73ae8878ca8955a660252280da3)",
  "serde_json",
 ]
 

@@ -6,7 +6,7 @@ mod pieces;
 
 #[path = "corpus/invariants.rs"]
 mod invariants;
-use fux_vt::{Identity, Mode, Options, Parser, Sink};
+use fux_vt::{Feature, Identity, Mode, Options, Parser, Sink};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 #[test]
@@ -61,8 +61,8 @@ impl Sink for Replies {
 /// The adversarial corpus, after the terminal-edge streams, fed whole and in
 /// pieces of one to seven bytes: the two parsers agree (screens, history,
 /// links, prompt marks, replies) and the invariants hold after every
-/// operation. Without options; and with every option that keeps state, with
-/// and without reflow, links opened and closed, prompts marked and cells
+/// operation. Without options; and with every feature, with and without
+/// reflow, links opened and closed, prompts marked and cells
 /// inserted and deleted among the operations, and the screen resized now
 /// and then. Then one 160 KiB stream.
 #[test]
@@ -80,20 +80,15 @@ fn the_adversarial_corpus_is_chunk_invariant_and_bounded() -> Result {
         b"\x1b[4h",
         b"\x1b[4l",
     ];
-    let every = Options::new()
-        .with_events(true)
-        .with_extended_replies(true)
-        .with_kitty_keyboard(true)
-        .with_hyperlinks(true)
-        .with_prompt_marks(true)
-        .with_identity(Some(Identity {
-            name: "fux-vt",
-            version: "1.2.3",
-        }));
+    let every = Feature::ALL.into_iter().filter(|&f| f != Feature::Reflow);
+    let every = every.collect::<Options>().with_identity(Some(Identity {
+        name: "fux-vt",
+        version: "1.2.3",
+    }));
     for (options, extras) in [
         (Options::new(), &[][..]),
         (every, &extra[..]),
-        (every.with_reflow(true), &extra[..]),
+        (every.with(Feature::Reflow), &extra[..]),
     ] {
         for seed in 0..10 {
             for (rows, cols) in [(1, 1), (1, 12), (12, 1), (2, 3), (4, 12), (24, 80)] {
@@ -198,7 +193,7 @@ fn a_rows_text_stays_within_its_budget_through_resizes() -> Result {
         .chain(std::iter::repeat_n('\u{301}', 60))
         .collect();
     let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
-    for options in [Options::default(), Options::new().with_reflow(true)] {
+    for options in [Options::default(), Options::new().with(Feature::Reflow)] {
         let mut p = Parser::with_options(3, 40, 10, options)?;
         for _ in 0..3 {
             for _ in 0..20 {
@@ -230,7 +225,7 @@ fn a_rows_text_stays_within_its_budget_through_resizes() -> Result {
 #[test]
 fn degenerate_reflows_keep_every_invariant() -> Result {
     for (rows, cols) in [(1, 1), (1, 40), (40, 1), (2, 2)] {
-        let mut p = Parser::with_options(rows, cols, 10, Options::new().with_reflow(true))?;
+        let mut p = Parser::with_options(rows, cols, 10, Options::new().with(Feature::Reflow))?;
         p.process("\u{4f60}\u{597d}ab\r\n\u{1f600}x".as_bytes())?;
         p.resize(1, 1)?;
         invariants::check(&p);

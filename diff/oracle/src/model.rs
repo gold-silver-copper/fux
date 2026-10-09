@@ -207,7 +207,7 @@ pub struct Setup {
     pub prompt_marks: bool,
     pub rectangle_checksums: bool,
     pub setting_reports: bool,
-    /// `Options::palette`, which the pinned commit has not: see `side`.
+    /// `Feature::Palette`, which the pinned commit has not: see `side`.
     pub palette: bool,
     /// The name and version the terminal answers as.
     pub identity: Option<(&'static str, &'static str)>,

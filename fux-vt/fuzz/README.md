@@ -44,9 +44,9 @@ columns and h mod 16 history rows, and their high bits turn options on:
 
 | Byte | 0x10 | 0x20 | 0x40 | 0x80 |
 | --- | --- | --- | --- | --- |
-| history | `events` | `extended_replies` | `hyperlinks` | `prompt_marks` |
-| rows | `reflow` | `kitty_keyboard` | `identity` | `color_scheme_updates` |
-| columns | | | `setting_reports` | `rectangle_checksums` |
+| history | `Events` | `ExtendedReplies` | `Hyperlinks` | `PromptMarks` |
+| rows | `Reflow` | `KittyKeyboard` | `identity` | `ColorSchemeUpdates` |
+| columns | | | `SettingReports` | `RectangleChecksums` |
 
 Then operations:
 

@@ -143,7 +143,7 @@ public API (`oracle/src/side.rs`) after every step:
   (DECRQM, DSR, DA1/2/3, XTVERSION, DECRQSS, DECRQCRA, colour queries and
   more), the saved cursor, character sets, tab stops, the cluster the next
   character would join, REP, the kitty keyboard stacks.
-- **The standalone types:** `Cells` under random edits, `Cell::new`,
+- **The standalone types:** `Cells` under random edits, `CellRef::new`,
   `continues_cluster`, and the constants and limits.
 
 Not compared: allocation failure itself (forcing one needs `unsafe`; the
@@ -155,12 +155,9 @@ kept.
 
 **Adapters.** Where the two APIs part, give `side!` an argument for that
 part, read both into the same model, and list it here. Today: the
-modes, which the working tree reads with `Screen::mode` and the merge base
-with a getter each; `Options::palette` and `Screen::colors_changed`, which the merge base lacks.
-The working tree gets the option the case asks for; the base reports the
-option as asked and no colour changed. A commit without an adapter for its
-API does not build (`oracle.sh dfe1ffb`, before
-`Options::setting_reports`, stops there).
+modes, which the working tree reads with `Screen::mode` and the base with a
+getter each. A commit without an adapter for its API does not build
+(`oracle.sh 4f3975b`, before hosts made cells as `CellRef`, stops there).
 
 ### The inputs
 
@@ -196,7 +193,7 @@ until whole. `exempt`'s tests list what is taken out and what is kept.
 
 | Feature | Sequences taken out |
 | --- | --- |
-| the palette, `Options::palette` | OSC 4, 5, 104, 105, 110 to 119; OSC 10 to 19 when they set a colour (a query alone stays) |
+| the palette, `Feature::Palette` | OSC 4, 5, 104, 105, 110 to 119; OSC 10 to 19 when they set a colour (a query alone stays) |
 | reverse wraparound | `CSI ? 45 h/l`, `CSI ? 1045 h/l` |
 | modes kept as xterm keeps them | DECSCLM (`?4`), DECSCNM (5), DECARM (8), DECNKM (66), DECBKM (67) |
 | XTSAVE and XTRESTORE | `CSI ? Pm s`, `CSI ? Pm r` |

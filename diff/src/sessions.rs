@@ -70,7 +70,7 @@ pub struct World {
 
 /// The same code for the baseline's crates and the current ones.
 macro_rules! stack {
-    ($name:ident, $fux:ident, $id:ident, $layout:ident) => {
+    ($name:ident, $fux:ident, $id:ident, $layout:ident, $side:ident) => {
         pub mod $name {
             use super::Event;
             use std::collections::BTreeMap;
@@ -156,10 +156,6 @@ macro_rules! stack {
             fn mode(mode: &Mode) -> String {
                 match mode {
                     Mode::Normal => "normal".into(),
-                    Mode::Column { path, selected } => format!("column {path:?} {selected}"),
-                    Mode::Repeat { path } => format!("repeat {path:?}"),
-                    Mode::List(list) => format!("{list:?}"),
-                    Mode::Prompt(prompt) => format!("{prompt:?}"),
                     Mode::Confirm(confirm) => format!("{confirm:?}"),
                     Mode::Copy(c) => format!(
                         "copy {} top {:?} cursor {:?} selection {:?} search {:?} typing {:?} held {:?}",
@@ -171,6 +167,7 @@ macro_rules! stack {
                         c.typing.as_ref().map(|(seek, text)| (format!("{seek:?}"), text.clone())),
                         c.held_at
                     ),
+                    other => super::$side::overlay(other),
                 }
             }
 
@@ -247,8 +244,60 @@ macro_rules! stack {
     };
 }
 
-stack!(base, baseline, command, layout);
-stack!(cur, fux, id, id);
+stack!(base, baseline, command, layout, base_side);
+stack!(cur, fux, id, id, cur_side);
+
+/// The column, a repeat mode, a list and a prompt as each side keeps them,
+/// written alike.
+mod base_side {
+    use baseline::view::Mode;
+
+    pub fn overlay(mode: &Mode) -> String {
+        match mode {
+            Mode::Column { path, selected } => format!("column {path:?} {selected}"),
+            Mode::Repeat { path } => format!("repeat {path:?}"),
+            Mode::List(l) => format!(
+                "list {:?} {:?} {} {:?}",
+                l.title, l.items, l.selected, l.about
+            ),
+            Mode::Prompt(p) => format!(
+                "prompt {:?} {:?} {:?} {}",
+                p.title, p.purpose, p.text, p.cursor
+            ),
+            Mode::Normal | Mode::Confirm(_) | Mode::Copy(_) => String::new(),
+        }
+    }
+}
+
+mod cur_side {
+    use fux::view::{Choice, Mode};
+
+    pub fn overlay(mode: &Mode) -> String {
+        match mode {
+            Mode::Column(c) => {
+                let selected = c.entries.as_ref().map_or(0, Choice::index);
+                format!("column {:?} {selected}", c.path)
+            }
+            Mode::Repeat(r) => format!("repeat {:?}", r.path),
+            Mode::List(l) => {
+                let items: Vec<_> = l.items.iter().collect();
+                format!(
+                    "list {:?} {items:?} {} {:?}",
+                    l.title,
+                    l.items.index(),
+                    l.about
+                )
+            }
+            Mode::Prompt(p) => {
+                let (before, after) = (p.line.before(), p.line.after());
+                let text = format!("{before}{after}");
+                let cursor = before.chars().count();
+                format!("prompt {:?} {:?} {text:?} {cursor}", p.title, p.purpose)
+            }
+            Mode::Normal | Mode::Confirm(_) | Mode::Copy(_) => String::new(),
+        }
+    }
+}
 
 /// Whether any of the baseline's clients is in copy mode, a list or a
 /// repeat mode: for the summary.

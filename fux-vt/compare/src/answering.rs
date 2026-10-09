@@ -5,7 +5,7 @@
 //!
 //! esctest reads the screen back cell by cell with DECRQCRA, a checksum of
 //! a rectangle (VT420; ctlseqs, "CSI Pi ; Pg ; Pt ; Pl ; Pb ; Pr * y").
-//! fux-vt answers it ([`fux_vt::Options::rectangle_checksums`], added for
+//! fux-vt answers it ([`fux_vt::Feature::RectangleChecksums`], added for
 //! esctest); no other engine here does: Ghostty's core, alacritty and
 //! libvterm ignore it. It is how the test reads the screen, not what the
 //! test is about, so here it is answered from the engine's own screen, read

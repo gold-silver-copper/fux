@@ -9,7 +9,7 @@
 //! however the output is cut up; and again after reflowing narrower and
 //! back.
 #![no_main]
-use fux_vt::{Options, Parser, Row};
+use fux_vt::{Feature, Options, Parser, Row};
 use libfuzzer_sys::arbitrary::{self, Arbitrary};
 use libfuzzer_sys::fuzz_target;
 use unicode_width::UnicodeWidthChar;
@@ -112,7 +112,7 @@ fuzz_target!(|input: Input| {
         }
     }
 
-    let options = Options::new().with_reflow(true);
+    let options = Options::new().with(Feature::Reflow);
     let Ok(mut parser) = Parser::with_options(rows, cols, 1_000, options) else {
         return;
     };

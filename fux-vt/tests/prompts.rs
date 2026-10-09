@@ -2,11 +2,11 @@
 //! iTerm2's "Shell Integration/FinalTerm"): `A` marks the row a prompt
 //! starts on, after a fresh line; the mark goes with its row.
 
-use fux_vt::{Options, Parser};
+use fux_vt::{Feature, Options, Parser};
 #[path = "corpus/pieces.rs"]
 mod pieces;
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
-const MARKS: Options = Options::new().with_prompt_marks(true);
+const MARKS: Options = Options::new().with(Feature::PromptMarks);
 
 /// The retained rows a prompt starts on, counted from the oldest.
 fn marks(p: &Parser) -> Vec<usize> {
@@ -48,7 +48,7 @@ fn a_prompt_marks_its_row_and_the_others_change_nothing() -> Result {
     assert_eq!(text(&q, 0), "abc");
     // The same whatever pieces the output came in, and with every option.
     for size in [1, 2, 5] {
-        let options = MARKS.with_events(true).with_hyperlinks(true);
+        let options = MARKS.with(Feature::Events).with(Feature::Hyperlinks);
         let mut q = Parser::with_options(8, 10, 10, options)?;
         for piece in pieces::pieces(SESSION, size) {
             q.process(piece)?;
@@ -121,7 +121,7 @@ fn marks_survive_resize_and_reflow() -> Result {
     p.process(input)?;
     p.resize(4, 6)?;
     assert_eq!(marks(&p), [0, 2]);
-    let mut p = Parser::with_options(4, 20, 10, MARKS.with_reflow(true))?;
+    let mut p = Parser::with_options(4, 20, 10, MARKS.with(Feature::Reflow))?;
     p.process(input)?;
     // "$ long command" takes three rows of six.
     p.resize(4, 6)?;
@@ -131,7 +131,7 @@ fn marks_survive_resize_and_reflow() -> Result {
     // A mark on a line's second row goes where that row's first cell goes:
     // narrower, its own row; wider, the line's first. A mark is a row's, so
     // from there on it is the first row's.
-    let mut p = Parser::with_options(3, 4, 10, MARKS.with_reflow(true))?;
+    let mut p = Parser::with_options(3, 4, 10, MARKS.with(Feature::Reflow))?;
     p.process(b"abcde\r\x1b]133;A\x07")?;
     assert_eq!(marks(&p), [1]);
     p.resize(3, 2)?;
@@ -143,7 +143,7 @@ fn marks_survive_resize_and_reflow() -> Result {
     Ok(())
 }
 
-/// Without `Options::prompt_marks`, OSC 133 is ignored: no mark, no fresh
+/// Without `Feature::PromptMarks`, OSC 133 is ignored: no mark, no fresh
 /// line, and no OSC payload kept.
 #[test]
 fn without_the_option_prompt_marks_are_ignored() -> Result {
