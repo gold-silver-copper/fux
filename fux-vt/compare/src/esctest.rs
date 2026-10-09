@@ -258,8 +258,8 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
 /// esctest needs that panes leave off.
 pub fn options() -> fux_vt::Options {
     fux::pane::OPTIONS
-        .with_rectangle_checksums(true)
-        .with_extended_replies(true)
+        .with(fux_vt::Feature::RectangleChecksums)
+        .with(fux_vt::Feature::ExtendedReplies)
 }
 
 /// Where esctest is: `references/xterm/esctest2/esctest`, which
@@ -778,8 +778,8 @@ fn in_fux(job: &Job<'_>, fux: &Path, area: &Area, scratch: &Path) -> Result<Ran,
     let server = server(fux, &argv)?;
     let rows = ROWS.saturating_add(1);
     let terminal = fux_vt::Options::new()
-        .with_extended_replies(true)
-        .with_events(true);
+        .with(fux_vt::Feature::ExtendedReplies)
+        .with(fux_vt::Feature::Events);
     let mut parser = fux_vt::Parser::with_options(rows, COLS, 0, terminal)
         .map_err(|e| format!("fux-vt: {e}"))?;
     let (master, slave) = fuxix::pty::open(rows, COLS).map_err(|e| format!("a PTY: {e}"))?;

@@ -223,7 +223,7 @@ enum State {
 /// nothing beyond this is ever buffered.
 pub const OSC_PAYLOAD_LIMIT: usize = 64 * 1024;
 
-/// The most OSC payload bytes retained with [`Options::prompt_marks`] alone:
+/// The most OSC payload bytes retained with [`Feature::PromptMarks`] alone:
 /// enough to tell a prompt mark, `133;A`, or a prompt's kind, `133;P;k=i`.
 const OSC_PREFIX: usize = 16;
 
@@ -232,7 +232,7 @@ const OSC_PREFIX: usize = 16;
 const REQUEST_LIMIT: usize = 4;
 
 /// A DECRQSS request (`DCS $ q Pt ST`) as far as it has come, with
-/// [`Options::setting_reports`].
+/// [`Feature::SettingReports`].
 #[derive(Clone, Copy, Debug, Default)]
 struct Request {
     bytes: [u8; REQUEST_LIMIT],
@@ -257,39 +257,36 @@ impl Request {
     }
 }
 
-/// Opt-in behaviour that needs the host's cooperation. The default
-/// (everything off) is fux's policy: child output causes no title, bell or
-/// clipboard side effects, OSC payloads are never retained, only DSR 5n/6n
-/// and primary DA are answered, keyboard protocol requests are ignored,
-/// hyperlinks and prompt marks are ignored, and a resize does not reflow.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// A piece of opt-in behaviour that needs the host's cooperation, turned on
+/// in [`Options`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub struct Options {
+pub enum Feature {
     /// Deliver OSC 0/1/2 (icon name / window title), OSC 52 (clipboard),
     /// BEL, and the dynamic colours' queries (OSC 10 to 19, as
     /// [`Event::ColorQuery`]) as [`Event`]s. OSC payloads are buffered up
     /// to [`OSC_PAYLOAD_LIMIT`].
-    pub events: bool,
+    Events,
     /// Also answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`), DECXCPR
     /// (`CSI ? 6 n`) and secondary device attributes (`CSI > c`).
-    pub extended_replies: bool,
+    ExtendedReplies,
     /// Answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`) alone, as
-    /// [`Options::extended_replies`] does with the rest: how programs learn
+    /// [`Feature::ExtendedReplies`] does with the rest: how programs learn
     /// which modes the terminal knows, synchronized output (2026) among
     /// them, without what DA2 and DECXCPR say about it.
-    pub mode_reports: bool,
+    ModeReports,
     /// Mode 2048, in-band resize (`references/modern/mode_2048_in_band_resize.md`):
     /// track it, report the size as `CSI 48 ; rows ; cols ; 0 ; 0 t` when a
     /// program sets it, and give the host the report to send after a
     /// resize ([`Parser::resize_report`]). Pixel sizes are reported as 0,
     /// which the spec allows a terminal that does not know them. Off, the
     /// mode is not recognized, and DECRQM says so.
-    pub in_band_resize: bool,
+    InBandResize,
     /// Answer xterm's text-area size query (`CSI 18 t`, ctlseqs' window
     /// manipulation) with `CSI 8 ; rows ; cols t`, the screen's size in
     /// characters. The pixel query (`CSI 14 t`) stays unanswered: fux-vt
     /// knows no pixels.
-    pub size_reports: bool,
+    SizeReports,
     /// Mode 2031, colour-scheme change reports
     /// (`references/modern/mode_2031_color_scheme_updates.md`): track it,
     /// read with [`Screen::color_scheme_updates`], and report it to DECRQM.
@@ -297,33 +294,33 @@ pub struct Options {
     /// (`CSI ? 997 ; 1 n` dark, `CSI ? 997 ; 2 n` light) and answers
     /// `CSI ? 996 n`, which stays unhandled. Off, the mode is not
     /// recognized, and DECRQM says so.
-    pub color_scheme_updates: bool,
+    ColorSchemeUpdates,
     /// Track the kitty keyboard protocol's flag stacks (`CSI > u`, `CSI < u`,
     /// `CSI = u`) and xterm's modifyOtherKeys (`CSI > 4 ; Pv m`), and answer
     /// the flag query `CSI ? u`. State only: the host encodes keys, reading
     /// [`Screen::kitty_keyboard_flags`] and [`Screen::modify_other_keys`].
     /// A host that cannot encode keys that way must leave this off, or
     /// programs will believe it can.
-    pub kitty_keyboard: bool,
+    KittyKeyboard,
     /// Re-wrap the primary screen and its history at the new width on
     /// resize, keeping the cursor on its character. The alternate screen is
     /// resized without reflow, as its programs redraw anyway.
-    pub reflow: bool,
+    Reflow,
     /// Keep hyperlinks (`OSC 8 ; params ; URI ST`): each cell printed while
     /// one is open has it, read with [`crate::Row::link`]. The URIs are
     /// kept, so OSC 8 payloads are buffered, up to [`OSC_PAYLOAD_LIMIT`],
     /// and each screen holds up to 4 MiB of links. Off, OSC 8 is ignored.
-    pub hyperlinks: bool,
+    Hyperlinks,
     /// Keep prompt marks (`OSC 133 ; A`, semantic prompts): the row a prompt
     /// starts on is marked, read with [`crate::Row::starts_prompt`], and `A`
     /// and `L` start a fresh line. An OSC string's first bytes are kept to
     /// tell one. Off, OSC 133 is ignored.
-    pub prompt_marks: bool,
+    PromptMarks,
     /// Answer DECRQCRA, a checksum of a rectangle of the screen, with
     /// DECCKSR, as xterm and the VT520 sum it (`Screen::rectangle_checksum`).
     /// It lets a program read what its screen shows, so xterm refuses it by
     /// default, and fux's panes leave it off; esctest reads the screen so.
-    pub rectangle_checksums: bool,
+    RectangleChecksums,
     /// Answer DECRQSS (`DCS $ q Pt ST`, xterm's ctlseqs; DECRPSS in the
     /// VT510 manual) for the pen (`m`, SGR), the cursor shape (` q`,
     /// DECSCUSR) and the margins (`r`, DECSTBM), as xterm answers: `DCS 1 $
@@ -334,109 +331,98 @@ pub struct Options {
     /// learn from the pen what the terminal draws: neovim sets a curly
     /// underline and asks, and draws its diagnostics curly only if `4:3`
     /// comes back. Off, DECRQSS is ignored, as every other DCS.
-    pub setting_reports: bool,
+    SettingReports,
     /// Keep the colours a program sets and answer its queries of them, as
     /// xterm does: the palette (OSC 4, 104), the special colours (OSC 5,
     /// 105) and the dynamic colours (OSC 10 to 19, 110 to 119); `palette.rs`
     /// says how. Read with [`Screen::palette_color`] and
     /// [`Screen::dynamic_color`]. OSC payloads are buffered, up to
     /// [`OSC_PAYLOAD_LIMIT`]. Off, these OSCs are ignored, and OSC 10 to 19
-    /// queries are events, with [`Options::events`].
-    pub palette: bool,
-    /// Answer as this terminal rather than as a bare VT100: see [`Identity`].
-    pub identity: Option<Identity>,
+    /// queries are events, with [`Feature::Events`].
+    Palette,
+}
+
+impl Feature {
+    /// Every feature, in declaration order: a new one goes last, here too,
+    /// as [`Options`] keeps a place for each.
+    pub const ALL: [Feature; 13] = [
+        Feature::Events,
+        Feature::ExtendedReplies,
+        Feature::ModeReports,
+        Feature::InBandResize,
+        Feature::SizeReports,
+        Feature::ColorSchemeUpdates,
+        Feature::KittyKeyboard,
+        Feature::Reflow,
+        Feature::Hyperlinks,
+        Feature::PromptMarks,
+        Feature::RectangleChecksums,
+        Feature::SettingReports,
+        Feature::Palette,
+    ];
+}
+
+/// How a parser behaves: the [`Feature`]s on, and who it answers as. The
+/// default (no feature, no identity) is fux's policy: child output causes
+/// no title, bell or clipboard side effects, OSC payloads are never
+/// retained, only DSR 5n/6n and primary DA are answered, keyboard protocol
+/// requests are ignored, hyperlinks and prompt marks are ignored, and a
+/// resize does not reflow.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Options {
+    /// Whether each feature is on, by its discriminant: a byte each, read
+    /// as a field of its own would be (a bit each would be one load the
+    /// compiler keeps live through the parser's dispatch, costing more).
+    on: [bool; Feature::ALL.len()],
+    identity: Option<Identity>,
 }
 
 impl Options {
-    /// Everything off, as [`Options::default`]; the `with_` methods turn
-    /// each on, in a `const` too.
+    /// Nothing on, as [`Options::default`], in a `const` too.
     pub const fn new() -> Self {
         Self {
-            events: false,
-            extended_replies: false,
-            mode_reports: false,
-            in_band_resize: false,
-            size_reports: false,
-            color_scheme_updates: false,
-            kitty_keyboard: false,
-            reflow: false,
-            hyperlinks: false,
-            prompt_marks: false,
-            rectangle_checksums: false,
-            setting_reports: false,
-            palette: false,
+            on: [false; Feature::ALL.len()],
             identity: None,
         }
     }
-    /// These options with [`Options::events`] as `on` says.
-    pub const fn with_events(mut self, on: bool) -> Self {
-        self.events = on;
+    /// These options with `feature` on.
+    pub const fn with(self, feature: Feature) -> Self {
+        self.set(feature, true)
+    }
+    /// These options with `feature` as `on` says.
+    pub const fn set(mut self, feature: Feature, on: bool) -> Self {
+        if let Some((_, [slot, ..])) = self.on.split_at_mut_checked(feature as usize) {
+            *slot = on;
+        }
         self
     }
-    /// These options with [`Options::extended_replies`] as `on` says.
-    pub const fn with_extended_replies(mut self, on: bool) -> Self {
-        self.extended_replies = on;
-        self
-    }
-    /// These options with [`Options::mode_reports`] as `on` says.
-    pub const fn with_mode_reports(mut self, on: bool) -> Self {
-        self.mode_reports = on;
-        self
-    }
-    /// These options with [`Options::in_band_resize`] as `on` says.
-    pub const fn with_in_band_resize(mut self, on: bool) -> Self {
-        self.in_band_resize = on;
-        self
-    }
-    /// These options with [`Options::size_reports`] as `on` says.
-    pub const fn with_size_reports(mut self, on: bool) -> Self {
-        self.size_reports = on;
-        self
-    }
-    /// These options with [`Options::color_scheme_updates`] as `on` says.
-    pub const fn with_color_scheme_updates(mut self, on: bool) -> Self {
-        self.color_scheme_updates = on;
-        self
-    }
-    /// These options with [`Options::kitty_keyboard`] as `on` says.
-    pub const fn with_kitty_keyboard(mut self, on: bool) -> Self {
-        self.kitty_keyboard = on;
-        self
-    }
-    /// These options with [`Options::reflow`] as `on` says.
-    pub const fn with_reflow(mut self, on: bool) -> Self {
-        self.reflow = on;
-        self
-    }
-    /// These options with [`Options::prompt_marks`] as `on` says.
-    pub const fn with_prompt_marks(mut self, on: bool) -> Self {
-        self.prompt_marks = on;
-        self
-    }
-    /// These options with [`Options::hyperlinks`] as `on` says.
-    pub const fn with_hyperlinks(mut self, on: bool) -> Self {
-        self.hyperlinks = on;
-        self
-    }
-    /// These options with [`Options::rectangle_checksums`] as `on` says.
-    pub const fn with_rectangle_checksums(mut self, on: bool) -> Self {
-        self.rectangle_checksums = on;
-        self
-    }
-    /// These options with [`Options::setting_reports`] as `on` says.
-    pub const fn with_setting_reports(mut self, on: bool) -> Self {
-        self.setting_reports = on;
-        self
-    }
-    /// These options with [`Options::palette`] as `on` says.
-    pub const fn with_palette(mut self, on: bool) -> Self {
-        self.palette = on;
-        self
+    /// Whether `feature` is on.
+    pub const fn has(&self, feature: Feature) -> bool {
+        matches!(
+            self.on.split_at_checked(feature as usize),
+            Some((_, [true, ..]))
+        )
     }
     /// These options answering as `identity`, or as a bare VT100 if `None`.
     pub const fn with_identity(mut self, identity: Option<Identity>) -> Self {
         self.identity = identity;
         self
+    }
+    /// Who the terminal answers as: see [`Identity`].
+    pub const fn identity(&self) -> Option<Identity> {
+        self.identity
+    }
+}
+
+impl From<Feature> for Options {
+    fn from(feature: Feature) -> Self {
+        Options::new().with(feature)
+    }
+}
+
+impl FromIterator<Feature> for Options {
+    fn from_iter<I: IntoIterator<Item = Feature>>(features: I) -> Self {
+        features.into_iter().fold(Options::new(), Options::with)
     }
 }
 
@@ -474,7 +460,7 @@ impl Identity {
 }
 
 /// A side effect requested by child output. Only delivered with
-/// [`Options::events`]; payloads are raw bytes, bounded by [`OSC_PAYLOAD_LIMIT`].
+/// [`Feature::Events`]; payloads are raw bytes, bounded by [`OSC_PAYLOAD_LIMIT`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event<'a> {
@@ -498,7 +484,7 @@ pub enum Event<'a> {
     /// an event each, in order. xterm answers `OSC Ps ; rgb:RRRR/GGGG/BBBB`,
     /// ended as the query was; the host knows the colours, so the answer
     /// is its to make. A request to set a colour is no event; with
-    /// [`Options::palette`], neither is a query of a colour the program
+    /// [`Feature::Palette`], neither is a query of a colour the program
     /// set, which fux-vt answers itself.
     ColorQuery {
         /// The colour asked for, 10 to 19.
@@ -562,13 +548,13 @@ impl<'a> Params<'a> {
     }
 }
 
-/// Receives terminal query replies, with [`Options::events`] events, and
+/// Receives terminal query replies, with [`Feature::Events`] events, and
 /// sequences fux-vt does not implement. All default to discarding, so an
 /// implementation handles only what it needs.
 pub trait Sink {
     /// A reply to a query, to send back to the program.
     fn reply(&mut self, _bytes: &[u8]) {}
-    /// An event, with [`Options::events`].
+    /// An event, with [`Feature::Events`].
     fn event(&mut self, _event: Event<'_>) {}
     /// A complete sequence fux-vt does not implement.
     fn unhandled(&mut self, _sequence: Unhandled<'_>) {}
@@ -589,13 +575,13 @@ pub struct Parser {
     options: Options,
     /// OSC payload, at most `osc_limit` bytes.
     osc: Vec<u8>,
-    /// `OSC_PAYLOAD_LIMIT` with `options.events`, `options.hyperlinks` or
-    /// `options.palette`, else `OSC_PREFIX` with `options.prompt_marks`,
+    /// `OSC_PAYLOAD_LIMIT` with `options.has(Feature::Events)`, `options.has(Feature::Hyperlinks)` or
+    /// `options.has(Feature::Palette)`, else `OSC_PREFIX` with `options.has(Feature::PromptMarks)`,
     /// else 0: set once, as it is asked for every byte of an OSC.
     osc_limit: usize,
     osc_overflow: bool,
     /// The DECRQSS the DCS string being read is, with
-    /// [`Options::setting_reports`]; `None` for any other string.
+    /// [`Feature::SettingReports`]; `None` for any other string.
     request: Option<Request>,
     /// Whether the CSI just dispatched began a frame (set synchronized
     /// output), for `Parser::process_until_frame`, which stops at once and
@@ -632,9 +618,12 @@ impl Parser {
             screen: Screen::new(rows, cols, history_lines)?,
             options,
             osc: Vec::new(),
-            osc_limit: if options.events || options.hyperlinks || options.palette {
+            osc_limit: if options.has(Feature::Events)
+                || options.has(Feature::Hyperlinks)
+                || options.has(Feature::Palette)
+            {
                 OSC_PAYLOAD_LIMIT
-            } else if options.prompt_marks {
+            } else if options.has(Feature::PromptMarks) {
                 OSC_PREFIX
             } else {
                 0
@@ -662,7 +651,7 @@ impl Parser {
         &self.screen
     }
     /// Tells the parser what the host's terminal shows for palette entry
-    /// `index` (`None`: the host does not know), with `Options::palette`: a
+    /// `index` (`None`: the host does not know), with `Feature::Palette`: a
     /// program's query of an entry it has not set (`OSC 4 ; index ; ?`) is
     /// answered with it rather than with xterm's default. A colour the
     /// program set still wins, and no reset of the program's colours (OSC
@@ -674,17 +663,18 @@ impl Parser {
         self.screen.set_host_color(index, rgb)
     }
     /// Resizes the terminal, reflowing the primary screen with
-    /// [`Options::reflow`].
+    /// [`Feature::Reflow`].
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error> {
-        self.screen.resize(rows, cols, self.options.reflow)
+        self.screen
+            .resize(rows, cols, self.options.has(Feature::Reflow))
     }
     /// The size report a program that set in-band resize (mode 2048) is to
     /// be sent after the terminal's size changed: `CSI 48 ; rows ; cols ; 0
     /// ; 0 t`, or `None` if it did not set it or
-    /// [`Options::in_band_resize`] is off. The host sends it once the
+    /// [`Feature::InBandResize`] is off. The host sends it once the
     /// program's terminal has the new size, as the spec requires.
     pub fn resize_report(&self) -> Option<Vec<u8>> {
-        (self.options.in_band_resize && self.screen.in_band_resize())
+        (self.options.has(Feature::InBandResize) && self.screen.in_band_resize())
             .then(|| self.screen.size_report().as_bytes().to_vec())
     }
     /// The options the parser was made with.
@@ -703,7 +693,7 @@ impl Parser {
     ) -> Result<(), Error> {
         self.process_with(bytes, &mut Replies(reply))
     }
-    /// Process output, delivering replies and (with [`Options::events`]) events.
+    /// Process output, delivering replies and (with [`Feature::Events`]) events.
     pub fn process_with(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(), Error> {
         self.run::<false>(bytes, sink).map(|_| ())
     }
@@ -1004,7 +994,7 @@ impl Parser {
 
     /// Execute a C0 control. BEL becomes an event when events are enabled.
     fn control(&mut self, byte: u8, sink: &mut impl Sink) -> Result<(), Error> {
-        if byte == 7 && self.options.events {
+        if byte == 7 && self.options.has(Feature::Events) {
             sink.event(Event::Bell);
         }
         self.screen.control(byte)
@@ -1146,7 +1136,7 @@ impl Parser {
                         if dcs {
                             self.state = State::DcsString;
                             // DECRQSS: `$ q` with no parameters.
-                            let decrqss = self.options.setting_reports
+                            let decrqss = self.options.has(Feature::SettingReports)
                                 && byte == b'q'
                                 && !self.ignoring
                                 && self.intermediates.get(..self.intermediate_len) == Some(b"$")
@@ -1234,10 +1224,10 @@ impl Parser {
 
     /// Carries out the completed OSC string, ended by BEL if `bel`, else
     /// by ESC (ST): 133 (prompt marks), from its first bytes, with
-    /// [`Options::prompt_marks`]; 8 (hyperlinks) with [`Options::hyperlinks`];
+    /// [`Feature::PromptMarks`]; 8 (hyperlinks) with [`Feature::Hyperlinks`];
     /// the colours (4, 5, 10 to 19, 104, 105, 110 to 119) with
-    /// [`Options::palette`]; 0, 1, 2, 52 and colour queries (10 to 19)
-    /// delivered as events with [`Options::events`]. An overflowed string is no event, and closes any
+    /// [`Feature::Palette`]; 0, 1, 2, 52 and colour queries (10 to 19)
+    /// delivered as events with [`Feature::Events`]. An overflowed string is no event, and closes any
     /// link; others are dropped.
     ///
     /// Kept out of line: inlined into `byte`, with the screen's OSC
@@ -1254,7 +1244,7 @@ impl Parser {
     }
 
     /// Answers the DECRQSS whose string just ended (see
-    /// [`Options::setting_reports`]). Out of line, as `dispatch_osc` is.
+    /// [`Feature::SettingReports`]). Out of line, as `dispatch_osc` is.
     #[inline(never)]
     fn dispatch_request(&mut self, sink: &mut impl Sink) {
         let Some(request) = self.request.take() else {
@@ -1289,30 +1279,32 @@ impl Parser {
             None => (payload, &[][..]),
         };
         match command {
-            b"133" if self.options.prompt_marks => return self.screen.prompt_osc(rest),
+            b"133" if self.options.has(Feature::PromptMarks) => {
+                return self.screen.prompt_osc(rest);
+            }
             // A link too long to keep is no link: what follows is printed
             // without one.
-            b"8" if self.options.hyperlinks => {
+            b"8" if self.options.has(Feature::Hyperlinks) => {
                 let whole = if self.osc_overflow { &[][..] } else { rest };
                 self.screen.hyperlink_osc(whole);
                 return Ok(());
             }
             _ => {}
         }
-        if self.options.palette
+        if self.options.has(Feature::Palette)
             && !self.osc_overflow
             && crate::palette::osc(
                 self.screen.colours_mut(),
                 command,
                 rest,
                 bel,
-                self.options.events,
+                self.options.has(Feature::Events),
                 sink,
             )
         {
             return Ok(());
         }
-        if !self.options.events || self.osc_overflow {
+        if !self.options.has(Feature::Events) || self.osc_overflow {
             return Ok(());
         }
         match command {
@@ -1336,14 +1328,14 @@ impl Parser {
         Ok(())
     }
 
-    /// Replies enabled by [`Options::extended_replies`] and
+    /// Replies enabled by [`Feature::ExtendedReplies`] and
     /// [`Options::identity`] for CSI sequences the screen does not answer
     /// itself.
     fn query_reply(&self, intermediates: &[u8], byte: u8) -> Option<Reply> {
         let n = self.params.first(0, 0);
-        let extended = self.options.extended_replies;
-        let modes = extended || self.options.mode_reports;
-        let identity = self.options.identity;
+        let extended = self.options.has(Feature::ExtendedReplies);
+        let modes = extended || self.options.has(Feature::ModeReports);
+        let identity = self.options.identity();
         match (intermediates, byte) {
             (b"?", b'n') if n == 6 && extended => {
                 let (row, col) = self.screen.reported_cursor(&self.options);
@@ -1366,17 +1358,17 @@ impl Parser {
                 let (name, version) = (identity.name, identity.version);
                 Some(Reply::of(format_args!("\x1bP>|{name} {version}\x1b\\")))
             }
-            (b"", b't') if n == 18 && self.options.size_reports => {
+            (b"", b't') if n == 18 && self.options.has(Feature::SizeReports) => {
                 let (rows, cols) = self.screen.size();
                 Some(Reply::of(format_args!("\x1b[8;{rows};{cols}t")))
             }
-            (b"*", b'y') if self.options.rectangle_checksums => {
+            (b"*", b'y') if self.options.has(Feature::RectangleChecksums) => {
                 Some(self.screen.rectangle_checksum(&self.params))
             }
             (b"?$", b'p') if modes => {
                 let status = match n {
-                    2048 if !self.options.in_band_resize => 0,
-                    2031 if !self.options.color_scheme_updates => 0,
+                    2048 if !self.options.has(Feature::InBandResize) => 0,
+                    2031 if !self.options.has(Feature::ColorSchemeUpdates) => 0,
                     _ => self.screen.private_mode_status(n),
                 };
                 Some(Reply::of(format_args!("\x1b[?{n};{status}$y")))

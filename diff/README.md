@@ -154,12 +154,13 @@ redesign changes on purpose (`RowId` and `Mark` are compared by number);
 kept.
 
 **Adapters.** Where the two APIs part, give `side!` an argument for that
-part, read both into the same model, and list it here. Today:
-`Options::palette` and `Screen::colors_changed`, which the merge base lacks.
+part, read both into the same model, and list it here. Today: the
+options (a set of `Feature`s here, a field each in the base);
+`Feature::Palette` and `Screen::colors_changed`, which the merge base lacks.
 The working tree gets the option the case asks for; the base reports the
 option as asked and no colour changed. A commit without an adapter for its
 API does not build (`oracle.sh dfe1ffb`, before
-`Options::setting_reports`, stops there).
+`Feature::SettingReports`, stops there).
 
 ### The inputs
 
@@ -195,7 +196,7 @@ until whole. `exempt`'s tests list what is taken out and what is kept.
 
 | Feature | Sequences taken out |
 | --- | --- |
-| the palette, `Options::palette` | OSC 4, 5, 104, 105, 110 to 119; OSC 10 to 19 when they set a colour (a query alone stays) |
+| the palette, `Feature::Palette` | OSC 4, 5, 104, 105, 110 to 119; OSC 10 to 19 when they set a colour (a query alone stays) |
 | reverse wraparound | `CSI ? 45 h/l`, `CSI ? 1045 h/l` |
 | modes kept as xterm keeps them | DECSCLM (`?4`), DECSCNM (5), DECARM (8), DECNKM (66), DECBKM (67) |
 | XTSAVE and XTRESTORE | `CSI ? Pm s`, `CSI ? Pm r` |

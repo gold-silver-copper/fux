@@ -1,11 +1,11 @@
 //! Hyperlinks (OSC 8, `references/modern/osc8_hyperlinks.md`), with
-//! `Options::hyperlinks`: each cell printed while a link is open keeps it,
+//! `Feature::Hyperlinks`: each cell printed while a link is open keeps it,
 //! through scrolling, erasing, editing and resizing, within bounds.
 
-use fux_vt::{ID_LIMIT, OSC_PAYLOAD_LIMIT, Options, Parser, Row, URI_LIMIT};
+use fux_vt::{Feature, ID_LIMIT, OSC_PAYLOAD_LIMIT, Options, Parser, Row, URI_LIMIT};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
-const LINKS: Options = Options::new().with_hyperlinks(true);
+const LINKS: Options = Options::new().with(Feature::Hyperlinks);
 
 fn parser(
     rows: u16,
@@ -204,7 +204,7 @@ fn resizing_and_reflowing_keep_links() -> Result {
     let mut p = parser(2, 8, 4, text)?;
     p.resize(2, 4)?;
     assert_eq!(uris_at(&p, 0), expected(&["-", "-", "u", "u"]));
-    let mut p = Parser::with_options(2, 8, 4, LINKS.with_reflow(true))?;
+    let mut p = Parser::with_options(2, 8, 4, LINKS.with(Feature::Reflow))?;
     p.process(text)?;
     p.resize(2, 4)?;
     assert_eq!(uris_at(&p, 0), expected(&["-", "-", "u", "u"]));
@@ -215,7 +215,7 @@ fn resizing_and_reflowing_keep_links() -> Result {
         expected(&["-", "-", "u", "u", "u", "u", "-", "-"])
     );
     // The link still open goes on in the reflowed grid.
-    let mut p = Parser::with_options(2, 4, 4, LINKS.with_reflow(true))?;
+    let mut p = Parser::with_options(2, 4, 4, LINKS.with(Feature::Reflow))?;
     p.process(b"\x1b]8;;w\x07ab")?;
     p.resize(2, 6)?;
     p.process(b"c")?;

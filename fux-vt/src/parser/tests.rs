@@ -234,20 +234,9 @@ fn scalar(
 
 /// Random options, each on or off.
 fn options(r: &mut Rng) -> Options {
-    Options::new()
-        .with_events(r.chance(50))
-        .with_extended_replies(r.chance(50))
-        .with_mode_reports(r.chance(50))
-        .with_in_band_resize(r.chance(50))
-        .with_size_reports(r.chance(50))
-        .with_color_scheme_updates(r.chance(50))
-        .with_kitty_keyboard(r.chance(50))
-        .with_reflow(r.chance(50))
-        .with_hyperlinks(r.chance(50))
-        .with_prompt_marks(r.chance(50))
-        .with_rectangle_checksums(r.chance(50))
-        .with_setting_reports(r.chance(50))
-        .with_palette(r.chance(50))
+    let features = Feature::ALL.into_iter().filter(|_| r.chance(50));
+    features
+        .collect::<Options>()
         .with_identity(r.chance(50).then_some(Identity {
             name: "fux",
             version: "1.2.3",
