@@ -105,11 +105,17 @@ fn blink_hidden_strikeout_and_underline_colour_are_stored_on_cells() -> Result {
     assert!(cell(&p, 0, 1)?.hidden());
     assert!(!cell(&p, 0, 2)?.hidden() && cell(&p, 0, 2)?.strikeout());
     assert!(!cell(&p, 0, 3)?.strikeout());
-    assert_eq!(cell(&p, 0, 3)?.underline_color(), Color::Rgb(1, 2, 3));
+    assert_eq!(
+        cell(&p, 0, 3)?.underline_color(),
+        Color::Rgb([1, 2, 3].into())
+    );
     assert_eq!(cell(&p, 0, 4)?.underline_color(), Color::Idx(9));
     assert_eq!(cell(&p, 0, 5)?.underline_color(), Color::Default);
     assert!(cell(&p, 0, 6)?.hidden() && cell(&p, 0, 6)?.strikeout());
-    assert_eq!(cell(&p, 0, 6)?.underline_color(), Color::Rgb(4, 5, 6));
+    assert_eq!(
+        cell(&p, 0, 6)?.underline_color(),
+        Color::Rgb([4, 5, 6].into())
+    );
     assert!(
         !cell(&p, 0, 7)?.hidden() && !cell(&p, 0, 7)?.strikeout(),
         "SGR 0 resets"

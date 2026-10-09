@@ -7,7 +7,7 @@ use crate::test_rng::Rng;
 fn stored_cells_read_back_as_they_were_made() {
     let attributes = Attributes {
         foreground: Packed::new(Color::Idx(9)),
-        background: Packed::new(Color::Rgb(1, 2, 3)),
+        background: Packed::new(Color::Rgb([1, 2, 3].into())),
         underline_color: Packed::new(Color::Idx(4)),
         flags: (0x1ff & !Attributes::RAPID_BLINK) | Attributes::UNDERLINE,
     };
@@ -34,7 +34,7 @@ fn stored_cells_read_back_as_they_were_made() {
 #[test]
 fn underline_styles_keep_to_their_own_bits() {
     use super::UnderlineStyle;
-    let others = Attributes::new(Color::Idx(1), Color::Rgb(1, 2, 3))
+    let others = Attributes::new(Color::Idx(1), Color::Rgb([1, 2, 3].into()))
         .with_bold(true)
         .with_dim(true)
         .with_italic(true)

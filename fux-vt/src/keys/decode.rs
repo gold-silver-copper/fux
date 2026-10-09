@@ -45,7 +45,8 @@
 //!
 //! An answer's string longer than any answer (`OSC_LIMIT`, `DCS_LIMIT`) is
 //! dropped to its end as it arrives, none of it typed.
-use crate::keys::colour::{Rgb, Scheme};
+use crate::Rgb;
+use crate::keys::colour::Scheme;
 use crate::keys::encode::PASTE_END;
 use crate::keys::mouse::{self, MouseEvent};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
@@ -97,13 +98,10 @@ pub enum Input {
 /// What the terminal answers fux (`outer`), told from keys by its form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reply {
-    /// `OSC 10 ; rgb:… ST` (foreground) or `OSC 11 ; …` (background).
-    Colour {
-        /// Which colour: 10 the foreground, 11 the background.
-        number: u8,
-        /// The colour.
-        rgb: Rgb,
-    },
+    /// `OSC 10 ; rgb:… ST`: the foreground.
+    Foreground(Rgb),
+    /// `OSC 11 ; rgb:… ST`: the background.
+    Background(Rgb),
     /// `OSC 4 ; index ; rgb:… ST`: a palette entry.
     Palette {
         /// The entry, 0 to 255.
@@ -650,23 +648,18 @@ fn dcs_reply(payload: &[u8]) -> Option<Reply> {
 /// `10 ; rgb:…` or `11 ; rgb:…`: the terminal's foreground or background;
 /// `4 ; index ; rgb:…`: one of its palette entries.
 fn colour_reply(payload: &[u8]) -> Option<Reply> {
-    let split = payload.iter().position(|b| *b == b';')?;
-    let (number, spec) = payload.split_at_checked(split)?;
-    let number = match number {
-        b"10" => 10,
-        b"11" => 11,
+    let mut params = payload.split(|b| *b == b';');
+    let reply = match params.next()? {
+        b"10" => Reply::Foreground(Rgb::parse(params.next()?)?),
+        b"11" => Reply::Background(Rgb::parse(params.next()?)?),
         b"4" => {
-            let entry = spec.get(1..)?;
-            let split = entry.iter().position(|b| *b == b';')?;
-            let (index, spec) = entry.split_at_checked(split)?;
-            let index = std::str::from_utf8(index).ok()?.parse::<u8>().ok()?;
-            let rgb = Rgb::parse(spec.get(1..)?)?;
-            return Some(Reply::Palette { index, rgb });
+            let index = std::str::from_utf8(params.next()?).ok()?.parse().ok()?;
+            let rgb = Rgb::parse(params.next()?)?;
+            Reply::Palette { index, rgb }
         }
         _ => return None,
     };
-    let rgb = Rgb::parse(spec.get(1..)?)?;
-    Some(Reply::Colour { number, rgb })
+    params.next().is_none().then_some(reply)
 }
 
 /// A CSI answer from the terminal, `params` from its `?` on, ending with
@@ -981,7 +974,8 @@ fn after(from: Instant, wait: Duration) -> Instant {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keys::colour::{Rgb, Scheme};
+    use crate::Rgb;
+    use crate::keys::colour::Scheme;
 
     fn all(bytes: &[u8]) -> Vec<Input> {
         let mut d = Decoder::default();
@@ -1144,13 +1138,6 @@ mod tests {
         split_anywhere(stream, false, &whole);
     }
 
-    fn colour(number: u8, r: u16, g: u16, b: u16) -> Input {
-        Input::Reply(Reply::Colour {
-            number,
-            rgb: Rgb { r, g, b },
-        })
-    }
-
     /// The kitty protocol's forms, as a terminal sends them with
     /// disambiguate and alternate keys pushed (the spec's "Disambiguate
     /// escape codes", "Key codes", "Modifiers", "Event types" and
@@ -1303,11 +1290,11 @@ mod tests {
         };
         let expected = vec![
             key("a"),
-            colour(10, 0xffff, 0xffff, 0xffff),
+            Input::Reply(Reply::Foreground([0xff; 3].into())),
             key("b"),
-            colour(11, 0x1e1e, 0x1e1e, 0x2020),
-            palette(1, 0xcdcd, 0, 0),
-            palette(15, 0xffff, 0xffff, 0xffff),
+            Input::Reply(Reply::Background([0x1e, 0x1e, 0x20].into())),
+            palette(1, 0xcd, 0, 0),
+            palette(15, 0xff, 0xff, 0xff),
             Input::Reply(Reply::Mode {
                 mode: 2031,
                 status: 2,
@@ -1327,7 +1314,7 @@ mod tests {
         // Colours fux does not ask for or cannot read are dropped; answers
         // it does not use reach the session, which ignores them: no keys.
         assert_eq!(
-            all(b"\x1b[?1;2c\x1b]12;rgb:0/0/0\x07\x1b]11;#000\x07\x1b]4;256;rgb:0/0/0\x07\x1b]4;x;rgb:0/0/0\x07\x1b]4;1\x07\x1b[?6;1$yx"),
+            all(b"\x1b[?1;2c\x1b]12;rgb:0/0/0\x07\x1b]11;red\x07\x1b]4;256;rgb:0/0/0\x07\x1b]4;x;rgb:0/0/0\x07\x1b]4;1\x07\x1b[?6;1$yx"),
             vec![
                 Input::Reply(Reply::Attributes),
                 Input::Reply(Reply::Mode { mode: 6, status: 1 }),

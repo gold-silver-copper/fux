@@ -16,7 +16,7 @@
 //! read: a specification fux-vt cannot read changes nothing.
 //!
 //! What fux-vt keeps is what the program set, and what the host says its
-//! terminal shows for palette entries 0 to 15 ([`crate::Screen::set_host_color`]):
+//! terminal shows for palette entries 0 to 15 ([`crate::Parser::set_host_palette`]):
 //! the colours themselves are the terminal's. A palette entry the program
 //! has not set is answered with the host's colour for it, if the host gave
 //! one, else with xterm's default, which is what `TERM=xterm-256color`
@@ -24,10 +24,8 @@
 //! ([`crate::Event::ColorQuery`], as without the palette), which knows its
 //! terminal's; a special colour it has not set is not answered, xterm's
 //! default being the terminal's foreground, which fux-vt does not know.
+use crate::Rgb;
 use crate::parser::{Event, Sink};
-
-/// A colour: red, green and blue, 8 bits each.
-pub(crate) type Rgb = [u8; 3];
 
 /// How many special colours xterm has (ctlseqs, OSC 5): bold, underline,
 /// blink, reverse and italic.
@@ -39,7 +37,7 @@ const PAST_PALETTE: u16 = 256;
 /// in: black, red3, green3, yellow3, blue2, magenta3, cyan3, gray90,
 /// gray50, red, green, yellow, rgb:5c/5c/ff, magenta, cyan and white), as
 /// xterm 411 reports them.
-const SIXTEEN: [Rgb; 16] = [
+const SIXTEEN: [[u8; 3]; 16] = [
     [0x00, 0x00, 0x00],
     [0xcd, 0x00, 0x00],
     [0x00, 0xcd, 0x00],
@@ -71,7 +69,11 @@ pub(crate) fn default(index: u8) -> Rgb {
         }
     };
     match index {
-        0..=15 => SIXTEEN.get(usize::from(index)).copied().unwrap_or_default(),
+        0..=15 => SIXTEEN
+            .get(usize::from(index))
+            .copied()
+            .unwrap_or_default()
+            .into(),
         16..=231 => {
             let n = index.saturating_sub(16);
             let channel = |weight: u8| {
@@ -82,21 +84,17 @@ pub(crate) fn default(index: u8) -> Rgb {
                         .unwrap_or(0),
                 )
             };
-            [channel(36), channel(6), channel(1)]
+            [channel(36), channel(6), channel(1)].into()
         }
         _ => {
             let grey = index
                 .saturating_sub(232)
                 .saturating_mul(10)
                 .saturating_add(8);
-            [grey, grey, grey]
+            [grey, grey, grey].into()
         }
     }
 }
-
-/// How many palette entries the host can give its terminal's colour for:
-/// 0 to 15, the ones themes change.
-pub(crate) const HOST_ENTRIES: usize = 16;
 
 /// The colours a program set, each `None` while it is the terminal's own,
 /// and the host's colours for palette entries 0 to 15.
@@ -106,10 +104,11 @@ pub(crate) struct Colours {
     special: [Option<Rgb>; 5],
     /// OSC 10 to 19.
     dynamic: [Option<Rgb>; 10],
-    /// What the host's terminal shows for palette entries 0 to 15: what a
-    /// query of an entry the program has not set is answered with. No
-    /// reset of the program's colours touches them.
-    host: [Option<Rgb>; HOST_ENTRIES],
+    /// What the host's terminal shows for palette entries 0 to 15, the
+    /// ones themes change: what a query of an entry the program has not
+    /// set is answered with. No reset of the program's colours touches
+    /// them.
+    pub(crate) host: [Option<Rgb>; 16],
 }
 
 impl Default for Colours {
@@ -118,7 +117,7 @@ impl Default for Colours {
             palette: [None; 256],
             special: [None; 5],
             dynamic: [None; 10],
-            host: [None; HOST_ENTRIES],
+            host: [None; 16],
         }
     }
 }
@@ -132,21 +131,6 @@ impl Colours {
     pub(crate) fn dynamic(&self, number: u8) -> Option<Rgb> {
         let i = usize::from(number.checked_sub(10)?);
         self.dynamic.get(i).copied().flatten()
-    }
-    /// The host's colour for palette entry `index`, if it gave one.
-    pub(crate) fn host(&self, index: u8) -> Option<Rgb> {
-        self.host.get(usize::from(index)).copied().flatten()
-    }
-    /// Sets the host's colour for palette entry `index` (0 to 15), or
-    /// clears it; whether `index` is one the host can give.
-    pub(crate) fn set_host(&mut self, index: u8, colour: Option<Rgb>) -> bool {
-        match self.host.get_mut(usize::from(index)) {
-            Some(slot) => {
-                *slot = colour;
-                true
-            }
-            None => false,
-        }
     }
     /// Whether the program set a palette entry or a dynamic colour: what
     /// a host that draws the screen needs to know of.
@@ -209,50 +193,54 @@ fn scaled(digits: &[u8]) -> Option<u16> {
     u16::try_from(value.checked_mul(0xffff)?.checked_div(largest)?).ok()
 }
 
-/// A colour specification, as xterm reads it (see the module's
-/// documentation); `None` for one fux-vt does not read.
-pub(crate) fn parse(spec: &[u8]) -> Option<Rgb> {
-    let sixteen: [u16; 3] = if let Some(hex) = spec.strip_prefix(b"#") {
-        // Three channels of 1 to 4 digits each, the digits the high bits.
-        let n = hex.len().checked_div(3)?;
-        if n == 0 || hex.len().checked_rem(3) != Some(0) || n > 4 {
-            return None;
-        }
-        let shift = u32::try_from(n).ok()?.checked_mul(4)?;
-        let channel = |i: usize| -> Option<u16> {
-            let digits = hex.get(i.checked_mul(n)?..i.checked_add(1)?.checked_mul(n)?)?;
-            let value = u16::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()?;
-            value.checked_shl(16u32.checked_sub(shift)?)
+impl Rgb {
+    /// A colour specification, as xterm reads a program's and fux reads a
+    /// terminal's answer (see the module's documentation); `None` for one
+    /// fux-vt does not read.
+    pub fn parse(spec: &[u8]) -> Option<Self> {
+        let sixteen: [u16; 3] = if let Some(hex) = spec.strip_prefix(b"#") {
+            // Three channels of 1 to 4 digits each, the digits the high bits.
+            let n = hex.len().checked_div(3)?;
+            if n == 0 || hex.len().checked_rem(3) != Some(0) || n > 4 {
+                return None;
+            }
+            let shift = u32::try_from(n).ok()?.checked_mul(4)?;
+            let channel = |i: usize| -> Option<u16> {
+                let digits = hex.get(i.checked_mul(n)?..i.checked_add(1)?.checked_mul(n)?)?;
+                let value = u16::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()?;
+                value.checked_shl(16u32.checked_sub(shift)?)
+            };
+            [channel(0)?, channel(1)?, channel(2)?]
+        } else {
+            // `rgb:`, its prefix in either case.
+            let prefix = spec.get(..4)?;
+            if !prefix.eq_ignore_ascii_case(b"rgb:") {
+                return None;
+            }
+            let mut channels = spec.get(4..)?.split(|b| *b == b'/');
+            let colour = [
+                scaled(channels.next()?)?,
+                scaled(channels.next()?)?,
+                scaled(channels.next()?)?,
+            ];
+            if channels.next().is_some() {
+                return None;
+            }
+            colour
         };
-        [channel(0)?, channel(1)?, channel(2)?]
-    } else {
-        // `rgb:`, its prefix in either case.
-        let prefix = spec.get(..4)?;
-        if !prefix.eq_ignore_ascii_case(b"rgb:") {
-            return None;
-        }
-        let mut channels = spec.get(4..)?.split(|b| *b == b'/');
-        let colour = [
-            scaled(channels.next()?)?,
-            scaled(channels.next()?)?,
-            scaled(channels.next()?)?,
-        ];
-        if channels.next().is_some() {
-            return None;
-        }
-        colour
-    };
-    Some(sixteen.map(|c| {
-        let [high, _] = c.to_be_bytes();
-        high
-    }))
+        Some(Rgb::from(sixteen.map(|c| {
+            let [high, _] = c.to_be_bytes();
+            high
+        })))
+    }
 }
 
 /// xterm's answer: `OSC command ; index ; rgb:RRRR/GGGG/BBBB` (no index for
 /// a dynamic colour), each channel's byte twice, ended as the query was.
 /// Built byte by byte rather than formatted: zellij asks all 256 entries
 /// as it starts, and formatting cost more than the rest of the work.
-fn report(sink: &mut impl Sink, command: u16, index: Option<u16>, colour: Rgb, bel: bool) {
+#[inline]
+pub(crate) fn answer(command: u16, index: Option<u16>, colour: Rgb, bel: bool) -> Answer {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = Answer::default();
     out.push(b"\x1b]");
@@ -262,7 +250,7 @@ fn report(sink: &mut impl Sink, command: u16, index: Option<u16>, colour: Rgb, b
         out.decimal(index);
     }
     out.push(b";rgb:");
-    for (i, channel) in colour.into_iter().enumerate() {
+    for (i, channel) in <[u8; 3]>::from(colour).into_iter().enumerate() {
         if i > 0 {
             out.byte(b'/');
         }
@@ -271,18 +259,22 @@ fn report(sink: &mut impl Sink, command: u16, index: Option<u16>, colour: Rgb, b
         out.push(&[high, low, high, low]);
     }
     out.push(if bel { b"\x07" } else { b"\x1b\\" });
-    sink.reply(out.bytes.get(..out.len).unwrap_or_default());
+    out
 }
 
 /// An answer being built: the longest, `OSC 4 ; 260 ; rgb:`, three
 /// channels and ST, is 28 bytes.
 #[derive(Default)]
-struct Answer {
+pub(crate) struct Answer {
     bytes: [u8; 32],
     len: usize,
 }
 
 impl Answer {
+    /// The answer's bytes.
+    pub(crate) fn bytes(&self) -> &[u8] {
+        self.bytes.get(..self.len).unwrap_or_default()
+    }
     fn byte(&mut self, b: u8) {
         if let Some(slot) = self.bytes.get_mut(self.len) {
             *slot = b;
@@ -332,19 +324,16 @@ pub(crate) fn osc(
         b"5" => pairs(colours, rest, PAST_PALETTE, bel, sink),
         b"104" => reset(colours, rest, 0),
         b"105" => reset(colours, rest, PAST_PALETTE),
-        b"10" | b"11" | b"12" | b"13" | b"14" | b"15" | b"16" | b"17" | b"18" | b"19" => {
-            dynamic(colours, command, rest, bel, events, sink);
+        // OSC 10 to 19, and 110 to 119 with no parameter (with one, nothing,
+        // as in xterm and Ghostty): dynamic colour `d`, 0 to 9 from 10.
+        [b'1', d @ b'0'..=b'9'] => {
+            dynamic(colours, d.saturating_sub(b'0'), rest, bel, events, sink)
         }
-        b"110" | b"111" | b"112" | b"113" | b"114" | b"115" | b"116" | b"117" | b"118" | b"119" => {
-            // With a parameter, nothing, as in xterm and Ghostty.
+        [b'1', b'1', d @ b'0'..=b'9'] => {
             if rest.is_empty()
-                && let Some(c) = colours
-                && let Some(number) = command.get(1..)
-                && let Some(slot) = std::str::from_utf8(number)
-                    .ok()
-                    .and_then(|n| n.parse::<usize>().ok())
-                    .and_then(|n| n.checked_sub(10))
-                    .and_then(|i| c.dynamic.get_mut(i))
+                && let Some(slot) = colours
+                    .as_mut()
+                    .and_then(|c| c.dynamic.get_mut(usize::from(d.saturating_sub(b'0'))))
             {
                 *slot = None;
             }
@@ -383,7 +372,7 @@ fn pairs(
                 // The host's terminal's colour, if it said; else xterm's.
                 (None, Ok(index)) => colours
                     .as_ref()
-                    .and_then(|c| c.host(index))
+                    .and_then(|c| c.host.get(usize::from(index)).copied().flatten())
                     .unwrap_or_else(|| default(index)),
                 // A special colour the program has not set: fux-vt does
                 // not know the terminal's foreground, xterm's default.
@@ -392,10 +381,10 @@ fn pairs(
             // Answered in the form it was asked: OSC 5 by its own number.
             let asked = n.saturating_sub(offset);
             let command = if offset == 0 { 4 } else { 5 };
-            report(sink, command, Some(asked), colour, bel);
+            sink.reply(answer(command, Some(asked), colour, bel).bytes());
             continue;
         }
-        let Some(colour) = parse(spec) else {
+        let Some(colour) = Rgb::parse(spec) else {
             return;
         };
         if let Some(slot) = colours.get_or_insert_default().slot(n) {
@@ -431,7 +420,6 @@ fn reset(colours: &mut Option<Box<Colours>>, rest: &[u8], offset: u16) {
         if let Some(slot) = u16::try_from(n)
             .ok()
             .and_then(|n| n.checked_add(offset))
-            .filter(|n| *n < PAST_PALETTE.saturating_add(SPECIALS))
             .and_then(|n| c.slot(n))
         {
             *slot = None;
@@ -439,39 +427,33 @@ fn reset(colours: &mut Option<Box<Colours>>, rest: &[u8], offset: u16) {
     }
 }
 
-/// OSC 10 to 19: each parameter the next dynamic colour from `command`'s,
+/// OSC 10 to 19: each parameter the next dynamic colour from `first`'s
+/// (0 to 9, numbered from 10),
 /// `?` asking for it, as xterm's `ChangeColorsRequest` reads them; a
 /// specification fux-vt cannot read leaves its colour and goes on to the
 /// next, as in xterm. A colour the program set is answered here; one it has
 /// not is asked of the host, with `events`.
 fn dynamic(
     colours: &mut Option<Box<Colours>>,
-    command: &[u8],
+    first: u8,
     rest: &[u8],
     bel: bool,
     events: bool,
     sink: &mut impl Sink,
 ) {
-    let Some(first) = std::str::from_utf8(command)
-        .ok()
-        .and_then(|n| n.parse::<u8>().ok())
-    else {
-        return;
-    };
-    for (number, parameter) in (first..=19).zip(parameters(rest)) {
+    for (i, parameter) in (first..10).zip(parameters(rest)) {
+        let number = i.saturating_add(10);
         if parameter == b"?" {
             match colours.as_ref().and_then(|c| c.dynamic(number)) {
-                Some(colour) => report(sink, u16::from(number), None, colour, bel),
+                Some(colour) => sink.reply(answer(u16::from(number), None, colour, bel).bytes()),
                 None if events => sink.event(Event::ColorQuery { number, bel }),
                 None => {}
             }
-        } else if let Some(colour) = parse(parameter)
-            && let Some(slot) = number.checked_sub(10).and_then(|i| {
-                colours
-                    .get_or_insert_default()
-                    .dynamic
-                    .get_mut(usize::from(i))
-            })
+        } else if let Some(colour) = Rgb::parse(parameter)
+            && let Some(slot) = colours
+                .get_or_insert_default()
+                .dynamic
+                .get_mut(usize::from(i))
         {
             *slot = Some(colour);
         }
@@ -480,10 +462,12 @@ fn dynamic(
 
 #[cfg(test)]
 mod tests {
-    use super::{atoi, default, parse};
+    use super::{atoi, default};
+    use crate::Rgb;
 
     #[test]
     fn specifications_are_read_as_xterm_reads_them() {
+        let parse = |spec: &[u8]| Rgb::parse(spec).map(<[u8; 3]>::from);
         // XParseColor's rgb: scales each channel to 16 bits; # forms give
         // the high bits; the high byte is kept (xterm 411, `OSC 4 ; n ; ?`
         // after each).
@@ -535,11 +519,11 @@ mod tests {
             (255, [0xee, 0xee, 0xee]),
         ];
         for (index, rgb) in expected {
-            assert_eq!(default(index), rgb, "{index}");
+            assert_eq!(<[u8; 3]>::from(default(index)), rgb, "{index}");
         }
         // The cube's levels.
-        assert_eq!(default(16 + 36 + 2 * 6 + 5), [0x5f, 0x87, 0xff]);
-        assert_eq!(default(16 + 4 * 36 + 3 * 6), [0xd7, 0xaf, 0]);
+        assert_eq!(default(16 + 36 + 2 * 6 + 5), [0x5f, 0x87, 0xff].into());
+        assert_eq!(default(16 + 4 * 36 + 3 * 6), [0xd7, 0xaf, 0].into());
     }
 
     #[test]

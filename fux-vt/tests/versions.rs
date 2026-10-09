@@ -133,7 +133,7 @@ fn sgr(attributes: Attributes) -> String {
     ] {
         let _ = match color {
             Color::Idx(i) => write!(out, ";{base};5;{i}"),
-            Color::Rgb(r, g, b) => write!(out, ";{base};2;{r};{g};{b}"),
+            Color::Rgb(fux_vt::Rgb { r, g, b }) => write!(out, ";{base};2;{r};{g};{b}"),
             Color::Default | _ => Ok(()),
         };
     }

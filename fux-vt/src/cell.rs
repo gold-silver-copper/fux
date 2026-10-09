@@ -5,6 +5,31 @@
 
 use crate::compact::{Compact, Line, Text};
 
+/// A colour: red, green and blue, 8 bits each, as xterm keeps every
+/// colour (what its 24-bit visual holds): a cell's direct colour, a palette
+/// entry, and what a terminal says its own colours are.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Rgb {
+    /// Red.
+    pub r: u8,
+    /// Green.
+    pub g: u8,
+    /// Blue.
+    pub b: u8,
+}
+
+impl From<[u8; 3]> for Rgb {
+    fn from([r, g, b]: [u8; 3]) -> Self {
+        Self { r, g, b }
+    }
+}
+
+impl From<Rgb> for [u8; 3] {
+    fn from(Rgb { r, g, b }: Rgb) -> Self {
+        [r, g, b]
+    }
+}
+
 /// A default, indexed, or true-colour terminal colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -15,8 +40,8 @@ pub enum Color {
     /// An indexed colour: 0 to 7 the standard colours, 8 to 15 their bright
     /// forms, 16 to 255 xterm's 256-colour palette.
     Idx(u8),
-    /// A direct colour: red, green and blue.
-    Rgb(u8, u8, u8),
+    /// A direct colour.
+    Rgb(Rgb),
 }
 
 /// How a cell blinks: SGR 5 (slow) and 6 (rapid) replace one another, and
@@ -95,13 +120,13 @@ impl Packed {
         Self(match color {
             Color::Default => [0; 4],
             Color::Idx(i) => [1, i, 0, 0],
-            Color::Rgb(r, g, b) => [2, r, g, b],
+            Color::Rgb(Rgb { r, g, b }) => [2, r, g, b],
         })
     }
     const fn get(self) -> Color {
         match self.0 {
             [1, i, _, _] => Color::Idx(i),
-            [2, r, g, b] => Color::Rgb(r, g, b),
+            [2, r, g, b] => Color::Rgb(Rgb { r, g, b }),
             _ => Color::Default,
         }
     }

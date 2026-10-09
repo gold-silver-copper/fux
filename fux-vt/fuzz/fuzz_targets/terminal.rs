@@ -1,6 +1,6 @@
 #![no_main]
 use fux_vt::{
-    Color, Event, Feature, Identity, OSC_PAYLOAD_LIMIT, Options, Parser, RowId, Sink, Size,
+    Color, Event, Feature, Identity, OSC_PAYLOAD_LIMIT, Options, Parser, Rgb, RowId, Sink, Size,
     Unhandled,
 };
 use libfuzzer_sys::fuzz_target;
@@ -82,7 +82,7 @@ impl Sink for Record {
 fn color(c: Color) -> u32 {
     match c {
         Color::Idx(i) => 0x100 | u32::from(i),
-        Color::Rgb(r, g, b) => 0x0100_0000 | u32::from_be_bytes([0, r, g, b]),
+        Color::Rgb(Rgb { r, g, b }) => 0x0100_0000 | u32::from_be_bytes([0, r, g, b]),
         // A kind fux-vt adds later hashes as the default until named here.
         Color::Default | _ => 0,
     }
