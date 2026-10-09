@@ -10,9 +10,10 @@ use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::Json;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::{self, Axis, Node, Placement, Rect, Side};
+use crate::overlay::{Column, Repeat};
 use crate::pane::Pane;
 use crate::process::Pid;
-use crate::view::{Mode, View};
+use crate::view::{Choice, Mode, View};
 use std::collections::{BTreeMap, VecDeque};
 use std::ops::Bound;
 use std::os::fd::OwnedFd;
@@ -809,22 +810,8 @@ impl Session {
                 }
                 crate::view::PromptFor::Command | crate::view::PromptFor::Rename(_) => None,
             },
-            // Bindings change under a client from the command line.
-            Mode::Column { path, .. } if !path.is_empty() && !self.is_layer(path) => Some(format!(
-                "closed: the layer {} is gone",
-                self.keys_named(path)
-            )),
-            Mode::Repeat { path } if !self.repeats(path) => Some(format!(
-                "closed: the repeat mode {} is gone",
-                self.keys_named(path)
-            )),
-            Mode::Normal | Mode::Column { .. } | Mode::Repeat { .. } => None,
-        };
-        // A column shorter than it was keeps its selection within it.
-        let last = if let Mode::Column { path, .. } = &view.mode {
-            Some(crate::overlay::column(self, path).len().saturating_sub(1))
-        } else {
-            None
+            // Found again whenever the bindings change (`rebind`).
+            Mode::Normal | Mode::Column(_) | Mode::Repeat(_) => None,
         };
         let Some(view) = self.views.get_mut(&id) else {
             return;
@@ -849,12 +836,6 @@ impl Session {
                 _ => {}
             }
         }
-        if let (Mode::Column { selected, .. }, Some(last)) = (&mut view.mode, last)
-            && *selected > last
-        {
-            *selected = last;
-            view.dirty = true;
-        }
         if let (Mode::Copy(copy), Some(at)) = (&mut view.mode, held_at) {
             copy.held_at = Some(at);
         }
@@ -864,19 +845,32 @@ impl Session {
         }
     }
 
-    /// Whether `path` is a layer: some binding's keys go on past it.
-    pub(crate) fn is_layer(&self, path: &[KeyPress]) -> bool {
-        self.config
-            .bindings
-            .iter()
-            .any(|b| b.in_layer(path).is_some())
-    }
-
-    /// Whether the layer at `path` holds a repeating binding.
-    fn repeats(&self, path: &[KeyPress]) -> bool {
-        self.config.bindings.iter().any(|b| {
-            b.repeat && b.keys.len() == path.len().saturating_add(1) && b.keys.starts_with(path)
-        })
+    /// The bindings changed: each client's command column and repeat mode
+    /// is found in them again, the column keeping its place; one whose
+    /// layer went closes, saying so.
+    fn rebind(&mut self) {
+        let clients: Vec<ClientId> = self.views.keys().copied().collect();
+        for id in clients {
+            let found = match self.views.get(&id).map(|v| &v.mode) {
+                Some(Mode::Column(old)) => {
+                    let at = old.entries.as_ref().map_or(0, Choice::index);
+                    Column::layer(self, old.path.clone(), at)
+                        .map(Mode::Column)
+                        .ok_or_else(|| format!("the layer {}", self.keys_named(&old.path)))
+                }
+                Some(Mode::Repeat(old)) => Repeat::of(&self.config, old.path.clone())
+                    .map(Mode::Repeat)
+                    .ok_or_else(|| format!("the repeat mode {}", self.keys_named(&old.path))),
+                _ => continue,
+            };
+            match found {
+                Ok(mode) => self.set_mode(id, mode),
+                Err(gone) => {
+                    self.set_mode(id, Mode::Normal);
+                    self.error_to(id, format!("closed: {gone} is gone"));
+                }
+            }
+        }
     }
 
     /// The prefix and keys after it as they are typed, `C-b t`: as the bar,
@@ -1454,6 +1448,7 @@ impl Session {
                 // command that can show something new: `set titles`
                 // shows at each client's next paint.
                 self.config.apply(argv).map_err(Error::Config)?;
+                self.rebind();
                 Ok(String::new())
             }
             &Command::Reload => {
@@ -1462,6 +1457,7 @@ impl Session {
                     Ok(config) => {
                         self.config = config;
                         self.config_error = None;
+                        self.rebind();
                         Ok(format!("reloaded {}\n", path.display()))
                     }
                     Err(error) => Err(Error::Reload(error)),
@@ -1530,10 +1526,7 @@ impl Session {
             ClientAction::SelectTab(pick) => self.select_tab(view, pick),
             ClientAction::SelectWorkspace(ref pick) => self.select_workspace(view, pick),
             ClientAction::CommandColumn => {
-                view.mode = Mode::Column {
-                    path: Vec::new(),
-                    selected: 0,
-                };
+                view.mode = Mode::Column(Column::root(self));
                 Ok(String::new())
             }
             ClientAction::CommandPrompt => {
@@ -1566,7 +1559,7 @@ impl Session {
             }
             ClientAction::ChooseWorkspace { moving } => {
                 let moving = self.moving(moving, here)?;
-                Ok(crate::overlay::open_workspace_chooser(self, view, moving))
+                crate::overlay::open_workspace_chooser(self, view, moving)
             }
             ClientAction::ChoosePane { target } => {
                 let source = self.pane(target, here)?.id;

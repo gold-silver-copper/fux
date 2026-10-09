@@ -137,16 +137,13 @@ impl Session {
             Mode::List(_) => overlay::list_key(self, client, press),
             Mode::Prompt(_) => overlay::prompt_key(self, client, press),
             Mode::Confirm(_) => overlay::confirm_key(self, client, press),
-            Mode::Column { .. } => overlay::column_key(self, client, press),
-            Mode::Repeat { .. } => overlay::repeat_key(self, client, press),
+            Mode::Column(_) => overlay::column_key(self, client, press),
+            Mode::Repeat(_) => overlay::repeat_key(self, client, press),
             Mode::Normal => {
                 // Further input clears the last notice.
                 view.notice = None;
                 if press == self.config.prefix {
-                    view.mode = Mode::Column {
-                        path: Vec::new(),
-                        selected: 0,
-                    };
+                    self.set_mode(client, Mode::Column(overlay::Column::root(self)));
                 } else if !overlay::run_root(self, client, press) {
                     overlay::send_key(self, client, stroke);
                 }
