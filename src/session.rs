@@ -61,32 +61,55 @@ pub enum Timer {
     Frame(PaneId),
 }
 
-/// Where a command comes from.
+/// Where a command comes from, which says what it acts on when it names no
+/// pane, tab or workspace.
 #[derive(Clone, Debug, Default)]
-pub struct Ctx {
-    /// The client whose key, prompt or menu ran it.
-    pub client: Option<ClientId>,
-    /// `FUX_PANE` of the CLI's caller.
-    pub pane: Option<PaneId>,
-    /// The CLI caller's working directory.
-    pub cwd: Option<PathBuf>,
+pub enum Origin {
+    /// A client's key, prompt or menu: where the client is.
+    Client(ClientId),
+    /// The CLI: its caller's pane (`FUX_PANE`) and working directory, each
+    /// if it gave one.
+    Cli {
+        pane: Option<PaneId>,
+        cwd: Option<PathBuf>,
+    },
+    /// Nowhere: no client and no caller.
+    #[default]
+    Nowhere,
 }
 
-impl Ctx {
-    pub fn client(id: ClientId) -> Ctx {
-        Ctx {
-            client: Some(id),
-            ..Ctx::default()
+/// Where an attached client is: the workspace and tab it is shown, and the
+/// pane it focuses there unless the tab is empty.
+#[derive(Clone, Copy)]
+pub struct Place {
+    pub ws: WsId,
+    pub tab: TabId,
+    pub pane: Option<PaneId>,
+}
+
+/// What a command that names nothing acts on, found once from its origin.
+#[derive(Clone, Copy)]
+enum Here<'a> {
+    /// An attached client, where it is.
+    Client(ClientId, Place),
+    /// The CLI: its caller's pane, where that is if it is a pane, and its
+    /// working directory.
+    Cli(Option<PaneId>, Option<Place>, Option<&'a Path>),
+}
+
+impl Here<'_> {
+    fn place(self) -> Option<Place> {
+        match self {
+            Here::Client(_, place) => Some(place),
+            Here::Cli(_, at, _) => at,
         }
     }
-}
-
-/// What a command acts on when it names no pane, tab or workspace.
-#[derive(Clone, Copy, Default)]
-struct Here {
-    pane: Option<PaneId>,
-    tab: Option<TabId>,
-    workspace: Option<WsId>,
+    fn pane(self) -> Option<PaneId> {
+        match self {
+            Here::Client(_, place) => place.pane,
+            Here::Cli(pane, ..) => pane,
+        }
+    }
 }
 
 impl WsRef {
@@ -125,8 +148,6 @@ pub enum Error {
     NoCopiedText,
     NoConfigFile,
     // What the client's view has none of.
-    NoCurrentTab,
-    NoCurrentWorkspace,
     NoLastPane,
     /// The client focuses no pane.
     NoPaneToCopy,
@@ -190,8 +211,6 @@ impl std::fmt::Display for Error {
             Error::NoBuffer(index) => write!(f, "no buffer {index}"),
             Error::NoCopiedText => f.write_str("no copied text yet"),
             Error::NoConfigFile => f.write_str("no config file to reload"),
-            Error::NoCurrentTab => f.write_str("no tab"),
-            Error::NoCurrentWorkspace => f.write_str("no workspace"),
             Error::NoLastPane => f.write_str("no previously focused pane"),
             Error::NoPaneToCopy => f.write_str("no pane to copy from"),
             Error::TabEmpty => f.write_str("the tab is empty"),
@@ -250,8 +269,6 @@ impl std::error::Error for Error {
             | Error::NoBuffer(_)
             | Error::NoCopiedText
             | Error::NoConfigFile
-            | Error::NoCurrentTab
-            | Error::NoCurrentWorkspace
             | Error::NoLastPane
             | Error::NoPaneToCopy
             | Error::TabEmpty
@@ -396,7 +413,7 @@ impl Session {
 
     /// One workspace, holding one tab with one shell.
     pub fn start(&mut self) -> Result<(), Error> {
-        self.create_workspace(Some(MAIN.into()), &[], &Ctx::default())
+        self.create_workspace(Some(MAIN.into()), &[], &home())
             .map(|_| ())
     }
 
@@ -459,48 +476,52 @@ impl Session {
 
     // ------------------------------------------------------------- targets
 
-    /// What a command that names nothing acts on: its client's, else the
-    /// CLI caller's pane's.
-    fn here(&self, ctx: &Ctx) -> Here {
-        let view = ctx.client.map_or_else(Here::default, |c| self.here_of(c));
-        let caller = ctx.pane.and_then(|p| self.locate(p));
-        Here {
-            pane: view.pane.or(ctx.pane),
-            tab: view.tab.or(caller.map(|(_, t)| t)),
-            workspace: view.workspace.or(caller.map(|(w, _)| w)),
+    /// Where a command from `origin` acts: an attached client's place, or
+    /// the CLI caller's pane's.
+    fn here<'a>(&self, origin: &'a Origin) -> Result<Here<'a>, Error> {
+        match *origin {
+            Origin::Client(client) => {
+                let place = self.place(client).ok_or(Error::NoClient(client))?;
+                Ok(Here::Client(client, place))
+            }
+            Origin::Cli { pane, ref cwd } => {
+                let at = pane.and_then(|p| self.locate(p));
+                let at = at.map(|(ws, tab)| Place { ws, tab, pane });
+                Ok(Here::Cli(pane, at, cwd.as_deref()))
+            }
+            Origin::Nowhere => Ok(Here::Cli(None, None, None)),
         }
     }
 
-    /// A client's focused pane, its tab and workspace.
-    fn here_of(&self, client: ClientId) -> Here {
-        let ws = self.shown_workspace(client);
-        let tab = ws.and_then(|w| w.tab_of(client));
-        Here {
-            pane: tab.and_then(|t| t.focus(client)),
-            tab: tab.map(|t| t.id),
-            workspace: ws.map(|w| w.id),
-        }
+    /// Where client `client` is, if it is attached: the workspace it is
+    /// shown, while there is any.
+    pub fn place(&self, client: ClientId) -> Option<Place> {
+        let ws = self.shown_workspace(client)?;
+        let tab = ws.tab_of(client)?;
+        let (ws, pane, tab) = (ws.id, tab.focus(client), tab.id);
+        Some(Place { ws, tab, pane })
     }
 
     fn pane(&self, explicit: Option<PaneId>, here: Here) -> Result<&Pane, Error> {
-        let id = explicit.or(here.pane).ok_or(Error::NoPaneGiven)?;
+        let id = explicit.or(here.pane()).ok_or(Error::NoPaneGiven)?;
         self.panes.get(&id).ok_or(Error::NoPane(id))
     }
 
     fn pane_mut(&mut self, explicit: Option<PaneId>, here: Here) -> Result<&mut Pane, Error> {
-        let id = explicit.or(here.pane).ok_or(Error::NoPaneGiven)?;
+        let id = explicit.or(here.pane()).ok_or(Error::NoPaneGiven)?;
         self.panes.get_mut(&id).ok_or(Error::NoPane(id))
     }
 
     fn tab_target(&self, explicit: Option<TabId>, here: Here) -> Result<TabId, Error> {
-        let id = explicit.or(here.tab).ok_or(Error::NoTabGiven)?;
+        let id = explicit.or(here.place().map(|p| p.tab));
+        let id = id.ok_or(Error::NoTabGiven)?;
         self.tab(id).map(|t| t.id).ok_or(Error::NoTab(id))
     }
 
     fn ws_target(&self, explicit: Option<&WsRef>, here: Here) -> Result<WsRef, Error> {
         explicit
             .cloned()
-            .or(here.workspace.map(WsRef::Id))
+            .or(here.place().map(|p| WsRef::Id(p.ws)))
             .ok_or(Error::NoWorkspaceGiven)
     }
 
@@ -524,22 +545,16 @@ impl Session {
 
     // ------------------------------------------------------------ creation
 
-    fn cwd_for(&self, ctx: &Ctx, near: Option<PaneId>) -> PathBuf {
-        if let Some(cwd) = &ctx.cwd {
-            return cwd.clone();
-        }
-        let near = near.or_else(|| ctx.client.and_then(|c| self.focused(c)));
-        if let Some(cwd) = near
-            .and_then(|p| self.panes.get(&p))
-            .and_then(|p| p.process.child())
+    fn cwd_for(&self, here: Here, near: Option<PaneId>) -> PathBuf {
+        let near = match here {
+            Here::Cli(.., Some(cwd)) => return cwd.to_owned(),
+            Here::Cli(.., None) => near,
+            Here::Client(_, place) => near.or(place.pane),
+        };
+        let leader = near.and_then(|p| self.panes.get(&p)?.process.child());
+        leader
             .and_then(|c| fuxix::process::cwd(c.leader.pid()))
-        {
-            return cwd;
-        }
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_dir())
-            .unwrap_or_else(|| PathBuf::from("/"))
+            .unwrap_or_else(home)
     }
 
     /// The name a workspace gets when none is given: `workspace-N` after
@@ -562,9 +577,8 @@ impl Session {
         &mut self,
         name: Option<String>,
         cmd: &[String],
-        ctx: &Ctx,
+        cwd: &Path,
     ) -> Result<WsId, Error> {
-        let cwd = self.cwd_for(ctx, None);
         if let Some(name) = &name {
             check_workspace_name(name, &self.workspaces)?;
         }
@@ -574,7 +588,7 @@ impl Session {
         let id = ids.workspace()?;
         let tab = ids.tab()?;
         let launch = self.launch.as_deref();
-        let pane = new_pane(&self.config, launch, &mut ids, cmd, &cwd, DEFAULT_SIZE)?;
+        let pane = new_pane(&self.config, launch, &mut ids, cmd, cwd, DEFAULT_SIZE)?;
         self.ids = ids;
         let name = name.unwrap_or_else(|| self.workspace_name(id));
         let root = Some(Tree::Pane(pane.id));
@@ -646,12 +660,13 @@ impl Session {
         }
     }
 
-    /// The command's client, if it is attached, follows what it made or
-    /// moved: it is shown it, unzoomed.
-    fn follow(&mut self, ctx: &Ctx, ws: WsId, tab: Option<TabId>, pane: Option<PaneId>) {
-        if let Some(view) = ctx.client.and_then(|c| self.views.get_mut(&c)) {
+    /// The command's client, if it has one, follows what it made or moved:
+    /// it is shown it, unzoomed.
+    fn follow(&mut self, here: Here, ws: WsId, tab: Option<TabId>, pane: Option<PaneId>) {
+        if let Here::Client(client, _) = here
+            && let Some(view) = self.views.get_mut(&client)
+        {
             view.zoom = false;
-            let client = view.id;
             self.show(client, ws, tab, pane);
         }
     }
@@ -721,8 +736,11 @@ impl Session {
 
     /// The area to lay out a tab in for a command without a client: a
     /// client showing it, else any client, else a typical terminal.
-    fn reference_area(&self, tab: TabId, ctx: &Ctx) -> Rect {
-        let own = ctx.client.and_then(|c| self.views.get(&c));
+    fn reference_area(&self, tab: TabId, here: Here) -> Rect {
+        let own = match here {
+            Here::Client(client, _) => self.views.get(&client),
+            Here::Cli(..) => None,
+        };
         let shows = |v: &&View| self.shows(v.id, tab);
         let view = (own.filter(shows))
             .or_else(|| self.views.values().find(shows))
@@ -1068,24 +1086,25 @@ impl Session {
     // ------------------------------------------------------------ commands
 
     /// Runs a command line from the CLI or the prompt.
-    pub fn run(&mut self, argv: &[String], ctx: &Ctx) -> Outcome {
-        match command::parse(argv) {
-            Ok(command) => self.run_command(&command, ctx),
-            // Nothing ran, so nothing shows anything new.
-            Err(usage) => {
-                self.settle();
-                Outcome {
-                    status: 2,
-                    stdout: String::new(),
-                    stderr: usage.to_string(),
-                }
-            }
-        }
+    pub fn run(&mut self, argv: &[String], origin: &Origin) -> Outcome {
+        let usage = match command::parse(argv) {
+            Ok(command) => return self.run_command(&command, origin),
+            Err(usage) => usage,
+        };
+        let outcome = Outcome {
+            status: 2,
+            stdout: String::new(),
+            stderr: usage.to_string(),
+        };
+        self.tell(origin, &outcome, false);
+        // Nothing ran, so nothing shows anything new.
+        self.settle();
+        outcome
     }
 
     /// Runs a command, parsed already: from a line, a binding or a menu.
-    pub fn run_command(&mut self, command: &Command, ctx: &Ctx) -> Outcome {
-        let outcome = match self.execute(command, ctx) {
+    pub fn run_command(&mut self, command: &Command, origin: &Origin) -> Outcome {
+        let outcome = match self.execute(command, origin) {
             Ok(stdout) => Outcome {
                 status: 0,
                 stdout,
@@ -1102,7 +1121,31 @@ impl Session {
             self.touch();
         }
         self.settle();
+        let made = matches!(
+            command,
+            Command::Split { .. }
+                | Command::NewTab { .. }
+                | Command::NewWorkspace { .. }
+                | Command::MovePane { .. }
+        );
+        self.tell(origin, &outcome, made);
         outcome
+    }
+
+    /// A client's command tells the client how it went, in its notice: the
+    /// first line of its error, or of what it printed, with `…` if more
+    /// follow; but not the ID of what it `made`, which the client is shown.
+    fn tell(&mut self, origin: &Origin, outcome: &Outcome, made: bool) {
+        let &Origin::Client(client) = origin else {
+            return;
+        };
+        let mut lines = outcome.stdout.lines().filter(|l| !l.trim().is_empty());
+        if outcome.status != 0 {
+            self.error_to(client, outcome.stderr.lines().next().unwrap_or("failed"));
+        } else if let Some(line) = lines.next().filter(|_| !made) {
+            let more = if lines.next().is_some() { " …" } else { "" };
+            self.info_to(client, format!("{line}{more}"));
+        }
     }
 
     /// How many commands have run that may change what clients show.
@@ -1112,8 +1155,10 @@ impl Session {
 
     /// Why a command cannot run now, if it cannot: menus and the command
     /// column dim such entries, and running one says why.
-    pub fn unavailable(&self, command: &Command, ctx: &Ctx) -> Option<Error> {
-        let ws = ctx.client.and_then(|c| self.shown_workspace(c));
+    pub fn unavailable(&self, command: &Command, client: ClientId) -> Option<Error> {
+        let Some(place) = self.place(client) else {
+            return Some(Error::NoClient(client));
+        };
         // Going to the next or previous one needs another.
         let alone = |kind, count: usize| (count < 2).then_some(Error::OnlyOne(kind));
         let action = if let Command::Client { action, .. } = command {
@@ -1129,13 +1174,13 @@ impl Session {
             )
         ) {
             let mut panes = 0usize;
-            let tab = ctx.client.zip(ws).and_then(|(c, w)| w.tab_of(c));
-            if let Some(root) = tab.and_then(Tab::root) {
+            if let Some(root) = self.root(place.tab) {
                 root.for_each_pane(&mut |_| panes = panes.saturating_add(1));
             }
             return alone(Kind::Pane, panes);
         }
         if let Some(ClientAction::SelectTab(Pick::Step(_))) = action {
+            let ws = self.workspace(place.ws);
             return alone(Kind::Tab, ws.map_or(0, |w| w.tabs().len()));
         }
         if let Some(ClientAction::SelectWorkspace(Pick::Step(_))) = action {
@@ -1148,7 +1193,7 @@ impl Session {
                 .is_none()
                 .then_some(Error::NoCopiedText);
         }
-        let here = self.here(ctx);
+        let here = Here::Client(client, place);
         if let Command::Terminate { target } = command {
             return match self.pane(*target, here) {
                 Ok(pane) => (pane.process.job().is_none()).then_some(Error::OnlyShell(pane.id)),
@@ -1164,8 +1209,8 @@ impl Session {
         None
     }
 
-    fn execute(&mut self, command: &Command, ctx: &Ctx) -> Result<String, Error> {
-        let here = self.here(ctx);
+    fn execute(&mut self, command: &Command, origin: &Origin) -> Result<String, Error> {
+        let here = self.here(origin)?;
         match command {
             &Command::Ls { json } => Ok(if json { self.ls_json() } else { self.ls_text() }),
             &Command::KillServer => {
@@ -1202,13 +1247,14 @@ impl Session {
                 Ok(out)
             }
             Command::NewWorkspace { name, cmd } => {
-                let ws = self.create_workspace(name.clone(), cmd, ctx)?;
-                self.follow(ctx, ws, None, None);
+                let cwd = self.cwd_for(here, None);
+                let ws = self.create_workspace(name.clone(), cmd, &cwd)?;
+                self.follow(here, ws, None, None);
                 Ok(format!("{ws}\n"))
             }
             Command::NewTab { target, name, cmd } => {
                 let named = self.ws_target(target.as_ref(), here)?;
-                let cwd = self.cwd_for(ctx, None);
+                let cwd = self.cwd_for(here, None);
                 let ws = self.workspaces.iter_mut().find(|w| named.names(w));
                 let ws = ws.ok_or_else(|| named.missing())?;
                 if let Some(name) = &name {
@@ -1223,7 +1269,7 @@ impl Session {
                 ws.add_tab(id, name.clone(), Some(Tree::Pane(pane.id)));
                 let ws = ws.id;
                 self.panes.insert(pane.id, pane);
-                self.follow(ctx, ws, Some(id), None);
+                self.follow(here, ws, Some(id), None);
                 Ok(format!("{id}\n"))
             }
             &Command::Split {
@@ -1232,10 +1278,14 @@ impl Session {
                 ref cmd,
             } => {
                 let (target, size) = self.pane(target, here).map(|p| (p.id, p.size))?;
-                let cwd = self.cwd_for(ctx, Some(target));
-                // From the CLI, the clients showing the split pane follow it.
+                let cwd = self.cwd_for(here, Some(target));
+                // The splitting client follows the new pane; from the CLI, the
+                // clients that focus the split one.
                 let shown = |c: &ClientId| self.focused(*c) == Some(target);
-                let watching: Vec<ClientId> = self.views.keys().copied().filter(shown).collect();
+                let followers: Vec<ClientId> = match here {
+                    Here::Client(client, _) => vec![client],
+                    Here::Cli(..) => self.views.keys().copied().filter(shown).collect(),
+                };
                 let tab = tab_of(&mut self.workspaces, target)?;
                 let mut ids = self.ids;
                 let launch = self.launch.as_deref();
@@ -1244,15 +1294,10 @@ impl Session {
                 let new = pane.id;
                 tab.edit(|root| layout::split(root, target, new, axis, Side::After));
                 self.panes.insert(new, pane);
-                // The splitting client follows the new pane.
-                for view in self.views.values_mut() {
-                    let follows = ctx
-                        .client
-                        .map_or(watching.contains(&view.id), |c| view.id == c);
-                    if follows {
-                        tab.set_focus(view.id, new);
-                        view.zoom = false;
-                    }
+                let views = self.views.values_mut();
+                for view in views.filter(|v| followers.contains(&v.id)) {
+                    tab.set_focus(view.id, new);
+                    view.zoom = false;
                 }
                 Ok(format!("{new}\n"))
             }
@@ -1276,12 +1321,12 @@ impl Session {
             Command::Rename { target, name } => {
                 self.rename(target, name.clone()).map(|()| String::new())
             }
-            &Command::MovePane { target, ref to } => self.move_pane(target, to, ctx, here),
+            &Command::MovePane { target, ref to } => self.move_pane(target, to, here),
             &Command::SwapPane { target, with } => {
                 let source = self.pane(target, here)?.id;
                 let other = match with {
                     SwapWith::Pane(p) => self.pane(Some(p), here)?.id,
-                    SwapWith::Toward(direction) => self.neighbor(source, direction, ctx)?,
+                    SwapWith::Toward(direction) => self.neighbor(source, direction, here)?,
                 };
                 self.swap(source, other);
                 Ok(String::new())
@@ -1293,7 +1338,7 @@ impl Session {
             } => {
                 let pane = self.pane(target, here)?.id;
                 let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
-                let area = self.reference_area(tab, ctx);
+                let area = self.reference_area(tab, here);
                 let tab = tab_of(&mut self.workspaces, pane)?;
                 let resize = |root: &mut Option<Tree>| {
                     let root = root.as_mut();
@@ -1400,11 +1445,16 @@ impl Session {
                 Ok(String::new())
             }
             &Command::Client { client, ref action } => {
-                let client = client.or(ctx.client).ok_or(Error::NoClientGiven)?;
+                // The client `-c` names, else the one the command came from.
+                let (client, place) = match (client, here) {
+                    (Some(c), _) => (c, self.place(c).ok_or(Error::NoClient(c))?),
+                    (None, Here::Client(client, place)) => (client, place),
+                    (None, Here::Cli(..)) => return Err(Error::NoClientGiven),
+                };
                 // The client's view is the command's while it runs: out of
                 // the map, so that nothing looks it up again.
                 let mut view = self.views.remove(&client).ok_or(Error::NoClient(client))?;
-                let done = self.on_client(&mut view, action);
+                let done = self.on_client(&mut view, place, action);
                 if let ClientAction::Detach = action {
                     self.workspaces.iter_mut().for_each(|w| w.forget(client));
                     self.outbox.push(Outgoing::Exit(client, "detached".into()));
@@ -1418,8 +1468,13 @@ impl Session {
 
     /// A command on a client's screen, its view in hand. Targets it leaves
     /// out are the client's own.
-    fn on_client(&mut self, view: &mut View, action: &ClientAction) -> Result<String, Error> {
-        let here = self.here_of(view.id);
+    fn on_client(
+        &mut self,
+        view: &mut View,
+        place: Place,
+        action: &ClientAction,
+    ) -> Result<String, Error> {
+        let here = Here::Client(view.id, place);
         match *action {
             // `execute` does not put the view back.
             ClientAction::Detach => Ok(String::new()),
@@ -1432,8 +1487,8 @@ impl Session {
                 view.zoom = !view.zoom;
                 Ok(String::new())
             }
-            ClientAction::SelectPane(pick) => self.select_pane(view, pick),
-            ClientAction::SelectTab(pick) => self.select_tab(view, pick),
+            ClientAction::SelectPane(pick) => self.select_pane(view, place, pick),
+            ClientAction::SelectTab(pick) => self.select_tab(view, place, pick),
             ClientAction::SelectWorkspace(ref pick) => self.select_workspace(view, pick),
             ClientAction::CommandColumn => {
                 view.mode = Mode::Column(Column::root(self));
@@ -1465,7 +1520,7 @@ impl Session {
             }
             ClientAction::ChooseTab { moving } => {
                 let moving = self.moving(moving, here)?;
-                crate::overlay::open_tab_chooser(self, view, moving)
+                crate::overlay::open_tab_chooser(self, view, place, moving)
             }
             ClientAction::ChooseWorkspace { moving } => {
                 let moving = self.moving(moving, here)?;
@@ -1475,7 +1530,7 @@ impl Session {
                 let source = self.pane(target, here)?.id;
                 crate::overlay::open_pane_chooser(self, view, source)
             }
-            ClientAction::CopyMode => crate::copy::enter(self, view),
+            ClientAction::CopyMode => crate::copy::enter(self, view, place),
         }
     }
 
@@ -1521,9 +1576,9 @@ impl Session {
 
     /// The pane beside `from` toward `direction`, its tab laid out as for
     /// the command.
-    fn neighbor(&self, from: PaneId, direction: Direction, ctx: &Ctx) -> Result<PaneId, Error> {
+    fn neighbor(&self, from: PaneId, direction: Direction, here: Here) -> Result<PaneId, Error> {
         let found = self.locate(from).and_then(|(_, tab)| {
-            let area = self.reference_area(tab, ctx);
+            let area = self.reference_area(tab, here);
             layout::neighbor(&layout::place(self.root(tab)?, area), from, direction)
         });
         found.ok_or(Error::NoNeighbor { from, direction })
@@ -1554,13 +1609,12 @@ impl Session {
         &mut self,
         target: Option<PaneId>,
         to: &MoveTo,
-        ctx: &Ctx,
         here: Here,
     ) -> Result<String, Error> {
         let pane = self.pane(target, here)?.id;
         let (ws, tab) = match to {
             &MoveTo::Beside(direction) => {
-                let destination = self.neighbor(pane, direction, ctx)?;
+                let destination = self.neighbor(pane, direction, here)?;
                 let side = match direction {
                     Direction::Right | Direction::Down => Side::After,
                     Direction::Left | Direction::Up => Side::Before,
@@ -1608,7 +1662,7 @@ impl Session {
         }
         self.relocate(pane, tab);
         // The moving client follows its pane.
-        self.follow(ctx, ws, Some(tab), Some(pane));
+        self.follow(here, ws, Some(tab), Some(pane));
         Ok(format!("{tab}\n"))
     }
 
@@ -1638,9 +1692,9 @@ impl Session {
         }
     }
 
-    fn select_pane(&mut self, view: &mut View, pick: PanePick) -> Result<String, Error> {
+    fn select_pane(&mut self, view: &mut View, at: Place, pick: PanePick) -> Result<String, Error> {
         let client = view.id;
-        let tab = self.shown_tab(client).ok_or(Error::NoCurrentTab)?;
+        let tab = self.tab(at.tab).ok_or(Error::NoTab(at.tab))?;
         let panes = tab.root().map_or_else(Vec::new, Tree::panes);
         let (current, last) = (tab.focus(client), tab.seat(client).and_then(Seat::last));
         let target = match pick {
@@ -1664,16 +1718,14 @@ impl Session {
         Ok(String::new())
     }
 
-    fn select_tab(&mut self, view: &mut View, pick: Pick<TabId>) -> Result<String, Error> {
-        let (ws, target) = match pick {
+    fn select_tab(&mut self, view: &mut View, at: Place, to: Pick<TabId>) -> Result<String, Error> {
+        let (ws, target) = match to {
             Pick::Id(t) => (self.tab_workspace(t)?, t),
             Pick::Step(toward) => {
-                let ws = self.shown_workspace(view.id);
-                let tabs = ws.map_or(&[][..], Workspace::tabs);
-                let index = tabs.iter().position(|t| t.shown_to(view.id));
+                let tabs = self.workspace(at.ws).map_or(&[][..], Workspace::tabs);
+                let index = tabs.iter().position(|t| t.id == at.tab);
                 let next = round(tabs, index.unwrap_or(0), toward);
-                let next = ws.zip(next).map(|(w, t)| (w.id, t.id));
-                next.ok_or(Error::OnlyOne(Kind::Tab))?
+                (at.ws, next.ok_or(Error::OnlyOne(Kind::Tab))?.id)
             }
         };
         self.show(view.id, ws, Some(target), None);
@@ -1729,15 +1781,15 @@ impl Session {
         }
         let shown = |id: Option<String>| id.unwrap_or_else(|| "-".into());
         for view in self.views.values() {
-            let here = self.here_of(view.id);
+            let place = self.place(view.id);
             out.push_str(&format!(
                 "client {} {}x{} {} {} {}\n",
                 view.id,
                 view.cols,
                 view.rows,
-                shown(here.workspace.map(|w| w.to_string())),
-                shown(here.tab.map(|t| t.to_string())),
-                shown(here.pane.map(|p| p.to_string())),
+                shown(place.map(|p| p.ws.to_string())),
+                shown(place.map(|p| p.tab.to_string())),
+                shown(place.and_then(|p| p.pane).map(|p| p.to_string())),
             ));
         }
         out
@@ -1799,14 +1851,15 @@ impl Session {
             .views
             .values()
             .map(|v| {
-                let here = self.here_of(v.id);
+                let place = self.place(v.id);
+                let pane = place.and_then(|p| p.pane);
                 Json::Object(vec![
                     ("id", Json::str(v.id.to_string())),
                     ("rows", Json::Number(i64::from(v.rows))),
                     ("cols", Json::Number(i64::from(v.cols))),
-                    ("workspace", opt(here.workspace.map(|w| w.to_string()))),
-                    ("tab", opt(here.tab.map(|t| t.to_string()))),
-                    ("pane", opt(here.pane.map(|p| p.to_string()))),
+                    ("workspace", opt(place.map(|p| p.ws.to_string()))),
+                    ("tab", opt(place.map(|p| p.tab.to_string()))),
+                    ("pane", opt(pane.map(|p| p.to_string()))),
                     ("zoom", Json::Bool(v.zoom)),
                 ])
             })
@@ -1819,6 +1872,12 @@ impl Session {
         text.push('\n');
         text
     }
+}
+
+/// `$HOME`, else `/`: where a pane starts when nothing says where.
+fn home() -> PathBuf {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    home.filter(|p| p.is_dir()).unwrap_or_else(|| "/".into())
 }
 
 /// `%3`, `@2`, `+1` or a workspace's name.
@@ -2056,7 +2115,7 @@ pub fn row_text(row: fux_vt::Row<'_>) -> String {
 /// config, a client attached, and a command line run in it.
 #[cfg(test)]
 pub(crate) mod testing {
-    use super::{Ctx, Session};
+    use super::{Origin, Session};
     use crate::config::Config;
     use crate::id::ClientId;
 
@@ -2086,7 +2145,7 @@ pub(crate) mod testing {
     /// error if it fails.
     pub(crate) fn output(session: &mut Session, line: &str) -> Result<String, String> {
         let words = crate::words::split(line).map_err(|e| e.to_string())?;
-        let outcome = session.run(&words, &Ctx::default());
+        let outcome = session.run(&words, &Origin::default());
         if outcome.status == 0 {
             Ok(outcome.stdout)
         } else {
@@ -2229,7 +2288,7 @@ mod tests {
             !dirty(&s, one) && !dirty(&s, two),
             "reading repaints no one"
         );
-        assert!(s.run(&["nope".into()], &Ctx::default()).status != 0);
+        assert!(s.run(&["nope".into()], &Origin::default()).status != 0);
         assert!(
             !dirty(&s, one) && !dirty(&s, two),
             "a usage error repaints no one"
@@ -2425,7 +2484,7 @@ mod tests {
                 "the workspace is already at that end",
             ),
         ] {
-            let outcome = s.run(&crate::words::split(line)?, &Ctx::default());
+            let outcome = s.run(&crate::words::split(line)?, &Origin::default());
             assert_eq!(
                 (outcome.status, outcome.stderr.as_str()),
                 (status, message),
@@ -2433,7 +2492,7 @@ mod tests {
             );
         }
         let argv = ["split", "-h", "-t", "%1", "--", "a\nb"].map(str::to_owned);
-        let outcome = s.run(&argv, &Ctx::default());
+        let outcome = s.run(&argv, &Origin::default());
         assert_eq!(
             (outcome.status, outcome.stderr.as_str()),
             (
@@ -2442,7 +2501,7 @@ mod tests {
             )
         );
         // Why a menu entry or a binding cannot run now.
-        let ctx = Ctx::client("c1".parse()?);
+        let client = "c1".parse()?;
         for (line, reason) in [
             ("select-pane --next", Some("only one pane")),
             ("select-tab --next", Some("only one tab")),
@@ -2453,7 +2512,7 @@ mod tests {
             ("choose-pane", Some("only one pane")),
         ] {
             let command = command::parse(&crate::words::split(line)?)?;
-            let got = s.unavailable(&command, &ctx).map(|e| e.to_string());
+            let got = s.unavailable(&command, client).map(|e| e.to_string());
             assert_eq!(got.as_deref(), reason, "{line}");
         }
         Ok(())
@@ -2463,10 +2522,10 @@ mod tests {
     #[test]
     fn failures_are_told_apart_by_kind() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = attached(10, 40)?;
-        let ctx = Ctx::client(c);
+        let origin = Origin::Client(c);
         let mut run = |line: &str| -> Result<Result<String, Error>, Box<dyn std::error::Error>> {
             let command = command::parse(&crate::words::split(line)?)?;
-            Ok(s.execute(&command, &ctx))
+            Ok(s.execute(&command, &origin))
         };
         assert!(matches!(
             run("kill-pane -t %9")?,

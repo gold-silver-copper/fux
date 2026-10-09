@@ -438,8 +438,8 @@ fn paint(
         .attach(first.rows.saturating_add(1), first.cols, None)
         .map_err(|e| e.to_string())?;
     if split {
-        let argv = ["split".to_owned(), "-h".to_owned()];
-        s.run(&argv, &fux::session::Ctx::client(c));
+        let argv = ["split", "-h", "-t", "%1"].map(str::to_owned);
+        s.run(&argv, &Default::default());
     }
     let panes: Vec<_> = s.panes.keys().copied().collect();
     let mut shown = fux::render::Grid::new(0, 0);

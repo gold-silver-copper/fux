@@ -31,12 +31,13 @@ macro_rules! stack {
         |$s:ident| $retained:expr,
         |$at:ident, $index:ident| $row:expr,
         |$found:ident, $from:ident, $query:ident, $seek:ident| $find:expr,
-        |$copied:ident, $kind:ident, $start:ident, $end:ident| $text:expr
+        |$copied:ident, $kind:ident, $start:ident, $end:ident| $text:expr,
+        $origin:ident::$client:ident
     ) => {
         mod $name {
             use $fux::config::Config;
             use $fux::copy::{self, Seek, Select};
-            use $fux::session::{Ctx, Session};
+            use $fux::session::{$origin, Session};
             use $fux::$ids::ClientId;
             use $vt::Parser;
 
@@ -113,7 +114,7 @@ macro_rules! stack {
 
             fn run(s: &mut Session, c: ClientId, line: &str) -> String {
                 let argv: Vec<String> = line.split(' ').map(str::to_owned).collect();
-                format!("{:?}", s.run(&argv, &Ctx::client(c)))
+                format!("{:?}", s.run(&argv, &$origin::$client(c)))
             }
 
             /// Every copy-mode error a session can reach, `lines` lines of
@@ -171,7 +172,8 @@ stack! {
     |s| copy::retained(s),
     |s, index| copy::row_at(s, index).map(|row| (row.id(), copy::index_of(s, row.id()))),
     |s, from, query, seek| copy::find(s, query, from, seek),
-    |s, kind, start, end| copy::text(s, kind, start, end).map_err(|e| e.to_string())
+    |s, kind, start, end| copy::text(s, kind, start, end).map_err(|e| e.to_string()),
+    Ctx::client
 }
 stack! {
     cur, fux, fux_vt, id,
@@ -189,7 +191,8 @@ stack! {
             Some((start, end)) => copy::text(s, kind, start, end).map_err(|e| e.to_string()),
             None => Err("no such row".to_owned()),
         }
-    }
+    },
+    Origin::Client
 }
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {

@@ -15,7 +15,7 @@ use fux::id::{ClientId, PaneId};
 use fux::keys::KeyPress;
 use fux::outer;
 use fux::render::{Grid, compose};
-use fux::session::{Ctx, Outgoing, Session};
+use fux::session::{Origin, Outgoing, Session};
 use fux::view::{Choice, Mode};
 use libfuzzer_sys::fuzz_target;
 
@@ -370,7 +370,7 @@ impl Run {
 
     /// What anyone can tell apart, as `State` lists it.
     fn state(&mut self) -> State {
-        let ls = self.s.run(&["ls".to_owned()], &Ctx::default()).stdout;
+        let ls = self.s.run(&["ls".to_owned()], &Origin::default()).stdout;
         let screens = self
             .s
             .views
@@ -528,8 +528,8 @@ fuzz_target!(|data: &[u8]| {
             11 | 12 => {
                 let line = SIDE[usize::from(input.next()) % SIDE.len()];
                 let argv: Vec<String> = line.split(' ').map(str::to_owned).collect();
-                let a = given.s.run(&argv, &Ctx::default());
-                let b = bytewise.s.run(&argv, &Ctx::default());
+                let a = given.s.run(&argv, &Origin::default());
+                let b = bytewise.s.run(&argv, &Origin::default());
                 assert_eq!(
                     (a.status, a.stdout, a.stderr),
                     (b.status, b.stdout, b.stderr)
