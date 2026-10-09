@@ -663,8 +663,11 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
     let focus = view.focus();
     // Copy mode and its positions, their rows found once for the paint.
     let copy = if let Mode::Copy(copy) = &view.mode {
-        let pane = session.panes.get(&copy.pane);
-        pane.map(|pane| (copy.as_ref(), copy.resolve(pane.screen())))
+        let at = session
+            .panes
+            .get(&copy.pane)
+            .and_then(|p| copy.resolve(p.screen()));
+        at.map(|at| (copy.as_ref(), at))
     } else {
         None
     };

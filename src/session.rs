@@ -161,8 +161,6 @@ pub enum Error {
     OnlyShell(PaneId),
     // What copy mode cannot do.
     NoRows,
-    /// The history no longer holds the rows copy mode was on.
-    RowsDropped,
     /// A selection of more than `MAX_CELLS` cells.
     SelectionTooLarge,
     // A name that cannot be given.
@@ -223,9 +221,6 @@ impl std::fmt::Display for Error {
             }
             Error::OnlyShell(pane) => write!(f, "nothing is running in {pane} but its shell"),
             Error::NoRows => f.write_str("the pane has no rows"),
-            Error::RowsDropped => {
-                f.write_str("copy mode ended: the history dropped the rows it held")
-            }
             Error::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
             Error::EmptyName => f.write_str("a name cannot be empty"),
             Error::ControlInName => f.write_str("a name cannot contain control characters"),
@@ -284,7 +279,6 @@ impl std::error::Error for Error {
             | Error::NoNeighbor { .. }
             | Error::OnlyShell(_)
             | Error::NoRows
-            | Error::RowsDropped
             | Error::SelectionTooLarge
             | Error::EmptyName
             | Error::ControlInName
@@ -790,29 +784,18 @@ impl Session {
         let mut held_at = None;
         // What the view's mode refers to must still exist.
         let gone: Option<String> = match &view.mode {
-            Mode::Copy(copy) => {
-                if !self.panes.contains_key(&copy.pane) {
-                    Some("copy mode ended: its pane closed".into())
-                } else if Some(copy.pane) != focus {
+            Mode::Copy(copy) => match self.panes.get(&copy.pane).map(Pane::screen) {
+                None => Some("copy mode ended: its pane closed".into()),
+                Some(_) if Some(copy.pane) != focus => {
                     Some("copy mode ended: its pane is no longer focused".into())
-                } else {
-                    let screen = self.panes.get(&copy.pane).map(|p| p.screen());
-                    let unchanged = screen
-                        .zip(copy.held_at)
-                        .is_some_and(|(screen, at)| !screen.changed_since(at));
-                    let checked = screen
-                        .filter(|_| !unchanged)
-                        .map(|s| (s.mark(), copy.check(s)));
-                    match checked {
-                        Some((mark, Ok(()))) => {
-                            held_at = Some(mark);
-                            None
-                        }
-                        Some((_, Err(error))) => Some(error.to_string()),
-                        None => None,
-                    }
                 }
-            }
+                Some(screen) if copy.held_at.is_some_and(|at| !screen.changed_since(at)) => None,
+                Some(screen) if copy.resolve(screen).is_some() => {
+                    held_at = Some(screen.mark());
+                    None
+                }
+                Some(_) => Some("copy mode ended: the history dropped the rows it held".into()),
+            },
             Mode::List(list) => list
                 .about
                 .as_ref()
