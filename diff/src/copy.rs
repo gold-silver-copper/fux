@@ -25,7 +25,10 @@ const QUERIES: &[&str] = &[
 ];
 
 macro_rules! stack {
-    ($name:ident, $fux:ident, $vt:ident, $ids:ident, |$row:ident| $id:expr) => {
+    (
+        $name:ident, $fux:ident, $vt:ident, $ids:ident, |$row:ident| $id:expr,
+        |$rows:ident, $cols:ident| [$($size:tt)*]
+    ) => {
         mod $name {
             use $fux::config::Config;
             use $fux::copy::{self, Seek, Select};
@@ -39,7 +42,8 @@ macro_rules! stack {
                 history: usize,
                 output: &str,
             ) -> Result<Parser, String> {
-                let mut parser = Parser::new(rows, cols, history).map_err(|e| format!("{e:?}"))?;
+                let ($rows, $cols) = (rows, cols);
+                let mut parser = Parser::new($($size)*, history).map_err(|e| format!("{e:?}"))?;
                 parser
                     .process(output.as_bytes())
                     .map_err(|e| format!("{e:?}"))?;
@@ -147,8 +151,8 @@ macro_rules! stack {
 }
 
 // Rows give their identity through an accessor, in the baseline as now.
-stack!(base, baseline, baseline_vt, command, |row| row.id());
-stack!(cur, fux, fux_vt, id, |row| row.id());
+stack! { base, baseline, baseline_vt, command, |row| row.id(), |r, c| [r, c] }
+stack! { cur, fux, fux_vt, id, |row| row.id(), |r, c| [crate::size(r, c)] }
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
     let (mut searches, mut found) = (0u64, 0u64);

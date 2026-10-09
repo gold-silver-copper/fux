@@ -255,7 +255,7 @@ mod tests {
     /// fux-vt answering DECRQCRA itself, as esctest's direct run sets it
     /// up: the oracle for the checksum read from a snapshot.
     fn fux_vt(rows: u16, cols: u16) -> Result<fux_vt::Parser, String> {
-        fux_vt::Parser::with_options(rows, cols, 0, crate::esctest::options())
+        fux_vt::Parser::with_options(crate::vt_size(rows, cols)?, 0, crate::esctest::options())
             .map_err(|e| e.to_string())
     }
 

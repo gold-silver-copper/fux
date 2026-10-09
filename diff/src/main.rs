@@ -242,6 +242,12 @@ pub fn same_lines(what: &str, baseline: &str, current: &str) -> Result<(), Strin
     }
 }
 
+/// The current fux-vt's `Size` of `rows` by `cols`, neither ever zero here.
+pub fn size(rows: u16, cols: u16) -> fux_vt::Size {
+    let one = |n| std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN);
+    fux_vt::Size::from((one(rows), one(cols)))
+}
+
 /// `n` times `scale`, for a number of cases.
 pub fn times(n: usize, scale: usize) -> usize {
     n.saturating_mul(scale)

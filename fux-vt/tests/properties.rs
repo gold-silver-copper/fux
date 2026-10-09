@@ -3,7 +3,7 @@
 //! every line's text; `Cells` behaves as a plain list of cells; the kitty
 //! keyboard flag stacks behave as plain stacks.
 
-use fux_vt::{Cells, Feature, Options, Parser};
+use fux_vt::{Cells, Feature, Options, Parser, Size};
 use unicode_width::UnicodeWidthChar;
 #[path = "corpus/graphemes.rs"]
 mod graphemes;
@@ -11,7 +11,7 @@ mod graphemes;
 mod models;
 use models::{CellsOp, Model, cells_of, printable};
 
-type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// A small deterministic generator (splitmix64), so a failure names its case.
 struct Rng(u64);
@@ -82,7 +82,7 @@ fn printed_text_is_segmented_as_the_model_says() -> Result {
             let mut buffer = [0; 4];
             input.extend_from_slice(c.encode_utf8(&mut buffer).as_bytes());
         }
-        let mut parser = Parser::new(2, cols, 0)?;
+        let mut parser = Parser::new(Size::new(2, cols)?, 0)?;
         let mut rest = input.as_slice();
         while !rest.is_empty() {
             let (piece, tail) = rest
@@ -128,7 +128,7 @@ fn printed_text_is_segmented_as_the_model_says() -> Result {
 /// unicode-width lays it out, as it did in 0.1.5.
 #[test]
 fn a_three_column_character_takes_a_cell_and_two_blanks() -> Result {
-    let mut parser = Parser::new(2, 10, 0)?;
+    let mut parser = Parser::new(Size::new(2, 10)?, 0)?;
     parser.process("a\u{17D8}b".as_bytes())?;
     let screen = parser.screen();
     let cell = |col| screen.cell(0, col).map(|c| (c.contents(), c.is_wide()));
@@ -168,7 +168,7 @@ fn lines(parser: &Parser) -> Vec<String> {
     let screen = parser.screen();
     let retained = screen
         .history_len()
-        .saturating_add(usize::from(screen.size().0));
+        .saturating_add(usize::from(screen.size().rows()));
     let rows: Vec<_> = (0..retained)
         .rev()
         .filter_map(|offset| screen.row_from_bottom(offset))
@@ -222,7 +222,7 @@ fn reflow_narrower_and_back_keeps_every_line() -> Result {
                 text.push_str(r.pick(PIECES).unwrap_or("a"));
             }
         }
-        let mut parser = Parser::with_options(rows, cols, 1_000, options)?;
+        let mut parser = Parser::with_options(Size::new(rows, cols)?, 1_000, options)?;
         parser.process(text.as_bytes())?;
         let before = lines(&parser);
         let cursor = parser.screen().cursor_position();
@@ -231,13 +231,13 @@ fn reflow_narrower_and_back_keeps_every_line() -> Result {
                 .saturating_add(2),
         )?;
         let taller = u16::try_from(r.below(4))?;
-        parser.resize(rows.saturating_add(taller), narrow)?;
+        parser.resize(Size::new(rows.saturating_add(taller), narrow)?)?;
         assert_eq!(
             lines(&parser),
             before,
             "case {case}: {text:?} at {narrow} columns"
         );
-        parser.resize(rows, cols)?;
+        parser.resize(Size::new(rows, cols)?)?;
         assert_eq!(
             lines(&parser),
             before,
@@ -312,7 +312,7 @@ fn kitty_keyboard_flags_agree_with_two_plain_stacks() -> Result {
     let options = Options::new().with(Feature::KittyKeyboard);
     let mut r = Rng(0x0c17_7700_0000_0004);
     for case in 0..300 {
-        let mut parser = Parser::with_options(4, 10, 0, options)?;
+        let mut parser = Parser::with_options(Size::new(4, 10)?, 0, options)?;
         let mut primary: Vec<u8> = Vec::new();
         let mut secondary: Vec<u8> = Vec::new();
         let mut alternate = false;

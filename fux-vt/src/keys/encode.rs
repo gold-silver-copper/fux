@@ -1091,7 +1091,7 @@ mod tests {
 
     #[test]
     fn a_screen_encodes_pastes_and_focus_as_its_program_asked() -> Result<(), crate::Error> {
-        let mut parser = crate::Parser::new(4, 10, 0)?;
+        let mut parser = crate::Parser::new(crate::Size::of(4, 10), 0)?;
         let (mut out, screen) = (Vec::new(), parser.screen());
         screen.encode_paste("a\x1b[201~b", &mut out);
         assert_eq!(out, b"a\x1b[201~b");

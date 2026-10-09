@@ -1,31 +1,48 @@
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
-use std::num::NonZeroU16;
 use std::ops::Range;
 use std::sync::Arc;
 
 use crate::compact::{BLANK, Compact, Line, Text};
+use crate::geometry::{Size, Span};
 use crate::history::{Arriving, History, trimmed};
 use crate::link::Links;
 use crate::style::Styles;
 use crate::{Attributes, CellRef, Error, Row, RowId};
 
-/// A grid's number of rows or columns. Never zero, so a grid always has a
-/// last row and a last column.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Extent(NonZeroU16);
+/// The cursor, and what DECSC saves with it. Only the grid's movements set
+/// its row and column, each keeping them on the grid: a glyph that reaches
+/// the last column leaves the cursor there with `pending_wrap` set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Cursor {
+    row: u16,
+    col: u16,
+    /// DEC STD 070's Last Column Flag (Appendix D.6.1): a glyph went into
+    /// the last column, so the next one, with autowrap on, first moves to
+    /// the start of the next line.
+    pub pending_wrap: bool,
+    /// Origin mode (DECOM).
+    pub origin: bool,
+}
 
-impl Extent {
-    pub fn new(n: u16) -> Result<Self, Error> {
-        NonZeroU16::new(n).map(Self).ok_or(Error::ZeroSize)
+impl Cursor {
+    pub fn row(&self) -> u16 {
+        self.row
     }
-    pub fn get(self) -> u16 {
-        self.0.get()
+    pub fn col(&self) -> u16 {
+        self.col
     }
-    /// The last row or column.
-    pub fn last(self) -> u16 {
-        // Exact: an extent is at least one.
-        self.0.get().saturating_sub(1)
+    /// Its row and column.
+    pub fn at(&self) -> (u16, u16) {
+        (self.row, self.col)
+    }
+    /// This cursor at `row` and `col`, or as near as a grid of `size` has.
+    fn placed(self, (row, col): (u16, u16), size: Size) -> Self {
+        Self {
+            row: row.min(size.lines().last()),
+            col: col.min(size.columns().last()),
+            ..self
+        }
     }
 }
 
@@ -246,44 +263,22 @@ pub(crate) struct Grid {
     /// The slot of each row of the screen, top to bottom.
     order: Order,
     history: History,
-    pub rows: Extent,
-    pub cols: Extent,
+    size: Size,
     pub history_limit: usize,
-    /// Always on the grid: a glyph that reaches the last column leaves the
-    /// cursor there with `pending_wrap` set.
-    pub cursor: (u16, u16),
-    /// DEC STD 070's Last Column Flag (Appendix D.6.1): a glyph went into
-    /// the last column, so the next one, with autowrap on, first moves to
-    /// the start of the next line.
-    pub pending_wrap: bool,
-    pub saved_cursor: (u16, u16),
-    /// The flag DECSC saved with the cursor, which DECRC restores.
-    pub saved_pending_wrap: bool,
-    pub origin: bool,
-    pub saved_origin: bool,
-    pub top: u16,
-    pub bottom: u16,
-    /// The left and right margins (DECSLRM, with DECLRMM set), zero-based
-    /// and inclusive: the screen's first and last columns unless a program
-    /// set them. Set with `set_columns` alone, which keeps `lr`.
-    pub left: u16,
-    pub right: u16,
-    /// Whether `left` and `right` are narrower than the screen: one test
-    /// for every operation they bound, which without them does as it did.
+    pub cursor: Cursor,
+    /// The cursor DECSC saved, which DECRC restores.
+    pub saved: Cursor,
+    /// The top and bottom margins (DECSTBM): the scrolling region.
+    pub lines: Span,
+    /// The left and right margins (DECSLRM, with DECLRMM set), set with
+    /// `set_columns` alone, which keeps `lr`.
+    columns: Span,
+    /// Whether `columns` is narrower than the screen: one test for every
+    /// operation the margins bound, which without them does as it did.
     lr: bool,
     /// Whether its screen's cells are yet to be made (`Grid::unmade`):
     /// every row is blank, and `make` makes them.
     unmade: bool,
-}
-
-/// A grid's cursor and what goes with it (`Grid::clone_cursor`).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct CursorState {
-    cursor: (u16, u16),
-    pending_wrap: bool,
-    origin: bool,
-    margins: (u16, u16, u16, u16),
-    saved: ((u16, u16), bool, bool),
 }
 
 /// Which way a scroll moves rows: up, the rows leaving the top going into
@@ -301,29 +296,27 @@ pub(crate) fn next_id(next: &mut u64) -> Result<RowId, Error> {
 }
 
 impl Grid {
-    pub fn check_size(rows: u16, cols: u16, history: usize) -> Result<(Extent, Extent), Error> {
-        let (rows, cols) = (Extent::new(rows)?, Extent::new(cols)?);
+    pub fn check_size(size: Size, history: usize) -> Result<(), Error> {
         let retained = history
-            .checked_add(usize::from(rows.get()))
+            .checked_add(usize::from(size.rows()))
             .ok_or(Error::Capacity)?;
         if retained > MAX_ROWS
             || retained
-                .checked_mul(usize::from(cols.get()))
+                .checked_mul(usize::from(size.cols()))
                 .is_none_or(|n| n > MAX_CELLS)
         {
             return Err(Error::Capacity);
         }
-        Ok((rows, cols))
+        Ok(())
     }
 
     pub fn new(
-        rows: u16,
-        cols: u16,
+        size: Size,
         history_limit: usize,
         next: &mut u64,
         version: u64,
     ) -> Result<Self, Error> {
-        Self::made(rows, cols, history_limit, next, version, false)
+        Self::made(size, history_limit, next, version, false)
     }
 
     /// `new`, but with no storage for the screen's cells until `make`
@@ -332,8 +325,8 @@ impl Grid {
     /// and clearing keep it unmade (`resized`, `clear`); anything else is
     /// for a made grid. The alternate screen is made so, as most programs
     /// never show it.
-    pub fn unmade(rows: u16, cols: u16, next: &mut u64, version: u64) -> Result<Self, Error> {
-        Self::made(rows, cols, 0, next, version, true)
+    pub fn unmade(size: Size, next: &mut u64, version: u64) -> Result<Self, Error> {
+        Self::made(size, 0, next, version, true)
     }
 
     /// Gives an unmade grid (`unmade`) its screen's cells, blank, as `new`
@@ -343,9 +336,7 @@ impl Grid {
         if !self.unmade {
             return Ok(());
         }
-        let size = usize::from(self.rows.get())
-            .checked_mul(usize::from(self.cols.get()))
-            .ok_or(Error::Capacity)?;
+        let size = self.size.cells();
         self.cells
             .try_reserve_exact(size)
             .map_err(|_| Error::Capacity)?;
@@ -355,23 +346,22 @@ impl Grid {
     }
 
     fn made(
-        rows: u16,
-        cols: u16,
+        size: Size,
         history_limit: usize,
         next: &mut u64,
         version: u64,
         unmade: bool,
     ) -> Result<Self, Error> {
-        let (rows, cols) = Self::check_size(rows, cols, history_limit)?;
+        Self::check_size(size, history_limit)?;
         let mut grid = Self {
             unmade,
-            ..Self::bare(rows, cols, history_limit)
+            ..Self::bare(size, history_limit)
         };
         grid.reserve_screen()?;
-        for _ in 0..rows.get() {
+        for _ in 0..size.rows() {
             let id = next_id(next)?;
             grid.push_screen_row(
-                Meta::new(id, version, cols.get(), false, 0),
+                Meta::new(id, version, size.cols(), false, 0),
                 &[],
                 None,
                 None,
@@ -380,8 +370,8 @@ impl Grid {
         Ok(grid)
     }
 
-    /// A grid of `rows` by `cols` with no row yet, nor storage for one.
-    fn bare(rows: Extent, cols: Extent, history_limit: usize) -> Self {
+    /// A grid of `size` with no row yet, nor storage for one.
+    fn bare(size: Size, history_limit: usize) -> Self {
         Self {
             cells: Vec::new(),
             meta: Vec::new(),
@@ -393,19 +383,12 @@ impl Grid {
             linked: Linked::default(),
             order: Order::default(),
             history: History::new(history_limit),
-            rows,
-            cols,
+            size,
             history_limit,
-            cursor: (0, 0),
-            pending_wrap: false,
-            saved_cursor: (0, 0),
-            saved_pending_wrap: false,
-            origin: false,
-            saved_origin: false,
-            top: 0,
-            bottom: rows.last(),
-            left: 0,
-            right: cols.last(),
+            cursor: Cursor::default(),
+            saved: Cursor::default(),
+            lines: size.lines(),
+            columns: size.columns(),
             lr: false,
             unmade: false,
         }
@@ -414,26 +397,21 @@ impl Grid {
     /// A grid with no row yet that takes this one's place: the same styles,
     /// and their numbers, which the rows it is given keep; unmade if this
     /// one is.
-    fn successor(&self, rows: Extent, cols: Extent) -> Self {
+    fn successor(&self, size: Size) -> Self {
         Self {
             styles: Arc::clone(&self.styles),
             recent: self.recent,
             epoch: self.epoch,
             unmade: self.unmade,
-            ..Self::bare(rows, cols, self.history_limit)
+            ..Self::bare(size, self.history_limit)
         }
     }
 
     /// Room for the screen's rows, exactly; their cells' only once made.
     fn reserve_screen(&mut self) -> Result<(), Error> {
-        let rows = usize::from(self.rows.get());
-        let size = rows
-            .checked_mul(usize::from(self.cols.get()))
-            .ok_or(Error::Capacity)?;
-        if size > MAX_CELLS {
-            return Err(Error::Capacity);
-        }
-        let cells = if self.unmade { 0 } else { size };
+        // Within the limits: `check_size` came first.
+        let rows = usize::from(self.size.rows());
+        let cells = if self.unmade { 0 } else { self.size.cells() };
         self.cells
             .try_reserve_exact(cells.saturating_sub(self.cells.len()))
             .map_err(|_| Error::Capacity)?;
@@ -459,7 +437,7 @@ impl Grid {
         links: Option<Box<[u16]>>,
     ) {
         let slot = self.meta.len();
-        let cols = usize::from(self.cols.get());
+        let cols = usize::from(self.size.cols());
         // An unmade grid's rows are blank, and have no cells to put.
         if !self.unmade {
             let start = self.cells.len();
@@ -476,6 +454,9 @@ impl Grid {
         self.order.push_back(slot);
     }
 
+    pub fn size(&self) -> Size {
+        self.size
+    }
     pub fn history_len(&self) -> usize {
         self.history.len()
     }
@@ -497,7 +478,7 @@ impl Grid {
     /// Where a slot's cells are.
     fn cells_of(&self, slot: usize) -> Option<Range<usize>> {
         let width = usize::from(self.meta.get(slot)?.width);
-        let start = slot.checked_mul(usize::from(self.cols.get()))?;
+        let start = slot.checked_mul(usize::from(self.size.cols()))?;
         Some(start..start.checked_add(width)?)
     }
     fn slice(&self, slot: usize) -> &[Compact] {
@@ -574,7 +555,7 @@ impl Grid {
     }
     #[inline]
     fn slot(&self, row: u16) -> Option<usize> {
-        if row >= self.rows.get() {
+        if row >= self.size.rows() {
             return None;
         }
         self.order.get(usize::from(row)).copied()
@@ -973,7 +954,7 @@ impl Grid {
     /// the mark back to `start`: a row erased once costs nothing to erase
     /// again, and nothing to recycle.
     pub fn erase(&mut self, row: u16, start: u16, end: u16, style: u32, version: u64) {
-        let (cols, last) = (self.cols.get(), self.cols.last());
+        let (cols, last) = (self.size.cols(), self.size.columns().last());
         let mut clears_edge = end >= cols;
         let Some(slot) = self.slot(row) else {
             return;
@@ -1054,6 +1035,37 @@ impl Grid {
         }
     }
 
+    /// ED (`display`) or EL in `mode`, 0 to 2, from the cursor, ending a
+    /// pending wrap: `erase` erases each row's span, and says whether it
+    /// found something it left; whether any did. A row ED erases whole is
+    /// no prompt's, as in Ghostty; EL, and ED's part of the cursor's row,
+    /// leave the mark (a shell redrawing its prompt erases from it).
+    #[inline]
+    pub fn erase_in(
+        &mut self,
+        display: bool,
+        mode: u16,
+        mut erase: impl FnMut(&mut Self, u16, u16, u16) -> bool,
+    ) -> bool {
+        self.cursor.pending_wrap = false;
+        let ((row, col), cols) = (self.cursor.at(), self.size.cols());
+        let mut found = false;
+        if display {
+            for y in 0..self.size.rows() {
+                if (mode == 0 && y > row) || (mode == 1 && y < row) || mode == 2 {
+                    found |= erase(self, y, 0, cols);
+                    self.clear_prompt(y);
+                }
+            }
+        }
+        let (start, end) = match mode {
+            0 => (col, cols),
+            1 => (0, col.saturating_add(1).min(cols)),
+            _ => (0, cols),
+        };
+        erase(self, row, start, end) | found
+    }
+
     /// `erase`, leaving protected glyphs (DECSCA, SPA) as they are: each
     /// run of unprotected cells between them is erased, as xterm's
     /// `ClearInLine2` erases around them. A wide glyph's second half is
@@ -1068,7 +1080,7 @@ impl Grid {
         style: u32,
         version: u64,
     ) -> bool {
-        let end = end.min(self.cols.get());
+        let end = end.min(self.size.cols());
         let cells = self.live_cells(row);
         let protected = |at: usize| {
             cells.get(at).is_some_and(|c| {
@@ -1112,8 +1124,8 @@ impl Grid {
         if self.lr && !self.in_columns() {
             return;
         }
-        self.pending_wrap = false;
-        let (row, col) = self.cursor;
+        self.cursor.pending_wrap = false;
+        let (row, col) = self.cursor.at();
         self.edit_row(row, col, count, insert, blank, version);
     }
 
@@ -1131,13 +1143,13 @@ impl Grid {
     ) {
         // The cells the edit moves end at the right margin, which is the
         // last column without margins.
-        let end = self.right.saturating_add(1).min(self.cols.get());
+        let end = self.columns.end();
         // At most the cells from the column to the margin.
         let count = usize::from(count.min(end.saturating_sub(col)));
         if count == 0 {
             return;
         }
-        let cols = self.cols.get();
+        let cols = self.size.cols();
         let end = usize::from(end);
         let blank = Compact::blank(blank);
         self.mutate_row(row, version, cols, |row_cells| {
@@ -1215,10 +1227,10 @@ impl Grid {
     /// scroll costs what it did before links.
     #[inline]
     fn recycle(&mut self, slot: usize, id: RowId, version: u64) {
-        let mut used = usize::from(self.cols.get());
+        let mut used = usize::from(self.size.cols());
         if let Some(m) = self.meta.get_mut(slot) {
             used = usize::from(m.used);
-            *m = Meta::new(id, version, self.cols.get(), false, 0);
+            *m = Meta::new(id, version, self.size.cols(), false, 0);
         }
         // A row taken into history leaves its slot blank (`take_row`).
         if used > 0 {
@@ -1254,7 +1266,7 @@ impl Grid {
     #[inline]
     pub fn scroll(
         &mut self,
-        (top, bottom): (u16, u16),
+        region: Span,
         count: u16,
         direction: Scroll,
         blank: u32,
@@ -1264,47 +1276,34 @@ impl Grid {
         // A line feed at the bottom of the screen, the commonest scroll,
         // goes straight to history.
         if direction == (Scroll::Up { history: true })
-            && top == 0
-            && bottom == self.rows.last()
+            && region == self.size.lines()
             && self.history_limit > 0
         {
-            for _ in 0..count.min(self.rows.get()) {
+            for _ in 0..count.min(self.size.rows()) {
                 self.scroll_into_history(blank, next, version)?;
             }
             return Ok(());
         }
-        self.scroll_region((top, bottom), count, direction, blank, next, version)
+        self.scroll_region(region, count, direction, blank, next, version)
     }
 
     /// A scroll inside left and right margins (DEC STD 070, 5.4.3; xterm's
     /// `scrollInMargins`): the cells between the margins of rows `top` to
-    /// `bottom` move `count` rows up or down, and those the move leaves
+    /// `region` move `count` rows up or down, and those the move leaves
     /// are blank in `blank`. Rows do not move, so each keeps its identity,
     /// its soft wrap and its prompt mark, as xterm keeps a row's flags;
     /// their cells change, with their text and links, and so their
     /// versions. A wide glyph across either margin, in any row of the
     /// region, loses both halves first, as in xterm. Nothing goes into
     /// history.
-    pub fn scroll_columns(
-        &mut self,
-        (top, bottom): (u16, u16),
-        count: u16,
-        up: bool,
-        blank: u32,
-        version: u64,
-    ) {
-        if bottom >= self.rows.get() {
-            return;
-        }
-        let Some(height) = bottom.checked_sub(top).and_then(|h| h.checked_add(1)) else {
-            return;
-        };
+    pub fn scroll_columns(&mut self, region: Span, count: u16, up: bool, blank: u32, version: u64) {
+        let (top, bottom, height) = (region.first(), region.last(), region.len());
         let count = count.min(height);
         if count == 0 {
             return;
         }
-        let (left, right) = (usize::from(self.left), usize::from(self.right));
-        let end = right.saturating_add(1);
+        let left = usize::from(self.columns.first());
+        let end = usize::from(self.columns.end());
         for y in top..=bottom {
             self.mutate_row(y, version, 0, |cells| {
                 let mut changed = false;
@@ -1424,7 +1423,7 @@ impl Grid {
     #[inline]
     fn scroll_region(
         &mut self,
-        (top, bottom): (u16, u16),
+        region: Span,
         count: u16,
         direction: Scroll,
         blank: u32,
@@ -1432,14 +1431,8 @@ impl Grid {
         version: u64,
     ) -> Result<(), Error> {
         let up = direction != Scroll::Down;
-        if bottom >= self.rows.get() {
-            return Ok(());
-        }
-        let Some(height) = bottom.checked_sub(top).and_then(|h| h.checked_add(1)) else {
-            return Ok(());
-        };
-        let count = count.min(height);
-        for _ in 0..count {
+        let (top, bottom) = (region.first(), region.last());
+        for _ in 0..count.min(region.len()) {
             let id = next_id(next)?;
             let (from, to) = if up { (top, bottom) } else { (bottom, top) };
             if let Some(slot) = self.move_row(usize::from(from), usize::from(to)) {
@@ -1477,7 +1470,7 @@ impl Grid {
             self.cells.as_mut_slice(),
             self.meta.as_mut_slice(),
             self.texts.as_slice(),
-            (slot, usize::from(self.cols.get())),
+            (slot, usize::from(self.size.cols())),
         )?;
         if !taken {
             self.take_row_with_extras(slot)?;
@@ -1491,7 +1484,7 @@ impl Grid {
             // Its cells are blank, and it has neither text nor links: it
             // is a new row once it has a new identity.
             if let Some(m) = self.meta.get_mut(slot) {
-                *m = Meta::new(id, version, self.cols.get(), false, 0);
+                *m = Meta::new(id, version, self.size.cols(), false, 0);
             }
         } else {
             self.recycle(slot, id, version);
@@ -1510,7 +1503,7 @@ impl Grid {
         let Some(&m) = self.meta.get(slot) else {
             return Ok(());
         };
-        let start = slot.saturating_mul(usize::from(self.cols.get()));
+        let start = slot.saturating_mul(usize::from(self.size.cols()));
         let used = start.saturating_add(usize::from(m.used.min(m.width)));
         let cells = trimmed(self.cells.get(start..used).unwrap_or_default());
         self.history.push(Arriving {
@@ -1603,14 +1596,9 @@ impl Grid {
     /// cells, cut or padded to the new width (`reflowed` rewraps them). The
     /// new storage is built before anything changes, so a failed allocation
     /// leaves this grid as it was.
-    pub fn resized(
-        &self,
-        rows: u16,
-        cols: u16,
-        next: &mut u64,
-        version: u64,
-    ) -> Result<Self, Error> {
-        let (rows, cols) = Self::check_size(rows, cols, self.history_limit)?;
+    pub fn resized(&self, size: Size, next: &mut u64, version: u64) -> Result<Self, Error> {
+        Self::check_size(size, self.history_limit)?;
+        let (rows, cols) = (size.rows(), size.cols());
         let history = self.history_len();
         // Rows are placed around the cursor, so that the line it is on stays
         // in view (docs/breaks-audit.md, 017: a resized pane lost its bottom
@@ -1620,17 +1608,17 @@ impl Grid {
         // pulls rows back from history above, as xterm does, and pads the rest
         // with blank rows below. history_limit bounds history, oldest first.
         let old_retained = self.retained_len();
-        let live_top = match rows.get().checked_sub(self.rows.get()) {
+        let live_top = match rows.checked_sub(self.size.rows()) {
             // A grow takes back as many history rows as there are.
             Some(grown) if grown > 0 => history.saturating_sub(usize::from(grown)),
             // A shrink scrolls up only the rows from the top through the
             // cursor's that no longer fit.
             Some(_) | None => {
-                let through_cursor = usize::from(self.cursor.0)
+                let through_cursor = usize::from(self.cursor.row)
                     .checked_add(1)
                     .ok_or(Error::Capacity)?;
                 history
-                    .checked_add(through_cursor.saturating_sub(usize::from(rows.get())))
+                    .checked_add(through_cursor.saturating_sub(usize::from(rows)))
                     .ok_or(Error::Capacity)?
             }
         };
@@ -1638,29 +1626,23 @@ impl Grid {
         // Rows past the history limit are dropped, oldest first.
         let base = live_top.saturating_sub(self.history_limit);
         let keep_total = new_history
-            .checked_add(usize::from(rows.get()))
+            .checked_add(usize::from(rows))
             .ok_or(Error::Capacity)?;
         // Both cursors move with the rows they sit on, and stop at the last.
-        let shifted = |row: u16| {
-            let index = history.checked_add(usize::from(row));
+        // They keep their columns, as far as the new width allows, and a
+        // wrap they wait on, as xterm keeps it at any width (DEC STD 070,
+        // Appendix D.6.1: a resize is no movement that ends it). The scroll
+        // region is reset, as xterm does, and as `reflowed` does.
+        let shifted = |cursor: Cursor| {
+            let index = history.checked_add(usize::from(cursor.row));
             let row = index.map_or(usize::MAX, |i| i.saturating_sub(live_top));
-            u16::try_from(row).map_or(rows.last(), |row| row.min(rows.last()))
+            let row = u16::try_from(row).unwrap_or(u16::MAX);
+            cursor.placed((row, cursor.col), size)
         };
-        // The cursors keep their columns, as far as the new width allows,
-        // and a wrap they wait on, as xterm keeps it at any width (DEC STD
-        // 070, Appendix D.6.1: a resize is no movement that ends it). The
-        // scroll region is reset, as xterm does, and as `reflowed` does.
         let mut replacement = Self {
-            cursor: (shifted(self.cursor.0), self.cursor.1.min(cols.last())),
-            pending_wrap: self.pending_wrap,
-            saved_cursor: (
-                shifted(self.saved_cursor.0),
-                self.saved_cursor.1.min(cols.last()),
-            ),
-            saved_pending_wrap: self.saved_pending_wrap,
-            origin: self.origin,
-            saved_origin: self.saved_origin,
-            ..self.successor(rows, cols)
+            cursor: shifted(self.cursor),
+            saved: shifted(self.saved),
+            ..self.successor(size)
         };
         replacement.reserve_screen()?;
         let end = base.checked_add(keep_total).ok_or(Error::Capacity)?;
@@ -1676,7 +1658,7 @@ impl Grid {
             let width = match old {
                 // A row is never wider than the u16 grid it was made in.
                 Some(r) if is_history => u16::try_from(r.width).map_err(|_| Error::Capacity)?,
-                Some(_) | None => cols.get(),
+                Some(_) | None => cols,
             };
             row.clear();
             row.resize(usize::from(width), BLANK);
@@ -1738,14 +1720,7 @@ impl Grid {
         if !self.recyclable() {
             // The links are kept, as a link the program has open keeps its
             // number (`Screen::pen_link`).
-            let mut grid = Self::made(
-                self.rows.get(),
-                self.cols.get(),
-                self.history_limit,
-                next,
-                version,
-                self.unmade,
-            )?;
+            let mut grid = Self::made(self.size, self.history_limit, next, version, self.unmade)?;
             grid.adopt_links(std::mem::take(&mut self.links));
             grid.epoch = self.epoch.wrapping_add(1);
             *self = grid;
@@ -1753,7 +1728,7 @@ impl Grid {
         }
         // `new` would run out of identities partway, having taken those
         // before; the rows are left as they were.
-        if next.checked_add(u64::from(self.rows.get())).is_none() {
+        if next.checked_add(u64::from(self.size.rows())).is_none() {
             *next = u64::MAX;
             return Err(Error::IdentityExhausted);
         }
@@ -1764,17 +1739,12 @@ impl Grid {
     /// holds its live rows alone, each as wide as the grid, in storage that
     /// `new` would make no smaller (none for an unmade grid's cells).
     pub fn recyclable(&self) -> bool {
-        let rows = usize::from(self.rows.get());
-        let cols = usize::from(self.cols.get());
+        let rows = usize::from(self.size.rows());
+        let cells = if self.unmade { 0 } else { self.size.cells() };
         self.history.is_bare()
             && self.order.len() == rows
             && self.meta.len() == rows
-            && self.cells.capacity()
-                == if self.unmade {
-                    0
-                } else {
-                    rows.saturating_mul(cols)
-                }
+            && self.cells.capacity() == cells
     }
 
     /// Blanks every row of a recyclable grid and gives each a new identity,
@@ -1791,46 +1761,10 @@ impl Grid {
         self.styles = Arc::default();
         self.recent = [(Attributes::default(), 0); RECENT];
         self.epoch = self.epoch.wrapping_add(1);
-        self.cursor = (0, 0);
-        self.pending_wrap = false;
-        self.saved_cursor = (0, 0);
-        self.saved_pending_wrap = false;
-        self.origin = false;
-        self.saved_origin = false;
-        self.top = 0;
-        self.bottom = self.rows.last();
-        self.set_columns(0, self.cols.last());
+        self.cursor = Cursor::default();
+        self.saved = Cursor::default();
+        self.reset_margins();
         Ok(())
-    }
-
-    /// The cursor and what goes with it: pending wrap, origin mode, the
-    /// margins and the saved cursor.
-    pub fn clone_cursor(&self) -> CursorState {
-        CursorState {
-            cursor: self.cursor,
-            pending_wrap: self.pending_wrap,
-            origin: self.origin,
-            margins: (self.top, self.bottom, self.left, self.right),
-            saved: (
-                self.saved_cursor,
-                self.saved_pending_wrap,
-                self.saved_origin,
-            ),
-        }
-    }
-    /// Puts back what `clone_cursor` took, on a grid of the same size.
-    pub fn set_cursor(&mut self, state: CursorState) {
-        self.cursor = state.cursor;
-        self.pending_wrap = state.pending_wrap;
-        self.origin = state.origin;
-        let (top, bottom, left, right) = state.margins;
-        (self.top, self.bottom) = (top, bottom);
-        self.set_columns(left, right);
-        (
-            self.saved_cursor,
-            self.saved_pending_wrap,
-            self.saved_origin,
-        ) = state.saved;
     }
     /// Whether every slot's cells from `used` to its width are blank, as
     /// recycling relies on; an unmade grid's are all blank.
@@ -1844,9 +1778,6 @@ impl Grid {
                     .is_some_and(|tail| tail.iter().all(|c| *c == BLANK))
             })
     }
-    pub fn in_region(&self) -> bool {
-        (self.top..=self.bottom).contains(&self.cursor.0)
-    }
     /// Whether left and right margins narrower than the screen are set
     /// (DECSLRM): every operation they bound looks here first, so without
     /// them each costs this test and no more.
@@ -1854,17 +1785,24 @@ impl Grid {
     pub fn lr(&self) -> bool {
         self.lr
     }
-    /// Sets the left and right margins, `left` before `right`, both on the
-    /// screen.
-    pub fn set_columns(&mut self, left: u16, right: u16) {
-        self.left = left;
-        self.right = right;
-        self.lr = left != 0 || right != self.cols.last();
+    /// The left and right margins.
+    pub fn columns(&self) -> Span {
+        self.columns
+    }
+    /// Sets the left and right margins.
+    pub fn set_columns(&mut self, columns: Span) {
+        self.columns = columns;
+        self.lr = columns != self.size.columns();
+    }
+    /// The margins at the screen's edges, as resets put them.
+    pub fn reset_margins(&mut self) {
+        self.lines = self.size.lines();
+        self.set_columns(self.size.columns());
     }
     /// Whether the cursor is between the left and right margins.
     #[inline]
     pub fn in_columns(&self) -> bool {
-        (self.left..=self.right).contains(&self.cursor.1)
+        self.columns.contains(self.cursor.col)
     }
     /// One past the last column a glyph printed now may take: the right
     /// margin's, unless the cursor is past it, when the margin is no bound
@@ -1874,23 +1812,23 @@ impl Grid {
         if self.lr {
             return self.line_end_in_margins();
         }
-        self.cols.get()
+        self.size.cols()
     }
     /// `line_end` with left and right margins. Out of line, as every margin
     /// case is, so that without margins each costs one test.
     #[cold]
     #[inline(never)]
     fn line_end_in_margins(&self) -> u16 {
-        if self.cursor.1 <= self.right {
-            self.right.saturating_add(1)
+        if self.cursor.col <= self.columns.last() {
+            self.columns.end()
         } else {
-            self.cols.get()
+            self.size.cols()
         }
     }
     /// Where the next glyph goes, before any wrap: the cursor's column, or
     /// one past the last column while a wrap is pending.
     pub fn next_column(&self) -> u16 {
-        past(self.cursor.1, self.pending_wrap)
+        past(self.cursor.col, self.cursor.pending_wrap)
     }
     /// Puts the cursor in column `col` of its row, from where it is; one
     /// past the end of its line (`line_end`) is the line's last column with
@@ -1900,36 +1838,44 @@ impl Grid {
         let end = self.line_end();
         self.advance_within(col, end);
     }
-    /// `advance_to`, the line ending at `end`, as `line_end` found it.
+    /// `advance_to`, the line ending at `end`, as `line_end` found it: at
+    /// most the screen's width, so the cursor stays on it.
     #[inline]
     pub fn advance_within(&mut self, col: u16, end: u16) {
-        self.pending_wrap = col >= end;
-        self.cursor.1 = col.min(end.saturating_sub(1));
+        self.cursor.pending_wrap = col >= end;
+        self.cursor.col = col.min(end.saturating_sub(1));
+    }
+    /// Moves the cursor to row `row`, the last if past it.
+    #[inline]
+    pub fn set_row(&mut self, row: u16) {
+        self.cursor.row = row.min(self.size.lines().last());
+    }
+    /// Moves the cursor to column `col`, the last if past it.
+    #[inline]
+    pub fn set_col(&mut self, col: u16) {
+        self.cursor.col = col.min(self.size.columns().last());
     }
     /// The cursor's line as CUP addresses it: from the top margin in
     /// origin mode.
     pub fn cursor_line(&self) -> u16 {
-        if self.origin {
-            self.cursor.0.saturating_sub(self.top)
-        } else {
-            self.cursor.0
-        }
+        self.cursor.row.saturating_sub(self.addressed().0.first())
     }
-    /// The column CR moves the cursor to: the left margin, unless the
-    /// cursor is left of it outside origin mode, when it is the first
-    /// (xterm's `CarriageReturn`; DEC STD 070 leaves CR at the margin).
+    /// CR: the cursor to the left margin, unless it is left of it outside
+    /// origin mode, when to the first column (xterm's `CarriageReturn`; DEC
+    /// STD 070 leaves CR at the margin).
     #[inline]
-    pub fn carriage_column(&self) -> u16 {
-        if self.lr {
-            return self.carriage_in_margins();
-        }
-        0
+    pub fn carriage_return(&mut self) {
+        self.cursor.col = if self.lr {
+            self.carriage_in_margins()
+        } else {
+            0
+        };
     }
     #[cold]
     #[inline(never)]
     fn carriage_in_margins(&self) -> u16 {
-        if self.origin || self.cursor.1 >= self.left {
-            self.left
+        if self.cursor.origin || self.cursor.col >= self.columns.first() {
+            self.columns.first()
         } else {
             0
         }
@@ -1939,86 +1885,87 @@ impl Grid {
     /// every cursor movement, it ends a pending wrap.
     #[inline]
     pub fn position(&mut self, row: u16, col: u16) {
-        self.pending_wrap = false;
-        // Without margins, the left one is the first column and the right
-        // the last: outside origin mode the margins are no bound.
-        self.cursor = if self.origin {
-            (
-                row.saturating_add(self.top).min(self.bottom).max(self.top),
-                col.saturating_add(self.left).min(self.right),
-            )
+        self.cursor.pending_wrap = false;
+        let (lines, columns) = self.addressed();
+        (self.cursor.row, self.cursor.col) = (lines.nth(row), columns.nth(col));
+    }
+    /// The rows and columns CUP addresses: between the margins in origin
+    /// mode, else the whole screen, as the margins are no bound outside it.
+    #[inline]
+    pub fn addressed(&self) -> (Span, Span) {
+        if self.cursor.origin {
+            (self.lines, self.columns)
         } else {
-            (row.min(self.rows.last()), col.min(self.cols.last()))
-        };
+            (self.size.lines(), self.size.columns())
+        }
     }
     /// BS without reverse wraparound: back a column, stopping at the left
     /// margin unless the cursor is already left of it (xterm's
     /// `CursorBack`).
     #[inline]
     pub fn back(&mut self) {
-        if self.lr && self.cursor.1 == self.left {
+        if self.lr && self.cursor.col == self.columns.first() {
             return;
         }
-        self.cursor.1 = self.cursor.1.saturating_sub(1);
+        self.cursor.col = self.cursor.col.saturating_sub(1);
     }
-    /// The column CUF, or HPR (`absolute`, outside origin mode), moves the
-    /// cursor `n` columns right to: no further than the right margin, for
-    /// CUF while the cursor is not past it, for HPR in origin mode
-    /// (xterm's `CursorForward` and `CASE_HPR`), else the last column.
+    /// CUF, or HPR (`absolute`, outside origin mode): the cursor `n`
+    /// columns right, no further than the right margin, for CUF while the
+    /// cursor is not past it, for HPR in origin mode (xterm's
+    /// `CursorForward` and `CASE_HPR`), else the last column.
     #[inline]
-    pub fn forward(&self, n: u16, absolute: bool) -> u16 {
-        let col = self.cursor.1.saturating_add(n);
-        if self.lr {
-            return self.forward_in_margins(col, absolute);
-        }
-        col.min(self.cols.last())
+    pub fn forward(&mut self, n: u16, absolute: bool) {
+        let col = self.cursor.col.saturating_add(n);
+        self.cursor.col = if self.lr {
+            self.forward_in_margins(col, absolute)
+        } else {
+            col.min(self.size.columns().last())
+        };
     }
     #[cold]
     #[inline(never)]
     fn forward_in_margins(&self, col: u16, absolute: bool) -> u16 {
         let bounded = if absolute {
-            self.origin
+            self.cursor.origin
         } else {
-            self.cursor.1 <= self.right
+            self.cursor.col <= self.columns.last()
         };
         col.min(if bounded {
-            self.right
+            self.columns.last()
         } else {
-            self.cols.last()
+            self.size.columns().last()
         })
     }
-    /// The column CUB moves the cursor `n` columns left to: no further than
-    /// the left margin, unless the cursor is left of it already (xterm's
-    /// `CursorBack`).
+    /// CUB: the cursor `n` columns left, no further than the left margin,
+    /// unless it is left of it already (xterm's `CursorBack`).
     #[inline]
-    pub fn backward(&self, n: u16) -> u16 {
-        let col = self.cursor.1.saturating_sub(n);
-        if self.lr && self.cursor.1 >= self.left {
-            return col.max(self.left);
-        }
-        col
+    pub fn backward(&mut self, n: u16) {
+        let col = self.cursor.col.saturating_sub(n);
+        let left = self.columns.first();
+        self.cursor.col = if self.lr && self.cursor.col >= left {
+            col.max(left)
+        } else {
+            col
+        };
     }
-    /// The column CHA and HPA move the cursor to, `col` counting from the
-    /// left margin in origin mode, no further than the right one.
+    /// CHA and HPA: the cursor to column `col`, counting from the left
+    /// margin in origin mode, no further than the right one.
     #[inline]
-    pub fn column(&self, col: u16) -> u16 {
-        if self.lr && self.origin {
-            return col.saturating_add(self.left).min(self.right);
-        }
-        col.min(self.cols.last())
+    pub fn column(&mut self, col: u16) {
+        self.cursor.col = if self.lr && self.cursor.origin {
+            self.columns.nth(col)
+        } else {
+            col.min(self.size.columns().last())
+        };
     }
     /// Moves the cursor to line `line` as CUP does, keeping its column,
     /// which origin mode keeps within the right margin (VPA and VPR, as
     /// xterm addresses them).
     #[inline]
     pub fn position_line(&mut self, line: u16) {
-        let col = self.cursor.1;
+        let col = self.cursor.col;
         self.position(line, 0);
-        self.cursor.1 = if self.origin {
-            col.min(self.right)
-        } else {
-            col
-        };
+        self.cursor.col = col.min(self.addressed().1.last());
     }
 }
 

@@ -4,7 +4,7 @@ use fux_vt::Parser;
 /// Each row of the screen, its blank tail trimmed.
 pub fn lines(parser: &Parser) -> Vec<String> {
     let screen = parser.screen();
-    let (rows, cols) = screen.size();
+    let (rows, cols) = screen.size().into();
     (0..rows)
         .map(|y| {
             (0..cols)

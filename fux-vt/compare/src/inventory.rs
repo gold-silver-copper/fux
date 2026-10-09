@@ -754,8 +754,9 @@ fn tally(recordings: &[Recording]) -> Result<BTreeMap<String, Row>, String> {
     for r in recordings {
         // As fux's panes are set up.
         let options = fux::pane::OPTIONS;
-        let mut parser = fux_vt::Parser::with_options(r.rows, r.cols, 10_000, options)
-            .map_err(|e| format!("fux-vt: {e}"))?;
+        let mut parser =
+            fux_vt::Parser::with_options(crate::vt_size(r.rows, r.cols)?, 10_000, options)
+                .map_err(|e| format!("fux-vt: {e}"))?;
         let bytes = r.bytes();
         for token in tokens(&bytes) {
             let mut heard = Heard::default();

@@ -9,7 +9,7 @@
 //! however the output is cut up; and again after reflowing narrower and
 //! back.
 #![no_main]
-use fux_vt::{Feature, Options, Parser, Row};
+use fux_vt::{Feature, Options, Parser, Row, Size};
 use libfuzzer_sys::arbitrary::{self, Arbitrary};
 use libfuzzer_sys::fuzz_target;
 use unicode_width::UnicodeWidthChar;
@@ -113,7 +113,8 @@ fuzz_target!(|input: Input| {
     }
 
     let options = Options::new().with(Feature::Reflow);
-    let Ok(mut parser) = Parser::with_options(rows, cols, 1_000, options) else {
+    let size = Size::new(rows, cols).expect("a row and four columns at least");
+    let Ok(mut parser) = Parser::with_options(size, 1_000, options) else {
         return;
     };
     let mut rest = output.as_slice();
@@ -156,8 +157,9 @@ fuzz_target!(|input: Input| {
             parser.screen().pending_wrap(),
         );
         let narrow = u16::from(width).clamp(2, cols);
-        assert!(parser.resize(rows, narrow).is_ok());
-        assert!(parser.resize(rows, cols).is_ok());
+        let narrow = Size::new(rows, narrow).expect("two columns at least");
+        assert!(parser.resize(narrow).is_ok());
+        assert!(parser.resize(size).is_ok());
         check(&parser);
         let after = (
             parser.screen().cursor_position(),

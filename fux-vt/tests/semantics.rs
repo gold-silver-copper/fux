@@ -1,7 +1,7 @@
 //! The sequence matrix's behaviour, family by family, with expected values
 //! from the vt100-crate baseline and its corrections.
-use fux_vt::{CellRef, Color, Error, Mode, MouseProtocolEncoding, MouseProtocolMode, Parser};
-type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+use fux_vt::{CellRef, Color, Error, Mode, MouseProtocolEncoding, MouseProtocolMode, Parser, Size};
+type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[path = "corpus/lines.rs"]
 mod lines;
@@ -12,7 +12,7 @@ fn cell(parser: &Parser, row: u16, col: u16) -> std::result::Result<CellRef<'_>,
 
 #[test]
 fn text_controls_cursor_and_pending_wrap() -> Result {
-    let mut p = Parser::new(3, 5, 2)?;
+    let mut p = Parser::new(Size::new(3, 5)?, 2)?;
     p.process(b"abcde")?;
     // The cursor stays on the last column, waiting to wrap (DEC STD 070,
     // Appendix D.6.1, the Last Column Flag).
@@ -43,7 +43,7 @@ fn text_controls_cursor_and_pending_wrap() -> Result {
 #[test]
 fn tiny_grids_wrap_and_drop_wide_glyphs_without_underflow() -> Result {
     for (rows, cols) in [(1, 1), (1, 2), (1, 8), (8, 1)] {
-        let mut p = Parser::new(rows, cols, 2)?;
+        let mut p = Parser::new(Size::new(rows, cols)?, 2)?;
         p.process("界".as_bytes())?;
         if cols == 1 {
             assert_eq!(p.screen().cursor_position(), (0, 0));
@@ -62,7 +62,7 @@ fn tiny_grids_wrap_and_drop_wide_glyphs_without_underflow() -> Result {
 
 #[test]
 fn autowrap_disabled_overwrites_without_scrolling() -> Result {
-    let mut p = Parser::new(2, 3, 2)?;
+    let mut p = Parser::new(Size::new(2, 3)?, 2)?;
     p.process(b"\x1b[?7labcdef")?;
     assert_eq!(lines(&p), ["abf", ""]);
     assert_eq!(p.screen().history_len(), 0);
@@ -75,7 +75,7 @@ fn autowrap_disabled_overwrites_without_scrolling() -> Result {
 
 #[test]
 fn unicode_combining_and_clipping_are_cell_aware() -> Result {
-    let mut p = Parser::new(3, 12, 0)?;
+    let mut p = Parser::new(Size::new(3, 12)?, 0)?;
     p.process("A界e\u{301}Z".as_bytes())?;
     assert!(cell(&p, 0, 1)?.is_wide());
     assert!(cell(&p, 0, 2)?.is_wide_continuation());
@@ -93,7 +93,7 @@ fn unicode_combining_and_clipping_are_cell_aware() -> Result {
 
 #[test]
 fn erase_insert_delete_and_wide_halves_are_repaired() -> Result {
-    let mut p = Parser::new(2, 6, 0)?;
+    let mut p = Parser::new(Size::new(2, 6)?, 0)?;
     p.process(b"abcdef\r\x1b[2@")?;
     assert_eq!(lines(&p), ["  abcd", ""]);
     p.process(b"\x1b[3P")?;
@@ -108,14 +108,14 @@ fn erase_insert_delete_and_wide_halves_are_repaired() -> Result {
     assert_eq!(cell(&p, 0, 1)?.contents(), "x");
     p.process(b"\x1b[3G\x1b[X")?;
     assert!(!cell(&p, 0, 3)?.is_wide_continuation());
-    p.resize(2, 5)?;
+    p.resize(Size::new(2, 5)?)?;
     assert!(!cell(&p, 0, 4)?.is_wide());
     Ok(())
 }
 
 #[test]
 fn sgr_defaults_resets_and_colour_parameter_forms() -> Result {
-    let mut p = Parser::new(2, 10, 0)?;
+    let mut p = Parser::new(Size::new(2, 10)?, 0)?;
     p.process(b"\x1b[1;3;4;7;91;104mA\x1b[2mB\x1b[22;23;24;27;39;49mC\x1b[38:2:1:2:3;48:5:200mD\x1b[38;5;255;48;2;5;6;7mE\x1b[mF")?;
     let a = cell(&p, 0, 0)?;
     assert!(a.bold() && a.italic() && a.underline() && a.inverse());
@@ -135,7 +135,7 @@ fn sgr_defaults_resets_and_colour_parameter_forms() -> Result {
 
 #[test]
 fn history_ids_survive_scrolling_and_recycled_slots_do_not_alias() -> Result {
-    let mut p = Parser::new(3, 8, 2)?;
+    let mut p = Parser::new(Size::new(3, 8)?, 2)?;
     p.process(b"one\r\ntwo\r\nthree")?;
     let id = p
         .screen()
@@ -183,10 +183,10 @@ fn history_ids_survive_scrolling_and_recycled_slots_do_not_alias() -> Result {
 
 #[test]
 fn copying_widened_history_joins_original_row_extents_without_padding() -> Result {
-    let mut p = Parser::new(2, 5, 2)?;
+    let mut p = Parser::new(Size::new(2, 5)?, 2)?;
     p.process(b"abcdefgh\r\nlast")?;
     assert_eq!(p.screen().history_len(), 1);
-    p.resize(2, 10)?;
+    p.resize(Size::new(2, 10)?)?;
     let window = p.screen().window(1, 2, 10);
     assert!(window.row_wrapped(0));
     assert!(window.cell(0, 5).is_none());
@@ -196,7 +196,7 @@ fn copying_widened_history_joins_original_row_extents_without_padding() -> Resul
 
 #[test]
 fn copy_soft_wraps_trim_hard_padding_and_enforce_limits() -> Result {
-    let mut p = Parser::new(4, 5, 0)?;
+    let mut p = Parser::new(Size::new(4, 5)?, 0)?;
     p.process(b"abcdefgh\r\nijk")?;
     let w = p.screen().window(0, 4, 5);
     assert_eq!(w.text((0, 0), (2, 2), 100, 100)?, "abcdefgh\nijk");
@@ -213,7 +213,7 @@ fn copy_soft_wraps_trim_hard_padding_and_enforce_limits() -> Result {
 
 #[test]
 fn marks_observe_cursor_modes_resize_and_invalid_marks_without_consumption() -> Result {
-    let mut p = Parser::new(2, 5, 0)?;
+    let mut p = Parser::new(Size::new(2, 5)?, 0)?;
     let mark = p.screen().mark();
     p.process(b"")?;
     assert_eq!(p.screen().mark(), mark);
@@ -226,7 +226,7 @@ fn marks_observe_cursor_modes_resize_and_invalid_marks_without_consumption() -> 
     assert_eq!(p.screen().dirty_rows_since(mark).count(), 1);
     assert_eq!(p.screen().dirty_rows_since(mark).count(), 1);
     let mark = p.screen().mark();
-    p.resize(3, 6)?;
+    p.resize(Size::new(3, 6)?)?;
     assert!(p.screen().full_refresh_since(mark));
     let mark = p.screen().mark();
     p.process(b"")?;
@@ -236,10 +236,10 @@ fn marks_observe_cursor_modes_resize_and_invalid_marks_without_consumption() -> 
 
 #[test]
 fn height_only_resize_clears_live_wrap_metadata() -> Result {
-    let mut p = Parser::new(3, 5, 0)?;
+    let mut p = Parser::new(Size::new(3, 5)?, 0)?;
     p.process(b"abcdef")?;
     assert!(p.screen().row_wrapped(0));
-    p.resize(4, 5)?;
+    p.resize(Size::new(4, 5)?)?;
     assert!(!p.screen().row_wrapped(0));
     assert_eq!(lines(&p), ["abcde", "f", "", ""]);
     Ok(())
@@ -247,20 +247,24 @@ fn height_only_resize_clears_live_wrap_metadata() -> Result {
 
 #[test]
 fn resize_rejects_bad_capacity_without_mutating_state() -> Result {
-    assert_eq!(Parser::new(0, 1, 0).err(), Some(Error::ZeroSize));
-    assert_eq!(Parser::new(1, 1, usize::MAX).err(), Some(Error::Capacity));
-    let mut p = Parser::new(3, 5, 2)?;
+    assert_eq!(
+        Parser::new(Size::new(1, 1)?, usize::MAX).err(),
+        Some(Error::Capacity)
+    );
+    let mut p = Parser::new(Size::new(3, 5)?, 2)?;
     p.process(b"abcde\r\nfghij\r\nklmno\r\npqrst")?;
     let mark = p.screen().mark();
-    assert_eq!(p.resize(0, 4), Err(Error::ZeroSize));
+    assert_eq!(
+        p.resize(Size::new(u16::MAX, u16::MAX)?),
+        Err(Error::Capacity)
+    );
     assert!(!p.screen().changed_since(mark));
-    assert_eq!(p.resize(u16::MAX, u16::MAX), Err(Error::Capacity));
-    assert_eq!(p.screen().size(), (3, 5));
+    assert_eq!(p.screen().size(), Size::new(3, 5)?);
     // Shrinking keeps the cursor line visible: the cursor is on `pqrst`, so
     // that line stays and the top of the live area (`fghij`) joins history.
     // (Before hunt 8 finding 017 the shrink dropped `pqrst`, the very line the
     // cursor was on, and kept `fgh`/`klm`; koh's 220 tests pass with this fix.)
-    p.resize(2, 3)?;
+    p.resize(Size::new(2, 3)?)?;
     assert_eq!(lines(&p), ["klm", "pqr"]);
     assert_eq!(p.screen().cursor_position(), (1, 2));
     assert_eq!(
@@ -270,7 +274,7 @@ fn resize_rejects_bad_capacity_without_mutating_state() -> Result {
     // Growing pulls rows back from history so the space shows older output,
     // as xterm does: `fghij` returns at full width, while `klm`/`pqr` keep the
     // three columns they were truncated to while the grid was narrow.
-    p.resize(3, 5)?;
+    p.resize(Size::new(3, 5)?)?;
     assert_eq!(lines(&p), ["fghij", "klm", "pqr"]);
     assert_eq!(
         p.screen().window(1, 3, 5).text((0, 0), (0, 4), 100, 100)?,
@@ -286,13 +290,13 @@ fn focus_and_cursor_shape() -> Result {
     let stream = b"x\x1b[?1004;2004hy\x1b[5 qz\x1b[?25l";
     for split in 0..stream.len() {
         let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
-        let mut p = Parser::new(3, 8, 0)?;
+        let mut p = Parser::new(Size::new(3, 8)?, 0)?;
         p.process(a)?;
         p.process(b)?;
         assert!(p.screen().mode(Mode::FocusReporting), "split {split}");
         assert_eq!(p.screen().cursor_shape(), 5, "split {split}");
     }
-    let mut p = Parser::new(3, 8, 0)?;
+    let mut p = Parser::new(Size::new(3, 8)?, 0)?;
     p.process(b"\x1b[?1004h\x1b[?1004l\x1b[2 q\x1b[ q")?;
     assert!(!p.screen().mode(Mode::FocusReporting));
     assert_eq!(p.screen().cursor_shape(), 0);
@@ -310,7 +314,7 @@ fn focus_and_cursor_shape() -> Result {
 
 #[test]
 fn alternate_mouse_modes_saved_cursor_and_replies() -> Result {
-    let mut p = Parser::new(3, 8, 2)?;
+    let mut p = Parser::new(Size::new(3, 8)?, 2)?;
     p.process(b"main\x1b[31m\x1b[?1049hALT\x1b[?1h\x1b[?25l\x1b[?2004h\x1b[?1002h\x1b[?1006h")?;
     assert!(
         p.screen().mode(Mode::AlternateScreen)
@@ -365,7 +369,7 @@ fn alternate_mouse_modes_saved_cursor_and_replies() -> Result {
 #[test]
 fn line_edits_outside_margins_leave_the_grid_unchanged() -> Result {
     for edit in *b"LM" {
-        let mut p = Parser::new(4, 4, 0)?;
+        let mut p = Parser::new(Size::new(4, 4)?, 0)?;
         p.process(b"\x1b[2;3r\x1b[4;4HZ")?;
         p.process(&[27, b'[', edit])?;
         assert_eq!(lines(&p), ["", "", "", "   Z"]);
@@ -379,7 +383,7 @@ fn line_edits_outside_margins_leave_the_grid_unchanged() -> Result {
 
 #[test]
 fn wrapping_below_the_scroll_region_does_not_invent_a_soft_line_join() -> Result {
-    let mut p = Parser::new(4, 4, 0)?;
+    let mut p = Parser::new(Size::new(4, 4)?, 0)?;
     p.process(b"\x1b[2;3r\x1b[4;4Hab")?;
     assert_eq!(p.screen().cursor_position(), (3, 1));
     assert_eq!(lines(&p), ["", "", "", "b  a"]);
@@ -389,7 +393,7 @@ fn wrapping_below_the_scroll_region_does_not_invent_a_soft_line_join() -> Result
 
 #[test]
 fn regions_origin_and_reset_have_explicit_history_semantics() -> Result {
-    let mut p = Parser::new(4, 4, 3)?;
+    let mut p = Parser::new(Size::new(4, 4)?, 3)?;
     p.process(b"a\r\nb\r\nc\r\nd\x1b[2;3r\x1b[?6h")?;
     assert_eq!(p.screen().scroll_region(), (1, 2));
     assert!(p.screen().mode(Mode::Origin));
@@ -426,13 +430,13 @@ fn ignored_sequences_cancel_and_recover_without_payload_leakage() -> Result {
         b"\x1b[999z",
         b"\x1b(0",
     ] {
-        let mut p = Parser::new(2, 8, 0)?;
+        let mut p = Parser::new(Size::new(2, 8)?, 0)?;
         p.process(b"A")?;
         p.process(ignored)?;
         p.process(b"B")?;
         assert_eq!(lines(&p), ["AB", ""], "{ignored:?}");
     }
-    let mut p = Parser::new(2, 8, 0)?;
+    let mut p = Parser::new(Size::new(2, 8)?, 0)?;
     p.process(b"\x1b]unfinished\x18A\x1b[12\x1aB\x1b[999999999999999999C!")?;
     assert_eq!(lines(&p), ["AB     !", ""]);
     p.process(b"\x1b[1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16;17;18;19;20;21;22;23;24;25;26;27;28;29;30;31;32;33H\rZ")?;
@@ -443,10 +447,10 @@ fn ignored_sequences_cancel_and_recover_without_payload_leakage() -> Result {
 #[test]
 fn all_chunk_boundaries_preserve_utf8_escapes_and_ascii_fast_path_results() -> Result {
     let bytes = "A界e\u{301}\x1b[31mRED\x1b[m\r\n0123456789\x1b]ignored\x07END".as_bytes();
-    let mut whole = Parser::new(4, 8, 3)?;
+    let mut whole = Parser::new(Size::new(4, 8)?, 3)?;
     whole.process(bytes)?;
     for split in 0..=bytes.len() {
-        let mut p = Parser::new(4, 8, 3)?;
+        let mut p = Parser::new(Size::new(4, 8)?, 3)?;
         p.process(bytes.get(..split).ok_or(Error::InvalidRange)?)?;
         p.process(bytes.get(split..).ok_or(Error::InvalidRange)?)?;
         assert_eq!(lines(&p), lines(&whole), "split {split}");
@@ -460,7 +464,7 @@ fn all_chunk_boundaries_preserve_utf8_escapes_and_ascii_fast_path_results() -> R
             }
         }
     }
-    let mut p = Parser::new(4, 8, 3)?;
+    let mut p = Parser::new(Size::new(4, 8)?, 3)?;
     for byte in bytes {
         p.process(std::slice::from_ref(byte))?;
     }
@@ -474,14 +478,14 @@ fn all_chunk_boundaries_preserve_utf8_escapes_and_ascii_fast_path_results() -> R
 /// newline must keep that line -- the cursor is on it -- rather than drop it.
 #[test]
 fn shrink_keeps_the_newline_less_bottom_line() -> Result {
-    let mut p = Parser::new(24, 80, 100)?;
+    let mut p = Parser::new(Size::new(24, 80)?, 100)?;
     let mut out = String::new();
     for i in 1..=40 {
         out.push_str(&format!("ROW-{i:02}\r\n"));
     }
     out.push_str("TAIL");
     p.process(out.as_bytes())?;
-    p.resize(23, 80)?;
+    p.resize(Size::new(23, 80)?)?;
     let s = p.screen();
     let w = s.window(0, 23, 80);
     let bottom: String = (0..80)
@@ -497,9 +501,9 @@ fn shrink_keeps_the_newline_less_bottom_line() -> Result {
 // loses a row. Taking the top row instead hid every new pane's first line.
 #[test]
 fn shrink_drops_blank_rows_below_the_cursor_first() -> Result {
-    let mut p = Parser::new(24, 80, 100)?;
+    let mut p = Parser::new(Size::new(24, 80)?, 100)?;
     p.process(b"BANNER\r\n$ ")?;
-    p.resize(23, 80)?;
+    p.resize(Size::new(23, 80)?)?;
     assert_eq!(lines(&p).first().map(String::as_str), Some("BANNER"));
     assert_eq!(p.screen().cursor_position(), (1, 2));
     assert_eq!(p.screen().history_len(), 0);
@@ -512,11 +516,11 @@ fn shrink_drops_blank_rows_below_the_cursor_first() -> Result {
 // moves with its row.
 #[test]
 fn grow_restores_rows_a_shrink_scrolled_away() -> Result {
-    let mut p = Parser::new(4, 10, 100)?;
+    let mut p = Parser::new(Size::new(4, 10)?, 100)?;
     p.process(b"a\r\nb\r\nc\r\nd")?;
-    p.resize(2, 10)?;
+    p.resize(Size::new(2, 10)?)?;
     assert_eq!(lines(&p), ["c", "d"]);
-    p.resize(4, 10)?;
+    p.resize(Size::new(4, 10)?)?;
     assert_eq!(lines(&p), ["a", "b", "c", "d"]);
     assert_eq!(p.screen().cursor_position(), (3, 1));
     Ok(())
@@ -526,10 +530,10 @@ fn grow_restores_rows_a_shrink_scrolled_away() -> Result {
 // above the cursor discards them; the primary screen is untouched.
 #[test]
 fn alternate_screen_shrink_discards_rows_above_the_cursor() -> Result {
-    let mut p = Parser::new(4, 10, 100)?;
+    let mut p = Parser::new(Size::new(4, 10)?, 100)?;
     p.process(b"main")?;
     p.process(b"\x1b[?1049h\x1b[Ha\r\nb\r\nc\r\nd")?;
-    p.resize(2, 10)?;
+    p.resize(Size::new(2, 10)?)?;
     assert_eq!(lines(&p), ["c", "d"]);
     assert_eq!(p.screen().cursor_position(), (1, 1));
     p.process(b"\x1b[?1049l")?;
@@ -561,7 +565,7 @@ fn vertical_moves_stop_at_the_margin_they_come_to() -> Result {
         (b"\x1b[2;4r\x1b[3;1H\x1b[9A", 1),
         (b"\x1b[2;4r\x1b[3;1H\x1b[9B", 3),
     ] {
-        let mut p = Parser::new(5, 5, 0)?;
+        let mut p = Parser::new(Size::new(5, 5)?, 0)?;
         p.process(bytes)?;
         assert_eq!(
             p.screen().cursor_position().0,
@@ -582,9 +586,9 @@ fn vertical_moves_stop_at_the_margin_they_come_to() -> Result {
 #[test]
 fn a_resize_without_reflow_keeps_a_pending_wrap_and_resets_the_region() -> Result {
     for (rows, cols) in [(4, 5), (3, 8), (3, 4)] {
-        let mut p = Parser::new(3, 5, 10)?;
+        let mut p = Parser::new(Size::new(3, 5)?, 10)?;
         p.process(b"abcde")?;
-        p.resize(rows, cols)?;
+        p.resize(Size::new(rows, cols)?)?;
         p.process(b"X")?;
         assert_eq!(
             p.screen().cursor_position(),
@@ -593,9 +597,9 @@ fn a_resize_without_reflow_keeps_a_pending_wrap_and_resets_the_region() -> Resul
         );
         assert_eq!(cell(&p, 1, 0)?.contents(), "X", "{rows}x{cols}");
     }
-    let mut p = Parser::new(10, 5, 0)?;
+    let mut p = Parser::new(Size::new(10, 5)?, 0)?;
     p.process(b"\x1b[2;5r")?;
-    p.resize(12, 5)?;
+    p.resize(Size::new(12, 5)?)?;
     p.process(b"\x1b[5;1H\nX")?;
     assert_eq!(
         p.screen().cursor_position(),
