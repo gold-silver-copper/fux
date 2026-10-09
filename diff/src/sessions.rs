@@ -79,7 +79,7 @@ macro_rules! stack {
             use $fux::$layout::PaneId;
             use $fux::config::Config;
             use $fux::render::Grid;
-            use $fux::session::{Ctx, Session};
+            use $fux::session::Session;
             use $fux::view::Mode;
 
             pub fn make(history: usize, clipboard: bool, buffers: usize) -> Result<Session, String> {
@@ -109,12 +109,8 @@ macro_rules! stack {
                     Event::Key(c, bytes) => client(c).into_iter().for_each(|c| s.input(c, bytes)),
                     Event::Escape(c) => client(c).into_iter().for_each(|c| s.escape(c)),
                     Event::Run(argv, c, p) => {
-                        let ctx = Ctx {
-                            client: c.as_ref().and_then(client),
-                            pane: p.as_ref().and_then(pane),
-                            cwd: Some("/".into()),
-                        };
-                        return format!("{:?}", s.run(argv, &ctx));
+                        let (c, p) = (c.as_ref().and_then(client), p.as_ref().and_then(pane));
+                        return format!("{:?}", s.run(argv, &super::$side::origin(c, p)));
                     }
                     Event::Output(p, bytes) => pane(p).into_iter().for_each(|p| s.output(p, bytes)),
                     Event::Resize(c, rows, cols) => {
@@ -246,9 +242,20 @@ stack!(cur, fux, id, id, cur_side);
 /// The column, a repeat mode, a list and a prompt as each side keeps them,
 /// a client's place and a workspace's tabs with their layouts, written alike.
 mod base_side {
+    use baseline::command::ClientId;
     use baseline::layout::Node;
-    use baseline::session::{Session, Tab, Workspace};
+    use baseline::layout::PaneId;
+    use baseline::session::{Ctx, Session, Tab, Workspace};
     use baseline::view::{Mode, View};
+
+    pub fn origin(c: Option<ClientId>, p: Option<PaneId>) -> Ctx {
+        let cwd = Some("/".into());
+        Ctx {
+            client: c,
+            pane: p,
+            cwd,
+        }
+    }
 
     pub fn place(s: &Session, v: &View) -> String {
         let ws = s.workspace(v.workspace).map(|w| w.id);
@@ -277,10 +284,17 @@ mod base_side {
 }
 
 mod cur_side {
+    use fux::id::{ClientId, PaneId};
     use fux::layout::Tree;
-    use fux::session::Session;
+    use fux::session::{Origin, Session};
     use fux::view::{Choice, Mode, View};
     use fux::workspace::{Tab, Workspace};
+
+    /// A client's command, or the CLI's: a command has one origin.
+    pub fn origin(c: Option<ClientId>, p: Option<PaneId>) -> Origin {
+        let cwd = Some("/".into());
+        c.map_or(Origin::Cli { pane: p, cwd }, Origin::Client)
+    }
 
     pub fn place(s: &Session, v: &View) -> String {
         let (ws, tab) = (s.shown_workspace(v.id), s.shown_tab(v.id));
