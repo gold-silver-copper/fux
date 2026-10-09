@@ -9,7 +9,7 @@ use crate::copy::MAX_CELLS;
 use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::Json;
 use crate::keys::{Direction, KeyPress};
-use crate::layout::{self, Axis, Node, Placement, Rect, Side};
+use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
 use crate::overlay::{Column, Repeat};
 use crate::pane::Pane;
 use crate::process::Pid;
@@ -393,7 +393,7 @@ impl Session {
             .find(|t| t.id == id)
     }
     /// A tab's layout, unless it is empty.
-    pub fn root(&self, tab: TabId) -> Option<&Node> {
+    pub fn root(&self, tab: TabId) -> Option<&Tree> {
         self.tab(tab)?.root()
     }
     /// The workspace and tab that hold a pane.
@@ -558,7 +558,7 @@ impl Session {
         let pane = new_pane(&self.config, launch, &mut ids, cmd, &cwd, DEFAULT_SIZE)?;
         self.ids = ids;
         let name = name.unwrap_or_else(|| self.workspace_name(id));
-        let root = Some(Node::Pane(pane.id));
+        let root = Some(Tree::Pane(pane.id));
         let clients = self.views.keys().copied();
         (self.workspaces).push(Workspace::new(id, name, tab, root, clients));
         self.panes.insert(pane.id, pane);
@@ -1233,7 +1233,7 @@ impl Session {
                 let launch = self.launch.as_deref();
                 let pane = new_pane(&self.config, launch, &mut ids, cmd, &cwd, DEFAULT_SIZE)?;
                 self.ids = ids;
-                ws.add_tab(id, name.clone(), Some(Node::Pane(pane.id)));
+                ws.add_tab(id, name.clone(), Some(Tree::Pane(pane.id)));
                 let ws = ws.id;
                 self.panes.insert(pane.id, pane);
                 self.follow(ctx, ws, Some(id), None);
@@ -1308,7 +1308,7 @@ impl Session {
                 let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
                 let area = self.reference_area(tab, ctx);
                 let tab = tab_of(&mut self.workspaces, pane)?;
-                let resize = |root: &mut Option<Node>| {
+                let resize = |root: &mut Option<Tree>| {
                     let root = root.as_mut();
                     root.is_some_and(|root| layout::resize(root, area, pane, direction, amount))
                 };
@@ -1562,20 +1562,7 @@ impl Session {
             tab.edit(|root| {
                 layout::remove(root, pane);
                 if takes {
-                    *root = Some(match root.take() {
-                        None => Node::Pane(pane),
-                        Some(root) => {
-                            let mut node = Node::Split {
-                                axis: Axis::Horizontal,
-                                children: vec![
-                                    (layout::WEIGHT, root),
-                                    (layout::WEIGHT, Node::Pane(pane)),
-                                ],
-                            };
-                            layout::normalize(&mut node);
-                            node
-                        }
-                    });
+                    layout::append(root, pane);
                 }
             });
         }
@@ -1647,7 +1634,7 @@ impl Session {
         let moved = match target {
             AnyRef::Pane(p) => {
                 let panes = self.locate(*p).and_then(|(_, t)| self.root(t));
-                let panes = panes.map_or_else(Vec::new, Node::panes);
+                let panes = panes.map_or_else(Vec::new, Tree::panes);
                 let index = panes.iter().position(|x| x == p);
                 let other = index
                     .and_then(|i| sibling(i, toward))
@@ -1672,7 +1659,7 @@ impl Session {
     fn select_pane(&mut self, view: &mut View, pick: PanePick) -> Result<String, Error> {
         let client = view.id;
         let tab = self.shown_tab(client).ok_or(Error::NoCurrentTab)?;
-        let panes = tab.root().map_or_else(Vec::new, Node::panes);
+        let panes = tab.root().map_or_else(Vec::new, Tree::panes);
         let (current, last) = (tab.focus(client), tab.seat(client).and_then(Seat::last));
         let target = match pick {
             PanePick::Id(p) => p,

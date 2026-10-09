@@ -4,7 +4,7 @@
 //! and its layout changes only through [`Tab::edit`], which keeps each focus
 //! on one of its panes: no client names a tab or pane that is gone.
 use crate::id::{ClientId, PaneId, TabId, WsId};
-use crate::layout::Node;
+use crate::layout::Tree;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A workspace and its tabs, of which it always has one or more: each is
@@ -21,7 +21,7 @@ pub struct Workspace {
 pub struct Tab {
     pub id: TabId,
     pub name: String,
-    root: Option<Node>,
+    root: Option<Tree>,
     seats: BTreeMap<ClientId, Seat>,
     /// The client that last typed into it, whose terminal answers its panes'
     /// colour queries (`outer`).
@@ -62,7 +62,7 @@ impl Workspace {
         id: WsId,
         name: String,
         tab: TabId,
-        root: Option<Node>,
+        root: Option<Tree>,
         clients: impl Iterator<Item = ClientId>,
     ) -> Workspace {
         let tab = Tab::new(tab, crate::session::MAIN.into(), root, clients, true);
@@ -91,7 +91,7 @@ impl Workspace {
 
     /// Adds a tab, named after its place if no name is given, with a seat
     /// for every client that has one in the others.
-    pub(crate) fn add_tab(&mut self, id: TabId, name: Option<String>, root: Option<Node>) {
+    pub(crate) fn add_tab(&mut self, id: TabId, name: Option<String>, root: Option<Tree>) {
         let number = self.tabs.len().saturating_add(1);
         let name = name.unwrap_or_else(|| format!("tab-{number}"));
         let clients = self.tabs.first().map(|t| t.seats.keys().copied());
@@ -117,7 +117,7 @@ impl Workspace {
 
     /// Removes tab `tab`, giving back its layout: the clients it was shown
     /// to are shown its neighbour.
-    pub(crate) fn remove_tab(&mut self, tab: TabId) -> Option<Node> {
+    pub(crate) fn remove_tab(&mut self, tab: TabId) -> Option<Tree> {
         let index = self.tabs.iter().position(|t| t.id == tab)?;
         let gone = self.tabs.get_mut(index)?;
         let (seats, root) = (std::mem::take(&mut gone.seats), gone.root.take());
@@ -157,7 +157,7 @@ impl Tab {
     fn new(
         id: TabId,
         name: String,
-        root: Option<Node>,
+        root: Option<Tree>,
         clients: impl Iterator<Item = ClientId>,
         shown: bool,
     ) -> Tab {
@@ -175,7 +175,7 @@ impl Tab {
     }
 
     /// Its layout, unless it is empty.
-    pub fn root(&self) -> Option<&Node> {
+    pub fn root(&self) -> Option<&Tree> {
         self.root.as_ref()
     }
 
@@ -214,7 +214,7 @@ impl Tab {
     /// Changes the layout with `change`; each client then focuses the pane
     /// it did if the tab still holds it, else the one before, else the
     /// first.
-    pub(crate) fn edit<R>(&mut self, change: impl FnOnce(&mut Option<Node>) -> R) -> R {
+    pub(crate) fn edit<R>(&mut self, change: impl FnOnce(&mut Option<Tree>) -> R) -> R {
         let out = change(&mut self.root);
         self.refocus();
         out
@@ -226,7 +226,7 @@ impl Tab {
         for seat in self.seats.values_mut() {
             let (focus, last) = (seat.focus.filter(inside), seat.last.filter(inside));
             seat.held &= focus.is_some();
-            seat.focus = focus.or(last).or_else(|| root.and_then(Node::first_pane));
+            seat.focus = focus.or(last).or_else(|| root.and_then(Tree::first_pane));
             seat.last = last.filter(|l| Some(*l) != seat.focus);
         }
     }
