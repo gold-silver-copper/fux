@@ -23,7 +23,7 @@ use std::ops::Range;
 
 use crate::compact::{BLANK, Compact, NO_TEXT, Text};
 use crate::grid::SlotHasher;
-use crate::link::Links;
+use crate::link::RowLinks;
 use crate::{Error, RowId};
 
 /// The cells a block holds, unless one row needs more. Small, as a block
@@ -143,7 +143,7 @@ pub(crate) struct Found<'a> {
     pub(crate) kept: &'a Kept,
     pub(crate) cells: &'a [Compact],
     pub(crate) text: &'a Text,
-    pub(crate) links: Option<&'a [u16]>,
+    pub(crate) links: Option<&'a RowLinks>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -163,7 +163,7 @@ pub(crate) struct History {
     /// A block the rows left, kept for the next to fill.
     spare: Vec<Compact>,
     texts: ByRow<Text>,
-    linked: ByRow<Box<[u16]>>,
+    linked: ByRow<RowLinks>,
     /// The cells the rows keep, for `storage_cells`.
     cells: usize,
     /// The most rows the grid keeps, which `rows` grows no larger than
@@ -228,7 +228,7 @@ impl History {
             &NO_TEXT
         };
         let links = if kept.flags() & LINKED != 0 {
-            self.linked.get(&number).map(|links| &**links)
+            self.linked.get(&number)
         } else {
             None
         };
@@ -243,9 +243,12 @@ impl History {
     pub(crate) fn position(&self, id: RowId) -> Option<usize> {
         self.rows.iter().position(|kept| kept.id == id)
     }
-    /// The links every row has, for counting them.
-    pub(crate) fn links(&self) -> impl Iterator<Item = &[u16]> {
-        self.linked.values().map(|links| &**links)
+    /// The links of each row that has any, with its index, oldest first.
+    pub(crate) fn links(&self) -> impl Iterator<Item = (usize, &RowLinks)> {
+        let linked = self.rows.iter().enumerate();
+        linked
+            .filter(|(_, kept)| kept.flags() & LINKED != 0)
+            .filter_map(|(index, _)| Some((index, self.linked.get(&self.number(index)?)?)))
     }
     /// Calls `f` with every cell the rows keep (not those of rows gone,
     /// which a block keeps until every row in it has gone), to mark the
@@ -384,11 +387,11 @@ impl History {
         ));
     }
 
-    /// Lets the oldest row go, its links released from `table`; and, once
+    /// Lets the oldest row go, and its links; and, once
     /// a row goes from a later block than the oldest, the blocks before
     /// that, which no row is in now.
     #[inline]
-    pub(crate) fn pop(&mut self, table: &mut Links) {
+    pub(crate) fn pop(&mut self) {
         let Some(gone) = self.rows.pop_front() else {
             return;
         };
@@ -396,7 +399,7 @@ impl History {
         self.first_row = self.first_row.wrapping_add(1);
         self.cells = self.cells.saturating_sub(gone.len());
         if gone.flags() & (TEXT | LINKED) != 0 {
-            self.forget(number, gone.flags(), table);
+            self.forget(number, gone.flags());
         }
         if gone.block() != self.first_block {
             self.leave_blocks(gone.block());
@@ -418,17 +421,15 @@ impl History {
     }
 
     /// The text and links of row `number`, which `flags` says it has, let
-    /// go, its links released from `table`.
+    /// go.
     #[cold]
     #[inline(never)]
-    fn forget(&mut self, number: u64, flags: u8, table: &mut Links) {
+    fn forget(&mut self, number: u64, flags: u8) {
         if flags & TEXT != 0 {
             self.texts.remove(&number);
         }
-        if flags & LINKED != 0
-            && let Some(links) = self.linked.remove(&number)
-        {
-            table.release_all(&links);
+        if flags & LINKED != 0 {
+            self.linked.remove(&number);
         }
     }
 
@@ -452,7 +453,7 @@ impl History {
     /// if it has any.
     #[cold]
     #[inline(never)]
-    pub(crate) fn attach(&mut self, text: Option<Text>, links: Option<Box<[u16]>>) {
+    pub(crate) fn attach(&mut self, text: Option<Text>, links: Option<RowLinks>) {
         let Some(index) = self.rows.len().checked_sub(1) else {
             return;
         };
@@ -472,22 +473,15 @@ impl History {
         }
     }
 
-    /// Row `index` loses its links, released from `table`, and takes
-    /// `version`; whether it had any.
-    pub(crate) fn unlink(&mut self, index: usize, version: u64, table: &mut Links) -> bool {
-        let Some(number) = self.number(index) else {
-            return false;
-        };
-        match self.rows.get_mut(index) {
-            Some(kept) if kept.flags() & LINKED != 0 => {
-                kept.set(LINKED, false);
-                kept.version = version;
-                if let Some(links) = self.linked.remove(&number) {
-                    table.release_all(&links);
-                }
-                true
-            }
-            Some(_) | None => false,
+    /// Row `index` loses its links, if it has any, and takes `version`.
+    pub(crate) fn unlink(&mut self, index: usize, version: u64) {
+        if let Some(number) = self.number(index)
+            && let Some(kept) = self.rows.get_mut(index)
+            && kept.flags() & LINKED != 0
+        {
+            kept.set(LINKED, false);
+            kept.version = version;
+            self.linked.remove(&number);
         }
     }
 
