@@ -196,8 +196,8 @@ impl Decoder {
         self.paste.is_none() && (!self.pending.is_empty() || self.discarding.is_some())
     }
 
-    /// Records `now` as when decoding began waiting, if it is waiting and
-    /// was not when last marked.
+    /// Records `now` as when decoding began waiting, if it is waiting on a
+    /// sequence it was not waiting on when last marked.
     pub fn mark(&mut self, now: Instant) {
         if self.waiting() && self.since.is_none() {
             self.since = Some(now);
@@ -249,7 +249,6 @@ impl Decoder {
     /// sequence waits for more, or for [`Decoder::timeout`].
     pub fn bytes(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
         self.feed(bytes, out);
-        // Waiting that stops and starts again within these bytes goes on.
         if !self.waiting() {
             self.since = None;
         }
@@ -316,6 +315,7 @@ impl Decoder {
             let string = self.discarding.as_mut()?;
             if string.escape {
                 self.discarding = None;
+                self.since = None;
                 if byte == b'\\' {
                     return bytes.get(i.saturating_add(1)..);
                 }
@@ -329,6 +329,7 @@ impl Decoder {
             match byte {
                 0x07 if string.bel => {
                     self.discarding = None;
+                    self.since = None;
                     return bytes.get(i.saturating_add(1)..);
                 }
                 0x1b => string.escape = true,
@@ -358,8 +359,10 @@ impl Decoder {
             match step {
                 Step::Done(n, input) => {
                     // Nearly always the whole sequence; else what follows it
-                    // stays, without moving.
+                    // stays, without moving. Its wait, if it had one, ends:
+                    // another begins when marked.
                     self.pending.take(n);
+                    self.since = None;
                     if input == Some(Input::Reply(Reply::Attributes)) {
                         self.expected = self.expected.saturating_sub(1);
                     }
@@ -369,6 +372,7 @@ impl Decoder {
                 }
                 Step::PasteStart(n) => {
                     self.pending.take(n);
+                    self.since = None;
                     self.paste = Some(Vec::new());
                     // Bytes after the marker in this batch are paste text.
                     let rest = std::mem::take(&mut self.pending);
@@ -1050,8 +1054,8 @@ mod tests {
     }
 
     /// The deadline runs from when decoding began waiting, through bytes
-    /// that leave it waiting, even across a paste; a wait that ends and
-    /// begins again runs from the new start.
+    /// that leave the same sequence waiting; a wait for another sequence
+    /// runs from the read it began in, even one that ended the first wait.
     #[test]
     fn the_deadline_runs_from_when_waiting_began() {
         let t0 = Instant::now();
@@ -1072,7 +1076,11 @@ mod tests {
         );
         d.bytes(b"200~pasted\x1b[201~\x1b", &mut out);
         d.mark(t0 + ms(20));
-        assert_eq!(d.deadline(), Some(t0 + ESCAPE_DELAY), "through a paste");
+        assert_eq!(
+            d.deadline(),
+            Some(t0 + ms(20) + ESCAPE_DELAY),
+            "after a paste"
+        );
         d.timeout(&mut out);
         assert_eq!(d.deadline(), None);
         d.bytes(b"\x1b", &mut out);
@@ -1082,6 +1090,15 @@ mod tests {
         d.bytes(b"\x1b", &mut out);
         d.mark(t0 + ms(40));
         assert_eq!(d.deadline(), Some(t0 + ms(40) + ESCAPE_DELAY), "a new wait");
+        // Up, then an Escape begun in the same read: its rest has its own
+        // `ESCAPE_DELAY` to come, not what was left of Up's.
+        d.bytes(b"[A\x1b", &mut out);
+        d.mark(t0 + ms(70));
+        assert_eq!(
+            d.deadline(),
+            Some(t0 + ms(70) + ESCAPE_DELAY),
+            "Up's wait ended"
+        );
     }
 
     #[test]
