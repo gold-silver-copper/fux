@@ -5,7 +5,7 @@
 //! after picks a word for the next slot of that command. Any other line is
 //! text, split into words as a config file's are. Each line's words go to
 //! `Config::apply`.
-use fux::config::{Binding, Config};
+use fux::config::{Binding, Config, Layer, Node};
 use fux::keys::{Key, KeyPress};
 use fux::words;
 use libfuzzer_sys::fuzz_target;
@@ -204,22 +204,31 @@ struct Models {
     root: Vec<Model>,
 }
 
-fn model_of(binding: &Binding) -> Model {
-    Model {
-        keys: binding.keys.clone(),
-        command: binding.command.clone(),
-        group: binding.group.clone(),
-        repeat: binding.repeat,
-    }
+/// The bindings after the prefix as models, depth first.
+fn models_of(layer: &Layer) -> Vec<Model> {
+    (layer.all().into_iter())
+        .map(|(keys, b, repeat)| Model {
+            keys,
+            command: b.command.clone(),
+            group: b.group.clone(),
+            repeat,
+        })
+        .collect()
 }
 
-/// Whether a binding is the model's, without allocating: this runs for
-/// every line.
-fn same(binding: &Binding, model: &Model) -> bool {
-    binding.keys == model.keys
+/// Whether a binding without the prefix is the model's.
+fn same(key: KeyPress, binding: &Binding, model: &Model) -> bool {
+    model.keys == [key]
         && binding.command == model.command
         && binding.group == model.group
-        && binding.repeat == model.repeat
+        && !model.repeat
+}
+
+/// Whether the tree's bindings are the model's, in any order: the tree
+/// lists a layer's keys together.
+fn agree(layer: &Layer, model: &[Model]) -> bool {
+    let all = models_of(layer);
+    all.len() == model.len() && model.iter().all(|m| all.contains(m))
 }
 
 /// A key by its name, case kept: `S-` on a letter is its upper case.
@@ -379,37 +388,24 @@ fn model_apply(models: &mut Models, argv: &[String], prefix: KeyPress) -> Option
     }
 }
 
-/// The rules every configuration keeps.
+/// The rules every configuration keeps that its types do not: no Escape
+/// after the prefix, no empty layer, and no binding of the prefix without
+/// it or of one key twice.
 fn check_bindings(config: &Config) {
-    for b in &config.bindings {
-        assert!(!b.keys.is_empty() && !b.command.is_empty(), "{b:?}");
-        assert!(!b.keys.iter().any(column_escape), "Escape bound: {b:?}");
-        for other in &config.bindings {
-            if std::ptr::eq(b, other) {
-                continue;
-            }
-            assert_ne!(b.keys, other.keys, "two bindings of the same keys");
-            assert!(
-                !other.keys.starts_with(&b.keys),
-                "{:?} is both a command and a layer of {:?}",
-                b.keys,
-                other.keys
-            );
-        }
+    fn layers_hold_keys(layer: &Layer) -> bool {
+        layer.iter().all(|(_, node)| match node {
+            Node::Layer(inner) => inner.first().is_some() && layers_hold_keys(inner),
+            Node::Run { .. } => true,
+        })
     }
-}
-
-/// The rules every binding without the prefix keeps.
-fn check_root(config: &Config) {
-    for (i, b) in config.root.iter().enumerate() {
-        assert_eq!(b.keys.len(), 1, "{b:?}");
-        assert!(!b.repeat && !b.command.is_empty(), "{b:?}");
-        assert_ne!(b.keys, [config.prefix], "the prefix bound without itself");
-        assert!(
-            !config.root.iter().skip(i + 1).any(|o| o.keys == b.keys),
-            "two bindings of {:?}",
-            b.keys
-        );
+    assert!(layers_hold_keys(&config.bindings), "an empty layer");
+    for (keys, _, _) in config.bindings.all() {
+        assert!(!keys.iter().any(column_escape), "Escape bound: {keys:?}");
+    }
+    for (i, (key, _)) in config.root.iter().enumerate() {
+        assert_ne!(*key, config.prefix, "the prefix bound without itself");
+        let again = config.root.iter().skip(i + 1).any(|(o, _)| o == key);
+        assert!(!again, "two bindings of {key:?}");
     }
 }
 
@@ -457,7 +453,7 @@ fn line_words(line: &[u8]) -> Option<Vec<String>> {
 fuzz_target!(|data: &[u8]| {
     let mut config = defaults().clone();
     let mut models = Models {
-        prefixed: config.bindings.iter().map(model_of).collect(),
+        prefixed: models_of(&config.bindings),
         root: Vec::new(),
     };
     check_bindings(&config);
@@ -483,16 +479,14 @@ fuzz_target!(|data: &[u8]| {
             }
         }
         let model = &models.prefixed;
-        let agree = config.bindings.len() == model.len()
-            && config.bindings.iter().zip(model).all(|(b, m)| same(b, m));
         assert!(
-            agree,
+            agree(&config.bindings, model),
             "{argv:?}: {:?} but the model has {model:?}",
             config.bindings
         );
         let root = &models.root;
         let agree = config.root.len() == root.len()
-            && config.root.iter().zip(root).all(|(b, m)| same(b, m));
+            && (config.root.iter().zip(root)).all(|((k, b), m)| same(*k, b, m));
         assert!(
             agree,
             "{argv:?}: {:?} but the model has {root:?}",
@@ -509,12 +503,6 @@ fuzz_target!(|data: &[u8]| {
                     assert_eq!(same, [&new], "{argv:?}");
                 }
             }
-            (Some("set"), Ok(())) if argv.get(1).is_some_and(|o| o == "prefix") => {
-                assert!(
-                    !config.root.iter().any(|b| b.keys == [config.prefix]),
-                    "{argv:?}: the prefix is bound without itself"
-                );
-            }
             (Some("unbind"), outcome) if argv.get(1).is_none_or(|w| w != "-n") => {
                 let keys: Option<Vec<KeyPress>> =
                     argv.iter().skip(1).map(|w| model_key(w)).collect();
@@ -522,13 +510,8 @@ fuzz_target!(|data: &[u8]| {
                     // Nothing starts with them now; if it failed, nothing did.
                     assert!(!bindings.iter().any(|b| b.keys.starts_with(&keys)));
                     if outcome.is_err() {
-                        assert!(
-                            !before
-                                .bindings
-                                .iter()
-                                .map(model_of)
-                                .any(|b| b.keys.starts_with(&keys))
-                        );
+                        let all = before.bindings.all();
+                        assert!(!all.iter().any(|(k, ..)| k.starts_with(&keys)));
                     }
                 }
             }
@@ -537,7 +520,6 @@ fuzz_target!(|data: &[u8]| {
         // An unchanged configuration was checked already.
         if config != before {
             check_bindings(&config);
-            check_root(&config);
             check_describe(&config);
         }
     }

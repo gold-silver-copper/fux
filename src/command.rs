@@ -1284,7 +1284,7 @@ mod tests {
         let words = |s: &str| crate::words::split(s).unwrap_or_default();
         assert_eq!(label(&words("split -h")), "split side by side");
         assert_eq!(label(&words("split -h -- htop")), "split -h -- htop");
-        for binding in crate::config::Config::default().bindings {
+        for (_, binding, _) in crate::config::Config::default().bindings.all() {
             assert!(parse(&binding.command).is_ok(), "{:?}", binding.command);
             assert_ne!(
                 label(&binding.command),
