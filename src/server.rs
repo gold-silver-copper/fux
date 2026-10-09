@@ -254,12 +254,7 @@ impl Attached {
     /// painted at once.
     fn input(&mut self, session: &mut Session, bytes: &[u8], now: Instant) {
         session.input_at(self.client, bytes, now);
-        self.clock.typed_into(
-            session
-                .views
-                .get(&self.client)
-                .and_then(crate::view::View::focus),
-        );
+        self.clock.typed_into(session.focused(self.client));
     }
 
     /// Bytes for the client's terminal, a paint's or what the session sends

@@ -178,19 +178,14 @@ macro_rules! stack {
                 for v in s.views.values() {
                     let _ = writeln!(
                         out,
-                        "view {} {}x{} {} tab {:?} focus {:?} zoom {} dirty {} notice {:?} tabs {:?} focus {:?} last {:?} {}",
+                        "view {} {}x{} {} zoom {} dirty {} notice {:?} {}",
                         v.id,
                         v.rows,
                         v.cols,
-                        v.workspace,
-                        v.tab(),
-                        v.focus(),
+                        super::$side::place(s, v),
                         v.zoom,
                         v.dirty,
                         v.notice,
-                        v.tab_of,
-                        v.focus_of,
-                        v.last_of,
                         mode(&v.mode)
                     );
                 }
@@ -207,8 +202,8 @@ macro_rules! stack {
                 }
                 for ws in &s.workspaces {
                     let _ = writeln!(out, "workspace {} {:?}", ws.id, ws.name);
-                    for t in &ws.tabs {
-                        let _ = writeln!(out, "  tab {} {:?} {:?}", t.id, t.name, t.root);
+                    for (t, root) in super::$side::tabs(ws) {
+                        let _ = writeln!(out, "  tab {} {:?} {:?}", t.id, t.name, root);
                     }
                 }
                 let _ = writeln!(
@@ -248,9 +243,20 @@ stack!(base, baseline, command, layout, base_side);
 stack!(cur, fux, id, id, cur_side);
 
 /// The column, a repeat mode, a list and a prompt as each side keeps them,
-/// written alike.
+/// a client's place and a workspace's tabs with their layouts, written alike.
 mod base_side {
-    use baseline::view::Mode;
+    use baseline::layout::Node;
+    use baseline::session::{Session, Tab, Workspace};
+    use baseline::view::{Mode, View};
+
+    pub fn place(s: &Session, v: &View) -> String {
+        let ws = s.workspace(v.workspace).map(|w| w.id);
+        format!("{ws:?} tab {:?} focus {:?}", v.tab(), v.focus())
+    }
+
+    pub fn tabs(w: &Workspace) -> impl Iterator<Item = (&Tab, Option<&Node>)> {
+        w.tabs.iter().map(|t| (t, t.root.as_ref()))
+    }
 
     pub fn overlay(mode: &Mode) -> String {
         match mode {
@@ -270,7 +276,20 @@ mod base_side {
 }
 
 mod cur_side {
-    use fux::view::{Choice, Mode};
+    use fux::layout::Node;
+    use fux::session::Session;
+    use fux::view::{Choice, Mode, View};
+    use fux::workspace::{Tab, Workspace};
+
+    pub fn place(s: &Session, v: &View) -> String {
+        let (ws, tab) = (s.shown_workspace(v.id), s.shown_tab(v.id));
+        let (ws, tab) = (ws.map(|w| w.id), tab.map(|t| t.id));
+        format!("{ws:?} tab {tab:?} focus {:?}", s.focused(v.id))
+    }
+
+    pub fn tabs(w: &Workspace) -> impl Iterator<Item = (&Tab, Option<&Node>)> {
+        w.tabs().iter().map(|t| (t, t.root()))
+    }
 
     pub fn overlay(mode: &Mode) -> String {
         match mode {

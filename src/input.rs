@@ -164,7 +164,9 @@ impl Session {
             return;
         }
         view.notice = None;
-        let Some(pane) = view.focus() else { return };
+        let Some(pane) = self.focused(client) else {
+            return;
+        };
         self.typed(client);
         let Some(p) = self.panes.get_mut(&pane) else {
             return;
@@ -181,7 +183,7 @@ impl Session {
     /// The outer terminal gained or lost focus: the client's focused pane
     /// hears of it, if it asked.
     fn focus_event(&mut self, client: ClientId, gained: bool) {
-        let Some(pane) = self.views.get(&client).and_then(|v| v.focus()) else {
+        let Some(pane) = self.focused(client) else {
             return;
         };
         if let Some(p) = self.panes.get_mut(&pane)
@@ -202,7 +204,10 @@ impl Session {
         let Some(view) = self.views.get(&client) else {
             return;
         };
-        let Some(pane) = view.focus().filter(|_| matches!(view.mode, Mode::Normal)) else {
+        let Some(pane) = self
+            .focused(client)
+            .filter(|_| matches!(view.mode, Mode::Normal))
+        else {
             return;
         };
         let mut placement = Placement::default();
@@ -211,17 +216,18 @@ impl Session {
             return;
         };
         let inside = rect.contains(event.col, event.row);
-        let held = view.mouse_held == Some(pane);
+        let seat = self.shown_tab(client).and_then(|t| t.seat(client));
+        let held = seat.is_some_and(|s| s.held);
         let pressed =
             event.action == MouseAction::Press && event.button.is_some_and(|b| !b.is_wheel());
         if !(inside || held && event.action != MouseAction::Press) {
             return;
         }
-        if let Some(view) = self.views.get_mut(&client) {
+        if let Some(seat) = self.shown_tab_mut(client).and_then(|t| t.seat_mut(client)) {
             if pressed {
-                view.mouse_held = Some(pane);
+                seat.held = true;
             } else if event.action == MouseAction::Release {
-                view.mouse_held = None;
+                seat.held = false;
             }
         }
         // Kept to the pane: `rect` holds the press, so it is not empty.
