@@ -273,8 +273,8 @@ impl Checker {
         Ok(())
     }
 
-    /// Ids are unique; every pane is in exactly one tab; every client's
-    /// workspace, tab and pane exist and belong together.
+    /// Ids are unique. (A client's workspace, tab and pane belong together
+    /// by fux's types: `fux::workspace`.)
     fn structure(&self, world: &World, at: usize) -> Result<(), End> {
         let mut seen = std::collections::BTreeSet::new();
         for id in world
@@ -287,51 +287,6 @@ impl Checker {
         {
             if !seen.insert(id.clone()) {
                 return Err(fail(at, "ids are unique", format!("{id} is listed twice")));
-            }
-        }
-        for c in &world.clients {
-            let ws = world.workspace(&c.workspace).ok_or_else(|| {
-                fail(
-                    at,
-                    "a client's workspace exists",
-                    format!("{} is on {}", c.id, c.workspace),
-                )
-            })?;
-            match (&c.tab, &c.pane) {
-                (Some(tab), pane) => {
-                    let t = ws.tabs.iter().find(|t| &t.id == tab).ok_or_else(|| {
-                        fail(
-                            at,
-                            "a client's tab is in its workspace",
-                            format!("{} shows {tab}, not in {}", c.id, ws.id),
-                        )
-                    })?;
-                    match pane {
-                        Some(pane) if !t.panes.iter().any(|p| &p.id == pane) => {
-                            return Err(fail(
-                                at,
-                                "a client's pane is in its tab",
-                                format!("{} focuses {pane}, not in {tab}", c.id),
-                            ));
-                        }
-                        None if !t.panes.is_empty() => {
-                            return Err(fail(
-                                at,
-                                "a client focuses a pane of a tab that has one",
-                                format!("{} focuses nothing in {tab}", c.id),
-                            ));
-                        }
-                        Some(_) | None => {}
-                    }
-                }
-                (None, _) if !ws.tabs.is_empty() => {
-                    return Err(fail(
-                        at,
-                        "a client shows a tab",
-                        format!("{} shows no tab of {}", c.id, ws.id),
-                    ));
-                }
-                (None, _) => {}
             }
         }
         Ok(())
@@ -518,7 +473,7 @@ impl Checker {
             // A notice may take three quarters of the bar: names are
             // checked only where the quarter left has room for them.
             let room = usize::from(client.cols) / 4;
-            let ws = world.workspace(&view.workspace);
+            let ws = view.workspace.as_deref().and_then(|w| world.workspace(w));
             if let Some(ws) = ws
                 && ws.name.len().saturating_add(2) <= room
                 && !bar.starts_with(&format!(" {} ", ws.name))

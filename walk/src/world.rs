@@ -25,7 +25,7 @@ pub struct ClientView {
     pub id: String,
     pub rows: u16,
     pub cols: u16,
-    pub workspace: String,
+    pub workspace: Option<String>,
     pub tab: Option<String>,
     pub pane: Option<String>,
     pub zoom: bool,
@@ -93,13 +93,14 @@ impl World {
         }
         let mut clients = Vec::new();
         for c in list(&root, "clients")? {
+            let word = |key| c.get(key).and_then(Value::as_str).map(str::to_owned);
             clients.push(ClientView {
                 id: text(c, "id")?,
                 rows: size(c, "rows")?,
                 cols: size(c, "cols")?,
-                workspace: text(c, "workspace")?,
-                tab: c.get("tab").and_then(Value::as_str).map(str::to_owned),
-                pane: c.get("pane").and_then(Value::as_str).map(str::to_owned),
+                workspace: word("workspace"),
+                tab: word("tab"),
+                pane: word("pane"),
                 zoom: c.get("zoom").and_then(Value::as_bool).unwrap_or(false),
             });
         }
