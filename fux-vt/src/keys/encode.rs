@@ -8,25 +8,75 @@
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Modifiers};
 use std::io::Write;
 
-/// How a pane's program asked for its keys.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct KeyMode {
-    /// Application cursor keys (DECCKM).
-    pub application: bool,
-    /// The kitty keyboard protocol's flags in force on the pane's screen.
-    pub kitty: u8,
-    /// xterm's modifyOtherKeys level, if set.
-    pub other_keys: Option<u8>,
+/// How a pane's program asked for its keys: one of the protocols fux
+/// speaks, with only the options that protocol reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyMode {
+    /// xterm's bytes, which every key has.
+    Legacy {
+        /// Application cursor keys (DECCKM): the arrows, Home and End as SS3.
+        application: bool,
+        /// xterm's modifyOtherKeys, if set: the keys it applies to are
+        /// `CSI 27 ; mods ; code ~`, the others keep their legacy bytes.
+        other_keys: Option<OtherKeys>,
+    },
+    /// The kitty keyboard protocol (`references/modern/kitty_keyboard_protocol.html`),
+    /// which leaves application cursor keys and modifyOtherKeys unread.
+    Kitty {
+        /// Report alternate keys (4): a text key's shifted and base-layout keys.
+        alternate: bool,
+        /// Which keys are escapes.
+        report: Report,
+    },
+}
+
+/// xterm's modifyOtherKeys levels (`CSI > 4 ; level m`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OtherKeys {
+    /// Level 1: "the usual shift- and control-modifiers work as expected".
+    Usual,
+    /// Level 2, and 3, which xterm extends to unmodified keys: "all of the
+    /// modifiers apply".
+    All,
+}
+
+/// Which keys the kitty protocol escapes, as its flags ask.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Report {
+    /// Disambiguate (1): keys that type text, with no modifier but Shift,
+    /// send their text, and Enter, Tab and Backspace their legacy byte.
+    Disambiguated,
+    /// Report all keys (8): every key is an escape.
+    AllKeys,
+    /// Report all keys with their text (8 and 16): a key that types text
+    /// carries it as `CSI code ; mods ; text u`.
+    AllKeysWithText,
 }
 
 impl crate::Screen {
-    /// How the program on this screen asked for its keys: application cursor keys, the kitty
-    /// keyboard protocol's flags, modifyOtherKeys.
+    /// How the program on this screen asked for its keys: the kitty
+    /// protocol, if its flags disambiguate or report all keys; else legacy
+    /// keys, in the cursor mode and modifyOtherKeys level it set. The other
+    /// flags alone change nothing.
     pub fn key_mode(&self) -> KeyMode {
-        KeyMode {
-            application: self.mode(crate::Mode::ApplicationCursor),
-            kitty: self.kitty_keyboard_flags(),
-            other_keys: self.modify_other_keys(),
+        let flags = self.kitty_keyboard_flags();
+        let report = match (flags & ALL_KEYS != 0, flags & TEXT != 0) {
+            (true, true) => Report::AllKeysWithText,
+            (true, false) => Report::AllKeys,
+            (false, _) if flags & DISAMBIGUATE != 0 => Report::Disambiguated,
+            (false, _) => {
+                return KeyMode::Legacy {
+                    application: self.mode(crate::Mode::ApplicationCursor),
+                    other_keys: self.modify_other_keys().map(|level| match level {
+                        1 => OtherKeys::Usual,
+                        _ => OtherKeys::All,
+                    }),
+                };
+            }
+        };
+        KeyMode::Kitty {
+            alternate: flags & ALTERNATE_KEYS != 0,
+            report,
         }
     }
 
@@ -40,15 +90,14 @@ impl crate::Screen {
 impl KeyMode {
     /// Legacy keys, in normal or application cursor mode.
     pub fn legacy(application: bool) -> KeyMode {
-        KeyMode {
+        KeyMode::Legacy {
             application,
-            ..KeyMode::default()
+            other_keys: None,
         }
     }
 }
 
-/// The kitty protocol's progressive enhancements
-/// (`references/modern/kitty_keyboard_protocol.html`).
+/// The kitty protocol's progressive enhancements, as a screen holds them.
 const DISAMBIGUATE: u8 = 1;
 const ALTERNATE_KEYS: u8 = 4;
 const ALL_KEYS: u8 = 8;
@@ -120,29 +169,29 @@ impl crate::Screen {
 }
 
 /// Appends a key's bytes, as the pane asked for them in `mode`, to `out`:
-/// the kitty keyboard protocol's, if its flags disambiguate or report all
-/// keys; else xterm's modifyOtherKeys, if it is set and applies to the key;
-/// else legacy xterm bytes, which every key has.
+/// the kitty keyboard protocol's; or xterm's modifyOtherKeys, if it is set
+/// and applies to the key, else legacy xterm bytes, which every key has.
 pub fn key_bytes(stroke: Keystroke, mode: KeyMode, out: &mut Vec<u8>) {
-    if mode.kitty & (DISAMBIGUATE | ALL_KEYS) != 0 {
-        return kitty(stroke, mode.kitty, out);
+    match mode {
+        KeyMode::Kitty { alternate, report } => kitty(stroke, alternate, report, out),
+        KeyMode::Legacy {
+            application,
+            other_keys: level,
+        } => {
+            if !level.is_some_and(|level| other_keys(stroke, level, out)) {
+                legacy(stroke.press, application, out);
+            }
+        }
     }
-    if let Some(level @ 1..) = mode.other_keys
-        && other_keys(stroke, level, out)
-    {
-        return;
-    }
-    legacy(stroke.press, mode.application, out);
 }
 
-/// The kitty keyboard protocol's bytes for a key, with `flags`, which
-/// disambiguate (1) or report all keys (8)
-/// (`references/modern/kitty_keyboard_protocol.html`):
+/// The kitty keyboard protocol's bytes for a key, its keys escaped as
+/// `report` says (`references/modern/kitty_keyboard_protocol.html`):
 /// - a key that types text, with no modifier but Shift, sends its text,
 ///   unless all keys are reported; then `CSI code ; mods u`, the code the
-///   unshifted key's, with the text as its third parameter if asked (16);
+///   unshifted key's, with the text as its third parameter if asked;
 /// - any other text key is `CSI code ; mods u`, with its shifted and
-///   base-layout keys if asked (alternate keys, 4) and known;
+///   base-layout keys if `alternate` and known;
 /// - Enter, Tab and Backspace send their legacy byte unless modified (or all
 ///   keys are reported), Escape is `CSI 27 u`;
 /// - the functional keys are `CSI 1 ; mods X` or `CSI X` (arrows, Home, End,
@@ -153,55 +202,34 @@ pub fn key_bytes(stroke: Keystroke, mode: KeyMode, out: &mut Vec<u8>) {
 /// among them, if it spoke the protocol; else the press's, a capital letter
 /// counting as shifted. Only presses are sent: fux reports no repeats or
 /// releases (2), which the spec lets a terminal leave out.
-fn kitty(stroke: Keystroke, flags: u8, out: &mut Vec<u8>) {
+fn kitty(stroke: Keystroke, alternate: bool, report: Report, out: &mut Vec<u8>) {
     let KeyPress { key, mods } = stroke.press;
     let exact = stroke.kitty;
-    let all = flags & ALL_KEYS != 0;
+    let all = report != Report::Disambiguated;
     let capital = matches!(key, Key::Char(c) if c.is_ascii_uppercase()) && exact.is_none();
     let bits = exact.map_or_else(|| xterm_bits(mods) | u8::from(capital), |k| k.mods);
     let held = bits & !LOCKS;
+    let modifier = u16::from(bits).saturating_add(1);
     // `;mods`, left out when there are none; empty if a parameter follows,
     // as the spec's examples have it (`CSI 0 ; ; 229 u`).
-    let modifier = |out: &mut Vec<u8>, more: bool| {
+    let mods_param = |out: &mut Vec<u8>, more: bool| {
         if bits != 0 {
-            let _ = write!(out, ";{}", u16::from(bits).saturating_add(1));
+            let _ = write!(out, ";{modifier}");
         } else if more {
             out.push(b';');
         }
     };
     let csi_u = |out: &mut Vec<u8>, code: u32| {
         let _ = write!(out, "\x1b[{code}");
-        modifier(out, false);
+        mods_param(out, false);
         out.push(b'u');
     };
     // A keypad key the terminal named is sent as it named it.
     if let Some(code @ 57399..=57427) = exact.and_then(|k| k.code) {
         return csi_u(out, code);
     }
-    // Enter, Tab and Backspace: the legacy byte, which is also the code.
-    let legacy_or = |out: &mut Vec<u8>, byte: u8| {
-        if held == 0 && !all {
-            out.push(byte);
-        } else {
-            csi_u(out, u32::from(byte));
-        }
-    };
-    let cursor = |out: &mut Vec<u8>, final_byte: char| {
-        if bits == 0 {
-            let _ = write!(out, "\x1b[{final_byte}");
-        } else {
-            let _ = write!(out, "\x1b[1");
-            modifier(out, false);
-            let _ = write!(out, "{final_byte}");
-        }
-    };
-    let tilde = |out: &mut Vec<u8>, code: u8| {
-        let _ = write!(out, "\x1b[{code}");
-        modifier(out, false);
-        out.push(b'~');
-    };
-    match key {
-        Key::Char(c) => {
+    match Form::from(key) {
+        Form::Text(c) => {
             let types_text = held & !1 == 0;
             if types_text && !all {
                 return out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
@@ -217,7 +245,7 @@ fn kitty(stroke: Keystroke, flags: u8, out: &mut Vec<u8>) {
                 (u32::from(shifted) != code).then_some(u32::from(shifted))
             });
             let _ = write!(out, "\x1b[{code}");
-            if flags & ALTERNATE_KEYS != 0 {
+            if alternate {
                 let shifted = shifted.filter(|_| bits & 1 != 0);
                 let base = exact.and_then(|k| k.base);
                 match (shifted, base) {
@@ -227,45 +255,82 @@ fn kitty(stroke: Keystroke, flags: u8, out: &mut Vec<u8>) {
                     (None, None) => {}
                 }
             }
-            let text = (all && flags & TEXT != 0 && types_text).then_some(u32::from(c));
-            modifier(out, text.is_some());
+            let text = (report == Report::AllKeysWithText && types_text).then_some(u32::from(c));
+            mods_param(out, text.is_some());
             if let Some(text) = text {
                 let _ = write!(out, ";{text}");
             }
             out.push(b'u');
         }
-        Key::Enter => legacy_or(out, 0x0d),
-        Key::Tab => legacy_or(out, 0x09),
-        Key::Backspace => legacy_or(out, 0x7f),
-        Key::Escape => csi_u(out, 27),
-        Key::Arrow(Direction::Up) => cursor(out, 'A'),
-        Key::Arrow(Direction::Down) => cursor(out, 'B'),
-        Key::Arrow(Direction::Right) => cursor(out, 'C'),
-        Key::Arrow(Direction::Left) => cursor(out, 'D'),
-        Key::Home => cursor(out, 'H'),
-        Key::End => cursor(out, 'F'),
-        Key::F(1) => cursor(out, 'P'),
-        Key::F(2) => cursor(out, 'Q'),
-        Key::F(3) => tilde(out, 13),
-        Key::F(4) => cursor(out, 'S'),
-        Key::Insert => tilde(out, 2),
-        Key::Delete => tilde(out, 3),
-        Key::PageUp => tilde(out, 5),
-        Key::PageDown => tilde(out, 6),
-        Key::F(n) => match usize::from(n).checked_sub(5).and_then(|i| F_CODES.get(i)) {
-            Some(code) => tilde(out, *code),
-            // F13 to F35 are numbered from 57376; fux names none past F12.
-            None => csi_u(
-                out,
-                57376_u32.saturating_add(u32::from(n.saturating_sub(13))),
-            ),
-        },
+        // Enter, Tab and Backspace: the legacy byte, which is also the code.
+        Form::Control(byte) if byte != 0x1b && held == 0 && !all => out.push(byte),
+        Form::Control(byte) => csi_u(out, u32::from(byte)),
+        // F3 is `CSI 13 ~`: the protocol leaves `CSI R` to cursor position reports.
+        Form::Numbered(_, 'R') => numbered(out, 13, modifier, '~'),
+        Form::Numbered(number, final_byte) => numbered(out, number, modifier, final_byte),
+        // F13 to F35 are numbered from 57376; fux names none past F12.
+        Form::Unnumbered(n) => csi_u(
+            out,
+            57376_u32.saturating_add(u32::from(n.saturating_sub(13))),
+        ),
     }
 }
 
-/// F5 to F12's numbers in `CSI n ~`, with xterm's gaps; `decode.rs`
-/// (`csi`) reads them back.
-const F_CODES: [u8; 8] = [15, 17, 18, 19, 20, 21, 23, 24];
+/// A key as both protocols start from xterm's bytes for it.
+#[derive(Clone, Copy)]
+enum Form {
+    /// A key that types a character.
+    Text(char),
+    /// Enter, Tab, Escape and Backspace: their C0 control or DEL.
+    Control(u8),
+    /// `CSI number ; mods final` ([`numbered`]): the arrows, Home, End and
+    /// F1 to F4 numbered 1, the others with xterm's numbers and gaps, as
+    /// `decode.rs` (`csi`) reads them back.
+    Numbered(u8, char),
+    /// A function key past F12, which xterm has no number for.
+    Unnumbered(u8),
+}
+
+impl From<Key> for Form {
+    fn from(key: Key) -> Form {
+        let f_codes = [15, 17, 18, 19, 20, 21, 23, 24];
+        match key {
+            Key::Char(c) => Form::Text(c),
+            Key::Enter => Form::Control(0x0d),
+            Key::Tab => Form::Control(0x09),
+            Key::Escape => Form::Control(0x1b),
+            Key::Backspace => Form::Control(0x7f),
+            Key::Arrow(Direction::Up) => Form::Numbered(1, 'A'),
+            Key::Arrow(Direction::Down) => Form::Numbered(1, 'B'),
+            Key::Arrow(Direction::Right) => Form::Numbered(1, 'C'),
+            Key::Arrow(Direction::Left) => Form::Numbered(1, 'D'),
+            Key::Home => Form::Numbered(1, 'H'),
+            Key::End => Form::Numbered(1, 'F'),
+            Key::F(1) => Form::Numbered(1, 'P'),
+            Key::F(2) => Form::Numbered(1, 'Q'),
+            Key::F(3) => Form::Numbered(1, 'R'),
+            Key::F(4) => Form::Numbered(1, 'S'),
+            Key::Insert => Form::Numbered(2, '~'),
+            Key::Delete => Form::Numbered(3, '~'),
+            Key::PageUp => Form::Numbered(5, '~'),
+            Key::PageDown => Form::Numbered(6, '~'),
+            Key::F(n) => match usize::from(n).checked_sub(5).and_then(|i| f_codes.get(i)) {
+                Some(&number) => Form::Numbered(number, '~'),
+                None => Form::Unnumbered(n),
+            },
+        }
+    }
+}
+
+/// `CSI number ; modifier final`, the modifier left out when it is 1, none
+/// held, and then the number too if it is 1 (`CSI A`).
+fn numbered(out: &mut Vec<u8>, number: u8, modifier: u16, final_byte: char) {
+    let _ = match (number, modifier) {
+        (_, 2..) => write!(out, "\x1b[{number};{modifier}{final_byte}"),
+        (1, _) => write!(out, "\x1b[{final_byte}"),
+        (_, _) => write!(out, "\x1b[{number}{final_byte}"),
+    };
+}
 
 /// Shift, Alt and Ctrl as xterm's and kitty's modifier bits.
 fn xterm_bits(mods: Modifiers) -> u8 {
@@ -310,7 +375,7 @@ fn xterm_bits(mods: Modifiers) -> u8 {
 /// The code is the key's character, Shift applied (Ctrl-Shift-a is 65), as
 /// xterm sends the keysym; Backspace's is 127, or 8 with Ctrl, which the
 /// backarrow toggle leaves BS.
-fn other_keys(stroke: Keystroke, level: u8, out: &mut Vec<u8>) -> bool {
+fn other_keys(stroke: Keystroke, level: OtherKeys, out: &mut Vec<u8>) -> bool {
     let KeyPress { key, mods } = stroke.press;
     let kitty_shift = stroke.kitty.is_some_and(|k| k.mods & 1 != 0);
     let shift = mods.shift || kitty_shift || matches!(key, Key::Char(c) if c.is_ascii_uppercase());
@@ -337,13 +402,11 @@ fn other_keys(stroke: Keystroke, level: u8, out: &mut Vec<u8>) -> bool {
     if !modified(sym, state, level) {
         return false;
     }
-    let sent = if level > 1 {
-        state
-    } else {
-        allowed(sym, state)
+    let sent = match level {
+        OtherKeys::Usual => allowed(sym, state),
+        OtherKeys::All => state,
     };
-    let text = matches!(sym, Sym::Char(c) if c != ' ') && sent == Modifiers::SHIFT;
-    if sent.is_empty() || level > 1 && text {
+    if sent.is_empty() {
         return false;
     }
     let mods = u16::from(xterm_bits(sent)).saturating_add(1);
@@ -393,41 +456,33 @@ impl Sym {
 
 /// Whether xterm sends `sym` with `state` as a modifyOtherKeys sequence at
 /// `level`: `input.c`'s `ModifyOtherKeys`, and its `Input`'s Shift-Tab,
-/// which at level 1 becomes `ISO_Left_Tab`, a function key, `CSI Z`.
-fn modified(sym: Sym, state: Modifiers, level: u8) -> bool {
-    if state.is_empty() || level == 1 && sym == Sym::Tab && state == Modifiers::SHIFT {
+/// which at level 1 becomes `ISO_Left_Tab`, a function key, `CSI Z`. At
+/// level 2, Shift alone on a character other than Space types its text.
+fn modified(sym: Sym, state: Modifiers, level: OtherKeys) -> bool {
+    if state.is_empty() {
+        return false;
+    }
+    let OtherKeys::Usual = level else {
+        return match sym {
+            Sym::BackSpace => state != Modifiers::CTRL,
+            Sym::Delete | Sym::Escape | Sym::Return | Sym::Tab => true,
+            Sym::Char(c) => state != Modifiers::SHIFT || c == ' ',
+        };
+    };
+    if sym == Sym::Tab && state == Modifiers::SHIFT {
         return false;
     }
     // A character's modifiers are filtered first, a predefined key's not.
     let st = match sym {
-        Sym::Char(_) if level == 1 => allowed(sym, state),
-        Sym::Char(_) | Sym::Return | Sym::Tab | Sym::Escape | Sym::BackSpace | Sym::Delete => state,
+        Sym::Char(_) => allowed(sym, state),
+        Sym::Return | Sym::Tab | Sym::Escape | Sym::BackSpace | Sym::Delete => state,
     };
-    let without_ctrl = Modifiers { ctrl: false, ..st };
-    if st.is_empty() {
-        return false;
-    }
-    if level == 1 {
-        return match sym {
-            Sym::BackSpace | Sym::Delete => false,
-            Sym::Return | Sym::Tab => true,
-            Sym::Char(_) | Sym::Escape if sym.control_input() => {
-                st != Modifiers::CTRL && st != Modifiers::SHIFT
-            }
-            Sym::Char(_) | Sym::Escape if sym.control_alias(state.ctrl) => {
-                st != Modifiers::SHIFT && !without_ctrl.is_empty()
-            }
-            Sym::Char(_) | Sym::Escape => true,
-        };
-    }
+    let control = sym.control_input() || sym.control_alias(state.ctrl);
     match sym {
-        Sym::BackSpace => !without_ctrl.is_empty(),
-        Sym::Delete | Sym::Escape | Sym::Return | Sym::Tab => true,
-        Sym::Char(c) => {
-            sym.control_input()
-                || st == Modifiers::SHIFT && c == ' '
-                || !Modifiers { shift: false, ..st }.is_empty()
-        }
+        _ if st.is_empty() => false,
+        Sym::BackSpace | Sym::Delete => false,
+        Sym::Return | Sym::Tab => true,
+        Sym::Char(_) | Sym::Escape => !control || st != Modifiers::CTRL && st != Modifiers::SHIFT,
     }
 }
 
@@ -472,52 +527,22 @@ fn legacy(press: KeyPress, application: bool, out: &mut Vec<u8>) {
     let KeyPress { key, mods } = press;
     let Modifiers { ctrl, alt, shift } = mods;
     // xterm's modifier parameter: 1 plus a bit for each, so at most 8.
-    let modifier = xterm_bits(mods).saturating_add(1);
-    let csi = |out: &mut Vec<u8>, code: u8, final_byte: char| {
-        let _ = if modifier > 1 {
-            write!(out, "\x1b[{code};{modifier}{final_byte}")
-        } else {
-            write!(out, "\x1b[{code}{final_byte}")
-        };
-    };
-    // Cursor-style keys share one shape: `ESC [ final`, `ESC O final` in
-    // application mode or for F1..F4, and `ESC [ 1 ; mod final` when
-    // modified. Alt adds nothing to them.
-    let cursor = |out: &mut Vec<u8>, final_byte: char, function: bool| {
-        if modifier > 1 {
-            csi(out, 1, final_byte);
-        } else {
-            let prefix = if application || function { 'O' } else { '[' };
-            let _ = write!(out, "\x1b{prefix}{final_byte}");
-        }
-    };
+    let modifier = u16::from(xterm_bits(mods)).saturating_add(1);
     let start = out.len();
-    match key {
-        Key::Arrow(Direction::Up) => return cursor(out, 'A', false),
-        Key::Arrow(Direction::Down) => return cursor(out, 'B', false),
-        Key::Arrow(Direction::Right) => return cursor(out, 'C', false),
-        Key::Arrow(Direction::Left) => return cursor(out, 'D', false),
-        Key::Home => return cursor(out, 'H', false),
-        Key::End => return cursor(out, 'F', false),
-        Key::F(1) => return cursor(out, 'P', true),
-        Key::F(2) => return cursor(out, 'Q', true),
-        Key::F(3) => return cursor(out, 'R', true),
-        Key::F(4) => return cursor(out, 'S', true),
-        Key::Enter => out.push(13),
-        Key::Tab if shift => out.extend_from_slice(b"\x1b[Z"),
-        Key::Tab => out.push(9),
-        Key::Escape => out.push(27),
-        Key::Backspace => out.push(127),
-        Key::Insert => csi(out, 2, '~'),
-        Key::Delete => csi(out, 3, '~'),
-        Key::PageUp => csi(out, 5, '~'),
-        Key::PageDown => csi(out, 6, '~'),
-        Key::F(n) => match usize::from(n).checked_sub(5).and_then(|i| F_CODES.get(i)) {
-            Some(code) => csi(out, *code, '~'),
-            None => out.push(27),
-        },
-        Key::Char(c) if ctrl && c.is_ascii() => out.push(control_byte(c).unwrap_or(c as u8)),
-        Key::Char(c) => out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
+    match Form::from(key) {
+        // SS3, for F1 to F4 and in application mode the other keys numbered
+        // 1, unmodified.
+        Form::Numbered(1, final_byte)
+            if modifier == 1 && (application || matches!(key, Key::F(_))) =>
+        {
+            let _ = write!(out, "\x1bO{final_byte}");
+        }
+        Form::Numbered(number, final_byte) => numbered(out, number, modifier, final_byte),
+        Form::Control(0x09) if shift => out.extend_from_slice(b"\x1b[Z"),
+        Form::Control(byte) => out.push(byte),
+        Form::Unnumbered(_) => out.push(27),
+        Form::Text(c) if ctrl && c.is_ascii() => out.push(control_byte(c).unwrap_or(c as u8)),
+        Form::Text(c) => out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
     }
     // Alt is an Escape before the key, unless the key is a sequence, which
     // carries Alt in its parameter; a lone ESC (Escape, Ctrl-[) takes one
@@ -553,37 +578,27 @@ fn control_byte(c: char) -> Option<u8> {
 mod tests {
     use super::*;
 
-    const ALL: Modifiers = Modifiers {
-        ctrl: true,
-        alt: true,
-        shift: true,
-    };
-    fn press(key: Key, mods: Modifiers) -> KeyPress {
-        KeyPress { key, mods }
-    }
-    /// A key's bytes, appended after others, which stay as they were.
-    fn encoded(press: KeyPress, application: bool) -> Vec<u8> {
-        let mut out = b"before".to_vec();
-        key_bytes(press.into(), KeyMode::legacy(application), &mut out);
-        assert!(out.starts_with(b"before"), "{press:?}");
-        out.get(6..).map(<[u8]>::to_vec).unwrap_or_default()
-    }
-    /// The bytes for a named key, or a stroke, in `mode`, as text.
+    /// The bytes for a named key, or a stroke, in `mode`, as text, appended
+    /// after others, which stay as they were.
     fn named(name: &str, mode: KeyMode) -> String {
         let press = name.parse::<KeyPress>().unwrap_or(KeyPress::char('?'));
         stroke(press.into(), mode)
     }
     fn stroke(stroke: Keystroke, mode: KeyMode) -> String {
-        let mut out = Vec::new();
+        let mut out = b"before".to_vec();
         key_bytes(stroke, mode, &mut out);
-        String::from_utf8_lossy(&out).into_owned()
+        assert!(out.starts_with(b"before"), "{stroke:?}");
+        String::from_utf8_lossy(out.get(6..).unwrap_or_default()).into_owned()
     }
-    fn kitty_mode(flags: u8) -> KeyMode {
-        KeyMode {
-            kitty: flags,
-            ..KeyMode::default()
-        }
+    const LEGACY: KeyMode = KeyMode::Legacy {
+        application: false,
+        other_keys: None,
+    };
+    const fn kitty_mode(alternate: bool, report: Report) -> KeyMode {
+        KeyMode::Kitty { alternate, report }
     }
+    const DISAMBIGUATED: KeyMode = kitty_mode(false, Report::Disambiguated);
+    const ALTERNATE: KeyMode = kitty_mode(true, Report::Disambiguated);
     /// A key as a kitty-protocol terminal reports it.
     fn reported(
         name: &str,
@@ -611,7 +626,6 @@ mod tests {
     /// even in application cursor mode; F3 is `CSI 13 ~`.
     #[test]
     fn disambiguated_keys_follow_the_kitty_spec() {
-        let mode = kitty_mode(1);
         for (name, bytes) in [
             ("a", "a"),
             ("A", "A"),
@@ -653,16 +667,8 @@ mod tests {
             ("PageUp", "\x1b[5~"),
             ("PageDown", "\x1b[6~"),
         ] {
-            assert_eq!(named(name, mode), bytes, "{name}");
+            assert_eq!(named(name, DISAMBIGUATED), bytes, "{name}");
         }
-        let application = KeyMode {
-            application: true,
-            ..mode
-        };
-        assert_eq!(named("Up", application), "\x1b[A");
-        // Flags without disambiguate or all keys change nothing.
-        assert_eq!(named("C-i", kitty_mode(4)), "\t");
-        assert_eq!(named("Escape", kitty_mode(2)), "\x1b");
     }
 
     /// What a kitty-protocol terminal said beyond the press is given back:
@@ -673,25 +679,25 @@ mod tests {
     #[test]
     fn a_reported_key_is_given_back_as_reported() {
         let ctrl_shift_i = reported("C-i", 105, Some(73), None, 5);
-        assert_eq!(stroke(ctrl_shift_i, kitty_mode(1)), "\x1b[105;6u");
-        assert_eq!(stroke(ctrl_shift_i, kitty_mode(5)), "\x1b[105:73;6u");
+        assert_eq!(stroke(ctrl_shift_i, DISAMBIGUATED), "\x1b[105;6u");
+        assert_eq!(stroke(ctrl_shift_i, ALTERNATE), "\x1b[105:73;6u");
         let super_a = reported("a", 97, None, None, 8);
-        assert_eq!(stroke(super_a, kitty_mode(1)), "\x1b[97;9u");
+        assert_eq!(stroke(super_a, DISAMBIGUATED), "\x1b[97;9u");
         // Ctrl and С on a Cyrillic layout, whose base-layout key is c.
         let cyrillic = reported("C-c", 1089, None, Some(99), 4);
-        assert_eq!(stroke(cyrillic, kitty_mode(1)), "\x1b[1089;5u");
-        assert_eq!(stroke(cyrillic, kitty_mode(5)), "\x1b[1089::99;5u");
+        assert_eq!(stroke(cyrillic, DISAMBIGUATED), "\x1b[1089;5u");
+        assert_eq!(stroke(cyrillic, ALTERNATE), "\x1b[1089::99;5u");
         let keypad_enter = reported("Enter", 57414, None, None, 0);
-        assert_eq!(stroke(keypad_enter, kitty_mode(1)), "\x1b[57414u");
-        assert_eq!(stroke(keypad_enter, KeyMode::default()), "\r");
+        assert_eq!(stroke(keypad_enter, DISAMBIGUATED), "\x1b[57414u");
+        assert_eq!(stroke(keypad_enter, LEGACY), "\r");
         let caps_ctrl_a = reported("C-a", 97, None, None, 4 | 64);
-        assert_eq!(stroke(caps_ctrl_a, kitty_mode(1)), "\x1b[97;69u");
+        assert_eq!(stroke(caps_ctrl_a, DISAMBIGUATED), "\x1b[97;69u");
         // A legacy pane gets the press's bytes alone, what was reported
         // beside them unused.
-        assert_eq!(stroke(ctrl_shift_i, KeyMode::default()), "\t");
-        assert_eq!(stroke(cyrillic, KeyMode::default()), "\x03");
+        assert_eq!(stroke(ctrl_shift_i, LEGACY), "\t");
+        assert_eq!(stroke(cyrillic, LEGACY), "\x03");
         // Alternate keys from a legacy press: a capital's shifted key.
-        assert_eq!(named("M-A", kitty_mode(5)), "\x1b[97:65;4u");
+        assert_eq!(named("M-A", ALTERNATE), "\x1b[97:65;4u");
     }
 
     /// Report all keys (8): text keys too are `CSI code ; mods u`, with the
@@ -700,29 +706,33 @@ mod tests {
     /// are escapes.
     #[test]
     fn reporting_all_keys_escapes_text_keys() {
-        for (flags, name, bytes) in [
-            (9, "a", "\x1b[97u"),
-            (9, "A", "\x1b[97;2u"),
-            (13, "A", "\x1b[97:65;2u"),
-            (25, "a", "\x1b[97;;97u"),
-            (25, "A", "\x1b[97;2;65u"),
-            (25, "C-a", "\x1b[97;5u"),
-            (9, "Enter", "\x1b[13u"),
-            (9, "Tab", "\x1b[9u"),
-            (9, "BSpace", "\x1b[127u"),
-            (8, "Escape", "\x1b[27u"),
-            (8, "Up", "\x1b[A"),
+        let (all, text) = (Report::AllKeys, Report::AllKeysWithText);
+        for (alternate, report, name, bytes) in [
+            (false, all, "a", "\x1b[97u"),
+            (false, all, "A", "\x1b[97;2u"),
+            (true, all, "A", "\x1b[97:65;2u"),
+            (false, text, "a", "\x1b[97;;97u"),
+            (false, text, "A", "\x1b[97;2;65u"),
+            (false, text, "C-a", "\x1b[97;5u"),
+            (false, all, "Enter", "\x1b[13u"),
+            (false, all, "Tab", "\x1b[9u"),
+            (false, all, "BSpace", "\x1b[127u"),
+            (false, all, "Escape", "\x1b[27u"),
+            (false, all, "Up", "\x1b[A"),
         ] {
-            assert_eq!(named(name, kitty_mode(flags)), bytes, "{flags} {name}");
+            let mode = kitty_mode(alternate, report);
+            assert_eq!(named(name, mode), bytes, "{mode:?} {name}");
         }
     }
 
-    fn other_keys_level(n: u8) -> KeyMode {
-        KeyMode {
-            other_keys: Some(n),
-            ..KeyMode::default()
+    const fn other_keys_level(level: OtherKeys) -> KeyMode {
+        KeyMode::Legacy {
+            application: false,
+            other_keys: Some(level),
         }
     }
+    const USUAL: KeyMode = other_keys_level(OtherKeys::Usual);
+    const ALL_MODIFIERS: KeyMode = other_keys_level(OtherKeys::All);
 
     /// modifyOtherKeys level 1, as xterm's input.c (patch 412) sends it with
     /// the Alt key as its Meta modifier. Alone, Alt leaves a key its legacy
@@ -769,15 +779,10 @@ mod tests {
             "C-Up",
             "F5",
         ] {
-            let legacy = String::from_utf8_lossy(&encoded(
-                name.parse().unwrap_or(KeyPress::char('?')),
-                false,
-            ))
-            .into_owned();
-            assert_eq!(named(name, other_keys_level(1)), legacy, "{name}");
+            assert_eq!(named(name, USUAL), named(name, LEGACY), "{name}");
         }
-        assert_eq!(named("M-x", other_keys_level(1)), "\x1bx");
-        assert_eq!(named("C-M-x", other_keys_level(1)), "\x1b\x18");
+        assert_eq!(named("M-x", USUAL), "\x1bx");
+        assert_eq!(named("C-M-x", USUAL), "\x1b\x18");
         for (name, bytes) in [
             ("C-1", "\x1b[27;5;49~"),
             ("C-M-1", "\x1b[27;7;49~"),
@@ -794,12 +799,12 @@ mod tests {
             ("C-BTab", "\x1b[27;6;9~"),
             ("M-BTab", "\x1b[27;2;9~"),
         ] {
-            assert_eq!(named(name, other_keys_level(1)), bytes, "{name}");
+            assert_eq!(named(name, USUAL), bytes, "{name}");
         }
         // Ctrl-Shift-a, which only a kitty-protocol terminal tells from
         // Ctrl-a, is a control too.
         let ctrl_shift_a = reported("C-a", 97, Some(65), None, 5);
-        assert_eq!(stroke(ctrl_shift_a, other_keys_level(1)), "\x01");
+        assert_eq!(stroke(ctrl_shift_a, USUAL), "\x01");
     }
 
     /// modifyOtherKeys level 2, as xterm's input.c sends it: every modifier
@@ -808,55 +813,69 @@ mod tests {
     /// makes BS, and Shift alone on a character that types text, which is
     /// its text: xterm's for `!`, fux's departure for a letter. Shift-Tab is
     /// `CSI 27 ; 2 ; 9 ~`, as ctlseqs says. Other keys keep their legacy
-    /// bytes, level 3 is taken as 2, and the kitty flags, when set, win.
+    /// bytes.
     #[test]
     fn modify_other_keys_level_2_follows_xterm() {
-        for (n, name, bytes) in [
-            (2, "M-x", "\x1b[27;3;120~"),
-            (2, "M-X", "\x1b[27;4;88~"),
-            (2, "C-M-x", "\x1b[27;7;120~"),
-            (2, "M-1", "\x1b[27;3;49~"),
-            (2, "C-1", "\x1b[27;5;49~"),
-            (2, "C-a", "\x1b[27;5;97~"),
-            (2, "C-i", "\x1b[27;5;105~"),
-            (2, "C-Space", "\x1b[27;5;32~"),
-            (2, "BTab", "\x1b[27;2;9~"),
-            (2, "M-Tab", "\x1b[27;3;9~"),
-            (2, "S-Enter", "\x1b[27;2;13~"),
-            (2, "C-Enter", "\x1b[27;5;13~"),
-            (2, "M-Enter", "\x1b[27;3;13~"),
-            (2, "M-Escape", "\x1b[27;3;27~"),
-            (2, "S-Escape", "\x1b[27;2;27~"),
-            (2, "M-BSpace", "\x1b[27;3;127~"),
-            (2, "S-BSpace", "\x1b[27;2;127~"),
-            (2, "C-S-BSpace", "\x1b[27;6;8~"),
-            (2, "C-M-BSpace", "\x1b[27;7;8~"),
-            (2, "C-BSpace", "\x7f"),
-            (2, "a", "a"),
-            (2, "A", "A"),
-            (2, "!", "!"),
-            (2, "Enter", "\r"),
-            (2, "Escape", "\x1b"),
-            (2, "C-Up", "\x1b[1;5A"),
-            (2, "F5", "\x1b[15~"),
-            (3, "C-a", "\x1b[27;5;97~"),
-            (3, "M-x", "\x1b[27;3;120~"),
+        for (name, bytes) in [
+            ("M-x", "\x1b[27;3;120~"),
+            ("M-X", "\x1b[27;4;88~"),
+            ("C-M-x", "\x1b[27;7;120~"),
+            ("M-1", "\x1b[27;3;49~"),
+            ("C-1", "\x1b[27;5;49~"),
+            ("C-a", "\x1b[27;5;97~"),
+            ("C-i", "\x1b[27;5;105~"),
+            ("C-Space", "\x1b[27;5;32~"),
+            ("BTab", "\x1b[27;2;9~"),
+            ("M-Tab", "\x1b[27;3;9~"),
+            ("S-Enter", "\x1b[27;2;13~"),
+            ("C-Enter", "\x1b[27;5;13~"),
+            ("M-Enter", "\x1b[27;3;13~"),
+            ("M-Escape", "\x1b[27;3;27~"),
+            ("S-Escape", "\x1b[27;2;27~"),
+            ("M-BSpace", "\x1b[27;3;127~"),
+            ("S-BSpace", "\x1b[27;2;127~"),
+            ("C-S-BSpace", "\x1b[27;6;8~"),
+            ("C-M-BSpace", "\x1b[27;7;8~"),
+            ("C-BSpace", "\x7f"),
+            ("a", "a"),
+            ("A", "A"),
+            ("!", "!"),
+            ("Enter", "\r"),
+            ("Escape", "\x1b"),
+            ("C-Up", "\x1b[1;5A"),
+            ("F5", "\x1b[15~"),
         ] {
-            assert_eq!(named(name, other_keys_level(n)), bytes, "level {n} {name}");
+            assert_eq!(named(name, ALL_MODIFIERS), bytes, "{name}");
         }
         let ctrl_shift_a = reported("C-a", 97, Some(65), None, 5);
-        assert_eq!(stroke(ctrl_shift_a, other_keys_level(2)), "\x1b[27;6;65~");
+        assert_eq!(stroke(ctrl_shift_a, ALL_MODIFIERS), "\x1b[27;6;65~");
         // Shift-Space, which only a kitty-protocol terminal tells from
         // Space, is xterm's one character modified by Shift alone.
         let shift_space = reported("Space", 32, None, None, 1);
-        assert_eq!(stroke(shift_space, other_keys_level(2)), "\x1b[27;2;32~");
-        assert_eq!(stroke(shift_space, other_keys_level(1)), " ");
-        let both = KeyMode {
-            kitty: 1,
-            other_keys: Some(2),
-            ..KeyMode::default()
-        };
-        assert_eq!(named("C-a", both), "\x1b[97;5u");
+        assert_eq!(stroke(shift_space, ALL_MODIFIERS), "\x1b[27;2;32~");
+        assert_eq!(stroke(shift_space, USUAL), " ");
+    }
+
+    /// A screen's kitty flags pick the protocol: disambiguate or all keys
+    /// make it kitty's, whatever the cursor mode and modifyOtherKeys; the
+    /// other flags alone leave legacy keys. Level 3 is taken as 2.
+    #[test]
+    fn a_screen_s_flags_pick_its_key_protocol() -> Result<(), crate::Error> {
+        for (setup, mode) in [
+            ("", LEGACY),
+            ("\x1b[?1h\x1b[>2u", KeyMode::legacy(true)),
+            ("\x1b[>4;1m\x1b[>16u", USUAL),
+            ("\x1b[>4;3m", ALL_MODIFIERS),
+            ("\x1b[?1h\x1b[>4;2m\x1b[>5u", ALTERNATE),
+            ("\x1b[>8u", kitty_mode(false, Report::AllKeys)),
+            ("\x1b[>25u", kitty_mode(false, Report::AllKeysWithText)),
+        ] {
+            let options = crate::Feature::KittyKeyboard.into();
+            let mut parser = crate::Parser::with_options(crate::Size::of(4, 10), 0, options)?;
+            parser.process(setup.as_bytes())?;
+            assert_eq!(parser.screen().key_mode(), mode, "{setup:?}");
+        }
+        Ok(())
     }
 
     fn pasted(text: &str, bracketed: bool) -> Vec<u8> {
@@ -865,33 +884,36 @@ mod tests {
         out
     }
 
+    /// Legacy keys: SS3 for F1 to F4, and in application mode for the
+    /// cursor keys, unless modified; Alt an ESC before a key's bytes, a lone
+    /// ESC's too (xterm's Alt-Escape is ESC ESC), but not before a sequence,
+    /// which carries it.
     #[test]
-    fn modified_keys_preserve_xterm_protocol_semantics() {
-        for (key, plain, modified) in [
-            (Key::F(1), "\x1bOP", "\x1b[1;8P"),
-            (Key::F(4), "\x1bOS", "\x1b[1;8S"),
-            (Key::F(5), "\x1b[15~", "\x1b[15;8~"),
-            (Key::Insert, "\x1b[2~", "\x1b[2;8~"),
-            (Key::Home, "\x1b[H", "\x1b[1;8H"),
+    fn legacy_keys_follow_xterm() {
+        let application = KeyMode::legacy(true);
+        for (name, mode, bytes) in [
+            ("F1", LEGACY, "\x1bOP"),
+            ("C-M-S-F1", LEGACY, "\x1b[1;8P"),
+            ("C-S-F1", LEGACY, "\x1b[1;6P"),
+            ("C-M-S-F4", LEGACY, "\x1b[1;8S"),
+            ("F5", LEGACY, "\x1b[15~"),
+            ("C-M-S-F5", LEGACY, "\x1b[15;8~"),
+            ("M-F12", LEGACY, "\x1b[24;3~"),
+            ("C-M-S-Insert", LEGACY, "\x1b[2;8~"),
+            ("Home", LEGACY, "\x1b[H"),
+            ("C-M-S-Home", LEGACY, "\x1b[1;8H"),
+            ("Left", application, "\x1bOD"),
+            ("C-Left", application, "\x1b[1;5D"),
+            ("M-Up", application, "\x1b[1;3A"),
+            ("C-c", LEGACY, "\x03"),
+            ("M-a", LEGACY, "\x1ba"),
+            ("M-Escape", LEGACY, "\x1b\x1b"),
+            ("C-M-[", LEGACY, "\x1b\x1b"),
+            ("C-M-3", LEGACY, "\x1b\x1b"),
+            ("M-Delete", LEGACY, "\x1b[3;3~"),
         ] {
-            assert_eq!(
-                encoded(press(key, Modifiers::NONE), false),
-                plain.as_bytes()
-            );
-            assert_eq!(encoded(press(key, ALL), false), modified.as_bytes());
+            assert_eq!(named(name, mode), bytes, "{name}");
         }
-        let left = Key::Arrow(Direction::Left);
-        assert_eq!(encoded(press(left, Modifiers::NONE), true), b"\x1bOD");
-        let (ctrl, alt) = (Modifiers::CTRL, Modifiers::ALT);
-        assert_eq!(encoded(press(left, ctrl), true), b"\x1b[1;5D");
-        let ctrl_shift = Modifiers {
-            shift: true,
-            ..ctrl
-        };
-        assert_eq!(encoded(press(Key::F(1), ctrl_shift), false), b"\x1b[1;6P");
-        assert_eq!(encoded(press(Key::F(12), alt), false), b"\x1b[24;3~");
-        assert_eq!(encoded(press(Key::Char('c'), ctrl), false), vec![3]);
-        assert_eq!(encoded(press(Key::Char('x'), alt), false), b"\x1bx");
     }
 
     #[test]
@@ -929,34 +951,14 @@ mod tests {
             ('1', b'1'),
             ('!', b'!'),
         ] {
-            assert_eq!(
-                encoded(press(Key::Char(c), Modifiers::CTRL), false),
-                vec![byte],
-                "{c:?}"
-            );
+            let ctrl = KeyPress::new(Key::Char(c), Modifiers::CTRL);
+            assert_eq!(stroke(ctrl.into(), LEGACY), char::from(byte).to_string());
         }
     }
 
-    /// Alt is an ESC before a key's bytes, a lone ESC's too (xterm's
-    /// Alt-Escape is ESC ESC), but not before a sequence, which carries it.
-    #[test]
-    fn alt_prefixes_a_lone_escape_but_not_a_sequence() {
-        let alt = Modifiers::ALT;
-        let ctrl_alt = Modifiers { ctrl: true, ..alt };
-        assert_eq!(encoded(press(Key::Escape, alt), false), b"\x1b\x1b");
-        assert_eq!(encoded(press(Key::Char('['), ctrl_alt), false), b"\x1b\x1b");
-        assert_eq!(encoded(press(Key::Char('3'), ctrl_alt), false), b"\x1b\x1b");
-        assert_eq!(encoded(press(Key::Char('a'), alt), false), b"\x1ba");
-        assert_eq!(encoded(press(Key::Delete, alt), false), b"\x1b[3;3~");
-        assert_eq!(
-            encoded(press(Key::Arrow(Direction::Up), alt), true),
-            b"\x1b[1;3A"
-        );
-    }
-
-    /// Every key, under all eight modifier sets and both cursor modes, has a
-    /// non-empty encoding, and a plain character is its own UTF-8; in every
-    /// pane mode too, but where all keys are escapes.
+    /// Every key, under all eight modifier sets and in every key mode, has a
+    /// non-empty encoding, and a plain character is its own UTF-8 but where
+    /// all keys are escapes.
     #[test]
     fn key_bytes_is_total_and_never_empty() {
         let mut keys = vec![
@@ -987,30 +989,21 @@ mod tests {
                     alt: bits & 2 != 0,
                     shift: bits & 4 != 0,
                 };
-                for application in [false, true] {
-                    let bytes = encoded(press(key, mods), application);
-                    assert!(!bytes.is_empty(), "{key:?} {mods:?}");
-                    if let Key::Char(c) = key
-                        && mods.is_empty()
-                    {
-                        let mut buffer = [0u8; 4];
-                        assert_eq!(bytes, c.encode_utf8(&mut buffer).as_bytes());
-                    }
-                }
-                for (kitty, other_keys) in
-                    [(1, None), (5, None), (31, None), (0, Some(1)), (0, Some(2))]
-                {
-                    let mode = KeyMode {
-                        application: false,
-                        kitty,
-                        other_keys,
-                    };
+                for mode in [
+                    LEGACY,
+                    KeyMode::legacy(true),
+                    USUAL,
+                    ALL_MODIFIERS,
+                    DISAMBIGUATED,
+                    ALTERNATE,
+                    kitty_mode(true, Report::AllKeysWithText),
+                ] {
                     let mut bytes = Vec::new();
-                    key_bytes(press(key, mods).into(), mode, &mut bytes);
+                    key_bytes(KeyPress { key, mods }.into(), mode, &mut bytes);
                     assert!(!bytes.is_empty(), "{key:?} {mods:?} {mode:?}");
                     if let Key::Char(c) = key
                         && mods.is_empty()
-                        && kitty & ALL_KEYS == 0
+                        && !matches!(mode, KeyMode::Kitty { report, .. } if report != Report::Disambiguated)
                     {
                         let mut buffer = [0u8; 4];
                         assert_eq!(bytes, c.encode_utf8(&mut buffer).as_bytes());

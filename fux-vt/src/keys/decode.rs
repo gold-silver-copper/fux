@@ -822,7 +822,7 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     let bits = u8::try_from(modifier.saturating_sub(1)).unwrap_or(u8::MAX);
     // `CSI n ~` numbers the function keys with gaps, each run from its
     // base: the key is F(`first - base`). `encode.rs` sends the same
-    // numbers (`F_CODES`, and 2, 3, 5, 6 for Insert to PageDown).
+    // numbers (its `Form::Numbered`).
     let function = |base: u32| {
         let n = u8::try_from(first.checked_sub(base)?).ok()?;
         press(Key::F(n), mods)
@@ -1239,7 +1239,7 @@ mod tests {
     /// flags (`encode::tests`).
     #[test]
     fn every_key_decodes_alike_with_and_without_the_kitty_protocol() {
-        use crate::keys::encode::{KeyMode, key_bytes};
+        use crate::keys::encode::{KeyMode, Report, key_bytes};
         let mut names = crate::keys::all_names();
         names.extend(
             (' '..='~')
@@ -1257,13 +1257,13 @@ mod tests {
                     key_bytes(press.into(), mode, &mut bytes);
                     presses(all(&bytes))
                 };
-                if decoded(KeyMode::default()) != vec![Some(press)] {
+                if decoded(KeyMode::legacy(false)) != vec![Some(press)] {
                     // Legacy bytes cannot tell this key (S-Enter is Enter).
                     continue;
                 }
-                let kitty = KeyMode {
-                    kitty: 5,
-                    ..KeyMode::default()
+                let kitty = KeyMode::Kitty {
+                    alternate: true,
+                    report: Report::Disambiguated,
                 };
                 assert_eq!(decoded(kitty), vec![Some(press)], "{prefix}{name}");
                 compared += 1;
