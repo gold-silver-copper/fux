@@ -3,7 +3,7 @@ use crate::command::{AnyRef, Command};
 use crate::copy::Copy;
 use crate::decode::Decoder;
 use crate::id::{ClientId, PaneId, TabId, WsId};
-use crate::keys::KeyPress;
+use crate::overlay::{Column, Repeat};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,17 +21,92 @@ pub struct Item {
     pub command: Command,
     /// Marked as the current one in a chooser.
     pub current: bool,
-    /// What `r` renames and `x` closes, in a chooser.
+    /// What `r` renames and `x` closes: a chooser's items each have one,
+    /// a menu's none.
     pub subject: Option<AnyRef>,
+}
+
+/// Items to choose from, one of them chosen: there is always at least one,
+/// and the choice is always one of them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Choice<T> {
+    before: Vec<T>,
+    chosen: T,
+    /// The items after the chosen one, the last first.
+    after: Vec<T>,
+}
+
+impl<T> Choice<T> {
+    /// `first` and the `rest`, `first` chosen.
+    pub fn of(first: T, mut rest: Vec<T>) -> Choice<T> {
+        rest.reverse();
+        Choice {
+            before: Vec::new(),
+            chosen: first,
+            after: rest,
+        }
+    }
+
+    /// `items`, the first chosen; none if there are none.
+    pub fn new(items: Vec<T>) -> Option<Choice<T>> {
+        let mut items = items.into_iter();
+        Some(Choice::of(items.next()?, items.collect()))
+    }
+
+    pub fn chosen(&self) -> &T {
+        &self.chosen
+    }
+
+    /// Where the chosen item is, counted from the first.
+    pub fn index(&self) -> usize {
+        self.before.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &T> + Clone {
+        let chosen = std::iter::once(&self.chosen);
+        self.before
+            .iter()
+            .chain(chosen)
+            .chain(self.after.iter().rev())
+    }
+
+    /// Chooses the item `n` before, or the first.
+    pub fn up(&mut self, n: usize) {
+        for _ in 0..n {
+            let Some(item) = self.before.pop() else { break };
+            self.after.push(std::mem::replace(&mut self.chosen, item));
+        }
+    }
+
+    /// Chooses the item `n` after, or the last.
+    pub fn down(&mut self, n: usize) {
+        for _ in 0..n {
+            let Some(item) = self.after.pop() else { break };
+            self.before.push(std::mem::replace(&mut self.chosen, item));
+        }
+    }
+
+    /// Moves the choice for a key that moves it, `page` items for a page,
+    /// and says whether `key` was one.
+    pub fn moved(&mut self, key: Option<crate::keys::Key>, page: usize) -> bool {
+        use crate::keys::{Direction, Key};
+        match key {
+            Some(Key::Arrow(Direction::Up)) => self.up(1),
+            Some(Key::Arrow(Direction::Down)) => self.down(1),
+            Some(Key::PageUp) => self.up(page),
+            Some(Key::PageDown) => self.down(page),
+            Some(Key::Home) => self.up(usize::MAX),
+            Some(Key::End) => self.down(usize::MAX),
+            _ => return false,
+        }
+        true
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct List {
     pub title: String,
-    pub items: Vec<Item>,
-    pub selected: usize,
-    /// A chooser takes `r` and `x`; a menu does not.
-    pub chooser: bool,
+    pub items: Choice<Item>,
     /// What the list was opened for; if it goes, the list closes.
     pub about: Option<AnyRef>,
 }
@@ -48,9 +123,85 @@ pub enum PromptFor {
 pub struct Prompt {
     pub title: String,
     pub purpose: PromptFor,
-    pub text: String,
-    /// A char index into `text`.
-    pub cursor: usize,
+    pub line: Line,
+}
+
+/// The most bytes a prompt's line holds.
+const LINE_MAX: usize = 4096;
+
+/// A prompt's one line of text, split at its cursor: the cursor is always
+/// between two chars, or at an end, and every edit is a whole char.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Line {
+    before: String,
+    after: String,
+}
+
+impl Line {
+    /// `text`, the cursor after it.
+    pub fn new(text: String) -> Line {
+        Line {
+            before: text,
+            after: String::new(),
+        }
+    }
+
+    /// The text before the cursor.
+    pub fn before(&self) -> &str {
+        &self.before
+    }
+
+    /// The text after the cursor.
+    pub fn after(&self) -> &str {
+        &self.after
+    }
+
+    /// The whole text.
+    pub fn text(self) -> String {
+        self.before + &self.after
+    }
+
+    /// Types `text` at the cursor, unless the line would pass `LINE_MAX`
+    /// bytes: whether it did.
+    pub fn insert(&mut self, text: &str) -> bool {
+        let len = self.before.len().saturating_add(self.after.len());
+        let fits = len.saturating_add(text.len()) <= LINE_MAX;
+        if fits {
+            self.before.push_str(text);
+        }
+        fits
+    }
+
+    pub fn backspace(&mut self) {
+        self.before.pop();
+    }
+
+    pub fn delete(&mut self) {
+        self.after = self.after.chars().skip(1).collect();
+    }
+
+    pub fn left(&mut self) {
+        if let Some(c) = self.before.pop() {
+            self.after = std::iter::once(c).chain(self.after.chars()).collect();
+        }
+    }
+
+    pub fn right(&mut self) {
+        let mut chars = self.after.chars();
+        if let Some(c) = chars.next() {
+            self.before.push(c);
+            self.after = chars.as_str().to_owned();
+        }
+    }
+
+    pub fn home(&mut self) {
+        self.before.push_str(&self.after);
+        self.after = std::mem::take(&mut self.before);
+    }
+
+    pub fn end(&mut self) {
+        self.before.push_str(&std::mem::take(&mut self.after));
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,17 +213,8 @@ pub struct Confirm {
 
 pub enum Mode {
     Normal,
-    /// The command column: the layer it shows (none for the bindings right
-    /// after the prefix), and its selected entry.
-    Column {
-        path: Vec<KeyPress>,
-        selected: usize,
-    },
-    /// A repeat mode: the keys of the layer at `path` run its bindings
-    /// without the prefix, until Esc.
-    Repeat {
-        path: Vec<KeyPress>,
-    },
+    Column(Column),
+    Repeat(Repeat),
     List(List),
     Prompt(Prompt),
     Confirm(Confirm),
