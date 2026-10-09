@@ -1,8 +1,8 @@
 //! The server's state: workspaces, tabs, panes and the clients' views, and
 //! every command that changes them.
 use crate::command::{
-    self, AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, PanePick, Pick, Sibling, SwapWith,
-    TabId, WsId, WsRef,
+    self, AnyRef, ClientAction, ClientId, Command, Kind, MoveTo, PanePick, Pick, Sibling, Subject,
+    SwapWith, TabId, WsId, WsRef,
 };
 use crate::config::Config;
 use crate::copy::MAX_CELLS;
@@ -83,10 +83,7 @@ pub enum Error {
     NoTabGiven,
     NoTab(TabId),
     NoWorkspaceGiven,
-    NoTarget {
-        kind: Kind,
-        target: AnyRef,
-    },
+    NoTarget(AnyRef),
     NoClientGiven,
     NoClient(ClientId),
     NoWorkspaces,
@@ -155,8 +152,8 @@ impl std::fmt::Display for Error {
             Error::NoTabGiven => f.write_str("no tab given: use -t @N"),
             Error::NoTab(id) => write!(f, "no tab {id}"),
             Error::NoWorkspaceGiven => f.write_str("no workspace given: use -t +N or a name"),
-            Error::NoTarget { kind, target } => {
-                write!(f, "no {} {}", kind.name(), describe(target))
+            Error::NoTarget(target) => {
+                write!(f, "no {} {}", target.kind().name(), describe(target))
             }
             Error::NoClientGiven => f.write_str(
                 "this command acts on a client's screen: use -c CLIENT (`fux ls` lists clients)",
@@ -226,7 +223,7 @@ impl std::error::Error for Error {
             | Error::NoTabGiven
             | Error::NoTab(_)
             | Error::NoWorkspaceGiven
-            | Error::NoTarget { .. }
+            | Error::NoTarget(_)
             | Error::NoClientGiven
             | Error::NoClient(_)
             | Error::NoWorkspaces
@@ -505,23 +502,15 @@ impl Session {
             .ok_or(Error::NoWorkspaceGiven)
     }
 
-    fn any_target(
-        &self,
-        kind: Kind,
-        explicit: Option<&AnyRef>,
-        ctx: &Ctx,
-    ) -> Result<AnyRef, Error> {
-        if let Some(target) = explicit {
-            return if self.exists(target) {
-                Ok(target.clone())
+    fn any_target(&self, subject: &Subject, ctx: &Ctx) -> Result<AnyRef, Error> {
+        if let Some(target) = subject.target() {
+            return if self.exists(&target) {
+                Ok(target)
             } else {
-                Err(Error::NoTarget {
-                    kind,
-                    target: target.clone(),
-                })
+                Err(Error::NoTarget(target))
             };
         }
-        Ok(match kind {
+        Ok(match subject.kind() {
             Kind::Pane => AnyRef::Pane(self.pane_target(None, ctx)?),
             Kind::Tab => AnyRef::Tab(self.tab_target(None, ctx)?),
             Kind::Workspace => AnyRef::Workspace(WsRef::Id(self.ws_target(None, ctx)?)),
@@ -1611,11 +1600,10 @@ impl Session {
                 }
             }
             &Command::Reorder {
-                kind,
-                ref target,
+                ref subject,
                 toward,
             } => {
-                let target = self.any_target(kind, target.as_ref(), ctx)?;
+                let target = self.any_target(subject, ctx)?;
                 self.reorder(&target, toward).map(|()| String::new())
             }
             Command::Configure { argv } => {
@@ -1623,10 +1611,6 @@ impl Session {
                 // command that can show something new: `set titles`
                 // shows at each client's next paint.
                 self.config.apply(argv).map_err(Error::Config)?;
-                Ok(String::new())
-            }
-            &Command::UnbindAll => {
-                self.config.unbind_all();
                 Ok(String::new())
             }
             &Command::Reload => {
@@ -1713,31 +1697,31 @@ impl Session {
                 ":".into(),
                 String::new(),
             ),
-            ClientAction::RenamePrompt { kind, ref target } => {
-                let target = self.any_target(kind, target.as_ref(), &ctx)?;
+            ClientAction::RenamePrompt(ref subject) => {
+                let target = self.any_target(subject, &ctx)?;
                 let current = self.name_of(&target);
                 crate::overlay::open_prompt(
                     self,
                     client,
                     crate::view::PromptFor::Rename(target.clone()),
-                    format!("rename {} {}", kind.name(), describe(&target)),
+                    format!("rename {} {}", subject.kind().name(), describe(&target)),
                     current,
                 )
             }
-            ClientAction::ConfirmClose { kind, ref target } => {
-                let target = self.any_target(kind, target.as_ref(), &ctx)?;
+            ClientAction::ConfirmClose(ref subject) => {
+                let target = self.any_target(subject, &ctx)?;
                 crate::overlay::open_confirm(self, client, target)
             }
-            ClientAction::Menu { kind, ref target } => {
-                let target = self.any_target(kind, target.as_ref(), &ctx)?;
+            ClientAction::Menu(ref subject) => {
+                let target = self.any_target(subject, &ctx)?;
                 crate::overlay::open_menu(self, client, target)
             }
-            ClientAction::ChooseTab { moving, moving_now } => {
-                let moving = self.moving(client, moving, moving_now)?;
+            ClientAction::ChooseTab { moving } => {
+                let moving = moving.map(|p| self.pane_target(p, &ctx)).transpose()?;
                 crate::overlay::open_tab_chooser(self, client, moving)
             }
-            ClientAction::ChooseWorkspace { moving, moving_now } => {
-                let moving = self.moving(client, moving, moving_now)?;
+            ClientAction::ChooseWorkspace { moving } => {
+                let moving = moving.map(|p| self.pane_target(p, &ctx)).transpose()?;
                 crate::overlay::open_workspace_chooser(self, client, moving)
             }
             ClientAction::ChoosePane { target } => {
@@ -1745,19 +1729,6 @@ impl Session {
                 crate::overlay::open_pane_chooser(self, client, source)
             }
             ClientAction::CopyMode => crate::copy::enter(self, client),
-        }
-    }
-
-    fn moving(
-        &self,
-        client: ClientId,
-        moving: Option<PaneId>,
-        now: bool,
-    ) -> Result<Option<PaneId>, Error> {
-        match (moving, now) {
-            (Some(p), _) => self.pane_target(Some(p), &Ctx::default()).map(Some),
-            (None, true) => self.pane_target(None, &Ctx::client(client)).map(Some),
-            (None, false) => Ok(None),
         }
     }
 
@@ -2728,7 +2699,7 @@ mod tests {
         assert!(run("copy-mode")?.is_ok());
         assert!(matches!(
             s.attach(10, 40, Some("%1")),
-            Err(Error::Usage(command::Usage::NotWorkspace(_)))
+            Err(Error::Usage(command::Usage::Not(Kind::Workspace, _)))
         ));
         assert!(matches!(
             s.attach(10, 40, Some("nope")),

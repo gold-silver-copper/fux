@@ -394,10 +394,6 @@ impl Default for Config {
     }
 }
 
-/// The groups of the command column, in order; custom groups follow them,
-/// and `Other` is last.
-pub const GROUPS: &[&str] = &["Panes", "Focus", "Tabs", "Workspaces", "Session"];
-
 impl Binding {
     /// The keys after `path`, if the binding is in the layer at `path`:
     /// one or more of them.
@@ -413,33 +409,7 @@ impl Binding {
 
     /// The group its command belongs to, whatever `-g` said.
     pub fn derived_group(&self) -> &'static str {
-        let name = self.command.first().map(String::as_str).unwrap_or("");
-        let second = self.command.get(1).map(String::as_str);
-        match (name, second) {
-            ("select-pane", _) => "Focus",
-            ("menu", Some("tab"))
-            | ("rename-prompt", Some("tab"))
-            | ("confirm-close", Some("tab"))
-            | ("reorder", Some("tab")) => "Tabs",
-            ("menu", Some("workspace"))
-            | ("rename-prompt", Some("workspace"))
-            | ("confirm-close", Some("workspace"))
-            | ("reorder", Some("workspace")) => "Workspaces",
-            (
-                "split" | "kill-pane" | "zoom" | "resize-pane" | "swap-pane" | "move-pane"
-                | "copy-mode" | "paste-buffer" | "menu" | "rename-prompt" | "confirm-close"
-                | "terminate" | "choose-pane" | "send-keys" | "send-prefix" | "reorder",
-                _,
-            ) => "Panes",
-            ("new-tab" | "select-tab" | "choose-tab" | "kill-tab", _) => "Tabs",
-            ("new-workspace" | "select-workspace" | "choose-workspace" | "kill-workspace", _) => {
-                "Workspaces"
-            }
-            ("detach" | "command-prompt" | "command-column" | "reload" | "kill-server", _) => {
-                "Session"
-            }
-            _ => "Other",
-        }
+        command::group(&self.command, &self.parsed)
     }
 }
 
@@ -1180,6 +1150,23 @@ mod tests {
             );
             let back = read_back(&c);
             assert_eq!(back.as_ref().map(|b| &b.shell), Ok(&c.shell), "{shell}");
+        }
+    }
+
+    /// A command on any kind is listed under the kind it acts on, given or
+    /// its target's.
+    #[test]
+    fn a_binding_is_grouped_by_the_kind_it_acts_on() {
+        let mut c = Config::default();
+        for (keys, command, group) in [
+            ("g a", "menu -t @2", "Tabs"),
+            ("g b", "confirm-close -t +1", "Workspaces"),
+            ("g c", "reorder workspace --next", "Workspaces"),
+            ("g d", "menu pane", "Panes"),
+        ] {
+            assert_eq!(apply(&mut c, &format!("bind {keys} {command}")), Ok(()));
+            let b = c.bindings.iter().find(|b| keys_text(&b.keys) == keys);
+            assert_eq!(b.map(Binding::group), Some(group), "{command}");
         }
     }
 

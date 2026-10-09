@@ -51,41 +51,24 @@ pub(crate) fn drain(pipe: &mut UnixStream) {
     while matches!(pipe.read(&mut buffer), Ok(n) if n > 0) {}
 }
 
-const USAGE: &str = "\
+/// `fux help`: how to run fux, and its commands as their table has them.
+fn usage() -> String {
+    format!(
+        "\
 usage: fux [attach] [-t WORKSPACE] [--nested]
        fux server [--socket PATH] [--config FILE]
-       fux kill-server
        fux COMMAND [ARGS...]
 
-Commands:
-  ls [--json]                          workspaces, tabs, panes and clients
-  new-workspace [-n NAME] [-- CMD...]  a workspace with a shell (CMD typed into it)
-  new-tab [-t WS] [-n NAME] [-- CMD...]
-  split -h|-v [-t %N] [-- CMD...]      -h side by side, -v stacked
-  kill-pane|kill-tab|kill-workspace [-t TARGET]
-  rename -t TARGET NAME                TARGET is %N, @N, +N or a workspace name
-  move-pane [-t %N] --to @N|+N|new-tab|new-workspace   or -L/-R/-U/-D
-  swap-pane [-t %N] %M                 or -L/-R/-U/-D
-  resize-pane [-t %N] -L|-R|-U|-D [CELLS]
-  reorder pane|tab|workspace [-t TARGET] --next|--previous
-  terminate [-t %N]                    SIGTERM to what runs in the pane's foreground
-  send-keys [-t %N] [-l] KEYS...
-  send-prefix [-t %N]                  the prefix key, to the pane
-  capture-pane [-t %N] [-S -LINES] [--json]
-  capture-client [-c CLIENT] [--json]  what a client's terminal shows
-  set OPTION VALUE | unbind [-n] KEY... | unbind-all | reload
-  bind [-g GROUP] [-r] KEY... COMMAND...   keys after the prefix; V is Shift-v
-  bind -n [-g GROUP] KEY COMMAND...    a key without the prefix
-  list-buffers | show-buffer [-b N] | paste-buffer [-b N] [-t %N]
-  list-keys | detach [-c CLIENT]
-On a client's screen (from a key, the command prompt, or with -c CLIENT):
-  command-column, command-prompt, copy-mode, zoom, choose-tab, choose-workspace,
-  choose-pane, menu pane|tab|workspace, rename-prompt, confirm-close,
-  select-pane, select-tab, select-workspace
+{}
+-c CLIENT names the client whose screen a command acts on; from a key, the
+command prompt or a menu, it is the client that ran it.
 
 The socket is FUX_SOCKET, else $XDG_RUNTIME_DIR/fux/server.sock, else
 $TMPDIR/fux/server.sock. Inside a pane, FUX_PANE names it, so commands there
-target it without -t.";
+target it without -t.",
+        command::help()
+    )
+}
 
 /// The command line of the `fux` binary.
 pub fn main() -> ExitCode {
@@ -149,7 +132,7 @@ impl From<client::Error> for Error {
 }
 
 fn usage_error(message: &str) -> Result<u8, Error> {
-    eprintln!("fux: {message}\n{USAGE}");
+    eprintln!("fux: {message}\n{}", usage());
     Ok(2)
 }
 
@@ -207,7 +190,7 @@ fn run(args: &[String]) -> Result<u8, Error> {
             Ok(0)
         }
         Some("help" | "--help" | "-h") => {
-            println!("{USAGE}");
+            println!("{}", usage());
             Ok(0)
         }
         Some("--version" | "-V" | "version") => {
@@ -227,69 +210,17 @@ fn run(args: &[String]) -> Result<u8, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    /// Every command the usage and the README name is one the parser knows,
-    /// and every command here is named in both: a command added to the
-    /// parser is added here, which holds the two to it.
+    /// The README names every command.
     #[test]
-    fn the_usage_and_the_readme_name_the_commands_the_parser_knows() {
-        const COMMANDS: &[&str] = &[
-            "ls",
-            "kill-server",
-            "new-workspace",
-            "new-tab",
-            "split",
-            "kill-pane",
-            "kill-tab",
-            "kill-workspace",
-            "rename",
-            "move-pane",
-            "swap-pane",
-            "resize-pane",
-            "reorder",
-            "terminate",
-            "send-keys",
-            "send-prefix",
-            "capture-pane",
-            "capture-client",
-            "set",
-            "bind",
-            "unbind",
-            "unbind-all",
-            "reload",
-            "list-buffers",
-            "show-buffer",
-            "paste-buffer",
-            "list-keys",
-            "detach",
-            "command-column",
-            "command-prompt",
-            "copy-mode",
-            "zoom",
-            "choose-tab",
-            "choose-workspace",
-            "choose-pane",
-            "menu",
-            "rename-prompt",
-            "confirm-close",
-            "select-pane",
-            "select-tab",
-            "select-workspace",
-        ];
+    fn the_readme_names_every_command() {
         let readme = include_str!("../README.md");
-        for name in COMMANDS {
-            let parsed = crate::command::parse(&[(*name).to_owned()]);
-            assert!(
-                !matches!(parsed, Err(crate::command::Usage::UnknownCommand(_))),
-                "{name}: the parser does not know it"
-            );
-            let named = |text: &str| {
-                text.split(|c: char| !(c.is_ascii_lowercase() || c == '-'))
-                    .any(|word| word == *name)
-            };
-            assert!(named(USAGE), "{name}: not in the usage");
-            assert!(named(readme), "{name}: not in the README");
+        for (_, specs) in crate::command::COMMANDS {
+            for name in specs.iter().flat_map(|spec| spec.names()) {
+                let named = readme
+                    .split(|c: char| !(c.is_ascii_lowercase() || c == '-'))
+                    .any(|word| word == name);
+                assert!(named, "{name}: not in the README");
+            }
         }
     }
 }
