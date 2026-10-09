@@ -1506,7 +1506,7 @@ impl Session {
                 let text = self.buffers.get(index).cloned();
                 let text = text.ok_or(Error::NoBuffer(index))?;
                 let p = self.pane_mut(target, here)?;
-                let bracketed = p.screen().bracketed_paste();
+                let bracketed = p.screen().mode(fux_vt::Mode::BracketedPaste);
                 p.input
                     .push_with(|out| crate::encode::paste(&text, bracketed, out))?;
                 Ok(String::new())

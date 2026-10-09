@@ -2,7 +2,7 @@
 //! each test citing the section that sets its expected values. Where xterm
 //! departs from the specification, the test says so and follows xterm.
 
-use fux_vt::{CellRef, Color, Identity, Options, Parser};
+use fux_vt::{CellRef, Color, Identity, Mode, Options, Parser};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 #[path = "corpus/lines.rs"]
@@ -253,19 +253,19 @@ fn a_soft_reset_restores_the_modes_and_keeps_the_screen() -> Result {
     // Autowrap is on again.
     let p = run(1, 3, b"\x1b[?7l\x1b[!pabcd")?;
     assert_eq!(lines(&p), ["d"]);
-    assert!(p.screen().autowrap());
+    assert!(p.screen().mode(Mode::Autowrap));
     let p = run(
         3,
         5,
         b"\x1b[?25l\x1b[?6h\x1b[?1h\x1b=\x1b[2;3r\x1b[?2004h\x1b[?1004h\x1b[!p",
     )?;
     let screen = p.screen();
-    assert!(!screen.hide_cursor());
-    assert!(!screen.origin_mode());
-    assert!(!screen.application_cursor());
-    assert!(!screen.application_keypad());
+    assert!(screen.mode(Mode::ShowCursor));
+    assert!(!screen.mode(Mode::Origin));
+    assert!(!screen.mode(Mode::ApplicationCursor));
+    assert!(!screen.mode(Mode::ApplicationKeypad));
     assert_eq!(screen.scroll_region(), (0, 2));
-    assert!(screen.bracketed_paste() && screen.focus_reporting());
+    assert!(screen.mode(Mode::BracketedPaste) && screen.mode(Mode::FocusReporting));
     // The saved cursor goes home, with the normal rendition.
     let p = run(3, 5, b"\x1b[2;2H\x1b[1m\x1b7\x1b[m\x1b[!p\x1b[3;3H\x1b8X")?;
     assert_eq!(lines(&p), ["X", "", ""]);
@@ -616,9 +616,9 @@ fn tab_stops_are_set_cleared_and_kept() -> Result {
 #[test]
 fn modes_1047_and_1048() -> Result {
     let mut p = run(2, 5, b"ab\x1b[?1048h\x1b[?1047hX")?;
-    assert!(p.screen().alternate_screen());
+    assert!(p.screen().mode(Mode::AlternateScreen));
     p.process(b"\x1b[?1047l\x1b[?1048lY")?;
-    assert!(!p.screen().alternate_screen());
+    assert!(!p.screen().mode(Mode::AlternateScreen));
     assert_eq!(lines(&p), ["abY", ""]);
     p.process(b"\x1b[?1047h")?;
     assert_eq!(lines(&p), ["", ""]);
@@ -640,10 +640,10 @@ fn insert_mode_moves_what_is_there() -> Result {
     let p = run(2, 5, b"abcdefgh\x1b[4h\x1b[1;1Hx")?;
     assert_eq!(lines(&p), ["xabcd", "fgh"]);
     assert!(p.screen().row_wrapped(0));
-    assert!(p.screen().insert_mode());
+    assert!(p.screen().mode(Mode::Insert));
     for reset in [&b"\x1b[!p"[..], b"\x1bc"] {
         let p = run(1, 5, &[&b"\x1b[4h"[..], reset].concat())?;
-        assert!(!p.screen().insert_mode(), "{reset:?}");
+        assert!(!p.screen().mode(Mode::Insert), "{reset:?}");
     }
     assert!(
         run(2, 5, b"abcdefgh\x1b[1;1H\x1b[@")?
@@ -695,7 +695,7 @@ fn switching_screens_keeps_the_cursor() -> Result {
     // Origin mode and the margins go along.
     let p = run(4, 5, b"\x1b[2;3r\x1b[?6h\x1b[?47h\x1b[1;1HX")?;
     assert_eq!(lines(&p), ["", "X", "", ""]);
-    assert!(p.screen().origin_mode());
+    assert!(p.screen().mode(Mode::Origin));
     assert_eq!(p.screen().scroll_region(), (1, 2));
     // The cleared screen takes the pen's colours.
     let p = run(2, 3, b"\x1b[41m\x1b[?1049h")?;

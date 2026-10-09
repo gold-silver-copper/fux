@@ -6,7 +6,7 @@ mod pieces;
 
 #[path = "corpus/invariants.rs"]
 mod invariants;
-use fux_vt::{Identity, Options, Parser, Sink};
+use fux_vt::{Identity, Mode, Options, Parser, Sink};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 #[test]
@@ -26,18 +26,18 @@ fn terminal_edge_streams_preserve_primary_history_and_modes() -> Result {
                 main = Some(p.clone());
             }
             1 => {
-                assert!(s.alternate_screen());
+                assert!(s.mode(Mode::AlternateScreen));
                 assert_eq!(text.trim_end_matches('\n'), "ALTERNATE");
                 assert_eq!(s.history_len(), 0);
             }
             2 => {
-                assert!(!s.alternate_screen());
+                assert!(!s.mode(Mode::AlternateScreen));
                 if let Some(ref main) = main {
                     invariants::equal(&p, main);
                 }
             }
             3 => {
-                assert!(s.application_cursor());
+                assert!(s.mode(Mode::ApplicationCursor));
                 assert_eq!(text.trim_end_matches('\n'), "APP");
             }
             4 => {

@@ -2,6 +2,7 @@
 //! model (reference and attribution in the crate README), with UTF-8 ground decoding.
 //! Ignored control strings retain no payload. No parser dependency is used.
 
+use crate::mode::{Kind, Mode};
 use crate::{Error, Reply, Screen, screen::Dispatch};
 
 #[cfg(test)]
@@ -292,7 +293,7 @@ pub struct Options {
     pub size_reports: bool,
     /// Mode 2031, colour-scheme change reports
     /// (`references/modern/mode_2031_color_scheme_updates.md`): track it,
-    /// read with [`Screen::color_scheme_updates`], and report it to DECRQM.
+    /// read with [`Screen::mode`], and report it to DECRQM.
     /// State only: the host knows the colour scheme, and sends the reports
     /// (`CSI ? 997 ; 1 n` dark, `CSI ? 997 ; 2 n` light) and answers
     /// `CSI ? 996 n`, which stays unhandled. Off, the mode is not
@@ -684,7 +685,8 @@ impl Parser {
     /// [`Options::in_band_resize`] is off. The host sends it once the
     /// program's terminal has the new size, as the spec requires.
     pub fn resize_report(&self) -> Option<Vec<u8>> {
-        (self.options.in_band_resize && self.screen.in_band_resize())
+        self.screen
+            .mode(Mode::InBandResize)
             .then(|| self.screen.size_report().as_bytes().to_vec())
     }
     /// The options the parser was made with.
@@ -711,7 +713,7 @@ impl Parser {
     /// a sequence that sets synchronized output (`CSI ? 2026 h`, BSU), and
     /// say how many bytes that took; `None` if no sequence did, and every
     /// byte was processed. A host that holds a program's frames
-    /// ([`crate::Screen::synchronized_output`]) holds the rest from there, found
+    /// ([`Mode::SynchronizedOutput`]) holds the rest from there, found
     /// exactly as the parser reads it: split across calls, or set beside
     /// other modes in one sequence.
     pub fn process_until_frame(
@@ -1373,23 +1375,20 @@ impl Parser {
             (b"*", b'y') if self.options.rectangle_checksums => {
                 Some(self.screen.rectangle_checksum(&self.params))
             }
-            (b"?$", b'p') if modes => {
-                let status = match n {
-                    2048 if !self.options.in_band_resize => 0,
-                    2031 if !self.options.color_scheme_updates => 0,
-                    _ => self.screen.private_mode_status(n),
+            // DECRQM: 1 set, 2 reset, 0 not recognized (and 1048, an
+            // action), and 4 permanently reset for DECARM. Focus reporting
+            // (1004) is answered 0, as the README's row for it records.
+            (b"?$" | b"$", b'p') if modes => {
+                let private = intermediates == b"?$";
+                let mode = Mode::of(n, private, &self.options);
+                let status = match mode.map(|m| (m, m.kind())) {
+                    None | Some((Mode::FocusReporting, _) | (_, Kind::SaveCursor)) => 0,
+                    Some((_, Kind::Reset)) => 4,
+                    Some((mode, _)) if self.screen.mode(mode) => 1,
+                    Some(_) => 2,
                 };
-                Some(Reply::of(format_args!("\x1b[?{n};{status}$y")))
-            }
-            (b"$", b'p') if modes => {
-                // IRM and LNM alone of the ANSI modes are known.
-                let status = match n {
-                    4 if self.screen.insert_mode() => 1,
-                    20 if self.screen.new_line_mode() => 1,
-                    4 | 20 => 2,
-                    _ => 0,
-                };
-                Some(Reply::of(format_args!("\x1b[{n};{status}$y")))
+                let marker = if private { "?" } else { "" };
+                Some(Reply::of(format_args!("\x1b[{marker}{n};{status}$y")))
             }
             _ => None,
         }

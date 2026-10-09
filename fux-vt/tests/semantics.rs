@@ -1,6 +1,6 @@
 //! The sequence matrix's behaviour, family by family, with expected values
 //! from the vt100-crate baseline and its corrections.
-use fux_vt::{CellRef, Color, Error, MouseProtocolEncoding, MouseProtocolMode, Parser};
+use fux_vt::{CellRef, Color, Error, Mode, MouseProtocolEncoding, MouseProtocolMode, Parser};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
 #[path = "corpus/lines.rs"]
@@ -66,10 +66,10 @@ fn autowrap_disabled_overwrites_without_scrolling() -> Result {
     p.process(b"\x1b[?7labcdef")?;
     assert_eq!(lines(&p), ["abf", ""]);
     assert_eq!(p.screen().history_len(), 0);
-    assert!(!p.screen().autowrap());
+    assert!(!p.screen().mode(Mode::Autowrap));
     p.process(b"\x1b[?7hG")?;
     assert_eq!(lines(&p), ["abf", "G"]);
-    assert!(p.screen().autowrap());
+    assert!(p.screen().mode(Mode::Autowrap));
     Ok(())
 }
 
@@ -289,21 +289,21 @@ fn focus_and_cursor_shape() -> Result {
         let mut p = Parser::new(3, 8, 0)?;
         p.process(a)?;
         p.process(b)?;
-        assert!(p.screen().focus_reporting(), "split {split}");
+        assert!(p.screen().mode(Mode::FocusReporting), "split {split}");
         assert_eq!(p.screen().cursor_shape(), 5, "split {split}");
     }
     let mut p = Parser::new(3, 8, 0)?;
     p.process(b"\x1b[?1004h\x1b[?1004l\x1b[2 q\x1b[ q")?;
-    assert!(!p.screen().focus_reporting());
+    assert!(!p.screen().mode(Mode::FocusReporting));
     assert_eq!(p.screen().cursor_shape(), 0);
     p.process(b"\x1b[1004h\x1b[3!q\x1b[?4 q")?;
-    assert!(!p.screen().focus_reporting());
+    assert!(!p.screen().mode(Mode::FocusReporting));
     assert_eq!(p.screen().cursor_shape(), 0);
     p.process(b"\x1b[?1004h\x1b[6 q")?;
-    assert!(p.screen().focus_reporting());
+    assert!(p.screen().mode(Mode::FocusReporting));
     assert_eq!(p.screen().cursor_shape(), 6);
     p.process(b"\x1bc")?;
-    assert!(!p.screen().focus_reporting());
+    assert!(!p.screen().mode(Mode::FocusReporting));
     assert_eq!(p.screen().cursor_shape(), 0);
     Ok(())
 }
@@ -313,10 +313,10 @@ fn alternate_mouse_modes_saved_cursor_and_replies() -> Result {
     let mut p = Parser::new(3, 8, 2)?;
     p.process(b"main\x1b[31m\x1b[?1049hALT\x1b[?1h\x1b[?25l\x1b[?2004h\x1b[?1002h\x1b[?1006h")?;
     assert!(
-        p.screen().alternate_screen()
-            && p.screen().application_cursor()
-            && p.screen().hide_cursor()
-            && p.screen().bracketed_paste()
+        p.screen().mode(Mode::AlternateScreen)
+            && p.screen().mode(Mode::ApplicationCursor)
+            && !p.screen().mode(Mode::ShowCursor)
+            && p.screen().mode(Mode::BracketedPaste)
     );
     assert_eq!(
         p.screen().mouse_protocol_mode(),
@@ -392,7 +392,7 @@ fn regions_origin_and_reset_have_explicit_history_semantics() -> Result {
     let mut p = Parser::new(4, 4, 3)?;
     p.process(b"a\r\nb\r\nc\r\nd\x1b[2;3r\x1b[?6h")?;
     assert_eq!(p.screen().scroll_region(), (1, 2));
-    assert!(p.screen().origin_mode());
+    assert!(p.screen().mode(Mode::Origin));
     assert_eq!(p.screen().cursor_position(), (1, 0));
     p.process(b"\x1b[2;1H\n")?;
     assert_eq!(lines(&p), ["a", "c", "", "d"]);
@@ -407,8 +407,8 @@ fn regions_origin_and_reset_have_explicit_history_semantics() -> Result {
         .id();
     p.process(b"\x1bc")?;
     assert_eq!(lines(&p), ["", "", "", ""]);
-    assert!(!p.screen().origin_mode());
-    assert!(p.screen().autowrap());
+    assert!(!p.screen().mode(Mode::Origin));
+    assert!(p.screen().mode(Mode::Autowrap));
     assert_eq!(p.screen().scroll_region(), (0, 3));
     assert!(p.screen().row_by_id(id).is_none());
     Ok(())
