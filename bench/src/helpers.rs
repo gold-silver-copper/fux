@@ -1,10 +1,7 @@
 //! The programs `feel` runs, as subcommands of this binary (`fux-bench
-//! __NAME`): the launcher that starts a client on a PTY, and the pane
-//! programs it measures with.
+//! __NAME`): the pane programs it measures with.
 use std::io::Write;
 use std::os::fd::AsFd;
-use std::os::unix::process::CommandExt;
-use std::process::Command;
 
 /// What a pane program prints when it is ready, in raw mode: three
 /// snowmen, which nothing else prints.
@@ -27,20 +24,6 @@ pub fn marker(n: usize) -> String {
         .copied()
         .unwrap_or('\u{2603}');
     std::iter::repeat_n(glyph, 6).collect()
-}
-
-/// `__launch PROGRAM ARGS...`: started with a PTY as its stdin, stdout and
-/// stderr, makes it its controlling terminal in a session of its own, and
-/// becomes PROGRAM.
-pub fn launch(argv: &[String]) -> Result<bool, String> {
-    let Some((program, args)) = argv.split_first() else {
-        return Err("no program to run".into());
-    };
-    fuxix::process::setsid().map_err(|e| format!("setsid: {e}"))?;
-    fuxix::terminal::make_controlling(std::io::stdin().as_fd())
-        .map_err(|e| format!("making the PTY the controlling terminal: {e}"))?;
-    let error = Command::new(program).args(args).exec();
-    Err(format!("{program}: {error}"))
 }
 
 /// Puts the terminal on stdin in raw mode.
