@@ -8,12 +8,13 @@ meant to leave behaviour as it was (a refactor, a speed-up, a rewrite):
   `baseline-ix` in `Cargo.toml`) into one binary, feeds both the same
   random inputs and compares everything each gives back.
 - **The oracle** (`oracle/`, `oracle.sh`, fuzz target in `fuzz/`) compares
-  the working tree's fux-vt with fux-vt at a commit: see
+  the working tree's fux-vt with fux-vt at the latest `main`: see
   [The oracle](#the-oracle-fux-vt-beside-a-commit).
 
 It forbids the same lints as fux, and its release profile checks arithmetic
-for overflow. CI only checks that `fux-diff` passes fmt and clippy, and
-allows that to fail (see [The baseline](#the-baseline)).
+for overflow. CI checks that the oracle passes clippy against the commit
+under test, and that `fux-diff` passes fmt and clippy, which it allows to
+fail (see [The baseline](#the-baseline)).
 
 ## fux-diff
 
@@ -77,15 +78,15 @@ differs too:
 
 ## The oracle: fux-vt beside a commit
 
-`fux-vt-oracle` holds the working tree's fux-vt to what fux-vt did at a
-commit, by default the merge base with `main`. Both get the same bytes,
-resizes and API calls, and everything fux-vt's public API shows is compared
-after every step. Any difference fails, shrunk to the smallest case that
+`fux-vt-oracle` holds the working tree's fux-vt to what fux-vt does at a
+commit, by default the latest `main`. Both get the same bytes, resizes and
+API calls, and everything fux-vt's public API shows is compared after
+every step. Any difference fails, shrunk to the smallest case that
 shows it.
 
 ```sh
-diff/oracle.sh                       # against the merge base with main
-diff/oracle.sh 74e9769               # against another commit
+diff/oracle.sh                       # against the latest origin/main, fetched first
+diff/oracle.sh HEAD                  # against another commit
 diff/oracle.sh --cases 50000 --seed 7
 diff/oracle.sh --replay diff/target/oracle/NAME.case
 
@@ -112,20 +113,28 @@ cargo +nightly fuzz run oracle --fuzz-dir diff/fuzz -O -a diff/fuzz/corpus/oracl
 `fux-vt/compare/run.sh quick` runs `oracle.sh`; `run.sh fuzz` writes
 seeds with `--seeds` and runs the fuzz target.
 
-### The commit, and the lockfile
+### The commit
 
 The commit is `base-vt`, a git dependency at a `rev` in
-`oracle/Cargo.toml`, so `Cargo.lock` names what was built and, once
-fetched, it builds offline. `oracle.sh REF` pins `REF` there if it is
-another commit and says so: commit the two changed files to keep the pin,
-or `git checkout` them (or run `oracle.sh` with no `REF`) to go back. A
-commit on a remote branch is fetched from GitHub; one only in this
-repository by a `file://` URL, which works on this machine alone and must
-not be committed.
+`oracle/Cargo.toml`. Each run pins it to `REF` (by a `file://` URL to this
+repository, so any local commit works), builds, and puts
+`oracle/Cargo.toml` and `Cargo.lock` back when it exits: a run leaves no
+change behind, and the committed `rev` is only a resting value nobody
+bumps. `oracle.sh --pin [REF]` pins and leaves the pin in place; CI runs
+`oracle.sh --pin HEAD` before it builds this workspace, so the oracle
+always builds with both sides at one API. The fuzz target builds against
+the resting `rev`; when that no longer builds, run `oracle.sh --pin` first
+and `git checkout` the two files after.
+
+Both sides are read by one adapter, `side!` in `oracle/src/side.rs`, with
+no per-side code. A branch that changes fux-vt's public API does not build
+against `main`, and `oracle.sh` says so in one message: to compare such a
+branch, add a temporary shim for the base side in `side.rs`, and never
+commit it.
 
 ### What is compared
 
-Each side is read into one model (`oracle/src/model.rs`) through its own
+Each side is read into one model (`oracle/src/model.rs`) through fux-vt's
 public API (`oracle/src/side.rs`) after every step:
 
 - **The screen's state:** size, cursor, pending wrap, every mode, the
@@ -135,7 +144,7 @@ public API (`oracle/src/side.rs`) after every step:
   length, `text_len`, `has_links`; each cell's text, width, attributes,
   colours and link, through every getter.
 - **Marks** (`changed_since`, `full_refresh_since`, dirty rows), **rows by
-  identity** (`offset_for_row`, `row_by_id`, including rows since dropped),
+  identity** (`row_by_id`, `Row::index`, including rows since dropped),
   and **copies** (`Window::text`, random windows and selections).
 - **Everything the host is given,** in order: replies byte for byte, events,
   unhandled sequences, each call's result and error.
@@ -152,13 +161,6 @@ sizes fux-vt refuses before allocating are compared instead);
 redesign changes on purpose (`RowId` and `Mark` are compared by number);
 `process` and `process_with_replies`, which are `process_with` with less
 kept.
-
-**Adapters.** Where the two APIs part, give `side!` an argument for that
-part, read both into the same model, and list it here. Today: reading rows
-and windows, which the working tree does from a row (`Screen::rows`,
-`Row::window`) and the base by an offset from the bottom
-(`row_from_bottom`, `offset_for_row`, a window of any size). A commit without an adapter for its API does not build
-(`oracle.sh 4f3975b`, before hosts made cells as `CellRef`, stops there).
 
 ### The inputs
 
@@ -181,41 +183,6 @@ and windows, which the working tree does from a row (`Screen::rows`,
 
 No case may make a grid that holds more than 2 Mi cells unless fux-vt is
 sure to refuse it (`case::safe`).
-
-### Exemptions
-
-A feature the user approved adding to fux-vt since the commit changes what
-its own sequences do, and nothing else. Each is a named exemption in
-`oracle/src/exempt.rs`, an input filter: every byte given to both sides
-goes through it, and it takes out exactly the feature's sequences (a C0
-control inside one stays). Both sides get the same filtered bytes and
-everything is compared as before. A sequence split between steps is held
-until whole. `exempt`'s tests list what is taken out and what is kept.
-
-| Feature | Sequences taken out |
-| --- | --- |
-| the palette, `Feature::Palette` | OSC 4, 5, 104, 105, 110 to 119; OSC 10 to 19 when they set a colour (a query alone stays) |
-| reverse wraparound | `CSI ? 45 h/l`, `CSI ? 1045 h/l` |
-| modes kept as xterm keeps them | DECSCLM (`?4`), DECSCNM (5), DECARM (8), DECNKM (66), DECBKM (67) |
-| XTSAVE and XTRESTORE | `CSI ? Pm s`, `CSI ? Pm r` |
-| LNM | `CSI 20 h/l` |
-| DECID | `ESC Z` |
-| DECALN | `ESC # 8` |
-| left and right margins | DECLRMM (`CSI ? 69 h/l`) and its DECRQM; DECSLRM (`CSI Pl ; Pr s`) while DECLRMM is set, tracked as fux-vt would (otherwise it is SCOSC and passed on); DECIC and DECDC (`CSI Pn ' }`, `CSI Pn ' ~`) |
-| protected glyphs and selective erase | DECSCA (`CSI Ps " q`), SPA and EPA (`ESC V`, `ESC W`), DECSED (`CSI ? Ps J`), DECSEL (`CSI ? Ps K`) |
-
-An exempt mode is taken out of a DECSET, DECRST, SM or RM and the others
-kept (`CSI ? 7;45 h` becomes `CSI ? 7 h`); its DECRQM goes whole. Only the
-plain form fux-vt reads is touched; any other is passed on, as both sides
-read it alike. On the corpus this takes out only zellij's `OSC 4` queries
-and neovim's left and right margins.
-
-**Memory diagnostics.** Since the compact cell (8-byte cells, long clusters
-stored outside, history rows trimmed), `storage_cells` and a row's
-`text_len` may be smaller than the commit's, never larger
-(`observe.rs`, `larger`). `Cells`' `text_len` is still compared exactly.
-Any other change to how cells are stored that moves these is an exemption
-to approve and record, not to hide.
 
 ### A difference
 

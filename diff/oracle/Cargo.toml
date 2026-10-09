@@ -20,10 +20,11 @@ bench = false
 [dependencies]
 # The code under test: the working tree's fux-vt.
 fux-vt = { path = "../../fux-vt" }
-# What it must behave as: fux-vt at a commit, the merge base with main
-# unless told another. diff/oracle.sh pins it (it rewrites this rev, and
-# Cargo.lock follows), so Cargo.lock says which commit was built.
-base-vt = { package = "fux-vt", git = "https://github.com/gold-silver-copper/fux", rev = "995beb1b47b6e9fbea4f267aac738d1545c8e128" }
+# What it must behave as: fux-vt at a commit. diff/oracle.sh pins it for
+# each run (the latest main unless told another) and puts this file and
+# Cargo.lock back after; CI pins it to the commit under test. The rev here
+# is only a resting value that need never be bumped.
+base-vt = { package = "fux-vt", git = "https://github.com/gold-silver-copper/fux", rev = "dec0f550287a1f7fed037ac8486f4bb847508b81" }
 # The corpus's manifests.
 serde_json = "1"
 
