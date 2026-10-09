@@ -515,45 +515,30 @@ fn place_node(node: &Node, area: Rect, out: &mut Placement) {
 
 /// Places a split's `children`, side by side along `axis`, in `area`.
 fn place_split(axis: Axis, children: &[(u32, Node)], area: Rect, out: &mut Placement) {
-    // The children's sizes, above those of the splits this one is inside,
-    // until it is placed.
-    let base = out.scratch.len();
-    share(axis, children, area, &mut out.scratch);
-    let mut cut = Cut::new(axis, area);
-    for (i, (_, child)) in children.iter().enumerate() {
-        let size = out.scratch.get(base..).and_then(|s| s.get(i)).copied();
-        if let Some((separator, rect)) = cut.next(size.unwrap_or(0)) {
-            out.separators.extend(separator);
-            place_node(child, rect, out);
-        }
-    }
-    out.scratch.truncate(base);
-}
-
-/// Pushes the length along `axis` each of a split's `children` has in
-/// `area` onto `sizes`: 0 for those with no room.
-fn share(axis: Axis, children: &[(u32, Node)], area: Rect, sizes: &mut Vec<u16>) {
-    let along = if area.is_empty() { 0 } else { area.len(axis) };
+    let along = area.len(axis);
     let separators = separators(children.len());
-    // The sizes, then the minimums, until they are shared.
-    let base = sizes.len();
-    sizes.extend(children.iter().map(|_| 0));
-    sizes.extend(children.iter().map(|(_, c)| c.min_len(axis)));
-    let (sizes_now, mins) = sizes
+    // The children's sizes, then their minimums, above those of the splits
+    // this one is inside, until it is placed.
+    let base = out.scratch.len();
+    out.scratch.extend(children.iter().map(|_| 0));
+    out.scratch
+        .extend(children.iter().map(|(_, c)| c.min_len(axis)));
+    let (sizes, mins) = out
+        .scratch
         .get_mut(base..)
         .and_then(|s| s.split_at_mut_checked(children.len()))
         .unwrap_or_default();
     let needed = mins.iter().fold(separators, |a, m| a.saturating_add(*m));
     let room = along.checked_sub(separators).filter(|_| along >= needed);
     if let Some(room) = room {
-        distribute(room, children, sizes_now, mins);
+        distribute(room, children, sizes, mins);
     } else {
         // Too small for all: children in order while they fit, each after
         // the first needing a separator; the last one shown takes what is
         // left.
         let mut left = along;
         let mut last = None;
-        for (i, (size, min)) in sizes_now.iter_mut().zip(mins.iter()).enumerate() {
+        for (i, (size, min)) in sizes.iter_mut().zip(mins.iter()).enumerate() {
             let cost = min.saturating_add(u16::from(i > 0));
             let Some(rest) = left.checked_sub(cost) else {
                 break;
@@ -563,47 +548,29 @@ fn share(axis: Axis, children: &[(u32, Node)], area: Rect, sizes: &mut Vec<u16>)
             last = Some(i);
         }
         // What is left fits: the sizes add up to at most `along`.
-        if let Some(size) = last.and_then(|i| sizes_now.get_mut(i)) {
+        if let Some(size) = last.and_then(|i| sizes.get_mut(i)) {
             *size = size.saturating_add(left);
         }
     }
-    sizes.truncate(base.saturating_add(children.len()));
-}
-
-/// Cuts a split's area into its children's, in order, with a separator
-/// before each but the first.
-struct Cut {
-    axis: Axis,
-    rest: Rect,
-    first: bool,
-}
-
-impl Cut {
-    fn new(axis: Axis, area: Rect) -> Cut {
-        Cut {
-            axis,
-            rest: area,
-            first: true,
+    // Each child shown is cut from what is left of `area`, after a
+    // separator if one was before it.
+    let mut rest = area;
+    let mut first = true;
+    for (i, (_, child)) in children.iter().enumerate() {
+        let size = out.scratch.get(base..).and_then(|s| s.get(i)).copied();
+        let Some(size) = size.filter(|s| *s > 0) else {
+            continue;
+        };
+        if !std::mem::replace(&mut first, false) {
+            let (line, after) = rest.split(axis, 1);
+            out.separators.push(Separator { axis, rect: line });
+            rest = after;
         }
+        let (rect, after) = rest.split(axis, size);
+        place_node(child, rect, out);
+        rest = after;
     }
-    /// The next child's rect, `size` long, and the separator before it;
-    /// none for a child with no room.
-    fn next(&mut self, size: u16) -> Option<(Option<Separator>, Rect)> {
-        if size == 0 {
-            return None;
-        }
-        let separator = (!std::mem::replace(&mut self.first, false)).then(|| {
-            let (line, rest) = self.rest.split(self.axis, 1);
-            self.rest = rest;
-            Separator {
-                axis: self.axis,
-                rect: line,
-            }
-        });
-        let (rect, rest) = self.rest.split(self.axis, size);
-        self.rest = rest;
-        Some((separator, rect))
-    }
+    out.scratch.truncate(base);
 }
 
 /// The pane in `direction` from `from`, among the placed panes: rectangles
@@ -671,16 +638,20 @@ fn resize_by(
     let Some(index) = children.iter().position(|(_, c)| c.contains(pane)) else {
         return false;
     };
-    let mut sizes = Vec::with_capacity(children.len());
-    share(*axis, children, area, &mut sizes);
-    // Deeper splits first: the border nearest the pane moves. A child with
-    // no room has none to resize in.
-    let mut cut = Cut::new(*axis, area);
-    let inner = (sizes.iter().take(index.saturating_add(1)))
-        .map(|size| cut.next(*size))
-        .last()
-        .flatten()
-        .map_or_else(Rect::default, |(_, rect)| rect);
+    // Deeper splits first: the border nearest the pane moves.
+    let mut placement = Placement::default();
+    if !area.is_empty() {
+        place_split(*axis, children, area, &mut placement);
+    }
+    let mut sizes: Vec<u16> = Vec::with_capacity(children.len());
+    let mut inner = Rect::default();
+    for (i, (_, child)) in children.iter().enumerate() {
+        let rect = placed_span(*axis, child, area, &placement);
+        sizes.push(rect.len(*axis));
+        if i == index {
+            inner = rect;
+        }
+    }
     if let Some((_, child)) = children.get_mut(index)
         && resize_by(child, inner, pane, direction, amount, toward)
     {
@@ -717,6 +688,40 @@ fn resize_by(
         *weight = u32::from(*size).max(1);
     }
     true
+}
+
+/// The rect a child of a split along `axis` in `area` has in `placement`:
+/// along the axis, the span of its placed panes, none if none is; across,
+/// all of `area`.
+fn placed_span(axis: Axis, child: &Node, area: Rect, placement: &Placement) -> Rect {
+    let mut span: Option<Range<u16>> = None;
+    child.for_each_pane(&mut |p| {
+        if let Some(r) = placement.rect(p) {
+            let (start, end) = match axis {
+                Axis::Horizontal => (r.x, r.right()),
+                Axis::Vertical => (r.y, r.bottom()),
+            };
+            span = Some(
+                span.as_ref()
+                    .map_or(start..end, |s| s.start.min(start)..s.end.max(end)),
+            );
+        }
+    });
+    // Inside `area`, as the panes are.
+    let Range { start, end } = span.unwrap_or_default();
+    let len = end.saturating_sub(start);
+    match axis {
+        Axis::Horizontal => Rect {
+            x: start,
+            w: len,
+            ..area
+        },
+        Axis::Vertical => Rect {
+            y: start,
+            h: len,
+            ..area
+        },
+    }
 }
 
 #[cfg(test)]
