@@ -836,10 +836,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             let room = view.cols.saturating_sub(2);
             let lines: [Line<'_>; 3] = [
                 (prompt.title.as_str().into(), panel().with_bold(true)),
-                (
-                    prompt_line(&prompt.text, prompt.cursor, room).into(),
-                    panel(),
-                ),
+                (prompt_line(&prompt.line, room).into(), panel()),
                 ("Enter accepts · Esc cancels".into(), panel().with_dim(true)),
             ];
             surface(grid, view, &lines);
@@ -859,14 +856,13 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
 /// A prompt's text with its cursor bar, in at most `room` cells: when it is
 /// wider, the line scrolls so the bar shows, with a few cells of what
 /// follows it, and an ellipsis marks each side cut off.
-fn prompt_line(text: &str, cursor: usize, room: u16) -> String {
-    let line = with_cursor(text, cursor);
+fn prompt_line(text: &crate::view::Line, room: u16) -> String {
+    let line = format!("{}▏{}", text.before(), text.after());
     if width(&line) <= room {
         return line;
     }
     let chars: Vec<char> = line.chars().filter(|c| !c.is_control()).collect();
-    // Where `with_cursor` put the bar.
-    let bar = cursor.min(text.chars().filter(|c| !c.is_control()).count());
+    let bar = text.before().chars().filter(|c| !c.is_control()).count();
     // An ellipsis each side, at most.
     let inner = room.saturating_sub(2);
     let ahead = inner / 4;
@@ -900,17 +896,6 @@ fn prompt_line(text: &str, cursor: usize, room: u16) -> String {
         out.push('…');
     }
     out
-}
-
-/// A prompt's text with a bar at `cursor`, counted in chars; past the end
-/// the bar follows the text.
-fn with_cursor(text: &str, cursor: usize) -> String {
-    let at = text
-        .char_indices()
-        .nth(cursor)
-        .map_or(text.len(), |(i, _)| i);
-    let (before, after) = text.split_at_checked(at).unwrap_or((text, ""));
-    format!("{before}▏{after}")
 }
 
 fn panel() -> Attributes {
@@ -2345,39 +2330,29 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn the_prompt_cursor_falls_between_chars_not_bytes() {
-        for (text, cursor, shown) in [
-            ("", 0, "▏"),
-            ("", 3, "▏"),
-            ("héllo", 0, "▏héllo"),
-            ("héllo", 2, "hé▏llo"),
-            ("héllo", 5, "héllo▏"),
-            ("héllo", 9, "héllo▏"),
-            ("界a界", 1, "界▏a界"),
-            ("界a界", 2, "界a▏界"),
-        ] {
-            assert_eq!(with_cursor(text, cursor), shown, "{text:?} at {cursor}");
-        }
-    }
-
     /// A prompt wider than its panel scrolls to keep the cursor in view,
     /// with an ellipsis on each side cut off, never wider than the room.
     #[test]
     fn a_long_prompt_scrolls_to_its_cursor() {
         let text = "split -v -- echo aaaaaaaaaaaaaaaaaaaaTAIL";
+        // The line with its cursor `left` chars from the end.
+        let line = |text: &str, left: usize| {
+            let mut line = crate::view::Line::new(text.into());
+            (0..left).for_each(|_| line.left());
+            line
+        };
         let end = text.chars().count();
-        for (cursor, starts, ends) in [(end, "…", "TAIL▏"), (0, "▏spl", "…"), (20, "…", "…")]
+        for (left, starts, ends) in [(0, "…", "TAIL▏"), (end, "▏spl", "…"), (20, "…", "…")]
         {
-            let shown = prompt_line(text, cursor, 12);
+            let shown = prompt_line(&line(text, left), 12);
             assert!(width(&shown) <= 12, "{shown:?} fits");
             assert!(shown.contains('▏'), "{shown:?} shows the cursor");
             assert!(shown.starts_with(starts), "{shown:?} starts {starts:?}");
             assert!(shown.ends_with(ends), "{shown:?} ends {ends:?}");
         }
         // Wide chars count two cells; short text is as it was.
-        assert!(width(&prompt_line("界界界界界界界界", 8, 7)) <= 7);
-        assert_eq!(prompt_line("ls", 2, 12), "ls▏");
+        assert!(width(&prompt_line(&line("界界界界界界界界", 0), 7)) <= 7);
+        assert_eq!(prompt_line(&line("ls", 0), 12), "ls▏");
     }
 
     fn grid_lines(g: &Grid) -> Vec<String> {

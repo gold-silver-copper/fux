@@ -48,9 +48,85 @@ pub enum PromptFor {
 pub struct Prompt {
     pub title: String,
     pub purpose: PromptFor,
-    pub text: String,
-    /// A char index into `text`.
-    pub cursor: usize,
+    pub line: Line,
+}
+
+/// The most bytes a prompt's line holds.
+const LINE_MAX: usize = 4096;
+
+/// A prompt's one line of text, split at its cursor: the cursor is always
+/// between two chars, or at an end, and every edit is a whole char.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Line {
+    before: String,
+    after: String,
+}
+
+impl Line {
+    /// `text`, the cursor after it.
+    pub fn new(text: String) -> Line {
+        Line {
+            before: text,
+            after: String::new(),
+        }
+    }
+
+    /// The text before the cursor.
+    pub fn before(&self) -> &str {
+        &self.before
+    }
+
+    /// The text after the cursor.
+    pub fn after(&self) -> &str {
+        &self.after
+    }
+
+    /// The whole text.
+    pub fn text(self) -> String {
+        self.before + &self.after
+    }
+
+    /// Types `text` at the cursor, unless the line would pass `LINE_MAX`
+    /// bytes: whether it did.
+    pub fn insert(&mut self, text: &str) -> bool {
+        let len = self.before.len().saturating_add(self.after.len());
+        let fits = len.saturating_add(text.len()) <= LINE_MAX;
+        if fits {
+            self.before.push_str(text);
+        }
+        fits
+    }
+
+    pub fn backspace(&mut self) {
+        self.before.pop();
+    }
+
+    pub fn delete(&mut self) {
+        self.after = self.after.chars().skip(1).collect();
+    }
+
+    pub fn left(&mut self) {
+        if let Some(c) = self.before.pop() {
+            self.after = std::iter::once(c).chain(self.after.chars()).collect();
+        }
+    }
+
+    pub fn right(&mut self) {
+        let mut chars = self.after.chars();
+        if let Some(c) = chars.next() {
+            self.before.push(c);
+            self.after = chars.as_str().to_owned();
+        }
+    }
+
+    pub fn home(&mut self) {
+        self.before.push_str(&self.after);
+        self.after = std::mem::take(&mut self.before);
+    }
+
+    pub fn end(&mut self) {
+        self.before.push_str(&std::mem::take(&mut self.after));
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
