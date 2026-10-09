@@ -106,11 +106,10 @@ pub fn thread_cpu_time() -> Result<std::time::Duration> {
     Ok(std::time::Duration::new(seconds, nanos))
 }
 
-/// Makes this process the leader of a new session: the session's ID.
-pub fn setsid() -> Result<Pid> {
+/// Makes this process the leader of a new session, whose ID is its pid.
+pub fn setsid() -> Result<()> {
     // SAFETY: setsid takes nothing and touches no memory.
-    let session = check(unsafe { libc::setsid() })?;
-    Pid::from_raw(session).ok_or(Errno::INVAL)
+    check(unsafe { libc::setsid() }).map(drop)
 }
 
 /// The session of `pid`. `None` if there is none to name: the process is

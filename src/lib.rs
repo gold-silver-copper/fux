@@ -141,7 +141,7 @@ fn usage_error(message: &str) -> Result<u8, Error> {
 fn run(args: &[String]) -> Result<u8, Error> {
     let first = args.first().map(String::as_str);
     match first {
-        Some(process::LAUNCH) => Ok(process::launched(args.get(1..).unwrap_or_default())),
+        Some(fuxix::pty::LAUNCH) => Ok(fuxix::pty::launched(args.get(1..).unwrap_or_default())),
         None | Some("attach") => {
             let mut workspace = None;
             let mut nested = false;
