@@ -4,7 +4,7 @@ use crate::mode::{Kind, Mode, Modes, Switch};
 use crate::unicode::Cluster;
 use crate::{
     Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Mark, Options, Reply, Row, RowId,
-    UnderlineStyle, Window,
+    Rows, UnderlineStyle, Window,
     geometry::{Size, Span},
     grid::{Cursor, Grid, Scroll},
     parser::Parameters,
@@ -864,32 +864,20 @@ impl Screen {
     pub fn row_by_id(&self, id: RowId) -> Option<Row<'_>> {
         self.grid().row_by_id(id)
     }
-    /// Row offsets count from the last live row; includes all retained history.
-    pub fn row_from_bottom(&self, offset: usize) -> Option<Row<'_>> {
-        self.grid()
-            .retained_len()
-            .checked_sub(offset.checked_add(1)?)
-            .and_then(|i| self.grid().row_at(i))
-    }
-    /// History offset putting this row at the top, if a complete window can do so.
-    pub fn offset_for_row(&self, id: RowId) -> Option<usize> {
-        self.grid()
-            .history_len()
-            .checked_sub(self.grid().index_of(id)?)
-    }
-    /// A window of `rows` by `cols` cells (at most the screen's), `offset`
-    /// rows up into history (at most all of it).
-    pub fn window(&self, offset: usize, rows: u16, cols: u16) -> Window<'_> {
+    /// The rows retained, history's oldest first, then the screen's.
+    pub fn rows(&self) -> Rows<'_> {
         let grid = self.grid();
-        let history = grid.history_len();
-        let offset = offset.min(history);
+        Rows {
+            grid,
+            range: 0..grid.retained_len(),
+        }
+    }
+    /// The screen's rows: the window no rows up into history.
+    pub fn window(&self) -> Window<'_> {
+        let grid = self.grid();
         Window {
             grid,
-            // Exact: the offset is clamped to the history.
-            start: history.saturating_sub(offset),
-            rows: rows.min(grid.size().rows()),
-            cols: cols.min(grid.size().cols()),
-            offset,
+            start: grid.history_len(),
         }
     }
     /// A mark of the screen as it is now, to ask later what changed.
@@ -911,9 +899,7 @@ impl Screen {
     /// not acknowledge or clear changes for anyone else.
     pub fn dirty_rows_since(&self, mark: Mark) -> impl Iterator<Item = Row<'_>> {
         let full = self.full_refresh_since(mark);
-        (0..self.grid().retained_len())
-            .filter_map(|i| self.grid().row_at(i))
-            .filter(move |r| full || r.version > mark.0)
+        self.rows().filter(move |r| full || r.version > mark.0)
     }
     /// The live rows changed since `mark`, each with its place on the screen
     /// (0 at the top), top to bottom; every live row after a full refresh.
