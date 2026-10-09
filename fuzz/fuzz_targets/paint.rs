@@ -176,7 +176,8 @@ fuzz_target!(|data: &[u8]| {
 
     // The client's terminal: `old` as painted from nothing, then the paint
     // that turns it into `new`.
-    let Ok(mut terminal) = Parser::new(new_rows, new_cols, 0) else {
+    let size = fux_vt::Size::new(new_rows, new_cols).expect("a grid has cells");
+    let Ok(mut terminal) = Parser::new(size, 0) else {
         return;
     };
     assert!(terminal.process(&paint(None, &old)).is_ok());

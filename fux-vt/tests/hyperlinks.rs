@@ -2,18 +2,13 @@
 //! `Feature::Hyperlinks`: each cell printed while a link is open keeps it,
 //! through scrolling, erasing, editing and resizing, within bounds.
 
-use fux_vt::{Feature, ID_LIMIT, OSC_PAYLOAD_LIMIT, Options, Parser, Row, URI_LIMIT};
-type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+use fux_vt::{Feature, ID_LIMIT, OSC_PAYLOAD_LIMIT, Options, Parser, Row, Size, URI_LIMIT};
+type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 const LINKS: Options = Options::new().with(Feature::Hyperlinks);
 
-fn parser(
-    rows: u16,
-    cols: u16,
-    history: usize,
-    input: &[u8],
-) -> std::result::Result<Parser, fux_vt::Error> {
-    let mut parser = Parser::with_options(rows, cols, history, LINKS)?;
+fn parser(rows: u16, cols: u16, history: usize, input: &[u8]) -> Result<Parser> {
+    let mut parser = Parser::with_options(Size::new(rows, cols)?, history, LINKS)?;
     parser.process(input)?;
     Ok(parser)
 }
@@ -28,7 +23,7 @@ fn uris(row: Row<'_>) -> Vec<String> {
 /// The URIs of the screen's row `y`.
 fn uris_at(parser: &Parser, y: u16) -> Vec<String> {
     let screen = parser.screen();
-    let rows = usize::from(screen.size().0);
+    let rows = usize::from(screen.size().rows());
     // Row `y` of the screen, counted from the bottom.
     let offset = rows.saturating_sub(usize::from(y) + 1);
     screen.row_from_bottom(offset).map(uris).unwrap_or_default()
@@ -93,7 +88,7 @@ fn an_id_joins_the_cells_of_one_link() -> Result {
 /// Without the option, OSC 8 is ignored, as it always was.
 #[test]
 fn without_the_option_links_are_ignored() -> Result {
-    let mut p = Parser::new(1, 4, 0)?;
+    let mut p = Parser::new(Size::new(1, 4)?, 0)?;
     p.process(b"\x1b]8;;http://x\x07ab")?;
     let s = p.screen();
     assert_eq!(s.link(0, 0), None);
@@ -202,22 +197,22 @@ fn inserting_and_deleting_move_links() -> Result {
 fn resizing_and_reflowing_keep_links() -> Result {
     let text = b"ab\x1b]8;;u\x07cdef\x1b]8;;\x07gh";
     let mut p = parser(2, 8, 4, text)?;
-    p.resize(2, 4)?;
+    p.resize(Size::new(2, 4)?)?;
     assert_eq!(uris_at(&p, 0), expected(&["-", "-", "u", "u"]));
-    let mut p = Parser::with_options(2, 8, 4, LINKS.with(Feature::Reflow))?;
+    let mut p = Parser::with_options(Size::new(2, 8)?, 4, LINKS.with(Feature::Reflow))?;
     p.process(text)?;
-    p.resize(2, 4)?;
+    p.resize(Size::new(2, 4)?)?;
     assert_eq!(uris_at(&p, 0), expected(&["-", "-", "u", "u"]));
     assert_eq!(uris_at(&p, 1), expected(&["u", "u", "-", "-"]));
-    p.resize(2, 8)?;
+    p.resize(Size::new(2, 8)?)?;
     assert_eq!(
         uris_at(&p, 0),
         expected(&["-", "-", "u", "u", "u", "u", "-", "-"])
     );
     // The link still open goes on in the reflowed grid.
-    let mut p = Parser::with_options(2, 4, 4, LINKS.with(Feature::Reflow))?;
+    let mut p = Parser::with_options(Size::new(2, 4)?, 4, LINKS.with(Feature::Reflow))?;
     p.process(b"\x1b]8;;w\x07ab")?;
-    p.resize(2, 6)?;
+    p.resize(Size::new(2, 6)?)?;
     p.process(b"c")?;
     assert_eq!(uris_at(&p, 0), expected(&["w", "w", "w", "-", "-", "-"]));
     Ok(())
@@ -278,7 +273,7 @@ fn links_past_their_limits_are_not_opened() -> Result {
 /// theirs, and the newest still have theirs.
 #[test]
 fn links_are_bounded_and_history_loses_them_first() -> Result {
-    let mut p = Parser::with_options(4, 4, 4000, LINKS)?;
+    let mut p = Parser::with_options(Size::new(4, 4)?, 4000, LINKS)?;
     let long: String = std::iter::repeat_n('u', 2000).collect();
     // About 2 KiB each: 3000 are past the 4 MiB a screen holds.
     for n in 0..3000 {

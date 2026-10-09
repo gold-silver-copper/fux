@@ -35,6 +35,11 @@ use rng::Rng;
 use std::process::ExitCode;
 use std::time::Instant;
 
+/// fux-vt's size for a screen of `rows` by `cols`.
+fn vt_size(rows: u16, cols: u16) -> Result<fux_vt::Size, String> {
+    fux_vt::Size::new(rows, cols).map_err(|e| format!("fux-vt: {rows}x{cols}: {e}"))
+}
+
 const USAGE: &str = "\
 usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
                       [--engines LIST] [--no-reflow] [--subject NAME]

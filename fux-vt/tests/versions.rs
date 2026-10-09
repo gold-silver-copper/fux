@@ -2,11 +2,11 @@
 //! other: after every `process`, a row whose cells or wrap flag differ has a
 //! greater version and is among the dirty rows; and input whose every edit
 //! leaves its row as it was changes no version at all.
-use fux_vt::{Attributes, Blink, CellRef, Cells, Color, Parser, RowId};
+use fux_vt::{Attributes, Blink, CellRef, Cells, Color, Parser, RowId, Size};
 use std::collections::HashMap;
 use std::fmt::Write;
 
-type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// A small deterministic generator, so a failure names its case.
 struct Rng(u64);
@@ -20,6 +20,13 @@ impl Rng {
     }
     fn below(&mut self, n: u64) -> u64 {
         self.next().checked_rem(n).unwrap_or(0)
+    }
+    /// A screen of up to 12 rows by 32 columns.
+    fn size(&mut self) -> Result<Size> {
+        Ok(Size::new(
+            u16::try_from(self.below(12).saturating_add(1))?,
+            u16::try_from(self.below(32).saturating_add(1))?,
+        )?)
     }
     fn pick<'a>(&mut self, items: &[&'a str]) -> &'a str {
         let n = u64::try_from(items.len()).unwrap_or(1);
@@ -80,7 +87,7 @@ fn retained(parser: &Parser) -> HashMap<RowId, (u64, bool, Cells)> {
     let screen = parser.screen();
     let retained = screen
         .history_len()
-        .saturating_add(usize::from(screen.size().0));
+        .saturating_add(usize::from(screen.size().rows()));
     (0..retained)
         .filter_map(|i| screen.row_from_bottom(i))
         .map(|row| {
@@ -146,7 +153,7 @@ fn sgr(attributes: Attributes) -> String {
 /// is blank.
 fn no_op(parser: &Parser) -> String {
     let screen = parser.screen();
-    let (rows, cols) = screen.size();
+    let (rows, cols) = screen.size().into();
     // Positions are absolute, whatever the program set.
     let mut out = String::from("\x1b[?6l");
     for y in 0..rows {
@@ -200,9 +207,9 @@ fn a_version_changes_with_its_row_and_only_then() -> Result {
     let mut r = Rng(0x7e85_10a5_0000_0001);
     let (mut calls, mut changed, mut quiet) = (0u64, 0u64, 0u64);
     for case in 0..1_500u64 {
-        let (rows, cols) = (1 + r.below(12), 1 + r.below(32));
+        let size = r.size()?;
         let history = usize::try_from(r.below(20))?;
-        let mut parser = Parser::new(u16::try_from(rows)?, u16::try_from(cols)?, history)?;
+        let mut parser = Parser::new(size, history)?;
         for step in 0..r.below(30) {
             // Some output of every kind, then the same screen written again.
             let bytes = if step % 3 == 2 {
@@ -263,19 +270,18 @@ fn dirty_live_rows_are_the_live_dirty_rows() -> Result {
     let mut r = Rng(0xd1e7_0000_0000_0003);
     let (mut compared, mut refreshed) = (0u64, 0u64);
     for _ in 0..1_000u64 {
-        let (rows, cols) = (1 + r.below(12), 1 + r.below(32));
+        let size = r.size()?;
         let history = usize::try_from(r.below(40))?;
-        let mut parser = Parser::new(u16::try_from(rows)?, u16::try_from(cols)?, history)?;
+        let mut parser = Parser::new(size, history)?;
         for _ in 0..r.below(20) {
             let mark = parser.screen().mark();
             let bytes: String = (0..1 + r.below(4)).map(|_| piece(&mut r)).collect();
             parser.process(bytes.as_bytes())?;
             if r.below(8) == 0 {
-                let (rows, cols) = (1 + r.below(12), 1 + r.below(32));
-                parser.resize(u16::try_from(rows)?, u16::try_from(cols)?)?;
+                parser.resize(r.size()?)?;
             }
             let screen = parser.screen();
-            let height = screen.size().0;
+            let height = screen.size().rows();
             // The live row at `y` is `height - 1 - y` rows from the bottom.
             let live: HashMap<RowId, u16> = (0..height)
                 .filter_map(|y| {
@@ -310,7 +316,7 @@ fn dirty_live_rows_are_the_live_dirty_rows() -> Result {
 
 #[test]
 fn the_common_redraw_changes_no_version() -> Result {
-    let mut parser = Parser::new(5, 20, 10)?;
+    let mut parser = Parser::new(Size::new(5, 20)?, 10)?;
     let redraw = "\x1b[H\x1b[1;1Hone\x1b[K\x1b[2;1H\x1b[1m界 two\x1b[0m\x1b[K\x1b[3;1Hthree\x1b[K";
     parser.process(redraw.as_bytes())?;
     let versions = |p: &Parser| -> Vec<u64> {

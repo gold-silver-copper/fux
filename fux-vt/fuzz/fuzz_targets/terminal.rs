@@ -1,6 +1,7 @@
 #![no_main]
 use fux_vt::{
-    Color, Event, Feature, Identity, OSC_PAYLOAD_LIMIT, Options, Parser, RowId, Sink, Unhandled,
+    Color, Event, Feature, Identity, OSC_PAYLOAD_LIMIT, Options, Parser, RowId, Sink, Size,
+    Unhandled,
 };
 use libfuzzer_sys::fuzz_target;
 #[path = "../../tests/corpus/graphemes.rs"]
@@ -141,7 +142,7 @@ fn cells_hash(row: fux_vt::Row<'_>) -> u64 {
 /// cells' hash.
 fn rows(p: &Parser) -> Vec<(RowId, u64, bool, u64)> {
     let screen = p.screen();
-    let retained = screen.history_len() + usize::from(screen.size().0);
+    let retained = screen.history_len() + usize::from(screen.size().rows());
     let mut rows: Vec<_> = (0..retained)
         .filter_map(|i| screen.row_from_bottom(i))
         .map(|row| (row.id(), row.version(), row.wrapped(), cells_hash(row)))
@@ -188,12 +189,8 @@ fuzz_target!(|data: &[u8]| {
         .set(Feature::ColorSchemeUpdates, r & 0x80 != 0)
         .set(Feature::SettingReports, c & 0x40 != 0)
         .set(Feature::RectangleChecksums, c & 0x80 != 0);
-    let Ok(mut whole) = Parser::with_options(
-        1 + u16::from(r % 16),
-        1 + u16::from(c % 24),
-        usize::from(history % 16),
-        options,
-    ) else {
+    let size = Size::new(1 + u16::from(r % 16), 1 + u16::from(c % 24)).expect("one at least");
+    let Ok(mut whole) = Parser::with_options(size, usize::from(history % 16), options) else {
         return;
     };
     let mut split = whole.clone();
@@ -210,25 +207,18 @@ fuzz_target!(|data: &[u8]| {
                     break;
                 };
                 input = input.get(2..).unwrap_or_default();
-                let size = (1 + u16::from(r % 16), 1 + u16::from(c % 24));
+                let size = Size::new(1 + u16::from(r % 16), 1 + u16::from(c % 24));
+                let size = size.expect("one at least");
                 // Resizing to the size it has changes nothing, not even marks.
                 let unchanged = whole.screen().size() == size;
                 let mark = whole.screen().mark();
-                assert!(chunked.resize(size.0, size.1).is_ok());
-                assert!(
-                    whole
-                        .resize(1 + u16::from(r % 16), 1 + u16::from(c % 24))
-                        .is_ok()
-                );
+                assert!(chunked.resize(size).is_ok());
+                assert!(whole.resize(size).is_ok());
                 if unchanged {
                     assert_eq!(whole.screen().mark(), mark);
                     assert!(!whole.screen().full_refresh_since(mark));
                 }
-                assert!(
-                    split
-                        .resize(1 + u16::from(r % 16), 1 + u16::from(c % 24))
-                        .is_ok()
-                );
+                assert!(split.resize(size).is_ok());
             }
             0xfe => {
                 let Some(parameters) = input.get(..8) else {

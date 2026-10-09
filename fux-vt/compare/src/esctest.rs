@@ -674,8 +674,9 @@ fn direct(job: &Job<'_>, subject: Subject, area: &Area, scratch: &Path) -> Resul
     );
     let mut answer: Box<Answer<'_>> = match subject {
         Subject::FuxVt => {
-            let mut parser = fux_vt::Parser::with_options(ROWS, COLS, 10_000, options())
-                .map_err(|e| format!("fux-vt: {e}"))?;
+            let mut parser =
+                fux_vt::Parser::with_options(crate::vt_size(ROWS, COLS)?, 10_000, options())
+                    .map_err(|e| format!("fux-vt: {e}"))?;
             Box::new(move |bytes| {
                 Ok(parse(&mut parser, bytes, |s: &mut Replies| {
                     std::mem::take(&mut s.0)
@@ -780,7 +781,7 @@ fn in_fux(job: &Job<'_>, fux: &Path, area: &Area, scratch: &Path) -> Result<Ran,
     let terminal = fux_vt::Options::new()
         .with(fux_vt::Feature::ExtendedReplies)
         .with(fux_vt::Feature::Events);
-    let mut parser = fux_vt::Parser::with_options(rows, COLS, 0, terminal)
+    let mut parser = fux_vt::Parser::with_options(crate::vt_size(rows, COLS)?, 0, terminal)
         .map_err(|e| format!("fux-vt: {e}"))?;
     let (master, slave) = fuxix::pty::open(rows, COLS).map_err(|e| format!("a PTY: {e}"))?;
     let attach = vec![fux.display().to_string(), "attach".to_owned()];

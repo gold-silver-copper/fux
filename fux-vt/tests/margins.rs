@@ -7,23 +7,23 @@
 //! agree, cell for cell, cursor and reports. Where xterm departs from DEC
 //! STD 070, the test says so and follows xterm.
 
-use fux_vt::{Color, Feature, Options, Parser};
-type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+use fux_vt::{Color, Feature, Options, Parser, Size};
+type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[path = "corpus/lines.rs"]
 mod lines;
 use lines::lines;
 
-fn run(rows: u16, cols: u16, bytes: &[u8]) -> std::result::Result<Parser, fux_vt::Error> {
-    let mut parser = Parser::new(rows, cols, 0)?;
+fn run(rows: u16, cols: u16, bytes: &[u8]) -> Result<Parser> {
+    let mut parser = Parser::new(Size::new(rows, cols)?, 0)?;
     parser.process(bytes)?;
     Ok(parser)
 }
 
 /// The replies to `bytes`, with DECRQM and DECXCPR answered.
-fn replies(rows: u16, cols: u16, bytes: &[u8]) -> std::result::Result<Vec<String>, fux_vt::Error> {
+fn replies(rows: u16, cols: u16, bytes: &[u8]) -> Result<Vec<String>> {
     let options = Options::new().with(Feature::ExtendedReplies);
-    let mut parser = Parser::with_options(rows, cols, 0, options)?;
+    let mut parser = Parser::with_options(Size::new(rows, cols)?, 0, options)?;
     let mut replies = Vec::new();
     parser.process_with_replies(bytes, |r| {
         replies.push(String::from_utf8_lossy(r).into_owned());
@@ -36,7 +36,7 @@ fn replies(rows: u16, cols: u16, bytes: &[u8]) -> std::result::Result<Vec<String
 const FULL: &str = "ABCDEFGHIJKL\r\nMNOPQRSTUVWX\r\nabcdefghijkl\r\nmnopqrstuvwx\r\n012345678901";
 const MARGINS: &str = "\x1b[?69h\x1b[3;8s\x1b[2;5r";
 
-fn framed(then: &str) -> std::result::Result<Parser, fux_vt::Error> {
+fn framed(then: &str) -> Result<Parser> {
     run(6, 12, format!("{FULL}{MARGINS}{then}").as_bytes())
 }
 
@@ -216,7 +216,7 @@ fn scrolling_is_bounded_by_the_margins() -> Result {
         (Some(Color::Default), Some(Color::Default))
     );
     // A full-height region with margins keeps no history.
-    let mut p = Parser::new(3, 8, 100)?;
+    let mut p = Parser::new(Size::new(3, 8)?, 100)?;
     p.process(b"\x1b[?69h\x1b[2;4s\x1b[1;2Ha\r\nb\r\nc\r\nd\r\ne")?;
     assert_eq!(p.screen().history_len(), 0);
     assert_eq!(lines(&p), [" c", " d", " e"]);
@@ -380,7 +380,7 @@ fn tabs_stop_at_the_right_margin() -> Result {
         b"\x1b[?69h\x1b[3;8s\x1b[2;10H\t1\x1b[2;1H\t2\x1b[3;5H\x1b[2I3\x1b[4;8H\x1b[Z4\x1b[?6h\x1b[3;5H\x1b[3Z5",
     )?;
     assert_eq!(lines(&p), ["", "       2", "  5    3", "4", "", ""]);
-    let mut p = Parser::new(3, 80, 0)?;
+    let mut p = Parser::new(Size::new(3, 80)?, 0)?;
     p.process(b"\x1b[?69h\x1b[10;20s")?;
     for col in [8, 16, 19, 19] {
         p.process(b"\t")?;
