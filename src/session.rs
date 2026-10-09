@@ -1034,11 +1034,10 @@ impl Session {
         }
     }
 
-    /// Reads into pane `id` with `read`, which says whether it dropped rows,
-    /// as every read of a pane's output does: its tab's host colours and
-    /// palette given it first, what follows a read seen to after
-    /// (`read_into`).
-    fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut Pane) -> bool) {
+    /// Reads into pane `id` with `read`, as every read of a pane's output
+    /// does: its tab's host colours and palette given it first, what
+    /// follows a read seen to after (`read_into`).
+    fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut Pane)) {
         let place = self.locate(id);
         let colours = self.colours_for(place.map(|(_, t)| t));
         let palette = self.palette_for(place.map(|(_, t)| t));
@@ -1047,7 +1046,8 @@ impl Session {
         };
         pane.colours = colours;
         pane.set_host_palette(palette);
-        let dropped = read(pane);
+        read(pane);
+        let dropped = pane.input.lost_reply();
         self.read_into(id, place, dropped);
     }
 
