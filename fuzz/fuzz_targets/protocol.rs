@@ -2,7 +2,9 @@
 //! Input: one byte choosing a piece size (0 is the whole stream at once),
 //! then the bytes a peer sends on the socket.
 use fux::bytes::ByteQueue;
-use fux::protocol::{Decoder, Error, Frame, MAX_FRAME, Stream};
+use fux::protocol::{
+    Attach, AttachedFrame, Command, Decoder, Error, Frame, Hello, MAX_FRAME, ServerFrame,
+};
 use libfuzzer_sys::fuzz_target;
 use std::num::NonZeroUsize;
 
@@ -15,9 +17,10 @@ fn pieces(mut rest: &[u8], size: NonZeroUsize) -> impl Iterator<Item = &[u8]> {
     })
 }
 
-/// The frames, then the first error, from `stream` pushed in pieces of
-/// `size` bytes (the whole stream at once for 0).
-fn decode(stream: &[u8], size: usize) -> (Vec<Frame>, Option<Error>) {
+/// Each frame `next` decodes from `stream` pushed in pieces of
+/// `size` bytes (the whole stream at once for 0), encoded again; then the
+/// first error.
+fn decode(next: Next, stream: &[u8], size: usize) -> (Vec<Vec<u8>>, Option<Error>) {
     let mut decoder = Decoder::default();
     let mut frames = Vec::new();
     let pieces: Vec<&[u8]> = match NonZeroUsize::new(size) {
@@ -27,7 +30,7 @@ fn decode(stream: &[u8], size: usize) -> (Vec<Frame>, Option<Error>) {
     for piece in pieces {
         decoder.push(piece);
         loop {
-            match decoder.frame() {
+            match next(&mut decoder) {
                 Ok(Some(frame)) => frames.push(frame),
                 Ok(None) => break,
                 // The stream is unusable after an error.
@@ -45,37 +48,57 @@ fn decode(stream: &[u8], size: usize) -> (Vec<Frame>, Option<Error>) {
     (frames, None)
 }
 
+/// The next frame `decoder` yields as one of the kinds expected at some
+/// point of a connection, encoded again.
+type Next = fn(&mut Decoder) -> Result<Option<Vec<u8>>, Error>;
+
+/// A decoded frame encodes again.
+fn encoded<'a>(frame: &impl Frame<'a>) -> Vec<u8> {
+    let bytes = frame.encode();
+    assert!(bytes.is_ok(), "a decoded frame does not encode: {bytes:?}");
+    bytes.unwrap_or_default()
+}
+
+/// A server's frame, encoded again. A stream's is what the stream writes
+/// for its payload, and an empty stream writes nothing.
+fn server(decoder: &mut Decoder) -> Result<Option<Vec<u8>>, Error> {
+    let Some(frame) = decoder.frame::<ServerFrame>()? else {
+        return Ok(None);
+    };
+    let bytes = encoded(&frame);
+    let mut queue = ByteQueue::default();
+    match frame {
+        ServerFrame::Paint(p) => ServerFrame::split_into(p, ServerFrame::Paint, &mut queue),
+        ServerFrame::Stdout(p) => ServerFrame::split_into(p, ServerFrame::Stdout, &mut queue),
+        ServerFrame::Stderr(p) => ServerFrame::split_into(p, ServerFrame::Stderr, &mut queue),
+        ServerFrame::Hello(_)
+        | ServerFrame::Exit(_)
+        | ServerFrame::Done { .. }
+        | ServerFrame::Terminal { .. } => return Ok(Some(bytes)),
+    }
+    // A header and no payload.
+    let expected: &[u8] = if bytes.len() == 5 { &[] } else { &bytes };
+    assert_eq!(queue.as_slice(), expected);
+    Ok(Some(bytes))
+}
+
 fuzz_target!(|data: &[u8]| {
     let Some((&size, stream)) = data.split_first() else {
         return;
     };
-    let whole = decode(stream, 0);
-    // However the bytes arrive, the same frames and the same error.
-    assert_eq!(decode(stream, usize::from(size)), whole);
-    assert_eq!(decode(stream, 1), whole);
-    // A decoded frame re-encodes to bytes that decode to it again.
-    for frame in &whole.0 {
-        let bytes = frame.encode();
-        assert!(bytes.is_ok(), "{frame:?} does not encode: {bytes:?}");
-        let bytes = bytes.unwrap_or_default();
-        assert_eq!(decode(&bytes, 0), (vec![frame.clone()], None));
-        // Encoded after other bytes, it is the same bytes after them.
-        let mut out = b"before".to_vec();
-        assert!(frame.encode_into(&mut out).is_ok());
-        assert_eq!(out.strip_prefix(b"before"), Some(bytes.as_slice()));
-        // A stream's frame is what the stream writes for its payload, and
-        // an empty stream writes nothing.
-        let stream = match frame {
-            Frame::Paint(payload) => Some((Stream::Paint, payload)),
-            Frame::Stdout(payload) => Some((Stream::Stdout, payload)),
-            Frame::Stderr(payload) => Some((Stream::Stderr, payload)),
-            _ => None,
-        };
-        if let Some((stream, payload)) = stream {
-            let mut queue = ByteQueue::default();
-            stream.encode_into(payload, &mut queue);
-            let expected: &[u8] = if payload.is_empty() { &[] } else { &bytes };
-            assert_eq!(queue.as_slice(), expected);
-        }
+    let kinds: [Next; 5] = [
+        |d| Ok(d.frame::<Hello>()?.map(|f| encoded(&f))),
+        |d| Ok(d.frame::<Attach>()?.map(|f| encoded(&f))),
+        |d| Ok(d.frame::<AttachedFrame>()?.map(|f| encoded(&f))),
+        |d| Ok(d.frame::<Command>()?.map(|f| encoded(&f))),
+        server,
+    ];
+    for next in kinds {
+        // However the bytes arrive, the same frames and the same error;
+        // and the frames encode to the bytes they came from.
+        let whole = decode(next, stream, 0);
+        assert_eq!(decode(next, stream, usize::from(size)), whole);
+        assert_eq!(decode(next, stream, 1), whole);
+        assert!(stream.starts_with(&whole.0.concat()));
     }
 });

@@ -329,20 +329,22 @@ impl Fixture {
     /// A client that asks for 9000 by 9000, speaking the protocol, for as
     /// long as `ls` takes to show it: the size it got.
     pub fn clamped(&self) -> Result<(u16, u16), String> {
-        use fux::protocol::{Frame, PROTOCOL, Role};
+        use fux::protocol::{Attach, AttachedFrame, Frame, Hello, PROTOCOL, Role};
+        use std::num::NonZeroU16;
         let before = self.listed_clients()?;
         let mut stream = UnixStream::connect(&self.socket).map_err(|e| e.to_string())?;
-        let hello = Frame::Hello {
+        let hello = Hello {
             protocol: PROTOCOL,
-            version: "walk".into(),
+            version: "walk",
             role: Role::Attach,
         };
         stream
             .write_all(&hello.encode().map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
-        let attach = Frame::Attach {
-            rows: 9000,
-            cols: 9000,
+        let size = NonZeroU16::new(9000).ok_or("9000 is not zero")?;
+        let attach = Attach {
+            rows: size,
+            cols: size,
             workspace: None,
         };
         stream
@@ -371,7 +373,7 @@ impl Fixture {
             }
             std::thread::sleep(Duration::from_millis(5));
         };
-        let _ = stream.write_all(&Frame::Detach.encode().map_err(|e| e.to_string())?);
+        let _ = stream.write_all(&AttachedFrame::Detach.encode().map_err(|e| e.to_string())?);
         Ok(size)
     }
 

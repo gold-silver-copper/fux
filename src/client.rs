@@ -1,12 +1,15 @@
 //! The clients: `fux attach`, which hands its terminal to the server and
 //! watches it (or relays between them, if the server does not take it),
 //! and the one-shot command client every other `fux` command uses.
-use crate::protocol::{Decoder, Frame, PROTOCOL, Role};
+use crate::protocol::{
+    Attach, AttachedFrame, Command, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame,
+};
 use crate::socket::SocketPath;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use fuxix::terminal::Termios;
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGWINCH};
 use std::io::{ErrorKind, Read, Write};
+use std::num::NonZeroU16;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -167,9 +170,9 @@ fn connect(socket: &SocketPath, role: Role) -> Result<(UnixStream, Decoder), Err
     })?;
     let sent = send(
         &mut stream,
-        &Frame::Hello {
+        &Hello {
             protocol: PROTOCOL,
-            version: env!("CARGO_PKG_VERSION").into(),
+            version: env!("CARGO_PKG_VERSION"),
             role,
         },
     );
@@ -190,32 +193,32 @@ fn connect(socket: &SocketPath, role: Role) -> Result<(UnixStream, Decoder), Err
 
 /// Whether the server's answer to Hello, and sending it, let the client go
 /// on: a refusal, which a server may make before reading the Hello, wins.
-fn greeted(answer: Result<Option<Frame>, Error>, sent: Result<(), Error>) -> Result<(), Error> {
+fn greeted(
+    answer: Result<Option<ServerFrame>, Error>,
+    sent: Result<(), Error>,
+) -> Result<(), Error> {
     match (answer, sent) {
-        (Ok(Some(Frame::Exit(reason))), _) => Err(Error::Refused(reason)),
+        (Ok(Some(ServerFrame::Exit(reason))), _) => Err(Error::Refused(reason.to_owned())),
         (_, Err(error)) => Err(error),
-        (Ok(Some(Frame::Hello { .. })), Ok(())) => Ok(()),
+        (Ok(Some(ServerFrame::Hello(_))), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),
         (Ok(_), Ok(())) => Err(Error::NoAnswer),
     }
 }
 
-fn send(stream: &mut UnixStream, frame: &Frame) -> Result<(), Error> {
+fn send<'a>(stream: &mut UnixStream, frame: &impl Frame<'a>) -> Result<(), Error> {
     let bytes = frame.encode()?;
     stream.write_all(&bytes).map_err(Error::Write)
 }
 
-fn read_frame(
+fn read_frame<'d>(
     stream: &mut UnixStream,
-    decoder: &mut Decoder,
+    decoder: &'d mut Decoder,
     buffer: &mut [u8],
     timeout: Option<Duration>,
-) -> Result<Option<Frame>, Error> {
+) -> Result<Option<ServerFrame<'d>>, Error> {
     let _ = stream.set_read_timeout(timeout);
-    loop {
-        if let Some(frame) = decoder.frame()? {
-            return Ok(Some(frame));
-        }
+    while !decoder.ready()? {
         match stream.read(buffer) {
             Ok(0) => return Ok(None),
             Ok(n) => decoder.push(buffer.get(..n).unwrap_or_default()),
@@ -226,6 +229,7 @@ fn read_frame(
             Err(e) => return Err(Error::Read(e)),
         }
     }
+    Ok(decoder.frame()?)
 }
 
 /// Runs one command on the server; its output goes to ours. The exit status.
@@ -237,7 +241,7 @@ pub fn command(socket: &SocketPath, argv: &[String]) -> Result<u8, Error> {
     let pane = std::env::var("FUX_PANE").ok().filter(|p| !p.is_empty());
     send(
         &mut stream,
-        &Frame::Command {
+        &Command {
             argv: argv.to_vec(),
             cwd,
             pane,
@@ -247,17 +251,17 @@ pub fn command(socket: &SocketPath, argv: &[String]) -> Result<u8, Error> {
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
         match read_frame(&mut stream, &mut decoder, &mut buffer, None)? {
-            Some(Frame::Stdout(bytes)) => {
-                let _ = stdout.write_all(&bytes);
+            Some(ServerFrame::Stdout(bytes)) => {
+                let _ = stdout.write_all(bytes);
             }
-            Some(Frame::Stderr(bytes)) => {
-                let _ = stderr.write_all(&bytes);
+            Some(ServerFrame::Stderr(bytes)) => {
+                let _ = stderr.write_all(bytes);
             }
-            Some(Frame::Done { status }) => {
+            Some(ServerFrame::Done { status }) => {
                 let _ = stdout.flush();
                 return Ok(status);
             }
-            Some(Frame::Exit(reason)) => return Err(Error::Refused(reason)),
+            Some(ServerFrame::Exit(reason)) => return Err(Error::Refused(reason.to_owned())),
             Some(_) => {}
             None => return Err(Error::Closed),
         }
@@ -275,7 +279,7 @@ pub fn kill_server(socket: &SocketPath) -> Result<(), Error> {
             &mut buffer,
             Some(Duration::from_secs(5)),
         ) {
-            Ok(Some(Frame::Done { .. })) | Ok(None) => return Ok(()),
+            Ok(Some(ServerFrame::Done { .. })) | Ok(None) => return Ok(()),
             Ok(Some(_)) => {}
             Err(error) => return Err(error),
         }
@@ -332,11 +336,13 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
     }
 }
 
-fn window_size() -> (u16, u16) {
-    fuxix::terminal::window_size(std::io::stdout())
-        .ok()
-        .filter(|(rows, cols)| *rows > 0 && *cols > 0)
-        .unwrap_or((24, 80))
+/// The terminal's rows and columns; 24 by 80 if it does not say.
+fn window_size() -> (NonZeroU16, NonZeroU16) {
+    let (rows, cols) = fuxix::terminal::window_size(std::io::stdout()).unwrap_or_default();
+    let fallback = |n: u16| NonZeroU16::MIN.saturating_add(n.saturating_sub(1));
+    NonZeroU16::new(rows)
+        .zip(NonZeroU16::new(cols))
+        .unwrap_or((fallback(24), fallback(80)))
 }
 
 /// Attaches this terminal to the server until detach or the server's end.
@@ -370,10 +376,10 @@ pub fn attach(socket: &SocketPath, workspace: Option<String>) -> Result<(), Erro
     // The terminal goes with the `Attach`, now that it is set up: if the
     // server takes it, it reads the keys and writes the paints there
     // itself, and this client only passes on resizes and signals.
-    let attach = Frame::Attach {
+    let attach = Attach {
         rows,
         cols,
-        workspace,
+        workspace: workspace.as_deref(),
     };
     let result = send_with_terminal(&mut stream, &attach, &stdin)
         .and_then(|()| terminal_taken(&mut stream, &mut decoder))
@@ -385,9 +391,9 @@ pub fn attach(socket: &SocketPath, workspace: Option<String>) -> Result<(), Erro
 
 /// Sends `frame` with this process's terminal attached, its first bytes
 /// carrying it.
-fn send_with_terminal(
+fn send_with_terminal<'a>(
     stream: &mut UnixStream,
-    frame: &Frame,
+    frame: &impl Frame<'a>,
     terminal: impl std::os::fd::AsFd,
 ) -> Result<(), Error> {
     let bytes = frame.encode()?;
@@ -405,21 +411,21 @@ fn send_with_terminal(
 
 /// The server's first answer to an `Attach` sent with the terminal: whether
 /// it took it. A server that ends the attachment first says why. A paint
-/// first says it did not: the server sends `Frame::Terminal` before any
+/// first says it did not: the server sends `ServerFrame::Terminal` before any
 /// paint, and one that never got the descriptor (lost on its way) sends
 /// none, and relays; the paint is written, as relaying writes it.
 fn terminal_taken(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<bool, Error> {
     let mut buffer = vec![0u8; 4096];
     loop {
         match read_frame(stream, decoder, &mut buffer, None)? {
-            Some(Frame::Terminal { taken }) => return Ok(taken),
-            Some(Frame::Paint(bytes)) => {
+            Some(ServerFrame::Terminal { taken }) => return Ok(taken),
+            Some(ServerFrame::Paint(bytes)) => {
                 let mut stdout = std::io::stdout();
-                stdout.write_all(&bytes).map_err(Error::WriteTerminal)?;
+                stdout.write_all(bytes).map_err(Error::WriteTerminal)?;
                 let _ = stdout.flush();
                 return Ok(false);
             }
-            Some(Frame::Exit(reason)) => return Err(Error::Refused(reason)),
+            Some(ServerFrame::Exit(reason)) => return Err(Error::Refused(reason.to_owned())),
             Some(_) => {}
             None => return Err(Error::Closed),
         }
@@ -465,23 +471,23 @@ fn attached(stream: &mut UnixStream, decoder: &mut Decoder, relay: bool) -> Resu
         // The terminal, unpolled when not relaying, is never ready.
         let is = |i: usize| ready.get(i).is_some_and(|f| !f.is_empty());
         if is(STOPS) {
-            let _ = send(stream, &Frame::Detach);
+            let _ = send(stream, &AttachedFrame::Detach);
             return Ok("detached by a signal".into());
         }
         if is(WINCH) {
             crate::drain(&mut winch);
             let (rows, cols) = window_size();
-            send(stream, &Frame::Resize { rows, cols })?;
+            send(stream, &AttachedFrame::Resize { rows, cols })?;
         }
         if is(TERMINAL) {
             match fuxix::io::read(&stdin, &mut buffer) {
                 Ok(0) => {
-                    let _ = send(stream, &Frame::Detach);
+                    let _ = send(stream, &AttachedFrame::Detach);
                     return Ok("detached: the terminal closed".into());
                 }
                 Ok(n) => send(
                     stream,
-                    &Frame::Input(buffer.get(..n).unwrap_or_default().to_vec()),
+                    &AttachedFrame::Input(buffer.get(..n).unwrap_or_default()),
                 )?,
                 Err(fuxix::Errno::INTR | fuxix::Errno::AGAIN) => {}
                 Err(e) => return Err(Error::ReadTerminal(e)),
@@ -504,16 +510,13 @@ fn attached(stream: &mut UnixStream, decoder: &mut Decoder, relay: bool) -> Resu
 /// Takes every whole frame `decoder` holds: a paint to the terminal, an
 /// `Exit` ending the attachment, with its reason.
 fn take_frames(decoder: &mut Decoder, stdout: &mut impl Write) -> Result<Option<String>, Error> {
-    while let Some(raw) = decoder.raw()? {
-        // A paint goes to the terminal straight from the decoder.
-        if let Some(bytes) = raw.paint() {
+    while let Some(frame) = decoder.frame()? {
+        // A paint goes to the terminal straight from the decoder; of the
+        // rest, only an `Exit` matters.
+        if let ServerFrame::Paint(bytes) = frame {
             stdout.write_all(bytes).map_err(Error::WriteTerminal)?;
-            continue;
-        }
-        // Any other frame is decoded, so that a malformed one is an error;
-        // one that decodes is ignored, but `Exit`.
-        if let Frame::Exit(reason) = raw.decode()? {
-            return Ok(Some(reason));
+        } else if let ServerFrame::Exit(reason) = frame {
+            return Ok(Some(reason.to_owned()));
         }
     }
     let _ = stdout.flush();
@@ -527,11 +530,11 @@ mod tests {
     /// A server that never says whether it took the terminal (the
     /// descriptor lost on its way) relays paints: the first one says the
     /// terminal was not taken, and the client relays from there, rather
-    /// than waiting for a `Frame::Terminal` that does not come.
+    /// than waiting for a `ServerFrame::Terminal` that does not come.
     #[test]
     fn a_paint_before_frame_terminal_says_the_terminal_was_not_taken() -> Result<(), String> {
         let (mut client, mut server) = UnixStream::pair().map_err(|e| e.to_string())?;
-        let paint = Frame::Paint(Vec::new())
+        let paint = ServerFrame::Paint(&[])
             .encode()
             .map_err(|e| e.to_string())?;
         server.write_all(&paint).map_err(|e| e.to_string())?;
@@ -542,19 +545,19 @@ mod tests {
         });
         let taken = ended
             .recv_timeout(Duration::from_secs(5))
-            .map_err(|_| "still waiting for Frame::Terminal after 5 s")??;
+            .map_err(|_| "still waiting for ServerFrame::Terminal after 5 s")??;
         assert!(!taken);
         Ok(())
     }
 
-    /// Frames read with `Frame::Terminal`, before the attachment's loop
+    /// Frames read with `ServerFrame::Terminal`, before the attachment's loop
     /// began, are taken at once, though no more bytes come: a paint is
     /// written, an `Exit` ends the attachment with its reason.
     #[test]
     fn frames_read_before_the_attachment_began_are_taken_at_once() -> Result<(), String> {
         let (mut client, _server) = UnixStream::pair().map_err(|e| e.to_string())?;
         let mut decoder = Decoder::default();
-        for frame in [Frame::Paint(Vec::new()), Frame::Exit("detached".into())] {
+        for frame in [ServerFrame::Paint(&[]), ServerFrame::Exit("detached")] {
             decoder.push(&frame.encode().map_err(|e| e.to_string())?);
         }
         let (done, ended) = std::sync::mpsc::channel();
@@ -580,7 +583,7 @@ mod tests {
         greeted(answer, Ok(()))
     }
 
-    fn write(peer: &mut UnixStream, frame: &Frame) {
+    fn write(peer: &mut UnixStream, frame: &ServerFrame) {
         let _ = frame.encode().map(|bytes| peer.write_all(&bytes));
     }
 
@@ -589,13 +592,13 @@ mod tests {
     #[test]
     fn the_client_tells_a_refusal_from_a_timeout() {
         let wait = Duration::from_millis(50);
-        let hello = Frame::Hello {
+        let hello = ServerFrame::Hello(Hello {
             protocol: PROTOCOL,
-            version: "0".into(),
+            version: "0",
             role: Role::Command,
-        };
+        });
         assert!(answer(|peer| write(peer, &hello), wait).is_ok());
-        let refused = answer(|peer| write(peer, &Frame::Exit("busy".into())), wait);
+        let refused = answer(|peer| write(peer, &ServerFrame::Exit("busy")), wait);
         assert!(matches!(&refused, Err(Error::Refused(reason)) if reason == "busy"));
         let silent = answer(|_| {}, wait);
         assert!(matches!(silent, Err(Error::Timeout)));
@@ -608,10 +611,10 @@ mod tests {
         let garbled = answer(|peer| drop(peer.write_all(&[0, 0, 0, 1, 99])), wait);
         assert!(matches!(
             garbled,
-            Err(Error::Protocol(crate::protocol::Error::UnknownKind(99)))
+            Err(Error::Protocol(crate::protocol::Error::UnexpectedKind(99)))
         ));
         // A refusal wins over a failure to send the Hello.
-        let both = greeted(Ok(Some(Frame::Exit("no".into()))), Err(Error::Closed));
+        let both = greeted(Ok(Some(ServerFrame::Exit("no"))), Err(Error::Closed));
         assert!(matches!(both, Err(Error::Refused(_))));
     }
 }
