@@ -11,11 +11,12 @@ use crate::protocol::{
     Attach, AttachedFrame, Command, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame,
 };
 use crate::render::{self, Grid};
-use crate::session::{Ctx, Outgoing, Session};
+use crate::session::{Ctx, Dying, Outgoing, Session, Timer};
 use crate::socket::SocketPath;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use signal_hook::consts::{SIGCHLD, SIGHUP, SIGINT, SIGTERM};
 use std::io::{ErrorKind, Write};
+use std::ops::ControlFlow;
 use std::os::fd::OwnedFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -60,6 +61,33 @@ struct Shortage {
     /// Refused since the last report, and in all.
     refused: u64,
     total: u64,
+}
+
+/// Where the server is in its life, each stage holding the moment it waits
+/// for (`Server::wakes`).
+enum Phase {
+    /// The listener is polled.
+    Serving,
+    /// An `accept` failed in a way that retrying at once would repeat: the
+    /// listener, which stays readable meanwhile, rests until then.
+    Resting(Instant),
+    /// Stopping: no connection is accepted, and the server waits for its
+    /// clients and processes until then.
+    Stopping(Instant),
+}
+
+/// Something the loop waits for until a moment (`Server::wakes`), and
+/// handles once due (`Server::wake`).
+enum Wake {
+    Session(Timer),
+    /// A closed pane's program's grace is over: it is killed.
+    Grace(PaneId),
+    /// The listener's rest is over.
+    Listen,
+    /// A stopping server waits no more.
+    Stop,
+    /// A connection's client may be painted (`Conn::paint_due`).
+    Paint(usize),
 }
 
 /// A client's connection: its socket, and where it is in its life.
@@ -280,6 +308,27 @@ impl Conn {
         }
     }
 
+    /// Bytes waiting for the client, in frames or for its terminal.
+    fn pending(&self) -> usize {
+        let tty = if let Stage::Attached(attached) = &self.stage {
+            attached.tty.as_ref().map_or(0, |tty| tty.out.len())
+        } else {
+            0
+        };
+        self.out.len().saturating_add(tty)
+    }
+
+    /// When the client attached here may be painted, if its view changed
+    /// and its terminal is not starved.
+    fn paint_due(&self, session: &Session) -> Option<Instant> {
+        let Stage::Attached(attached) = &self.stage else {
+            return None;
+        };
+        let dirty = session.views.get(&attached.client)?.dirty;
+        let starved = attached.screen == Screen::Starved && self.pending() != 0;
+        (dirty && !starved).then_some(attached.clock.due())
+    }
+
     /// Whether `client` is attached here.
     fn serves(&self, client: ClientId) -> bool {
         matches!(&self.stage, Stage::Attached(attached) if attached.client == client)
@@ -351,15 +400,13 @@ impl Conn {
 pub struct Server {
     session: Session,
     listener: UnixListener,
+    phase: Phase,
     conns: Vec<Conn>,
     children: UnixStream,
     /// Closed panes' programs killed but not yet exited, reaped once SIGCHLD
     /// says they have.
     killed: Vec<Leader>,
     stops: UnixStream,
-    /// When a server that is stopping stops waiting for its clients and
-    /// processes.
-    stop_by: Option<Instant>,
     /// Where bytes read from a client's connection or terminal land before
     /// they are taken; one for the server, reused by every read.
     read_buffer: Vec<u8>,
@@ -374,9 +421,6 @@ pub struct Server {
     /// refused (bevy-final findings 006 and 012).
     spare: Option<std::fs::File>,
     shortage: Option<Shortage>,
-    /// While set, the listener is not polled: an `accept` failed in a way
-    /// that retrying at once would repeat, and it stays readable meanwhile.
-    listen_after: Option<Instant>,
     /// When an `accept` failure other than a shortage was last logged.
     accept_logged: Option<Instant>,
 }
@@ -439,18 +483,17 @@ pub fn serve(socket: &SocketPath, config_path: Option<PathBuf>) -> Result<(), Er
     let mut server = Server {
         session,
         listener,
+        phase: Phase::Serving,
         conns: Vec::new(),
         children,
         killed: Vec::new(),
         stops,
-        stop_by: None,
         read_buffer: vec![0u8; 64 * 1024],
         paint_buffer: Vec::new(),
         slots: Vec::new(),
         ready: Vec::new(),
         spare: std::fs::File::open("/dev/null").ok(),
         shortage: None,
-        listen_after: None,
         accept_logged: None,
     };
     server.run();
@@ -476,22 +519,33 @@ enum Slot {
 impl Server {
     fn run(&mut self) {
         loop {
+            let now = Instant::now();
+            let due: Vec<Wake> = (self.wakes())
+                .filter_map(|(at, wake)| (at <= now).then_some(wake))
+                .collect();
+            for wake in due {
+                if self.wake(wake, now).is_break() {
+                    return;
+                }
+            }
+            // Input given to panes since the last poll is written now rather
+            // than when the next poll says their terminals can take it.
+            self.session.panes.values_mut().for_each(Pane::write_input);
+            self.close_conns();
             // Each change settles as it is made; this catches output that
             // dropped rows a copy mode held.
             self.session.settle_if_needed();
             self.flush_outbox();
-            let now = Instant::now();
-            if let Some(by) = self.stop_by
-                && (now >= by
-                    || (self.session.dying.is_empty()
-                        && self.killed.is_empty()
-                        && self.conns.iter().all(|c| c.out.is_empty())))
+            if matches!(self.phase, Phase::Stopping(_))
+                && self.session.dying.is_empty()
+                && self.killed.is_empty()
+                && self.conns.iter().all(|c| c.out.is_empty())
             {
-                self.finish_dying(true);
+                self.finish();
                 return;
             }
-            self.paint(now);
-            let timeout = self.timeout(Instant::now());
+            let timeout = (self.wakes().map(|(at, _)| at).min())
+                .map(|at| at.saturating_duration_since(Instant::now()));
             let mut ready = std::mem::take(&mut self.ready);
             self.poll(timeout, &mut ready);
             let now = Instant::now();
@@ -512,15 +566,45 @@ impl Server {
                 }
             }
             self.ready = ready;
-            self.escapes(now);
-            self.session.type_due(now);
-            // Input given to panes this tick is written now rather than
-            // when the next poll says their terminals can take it.
-            self.session.panes.values_mut().for_each(Pane::write_input);
-            self.session.release_frames(now);
-            self.finish_dying(false);
-            self.close_conns();
         }
+    }
+
+    /// Everything the loop waits for, each with when it is due. Paints come
+    /// last, after what may change what they show.
+    fn wakes(&self) -> impl Iterator<Item = (Instant, Wake)> + '_ {
+        let session = (self.session.timers()).map(|(at, timer)| (at, Wake::Session(timer)));
+        let grace = (self.session.dying.iter()).map(|(pane, d)| (d.deadline, Wake::Grace(*pane)));
+        let phase = match self.phase {
+            Phase::Serving => None,
+            Phase::Resting(at) => Some((at, Wake::Listen)),
+            Phase::Stopping(by) => Some((by, Wake::Stop)),
+        };
+        let paints = (self.conns.iter().enumerate())
+            .filter_map(|(i, conn)| Some((conn.paint_due(&self.session)?, Wake::Paint(i))));
+        session.chain(grace).chain(phase).chain(paints)
+    }
+
+    /// What `wake` waited for is done, now that it is due at `now`; a break
+    /// once the server has stopped.
+    fn wake(&mut self, wake: Wake, now: Instant) -> ControlFlow<()> {
+        match wake {
+            Wake::Session(timer) => self.session.fire(timer),
+            Wake::Grace(pane) => {
+                let dying = self.session.dying.remove(&pane);
+                self.killed.extend(dying.and_then(Dying::kill));
+            }
+            Wake::Listen => self.phase = Phase::Serving,
+            Wake::Stop => {
+                self.finish();
+                return ControlFlow::Break(());
+            }
+            Wake::Paint(index) => {
+                self.session.settle_if_needed();
+                self.flush_outbox();
+                self.paint(index, now);
+            }
+        }
+        ControlFlow::Continue(())
     }
 
     /// Drops every connection that is dead, or closing with nothing left to
@@ -533,38 +617,6 @@ impl Server {
         });
     }
 
-    /// What a client's decoder waits on is taken as it is once its deadline
-    /// passes: a lone Escape becomes a key, an answer cut short is dropped
-    /// (`Decoder::deadline`).
-    fn escapes(&mut self, now: Instant) {
-        // One at a time, in the clients' order: an Escape runs whatever it
-        // completes.
-        while let Some(client) = self.session.escape_due(now) {
-            self.session.escape(client);
-        }
-    }
-
-    fn timeout(&self, now: Instant) -> Option<Duration> {
-        let session = &self.session;
-        let paints = self.conns.iter().filter_map(|conn| {
-            let Stage::Attached(attached) = &conn.stage else {
-                return None;
-            };
-            let dirty = session.views.get(&attached.client)?.dirty;
-            (dirty && attached.screen != Screen::Starved).then_some(attached.clock.due())
-        });
-        let escapes = session.views.values().filter_map(|v| v.decoder.deadline());
-        paints
-            .chain(escapes)
-            .chain(session.dying.iter().map(|d| d.deadline))
-            .chain(session.next_typing())
-            .chain(session.next_frame_release())
-            .chain(self.stop_by)
-            .chain(self.listen_after)
-            .min()
-            .map(|d| d.saturating_duration_since(now))
-    }
-
     /// Waits for descriptors to be ready, or `timeout`; which are, and for
     /// what, go into `ready`.
     fn poll(&mut self, timeout: Option<Duration>, ready: &mut Vec<(Slot, PollFlags)>) {
@@ -573,10 +625,7 @@ impl Server {
         slots.clear();
         // Built afresh, as it borrows the descriptors.
         let mut fds = Vec::new();
-        if self.listen_after.is_some_and(|at| Instant::now() >= at) {
-            self.listen_after = None;
-        }
-        if self.stop_by.is_none() && self.listen_after.is_none() {
+        if let Phase::Serving = self.phase {
             fds.push(PollFd::new(&self.listener, PollFlags::IN));
             slots.push(Slot::Listener);
         }
@@ -626,7 +675,7 @@ impl Server {
     }
 
     fn stop(&mut self, reason: String) {
-        if self.stop_by.is_some() {
+        if let Phase::Stopping(_) = self.phase {
             return;
         }
         log(&reason);
@@ -637,7 +686,7 @@ impl Server {
                 conn.end(&mut self.session, &ServerFrame::Exit(&exit));
             }
         }
-        self.stop_by = Some(crate::after(Instant::now(), STOP_WAIT));
+        self.phase = Phase::Stopping(crate::after(Instant::now(), STOP_WAIT));
     }
 
     fn flush_outbox(&mut self) {
@@ -660,63 +709,56 @@ impl Server {
         }
     }
 
-    fn paint(&mut self, now: Instant) {
+    /// Paints the client attached on connection `index`, whose paint is due.
+    fn paint(&mut self, index: usize, now: Instant) {
         let session = &mut self.session;
-        for conn in &mut self.conns {
-            let Stage::Attached(attached) = &mut conn.stage else {
-                continue;
-            };
-            // Bytes waiting for the client, in frames or for its terminal.
-            let tty = attached.tty.as_ref().map_or(0, |tty| tty.out.len());
-            let pending = conn.out.len().saturating_add(tty);
-            if pending > OUTPUT_CAP {
-                // A client that stops reading gets nothing more queued; once
-                // it drains, one full repaint.
-                attached.screen = Screen::Starved;
-                continue;
-            }
-            if attached.screen == Screen::Starved {
-                if pending != 0 {
-                    continue;
-                }
-                attached.screen = Screen::Unknown;
-            }
-            let client = attached.client;
-            let dirty = session.views.get(&client).is_some_and(|v| v.dirty);
-            if !dirty || now < attached.clock.due() {
-                continue;
-            }
-            // The title and bell marks first: the bar shows the marks.
-            let before = session.before_paint(client);
-            if !render::compose_into(
-                session,
-                client,
-                &mut attached.spare,
-                &mut attached.placement,
-            ) {
-                continue;
-            }
-            if !before.is_empty() {
-                attached.paint(&mut conn.out, &before);
-            }
-            let shown = (attached.screen == Screen::Shown).then_some(&attached.shown);
-            // The same screen as the client shows: nothing to send, not even
-            // the envelope, whose cursor hide and show would restart a
-            // blinking cursor.
-            if shown.is_none_or(|shown| !attached.spare.same_as(shown)) {
-                self.paint_buffer.clear();
-                render::paint_into(shown, &attached.spare, &mut self.paint_buffer);
-                attached.paint(&mut conn.out, &self.paint_buffer);
-                std::mem::swap(&mut attached.shown, &mut attached.spare);
-                attached.screen = Screen::Shown;
-                attached.clock.painted(now);
-                // Written now rather than when the next poll says it can
-                // be: a keystroke's echo goes out a round sooner.
-                conn.flush(session);
-            }
-            if let Some(view) = session.views.get_mut(&client) {
-                view.dirty = false;
-            }
+        let Some(conn) = self.conns.get_mut(index) else {
+            return;
+        };
+        let pending = conn.pending();
+        let Stage::Attached(attached) = &mut conn.stage else {
+            return;
+        };
+        if pending > OUTPUT_CAP {
+            // A client that stops reading gets nothing more queued; once it
+            // drains, one full repaint.
+            attached.screen = Screen::Starved;
+            return;
+        }
+        if attached.screen == Screen::Starved {
+            attached.screen = Screen::Unknown;
+        }
+        let client = attached.client;
+        // The title and bell marks first: the bar shows the marks.
+        let before = session.before_paint(client);
+        if !render::compose_into(
+            session,
+            client,
+            &mut attached.spare,
+            &mut attached.placement,
+        ) {
+            return;
+        }
+        if !before.is_empty() {
+            attached.paint(&mut conn.out, &before);
+        }
+        let shown = (attached.screen == Screen::Shown).then_some(&attached.shown);
+        // The same screen as the client shows: nothing to send, not even
+        // the envelope, whose cursor hide and show would restart a blinking
+        // cursor.
+        if shown.is_none_or(|shown| !attached.spare.same_as(shown)) {
+            self.paint_buffer.clear();
+            render::paint_into(shown, &attached.spare, &mut self.paint_buffer);
+            attached.paint(&mut conn.out, &self.paint_buffer);
+            std::mem::swap(&mut attached.shown, &mut attached.spare);
+            attached.screen = Screen::Shown;
+            attached.clock.painted(now);
+            // Written now rather than when the next poll says it can be: a
+            // keystroke's echo goes out a round sooner.
+            conn.flush(session);
+        }
+        if let Some(view) = session.views.get_mut(&client) {
+            view.dirty = false;
         }
     }
 
@@ -784,7 +826,7 @@ impl Server {
                     // else persists. The listener stays readable, so it
                     // rests rather than being polled again at once.
                     let now = Instant::now();
-                    self.listen_after = Some(crate::after(now, ACCEPT_REST));
+                    self.phase = Phase::Resting(crate::after(now, ACCEPT_REST));
                     if self
                         .accept_logged
                         .is_none_or(|at| now.duration_since(at) >= REPORT_EVERY)
@@ -1180,29 +1222,19 @@ impl Server {
             .collect();
     }
 
-    /// Kills the programs whose grace is over, or every one if `all`, and
-    /// reaps those that have exited. When the server itself is stopping, it
-    /// waits for the rest, at most a second: a process stuck in the kernel
-    /// is left to init rather than hold the exit.
-    fn finish_dying(&mut self, all: bool) {
-        let now = Instant::now();
-        for dying in std::mem::take(&mut self.session.dying) {
-            if all || dying.deadline <= now {
-                // The master closes first: a dying writer can hold on to it.
-                drop(dying.child.master);
-                self.killed.extend(dying.child.leader.finish().err());
-            } else {
-                self.session.dying.push(dying);
+    /// Kills every closed pane's program, and waits for them, at most a
+    /// second: a process stuck in the kernel is left to init rather than
+    /// hold the server's exit.
+    fn finish(&mut self) {
+        let dying = std::mem::take(&mut self.session.dying);
+        self.killed
+            .extend(dying.into_values().filter_map(Dying::kill));
+        for _ in 0..500 {
+            self.reap_killed();
+            if self.killed.is_empty() {
+                break;
             }
-        }
-        if all {
-            for _ in 0..500 {
-                self.reap_killed();
-                if self.killed.is_empty() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(2));
-            }
+            std::thread::sleep(Duration::from_millis(2));
         }
     }
 }
