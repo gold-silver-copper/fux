@@ -11,20 +11,17 @@ pub(crate) mod test_corpus;
 #[derive(Clone, Debug)]
 pub(crate) struct Parameters {
     values: [u16; 32],
-    /// True when this value continues the previous colon-delimited group.
-    sub: [bool; 32],
+    /// Bit `i` set when value `i` continues the previous colon-delimited
+    /// group: none until a `:` is read, and each value a group of its own.
+    sub: u32,
     len: usize,
-    /// Whether any value continues a group (a `:` was read): until one
-    /// does, each value is a group of its own, and `sub` is not read.
-    colons: bool,
 }
 impl Default for Parameters {
     fn default() -> Self {
         Self {
             values: [0; 32],
-            sub: [false; 32],
+            sub: 0,
             len: 1,
-            colons: false,
         }
     }
 }
@@ -43,15 +40,26 @@ impl Parameters {
         };
         // The new parameter starts empty: `clear` left what a sequence
         // before put there.
-        if let Some(sub) = self.sub.get_mut(self.len) {
-            *sub = colon;
-        }
         if let Some(value) = self.values.get_mut(self.len) {
             *value = 0;
         }
+        self.continue_group(self.len, colon);
         self.len = len;
-        self.colons |= colon;
         true
+    }
+    /// Marks value `index` as continuing the previous group if `colon`.
+    #[inline]
+    fn continue_group(&mut self, index: usize, colon: bool) {
+        if colon && let Ok(index) = u32::try_from(index) {
+            self.sub |= 1u32.wrapping_shl(index);
+        }
+    }
+    /// Whether value `index` continues the previous group.
+    fn continues(&self, index: usize) -> bool {
+        u32::try_from(index)
+            .ok()
+            .and_then(|i| self.sub.checked_shr(i))
+            .is_some_and(|bits| bits & 1 != 0)
     }
     /// `separator` for a reader that keeps the parameter being read and
     /// how many there are itself (`Parser::sequence`): the parameter
@@ -62,10 +70,7 @@ impl Parameters {
     fn next(&mut self, len: usize, value: u16, colon: bool) -> Option<usize> {
         let more = len.checked_add(1).filter(|n| *n <= self.values.len())?;
         self.end(len, value);
-        if let Some(sub) = self.sub.get_mut(len) {
-            *sub = colon;
-        }
-        self.colons |= colon;
+        self.continue_group(len, colon);
         Some(more)
     }
     /// The parameters as such a reader leaves them: `len` of them, the
@@ -82,7 +87,7 @@ impl Parameters {
     /// three stores rather than rewriting all the parameters.
     fn clear(&mut self) {
         self.len = 1;
-        self.colons = false;
+        self.sub = 0;
         if let Some(value) = self.values.first_mut() {
             *value = 0;
         }
@@ -94,7 +99,7 @@ impl Parameters {
                 return None;
             }
             let mut end = start.checked_add(1)?;
-            while self.colons && end < self.len && self.sub.get(end).copied().unwrap_or(false) {
+            while self.sub != 0 && end < self.len && self.continues(end) {
                 end = end.checked_add(1)?;
             }
             let result = self.values.get(start..end);
@@ -112,7 +117,7 @@ impl Parameters {
     /// `grouped` out of line.
     #[inline(always)]
     pub fn first(&self, index: usize, default: u16) -> u16 {
-        let value = if self.colons {
+        let value = if self.sub != 0 {
             self.grouped(index)
         } else {
             self.values
