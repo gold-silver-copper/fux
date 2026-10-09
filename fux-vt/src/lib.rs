@@ -8,6 +8,7 @@ mod grid;
 mod history;
 pub mod keys;
 mod link;
+mod mode;
 mod palette;
 mod parser;
 mod screen;
@@ -18,6 +19,7 @@ mod unicode;
 
 pub use cell::{Attributes, Blink, CLUSTER_CAPACITY, CellRef, Cells, Color, UnderlineStyle};
 pub use link::{Hyperlink, ID_LIMIT, URI_LIMIT};
+pub use mode::Mode;
 pub use parser::{
     Event, Feature, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink, Unhandled,
 };

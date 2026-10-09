@@ -1,5 +1,6 @@
 use crate::compact::{Compact, PROTECTED};
 use crate::link::{Held, Pen};
+use crate::mode::{Kind, Mode, Modes, Switch};
 use crate::unicode::Cluster;
 use crate::{
     Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Mark, Options, Reply, Row, RowId,
@@ -225,13 +226,6 @@ pub(crate) enum Dispatch {
     Unhandled,
 }
 
-/// The DEC private modes XTSAVE saves and XTRESTORE restores: every one
-/// fux-vt keeps (DECARM is permanently reset, and 1048 is an action).
-const SAVABLE: [u16; 25] = [
-    1, 4, 5, 6, 7, 9, 25, 45, 47, 66, 67, 69, 1000, 1002, 1003, 1004, 1005, 1006, 1045, 1047, 1049,
-    2004, 2026, 2031, 2048,
-];
-
 /// Which protected glyphs erasing leaves (xterm's `protected_mode`): set
 /// by the last DECSCA (DEC's) or SPA (ISO's) for the whole terminal, as the
 /// glyphs printed after either are protected; none after a reset.
@@ -331,23 +325,12 @@ pub struct Screen {
     charsets: Charsets,
     /// The character sets DECSC saved, which DECRC restores.
     saved_charsets: Charsets,
-    autowrap: bool,
-    /// Reverse wraparound (`CSI ? 45 h`, xterm's XTREVWRAP) and extended
-    /// reverse wraparound (`CSI ? 1045 h`, XTREVWRAP2): with DECAWM, BS and
-    /// CUB go on at the end of the line before (`cursor_back`).
-    reverse_wrap: bool,
-    extended_reverse_wrap: bool,
-    /// The modes XTSAVE saved: bit i for `SAVABLE[i]`, set if the mode
-    /// was. One never saved is reset, as in xterm, and RIS and DECSTR keep
-    /// them, as xterm 411 does.
-    saved_modes: u32,
-    /// IRM (ECMA-48 7.2.10, `CSI 4 h`): a glyph printed moves what is at
-    /// and after the cursor right, rather than writing over it.
-    insert: bool,
-    /// DECLRMM (`CSI ? 69 h`; DEC STD 070, 5.4.3): whether DECSLRM (`CSI Pl
-    /// ; Pr s`) sets left and right margins, taking `CSI s` from SCOSC.
-    /// Reset, the margins are the screen's edges (`Grid::left`, `right`).
-    left_right_mode: bool,
+    /// The modes kept as bits (`Kind::Flag`, `Margins`, `Frame`,
+    /// `SizeReport`) that are set.
+    modes: Modes,
+    /// The modes XTSAVE saved set. One never saved is reset, as in xterm,
+    /// and RIS and DECSTR keep them, as xterm 411 does.
+    saved_modes: Modes,
     /// [`PROTECTED`] while the glyphs printed are protected from selective
     /// erase (DECSCA 1, SPA), else 0: or-ed into the style they are
     /// written in. DECSC saves it, as xterm does.
@@ -355,33 +338,10 @@ pub struct Screen {
     saved_protect: u32,
     /// Which erases leave protected glyphs.
     protection: Protection,
-    /// LNM (DEC STD 070, Line Feed/New Line Mode; `CSI 20 h`): LF, VT and
-    /// FF return the carriage too.
-    new_line: bool,
     tabs: TabStops,
-    application_cursor: bool,
-    /// DECKPAM / DECKPNM (`ESC =`, `ESC >`), which DECNKM (`CSI ? 66 h`)
-    /// sets too, as in xterm.
-    application_keypad: bool,
-    /// DECSCLM, smooth scroll (`CSI ? 4 h`), DECSCNM, reverse video
-    /// (`CSI ? 5 h`), and DECBKM, the backarrow key sending BS (`CSI ? 67
-    /// h`): kept as xterm keeps them, for DECRQM and XTSAVE. State only:
-    /// fux-vt scrolls at once, draws nothing, and encodes Backspace the
-    /// same whatever DECBKM says (`Screen::encode_key`).
-    smooth_scroll: bool,
-    reverse_video: bool,
-    backarrow_sends_backspace: bool,
-    hide_cursor: bool,
-    bracketed_paste: bool,
-    synchronized_output: bool,
-    in_band_resize: bool,
-    /// Mode 2031, colour-scheme change reports, with
-    /// `Feature::ColorSchemeUpdates`.
-    color_scheme_updates: bool,
     /// How many times synchronized output has been set, for
     /// `Parser::process_until_frame`.
     frames_begun: u64,
-    focus_reporting: bool,
     cursor_shape: u16,
     mouse: MouseProtocolMode,
     encoding: MouseProtocolEncoding,
@@ -447,6 +407,16 @@ fn rgb(r: u16, g: u16, b: u16) -> Option<Color> {
     ))
 }
 
+/// Sets a mouse mode or encoding `value` in `slot`, the latest set
+/// winning; reset, it is the default again if it is the one set.
+fn latest<T: Copy + Default + PartialEq>(slot: &mut T, value: T, on: bool) {
+    if on {
+        *slot = value;
+    } else if *slot == value {
+        *slot = T::default();
+    }
+}
+
 /// Whether a glyph `width` wide at `i` has its second half after it, if it
 /// needs one. Kept out of line, as `unchanged` is (grid.rs), so that the
 /// print that usually follows compiles as if it were not there.
@@ -477,29 +447,13 @@ impl Screen {
             saved_attributes: Attributes::default(),
             charsets: Charsets::default(),
             saved_charsets: Charsets::default(),
-            autowrap: true,
-            reverse_wrap: false,
-            extended_reverse_wrap: false,
-            saved_modes: 0,
-            insert: false,
-            left_right_mode: false,
+            modes: Modes::DEFAULT,
+            saved_modes: Modes::default(),
             protect: 0,
             saved_protect: 0,
             protection: Protection::Off,
-            new_line: false,
             tabs: TabStops::default(),
-            application_cursor: false,
-            application_keypad: false,
-            smooth_scroll: false,
-            reverse_video: false,
-            backarrow_sends_backspace: false,
-            hide_cursor: false,
-            bracketed_paste: false,
-            synchronized_output: false,
-            in_band_resize: false,
-            color_scheme_updates: false,
             frames_begun: 0,
-            focus_reporting: false,
             cursor_shape: 0,
             mouse: MouseProtocolMode::None,
             encoding: MouseProtocolEncoding::Default,
@@ -641,45 +595,21 @@ impl Screen {
     pub fn pending_wrap(&self) -> bool {
         self.grid().pending_wrap
     }
-    /// Whether the program hid the cursor (DECTCEM, `CSI ? 25 l`).
-    pub fn hide_cursor(&self) -> bool {
-        self.hide_cursor
-    }
-    /// DECCKM (`CSI ? 1 h`): whether cursor keys are to send their
-    /// application sequences, as `Screen::encode_key` sends them.
-    pub fn application_cursor(&self) -> bool {
-        self.application_cursor
-    }
-    /// DECKPAM (`ESC =`) / DECKPNM (`ESC >`) state. Tracked for consumers that
-    /// mirror it to another terminal; `Screen::encode_key` does not read it.
-    pub fn application_keypad(&self) -> bool {
-        self.application_keypad
-    }
-    /// Whether pastes are to be bracketed (`CSI ? 2004 h`).
-    pub fn bracketed_paste(&self) -> bool {
-        self.bracketed_paste
-    }
-    /// Synchronized output (`CSI ? 2026 h` / `l`): whether the program is
-    /// drawing a frame it wants shown whole, once it resets the mode
-    /// (`references/modern/mode_2026_synchronized_output.md`). State only:
-    /// holding the display is the host's to do. RIS, DECSTR and a resize
-    /// end it, as a resize does in Ghostty.
-    pub fn synchronized_output(&self) -> bool {
-        self.synchronized_output
-    }
-    /// In-band resize (`CSI ? 2048 h` / `l`), with
-    /// `Feature::InBandResize`: whether the program wants a size report
-    /// whenever the size changes. RIS ends it.
-    pub fn in_band_resize(&self) -> bool {
-        self.in_band_resize
-    }
-    /// Colour-scheme change reports (`CSI ? 2031 h` / `l`), with
-    /// `Feature::ColorSchemeUpdates`: whether the program wants to hear
-    /// when the terminal's colours change between dark and light
-    /// (`references/modern/mode_2031_color_scheme_updates.md`). State
-    /// only: the host sends the reports. RIS ends it.
-    pub fn color_scheme_updates(&self) -> bool {
-        self.color_scheme_updates
+    /// Whether `mode` is set, as DECRQM reports it. The alternate screen's
+    /// three modes are set together, while it is shown; DECARM and 1048
+    /// never are.
+    #[inline]
+    pub fn mode(&self, mode: Mode) -> bool {
+        match mode.kind() {
+            Kind::Flag | Kind::Margins | Kind::Frame | Kind::SizeReport => {
+                self.modes.contains(mode)
+            }
+            Kind::Origin => self.grid().origin,
+            Kind::Screen(_) => self.alternate_active,
+            Kind::SaveCursor | Kind::Reset => false,
+            Kind::Mouse(mouse) => self.mouse == mouse,
+            Kind::Encoding(encoding) => self.encoding == encoding,
+        }
     }
     /// The in-band resize report of the current size, pixels unknown.
     pub(crate) fn size_report(&self) -> Reply {
@@ -689,36 +619,10 @@ impl Screen {
     pub(crate) fn frames_begun(&self) -> u64 {
         self.frames_begun
     }
-    /// `CSI ? 1004 h` / `l` state: whether the program wants focus-in and
-    /// focus-out reports, as `Screen::encode_focus` makes them.
-    pub fn focus_reporting(&self) -> bool {
-        self.focus_reporting
-    }
     /// The cursor shape last set with DECSCUSR (`CSI Ps SP q`); 0, the
     /// default, is the terminal's own. State only: fux-vt draws no cursor.
     pub fn cursor_shape(&self) -> u16 {
         self.cursor_shape
-    }
-    /// Whether the alternate screen is shown (`CSI ? 47`, `1047`, `1049`).
-    pub fn alternate_screen(&self) -> bool {
-        self.alternate_active
-    }
-    /// DECAWM (`CSI ? 7`): whether a glyph past the last column wraps.
-    pub fn autowrap(&self) -> bool {
-        self.autowrap
-    }
-    /// IRM (`CSI 4 h` / `l`): whether printing inserts rather than
-    /// replaces. Off by default, and after RIS and DECSTR.
-    pub fn insert_mode(&self) -> bool {
-        self.insert
-    }
-    /// LNM (`CSI 20 h` / `l`), for DECRQM.
-    pub(crate) fn new_line_mode(&self) -> bool {
-        self.new_line
-    }
-    /// DECOM (`CSI ? 6`): whether lines are addressed from the top margin.
-    pub fn origin_mode(&self) -> bool {
-        self.grid().origin
     }
     /// The top and bottom margins (DECSTBM), zero-based and inclusive.
     pub fn scroll_region(&self) -> (u16, u16) {
@@ -1034,7 +938,7 @@ impl Screen {
     pub(crate) fn resize(&mut self, rows: u16, cols: u16, reflow: bool) -> Result<(), Error> {
         // A frame drawn for the old size is no frame for the new one; as in
         // Ghostty, any resize ends synchronized output.
-        self.synchronized_output = false;
+        self.modes.set(Mode::SynchronizedOutput, false);
         if self.size() == (rows, cols) {
             return Ok(());
         }
@@ -1200,7 +1104,7 @@ impl Screen {
     #[inline(never)]
     fn wrap(&mut self, end: u16, room: u16) -> Result<u16, Error> {
         let g = self.grid();
-        let wrap = self.autowrap;
+        let wrap = self.mode(Mode::Autowrap);
         if !wrap {
             // Back to the last column the glyph fits in; a wrap left
             // pending where a right margin was overwrites there, as xterm
@@ -1299,7 +1203,7 @@ impl Screen {
         // What REP repeats: the last glyph printed, not a mark.
         self.repeat = Some(raw);
         let end = self.wrap_for(width)?;
-        if self.insert {
+        if self.mode(Mode::Insert) {
             // Room for the glyph, what was there moving right (ICH).
             let blank = self.blank_style();
             self.with_grid(|g, _, v| g.edit_cells(width, true, blank, v));
@@ -1534,7 +1438,7 @@ impl Screen {
     pub(crate) fn ascii(&mut self, mut bytes: &[u8]) -> Result<(), Error> {
         // DEC Special Graphics print other characters, and insert mode
         // moves what is there, one glyph at a time.
-        if self.charsets.graphics() || self.insert {
+        if self.charsets.graphics() || self.mode(Mode::Insert) {
             for &byte in bytes {
                 self.print(char::from(byte))?;
             }
@@ -1592,7 +1496,7 @@ impl Screen {
             self.cursor_back(1, pending);
             return Ok(());
         }
-        let new_line = self.new_line;
+        let new_line = self.mode(Mode::NewLine);
         let g = self.grid_mut();
         // BS, LF, VT, FF and CR end a pending wrap (DEC STD 070, Appendix
         // D.6.1). HT does not: it leaves a cursor in the last column where
@@ -1640,7 +1544,8 @@ impl Screen {
     /// Whether BS and CUB wrap back: reverse wraparound, either kind, with
     /// DECAWM, as xterm has it.
     fn reverse_wraps(&self) -> bool {
-        self.autowrap && (self.reverse_wrap || self.extended_reverse_wrap)
+        self.mode(Mode::Autowrap)
+            && (self.mode(Mode::ReverseWrap) || self.mode(Mode::ExtendedReverseWrap))
     }
 
     /// BS and CUB with reverse wraparound, as xterm 411 moves (`CursorBack`;
@@ -1657,7 +1562,7 @@ impl Screen {
     /// right margins the line runs from the left margin, unless the cursor
     /// starts left of it, to the right margin, as in xterm.
     fn cursor_back(&mut self, count: u16, pending: bool) {
-        let extended = self.extended_reverse_wrap;
+        let extended = self.mode(Mode::ExtendedReverseWrap);
         let g = self.grid_mut();
         g.pending_wrap = false;
         let mut count = if pending {
@@ -1744,8 +1649,8 @@ impl Screen {
         match byte {
             b'7' => self.save(),
             b'8' => self.restore(),
-            b'=' => self.application_keypad = true,
-            b'>' => self.application_keypad = false,
+            b'=' => self.modes.set(Mode::ApplicationKeypad, true),
+            b'>' => self.modes.set(Mode::ApplicationKeypad, false),
             // IND (DEC STD 070; xterm's ctlseqs): a line feed, scrolling
             // at the bottom margin.
             b'D' => self.linefeed()?,
@@ -1802,27 +1707,11 @@ impl Screen {
                 self.saved_attributes = Attributes::default();
                 self.charsets = Charsets::default();
                 self.saved_charsets = Charsets::default();
-                self.autowrap = true;
-                self.reverse_wrap = false;
-                self.extended_reverse_wrap = false;
-                self.insert = false;
-                self.left_right_mode = false;
+                self.modes = Modes::DEFAULT;
                 self.protect = 0;
                 self.saved_protect = 0;
                 self.protection = Protection::Off;
-                self.new_line = false;
                 self.tabs = TabStops::default();
-                self.application_cursor = false;
-                self.application_keypad = false;
-                self.smooth_scroll = false;
-                self.reverse_video = false;
-                self.backarrow_sends_backspace = false;
-                self.hide_cursor = false;
-                self.bracketed_paste = false;
-                self.synchronized_output = false;
-                self.in_band_resize = false;
-                self.color_scheme_updates = false;
-                self.focus_reporting = false;
                 self.cursor_shape = 0;
                 self.mouse = MouseProtocolMode::None;
                 self.encoding = MouseProtocolEncoding::Default;
@@ -1996,32 +1885,23 @@ impl Screen {
     /// DEC STD 070's Soft Terminal Reset (p. 4-37) list them: the cursor
     /// shown, DECOM, DECCKM and DECKPAM off, the scroll region the whole
     /// screen, the pen and the saved cursor's attributes normal, the
-    /// character sets ASCII with G0 in GL, and the saved cursor home. DECAWM goes back to its default, which both
-    /// leave to the terminal's setting (xterm's: on). The screen, the
+    /// character sets ASCII with G0 in GL, and the saved cursor home
+    /// (`Modes::SOFT_RESET` has the modes). DECAWM goes back to its
+    /// default, which both leave to the terminal's setting (xterm's: on).
+    /// The screen, the
     /// cursor, a pending wrap, the alternate screen, bracketed paste, focus
     /// reporting, mouse modes and kitty keyboard flags stay as they are,
     /// as in xterm.
     fn soft_reset(&mut self) {
-        self.hide_cursor = false;
-        // Not in either table; ended so that `tput init` and `tput reset`,
-        // which send DECSTR, never leave a frame waiting.
-        self.synchronized_output = false;
-        self.autowrap = true;
-        // Reverse wraparound too, as xterm 411's DECSTR ends both.
-        self.reverse_wrap = false;
-        self.extended_reverse_wrap = false;
-        self.insert = false;
-        self.application_cursor = false;
-        self.application_keypad = false;
+        self.modes.reset(Modes::SOFT_RESET);
         self.attributes = Attributes::default();
         self.pen_changed();
         self.saved_attributes = Attributes::default();
         self.charsets = Charsets::default();
         self.saved_charsets = Charsets::default();
-        // DECLRMM and the left and right margins, and the selective erase
-        // attribute, both in the VT520 manual's table, and what erasing
-        // leaves, as xterm resets it.
-        self.left_right_mode = false;
+        // The left and right margins, and the selective erase attribute,
+        // both in the VT520 manual's table, and what erasing leaves, as
+        // xterm resets it.
         self.protect = 0;
         self.saved_protect = 0;
         self.protection = Protection::Off;
@@ -2165,119 +2045,130 @@ impl Screen {
         }
     }
 
-    /// DECRQM status for a DEC private mode: 1 set, 2 reset, 0 not
-    /// recognized, and 4 permanently reset for DECARM (8), which xterm 411
-    /// reports so (its auto-repeat is the X server's).
-    pub(crate) fn private_mode_status(&self, n: u16) -> u8 {
-        if n == 8 {
-            return 4;
+    /// SM and RM, DECSET and DECRST (`on` for `h`), and XTRESTORE
+    /// (`on` `None`: each mode as XTSAVE saved it, but 1048 and DECARM,
+    /// which it does not save). Of the ANSI modes, a sequence that names
+    /// none fux-vt keeps is unhandled.
+    #[inline(always)]
+    fn set_modes(
+        &mut self,
+        p: &Parameters,
+        private: bool,
+        on: Option<bool>,
+        options: &Options,
+    ) -> Result<Dispatch, Error> {
+        let (mut handled, mut report) = (private, false);
+        for group in p.groups() {
+            let [n] = group else { continue };
+            let Some(mode) = Mode::of(*n, private, options) else {
+                continue;
+            };
+            handled = true;
+            let on = match on {
+                Some(on) => on,
+                None if mode.savable() => self.saved_modes.contains(mode),
+                None => continue,
+            };
+            // A mode that is a bit and no more is set here, without a call.
+            if mode.kind() == Kind::Flag {
+                self.modes.set(mode, on);
+            } else {
+                report |= self.set_mode(mode, on)?;
+            }
         }
-        match self.private_mode(n) {
-            Some(true) => 1,
-            Some(false) => 2,
-            None => 0,
-        }
-    }
-
-    /// Whether DEC private mode `n` is set, if DECRQM reports it: every mode
-    /// fux-vt keeps but focus reporting (1004), which DECRQM answers as not
-    /// recognized (0), as the README's row for it records.
-    fn private_mode(&self, n: u16) -> Option<bool> {
-        Some(match n {
-            1 => self.application_cursor,
-            4 => self.smooth_scroll,
-            5 => self.reverse_video,
-            45 => self.reverse_wrap,
-            1045 => self.extended_reverse_wrap,
-            66 => self.application_keypad,
-            67 => self.backarrow_sends_backspace,
-            69 => self.left_right_mode,
-            6 => self.grid().origin,
-            7 => self.autowrap,
-            25 => !self.hide_cursor,
-            47 | 1047 | 1049 => self.alternate_active,
-            9 => self.mouse == MouseProtocolMode::Press,
-            1000 => self.mouse == MouseProtocolMode::PressRelease,
-            1002 => self.mouse == MouseProtocolMode::ButtonMotion,
-            1003 => self.mouse == MouseProtocolMode::AnyMotion,
-            1005 => self.encoding == MouseProtocolEncoding::Utf8,
-            1006 => self.encoding == MouseProtocolEncoding::Sgr,
-            2004 => self.bracketed_paste,
-            2026 => self.synchronized_output,
-            2048 => self.in_band_resize,
-            2031 => self.color_scheme_updates,
-            _ => return None,
+        Ok(match (handled, report) {
+            (_, true) => Dispatch::Reply(self.size_report()),
+            (true, false) => Dispatch::Done,
+            (false, false) => Dispatch::Unhandled,
         })
     }
 
-    /// XTSAVE (`CSI ? Pm s`, ctlseqs): mode `n` saved as it is, if fux-vt
-    /// keeps it, as DECRQM knows it (2048 and 2031 with their options).
-    fn save_mode(&mut self, n: u16, options: &Options) {
-        let known = match n {
-            2048 => options.has(Feature::InBandResize),
-            2031 => options.has(Feature::ColorSchemeUpdates),
-            1004 => true,
-            _ => self.private_mode_status(n) != 0,
-        };
-        let set = if n == 1004 {
-            self.focus_reporting
-        } else {
-            self.private_mode(n) == Some(true)
-        };
-        if let Some(bit) = SAVABLE.iter().position(|m| *m == n).filter(|_| known) {
-            let mask = 1u32
-                .checked_shl(u32::try_from(bit).unwrap_or(u32::MAX))
-                .unwrap_or(0);
-            self.saved_modes = if set {
-                self.saved_modes | mask
-            } else {
-                self.saved_modes & !mask
-            };
+    /// XTSAVE (`CSI ? Pm s`, with `save`): each mode saved as it is; and
+    /// XTRESTORE (`CSI ? Pm r`): each set as it was saved.
+    #[inline(never)]
+    fn save_or_restore_modes(
+        &mut self,
+        p: &Parameters,
+        save: bool,
+        options: &Options,
+    ) -> Result<Dispatch, Error> {
+        if !save {
+            return self.set_modes(p, true, None, options);
         }
+        for group in p.groups() {
+            if let [n] = group
+                && let Some(mode) = Mode::of(*n, true, options).filter(|m| m.savable())
+            {
+                self.saved_modes.set(mode, self.mode(mode));
+            }
+        }
+        Ok(Dispatch::Done)
     }
 
-    /// XTRESTORE (`CSI ? Pm r`, ctlseqs): mode `n` set as XTSAVE saved it,
-    /// as DECSET or DECRST would set it, or reset if it never was, as in
-    /// xterm 411. Whether a size report is due (`set_private_mode`).
-    fn restore_mode(&mut self, n: u16, options: &Options) -> Result<bool, Error> {
-        let Some(bit) = SAVABLE.iter().position(|m| *m == n) else {
-            return Ok(false);
-        };
-        let set = self
-            .saved_modes
-            .checked_shr(u32::try_from(bit).unwrap_or(u32::MAX))
-            .is_some_and(|b| b & 1 == 1);
-        self.set_private_mode(n, set, options)
-    }
-
-    /// DECSET or DECRST of DEC private mode `n`; whether a size report is
-    /// due (setting in-band resize reports at once, however often it is
-    /// set: `references/modern/mode_2048_in_band_resize.md`).
-    fn set_private_mode(&mut self, n: u16, set: bool, options: &Options) -> Result<bool, Error> {
-        match n {
-            2048 => {
-                if options.has(Feature::InBandResize) {
-                    self.in_band_resize = set;
-                    return Ok(set);
-                }
-            }
-            2031 => {
-                if options.has(Feature::ColorSchemeUpdates) {
-                    self.color_scheme_updates = set;
-                }
-            }
-            _ => {
-                // A switch of screens leaves the printed cell behind. The
-                // alternate screen is made when first shown, before anything
-                // changes, so that failing to make it changes nothing.
-                if matches!(n, 47 | 1047 | 1049) {
-                    if set {
-                        self.alternate.make()?;
+    /// Sets or resets `mode`; whether a size report is due (setting
+    /// in-band resize reports at once, however often it is set).
+    #[inline(never)]
+    fn set_mode(&mut self, mode: Mode, on: bool) -> Result<bool, Error> {
+        match mode.kind() {
+            Kind::Flag => self.modes.set(mode, on),
+            // DECLRMM: reset, the margins go back to the screen's edges (DEC
+            // STD 070, DECLRMM; xterm's `set_left_right_margin_mode`).
+            Kind::Margins => {
+                self.modes.set(mode, on);
+                if !on {
+                    for g in [&mut self.primary, &mut self.alternate] {
+                        let last = g.cols.last();
+                        g.set_columns(0, last);
                     }
-                    self.break_cluster();
                 }
-                self.mode(n, set)?;
             }
+            Kind::Frame => {
+                self.modes.set(mode, on);
+                if on {
+                    self.frames_begun = self.frames_begun.wrapping_add(1);
+                }
+            }
+            Kind::SizeReport => {
+                self.modes.set(mode, on);
+                return Ok(on);
+            }
+            Kind::Origin => {
+                let g = self.grid_mut();
+                g.origin = on;
+                g.position(0, 0);
+            }
+            // A switch of screens leaves the printed cell behind. The
+            // alternate screen is made when first shown, before anything
+            // changes, so that failing to make it changes nothing.
+            Kind::Screen(switch) => {
+                if on {
+                    self.alternate.make()?;
+                }
+                self.break_cluster();
+                match switch {
+                    Switch::Plain => self.switch_screen(on),
+                    Switch::ClearedOnLeaving => {
+                        if !on && self.alternate_active {
+                            self.clear_alternate()?;
+                        }
+                        self.switch_screen(on);
+                    }
+                    Switch::SavingCursor if on => {
+                        self.save();
+                        self.switch_screen(true);
+                        self.clear_alternate()?;
+                    }
+                    Switch::SavingCursor => {
+                        self.switch_screen(false);
+                        self.restore();
+                    }
+                }
+            }
+            Kind::SaveCursor if on => self.save(),
+            Kind::SaveCursor => self.restore(),
+            Kind::Reset => {}
+            Kind::Mouse(mouse) => latest(&mut self.mouse, mouse, on),
+            Kind::Encoding(encoding) => latest(&mut self.encoding, encoding, on),
         }
         Ok(false)
     }
@@ -2379,99 +2270,6 @@ impl Screen {
         colour(out, a.underline_color(), None, 58);
     }
 
-    fn mode(&mut self, n: u16, set: bool) -> Result<(), Error> {
-        match n {
-            1 => self.application_cursor = set,
-            4 => self.smooth_scroll = set,
-            5 => self.reverse_video = set,
-            45 => self.reverse_wrap = set,
-            1045 => self.extended_reverse_wrap = set,
-            66 => self.application_keypad = set,
-            67 => self.backarrow_sends_backspace = set,
-            // DECLRMM: reset, the margins go back to the screen's edges
-            // (DEC STD 070, DECLRMM; xterm's `set_left_right_margin_mode`).
-            69 => {
-                self.left_right_mode = set;
-                if !set {
-                    for g in [&mut self.primary, &mut self.alternate] {
-                        let last = g.cols.last();
-                        g.set_columns(0, last);
-                    }
-                }
-            }
-            6 => {
-                let g = self.grid_mut();
-                g.origin = set;
-                g.position(0, 0);
-            }
-            7 => self.autowrap = set,
-            25 => self.hide_cursor = !set,
-            2004 => self.bracketed_paste = set,
-            2026 => {
-                self.synchronized_output = set;
-                if set {
-                    self.frames_begun = self.frames_begun.wrapping_add(1);
-                }
-            }
-            1004 => self.focus_reporting = set,
-            47 => self.switch_screen(set),
-            // 1047: the alternate screen, cleared on leaving it (xterm's
-            // ctlseqs). 1048: DECSC and DECRC.
-            1047 => {
-                if !set && self.alternate_active {
-                    self.clear_alternate()?;
-                }
-                self.switch_screen(set);
-            }
-            1048 => {
-                if set {
-                    self.save();
-                } else {
-                    self.restore();
-                }
-            }
-            // 1049: DECSC, then the alternate screen, cleared first; and
-            // back, then DECRC.
-            1049 => {
-                if set {
-                    self.save();
-                    self.switch_screen(true);
-                    self.clear_alternate()?;
-                } else {
-                    self.switch_screen(false);
-                    self.restore();
-                }
-            }
-            9 | 1000 | 1002 | 1003 => {
-                let mode = match n {
-                    9 => MouseProtocolMode::Press,
-                    1000 => MouseProtocolMode::PressRelease,
-                    1002 => MouseProtocolMode::ButtonMotion,
-                    _ => MouseProtocolMode::AnyMotion,
-                };
-                if set {
-                    self.mouse = mode;
-                } else if self.mouse == mode {
-                    self.mouse = MouseProtocolMode::None;
-                }
-            }
-            1005 | 1006 => {
-                let encoding = if n == 1005 {
-                    MouseProtocolEncoding::Utf8
-                } else {
-                    MouseProtocolEncoding::Sgr
-                };
-                if set {
-                    self.encoding = encoding;
-                } else if self.encoding == encoding {
-                    self.encoding = MouseProtocolEncoding::Default;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
     /// The kitty keyboard protocol and modifyOtherKeys sequences, with
     /// [`Feature::KittyKeyboard`]; `None` for any other sequence.
     fn keyboard_protocol(
@@ -2531,36 +2329,8 @@ impl Screen {
         if !intermediates.is_empty() && !private {
             return Ok(Dispatch::Unhandled);
         }
-        if private && matches!(byte, b'h' | b'l') {
-            let mut report = false;
-            for group in p.groups() {
-                if let [n] = group {
-                    report |= self.set_private_mode(*n, byte == b'h', options)?;
-                }
-            }
-            return Ok(if report {
-                Dispatch::Reply(self.size_report())
-            } else {
-                Dispatch::Done
-            });
-        }
-        // SM and RM: IRM (4) and LNM (20) of the ANSI modes.
-        if !private && matches!(byte, b'h' | b'l') {
-            let mut handled = false;
-            for group in p.groups() {
-                if group == [4] {
-                    self.insert = byte == b'h';
-                    handled = true;
-                } else if group == [20] {
-                    self.new_line = byte == b'h';
-                    handled = true;
-                }
-            }
-            return Ok(if handled {
-                Dispatch::Done
-            } else {
-                Dispatch::Unhandled
-            });
+        if matches!(byte, b'h' | b'l') {
+            return self.set_modes(p, private, Some(byte == b'h'), options);
         }
         // Every sequence that moves the cursor or edits a row; not SGR,
         // modes or queries.
@@ -2594,21 +2364,7 @@ impl Screen {
         // DECSTBM (`CSI Pt ; Pb r`); `CSI s` is DECSLRM below while DECLRMM
         // is set, and SCOSC otherwise.
         if private && matches!(byte, b's' | b'r') {
-            let mut report = false;
-            for group in p.groups() {
-                if let [n] = group {
-                    if byte == b's' {
-                        self.save_mode(*n, options);
-                    } else {
-                        report |= self.restore_mode(*n, options)?;
-                    }
-                }
-            }
-            return Ok(if report {
-                Dispatch::Reply(self.size_report())
-            } else {
-                Dispatch::Done
-            });
+            return self.save_or_restore_modes(p, byte == b's', options);
         }
         if private && !matches!(byte, b'J' | b'K') {
             return Ok(Dispatch::Unhandled);
@@ -2684,7 +2440,7 @@ impl Screen {
             // and the cursor goes home, obeying DECOM; others are ignored.
             // A right margin past the screen is its last column, as xterm
             // reads it, as it reads DECSTBM (where DEC STD 070 ignores it).
-            b's' if self.left_right_mode => self.set_left_right_margins(p),
+            b's' if self.mode(Mode::LeftRightMargins) => self.set_left_right_margins(p),
             // SCOSC and SCORC share DECSC's slot and, like DECSC, save and
             // restore the attributes with the position.
             b's' => self.save(),

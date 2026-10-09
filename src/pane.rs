@@ -602,6 +602,7 @@ impl Pane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fux_vt::Mode;
 
     #[test]
     fn the_queue_is_bounded_by_bytes_not_pieces() {
@@ -658,15 +659,15 @@ mod tests {
             let mut pane = Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
             pane.output(a);
             pane.output(b);
-            assert!(pane.screen().focus_reporting(), "split {split}");
+            assert!(pane.screen().mode(Mode::FocusReporting), "split {split}");
             assert_eq!(pane.screen().cursor_shape(), 5, "split {split}");
         }
         let mut pane = Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
         pane.output(b"\x1b[?1004h\x1b[?1004l\x1b[2 q\x1b[ q");
-        assert!(!pane.screen().focus_reporting());
+        assert!(!pane.screen().mode(Mode::FocusReporting));
         assert_eq!(pane.screen().cursor_shape(), 0);
         pane.output(b"\x1b[?1004h\x1bc");
-        assert!(!pane.screen().focus_reporting());
+        assert!(!pane.screen().mode(Mode::FocusReporting));
         Ok(())
     }
 
@@ -757,7 +758,7 @@ mod tests {
         );
         // DECRQM knows mode 2031, which the program sets.
         pane.output(b"\x1b[?2031h\x1b[?2031$p");
-        assert!(pane.screen().color_scheme_updates());
+        assert!(pane.screen().mode(Mode::ColorSchemeUpdates));
         assert_eq!(pane.input.drain_all(), b"\x1b[?2031;1$y");
         Ok(())
     }
@@ -785,12 +786,12 @@ mod tests {
         let mut pane = pane()?;
         pane.output(b"a\x1b[?2026hb");
         assert_eq!(first_row(&pane), "a", "the frame is held");
-        assert!(pane.screen().synchronized_output());
+        assert!(pane.screen().mode(Mode::SynchronizedOutput));
         pane.output(b"c\x1b[?20");
         assert_eq!(first_row(&pane), "a", "an ESU begun is not one");
         pane.output(b"26ld");
         assert_eq!(first_row(&pane), "abcd");
-        assert!(!pane.screen().synchronized_output());
+        assert!(!pane.screen().mode(Mode::SynchronizedOutput));
         // A BSU split across reads.
         pane.output(b"e\x1b[?2");
         pane.output(b"026hf");

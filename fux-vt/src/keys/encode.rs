@@ -24,7 +24,7 @@ impl crate::Screen {
     /// keyboard protocol's flags, modifyOtherKeys.
     pub fn key_mode(&self) -> KeyMode {
         KeyMode {
-            application: self.application_cursor(),
+            application: self.mode(crate::Mode::ApplicationCursor),
             kitty: self.kitty_keyboard_flags(),
             other_keys: self.modify_other_keys(),
         }
@@ -104,14 +104,14 @@ impl crate::Screen {
     /// framed by `CSI 200 ~` and `CSI 201 ~` if it set bracketed paste
     /// (`CSI ? 2004 h`), never ended early from inside ([`paste`]).
     pub fn encode_paste(&self, text: &str, out: &mut Vec<u8>) {
-        paste(text, self.bracketed_paste(), out);
+        paste(text, self.mode(crate::Mode::BracketedPaste), out);
     }
 
     /// Appends a focus change to `out`, `CSI I` for gained and `CSI O` for
     /// lost, if the program on this screen asked for them (`CSI ? 1004 h`),
     /// and returns whether it did.
     pub fn encode_focus(&self, focused: bool, out: &mut Vec<u8>) -> bool {
-        if !self.focus_reporting() {
+        if !self.mode(crate::Mode::FocusReporting) {
             return false;
         }
         out.extend_from_slice(if focused { b"\x1b[I" } else { b"\x1b[O" });

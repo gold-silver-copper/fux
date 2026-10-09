@@ -1,5 +1,5 @@
 //! Shared independent invariants for deterministic tests and cargo-fuzz.
-use fux_vt::{CLUSTER_CAPACITY, Cells, Parser};
+use fux_vt::{CLUSTER_CAPACITY, Cells, Mode, Parser};
 
 fn cells(row: fux_vt::Row<'_>) -> Vec<fux_vt::CellRef<'_>> {
     row.cells().collect()
@@ -118,18 +118,22 @@ pub fn equal(a: &Parser, b: &Parser) {
     assert_eq!(a.cursor_position(), b.cursor_position());
     assert_eq!(a.pending_wrap(), b.pending_wrap());
     assert_eq!(a.attributes(), b.attributes());
-    assert_eq!(a.autowrap(), b.autowrap());
-    assert_eq!(a.origin_mode(), b.origin_mode());
     assert_eq!(a.scroll_region(), b.scroll_region());
-    assert_eq!(a.hide_cursor(), b.hide_cursor());
-    assert_eq!(a.application_cursor(), b.application_cursor());
-    assert_eq!(a.bracketed_paste(), b.bracketed_paste());
-    assert_eq!(a.alternate_screen(), b.alternate_screen());
     assert_eq!(a.mouse_protocol_mode(), b.mouse_protocol_mode());
     assert_eq!(a.mouse_protocol_encoding(), b.mouse_protocol_encoding());
     assert_eq!(a.kitty_keyboard_flags(), b.kitty_keyboard_flags());
     assert_eq!(a.modify_other_keys(), b.modify_other_keys());
-    assert_eq!(a.color_scheme_updates(), b.color_scheme_updates());
+    for mode in [
+        Mode::Autowrap,
+        Mode::Origin,
+        Mode::ShowCursor,
+        Mode::ApplicationCursor,
+        Mode::BracketedPaste,
+        Mode::AlternateScreen,
+        Mode::ColorSchemeUpdates,
+    ] {
+        assert_eq!(a.mode(mode), b.mode(mode), "{mode:?}");
+    }
     assert_eq!(a.history_len(), b.history_len());
     for offset in 0..usize::from(a.size().0).saturating_add(a.history_len()) {
         let (a, b) = (a.row_from_bottom(offset), b.row_from_bottom(offset));

@@ -151,7 +151,8 @@ macro_rules! stack {
         |$row:ident| $cells:expr,
         |$attrs:ident| $colors:expr,
         |$meta:ident| $identity:expr,
-        |$events:ident, $extended:ident| $options:expr
+        |$events:ident, $extended:ident| $options:expr,
+        |$screen:ident| $modes:expr
     ) => {
         mod $name {
             use std::fmt::Write;
@@ -243,19 +244,15 @@ macro_rules! stack {
                     let s = self.parser.screen();
                     let mut out = String::new();
                     let (rows, cols) = s.size();
+                    let modes: [bool; 8] = {
+                        let $screen = s;
+                        $modes
+                    };
                     let _ = writeln!(
                         out,
-                        "{rows}x{cols} cursor {:?} hidden {} app cursor {} keypad {} paste {} focus {} shape {} alternate {} autowrap {} origin {} region {:?} mouse {:?} {:?} attributes {} history {} storage {}",
+                        "{rows}x{cols} cursor {:?} modes {modes:?} shape {} region {:?} mouse {:?} {:?} attributes {} history {} storage {}",
                         s.cursor_position(),
-                        s.hide_cursor(),
-                        s.application_cursor(),
-                        s.application_keypad(),
-                        s.bracketed_paste(),
-                        s.focus_reporting(),
                         s.cursor_shape(),
-                        s.alternate_screen(),
-                        s.autowrap(),
-                        s.origin_mode(),
                         s.scroll_region(),
                         s.mouse_protocol_mode(),
                         s.mouse_protocol_encoding(),
@@ -305,7 +302,17 @@ stack!(
     |row| (row.id(), row.version(), row.wrapped()),
     |events, extended| Options::new()
         .with_events(events)
-        .with_extended_replies(extended)
+        .with_extended_replies(extended),
+    |s| [
+        s.hide_cursor(),
+        s.application_cursor(),
+        s.application_keypad(),
+        s.bracketed_paste(),
+        s.focus_reporting(),
+        s.alternate_screen(),
+        s.autowrap(),
+        s.origin_mode(),
+    ]
 );
 stack!(
     cur,
@@ -315,7 +322,17 @@ stack!(
     |row| (row.id(), row.version(), row.wrapped()),
     |events, extended| Options::new()
         .set(fux_vt::Feature::Events, events)
-        .set(fux_vt::Feature::ExtendedReplies, extended)
+        .set(fux_vt::Feature::ExtendedReplies, extended),
+    |s| [
+        !s.mode(fux_vt::Mode::ShowCursor),
+        s.mode(fux_vt::Mode::ApplicationCursor),
+        s.mode(fux_vt::Mode::ApplicationKeypad),
+        s.mode(fux_vt::Mode::BracketedPaste),
+        s.mode(fux_vt::Mode::FocusReporting),
+        s.mode(fux_vt::Mode::AlternateScreen),
+        s.mode(fux_vt::Mode::Autowrap),
+        s.mode(fux_vt::Mode::Origin),
+    ]
 );
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {

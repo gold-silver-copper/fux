@@ -6,21 +6,20 @@
 //! argument for that part, as `diff/src/terminal.rs`'s `stack!` does, and
 //! read both into the same model; say so in the README's list of adapters.
 //!
-//! Adapters today: the options, a set of `Feature`s in the working tree
-//! and a field each in the commit.
+//! Adapters today: the modes, which the working tree reads with
+//! `Screen::mode` and the commit with a getter each.
 
 macro_rules! side {
     (
         $module:ident,
         $vt:ident,
         $name:literal,
-        options: $options:expr,
-        setup: $setup:expr $(,)?
+        modes: $modes:expr $(,)?
     ) => {
         pub mod $module {
             use crate::model::{
-                self, Blink, Cell, Color, Encoding, Error, Heard, Lookup, Marked, Mouse, Row, Seen,
-                Setup, State, Style, Underline,
+                self, Blink, Cell, Color, Error, Heard, Lookup, Marked, Row, Seen, Setup, State,
+                Style, Underline,
             };
             use $vt as vt;
 
@@ -121,8 +120,11 @@ macro_rules! side {
             }
 
             fn options(setup: &Setup) -> vt::Options {
-                let options: fn(&Setup) -> vt::Options = $options;
-                options(setup).with_identity(
+                let mut flags = *setup;
+                // `Setup::flags` is in `Feature::ALL`'s order.
+                let on = vt::Feature::ALL.into_iter().zip(flags.flags());
+                let options: vt::Options = on.filter_map(|(f, (_, on))| on.then_some(f)).collect();
+                options.with_identity(
                     setup
                         .identity
                         .map(|(name, version)| vt::Identity { name, version }),
@@ -131,8 +133,12 @@ macro_rules! side {
 
             /// The options back, as the parser reports them.
             fn setup(o: vt::Options) -> Setup {
-                let setup: fn(vt::Options) -> Setup = $setup;
-                setup(o)
+                let mut setup = Setup::default();
+                for (f, (_, on)) in vt::Feature::ALL.into_iter().zip(setup.flags()) {
+                    *on = o.has(f);
+                }
+                setup.identity = o.identity().map(|i| (i.name, i.version));
+                setup
             }
 
             /// Everything the parser gives the host, in order.
@@ -220,34 +226,14 @@ macro_rules! side {
                         size: s.size(),
                         cursor: s.cursor_position(),
                         pending_wrap: s.pending_wrap(),
-                        hide_cursor: s.hide_cursor(),
-                        application_cursor: s.application_cursor(),
-                        application_keypad: s.application_keypad(),
-                        bracketed_paste: s.bracketed_paste(),
-                        synchronized_output: s.synchronized_output(),
-                        in_band_resize: s.in_band_resize(),
-                        color_scheme_updates: s.color_scheme_updates(),
-                        focus_reporting: s.focus_reporting(),
+                        modes: {
+                            let modes: fn(&vt::Screen) -> Vec<(String, bool)> = $modes;
+                            modes(s)
+                        },
                         cursor_shape: s.cursor_shape(),
-                        alternate_screen: s.alternate_screen(),
-                        autowrap: s.autowrap(),
-                        insert_mode: s.insert_mode(),
-                        origin_mode: s.origin_mode(),
                         scroll_region: s.scroll_region(),
-                        mouse: match s.mouse_protocol_mode() {
-                            vt::MouseProtocolMode::None => Mouse::None,
-                            vt::MouseProtocolMode::Press => Mouse::Press,
-                            vt::MouseProtocolMode::PressRelease => Mouse::PressRelease,
-                            vt::MouseProtocolMode::ButtonMotion => Mouse::ButtonMotion,
-                            vt::MouseProtocolMode::AnyMotion => Mouse::AnyMotion,
-                            other => Mouse::Other(format!("{other:?}")),
-                        },
-                        encoding: match s.mouse_protocol_encoding() {
-                            vt::MouseProtocolEncoding::Default => Encoding::Default,
-                            vt::MouseProtocolEncoding::Utf8 => Encoding::Utf8,
-                            vt::MouseProtocolEncoding::Sgr => Encoding::Sgr,
-                            other => Encoding::Other(format!("{other:?}")),
-                        },
+                        mouse: format!("{:?}", s.mouse_protocol_mode()),
+                        encoding: format!("{:?}", s.mouse_protocol_encoding()),
                         kitty_keyboard_flags: s.kitty_keyboard_flags(),
                         modify_other_keys: s.modify_other_keys(),
                         pen: style(pen),
@@ -641,53 +627,35 @@ side!(
     work,
     fux_vt,
     "work",
-    options: |setup| {
-        let mut setup = *setup;
-        // `Setup::flags` is in `Feature::ALL`'s order.
-        let flags = vt::Feature::ALL.into_iter().zip(setup.flags());
-        flags.filter_map(|(f, (_, on))| on.then_some(f)).collect()
-    },
-    setup: |o| {
-        let mut setup = Setup::default();
-        for (f, (_, on)) in vt::Feature::ALL.into_iter().zip(setup.flags()) {
-            *on = o.has(f);
-        }
-        setup.identity = o.identity().map(|i| (i.name, i.version));
-        setup
+    modes: |s| {
+        use vt::Mode::*;
+        [
+            ShowCursor, ApplicationCursor, ApplicationKeypad, BracketedPaste, SynchronizedOutput,
+            InBandResize, ColorSchemeUpdates, FocusReporting, AlternateScreen, Autowrap, Insert,
+            Origin,
+        ]
+        .map(|m| (format!("{m:?}"), s.mode(m)))
+        .into()
     },
 );
 side!(
     base,
     base_vt,
     "base",
-    options: |setup| vt::Options::new()
-        .with_events(setup.events)
-        .with_extended_replies(setup.extended_replies)
-        .with_mode_reports(setup.mode_reports)
-        .with_in_band_resize(setup.in_band_resize)
-        .with_size_reports(setup.size_reports)
-        .with_color_scheme_updates(setup.color_scheme_updates)
-        .with_kitty_keyboard(setup.kitty_keyboard)
-        .with_reflow(setup.reflow)
-        .with_hyperlinks(setup.hyperlinks)
-        .with_prompt_marks(setup.prompt_marks)
-        .with_rectangle_checksums(setup.rectangle_checksums)
-        .with_setting_reports(setup.setting_reports)
-        .with_palette(setup.palette),
-    setup: |o| Setup {
-        palette: o.palette,
-        events: o.events,
-        extended_replies: o.extended_replies,
-        mode_reports: o.mode_reports,
-        in_band_resize: o.in_band_resize,
-        size_reports: o.size_reports,
-        color_scheme_updates: o.color_scheme_updates,
-        kitty_keyboard: o.kitty_keyboard,
-        reflow: o.reflow,
-        hyperlinks: o.hyperlinks,
-        prompt_marks: o.prompt_marks,
-        rectangle_checksums: o.rectangle_checksums,
-        setting_reports: o.setting_reports,
-        identity: o.identity.map(|i| (i.name, i.version)),
-    },
+    modes: |s| [
+        ("ShowCursor", !s.hide_cursor()),
+        ("ApplicationCursor", s.application_cursor()),
+        ("ApplicationKeypad", s.application_keypad()),
+        ("BracketedPaste", s.bracketed_paste()),
+        ("SynchronizedOutput", s.synchronized_output()),
+        ("InBandResize", s.in_band_resize()),
+        ("ColorSchemeUpdates", s.color_scheme_updates()),
+        ("FocusReporting", s.focus_reporting()),
+        ("AlternateScreen", s.alternate_screen()),
+        ("Autowrap", s.autowrap()),
+        ("Insert", s.insert_mode()),
+        ("Origin", s.origin_mode()),
+    ]
+    .map(|(name, on)| (name.to_owned(), on))
+    .into(),
 );

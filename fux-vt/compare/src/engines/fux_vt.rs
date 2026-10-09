@@ -1,7 +1,7 @@
 //! fux-vt, the subject, read into a snapshot.
 use crate::engine::{Engine, Setup};
 use crate::snapshot::{self, Cell, Color, Line, Snapshot, Style, Width};
-use fux_vt::{Blink, CellRef, Event, Feature, Identity, Options, Parser, Sink};
+use fux_vt::{Blink, CellRef, Event, Feature, Identity, Mode, Options, Parser, Sink};
 
 /// How the parser is set up: as ratty sets it up (reflow, an identity), with
 /// events on so titles can be compared; or, with `reflow` off, as fux does.
@@ -147,16 +147,16 @@ impl Engine for Vt {
             cols,
             cursor,
             pending_wrap,
-            cursor_visible: !s.hide_cursor(),
-            autowrap: s.autowrap(),
-            origin: s.origin_mode(),
-            alternate: s.alternate_screen(),
-            application_cursor: s.application_cursor(),
-            application_keypad: s.application_keypad(),
-            bracketed_paste: s.bracketed_paste(),
-            synchronized_output: s.synchronized_output(),
-            in_band_resize: s.in_band_resize(),
-            focus_reporting: s.focus_reporting(),
+            cursor_visible: s.mode(Mode::ShowCursor),
+            autowrap: s.mode(Mode::Autowrap),
+            origin: s.mode(Mode::Origin),
+            alternate: s.mode(Mode::AlternateScreen),
+            application_cursor: s.mode(Mode::ApplicationCursor),
+            application_keypad: s.mode(Mode::ApplicationKeypad),
+            bracketed_paste: s.mode(Mode::BracketedPaste),
+            synchronized_output: s.mode(Mode::SynchronizedOutput),
+            in_band_resize: s.mode(Mode::InBandResize),
+            focus_reporting: s.mode(Mode::FocusReporting),
             kitty_keyboard_flags: s.kitty_keyboard_flags(),
             title: self.heard.title.clone().unwrap_or_default(),
             reports: snapshot::reports(&self.heard.replies),
