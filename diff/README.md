@@ -154,9 +154,10 @@ redesign changes on purpose (`RowId` and `Mark` are compared by number);
 kept.
 
 **Adapters.** Where the two APIs part, give `side!` an argument for that
-part, read both into the same model, and list it here. Today: making and
-resizing a parser, which the working tree does with a `Size` and the base
-with rows and columns. A commit without an adapter for its API does not build
+part, read both into the same model, and list it here. Today: reading rows
+and windows, which the working tree does from a row (`Screen::rows`,
+`Row::window`) and the base by an offset from the bottom
+(`row_from_bottom`, `offset_for_row`, a window of any size). A commit without an adapter for its API does not build
 (`oracle.sh 4f3975b`, before hosts made cells as `CellRef`, stops there).
 
 ### The inputs

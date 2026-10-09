@@ -142,9 +142,8 @@ fn cells_hash(row: fux_vt::Row<'_>) -> u64 {
 /// cells' hash.
 fn rows(p: &Parser) -> Vec<(RowId, u64, bool, u64)> {
     let screen = p.screen();
-    let retained = screen.history_len() + usize::from(screen.size().rows());
-    let mut rows: Vec<_> = (0..retained)
-        .filter_map(|i| screen.row_from_bottom(i))
+    let mut rows: Vec<_> = screen
+        .rows()
         .map(|row| (row.id(), row.version(), row.wrapped(), cells_hash(row)))
         .collect();
     rows.sort_unstable_by_key(|r| r.0);
@@ -227,8 +226,8 @@ fuzz_target!(|data: &[u8]| {
                 input = input.get(8..).unwrap_or_default();
                 let mut values = parameters.iter().copied();
                 let offset = usize::from(values.next().unwrap_or_default());
-                let height = u16::from(values.next().unwrap_or_default());
-                let width = u16::from(values.next().unwrap_or_default());
+                // Once a window's height and width: a window is the screen's.
+                let _ = values.nth(1);
                 let a = (
                     u16::from(values.next().unwrap_or_default()),
                     u16::from(values.next().unwrap_or_default()),
@@ -239,22 +238,17 @@ fuzz_target!(|data: &[u8]| {
                 );
                 let cells = usize::from(values.next().unwrap_or_default());
                 let bytes = cells * 4;
-                let screen = whole.screen();
-                let mark = screen.mark();
-                let result = screen
-                    .window(offset, height, width)
-                    .text(a, b, cells, bytes);
-                assert_eq!(
-                    result,
-                    split
-                        .screen()
-                        .window(offset, height, width)
-                        .text(a, b, cells, bytes)
-                );
+                fn window(p: &Parser, offset: usize) -> fux_vt::Window<'_> {
+                    let window = p.screen().window();
+                    window.row(0).map_or(window, |top| top.up(offset).window())
+                }
+                let mark = whole.screen().mark();
+                let result = window(&whole, offset).text(a, b, cells, bytes);
+                assert_eq!(result, window(&split, offset).text(a, b, cells, bytes));
                 if let Ok(text) = result {
                     assert!(text.len() <= bytes);
                 }
-                assert_eq!(mark, screen.mark());
+                assert_eq!(mark, whole.screen().mark());
             }
             operation => {
                 // 0xfd: a count, then a byte a character, each one of

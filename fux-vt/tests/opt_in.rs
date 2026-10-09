@@ -554,7 +554,7 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
             CellRef::new(text, original.is_wide(), attributes)
         ));
     }
-    let row = screen.row_from_bottom(1).ok_or("row")?;
+    let row = screen.rows().nth_back(1).ok_or("row")?;
     let original: Cells = row.cells().take(6).collect();
     assert_eq!(copy, original);
     assert_eq!(copy.get(4).map(|c| c.contents()), Some(family));

@@ -45,15 +45,6 @@ impl Session {
         }
     }
 
-    /// The first client, in their order, whose decoder's wait was due by
-    /// `now`: a lone Escape's, or an answer's.
-    pub fn escape_due(&self, now: Instant) -> Option<ClientId> {
-        self.views
-            .iter()
-            .find(|(_, v)| v.decoder.deadline().is_some_and(|due| due <= now))
-            .map(|(client, _)| *client)
-    }
-
     /// The decoder's wait passed for a client: what was waiting is taken as
     /// it is.
     pub fn escape(&mut self, client: ClientId) {

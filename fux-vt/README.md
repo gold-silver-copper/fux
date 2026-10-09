@@ -280,13 +280,18 @@ columns, is the oracle (`grid::tests::laying_out_runs_is_laying_out_cells`).
 
 ### Windows and change marks
 
-A `Window` is an immutable view of at most the screen's size, any number of
-rows up into history; reading it never changes where output lands. History
-rows are padded or clipped to it unchanged, and a wide glyph cut by its
-edge reads as blank. `Window::text` copies between inclusive endpoints:
-wide halves become their first half, soft wraps join, padding at hard line
-ends and past a history row's width is not copied, and cell and byte
-limits are checked before anything grows.
+A `Row` is a retained row and its place among the rows retained, history
+first: it borrows the screen, so a place can't be held past output that
+moves it, and it steps to the rows around it (`above`, `below`, `up`,
+`down`) without leaving them; a `RowId` finds it again later. A `Window`
+is an immutable view of the screen's size: the screen (`Screen::window`),
+or the rows from one up in history (`Row::window`), never short of rows;
+reading it never changes where output lands. History rows are padded or
+clipped to it unchanged, and a wide glyph cut by its edge reads as blank.
+`Window::text` copies between inclusive endpoints: wide halves become
+their first half, soft wraps join, padding at hard line ends and past a
+history row's width is not copied, and cell and byte limits are checked
+before anything grows.
 
 Marks are not consumed, so readers share them. `changed_since` says
 whether the screen may have changed (any processing counts);

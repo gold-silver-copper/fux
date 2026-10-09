@@ -130,7 +130,7 @@ fuzz_target!(|input: Input| {
     let check = |parser: &Parser| {
         let screen = parser.screen();
         for (y, (cells, line)) in expected.iter().zip(&lines).enumerate() {
-            let row = screen.row_from_bottom(lines.len() - y);
+            let row = screen.rows().nth_back(lines.len() - y);
             row_is(row.unwrap_or_else(|| panic!("row {y}")), cells, line);
         }
     };
