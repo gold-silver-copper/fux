@@ -1,15 +1,14 @@
 #![no_main]
 //! Input: four bytes for the area's width and height (a high byte below 0x80
-//! is a small size, `lo % 64`; ff is u16::MAX), a tree of splits and panes,
-//! then two-byte resizes.
+//! is a small size, `lo % 64`; ff is u16::MAX), the splits that grow a tree
+//! from one pane, then two-byte resizes.
 use fux::id::PaneId;
 use fux::keys::Direction;
-use fux::layout::{self, Axis, MIN, Node, Placement, Rect};
+use fux::layout::{self, Axis, MIN, Placement, Rect, Side, Tree};
 use libfuzzer_sys::fuzz_target;
 
 struct Bytes<'a> {
     rest: &'a [u8],
-    panes: u32,
 }
 impl Bytes<'_> {
     fn next(&mut self) -> u8 {
@@ -27,40 +26,33 @@ impl Bytes<'_> {
             _ => u16::from(lo % 64),
         }
     }
-    fn weight(&mut self) -> u32 {
-        let b = self.next();
-        match b % 8 {
-            0 => 0,
-            1 => 1,
-            2 => layout::WEIGHT,
-            3 => u32::MAX,
-            4 => u32::MAX - 1,
-            _ => u32::from(b) * 37,
+    /// A tree of up to 16 panes, grown from one by splits, each two
+    /// bytes: the pane to split, then the axis and side.
+    fn tree(&mut self) -> Option<Tree> {
+        let mut root = Some(Tree::Pane(pane(1)));
+        let count = self.next() % 16;
+        for new in 2..=u32::from(count) + 1 {
+            let (which, how) = (self.next(), self.next());
+            let panes = root.as_ref().map(Tree::panes).unwrap_or_default();
+            let target = panes[usize::from(which) % panes.len()];
+            let axis = if how & 1 == 0 {
+                Axis::Horizontal
+            } else {
+                Axis::Vertical
+            };
+            let side = if how & 2 == 0 {
+                Side::After
+            } else {
+                Side::Before
+            };
+            layout::split(&mut root, target, pane(new), axis, side);
         }
+        root
     }
-    /// A pane, or a split of two to four children, at most four deep and
-    /// with at most 16 panes.
-    fn node(&mut self, depth: u32) -> Node {
-        let b = self.next();
-        if depth >= 4 || self.panes >= 16 || b & 0x80 == 0 {
-            self.panes += 1;
-            let pane: PaneId = format!("%{}", self.panes).parse().expect("a pane's number");
-            return Node::Pane(pane);
-        }
-        let axis = if b & 1 == 0 {
-            Axis::Horizontal
-        } else {
-            Axis::Vertical
-        };
-        let count = 2 + (b >> 1) % 3;
-        let children = (0..count)
-            .map(|_| {
-                let weight = self.weight();
-                (weight, self.node(depth + 1))
-            })
-            .collect();
-        Node::Split { axis, children }
-    }
+}
+
+fn pane(n: u32) -> PaneId {
+    format!("%{n}").parse().expect("a pane's number")
 }
 
 /// A rect's cells as x and y ranges, in u32 so that no end overflows.
@@ -75,7 +67,7 @@ fn overlap(a: &Rect, b: &Rect) -> bool {
 }
 
 /// Everything `place` promises about `placement` of `root` in `area`.
-fn check(root: &Node, area: Rect, placement: &Placement) {
+fn check(root: &Tree, area: Rect, placement: &Placement) {
     if area.w == 0 || area.h == 0 {
         assert!(placement.panes.is_empty() && placement.separators.is_empty());
         return;
@@ -114,34 +106,18 @@ fn check(root: &Node, area: Rect, placement: &Placement) {
         }
         covered += u64::from(piece.w) * u64::from(piece.h);
     }
-    // Disjoint, so never more than the area; and when the whole tree fits,
-    // exactly the area: the panes and separators tile it. (Where it does not
-    // fit, a split without room for even its first child shows nothing.)
+    // Disjoint, so never more than the area. Room for 16 panes side by side
+    // is room for any tree of them, and every pane shown; and with every
+    // pane shown they tile the area exactly. (Where it is too small, a split
+    // without room for even its first child shows nothing.)
     let whole = u64::from(area.w) * u64::from(area.h);
     assert!(covered <= whole);
-    if area.w >= min_len(root, Axis::Horizontal) && area.h >= min_len(root, Axis::Vertical) {
-        assert_eq!(covered, whole, "the area is not tiled: {placement:?}");
+    let room = 16 * MIN + 15;
+    if area.w >= room && area.h >= room {
+        assert_eq!(placement.panes.len(), panes.len(), "a pane is hidden");
     }
-}
-
-/// The smallest length `node` can have along `axis`, as the layout docs
-/// define it: a pane needs MIN; a split along the axis needs its children's
-/// and a separator between each two; across it, its largest child's.
-fn min_len(node: &Node, axis: Axis) -> u16 {
-    match node {
-        Node::Pane(_) => MIN,
-        Node::Split {
-            axis: own,
-            children,
-        } => {
-            let mins = children.iter().map(|(_, c)| min_len(c, axis));
-            if *own == axis {
-                let separators = u16::try_from(children.len() - 1).unwrap_or(u16::MAX);
-                mins.fold(separators, u16::saturating_add)
-            } else {
-                mins.max().unwrap_or(MIN)
-            }
-        }
+    if placement.panes.len() == panes.len() {
+        assert_eq!(covered, whole, "the area is not tiled: {placement:?}");
     }
 }
 
@@ -153,10 +129,7 @@ const DIRECTIONS: [Direction; 4] = [
 ];
 
 fuzz_target!(|data: &[u8]| {
-    let mut bytes = Bytes {
-        rest: data,
-        panes: 0,
-    };
+    let mut bytes = Bytes { rest: data };
     let (x, y) = (u16::from(bytes.next() % 4), u16::from(bytes.next() % 4));
     let (w, h) = (bytes.length(), bytes.length());
     // The area may sit anywhere its far edge still fits a u16 screen.
@@ -166,9 +139,9 @@ fuzz_target!(|data: &[u8]| {
         w,
         h,
     };
-    let mut root = bytes.node(0);
-    // fux keeps its trees normalized after every change.
-    layout::normalize(&mut root);
+    let Some(mut root) = bytes.tree() else {
+        return;
+    };
     let placement = layout::place(&root, area);
     check(&root, area, &placement);
     let ids = root.panes();
