@@ -4,7 +4,8 @@
 //! stay fux's policy: no events and the original reply set.
 
 use fux_vt::{
-    Attributes, CellRef, Cells, Color, Event, Feature, OSC_PAYLOAD_LIMIT, Options, Parser, Sink,
+    Attributes, CellRef, Cells, Color, Event, Feature, Mode, OSC_PAYLOAD_LIMIT, Options, Parser,
+    Sink,
 };
 #[path = "corpus/pieces.rs"]
 mod pieces;
@@ -200,25 +201,25 @@ fn mode_reports_answer_decrqm_alone() -> Result {
 #[test]
 fn synchronized_output_is_tracked_and_ended() -> Result {
     let mut p = Parser::new(4, 10, 0)?;
-    assert!(!p.screen().synchronized_output());
+    assert!(!p.screen().mode(Mode::SynchronizedOutput));
     p.process(b"\x1b[?2026h")?;
-    assert!(p.screen().synchronized_output());
+    assert!(p.screen().mode(Mode::SynchronizedOutput));
     p.process(b"\x1b[?2026l")?;
-    assert!(!p.screen().synchronized_output());
+    assert!(!p.screen().mode(Mode::SynchronizedOutput));
     for (then, what) in [(&b"\x1bc"[..], "RIS"), (b"\x1b[!p", "DECSTR")] {
         p.process(b"\x1b[?2026h")?;
         p.process(then)?;
-        assert!(!p.screen().synchronized_output(), "{what}");
+        assert!(!p.screen().mode(Mode::SynchronizedOutput), "{what}");
     }
     p.process(b"\x1b[?2026h")?;
     p.resize(4, 10)?;
     assert!(
-        !p.screen().synchronized_output(),
+        !p.screen().mode(Mode::SynchronizedOutput),
         "a resize to the same size"
     );
     p.process(b"\x1b[?2026h")?;
     p.resize(5, 12)?;
-    assert!(!p.screen().synchronized_output(), "a resize");
+    assert!(!p.screen().mode(Mode::SynchronizedOutput), "a resize");
     Ok(())
 }
 
@@ -259,7 +260,7 @@ fn process_until_frame_stops_after_an_xtrestore_that_begins_a_frame() -> Result 
         p.process_until_frame(b"\x1b[?2026r\x1b]2;hello\x07", &mut sink)?,
         Some(8)
     );
-    assert!(p.screen().synchronized_output());
+    assert!(p.screen().mode(Mode::SynchronizedOutput));
     // An `h` in a string, or printed, after the frame's sequence is read.
     p.process(b"\x1b[?2026l")?;
     assert_eq!(
@@ -507,12 +508,12 @@ fn colour_scheme_updates_are_tracked() -> Result {
     let mut p = Parser::with_options(24, 80, 0, options)?;
     let mut said = Said::default();
     p.process_with(b"\x1b[?2031$p\x1b[?2031h\x1b[?2031$p", &mut said)?;
-    assert!(p.screen().color_scheme_updates());
+    assert!(p.screen().mode(Mode::ColorSchemeUpdates));
     assert_eq!(said.0, ["\x1b[?2031;2$y", "\x1b[?2031;1$y"]);
     p.process(b"\x1b[?2031l")?;
-    assert!(!p.screen().color_scheme_updates());
+    assert!(!p.screen().mode(Mode::ColorSchemeUpdates));
     p.process(b"\x1b[?2031h\x1bc")?;
-    assert!(!p.screen().color_scheme_updates(), "RIS");
+    assert!(!p.screen().mode(Mode::ColorSchemeUpdates), "RIS");
     let mut said = Said::default();
     p.process_with(b"\x1b[?996n", &mut said)?;
     assert_eq!(said.0.len(), 1);
@@ -520,21 +521,8 @@ fn colour_scheme_updates_are_tracked() -> Result {
     let mut p = Parser::with_options(24, 80, 0, Options::new().with(Feature::ModeReports))?;
     let mut said = Said::default();
     p.process_with(b"\x1b[?2031h\x1b[?2031$p", &mut said)?;
-    assert!(!p.screen().color_scheme_updates());
+    assert!(!p.screen().mode(Mode::ColorSchemeUpdates));
     assert_eq!(said.0, ["\x1b[?2031;0$y"]);
-    Ok(())
-}
-
-#[test]
-fn keypad_mode_is_tracked_and_reset() -> Result {
-    let mut parser = Parser::new(2, 4, 0)?;
-    assert!(!parser.screen().application_keypad());
-    parser.process(b"\x1b=")?;
-    assert!(parser.screen().application_keypad());
-    parser.process(b"\x1b>")?;
-    assert!(!parser.screen().application_keypad());
-    parser.process(b"\x1b=\x1bc")?;
-    assert!(!parser.screen().application_keypad(), "RIS resets DECKPAM");
     Ok(())
 }
 

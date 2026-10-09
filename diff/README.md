@@ -155,8 +155,8 @@ kept.
 
 **Adapters.** Where the two APIs part, give `side!` an argument for that
 part, read both into the same model, and list it here. Today: the
-options, a set of `Feature`s in the working tree and a field each in a base
-from before them. A commit without an adapter for its API does not build
+modes, which the working tree reads with `Screen::mode` and the base with a
+getter each. A commit without an adapter for its API does not build
 (`oracle.sh 4f3975b`, before hosts made cells as `CellRef`, stops there).
 
 ### The inputs
