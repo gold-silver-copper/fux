@@ -1,7 +1,7 @@
 //! What a terminal shows and says, in one form both sides are read into:
-//! the working tree's fux-vt and the pinned commit's. Each side's adapter
-//! (`side.rs`) reads its own types into these through fux-vt's public API,
-//! so the two are compared field by field even where their types differ.
+//! the working tree's fux-vt and the base commit's. `side.rs` reads each
+//! side's types into these through fux-vt's public API, so the two are
+//! compared field by field.
 //!
 //! A kind one side has and the model does not name (a colour, an event, a
 //! mouse mode added later) is read as `Other`, with its `Debug` text, so it
@@ -207,7 +207,7 @@ pub struct Setup {
     pub prompt_marks: bool,
     pub rectangle_checksums: bool,
     pub setting_reports: bool,
-    /// `Feature::Palette`, which the pinned commit has not: see `side`.
+    /// `Feature::Palette`.
     pub palette: bool,
     /// The name and version the terminal answers as.
     pub identity: Option<(&'static str, &'static str)>,
@@ -312,8 +312,7 @@ pub struct State {
     pub resize_report: Option<Vec<u8>>,
     /// The options the parser says it has.
     pub options: Setup,
-    /// Whether the program changed a colour (`Screen::colors_changed`),
-    /// which the pinned commit cannot: see `side`.
+    /// Whether the program changed a colour (`Screen::colors_changed`).
     pub colors_changed: bool,
     /// Whether the rows read from the bottom end where the history and
     /// screen do.

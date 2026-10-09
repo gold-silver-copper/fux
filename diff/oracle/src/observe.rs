@@ -80,17 +80,6 @@ fn row_difference(a: &Row, b: &Row) -> (String, String, String) {
     ("cells".into(), a.line(), b.line())
 }
 
-/// Whether the working tree's memory diagnostic `work` is larger than the
-/// base's `base`: the one way the two may differ. The compact cell (phase 3
-/// of the work to beat Ghostty's core) stores a grid's cells and their text
-/// otherwise, and keeps history rows trimmed, on purpose: `storage_cells`
-/// and a row's `text_len` may be smaller than the commit's, never larger
-/// (diff/README.md, "Exemptions"). `Cells`' `text_len` is still compared
-/// exactly.
-fn larger(work: usize, base: usize) -> bool {
-    work > base
-}
-
 /// Every retained row, bottom up.
 fn rows<A: Side, B: Side>(
     step: Option<usize>,
@@ -102,9 +91,6 @@ fn rows<A: Side, B: Side>(
     let retained = a.retained().max(b.retained());
     for offset in 0..=retained {
         let (ha, hb) = (a.row(offset, &mut readers.a), b.row(offset, &mut readers.b));
-        if !larger(readers.b.text_len, readers.a.text_len) {
-            readers.b.text_len = readers.a.text_len;
-        }
         if ha != hb || readers.a != readers.b {
             let (what, base, work) = if ha && hb {
                 row_difference(&readers.a, &readers.b)
@@ -140,10 +126,7 @@ pub fn compare<A: Side, B: Side>(
     readers: &mut Readers,
     count: &mut Count,
 ) -> Result<(), Difference> {
-    let (sa, mut sb) = (a.state(), b.state());
-    if !larger(sb.storage_cells, sa.storage_cells) {
-        sb.storage_cells = sa.storage_cells;
-    }
+    let (sa, sb) = (a.state(), b.state());
     same(step, "the screen's state", &sa, &sb)?;
     rows(step, a, b, readers, count)?;
     same_list(step, "the marks", &a.marks(), &b.marks())?;
@@ -315,8 +298,7 @@ pub fn probes<S: Side>(s: &S) -> Vec<String> {
     out.push(poke(&mut copy, "REP", b"\x1b[2b"));
     let mut heard: Vec<Heard> = Vec::new();
     for query in QUERIES {
-        // A query of an approved feature's is taken out (`exempt`).
-        let result = copy.process(&crate::exempt::bytes(query.as_bytes()), &mut heard);
+        let result = copy.process(query.as_bytes(), &mut heard);
         if result.is_err() {
             out.push(format!("{query:?}: {result:?}"));
         }

@@ -90,6 +90,16 @@ jobs:
             cargo test --manifest-path "$package/Cargo.toml" --locked
           done 2>&1 | tee "$CI_LOGS/excluded.log"
 
+      - name: fux-vt oracle builds
+        # Against this very commit, so both sides share one API and it
+        # builds with no shims (diff/README.md). The pin stays for the step
+        # below.
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          diff/oracle.sh --pin HEAD
+          cargo clippy --manifest-path diff/Cargo.toml -p fux-vt-oracle --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/oracle.log"
+
       - name: fux-diff builds
         # It builds the last release beside this code, so a deliberate API
         # change can break it until its baseline is bumped (diff/README.md).

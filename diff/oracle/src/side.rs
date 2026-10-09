@@ -1,26 +1,17 @@
-//! The two sides: the working tree's fux-vt (`work`) and the pinned
-//! commit's (`base`), each read into the model through its own public API.
+//! The two sides: the working tree's fux-vt (`work`) and the base commit's
+//! (`base`), each read into the model through the same public API.
 //!
-//! Both are one macro, `side!`, so they are read the same way. Where the
-//! two APIs part (a method renamed, a type reshaped), give the macro an
-//! argument for that part, as `diff/src/terminal.rs`'s `stack!` does, and
-//! read both into the same model; say so in the README's list of adapters.
-//!
-//! Adapters today: reading rows and windows, which the working tree does
-//! from a row (`Screen::rows`, `Row::window`) and the commit by an offset
-//! from the bottom (`row_from_bottom`, `offset_for_row`, `window`); and a direct colour,
-//! which the working tree holds as an `Rgb` and the commit as three bytes.
+//! Both are one macro, `side!`, so they are read the same way. The base is
+//! the newest `main` (or a commit `diff/oracle.sh` is given), so both sides
+//! share one API and the macro takes no per-side code. A branch that changes
+//! fux-vt's public API can be compared with a temporary local shim here for
+//! the base side; never commit one.
 
 macro_rules! side {
     (
         $module:ident,
         $vt:ident,
-        $name:literal,
-        back: $back:expr,
-        up: $up:expr,
-        window: $window:expr,
-        rgb_of: $rgb_of:expr,
-        rgb: $rgb:expr $(,)?
+        $name:literal $(,)?
     ) => {
         pub mod $module {
             use crate::model::{
@@ -31,21 +22,19 @@ macro_rules! side {
 
             /// The row `offset` up from the bottom.
             fn back(s: &vt::Screen, offset: usize) -> Option<vt::Row<'_>> {
-                let back: fn(&vt::Screen, usize) -> Option<vt::Row<'_>> = $back;
-                back(s, offset)
+                s.rows().nth_back(offset)
             }
 
             /// How many rows up into history a window starts at row `id`, if
             /// one can.
             fn up(s: &vt::Screen, id: vt::RowId) -> Option<usize> {
-                let up: fn(&vt::Screen, vt::RowId) -> Option<usize> = $up;
-                up(s, id)
+                s.history_len().checked_sub(s.row_by_id(id)?.index())
             }
 
             /// The window `offset` rows up into history, at most all of it.
             fn window(s: &vt::Screen, offset: usize) -> vt::Window<'_> {
-                let window: fn(&vt::Screen, usize) -> vt::Window<'_> = $window;
-                window(s, offset)
+                let window = s.window();
+                window.row(0).map_or(window, |top| top.up(offset).window())
             }
 
             /// A parser, and the marks taken of its screen.
@@ -59,12 +48,11 @@ macro_rules! side {
             }
 
             fn color(c: vt::Color) -> Color {
-                let rgb_of: fn(vt::Color) -> Option<(u8, u8, u8)> = $rgb_of;
-                match (c, rgb_of(c)) {
-                    (vt::Color::Default, _) => Color::Default,
-                    (vt::Color::Idx(n), _) => Color::Idx(n),
-                    (_, Some((r, g, b))) => Color::Rgb(r, g, b),
-                    (other, None) => Color::Other(format!("{other:?}")),
+                match c {
+                    vt::Color::Default => Color::Default,
+                    vt::Color::Idx(n) => Color::Idx(n),
+                    vt::Color::Rgb(vt::Rgb { r, g, b }) => Color::Rgb(r, g, b),
+                    other => Color::Other(format!("{other:?}")),
                 }
             }
 
@@ -457,10 +445,11 @@ macro_rules! side {
             fn to_color(c: &Color) -> vt::Color {
                 match c {
                     Color::Idx(n) => vt::Color::Idx(*n),
-                    Color::Rgb(r, g, b) => {
-                        let rgb: fn(u8, u8, u8) -> vt::Color = $rgb;
-                        rgb(*r, *g, *b)
-                    }
+                    Color::Rgb(r, g, b) => vt::Color::Rgb(vt::Rgb {
+                        r: *r,
+                        g: *g,
+                        b: *b,
+                    }),
                     Color::Default | Color::Other(_) => vt::Color::Default,
                 }
             }
@@ -668,38 +657,8 @@ macro_rules! side {
     };
 }
 
-side!(
-    work,
-    fux_vt,
-    "work",
-    back: |s, offset| s.rows().nth_back(offset),
-    up: |s, id| s.history_len().checked_sub(s.row_by_id(id)?.index()),
-    window: |s, offset| {
-        let window = s.window();
-        window.row(0).map_or(window, |top| top.up(offset).window())
-    },
-    rgb_of: |c| match c {
-        vt::Color::Rgb(vt::Rgb { r, g, b }) => Some((r, g, b)),
-        _other => None,
-    },
-    rgb: |r, g, b| vt::Color::Rgb(vt::Rgb { r, g, b }),
-);
-side!(
-    base,
-    base_vt,
-    "base",
-    back: |s, offset| s.row_from_bottom(offset),
-    up: |s, id| s.offset_for_row(id),
-    window: |s, offset| {
-        let (rows, cols) = s.size().into();
-        s.window(offset, rows, cols)
-    },
-    rgb_of: |c| match c {
-        vt::Color::Rgb(r, g, b) => Some((r, g, b)),
-        _other => None,
-    },
-    rgb: vt::Color::Rgb,
-);
+side!(work, fux_vt, "work");
+side!(base, base_vt, "base");
 
 /// The commit's error for a size of no rows or no columns, as read.
 fn zero_size() -> crate::model::Error {

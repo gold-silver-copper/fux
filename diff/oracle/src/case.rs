@@ -264,9 +264,6 @@ const LAST: usize = 1;
 const OLDER: usize = 2;
 
 fn run<A: Side, B: Side>(case: &Case) -> Result<Count, Difference> {
-    // The approved exemptions taken out of the output (`exempt`).
-    let filtered = crate::exempt::case(case);
-    let case = &filtered;
     let mut count = Count::default();
     let Some((mut a, mut b)) = make::<A, B>(case)? else {
         return Ok(count);
