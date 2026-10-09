@@ -167,9 +167,9 @@ impl Screen {
 struct PaintClock {
     /// `PAINT` after the last paint.
     next: Instant,
-    /// When the panes will have been quiet for `QUIET`, if output came
-    /// before `next`.
-    settled: Option<Instant>,
+    /// When the next paint may be made: `next`, or once the panes are
+    /// quiet for `QUIET` if output came before it.
+    due: Instant,
     /// The pane the client last typed into, until it writes: what it writes
     /// then, a keystroke's echo, is painted at once, not held to `PAINT`
     /// behind a pane that keeps the screen changing (tmux paints it at
@@ -178,40 +178,20 @@ struct PaintClock {
 }
 
 impl PaintClock {
-    fn new() -> PaintClock {
-        PaintClock {
-            next: Instant::now(),
-            settled: None,
-            echo: None,
-        }
-    }
-    /// When the next paint may be made.
-    fn due(&self) -> Instant {
-        self.settled
-            .map_or(self.next, |settled| settled.min(self.next))
-    }
     /// A paint was made at `now`.
     fn painted(&mut self, now: Instant) {
         self.next = crate::after(now, PAINT);
-        self.settled = None;
+        self.due = self.next;
     }
-    /// The client typed into `pane`, its focus, if any.
-    fn typed_into(&mut self, pane: Option<PaneId>) {
-        self.echo = pane;
-    }
-    /// Pane `pane` wrote: if it is the pane typed into, its echo is painted
-    /// at once.
-    fn wrote(&mut self, pane: PaneId) {
+    /// Pane `pane` wrote, read at `now`: the echo of a keystroke into it is
+    /// painted at once, other output held to `PAINT` once the panes are
+    /// quiet for `QUIET`.
+    fn output(&mut self, pane: PaneId, now: Instant) {
         if self.echo == Some(pane) {
             self.echo = None;
-            self.next = Instant::now();
-        }
-    }
-    /// Panes wrote, read at `now`: output held to `PAINT` is painted once
-    /// the panes are quiet for `QUIET`.
-    fn output(&mut self, now: Instant) {
-        if now < self.next {
-            self.settled = Some(crate::after(now, QUIET));
+            (self.next, self.due) = (now, now);
+        } else if now < self.next {
+            self.due = crate::after(now, QUIET).min(self.next);
         }
     }
 }
@@ -267,6 +247,7 @@ fn write_out(fd: impl std::os::fd::AsFd, out: &mut ByteQueue) -> bool {
 
 impl Attached {
     fn new(client: ClientId, tty: Option<TakenTerminal>) -> Attached {
+        let now = Instant::now();
         Attached {
             client,
             tty,
@@ -274,7 +255,11 @@ impl Attached {
             screen: Screen::Unknown,
             spare: Grid::new(0, 0),
             placement: Placement::default(),
-            clock: PaintClock::new(),
+            clock: PaintClock {
+                next: now,
+                due: now,
+                echo: None,
+            },
         }
     }
 
@@ -283,7 +268,7 @@ impl Attached {
     /// painted at once.
     fn input(&mut self, session: &mut Session, bytes: &[u8], now: Instant) {
         session.input_at(self.client, bytes, now);
-        self.clock.typed_into(session.focused(self.client));
+        self.clock.echo = session.focused(self.client);
     }
 
     /// Bytes for the client's terminal, a paint's or what the session sends
@@ -325,7 +310,7 @@ impl Conn {
         };
         let dirty = session.views.get(&attached.client)?.dirty;
         let starved = attached.screen == Screen::Starved && self.pending() != 0;
-        (dirty && !starved).then_some(attached.clock.due())
+        (dirty && !starved).then_some(attached.clock.due)
     }
 
     /// Whether `client` is attached here.
@@ -1155,10 +1140,6 @@ impl Server {
                     // Past PANE_READ by at most one buffer, when the loop ends.
                     total = total.saturating_add(n);
                     self.session.output(id, buffer.get(..n).unwrap_or_default());
-                    // A keystroke's echo is painted at once.
-                    for attached in self.conns.iter_mut().filter_map(Conn::attached) {
-                        attached.clock.wrote(id);
-                    }
                     // A little, as an echo or a prompt is: that was all,
                     // and the poll says when there is more, without a read
                     // to find none. A flood's reads are larger, and go on.
@@ -1175,11 +1156,10 @@ impl Server {
                 }
             }
         }
-        // Output held to `PAINT` is painted once the panes are quiet.
         if total > 0 {
             let now = Instant::now();
             for attached in self.conns.iter_mut().filter_map(Conn::attached) {
-                attached.clock.output(now);
+                attached.clock.output(id, now);
             }
         }
         if ended {
