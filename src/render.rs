@@ -1745,13 +1745,7 @@ mod tests {
         for case in 0..30 {
             let (mut s, c) = crate::session::testing::attached(10, 40)?;
             if r.below(3) == 0 {
-                let argv = [
-                    "split".to_owned(),
-                    "-h".to_owned(),
-                    "-t".to_owned(),
-                    "%1".to_owned(),
-                ];
-                s.run(&argv, &crate::session::Origin::default());
+                crate::session::testing::run(&mut s, "split -h -t %1")?;
             }
             let mut fast = terminal(10, 40)?;
             let mut whole = terminal(10, 40)?;
@@ -1835,8 +1829,7 @@ mod tests {
                 match r.below(12) {
                     0 => {
                         let line = commands.get(r.below(commands.len())).copied().unwrap_or("");
-                        let argv: Vec<String> = line.split(' ').map(str::to_owned).collect();
-                        s.run(&argv, &crate::session::Origin::default());
+                        let _ = crate::session::testing::run(&mut s, line);
                     }
                     1 => s.input(c, b"\x1b"),
                     2 => {
@@ -1845,13 +1838,7 @@ mod tests {
                         s.resize(c, rows, cols);
                     }
                     3 => {
-                        let argv = [
-                            "rename".to_owned(),
-                            "-t".to_owned(),
-                            "@1".to_owned(),
-                            "n".to_owned(),
-                        ];
-                        s.run(&argv, &crate::session::Origin::default());
+                        crate::session::testing::run(&mut s, "rename -t @1 n")?;
                     }
                     _ => {
                         let panes: Vec<PaneId> = s.panes.keys().copied().collect();
@@ -2008,11 +1995,7 @@ mod tests {
         let (mut s, c) = crate::session::testing::attached(12, 50)?;
         s.output(PaneId::of(1), b"first screen\r\n\x1b[5 q");
         let before = compose(&s, c).ok_or("a screen")?;
-        let outcome = s.run(
-            &["split".to_owned(), "-h".to_owned()],
-            &crate::session::Origin::Client(c),
-        );
-        assert_eq!(outcome.status, 0, "{}", outcome.stderr);
+        crate::session::testing::run(&mut s, "split -h -t %1")?;
         // The focused pane hides its cursor, and a smaller client makes the
         // panes smaller than their places: compose leaves cells untouched.
         s.output(PaneId::of(2), "界 second\r\n\x1b[?25l".as_bytes());
@@ -2345,11 +2328,7 @@ mod tests {
     #[test]
     fn a_panes_palette_is_painted_and_stays_the_panes() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 41)?;
-        let outcome = s.run(
-            &["split".to_owned(), "-h".to_owned()],
-            &crate::session::Origin::Client(c),
-        );
-        assert_eq!(outcome.status, 0, "{}", outcome.stderr);
+        crate::session::testing::run(&mut s, "split -h -t %1")?;
         let set = b"\x1b]4;1;#ff0000\x1b\\\x1b]10;rgb:11/22/33;#000080\x07";
         s.output(PaneId::of(1), &[&set[..], b"\x1b[31mR\x1b[39mD"].concat());
         s.output(PaneId::of(2), b"\x1b[31mR\x1b[39mD");
@@ -2423,11 +2402,7 @@ mod tests {
     #[test]
     fn hyperlinks_are_painted_with_their_panes_ids() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 41)?;
-        let outcome = s.run(
-            &["split".to_owned(), "-h".to_owned()],
-            &crate::session::Origin::Client(c),
-        );
-        assert_eq!(outcome.status, 0, "{}", outcome.stderr);
+        crate::session::testing::run(&mut s, "split -h -t %1")?;
         let linked = b"a\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\b";
         s.output(PaneId::of(1), linked);
         s.output(PaneId::of(2), linked);
