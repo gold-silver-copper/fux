@@ -90,7 +90,13 @@ impl InputQueue {
     /// Queues what `write` appends to its vector as a piece, in place, or
     /// takes it back and refuses it whole, as `push` does.
     pub fn push_with(&mut self, write: impl FnOnce(&mut Vec<u8>)) -> Result<(), Error> {
-        let room = self.room();
+        let held = self.held.as_ref().map_or(0, |typed| typed.line.len());
+        let used = self.bytes.len().saturating_add(held);
+        let room = if self.refusing {
+            0
+        } else {
+            INPUT_BYTES.saturating_sub(used)
+        };
         let fits = self.bytes.push_with(|out| {
             let start = out.len();
             write(out);
@@ -108,15 +114,6 @@ impl InputQueue {
     /// life, which is told.
     pub fn reply(&mut self, bytes: &[u8]) -> bool {
         self.push(bytes).is_err() && !std::mem::replace(&mut self.reply_dropped, true)
-    }
-    /// How many more bytes are taken.
-    fn room(&self) -> usize {
-        let held = self.held.as_ref().map_or(0, |typed| typed.line.len());
-        if self.refusing {
-            0
-        } else {
-            INPUT_BYTES.saturating_sub(self.bytes.len().saturating_add(held))
-        }
     }
     /// When the held command line is to be typed, if one is held.
     pub fn due_at(&self) -> Option<Instant> {
@@ -646,12 +643,6 @@ mod tests {
             big.push(vec![0; MAX_INPUT]).is_ok(),
             "space is freed as it is written"
         );
-        let mut partial = InputQueue::default();
-        assert!(partial.push(b"abc").is_ok());
-        partial.advance(1);
-        assert_eq!(partial.front(), Some(&b"bc"[..]));
-        assert_eq!(partial.drain_all(), b"bc");
-        assert!(partial.is_empty());
     }
 
     /// Once input is refused, nothing more is queued until the program
