@@ -248,8 +248,8 @@ row's slot, and history.
 - **The alternate screen** has no history, and no cells until first shown;
   RIS and resizes keep an unmade one unmade.
 - **Identity.** Every row has a `RowId`, kept through edits and scrolling
-  while it is retained, and never reused; running out is
-  `Error::IdentityExhausted`. A row's version changes with each edit that
+  while it is retained, and never reused: 64 bits counted by one do not
+  run out. A row's version changes with each edit that
   changes its cells, links or soft wrap, and nothing else: erasing blanks,
   or rewriting a glyph as it was, keeps it; ICH and DCH always change it.
 - **Limits.** A `Size` has no zero to refuse: `Size::new` refuses one.

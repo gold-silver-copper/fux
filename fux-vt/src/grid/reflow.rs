@@ -86,7 +86,7 @@ impl Grid {
         self.reflow(usize::from(cols), marks, &mut copy)?;
         // Blank rows under the last line, if the lines do not fill the screen.
         while replacement.order.len() < screen {
-            let meta = Meta::new(next_id(next)?, version, cols, false, 0);
+            let meta = Meta::new(next_id(next), version, cols, false, 0);
             replacement.push_screen_row(meta, &[], None, None);
         }
         Ok(replacement)
@@ -568,7 +568,7 @@ impl Reflow for Fill<'_> {
         }
         let id = match id {
             Some(id) => id,
-            None => next_id(self.next)?,
+            None => next_id(self.next),
         };
         let cols = self.grid.size.cols();
         // The row's `used` mark is where its cells laid out end, so the
