@@ -836,9 +836,11 @@ mod tests {
             session.input(client, name.as_bytes());
             session.input(client, b"\r");
             assert_eq!(notice(&session, client), "", "{open}");
-            let target = crate::command::parse_any(read).map_err(|e| e.to_string())?;
-            let target = session.resolve(&target).map_err(|e| e.to_string())?;
-            assert_eq!(session.name_of(target), name, "{open}");
+            let listed = crate::session::testing::output(&mut session, "ls")?;
+            assert!(
+                listed.contains(&format!("{read} {name}")),
+                "{open}: {listed}"
+            );
         }
         Ok(())
     }
