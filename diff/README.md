@@ -156,11 +156,10 @@ public API (`oracle/src/side.rs`) after every step:
   `continues_cluster`, and the constants and limits.
 
 Not compared: allocation failure itself (forcing one needs `unsafe`; the
-sizes fux-vt refuses before allocating are compared instead);
-`Error::IdentityExhausted` (2^64 rows); `Debug` output, which a storage
-redesign changes on purpose (`RowId` and `Mark` are compared by number);
-`process` and `process_with_replies`, which are `process_with` with less
-kept.
+sizes fux-vt refuses before allocating are compared instead); `Debug`
+output, which a storage redesign changes on purpose (`RowId` and `Mark` are
+compared by number); `process` and `process_with_replies`, which are
+`process_with` with less kept.
 
 ### The inputs
 

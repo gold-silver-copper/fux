@@ -257,8 +257,6 @@ impl<'a> Row<'a> {
 pub enum Error {
     /// More rows or cells than a grid may hold, or an allocation that failed.
     Capacity,
-    /// Row identities or versions ran out: they are never reused.
-    IdentityExhausted,
     /// A copy longer than its cell or byte limit.
     CopyLimit,
     /// A copy endpoint outside the window.
@@ -268,7 +266,6 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Capacity => "terminal allocation limit exceeded",
-            Self::IdentityExhausted => "terminal identity/version space exhausted",
             Self::CopyLimit => "copy cell or byte limit exceeded",
             Self::InvalidRange => "copy range is outside the visible window",
         })

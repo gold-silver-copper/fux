@@ -538,7 +538,6 @@ macro_rules! side {
                     }
                     for e in [
                         vt::Error::Capacity,
-                        vt::Error::IdentityExhausted,
                         vt::Error::CopyLimit,
                         vt::Error::InvalidRange,
                     ] {

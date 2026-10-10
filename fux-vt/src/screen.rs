@@ -555,12 +555,10 @@ impl Screen {
         }
         id
     }
-    pub(crate) fn begin(&mut self) -> Result<(), Error> {
-        self.version = self
-            .version
-            .checked_add(1)
-            .ok_or(Error::IdentityExhausted)?;
-        Ok(())
+    /// A new version, for what is processed next: like identities, 64 bits
+    /// counted up by one do not run out.
+    pub(crate) fn begin(&mut self) {
+        self.version = self.version.wrapping_add(1);
     }
     /// The screen's rows and columns.
     pub fn size(&self) -> Size {
@@ -890,10 +888,7 @@ impl Screen {
             return Ok(());
         }
         self.last_print = None;
-        let version = self
-            .version
-            .checked_add(1)
-            .ok_or(Error::IdentityExhausted)?;
+        let version = self.version.wrapping_add(1);
         let mut next = self.next_id;
         let mut primary = if reflow {
             self.primary.reflowed(size, &mut next, version)?
@@ -928,7 +923,7 @@ impl Screen {
         history: bool,
     ) -> Result<(), Error> {
         // A bounded multi-row scroll can fail after earlier rows have moved
-        // (allocation/identity exhaustion). Even that partial result must
+        // (allocation failure). Even that partial result must
         // invalidate every reader's window, not just its newly blank rows.
         self.structural = self.version;
         // The rows brought in take the pen's colours (`bce`), as in xterm.
@@ -1617,8 +1612,6 @@ impl Screen {
                     .iter()
                     .all(|g| g.recyclable() && g.size() == size);
                 if recycle {
-                    let needed = u64::from(size.rows()).saturating_mul(2);
-                    next.checked_add(needed).ok_or(Error::IdentityExhausted)?;
                     self.primary.clear(&mut next, self.version)?;
                     self.alternate.clear(&mut next, self.version)?;
                 } else {

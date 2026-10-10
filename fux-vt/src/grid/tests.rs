@@ -354,7 +354,7 @@ fn scrolling_between_full_margins_is_scrolling_rows() -> Result<(), Error> {
             Scroll::Down
         };
         let region = Span::of(top, bottom);
-        by_rows.scroll_region(region, count, direction, blank, &mut next, 1_000)?;
+        by_rows.scroll_region(region, count, direction, blank, &mut next, 1_000);
         by_cells.scroll_columns(region, count, up, blank, 1_000);
         for y in 0..rows {
             let (a, b) = (read_row(&by_rows, y), read_row(&by_cells, y));

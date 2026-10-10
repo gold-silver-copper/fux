@@ -289,10 +289,12 @@ pub(crate) enum Scroll {
     Down,
 }
 
-pub(crate) fn next_id(next: &mut u64) -> Result<RowId, Error> {
+/// The identity `next` holds, and the next one: 64 bits counted up by one
+/// do not run out, so none is ever reused.
+pub(crate) fn next_id(next: &mut u64) -> RowId {
     let id = *next;
-    *next = next.checked_add(1).ok_or(Error::IdentityExhausted)?;
-    Ok(RowId(id))
+    *next = next.wrapping_add(1);
+    RowId(id)
 }
 
 impl Grid {
@@ -359,7 +361,7 @@ impl Grid {
         };
         grid.reserve_screen()?;
         for _ in 0..size.rows() {
-            let id = next_id(next)?;
+            let id = next_id(next);
             grid.push_screen_row(
                 Meta::new(id, version, size.cols(), false, 0),
                 &[],
@@ -1257,7 +1259,8 @@ impl Grid {
             }
             return Ok(());
         }
-        self.scroll_region(region, count, direction, blank, next, version)
+        self.scroll_region(region, count, direction, blank, next, version);
+        Ok(())
     }
 
     /// A scroll inside left and right margins (DEC STD 070, 5.4.3; xterm's
@@ -1399,11 +1402,11 @@ impl Grid {
         blank: u32,
         next: &mut u64,
         version: u64,
-    ) -> Result<(), Error> {
+    ) {
         let up = direction != Scroll::Down;
         let (top, bottom) = (region.first(), region.last());
         for _ in 0..count.min(region.len()) {
-            let id = next_id(next)?;
+            let id = next_id(next);
             let (from, to) = if up { (top, bottom) } else { (bottom, top) };
             if let Some(slot) = self.move_row(usize::from(from), usize::from(to)) {
                 self.recycle(slot, id, version);
@@ -1415,14 +1418,12 @@ impl Grid {
                 self.wrap(bottom, false, version);
             }
         }
-        Ok(())
     }
 
     /// Moves the screen's top row into history, the oldest row there going
     /// if there are more than the limit, and puts a new blank row under
     /// the screen's last, in style `blank`, with a new identity, in the top
-    /// row's slot. Nothing moves if there is no identity or no room in
-    /// history.
+    /// row's slot. Nothing moves if there is no room in history.
     #[inline]
     fn scroll_into_history(
         &mut self,
@@ -1430,8 +1431,6 @@ impl Grid {
         next: &mut u64,
         version: u64,
     ) -> Result<(), Error> {
-        // An identity for the new row, taken once nothing can fail.
-        let after = next.checked_add(1).ok_or(Error::IdentityExhausted)?;
         let Some(&slot) = self.order.front() else {
             return Ok(());
         };
@@ -1448,8 +1447,7 @@ impl Grid {
         if self.history.len() > self.history_limit {
             self.history.pop();
         }
-        let id = RowId(*next);
-        *next = after;
+        let id = next_id(next);
         if taken {
             // Its cells are blank, and it has neither text nor links: it
             // is a new row once it has a new identity.
@@ -1623,7 +1621,7 @@ impl Grid {
             let is_history = p < new_history;
             let id = match old {
                 Some(r) => r.id,
-                None => next_id(next)?,
+                None => next_id(next),
             };
             let width = match old {
                 // A row is never wider than the u16 grid it was made in.
@@ -1691,13 +1689,8 @@ impl Grid {
             *self = grid;
             return Ok(());
         }
-        // `new` would run out of identities partway, having taken those
-        // before; the rows are left as they were.
-        if next.checked_add(u64::from(self.size.rows())).is_none() {
-            *next = u64::MAX;
-            return Err(Error::IdentityExhausted);
-        }
-        self.renew(next, version)
+        self.renew(next, version);
+        Ok(())
     }
 
     /// Whether `clear` can start the grid again in the storage it has: it
@@ -1713,11 +1706,10 @@ impl Grid {
     }
 
     /// Blanks every row of a recyclable grid and gives each a new identity,
-    /// top to bottom; the cursors, origin and margins are reset. `next` must
-    /// have identities enough.
-    fn renew(&mut self, next: &mut u64, version: u64) -> Result<(), Error> {
+    /// top to bottom; the cursors, origin and margins are reset.
+    fn renew(&mut self, next: &mut u64, version: u64) {
         for index in 0..self.order.len() {
-            let id = next_id(next)?;
+            let id = next_id(next);
             if let Some(&slot) = self.order.get(index) {
                 self.recycle(slot, id, version);
             }
@@ -1729,7 +1721,6 @@ impl Grid {
         self.cursor = Cursor::default();
         self.saved = Cursor::default();
         self.reset_margins();
-        Ok(())
     }
     /// Whether every slot's cells from `used` to its width are blank, as
     /// recycling relies on; an unmade grid's are all blank.
