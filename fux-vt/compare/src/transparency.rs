@@ -118,18 +118,18 @@ const OUTSIDE: (u16, u16) = (u16::MAX, u16::MAX);
 /// cursor relative to it ([`OUTSIDE`] if it is not in it), and the rest as
 /// it was.
 pub fn crop(s: &Snapshot, rect: Rect) -> Snapshot {
-    let (x, y) = (usize::from(rect.x), usize::from(rect.y));
+    let (x, y) = (usize::from(rect.x()), usize::from(rect.y()));
     let screen = s
         .screen
         .iter()
         .skip(y)
-        .take(usize::from(rect.h))
+        .take(usize::from(rect.h()))
         .map(|line| Line {
             cells: line
                 .cells
                 .iter()
                 .skip(x)
-                .take(usize::from(rect.w))
+                .take(usize::from(rect.w()))
                 .cloned()
                 .collect(),
             wrapped: line.wrapped,
@@ -138,18 +138,18 @@ pub fn crop(s: &Snapshot, rect: Rect) -> Snapshot {
         })
         .collect();
     let (cy, cx) = s.cursor;
-    let inside = cy >= rect.y
-        && cx >= rect.x
-        && cy.saturating_sub(rect.y) < rect.h
-        && cx.saturating_sub(rect.x) < rect.w;
+    let inside = cy >= rect.y()
+        && cx >= rect.x()
+        && cy.saturating_sub(rect.y()) < rect.h()
+        && cx.saturating_sub(rect.x()) < rect.w();
     let cursor = if inside {
-        (cy.saturating_sub(rect.y), cx.saturating_sub(rect.x))
+        (cy.saturating_sub(rect.y()), cx.saturating_sub(rect.x()))
     } else {
         OUTSIDE
     };
     Snapshot {
-        rows: rect.h,
-        cols: rect.w,
+        rows: rect.h(),
+        cols: rect.w(),
         cursor,
         screen,
         ..s.clone()
@@ -253,10 +253,11 @@ impl Through {
             [(pane, rect)] => (*pane, *rect),
             _ => return Err("fux: not one pane on the client's screen".into()),
         };
-        if (rect.h, rect.w) != (rows, cols) {
+        if (rect.h(), rect.w()) != (rows, cols) {
             return Err(format!(
                 "fux: the pane is {}x{}, not {rows}x{cols}",
-                rect.h, rect.w
+                rect.h(),
+                rect.w()
             ));
         }
         let mut terminal = terminal(kind, client_rows, cols)?;
@@ -293,10 +294,11 @@ impl Through {
             [(_, rect)] => *rect,
             _ => return Err("fux: not one pane on the client's screen".into()),
         };
-        if (self.rect.h, self.rect.w) != (rows, cols) {
+        if (self.rect.h(), self.rect.w()) != (rows, cols) {
             return Err(format!(
                 "fux: the pane is {}x{} after a resize, not {rows}x{cols}",
-                self.rect.h, self.rect.w
+                self.rect.h(),
+                self.rect.w()
             ));
         }
         Ok(())
@@ -969,15 +971,7 @@ impl Mux {
             Mux::Tmux => rows.checked_add(1).ok_or("too many rows")?,
             Mux::Zellij | Mux::Herdr => rows,
         };
-        Ok((
-            client_rows,
-            Rect {
-                x: 0,
-                y: 0,
-                w: cols,
-                h: rows,
-            },
-        ))
+        Ok((client_rows, Rect::screen(rows, cols)))
     }
 }
 
@@ -1628,12 +1622,12 @@ mod tests {
             screen: vec![line("abcd"), line("efgh"), line("ijkl")],
             ..Snapshot::default()
         };
-        let rect = |x, y, w, h| Rect { x, y, w, h };
-        let inner = crop(&screen, rect(1, 1, 3, 2));
+        // Rows 1 and 2, columns 1 to 3.
+        let inner = crop(&screen, Rect::screen(3, 4).corner(2, 3));
         assert_eq!((inner.rows, inner.cols, inner.cursor), (2, 3, (1, 2)));
         let texts: Vec<String> = inner.screen.iter().map(Line::text).collect();
         assert_eq!(texts, ["fgh", "jkl"]);
-        assert_eq!(crop(&screen, rect(0, 0, 4, 2)).cursor, super::OUTSIDE);
+        assert_eq!(crop(&screen, Rect::screen(2, 4)).cursor, super::OUTSIDE);
     }
 
     /// Where a hidden cursor is shows nowhere; a cursor that shows on one
