@@ -979,7 +979,9 @@ pub fn run(options: &Options) -> Result<bool, String> {
         );
     }
     // Short: fux's socket goes in it.
-    let dir = PathBuf::from(format!("/tmp/fux-feel-{}", std::process::id()));
+    let dir = fuxix::file::scratch()
+        .map_err(|e| e.to_string())?
+        .join(format!("fux-feel-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     private(&dir)?;
     let place = Place {

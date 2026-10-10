@@ -250,8 +250,9 @@ mod tests {
     use super::*;
     use std::os::unix::net::{UnixListener, UnixStream};
 
-    fn scratch(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("fuxix-{name}-{}", std::process::id()))
+    fn scratch(name: &str) -> std::result::Result<std::path::PathBuf, String> {
+        let dir = crate::file::scratch().map_err(|e| e.to_string())?;
+        Ok(dir.join(format!("fuxix-{name}-{}", std::process::id())))
     }
 
     /// A descriptor sent with bytes arrives with them, for the same open
@@ -281,7 +282,7 @@ mod tests {
 
     #[test]
     fn a_socket_binds_listens_and_is_connected_to() -> std::result::Result<(), String> {
-        let dir = scratch("bind");
+        let dir = scratch("bind")?;
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join("s.sock");

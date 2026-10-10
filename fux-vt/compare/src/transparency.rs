@@ -1064,11 +1064,13 @@ impl Client {
             Mux::Zellij => {
                 // A socket's path is short: zellij adds a directory of its
                 // own and the session's name to this one.
-                let sockets = PathBuf::from(format!(
-                    "/tmp/fux-vt-compare-z{}-{}",
-                    std::process::id(),
-                    pane::serial()
-                ));
+                let sockets = fuxix::file::scratch()
+                    .map_err(|e| e.to_string())?
+                    .join(format!(
+                        "fux-vt-compare-z{}-{}",
+                        std::process::id(),
+                        pane::serial()
+                    ));
                 std::fs::create_dir_all(&sockets)
                     .map_err(|e| format!("{}: {e}", sockets.display()))?;
                 std::os::unix::fs::symlink(&sockets, dir.join("sockets"))
@@ -1103,11 +1105,13 @@ impl Client {
             Mux::Herdr => {
                 // Its socket is in its config directory, whose path must
                 // stay short.
-                let config = PathBuf::from(format!(
-                    "/tmp/fux-vt-compare-h{}-{}",
-                    std::process::id(),
-                    pane::serial()
-                ));
+                let config = fuxix::file::scratch()
+                    .map_err(|e| e.to_string())?
+                    .join(format!(
+                        "fux-vt-compare-h{}-{}",
+                        std::process::id(),
+                        pane::serial()
+                    ));
                 std::fs::create_dir_all(config.join("herdr"))
                     .map_err(|e| format!("{}: {e}", config.display()))?;
                 std::os::unix::fs::symlink(&config, dir.join("sockets"))

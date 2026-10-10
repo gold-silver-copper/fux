@@ -933,7 +933,9 @@ mod tests {
             )
         );
         // In a config file, such a line is an error naming its line.
-        let dir = std::env::temp_dir().join(format!("fux-config-parse-{}", std::process::id()));
+        let dir = fuxix::file::scratch()
+            .map_err(|e| e.to_string())?
+            .join(format!("fux-config-parse-{}", std::process::id()));
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join("fux.conf");
         std::fs::write(&path, "set prefix C-a\nbind g nope\n").map_err(|e| e.to_string())?;
@@ -1071,7 +1073,9 @@ mod tests {
     /// without bound.
     #[test]
     fn a_config_file_over_a_mebibyte_is_refused() -> Result<(), String> {
-        let dir = std::env::temp_dir().join(format!("fux-config-big-{}", std::process::id()));
+        let dir = fuxix::file::scratch()
+            .map_err(|e| e.to_string())?
+            .join(format!("fux-config-big-{}", std::process::id()));
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join("fux.conf");
         // Comments only: read whole, it would apply as the defaults.
@@ -1093,7 +1097,7 @@ mod tests {
 
     #[test]
     fn a_file_applies_whole_or_names_its_bad_line() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = std::env::temp_dir().join(format!("fux-config-{}", std::process::id()));
+        let dir = fuxix::file::scratch()?.join(format!("fux-config-{}", std::process::id()));
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join("fux.conf");
         std::fs::write(

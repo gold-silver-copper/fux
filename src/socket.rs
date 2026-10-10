@@ -556,11 +556,8 @@ mod tests {
         bind_socket(&checked(&path.to_string_lossy(), "test")?)
     }
 
-    fn scratch(name: &str) -> PathBuf {
-        let base = std::env::temp_dir()
-            .canonicalize()
-            .unwrap_or_else(|_| std::env::temp_dir());
-        base.join(format!("fux-socket-{name}-{}", std::process::id()))
+    fn scratch(name: &str) -> std::io::Result<PathBuf> {
+        Ok(fuxix::file::scratch()?.join(format!("fux-socket-{name}-{}", std::process::id())))
     }
 
     #[test]
@@ -621,7 +618,7 @@ mod tests {
     #[test]
     fn bind_is_private_single_owner_and_cleans_up_only_its_own_socket()
     -> Result<(), Box<dyn std::error::Error>> {
-        let root = scratch("bind");
+        let root = scratch("bind")?;
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
@@ -698,7 +695,7 @@ mod tests {
     #[test]
     fn cleanup_leaves_a_socket_that_replaced_ours_where_inodes_are_reused()
     -> Result<(), Box<dyn std::error::Error>> {
-        let root = scratch("reuse");
+        let root = scratch("reuse")?;
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("fux")).map_err(|e| e.to_string())?;
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
@@ -745,7 +742,7 @@ mod tests {
 
     #[test]
     fn a_shared_directory_is_refused() -> Result<(), Box<dyn std::error::Error>> {
-        let root = scratch("shared");
+        let root = scratch("shared")?;
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("fux")).map_err(|e| e.to_string())?;
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;

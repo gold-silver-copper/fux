@@ -714,14 +714,16 @@ impl Drop for Server {
 static SERVERS: AtomicUsize = AtomicUsize::new(0);
 
 /// Starts a fux server whose panes run `argv`, in a directory of its own
-/// under `/tmp` (a socket's path must stay under 104 bytes), as fux's own
-/// tests start one (`tests/support/mod.rs`); never the user's.
+/// under `fuxix::file::scratch`, as fux's own tests start one
+/// (`tests/support/mod.rs`); never the user's.
 fn server(fux: &Path, argv: &[String]) -> Result<Server, String> {
-    let dir = Path::new("/tmp").join(format!(
-        "fux-esctest-{}-{}",
-        std::process::id(),
-        SERVERS.fetch_add(1, Ordering::SeqCst)
-    ));
+    let dir = fuxix::file::scratch()
+        .map_err(|e| e.to_string())?
+        .join(format!(
+            "fux-esctest-{}-{}",
+            std::process::id(),
+            SERVERS.fetch_add(1, Ordering::SeqCst)
+        ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let quoted: Vec<String> = argv.iter().map(|w| format!("'{w}'")).collect();
@@ -1303,9 +1305,12 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         }
         None => None,
     };
-    let scratch = request.logs.clone().unwrap_or_else(|| {
-        std::env::temp_dir().join(format!("fux-vt-esctest-{}", std::process::id()))
-    });
+    let scratch = match request.logs.clone() {
+        Some(logs) => logs,
+        None => fuxix::file::scratch()
+            .map_err(|e| e.to_string())?
+            .join(format!("fux-vt-esctest-{}", std::process::id())),
+    };
     std::fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
     let job = Job {
         request: &request,

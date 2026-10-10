@@ -241,7 +241,7 @@ fn a_typed_command_survives_a_startup_that_writes_then_discards_input() -> Outco
 /// One attempt: `Err` inside if the premise did not hold, and nothing was
 /// tested.
 fn typed_command_after_a_noisy_startup() -> Result<Result<(), String>, String> {
-    let dir = std::env::temp_dir().canonicalize().map_err(e)?;
+    let dir = fuxix::file::scratch().map_err(e)?;
     let script = dir.join(format!("fux-noisy-startup-{}.py", std::process::id()));
     let timing = dir.join(format!("fux-noisy-timing-{}", std::process::id()));
     let _ = std::fs::remove_file(&timing);
