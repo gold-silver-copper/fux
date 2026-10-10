@@ -69,11 +69,11 @@ fn cells_past_a_rows_used_mark_stay_blank() -> Result<(), Error> {
 }
 
 /// What each grid counts its links to cost is within the bound, and never
-/// short of what the links its rows (and slots recycled since) and the open
-/// link have cost, whatever the rows went through: printing over links,
-/// inserting and deleting characters, erasing, scrolling into and out of
-/// history, both screens, resizes with and without reflow, RIS, and making
-/// room when the links fill their bound.
+/// short of what the links its rows and the open link have cost, whatever
+/// the rows went through: printing over links, inserting and deleting
+/// characters, erasing, scrolling into and out of history, both screens,
+/// resizes with and without reflow, RIS, and making room when the links
+/// fill their bound.
 #[test]
 fn the_links_counted_cover_the_rows() -> Result<(), Error> {
     let check = |p: &crate::Parser, step: &str| {
