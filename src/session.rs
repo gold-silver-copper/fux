@@ -10,7 +10,7 @@ use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::Json;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
-use crate::overlay::{Column, Repeat};
+use crate::overlay::{Column, Repeat, pane_chooser};
 use crate::pane::{InputQueue, Pane, Process, Typed};
 use crate::process::Child;
 use crate::view::{Choice, Mode, View};
@@ -86,6 +86,9 @@ pub struct Place {
     pub tab: TabId,
     pub pane: Option<PaneId>,
 }
+
+/// Where a select command takes a client: a workspace, and a tab and pane.
+type Picked = (WsId, Option<TabId>, Option<PaneId>);
 
 /// What a command that names nothing acts on, found once from its origin.
 #[derive(Clone, Copy)]
@@ -1163,35 +1166,29 @@ impl Session {
     /// Why a command cannot run now, if it cannot: menus and the command
     /// column dim such entries, and running one says why.
     pub fn unavailable(&self, command: &Command, client: ClientId) -> Option<Error> {
-        let Some(place) = self.place(client) else {
+        let (Some(place), Some(view)) = (self.place(client), self.views.get(&client)) else {
             return Some(Error::NoClient(client));
         };
-        // Going to the next or previous one needs another.
-        let alone = |kind, count: usize| (count < 2).then_some(Error::OnlyOne(kind));
+        let here = Here::Client(client, place);
         let action = if let Command::Client { action, .. } = command {
             Some(action)
         } else {
             None
         };
-        if matches!(
-            action,
-            Some(
-                ClientAction::SelectPane(PanePick::Step(_) | PanePick::Last)
-                    | ClientAction::ChoosePane { .. }
-            )
-        ) {
-            let mut panes = 0usize;
-            if let Some(root) = self.root(place.tab) {
-                root.for_each_pane(&mut |_| panes = panes.saturating_add(1));
-            }
-            return alone(Kind::Pane, panes);
+        if let Some(&ClientAction::SelectPane(pick)) = action {
+            return self.pick_pane(view, place, pick).err();
         }
-        if let Some(ClientAction::SelectTab(Pick::Step(_))) = action {
-            let ws = self.workspace(place.ws);
-            return alone(Kind::Tab, ws.map_or(0, |w| w.tabs().len()));
+        if let Some(&ClientAction::SelectTab(pick)) = action {
+            return self.pick_tab(place, pick).err();
         }
-        if let Some(ClientAction::SelectWorkspace(Pick::Step(_))) = action {
-            return alone(Kind::Workspace, self.workspaces.len());
+        if let Some(ClientAction::SelectWorkspace(pick)) = action {
+            return self.pick_ws(view, pick).err();
+        }
+        if let Some(&ClientAction::ChoosePane { target }) = action {
+            return self
+                .pane(target, here)
+                .and_then(|p| pane_chooser(self, p.id))
+                .err();
         }
         if let Command::PasteBuffer { index, .. } = command {
             return self
@@ -1200,7 +1197,6 @@ impl Session {
                 .is_none()
                 .then_some(Error::NoCopiedText);
         }
-        let here = Here::Client(client, place);
         if let Command::Terminate { target } = command {
             return match self.pane(*target, here) {
                 Ok(pane) => (pane.process.job().is_none()).then_some(Error::OnlyShell(pane.id)),
@@ -1495,9 +1491,9 @@ impl Session {
                 view.zoom = !view.zoom;
                 Ok(String::new())
             }
-            ClientAction::SelectPane(pick) => self.select_pane(view, place, pick),
-            ClientAction::SelectTab(pick) => self.select_tab(view, place, pick),
-            ClientAction::SelectWorkspace(ref pick) => self.select_workspace(view, pick),
+            ClientAction::SelectPane(pick) => self.select(self.pick_pane(view, place, pick)?, view),
+            ClientAction::SelectTab(pick) => self.select(self.pick_tab(place, pick)?, view),
+            ClientAction::SelectWorkspace(ref pick) => self.select(self.pick_ws(view, pick)?, view),
             ClientAction::CommandColumn => {
                 view.mode = Mode::Column(Column::root(self));
                 Ok(String::new())
@@ -1536,7 +1532,8 @@ impl Session {
             }
             ClientAction::ChoosePane { target } => {
                 let source = self.pane(target, here)?.id;
-                crate::overlay::open_pane_chooser(self, view, source)
+                view.mode = Mode::List(pane_chooser(self, source)?);
+                Ok(String::new())
             }
             ClientAction::CopyMode => crate::copy::enter(self, view, place),
         }
@@ -1692,7 +1689,15 @@ impl Session {
         moved.then_some(()).ok_or(Error::AtEnd(target.kind()))
     }
 
-    fn select_pane(&mut self, view: &mut View, at: Place, pick: PanePick) -> Result<String, Error> {
+    /// Shows client `view` where a select command picked, unzoomed.
+    fn select(&mut self, (ws, tab, pane): Picked, view: &mut View) -> Result<String, Error> {
+        self.show(view.id, ws, tab, pane);
+        view.zoom = false;
+        Ok(String::new())
+    }
+
+    /// The pane `select-pane` picks for client `view`, which is at `at`.
+    fn pick_pane(&self, view: &View, at: Place, pick: PanePick) -> Result<Picked, Error> {
         let client = view.id;
         let tab = self.tab(at.tab).ok_or(Error::NoTab(at.tab))?;
         let panes = tab.root().map_or_else(Vec::new, Tree::panes);
@@ -1713,12 +1718,11 @@ impl Session {
             }
         };
         let (ws, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
-        self.show(client, ws, Some(tab), Some(target));
-        view.zoom = false;
-        Ok(String::new())
+        Ok((ws, Some(tab), Some(target)))
     }
 
-    fn select_tab(&mut self, view: &mut View, at: Place, to: Pick<TabId>) -> Result<String, Error> {
+    /// The tab `select-tab` picks for a client at `at`.
+    fn pick_tab(&self, at: Place, to: Pick<TabId>) -> Result<Picked, Error> {
         let (ws, target) = match to {
             Pick::Id(t) => (self.tab_workspace(t)?, t),
             Pick::Step(toward) => {
@@ -1728,12 +1732,11 @@ impl Session {
                 (at.ws, next.ok_or(Error::OnlyOne(Kind::Tab))?.id)
             }
         };
-        self.show(view.id, ws, Some(target), None);
-        view.zoom = false;
-        Ok(String::new())
+        Ok((ws, Some(target), None))
     }
 
-    fn select_workspace(&mut self, view: &mut View, pick: &Pick<WsRef>) -> Result<String, Error> {
+    /// The workspace `select-workspace` picks for client `view`.
+    fn pick_ws(&self, view: &View, pick: &Pick<WsRef>) -> Result<Picked, Error> {
         let ws = match pick {
             Pick::Id(r) => self.resolve_ws(r)?,
             Pick::Step(toward) => {
@@ -1743,9 +1746,7 @@ impl Session {
                 next.ok_or(Error::OnlyOne(Kind::Workspace))?.id
             }
         };
-        self.show(view.id, ws, None, None);
-        view.zoom = false;
-        Ok(String::new())
+        Ok((ws, None, None))
     }
 
     // ------------------------------------------------------------------ ls
@@ -2507,10 +2508,15 @@ mod tests {
                 r#"the command argument "a\nb" contains the control character '\n'; it would act as a key in the shell"#
             )
         );
-        // Why a menu entry or a binding cannot run now.
+        // Why a menu entry or a binding cannot run now: as running it says.
+        // The client's tab has one pane; workspace two's, two.
+        run(&mut s, "split -h -t %2")?;
         let client = "c1".parse()?;
         for (line, reason) in [
             ("select-pane --next", Some("only one pane")),
+            ("select-pane --last", Some("no previously focused pane")),
+            ("select-pane -L", Some("no pane left of %1")),
+            ("choose-pane -t %2", None),
             ("select-tab --next", Some("only one tab")),
             ("select-workspace --next", None),
             ("paste-buffer", Some("no copied text yet")),

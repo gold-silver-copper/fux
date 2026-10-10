@@ -395,12 +395,8 @@ fn open_chooser(
     open_list(view, title, items, moving.map(AnyRef::Pane))
 }
 
-/// The other panes of the client's tab, to swap `source` with.
-pub fn open_pane_chooser(
-    session: &Session,
-    view: &mut View,
-    source: PaneId,
-) -> Result<String, Error> {
+/// The other panes of `source`'s tab, to swap it with.
+pub fn pane_chooser(session: &Session, source: PaneId) -> Result<List, Error> {
     let mut items: Vec<Item> = Vec::new();
     let root = session
         .locate(source)
@@ -422,8 +418,12 @@ pub fn open_pane_chooser(
         });
     }
     let items = Choice::new(items).ok_or(Error::OnlyOne(Kind::Pane))?;
-    let about = Some(AnyRef::Pane(source));
-    Ok(open_list(view, format!("swap {source} with"), items, about))
+    let (title, about) = (format!("swap {source} with"), Some(AnyRef::Pane(source)));
+    Ok(List {
+        title,
+        items,
+        about,
+    })
 }
 
 // ----------------------------------------------------------------- input
