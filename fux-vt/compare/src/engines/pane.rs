@@ -22,7 +22,7 @@
 //! and the pane exits, and the terminal with it.
 //!
 //! The FIFOs and every other file live in
-//! `std::env::temp_dir()/fux-vt-compare-<pid>/`, and are removed when
+//! `fuxix::file::scratch()/fux-vt-compare-<pid>/`, and are removed when
 //! their engine is dropped (the directory too, once it is empty).
 //!
 //! # Sync
@@ -88,15 +88,18 @@ type Meanwhile<'a> = Option<&'a mut dyn FnMut() -> Result<(), String>>;
 
 /// This process's directory for FIFOs and files, made if it is missing.
 pub fn dir() -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join(format!("fux-vt-compare-{}", std::process::id()));
+    let dir = fuxix::file::scratch()
+        .map_err(|e| e.to_string())?
+        .join(format!("fux-vt-compare-{}", std::process::id()));
     fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     Ok(dir)
 }
 
 /// Removes this process's directory if nothing is left in it.
 pub fn tidy() {
-    let dir = std::env::temp_dir().join(format!("fux-vt-compare-{}", std::process::id()));
-    let _ = fs::remove_dir(dir);
+    if let Ok(dir) = fuxix::file::scratch() {
+        let _ = fs::remove_dir(dir.join(format!("fux-vt-compare-{}", std::process::id())));
+    }
 }
 
 /// A number no other call in this process gets: for names of files,

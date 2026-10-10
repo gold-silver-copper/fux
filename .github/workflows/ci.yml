@@ -123,11 +123,12 @@ jobs:
 
       - name: Socket cleanup where inode numbers are reused
         # Only a filesystem that gives a freed inode number to the next file
-        # tests the guarantee (bevy-final finding 014); ubuntu's /tmp is
-        # ext4, which does. The test says which it found.
+        # tests the guarantee (bevy-final finding 014); the runner's home,
+        # where tests make their files (fuxix::file::scratch), is ext4,
+        # which does. The test says which it found.
         run: |
           set -euo pipefail
-          df -T "${TMPDIR:-/tmp}" 2>/dev/null || df "${TMPDIR:-/tmp}"
+          df -T "${TMPDIR:-$HOME}" 2>/dev/null || df "${TMPDIR:-$HOME}"
           cargo test --locked --lib socket::tests::cleanup_leaves_a_socket_that_replaced_ours_where_inodes_are_reused -- --exact --nocapture
 
       - name: Packaging

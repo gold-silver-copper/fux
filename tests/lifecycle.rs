@@ -48,7 +48,9 @@ struct Bare {
 
 impl Bare {
     fn start(name: &str, env: &[(&str, String)], remove: &[&str]) -> Result<Bare, String> {
-        let dir = short_temp_dir()?.join(format!("fux-{name}-{}", std::process::id()));
+        let dir = fuxix::file::scratch()
+            .map_err(e)?
+            .join(format!("fux-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).map_err(e)?;
         let mut env: Vec<(String, String)> = env
@@ -127,7 +129,9 @@ type Case<'a> = (&'a [(&'a str, String)], &'a [&'a str], &'a Path);
 /// else `$TMPDIR/fux/server.sock`; the `fux` directory is made private.
 #[test]
 fn the_default_socket_is_under_xdg_runtime_dir_else_tmpdir() -> Outcome {
-    let base = short_temp_dir()?.join(format!("fux-default-{}", std::process::id()));
+    let base = fuxix::file::scratch()
+        .map_err(e)?
+        .join(format!("fux-default-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     for sub in ["run", "tmp"] {
         std::fs::create_dir_all(base.join(sub)).map_err(e)?;
@@ -172,7 +176,9 @@ fn the_default_socket_is_under_xdg_runtime_dir_else_tmpdir() -> Outcome {
 #[test]
 fn a_pane_runs_shell_else_bin_sh() -> Outcome {
     for (shell, name) in [(Some("/bin/dash"), "dash"), (None, "sh")] {
-        let dir = short_temp_dir()?.join(format!("fux-shell-{name}-{}", std::process::id()));
+        let dir = fuxix::file::scratch()
+            .map_err(e)?
+            .join(format!("fux-shell-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).map_err(e)?;
         {

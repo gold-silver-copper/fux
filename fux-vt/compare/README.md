@@ -533,8 +533,8 @@ fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt   # with fux-vt
   a listed test that passes, so the list never goes stale. A line tagged
   `[fux]` fails only in a pane, and `[direct]` only directly.
 - **In fux** (`--in-fux`): builds fux and runs each area in the only pane
-  of a fux server of its own (under `/tmp/fux-esctest-*`, never the
-  user's), with a client on a 26×80 PTY. Panes don't answer DECRQCRA, so
+  of a fux server of its own (under `fux-esctest-*` in `$TMPDIR` if it is
+  short, else `~/.cache/fux`; never the user's), with a client on a 26×80 PTY. Panes don't answer DECRQCRA, so
   tests that read cells are skipped. A test that passes in one place and
   fails in the other is printed, and points at fux.
 - **In xterm** (`--xterm`): each area also runs in a real xterm under Xvfb,

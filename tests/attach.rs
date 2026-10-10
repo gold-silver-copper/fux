@@ -243,8 +243,7 @@ fn attaching_inside_a_pane_is_refused_unless_nested() -> Outcome {
 
 #[test]
 fn attach_starts_a_server_when_none_answers() -> Outcome {
-    let dir = std::env::temp_dir()
-        .canonicalize()
+    let dir = fuxix::file::scratch()
         .map_err(e)?
         .join(format!("fux-auto-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -579,7 +578,9 @@ fn a_program_that_cannot_start_is_reported_as_before() -> Outcome {
 
 #[test]
 fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
-    let dir = short_temp_dir()?.join(format!("fux-hangup-{}", std::process::id()));
+    let dir = fuxix::file::scratch()
+        .map_err(e)?
+        .join(format!("fux-hangup-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(e)?;
     use std::os::unix::fs::PermissionsExt;
