@@ -154,11 +154,8 @@ pub struct Fixture {
 impl Fixture {
     /// A fresh server, in a fresh 0700 directory, with one client.
     pub fn start(fux: &Path) -> Result<Fixture, String> {
-        // Under /tmp, not $TMPDIR: a socket path is at most about 100
-        // bytes, and macOS's $TMPDIR alone is half of that.
         static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let dir = Path::new("/tmp")
-            .canonicalize()
+        let dir = fuxix::file::scratch()
             .map_err(|e| e.to_string())?
             .join(format!(
                 "fux-walk-{}-{}",

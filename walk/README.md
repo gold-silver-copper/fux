@@ -40,7 +40,8 @@ Walk a debug build of fux: it checks arithmetic for overflow.
 ## The fixture
 
 Each walk and replay starts a fresh `fux server` in a new 0700 directory
-under `/tmp` (macOS's `$TMPDIR` is too long for a socket path), with a
+in `$TMPDIR` if it is short, else `~/.cache/fux` (macOS's `$TMPDIR` is
+too long for a socket path, and `/tmp` is memory on some machines), with a
 config file the walk may rewrite (`set shell /bin/sh`), an environment
 cleared but for `PATH`, `HOME` set to the directory, and `act.sh`, the
 script panes act through. The first client is a `fux attach` at 24×80,

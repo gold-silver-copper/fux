@@ -109,7 +109,8 @@ the keys per latency run (default 2000). Wall time is measured; it is
 reported, never gated on.
 
 The user's own servers are never touched. Each multiplexer runs on its
-own socket and configuration under `/tmp/fux-feel-PID` (removed after):
+own socket and configuration under `fux-feel-PID` (removed after), in
+`$TMPDIR` if it is short, else `~/.cache/fux`:
 fux as `fux server --socket … --config …` with `HOME` there; tmux as `tmux
 -L fux-bench-PID-N -f /dev/null`; zellij in its own session with its
 config, data, `HOME` and `ZELLIJ_SOCKET_DIR` there, without plugins or pane

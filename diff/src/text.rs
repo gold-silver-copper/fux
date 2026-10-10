@@ -191,7 +191,9 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
         bump(&mut keys);
     }
     let mut configs = 0u64;
-    let dir = std::env::temp_dir().join(format!("fux-diff-{}", std::process::id()));
+    let dir = fuxix::file::scratch()
+        .map_err(|e| e.to_string())?
+        .join(format!("fux-diff-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     for case in 0..times(2_000, scale) {
         let config: Vec<&str> = (0..r.below(12))

@@ -681,8 +681,9 @@ mod tests {
     use serde_json::json;
 
     fn dir(name: &str) -> Result<std::path::PathBuf, String> {
-        let dir =
-            std::env::temp_dir().join(format!("fux-scoreboard-{name}-{}", std::process::id()));
+        let dir = fuxix::file::scratch()
+            .map_err(|e| e.to_string())?
+            .join(format!("fux-scoreboard-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         Ok(dir)

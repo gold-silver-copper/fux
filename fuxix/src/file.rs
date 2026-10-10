@@ -4,6 +4,26 @@
 /// path is refused, not followed.
 pub const NOFOLLOW: i32 = libc::O_NOFOLLOW;
 
+/// Where fux's tests and tools make their short-lived files and sockets,
+/// made if it is missing: `$TMPDIR` if it is set and resolves to at most
+/// 40 bytes, else `~/.cache/fux`. A socket's path must stay under 104
+/// bytes, and macOS's `$TMPDIR` alone takes half of that; `/tmp` is memory
+/// on some machines, so it is used only when `$TMPDIR` names it.
+pub fn scratch() -> std::io::Result<std::path::PathBuf> {
+    if let Some(tmp) = std::env::var_os("TMPDIR").filter(|v| !v.is_empty())
+        && let Ok(tmp) = std::fs::canonicalize(tmp)
+        && tmp.as_os_str().len() <= 40
+    {
+        return Ok(tmp);
+    }
+    let home = std::env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "HOME is not set"))?;
+    let dir = std::path::Path::new(&home).join(".cache/fux");
+    std::fs::create_dir_all(&dir)?;
+    dir.canonicalize()
+}
+
 /// A descriptor naming the file at `path`, a symbolic link refused,
 /// without opening it for reading or writing (`O_PATH`). While it is held
 /// the file's inode stays allocated, so its number cannot be given to
@@ -24,7 +44,9 @@ mod tests {
 
     #[test]
     fn a_pin_names_its_file_and_keeps_its_inode() -> std::result::Result<(), String> {
-        let path = std::env::temp_dir().join(format!("fuxix-pin-{}", std::process::id()));
+        let path = scratch()
+            .map_err(|e| e.to_string())?
+            .join(format!("fuxix-pin-{}", std::process::id()));
         std::fs::write(&path, b"x").map_err(|e| e.to_string())?;
         let pinned = pin(&path).map_err(|e| e.to_string())?;
         let inode = pinned.metadata().map_err(|e| e.to_string())?.ino();
