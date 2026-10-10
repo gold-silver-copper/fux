@@ -15,7 +15,7 @@ use std::borrow::Cow;
 use std::io::Write;
 use unicode_width::UnicodeWidthChar;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct Grid {
     pub rows: u16,
     pub cols: u16,
@@ -34,52 +34,52 @@ pub struct Grid {
     /// Whether the client's terminal draws underline styles (`outer`):
     /// painted as they are, else as plain underlines (`sgr`).
     pub underline_styles: bool,
-    /// What composed the grid, so that composing it again puts only what
-    /// changed, and painting it compares only rows that may differ. Not
-    /// what the grid shows: grids compare equal whatever it holds.
-    memo: Memo,
+    /// What composed the grid, if it can say (`Memo`). Not what the grid
+    /// shows: grids compare equal whatever composed them.
+    memo: Option<Memo>,
 }
 
-/// What composed a grid in normal mode: its frame, everything that decides
-/// the grid but its panes' rows, and the identity and version of each pane
-/// row put in it. A row of a fux-vt screen keeps its identity while it is
-/// retained, no later row takes it, and its version changes with every
-/// edit of its cells or soft wrap; pane ids are never reused. So two grids
-/// of the same frame show the same cells on a row of the pane area whose
-/// pane rows have the same keys in both.
-#[derive(Clone, Debug, Default)]
+/// Grids are equal when they show the same.
+impl PartialEq for Grid {
+    fn eq(&self, other: &Grid) -> bool {
+        self.head() == other.head() && self.cells == other.cells
+    }
+}
+impl Eq for Grid {}
+
+/// What composed a grid in normal mode: its frame, and the
+/// identity and version of each pane row put in it. A row of a fux-vt
+/// screen keeps its identity while it is retained, no later row takes it,
+/// and its version changes with every edit of its cells, soft wrap or
+/// links; pane ids are never reused. So a grid composed again for its
+/// memo's frame needs only the pane rows whose keys changed put again
+/// (`Memo::update`), and two grids of one frame show the same cells on a
+/// row of the pane area whose pane rows have the same keys in both
+/// (`SameFrame`).
+#[derive(Clone, Debug)]
 struct Memo {
-    frame: Option<Frame>,
-    /// For each pane of the frame's placement, in its order: each of its
-    /// window's rows on the grid, `None` where it has none.
-    keys: Vec<(PaneId, Vec<RowKey>)>,
+    frame: Frame,
+    /// For each of the frame's panes, in its order: each of its window's
+    /// rows on the grid, as many as the frame gives it.
+    keys: Vec<Vec<RowKey>>,
 }
 
 /// A pane row's identity and version, `None` where the window has no row.
 type RowKey = Option<(fux_vt::RowId, u64)>;
 
-impl PartialEq for Memo {
-    fn eq(&self, _: &Memo) -> bool {
-        true
-    }
-}
-impl Eq for Memo {}
-
-/// Everything about a composed grid but its panes' rows: its size, where
-/// each pane and separator is and its window's size, the focus (which
-/// colours the separators), whether the panes cover the pane area, and how
-/// underlines are painted. Only in normal mode, with no overlay, no
-/// copy-mode selection, no empty-tab hint, and no pane in colours of its
-/// own (`recolour`), whose rows depend on more than their keys.
+/// Everything about a grid composed in normal mode but its panes' rows: its
+/// size, where each pane and separator is and its window's size, and the
+/// focused pane, which colours the separators. Only for a tab with panes
+/// (one without shows a hint, and focuses none) none of which is in
+/// colours of its own (`recolour`), whose rows depend on more than their
+/// keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Frame {
     rows: u16,
     cols: u16,
     panes: Vec<(PaneId, Rect, (u16, u16))>,
     separators: Vec<crate::layout::Separator>,
-    focus: Option<PaneId>,
-    tiled: bool,
-    underline_styles: bool,
+    focus: PaneId,
 }
 
 impl Frame {
@@ -87,11 +87,9 @@ impl Frame {
         session: &Session,
         view: &View,
         placement: &Placement,
-        tiled: bool,
         focus: Option<PaneId>,
     ) -> Option<Frame> {
-        // A client focuses a pane of its tab unless the tab is empty.
-        if !matches!(view.mode, Mode::Normal) || focus.is_none() {
+        if !matches!(view.mode, Mode::Normal) {
             return None;
         }
         let mut panes = Vec::with_capacity(placement.panes.len());
@@ -107,26 +105,71 @@ impl Frame {
             cols: view.cols,
             panes,
             separators: placement.separators.clone(),
-            focus,
-            tiled,
-            underline_styles: view.terminal.underline_styles,
+            focus: focus?,
         })
+    }
+}
+
+impl Memo {
+    /// Puts again on `grid`, which this memo's frame composed and composes
+    /// now, the pane rows that changed since: the grid's memo then.
+    fn update(mut self, grid: &mut Grid, session: &Session) -> Memo {
+        for ((id, rect, _), keys) in self.frame.panes.iter().zip(&mut self.keys) {
+            let Some(pane) = session.panes.get(id) else {
+                continue;
+            };
+            let window = pane.screen().window();
+            let lines = (0..window.rows()).zip(rect.lines());
+            for ((y, line), key) in lines.zip(keys.iter_mut()) {
+                let row = window.row(y);
+                let now = row.map(|r| (r.id(), r.version()));
+                if now != *key {
+                    draw_row(grid, *id, row, (line, window.cols()), None);
+                    *key = now;
+                }
+            }
+        }
+        self
+    }
+}
+
+/// Two grids composed for one frame (`Memo`): proof that their keys can be
+/// compared.
+struct SameFrame<'a> {
+    frame: &'a Frame,
+    keys: (&'a [Vec<RowKey>], &'a [Vec<RowKey>]),
+}
+
+impl<'a> SameFrame<'a> {
+    fn of(a: &'a Grid, b: &'a Grid) -> Option<SameFrame<'a>> {
+        let (a, b) = (a.memo.as_ref()?, b.memo.as_ref()?);
+        (a.frame == b.frame).then_some(SameFrame {
+            frame: &a.frame,
+            keys: (&a.keys, &b.keys),
+        })
+    }
+    /// Whether row `y` is in the pane area and has the same pane rows in
+    /// both grids: then it shows the same cells.
+    fn same_row(&self, y: u16) -> bool {
+        // The bar's row is not memo'd.
+        y < self.frame.rows.saturating_sub(1)
+            && (self.frame.panes.iter())
+                .zip(self.keys.0.iter().zip(self.keys.1))
+                .all(|((_, rect, _), (a, b))| {
+                    let i = y.checked_sub(rect.y()).filter(|i| *i < rect.h());
+                    i.is_none_or(|i| a.get(usize::from(i)) == b.get(usize::from(i)))
+                })
     }
 }
 
 /// Puts a pane's window row on the grid at `line`, the pane's row there, in
 /// the pane's own colours if it has them; the window is `window_cols` wide.
-/// With `tiled`, what the row does not cover of the pane's width is blanked
-/// here, as nothing blanked the area first. Without, a whole composition
-/// blanked the area before; and the memo path (`put_changed_rows`) puts only
-/// live rows, each as wide as its window, so the cells past one are the
-/// blanks the frame before left there.
+/// What the row does not cover of the pane's width is blanked.
 fn draw_row(
     grid: &mut Grid,
     pane: PaneId,
     row: Option<Row<'_>>,
     (line, window_cols): (Rect, u16),
-    tiled: bool,
     colours: Option<&fux_vt::Screen>,
 ) {
     let (gy, gx, width) = (line.y(), line.x(), line.w().min(window_cols));
@@ -138,11 +181,9 @@ fn draw_row(
             grid.recolour(gy, gx, width, screen);
         }
     }
-    if tiled {
-        // At most `width`, which is at most the line's.
-        let end = u16::try_from(len).unwrap_or(width).min(width);
-        grid.blank(line.split(Axis::Horizontal, end).1);
-    }
+    // At most `width`, which is at most the line's.
+    let end = u16::try_from(len).unwrap_or(width).min(width);
+    grid.blank(line.split(Axis::Horizontal, end).1);
     // A wide glyph in the window's last column, if the line shows it, is
     // cut off, as `Window::cell` has it.
     if let Some(last) = window_cols.checked_sub(1)
@@ -153,38 +194,6 @@ fn draw_row(
     {
         grid.put(gy, x, CellRef::default());
     }
-}
-
-/// Puts again the pane rows that changed since `grid`, whose memo has the
-/// frame composed now, was composed: whether that sufficed; false if the
-/// panes are not the memo's.
-fn put_changed_rows(
-    grid: &mut Grid,
-    session: &Session,
-    placement: &Placement,
-    tiled: bool,
-) -> bool {
-    let mut keys = std::mem::take(&mut grid.memo.keys);
-    let mut sufficed = keys.len() == placement.panes.len();
-    for ((id, rect), (memo_id, pane_keys)) in placement.panes.iter().zip(&mut keys) {
-        let Some(pane) = session.panes.get(id).filter(|_| id == memo_id && sufficed) else {
-            sufficed = false;
-            break;
-        };
-        let window = pane.screen().window();
-        let lines = (0..window.rows()).zip(rect.lines());
-        for ((y, line), key) in lines.zip(pane_keys.iter_mut()) {
-            let row = window.row(y);
-            let now = row.map(|r| (r.id(), r.version()));
-            if now == *key {
-                continue;
-            }
-            draw_row(grid, *id, row, (line, window.cols()), tiled, None);
-            *key = now;
-        }
-    }
-    grid.memo.keys = keys;
-    sufficed
 }
 
 /// Each cell's hyperlink (OSC 8), with the pane whose it is: none past
@@ -254,7 +263,7 @@ impl Grid {
             cursor_shape: 0,
             mouse: 0,
             underline_styles: false,
-            memo: Memo::default(),
+            memo: None,
         }
     }
     /// The hyperlink of the cell at `y`, `x`, and the pane whose it is.
@@ -280,7 +289,7 @@ impl Grid {
         self.cursor = None;
         self.cursor_shape = 0;
         self.mouse = 0;
-        self.memo = Memo::default();
+        self.memo = None;
     }
     fn index(&self, y: u16, x: u16) -> Option<usize> {
         (y < self.rows && x < self.cols)
@@ -294,36 +303,25 @@ impl Grid {
     /// the oracles that check the memo against working without it.
     #[doc(hidden)]
     pub fn forget_memo(&mut self) {
-        self.memo = Memo::default();
+        self.memo = None;
+    }
+    /// All the grid shows but its cells.
+    fn head(&self) -> impl PartialEq + '_ {
+        (
+            (self.rows, self.cols, self.cursor),
+            (self.cursor_shape, self.mouse, self.underline_styles),
+            &self.links,
+        )
     }
     /// Whether the grid shows what `other` shows: the same as `==`, without
-    /// comparing the rows their memos show are the same (`Memo`).
+    /// comparing the rows their memos show are the same (`SameFrame`).
     pub fn same_as(&self, other: &Grid) -> bool {
-        if (
-            self.rows,
-            self.cols,
-            self.cursor,
-            self.cursor_shape,
-            self.mouse,
-        ) != (
-            other.rows,
-            other.cols,
-            other.cursor,
-            other.cursor_shape,
-            other.mouse,
-        ) || self.underline_styles != other.underline_styles
-            || self.links != other.links
-        {
+        if self.head() != other.head() {
             return false;
         }
-        let memo = self.same_frame(other);
-        (0..self.rows).all(|y| memo && same_keys(self, other, y) || self.row_eq(other, y))
-    }
-    /// Whether the two grids were composed for one frame (`Memo`): then a
-    /// pane row whose keys are the same in both shows the same cells.
-    #[inline]
-    fn same_frame(&self, other: &Grid) -> bool {
-        self.memo.frame.is_some() && self.memo.frame == other.memo.frame
+        let memo = SameFrame::of(self, other);
+        (0..self.rows)
+            .all(|y| memo.as_ref().is_some_and(|m| m.same_row(y)) || self.row_eq(other, y))
     }
     /// Whether row `y` has the same cells as `other`'s, a grid of its size:
     /// compared by `Cells::range_eq`, without reading each cell's text.
@@ -586,15 +584,6 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
     let area = Session::pane_area(view);
     session.placement_into(view, placement);
     let placement = &*placement;
-    // The panes and separators, which never overlap, cover the pane area
-    // unless a split has no room for even its first child; the bar covers
-    // its row. Covered, every cell is written below, and the grid needs no
-    // blanking first.
-    let lines = placement.separators.iter().map(|s| &s.rect);
-    let covered = (placement.panes.iter().map(|(_, r)| r).chain(lines))
-        .map(Rect::area)
-        .fold(0u32, u32::saturating_add);
-    let tiled = covered == area.area();
     let tab = session.shown_tab(view.id);
     let focus = tab.and_then(|t| t.focus(view.id));
     // Copy mode and its positions, their rows found once for the paint.
@@ -607,74 +596,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
     } else {
         None
     };
-    // The grid holds this very frame: only the pane rows that changed since
-    // it was composed are put again (`Memo`).
-    let frame = Frame::of(session, view, placement, tiled, focus);
-    let reused = frame.is_some()
-        && grid.memo.frame == frame
-        && (grid.rows, grid.cols) == (view.rows, view.cols)
-        && put_changed_rows(grid, session, placement, tiled);
-    if reused {
-        grid.cursor = None;
-        grid.cursor_shape = 0;
-        grid.mouse = 0;
-    } else {
-        grid.reset(view.rows, view.cols, !tiled);
-        grid.underline_styles = view.terminal.underline_styles;
-        let mut keys = frame.as_ref().map(|_| Vec::new());
-        for (id, rect) in &placement.panes {
-            let Some(pane) = session.panes.get(id) else {
-                if tiled {
-                    grid.blank(*rect);
-                }
-                continue;
-            };
-            let screen = pane.screen();
-            // A pane whose program changed its colours is drawn in them.
-            let colours = screen.colors_changed().then_some(screen);
-            let at = copy.filter(|(c, _)| c.pane == *id).map(|(_, at)| at);
-            let window = at.map_or_else(|| screen.window(), |at| at.top.window());
-            let width = rect.w().min(window.cols());
-            // What the pane's screen does not cover of its place is blank.
-            if tiled {
-                grid.blank(rect.split(Axis::Vertical, window.rows()).1);
-            }
-            let mut pane_keys = Vec::new();
-            for (y, line) in (0..window.rows()).zip(rect.lines()) {
-                let row = window.row(y);
-                pane_keys.push(row.map(|r| (r.id(), r.version())));
-                draw_row(grid, *id, row, (line, window.cols()), tiled, colours);
-                let (Some(at), Some(row)) = (at, row) else {
-                    continue;
-                };
-                for x in 0..width {
-                    // A wide glyph is selected if either half is, as `y`
-                    // copies it whole.
-                    if let Some(i) = line.at(0, x).and_then(|(gy, gx)| grid.index(gy, gx))
-                        && let Some(cell) = grid.cells.get(i)
-                        && !cell.is_wide_continuation()
-                        && (at.selected(&row, x)
-                            || cell.is_wide()
-                                && x.checked_add(1).is_some_and(|x| at.selected(&row, x)))
-                    {
-                        let attrs = cell.attributes().with_inverse(!cell.inverse());
-                        grid.cells.set_attributes(i, attrs);
-                    }
-                }
-            }
-            if let Some(keys) = &mut keys {
-                keys.push((*id, pane_keys));
-            }
-        }
-        separators(grid, placement, focus);
-        grid.memo = match (frame, keys) {
-            (Some(frame), Some(keys)) => Memo {
-                frame: Some(frame),
-                keys,
-            },
-            (None | Some(_), None) | (None, Some(_)) => Memo::default(),
-        };
-    }
+    put_panes(grid, session, view, placement, focus, copy);
     if tab.is_some_and(|t| t.root().is_none()) && area.h() > 0 {
         // The keys bound to these commands, whatever they are; the command
         // itself if none is.
@@ -768,6 +690,83 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
         // A repeat mode shows in the bar, leaving the layout in view.
         Mode::Normal | Mode::Copy(_) | Mode::Repeat(_) => {}
     }
+}
+
+/// Puts the panes and separators on the grid, composed for `view` as laid
+/// out in `placement`: if the grid's memo is of the frame composed now, only
+/// the pane rows that changed since (`Memo`); else all, blanking first what
+/// they leave.
+fn put_panes(
+    grid: &mut Grid,
+    session: &Session,
+    view: &View,
+    placement: &Placement,
+    focus: Option<PaneId>,
+    copy: Option<(&crate::copy::Copy, crate::copy::Resolved)>,
+) {
+    grid.underline_styles = view.terminal.underline_styles;
+    let frame = Frame::of(session, view, placement, focus);
+    if let Some(memo) = grid
+        .memo
+        .take()
+        .filter(|m| frame.as_ref() == Some(&m.frame))
+    {
+        grid.cursor = None;
+        grid.cursor_shape = 0;
+        grid.mouse = 0;
+        grid.memo = Some(memo.update(grid, session));
+        return;
+    }
+    // The panes and separators, which never overlap, cover the pane area
+    // unless a split has no room for even its first child; the bar covers
+    // its row. Covered, every cell is written below, and the grid needs no
+    // blanking first.
+    let lines = placement.separators.iter().map(|s| &s.rect);
+    let covered = (placement.panes.iter().map(|(_, r)| r).chain(lines))
+        .map(Rect::area)
+        .fold(0u32, u32::saturating_add);
+    let tiled = covered == Session::pane_area(view).area();
+    grid.reset(view.rows, view.cols, !tiled);
+    let mut keys = Vec::new();
+    for (id, rect) in &placement.panes {
+        let Some(pane) = session.panes.get(id) else {
+            grid.blank(*rect);
+            continue;
+        };
+        let screen = pane.screen();
+        // A pane whose program changed its colours is drawn in them.
+        let colours = screen.colors_changed().then_some(screen);
+        let at = copy.filter(|(c, _)| c.pane == *id).map(|(_, at)| at);
+        let window = at.map_or_else(|| screen.window(), |at| at.top.window());
+        let width = rect.w().min(window.cols());
+        // What the pane's screen does not cover of its place is blank.
+        grid.blank(rect.split(Axis::Vertical, window.rows()).1);
+        let mut pane_keys = Vec::new();
+        for (y, line) in (0..window.rows()).zip(rect.lines()) {
+            let row = window.row(y);
+            pane_keys.push(row.map(|r| (r.id(), r.version())));
+            draw_row(grid, *id, row, (line, window.cols()), colours);
+            let (Some(at), Some(row)) = (at, row) else {
+                continue;
+            };
+            for x in 0..width {
+                // A wide glyph is selected if either half is, as `y`
+                // copies it whole.
+                if let Some(i) = line.at(0, x).and_then(|(gy, gx)| grid.index(gy, gx))
+                    && let Some(cell) = grid.cells.get(i)
+                    && !cell.is_wide_continuation()
+                    && (at.selected(&row, x)
+                        || cell.is_wide() && x.checked_add(1).is_some_and(|x| at.selected(&row, x)))
+                {
+                    let attrs = cell.attributes().with_inverse(!cell.inverse());
+                    grid.cells.set_attributes(i, attrs);
+                }
+            }
+        }
+        keys.push(pane_keys);
+    }
+    separators(grid, placement, focus);
+    grid.memo = frame.map(|frame| Memo { frame, keys });
 }
 
 /// A prompt's text with its cursor bar, in at most `room` cells: when it is
@@ -1327,29 +1326,6 @@ fn one_based(n: u16) -> u32 {
     u32::from(n).saturating_add(1)
 }
 
-/// Whether row `y` of two grids of one frame (`Memo`) is in the
-/// pane area and has the same pane rows in both: then it shows the same
-/// cells.
-fn same_keys(a: &Grid, b: &Grid, y: u16) -> bool {
-    let Some(frame) = &a.memo.frame else {
-        return false;
-    };
-    // The bar's row, and any row past the panes', are not memo'd.
-    if y >= frame.rows.saturating_sub(1) {
-        return false;
-    }
-    a.memo.keys.len() == frame.panes.len()
-        && b.memo.keys.len() == frame.panes.len()
-        && frame
-            .panes
-            .iter()
-            .zip(a.memo.keys.iter().zip(&b.memo.keys))
-            .all(|((_, rect, _), ((_, ka), (_, kb)))| {
-                let i = y.checked_sub(rect.y()).filter(|i| *i < rect.h());
-                i.is_none_or(|i| ka.get(usize::from(i)) == kb.get(usize::from(i)))
-            })
-}
-
 /// Turns every mouse tracking mode and SGR encoding off, as `client::LEAVE`
 /// does too.
 pub const MOUSE_OFF: &str = "\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l";
@@ -1398,9 +1374,10 @@ fn same_row(old: &Grid, new: &Grid, y: u16, links: bool) -> bool {
 /// show them the same and whose cells or links differ.
 fn differing_rows<'a>(old: &'a Grid, new: &'a Grid) -> impl Iterator<Item = u16> + 'a {
     let links = !new.links.is_empty() || !old.links.is_empty();
-    let memo = old.same_frame(new);
-    (0..new.rows)
-        .filter(move |&y| !(memo && same_keys(old, new, y)) && !same_row(old, new, y, links))
+    let memo = SameFrame::of(old, new);
+    (0..new.rows).filter(move |&y| {
+        !memo.as_ref().is_some_and(|m| m.same_row(y)) && !same_row(old, new, y, links)
+    })
 }
 
 /// A keystroke's echo, painted as a terminal shows it typed: when all that
@@ -1536,12 +1513,12 @@ fn paint_whole(old: Option<&Grid>, new: &Grid, out: &mut Vec<u8>) {
     let links = !new.links.is_empty() || old.is_some_and(|o| !o.links.is_empty());
     // Grids of one frame show the same cells on a pane row whose keys are
     // the same in both (`Memo`): no comparison needed.
-    let memo = old.filter(|o| !full && o.same_frame(new));
+    let memo = old.filter(|_| !full).and_then(|o| SameFrame::of(o, new));
     // What the client shows, unless all is painted whole: a grid of the same
     // size, so the two index their cells alike.
     let before = old.filter(|_| !full);
     for y in 0..new.rows {
-        if memo.is_some_and(|o| same_keys(o, new, y)) {
+        if memo.as_ref().is_some_and(|m| m.same_row(y)) {
             continue;
         }
         // An unchanged row costs this one comparison.

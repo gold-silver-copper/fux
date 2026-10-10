@@ -66,6 +66,10 @@ fn terminal(rows: u16, cols: u16) -> Result<fux_vt::Parser, String> {
     fux_vt::Parser::new(fux_vt::Size::new(rows, cols).map_err(e)?, 0).map_err(e)
 }
 
+pub fn pty_size(rows: u16, cols: u16) -> Result<fuxix::terminal::Size, String> {
+    fuxix::terminal::Size::new(rows, cols).ok_or_else(|| format!("a {rows}x{cols} terminal"))
+}
+
 pub struct Server {
     pub dir: PathBuf,
     pub socket: PathBuf,
@@ -591,7 +595,7 @@ pub fn eventually(what: &str, mut test: impl FnMut() -> Result<bool, String>) ->
 /// shows.
 pub struct Terminal {
     /// `None` once the terminal is closed.
-    master: Option<std::os::fd::OwnedFd>,
+    master: Option<fuxix::pty::Master>,
     pub child: Child,
     pub screen: fux_vt::Parser,
     pub output: Vec<u8>,
@@ -622,16 +626,16 @@ impl Terminal {
         argv: &[&str],
         setup: impl FnOnce(&mut Command),
     ) -> Result<Terminal, String> {
-        let (master, slave) = fux::process::open_pty(rows, cols).map_err(e)?;
-        let child = {
+        let (master, slave) = fuxix::pty::open(pty_size(rows, cols)?).map_err(e)?;
+        let (child, _) = {
             let _guard = SPAWN.lock().map_err(e)?;
-            fux::process::launch(Path::new(FUX), argv, &slave, |command| {
-                command.env("TERM", "xterm-256color").env_remove("FUX_PANE");
-                setup(command);
-            })
-            .map_err(e)?
+            slave
+                .spawn(Path::new(FUX), argv, |command| {
+                    command.env("TERM", "xterm-256color").env_remove("FUX_PANE");
+                    setup(command);
+                })
+                .map_err(e)?
         };
-        drop(slave);
         Ok(Terminal {
             master: Some(master),
             child,
@@ -722,7 +726,7 @@ impl Terminal {
 
     pub fn resize(&mut self, rows: u16, cols: u16) -> Outcome {
         let master = self.master.as_ref().ok_or("the terminal is closed")?;
-        fux::process::resize(master, rows, cols);
+        fuxix::terminal::set_window_size(master, pty_size(rows, cols)?).map_err(e)?;
         self.screen = terminal(rows, cols)?;
         // The kernel signals the foreground group of the PTY: the client.
         Ok(())
