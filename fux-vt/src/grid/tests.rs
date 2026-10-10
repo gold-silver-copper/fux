@@ -120,13 +120,12 @@ pub(crate) type Seen = (
 );
 
 impl Grid {
-    /// Every link a row of the grid has, its history's and its screen's, or
-    /// a slot recycled since keeps.
+    /// Every link a row of the grid has, its history's and its screen's.
     pub(crate) fn held_links(&self) -> impl Iterator<Item = &Hyperlink> {
         let history = (0..self.history_len()).filter_map(|index| self.history.get(index));
         history
             .filter_map(|row| row.links)
-            .chain(self.linked.values())
+            .chain(&self.linked)
             .flat_map(RowLinks::links)
     }
     /// What a reader sees of every retained row, in order.
@@ -236,7 +235,8 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
     }
     let mut grid = p.screen().primary_grid().clone();
     // Rows of the screen are poked; some go into history after.
-    let rows = usize::from(grid.size.rows());
+    let (rows, cols) = (usize::from(grid.size.rows()), grid.size.cols());
+    let width = usize::from(cols);
     for _ in 0..r.below(5) {
         let Some(&slot) = grid.order.get(r.below(rows)) else {
             continue;
@@ -244,13 +244,12 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
         let Some(m) = grid.meta.get_mut(slot) else {
             continue;
         };
-        let width = usize::from(m.width);
         let col = r.below(width);
         match r.below(5) {
             0 => m.wrapped = !m.wrapped,
             1 => m.prompt = true,
             2 => {
-                m.used = m.width;
+                m.used = cols;
                 let half = match r.below(3) {
                     0 => Compact::glyph('\u{4e2d}', 2, 0),
                     1 => Compact::continuation(),
@@ -266,18 +265,18 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
                 }
             }
             3 => {
-                m.linked = true;
                 let link = grid.links.insert(&Arc::from("poked"), None, 0);
-                let links = grid.linked.entry(slot).or_default();
-                links.set(col..col.saturating_add(1), link.as_ref());
+                if let Some(links) = grid.linked.get_mut(slot) {
+                    links.set(col..col.saturating_add(1), link.as_ref());
+                }
             }
-            _ => m.used = u16::try_from(r.below(width.saturating_add(1))).unwrap_or(m.width),
+            _ => m.used = u16::try_from(r.below(width.saturating_add(1))).unwrap_or(cols),
         }
     }
     if !grid.blank_past_used() {
         // A `used` mark poked below a cell with text: put back.
         for m in &mut grid.meta {
-            m.used = m.width;
+            m.used = cols;
         }
     }
     if grid.history_limit > 0 && r.chance(50) {
@@ -354,7 +353,7 @@ fn scrolling_between_full_margins_is_scrolling_rows() -> Result<(), Error> {
             Scroll::Down
         };
         let region = Span::of(top, bottom);
-        by_rows.scroll_region(region, count, direction, blank, &mut next, 1_000)?;
+        by_rows.scroll_region(region, count, direction, blank, &mut next, 1_000);
         by_cells.scroll_columns(region, count, up, blank, 1_000);
         for y in 0..rows {
             let (a, b) = (read_row(&by_rows, y), read_row(&by_cells, y));
