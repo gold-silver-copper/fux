@@ -86,7 +86,7 @@ impl Grid {
         self.reflow(usize::from(cols), marks, &mut copy)?;
         // Blank rows under the last line, if the lines do not fill the screen.
         while replacement.order.len() < screen {
-            let meta = Meta::new(next_id(next), version, cols, false, 0);
+            let meta = Meta::new(next_id(next), version, false, 0);
             replacement.push_screen_row(meta, &[], None, None);
         }
         Ok(replacement)
@@ -347,10 +347,7 @@ impl Grid {
                 .history
                 .kept(index)
                 .map_or(0, |kept| usize::from(kept.width())),
-            Some(row) => self
-                .screen_slot(row)
-                .and_then(|slot| self.meta.get(slot))
-                .map_or(0, |m| usize::from(m.width)),
+            Some(_) => usize::from(self.size.cols()),
         }
     }
 
@@ -595,7 +592,7 @@ impl Reflow for Fill<'_> {
                 self.grid.history.attach(Some(text.exact()), links);
             }
         } else {
-            let mut meta = Meta::new(id, self.version, cols, wrapped, used);
+            let mut meta = Meta::new(id, self.version, wrapped, used);
             meta.prompt = prompt;
             self.grid
                 .push_screen_row(meta, &self.cells, Some(text), links);

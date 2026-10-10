@@ -235,7 +235,8 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
     }
     let mut grid = p.screen().primary_grid().clone();
     // Rows of the screen are poked; some go into history after.
-    let rows = usize::from(grid.size.rows());
+    let (rows, cols) = (usize::from(grid.size.rows()), grid.size.cols());
+    let width = usize::from(cols);
     for _ in 0..r.below(5) {
         let Some(&slot) = grid.order.get(r.below(rows)) else {
             continue;
@@ -243,13 +244,12 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
         let Some(m) = grid.meta.get_mut(slot) else {
             continue;
         };
-        let width = usize::from(m.width);
         let col = r.below(width);
         match r.below(5) {
             0 => m.wrapped = !m.wrapped,
             1 => m.prompt = true,
             2 => {
-                m.used = m.width;
+                m.used = cols;
                 let half = match r.below(3) {
                     0 => Compact::glyph('\u{4e2d}', 2, 0),
                     1 => Compact::continuation(),
@@ -270,13 +270,13 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
                     links.set(col..col.saturating_add(1), link.as_ref());
                 }
             }
-            _ => m.used = u16::try_from(r.below(width.saturating_add(1))).unwrap_or(m.width),
+            _ => m.used = u16::try_from(r.below(width.saturating_add(1))).unwrap_or(cols),
         }
     }
     if !grid.blank_past_used() {
         // A `used` mark poked below a cell with text: put back.
         for m in &mut grid.meta {
-            m.used = m.width;
+            m.used = cols;
         }
     }
     if grid.history_limit > 0 && r.chance(50) {
