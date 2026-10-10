@@ -90,6 +90,17 @@ jobs:
             cargo test --manifest-path "$package/Cargo.toml" --locked
           done 2>&1 | tee "$CI_LOGS/excluded.log"
 
+      - name: fux-vt/compare type-checks
+        # Its own workflow (compare.yml) builds Ghostty with Zig and runs on
+        # request only, so an API change could break it unnoticed. DOCS_RS
+        # skips both native builds, Ghostty's and libvterm's; clippy links
+        # nothing, so it needs neither.
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path fux-vt/compare/Cargo.toml --all --check
+          DOCS_RS=1 cargo clippy --manifest-path fux-vt/compare/Cargo.toml --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/compare.log"
+
       - name: fux-vt oracle builds
         # Against this very commit, so both sides share one API and it
         # builds with no shims (diff/README.md). The pin stays for the step

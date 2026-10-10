@@ -37,6 +37,12 @@ int fux_vt_compare_libvterm_fprintf(FILE *stream, const char *format, ...);
 
 fn main() -> Result<(), String> {
     println!("cargo:rerun-if-env-changed=LIBVTERM_SOURCE_DIR");
+    println!("cargo:rerun-if-env-changed=DOCS_RS");
+    // DOCS_RS skips the native build, as it does libghostty-vt-sys's: CI
+    // type-checks this crate with it (`cargo clippy`), which links nothing.
+    if env::var_os("DOCS_RS").is_some() {
+        return Ok(());
+    }
     println!("cargo:rerun-if-changed={SHIM}");
     println!("cargo:rerun-if-changed=build.rs");
     let source = env::var_os("LIBVTERM_SOURCE_DIR")

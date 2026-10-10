@@ -264,7 +264,7 @@ impl Recording {
             rows: self.rows,
             cols: self.cols,
             history: 10_000,
-            reflow: fux::pane::OPTIONS.reflow,
+            reflow: fux::pane::OPTIONS.has(fux_vt::Feature::Reflow),
             newline_before_resize: false,
             steps: self
                 .steps
