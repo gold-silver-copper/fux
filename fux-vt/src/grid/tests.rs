@@ -120,13 +120,12 @@ pub(crate) type Seen = (
 );
 
 impl Grid {
-    /// Every link a row of the grid has, its history's and its screen's, or
-    /// a slot recycled since keeps.
+    /// Every link a row of the grid has, its history's and its screen's.
     pub(crate) fn held_links(&self) -> impl Iterator<Item = &Hyperlink> {
         let history = (0..self.history_len()).filter_map(|index| self.history.get(index));
         history
             .filter_map(|row| row.links)
-            .chain(self.linked.values())
+            .chain(&self.linked)
             .flat_map(RowLinks::links)
     }
     /// What a reader sees of every retained row, in order.
@@ -266,10 +265,10 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
                 }
             }
             3 => {
-                m.linked = true;
                 let link = grid.links.insert(&Arc::from("poked"), None, 0);
-                let links = grid.linked.entry(slot).or_default();
-                links.set(col..col.saturating_add(1), link.as_ref());
+                if let Some(links) = grid.linked.get_mut(slot) {
+                    links.set(col..col.saturating_add(1), link.as_ref());
+                }
             }
             _ => m.used = u16::try_from(r.below(width.saturating_add(1))).unwrap_or(m.width),
         }
