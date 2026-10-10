@@ -51,7 +51,7 @@ area differed, 2 for a bad argument.
 | `input` | client input in pieces with Escape timeouts, key names, pastes, held command lines, pane input queues | decoded input and the Escape deadline, encoded keys and pastes, the queues |
 | `copy` | screens and history from random lines; searches both ways; every copy-mode error | matches, copied text, row positions, each error's notice |
 | `text` | random words, key names, config lines and files | `split`, `quote`, `join`, `shell_line`, key names, config results, JSON strings, base64 |
-| `system` | errnos, nonblocking requests on pipes, sockets and PTYs, PTY sizes | fuxix's results, and the config file's path for every mix of `XDG_CONFIG_HOME` and `HOME` |
+| `system` | errnos, nonblocking requests on pipes, sockets and PTYs | fuxix's results, and the config file's path for every mix of `XDG_CONFIG_HOME` and `HOME` |
 
 `--speed` parses five synthetic streams (ASCII, SGR, CJK, emoji, cursor
 movement) and the recordings in `fux-vt/compare/corpus/` with both fux-vts

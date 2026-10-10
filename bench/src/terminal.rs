@@ -5,7 +5,7 @@
 //! skipped, as a multiplexer that moves the cursor before each cell
 //! (herdr) writes a pattern's characters apart.
 use std::os::fd::{AsFd, OwnedFd};
-use std::process::{Child, Command};
+use std::process::Child;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -121,29 +121,24 @@ impl Terminal {
         env: &[(&str, &str)],
         watch: Option<&[u8]>,
     ) -> Result<Terminal, String> {
-        let (master, slave) =
-            fuxix::pty::open(rows, cols).map_err(|e| format!("opening a PTY: {e}"))?;
+        let size = fuxix::terminal::Size::new(rows, cols).ok_or("a zero size")?;
+        let (master, slave) = fuxix::pty::open(size).map_err(|e| format!("opening a PTY: {e}"))?;
+        // Read and written as a terminal is, waiting.
+        let master = OwnedFd::from(master);
+        fuxix::io::set_nonblocking(&master, false).map_err(|e| e.to_string())?;
         let me = std::env::current_exe().map_err(|e| e.to_string())?;
-        let clone = |fd: &OwnedFd| fd.try_clone().map_err(|e| format!("the PTY: {e}"));
-        let mut command = Command::new(me);
-        command
-            .arg("__launch")
-            .arg(program)
-            .args(args)
-            .env("TERM", "xterm-256color")
-            .stdin(clone(&slave)?)
-            .stdout(clone(&slave)?)
-            .stderr(clone(&slave)?);
-        for name in crate::feel::FOREIGN {
-            command.env_remove(name);
-        }
-        for (key, value) in env {
-            command.env(key, value);
-        }
-        let child = command
-            .spawn()
+        let argv = std::iter::once(program).chain(args.iter().copied());
+        let (child, _) = slave
+            .spawn(&me, &argv.collect::<Vec<_>>(), |command| {
+                command.env("TERM", "xterm-256color");
+                for name in crate::feel::FOREIGN {
+                    command.env_remove(name);
+                }
+                for (key, value) in env {
+                    command.env(key, value);
+                }
+            })
             .map_err(|e| format!("starting {program}: {e}"))?;
-        drop(slave);
         let seen = Seen {
             watch: watch.map(<[u8]>::to_vec),
             ..Seen::default()

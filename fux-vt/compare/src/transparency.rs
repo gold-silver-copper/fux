@@ -49,7 +49,6 @@ use fux::session::{Outgoing, Session};
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
@@ -1152,27 +1151,14 @@ impl Client {
             }
         };
         let (client_rows, _) = mux.screen(rows, cols)?;
-        let (master, slave) =
-            fuxix::pty::open(client_rows, cols).map_err(|e| format!("opening a PTY: {e}"))?;
-        let me = std::env::current_exe().map_err(|e| format!("this program's path: {e}"))?;
-        let clone = |fd: &OwnedFd| fd.try_clone().map_err(|e| format!("the PTY: {e}"));
-        let mut command = Command::new(me);
-        command
-            .arg(crate::record::LAUNCH)
-            .args(&argv)
-            .env_clear()
-            .current_dir(&dir)
-            .stdin(clone(&slave)?)
-            .stdout(clone(&slave)?)
-            .stderr(clone(&slave)?);
-        for (key, value) in &env {
-            command.env(key, value);
-        }
-        let child = command
-            .spawn()
-            .map_err(|e| format!("starting {}: {e}", mux.name()))?;
-        drop(slave);
-        let mut reader = File::from(clone(&master)?);
+        let (master, child) = crate::record::start(client_rows, cols, &argv, |command| {
+            command
+                .env_clear()
+                .current_dir(&dir)
+                .envs(env.iter().cloned());
+        })
+        .map_err(|e| format!("{}: {e}", mux.name()))?;
+        let mut reader = master.try_clone().map_err(|e| format!("the PTY: {e}"))?;
         let (tx, from) = mpsc::channel();
         std::thread::Builder::new()
             .name("mux-client".into())
@@ -1189,7 +1175,7 @@ impl Client {
             child,
             from,
             terminal: terminal(kind, client_rows, cols)?,
-            master: File::from(master),
+            master,
             answered: 0,
             dir,
             mux,

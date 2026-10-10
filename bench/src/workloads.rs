@@ -316,8 +316,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
         fux::command::parse_pane("%1").map_err(|e| e.to_string())?,
         "bench".into(),
         "/bin/sh".into(),
-        first.rows,
-        first.cols,
+        fux::pane::size(first.rows, first.cols),
         HISTORY,
     )
     .map_err(|e| e.to_string())?;
@@ -331,7 +330,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
         });
     }
     for load in loads {
-        pane.resize(load.rows, load.cols);
+        pane.resize(fux::pane::size(load.rows, load.cols));
         for piece in pieces(&load.bytes, PANE_READ) {
             black_box(pane.output(black_box(piece)));
         }

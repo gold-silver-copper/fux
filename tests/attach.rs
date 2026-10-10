@@ -1,6 +1,7 @@
 //! Milestone 2: one pane. Attach, detach and reattach, resize, and
 //! `capture-pane`.
 mod support;
+use std::os::fd::AsFd;
 use support::*;
 
 #[test]
@@ -252,9 +253,13 @@ fn attach_starts_a_server_when_none_answers() -> Outcome {
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
     let socket = dir.join("s").join("fux.sock");
     // A server handle that only cleans up; the client starts the real one.
-    let (master, slave) = fux::process::open_pty(10, 40).map_err(e)?;
-    let stdio =
-        |fd: &std::os::fd::OwnedFd| fd.try_clone().map(std::process::Stdio::from).map_err(e);
+    let (master, slave) = fuxix::pty::open(pty_size(10, 40)?).map_err(e)?;
+    let stdio = |fd: &fuxix::pty::Slave| {
+        fd.as_fd()
+            .try_clone_to_owned()
+            .map(std::process::Stdio::from)
+            .map_err(e)
+    };
     let mut child = std::process::Command::new(FUX)
         .env("FUX_SOCKET", &socket)
         .env("SHELL", "/bin/sh")
@@ -268,7 +273,7 @@ fn attach_starts_a_server_when_none_answers() -> Outcome {
     drop(slave);
     // Read, as a terminal is: one never read fills (macOS's pty holds about
     // a kilobyte), and the client's last writes, with the server's, block.
-    let mut terminal = std::fs::File::from(master.try_clone().map_err(e)?);
+    let mut terminal = std::fs::File::from(master.as_fd().try_clone_to_owned().map_err(e)?);
     std::thread::spawn(move || {
         let mut buffer = [0u8; 4096];
         // The master is nonblocking: nothing to read yet is no end.
@@ -831,7 +836,7 @@ fn attach_with(
 #[test]
 fn the_server_takes_a_terminal_sent_with_attach() -> Outcome {
     let server = Server::start("")?;
-    let (master, slave) = fux::process::open_pty(8, 30).map_err(e)?;
+    let (master, slave) = fuxix::pty::open(pty_size(8, 30)?).map_err(e)?;
     let (stream, frames) = attach_with(&server, &slave, |f| {
         f.iter().any(|f| f.starts_with("Terminal"))
     })?;

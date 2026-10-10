@@ -32,8 +32,7 @@ pub enum Error {
     NotReading,
     /// No terminal of this size and history.
     Terminal {
-        rows: u16,
-        cols: u16,
+        size: fux_vt::Size,
         history: usize,
         source: fux_vt::Error,
     },
@@ -46,13 +45,14 @@ impl std::fmt::Display for Error {
                 "the pane's program is not reading its input; nothing more is queued until it does",
             ),
             Error::Terminal {
-                rows,
-                cols,
+                size,
                 history,
                 source,
             } => write!(
                 f,
-                "a {rows}x{cols} terminal with {history} lines of history: {source}"
+                "a {}x{} terminal with {history} lines of history: {source}",
+                size.rows(),
+                size.cols()
             ),
         }
     }
@@ -347,9 +347,9 @@ pub struct Pane {
     pub name: String,
     /// Set by the program with OSC 0 or 2.
     pub title: String,
+    /// Its screen's size is the PTY's: the smallest rectangle any client
+    /// shows the pane in.
     pub parser: fux_vt::Parser,
-    /// The PTY size, the smallest rectangle any client shows the pane in.
-    pub size: (u16, u16),
     pub process: Process,
     pub input: InputQueue,
     /// Whether a reply was dropped because the queue was full; noticed once.
@@ -404,7 +404,7 @@ impl Typed {
 }
 
 /// `rows` by `cols`, a zero taken as one: a pane always has a cell.
-fn size(rows: u16, cols: u16) -> fux_vt::Size {
+pub fn size(rows: u16, cols: u16) -> fux_vt::Size {
     let one = |n| std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN);
     fux_vt::Size::from((one(rows), one(cols)))
 }
@@ -414,25 +414,21 @@ impl Pane {
         id: PaneId,
         name: String,
         shell: String,
-        rows: u16,
-        cols: u16,
+        size: fux_vt::Size,
         history: usize,
     ) -> Result<Pane, Error> {
-        let parser =
-            fux_vt::Parser::with_options(size(rows, cols), history, OPTIONS).map_err(|source| {
-                Error::Terminal {
-                    rows,
-                    cols,
-                    history,
-                    source,
-                }
-            })?;
+        let parser = fux_vt::Parser::with_options(size, history, OPTIONS).map_err(|source| {
+            Error::Terminal {
+                size,
+                history,
+                source,
+            }
+        })?;
         Ok(Pane {
             id,
             name,
             title: String::new(),
             parser,
-            size: (rows.max(1), cols.max(1)),
             process: Process::Absent,
             input: InputQueue::default(),
             reply_dropped: false,
@@ -588,16 +584,14 @@ impl Pane {
 
     /// Resizes the screen and the PTY. A held frame is read first: it was
     /// drawn for the old size.
-    pub fn resize(&mut self, rows: u16, cols: u16) {
-        let (rows, cols) = (rows.max(1), cols.max(1));
-        if self.size == (rows, cols) {
+    pub fn resize(&mut self, size: fux_vt::Size) {
+        if self.size() == size {
             return;
         }
         self.release_frame();
-        if self.parser.resize(size(rows, cols)).is_ok() {
-            self.size = (rows, cols);
+        if self.parser.resize(size).is_ok() {
             if let Some(child) = self.process.child() {
-                crate::process::resize(&child.master, rows, cols);
+                let _ = fuxix::terminal::set_window_size(&child.master, size.nonzero().into());
             }
             // In-band resize: the report follows the PTY's new size, never
             // precedes it (references/modern/mode_2048_in_band_resize.md).
@@ -614,6 +608,10 @@ impl Pane {
     /// still win, and nothing drawn changes (`fux_vt::Parser::set_host_palette`).
     pub fn set_host_palette(&mut self, palette: crate::outer::Palette) {
         self.parser.set_host_palette(palette);
+    }
+
+    pub fn size(&self) -> fux_vt::Size {
+        self.screen().size()
     }
 
     pub fn screen(&self) -> &fux_vt::Screen {
@@ -687,13 +685,13 @@ mod tests {
         let stream = b"x\x1b[?1004;2004hy\x1b[5 qz\x1b[?25l";
         for split in 0..stream.len() {
             let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
-            let mut pane = Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
+            let mut pane = pane(5, 20)?;
             pane.output(a);
             pane.output(b);
             assert!(pane.screen().mode(Mode::FocusReporting), "split {split}");
             assert_eq!(pane.screen().cursor_shape(), 5, "split {split}");
         }
-        let mut pane = Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
+        let mut pane = pane(5, 20)?;
         pane.output(b"\x1b[?1004h\x1b[?1004l\x1b[2 q\x1b[ q");
         assert!(!pane.screen().mode(Mode::FocusReporting));
         assert_eq!(pane.screen().cursor_shape(), 0);
@@ -725,7 +723,7 @@ mod tests {
 
     #[test]
     fn output_records_when_the_shell_wrote_and_types_nothing_itself() -> Result<(), Error> {
-        let mut pane = Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
+        let mut pane = pane(5, 20)?;
         let before = std::time::Instant::now();
         pane.typed = Some(Typed {
             line: b"x\r".to_vec(),
@@ -747,14 +745,13 @@ mod tests {
 
     #[test]
     fn output_answers_queries_and_takes_titles() -> Result<(), Error> {
-        let mut pane = Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
+        let mut pane = pane(5, 20)?;
         pane.output(b"hello\x1b]2;my title\x07\x1b[6n");
         assert_eq!(pane.title, "my title");
         assert_eq!(pane.label(), "my title");
         assert_eq!(pane.input.drain_all(), b"\x1b[1;6R");
-        pane.resize(3, 10);
-        assert_eq!(pane.size, (3, 10));
-        assert_eq!(<(u16, u16)>::from(pane.screen().size()), (3, 10));
+        pane.resize(size(3, 10));
+        assert_eq!(<(u16, u16)>::from(pane.size()), (3, 10));
         Ok(())
     }
 
@@ -766,7 +763,7 @@ mod tests {
     #[test]
     fn colour_queries_are_answered_from_the_session_s_colours() -> Result<(), Error> {
         use crate::outer::{Colours, Scheme};
-        let mut pane = pane()?;
+        let mut pane = pane(3, 30)?;
         pane.output(b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b[?996n\x1b[c");
         assert_eq!(pane.input.drain_all(), b"\x1b[?62;22c", "nothing known");
         pane.colours = Colours {
@@ -797,8 +794,9 @@ mod tests {
             .to_owned()
     }
 
-    fn pane() -> Result<Pane, Error> {
-        Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 3, 30, 10)
+    fn pane(rows: u16, cols: u16) -> Result<Pane, Error> {
+        let shell = "/bin/sh".to_owned();
+        Pane::new(PaneId::of(1), "sh".into(), shell, size(rows, cols), 10)
     }
 
     /// A frame drawn in synchronized output reaches the screen whole, when
@@ -806,7 +804,7 @@ mod tests {
     /// frame and the ESU each in pieces, and several frames in one read.
     #[test]
     fn a_synchronized_frame_reaches_the_screen_whole() -> Result<(), Error> {
-        let mut pane = pane()?;
+        let mut pane = pane(3, 30)?;
         pane.output(b"a\x1b[?2026hb");
         assert_eq!(first_row(&pane), "a", "the frame is held");
         assert!(pane.screen().mode(Mode::SynchronizedOutput));
@@ -833,7 +831,7 @@ mod tests {
     /// comes. A resize reads it first.
     #[test]
     fn a_frame_that_does_not_end_is_read_anyway() -> Result<(), Error> {
-        let mut pane = pane()?;
+        let mut pane = pane(3, 30)?;
         let t0 = Instant::now();
         pane.output_at(b"\x1b[?2026hx", t0);
         assert_eq!(pane.frame_deadline(), Some(crate::after(t0, FRAME_TIMEOUT)));
@@ -854,7 +852,7 @@ mod tests {
         assert!(first_row(&pane).ends_with('z'), "past it, read");
         assert_eq!(pane.frame_deadline(), None);
         pane.output(b"\x1b[2J\x1b[H\x1b[?2026hw");
-        pane.resize(3, 20);
+        pane.resize(size(3, 20));
         // The cursor's row: a reflow may bring history down above it.
         let (y, _) = pane.screen().cursor_position();
         let row: String = (0..20)
@@ -869,14 +867,14 @@ mod tests {
     /// resize, and on setting it; one that did not is told nothing.
     #[test]
     fn a_resize_reports_the_size_in_band_when_asked() -> Result<(), Error> {
-        let mut pane = pane()?;
-        pane.resize(4, 20);
+        let mut pane = pane(3, 30)?;
+        pane.resize(size(4, 20));
         assert!(pane.input.drain_all().is_empty(), "not asked");
         pane.output(b"\x1b[?2048h");
         assert_eq!(pane.input.drain_all(), b"\x1b[48;4;20;0;0t");
-        pane.resize(6, 25);
+        pane.resize(size(6, 25));
         assert_eq!(pane.input.drain_all(), b"\x1b[48;6;25;0;0t");
-        pane.resize(6, 25);
+        pane.resize(size(6, 25));
         assert!(pane.input.drain_all().is_empty(), "the same size");
         Ok(())
     }
@@ -887,7 +885,7 @@ mod tests {
     /// nothing.
     #[test]
     fn a_pushed_title_comes_back_when_popped() -> Result<(), Error> {
-        let mut pane = pane()?;
+        let mut pane = pane(3, 30)?;
         pane.output(b"\x1b]2;shell\x07\x1b[22;0t\x1b]2;vim\x07");
         assert_eq!(pane.title, "vim");
         pane.output(b"\x1b[23;0t");
@@ -913,7 +911,7 @@ mod tests {
     /// the style and says so; the cells keep what neovim then draws.
     #[test]
     fn a_pane_tells_neovim_it_keeps_underline_styles() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane()?;
+        let mut pane = pane(3, 30)?;
         pane.output(b"\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\");
         assert_eq!(pane.input.drain_all(), b"\x1bP1$r0;4:3m\x1b\\");
         pane.output(b"\x1b[0m\x1b[4:3m\x1b[58:2::255:0:0mx\x1b[0m");
