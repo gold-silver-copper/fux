@@ -11,12 +11,13 @@ pub enum WsRef {
     Name(String),
 }
 
-/// Any target: `%N`, `@N`, `+N` or a workspace name.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AnyRef {
+/// Any target: `%N`, `@N`, `+N` or a workspace name; once found, a
+/// workspace by its ID (`AnyRef<WsId>`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnyRef<W = WsRef> {
     Pane(PaneId),
     Tab(TabId),
-    Workspace(WsRef),
+    Workspace(W),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,12 +27,20 @@ pub enum Kind {
     Workspace,
 }
 
-impl AnyRef {
+impl<W> AnyRef<W> {
     pub fn kind(&self) -> Kind {
         match self {
             AnyRef::Pane(_) => Kind::Pane,
             AnyRef::Tab(_) => Kind::Tab,
             AnyRef::Workspace(_) => Kind::Workspace,
+        }
+    }
+    /// The same target, its workspace as `f` gives it.
+    pub fn map<V>(self, f: impl FnOnce(W) -> V) -> AnyRef<V> {
+        match self {
+            AnyRef::Pane(p) => AnyRef::Pane(p),
+            AnyRef::Tab(t) => AnyRef::Tab(t),
+            AnyRef::Workspace(w) => AnyRef::Workspace(f(w)),
         }
     }
 }

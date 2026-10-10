@@ -140,7 +140,6 @@ pub enum Error {
     NoTabGiven,
     NoTab(TabId),
     NoWorkspaceGiven,
-    NoTarget(AnyRef),
     NoClientGiven,
     NoClient(ClientId),
     NoWorkspaces,
@@ -200,9 +199,6 @@ impl std::fmt::Display for Error {
             Error::NoTabGiven => f.write_str("no tab given: use -t @N"),
             Error::NoTab(id) => write!(f, "no tab {id}"),
             Error::NoWorkspaceGiven => f.write_str("no workspace given: use -t +N or a name"),
-            Error::NoTarget(target) => {
-                write!(f, "no {} {}", target.kind().name(), describe(target))
-            }
             Error::NoClientGiven => f.write_str(
                 "this command acts on a client's screen: use -c CLIENT (`fux ls` lists clients)",
             ),
@@ -262,7 +258,6 @@ impl std::error::Error for Error {
             | Error::NoTabGiven
             | Error::NoTab(_)
             | Error::NoWorkspaceGiven
-            | Error::NoTarget(_)
             | Error::NoClientGiven
             | Error::NoClient(_)
             | Error::NoWorkspaces
@@ -470,12 +465,21 @@ impl Session {
         let found = self.workspaces.iter().find(|w| r.names(w));
         found.map(|w| w.id).ok_or_else(|| r.missing())
     }
-    pub fn exists(&self, what: &AnyRef) -> bool {
+    pub fn exists(&self, what: AnyRef<WsId>) -> bool {
         match what {
-            AnyRef::Pane(p) => self.panes.contains_key(p),
-            AnyRef::Tab(t) => self.tab(*t).is_some(),
-            AnyRef::Workspace(w) => self.resolve_ws(w).is_ok(),
+            AnyRef::Pane(p) => self.panes.contains_key(&p),
+            AnyRef::Tab(t) => self.tab(t).is_some(),
+            AnyRef::Workspace(w) => self.workspace(w).is_some(),
         }
+    }
+    /// What `target` names, if it is there: a workspace by its ID, as it is
+    /// held from then on.
+    pub(crate) fn resolve(&self, target: &AnyRef) -> Result<AnyRef<WsId>, Error> {
+        Ok(match *target {
+            AnyRef::Pane(p) => AnyRef::Pane(self.panes.get(&p).ok_or(Error::NoPane(p))?.id),
+            AnyRef::Tab(t) => AnyRef::Tab(self.tab(t).ok_or(Error::NoTab(t))?.id),
+            AnyRef::Workspace(ref w) => AnyRef::Workspace(self.resolve_ws(w)?),
+        })
     }
 
     // ------------------------------------------------------------- targets
@@ -529,21 +533,14 @@ impl Session {
             .ok_or(Error::NoWorkspaceGiven)
     }
 
-    fn any_target(&self, subject: &Subject, here: Here) -> Result<AnyRef, Error> {
+    fn any_target(&self, subject: &Subject, here: Here) -> Result<AnyRef<WsId>, Error> {
         if let Some(target) = subject.target() {
-            return if self.exists(&target) {
-                Ok(target)
-            } else {
-                Err(Error::NoTarget(target))
-            };
+            return self.resolve(&target);
         }
         Ok(match subject.kind() {
             Kind::Pane => AnyRef::Pane(self.pane(None, here)?.id),
             Kind::Tab => AnyRef::Tab(self.tab_target(None, here)?),
-            Kind::Workspace => {
-                let id = self.resolve_ws(&self.ws_target(None, here)?)?;
-                AnyRef::Workspace(WsRef::Id(id))
-            }
+            Kind::Workspace => AnyRef::Workspace(self.resolve_ws(&self.ws_target(None, here)?)?),
         })
     }
 
@@ -810,12 +807,11 @@ impl Session {
             }
             Mode::List(list) => list
                 .about
-                .as_ref()
-                .filter(|a| !self.exists(a))
+                .filter(|a| !self.exists(*a))
                 .map(|a| format!("closed: {} is gone", describe(a))),
-            Mode::Confirm(confirm) => (!self.exists(&confirm.about))
-                .then(|| format!("closed: {} is gone", describe(&confirm.about))),
-            Mode::Prompt(prompt) => match &prompt.purpose {
+            Mode::Confirm(confirm) => (!self.exists(confirm.about))
+                .then(|| format!("closed: {} is gone", describe(confirm.about))),
+            Mode::Prompt(prompt) => match prompt.purpose {
                 crate::view::PromptFor::Rename(target) if !self.exists(target) => {
                     Some(format!("closed: {} is gone", describe(target)))
                 }
@@ -1330,6 +1326,7 @@ impl Session {
                 Ok(String::new())
             }
             Command::Rename { target, name } => {
+                let target = self.resolve(target)?;
                 self.rename(target, name.clone()).map(|()| String::new())
             }
             &Command::MovePane { target, ref to } => self.move_pane(target, to, here),
@@ -1406,7 +1403,7 @@ impl Session {
                 toward,
             } => {
                 let target = self.any_target(subject, here)?;
-                self.reorder(&target, toward).map(|()| String::new())
+                self.reorder(target, toward).map(|()| String::new())
             }
             Command::Configure { argv } => {
                 // `run_command` marks every view to paint, as after any
@@ -1516,18 +1513,18 @@ impl Session {
             }
             ClientAction::RenamePrompt(ref subject) => {
                 let target = self.any_target(subject, here)?;
-                let current = self.name_of(&target);
-                let title = format!("rename {} {}", subject.kind().name(), describe(&target));
+                let current = self.name_of(target);
+                let title = format!("rename {} {}", subject.kind().name(), describe(target));
                 let purpose = crate::view::PromptFor::Rename(target);
                 Ok(crate::overlay::open_prompt(view, purpose, title, current))
             }
             ClientAction::ConfirmClose(ref subject) => {
                 let target = self.any_target(subject, here)?;
-                crate::overlay::open_confirm(self, view, target)
+                Ok(crate::overlay::open_confirm(self, view, target))
             }
             ClientAction::Menu(ref subject) => {
                 let target = self.any_target(subject, here)?;
-                crate::overlay::open_menu(self, view, target)
+                Ok(crate::overlay::open_menu(self, view, target))
             }
             ClientAction::ChooseTab { moving } => {
                 let moving = self.moving(moving, here)?;
@@ -1550,34 +1547,30 @@ impl Session {
         moving.map(|p| self.pane(p, here).map(|p| p.id)).transpose()
     }
 
-    pub fn name_of(&self, target: &AnyRef) -> String {
+    pub fn name_of(&self, target: AnyRef<WsId>) -> String {
         match target {
-            AnyRef::Pane(p) => self.panes.get(p).map(|p| p.name.clone()),
-            AnyRef::Tab(t) => self.tab(*t).map(|t| t.name.clone()),
-            AnyRef::Workspace(w) => self
-                .workspaces
-                .iter()
-                .find(|ws| w.names(ws))
-                .map(|w| w.name.clone()),
+            AnyRef::Pane(p) => self.panes.get(&p).map(|p| p.name.clone()),
+            AnyRef::Tab(t) => self.tab(t).map(|t| t.name.clone()),
+            AnyRef::Workspace(w) => self.workspace(w).map(|w| w.name.clone()),
         }
         .unwrap_or_default()
     }
 
-    fn rename(&mut self, target: &AnyRef, name: String) -> Result<(), Error> {
+    fn rename(&mut self, target: AnyRef<WsId>, name: String) -> Result<(), Error> {
         check_name(&name)?;
         match target {
             AnyRef::Pane(p) => {
-                self.panes.get_mut(p).ok_or(Error::NoPane(*p))?.name = name;
+                self.panes.get_mut(&p).ok_or(Error::NoPane(p))?.name = name;
             }
             AnyRef::Tab(t) => {
-                let tab = tabs_mut(&mut self.workspaces).find(|tab| tab.id == *t);
-                tab.ok_or(Error::NoTab(*t))?.name = name;
+                let tab = tabs_mut(&mut self.workspaces).find(|tab| tab.id == t);
+                tab.ok_or(Error::NoTab(t))?.name = name;
             }
-            AnyRef::Workspace(r) => {
+            AnyRef::Workspace(id) => {
                 // The one named, and the others, whose names it cannot take.
                 let (named, others): (Vec<_>, Vec<_>) =
-                    self.workspaces.iter_mut().partition(|w| r.names(w));
-                let ws = named.into_iter().next().ok_or_else(|| r.missing())?;
+                    self.workspaces.iter_mut().partition(|w| w.id == id);
+                let ws = named.into_iter().next().ok_or(Error::NoWorkspace(id))?;
                 check_workspace_name(&name, others.iter().map(|w| &**w))?;
                 ws.name = name;
             }
@@ -1677,30 +1670,26 @@ impl Session {
         Ok(format!("{tab}\n"))
     }
 
-    fn reorder(&mut self, target: &AnyRef, toward: Sibling) -> Result<(), Error> {
+    fn reorder(&mut self, target: AnyRef<WsId>, toward: Sibling) -> Result<(), Error> {
         let moved = match target {
             AnyRef::Pane(p) => {
-                let panes = self.locate(*p).and_then(|(_, t)| self.root(t));
+                let panes = self.locate(p).and_then(|(_, t)| self.root(t));
                 let panes = panes.map_or_else(Vec::new, Tree::panes);
-                let index = panes.iter().position(|x| x == p);
+                let index = panes.iter().position(|x| *x == p);
                 let other = index
                     .and_then(|i| sibling(i, toward))
                     .and_then(|i| panes.get(i));
                 let other = other.copied().ok_or(Error::AtEnd(Kind::Pane))?;
-                self.swap(*p, other);
+                self.swap(p, other);
                 return Ok(());
             }
-            AnyRef::Tab(t) => self
-                .workspaces
-                .iter_mut()
-                .find_map(|w| swap_sibling(w.tabs_mut(), |tab| tab.id == *t, toward)),
-            AnyRef::Workspace(r) => swap_sibling(&mut self.workspaces, |w| r.names(w), toward),
+            AnyRef::Tab(t) => (self.workspaces.iter_mut())
+                .find_map(|w| swap_sibling(w.tabs_mut(), |tab| tab.id == t, toward))
+                .ok_or(Error::NoTab(t))?,
+            AnyRef::Workspace(w) => swap_sibling(&mut self.workspaces, |ws| ws.id == w, toward)
+                .ok_or(Error::NoWorkspace(w))?,
         };
-        match moved {
-            Some(true) => Ok(()),
-            Some(false) => Err(Error::AtEnd(target.kind())),
-            None => Err(Error::NoTarget(target.clone())),
-        }
+        moved.then_some(()).ok_or(Error::AtEnd(target.kind()))
     }
 
     fn select_pane(&mut self, view: &mut View, at: Place, pick: PanePick) -> Result<String, Error> {
@@ -1891,13 +1880,12 @@ fn home() -> PathBuf {
     home.filter(|p| p.is_dir()).unwrap_or_else(|| "/".into())
 }
 
-/// `%3`, `@2`, `+1` or a workspace's name.
-pub fn describe(target: &AnyRef) -> String {
+/// `%3`, `@2` or `+1`.
+pub fn describe(target: AnyRef<WsId>) -> String {
     match target {
         AnyRef::Pane(p) => p.to_string(),
         AnyRef::Tab(t) => t.to_string(),
-        AnyRef::Workspace(WsRef::Id(w)) => w.to_string(),
-        AnyRef::Workspace(WsRef::Name(n)) => n.clone(),
+        AnyRef::Workspace(w) => w.to_string(),
     }
 }
 
@@ -2388,8 +2376,16 @@ mod tests {
                 "no workspace given: use -t +N or a name",
             ),
             ("rename -t nope x", 1, r#"no workspace named "nope""#),
-            ("reorder workspace -t nope --next", 1, "no workspace nope"),
-            ("menu -c c1 workspace -t nope", 1, "no workspace nope"),
+            (
+                "reorder workspace -t nope --next",
+                1,
+                r#"no workspace named "nope""#,
+            ),
+            (
+                "menu -c c1 workspace -t nope",
+                1,
+                r#"no workspace named "nope""#,
+            ),
             (
                 "zoom",
                 1,
