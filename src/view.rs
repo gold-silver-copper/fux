@@ -2,7 +2,7 @@
 use crate::command::{AnyRef, Command};
 use crate::copy::Copy;
 use crate::decode::Decoder;
-use crate::id::ClientId;
+use crate::id::{ClientId, WsId};
 use crate::overlay::{Column, Repeat};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -22,7 +22,7 @@ pub struct Item {
     pub current: bool,
     /// What `r` renames and `x` closes: a chooser's items each have one,
     /// a menu's none.
-    pub subject: Option<AnyRef>,
+    pub subject: Option<AnyRef<WsId>>,
 }
 
 /// Items to choose from, one of them chosen: there is always at least one,
@@ -107,7 +107,7 @@ pub struct List {
     pub title: String,
     pub items: Choice<Item>,
     /// What the list was opened for; if it goes, the list closes.
-    pub about: Option<AnyRef>,
+    pub about: Option<AnyRef<WsId>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,7 +115,7 @@ pub enum PromptFor {
     /// The command prompt: any fux command.
     Command,
     /// A new name for this target.
-    Rename(AnyRef),
+    Rename(AnyRef<WsId>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -207,7 +207,7 @@ impl Line {
 pub struct Confirm {
     pub question: String,
     pub command: Command,
-    pub about: AnyRef,
+    pub about: AnyRef<WsId>,
 }
 
 pub enum Mode {

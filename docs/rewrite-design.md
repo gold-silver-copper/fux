@@ -284,7 +284,9 @@ showing it, with a 1×1 minimum. A pane nobody shows keeps its last size. A
 client whose rectangle is larger than the PTY sees the pane at the top left,
 with the rest blank. Every change is published at once, and `fux ls` never
 reports a size from before the last change. A client's size is clamped to
-1..=4096 in each dimension.
+1..=4096 in each dimension, and the session alone says whether a resize
+changed it: one that leaves it as it was is not settled, and repaints the
+client in full only if its terminal said it was resized.
 
 ### Input
 
