@@ -4,7 +4,6 @@
 //! walk ends.
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -39,7 +38,7 @@ echo "act-done-$(( $1 + 1000 ))"
 /// A real `fux attach` on a PTY, and a terminal of what it shows.
 pub struct Client {
     pub id: String,
-    master: Option<OwnedFd>,
+    master: Option<fuxix::pty::Master>,
     pub child: Child,
     pub screen: fux_vt::Parser,
     pub rows: u16,
@@ -84,7 +83,8 @@ impl Client {
     /// Resizes the terminal; the kernel signals the client.
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
         let master = self.master.as_ref().ok_or("the terminal is closed")?;
-        fuxix::terminal::set_window_size(master, rows, cols).map_err(|e| e.to_string())?;
+        let size = fuxix::terminal::Size::new(rows, cols).ok_or("a zero size")?;
+        fuxix::terminal::set_window_size(master, size).map_err(|e| e.to_string())?;
         // The same size signals nothing, and nothing is repainted: the
         // screen stays as it is.
         if (rows, cols) == (self.rows, self.cols) {
@@ -287,16 +287,17 @@ impl Fixture {
     /// A new real client of `rows` by `cols`: its id.
     pub fn attach(&mut self, rows: u16, cols: u16) -> Result<String, String> {
         let before = self.listed_clients()?;
-        let (master, slave) = fux::process::open_pty(rows, cols).map_err(|e| e.to_string())?;
+        let size = fuxix::terminal::Size::new(rows, cols).ok_or("a zero size")?;
+        let (master, slave) = fuxix::pty::open(size).map_err(|e| e.to_string())?;
         let argv = [self.fux.as_os_str(), std::ffi::OsStr::new("attach")];
         let socket = self.socket.clone();
         let dir = self.dir.clone();
-        let child = fux::process::launch(&self.fux, &argv, &slave, |command| {
-            environment(command, &dir);
-            command.env("FUX_SOCKET", &socket);
-        })
-        .map_err(|e| e.to_string())?;
-        drop(slave);
+        let (child, _) = slave
+            .spawn(&self.fux, &argv, |command| {
+                environment(command, &dir);
+                command.env("FUX_SOCKET", &socket);
+            })
+            .map_err(|e| e.to_string())?;
         let deadline = after(CALL);
         let id = loop {
             if let Some(id) = self
