@@ -675,13 +675,17 @@ impl Session {
         }
     }
 
-    pub fn resize(&mut self, id: ClientId, rows: u16, cols: u16) {
-        if let Some(view) = self.views.get_mut(&id) {
-            view.rows = rows.clamp(1, 4096);
-            view.cols = cols.clamp(1, 4096);
-            view.dirty = true;
-        }
+    /// A client's terminal is `rows` by `cols`: its view, kept at most 4096
+    /// each way, takes the size and settles if that changes it, and says
+    /// whether it did.
+    pub fn resize(&mut self, id: ClientId, rows: u16, cols: u16) -> bool {
+        let size = (rows.clamp(1, 4096), cols.clamp(1, 4096));
+        let view = self.views.get_mut(&id).filter(|v| (v.rows, v.cols) != size);
+        let Some(view) = view else { return false };
+        (view.rows, view.cols) = size;
+        view.dirty = true;
         self.settle();
+        true
     }
 
     /// Gives a client an error notice, if it is still attached.
@@ -2339,6 +2343,29 @@ mod tests {
         s.resize(client, 3, 20);
         let view = s.views.get(&client).ok_or("the view")?;
         assert!(matches!(view.mode, Mode::Normal), "copy mode ended");
+        Ok(())
+    }
+
+    /// A client's size is kept at most 4096 each way, and only a size that
+    /// changes it resizes and repaints it: the same size again, or a larger
+    /// terminal's, changes nothing.
+    #[test]
+    fn only_a_size_that_changes_a_client_resizes_it() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, c) = attached(10, 40)?;
+        for (rows, changes) in [
+            (10, false),
+            (5000, true),
+            (5000, false),
+            (4096, false),
+            (3, true),
+        ] {
+            if let Some(view) = s.views.get_mut(&c) {
+                view.dirty = false;
+            }
+            let resized = s.resize(c, rows, 40);
+            let dirty = s.views.get(&c).is_some_and(|v| v.dirty);
+            assert_eq!((resized, dirty), (changes, changes), "{rows} rows");
+        }
         Ok(())
     }
 

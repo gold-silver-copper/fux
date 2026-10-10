@@ -113,9 +113,9 @@ macro_rules! stack {
                         return format!("{:?}", s.run(argv, &super::$side::origin(c, p)));
                     }
                     Event::Output(p, bytes) => pane(p).into_iter().for_each(|p| s.output(p, bytes)),
-                    Event::Resize(c, rows, cols) => {
-                        client(c).into_iter().for_each(|c| s.resize(c, *rows, *cols))
-                    }
+                    Event::Resize(c, rows, cols) => client(c).into_iter().for_each(|c| {
+                        s.resize(c, *rows, *cols);
+                    }),
                     Event::Attach(rows, cols, ws) => {
                         return match s.attach(*rows, *cols, ws.as_deref()) {
                             Ok(id) => id.to_string(),

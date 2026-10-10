@@ -885,14 +885,9 @@ impl Server {
         // size they were typed at, as when both came by the client.
         let Some(tty) = &attached.tty else { return };
         if let Some(size) = fuxix::terminal::window_size(&tty.fd)
-            && session
-                .views
-                .get(&attached.client)
-                .map(|v| (v.rows, v.cols))
-                != Some((size.rows.get(), size.cols.get()))
+            && session.resize(attached.client, size.rows.get(), size.cols.get())
         {
             attached.screen.forget();
-            session.resize(attached.client, size.rows.get(), size.cols.get());
         }
         let mut read = 0usize;
         let mut gone = false;
@@ -1064,6 +1059,9 @@ impl Server {
             Stage::Attached(attached) => match decoder.frame()? {
                 // Input goes to the session as the decoder lends it.
                 Some(AttachedFrame::Input(bytes)) => attached.input(session, bytes, now),
+                // The client's terminal was resized, which may have moved
+                // what it shows even if the size it ends at is the same:
+                // it is repainted in full either way.
                 Some(AttachedFrame::Resize { rows, cols }) => {
                     attached.screen.forget();
                     session.resize(attached.client, rows.get(), cols.get());
