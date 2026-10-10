@@ -23,16 +23,10 @@ use fuxix::poll::{Events, PollFd};
 use fuxix::process::{Pid, Signal};
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::{AsFd, OwnedFd};
-use std::os::unix::process::CommandExt;
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
 use std::time::{Duration, Instant};
-
-/// The hidden subcommand the recorder starts a program through: it makes
-/// the program the leader of a new session, with the PTY (its stdin) as
-/// its controlling terminal, as fux's own launcher does.
-pub const LAUNCH: &str = "__launch";
 
 /// The most reply bytes written back for one read of output, as fux's
 /// pane sink keeps (`src/pane.rs`).
@@ -222,7 +216,8 @@ impl Session {
         self.parser
             .resize(crate::vt_size(rows, cols)?)
             .map_err(|e| format!("fux-vt: {e}"))?;
-        fuxix::terminal::set_window_size(&self.master, rows, cols)
+        let size = fuxix::terminal::Size::new(rows, cols).ok_or("a terminal of no size")?;
+        fuxix::terminal::set_window_size(&self.master, size)
             .map_err(|e| format!("resizing the PTY: {e}"))?;
         if let Some(report) = self.parser.resize_report() {
             self.replies.extend_from_slice(&report);
@@ -270,44 +265,53 @@ impl Session {
     }
 }
 
-/// Opens a PTY and starts the program on it through [`LAUNCH`], with the
-/// environment `env` alone, besides `TERM`, and `PATH` if `env` has
-/// none.
-fn spawn(request: &Request) -> Result<(OwnedFd, std::process::Child), String> {
-    let (master, slave) =
-        fuxix::pty::open(request.rows, request.cols).map_err(|e| format!("opening a PTY: {e}"))?;
+/// Opens a PTY of `rows` by `cols` and starts `argv` on it, leading a new
+/// session with it as its controlling terminal (`fuxix::pty::launched`);
+/// `setup` sets its directory and environment. The master is blocking.
+pub fn start(
+    rows: u16,
+    cols: u16,
+    argv: &[String],
+    setup: impl FnOnce(&mut Command),
+) -> Result<(File, Child), String> {
+    let size = fuxix::terminal::Size::new(rows, cols).ok_or("a terminal of no size")?;
+    let (master, slave) = fuxix::pty::open(size).map_err(|e| format!("opening a PTY: {e}"))?;
+    let master = OwnedFd::from(master);
+    fuxix::io::set_nonblocking(&master, false).map_err(|e| format!("the PTY: {e}"))?;
     let me = std::env::current_exe().map_err(|e| format!("this program's path: {e}"))?;
-    let clone = |fd: &OwnedFd| fd.try_clone().map_err(|e| format!("the PTY: {e}"));
-    let mut command = Command::new(me);
-    command
-        .arg(LAUNCH)
-        .args(&request.argv)
-        .env_clear()
-        .env("TERM", "xterm-256color")
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .stdin(clone(&slave)?)
-        .stdout(clone(&slave)?)
-        .stderr(clone(&slave)?);
-    for pair in &request.env {
-        let (key, value) = pair
-            .split_once('=')
-            .ok_or(format!("--env {pair:?} is not KEY=VALUE"))?;
-        command.env(key, value);
-    }
-    if let Some(dir) = &request.dir {
-        command.current_dir(dir);
-    }
-    let child = command
-        .spawn()
-        .map_err(|e| format!("starting {:?}: {e}", request.argv))?;
-    drop(slave);
-    Ok((master, child))
+    let (child, _) = slave
+        .spawn(&me, argv, setup)
+        .map_err(|e| format!("starting {:?}: {e}", argv.first()))?;
+    Ok((File::from(master), child))
+}
+
+/// Starts the program on a PTY, with the environment `env` alone, besides
+/// `TERM`, and `PATH` if `env` has none.
+fn spawn(request: &Request) -> Result<(File, Child), String> {
+    let env = request
+        .env
+        .iter()
+        .map(|pair| {
+            pair.split_once('=')
+                .ok_or(format!("--env {pair:?} is not KEY=VALUE"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    start(request.rows, request.cols, &request.argv, |command| {
+        command
+            .env_clear()
+            .env("TERM", "xterm-256color")
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .envs(env);
+        if let Some(dir) = &request.dir {
+            command.current_dir(dir);
+        }
+    })
 }
 
 /// Waits up to `limit` for the program to exit, reading what it writes
 /// meanwhile: a process exiting with output still to be read waits for
 /// it to be read, as it closes its terminal. Whether it exited.
-fn exited(child: &mut std::process::Child, session: &mut Session, limit: Duration) -> bool {
+fn exited(child: &mut Child, session: &mut Session, limit: Duration) -> bool {
     let deadline = Instant::now().checked_add(limit);
     loop {
         if !matches!(child.try_wait(), Ok(None)) {
@@ -326,7 +330,7 @@ fn exited(child: &mut std::process::Child, session: &mut Session, limit: Duratio
 
 /// Ends the program: it has two seconds to exit after the last step, then
 /// its group gets SIGHUP, as from a terminal closing, and then SIGKILL.
-fn end(child: &mut std::process::Child, session: &mut Session) {
+fn end(child: &mut Child, session: &mut Session) {
     if exited(child, session, Duration::from_secs(2)) {
         return;
     }
@@ -381,7 +385,7 @@ pub fn record(request: &Request) -> Result<Recorded, String> {
             .map_err(|e| format!("fux-vt: {e}"))?;
     let (master, mut child) = spawn(request)?;
     let mut session = Session {
-        master: File::from(master),
+        master,
         parser,
         output: Vec::new(),
         replies: Vec::new(),
@@ -487,21 +491,6 @@ fn write(request: &Request, session: &Session, ends: &[End]) -> Result<(), Strin
         serde_json::to_string_pretty(&manifest).map_err(|e| format!("the manifest: {e}"))?;
     text.push('\n');
     save(&path(".json"), text.as_bytes())
-}
-
-/// The launcher: `fux-vt-compare __launch PROGRAM ARGS...`, started by
-/// [`record`] with the PTY as its stdin, stdout and stderr. It returns only
-/// if the program could not start, and says why on the PTY.
-pub fn launched(argv: &[String]) -> Result<bool, String> {
-    let Some((program, args)) = argv.split_first() else {
-        return Err("no program to run".into());
-    };
-    fuxix::process::setsid().map_err(|e| format!("setsid: {e}"))?;
-    let terminal = std::io::stdin();
-    fuxix::terminal::make_controlling(terminal.as_fd())
-        .map_err(|e| format!("making the PTY the controlling terminal: {e}"))?;
-    let error = Command::new(program).args(args).exec();
-    Err(format!("{program}: {error}"))
 }
 
 #[cfg(test)]

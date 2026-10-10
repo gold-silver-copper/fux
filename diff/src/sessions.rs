@@ -191,7 +191,7 @@ macro_rules! stack {
                         "pane {id} {:?} title {:?} {:?} queued {} typed {}",
                         p.name,
                         p.title,
-                        p.size,
+                        super::$side::pane_size(p),
                         super::shown(p.input.front().unwrap_or_default()),
                         p.typed.is_some()
                     );
@@ -262,6 +262,10 @@ mod base_side {
         format!("{ws:?} tab {:?} focus {:?}", v.tab(), v.focus())
     }
 
+    pub fn pane_size(p: &baseline::pane::Pane) -> (u16, u16) {
+        p.size
+    }
+
     pub fn tabs(w: &Workspace) -> impl Iterator<Item = (&Tab, Option<&Node>)> {
         w.tabs.iter().map(|t| (t, t.root.as_ref()))
     }
@@ -300,6 +304,10 @@ mod cur_side {
         let (ws, tab) = (s.shown_workspace(v.id), s.shown_tab(v.id));
         let (ws, tab) = (ws.map(|w| w.id), tab.map(|t| t.id));
         format!("{ws:?} tab {tab:?} focus {:?}", s.focused(v.id))
+    }
+
+    pub fn pane_size(p: &fux::pane::Pane) -> (u16, u16) {
+        p.size().into()
     }
 
     pub fn tabs(w: &Workspace) -> impl Iterator<Item = (&Tab, Option<&Tree>)> {
