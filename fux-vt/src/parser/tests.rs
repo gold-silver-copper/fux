@@ -220,7 +220,7 @@ fn scalar(
     if bytes.is_empty() {
         return Ok(None);
     }
-    parser.screen.begin()?;
+    parser.screen.begin();
     for (i, &byte) in bytes.iter().enumerate() {
         if parser.byte(byte, sink)? && until_frame {
             return Ok(Some(i.saturating_add(1)));

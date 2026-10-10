@@ -782,7 +782,7 @@ impl Parser {
         if bytes.is_empty() {
             return Ok(None);
         }
-        self.screen.begin()?;
+        self.screen.begin();
         let mut remaining = bytes;
         while let Some((&byte, tail)) = remaining.split_first() {
             let ground = matches!(self.state, State::Ground);

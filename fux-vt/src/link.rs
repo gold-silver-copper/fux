@@ -95,10 +95,13 @@ struct Run {
 }
 
 impl RowLinks {
-    /// No links, with room for a row's worth as a line of `ls` prints:
-    /// growing one run at a time would cost more.
-    pub(crate) fn new() -> Self {
-        Self(Vec::with_capacity(8))
+    /// Whether no cell has a link.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    /// Drops every link, keeping the memory for the slot's next row.
+    pub(crate) fn clear(&mut self) {
+        self.0.clear();
     }
     /// The link of the cell at `col`.
     pub(crate) fn get(&self, col: usize) -> Option<&Hyperlink> {
@@ -280,6 +283,12 @@ pub(crate) struct Links {
 }
 
 impl Links {
+    /// Whether no row has a link: every link a row has is held, and
+    /// costs something.
+    #[inline]
+    pub(crate) fn none(&self) -> bool {
+        self.held == 0
+    }
     /// The held link with this `id` and URI.
     pub(crate) fn find(&self, uri: &Arc<str>, id: &Arc<str>) -> Option<&Hyperlink> {
         self.ids.get(&(Arc::clone(id), Arc::clone(uri)))
