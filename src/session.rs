@@ -355,9 +355,6 @@ pub struct Session {
     /// Commands run that may change what any client shows; input that runs
     /// one repaints every client, input that runs none only its own.
     changes: u64,
-    /// Output changed a pane a client's copy mode holds rows of: the next
-    /// `settle_if_needed` repairs the views, to end copy mode if they went.
-    unsettled: bool,
 }
 
 /// The name of the first workspace, and of each workspace's first tab.
@@ -409,7 +406,6 @@ impl Session {
             placed: Placement::default(),
             ids: Ids::default(),
             changes: 0,
-            unsettled: false,
         }
     }
 
@@ -765,7 +761,6 @@ impl Session {
     /// Ends each view's mode if what it shows is gone, then sizes the PTYs:
     /// run after every event.
     pub fn settle(&mut self) {
-        self.unsettled = false;
         // Out of the session while they are repaired, which reads no view.
         let mut views = std::mem::take(&mut self.views);
         views.values_mut().for_each(|view| self.repair(view));
@@ -998,18 +993,11 @@ impl Session {
         self.close_pane(id, Some(format!("exited with status {status}")));
     }
 
-    /// Settles, if anything since the last settle needs it. Every change to
-    /// workspaces, tabs, panes and views settles as it is made; output does
-    /// not change them, but can drop history rows a copy mode holds.
+    /// Settles what output can change. Every change to workspaces, tabs,
+    /// panes and views settles as it is made; output does not change them,
+    /// but can drop history rows a copy mode holds.
     pub fn settle_if_needed(&mut self) {
-        if self.unsettled {
-            self.settle();
-        }
-    }
-
-    /// Whether a settle is pending.
-    pub fn unsettled(&self) -> bool {
-        self.unsettled
+        self.hold_copies();
     }
 
     /// Output from a pane's program.
@@ -1069,10 +1057,6 @@ impl Session {
         {
             self.ring(id, Instant::now());
         }
-        self.unsettled |= self
-            .views
-            .values()
-            .any(|view| matches!(&view.mode, Mode::Copy(copy) if copy.pane == id));
         for view in self.views.values_mut() {
             let shown = shown_tab(&self.workspaces, view.id).map(|t| t.id);
             if place.is_some_and(|(_, t)| shown == Some(t)) {
@@ -2285,25 +2269,21 @@ mod tests {
         Ok(())
     }
 
-    /// Output asks for a settle only where it can change a view: in a pane
-    /// a copy mode holds rows of, whose history it may drop. There, the
-    /// settle that follows ends copy mode when the rows go.
+    /// Output can drop history rows a copy mode holds: the settle that
+    /// follows it ends copy mode when they go.
     #[test]
-    fn output_asks_for_a_settle_only_under_copy_mode() -> Result<(), Box<dyn std::error::Error>> {
+    fn output_that_drops_a_copy_modes_rows_ends_it() -> Result<(), Box<dyn std::error::Error>> {
         let mut s = started(Config {
             history_lines: 2,
             ..Config::default()
         })?;
         let client = s.attach(6, 20, None)?;
         s.output(PaneId::of(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
-        assert!(!s.unsettled(), "no copy mode: nothing to repair");
         run(&mut s, "copy-mode -c c1")?;
         // To the oldest row, which the next lines of output push out.
         s.input(client, b"g");
         s.output(PaneId::of(1), b"g\r\nh\r\ni\r\nj\r\n");
-        assert!(s.unsettled());
         s.settle_if_needed();
-        assert!(!s.unsettled());
         let view = s.views.get(&client).ok_or("the view")?;
         assert!(matches!(view.mode, Mode::Normal), "copy mode ended");
         assert!(
