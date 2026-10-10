@@ -112,14 +112,6 @@ impl Subject {
             Subject::Workspace(_) => Kind::Workspace,
         }
     }
-    /// The one given, if one was.
-    pub fn target(&self) -> Option<AnyRef> {
-        match self {
-            Subject::Pane(p) => p.map(AnyRef::Pane),
-            Subject::Tab(t) => t.map(AnyRef::Tab),
-            Subject::Workspace(w) => w.clone().map(AnyRef::Workspace),
-        }
-    }
     /// The client's or the pane's own of `kind`.
     fn own(kind: Kind) -> Subject {
         match kind {

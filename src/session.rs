@@ -115,23 +115,6 @@ impl Here<'_> {
     }
 }
 
-impl WsRef {
-    fn names(&self, ws: &Workspace) -> bool {
-        match self {
-            WsRef::Id(id) => ws.id == *id,
-            WsRef::Name(name) => ws.name == *name,
-        }
-    }
-
-    /// Why no workspace is the one this names.
-    fn missing(&self) -> Error {
-        match self {
-            WsRef::Id(id) => Error::NoWorkspace(*id),
-            WsRef::Name(name) => Error::NoWorkspaceNamed(name.clone()),
-        }
-    }
-}
-
 /// Why a command, or attaching a client, failed: exit status 1.
 #[derive(Debug)]
 pub enum Error {
@@ -461,8 +444,12 @@ impl Session {
         self.shown_tab(client).is_some_and(|t| t.id == tab)
     }
     pub fn resolve_ws(&self, r: &WsRef) -> Result<WsId, Error> {
-        let found = self.workspaces.iter().find(|w| r.names(w));
-        found.map(|w| w.id).ok_or_else(|| r.missing())
+        match r {
+            WsRef::Id(id) => self.workspace(*id).ok_or(Error::NoWorkspace(*id)),
+            WsRef::Name(name) => (self.workspaces.iter().find(|w| w.name == *name))
+                .ok_or_else(|| Error::NoWorkspaceNamed(name.clone())),
+        }
+        .map(|w| w.id)
     }
     pub fn exists(&self, what: AnyRef<WsId>) -> bool {
         match what {
@@ -470,15 +457,6 @@ impl Session {
             AnyRef::Tab(t) => self.tab(t).is_some(),
             AnyRef::Workspace(w) => self.workspace(w).is_some(),
         }
-    }
-    /// What `target` names, if it is there: a workspace by its ID, as it is
-    /// held from then on.
-    pub(crate) fn resolve(&self, target: &AnyRef) -> Result<AnyRef<WsId>, Error> {
-        Ok(match *target {
-            AnyRef::Pane(p) => AnyRef::Pane(self.panes.get(&p).ok_or(Error::NoPane(p))?.id),
-            AnyRef::Tab(t) => AnyRef::Tab(self.tab(t).ok_or(Error::NoTab(t))?.id),
-            AnyRef::Workspace(ref w) => AnyRef::Workspace(self.resolve_ws(w)?),
-        })
     }
 
     // ------------------------------------------------------------- targets
@@ -525,21 +503,20 @@ impl Session {
         self.tab(id).map(|t| t.id).ok_or(Error::NoTab(id))
     }
 
-    fn ws_target(&self, explicit: Option<&WsRef>, here: Here) -> Result<WsRef, Error> {
-        explicit
-            .cloned()
-            .or(here.place().map(|p| WsRef::Id(p.ws)))
-            .ok_or(Error::NoWorkspaceGiven)
+    fn ws_target(&self, explicit: Option<&WsRef>, here: Here) -> Result<WsId, Error> {
+        match explicit {
+            Some(r) => self.resolve_ws(r),
+            None => here.place().map(|p| p.ws).ok_or(Error::NoWorkspaceGiven),
+        }
     }
 
+    /// What `subject` names, or the command's own, if it is there: a
+    /// workspace by its ID, as it is held from then on.
     fn any_target(&self, subject: &Subject, here: Here) -> Result<AnyRef<WsId>, Error> {
-        if let Some(target) = subject.target() {
-            return self.resolve(&target);
-        }
-        Ok(match subject.kind() {
-            Kind::Pane => AnyRef::Pane(self.pane(None, here)?.id),
-            Kind::Tab => AnyRef::Tab(self.tab_target(None, here)?),
-            Kind::Workspace => AnyRef::Workspace(self.resolve_ws(&self.ws_target(None, here)?)?),
+        Ok(match subject {
+            Subject::Pane(p) => AnyRef::Pane(self.pane(*p, here)?.id),
+            Subject::Tab(t) => AnyRef::Tab(self.tab_target(*t, here)?),
+            Subject::Workspace(w) => AnyRef::Workspace(self.ws_target(w.as_ref(), here)?),
         })
     }
 
@@ -1240,10 +1217,10 @@ impl Session {
                 Ok(format!("{ws}\n"))
             }
             Command::NewTab { target, name, cmd } => {
-                let named = self.ws_target(target.as_ref(), here)?;
+                let at = self.ws_target(target.as_ref(), here)?;
                 let cwd = self.cwd_for(here, None);
-                let ws = self.workspaces.iter_mut().find(|w| named.names(w));
-                let ws = ws.ok_or_else(|| named.missing())?;
+                let ws = self.workspaces.iter_mut().find(|w| w.id == at);
+                let ws = ws.ok_or(Error::NoWorkspace(at))?;
                 if let Some(name) = &name {
                     check_name(name)?;
                 }
@@ -1254,9 +1231,8 @@ impl Session {
                 let pane = new_pane(&self.config, launch, &mut ids, cmd, &cwd, default_size())?;
                 self.ids = ids;
                 ws.add_tab(id, name.clone(), Some(Tree::Pane(pane.id)));
-                let ws = ws.id;
                 self.panes.insert(pane.id, pane);
-                self.follow(here, ws, Some(id), None);
+                self.follow(here, at, Some(id), None);
                 Ok(format!("{id}\n"))
             }
             &Command::Split {
@@ -1300,13 +1276,13 @@ impl Session {
                 Ok(String::new())
             }
             Command::KillWorkspace { target } => {
-                let ws = self.resolve_ws(&self.ws_target(target.as_ref(), here)?)?;
+                let ws = self.ws_target(target.as_ref(), here)?;
                 self.remove_workspace(ws);
                 self.after_close();
                 Ok(String::new())
             }
             Command::Rename { target, name } => {
-                let target = self.resolve(target)?;
+                let target = self.any_target(&Subject::from(target.clone()), here)?;
                 self.rename(target, name.clone()).map(|()| String::new())
             }
             &Command::MovePane { target, ref to } => self.move_pane(target, to, here),
@@ -1614,9 +1590,9 @@ impl Session {
             }
             &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, tab),
             MoveTo::Workspace(r) => {
-                let mut named = self.workspaces.iter().filter(|w| r.names(w));
-                let first = named.find_map(|w| Some((w.id, w.tabs().first()?.id)));
-                first.ok_or_else(|| r.missing())?
+                let ws = self.resolve_ws(r)?;
+                let first = self.workspace(ws).and_then(|w| w.tabs().first());
+                (ws, first.ok_or(Error::NoWorkspace(ws))?.id)
             }
             MoveTo::NewTab => {
                 let ws = self
