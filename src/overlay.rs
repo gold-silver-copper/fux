@@ -7,7 +7,7 @@ use crate::command::{
     AnyRef, ClientAction, Command, Kind, MoveTo, Pick, Sibling, Subject, SwapWith, WsRef,
 };
 use crate::config::{Binding, Config, Layer, Node};
-use crate::id::{ClientId, PaneId};
+use crate::id::{ClientId, PaneId, WsId};
 use crate::keys::{Direction, Key, KeyPress, Keystroke};
 use crate::layout::Tree;
 use crate::session::{Error, Origin, Place, Session, describe};
@@ -178,30 +178,22 @@ pub fn open_prompt(view: &mut View, purpose: PromptFor, title: String, text: Str
     String::new()
 }
 
-pub fn open_confirm(session: &Session, view: &mut View, target: AnyRef) -> Result<String, Error> {
-    let (kind, id, command) = match &target {
-        AnyRef::Pane(p) => (
-            "pane",
-            p.to_string(),
-            Command::KillPane { target: Some(*p) },
-        ),
-        AnyRef::Tab(t) => ("tab", t.to_string(), Command::KillTab { target: Some(*t) }),
-        AnyRef::Workspace(r) => {
-            let ws = session.resolve_ws(r)?;
-            let command = Command::KillWorkspace {
-                target: Some(WsRef::Id(ws)),
-            };
-            ("workspace", ws.to_string(), command)
-        }
+pub fn open_confirm(session: &Session, view: &mut View, target: AnyRef<WsId>) -> String {
+    let command = match target {
+        AnyRef::Pane(p) => Command::KillPane { target: Some(p) },
+        AnyRef::Tab(t) => Command::KillTab { target: Some(t) },
+        AnyRef::Workspace(w) => Command::KillWorkspace {
+            target: Some(WsRef::Id(w)),
+        },
     };
-    let name = session.name_of(&target);
-    let question = format!("close {kind} {id} {name}?");
+    let (kind, name) = (target.kind().name(), session.name_of(target));
+    let question = format!("close {kind} {} {name}?", describe(target));
     view.mode = Mode::Confirm(Confirm {
         question,
         command,
         about: target,
     });
-    Ok(String::new())
+    String::new()
 }
 
 fn item(label: &str, command: Command) -> Item {
@@ -214,16 +206,12 @@ fn item(label: &str, command: Command) -> Item {
 }
 
 /// An action menu for a pane, tab or workspace: what has no default key.
-pub fn open_menu(session: &Session, view: &mut View, target: AnyRef) -> Result<String, Error> {
-    // What the menu is for, which every item names.
-    let about = match target {
-        AnyRef::Workspace(r) => AnyRef::Workspace(WsRef::Id(session.resolve_ws(&r)?)),
-        other @ (AnyRef::Pane(_) | AnyRef::Tab(_)) => other,
-    };
+/// What the menu is for, `about`, every item names.
+pub fn open_menu(session: &Session, view: &mut View, about: AnyRef<WsId>) -> String {
     let kind = about.kind();
-    let name = session.name_of(&about);
-    let title = format!("{} {} {name}", kind.name(), describe(&about));
-    let subject = Subject::from(about.clone());
+    let name = session.name_of(about);
+    let title = format!("{} {} {name}", kind.name(), describe(about));
+    let subject = Subject::from(about.map(WsRef::Id));
     let reorder = |toward| Command::Reorder {
         subject: subject.clone(),
         toward,
@@ -233,8 +221,8 @@ pub fn open_menu(session: &Session, view: &mut View, target: AnyRef) -> Result<S
         "close",
         ClientAction::ConfirmClose(subject.clone()).here(),
     )];
-    match &about {
-        &AnyRef::Pane(p) => items.extend([
+    match about {
+        AnyRef::Pane(p) => items.extend([
             item(
                 "terminate the running command",
                 Command::Terminate { target: Some(p) },
@@ -272,7 +260,7 @@ pub fn open_menu(session: &Session, view: &mut View, target: AnyRef) -> Result<S
                 },
             ),
         ]),
-        &AnyRef::Tab(tab) => {
+        AnyRef::Tab(tab) => {
             items.push(item(
                 "new tab",
                 Command::NewTab {
@@ -295,7 +283,7 @@ pub fn open_menu(session: &Session, view: &mut View, target: AnyRef) -> Result<S
         item("reorder next", reorder(Sibling::Next)),
     ]);
     let items = Choice::of(rename, items);
-    Ok(open_list(view, title, items, Some(about)))
+    open_list(view, title, items, Some(about))
 }
 
 /// Opens a list, the current item chosen.
@@ -303,7 +291,7 @@ fn open_list(
     view: &mut View,
     title: String,
     mut items: Choice<Item>,
-    about: Option<AnyRef>,
+    about: Option<AnyRef<WsId>>,
 ) -> String {
     let current = items.iter().position(|i| i.current);
     items.down(current.unwrap_or(0));
@@ -384,7 +372,7 @@ pub fn open_workspace_chooser(
                     None => ClientAction::SelectWorkspace(Pick::Id(WsRef::Id(ws.id))).here(),
                 },
                 current: Some(ws.id) == current,
-                subject: Some(AnyRef::Workspace(WsRef::Id(ws.id))),
+                subject: Some(AnyRef::Workspace(ws.id)),
             }
         })
         .collect();
@@ -407,12 +395,8 @@ fn open_chooser(
     open_list(view, title, items, moving.map(AnyRef::Pane))
 }
 
-/// The other panes of the client's tab, to swap `source` with.
-pub fn open_pane_chooser(
-    session: &Session,
-    view: &mut View,
-    source: PaneId,
-) -> Result<String, Error> {
+/// The other panes of `source`'s tab, to swap it with.
+pub fn pane_chooser(session: &Session, source: PaneId) -> Result<List, Error> {
     let mut items: Vec<Item> = Vec::new();
     let root = session
         .locate(source)
@@ -434,8 +418,12 @@ pub fn open_pane_chooser(
         });
     }
     let items = Choice::new(items).ok_or(Error::OnlyOne(Kind::Pane))?;
-    let about = Some(AnyRef::Pane(source));
-    Ok(open_list(view, format!("swap {source} with"), items, about))
+    let (title, about) = (format!("swap {source} with"), Some(AnyRef::Pane(source)));
+    Ok(List {
+        title,
+        items,
+        about,
+    })
 }
 
 // ----------------------------------------------------------------- input
@@ -663,7 +651,7 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
         Some(Key::Escape) | Some(Key::Char('q')) => close = true,
         Some(Key::Enter) => run = Some(list.items.chosen().command.clone()),
         Some(Key::Char(key @ ('r' | 'x'))) => {
-            if let Some(subject) = list.items.chosen().subject.clone() {
+            if let Some(subject) = list.items.chosen().subject.map(|s| s.map(WsRef::Id)) {
                 let action = if key == 'r' {
                     ClientAction::RenamePrompt(subject.into())
                 } else {
@@ -750,15 +738,8 @@ fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
         }
         PromptFor::Rename(target) => {
             // The command is built, not parsed from words: a name is the
-            // text as typed, `-dev` and `--` included. A workspace is held
-            // by its ID, in case its name changed while the prompt was open.
-            let target = match target {
-                AnyRef::Workspace(r) => match session.resolve_ws(&r) {
-                    Ok(w) => AnyRef::Workspace(WsRef::Id(w)),
-                    Err(error) => return session.error_to(client, error.to_string()),
-                },
-                other @ (AnyRef::Pane(_) | AnyRef::Tab(_)) => other,
-            };
+            // text as typed, `-dev` and `--` included.
+            let target = target.map(WsRef::Id);
             let name = prompt.line.text();
             let rename = Command::Rename { target, name };
             session.run_command(&rename, &Origin::Client(client));
@@ -855,8 +836,11 @@ mod tests {
             session.input(client, name.as_bytes());
             session.input(client, b"\r");
             assert_eq!(notice(&session, client), "", "{open}");
-            let target = crate::command::parse_any(read).map_err(|e| e.to_string())?;
-            assert_eq!(session.name_of(&target), name, "{open}");
+            let listed = crate::session::testing::output(&mut session, "ls")?;
+            assert!(
+                listed.contains(&format!("{read} {name}")),
+                "{open}: {listed}"
+            );
         }
         Ok(())
     }
@@ -916,7 +900,7 @@ mod tests {
         assert_eq!(mode(&s, c), "normal", "Q cancels");
         run(&mut s, "confirm-close -c c1 tab -t @2")?;
         s.input(c, b"Y");
-        let gone = crate::command::parse_any("@2").is_ok_and(|t| !s.exists(&t));
+        let gone = crate::command::parse_tab("@2").is_ok_and(|t| s.tab(t).is_none());
         assert!(gone, "Y confirms");
         Ok(())
     }
@@ -1636,6 +1620,23 @@ mod tests {
         run(&mut s, "kill-pane -t %2")?;
         assert_eq!(mode(&s, c), "normal");
         assert!(notice(&s, c).contains("%2 is gone"), "{}", notice(&s, c));
+        Ok(())
+    }
+
+    /// A workspace named by its name is held by its ID: renamed while a
+    /// prompt or a confirmation for it is open, it is the same workspace,
+    /// and they stay open on it.
+    #[test]
+    fn an_overlay_holds_a_workspace_named_by_name_through_a_rename() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "rename-prompt -c c1 workspace -t main")?;
+        run(&mut s, "rename -t main other")?;
+        assert_eq!(mode(&s, c), "prompt main|", "{}", notice(&s, c));
+        s.input(c, b"\x7f\x7f\x7f\x7fnew\r");
+        assert_eq!(s.workspaces.first().map(|w| w.name.as_str()), Some("new"));
+        run(&mut s, "confirm-close -c c1 workspace -t new")?;
+        run(&mut s, "rename -t new again")?;
+        assert_eq!(mode(&s, c), "confirm close workspace +1 new?");
         Ok(())
     }
 

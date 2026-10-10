@@ -92,7 +92,8 @@ column; any other key ends it and is dropped, which the bar says.
   `j`/`k`, PageUp/PageDown and Home/End move.
 - **Action menus** (`a`, `t a`, `w a`) hold what has no key: rename, close,
   terminate the running command, swap, move elsewhere, reorder. A menu acts
-  on the item it was opened for, and closes if that item is gone.
+  on the item it was opened for, even once renamed, and closes if that item
+  is gone.
 - **The command prompt** (`e`) runs a fux command line, such as
   `split -v -- htop`, and shows its output in the bar. It and the rename
   prompts edit with the arrows, Home, End, Backspace and Delete.
