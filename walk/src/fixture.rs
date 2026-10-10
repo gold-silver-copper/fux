@@ -154,17 +154,12 @@ pub struct Fixture {
 impl Fixture {
     /// A fresh server, in a fresh 0700 directory, with one client.
     pub fn start(fux: &Path) -> Result<Fixture, String> {
-        // Under /tmp, not $TMPDIR: a socket path is at most about 100
-        // bytes, and macOS's $TMPDIR alone is half of that.
         static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let dir = Path::new("/tmp")
-            .canonicalize()
-            .map_err(|e| e.to_string())?
-            .join(format!(
-                "fux-walk-{}-{}",
-                std::process::id(),
-                COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            ));
+        let dir = short_temp_dir()?.join(format!(
+            "fux-walk-{}-{}",
+            std::process::id(),
+            COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
@@ -449,4 +444,21 @@ pub fn environment(command: &mut Command, dir: &Path) {
         .env("SHELL", "/bin/sh")
         .env("TERM", "xterm-256color")
         .env("LANG", "C.UTF-8");
+}
+
+/// Where a short-lived directory with sockets goes: `$TMPDIR` when it is set
+/// and short, else `~/.cache`. A socket's path must stay under 104 bytes, and
+/// macOS's `$TMPDIR` takes half of that; `/tmp` is memory on some machines.
+fn short_temp_dir() -> Result<std::path::PathBuf, String> {
+    let tmp = std::env::temp_dir();
+    if std::env::var_os("TMPDIR").is_some_and(|v| !v.is_empty()) && tmp.as_os_str().len() <= 40 {
+        return tmp
+            .canonicalize()
+            .map_err(|e| format!("{}: {e}", tmp.display()));
+    }
+    let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
+    let dir = std::path::PathBuf::from(home).join(".cache");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    dir.canonicalize()
+        .map_err(|e| format!("{}: {e}", dir.display()))
 }

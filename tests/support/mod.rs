@@ -36,18 +36,21 @@ pub fn spawning() -> Result<std::sync::MutexGuard<'static, ()>, String> {
     SPAWN.lock().map_err(e)
 }
 
-/// Where test servers make their directories: `/tmp` where it can be
-/// written, as a socket path must stay under 104 bytes and macOS's
-/// `temp_dir()` (`/var/folders/…/T/`) takes half of that; else `temp_dir()`.
-pub fn short_temp_dir() -> Result<PathBuf, String> {
-    let tmp = Path::new("/tmp");
-    let writable = std::fs::metadata(tmp).is_ok_and(|m| m.is_dir() && !m.permissions().readonly());
-    let base = if writable {
-        tmp.to_path_buf()
-    } else {
-        std::env::temp_dir()
-    };
-    base.canonicalize().map_err(e)
+/// Where a short-lived directory with sockets goes: `$TMPDIR` when it is set
+/// and short, else `~/.cache`. A socket's path must stay under 104 bytes, and
+/// macOS's `$TMPDIR` takes half of that; `/tmp` is memory on some machines.
+pub fn short_temp_dir() -> Result<std::path::PathBuf, String> {
+    let tmp = std::env::temp_dir();
+    if std::env::var_os("TMPDIR").is_some_and(|v| !v.is_empty()) && tmp.as_os_str().len() <= 40 {
+        return tmp
+            .canonicalize()
+            .map_err(|e| format!("{}: {e}", tmp.display()));
+    }
+    let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
+    let dir = std::path::PathBuf::from(home).join(".cache");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    dir.canonicalize()
+        .map_err(|e| format!("{}: {e}", dir.display()))
 }
 
 /// When a wait that starts now gives up. A time past what an `Instant`

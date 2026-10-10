@@ -714,10 +714,10 @@ impl Drop for Server {
 static SERVERS: AtomicUsize = AtomicUsize::new(0);
 
 /// Starts a fux server whose panes run `argv`, in a directory of its own
-/// under `/tmp` (a socket's path must stay under 104 bytes), as fux's own
-/// tests start one (`tests/support/mod.rs`); never the user's.
+/// under `pane::short_temp_dir`, as fux's own tests start one
+/// (`tests/support/mod.rs`); never the user's.
 fn server(fux: &Path, argv: &[String]) -> Result<Server, String> {
-    let dir = Path::new("/tmp").join(format!(
+    let dir = crate::engines::pane::short_temp_dir()?.join(format!(
         "fux-esctest-{}-{}",
         std::process::id(),
         SERVERS.fetch_add(1, Ordering::SeqCst)

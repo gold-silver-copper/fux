@@ -1064,8 +1064,8 @@ impl Client {
             Mux::Zellij => {
                 // A socket's path is short: zellij adds a directory of its
                 // own and the session's name to this one.
-                let sockets = PathBuf::from(format!(
-                    "/tmp/fux-vt-compare-z{}-{}",
+                let sockets = pane::short_temp_dir()?.join(format!(
+                    "fux-vt-compare-z{}-{}",
                     std::process::id(),
                     pane::serial()
                 ));
@@ -1103,8 +1103,8 @@ impl Client {
             Mux::Herdr => {
                 // Its socket is in its config directory, whose path must
                 // stay short.
-                let config = PathBuf::from(format!(
-                    "/tmp/fux-vt-compare-h{}-{}",
+                let config = pane::short_temp_dir()?.join(format!(
+                    "fux-vt-compare-h{}-{}",
                     std::process::id(),
                     pane::serial()
                 ));

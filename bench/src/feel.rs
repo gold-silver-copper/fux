@@ -979,7 +979,7 @@ pub fn run(options: &Options) -> Result<bool, String> {
         );
     }
     // Short: fux's socket goes in it.
-    let dir = PathBuf::from(format!("/tmp/fux-feel-{}", std::process::id()));
+    let dir = short_temp_dir()?.join(format!("fux-feel-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     private(&dir)?;
     let place = Place {
@@ -1264,6 +1264,23 @@ fn report(json: &serde_json::Value, muxes: &[Mux]) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Where a short-lived directory with sockets goes: `$TMPDIR` when it is set
+/// and short, else `~/.cache`. A socket's path must stay under 104 bytes, and
+/// macOS's `$TMPDIR` takes half of that; `/tmp` is memory on some machines.
+fn short_temp_dir() -> Result<std::path::PathBuf, String> {
+    let tmp = std::env::temp_dir();
+    if std::env::var_os("TMPDIR").is_some_and(|v| !v.is_empty()) && tmp.as_os_str().len() <= 40 {
+        return tmp
+            .canonicalize()
+            .map_err(|e| format!("{}: {e}", tmp.display()));
+    }
+    let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
+    let dir = std::path::PathBuf::from(home).join(".cache");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    dir.canonicalize()
+        .map_err(|e| format!("{}: {e}", dir.display()))
 }
 
 #[cfg(test)]
