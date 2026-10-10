@@ -45,7 +45,6 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -519,29 +518,22 @@ fn esctest_argv(
 /// Spawns are made one at a time.
 static SPAWN: Mutex<()> = Mutex::new(());
 
-/// Starts `argv` on the PTY `slave`, leading a new session with it as its
-/// controlling terminal (through the recorder's launcher), with `env`
-/// besides `TERM` and `PATH`.
-fn launch(argv: &[String], slave: &OwnedFd, env: &[(&str, &Path)]) -> Result<Child, String> {
-    let me = std::env::current_exe().map_err(|e| format!("this program's path: {e}"))?;
-    let clone = |fd: &OwnedFd| fd.try_clone().map_err(|e| format!("the PTY: {e}"));
-    let mut command = Command::new(me);
-    command
-        .arg(crate::record::LAUNCH)
-        .args(argv)
-        .env_clear()
-        .env("TERM", "xterm-256color")
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .stdin(clone(slave)?)
-        .stdout(clone(slave)?)
-        .stderr(clone(slave)?);
-    for (key, value) in env {
-        command.env(key, value);
-    }
+/// Starts `argv` on a PTY of `rows` by `cols` (`record::start`), with
+/// `env` besides `TERM` and `PATH`.
+fn launch(
+    argv: &[String],
+    rows: u16,
+    cols: u16,
+    env: &[(&str, &Path)],
+) -> Result<(File, Child), String> {
     let _guard = SPAWN.lock().map_err(|_| "a spawn panicked")?;
-    command
-        .spawn()
-        .map_err(|e| format!("starting {:?}: {e}", argv.first()))
+    crate::record::start(rows, cols, argv, |command| {
+        command
+            .env_clear()
+            .env("TERM", "xterm-256color")
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .envs(env.iter().copied());
+    })
 }
 
 /// Ends `child` and its process group.
@@ -688,10 +680,7 @@ fn direct(job: &Job<'_>, subject: Subject, area: &Area, scratch: &Path) -> Resul
             Box::new(move |bytes| terminal.take(bytes))
         }
     };
-    let (master, slave) = fuxix::pty::open(ROWS, COLS).map_err(|e| format!("a PTY: {e}"))?;
-    let mut child = launch(&argv, &slave, &[])?;
-    drop(slave);
-    let mut master = File::from(master);
+    let (mut master, mut child) = launch(&argv, ROWS, COLS, &[])?;
     let deadline = deadline(job.request.limit);
     let finished = pump(&mut master, &mut *answer, deadline, || false);
     stop(&mut child);
@@ -783,15 +772,13 @@ fn in_fux(job: &Job<'_>, fux: &Path, area: &Area, scratch: &Path) -> Result<Ran,
         .with(fux_vt::Feature::Events);
     let mut parser = fux_vt::Parser::with_options(crate::vt_size(rows, COLS)?, 0, terminal)
         .map_err(|e| format!("fux-vt: {e}"))?;
-    let (master, slave) = fuxix::pty::open(rows, COLS).map_err(|e| format!("a PTY: {e}"))?;
     let attach = vec![fux.display().to_string(), "attach".to_owned()];
-    let mut client = launch(
+    let (mut master, mut client) = launch(
         &attach,
-        &slave,
+        rows,
+        COLS,
         &[("FUX_SOCKET", &server.socket), ("HOME", &server.dir)],
     )?;
-    drop(slave);
-    let mut master = File::from(master);
     let deadline = deadline(job.request.limit);
     let ended = || {
         std::fs::read_to_string(&log).is_ok_and(|text| {

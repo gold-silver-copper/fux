@@ -323,6 +323,10 @@ pub const TYPE_WAIT: Duration = Duration::from_secs(1);
 /// The size a pane gets when no client shows it yet.
 const DEFAULT_SIZE: (u16, u16) = (24, 80);
 
+fn default_size() -> fux_vt::Size {
+    crate::pane::size(DEFAULT_SIZE.0, DEFAULT_SIZE.1)
+}
+
 pub struct Session {
     pub workspaces: Vec<Workspace>,
     pub panes: BTreeMap<PaneId, Pane>,
@@ -588,7 +592,7 @@ impl Session {
         let id = ids.workspace()?;
         let tab = ids.tab()?;
         let launch = self.launch.as_deref();
-        let pane = new_pane(&self.config, launch, &mut ids, cmd, cwd, DEFAULT_SIZE)?;
+        let pane = new_pane(&self.config, launch, &mut ids, cmd, cwd, default_size())?;
         self.ids = ids;
         let name = name.unwrap_or_else(|| self.workspace_name(id));
         let root = Some(Tree::Pane(pane.id));
@@ -878,10 +882,11 @@ impl Session {
             let (rows, cols) = shown.iter().fold(first, |(rows, cols), (_, (h, w))| {
                 (rows.min(*h), cols.min(*w))
             });
+            let size = crate::pane::size(rows, cols);
             if let Some(pane) = self.panes.get_mut(&id)
-                && pane.size != (rows.max(1), cols.max(1))
+                && pane.size() != size
             {
-                pane.resize(rows, cols);
+                pane.resize(size);
                 resized = true;
             }
         }
@@ -1266,7 +1271,7 @@ impl Session {
                 let mut ids = self.ids;
                 let id = ids.tab()?;
                 let launch = self.launch.as_deref();
-                let pane = new_pane(&self.config, launch, &mut ids, cmd, &cwd, DEFAULT_SIZE)?;
+                let pane = new_pane(&self.config, launch, &mut ids, cmd, &cwd, default_size())?;
                 self.ids = ids;
                 ws.add_tab(id, name.clone(), Some(Tree::Pane(pane.id)));
                 let ws = ws.id;
@@ -1279,7 +1284,7 @@ impl Session {
                 target,
                 ref cmd,
             } => {
-                let (target, size) = self.pane(target, here).map(|p| (p.id, p.size))?;
+                let (target, size) = self.pane(target, here).map(|p| (p.id, p.size()))?;
                 let cwd = self.cwd_for(here, Some(target));
                 // The splitting client follows the new pane; from the CLI, the
                 // clients that focus the split one.
@@ -1770,8 +1775,8 @@ impl Session {
                             "    {} {} {}x{}{}\n",
                             pane,
                             p.label(),
-                            p.size.1,
-                            p.size.0,
+                            p.size().cols(),
+                            p.size().rows(),
                             p.process
                                 .child()
                                 .map(|c| format!(" pid {}", c.leader.pid()))
@@ -1811,8 +1816,8 @@ impl Session {
                     ("id", Json::str(p.id.to_string())),
                     ("name", Json::str(p.name.as_str())),
                     ("title", Json::str(p.title.as_str())),
-                    ("rows", Json::Number(i64::from(p.size.0))),
-                    ("cols", Json::Number(i64::from(p.size.1))),
+                    ("rows", Json::Number(i64::from(p.size().rows()))),
+                    ("cols", Json::Number(i64::from(p.size().cols()))),
                     (
                         "pid",
                         p.process.child().map_or(Json::Null, |c| {
@@ -1899,7 +1904,7 @@ fn new_pane(
     ids: &mut Ids,
     cmd: &[String],
     cwd: &Path,
-    size: (u16, u16),
+    size: fux_vt::Size,
 ) -> Result<Pane, Error> {
     let shell_program = config
         .shell
@@ -1922,26 +1927,13 @@ fn new_pane(
         .first()
         .map(|c| basename(c))
         .unwrap_or_else(|| basename(&shell_program));
-    let mut pane = Pane::new(
-        id,
-        name,
-        shell_program,
-        size.0,
-        size.1,
-        config.history_lines,
-    )?;
+    let mut pane = Pane::new(id, name, shell_program, size, config.history_lines)?;
     if let Some(socket) = launch {
         let env = [
             ("FUX_PANE", id.to_string()),
             ("FUX_SOCKET", socket.to_string_lossy().into_owned()),
         ];
-        pane.process = Process::Reading(crate::process::spawn(
-            &config.shell,
-            cwd,
-            &env,
-            size.0,
-            size.1,
-        )?);
+        pane.process = Process::Reading(crate::process::spawn(&config.shell, cwd, &env, size)?);
     }
     if let Some(typed) = typed {
         pane.input = InputQueue::from(typed);

@@ -171,23 +171,18 @@ fn run_shrunk(name: &str, dir: &Path, baseline: bool, shrink: usize) -> Result<D
         "paint/split" => paint(&recordings, true, baseline, size(CORPUS)),
         "session/keystroke" => keystroke(&recordings, baseline, size(KEYSTROKES)),
         "decode/legacy" => decode(&keys(&recordings, None), baseline, size(KEYS)),
-        "decode/kitty" => decode(&keys(&recordings, Some(KITTY_CLIENT)), baseline, size(KEYS)),
+        "decode/kitty" => decode(
+            &keys(&recordings, Some(kitty_mode(KITTY_CLIENT)?)),
+            baseline,
+            size(KEYS),
+        ),
         "encode/legacy" => encode(
             &recordings,
             fux::encode::KeyMode::legacy(false),
             baseline,
             size(STROKES),
         ),
-        "encode/kitty" => encode(
-            &recordings,
-            fux::encode::KeyMode {
-                application: false,
-                kitty: KITTY_ALL,
-                other_keys: None,
-            },
-            baseline,
-            size(STROKES),
-        ),
+        "encode/kitty" => encode(&recordings, kitty_mode(KITTY_ALL)?, baseline, size(STROKES)),
         _ => Err(format!("no workload {name:?}; `list` lists them")),
     }
 }
@@ -321,8 +316,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
         fux::command::parse_pane("%1").map_err(|e| e.to_string())?,
         "bench".into(),
         "/bin/sh".into(),
-        first.rows,
-        first.cols,
+        fux::pane::size(first.rows, first.cols),
         HISTORY,
     )
     .map_err(|e| e.to_string())?;
@@ -336,9 +330,9 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
         });
     }
     for load in loads {
-        pane.resize(load.rows, load.cols);
+        pane.resize(fux::pane::size(load.rows, load.cols));
         for piece in pieces(&load.bytes, PANE_READ) {
-            black_box(pane.output(black_box(piece)));
+            pane.output(black_box(piece));
         }
     }
     black_box(pane.screen().cursor_position());
@@ -488,20 +482,26 @@ fn paint(
     })
 }
 
+/// The key mode of a pane whose program pushed the kitty `flags`.
+fn kitty_mode(flags: u8) -> Result<fux::encode::KeyMode, String> {
+    let size = fux_vt::Size::new(1, 1).map_err(|e| e.to_string())?;
+    let mut parser =
+        fux_vt::Parser::with_options(size, 0, fux::pane::OPTIONS).map_err(|e| e.to_string())?;
+    parser
+        .process(format!("\x1b[>{flags}u").as_bytes())
+        .map_err(|e| e.to_string())?;
+    Ok(parser.screen().key_mode())
+}
+
 /// The keys of every step of every recording, as a legacy terminal sends
-/// them, or as a kitty-protocol terminal with `kitty` flags does.
-fn keys(recordings: &[Recording], kitty: Option<u8>) -> Vec<Vec<u8>> {
+/// them, or as a kitty-protocol terminal in `kitty` mode does.
+fn keys(recordings: &[Recording], kitty: Option<fux::encode::KeyMode>) -> Vec<Vec<u8>> {
     let legacy = recordings
         .iter()
         .flat_map(|r| r.steps.iter().map(|(keys, _)| keys.clone()))
         .filter(|keys| !keys.is_empty());
-    let Some(flags) = kitty else {
+    let Some(mode) = kitty else {
         return legacy.collect();
-    };
-    let mode = fux::encode::KeyMode {
-        application: false,
-        kitty: flags,
-        other_keys: None,
     };
     legacy
         .map(|keys| {

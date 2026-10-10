@@ -9,6 +9,7 @@ use crate::{
     grid::{Cursor, Grid, Scroll},
     parser::Parameters,
 };
+use std::collections::VecDeque;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// The blank style (`Screen::blank_style`) not asked for since the pen
@@ -251,49 +252,33 @@ const KEYBOARD_STACK_LIMIT: usize = 32;
 /// One screen's kitty keyboard protocol flag stack. The primary and
 /// alternate screens each keep one, so a program that pushes flags on the
 /// alternate screen and exits without popping them leaves the shell's alone.
-#[derive(Clone, Copy, Debug, Default)]
-struct KeyboardStack {
-    flags: [u8; KEYBOARD_STACK_LIMIT],
-    len: usize,
-}
+#[derive(Clone, Debug, Default)]
+struct KeyboardStack(VecDeque<u8>);
 
 impl KeyboardStack {
     fn top(&self) -> u8 {
-        self.len
-            .checked_sub(1)
-            .and_then(|i| self.flags.get(i))
-            .copied()
-            .unwrap_or(0)
+        self.0.back().copied().unwrap_or(0)
     }
     fn push(&mut self, flags: u8) {
-        if self.len >= KEYBOARD_STACK_LIMIT {
-            // A turn by one of the whole, non-empty array.
-            self.flags.rotate_left(1);
-            self.len = KEYBOARD_STACK_LIMIT.saturating_sub(1);
+        if self.0.len() >= KEYBOARD_STACK_LIMIT {
+            self.0.pop_front();
         }
-        if let Some(slot) = self.flags.get_mut(self.len)
-            && let Some(len) = self.len.checked_add(1)
-        {
-            *slot = flags;
-            self.len = len;
-        }
+        self.0.push_back(flags);
     }
     fn pop(&mut self, count: u16) {
-        self.len = self.len.saturating_sub(usize::from(count));
+        self.0
+            .truncate(self.0.len().saturating_sub(usize::from(count)));
     }
     /// `CSI = flags ; mode u`: mode 1 (the default) replaces the top's
-    /// flags, 2 adds to them and 3 removes from them.
+    /// flags, 2 adds to them and 3 removes from them; an empty stack's are 0.
     fn set(&mut self, flags: u8, mode: u16) {
-        if self.len == 0 {
-            self.push(0);
-        }
-        if let Some(top) = self.len.checked_sub(1).and_then(|i| self.flags.get_mut(i)) {
-            *top = match mode {
-                2 => *top | flags,
-                3 => *top & !flags,
-                _ => flags,
-            };
-        }
+        let top = self.top();
+        self.pop(1);
+        self.push(match mode {
+            2 => top | flags,
+            3 => top & !flags,
+            _ => flags,
+        });
     }
 }
 

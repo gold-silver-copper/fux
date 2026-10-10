@@ -338,11 +338,9 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
 
 /// The terminal's rows and columns; 24 by 80 if it does not say.
 fn window_size() -> (NonZeroU16, NonZeroU16) {
-    let (rows, cols) = fuxix::terminal::window_size(std::io::stdout()).unwrap_or_default();
     let fallback = |n: u16| NonZeroU16::MIN.saturating_add(n.saturating_sub(1));
-    NonZeroU16::new(rows)
-        .zip(NonZeroU16::new(cols))
-        .unwrap_or((fallback(24), fallback(80)))
+    fuxix::terminal::window_size(std::io::stdout())
+        .map_or((fallback(24), fallback(80)), |s| (s.rows, s.cols))
 }
 
 /// Attaches this terminal to the server until detach or the server's end.
