@@ -375,14 +375,18 @@ impl Grid {
     }
 }
 
+/// The links of a run of cells: their row's, if it has any, and where the
+/// cells are in it.
+type RunLinks<'a> = Option<(&'a RowLinks, Range<usize>)>;
+
 /// Where a reflow's rows go: `Layout` only counts them; `Fill` writes the
 /// ones kept into the replacement grid.
 trait Reflow {
-    /// `cells`, of a row whose text is in `text`, with links `links` (as
-    /// many as it has, the rest none), are at `col` on of reflowed row
+    /// `cells`, of a row whose text is in `text`, with links `links`, are
+    /// at `col` on of reflowed row
     /// `row`, where they fit; the row's cells past them that the run
     /// covers, which it does not keep, are blank.
-    fn run(&mut self, row: usize, col: usize, cells: &[Compact], text: &Text, links: &[u16]);
+    fn run(&mut self, row: usize, col: usize, cells: &[Compact], text: &Text, links: RunLinks<'_>);
     /// Reflowed row `row` is finished, its cells from `used` on blank;
     /// `wrapped` if its line goes on, the identity of its line's row in the
     /// same place before, if any, and whether a prompt starts on it.
@@ -463,12 +467,7 @@ impl Run {
         }
         self.prompt |= self.pending;
         self.pending = false;
-        let links = row.links.map_or(&[][..], |links| {
-            let len = links.len();
-            links
-                .get(cells.start.min(len)..cells.end.min(len))
-                .unwrap_or_default()
-        });
+        let links = row.links.map(|links| (links, cells.clone()));
         pass.target
             .run(pass.out.rows, self.used, run, row.text, links);
         self.used = self.used.saturating_add(cells.len());
@@ -488,7 +487,7 @@ struct Reflowed {
 
 struct Layout;
 impl Reflow for Layout {
-    fn run(&mut self, _: usize, _: usize, _: &[Compact], _: &Text, _: &[u16]) {}
+    fn run(&mut self, _: usize, _: usize, _: &[Compact], _: &Text, _: RunLinks<'_>) {}
     fn row(&mut self, _: usize, _: usize, _: bool, _: Option<RowId>, _: bool) -> Result<(), Error> {
         Ok(())
     }
@@ -509,18 +508,16 @@ struct Fill<'a> {
     /// they are blank.
     written: usize,
     text: Text,
-    links: Option<Box<[u16]>>,
+    links: Option<RowLinks>,
 }
 impl Fill<'_> {
     /// The links of the row being laid out, none at first.
-    fn links(&mut self) -> &mut [u16] {
-        let width = self.cells.len();
-        self.links
-            .get_or_insert_with(|| vec![0; width].into_boxed_slice())
+    fn links(&mut self) -> &mut RowLinks {
+        self.links.get_or_insert_default()
     }
 }
 impl Reflow for Fill<'_> {
-    fn run(&mut self, row: usize, col: usize, cells: &[Compact], text: &Text, links: &[u16]) {
+    fn run(&mut self, row: usize, col: usize, cells: &[Compact], text: &Text, links: RunLinks<'_>) {
         if !self.rows.contains(&row) {
             return;
         }
@@ -551,12 +548,11 @@ impl Reflow for Fill<'_> {
                 }
             }
         }
-        if links.iter().any(|link| *link != 0)
-            && let Some(dst) = col
-                .checked_add(links.len())
-                .and_then(|end| self.links().get_mut(col..end))
-        {
-            crate::copy_from(dst, links);
+        if let Some((links, from)) = links {
+            for (at, link) in links.within(from) {
+                let at = col.saturating_add(at.start)..col.saturating_add(at.end);
+                self.links().set(at, Some(link));
+            }
         }
     }
     fn row(
