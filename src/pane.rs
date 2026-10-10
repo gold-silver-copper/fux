@@ -11,8 +11,6 @@ pub const MAX_INPUT: usize = crate::decode::PASTE_LIMIT + 12;
 /// Input may wait for the program up to this many bytes, however many
 /// pieces it came in (bevy-final finding 021).
 pub const INPUT_BYTES: usize = 16 * MAX_INPUT;
-/// What one queued piece costs beyond its bytes.
-pub const ENTRY_COST: usize = 64;
 /// How long a frame drawn in synchronized output is held before it is
 /// shown anyway: Ghostty's choice. Long enough for a frame sent in pieces
 /// over a slow link; a program that dies mid-frame freezes its pane this
@@ -32,8 +30,7 @@ pub enum Error {
     NotReading,
     /// No terminal of this size and history.
     Terminal {
-        rows: u16,
-        cols: u16,
+        size: fux_vt::Size,
         history: usize,
         source: fux_vt::Error,
     },
@@ -46,13 +43,14 @@ impl std::fmt::Display for Error {
                 "the pane's program is not reading its input; nothing more is queued until it does",
             ),
             Error::Terminal {
-                rows,
-                cols,
+                size,
                 history,
                 source,
             } => write!(
                 f,
-                "a {rows}x{cols} terminal with {history} lines of history: {source}"
+                "a {}x{} terminal with {history} lines of history: {source}",
+                size.rows(),
+                size.cols()
             ),
         }
     }
@@ -68,19 +66,28 @@ impl std::error::Error for Error {
 }
 
 /// Input and terminal replies waiting for the pane's program to read them,
-/// bounded by what they cost rather than by how many pieces they came in.
-/// The pieces wait end to end, to be written together.
+/// end to end, to be written together: at most [`INPUT_BYTES`] of them,
+/// however many pieces they came in, with room kept for a command line
+/// held until the shell is ready, which is then typed whatever else came.
 #[derive(Default)]
 pub struct InputQueue {
     bytes: ByteQueue,
-    /// The length of each piece, the first of them whole.
-    pieces: VecDeque<usize>,
-    /// Bytes of the first piece already written.
-    written: usize,
-    cost: usize,
+    /// A command line held until the shell is ready.
+    held: Option<Typed>,
     /// Input was refused, and the program has not read since: everything
     /// is refused, so none arrives with a hole before it.
     refusing: bool,
+    lost: Lost,
+}
+
+/// Whether the program lost a reply because it was not reading, and whether
+/// that was told.
+#[derive(Clone, Copy, Default, PartialEq)]
+enum Lost {
+    #[default]
+    None,
+    Untold,
+    Told,
 }
 
 impl InputQueue {
@@ -92,35 +99,60 @@ impl InputQueue {
     /// Queues what `write` appends to its vector as a piece, in place, or
     /// takes it back and refuses it whole, as `push` does.
     pub fn push_with(&mut self, write: impl FnOnce(&mut Vec<u8>)) -> Result<(), Error> {
-        let (queued, refusing) = (self.cost, self.refusing);
-        let added = self.bytes.push_with(|out| {
+        let held = self.held.as_ref().map_or(0, |typed| typed.line.len());
+        let used = self.bytes.len().saturating_add(held);
+        let room = if self.refusing {
+            0
+        } else {
+            INPUT_BYTES.saturating_sub(used)
+        };
+        let fits = self.bytes.push_with(|out| {
             let start = out.len();
             write(out);
-            let added = out.len().saturating_sub(start);
-            let cost = added
-                .checked_add(ENTRY_COST)
-                .and_then(|cost| queued.checked_add(cost))
-                .filter(|cost| *cost <= INPUT_BYTES && !refusing);
-            if added > 0 && cost.is_none() {
+            let fits = out.len().saturating_sub(start) <= room;
+            if !fits {
                 out.truncate(start);
             }
-            cost.map(|cost| (added, cost)).ok_or(added)
+            fits
         });
-        match added {
-            Ok((0, _)) | Err(0) => Ok(()),
-            Ok((added, cost)) => {
-                self.cost = cost;
-                self.pieces.push_back(added);
-                Ok(())
-            }
-            Err(_) => {
-                self.refusing = true;
-                Err(Error::NotReading)
-            }
+        self.refusing |= !fits;
+        fits.then_some(()).ok_or(Error::NotReading)
+    }
+    /// Queues terminal replies, as `push`: a program that is not reading
+    /// loses them.
+    fn reply(&mut self, bytes: &[u8]) {
+        if self.push(bytes).is_err() && self.lost == Lost::None {
+            self.lost = Lost::Untold;
+        }
+    }
+    /// Whether a reply was lost and is yet to be told, which it then is:
+    /// once in the queue's life.
+    pub fn lost_reply(&mut self) -> bool {
+        let untold = self.lost == Lost::Untold;
+        if untold {
+            self.lost = Lost::Told;
+        }
+        untold
+    }
+    /// When the held command line is to be typed, if one is held.
+    pub fn due_at(&self) -> Option<Instant> {
+        self.held.as_ref().map(Typed::due_at)
+    }
+    /// The shell wrote at `now`: a held line waits for it to be quiet. The
+    /// clock is read only while one is held.
+    pub fn heard(&mut self, now: impl FnOnce() -> Instant) {
+        if let Some(typed) = &mut self.held {
+            typed.last_output = Some(now());
+        }
+    }
+    /// Types the held command line now, into the room kept for it.
+    pub fn type_now(&mut self) {
+        if let Some(typed) = self.held.take() {
+            self.bytes.push(&typed.line);
         }
     }
     pub fn is_empty(&self) -> bool {
-        self.pieces.is_empty()
+        self.bytes.is_empty()
     }
     /// Whether input is refused until the program reads.
     pub fn refusing(&self) -> bool {
@@ -132,30 +164,24 @@ impl InputQueue {
     }
     /// `n` bytes of the front were written: the program is reading.
     pub fn advance(&mut self, n: usize) {
-        if n > 0 {
-            self.refusing = false;
-        }
-        // At most what is queued.
-        let mut n = n.min(self.bytes.len());
+        self.refusing &= n == 0;
         self.bytes.take(n);
-        while let Some(&front) = self.pieces.front() {
-            let rest = front.saturating_sub(self.written);
-            if n < rest {
-                self.written = self.written.saturating_add(n);
-                break;
-            }
-            n = n.saturating_sub(rest);
-            // What `push` added for it, which fitted.
-            self.cost = self.cost.saturating_sub(front.saturating_add(ENTRY_COST));
-            self.pieces.pop_front();
-            self.written = 0;
-        }
     }
     /// Everything queued, for tests and for a pane with no process.
     pub fn drain_all(&mut self) -> Vec<u8> {
         let out = self.bytes.as_slice().to_vec();
         self.advance(out.len());
         out
+    }
+}
+
+impl From<Typed> for InputQueue {
+    /// A queue holding `typed` until the shell is ready.
+    fn from(typed: Typed) -> InputQueue {
+        InputQueue {
+            held: Some(typed),
+            ..InputQueue::default()
+        }
     }
 }
 
@@ -211,68 +237,65 @@ pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
 /// The most titles a pane's program can push (`CSI 22 t`): xterm's bound.
 const TITLE_STACK: usize = 10;
 
-/// What a program did to its title, in order: set it, push it, pop it.
-enum TitleOp {
-    Set(String),
-    Push,
-    Pop,
+/// A pane's title, as its program sets it with OSC 0 or 2, and the titles
+/// it pushed (`CSI 22 t`) to pop (`CSI 23 t`), at most xterm's ten: a push
+/// past them forgets the oldest.
+#[derive(Default)]
+pub struct Title {
+    now: String,
+    pushed: VecDeque<String>,
+}
+
+impl Title {
+    pub fn as_str(&self) -> &str {
+        &self.now
+    }
+    /// The title a program set, without control characters, at most 256
+    /// characters of it.
+    fn set(&mut self, title: &[u8]) {
+        let text = String::from_utf8_lossy(title);
+        self.now = text.chars().filter(|c| !c.is_control()).take(256).collect();
+    }
+    fn push(&mut self) {
+        if self.pushed.len() >= TITLE_STACK {
+            self.pushed.pop_front();
+        }
+        self.pushed.push_back(self.now.clone());
+    }
+    /// The title last pushed comes back; with none, nothing changes.
+    fn pop(&mut self) {
+        if let Some(title) = self.pushed.pop_back() {
+            self.now = title;
+        }
+    }
 }
 
 /// Replies (DSR, DA) and events the parser produces while reading output.
 struct Sink<'a> {
-    replies: &'a mut Vec<u8>,
-    titles: &'a mut Vec<TitleOp>,
+    /// The replies to one read, queued together after it: at most 4 KiB.
+    replies: Vec<u8>,
+    title: &'a mut Title,
     /// Set by a bell (BEL).
     bell: &'a mut bool,
     /// What colour queries are answered with (`outer`).
     colours: &'a crate::outer::Colours,
 }
 
-impl Sink<'_> {
-    /// A colour query (OSC 10, 11), answered if the colour is known.
-    fn colour_query(&mut self, number: u8, bel: bool) {
-        if let Some(answer) = self.colours.answer(number, bel) {
-            fux_vt::Sink::reply(self, &answer);
-        }
-    }
-
-    /// `CSI ? 996 n`, the colour scheme asked for: answered if known.
-    fn scheme_query(&mut self, sequence: &fux_vt::Unhandled<'_>) {
-        if let fux_vt::Unhandled::Csi {
-            params,
-            intermediates: b"?",
-            action: b'n',
-        } = sequence
-            && params.groups().eq([&[996][..]])
-            && let Some(scheme) = self.colours.scheme
-        {
-            fux_vt::Sink::reply(self, scheme.report());
-        }
-    }
-}
-
 impl fux_vt::Sink for Sink<'_> {
     fn reply(&mut self, bytes: &[u8]) {
-        if self
-            .replies
-            .len()
-            .checked_add(bytes.len())
-            .is_some_and(|len| len <= 4096)
-        {
+        if self.replies.len().saturating_add(bytes.len()) <= 4096 {
             self.replies.extend_from_slice(bytes);
         }
     }
+    /// A colour query (OSC 10, 11) is answered if the colour is known.
     fn event(&mut self, event: fux_vt::Event<'_>) {
         match event {
-            fux_vt::Event::Title(title) => {
-                let text: String = String::from_utf8_lossy(title)
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .take(256)
-                    .collect();
-                self.titles.push(TitleOp::Set(text));
+            fux_vt::Event::Title(title) => self.title.set(title),
+            fux_vt::Event::ColorQuery { number, bel } => {
+                if let Some(answer) = self.colours.answer(number, bel) {
+                    fux_vt::Sink::reply(self, &answer);
+                }
             }
-            fux_vt::Event::ColorQuery { number, bel } => self.colour_query(number, bel),
             fux_vt::Event::Bell => *self.bell = true,
             // fux's clipboard policy: a program's OSC 52 is not taken.
             fux_vt::Event::IconName(_) | fux_vt::Event::Clipboard { .. } | _ => {}
@@ -282,25 +305,28 @@ impl fux_vt::Sink for Sink<'_> {
     /// pushes the title, `CSI 23 ; Ps t` pops it, for Ps 0 (icon and
     /// title, which are one here) or 2 (title); Ps 1, the icon alone, is
     /// not a title. vim and tmux push on starting and pop on leaving. And
-    /// `CSI ? 996 n`, the colour scheme asked for.
+    /// `CSI ? 996 n`, the colour scheme asked for, answered if known.
     fn unhandled(&mut self, sequence: fux_vt::Unhandled<'_>) {
-        self.scheme_query(&sequence);
         let fux_vt::Unhandled::Csi {
             params,
-            intermediates: b"",
-            action: b't',
+            intermediates,
+            action,
         } = sequence
         else {
             return;
         };
         let mut groups = params.groups();
-        let op = match groups.next() {
-            Some([22]) => TitleOp::Push,
-            Some([23]) => TitleOp::Pop,
-            _ => return,
-        };
-        if matches!(groups.next(), None | Some([] | [0] | [2])) {
-            self.titles.push(op);
+        let (first, second) = (groups.next(), groups.next());
+        let title = matches!(second, None | Some([] | [0] | [2]));
+        match (intermediates, action, first) {
+            (b"?", b'n', Some([996])) if second.is_none() => {
+                if let Some(scheme) = self.colours.scheme {
+                    fux_vt::Sink::reply(self, scheme.report());
+                }
+            }
+            (b"", b't', Some([22])) if title => self.title.push(),
+            (b"", b't', Some([23])) if title => self.title.pop(),
+            _ => {}
         }
     }
 }
@@ -346,22 +372,16 @@ pub struct Pane {
     pub id: PaneId,
     pub name: String,
     /// Set by the program with OSC 0 or 2.
-    pub title: String,
+    pub title: Title,
+    /// Its screen's size is the PTY's: the smallest rectangle any client
+    /// shows the pane in.
     pub parser: fux_vt::Parser,
-    /// The PTY size, the smallest rectangle any client shows the pane in.
-    pub size: (u16, u16),
     pub process: Process,
     pub input: InputQueue,
-    /// Whether a reply was dropped because the queue was full; noticed once.
-    pub reply_dropped: bool,
     /// The shell's program the pane was started with. fux reads it nowhere
     /// itself; a typed command is quoted for the shell before the pane is
     /// made (`Session::new_pane`).
     pub shell: String,
-    /// A command line waiting to be typed into the shell.
-    pub typed: Option<Typed>,
-    /// Titles the program pushed (`CSI 22 t`), to pop (`CSI 23 t`).
-    title_stack: VecDeque<String>,
     /// The output of a frame the program is drawing in synchronized output,
     /// from BSU on, and since when; see [`Pane::output`].
     frame: Option<(Vec<u8>, Instant)>,
@@ -383,15 +403,25 @@ pub const QUIET: Duration = Duration::from_millis(50);
 /// has been quiet for `QUIET` after it first wrote, or at `deadline` if it
 /// writes nothing. Typed earlier, the terminal would echo the line before the
 /// shell had drawn its prompt, and a shell whose startup writes and then
-/// discards pending input would lose it.
+/// discards pending input would lose it. It always fits the input queue.
 pub struct Typed {
-    pub line: Vec<u8>,
-    pub deadline: Instant,
+    line: Vec<u8>,
+    deadline: Instant,
     /// When the shell last wrote, once it has.
-    pub last_output: Option<Instant>,
+    last_output: Option<Instant>,
 }
 
 impl Typed {
+    /// `line`, to be typed at `deadline` at the latest, unless it is too
+    /// long ever to fit the input queue.
+    pub fn new(line: Vec<u8>, deadline: Instant) -> Option<Typed> {
+        (line.len() <= INPUT_BYTES).then_some(Typed {
+            line,
+            deadline,
+            last_output: None,
+        })
+    }
+
     /// The moment the line is to be typed, as things stand.
     pub fn due_at(&self) -> Instant {
         match self.last_output {
@@ -404,7 +434,7 @@ impl Typed {
 }
 
 /// `rows` by `cols`, a zero taken as one: a pane always has a cell.
-fn size(rows: u16, cols: u16) -> fux_vt::Size {
+pub fn size(rows: u16, cols: u16) -> fux_vt::Size {
     let one = |n| std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN);
     fux_vt::Size::from((one(rows), one(cols)))
 }
@@ -414,40 +444,31 @@ impl Pane {
         id: PaneId,
         name: String,
         shell: String,
-        rows: u16,
-        cols: u16,
+        size: fux_vt::Size,
         history: usize,
     ) -> Result<Pane, Error> {
-        let parser =
-            fux_vt::Parser::with_options(size(rows, cols), history, OPTIONS).map_err(|source| {
-                Error::Terminal {
-                    rows,
-                    cols,
-                    history,
-                    source,
-                }
-            })?;
+        let parser = fux_vt::Parser::with_options(size, history, OPTIONS).map_err(|source| {
+            Error::Terminal {
+                size,
+                history,
+                source,
+            }
+        })?;
         Ok(Pane {
             id,
             name,
-            title: String::new(),
+            title: Title::default(),
             parser,
-            size: (rows.max(1), cols.max(1)),
             process: Process::Absent,
             input: InputQueue::default(),
-            reply_dropped: false,
             shell,
-            typed: None,
             frame: None,
-            title_stack: VecDeque::new(),
             colours: crate::outer::Colours::default(),
             bell: false,
         })
     }
 
-    /// Reads program output into the screen. Returns whether a reply had to
-    /// be dropped because the program is not reading its input, the first
-    /// time one is in the pane's life (`reply_dropped`).
+    /// Reads program output into the screen, its replies queued as input.
     ///
     /// A frame the program draws in synchronized output (from `CSI ? 2026 h`,
     /// BSU, to `CSI ? 2026 l`, ESU) is held, unread, until it ends, then read
@@ -456,13 +477,12 @@ impl Pane {
     /// anyway once [`FRAME_TIMEOUT`] passes ([`Pane::release_frame`]) or it
     /// grows past [`FRAME_LIMIT`]; after that the program's output is read as
     /// it comes until its next BSU.
-    pub fn output(&mut self, bytes: &[u8]) -> bool {
+    pub fn output(&mut self, bytes: &[u8]) {
         self.output_at(bytes, Instant::now())
     }
 
     /// [`Pane::output`] at `now`.
-    pub fn output_at(&mut self, bytes: &[u8], now: Instant) -> bool {
-        let mut dropped = false;
+    pub fn output_at(&mut self, bytes: &[u8], now: Instant) {
         let mut after: Vec<u8>;
         let mut rest = bytes;
         loop {
@@ -472,21 +492,19 @@ impl Pane {
                 held.extend_from_slice(rest);
                 let Some(end) = end_of(held, from, ESU) else {
                     if held.len() > FRAME_LIMIT {
-                        dropped |= self.release_frame();
+                        self.release_frame();
                     }
-                    return dropped;
+                    return;
                 };
                 let mut frame = std::mem::take(held);
                 self.frame = None;
                 after = frame.get(end..).unwrap_or_default().to_vec();
                 frame.truncate(end);
-                dropped |= self.feed(&frame, false).0;
+                self.feed(&frame, false);
                 rest = &after;
             } else {
-                let (dropped_now, begun) = self.feed(rest, true);
-                dropped |= dropped_now;
-                let Some(end) = begun else {
-                    return dropped;
+                let Some(end) = self.feed(rest, true) else {
+                    return;
                 };
                 self.frame = Some((Vec::new(), now));
                 rest = rest.get(end..).unwrap_or_default();
@@ -501,24 +519,19 @@ impl Pane {
             .map(|(_, since)| crate::after(*since, FRAME_TIMEOUT))
     }
 
-    /// Reads the held frame now, ended or not. Returns whether a reply had to
-    /// be dropped.
-    pub fn release_frame(&mut self) -> bool {
-        match self.frame.take() {
-            Some((held, _)) => self.feed(&held, false).0,
-            None => false,
+    /// Reads the held frame now, ended or not.
+    pub fn release_frame(&mut self) {
+        if let Some((held, _)) = self.frame.take() {
+            self.feed(&held, false);
         }
     }
 
     /// Gives `bytes` to the screen, stopping after a BSU if `until_frame`.
-    /// Returns whether a reply had to be dropped, and how many bytes were
-    /// read if it stopped.
-    fn feed(&mut self, bytes: &[u8], until_frame: bool) -> (bool, Option<usize>) {
-        let mut replies = Vec::new();
-        let mut titles = Vec::new();
+    /// Returns how many bytes were read if it stopped.
+    fn feed(&mut self, bytes: &[u8], until_frame: bool) -> Option<usize> {
         let mut sink = Sink {
-            replies: &mut replies,
-            titles: &mut titles,
+            replies: Vec::new(),
+            title: &mut self.title,
             bell: &mut self.bell,
             colours: &self.colours,
         };
@@ -537,30 +550,12 @@ impl Pane {
             }
             rest = rest.get(taken..).unwrap_or_default();
         }
-        for op in titles {
-            match op {
-                TitleOp::Set(title) => self.title = title,
-                TitleOp::Push => {
-                    if self.title_stack.len() >= TITLE_STACK {
-                        self.title_stack.pop_front();
-                    }
-                    self.title_stack.push_back(self.title.clone());
-                }
-                TitleOp::Pop => {
-                    if let Some(title) = self.title_stack.pop_back() {
-                        self.title = title;
-                    }
-                }
-            }
+        let replies = sink.replies;
+        if !replies.is_empty() {
+            self.input.reply(&replies);
         }
-        if let Some(typed) = &mut self.typed {
-            typed.last_output = Some(Instant::now());
-        }
-        if !replies.is_empty() && self.input.push(replies).is_err() && !self.reply_dropped {
-            self.reply_dropped = true;
-            return (true, begun);
-        }
-        (false, begun)
+        self.input.heard(Instant::now);
+        begun
     }
 
     /// Writes the waiting input, as far as the program's terminal takes it.
@@ -578,26 +573,16 @@ impl Pane {
         }
     }
 
-    /// Types a held command line into the shell now.
-    pub fn type_now(&mut self) {
-        if let Some(typed) = self.typed.take() {
-            // The queue is empty this early, so the line fits.
-            let _ = self.input.push(typed.line);
-        }
-    }
-
     /// Resizes the screen and the PTY. A held frame is read first: it was
     /// drawn for the old size.
-    pub fn resize(&mut self, rows: u16, cols: u16) {
-        let (rows, cols) = (rows.max(1), cols.max(1));
-        if self.size == (rows, cols) {
+    pub fn resize(&mut self, size: fux_vt::Size) {
+        if self.size() == size {
             return;
         }
         self.release_frame();
-        if self.parser.resize(size(rows, cols)).is_ok() {
-            self.size = (rows, cols);
+        if self.parser.resize(size).is_ok() {
             if let Some(child) = self.process.child() {
-                crate::process::resize(&child.master, rows, cols);
+                let _ = fuxix::terminal::set_window_size(&child.master, size.nonzero().into());
             }
             // In-band resize: the report follows the PTY's new size, never
             // precedes it (references/modern/mode_2048_in_band_resize.md).
@@ -616,16 +601,19 @@ impl Pane {
         self.parser.set_host_palette(palette);
     }
 
+    pub fn size(&self) -> fux_vt::Size {
+        self.screen().size()
+    }
+
     pub fn screen(&self) -> &fux_vt::Screen {
         self.parser.screen()
     }
 
     /// The name the bar shows: the program's title, else the pane's name.
     pub fn label(&self) -> &str {
-        if self.title.is_empty() {
-            &self.name
-        } else {
-            &self.title
+        match self.title.as_str() {
+            "" => &self.name,
+            title => title,
         }
     }
 }
@@ -634,32 +622,6 @@ impl Pane {
 mod tests {
     use super::*;
     use fux_vt::Mode;
-
-    #[test]
-    fn the_queue_is_bounded_by_bytes_not_pieces() {
-        let mut queue = InputQueue::default();
-        // Thousands of one-byte keys fit: the bound is cost, not count (021).
-        for _ in 0..3000 {
-            assert!(queue.push(vec![b'k']).is_ok());
-        }
-        let mut big = InputQueue::default();
-        let mut pushed = 0;
-        while big.push(vec![0; MAX_INPUT]).is_ok() {
-            pushed += 1;
-        }
-        assert_eq!(pushed, 15);
-        big.advance(MAX_INPUT);
-        assert!(
-            big.push(vec![0; MAX_INPUT]).is_ok(),
-            "space is freed as it is written"
-        );
-        let mut partial = InputQueue::default();
-        assert!(partial.push(b"abc").is_ok());
-        partial.advance(1);
-        assert_eq!(partial.front(), Some(&b"bc"[..]));
-        assert_eq!(partial.drain_all(), b"bc");
-        assert!(partial.is_empty());
-    }
 
     /// Once input is refused, nothing more is queued until the program
     /// reads, as the notice says: accepting a later key would deliver it
@@ -687,13 +649,13 @@ mod tests {
         let stream = b"x\x1b[?1004;2004hy\x1b[5 qz\x1b[?25l";
         for split in 0..stream.len() {
             let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
-            let mut pane = Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
+            let mut pane = pane(5, 20)?;
             pane.output(a);
             pane.output(b);
             assert!(pane.screen().mode(Mode::FocusReporting), "split {split}");
             assert_eq!(pane.screen().cursor_shape(), 5, "split {split}");
         }
-        let mut pane = Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
+        let mut pane = pane(5, 20)?;
         pane.output(b"\x1b[?1004h\x1b[?1004l\x1b[2 q\x1b[ q");
         assert!(!pane.screen().mode(Mode::FocusReporting));
         assert_eq!(pane.screen().cursor_shape(), 0);
@@ -703,14 +665,11 @@ mod tests {
     }
 
     #[test]
-    fn a_typed_line_waits_for_quiet_output_or_the_deadline() {
+    fn a_typed_line_waits_for_quiet_output_or_the_deadline() -> Result<(), &'static str> {
         let t0 = std::time::Instant::now();
         let ms = std::time::Duration::from_millis;
-        let mut typed = Typed {
-            line: b"echo hi\r".to_vec(),
-            deadline: t0 + ms(1000),
-            last_output: None,
-        };
+        let mut typed = Typed::new(b"echo hi\r".to_vec(), t0 + ms(1000));
+        let typed = typed.as_mut().ok_or("too long")?;
         // Nothing written yet: only the deadline.
         assert_eq!(typed.due_at(), t0 + ms(1000));
         // Output keeps pushing it back while it keeps coming within QUIET.
@@ -721,40 +680,36 @@ mod tests {
         // Never past the deadline, however long the output lasts.
         typed.last_output = Some(t0 + ms(990));
         assert_eq!(typed.due_at(), t0 + ms(1000));
+        Ok(())
     }
 
     #[test]
     fn output_records_when_the_shell_wrote_and_types_nothing_itself() -> Result<(), Error> {
-        let mut pane = Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
-        let before = std::time::Instant::now();
-        pane.typed = Some(Typed {
-            line: b"x\r".to_vec(),
-            deadline: before + std::time::Duration::from_secs(1),
-            last_output: None,
-        });
+        let mut pane = pane(5, 20)?;
+        let deadline = Instant::now() + Duration::from_secs(1);
+        pane.input = Typed::new(b"x\r".to_vec(), deadline)
+            .map(InputQueue::from)
+            .ok_or(Error::NotReading)?;
         pane.output(b"$ ");
-        assert!(
-            pane.typed
-                .as_ref()
-                .is_some_and(|t| t.last_output.is_some_and(|at| at >= before))
-        );
+        assert!(pane.input.due_at().is_some_and(|at| at < deadline));
         assert!(pane.input.is_empty(), "output alone types nothing");
-        pane.type_now();
-        assert_eq!(pane.input.drain_all(), b"x\r");
-        assert!(pane.typed.is_none());
+        // Input that comes first fills the queue but for the line's room.
+        while pane.input.push(vec![b'k'; MAX_INPUT]).is_ok() {}
+        pane.input.type_now();
+        assert!(pane.input.drain_all().ends_with(b"kx\r"));
+        assert_eq!(pane.input.due_at(), None);
         Ok(())
     }
 
     #[test]
     fn output_answers_queries_and_takes_titles() -> Result<(), Error> {
-        let mut pane = Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
+        let mut pane = pane(5, 20)?;
         pane.output(b"hello\x1b]2;my title\x07\x1b[6n");
-        assert_eq!(pane.title, "my title");
+        assert_eq!(pane.title.as_str(), "my title");
         assert_eq!(pane.label(), "my title");
         assert_eq!(pane.input.drain_all(), b"\x1b[1;6R");
-        pane.resize(3, 10);
-        assert_eq!(pane.size, (3, 10));
-        assert_eq!(<(u16, u16)>::from(pane.screen().size()), (3, 10));
+        pane.resize(size(3, 10));
+        assert_eq!(<(u16, u16)>::from(pane.size()), (3, 10));
         Ok(())
     }
 
@@ -766,7 +721,7 @@ mod tests {
     #[test]
     fn colour_queries_are_answered_from_the_session_s_colours() -> Result<(), Error> {
         use crate::outer::{Colours, Scheme};
-        let mut pane = pane()?;
+        let mut pane = pane(3, 30)?;
         pane.output(b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b[?996n\x1b[c");
         assert_eq!(pane.input.drain_all(), b"\x1b[?62;22c", "nothing known");
         pane.colours = Colours {
@@ -797,8 +752,9 @@ mod tests {
             .to_owned()
     }
 
-    fn pane() -> Result<Pane, Error> {
-        Pane::new(PaneId::of(1), "sh".into(), "/bin/sh".into(), 3, 30, 10)
+    fn pane(rows: u16, cols: u16) -> Result<Pane, Error> {
+        let shell = "/bin/sh".to_owned();
+        Pane::new(PaneId::of(1), "sh".into(), shell, size(rows, cols), 10)
     }
 
     /// A frame drawn in synchronized output reaches the screen whole, when
@@ -806,7 +762,7 @@ mod tests {
     /// frame and the ESU each in pieces, and several frames in one read.
     #[test]
     fn a_synchronized_frame_reaches_the_screen_whole() -> Result<(), Error> {
-        let mut pane = pane()?;
+        let mut pane = pane(3, 30)?;
         pane.output(b"a\x1b[?2026hb");
         assert_eq!(first_row(&pane), "a", "the frame is held");
         assert!(pane.screen().mode(Mode::SynchronizedOutput));
@@ -833,11 +789,11 @@ mod tests {
     /// comes. A resize reads it first.
     #[test]
     fn a_frame_that_does_not_end_is_read_anyway() -> Result<(), Error> {
-        let mut pane = pane()?;
+        let mut pane = pane(3, 30)?;
         let t0 = Instant::now();
         pane.output_at(b"\x1b[?2026hx", t0);
         assert_eq!(pane.frame_deadline(), Some(crate::after(t0, FRAME_TIMEOUT)));
-        assert!(!pane.release_frame(), "no reply dropped");
+        pane.release_frame();
         assert_eq!(first_row(&pane), "x");
         assert_eq!(pane.frame_deadline(), None);
         pane.output(b"y");
@@ -854,7 +810,7 @@ mod tests {
         assert!(first_row(&pane).ends_with('z'), "past it, read");
         assert_eq!(pane.frame_deadline(), None);
         pane.output(b"\x1b[2J\x1b[H\x1b[?2026hw");
-        pane.resize(3, 20);
+        pane.resize(size(3, 20));
         // The cursor's row: a reflow may bring history down above it.
         let (y, _) = pane.screen().cursor_position();
         let row: String = (0..20)
@@ -869,14 +825,14 @@ mod tests {
     /// resize, and on setting it; one that did not is told nothing.
     #[test]
     fn a_resize_reports_the_size_in_band_when_asked() -> Result<(), Error> {
-        let mut pane = pane()?;
-        pane.resize(4, 20);
+        let mut pane = pane(3, 30)?;
+        pane.resize(size(4, 20));
         assert!(pane.input.drain_all().is_empty(), "not asked");
         pane.output(b"\x1b[?2048h");
         assert_eq!(pane.input.drain_all(), b"\x1b[48;4;20;0;0t");
-        pane.resize(6, 25);
+        pane.resize(size(6, 25));
         assert_eq!(pane.input.drain_all(), b"\x1b[48;6;25;0;0t");
-        pane.resize(6, 25);
+        pane.resize(size(6, 25));
         assert!(pane.input.drain_all().is_empty(), "the same size");
         Ok(())
     }
@@ -887,22 +843,34 @@ mod tests {
     /// nothing.
     #[test]
     fn a_pushed_title_comes_back_when_popped() -> Result<(), Error> {
-        let mut pane = pane()?;
+        let mut pane = pane(3, 30)?;
         pane.output(b"\x1b]2;shell\x07\x1b[22;0t\x1b]2;vim\x07");
-        assert_eq!(pane.title, "vim");
+        assert_eq!(pane.title.as_str(), "vim");
         pane.output(b"\x1b[23;0t");
-        assert_eq!(pane.title, "shell");
+        assert_eq!(pane.title.as_str(), "shell");
         pane.output(b"\x1b[22;2t\x1b]2;tmux\x07\x1b[23;2t\x1b[23;0t");
-        assert_eq!(pane.title, "shell", "a pop with none left changes nothing");
+        assert_eq!(
+            pane.title.as_str(),
+            "shell",
+            "a pop with none left changes nothing"
+        );
         pane.output(b"\x1b[22;1t\x1b]2;other\x07\x1b[23;1t");
-        assert_eq!(pane.title, "other", "the icon's stack is not the title's");
+        assert_eq!(
+            pane.title.as_str(),
+            "other",
+            "the icon's stack is not the title's"
+        );
         for n in 0..12 {
             pane.output(format!("\x1b]2;t{n}\x07\x1b[22t").as_bytes());
         }
         for _ in 0..12 {
             pane.output(b"\x1b[23t");
         }
-        assert_eq!(pane.title, "t2", "ten kept: the first two pushes dropped");
+        assert_eq!(
+            pane.title.as_str(),
+            "t2",
+            "ten kept: the first two pushes dropped"
+        );
         Ok(())
     }
 
@@ -913,7 +881,7 @@ mod tests {
     /// the style and says so; the cells keep what neovim then draws.
     #[test]
     fn a_pane_tells_neovim_it_keeps_underline_styles() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane()?;
+        let mut pane = pane(3, 30)?;
         pane.output(b"\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\");
         assert_eq!(pane.input.drain_all(), b"\x1bP1$r0;4:3m\x1b\\");
         pane.output(b"\x1b[0m\x1b[4:3m\x1b[58:2::255:0:0mx\x1b[0m");

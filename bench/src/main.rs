@@ -88,7 +88,11 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
     // The programs `feel` runs, with arguments of their own.
     if let Some((first, rest)) = argv.split_first() {
         match first.as_str() {
-            "__launch" => return helpers::launch(rest),
+            // It returns only if the program could not start.
+            fuxix::pty::LAUNCH => {
+                fuxix::pty::launched(rest);
+                return Ok(false);
+            }
             "__echo" => return helpers::echo(),
             "__flood" => return helpers::flood(),
             "__fill" => return helpers::fill(rest),

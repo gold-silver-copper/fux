@@ -2,18 +2,13 @@
 //! it and its session are ended.
 pub use fuxix::process::Pid;
 use fuxix::process::{Signal, Status};
-use std::ffi::OsStr;
-use std::io::{Read, Write};
-use std::os::fd::{AsFd, OwnedFd};
-use std::os::unix::process::CommandExt;
+use fuxix::pty::Master;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Why a pane's process could not be started.
 #[derive(Debug)]
 pub enum Error {
     Pty(fuxix::pty::Error),
-    Nonblocking(fuxix::Errno),
     NoProgram,
     /// The `fux` binary, to run the launcher from, could not be found.
     Launcher(std::io::Error),
@@ -21,18 +16,15 @@ pub enum Error {
         program: String,
         source: std::io::Error,
     },
-    NoPid,
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Pty(error) => error.fmt(f),
-            Error::Nonblocking(errno) => write!(f, "nonblocking: {errno}"),
             Error::NoProgram => f.write_str("no program to run"),
             Error::Launcher(error) => write!(f, "finding the fux binary: {error}"),
             Error::Start { program, source } => write!(f, "starting {program}: {source}"),
-            Error::NoPid => f.write_str("the child has no valid pid"),
         }
     }
 }
@@ -41,9 +33,8 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::Pty(error) => Some(error),
-            Error::Nonblocking(errno) => Some(errno),
             Error::Launcher(error) | Error::Start { source: error, .. } => Some(error),
-            Error::NoProgram | Error::NoPid => None,
+            Error::NoProgram => None,
         }
     }
 }
@@ -58,48 +49,40 @@ pub struct Leader(Pid);
 /// A pane's program and the master side of its PTY.
 pub struct Child {
     pub leader: Leader,
-    pub master: OwnedFd,
+    pub master: Master,
 }
 
-/// Opens a PTY pair. Both ends are close-on-exec; the master is nonblocking.
-pub fn open_pty(rows: u16, cols: u16) -> Result<(OwnedFd, OwnedFd), Error> {
-    let (master, slave) = fuxix::pty::open(rows, cols).map_err(Error::Pty)?;
-    fuxix::io::set_nonblocking(&master, true).map_err(Error::Nonblocking)?;
-    Ok((master, slave))
-}
-
-/// Starts `argv` on a new PTY, in its own session with the PTY as its
-/// controlling terminal, through the launcher (`launch`).
+/// Starts `argv` on a new PTY of `size`, in its own session with the PTY as
+/// its controlling terminal, through the launcher in the `fux` binary
+/// (`fuxix::pty::launched`).
 pub fn spawn(
     argv: &[String],
     cwd: &Path,
     env: &[(&str, String)],
-    rows: u16,
-    cols: u16,
+    size: fux_vt::Size,
 ) -> Result<Child, Error> {
     let program = argv.first().ok_or(Error::NoProgram)?;
-    let (master, slave) = open_pty(rows, cols)?;
+    let (master, slave) = fuxix::pty::open(size.nonzero().into()).map_err(Error::Pty)?;
     let fux = launcher().map_err(Error::Launcher)?;
-    let child = launch(&fux, argv, &slave, |command| {
-        // TERM_PROGRAM is fux's, as tmux sets its own: the outer
-        // terminal's would have programs use features of a terminal they
-        // are not talking to (Claude Code, under Ghostty, pushed kitty
-        // keyboard flags fux does not honour).
-        command
-            .current_dir(cwd)
-            .env("TERM", "xterm-256color")
-            .env("TERM_PROGRAM", "fux")
-            .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
-        for (key, value) in env {
-            command.env(key, value);
-        }
-    })
-    .map_err(|source| Error::Start {
-        program: program.clone(),
-        source,
-    })?;
-    drop(slave);
-    let pid = Pid::of(&child).ok_or(Error::NoPid)?;
+    let (child, pid) = slave
+        .spawn(&fux, argv, |command| {
+            // TERM_PROGRAM is fux's, as tmux sets its own: the outer
+            // terminal's would have programs use features of a terminal they
+            // are not talking to (Claude Code, under Ghostty, pushed kitty
+            // keyboard flags fux does not honour).
+            command
+                .current_dir(cwd)
+                .env("TERM", "xterm-256color")
+                .env("TERM_PROGRAM", "fux")
+                .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+            for (key, value) in env {
+                command.env(key, value);
+            }
+        })
+        .map_err(|source| Error::Start {
+            program: program.clone(),
+            source,
+        })?;
     // The std handle is dropped without waiting: fux reaps the pid itself, and
     // std never waits on a dropped child.
     drop(child);
@@ -109,11 +92,6 @@ pub fn spawn(
     })
 }
 
-/// The hidden `fux` subcommand that starts a program for `launch`:
-/// `fux __launch PROGRAM [ARGS...]`. Only fux runs it, so it is in no usage
-/// text; its interface is fixed, as an older server may run a newer binary.
-pub const LAUNCH: &str = "__launch";
-
 /// The `fux` binary to run the launcher from: on Linux the server's own
 /// image, even once its file is replaced or removed.
 fn launcher() -> std::io::Result<PathBuf> {
@@ -121,96 +99,6 @@ fn launcher() -> std::io::Result<PathBuf> {
         return Ok(PathBuf::from("/proc/self/exe"));
     }
     std::env::current_exe()
-}
-
-/// Runs `argv` through the launcher in the `fux` binary, as the leader of a
-/// new session with `slave` as its controlling terminal and its stdin,
-/// stdout and stderr; `setup` sets the directory and environment. The child
-/// is the program once this returns, with the pid the launcher had.
-///
-/// Starting a process in a new session needs code between `fork` and `exec`,
-/// which std allows only through `unsafe`. The launcher runs that code as a
-/// program of its own instead, and reports a failure, including its `exec`
-/// failing, on a pipe that `exec` closes: as std reports its own, so this
-/// returns only once the program runs or cannot.
-pub fn launch<S: AsRef<OsStr>>(
-    fux: &Path,
-    argv: &[S],
-    slave: &OwnedFd,
-    setup: impl FnOnce(&mut Command),
-) -> std::io::Result<std::process::Child> {
-    let (mut failures, report) = std::io::pipe()?;
-    let mut child = {
-        let mut command = Command::new(fux);
-        command.arg(LAUNCH).args(argv);
-        setup(&mut command);
-        command
-            .stdin(slave.try_clone()?)
-            .stdout(report)
-            .stderr(slave.try_clone()?);
-        // Dropping `command` closes this side's end of the pipe.
-        command.spawn()?
-    };
-    let mut failure = String::new();
-    let read = failures.read_to_string(&mut failure);
-    if read.is_ok() && failure.is_empty() {
-        return Ok(child);
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    Err(read.err().unwrap_or_else(|| std::io::Error::other(failure)))
-}
-
-/// The launcher: `fux __launch PROGRAM [ARGS...]`, run by `launch` with its
-/// stdin and stderr on a PTY slave and its stdout on the pipe that reports a
-/// failure. It returns only if the program could not start.
-pub fn launched(argv: &[String]) -> u8 {
-    // Whatever the server inherited without close-on-exec, from a shell that
-    // leaks descriptors or a thread that raced its parent's spawn, it passed
-    // on to here: marked, it goes no further, and the program gets stdio and
-    // nothing else.
-    let marked = fuxix::io::cloexec_from(3);
-    // A close-on-exec copy, so a successful `exec` closes the pipe; the
-    // program's stdout is the PTY.
-    let report = std::io::stdout().as_fd().try_clone_to_owned();
-    let failure = match marked {
-        Ok(()) => become_program(argv),
-        Err(errno) => std::io::Error::other(format!(
-            "marking inherited descriptors close-on-exec: {errno}"
-        )),
-    };
-    if let Ok(report) = report {
-        let _ = std::fs::File::from(report).write_all(failure.to_string().as_bytes());
-    }
-    127
-}
-
-/// Makes this process the leader of a new session with its stdin as the
-/// controlling terminal, then replaces it with `argv`. The error, if either
-/// fails. The server's spawn of the launcher cleared the signal mask, and
-/// `exec` restores the SIGPIPE Rust ignores and the handlers signal-hook
-/// installed, so the program starts with default dispositions and an empty
-/// mask.
-fn become_program(argv: &[String]) -> std::io::Error {
-    let Some((program, args)) = argv.split_first() else {
-        return std::io::Error::other("no program to run");
-    };
-    if let Err(errno) = fuxix::process::setsid() {
-        return errno.into();
-    }
-    let terminal = std::io::stdin();
-    if let Err(errno) = fuxix::terminal::make_controlling(&terminal) {
-        return errno.into();
-    }
-    match terminal.as_fd().try_clone_to_owned() {
-        Ok(stdout) => Command::new(program).args(args).stdout(stdout).exec(),
-        Err(error) => error,
-    }
-}
-
-/// Resizes a PTY; the kernel sends SIGWINCH to its foreground group.
-pub fn resize(master: impl AsFd, rows: u16, cols: u16) {
-    let _ = fuxix::terminal::set_window_size(master, rows.max(1), cols.max(1));
 }
 
 /// The status a shell reports for a process: its exit code, or 128 plus the
