@@ -693,7 +693,7 @@ impl Screen {
     }
     /// The hyperlink of the cell at `row`, `col` of the screen (see
     /// [`Row::link`]). Always `None` without [`Feature::Hyperlinks`].
-    pub fn link(&self, row: u16, col: u16) -> Option<Hyperlink<'_>> {
+    pub fn link(&self, row: u16, col: u16) -> Option<&Hyperlink> {
         self.grid().live_row(row)?.link(usize::from(col))
     }
     /// The hyperlink the program has open (`OSC 8 ; params ; URI ST`), which
@@ -753,9 +753,11 @@ impl Screen {
                 uri: uri.into(),
                 id: id.map(Into::into),
                 key,
-                held: [Held::Pending; 2],
             })
         });
+        // Neither grid has made a link of the one open now.
+        self.primary.links.open = Held::Pending;
+        self.alternate.links.open = Held::Pending;
         self.links_seen |= self.link.is_some();
     }
 
@@ -765,32 +767,14 @@ impl Screen {
     /// printing, which never needs it until then, carries none of it.
     #[inline(never)]
     fn link_cells(&mut self, row: u16, span: std::ops::Range<usize>, open: bool) {
-        let link = if open { self.pen_link() } else { 0 };
         let version = self.version;
-        self.grid_mut().set_link(row, span, link, version);
-    }
-
-    /// The number the open link has in the grid shown, held there the first
-    /// time a glyph is printed with it; 0 if no link is open, or the grid has
-    /// no room for it.
-    fn pen_link(&mut self) -> u16 {
-        let Some(pen) = &mut self.link else {
-            return 0;
-        };
-        let (grid, held) = if self.alternate_active {
-            (&mut self.alternate, &mut pen.held[1])
+        let pen = self.link.as_ref().filter(|_| open);
+        let grid = if self.alternate_active {
+            &mut self.alternate
         } else {
-            (&mut self.primary, &mut pen.held[0])
+            &mut self.primary
         };
-        match *held {
-            Held::At(n) => n,
-            Held::Refused => 0,
-            Held::Pending => {
-                let n = grid.intern(&pen.uri, pen.id.as_ref(), pen.key, self.version);
-                *held = n.map_or(Held::Refused, Held::At);
-                n.unwrap_or(0)
-            }
-        }
+        grid.print_link(row, span, pen, version);
     }
 
     /// OSC 133, semantic prompts (`references/modern/osc133_*`): `A`
@@ -917,9 +901,9 @@ impl Screen {
             self.primary.resized(size, &mut next, version)?
         };
         let mut alternate = self.alternate.resized(size, &mut next, version)?;
-        // The cells' links keep their numbers, so the links go along.
-        primary.adopt_links(std::mem::take(&mut self.primary.links));
-        alternate.adopt_links(std::mem::take(&mut self.alternate.links));
+        // The links' tables go along, as the cells keep their links.
+        primary.links = std::mem::take(&mut self.primary.links);
+        alternate.links = std::mem::take(&mut self.alternate.links);
         self.primary = primary;
         self.alternate = alternate;
         self.next_id = next;

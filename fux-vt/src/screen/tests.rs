@@ -114,19 +114,24 @@ fn cells_past_a_rows_used_mark_stay_blank() -> Result<(), Error> {
     Ok(())
 }
 
-/// The links each grid counts are those its rows have, whatever the rows
-/// went through: printing over links, inserting and deleting characters,
-/// erasing, scrolling into and out of history, both screens, resizes with
-/// and without reflow, and making room when the links fill their bounds;
-/// and no row has the number of a link the grid let go.
+/// What each grid counts its links to cost is within the bound, and never
+/// short of what the links its rows (and slots recycled since) and the open
+/// link have cost, whatever the rows went through: printing over links,
+/// inserting and deleting characters, erasing, scrolling into and out of
+/// history, both screens, resizes with and without reflow, RIS, and making
+/// room when the links fill their bound.
 #[test]
-fn link_counts_follow_the_rows() -> Result<(), Error> {
+fn the_links_counted_cover_the_rows() -> Result<(), Error> {
     let check = |p: &crate::Parser, step: &str| {
         let s = p.screen();
         for grid in [&s.primary, &s.alternate] {
-            let (kept, counted, held) = grid.link_counts();
-            assert_eq!(kept, counted, "after {step}");
-            assert!(held, "after {step}");
+            let open = match &grid.links.open {
+                crate::link::Held::At(link) => Some(link),
+                crate::link::Held::Pending | crate::link::Held::Refused => None,
+            };
+            let (held, live) = grid.links.costs(grid.held_links().chain(open));
+            assert!(live <= held, "after {step}: {live} > {held}");
+            assert!(held <= crate::link::LINK_BYTES, "after {step}");
         }
     };
     let long: String = std::iter::repeat_n('u', 2000).collect();
@@ -162,7 +167,6 @@ fn link_counts_follow_the_rows() -> Result<(), Error> {
             p.process(format!("\x1b]8;;{long}{n}\x07x\x1b]8;;\x07\r\n").as_bytes())?;
         }
         check(&p, "filling the links");
-        assert!(p.screen().primary.links.len() < 2200);
     }
     Ok(())
 }

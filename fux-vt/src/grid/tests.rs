@@ -110,16 +110,25 @@ fn moves_are_removals_then_insertions(grid: &Grid) {
 
 /// What a reader sees of a row: its identity, version, wrap and prompt
 /// flags, and each cell as stored, with its attributes, its text and its
-/// link's number.
+/// link.
 pub(crate) type Seen = (
     RowId,
     u64,
     bool,
     bool,
-    Vec<(Compact, Attributes, String, u16)>,
+    Vec<(Compact, Attributes, String, Option<Hyperlink>)>,
 );
 
 impl Grid {
+    /// Every link a row of the grid has, its history's and its screen's, or
+    /// a slot recycled since keeps.
+    pub(crate) fn held_links(&self) -> impl Iterator<Item = &Hyperlink> {
+        let history = (0..self.history_len()).filter_map(|index| self.history.get(index));
+        history
+            .filter_map(|row| row.links)
+            .chain(self.linked.values())
+            .flat_map(RowLinks::links)
+    }
     /// What a reader sees of every retained row, in order.
     pub(crate) fn seen(&self) -> Vec<Seen> {
         (0..self.retained_len())
@@ -130,7 +139,7 @@ impl Grid {
                     .iter()
                     .enumerate()
                     .map(|(col, c)| {
-                        let link = row.links.and_then(|l| l.get(col)).copied().unwrap_or(0);
+                        let link = row.links.and_then(|l| l.get(col)).cloned();
                         let read = c.read(row.text, row.grid.styles());
                         (*c, read.attributes(), read.contents().to_owned(), link)
                     })
@@ -258,13 +267,9 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
             }
             3 => {
                 m.linked = true;
-                let links = grid
-                    .linked
-                    .entry(slot)
-                    .or_insert_with(|| vec![0; width].into_boxed_slice());
-                if let Some(link) = links.get_mut(col) {
-                    *link = 1;
-                }
+                let link = grid.links.insert(&Arc::from("poked"), None, 0);
+                let links = grid.linked.entry(slot).or_default();
+                links.set(col..col.saturating_add(1), link.as_ref());
             }
             _ => m.used = u16::try_from(r.below(width.saturating_add(1))).unwrap_or(m.width),
         }
@@ -362,24 +367,5 @@ fn scrolling_between_full_margins_is_scrolling_rows() -> Result<(), Error> {
         assert!(by_cells.blank_past_used(), "case {case}: used");
     }
     assert!(moved > 3_000, "{moved} rows changed");
-    Ok(())
-}
-
-/// After `reset_links` (RIS), a row that had links is given them again as
-/// any row is: `Meta::linked` is cleared with the arrays it named, so a
-/// link printed there makes the row's array anew.
-#[test]
-fn a_row_given_links_after_reset_links_keeps_them() -> Result<(), Error> {
-    let mut next = 0;
-    let mut grid = Grid::new(Size::of(2, 5), 0, &mut next, 0)?;
-    let uri: Arc<str> = Arc::from("https://example.com");
-    let link = grid.intern(&uri, None, 1, 1).ok_or(Error::Capacity)?;
-    grid.set_link(0, 0..2, link, 1);
-    grid.reset_links();
-    let link = grid.intern(&uri, None, 1, 2).ok_or(Error::Capacity)?;
-    grid.set_link(0, 0..2, link, 2);
-    let slot = grid.slot(0).ok_or(Error::Capacity)?;
-    let links = grid.linked.get(&slot).map(|links| links.to_vec());
-    assert_eq!(links, Some(vec![link, link, 0, 0, 0]));
     Ok(())
 }
