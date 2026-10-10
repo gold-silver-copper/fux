@@ -12,8 +12,14 @@ fn the_config_file_sets_the_prefix_and_bindings() -> Outcome {
     // C-a y splits; C-b is an ordinary key now.
     client.keys("\x01y")?;
     eventually("split by C-a y", || Ok(focused(&server)? == "%2"))?;
-    // The prefix twice sends it to the pane.
-    client.keys("cat -v\r")?;
+    // The prefix twice sends it to the pane. Keys typed while the shell is
+    // still reading its command line reach the terminal in the shell's raw
+    // mode, where Enter stays a carriage return and cat never sees a line:
+    // type them once the shell has run the command line.
+    client.keys("echo cat-ready; cat -v\r")?;
+    client.wait("the shell running the line", |t| {
+        t.lines().any(|l| l == "cat-ready")
+    })?;
     client.keys("\x01\x01\x02\r")?;
     client.wait("^A^B from cat -v", |t| t.lines().any(|l| l == "^A^B"))?;
     client.keys("\x03")?;
@@ -29,9 +35,9 @@ fn the_config_file_sets_the_prefix_and_bindings() -> Outcome {
     client.keys("\x1b[F")?;
     client.wait("the Tools group", |t| t.contains("Tools"))?;
     client.keys("g")?;
+    // The new pane is on the right; its own row is past the border.
     client.wait("from-g typed into a new pane", |t| {
-        t.lines()
-            .any(|l| l.ends_with("from-g") && !l.contains("echo"))
+        t.lines().any(|l| l.rsplit('│').next() == Some("from-g"))
     })?;
     Ok(())
 }
