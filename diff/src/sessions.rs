@@ -190,10 +190,10 @@ macro_rules! stack {
                         out,
                         "pane {id} {:?} title {:?} {:?} queued {} typed {}",
                         p.name,
-                        p.title,
+                        p.title.as_str(),
                         super::$side::pane_size(p),
                         super::shown(p.input.front().unwrap_or_default()),
-                        p.typed.is_some()
+                        super::$side::held(p)
                     );
                 }
                 for ws in &s.workspaces {
@@ -245,6 +245,7 @@ mod base_side {
     use baseline::command::ClientId;
     use baseline::layout::Node;
     use baseline::layout::PaneId;
+    use baseline::pane::Pane;
     use baseline::session::{Ctx, Session, Tab, Workspace};
     use baseline::view::{Mode, View};
 
@@ -255,6 +256,10 @@ mod base_side {
             pane: p,
             cwd,
         }
+    }
+
+    pub fn held(p: &Pane) -> bool {
+        p.typed.is_some()
     }
 
     pub fn place(s: &Session, v: &View) -> String {
@@ -290,6 +295,7 @@ mod base_side {
 mod cur_side {
     use fux::id::{ClientId, PaneId};
     use fux::layout::Tree;
+    use fux::pane::Pane;
     use fux::session::{Origin, Session};
     use fux::view::{Choice, Mode, View};
     use fux::workspace::{Tab, Workspace};
@@ -298,6 +304,11 @@ mod cur_side {
     pub fn origin(c: Option<ClientId>, p: Option<PaneId>) -> Origin {
         let cwd = Some("/".into());
         c.map_or(Origin::Cli { pane: p, cwd }, Origin::Client)
+    }
+
+    /// A command line is held until the shell is ready, in its input.
+    pub fn held(p: &Pane) -> bool {
+        p.input.due_at().is_some()
     }
 
     pub fn place(s: &Session, v: &View) -> String {

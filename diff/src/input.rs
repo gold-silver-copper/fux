@@ -90,11 +90,12 @@ fn key(r: &mut Rng) -> String {
 }
 
 /// `$name` decodes and encodes with `$fux`; `$key_bytes` encodes a press
-/// in a cursor mode, and `$shown` shows a decoded input, both as each
-/// version takes them: the current fux's keys carry what a kitty-protocol
-/// terminal said beyond the press, and its encoder the pane's key mode.
+/// in a cursor mode, `$shown` shows a decoded input, and `$due` times a held
+/// line, all as each version takes them: the current fux's keys carry what
+/// a kitty-protocol terminal said beyond the press, and its encoder the
+/// pane's key mode.
 macro_rules! stack {
-    ($name:ident, $fux:ident, $key_bytes:expr, $shown:expr) => {
+    ($name:ident, $fux:ident, $key_bytes:expr, $shown:expr, $due:expr) => {
         mod $name {
             use std::time::Instant;
             use $fux::decode::Decoder;
@@ -163,12 +164,8 @@ macro_rules! stack {
                 deadline: Instant,
                 last_output: Option<Instant>,
             ) -> Option<std::time::Duration> {
-                let typed = $fux::pane::Typed {
-                    line: Vec::new(),
-                    deadline,
-                    last_output,
-                };
-                typed.due_at().checked_duration_since(start)
+                let due: fn(Instant, Option<Instant>) -> Option<Instant> = $due;
+                due(deadline, last_output)?.checked_duration_since(start)
             }
 
             #[derive(Default)]
@@ -220,6 +217,14 @@ stack!(
             return format!("Key({:?})", stroke.press);
         }
         format!("{input:?}")
+    },
+    |deadline, last_output| {
+        let typed = baseline::pane::Typed {
+            line: Vec::new(),
+            deadline,
+            last_output,
+        };
+        Some(typed.due_at())
     }
 );
 stack!(
@@ -238,6 +243,12 @@ stack!(
             return format!("Key({:?})", stroke.press);
         }
         format!("{input:?}")
+    },
+    |deadline, last_output| {
+        let typed = fux::pane::Typed::new(Vec::new(), deadline)?;
+        let mut queue = fux::pane::InputQueue::from(typed);
+        last_output.into_iter().for_each(|at| queue.heard(|| at));
+        queue.due_at()
     }
 );
 

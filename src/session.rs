@@ -11,7 +11,7 @@ use crate::json::Json;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
 use crate::overlay::{Column, Repeat};
-use crate::pane::{Pane, Process};
+use crate::pane::{InputQueue, Pane, Process, Typed};
 use crate::process::Child;
 use crate::view::{Choice, Mode, View};
 use crate::workspace::{Seat, Tab, Workspace};
@@ -54,7 +54,7 @@ pub enum Timer {
     /// (`Decoder::deadline`): what waits is taken as it is.
     Escape(ClientId),
     /// A pane's command line, held until its shell is ready, is typed
-    /// (`Typed::due_at`).
+    /// (`InputQueue::due_at`).
     Type(PaneId),
     /// A pane's frame of synchronized output is read, ended or not
     /// (`Pane::frame_deadline`).
@@ -1021,7 +1021,7 @@ impl Session {
         let escapes = (self.views.iter())
             .filter_map(|(client, view)| Some((view.decoder.deadline()?, Timer::Escape(*client))));
         let panes = self.panes.values().flat_map(|pane| {
-            let typed = (pane.typed.as_ref()).map(|t| (t.due_at(), Timer::Type(pane.id)));
+            let typed = pane.input.due_at().map(|at| (at, Timer::Type(pane.id)));
             let frame = pane.frame_deadline().map(|at| (at, Timer::Frame(pane.id)));
             typed.into_iter().chain(frame)
         });
@@ -1032,16 +1032,17 @@ impl Session {
     pub fn fire(&mut self, timer: Timer) {
         match timer {
             Timer::Escape(client) => self.escape(client),
-            Timer::Type(id) => self.panes.get_mut(&id).into_iter().for_each(Pane::type_now),
+            Timer::Type(id) => (self.panes.get_mut(&id))
+                .into_iter()
+                .for_each(|p| p.input.type_now()),
             Timer::Frame(id) => self.read_with(id, Pane::release_frame),
         }
     }
 
-    /// Reads into pane `id` with `read`, which says whether it dropped rows,
-    /// as every read of a pane's output does: its tab's host colours and
-    /// palette given it first, what follows a read seen to after
-    /// (`read_into`).
-    fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut Pane) -> bool) {
+    /// Reads into pane `id` with `read`, as every read of a pane's output
+    /// does: its tab's host colours and palette given it first, what
+    /// follows a read seen to after (`read_into`).
+    fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut Pane)) {
         let place = self.locate(id);
         let colours = self.colours_for(place.map(|(_, t)| t));
         let palette = self.palette_for(place.map(|(_, t)| t));
@@ -1050,7 +1051,8 @@ impl Session {
         };
         pane.colours = colours;
         pane.set_host_palette(palette);
-        let dropped = read(pane);
+        read(pane);
+        let dropped = pane.input.lost_reply();
         self.read_into(id, place, dropped);
     }
 
@@ -1910,21 +1912,15 @@ fn new_pane(
         .cloned()
         .unwrap_or_else(|| "/bin/sh".into());
     let fish = basename(&shell_program) == "fish";
-    // The line to type is measured before anything is made: a line too
-    // long to type must not leave a process behind.
+    // The line to type is made before anything else: a line too long to
+    // type must not leave a process behind.
     let typed = if cmd.is_empty() {
         None
     } else {
-        let mut typed = crate::words::shell_line(cmd, fish)?.into_bytes();
-        typed.push(b'\r');
-        if typed
-            .len()
-            .checked_add(crate::pane::ENTRY_COST)
-            .is_none_or(|cost| cost > crate::pane::INPUT_BYTES)
-        {
-            return Err(Error::LineTooLong);
-        }
-        Some(typed)
+        let mut line = crate::words::shell_line(cmd, fish)?.into_bytes();
+        line.push(b'\r');
+        let deadline = crate::after(Instant::now(), TYPE_WAIT);
+        Some(Typed::new(line, deadline).ok_or(Error::LineTooLong)?)
     };
     let id = ids.pane()?;
     let name = cmd
@@ -1940,13 +1936,9 @@ fn new_pane(
         pane.process = Process::Reading(crate::process::spawn(&config.shell, cwd, &env, size)?);
     }
     if let Some(typed) = typed {
-        pane.typed = Some(crate::pane::Typed {
-            line: typed,
-            deadline: crate::after(Instant::now(), TYPE_WAIT),
-            last_output: None,
-        });
+        pane.input = InputQueue::from(typed);
         if let Process::Absent = pane.process {
-            pane.type_now();
+            pane.input.type_now();
         }
     }
     Ok(pane)

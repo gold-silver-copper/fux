@@ -229,7 +229,7 @@ impl Session {
             return;
         };
         let mut report = Vec::new();
-        if p.screen().encode_mouse(event, &mut report) && !p.input.refusing() {
+        if p.screen().encode_mouse(event, &mut report) {
             let _ = p.input.push(&report);
         }
     }

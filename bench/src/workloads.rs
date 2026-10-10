@@ -332,7 +332,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
     for load in loads {
         pane.resize(fux::pane::size(load.rows, load.cols));
         for piece in pieces(&load.bytes, PANE_READ) {
-            black_box(pane.output(black_box(piece)));
+            pane.output(black_box(piece));
         }
     }
     black_box(pane.screen().cursor_position());
