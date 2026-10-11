@@ -76,7 +76,7 @@ fn targets_come_from_t_or_fux_pane_and_are_never_guessed() -> Outcome {
     let ls = server.ok(&["ls"])?;
     assert!(ls.contains("%3"));
     let out = server.fux_env(&["new-tab"], &[("FUX_PANE", "%2")])?;
-    assert_eq!(out.stdout.trim(), "@2");
+    assert_eq!(out.stdout.trim(), "@2 %4", "the tab and its pane");
     // Wrong kinds and missing targets.
     assert_eq!(server.fux(&["kill-tab", "-t", "%1"])?.status, 2);
     assert_eq!(server.fux(&["kill-pane", "-t", "@1"])?.status, 2);
