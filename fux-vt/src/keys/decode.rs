@@ -73,6 +73,12 @@ const OSC_LIMIT: usize = 128;
 const DCS_LIMIT: usize = 256;
 /// The largest paste delivered; a longer one is refused whole.
 pub const PASTE_LIMIT: usize = 64 * 1024;
+/// How long a bracketed paste waits for more of itself before it ends
+/// unfinished: a terminal writes a paste at once, so only one that lost
+/// its end marker, or a link stalled for that long, stops for so long.
+/// Until then every byte is the paste's, as it must be: a paste never
+/// becomes keys.
+const PASTE_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// What a terminal's input decodes to.
@@ -167,9 +173,48 @@ enum State {
         escape: bool,
         since: Option<Instant>,
     },
-    /// Inside a bracketed paste, which no deadline cuts short: its bytes
-    /// so far.
-    Paste(Vec<u8>),
+    /// Inside a bracketed paste: what it has kept, and since when no more
+    /// of it has come, once marked. Its end marker ends it, or
+    /// `PASTE_DELAY` without bytes, unfinished.
+    Paste {
+        pasted: Pasted,
+        since: Option<Instant>,
+    },
+}
+
+/// What a bracketed paste under way keeps.
+enum Pasted {
+    /// Its bytes so far, no more than the limit, but for the end of them
+    /// that may begin its end marker.
+    Text(Vec<u8>),
+    /// It is past the limit, which was reported (`PasteTooLong`) at once:
+    /// it is dropped as it comes, keeping only the end that may begin its
+    /// end marker.
+    TooLong(Vec<u8>),
+}
+
+impl Pasted {
+    /// What a paste comes to when it ends: nothing more for one already
+    /// reported too long.
+    fn end(self, limit: usize) -> Option<Input> {
+        match self {
+            Pasted::Text(text) => Some(finished(text, limit)),
+            Pasted::TooLong(_) => None,
+        }
+    }
+}
+
+/// A paste's text, whole: a paste if no longer than `limit`, else too
+/// long.
+fn finished(text: Vec<u8>, limit: usize) -> Input {
+    if text.len() > limit {
+        return Input::PasteTooLong;
+    }
+    // Moved as it is, unless it is not UTF-8.
+    Input::Paste(
+        String::from_utf8(text)
+            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
+    )
 }
 
 /// Questions asked of the terminal, `rounds` of them, waited for until
@@ -208,16 +253,21 @@ fn drop_to_end(bel: bool, mut escape: bool, bytes: &[u8]) -> Result<Cow<'_, [u8]
     Err(escape)
 }
 
-/// Takes `bytes` of a bracketed paste, `text` its bytes so far; once its
-/// end marker is among them, the paste, if no longer than `limit`, to `out`,
-/// and the bytes after it. Past the limit, only what may begin the marker
-/// is kept beyond it.
+/// Takes `bytes` of a bracketed paste, `pasted` what it kept so far;
+/// once its end marker is among them, what it comes to, to `out`, and the
+/// bytes after it; else what it keeps. Once it is past `limit`, by more
+/// than the end that may begin the marker, it is reported too long, at
+/// once, and dropped from then on.
 fn paste<'a>(
-    mut text: Vec<u8>,
+    pasted: Pasted,
     bytes: &'a [u8],
     limit: usize,
     out: &mut Vec<Input>,
-) -> Result<&'a [u8], Vec<u8>> {
+) -> Result<&'a [u8], Pasted> {
+    let (mut text, too_long) = match pasted {
+        Pasted::Text(text) => (text, false),
+        Pasted::TooLong(tail) => (tail, true),
+    };
     let (old, marker) = (text.len(), PASTE_END.len());
     text.extend_from_slice(bytes);
     // The marker may have begun in the bytes before these.
@@ -226,24 +276,21 @@ fn paste<'a>(
         (from..text.len()).find(|&i| text.get(i..).is_some_and(|t| t.starts_with(PASTE_END)));
     let Some(end) = found else {
         let tail = text.len().saturating_sub(marker.saturating_sub(1));
-        if tail > limit.saturating_add(1) {
-            let kept = text.get(tail..).unwrap_or_default().to_vec();
-            text.truncate(limit.saturating_add(1));
-            text.extend(kept);
+        if !too_long && tail <= limit {
+            return Err(Pasted::Text(text));
         }
-        return Err(text);
+        if !too_long {
+            out.push(Input::PasteTooLong);
+        }
+        return Err(Pasted::TooLong(
+            text.get(tail..).unwrap_or_default().to_vec(),
+        ));
     };
     let rest = end.saturating_add(marker).saturating_sub(old);
     text.truncate(end);
-    out.push(if text.len() > limit {
-        Input::PasteTooLong
-    } else {
-        // Moved as it is, unless it is not UTF-8.
-        Input::Paste(
-            String::from_utf8(text)
-                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
-        )
-    });
+    if !too_long {
+        out.push(finished(text, limit));
+    }
     Ok(bytes.get(rest..).unwrap_or_default())
 }
 
@@ -271,16 +318,21 @@ impl Decoder {
         }
     }
 
-    /// Whether decoding is waiting on a timeout, outside a paste: a lone
-    /// Escape, an incomplete sequence, or an over-long string being dropped.
+    /// Whether decoding is waiting on a timeout: a lone Escape, an
+    /// incomplete sequence, an over-long string being dropped, or a paste
+    /// under way.
     pub fn waiting(&self) -> bool {
-        matches!(self.state, State::Pending { .. } | State::Dropping { .. })
+        !matches!(self.state, State::Idle)
     }
 
     /// Records `now` as when decoding began waiting, if it is waiting on a
-    /// sequence it was not waiting on when last marked.
+    /// sequence it was not waiting on when last marked, or on a paste that
+    /// has had bytes since.
     pub fn mark(&mut self, now: Instant) {
-        if let State::Pending { since, .. } | State::Dropping { since, .. } = &mut self.state {
+        if let State::Pending { since, .. }
+        | State::Dropping { since, .. }
+        | State::Paste { since, .. } = &mut self.state
+        {
             since.get_or_insert(now);
         }
     }
@@ -288,22 +340,23 @@ impl Decoder {
     /// When `timeout` is due: `ESCAPE_DELAY` after decoding began waiting,
     /// as marked, or `REPLY_DELAY` if what waits is an answer begun, or a
     /// bare `ESC ]`, `ESC P`, `ESC P0` or `ESC P1` while an answer is
-    /// expected; none while it is not waiting.
+    /// expected; `PASTE_DELAY` after a paste's last bytes; none while it is
+    /// not waiting.
     pub fn deadline(&self) -> Option<Instant> {
-        let (since, reply) = match &self.state {
-            State::Pending { held, since } => (
-                since,
-                match held.as_slice() {
+        let (since, wait) = match &self.state {
+            State::Pending { held, since } => {
+                let reply = match held.as_slice() {
                     b"\x1b]" | b"\x1bP" | b"\x1bP0" | b"\x1bP1" => self.expecting.is_some(),
                     held => {
                         held.starts_with(b"\x1b]") || held.starts_with(b"\x1b[?") || dcs_begun(held)
                     }
-                },
-            ),
-            State::Dropping { since, .. } => (since, true),
-            State::Idle | State::Paste(_) => return None,
+                };
+                (since, if reply { REPLY_DELAY } else { ESCAPE_DELAY })
+            }
+            State::Dropping { since, .. } => (since, REPLY_DELAY),
+            State::Paste { since, .. } => (since, PASTE_DELAY),
+            State::Idle => return None,
         };
-        let wait = if reply { REPLY_DELAY } else { ESCAPE_DELAY };
         Some(after((*since)?, wait))
     }
 
@@ -334,9 +387,9 @@ impl Decoder {
         self.feed(bytes, false, out);
     }
 
-    /// The deadline passed (`deadline`: an Escape's, or an answer's):
-    /// whatever is pending is complete as it is, and a string being dropped
-    /// is cut short, so what comes next is new.
+    /// The deadline passed (`deadline`: an Escape's, an answer's, or a
+    /// paste's): whatever is pending is complete as it is, and a string
+    /// being dropped or a paste is cut short, so what comes next is new.
     pub fn timeout(&mut self, out: &mut Vec<Input>) {
         self.feed(&[], true, out);
     }
@@ -358,10 +411,16 @@ impl Decoder {
                     return;
                 }
             },
-            State::Paste(text) => match paste(text, bytes, self.paste_limit, out) {
+            State::Paste { pasted, since } => match paste(pasted, bytes, self.paste_limit, out) {
                 Ok(rest) => (Cow::Borrowed(rest), None),
-                Err(text) => {
-                    self.state = State::Paste(text);
+                Err(pasted) if flush => {
+                    out.extend(pasted.end(self.paste_limit));
+                    return;
+                }
+                Err(pasted) => {
+                    // Bytes of it came: its wait begins again when marked.
+                    let since = since.filter(|_| bytes.is_empty());
+                    self.state = State::Paste { pasted, since };
                     return;
                 }
             },
@@ -392,9 +451,14 @@ impl Decoder {
                 }
                 Step::PasteStart(n) => {
                     let text = bytes.get(n..).unwrap_or_default();
-                    match paste(Vec::new(), text, self.paste_limit, out) {
+                    match paste(Pasted::Text(Vec::new()), text, self.paste_limit, out) {
                         Ok(rest) => Some(rest),
-                        Err(text) => return State::Paste(text),
+                        Err(pasted) => {
+                            return State::Paste {
+                                pasted,
+                                since: None,
+                            };
+                        }
                     }
                 }
                 Step::Overlong { bel } => {
@@ -1132,6 +1196,39 @@ mod tests {
         // Up, then an Escape begun in the same read: its rest has its own
         // `ESCAPE_DELAY` to come, not what was left of Up's.
         assert_eq!(due(b"[A\x1b", 70), Some(ms(70) + ESCAPE_DELAY));
+    }
+
+    /// A bracketed paste whose end marker never comes ends `PASTE_DELAY`
+    /// after its last bytes: what came of it is the paste, or, past the
+    /// limit, reported too long as soon as it is, the rest dropped; and
+    /// what is typed after it is keys again.
+    #[test]
+    fn an_unfinished_paste_ends_at_its_deadline() {
+        let ms = Duration::from_millis;
+        let t0 = Instant::now();
+        let mut d = Decoder::with_paste_limit(8);
+        let mut out = Vec::new();
+        d.bytes(b"\x1b[200~abc", &mut out);
+        d.mark(t0);
+        assert_eq!(d.deadline(), Some(t0 + PASTE_DELAY));
+        // More of it: its wait begins again.
+        d.bytes(b"de", &mut out);
+        d.mark(t0 + ms(1000));
+        assert_eq!(d.deadline(), Some(t0 + ms(1000) + PASTE_DELAY));
+        assert!(out.is_empty());
+        d.timeout(&mut out);
+        d.bytes(b"k", &mut out);
+        assert_eq!(out, vec![Input::Paste("abcde".into()), key("k")]);
+        let mut out = Vec::new();
+        d.bytes(b"\x1b[200~0123456789abcdef", &mut out);
+        assert_eq!(out, vec![Input::PasteTooLong]);
+        d.mark(t0);
+        d.bytes(b"more", &mut out);
+        d.mark(t0 + ms(1000));
+        assert_eq!(d.deadline(), Some(t0 + ms(1000) + PASTE_DELAY));
+        d.timeout(&mut out);
+        d.bytes(b"k", &mut out);
+        assert_eq!(out, vec![Input::PasteTooLong, key("k")]);
     }
 
     #[test]
