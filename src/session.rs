@@ -836,8 +836,9 @@ impl Session {
     }
 
     /// A PTY is the smallest rectangle any client shows it in. A tab no
-    /// client shows is laid out as on any client's screen, as commands
-    /// resizing it are; with no client at all, panes keep their size.
+    /// client shows whose layout changed is laid out on any client's screen,
+    /// as commands resizing it are; otherwise its panes keep their size, so
+    /// leaving a tab resizes nothing.
     fn size_panes(&mut self) {
         let mut sizes = std::mem::take(&mut self.shown_sizes);
         let mut placed = std::mem::take(&mut self.placed);
@@ -847,9 +848,11 @@ impl Session {
             sizes.extend(placed.panes.iter().map(|(p, r)| (*p, (r.h(), r.w()))));
         }
         if let Some(area) = self.views.values().next().map(Self::pane_area) {
-            let tabs = self.workspaces.iter().flat_map(Workspace::tabs);
-            let unshown = tabs.filter(|t| !self.views.keys().any(|&c| self.shows(c, t.id)));
-            for root in unshown.filter_map(Tab::root) {
+            let changed = self
+                .workspaces
+                .iter_mut()
+                .flat_map(Workspace::changed_unshown);
+            for root in changed {
                 layout::place_into(root, area, &mut placed);
                 sizes.extend(placed.panes.iter().map(|(p, r)| (*p, (r.h(), r.w()))));
             }
@@ -2117,6 +2120,12 @@ mod tests {
             .zip(bottom)
             .map(|(t, b)| (t.rows(), b.rows(), t.cols(), b.cols()));
         assert_eq!(rows, Some((5, 4, 40, 40)), "stacked, a separator between");
+        // Leaving a tab whose layout is unchanged resizes nothing: a zoomed
+        // pane keeps the whole screen.
+        run(&mut s, "select-tab -c c1 -t @2")?;
+        run(&mut s, "zoom -c c1")?;
+        run(&mut s, "select-tab -c c1 -t @1")?;
+        assert_eq!(size(&s, 2), Some(crate::pane::size(10, 40)));
         Ok(())
     }
 
