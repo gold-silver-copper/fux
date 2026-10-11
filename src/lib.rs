@@ -9,6 +9,7 @@ pub mod client;
 pub mod command;
 pub mod config;
 pub mod copy;
+pub mod help;
 pub mod id;
 pub mod input;
 pub mod json;
@@ -60,6 +61,9 @@ pub(crate) fn drain(mut pipe: &UnixStream) {
 fn usage() -> String {
     format!(
         "\
+Driving programs from a script or an agent: `fux help agents`.
+One command at length, with an example: `fux help COMMAND`.
+
 usage: fux [attach] [-t WORKSPACE] [--nested]
        fux attach --headless [--size COLSxROWS] [--log FILE] [-t WORKSPACE]
        fux server [--socket PATH] [--config FILE]
@@ -71,10 +75,7 @@ command prompt or a menu, it is the client that ran it.
 
 The socket is FUX_SOCKET, else $XDG_RUNTIME_DIR/fux/server.sock, else
 $TMPDIR/fux/server.sock. Inside a pane, FUX_PANE names it, so commands there
-target it without -t.
-
-Scripts and agents: run, send-keys, wait and capture-pane drive a program
-step by step; docs/agents.md in fux's repository has the recipe.",
+target it without -t.",
         command::help()
     )
 }
@@ -242,8 +243,29 @@ fn run(args: &[String]) -> Result<u8, Error> {
             Ok(0)
         }
         Some("help" | "--help" | "-h") => {
-            writeln!(std::io::stdout(), "{}", usage()).map_err(Error::Output)?;
+            let text = match args.get(1).map(String::as_str) {
+                None => usage(),
+                Some("agents") => help::AGENTS.to_owned(),
+                Some(name) => match help::command(name) {
+                    Some(text) => text,
+                    None => {
+                        let message = format!("no command {name:?}");
+                        return usage_error(&message, None);
+                    }
+                },
+            };
+            writeln!(std::io::stdout(), "{}", text.trim_end()).map_err(Error::Output)?;
             Ok(0)
+        }
+        // `fux COMMAND --help`: that command's help, not a run of it.
+        Some(name) if args.len() == 2 && args.get(1).is_some_and(|a| a == "--help") => {
+            match help::command(name) {
+                Some(text) => {
+                    writeln!(std::io::stdout(), "{}", text.trim_end()).map_err(Error::Output)?;
+                    Ok(0)
+                }
+                None => usage_error(&format!("unknown command {name:?}"), None),
+            }
         }
         Some("--version" | "-V" | "version") => {
             let version = env!("CARGO_PKG_VERSION");

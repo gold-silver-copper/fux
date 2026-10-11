@@ -1,5 +1,8 @@
 # Driving programs with fux
 
+(This is `fux help agents`; `fux help COMMAND` explains any command, its
+flags and an example.)
+
 How a script, a test or an AI agent drives terminal programs through fux:
 start one, send it keys, wait for it, read its screen, clean up. Every step
 is one `fux` command, and none touches the tabs a person is using. No

@@ -822,6 +822,13 @@ pub fn group(argv: &[String], command: &Command) -> &'static str {
     }
 }
 
+/// The usage of the command named `name`, and what it does.
+pub fn described(name: &str) -> Option<(&'static str, &'static str)> {
+    let (_, _, spec) = find(name)?;
+    let about = spec.usage.split_once("  ").map_or("", |(_, about)| about);
+    Some((spec.grammar(), about))
+}
+
 /// The usage of the command named `name`, without what it does.
 pub fn usage_of(name: &str) -> Option<&'static str> {
     find(name).map(|(_, _, spec)| spec.grammar())

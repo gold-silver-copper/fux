@@ -147,7 +147,8 @@ each terminal showing the pane. fux never reads the clipboard.
 ## Commands
 
 Commands run from the command line (`fux COMMAND …`), a key binding or the
-command prompt; `fux help` lists them. Targets: a pane is `%N`, a tab
+command prompt; `fux help` lists them, and `fux help COMMAND` (or
+`fux COMMAND --help`) explains one, its flags and an example. Targets: a pane is `%N`, a tab
 `@N`, a workspace `+N` or its name, a client `cN`. Inside a pane,
 `FUX_PANE` and `FUX_SOCKET` name the pane and the server, so commands there
 need no `-t`. Elsewhere a command that needs a target and has none fails.
@@ -186,7 +187,7 @@ From a key or the prompt, commands act on your focused pane.
 | `fux list-buffers`, `show-buffer [-b N]`, `paste-buffer [-b N] [-t %N]` | paste buffers, newest `0` |
 | `fux list-keys` | key names and the current bindings |
 | `fux detach [-c CLIENT]` | detach a client |
-| `fux help`, `fux --version` | usage, version |
+| `fux help [COMMAND\|agents]`, `fux --version` | usage, one command at length, the recipe for scripts and agents; version |
 
 These act on a client's screen: yours from a key or the prompt, `-c CLIENT`
 from the command line. `zoom` and `copy-mode` take no `-t`.
@@ -216,7 +217,8 @@ fux send-keys -t $P q && fux wait -t $P --exit   # prints: exited 0
 fux kill-workspace -t agent                # everything run started
 ```
 
-[docs/agents.md](docs/agents.md) has the whole recipe.
+`fux help agents` prints the whole recipe, the same as
+[docs/agents.md](docs/agents.md).
 
 **Key names**, for `send-keys` and `set prefix`, are tmux's (`C-x`, `M-x`,
 `S-Left`, `Enter`, `BTab`, `BSpace`, `PageUp`, `F1`–`F12`, …) and any
