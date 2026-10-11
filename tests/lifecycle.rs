@@ -175,7 +175,7 @@ fn the_default_socket_is_under_xdg_runtime_dir_else_tmpdir() -> Outcome {
 /// a real server may hold).
 #[test]
 fn a_pane_runs_shell_else_bin_sh() -> Outcome {
-    for (shell, name) in [(Some("/bin/dash"), "dash"), (None, "sh")] {
+    for (shell, name) in [(Some("/bin/bash"), "bash"), (None, "sh")] {
         let dir = fuxix::file::scratch()
             .map_err(e)?
             .join(format!("fux-shell-{name}-{}", std::process::id()));
@@ -203,13 +203,16 @@ fn a_pane_runs_shell_else_bin_sh() -> Outcome {
         let mut child = command.spawn().map_err(e)?;
         let ls = || {
             Command::new(FUX)
-                .arg("ls")
+                .args(["ls", "--json"])
                 .env("FUX_SOCKET", &socket)
                 .output()
                 .map_err(e)
         };
+        // The name, not the title a shell's startup files may set.
         let shown = eventually(&format!("a pane running {name}"), || {
-            Ok(String::from_utf8_lossy(&ls()?.stdout).contains(&format!("%1 {name} ")))
+            let ls = ls()?;
+            let ls = String::from_utf8_lossy(&ls.stdout);
+            Ok(ls.contains(&format!(r#""id":"%1","name":"{name}""#)))
         });
         let _ = Command::new(FUX)
             .arg("kill-server")

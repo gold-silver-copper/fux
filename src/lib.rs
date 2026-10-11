@@ -25,7 +25,7 @@ pub mod view;
 pub mod words;
 pub mod workspace;
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -48,7 +48,7 @@ pub(crate) fn signal_pipe(signals: &[std::ffi::c_int]) -> std::io::Result<UnixSt
 }
 
 /// Reads whatever a signal pipe holds.
-pub(crate) fn drain(pipe: &mut UnixStream) {
+pub(crate) fn drain(mut pipe: &UnixStream) {
     let mut buffer = [0u8; 256];
     while matches!(pipe.read(&mut buffer), Ok(n) if n > 0) {}
 }
@@ -78,7 +78,8 @@ pub fn main() -> ExitCode {
     match run(&args) {
         Ok(status) => ExitCode::from(status),
         Err(error) => {
-            eprintln!("fux: {error}");
+            // Nowhere is left to say that stderr failed.
+            let _ = writeln!(std::io::stderr(), "fux: {error}");
             ExitCode::from(1)
         }
     }
@@ -93,6 +94,8 @@ enum Error {
     Socket(socket::Error),
     Client(client::Error),
     Server(server::Error),
+    /// Help or the version could not be written.
+    Output(std::io::Error),
 }
 
 impl std::fmt::Display for Error {
@@ -105,6 +108,7 @@ impl std::fmt::Display for Error {
             Error::Socket(error) => error.fmt(f),
             Error::Client(error) => error.fmt(f),
             Error::Server(error) => error.fmt(f),
+            Error::Output(error) => write!(f, "writing the output: {error}"),
         }
     }
 }
@@ -117,6 +121,7 @@ impl std::error::Error for Error {
             Error::Socket(error) => Some(error),
             Error::Client(error) => Some(error),
             Error::Server(error) => Some(error),
+            Error::Output(error) => Some(error),
         }
     }
 }
@@ -134,7 +139,8 @@ impl From<client::Error> for Error {
 }
 
 fn usage_error(message: &str) -> Result<u8, Error> {
-    eprintln!("fux: {message}\n{}", usage());
+    // The status says it, if stderr cannot.
+    let _ = writeln!(std::io::stderr(), "fux: {message}\n{}", usage());
     Ok(2)
 }
 
@@ -192,11 +198,12 @@ fn run(args: &[String]) -> Result<u8, Error> {
             Ok(0)
         }
         Some("help" | "--help" | "-h") => {
-            println!("{}", usage());
+            writeln!(std::io::stdout(), "{}", usage()).map_err(Error::Output)?;
             Ok(0)
         }
         Some("--version" | "-V" | "version") => {
-            println!("fux {}", env!("CARGO_PKG_VERSION"));
+            let version = env!("CARGO_PKG_VERSION");
+            writeln!(std::io::stdout(), "fux {version}").map_err(Error::Output)?;
             Ok(0)
         }
         Some(_) => {

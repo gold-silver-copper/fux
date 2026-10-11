@@ -126,19 +126,20 @@ pub struct Prompt {
 }
 
 /// The most bytes a prompt's line holds.
-const LINE_MAX: usize = 4096;
+pub const LINE_MAX: usize = 4096;
 
-/// A prompt's one line of text, split at its cursor: the cursor is always
-/// between two chars, or at an end, and every edit is a whole char.
+/// A line of text being typed, of at most `MAX` bytes, split at its
+/// cursor: the cursor is always between two chars, or at an end, and every
+/// edit is a whole char.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Line {
+pub struct Line<const MAX: usize = LINE_MAX> {
     before: String,
     after: String,
 }
 
-impl Line {
+impl<const MAX: usize> Line<MAX> {
     /// `text`, the cursor after it.
-    pub fn new(text: String) -> Line {
+    pub fn new(text: String) -> Line<MAX> {
         Line {
             before: text,
             after: String::new(),
@@ -160,11 +161,11 @@ impl Line {
         self.before + &self.after
     }
 
-    /// Types `text` at the cursor, unless the line would pass `LINE_MAX`
-    /// bytes: whether it did.
+    /// Types `text` at the cursor, unless the line would pass `MAX` bytes:
+    /// whether it did.
     pub fn insert(&mut self, text: &str) -> bool {
         let len = self.before.len().saturating_add(self.after.len());
-        let fits = len.saturating_add(text.len()) <= LINE_MAX;
+        let fits = len.saturating_add(text.len()) <= MAX;
         if fits {
             self.before.push_str(text);
         }

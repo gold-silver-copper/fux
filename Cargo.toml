@@ -42,6 +42,11 @@ unsafe_code = "forbid"
 
 [lints.clippy]
 suspicious = { level = "forbid", priority = -1 }
+print_stdout = "forbid"
+# Denied, not forbidden: the tests' server keeps printing its log, which
+# only `eprintln!` lets the test harness capture.
+print_stderr = "deny"
+dbg_macro = "forbid"
 unwrap_used = "forbid"
 expect_used = "forbid"
 panic = "forbid"

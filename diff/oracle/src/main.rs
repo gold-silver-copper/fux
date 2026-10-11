@@ -17,7 +17,7 @@ usage: fux-vt-oracle [--seed N] [--cases N] [--streams N] [--cells N]
        fux-vt-oracle --baseline
 
 Runs the working tree's fux-vt beside fux-vt at the commit Cargo.lock pins
-(diff/oracle.sh pins it for the run, to the latest main unless told another),
+(diff/oracle.sh pins it for the run, to the latest master unless told another),
 comparing everything its API shows after every step: over every corpus
 recording (as fux sets up a pane, and with every option off; each step in
 pieces of up to 2048 bytes), --cases random cases (default 10000), --streams

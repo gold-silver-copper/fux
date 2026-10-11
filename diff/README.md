@@ -85,7 +85,7 @@ every step. Any difference fails, shrunk to the smallest case that
 shows it.
 
 ```sh
-diff/oracle.sh                       # against the latest origin/main, fetched first
+diff/oracle.sh                       # against the latest origin/master, fetched first
 diff/oracle.sh HEAD                  # against another commit
 diff/oracle.sh --cases 50000 --seed 7
 diff/oracle.sh --replay diff/target/oracle/NAME.case

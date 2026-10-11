@@ -389,6 +389,25 @@ fn tabs_stop_at_the_right_margin() -> Result {
     Ok(())
 }
 
+/// CBT and CHT cost the line's width at most, whatever their count. With
+/// the margins at columns 3000 and 4000, origin mode and every stop
+/// cleared, each stop back is the left margin, where the cursor already
+/// is, and each stop on the right margin: no count of them moves it again.
+#[test]
+fn a_tab_count_costs_no_more_than_the_line() -> Result {
+    let mut p = run(2, 4000, b"\x1b[?69h\x1b[3000;4000s\x1b[?6h\x1b[3g")?;
+    let start = std::time::Instant::now();
+    for _ in 0..10 {
+        p.process(b"\x1b[65535Z")?;
+        assert_eq!(p.screen().cursor_position(), (0, 2999));
+        p.process(b"\x1b[65535I")?;
+        assert_eq!(p.screen().cursor_position(), (0, 3999));
+    }
+    let spent = start.elapsed();
+    assert!(spent < std::time::Duration::from_secs(1), "{spent:?}");
+    Ok(())
+}
+
 /// REP prints as printing the character again would: it wraps at the
 /// right margin and scrolls the region between the margins. The copies
 /// past those that fill the region are skipped a line's worth at a time,

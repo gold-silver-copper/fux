@@ -2,7 +2,7 @@
 # diff/oracle.sh [REF] [ARGS...]: the working tree's fux-vt beside fux-vt
 # at REF, by fux-vt-oracle (diff/oracle), with ARGS passed to it
 # (`--cases N`, `--seed N`, `--replay FILE`; `--help` says them all).
-# REF is any commit; by default the latest main, fetched from origin first.
+# REF is any commit; by default the latest master, fetched from origin first.
 #
 # diff/oracle.sh --pin [REF]: only pin REF, and leave the pin in place
 # (CI pins HEAD this way before it builds the diff/ workspace).
@@ -29,8 +29,8 @@ if [[ $# -gt 0 && $1 != -* ]]; then
   shift
 fi
 if [[ -z $ref ]]; then
-  git -C "$root" fetch --quiet origin main
-  ref=origin/main
+  git -C "$root" fetch --quiet origin master
+  ref=origin/master
 fi
 sha=$(git -C "$root" rev-parse --verify "$ref^{commit}")
 source=file://$(cd "$(git -C "$root" rev-parse --git-common-dir)" && pwd)

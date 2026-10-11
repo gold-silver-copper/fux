@@ -130,7 +130,6 @@ pub enum Error {
     NoClient(ClientId),
     NoWorkspaces,
     NoBuffer(usize),
-    NoCopiedText,
     NoConfigFile,
     // What the client's view has none of.
     NoLastPane,
@@ -191,7 +190,6 @@ impl std::fmt::Display for Error {
             Error::NoClient(id) => write!(f, "no client {id}"),
             Error::NoWorkspaces => f.write_str("the server has no workspace"),
             Error::NoBuffer(index) => write!(f, "no buffer {index}"),
-            Error::NoCopiedText => f.write_str("no copied text yet"),
             Error::NoConfigFile => f.write_str("no config file to reload"),
             Error::NoLastPane => f.write_str("no previously focused pane"),
             Error::NoPaneToCopy => f.write_str("no pane to copy from"),
@@ -248,7 +246,6 @@ impl std::error::Error for Error {
             | Error::NoClient(_)
             | Error::NoWorkspaces
             | Error::NoBuffer(_)
-            | Error::NoCopiedText
             | Error::NoConfigFile
             | Error::NoLastPane
             | Error::NoPaneToCopy
@@ -748,8 +745,10 @@ impl Session {
 
     /// Output and sizing a pane can drop rows of its history: a copy mode
     /// whose rows went ends. They are looked for only if the screen changed
-    /// since they were last found.
-    fn hold_copies(&mut self) {
+    /// since they were last found. Every change to workspaces, tabs, panes
+    /// and views does this as it is made; output, which changes none of
+    /// them, leaves it to the server's loop.
+    pub fn hold_copies(&mut self) {
         for view in self.views.values_mut() {
             let Mode::Copy(copy) = &mut view.mode else {
                 continue;
@@ -970,13 +969,6 @@ impl Session {
         self.close_pane(id, Some(format!("exited with status {status}")));
     }
 
-    /// Settles what output can change. Every change to workspaces, tabs,
-    /// panes and views settles as it is made; output does not change them,
-    /// but can drop history rows a copy mode holds.
-    pub fn settle_if_needed(&mut self) {
-        self.hold_copies();
-    }
-
     /// Output from a pane's program.
     pub fn output(&mut self, id: PaneId, bytes: &[u8]) {
         self.read_with(id, |pane| pane.output(bytes));
@@ -1156,7 +1148,7 @@ impl Session {
                 .buffers
                 .get(*index)
                 .is_none()
-                .then_some(Error::NoCopiedText);
+                .then_some(Error::NoBuffer(*index));
         }
         if let Command::Terminate { target } = command {
             return match self.pane(*target, here) {
@@ -1255,7 +1247,10 @@ impl Session {
                 let pane = new_pane(&self.config, launch, &mut ids, cmd, &cwd, size)?;
                 self.ids = ids;
                 let new = pane.id;
-                tab.edit(|root| layout::split(root, target, new, axis, Side::After));
+                tab.edit(|root| {
+                    root.as_mut()
+                        .map(|r| r.split(target, new, axis, Side::After))
+                });
                 self.panes.insert(new, pane);
                 let views = self.views.values_mut();
                 for view in views.filter(|v| followers.contains(&v.id)) {
@@ -1580,12 +1575,9 @@ impl Session {
                     Direction::Right | Direction::Down => Side::After,
                     Direction::Left | Direction::Up => Side::Before,
                 };
-                for tab in tabs_mut(&mut self.workspaces) {
-                    tab.edit(|root| {
-                        layout::remove(root, pane);
-                        layout::split(root, destination, pane, Axis::of(direction), side)
-                    });
-                }
+                let axis = Axis::of(direction);
+                tab_of(&mut self.workspaces, pane)?
+                    .edit(|root| layout::move_beside(root, pane, destination, axis, side));
                 return Ok(String::new());
             }
             &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, tab),
@@ -2161,6 +2153,27 @@ mod tests {
         Ok(())
     }
 
+    /// A pane moved beside another moves within its own tab: a tab emptied
+    /// by an earlier move takes no copy of it, so none is left naming it
+    /// once it closes.
+    #[test]
+    fn a_pane_moved_beside_another_stays_out_of_empty_tabs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, _) = attached(10, 40)?;
+        run(&mut s, "split -h -t %1")?;
+        run(&mut s, "new-tab -t +1")?;
+        run(&mut s, "move-pane -t %3 --to @1")?;
+        run(&mut s, "move-pane -t %1 -R")?;
+        let holding = |s: &Session, pane| {
+            let tabs = s.workspaces.iter().flat_map(|w| w.tabs());
+            tabs.filter(|t| t.holds(pane)).count()
+        };
+        assert_eq!(holding(&s, PaneId::of(1)), 1);
+        run(&mut s, "kill-pane -t %1")?;
+        assert_eq!(holding(&s, PaneId::of(1)), 0);
+        Ok(())
+    }
+
     /// Workspaces are found by name, so no two share one: a name given is
     /// refused if taken, and a name made up skips those taken. Making one
     /// that fails part way uses up none of the IDs it took.
@@ -2259,7 +2272,7 @@ mod tests {
         // To the oldest row, which the next lines of output push out.
         s.input(client, b"g");
         s.output(PaneId::of(1), b"g\r\nh\r\ni\r\nj\r\n");
-        s.settle_if_needed();
+        s.hold_copies();
         let view = s.views.get(&client).ok_or("the view")?;
         assert!(matches!(view.mode, Mode::Normal), "copy mode ended");
         assert!(
@@ -2475,7 +2488,7 @@ mod tests {
             ("choose-pane -t %2", None),
             ("select-tab --next", Some("only one tab")),
             ("select-workspace --next", None),
-            ("paste-buffer", Some("no copied text yet")),
+            ("paste-buffer", Some("no buffer 0")),
             ("terminate", Some("nothing is running in %1 but its shell")),
             ("kill-pane -t %99", Some("no pane %99")),
             ("choose-pane", Some("only one pane")),

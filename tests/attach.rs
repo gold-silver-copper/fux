@@ -333,7 +333,9 @@ fn a_panes_program_inherits_only_stdio_and_a_clean_signal_mask() -> Outcome {
         "{open:?}:\n{}",
         std::fs::read_to_string(&report).unwrap_or_default()
     );
-    client.keys("ps -o sigmask= -p $$ | tr -d ' 0'; echo mask-checked\r")?;
+    // The mask of a program the shell starts, not of the shell itself: bash
+    // blocks SIGCHLD while it waits on a job, as it waits on `ps`.
+    client.keys("sh -c 'exec ps -o sigmask= -p $$' | tr -d ' 0'; echo mask-checked\r")?;
     client.wait("the mask", |t| t.lines().any(|l| l == "mask-checked"))?;
     let lines = client.lines();
     let at = lines.iter().position(|l| l == "mask-checked").unwrap_or(0);
@@ -367,8 +369,11 @@ fn focus_events_reach_a_pane_that_asked_and_cursor_shapes_pass_through() -> Outc
     let server = Server::start("")?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
-    // A pane that did not ask gets nothing.
-    client.keys("cat -v\r")?;
+    // A pane that did not ask gets nothing. The marker shows once the shell
+    // has given the terminal back, so what follows reaches cat, not the
+    // shell's line editor.
+    client.keys("echo cat-runs; cat -v\r")?;
+    client.wait("cat started", |t| t.lines().any(|l| l == "cat-runs"))?;
     client.send(b"\x1b[I")?;
     client.keys("before\r")?;
     client.wait("cat's echo", |t| t.lines().any(|l| l == "before"))?;
@@ -441,6 +446,102 @@ fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
     );
     // kill-server works whatever the version.
     assert_eq!(server.fux(&["kill-server"])?.status, 0);
+    Ok(())
+}
+
+/// A socket in a private directory of its own, where a test plays the
+/// server: the directory, removed when done, and the listener.
+fn fake_server(
+    name: &str,
+) -> Result<(std::path::PathBuf, std::os::unix::net::UnixListener), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = fuxix::file::scratch()
+        .map_err(e)?
+        .join(format!("fux-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(e)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
+    let listener = std::os::unix::net::UnixListener::bind(dir.join("fux.sock")).map_err(e)?;
+    Ok((dir, listener))
+}
+
+/// The client of a server of another protocol is told how to restart it,
+/// even when that server hangs up as soon as it has said so.
+#[test]
+fn a_server_of_another_protocol_is_named_by_the_client() -> Outcome {
+    use fux::protocol::{Frame, Hello, Role, ServerFrame};
+    let (dir, listener) = fake_server("mismatch")?;
+    let server = std::thread::spawn(move || -> Outcome {
+        let (mut stream, _) = listener.accept().map_err(e)?;
+        let hello = ServerFrame::Hello(Hello {
+            protocol: 999,
+            version: "9.9.9",
+            role: Role::Command,
+        });
+        let exit = ServerFrame::Exit("whatever the server says");
+        for frame in [hello, exit] {
+            std::io::Write::write_all(&mut stream, &frame.encode().map_err(e)?).map_err(e)?;
+        }
+        Ok(())
+    });
+    let out = std::process::Command::new(FUX)
+        .arg("ls")
+        .env("FUX_SOCKET", dir.join("fux.sock"))
+        .output()
+        .map_err(e)?;
+    server.join().map_err(|_| "the fake server panicked")??;
+    let _ = std::fs::remove_dir_all(&dir);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("protocol 999 (fux 9.9.9)") && stderr.contains("fux kill-server"),
+        "{stderr}"
+    );
+    Ok(())
+}
+
+/// A client whose server answers its Hello and then nothing more, while
+/// its terminal is raw, is still detached by a signal, and puts its
+/// terminal back.
+#[test]
+fn a_signal_detaches_a_client_waiting_on_a_stalled_server() -> Outcome {
+    use fux::protocol::{Frame, Hello, PROTOCOL, Role, ServerFrame};
+    let (dir, listener) = fake_server("stalled")?;
+    let server = std::thread::spawn(move || -> Result<std::os::unix::net::UnixStream, String> {
+        // `fux attach` first connects only to see that a server answers: the
+        // client's connection is the one that says hello.
+        let mut stream = loop {
+            let (mut stream, _) = listener.accept().map_err(e)?;
+            if std::io::Read::read(&mut stream, &mut [0u8; 64]).map_err(e)? > 0 {
+                break stream;
+            }
+        };
+        let hello = ServerFrame::Hello(Hello {
+            protocol: PROTOCOL,
+            version: "0",
+            role: Role::Attach,
+        });
+        std::io::Write::write_all(&mut stream, &hello.encode().map_err(e)?).map_err(e)?;
+        Ok(stream)
+    });
+    let socket = dir.join("fux.sock");
+    let mut terminal = Terminal::start(10, 40, &[FUX, "attach"], |command| {
+        command.env("FUX_SOCKET", &socket);
+    })?;
+    terminal.wait_for("\x1b[?1049h")?;
+    // Held open, saying no more.
+    let _stalled = server.join().map_err(|_| "the fake server panicked")??;
+    let pid = i32::try_from(terminal.child.id()).map_err(e)?;
+    signal(pid, fuxix::process::Signal::Term);
+    let status = terminal.wait_exit()?;
+    let _ = std::fs::remove_dir_all(&dir);
+    let output = String::from_utf8_lossy(&terminal.output);
+    assert!(status.success(), "{status}: {output:?}");
+    assert!(
+        output.contains("\x1b[?1049l"),
+        "the terminal is put back: {output:?}"
+    );
+    assert!(output.contains("[detached by a signal]"), "{output:?}");
     Ok(())
 }
 

@@ -365,7 +365,7 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
             s.output(pane, output);
         }
     }
-    s.settle_if_needed();
+    s.hold_copies();
     let mut shown = fux::render::Grid::new(0, 0);
     let mut spare = fux::render::Grid::new(0, 0);
     let mut placement = fux::layout::Placement::default();
@@ -389,7 +389,7 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         black_box(&typed);
         let glyph = char::from(key).encode_utf8(&mut echo);
         s.output(pane, glyph.as_bytes());
-        s.settle_if_needed();
+        s.hold_copies();
         buffer.clear();
         buffer.extend_from_slice(&s.before_paint(c));
         if let Some(view) = s.views.get_mut(&c) {
@@ -450,7 +450,7 @@ fn paint(
                         s.output(id, piece);
                     }
                     units = units.saturating_add(piece.len());
-                    s.settle_if_needed();
+                    s.hold_copies();
                     let dirty = s.views.get(&c).is_some_and(|v| v.dirty);
                     if let Some(view) = s.views.get_mut(&c) {
                         view.dirty = false;

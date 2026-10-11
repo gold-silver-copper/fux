@@ -772,7 +772,7 @@ fn put_panes(
 /// A prompt's text with its cursor bar, in at most `room` cells: when it is
 /// wider, the line scrolls so the bar shows, with a few cells of what
 /// follows it, and an ellipsis marks each side cut off.
-fn prompt_line(text: &crate::view::Line, room: u16) -> String {
+fn prompt_line<const MAX: usize>(text: &crate::view::Line<MAX>, room: u16) -> String {
     let line = format!("{}▏{}", text.before(), text.after());
     if width(&line) <= room {
         return line;
@@ -978,13 +978,14 @@ fn bar(
     if let Some(copy) = &copy_bar {
         // Copy mode's keys replace the tabs.
         let badge = style(Color::Idx(0), Color::Idx(11)).with_bold(true);
-        x = grid.text(
-            y,
-            x,
-            &fit(&format!(" {} ", copy.badge), left_limit),
-            badge,
-            left_limit,
-        );
+        let text = match &copy.badge {
+            crate::copy::Badge::Label(label) => fit(&format!(" {label} "), left_limit).into_owned(),
+            crate::copy::Badge::Typing(prompt, line) => {
+                let room = left_limit.saturating_sub(width(prompt).saturating_add(2));
+                format!(" {prompt}{} ", prompt_line(line, room))
+            }
+        };
+        x = grid.text(y, x, &text, badge, left_limit);
         for &(key, label) in &copy.hints {
             let hint = format!("  {key} {label}");
             if x.saturating_add(width(&hint)) > left_limit {
@@ -1707,7 +1708,7 @@ mod tests {
                 if let Some(&id) = panes.get(r.below(panes.len().max(1))) {
                     s.output(id, out);
                 }
-                s.settle_if_needed();
+                s.hold_copies();
                 if !compose_into(&s, c, &mut spare, &mut placement) {
                     continue;
                 }
@@ -1797,7 +1798,7 @@ mod tests {
                         }
                     }
                 }
-                s.settle_if_needed();
+                s.hold_copies();
                 if !compose_into(&s, c, &mut spare, &mut placement) {
                     continue;
                 }
@@ -2065,7 +2066,7 @@ mod tests {
         let text = "split -v -- echo aaaaaaaaaaaaaaaaaaaaTAIL";
         // The line with its cursor `left` chars from the end.
         let line = |text: &str, left: usize| {
-            let mut line = crate::view::Line::new(text.into());
+            let mut line: crate::view::Line = crate::view::Line::new(text.into());
             (0..left).for_each(|_| line.left());
             line
         };

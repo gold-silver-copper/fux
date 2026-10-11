@@ -601,7 +601,8 @@ impl Grid {
     /// Writes the ASCII `run` from column `col` of live row `row`, in style
     /// `style`, as `mutate_row` writes, taking `version` only if a cell
     /// changed; unless a cell there is half of a wide glyph, which the
-    /// general path repairs, when nothing is written and `false` returned.
+    /// general path repairs, when it writes nothing and says how many
+    /// bytes come before the first such cell, which it could write.
     #[inline]
     pub fn write_ascii(
         &mut self,
@@ -610,45 +611,46 @@ impl Grid {
         run: &[u8],
         style: u32,
         version: u64,
-    ) -> bool {
+    ) -> Written {
         let Some(slot) = self.slot(row) else {
-            return false;
+            return Written::Before(0);
         };
         let start = usize::from(col);
         let Some(dst) = start
             .checked_add(run.len())
             .and_then(|end| self.slice_mut(slot).get_mut(start..end))
         else {
-            return false;
+            return Written::Before(0);
         };
         // One glyph, as at a cursor moved to it: the cell alone, without
         // the set-up the loops below take for a run.
         if let ([cell], [byte]) = (&mut *dst, run) {
             if cell.is_wide() || cell.is_wide_continuation() {
-                return false;
+                return Written::Before(0);
             }
             if cell.is_ascii(*byte, style) {
-                return true;
+                return Written::All;
             }
             *cell = Compact::ascii(*byte, style);
             self.changed(slot, start.saturating_add(1), version);
-            return true;
+            return Written::All;
         }
-        // A short run, a word between colours, cell by cell; a long one by the loops that move words,
-        // whose set-up a short one would not repay.
+        // A short run, a word between colours, cell by cell; a long one by
+        // the loops that move words, whose set-up a short one would not
+        // repay.
         let halves = if run.len() < LONG_RUN {
             dst.iter().any(|c| c.is_wide() || c.is_wide_continuation())
         } else {
             Compact::any_halves(dst)
         };
         if halves {
-            return false;
+            return Written::Before(first_half(dst));
         }
         // Already these very cells, as a redraw finds them: the row is as
         // it was. New text differs at the first cell.
         let first = dst.first().zip(run.first());
         if first.is_some_and(|(c, b)| c.is_ascii(*b, style)) && unchanged(dst, run, style) {
-            return true;
+            return Written::All;
         }
         if run.len() < LONG_RUN {
             for (cell, byte) in dst.iter_mut().zip(run) {
@@ -658,7 +660,7 @@ impl Grid {
             Compact::fill_ascii(dst, run, style);
         }
         self.changed(slot, start.saturating_add(run.len()), version);
-        true
+        Written::All
     }
     /// `mutate_row` with the row's text too, for edits that store clusters.
     pub fn mutate_line(
@@ -1373,6 +1375,16 @@ impl Grid {
     }
 
     /// `scroll` within the margins, or down, or without history.
+    ///
+    /// The one place rows move across a region's edges, and so the one
+    /// that keeps soft wraps right there. A wrap belongs to the edge
+    /// between a row and the next, kept on the row above it: the row above
+    /// the region now meets another row, so it loses its wrap; scrolling
+    /// down, so does the region's last row, whose next row left. Scrolling
+    /// up, the last row keeps it, as a line wrapping at the bottom margin
+    /// goes on in the row brought in (`Screen::wrap` marks it before the
+    /// scroll). A row moved inside the region keeps its wrap, as the row
+    /// under it moves with it.
     #[inline]
     fn scroll_region(
         &mut self,
@@ -1386,6 +1398,12 @@ impl Grid {
         let up = direction != Scroll::Down;
         let (top, bottom) = (region.first(), region.last());
         let count = count.min(region.len());
+        if count == 0 {
+            return;
+        }
+        if let Some(above) = top.checked_sub(1) {
+            self.wrap(above, false, version);
+        }
         for _ in 0..count {
             let id = next_id(next);
             let (from, to) = if up { (top, bottom) } else { (bottom, top) };
@@ -1395,9 +1413,9 @@ impl Grid {
                     self.colour(slot, blank);
                 }
             }
-            if !up {
-                self.wrap(bottom, false, version);
-            }
+        }
+        if !up {
+            self.wrap(bottom, false, version);
         }
         // The rows brought in, in the slots of those that left, have none
         // of their links.
@@ -1958,6 +1976,28 @@ fn set_link(
     {
         m.version = version;
     }
+}
+
+/// What `write_ascii` made of a run.
+#[must_use]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Written {
+    /// It wrote all of it.
+    All,
+    /// It wrote none of it, as it meets half of a wide glyph, which the
+    /// general path repairs, after this many bytes: those it would write.
+    Before(usize),
+}
+
+/// How many of `cells` come before the first that is half of a wide
+/// glyph. Out of line: a run seldom meets one.
+#[cold]
+#[inline(never)]
+fn first_half(cells: &[Compact]) -> usize {
+    cells
+        .iter()
+        .position(|c| c.is_wide() || c.is_wide_continuation())
+        .unwrap_or(cells.len())
 }
 
 /// The run of ASCII from which `write_ascii` writes a word a cell.

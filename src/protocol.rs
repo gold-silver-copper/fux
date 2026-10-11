@@ -84,6 +84,41 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// A client and a server of different protocols, which understand each
+/// other's `Hello` and nothing after it but `Kill`: what both sides say of
+/// it, the server's protocol and version.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mismatch {
+    pub protocol: u32,
+    pub version: String,
+}
+
+impl Mismatch {
+    /// Whether a client that said `client` can go on with a server that
+    /// said `server`: either may ask, holding both.
+    pub fn between(client: &Hello, server: &Hello) -> Result<(), Mismatch> {
+        if client.role == Role::Kill || client.protocol == server.protocol {
+            return Ok(());
+        }
+        Err(Mismatch {
+            protocol: server.protocol,
+            version: server.version.to_owned(),
+        })
+    }
+}
+
+impl std::fmt::Display for Mismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the server speaks protocol {} (fux {}); restart it with `fux kill-server`",
+            self.protocol, self.version
+        )
+    }
+}
+
+impl std::error::Error for Mismatch {}
+
 /// What a connecting client is for; its discriminant is its byte in a
 /// `Hello`'s payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,7 +129,8 @@ pub enum Role {
     /// One command, then its output.
     Command = 1,
     /// Stop the server. Accepted whatever the protocol version, so that
-    /// `fux kill-server` can always stop a server from another fux version.
+    /// `fux kill-server` can always stop a server from another fux version:
+    /// for that, a `Hello`'s frame and payload never change.
     Kill = 2,
 }
 

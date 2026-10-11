@@ -8,11 +8,11 @@ use crate::layout::Placement;
 use crate::pane::{Pane, Process};
 use crate::process::Leader;
 use crate::protocol::{
-    Attach, AttachedFrame, Command, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame,
+    Attach, AttachedFrame, Command, Decoder, Frame, Hello, Mismatch, PROTOCOL, Role, ServerFrame,
 };
 use crate::render::{self, Grid};
 use crate::session::{Dying, Origin, Outgoing, Session, Timer};
-use crate::socket::SocketPath;
+use crate::socket::{Endpoint, SocketPath};
 use fuxix::poll::{Events as PollFlags, PollFd};
 use signal_hook::consts::{SIGCHLD, SIGHUP, SIGINT, SIGTERM};
 use std::io::{ErrorKind, Write};
@@ -62,16 +62,27 @@ struct Shortage {
     refused: u64,
 }
 
+/// The socket the server is found by: held only while it serves, so the
+/// moment it stops, its listener closes and the socket is gone, and a
+/// client finds no server rather than one that never answers.
+struct Listening {
+    listener: UnixListener,
+    /// Removes the socket once dropped, after the listener closes.
+    _endpoint: Endpoint,
+}
+
 /// Where the server is in its life, each stage holding the moment it waits
-/// for (`Server::wakes`).
+/// for (`Server::wakes`), and the socket while it has one.
 enum Phase {
-    /// The listener is polled.
-    Serving,
-    /// An `accept` failed in a way that retrying at once would repeat: the
-    /// listener, which stays readable meanwhile, rests until then.
-    Resting(Instant),
-    /// Stopping: no connection is accepted, and the server waits for its
-    /// clients and processes until then.
+    /// The listener is polled, unless an `accept` failed in a way that
+    /// retrying at once would repeat: then the listener, which stays
+    /// readable meanwhile, rests until `resting`.
+    Serving {
+        listening: Listening,
+        resting: Option<Instant>,
+    },
+    /// Stopping, its socket gone: the server waits for its clients and
+    /// processes until then.
     Stopping(Instant),
 }
 
@@ -117,10 +128,21 @@ enum Stage {
     /// It said hello as a command client: its `Command` is next.
     Command,
     /// Its last frame is sent: it closes once what waits is written, and
-    /// what it sends is dropped unread.
+    /// is read no more, so a client that has stopped sending, or shut its
+    /// side, still gets it all.
     Closing,
     /// It failed or hung up: it closes at the end of the tick.
     Dead,
+}
+
+impl Stage {
+    /// Whether what the client sends is read.
+    fn reads(&self) -> bool {
+        match self {
+            Stage::Hello(_) | Stage::Attaching(_) | Stage::Attached(_) | Stage::Command => true,
+            Stage::Closing | Stage::Dead => false,
+        }
+    }
 }
 
 /// An attached client: its view's id, its terminal if the server took it,
@@ -309,8 +331,11 @@ impl Conn {
             return None;
         };
         let dirty = session.views.get(&attached.client)?.dirty;
+        // A screen not known is painted whole, whether or not the view
+        // changed: forgetting it is asking for that paint.
+        let unknown = attached.screen != Screen::Shown;
         let starved = attached.screen == Screen::Starved && self.pending() != 0;
-        (dirty && !starved).then_some(attached.clock.due)
+        ((dirty || unknown) && !starved).then_some(attached.clock.due)
     }
 
     /// Whether `client` is attached here.
@@ -383,7 +408,6 @@ impl Conn {
 
 pub struct Server {
     session: Session,
-    listener: UnixListener,
     phase: Phase,
     conns: Vec<Conn>,
     children: UnixStream,
@@ -409,8 +433,10 @@ pub struct Server {
     accept_logged: Option<Instant>,
 }
 
+/// Writes to the server's log, its stderr. A log that cannot be written,
+/// a full disk, say, loses the line and stops nothing.
 fn log(message: &str) {
-    eprintln!("fux server: {message}");
+    let _ = writeln!(std::io::stderr(), "fux server: {message}");
 }
 
 /// Why a server could not start.
@@ -466,8 +492,13 @@ pub fn serve(socket: &SocketPath, config_path: Option<PathBuf>) -> Result<(), Er
     session.start().map_err(Error::Start)?;
     let mut server = Server {
         session,
-        listener,
-        phase: Phase::Serving,
+        phase: Phase::Serving {
+            listening: Listening {
+                listener,
+                _endpoint: endpoint,
+            },
+            resting: None,
+        },
         conns: Vec::new(),
         children,
         killed: Vec::new(),
@@ -481,7 +512,6 @@ pub fn serve(socket: &SocketPath, config_path: Option<PathBuf>) -> Result<(), Er
         accept_logged: None,
     };
     server.run();
-    drop(endpoint);
     Ok(())
 }
 
@@ -518,7 +548,7 @@ impl Server {
             self.close_conns();
             // Each change settles as it is made; this catches output that
             // dropped rows a copy mode held.
-            self.session.settle_if_needed();
+            self.session.hold_copies();
             self.flush_outbox();
             if matches!(self.phase, Phase::Stopping(_))
                 && self.session.dying.is_empty()
@@ -537,11 +567,11 @@ impl Server {
                 match slot {
                     Slot::Listener => self.accept(),
                     Slot::Children => {
-                        crate::drain(&mut self.children);
+                        crate::drain(&self.children);
                         self.reap();
                     }
                     Slot::Stops => {
-                        crate::drain(&mut self.stops);
+                        crate::drain(&self.stops);
                         self.stop("stopped by a signal".into());
                     }
                     Slot::Conn(i) => self.serve_conn(i, flags, now),
@@ -559,8 +589,7 @@ impl Server {
         let session = (self.session.timers()).map(|(at, timer)| (at, Wake::Session(timer)));
         let grace = (self.session.dying.iter()).map(|(pane, d)| (d.deadline, Wake::Grace(*pane)));
         let phase = match self.phase {
-            Phase::Serving => None,
-            Phase::Resting(at) => Some((at, Wake::Listen)),
+            Phase::Serving { resting, .. } => resting.map(|at| (at, Wake::Listen)),
             Phase::Stopping(by) => Some((by, Wake::Stop)),
         };
         let paints = (self.conns.iter().enumerate())
@@ -577,13 +606,17 @@ impl Server {
                 let dying = self.session.dying.remove(&pane);
                 self.killed.extend(dying.and_then(Dying::kill));
             }
-            Wake::Listen => self.phase = Phase::Serving,
+            Wake::Listen => {
+                if let Phase::Serving { resting, .. } = &mut self.phase {
+                    *resting = None;
+                }
+            }
             Wake::Stop => {
                 self.finish();
                 return ControlFlow::Break(());
             }
             Wake::Paint(index) => {
-                self.session.settle_if_needed();
+                self.session.hold_copies();
                 self.flush_outbox();
                 self.paint(index, now);
             }
@@ -609,8 +642,12 @@ impl Server {
         slots.clear();
         // Built afresh, as it borrows the descriptors.
         let mut fds = Vec::new();
-        if let Phase::Serving = self.phase {
-            fds.push(PollFd::new(&self.listener, PollFlags::IN));
+        if let Phase::Serving {
+            listening,
+            resting: None,
+        } = &self.phase
+        {
+            fds.push(PollFd::new(&listening.listener, PollFlags::IN));
             slots.push(Slot::Listener);
         }
         fds.push(PollFd::new(&self.children, PollFlags::IN));
@@ -618,7 +655,13 @@ impl Server {
         fds.push(PollFd::new(&self.stops, PollFlags::IN));
         slots.push(Slot::Stops);
         for (i, conn) in self.conns.iter().enumerate() {
-            let mut flags = PollFlags::IN;
+            // A connection that is not read is open only while it has
+            // something to write.
+            let mut flags = if conn.stage.reads() {
+                PollFlags::IN
+            } else {
+                PollFlags::OUT
+            };
             if !conn.out.is_empty() {
                 flags |= PollFlags::OUT;
             }
@@ -663,14 +706,20 @@ impl Server {
             return;
         }
         log(&reason);
+        // The socket goes first: from now on a client finds no server.
+        self.phase = Phase::Stopping(crate::after(Instant::now(), STOP_WAIT));
         self.session.shutdown();
+        // Every connection still open ends, so no command runs on what is
+        // left of the session.
+        let exit = format!("the fux server stopped: {reason}");
         for conn in &mut self.conns {
-            if matches!(conn.stage, Stage::Attaching(_) | Stage::Attached(_)) {
-                let exit = format!("the fux server stopped: {reason}");
-                conn.end(&mut self.session, &ServerFrame::Exit(&exit));
+            match conn.stage {
+                Stage::Hello(_) | Stage::Attaching(_) | Stage::Attached(_) | Stage::Command => {
+                    conn.end(&mut self.session, &ServerFrame::Exit(&exit));
+                }
+                Stage::Closing | Stage::Dead => {}
             }
         }
-        self.phase = Phase::Stopping(crate::after(Instant::now(), STOP_WAIT));
     }
 
     fn flush_outbox(&mut self) {
@@ -752,7 +801,10 @@ impl Server {
             // The spare makes room for this accept, and is taken back after
             // it: if it cannot be, the connection took the last descriptor.
             self.spare = None;
-            let accepted = self.listener.accept();
+            let Phase::Serving { listening, .. } = &self.phase else {
+                return;
+            };
+            let accepted = listening.listener.accept();
             let room = match std::fs::File::open("/dev/null") {
                 Ok(spare) => {
                     self.spare = Some(spare);
@@ -810,7 +862,9 @@ impl Server {
                     // else persists. The listener stays readable, so it
                     // rests rather than being polled again at once.
                     let now = Instant::now();
-                    self.phase = Phase::Resting(crate::after(now, ACCEPT_REST));
+                    if let Phase::Serving { resting, .. } = &mut self.phase {
+                        *resting = Some(crate::after(now, ACCEPT_REST));
+                    }
                     if self
                         .accept_logged
                         .is_none_or(|at| now.duration_since(at) >= REPORT_EVERY)
@@ -922,12 +976,15 @@ impl Server {
 
     /// A client's connection is ready, as found at `now`.
     fn serve_conn(&mut self, index: usize, flags: PollFlags, now: Instant) {
-        if flags.contains(PollFlags::OUT)
-            && let Some(conn) = self.conns.get_mut(index)
-        {
+        let Some(conn) = self.conns.get_mut(index) else {
+            return;
+        };
+        let gone = flags.intersects(PollFlags::HUP | PollFlags::ERR);
+        // One that is not read learns that its peer is gone by writing.
+        if flags.contains(PollFlags::OUT) || (gone && !conn.stage.reads()) {
             conn.flush(&mut self.session);
         }
-        if flags.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
+        if flags.contains(PollFlags::IN) || gone {
             self.read_conn(index, now);
         }
     }
@@ -943,7 +1000,8 @@ impl Server {
         let mut decoder = std::mem::take(&mut conn.decoder);
         let (mut frames, mut read) = (0usize, 0usize);
         let closed = 'read: loop {
-            let Some(conn) = self.conns.get_mut(index) else {
+            // A frame it sent may have ended it: it is read no more.
+            let Some(conn) = self.conns.get_mut(index).filter(|c| c.stage.reads()) else {
                 break false;
             };
             // A client may send its terminal with its `Attach`.
@@ -1004,28 +1062,22 @@ impl Server {
                     return Ok(false);
                 };
                 let passed = passed.take();
-                conn.send(
-                    session,
-                    &ServerFrame::Hello(Hello {
-                        protocol: PROTOCOL,
-                        version: env!("CARGO_PKG_VERSION"),
-                        role: hello.role,
-                    }),
-                );
-                match hello.role {
-                    Role::Kill => {
+                let ours = Hello {
+                    protocol: PROTOCOL,
+                    version: env!("CARGO_PKG_VERSION"),
+                    role: hello.role,
+                };
+                conn.send(session, &ServerFrame::Hello(ours));
+                match (Mismatch::between(&hello, &ours), hello.role) {
+                    (Err(mismatch), _) => {
+                        conn.end(session, &ServerFrame::Exit(&mismatch.to_string()));
+                    }
+                    (Ok(()), Role::Kill) => {
                         conn.end(session, &ServerFrame::Done { status: 0 });
                         self.stop("stopped by fux kill-server".into());
                     }
-                    _ if hello.protocol != PROTOCOL => conn.end(
-                        session,
-                        &ServerFrame::Exit(&format!(
-                            "the server speaks protocol {PROTOCOL} (fux {}); restart it with `fux kill-server`",
-                            env!("CARGO_PKG_VERSION")
-                        )),
-                    ),
-                    Role::Attach => conn.enter(session, Stage::Attaching(passed)),
-                    Role::Command => conn.enter(session, Stage::Command),
+                    (Ok(()), Role::Attach) => conn.enter(session, Stage::Attaching(passed)),
+                    (Ok(()), Role::Command) => conn.enter(session, Stage::Command),
                 }
             }
             Stage::Attaching(passed) => {
@@ -1061,7 +1113,7 @@ impl Server {
                 Some(AttachedFrame::Input(bytes)) => attached.input(session, bytes, now),
                 // The client's terminal was resized, which may have moved
                 // what it shows even if the size it ends at is the same:
-                // it is repainted in full either way.
+                // forgotten, it is repainted in full either way.
                 Some(AttachedFrame::Resize { rows, cols }) => {
                     attached.screen.forget();
                     session.resize(attached.client, rows.get(), cols.get());
@@ -1095,9 +1147,9 @@ impl Server {
                     },
                 );
             }
-            // A connection that is ending has had its last word: what it
-            // sends after a Detach, a Command, a refused Hello or a bad
-            // frame is dropped unread.
+            // A connection that is ending has had its last word: what came
+            // with the Detach, Command or refused Hello that ended it is
+            // dropped unread.
             Stage::Closing | Stage::Dead => {
                 *decoder = Decoder::default();
                 return Ok(false);
@@ -1160,7 +1212,7 @@ impl Server {
         if ended {
             self.reap();
             if let Some(pane) = self.session.panes.get_mut(&id) {
-                pane.process.hang_up();
+                pane.process.stop_reading();
             }
         }
     }
@@ -1248,6 +1300,23 @@ mod tests {
             }
         }
         (painted, exit)
+    }
+
+    /// A client whose screen is forgotten, as on a resize that ends at the
+    /// same size, is due a full paint though nothing it views changed.
+    #[test]
+    fn a_forgotten_screen_is_due_a_paint() -> Result<(), String> {
+        let (mut session, mut conn, _peer, _far) = with_terminal()?;
+        session.views.values_mut().for_each(|v| v.dirty = false);
+        if let Some(attached) = conn.attached() {
+            attached.screen = Screen::Shown;
+        }
+        assert_eq!(conn.paint_due(&session), None, "nothing to paint");
+        if let Some(attached) = conn.attached() {
+            attached.screen.forget();
+        }
+        assert!(conn.paint_due(&session).is_some());
+        Ok(())
     }
 
     /// A terminal given back that takes no more at once (a slow link) has

@@ -360,7 +360,9 @@ impl Process {
         (group != child.leader.pid()).then_some(group)
     }
 
-    pub fn hang_up(&mut self) {
+    /// The program's terminal hung up: it is read no more, and waits to be
+    /// reaped.
+    pub fn stop_reading(&mut self) {
         *self = match std::mem::replace(self, Process::Absent) {
             Process::Reading(child) | Process::HungUp(child) => Process::HungUp(child),
             Process::Absent => Process::Absent,

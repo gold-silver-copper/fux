@@ -378,20 +378,42 @@ pub enum Side {
     After,
 }
 
-/// Adds `new` beside `target`, on `side` of it, along `axis`. A split
-/// already along `axis` takes it as a sibling sharing the target's weight;
-/// otherwise the target becomes a new split of the two. An empty tree becomes
-/// the new pane alone. False if `target` is not in the tree.
-pub fn split(root: &mut Option<Tree>, target: PaneId, new: PaneId, axis: Axis, side: Side) -> bool {
-    match root {
-        None => *root = Some(Tree::Pane(new)),
-        Some(Tree::Pane(p)) if *p == target => {
-            *root = Some(Tree::Split(axis, Split::pair(target, new, side)));
+impl Tree {
+    /// Adds `new` beside `target`, on `side` of it, along `axis`. A split
+    /// already along `axis` takes it as a sibling sharing the target's
+    /// weight; otherwise the target becomes a new split of the two. False if
+    /// `target` is not in the tree.
+    pub fn split(&mut self, target: PaneId, new: PaneId, axis: Axis, side: Side) -> bool {
+        match self {
+            Tree::Pane(p) if *p == target => {
+                *self = Tree::Split(axis, Split::pair(target, new, side));
+                true
+            }
+            Tree::Pane(_) => false,
+            Tree::Split(own, split) => split.insert(*own, target, new, axis, side),
         }
-        Some(Tree::Pane(_)) => return false,
-        Some(Tree::Split(own, split)) => return split.insert(*own, target, new, axis, side),
     }
-    true
+}
+
+/// Moves `pane` beside `target`, as `Tree::split` puts a new one, in a
+/// tree holding both. False, the tree as it was, otherwise.
+pub fn move_beside(
+    root: &mut Option<Tree>,
+    pane: PaneId,
+    target: PaneId,
+    axis: Axis,
+    side: Side,
+) -> bool {
+    let both = root
+        .as_ref()
+        .is_some_and(|r| r.contains(pane) && r.contains(target));
+    if !both || pane == target {
+        return false;
+    }
+    // `target` is left, so the tree is too.
+    remove(root, pane);
+    root.as_mut()
+        .is_some_and(|r| r.split(target, pane, axis, side))
 }
 
 /// Removes a pane. A split left with one child becomes that child, merging
@@ -768,16 +790,16 @@ mod tests {
         Rect::screen(h, w)
     }
     /// `0 | 1`.
-    fn tree() -> Option<Tree> {
-        let mut root = Some(Tree::Pane(p(0)));
-        split(&mut root, p(0), p(1), Axis::Horizontal, Side::After);
+    fn tree() -> Tree {
+        let mut root = Tree::Pane(p(0));
+        root.split(p(0), p(1), Axis::Horizontal, Side::After);
         root
     }
 
     #[test]
     fn splitting_shares_the_space_with_one_separator() {
         let root = tree();
-        let Some(node) = &root else { return };
+        let node = &root;
         let placed = place(node, area(80, 24));
         assert_eq!(
             placed.panes,
@@ -816,8 +838,8 @@ mod tests {
         );
         // A second split of the right pane shares its weight: 1000:500:500.
         let mut root = tree();
-        assert!(split(&mut root, p(1), p(2), Axis::Horizontal, Side::After));
-        let Some(node) = &root else { return };
+        assert!(root.split(p(1), p(2), Axis::Horizontal, Side::After));
+        let node = &root;
         let widths: Vec<u16> = place(node, area(80, 24))
             .panes
             .iter()
@@ -829,10 +851,10 @@ mod tests {
     #[test]
     fn nested_splits_place_every_pane_without_overlap() {
         let mut root = tree();
-        split(&mut root, p(1), p(2), Axis::Horizontal, Side::After);
-        split(&mut root, p(2), p(3), Axis::Vertical, Side::After);
-        split(&mut root, p(1), p(4), Axis::Vertical, Side::Before);
-        let Some(node) = &root else { return };
+        root.split(p(1), p(2), Axis::Horizontal, Side::After);
+        root.split(p(2), p(3), Axis::Vertical, Side::After);
+        root.split(p(1), p(4), Axis::Vertical, Side::Before);
+        let node = &root;
         assert_eq!(node.panes(), vec![p(0), p(4), p(1), p(2), p(3)]);
         let placed = place(node, area(81, 25));
         assert_eq!(placed.panes.len(), 5);
@@ -855,9 +877,9 @@ mod tests {
     #[test]
     fn placing_into_a_used_placement_is_placing_afresh() {
         let mut root = tree();
-        split(&mut root, p(0), p(1), Axis::Horizontal, Side::After);
-        split(&mut root, p(1), p(2), Axis::Vertical, Side::After);
-        let Some(node) = &root else { return };
+        root.split(p(0), p(1), Axis::Horizontal, Side::After);
+        root.split(p(1), p(2), Axis::Vertical, Side::After);
+        let node = &root;
         let mut used = place(node, area(120, 40));
         for (w, h) in [(80, 24), (3, 3), (0, 9), (200, 60)] {
             place_into(node, area(w, h), &mut used);
@@ -872,9 +894,9 @@ mod tests {
     fn a_small_area_keeps_minimums_and_hides_what_does_not_fit() {
         let mut root = tree();
         for n in 2..10 {
-            split(&mut root, p(n - 1), p(n), Axis::Horizontal, Side::After);
+            root.split(p(n - 1), p(n), Axis::Horizontal, Side::After);
         }
-        let Some(node) = &root else { return };
+        let node = &root;
         let placed = place(node, area(10, 3));
         assert!(placed.panes.iter().all(|(_, r)| r.w >= MIN && r.h >= MIN));
         let used: usize = placed
@@ -890,9 +912,10 @@ mod tests {
 
     #[test]
     fn removal_collapses_and_merges() {
-        let mut root = tree();
-        split(&mut root, p(1), p(2), Axis::Vertical, Side::After);
-        split(&mut root, p(2), p(3), Axis::Horizontal, Side::After);
+        let mut tree = tree();
+        tree.split(p(1), p(2), Axis::Vertical, Side::After);
+        tree.split(p(2), p(3), Axis::Horizontal, Side::After);
+        let mut root = Some(tree);
         assert!(remove(&mut root, p(1)));
         // (0 | (1 / (2 | 3))) minus 1 is (0 | 2 | 3), merged along one axis.
         assert!(matches!(&root, Some(Tree::Split(Axis::Horizontal, Split(c))) if c.len() == 3));
@@ -902,17 +925,61 @@ mod tests {
         assert!(remove(&mut root, p(0)));
         assert_eq!(root, None);
         assert!(!remove(&mut root, p(0)));
+    }
+
+    /// A pane moves only within a tree holding both it and its target;
+    /// otherwise nothing changes, and an empty tree takes nothing.
+    #[test]
+    fn moving_beside_needs_both_panes_in_the_tree() {
+        let mut root = Some(tree());
+        assert!(move_beside(
+            &mut root,
+            p(0),
+            p(1),
+            Axis::Vertical,
+            Side::After
+        ));
+        assert_eq!(root.as_ref().map(Tree::panes), Some(vec![p(1), p(0)]));
+        let before = root.clone();
+        assert!(!move_beside(
+            &mut root,
+            p(0),
+            p(9),
+            Axis::Vertical,
+            Side::After
+        ));
+        assert!(!move_beside(
+            &mut root,
+            p(9),
+            p(0),
+            Axis::Vertical,
+            Side::After
+        ));
+        assert!(!move_beside(
+            &mut root,
+            p(0),
+            p(0),
+            Axis::Vertical,
+            Side::After
+        ));
+        assert_eq!(root, before);
         let mut empty = None;
-        assert!(split(&mut empty, p(9), p(5), Axis::Vertical, Side::After));
-        assert_eq!(empty, Some(Tree::Pane(p(5))));
+        assert!(!move_beside(
+            &mut empty,
+            p(0),
+            p(1),
+            Axis::Vertical,
+            Side::After
+        ));
+        assert_eq!(empty, None);
     }
 
     #[test]
     fn directional_neighbours_prefer_alignment_then_distance_then_id() {
         // 0 | (1 / 2)
         let mut root = tree();
-        split(&mut root, p(1), p(2), Axis::Vertical, Side::After);
-        let Some(node) = &root else { return };
+        root.split(p(1), p(2), Axis::Vertical, Side::After);
+        let node = &root;
         let placed = place(node, area(80, 24));
         assert_eq!(neighbor(&placed, p(0), Direction::Right), Some(p(1)));
         assert_eq!(neighbor(&placed, p(2), Direction::Left), Some(p(0)));
@@ -925,7 +992,7 @@ mod tests {
     #[test]
     fn resizing_moves_the_nearest_border_and_respects_minimums() {
         let mut root = tree();
-        let Some(node) = &mut root else { return };
+        let node = &mut root;
         let a = area(81, 24);
         assert!(resize(node, a, p(0), Direction::Right, 10));
         let placed = place(node, a);
@@ -948,9 +1015,9 @@ mod tests {
     #[test]
     fn resizing_in_nested_splits_moves_the_border_on_that_side() {
         let mut root = tree();
-        split(&mut root, p(1), p(2), Axis::Vertical, Side::After);
-        split(&mut root, p(2), p(3), Axis::Horizontal, Side::After);
-        let Some(node) = &mut root else { return };
+        root.split(p(1), p(2), Axis::Vertical, Side::After);
+        root.split(p(2), p(3), Axis::Horizontal, Side::After);
+        let node = &mut root;
         let a = area(81, 24);
         let before = place(node, a);
         let width = |placed: &Placement, n| placed.rect(p(n)).map(|r| r.w);
@@ -974,7 +1041,7 @@ mod tests {
     #[test]
     fn swapping_exchanges_places() {
         let mut root = tree();
-        let Some(node) = &mut root else { return };
+        let node = &mut root;
         swap(node, p(0), p(1));
         assert_eq!(node.panes(), vec![p(1), p(0)]);
     }

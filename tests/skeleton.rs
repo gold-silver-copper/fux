@@ -18,20 +18,22 @@ fn a_server_answers_ls_and_stops_on_kill_server() -> Outcome {
     assert!(json.contains("\"clients\":[]"), "{json}");
     let killed = server.fux(&["kill-server"])?;
     assert_eq!(killed.status, 0, "{}", killed.stderr);
-    assert!(server.wait_exit()?.success());
-    assert!(!server.socket.exists(), "the socket is removed");
-    assert!(
-        server.log().contains("stopped by fux kill-server"),
-        "{}",
-        server.log()
-    );
-    // No server: a command says so, and fails.
+    // The socket goes as the server starts stopping, before its panes'
+    // programs have ended: a command right after finds no server, and
+    // says so.
+    assert!(!server.socket.exists(), "the socket is removed at once");
     let out = server.fux(&["ls"])?;
     assert_eq!(out.status, 1);
     assert!(
         out.stderr.contains("no fux server is running"),
         "{}",
         out.stderr
+    );
+    assert!(server.wait_exit()?.success());
+    assert!(
+        server.log().contains("stopped by fux kill-server"),
+        "{}",
+        server.log()
     );
     Ok(())
 }
@@ -128,4 +130,47 @@ fn a_pane_is_told_it_runs_in_fux() -> Outcome {
             .lines()
             .any(|l| l == expected))
     })
+}
+
+/// A client that sends its command and then shuts its side of the socket,
+/// as a script piping one in does, still gets the output and the status.
+#[test]
+fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
+    use fux::protocol::{Command, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame};
+    use std::io::{Read, Write};
+    let server = Server::start("")?;
+    let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
+    let hello = Hello {
+        protocol: PROTOCOL,
+        version: "0",
+        role: Role::Command,
+    };
+    let command = Command {
+        argv: vec!["ls".into()],
+        cwd: String::new(),
+        pane: None,
+    };
+    stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
+    stream.write_all(&command.encode().map_err(e)?).map_err(e)?;
+    stream.shutdown(std::net::Shutdown::Write).map_err(e)?;
+    stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
+    let mut answer = Vec::new();
+    stream.read_to_end(&mut answer).map_err(e)?;
+    let mut decoder = Decoder::default();
+    decoder.push(&answer);
+    let (mut stdout, mut status) = (String::new(), None);
+    while let Some(frame) = decoder.frame::<ServerFrame>().map_err(e)? {
+        match frame {
+            ServerFrame::Stdout(bytes) => stdout.push_str(&String::from_utf8_lossy(bytes)),
+            ServerFrame::Done { status: s } => status = Some(s),
+            ServerFrame::Hello(_)
+            | ServerFrame::Paint(_)
+            | ServerFrame::Exit(_)
+            | ServerFrame::Stderr(_)
+            | ServerFrame::Terminal { .. } => {}
+        }
+    }
+    assert_eq!(status, Some(0), "{stdout}");
+    assert!(stdout.contains("+1 main"), "{stdout}");
+    Ok(())
 }

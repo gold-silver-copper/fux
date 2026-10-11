@@ -22,7 +22,7 @@ This document is the contract: what each sequence does, the options, the
 limits, and the departures from the references. The references are
 ECMA-48, DEC STD 070, the VT520 manual, xterm's ctlseqs, Unicode 17 and the
 specs of modern extensions
-([`references/README.md`](https://github.com/gold-silver-copper/fux/blob/main/references/README.md)).
+([`references/README.md`](https://github.com/gold-silver-copper/fux/blob/master/references/README.md)).
 Where they are silent, or xterm departs from them, fux-vt does what xterm
 does, since fux sets `TERM=xterm-256color`.
 
@@ -309,16 +309,16 @@ their places. A stale mark forces a refresh; it never hides an update.
   from the references or xterm, never from fux-vt, and each test cites its
   source.
 - **Fuzzing**: three targets in
-  [`fuzz/`](https://github.com/gold-silver-copper/fux/blob/main/fux-vt/fuzz/README.md),
+  [`fuzz/`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/fuzz/README.md),
   their corpora replayed nightly in CI.
 - **Other terminals**:
-  [`compare/`](https://github.com/gold-silver-copper/fux/blob/main/fux-vt/compare/README.md)
+  [`compare/`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/compare/README.md)
   runs fux-vt beside Ghostty, alacritty, libvterm, avt, wezterm, vt100,
   xterm.js, tmux and xterm on random cases, recordings of real programs and
   esctest, failing where they outvote it; families that follow a recorded
   choice, these departures among them, are checked against xterm
   (`run.sh verdicts`). Results:
-  [`SCOREBOARD.md`](https://github.com/gold-silver-copper/fux/blob/main/fux-vt/compare/scoreboard/SCOREBOARD.md).
+  [`SCOREBOARD.md`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/compare/scoreboard/SCOREBOARD.md).
 
 ## Departures from the references
 

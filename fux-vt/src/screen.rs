@@ -6,7 +6,7 @@ use crate::{
     Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Mark, Options, Reply, Rgb, Row,
     RowId, Rows, UnderlineStyle, Window,
     geometry::{Size, Span},
-    grid::{Cursor, Grid, Scroll},
+    grid::{Cursor, Grid, Scroll, Written},
     parser::Parameters,
 };
 use std::collections::VecDeque;
@@ -205,16 +205,17 @@ impl TabStops {
         }
         last
     }
-    /// The last stop before `col`, or the first column.
-    fn previous(&self, col: u16) -> u16 {
+    /// The last stop before `col` from `first` on, or `first`, the first
+    /// column the cursor may go back to.
+    fn previous(&self, col: u16, first: u16) -> u16 {
         let mut at = col;
-        while at > 0 {
+        while at > first {
             at = at.saturating_sub(1);
             if self.is_stop(at) {
                 return at;
             }
         }
-        0
+        first
     }
 }
 
@@ -1389,18 +1390,27 @@ impl Screen {
             };
             // A run too long for a u16 still stops at the margin.
             let count = u16::try_from(bytes.len()).map_or(room, |n| n.min(room));
-            let Some(end) = col.checked_add(count) else {
-                return Ok(());
-            };
             let style = self.pen_style() | self.protect;
-            let run = bytes.get(..usize::from(count)).unwrap_or_default();
-            // Written whole unless the run meets half of a wide glyph,
-            // which the general path repairs.
-            if !self.with_grid(|g, _, v| g.write_ascii(row, col, run, style, v)) {
+            let mut run = bytes.get(..usize::from(count)).unwrap_or_default();
+            // A run that meets half of a wide glyph, which the general path
+            // repairs, is written up to it, and the glyph there printed.
+            let written = loop {
+                match self.with_grid(|g, _, v| g.write_ascii(row, col, run, style, v)) {
+                    Written::All => break true,
+                    Written::Before(n) => match run.get(..n) {
+                        Some(before) if !before.is_empty() && n < run.len() => run = before,
+                        Some(_) | None => break false,
+                    },
+                }
+            };
+            let end = u16::try_from(run.len())
+                .ok()
+                .and_then(|n| col.checked_add(n));
+            let Some(end) = end.filter(|_| written) else {
                 self.print(char::from(first))?;
                 bytes = tail;
                 continue;
-            }
+            };
             self.grid_mut().advance_within(end, line);
             // The cells' links, after the cells: before, the call would make
             // the write above load again what it had in hand.
@@ -1416,7 +1426,7 @@ impl Screen {
             if let Some(&last) = run.last() {
                 self.repeat = Some(char::from(last));
             }
-            bytes = bytes.get(usize::from(count)..).unwrap_or_default();
+            bytes = bytes.get(run.len()..).unwrap_or_default();
         }
         Ok(())
     }
@@ -1462,16 +1472,24 @@ impl Screen {
     /// scrolling region: see the README's departures); back, in origin
     /// mode, at the left margin (`TabToPrevStop`). Without margins the
     /// right margin is the last column.
+    ///
+    /// Each stop is found from the last, never past the column it stops
+    /// at, and once the cursor stops moving the rest of the count is
+    /// spent: the work is the line's width at most, whatever the count.
     fn tab(&mut self, count: u16, forward: bool) {
         let g = self.grid();
         let (mut col, last) = (g.cursor.col(), g.columns().last());
         let first = g.addressed().1.first();
         for _ in 0..count {
-            col = if forward {
+            let to = if forward {
                 self.tabs.next(col, last)
             } else {
-                self.tabs.previous(col).max(first)
+                self.tabs.previous(col, first)
             };
+            if to == col {
+                break;
+            }
+            col = to;
         }
         self.grid_mut().set_col(col);
     }
@@ -1944,12 +1962,7 @@ impl Screen {
                 None if mode.savable() => self.saved_modes.contains(mode),
                 None => continue,
             };
-            // A mode that is a bit and no more is set here, without a call.
-            if mode.kind() == Kind::Flag {
-                self.modes.set(mode, on);
-            } else {
-                report |= self.set_mode(mode, on)?;
-            }
+            report |= self.set_mode(mode, on)?;
         }
         Ok(match (handled, report) {
             (_, true) => Dispatch::Reply(self.size_report()),

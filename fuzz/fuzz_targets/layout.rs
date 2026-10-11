@@ -28,12 +28,12 @@ impl Bytes<'_> {
     }
     /// A tree of up to 16 panes, grown from one by splits, each two
     /// bytes: the pane to split, then the axis and side.
-    fn tree(&mut self) -> Option<Tree> {
-        let mut root = Some(Tree::Pane(pane(1)));
+    fn tree(&mut self) -> Tree {
+        let mut root = Tree::Pane(pane(1));
         let count = self.next() % 16;
         for new in 2..=u32::from(count) + 1 {
             let (which, how) = (self.next(), self.next());
-            let panes = root.as_ref().map(Tree::panes).unwrap_or_default();
+            let panes = root.panes();
             let target = panes[usize::from(which) % panes.len()];
             let axis = if how & 1 == 0 {
                 Axis::Horizontal
@@ -45,7 +45,7 @@ impl Bytes<'_> {
             } else {
                 Side::Before
             };
-            layout::split(&mut root, target, pane(new), axis, side);
+            root.split(target, pane(new), axis, side);
         }
         root
     }
@@ -134,9 +134,7 @@ fuzz_target!(|data: &[u8]| {
         .1
         .split(Axis::Horizontal, x)
         .1;
-    let Some(mut root) = bytes.tree() else {
-        return;
-    };
+    let mut root = bytes.tree();
     let placement = layout::place(&root, area);
     check(&root, area, &placement);
     let ids = root.panes();
