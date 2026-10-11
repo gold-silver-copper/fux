@@ -2,7 +2,7 @@
 //! watches it (or relays between them, if the server does not take it),
 //! and the one-shot command client every other `fux` command uses.
 use crate::protocol::{
-    Attach, AttachedFrame, Command, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame,
+    Attach, AttachedFrame, Command, Decoder, Frame, Hello, Mismatch, PROTOCOL, Role, ServerFrame,
 };
 use crate::socket::SocketPath;
 use fuxix::poll::{Events as PollFlags, PollFd};
@@ -44,6 +44,8 @@ pub enum Error {
     },
     /// The server ended the connection, saying why.
     Refused(String),
+    /// The server speaks another protocol.
+    Mismatch(crate::protocol::Mismatch),
     /// The server closed the connection before it answered.
     NoAnswer,
     Timeout,
@@ -82,6 +84,7 @@ impl std::fmt::Display for Error {
                 write!(f, "connecting to {}: {source}", path.display())
             }
             Error::Refused(reason) => f.write_str(reason),
+            Error::Mismatch(mismatch) => mismatch.fmt(f),
             Error::NoAnswer => f.write_str("the server did not answer"),
             Error::Timeout => f.write_str("the server did not answer in time"),
             Error::Closed => f.write_str("the server closed the connection"),
@@ -115,6 +118,7 @@ impl std::error::Error for Error {
         match self {
             Error::Socket(error) => Some(error),
             Error::Protocol(error) => Some(error),
+            Error::Mismatch(mismatch) => Some(mismatch),
             Error::Connect { source: error, .. }
             | Error::Write(error)
             | Error::Read(error)
@@ -168,14 +172,12 @@ fn connect(socket: &SocketPath, role: Role) -> Result<(UnixStream, Decoder), Err
         path: socket.path().to_owned(),
         source,
     })?;
-    let sent = send(
-        &mut stream,
-        &Hello {
-            protocol: PROTOCOL,
-            version: env!("CARGO_PKG_VERSION"),
-            role,
-        },
-    );
+    let ours = Hello {
+        protocol: PROTOCOL,
+        version: env!("CARGO_PKG_VERSION"),
+        role,
+    };
+    let sent = send(&mut stream, &ours);
     let mut decoder = Decoder::default();
     let mut buffer = vec![0u8; 64 * 1024];
     // A server that refuses a connection says why and closes it, maybe
@@ -186,21 +188,25 @@ fn connect(socket: &SocketPath, role: Role) -> Result<(UnixStream, Decoder), Err
         &mut buffer,
         Some(Duration::from_secs(5)),
     );
-    greeted(answer, sent)?;
-    // A mismatched server answers Hello and then says why it refuses.
+    greeted(&ours, answer, sent)?;
     Ok((stream, decoder))
 }
 
-/// Whether the server's answer to Hello, and sending it, let the client go
-/// on: a refusal, which a server may make before reading the Hello, wins.
+/// Whether the server's answer to our Hello, `ours`, and sending it, let
+/// the client go on: a refusal, which a server may make before reading the
+/// Hello, wins, and a server of another protocol is refused here, before
+/// anything it would not understand is sent.
 fn greeted(
+    ours: &Hello,
     answer: Result<Option<ServerFrame>, Error>,
     sent: Result<(), Error>,
 ) -> Result<(), Error> {
     match (answer, sent) {
         (Ok(Some(ServerFrame::Exit(reason))), _) => Err(Error::Refused(reason.to_owned())),
         (_, Err(error)) => Err(error),
-        (Ok(Some(ServerFrame::Hello(_))), Ok(())) => Ok(()),
+        (Ok(Some(ServerFrame::Hello(theirs))), Ok(())) => {
+            Mismatch::between(ours, &theirs).map_err(Error::Mismatch)
+        }
         (Err(error), Ok(())) => Err(error),
         (Ok(_), Ok(())) => Err(Error::NoAnswer),
     }
@@ -580,8 +586,14 @@ mod tests {
         let mut decoder = Decoder::default();
         let mut buffer = [0u8; 256];
         let answer = read_frame(&mut client, &mut decoder, &mut buffer, Some(wait));
-        greeted(answer, Ok(()))
+        greeted(&OURS, answer, Ok(()))
     }
+
+    const OURS: Hello = Hello {
+        protocol: PROTOCOL,
+        version: "0",
+        role: Role::Command,
+    };
 
     fn write(peer: &mut UnixStream, frame: &ServerFrame) {
         let _ = frame.encode().map(|bytes| peer.write_all(&bytes));
@@ -592,12 +604,15 @@ mod tests {
     #[test]
     fn the_client_tells_a_refusal_from_a_timeout() {
         let wait = Duration::from_millis(50);
-        let hello = ServerFrame::Hello(Hello {
-            protocol: PROTOCOL,
-            version: "0",
-            role: Role::Command,
+        assert!(answer(|peer| write(peer, &ServerFrame::Hello(OURS)), wait).is_ok());
+        // A server of another protocol is refused before anything else is
+        // sent to it.
+        let other = ServerFrame::Hello(Hello {
+            protocol: PROTOCOL + 1,
+            ..OURS
         });
-        assert!(answer(|peer| write(peer, &hello), wait).is_ok());
+        let mismatched = answer(|peer| write(peer, &other), wait);
+        assert!(matches!(&mismatched, Err(Error::Mismatch(m)) if m.protocol == PROTOCOL + 1));
         let refused = answer(|peer| write(peer, &ServerFrame::Exit("busy")), wait);
         assert!(matches!(&refused, Err(Error::Refused(reason)) if reason == "busy"));
         let silent = answer(|_| {}, wait);
@@ -614,7 +629,7 @@ mod tests {
             Err(Error::Protocol(crate::protocol::Error::UnexpectedKind(99)))
         ));
         // A refusal wins over a failure to send the Hello.
-        let both = greeted(Ok(Some(ServerFrame::Exit("no"))), Err(Error::Closed));
+        let both = greeted(&OURS, Ok(Some(ServerFrame::Exit("no"))), Err(Error::Closed));
         assert!(matches!(both, Err(Error::Refused(_))));
     }
 }

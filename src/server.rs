@@ -8,7 +8,7 @@ use crate::layout::Placement;
 use crate::pane::{Pane, Process};
 use crate::process::Leader;
 use crate::protocol::{
-    Attach, AttachedFrame, Command, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame,
+    Attach, AttachedFrame, Command, Decoder, Frame, Hello, Mismatch, PROTOCOL, Role, ServerFrame,
 };
 use crate::render::{self, Grid};
 use crate::session::{Dying, Origin, Outgoing, Session, Timer};
@@ -1038,28 +1038,22 @@ impl Server {
                     return Ok(false);
                 };
                 let passed = passed.take();
-                conn.send(
-                    session,
-                    &ServerFrame::Hello(Hello {
-                        protocol: PROTOCOL,
-                        version: env!("CARGO_PKG_VERSION"),
-                        role: hello.role,
-                    }),
-                );
-                match hello.role {
-                    Role::Kill => {
+                let ours = Hello {
+                    protocol: PROTOCOL,
+                    version: env!("CARGO_PKG_VERSION"),
+                    role: hello.role,
+                };
+                conn.send(session, &ServerFrame::Hello(ours));
+                match (Mismatch::between(&hello, &ours), hello.role) {
+                    (Err(mismatch), _) => {
+                        conn.end(session, &ServerFrame::Exit(&mismatch.to_string()));
+                    }
+                    (Ok(()), Role::Kill) => {
                         conn.end(session, &ServerFrame::Done { status: 0 });
                         self.stop("stopped by fux kill-server".into());
                     }
-                    _ if hello.protocol != PROTOCOL => conn.end(
-                        session,
-                        &ServerFrame::Exit(&format!(
-                            "the server speaks protocol {PROTOCOL} (fux {}); restart it with `fux kill-server`",
-                            env!("CARGO_PKG_VERSION")
-                        )),
-                    ),
-                    Role::Attach => conn.enter(session, Stage::Attaching(passed)),
-                    Role::Command => conn.enter(session, Stage::Command),
+                    (Ok(()), Role::Attach) => conn.enter(session, Stage::Attaching(passed)),
+                    (Ok(()), Role::Command) => conn.enter(session, Stage::Command),
                 }
             }
             Stage::Attaching(passed) => {

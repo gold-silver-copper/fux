@@ -444,6 +444,49 @@ fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
     Ok(())
 }
 
+/// The client of a server of another protocol is told how to restart it,
+/// even when that server hangs up as soon as it has said so.
+#[test]
+fn a_server_of_another_protocol_is_named_by_the_client() -> Outcome {
+    use fux::protocol::{Frame, Hello, Role, ServerFrame};
+    use std::os::unix::fs::PermissionsExt;
+    let dir = fuxix::file::scratch()
+        .map_err(e)?
+        .join(format!("fux-mismatch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(e)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
+    let socket = dir.join("fux.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).map_err(e)?;
+    let server = std::thread::spawn(move || -> Outcome {
+        let (mut stream, _) = listener.accept().map_err(e)?;
+        let hello = ServerFrame::Hello(Hello {
+            protocol: 999,
+            version: "9.9.9",
+            role: Role::Command,
+        });
+        let exit = ServerFrame::Exit("whatever the server says");
+        for frame in [hello, exit] {
+            std::io::Write::write_all(&mut stream, &frame.encode().map_err(e)?).map_err(e)?;
+        }
+        Ok(())
+    });
+    let out = std::process::Command::new(FUX)
+        .arg("ls")
+        .env("FUX_SOCKET", &socket)
+        .output()
+        .map_err(e)?;
+    server.join().map_err(|_| "the fake server panicked")??;
+    let _ = std::fs::remove_dir_all(&dir);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("protocol 999 (fux 9.9.9)") && stderr.contains("fux kill-server"),
+        "{stderr}"
+    );
+    Ok(())
+}
+
 /// A pane's program ignores no signal fux ignores: the Rust runtime ignores
 /// SIGPIPE and signal-hook catches others, and neither reaches the program.
 /// Dispositions fux itself inherited ignored (a container's, say) pass on,
