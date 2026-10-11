@@ -1191,6 +1191,18 @@ impl Session {
     /// A pane's program exited with `status`: a shell's pane closes, and a
     /// program's stays, the status kept, for its last screen to be read.
     pub fn exited(&mut self, id: PaneId, status: i32) {
+        // What a program wrote as it exited may still be on its terminal,
+        // unread: its last screen is read whole before it is kept.
+        if self.panes.get(&id).is_some_and(|p| p.runs == Runs::Program) {
+            let left = self
+                .panes
+                .get(&id)
+                .map(|p| unread(&p.process))
+                .unwrap_or_default();
+            if !left.is_empty() {
+                self.output(id, &left);
+            }
+        }
         let Some(pane) = self.panes.get_mut(&id) else {
             return;
         };
@@ -1256,11 +1268,13 @@ impl Session {
         let place = self.locate(id);
         let colours = self.colours_for(place.map(|(_, t)| t));
         let palette = self.palette_for(place.map(|(_, t)| t));
+        let graphics = self.graphics_for(place.map(|(_, t)| t));
         let Some(pane) = self.panes.get_mut(&id) else {
             return;
         };
         pane.colours = colours;
         pane.set_host_palette(palette);
+        pane.parser.set_host_graphics(graphics);
         read(pane);
         pane.note_change(Instant::now());
         let dropped = pane.input.lost_reply();
@@ -1777,9 +1791,39 @@ impl Session {
                 Ok(String::new())
             }
             &Command::SendKeys {
+                client: Some(client),
+                ref inputs,
+                repeat,
+                ..
+            } => {
+                if !self.views.contains_key(&client) {
+                    return Err(Error::NoClient(client));
+                }
+                // As the client's terminal would have them decoded.
+                let mut typed = Vec::new();
+                for input in std::iter::repeat_n(inputs, usize::from(repeat)).flatten() {
+                    match input {
+                        Input::Key(key) => {
+                            typed.push(fux_vt::keys::decode::Input::Key((*key).into()))
+                        }
+                        Input::Text(text) => {
+                            typed.extend(text.chars().map(|c| {
+                                fux_vt::keys::decode::Input::Key(KeyPress::char(c).into())
+                            }))
+                        }
+                        Input::Paste(text) => {
+                            typed.push(fux_vt::keys::decode::Input::Paste(text.clone()))
+                        }
+                    }
+                }
+                self.dispatch(client, typed);
+                Ok(String::new())
+            }
+            &Command::SendKeys {
                 target,
                 ref inputs,
                 repeat,
+                client: None,
                 ..
             } => {
                 let p = self.live_pane_mut(target, here)?;
@@ -2339,6 +2383,23 @@ pub fn describe(target: AnyRef<WsId>) -> String {
     }
 }
 
+/// What a program's terminal holds, unread, up to a mebibyte: read as it
+/// exits, so that its last screen is whole.
+fn unread(process: &Process) -> Vec<u8> {
+    let mut left = Vec::new();
+    if let Process::Reading(child) = process {
+        let mut buffer = [0u8; 16384];
+        while left.len() < 1 << 20 {
+            match fuxix::io::read(&child.master, &mut buffer) {
+                Ok(n) if n > 0 => left.extend_from_slice(buffer.get(..n).unwrap_or_default()),
+                Err(fuxix::Errno::INTR) => {}
+                Ok(_) | Err(_) => break,
+            }
+        }
+    }
+    left
+}
+
 /// What a new pane starts.
 #[derive(Clone, Copy)]
 enum Start<'a> {
@@ -2640,14 +2701,14 @@ mod tests {
         assert_eq!(
             quiet(output(&mut s, "ls --json")?),
             concat!(
-                r#"{"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[{"id":"%1","name":"say \"hi\" \\ 界","title":"","rows":3,"cols":15,"pid":null,"program":null,"exited":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false},{"id":"%2","name":"sh","title":"tab\\title","rows":3,"cols":14,"pid":null,"program":null,"exited":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false}]},{"id":"@2","name":"two","panes":[{"id":"%3","name":"sh","title":"","rows":3,"cols":30,"pid":null,"program":null,"exited":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false}]}]}],"clients":[{"id":"c1","rows":4,"cols":30,"workspace":"+1","tab":"@1","pane":"%2","zoom":false}]}"#,
+                r#"{"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[{"id":"%1","name":"say \"hi\" \\ 界","title":"","rows":3,"cols":15,"pid":null,"program":null,"exited":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[]},{"id":"%2","name":"sh","title":"tab\\title","rows":3,"cols":14,"pid":null,"program":null,"exited":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[]}]},{"id":"@2","name":"two","panes":[{"id":"%3","name":"sh","title":"","rows":3,"cols":30,"pid":null,"program":null,"exited":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[]}]}]}],"clients":[{"id":"c1","rows":4,"cols":30,"workspace":"+1","tab":"@1","pane":"%2","zoom":false}]}"#,
                 "\n"
             )
         );
         assert_eq!(
             quiet(output(&mut s, "capture-pane -t %2 --json")?),
             concat!(
-                r#"{"pane":"%2","rows":3,"cols":14,"cursor":[1,2],"lines":["a       b \"q\"","界"],"program":null,"exited":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false}"#,
+                r#"{"pane":"%2","rows":3,"cols":14,"cursor":[1,2],"lines":["a       b \"q\"","界"],"program":null,"exited":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[]}"#,
                 "\n"
             )
         );

@@ -789,3 +789,67 @@ fn the_history_limit_changes_on_a_live_parser() -> Result {
     );
     Ok(())
 }
+
+/// A sixel picture takes the cells it covers, in the host's cell size, and
+/// shows while they are its: text over one of them takes it away, and a
+/// scroll carries it up. The cursor ends below it.
+#[test]
+fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
+    let mut p = Parser::new(Size::new(6, 10)?, 10)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((4, 8)),
+        sixel: true,
+    });
+    // 6 pixels wide and 12 high (two bands): 2 cells by 2, at row 1 col 3.
+    p.process(b"\r\n   \x1bPq#1;2;100;0;0!6~-!6~\x1b\\")?;
+    let shown: Vec<_> = p
+        .screen()
+        .pictures()
+        .map(|s| (s.row, s.col, s.cols, s.rows))
+        .collect();
+    assert_eq!(shown, [(1, 3, 2, 2)]);
+    assert_eq!(
+        p.screen().cursor_position(),
+        (3, 3),
+        "below it, at its left"
+    );
+    let covered = format!("{0}{0}", fux_vt::PLACEHOLDER);
+    assert_eq!(lines(&p).get(1).map(|l| l.trim()), Some(covered.as_str()));
+    p.process(b"\x1b[6;1H\n")?;
+    let rows: Vec<_> = p.screen().pictures().map(|s| s.row).collect();
+    assert_eq!(rows, [0], "a scroll carries it up");
+    p.process(b"\x1b[1;5Hx")?;
+    assert_eq!(
+        p.screen().pictures().count(),
+        0,
+        "text over a cell takes it away"
+    );
+    Ok(())
+}
+
+/// The host's graphics are what a program is told: sixel in DA1, and the
+/// cell's and the screen's pixel sizes.
+#[test]
+fn graphics_queries_are_answered_from_the_host() -> Result {
+    let mut p = Parser::new(Size::new(6, 10)?, 10)?;
+    let replies = |p: &mut Parser, q: &[u8]| -> std::result::Result<String, Error> {
+        let mut out = Vec::new();
+        p.process_with_replies(q, |r| out.extend_from_slice(r))?;
+        Ok(String::from_utf8_lossy(&out).into_owned())
+    };
+    assert_eq!(
+        replies(&mut p, b"\x1b[16t")?,
+        "",
+        "no size known, none told"
+    );
+    assert_eq!(replies(&mut p, b"\x1b[c")?, "\x1b[?1;2c");
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((9, 18)),
+        sixel: true,
+    });
+    assert_eq!(replies(&mut p, b"\x1b[c")?, "\x1b[?1;2;4c");
+    assert_eq!(replies(&mut p, b"\x1b[16t")?, "\x1b[6;18;9t");
+    assert_eq!(replies(&mut p, b"\x1b[14t")?, "\x1b[4;108;90t");
+    assert_eq!(replies(&mut p, b"\x1b[?1;1S")?, "\x1b[?1;0;256S");
+    Ok(())
+}

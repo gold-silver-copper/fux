@@ -205,6 +205,11 @@ fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
     eventually("a paint recorded", || {
         Ok(std::fs::read_to_string(&log).is_ok_and(|l| l.contains("main")))
     })?;
+    // Keys typed at it are a person's: the prefix and `c` open copy mode.
+    server.ok(&["send-keys", "-c", "c1", "C-b", "c"])?;
+    let screen = server.ok(&["capture-client", "-c", "c1"])?;
+    assert!(screen.contains("COPY"), "{screen}");
+    server.ok(&["send-keys", "-c", "c1", "q"])?;
     let mut terminal = server.attach(10, 40)?;
     terminal.pump()?;
     let refused = server.fux(&["resize", "-c", "c2", "60x12"])?;
@@ -245,6 +250,44 @@ fn tmux_habits_get_hints_and_usage_errors_stay_short() -> Outcome {
         out.stderr.contains("usage: fux split -h|-v"),
         "{}",
         out.stderr
+    );
+    Ok(())
+}
+
+/// A pane's pictures reach a client whose terminal draws sixel, clipped
+/// to the pane, after the program was told the terminal draws them; and
+/// `--json` says where they are.
+#[test]
+fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(20, 60)?;
+    let painted = |client: &Client, what: &[u8]| {
+        (0..client.painted.len()).any(|i| {
+            client
+                .painted
+                .get(i..)
+                .is_some_and(|rest| rest.starts_with(what))
+        })
+    };
+    eventually("the terminal asked", || {
+        client.pump()?;
+        Ok(painted(&client, b"\x1b[16t\x1b[?u\x1b[c"))
+    })?;
+    // A terminal of 10 by 20 pixel cells that draws sixel.
+    client.send(b"\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[6;20;10t\x1b[?62;4;22c")?;
+    let asked =
+        r"printf '\033[c'; read -r _; printf '\033Pq#1;2;100;0;0!20~-!20~\033\\'; echo drawn";
+    server.ok(&["send-keys", "-t", "%1", "--text", asked, "Enter"])?;
+    server.ok(&["wait", "-t", "%1", "--text", "62;4;22c"])?;
+    server.ok(&["send-keys", "-t", "%1", "Enter", "--wait-idle", "200"])?;
+    eventually("the picture sent", || {
+        client.pump()?;
+        Ok(painted(&client, b"\x1bP0;1;0q\"1;1;20;12"))
+    })?;
+    let json = server.ok(&["capture-pane", "-t", "%1", "--json"])?;
+    assert!(
+        json.contains(r#""col":0,"rows":1,"cols":2,"width":20,"height":12}]"#),
+        "{json}"
     );
     Ok(())
 }

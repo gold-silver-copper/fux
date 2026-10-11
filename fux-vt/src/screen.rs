@@ -288,6 +288,11 @@ impl KeyboardStack {
 pub struct Screen {
     primary: Grid,
     alternate: Grid,
+    /// Pictures placed on either grid (`pictures`), the last one's number,
+    /// and what the host's terminal draws.
+    pictures: VecDeque<pictures::Placement>,
+    picture_ids: u64,
+    graphics: Graphics,
     next_id: u64,
     version: u64,
     structural: u64,
@@ -356,6 +361,8 @@ pub struct Screen {
     colours: Option<Box<crate::palette::Colours>>,
 }
 
+mod pictures;
+pub use pictures::{Graphics, PLACEHOLDER, Shown};
 #[cfg(test)]
 mod tests;
 
@@ -422,6 +429,9 @@ impl Screen {
             primary: Grid::new(size, history, &mut next_id, 1)?,
             // Its cells are made when a program first shows it.
             alternate: Grid::unmade(size, &mut next_id, 1)?,
+            pictures: VecDeque::new(),
+            picture_ids: 0,
+            graphics: Graphics::default(),
             next_id,
             version: 1,
             structural: 1,
@@ -1941,11 +1951,13 @@ impl Screen {
     /// The primary device attributes (DA1, `CSI c`; and DECID, `ESC Z`):
     /// a VT220 with ANSI colour with an identity, else a VT100 with
     /// advanced video, as the vt100 crate answered.
-    pub(crate) fn primary_attributes(options: &Options) -> Reply {
+    pub(crate) fn primary_attributes(&self, options: &Options) -> Reply {
+        // 4: sixel graphics, when the host's terminal shows them.
+        let sixel = if self.graphics.sixel { ";4" } else { "" };
         if options.identity().is_some() {
-            Reply::of(format_args!("\x1b[?62;22c"))
+            Reply::of(format_args!("\x1b[?62{sixel};22c"))
         } else {
-            Reply::of(format_args!("\x1b[?1;2c"))
+            Reply::of(format_args!("\x1b[?1;2{sixel}c"))
         }
     }
 
@@ -2450,7 +2462,7 @@ impl Screen {
                 _ => return Ok(Dispatch::Unhandled),
             },
             b'c' if p.first(0, 0) == 0 => {
-                return Ok(Dispatch::Reply(Self::primary_attributes(options)));
+                return Ok(Dispatch::Reply(self.primary_attributes(options)));
             }
             _ => return Ok(Dispatch::Unhandled),
         }

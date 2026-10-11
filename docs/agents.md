@@ -81,8 +81,11 @@ program starts at its size, so it never draws for 80x24 and then resizes.
 
 `fux attach --headless --size 100x30 [--log FILE]` attaches a client with
 no terminal: it prints its id (`c2`), writes everything the server sends it
-to FILE, and detaches on SIGTERM. `fux resize -c c2 80x24` resizes it, and
-`fux capture-client -c c2` shows what it shows.
+to FILE, and detaches on SIGTERM. `fux resize -c c2 80x24` resizes it,
+`fux capture-client -c c2` shows what it shows, and
+`fux send-keys -c c2 C-b c` types at it, as a person at its terminal would:
+its bindings, menus, prompts and copy mode take the keys, which is how to
+drive fux's own screens.
 
 ## Ids and the rest
 
@@ -98,8 +101,10 @@ to FILE, and detaches on SIGTERM. `fux resize -c c2 80x24` resizes it, and
 
 ## What fux does not do
 
-- It takes no screenshots: a capture is text, styles and state. Images a
-  program draws are passed to terminals that show them (see the README).
+- It takes no screenshots: a capture is text, styles and state. A program
+  that draws sixel pictures does so only for a terminal that shows them
+  (see the README); a pane no such terminal shows is told none, so its
+  programs draw in text. `--json` lists `pictures` and where they are.
 - It never reads the clipboard; a program's copy (OSC 52) goes to fux's
   paste buffers and to the terminals showing the pane.
 - It has no mouse actions of its own.

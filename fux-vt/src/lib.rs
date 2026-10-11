@@ -13,6 +13,7 @@ mod mode;
 mod palette;
 mod parser;
 mod screen;
+pub mod sixel;
 mod style;
 #[cfg(test)]
 mod test_rng;
@@ -25,7 +26,7 @@ pub use mode::Mode;
 pub use parser::{
     Event, Feature, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink, Unhandled,
 };
-pub use screen::{MouseProtocolEncoding, MouseProtocolMode, Screen};
+pub use screen::{Graphics, MouseProtocolEncoding, MouseProtocolMode, PLACEHOLDER, Screen, Shown};
 pub use unicode::{UNICODE_VERSION, continues_cluster};
 
 /// `slice::copy_from_slice`, checked: copies `src` over `dst`, if they are the

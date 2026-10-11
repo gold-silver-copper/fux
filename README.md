@@ -176,7 +176,7 @@ From a key or the prompt, commands act on your focused pane.
 | `fux resize-pane [-t %N] [-x COLS[%]] [-y ROWS[%]]` | make a pane a width, a height or both, in cells or a percentage of its tab; refused, nothing changed, if it cannot be |
 | `fux reorder pane\|tab\|workspace [-t TARGET] --next\|--previous` | move one place in its order |
 | `fux terminate [-t %N]` | SIGTERM to the pane's foreground job, not the shell or background jobs |
-| `fux send-keys [-t %N] [-l] [-N COUNT] KEYS… [--wait-idle MS [--print]]` | send keys (`C-c`, `Enter`, …); other words, all with `-l`, and `--text TEXT` as text; `--paste TEXT` as a paste, bracketed if the program asked. `-N` sends them COUNT times; `--wait-idle` then waits as `wait --idle` does |
+| `fux send-keys [-t %N \| -c CLIENT] [-l] [-N COUNT] KEYS… [--wait-idle MS [--print]]` | send keys (`C-c`, `Enter`, …); other words, all with `-l`, and `--text TEXT` as text; `--paste TEXT` as a paste, bracketed if the program asked. `-N` sends them COUNT times; `--wait-idle` then waits as `wait --idle` does. `-c` types them at a client instead, as at its terminal: its bindings, overlays and prompts take them |
 | `fux send-mouse [-t %N] click\|right\|middle\|press\|release\|wheel-up\|wheel-down\|move ROW COL` | a mouse event at a cell, from 0, encoded as the program asked; refused if it did not ask for mouse reports |
 | `fux send-prefix [-t %N]` | send the prefix key to the pane, as its program asked for keys |
 | `fux capture-pane [-t %N] [-S -LINES] [--full] [-J] [--rows A-B] [--cols A-B] [--styles] [--json]` | the pane's text, after LINES of history, trailing blanks and blank rows trimmed (`--full` keeps them); `-J` joins soft-wrapped rows; `--rows`/`--cols` a region, from 0; `--styles` colours and attributes as SGR |
@@ -350,6 +350,15 @@ shows the error to each terminal that attaches until a reload succeeds.
   pane's (or its tab's name). fux saves your terminal's own title first and
   restores it when you detach or turn titles off.
 - **Hyperlinks** (OSC 8) reach your terminal as links.
+- **Pictures** (sixel). A pane's program is told your terminal draws sixel
+  graphics, and the size of its cells (`CSI 16 t`), if your terminal says
+  so, and the pictures it draws are shown on your terminal, clipped to the
+  pane; they scroll with the text, and text over one, or an overlay, takes
+  it away. A pane no sixel-drawing terminal shows is told none, so its
+  programs draw in text (half blocks), which captures read; `--json` says
+  where pictures are. Drawn by foot, WezTerm, xterm (`-ti vt340`), Konsole,
+  mlterm and others; not by kitty, whose graphics protocol fux does not
+  speak, nor Ghostty, Alacritty or Apple's Terminal.
 - **Underline styles** (curly, dotted, dashed, double) reach your terminal
   if it draws them, else a plain underline.
 - **In-band resize reports** (mode 2048) are sent when a pane's size

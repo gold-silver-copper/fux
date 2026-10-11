@@ -315,6 +315,9 @@ pub enum Command {
     },
     SendKeys {
         target: Option<PaneId>,
+        /// A client to send them to instead, as typed at its terminal: its
+        /// bindings, overlays and prompts take them as a person's keys.
+        client: Option<ClientId>,
         inputs: Vec<Input>,
         /// How many times to send them all.
         repeat: u16,
@@ -712,8 +715,9 @@ const PANES: &[Spec] = &[
     spec("choose-pane [-c CLIENT] [-t %N]  a pane to swap with", Screen(|a| {
         Ok(ClientAction::ChoosePane { target: a.pane()? })
     })),
-    spec("send-keys [-t %N] [-l] [-N COUNT] KEYS... [--wait-idle MS [--print]]  \
-          keys, words that are not key names as text, and --text TEXT or --paste TEXT", Line(send_keys)),
+    spec("send-keys [-t %N | -c CLIENT] [-l] [-N COUNT] KEYS... [--wait-idle MS [--print]]  \
+          keys, words that are not key names as text, and --text TEXT or --paste TEXT; \
+          -c types them at a client", Line(send_keys)),
     spec("send-mouse [-t %N] click|right|middle|press|release|wheel-up|wheel-down|move ROW COL  \
           a mouse event at a cell, from 0", Flags(send_mouse)),
     spec("wait [-t %N] (--text TEXT | --gone TEXT | --idle MS | --change | --exit) [--timeout SECS] [--print]  \
@@ -1352,10 +1356,12 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
         expected,
     };
     let (mut target, mut literal, mut repeat, mut idle, mut print) = (None, false, 1, None, false);
+    let mut client = None;
     let mut words = argv.get(1..).unwrap_or_default().iter().peekable();
-    while let Some(word) = words.next_if(|w| ["-t", "-l", "-N", "--"].contains(&w.as_str())) {
+    while let Some(word) = words.next_if(|w| ["-t", "-c", "-l", "-N", "--"].contains(&w.as_str())) {
         match word.as_str() {
             "-t" => target = Some(parse_pane(value(word, &mut words)?)?),
+            "-c" => client = Some(parse_client(value(word, &mut words)?)?),
             "-l" => literal = true,
             "-N" => {
                 let text = value(word, &mut words)?;
@@ -1391,6 +1397,11 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
     if print && idle.is_none() {
         return Err(Usage::Needs("send-keys --print goes with --wait-idle MS"));
     }
+    if client.is_some() && (target.is_some() || idle.is_some()) {
+        return Err(Usage::Needs(
+            "send-keys -c CLIENT types at a client; -t and --wait-idle are for a pane",
+        ));
+    }
     let then = idle.map(|idle| Wait {
         until: Until::Idle(idle),
         timeout: WAIT_TIMEOUT,
@@ -1398,6 +1409,7 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
     });
     Ok(Command::SendKeys {
         target,
+        client,
         inputs,
         repeat,
         then,
@@ -1554,6 +1566,7 @@ mod tests {
             cmd("send-keys -t %1 -l -x"),
             Ok(Command::SendKeys {
                 target: Some(PaneId::of(1)),
+                client: None,
                 inputs: vec![Input::Text("-x".into())],
                 repeat: 1,
                 then: None,
@@ -1565,6 +1578,7 @@ mod tests {
             cmd("send-keys -N 2 Escape 'two words' --paste p Enter --wait-idle 300 --print"),
             Ok(Command::SendKeys {
                 target: None,
+                client: None,
                 inputs: vec![
                     Input::Key("Escape".parse().map_err(|_| Usage::NoCommand)?),
                     Input::Text("two words".into()),

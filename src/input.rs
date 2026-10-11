@@ -56,7 +56,7 @@ impl Session {
         self.dispatch(client, inputs);
     }
 
-    fn dispatch(&mut self, client: ClientId, inputs: Vec<Input>) {
+    pub(crate) fn dispatch(&mut self, client: ClientId, inputs: Vec<Input>) {
         if inputs.is_empty() {
             return;
         }

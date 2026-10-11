@@ -171,6 +171,8 @@ struct Attached {
     placement: Placement,
     /// When the next paint may be made.
     clock: PaintClock,
+    /// The pictures its terminal was last sent, as they show there.
+    pictures: Vec<render::Visible>,
 }
 
 /// What is known of what an attached client's terminal shows.
@@ -288,6 +290,7 @@ impl Attached {
             screen: Screen::Unknown,
             spare: Grid::new(0, 0),
             placement: Placement::default(),
+            pictures: Vec::new(),
             clock: PaintClock {
                 next: now,
                 due: now,
@@ -839,6 +842,21 @@ impl Server {
         if !before.is_empty() {
             attached.paint(&mut conn.out, &before);
         }
+        // A picture gone or moved has its cells painted again, blank, which
+        // takes its pixels away; one whose cells this paint paints over, or
+        // new, is sent after the text.
+        let pictures = render::pictures(session, client, &attached.placement);
+        let known = attached.screen == Screen::Shown;
+        for gone in (attached.pictures.iter()).filter(|p| known && !pictures.contains(p)) {
+            attached.shown.forget_area(gone.area);
+        }
+        let send: Vec<bool> = (pictures.iter())
+            .map(|p| {
+                !known
+                    || !attached.pictures.contains(p)
+                    || !attached.spare.same_in(&attached.shown, p.area)
+            })
+            .collect();
         let shown = (attached.screen == Screen::Shown).then_some(&attached.shown);
         // The same screen as the client shows: nothing to send, not even
         // the envelope, whose cursor hide and show would restart a blinking
@@ -854,6 +872,17 @@ impl Server {
             // keystroke's echo goes out a round sooner.
             conn.flush(session);
         }
+        let Stage::Attached(attached) = &mut conn.stage else {
+            return;
+        };
+        let mut drawn = Vec::new();
+        for (picture, _) in pictures.iter().zip(&send).filter(|(_, send)| **send) {
+            render::picture_into(picture, &mut drawn);
+        }
+        if !drawn.is_empty() {
+            attached.paint(&mut conn.out, &drawn);
+        }
+        attached.pictures = pictures;
         if let Some(view) = session.views.get_mut(&client) {
             view.dirty = false;
         }

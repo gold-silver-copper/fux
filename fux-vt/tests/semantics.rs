@@ -408,7 +408,7 @@ fn regions_origin_and_reset_have_explicit_history_semantics() -> Result {
 fn ignored_sequences_cancel_and_recover_without_payload_leakage() -> Result {
     for ignored in [
         b"\x1b]0;title\x07".as_slice(),
-        b"\x1bP1;2qpayload\x1b\\",
+        b"\x1bP1;2zpayload\x1b\\",
         b"\x1b_apc\x1b\\",
         b"\x1b^pm\x1b\\",
         b"\x1bXsos\x1b\\",

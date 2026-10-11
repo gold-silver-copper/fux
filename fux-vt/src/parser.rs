@@ -227,6 +227,9 @@ enum State {
     /// A string read to its end and dropped: a DCS fux-vt does not
     /// answer, SOS, PM or APC.
     IgnoreString,
+    /// Sixel data (`DCS P1 ; P2 ; P3 q … ST`), decoded as it comes by the
+    /// parser's decoder; its end places the picture.
+    Sixel,
     /// A DECRQSS (`DCS $ q Pt ST`) with [`Options::setting_reports`]: its
     /// request so far, `None` once it ran past any setting fux-vt knows.
     Request(Option<Bytes<REQUEST_LIMIT>>),
@@ -670,6 +673,8 @@ pub struct Parser {
     /// The CSI's or DCS's parameters: read only in `State::Csi` and
     /// `State::Dcs`, cleared as one begins.
     params: Parameters,
+    /// The picture sixel data is drawing, in `State::Sixel`.
+    sixel: Option<Box<crate::sixel::Decoder>>,
 }
 #[cfg(test)]
 mod tests;
@@ -700,6 +705,7 @@ impl Parser {
             },
             state: State::Ground,
             params: Parameters::default(),
+            sixel: None,
         })
     }
     /// The screen, for a test to reach into.
@@ -721,6 +727,15 @@ impl Parser {
     /// colour drawn: [`Screen::palette_color`] stays the program's.
     pub fn set_host_palette(&mut self, palette: [Option<Rgb>; 16]) {
         self.screen.set_host_palette(palette);
+    }
+    /// Tells the parser what the host's terminal draws, replacing what it
+    /// told before: the size of a cell in pixels, which a program's
+    /// `CSI 16 t` and `CSI 14 t` are answered with, and whether it shows
+    /// sixel graphics, which primary device attributes then say (`4`).
+    /// Pictures are kept either way; what the host shows of them is its
+    /// own ([`Screen::pictures`]).
+    pub fn set_host_graphics(&mut self, graphics: crate::Graphics) {
+        self.screen.set_graphics(graphics);
     }
     /// Resizes the terminal, reflowing the primary screen with
     /// [`Feature::Reflow`].
@@ -1038,6 +1053,7 @@ impl Parser {
         // also begins ST, so it completes a pending OSC string or DECRQSS.
         if matches!(byte, 0x18 | 0x1a) {
             self.state = State::Ground;
+            self.sixel = None;
             self.screen.forget_repeat();
             return Ok(false);
         }
@@ -1045,6 +1061,12 @@ impl Parser {
             match state {
                 State::Osc { whole } => self.dispatch_osc(whole, false, sink)?,
                 State::Request(request) => self.dispatch_request(request, sink),
+                State::Sixel => {
+                    let picture = self.sixel.take().and_then(crate::sixel::Decoder::finish);
+                    if let Some(picture) = picture {
+                        self.screen.place_picture(picture)?;
+                    }
+                }
                 State::Ground
                 | State::Utf8(_)
                 | State::Escape(_)
@@ -1079,6 +1101,11 @@ impl Parser {
                 self.state = State::Request(request.and_then(|r| r.push(byte)));
             }
             State::IgnoreString => {}
+            State::Sixel => {
+                if let Some(decoder) = &mut self.sixel {
+                    decoder.push(byte);
+                }
+            }
             State::Escape(read) => match byte {
                 0x00..=0x1f => self.control(byte, sink)?,
                 0x20..=0x2f => {
@@ -1134,8 +1161,14 @@ impl Parser {
                         && byte == b'q'
                         && read.as_slice() == b"$"
                         && self.params.is_empty();
+                    // Sixel: `q` with no intermediates; P2 says whether
+                    // undrawn pixels stay clear, which they always do.
+                    let sixel = byte == b'q' && read.as_slice().is_empty();
                     self.state = if decrqss {
                         State::Request(Some(Bytes::default()))
+                    } else if sixel {
+                        self.sixel = Some(crate::sixel::Decoder::new());
+                        State::Sixel
                     } else {
                         State::IgnoreString
                     };
@@ -1162,7 +1195,7 @@ impl Parser {
         // replaced by DA (ctlseqs: "Obsolete form of CSI c"): answered as
         // DA1 is.
         if intermediates.is_empty() && byte == b'Z' {
-            let reply = Screen::primary_attributes(&self.options);
+            let reply = self.screen.primary_attributes(&self.options);
             sink.reply(reply.as_bytes());
         } else if !self.screen.escape(intermediates, byte)? {
             sink.unhandled(Unhandled::Escape {
@@ -1351,6 +1384,27 @@ impl Parser {
                 let (rows, cols) = self.screen.size().into();
                 Some(Reply::of(format_args!("\x1b[8;{rows};{cols}t")))
             }
+            // The cell's and the text area's size in pixels, from the host's
+            // terminal: how a program sizes the pictures it draws.
+            (b"", b't') if n == 16 => {
+                let (width, height) = self.screen.graphics().cell?;
+                Some(Reply::of(format_args!("\x1b[6;{height};{width}t")))
+            }
+            (b"", b't') if n == 14 => {
+                let (height, width) = self.screen.pixel_size()?;
+                Some(Reply::of(format_args!("\x1b[4;{height};{width}t")))
+            }
+            // XTSMGRAPHICS, read: 256 colour registers, and pictures as
+            // large as the screen.
+            (b"?", b'S') if self.screen.graphics().sixel && self.params.first(1, 0) == 1 => match n
+            {
+                1 => Some(Reply::of(format_args!("\x1b[?1;0;256S"))),
+                2 => {
+                    let (height, width) = self.screen.pixel_size()?;
+                    Some(Reply::of(format_args!("\x1b[?2;0;{width};{height}S")))
+                }
+                _ => None,
+            },
             (b"*", b'y') if self.options.has(Feature::RectangleChecksums) => {
                 Some(self.screen.rectangle_checksum(&self.params))
             }

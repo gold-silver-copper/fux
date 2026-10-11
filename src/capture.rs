@@ -114,7 +114,26 @@ pub fn state(pane: &Pane, now: Instant) -> Vec<(&'static str, Json<'static>)> {
             "bracketed_paste",
             Json::Bool(screen.mode(Mode::BracketedPaste)),
         ),
+        (
+            "pictures",
+            Json::Array(screen.pictures().map(picture).collect()),
+        ),
     ]
+}
+
+/// Where a picture is, for `--json`: its top row (negative once scrolled
+/// above the screen), first column, the cells it covers, and its size in
+/// pixels.
+fn picture(shown: fux_vt::Shown<'_>) -> Json<'static> {
+    let number = |n: u32| Json::Number(i64::from(n));
+    Json::Object(vec![
+        ("row", Json::Number(shown.row)),
+        ("col", number(u32::from(shown.col))),
+        ("rows", number(u32::from(shown.rows))),
+        ("cols", number(u32::from(shown.cols))),
+        ("width", number(shown.picture.width)),
+        ("height", number(shown.picture.height)),
+    ])
 }
 
 /// A capture as it is printed: its lines, trimmed unless `view.full`, in
