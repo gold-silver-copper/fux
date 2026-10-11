@@ -26,6 +26,11 @@ fn gone(pid: i32, what: &str) -> Outcome {
 /// survives, as it would a closed terminal (bevy-final finding 013).
 #[test]
 fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
+    // dash's own way with jobs is what is tested; CI's machines all have it.
+    if !std::path::Path::new("/bin/dash").exists() {
+        eprintln!("skipped: /bin/dash is not installed");
+        return Ok(());
+    }
     let server = Server::start("set shell /bin/dash")?;
     let mut reap = Reap::default();
     for how in ["kill-pane", "exit", "kill-workspace"] {
@@ -78,7 +83,7 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
 /// background job and the shell stay, as the README says.
 #[test]
 fn terminate_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
-    let server = Server::start("set shell /bin/dash")?;
+    let server = Server::start("")?;
     server.ok(&["split", "-h", "-t", "%1"])?;
     let (pane, shell) = server.newest_pane()?;
     let job = server.dir.join("job");

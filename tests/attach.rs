@@ -333,7 +333,9 @@ fn a_panes_program_inherits_only_stdio_and_a_clean_signal_mask() -> Outcome {
         "{open:?}:\n{}",
         std::fs::read_to_string(&report).unwrap_or_default()
     );
-    client.keys("ps -o sigmask= -p $$ | tr -d ' 0'; echo mask-checked\r")?;
+    // The mask of a program the shell starts, not of the shell itself: bash
+    // blocks SIGCHLD while it waits on a job, as it waits on `ps`.
+    client.keys("sh -c 'exec ps -o sigmask= -p $$' | tr -d ' 0'; echo mask-checked\r")?;
     client.wait("the mask", |t| t.lines().any(|l| l == "mask-checked"))?;
     let lines = client.lines();
     let at = lines.iter().position(|l| l == "mask-checked").unwrap_or(0);
@@ -367,8 +369,11 @@ fn focus_events_reach_a_pane_that_asked_and_cursor_shapes_pass_through() -> Outc
     let server = Server::start("")?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
-    // A pane that did not ask gets nothing.
-    client.keys("cat -v\r")?;
+    // A pane that did not ask gets nothing. The marker shows once the shell
+    // has given the terminal back, so what follows reaches cat, not the
+    // shell's line editor.
+    client.keys("echo cat-runs; cat -v\r")?;
+    client.wait("cat started", |t| t.lines().any(|l| l == "cat-runs"))?;
     client.send(b"\x1b[I")?;
     client.keys("before\r")?;
     client.wait("cat's echo", |t| t.lines().any(|l| l == "before"))?;
