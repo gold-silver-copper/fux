@@ -1379,6 +1379,16 @@ impl Grid {
     }
 
     /// `scroll` within the margins, or down, or without history.
+    ///
+    /// The one place rows move across a region's edges, and so the one
+    /// that keeps soft wraps right there. A wrap belongs to the edge
+    /// between a row and the next, kept on the row above it: the row above
+    /// the region now meets another row, so it loses its wrap; scrolling
+    /// down, so does the region's last row, whose next row left. Scrolling
+    /// up, the last row keeps it, as a line wrapping at the bottom margin
+    /// goes on in the row brought in (`Screen::wrap` marks it before the
+    /// scroll). A row moved inside the region keeps its wrap, as the row
+    /// under it moves with it.
     #[inline]
     fn scroll_region(
         &mut self,
@@ -1392,6 +1402,12 @@ impl Grid {
         let up = direction != Scroll::Down;
         let (top, bottom) = (region.first(), region.last());
         let count = count.min(region.len());
+        if count == 0 {
+            return;
+        }
+        if let Some(above) = top.checked_sub(1) {
+            self.wrap(above, false, version);
+        }
         for _ in 0..count {
             let id = next_id(next);
             let (from, to) = if up { (top, bottom) } else { (bottom, top) };
@@ -1401,9 +1417,9 @@ impl Grid {
                     self.colour(slot, blank);
                 }
             }
-            if !up {
-                self.wrap(bottom, false, version);
-            }
+        }
+        if !up {
+            self.wrap(bottom, false, version);
         }
         // The rows brought in, in the slots of those that left, have none
         // of their links.

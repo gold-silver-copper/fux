@@ -544,6 +544,22 @@ fn reflow_moves_the_saved_cursor_with_its_character() -> Result {
     Ok(())
 }
 
+/// DL and IL move rows across the region's top: the row above it, which
+/// went on into the row that moved, no longer does, so reflow joins it to
+/// nothing that follows.
+#[test]
+fn deleting_or_inserting_lines_ends_the_wrap_above() -> Result {
+    let mut p = Parser::with_options(Size::new(4, 6)?, 100, REFLOW)?;
+    p.process(b"abcdefgh\r\nxyz\x1b[2;1H\x1b[M")?;
+    assert!(!p.screen().row_wrapped(0));
+    p.resize(Size::new(4, 12)?)?;
+    assert_eq!(lines(&p), ["abcdef", "xyz", "", ""]);
+    let mut p = Parser::with_options(Size::new(4, 6)?, 100, REFLOW)?;
+    p.process(b"abcdefgh\x1b[2;1H\x1b[L")?;
+    assert!(!p.screen().row_wrapped(0));
+    Ok(())
+}
+
 #[test]
 fn reflow_pushes_overflow_into_history_and_pulls_it_back() -> Result {
     let mut p = Parser::with_options(Size::new(3, 12)?, 100, REFLOW)?;
