@@ -130,7 +130,6 @@ pub enum Error {
     NoClient(ClientId),
     NoWorkspaces,
     NoBuffer(usize),
-    NoCopiedText,
     NoConfigFile,
     // What the client's view has none of.
     NoLastPane,
@@ -191,7 +190,6 @@ impl std::fmt::Display for Error {
             Error::NoClient(id) => write!(f, "no client {id}"),
             Error::NoWorkspaces => f.write_str("the server has no workspace"),
             Error::NoBuffer(index) => write!(f, "no buffer {index}"),
-            Error::NoCopiedText => f.write_str("no copied text yet"),
             Error::NoConfigFile => f.write_str("no config file to reload"),
             Error::NoLastPane => f.write_str("no previously focused pane"),
             Error::NoPaneToCopy => f.write_str("no pane to copy from"),
@@ -248,7 +246,6 @@ impl std::error::Error for Error {
             | Error::NoClient(_)
             | Error::NoWorkspaces
             | Error::NoBuffer(_)
-            | Error::NoCopiedText
             | Error::NoConfigFile
             | Error::NoLastPane
             | Error::NoPaneToCopy
@@ -748,8 +745,10 @@ impl Session {
 
     /// Output and sizing a pane can drop rows of its history: a copy mode
     /// whose rows went ends. They are looked for only if the screen changed
-    /// since they were last found.
-    fn hold_copies(&mut self) {
+    /// since they were last found. Every change to workspaces, tabs, panes
+    /// and views does this as it is made; output, which changes none of
+    /// them, leaves it to the server's loop.
+    pub fn hold_copies(&mut self) {
         for view in self.views.values_mut() {
             let Mode::Copy(copy) = &mut view.mode else {
                 continue;
@@ -970,13 +969,6 @@ impl Session {
         self.close_pane(id, Some(format!("exited with status {status}")));
     }
 
-    /// Settles what output can change. Every change to workspaces, tabs,
-    /// panes and views settles as it is made; output does not change them,
-    /// but can drop history rows a copy mode holds.
-    pub fn settle_if_needed(&mut self) {
-        self.hold_copies();
-    }
-
     /// Output from a pane's program.
     pub fn output(&mut self, id: PaneId, bytes: &[u8]) {
         self.read_with(id, |pane| pane.output(bytes));
@@ -1156,7 +1148,7 @@ impl Session {
                 .buffers
                 .get(*index)
                 .is_none()
-                .then_some(Error::NoCopiedText);
+                .then_some(Error::NoBuffer(*index));
         }
         if let Command::Terminate { target } = command {
             return match self.pane(*target, here) {
@@ -2280,7 +2272,7 @@ mod tests {
         // To the oldest row, which the next lines of output push out.
         s.input(client, b"g");
         s.output(PaneId::of(1), b"g\r\nh\r\ni\r\nj\r\n");
-        s.settle_if_needed();
+        s.hold_copies();
         let view = s.views.get(&client).ok_or("the view")?;
         assert!(matches!(view.mode, Mode::Normal), "copy mode ended");
         assert!(
@@ -2496,7 +2488,7 @@ mod tests {
             ("choose-pane -t %2", None),
             ("select-tab --next", Some("only one tab")),
             ("select-workspace --next", None),
-            ("paste-buffer", Some("no copied text yet")),
+            ("paste-buffer", Some("no buffer 0")),
             ("terminate", Some("nothing is running in %1 but its shell")),
             ("kill-pane -t %99", Some("no pane %99")),
             ("choose-pane", Some("only one pane")),

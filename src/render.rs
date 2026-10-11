@@ -1708,7 +1708,7 @@ mod tests {
                 if let Some(&id) = panes.get(r.below(panes.len().max(1))) {
                     s.output(id, out);
                 }
-                s.settle_if_needed();
+                s.hold_copies();
                 if !compose_into(&s, c, &mut spare, &mut placement) {
                     continue;
                 }
@@ -1798,7 +1798,7 @@ mod tests {
                         }
                     }
                 }
-                s.settle_if_needed();
+                s.hold_copies();
                 if !compose_into(&s, c, &mut spare, &mut placement) {
                     continue;
                 }

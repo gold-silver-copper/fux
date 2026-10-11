@@ -700,7 +700,7 @@ impl Config {
                 self.shell = argv;
             }
             "history-lines" => self.history_lines = number(MAX_HISTORY)?,
-            "clipboard" => self.clipboard = one()? == "write-only" || on()?,
+            "clipboard" => self.clipboard = on()?,
             "bell" => self.bell = on()?,
             "titles" => self.titles = on()?,
             "buffers" => {

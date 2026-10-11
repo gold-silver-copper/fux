@@ -548,7 +548,7 @@ impl Server {
             self.close_conns();
             // Each change settles as it is made; this catches output that
             // dropped rows a copy mode held.
-            self.session.settle_if_needed();
+            self.session.hold_copies();
             self.flush_outbox();
             if matches!(self.phase, Phase::Stopping(_))
                 && self.session.dying.is_empty()
@@ -616,7 +616,7 @@ impl Server {
                 return ControlFlow::Break(());
             }
             Wake::Paint(index) => {
-                self.session.settle_if_needed();
+                self.session.hold_copies();
                 self.flush_outbox();
                 self.paint(index, now);
             }
@@ -1212,7 +1212,7 @@ impl Server {
         if ended {
             self.reap();
             if let Some(pane) = self.session.panes.get_mut(&id) {
-                pane.process.hang_up();
+                pane.process.stop_reading();
             }
         }
     }
