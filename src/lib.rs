@@ -148,10 +148,11 @@ fn run(args: &[String]) -> Result<u8, Error> {
     let first = args.first().map(String::as_str);
     match first {
         Some(fuxix::pty::LAUNCH) => Ok(fuxix::pty::launched(args.get(1..).unwrap_or_default())),
-        None | Some("attach") => {
+        // `attach` may be left out before its flags, as usage says.
+        None | Some("attach" | "-t" | "--nested") => {
             let mut workspace = None;
             let mut nested = false;
-            let mut rest = args.iter().skip(usize::from(first.is_some()));
+            let mut rest = args.iter().skip(usize::from(first == Some("attach")));
             while let Some(arg) = rest.next() {
                 match arg.as_str() {
                     "-t" => match rest.next() {

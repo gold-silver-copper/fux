@@ -22,6 +22,9 @@ pub struct Tab {
     pub id: TabId,
     pub name: String,
     root: Option<Tree>,
+    /// Its layout changed since its panes were sized for it: one no client
+    /// shows is then laid out on a client's screen (`Session::size_panes`).
+    changed: bool,
     seats: BTreeMap<ClientId, Seat>,
     /// The client that last typed into it, whose terminal answers its panes'
     /// colour queries (`outer`).
@@ -115,6 +118,19 @@ impl Workspace {
         }
     }
 
+    /// The layouts of its tabs no client shows that changed since their
+    /// panes were sized, for sizing them; every tab is then taken as sized,
+    /// a shown one as its clients show it.
+    pub(crate) fn changed_unshown(&mut self) -> impl Iterator<Item = &Tree> {
+        let viewers = &self.viewers;
+        self.tabs.iter_mut().filter_map(move |tab| {
+            let changed = std::mem::take(&mut tab.changed);
+            let tab = &*tab;
+            let shown = viewers.iter().any(|&c| tab.shown_to(c));
+            tab.root.as_ref().filter(|_| changed && !shown)
+        })
+    }
+
     /// Removes tab `tab`, giving back its layout: the clients it was shown
     /// to are shown its neighbour.
     pub(crate) fn remove_tab(&mut self, tab: TabId) -> Option<Tree> {
@@ -166,6 +182,7 @@ impl Tab {
             id,
             name,
             root,
+            changed: true,
             seats,
             typist,
         };
@@ -216,6 +233,7 @@ impl Tab {
     /// first.
     pub(crate) fn edit<R>(&mut self, change: impl FnOnce(&mut Option<Tree>) -> R) -> R {
         let out = change(&mut self.root);
+        self.changed = true;
         self.refocus();
         out
     }
