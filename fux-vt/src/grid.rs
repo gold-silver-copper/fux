@@ -600,9 +600,11 @@ impl Grid {
     }
     /// Writes the ASCII `run` from column `col` of live row `row`, in style
     /// `style`, as `mutate_row` writes, taking `version` only if a cell
-    /// changed; unless a cell there is half of a wide glyph, which the
-    /// general path repairs, when nothing is written and `false` returned.
+    /// changed; up to the first cell that is half of a wide glyph, which
+    /// the general path repairs. Returns how many bytes it wrote: all of
+    /// `run`, or those before that cell.
     #[inline]
+    #[must_use]
     pub fn write_ascii(
         &mut self,
         row: u16,
@@ -610,45 +612,49 @@ impl Grid {
         run: &[u8],
         style: u32,
         version: u64,
-    ) -> bool {
+    ) -> usize {
         let Some(slot) = self.slot(row) else {
-            return false;
+            return 0;
         };
         let start = usize::from(col);
         let Some(dst) = start
             .checked_add(run.len())
             .and_then(|end| self.slice_mut(slot).get_mut(start..end))
         else {
-            return false;
+            return 0;
+        };
+        // A short run, a word between colours, cell by cell; a long one by
+        // the loops that move words, whose set-up a short one would not
+        // repay. Only a run that meets a half looks for where.
+        let half = |c: &Compact| c.is_wide() || c.is_wide_continuation();
+        let halves = if run.len() < LONG_RUN {
+            dst.iter().any(half)
+        } else {
+            Compact::any_halves(dst)
+        };
+        let (dst, run) = if halves {
+            let n = dst.iter().position(half).unwrap_or(0);
+            match (dst.get_mut(..n), run.get(..n)) {
+                (Some(dst), Some(run)) if n > 0 => (dst, run),
+                _ => return 0,
+            }
+        } else {
+            (dst, run)
         };
         // One glyph, as at a cursor moved to it: the cell alone, without
         // the set-up the loops below take for a run.
         if let ([cell], [byte]) = (&mut *dst, run) {
-            if cell.is_wide() || cell.is_wide_continuation() {
-                return false;
+            if !cell.is_ascii(*byte, style) {
+                *cell = Compact::ascii(*byte, style);
+                self.changed(slot, start.saturating_add(1), version);
             }
-            if cell.is_ascii(*byte, style) {
-                return true;
-            }
-            *cell = Compact::ascii(*byte, style);
-            self.changed(slot, start.saturating_add(1), version);
-            return true;
-        }
-        // A short run, a word between colours, cell by cell; a long one by the loops that move words,
-        // whose set-up a short one would not repay.
-        let halves = if run.len() < LONG_RUN {
-            dst.iter().any(|c| c.is_wide() || c.is_wide_continuation())
-        } else {
-            Compact::any_halves(dst)
-        };
-        if halves {
-            return false;
+            return 1;
         }
         // Already these very cells, as a redraw finds them: the row is as
         // it was. New text differs at the first cell.
         let first = dst.first().zip(run.first());
         if first.is_some_and(|(c, b)| c.is_ascii(*b, style)) && unchanged(dst, run, style) {
-            return true;
+            return run.len();
         }
         if run.len() < LONG_RUN {
             for (cell, byte) in dst.iter_mut().zip(run) {
@@ -658,7 +664,7 @@ impl Grid {
             Compact::fill_ascii(dst, run, style);
         }
         self.changed(slot, start.saturating_add(run.len()), version);
-        true
+        run.len()
     }
     /// `mutate_row` with the row's text too, for edits that store clusters.
     pub fn mutate_line(

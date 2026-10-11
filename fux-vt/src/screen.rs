@@ -1390,18 +1390,19 @@ impl Screen {
             };
             // A run too long for a u16 still stops at the margin.
             let count = u16::try_from(bytes.len()).map_or(room, |n| n.min(room));
-            let Some(end) = col.checked_add(count) else {
-                return Ok(());
-            };
             let style = self.pen_style() | self.protect;
             let run = bytes.get(..usize::from(count)).unwrap_or_default();
-            // Written whole unless the run meets half of a wide glyph,
-            // which the general path repairs.
-            if !self.with_grid(|g, _, v| g.write_ascii(row, col, run, style, v)) {
+            // Written to the first cell that is half of a wide glyph, which
+            // the general path repairs, the glyph printed there.
+            let written = self.with_grid(|g, _, v| g.write_ascii(row, col, run, style, v));
+            let (Some(run), Some(end)) = (
+                run.get(..written).filter(|run| !run.is_empty()),
+                u16::try_from(written).ok().and_then(|n| col.checked_add(n)),
+            ) else {
                 self.print(char::from(first))?;
                 bytes = tail;
                 continue;
-            }
+            };
             self.grid_mut().advance_within(end, line);
             // The cells' links, after the cells: before, the call would make
             // the write above load again what it had in hand.
@@ -1417,7 +1418,7 @@ impl Screen {
             if let Some(&last) = run.last() {
                 self.repeat = Some(char::from(last));
             }
-            bytes = bytes.get(usize::from(count)..).unwrap_or_default();
+            bytes = bytes.get(written..).unwrap_or_default();
         }
         Ok(())
     }

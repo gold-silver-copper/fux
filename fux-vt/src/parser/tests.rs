@@ -19,6 +19,45 @@ fn ascii_run_path_equals_scalar_dispatch_around_grapheme_clusters() -> Result<()
         let difference = first_difference(&format!("{fast:?}"), &format!("{slow:?}"));
         assert_eq!(difference, None, "{cols} columns");
     }
+    // A run over a row that holds a wide glyph: written up to it.
+    for cols in 2..=12 {
+        let mut fast = Parser::new(Size::of(3, cols), 8)?;
+        let mut slow = fast.clone();
+        let text = wide_glyph_rows(3, cols);
+        fast.process(&text)?;
+        scalar(&mut slow, &text, false, &mut Log::default())?;
+        let difference = first_difference(&format!("{fast:?}"), &format!("{slow:?}"));
+        assert_eq!(difference, None, "{cols} columns, a wide glyph");
+    }
+    Ok(())
+}
+
+/// Each of `rows` rows of `cols` columns with a wide glyph before its last
+/// column, then a run of ASCII over the whole row.
+fn wide_glyph_rows(rows: u16, cols: u16) -> Vec<u8> {
+    let mut text = Vec::new();
+    for row in 1..=rows {
+        text.extend_from_slice(
+            format!("\x1b[{row};{}H\u{4e2d}\r", cols.saturating_sub(1)).as_bytes(),
+        );
+        text.extend(std::iter::repeat_n(b'a', usize::from(cols)));
+    }
+    text
+}
+
+/// The ASCII run path writes up to a half of a wide glyph and goes on past
+/// it: a run over a row that holds one costs the row, not a retry of the
+/// rest of the run for every byte.
+#[test]
+fn a_run_over_a_wide_glyph_costs_its_length() -> Result<(), Error> {
+    let mut p = Parser::new(Size::of(40, 8000), 0)?;
+    let text = wide_glyph_rows(40, 8000);
+    let start = std::time::Instant::now();
+    p.process(&text)?;
+    let spent = start.elapsed();
+    assert!(spent < std::time::Duration::from_secs(1), "{spent:?}");
+    let row = p.screen().window().text((39, 0), (39, 7999), 8000, 8000)?;
+    assert_eq!(row, std::iter::repeat_n('a', 8000).collect::<String>());
     Ok(())
 }
 
