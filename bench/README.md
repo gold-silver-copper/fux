@@ -1,13 +1,13 @@
-# fux-bench: fux's speed against main, in instructions
+# fux-bench: fux's speed against master, in instructions
 
 An excluded package with its own lockfile. It runs fixed workloads through
 fux and fux-vt in process and counts the instructions each retires, on the
-working tree and on another commit (`main` by default), in one run: no
+working tree and on another commit (`master` by default), in one run: no
 stored baseline, and a busy machine moves the counts far less than times. `feel`
 measures wall-clock latency and throughput through real servers, beside
 tmux, zellij and herdr.
 
-CI does not run it; `fux-vt/compare/run.sh full` runs `--against main`, and
+CI does not run it; `fux-vt/compare/run.sh full` runs `--against master`, and
 `run.sh deep` runs `feel` and `info`. It forbids fux's lints and builds with
 fux's release profile (`lto = "thin"`, `codegen-units = 1`): any other
 inlines differently and changes the counts.
@@ -17,7 +17,7 @@ inlines differently and changes the counts.
 From the repository root:
 
 ```sh
-cargo run --release --manifest-path bench/Cargo.toml -- --against main
+cargo run --release --manifest-path bench/Cargo.toml -- --against master
 cargo run --release --manifest-path bench/Cargo.toml -- --against HEAD~1 --repeats 9 --only paint/
 
 bench/target/release/fux-bench list          # the workloads
@@ -29,7 +29,7 @@ bench/target/release/fux-bench feel          # latency, throughput and footprint
 
 | Command and flags | Meaning |
 | --- | --- |
-| (default) `--against REF` | every workload on REF (default `main`) and on the working tree, in instructions |
+| (default) `--against REF` | every workload on REF (default `master`) and on the working tree, in instructions |
 | `--repeats N` | runs per side (default 5) |
 | `--jobs N` | threads (default: every core) |
 | `--threshold PERCENT` | flag a workload this much above REF (default 3) |

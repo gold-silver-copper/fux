@@ -29,7 +29,7 @@ its arguments, or one of the harness commands in `harness.sh`:
 | Command | When | Budget | Runs |
 | --- | --- | --- | --- |
 | `run.sh quick` | before a commit | 60 s | `corpus` beside xterm and the panel; `corpus --subject ghostty`; `transparency`; `run --cases 2000`; `cases`; `encoders`; the oracle (`diff/oracle.sh`, see [`diff/README.md`](../../diff/README.md)) |
-| `run.sh full` | before a PR | 600 s | `quick`; `run --cases 20000` with and without `--no-reflow`; `esctest`; `esctest --terminal ghostty --beside fux-vt`; `fux-bench --against main`; `footprint`; `bench --instructions` |
+| `run.sh full` | before a PR | 600 s | `quick`; `run --cases 20000` with and without `--no-reflow`; `esctest`; `esctest --terminal ghostty --beside fux-vt`; `fux-bench --against master`; `footprint`; `bench --instructions` |
 | `run.sh deep` | before a release, or when hunting | none (prints an estimate) | `full`; `verdicts` for seeds 1–20 (`FUX_DEEP_SEEDS`); `esctest --in-fux`; `transparency --multiplexers`; `fux-bench feel` and `info`; 10 minutes of fuzzing |
 | `run.sh fuzz [MINUTES]` | by hand | MINUTES (10) | every fuzz target in `harness.sh`, sharing the time; a crash is minimized (`cargo fuzz tmin`) and listed, to be made a test |
 | `run.sh scoreboard` | after any of them | seconds | the last results, gathered (see "The scoreboard") |
@@ -677,7 +677,7 @@ The axes:
 - conformance: esctest's pass rate, directly and in a fux pane;
 - real programs: corpus recordings agreeing;
 - the multiplexer: transparency, beside tmux and zellij;
-- speed: instructions against main, and MB/s beside Ghostty and alacritty;
+- speed: instructions against master, and MB/s beside Ghostty and alacritty;
 - latency;
 - footprint and bytes per frame;
 - robustness: fuzz time since the last crash;

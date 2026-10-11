@@ -10,7 +10,7 @@
 #
 # Results, logs and the fuzz ledger go to $FUX_HARNESS_OUT (default
 # fux-vt/compare/target/harness). Checks in a group run side by side; what
-# times itself or counts against main runs alone. Each command ends with a
+# times itself or counts against master runs alone. Each command ends with a
 # one-screen summary, and exits 1 if any check failed.
 set -euo pipefail
 
@@ -61,7 +61,7 @@ quick() {
   # place: both scores and where each departs alone (corpus-ghostty.json).
   # It runs beside the corpus, an xterm of its own, and still fits.
   # The oracle (diff/oracle.sh) holds fux-vt to what it does at the latest
-  # main: every observable, after every step, over the corpus,
+  # master: every observable, after every step, over the corpus,
   # 10,000 random cases and 50 resize streams.
   # The input encoders beside libghostty-vt's (encoders.rs) take seconds.
   echo "quick: corpus beside xterm, with Ghostty judged too, transparency, 2,000 random cases, the named cases, the encoders, the oracle"
@@ -91,12 +91,12 @@ full() {
     "random-no-reflow $compare run --cases 20000 --no-reflow" \
     "esctest $compare esctest --json $out/esctest.json" \
     "esctest-ghostty $compare esctest --terminal ghostty --beside fux-vt --json $out/esctest-ghostty.json"
-  echo "full: instructions against main (alone)"
+  echo "full: instructions against master (alone)"
   ran+=(against)
   build_bench
   # Nine repeats, not the bench's five: on a busy machine five left a
   # workload's spread above the 3% it judges at.
-  step against "$bench" --against main --repeats 9 --json "$out/against.json"
+  step against "$bench" --against master --repeats 9 --json "$out/against.json"
   # Each engine's memory, and its instructions per byte beside Ghostty's:
   # every measure a child process of its own. About 5 s and 45-60 s.
   echo "full: memory and instructions per byte, every engine in process (alone)"

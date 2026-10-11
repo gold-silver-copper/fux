@@ -26,12 +26,12 @@ usage: fux-bench [--against REF] [--repeats N] [--jobs N] [--threshold PERCENT]
        fux-bench info [--json FILE]
        fux-bench feel [--muxes LIST] [--parts LIST] [--keys N] [--json FILE]
 
-(default)  every workload on REF (default main), built in a temporary
+(default)  every workload on REF (default master), built in a temporary
            worktree, and on the working tree, alternating, in instructions
            retired; flags a workload more than PERCENT (default 3) above
            REF and beyond the noise of its repeats (default 5). Exit 1 if
            one is flagged. Run it built as fux is:
-             cargo run --release --manifest-path bench/Cargo.toml -- --against main
+             cargo run --release --manifest-path bench/Cargo.toml -- --against master
            --only runs the workloads whose names contain TEXT.
 list       the workloads.
 run        one workload once (or its baseline), as `--against` counts it.
@@ -111,7 +111,7 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
     };
     let mut corpus = corpus::dir(&against::root());
     let mut options = against::Options {
-        reference: "main".into(),
+        reference: "master".into(),
         repeats: 5,
         jobs: std::thread::available_parallelism().map_or(4, usize::from),
         threshold: 3.0,

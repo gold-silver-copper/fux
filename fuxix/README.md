@@ -19,7 +19,7 @@ platform it does not build.
 
 The one function that retries, though not for signals. It works around
 two macOS kernel bugs that strike when PTYs are allocated and freed
-quickly, by any processes (see [the report for Apple](https://github.com/gold-silver-copper/fux/blob/main/docs/apple-feedback-ptmx-eredriveopen.md)):
+quickly, by any processes (see [the report for Apple](https://github.com/gold-silver-copper/fux/blob/master/docs/apple-feedback-ptmx-eredriveopen.md)):
 
 - `posix_openpt` can fail with errno -6, the kernel-private
   `EREDRIVEOPEN`, or with `ENXIO` after losing a race with another

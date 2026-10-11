@@ -359,15 +359,15 @@ The tests start real servers and shells: they need `/bin/sh`, `/bin/dash`
 and `python3`, and use zsh if installed. Tools outside the workspace, each
 with a README:
 
-- [`fux-vt/compare`](https://github.com/gold-silver-copper/fux/blob/main/fux-vt/compare/README.md):
+- [`fux-vt/compare`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/compare/README.md):
   fux's terminal emulator beside other terminals;
-- [`diff`](https://github.com/gold-silver-copper/fux/blob/main/diff/README.md):
+- [`diff`](https://github.com/gold-silver-copper/fux/blob/master/diff/README.md):
   fux beside its last release;
-- [`bench`](https://github.com/gold-silver-copper/fux/blob/main/bench/README.md):
+- [`bench`](https://github.com/gold-silver-copper/fux/blob/master/bench/README.md):
   speed, latency and footprint;
-- [`fuzz`](https://github.com/gold-silver-copper/fux/blob/main/fuzz/README.md):
+- [`fuzz`](https://github.com/gold-silver-copper/fux/blob/master/fuzz/README.md):
   libFuzzer targets;
-- [`walk`](https://github.com/gold-silver-copper/fux/blob/main/walk/README.md):
+- [`walk`](https://github.com/gold-silver-copper/fux/blob/master/walk/README.md):
   scripted runs of the real binary.
 
 ## License
