@@ -4,7 +4,7 @@
 //! and its layout changes only through [`Tab::edit`], which keeps each focus
 //! on one of its panes: no client names a tab or pane that is gone.
 use crate::id::{ClientId, PaneId, TabId, WsId};
-use crate::layout::Tree;
+use crate::layout::{Rect, Tree};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A workspace and its tabs, of which it always has one or more: each is
@@ -23,12 +23,35 @@ pub struct Tab {
     pub name: String,
     root: Option<Tree>,
     /// Its layout changed since its panes were sized for it: one no client
-    /// shows is then laid out on a client's screen (`Session::size_panes`).
+    /// shows is then laid out again (`Session::size_panes`).
     changed: bool,
+    fit: Fit,
     seats: BTreeMap<ClientId, Seat>,
     /// The client that last typed into it, whose terminal answers its panes'
     /// colour queries (`outer`).
     pub(crate) typist: Option<ClientId>,
+}
+
+/// What a tab no client shows is laid out on. A client that shows it lays
+/// it out on its own screen, whichever this is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fit {
+    /// A client's screen, any attached client's: with none attached, its
+    /// panes keep their sizes.
+    Clients,
+    /// A screen of this size, client or none: `--size` and `fux resize`.
+    Fixed(fux_vt::Size),
+}
+
+impl Fit {
+    /// The area it lays a tab out in: a fixed size's, or `client`, a
+    /// client's screen, if there is one.
+    pub fn area(self, client: Option<Rect>) -> Option<Rect> {
+        match self {
+            Fit::Fixed(size) => Some(Rect::screen(size.rows(), size.cols())),
+            Fit::Clients => client,
+        }
+    }
 }
 
 /// A client's place in a tab: every attached client has one in every tab.
@@ -65,10 +88,10 @@ impl Workspace {
         id: WsId,
         name: String,
         tab: TabId,
-        root: Option<Tree>,
+        (root, fit): (Option<Tree>, Fit),
         clients: impl Iterator<Item = ClientId>,
     ) -> Workspace {
-        let tab = Tab::new(tab, crate::session::MAIN.into(), root, clients, true);
+        let tab = Tab::new(tab, crate::session::MAIN.into(), (root, fit), clients, true);
         let (tabs, viewers) = (vec![tab], BTreeSet::new());
         Workspace {
             id,
@@ -94,11 +117,11 @@ impl Workspace {
 
     /// Adds a tab, named after its place if no name is given, with a seat
     /// for every client that has one in the others.
-    pub(crate) fn add_tab(&mut self, id: TabId, name: Option<String>, root: Option<Tree>) {
+    pub(crate) fn add_tab(&mut self, id: TabId, name: Option<String>, layout: (Option<Tree>, Fit)) {
         let number = self.tabs.len().saturating_add(1);
         let name = name.unwrap_or_else(|| format!("tab-{number}"));
         let clients = self.tabs.first().map(|t| t.seats.keys().copied());
-        let tab = Tab::new(id, name, root, clients.into_iter().flatten(), false);
+        let tab = Tab::new(id, name, layout, clients.into_iter().flatten(), false);
         self.tabs.push(tab);
     }
 
@@ -119,15 +142,24 @@ impl Workspace {
     }
 
     /// The layouts of its tabs no client shows that changed since their
-    /// panes were sized, for sizing them; every tab is then taken as sized,
-    /// a shown one as its clients show it.
-    pub(crate) fn changed_unshown(&mut self) -> impl Iterator<Item = &Tree> {
+    /// panes were sized, each with the area its fit lays it out in given
+    /// `client`, any client's screen, for sizing them. Those are then taken
+    /// as sized, as is a shown one, by its clients; one with no area yet
+    /// waits for a client.
+    pub(crate) fn changed_unshown(
+        &mut self,
+        client: Option<Rect>,
+    ) -> impl Iterator<Item = (&Tree, Rect)> {
         let viewers = &self.viewers;
         self.tabs.iter_mut().filter_map(move |tab| {
-            let changed = std::mem::take(&mut tab.changed);
-            let tab = &*tab;
             let shown = viewers.iter().any(|&c| tab.shown_to(c));
-            tab.root.as_ref().filter(|_| changed && !shown)
+            let area = tab.fit.area(client).filter(|_| !shown);
+            if area.is_some() || shown {
+                let changed = std::mem::take(&mut tab.changed);
+                let tab = &*tab;
+                return tab.root.as_ref().filter(|_| changed).zip(area);
+            }
+            None
         })
     }
 
@@ -173,7 +205,7 @@ impl Tab {
     fn new(
         id: TabId,
         name: String,
-        root: Option<Tree>,
+        (root, fit): (Option<Tree>, Fit),
         clients: impl Iterator<Item = ClientId>,
         shown: bool,
     ) -> Tab {
@@ -183,6 +215,7 @@ impl Tab {
             name,
             root,
             changed: true,
+            fit,
             seats,
             typist,
         };
@@ -194,6 +227,16 @@ impl Tab {
     /// Its layout, unless it is empty.
     pub fn root(&self) -> Option<&Tree> {
         self.root.as_ref()
+    }
+
+    pub fn fit(&self) -> Fit {
+        self.fit
+    }
+
+    /// Lays it out on what `fit` says from now on.
+    pub(crate) fn set_fit(&mut self, fit: Fit) {
+        self.fit = fit;
+        self.changed = true;
     }
 
     pub fn holds(&self, pane: PaneId) -> bool {

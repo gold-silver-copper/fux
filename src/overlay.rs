@@ -267,6 +267,8 @@ pub fn open_menu(session: &Session, view: &mut View, about: AnyRef<WsId>) -> Str
                     target: session.tab_workspace(tab).ok().map(WsRef::Id),
                     name: None,
                     cmd: Vec::new(),
+                    size: None,
+                    json: false,
                 },
             ));
         }
@@ -275,6 +277,8 @@ pub fn open_menu(session: &Session, view: &mut View, about: AnyRef<WsId>) -> Str
             Command::NewWorkspace {
                 name: None,
                 cmd: Vec::new(),
+                size: None,
+                json: false,
             },
         )),
     }
@@ -967,6 +971,7 @@ mod tests {
                 axis: crate::layout::Axis::Horizontal,
                 target: None,
                 cmd,
+                ..
             }) if cmd.is_empty()
         ));
         // Letters are bindings, not moves: `j` focuses down and closes it.
@@ -1029,6 +1034,8 @@ mod tests {
             target: None,
             name: None,
             cmd: Vec::new(),
+            size: None,
+            json: false,
         };
         assert_eq!(
             column(&s.config, &[KeyPress::char('g')]),

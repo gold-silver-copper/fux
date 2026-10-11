@@ -4,10 +4,12 @@
 pub use fux_vt::bytes;
 pub use fux_vt::keys;
 pub use fux_vt::keys::{decode, encode};
+pub mod capture;
 pub mod client;
 pub mod command;
 pub mod config;
 pub mod copy;
+pub mod help;
 pub mod id;
 pub mod input;
 pub mod json;
@@ -22,10 +24,12 @@ pub mod server;
 pub mod session;
 pub mod socket;
 pub mod view;
+pub mod wait;
 pub mod words;
 pub mod workspace;
 
 use std::io::{Read, Write};
+use std::num::NonZeroU16;
 use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -57,7 +61,11 @@ pub(crate) fn drain(mut pipe: &UnixStream) {
 fn usage() -> String {
     format!(
         "\
+Driving programs from a script or an agent: `fux help agents`.
+One command at length, with an example: `fux help COMMAND`.
+
 usage: fux [attach] [-t WORKSPACE] [--nested]
+       fux attach --headless [--size COLSxROWS] [--log FILE] [-t WORKSPACE]
        fux server [--socket PATH] [--config FILE]
        fux COMMAND [ARGS...]
 
@@ -138,9 +146,25 @@ impl From<client::Error> for Error {
     }
 }
 
-fn usage_error(message: &str) -> Result<u8, Error> {
+/// `COLSxROWS`, as `attach --size` takes it: rows and columns.
+fn headless_size(text: &str) -> Option<(NonZeroU16, NonZeroU16)> {
+    let (cols, rows) = text.split_once('x')?;
+    Some((rows.parse().ok()?, cols.parse().ok()?))
+}
+
+fn nonzero(n: u16) -> NonZeroU16 {
+    NonZeroU16::new(n).unwrap_or(NonZeroU16::MIN)
+}
+
+/// A usage error: what is wrong, and the usage of the command it was in,
+/// if it names one, rather than every command's.
+fn usage_error(message: &str, command: Option<&str>) -> Result<u8, Error> {
+    let usage = (command.and_then(command::usage_of)).map_or_else(
+        || "`fux help` lists commands".to_owned(),
+        |usage| format!("usage: fux {usage}"),
+    );
     // The status says it, if stderr cannot.
-    let _ = writeln!(std::io::stderr(), "fux: {message}\n{}", usage());
+    let _ = writeln!(std::io::stderr(), "fux: {message}\n{usage}");
     Ok(2)
 }
 
@@ -149,28 +173,48 @@ fn run(args: &[String]) -> Result<u8, Error> {
     match first {
         Some(fuxix::pty::LAUNCH) => Ok(fuxix::pty::launched(args.get(1..).unwrap_or_default())),
         // `attach` may be left out before its flags, as usage says.
-        None | Some("attach" | "-t" | "--nested") => {
+        None | Some("attach" | "-t" | "--nested" | "--headless") => {
             let mut workspace = None;
-            let mut nested = false;
+            let (mut nested, mut headless, mut size, mut log) = (false, false, None, None);
             let mut rest = args.iter().skip(usize::from(first == Some("attach")));
             while let Some(arg) = rest.next() {
                 match arg.as_str() {
                     "-t" => match rest.next() {
                         Some(name) => workspace = Some(name.clone()),
-                        None => return usage_error("attach -t needs a workspace"),
+                        None => return usage_error("attach -t needs a workspace", None),
                     },
                     "--nested" => nested = true,
-                    other => return usage_error(&format!("attach: unexpected {other:?}")),
+                    "--headless" => headless = true,
+                    "--size" => match rest.next().and_then(|s| headless_size(s)) {
+                        Some(cells) => size = Some(cells),
+                        None => {
+                            return usage_error("attach --size needs COLSxROWS, as 100x30", None);
+                        }
+                    },
+                    "--log" => match rest.next() {
+                        Some(path) => log = Some(std::path::PathBuf::from(path)),
+                        None => return usage_error("attach --log needs a file", None),
+                    },
+                    other => return usage_error(&format!("attach: unexpected {other:?}"), None),
                 }
             }
-            if !nested && std::env::var_os("FUX_PANE").is_some_and(|p| !p.is_empty()) {
+            if !headless && (size.is_some() || log.is_some()) {
+                return usage_error("attach --size and --log go with --headless", None);
+            }
+            // A headless client takes no terminal, so may attach from a pane.
+            if !nested && !headless && std::env::var_os("FUX_PANE").is_some_and(|p| !p.is_empty()) {
                 return Err(Error::Nested);
             }
             let socket = socket::socket_path(None)?;
             if UnixStream::connect(socket.path()).is_err() {
                 client::start_server(&socket)?;
             }
-            client::attach(&socket, workspace)?;
+            if headless {
+                let size = size.unwrap_or((nonzero(24), nonzero(80)));
+                client::headless(&socket, workspace, size, log.as_deref())?;
+            } else {
+                client::attach(&socket, workspace)?;
+            }
             Ok(0)
         }
         Some("server") => {
@@ -183,7 +227,7 @@ fn run(args: &[String]) -> Result<u8, Error> {
                     client::SETSID => {
                         fuxix::process::setsid().map_err(Error::Setsid)?;
                     }
-                    other => return usage_error(&format!("server: unexpected {other:?}")),
+                    other => return usage_error(&format!("server: unexpected {other:?}"), None),
                 }
             }
             let socket = socket::socket_path(socket_flag.as_deref())?;
@@ -199,8 +243,29 @@ fn run(args: &[String]) -> Result<u8, Error> {
             Ok(0)
         }
         Some("help" | "--help" | "-h") => {
-            writeln!(std::io::stdout(), "{}", usage()).map_err(Error::Output)?;
+            let text = match args.get(1).map(String::as_str) {
+                None => usage(),
+                Some("agents") => help::AGENTS.to_owned(),
+                Some(name) => match help::command(name) {
+                    Some(text) => text,
+                    None => {
+                        let message = format!("no command {name:?}");
+                        return usage_error(&message, None);
+                    }
+                },
+            };
+            writeln!(std::io::stdout(), "{}", text.trim_end()).map_err(Error::Output)?;
             Ok(0)
+        }
+        // `fux COMMAND --help`: that command's help, not a run of it.
+        Some(name) if args.len() == 2 && args.get(1).is_some_and(|a| a == "--help") => {
+            match help::command(name) {
+                Some(text) => {
+                    writeln!(std::io::stdout(), "{}", text.trim_end()).map_err(Error::Output)?;
+                    Ok(0)
+                }
+                None => usage_error(&format!("unknown command {name:?}"), None),
+            }
         }
         Some("--version" | "-V" | "version") => {
             let version = env!("CARGO_PKG_VERSION");
@@ -210,7 +275,7 @@ fn run(args: &[String]) -> Result<u8, Error> {
         Some(_) => {
             // Parsed here as well, so a usage error needs no server.
             if let Err(usage) = command::parse(args) {
-                return usage_error(&usage.to_string());
+                return usage_error(&usage.to_string(), args.first().map(String::as_str));
             }
             let socket = socket::socket_path(None)?;
             Ok(client::command(&socket, args)?)

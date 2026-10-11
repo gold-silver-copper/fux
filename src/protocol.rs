@@ -13,7 +13,7 @@ use crate::bytes::ByteQueue;
 use std::num::NonZeroU16;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -132,6 +132,9 @@ pub enum Role {
     /// `fux kill-server` can always stop a server from another fux version:
     /// for that, a `Hello`'s frame and payload never change.
     Kill = 2,
+    /// A client with no terminal (`fux attach --headless`): `Attach`, then
+    /// nothing but its end; the server sizes it (`fux resize -c`).
+    Headless = 3,
 }
 
 /// The frames one side expects at one point of a connection, decoded from
@@ -200,7 +203,7 @@ impl<'a> Frame<'a> for Hello<'a> {
         whole(payload, |r| {
             let protocol = r.u32()?;
             let byte = r.u8()?;
-            let role = [Role::Attach, Role::Command, Role::Kill]
+            let role = [Role::Attach, Role::Command, Role::Kill, Role::Headless]
                 .into_iter()
                 .find(|role| *role as u8 == byte)
                 .ok_or(Error::UnknownRole(byte))?;

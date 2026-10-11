@@ -39,6 +39,99 @@ pub struct Grid {
     memo: Option<Memo>,
 }
 
+/// A picture a client is shown: the pane it is in and its number there,
+/// the cells of the client's screen it takes (top row, first column, rows,
+/// columns), and the part of its pixels those show (left, top, width,
+/// height).
+#[derive(Clone, Debug)]
+pub struct Visible {
+    pub pane: PaneId,
+    pub id: u64,
+    pub area: (u16, u16, u16, u16),
+    pub crop: (u32, u32, u32, u32),
+    pub picture: std::sync::Arc<fux_vt::sixel::Picture>,
+}
+
+/// The same picture in the same place, showing the same part.
+impl PartialEq for Visible {
+    fn eq(&self, other: &Visible) -> bool {
+        (self.pane, self.id, self.area, self.crop) == (other.pane, other.id, other.area, other.crop)
+    }
+}
+
+/// The pictures client `client`'s panes, placed as `placement` has them,
+/// show on its screen: none unless its terminal draws sixel, nothing covers
+/// its panes (an overlay, copy mode), and a picture was laid out in its
+/// cell size. Each is clipped to its pane.
+pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> Vec<Visible> {
+    let Some(view) = session.views.get(&client) else {
+        return Vec::new();
+    };
+    let graphics = view.terminal.graphics();
+    let Some(cell) = graphics
+        .cell
+        .filter(|_| graphics.sixel && matches!(view.mode, Mode::Normal))
+    else {
+        return Vec::new();
+    };
+    let mut visible = Vec::new();
+    for &(id, rect) in &placement.panes {
+        let Some(pane) = session.panes.get(&id) else {
+            continue;
+        };
+        for shown in pane.screen().pictures().filter(|s| s.cell == cell) {
+            // The rows of the pane it is on, and the columns.
+            let end = shown
+                .row
+                .saturating_add(i64::from(shown.rows))
+                .min(i64::from(rect.h()));
+            let start = shown.row.max(0);
+            let right = shown.col.saturating_add(shown.cols).min(rect.w());
+            let (Ok(top), Ok(bottom)) = (u16::try_from(start), u16::try_from(end)) else {
+                continue;
+            };
+            if bottom <= top || right <= shown.col {
+                continue;
+            }
+            let (rows, cols) = (bottom.saturating_sub(top), right.saturating_sub(shown.col));
+            let skipped = u32::try_from(start.saturating_sub(shown.row)).unwrap_or(0);
+            let (width, height) = (u32::from(cell.0), u32::from(cell.1));
+            visible.push(Visible {
+                pane: id,
+                id: shown.id,
+                area: (
+                    rect.y().saturating_add(top),
+                    rect.x().saturating_add(shown.col),
+                    rows,
+                    cols,
+                ),
+                crop: (
+                    0,
+                    skipped.saturating_mul(height),
+                    u32::from(cols).saturating_mul(width),
+                    u32::from(rows).saturating_mul(height),
+                ),
+                picture: std::sync::Arc::clone(shown.picture),
+            });
+        }
+    }
+    visible
+}
+
+/// What shows `picture` on a terminal that draws sixel, its cursor kept:
+/// at its area's top left, its crop of pixels.
+pub fn picture_into(picture: &Visible, out: &mut Vec<u8>) {
+    let (row, col, _, _) = picture.area;
+    let _ = write!(
+        out,
+        "\x1b7\x1b[{};{}H",
+        row.saturating_add(1),
+        col.saturating_add(1)
+    );
+    fux_vt::sixel::encode(&picture.picture, picture.crop, out);
+    out.extend_from_slice(b"\x1b8");
+}
+
 /// Grids are equal when they show the same.
 impl PartialEq for Grid {
     fn eq(&self, other: &Grid) -> bool {
@@ -298,6 +391,33 @@ impl Grid {
     pub fn get(&self, y: u16, x: u16) -> Option<CellRef<'_>> {
         self.index(y, x).and_then(|i| self.cells.get(i))
     }
+    /// Whether the cells of `area` (top row, first column, rows, columns)
+    /// are the same as `other`'s.
+    pub fn same_in(&self, other: &Grid, (row, col, rows, cols): (u16, u16, u16, u16)) -> bool {
+        (row..row.saturating_add(rows)).all(|y| {
+            (col..col.saturating_add(cols)).all(|x| match (self.get(y, x), other.get(y, x)) {
+                (Some(a), Some(b)) => {
+                    a.contents() == b.contents() && a.attributes() == b.attributes()
+                }
+                (None, None) => true,
+                (Some(_), None) | (None, Some(_)) => false,
+            })
+        })
+    }
+    /// Takes it that the cells of `area` show something no composed grid
+    /// does, as a picture's pixels: the next paint against it paints them
+    /// all again.
+    pub fn forget_area(&mut self, (row, col, rows, cols): (u16, u16, u16, u16)) {
+        self.memo = None;
+        let unlike = CellRef::new(fux_vt::PLACEHOLDER, false, Attributes::default());
+        for y in row..row.saturating_add(rows) {
+            for x in col..col.saturating_add(cols) {
+                if let Some(i) = self.index(y, x) {
+                    self.cells.set(i, unlike);
+                }
+            }
+        }
+    }
     /// Forgets what composed the grid (`Memo`): it shows the same, and is
     /// composed whole next time and painted by comparing every row. For
     /// the oracles that check the memo against working without it.
@@ -499,11 +619,12 @@ fn pane_colours(attributes: Attributes, screen: &fux_vt::Screen) -> Attributes {
 }
 
 /// What a cell shows: its text, or a space if it has none.
+/// A cell's glyph as it is painted and captured: a blank for an empty cell,
+/// and for one a picture covers, which the picture is drawn over.
 pub fn shown(cell: CellRef<'_>) -> &str {
-    if cell.has_contents() {
-        cell.contents()
-    } else {
-        " "
+    match cell.contents() {
+        text if cell.has_contents() && text != fux_vt::PLACEHOLDER => text,
+        _ => " ",
     }
 }
 
@@ -1161,7 +1282,7 @@ fn column(grid: &mut Grid, session: &Session, view: &View, column: &overlay::Col
 /// underline at all (xterm, avt) or reads the colon as a semicolon,
 /// underline and italic, and one that does not know 21 may read it as bold
 /// off (alacritty, avt). The underline colour goes either way: see below.
-fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
+pub(crate) fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
     out.extend_from_slice(b"\x1b[0");
     if a.bold() {
         out.extend_from_slice(b";1");
@@ -1866,7 +1987,7 @@ mod tests {
             .map(|y| {
                 window
                     .row(y)
-                    .map(crate::session::row_text)
+                    .map(crate::capture::row_text)
                     .unwrap_or_default()
             })
             .collect()

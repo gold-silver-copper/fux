@@ -1,8 +1,8 @@
 //! The server's state: workspaces, tabs, panes and the clients' views, and
 //! every command that changes them.
 use crate::command::{
-    self, AnyRef, ClientAction, Command, Kind, MoveTo, PanePick, Pick, Sibling, Subject, SwapWith,
-    WsRef,
+    self, AnyRef, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick, PaneResize,
+    Pick, Resized, Sibling, Subject, SwapWith, WsRef,
 };
 use crate::config::Config;
 use crate::copy::MAX_CELLS;
@@ -11,10 +11,10 @@ use crate::json::Json;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
 use crate::overlay::{Column, Repeat, pane_chooser};
-use crate::pane::{InputQueue, Pane, Process, Typed};
+use crate::pane::{InputQueue, Pane, Process, Runs, Typed};
 use crate::process::Child;
-use crate::view::{Choice, Mode, View};
-use crate::workspace::{Seat, Tab, Workspace};
+use crate::view::{Choice, ClientKind, Mode, View};
+use crate::workspace::{Fit, Seat, Tab, Workspace};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -59,6 +59,8 @@ pub enum Timer {
     /// A pane's frame of synchronized output is read, ended or not
     /// (`Pane::frame_deadline`).
     Frame(PaneId),
+    /// A pane's paced input goes on (`Pane::pace_due`).
+    Pace(PaneId),
 }
 
 /// Where a command comes from, which says what it acts on when it names no
@@ -150,6 +152,24 @@ pub enum Error {
     },
     /// Nothing runs in the pane but its shell.
     OnlyShell(PaneId),
+    /// The pane's program has exited: it takes no input.
+    Exited {
+        pane: PaneId,
+        status: i32,
+    },
+    /// The pane's program has not asked for mouse reports.
+    NoMouse(PaneId),
+    /// No way of moving the pane's borders makes it this size.
+    CannotResize {
+        pane: PaneId,
+        cols: u16,
+        rows: u16,
+    },
+    /// A command that waits, from where nothing can wait for it.
+    WaitsOnlyFromCli,
+    /// A client with a terminal, which says its size itself.
+    NotHeadless(ClientId),
+    NotADirectory(PathBuf),
     // What copy mode cannot do.
     NoRows,
     /// A selection of more than `MAX_CELLS` cells.
@@ -203,6 +223,21 @@ impl std::fmt::Display for Error {
                 write!(f, "no pane {} of {from}", direction.name())
             }
             Error::OnlyShell(pane) => write!(f, "nothing is running in {pane} but its shell"),
+            Error::Exited { pane, status } => {
+                write!(f, "the program in {pane} exited with status {status}")
+            }
+            Error::NoMouse(pane) => {
+                write!(f, "the program in {pane} has not asked for mouse reports")
+            }
+            Error::CannotResize { pane, cols, rows } => {
+                write!(f, "{pane} cannot be made {cols}x{rows} in its tab")
+            }
+            Error::WaitsOnlyFromCli => f.write_str("wait runs from the command line"),
+            Error::NotHeadless(client) => write!(
+                f,
+                "{client} has a terminal, which sets its size; resize sizes headless clients"
+            ),
+            Error::NotADirectory(path) => write!(f, "{} is not a directory", path.display()),
             Error::NoRows => f.write_str("the pane has no rows"),
             Error::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
             Error::EmptyName => f.write_str("a name cannot be empty"),
@@ -255,6 +290,12 @@ impl std::error::Error for Error {
             | Error::NoBorder { .. }
             | Error::NoNeighbor { .. }
             | Error::OnlyShell(_)
+            | Error::Exited { .. }
+            | Error::NoMouse(_)
+            | Error::CannotResize { .. }
+            | Error::WaitsOnlyFromCli
+            | Error::NotHeadless(_)
+            | Error::NotADirectory(_)
             | Error::NoRows
             | Error::SelectionTooLarge
             | Error::EmptyName
@@ -291,6 +332,13 @@ pub struct Outcome {
     pub status: u8,
     pub stdout: String,
     pub stderr: String,
+}
+
+/// What a command line from the CLI begins: its outcome, now, or a wait
+/// for one (`wait`, `send-keys --wait-idle`).
+pub enum Begun {
+    Done(Outcome),
+    Waiting(Box<crate::wait::Waiting>),
 }
 
 /// How long a closing pane's processes have to exit after the hangup.
@@ -339,6 +387,26 @@ pub struct Session {
 
 /// The name of the first workspace, and of each workspace's first tab.
 pub(crate) const MAIN: &str = "main";
+
+/// The workspace `fux run` starts programs in unless told another.
+pub const RUN_WORKSPACE: &str = "agent";
+
+/// What a command that makes a pane prints: `text`, the IDs it names; or
+/// with `--json`, where the pane is.
+fn made_ids((ws, tab, pane): (WsId, TabId, PaneId), text: &[String], json: bool) -> String {
+    let mut out = if json {
+        Json::Object(vec![
+            ("workspace", Json::str(ws.to_string())),
+            ("tab", Json::str(tab.to_string())),
+            ("pane", Json::str(pane.to_string())),
+        ])
+        .render()
+    } else {
+        text.join(" ")
+    };
+    out.push('\n');
+    out
+}
 
 /// Whether a command leaves every client's screen as it was: it reads the
 /// state, or hands a pane's program something whose effect, if any, comes
@@ -391,7 +459,9 @@ impl Session {
 
     /// One workspace, holding one tab with one shell.
     pub fn start(&mut self) -> Result<(), Error> {
-        self.create_workspace(Some(MAIN.into()), &[], &home())
+        let home = home();
+        let start = (Start::Shell(&[]), home.as_path());
+        self.create_workspace(Some(MAIN.into()), start, (Fit::Clients, default_size()))
             .map(|_| ())
     }
 
@@ -494,6 +564,88 @@ impl Session {
         self.panes.get_mut(&id).ok_or(Error::NoPane(id))
     }
 
+    /// `pane_mut`, for input: a pane whose program has exited takes none.
+    fn live_pane_mut(&mut self, explicit: Option<PaneId>, here: Here) -> Result<&mut Pane, Error> {
+        let pane = self.pane_mut(explicit, here)?;
+        match pane.process.exit_status() {
+            Some(status) => Err(Error::Exited {
+                pane: pane.id,
+                status,
+            }),
+            None => Ok(pane),
+        }
+    }
+
+    /// The size a pane starts at in a new tab laid out on `fit`.
+    fn start_size(&self, fit: Fit, here: Here) -> fux_vt::Size {
+        let area = self.tab_area(fit, here);
+        crate::pane::size(area.h(), area.w())
+    }
+
+    /// The size a pane split from `target` along `axis` starts at: its
+    /// place in the layout once split.
+    fn split_size(&self, target: PaneId, axis: Axis, here: Here) -> Result<fux_vt::Size, Error> {
+        let (_, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
+        let area = self.reference_area(tab, here);
+        let mut ids = self.ids;
+        let new = ids.pane()?;
+        let mut root = self.root(tab).cloned().ok_or(Error::NoPane(target))?;
+        root.split(target, new, axis, Side::After);
+        let rect = layout::place(&root, area).rect(new);
+        Ok(rect.map_or(default_size(), |r| crate::pane::size(r.h(), r.w())))
+    }
+
+    /// Resizes `pane`, placed in `area`, to `cols` and `rows`, either or
+    /// both; nothing changes unless both can be met.
+    fn resize_pane_to(
+        &mut self,
+        pane: PaneId,
+        area: Rect,
+        (cols, rows): (Option<Extent>, Option<Extent>),
+    ) -> Result<String, Error> {
+        let cells = |extent: Extent, of: u16| match extent {
+            Extent::Cells(n) => n,
+            Extent::Percent(p) => {
+                let share = u32::from(of).saturating_mul(u32::from(p)).checked_div(100);
+                share
+                    .and_then(|n| u16::try_from(n).ok())
+                    .unwrap_or(of)
+                    .max(1)
+            }
+        };
+        let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
+        let mut root = self.root(tab).cloned().ok_or(Error::NoPane(pane))?;
+        let now = layout::place(&root, area)
+            .rect(pane)
+            .ok_or(Error::NoPane(pane))?;
+        let want = (
+            cols.map_or(now.w(), |c| cells(c, area.w())),
+            rows.map_or(now.h(), |r| cells(r, area.h())),
+        );
+        let refused = || Error::CannotResize {
+            pane,
+            cols: want.0,
+            rows: want.1,
+        };
+        for (axis, len, asked) in [
+            (Axis::Horizontal, want.0, cols),
+            (Axis::Vertical, want.1, rows),
+        ] {
+            if asked.is_some() {
+                root = layout::resize_to(&root, area, pane, axis, len).ok_or_else(refused)?;
+            }
+        }
+        // A width moved by the height's borders is not met.
+        let got = layout::place(&root, area)
+            .rect(pane)
+            .map(|r| (r.w(), r.h()));
+        if got != Some(want) {
+            return Err(refused());
+        }
+        tab_of(&mut self.workspaces, pane)?.edit(|old| *old = Some(root));
+        Ok(format!("{pane} {}x{}\n", want.0, want.1))
+    }
+
     fn tab_target(&self, explicit: Option<TabId>, here: Here) -> Result<TabId, Error> {
         let id = explicit.or(here.place().map(|p| p.tab));
         let id = id.ok_or(Error::NoTabGiven)?;
@@ -547,12 +699,14 @@ impl Session {
         }
     }
 
+    /// A workspace with one tab, laid out on `fit`, holding one pane that
+    /// starts what `start` says, `size` to begin with.
     fn create_workspace(
         &mut self,
         name: Option<String>,
-        cmd: &[String],
-        cwd: &Path,
-    ) -> Result<WsId, Error> {
+        (start, cwd): (Start<'_>, &Path),
+        (fit, size): (Fit, fux_vt::Size),
+    ) -> Result<(WsId, TabId, PaneId), Error> {
         if let Some(name) = &name {
             check_workspace_name(name, &self.workspaces)?;
         }
@@ -562,14 +716,41 @@ impl Session {
         let id = ids.workspace()?;
         let tab = ids.tab()?;
         let launch = self.launch.as_deref();
-        let pane = new_pane(&self.config, launch, &mut ids, cmd, cwd, default_size())?;
+        let pane = new_pane(&self.config, launch, &mut ids, start, cwd, size)?;
         self.ids = ids;
         let name = name.unwrap_or_else(|| self.workspace_name(id));
+        let made = (id, tab, pane.id);
         let root = Some(Tree::Pane(pane.id));
         let clients = self.views.keys().copied();
-        (self.workspaces).push(Workspace::new(id, name, tab, root, clients));
+        (self.workspaces).push(Workspace::new(id, name, tab, (root, fit), clients));
         self.panes.insert(pane.id, pane);
-        Ok(id)
+        Ok(made)
+    }
+
+    /// Adds a tab to workspace `ws`, laid out on `fit`, holding one pane that
+    /// starts what `start` says, `size` to begin with.
+    fn create_tab(
+        &mut self,
+        ws: WsId,
+        name: Option<String>,
+        (start, cwd): (Start<'_>, &Path),
+        (fit, size): (Fit, fux_vt::Size),
+    ) -> Result<(TabId, PaneId), Error> {
+        if let Some(name) = &name {
+            check_name(name)?;
+        }
+        let workspace = self.workspaces.iter_mut().find(|w| w.id == ws);
+        let workspace = workspace.ok_or(Error::NoWorkspace(ws))?;
+        // As for a workspace: the ID first, committed after the pane.
+        let mut ids = self.ids;
+        let id = ids.tab()?;
+        let launch = self.launch.as_deref();
+        let pane = new_pane(&self.config, launch, &mut ids, start, cwd, size)?;
+        self.ids = ids;
+        let made = (id, pane.id);
+        workspace.add_tab(id, name, (Some(Tree::Pane(pane.id)), fit));
+        self.panes.insert(pane.id, pane);
+        Ok(made)
     }
 
     // ------------------------------------------------------------- clients
@@ -577,6 +758,17 @@ impl Session {
     /// A client attaches, viewing `workspace` or the first one.
     pub fn attach(
         &mut self,
+        rows: u16,
+        cols: u16,
+        workspace: Option<&str>,
+    ) -> Result<ClientId, Error> {
+        self.attach_as(ClientKind::Terminal, rows, cols, workspace)
+    }
+
+    /// `attach`, for a client of `kind`.
+    pub fn attach_as(
+        &mut self,
+        kind: ClientKind,
         rows: u16,
         cols: u16,
         workspace: Option<&str>,
@@ -593,6 +785,7 @@ impl Session {
         };
         let id = self.ids.client()?;
         let mut view = View::new(id, rows.clamp(1, 4096), cols.clamp(1, 4096));
+        view.kind = kind;
         if let Some(error) = &self.config_error {
             let error = error.to_string();
             // The bar is narrow: the file's name, not its whole path, which
@@ -712,22 +905,34 @@ impl Session {
         layout::place_into(root, area, out);
     }
 
-    /// The area to lay out a tab in for a command without a client: a
-    /// client showing it, else any client, else a typical terminal.
+    /// The area to lay out a tab in for a command: a client's showing it,
+    /// else what its fit says (`tab_area`).
     fn reference_area(&self, tab: TabId, here: Here) -> Rect {
         let own = match here {
             Here::Client(client, _) => self.views.get(&client),
             Here::Cli(..) => None,
         };
         let shows = |v: &&View| self.shows(v.id, tab);
-        let view = (own.filter(shows))
+        match own
+            .filter(shows)
             .or_else(|| self.views.values().find(shows))
-            .or(own)
-            .or_else(|| self.views.values().next());
-        view.map_or(
-            Rect::screen(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
-            Self::pane_area,
-        )
+        {
+            Some(view) => Self::pane_area(view),
+            None => self.tab_area(self.tab(tab).map_or(Fit::Clients, Tab::fit), here),
+        }
+    }
+
+    /// The area a tab no client shows is laid out in on `fit`: a fixed
+    /// size's, else the commanding client's screen, else any client's, else
+    /// a typical terminal's.
+    fn tab_area(&self, fit: Fit, here: Here) -> Rect {
+        let own = match here {
+            Here::Client(client, _) => self.views.get(&client),
+            Here::Cli(..) => None,
+        };
+        let client = own.or_else(|| self.views.values().next());
+        (fit.area(client.map(Self::pane_area)))
+            .unwrap_or(Rect::screen(DEFAULT_SIZE.0, DEFAULT_SIZE.1))
     }
 
     // -------------------------------------------------------------- repair
@@ -847,7 +1052,7 @@ impl Session {
     }
 
     /// A PTY is the smallest rectangle any client shows it in. A tab no
-    /// client shows whose layout changed is laid out on any client's screen,
+    /// client shows whose layout changed is laid out on what its fit says,
     /// as commands resizing it are; otherwise its panes keep their size, so
     /// leaving a tab resizes nothing.
     fn size_panes(&mut self) {
@@ -858,15 +1063,11 @@ impl Session {
             self.placement_into(view, &mut placed);
             sizes.extend(placed.panes.iter().map(|(p, r)| (*p, (r.h(), r.w()))));
         }
-        if let Some(area) = self.views.values().next().map(Self::pane_area) {
-            let changed = self
-                .workspaces
-                .iter_mut()
-                .flat_map(Workspace::changed_unshown);
-            for root in changed {
-                layout::place_into(root, area, &mut placed);
-                sizes.extend(placed.panes.iter().map(|(p, r)| (*p, (r.h(), r.w()))));
-            }
+        let client = self.views.values().next().map(Self::pane_area);
+        let changed = (self.workspaces.iter_mut()).flat_map(|w| w.changed_unshown(client));
+        for (root, area) in changed {
+            layout::place_into(root, area, &mut placed);
+            sizes.extend(placed.panes.iter().map(|(p, r)| (*p, (r.h(), r.w()))));
         }
         self.placed = placed;
         // A pane's rectangles side by side, for the smallest.
@@ -987,9 +1188,43 @@ impl Session {
         self.settle();
     }
 
-    /// A pane's program exited with `status`.
+    /// A pane's program exited with `status`: a shell's pane closes, and a
+    /// program's stays, the status kept, for its last screen to be read.
     pub fn exited(&mut self, id: PaneId, status: i32) {
-        self.close_pane(id, Some(format!("exited with status {status}")));
+        // What a program wrote as it exited may still be on its terminal,
+        // unread: its last screen is read whole before it is kept.
+        if self.panes.get(&id).is_some_and(|p| p.runs == Runs::Program) {
+            let left = self
+                .panes
+                .get(&id)
+                .map(|p| unread(&p.process))
+                .unwrap_or_default();
+            if !left.is_empty() {
+                self.output(id, &left);
+            }
+        }
+        let Some(pane) = self.panes.get_mut(&id) else {
+            return;
+        };
+        match pane.runs {
+            Runs::Shell => self.close_pane(id, Some(format!("exited with status {status}"))),
+            Runs::Program => {
+                // Its leader, exited and unreaped, is reaped with the dying.
+                let gone = std::mem::replace(&mut pane.process, Process::Exited(status));
+                if let Process::Reading(child) | Process::HungUp(child) = gone {
+                    let deadline = Instant::now();
+                    self.dying.insert(id, Dying { child, deadline });
+                }
+                let place = self.locate(id);
+                let viewers: Vec<ClientId> = (self.views.keys().copied())
+                    .filter(|c| place.is_some_and(|(_, t)| self.shows(*c, t)))
+                    .collect();
+                for client in viewers {
+                    self.info_to(client, format!("{id} exited with status {status}"));
+                }
+                self.touch();
+            }
+        }
     }
 
     /// Output from a pane's program.
@@ -1006,7 +1241,8 @@ impl Session {
         let panes = self.panes.values().flat_map(|pane| {
             let typed = pane.input.due_at().map(|at| (at, Timer::Type(pane.id)));
             let frame = pane.frame_deadline().map(|at| (at, Timer::Frame(pane.id)));
-            typed.into_iter().chain(frame)
+            let paced = pane.pace_due().map(|at| (at, Timer::Pace(pane.id)));
+            typed.into_iter().chain(frame).chain(paced)
         });
         escapes.chain(panes)
     }
@@ -1019,6 +1255,9 @@ impl Session {
                 .into_iter()
                 .for_each(|p| p.input.type_now()),
             Timer::Frame(id) => self.read_with(id, Pane::release_frame),
+            Timer::Pace(id) => (self.panes.get_mut(&id))
+                .into_iter()
+                .for_each(|p| p.release_paced(Instant::now())),
         }
     }
 
@@ -1029,12 +1268,15 @@ impl Session {
         let place = self.locate(id);
         let colours = self.colours_for(place.map(|(_, t)| t));
         let palette = self.palette_for(place.map(|(_, t)| t));
+        let graphics = self.graphics_for(place.map(|(_, t)| t));
         let Some(pane) = self.panes.get_mut(&id) else {
             return;
         };
         pane.colours = colours;
         pane.set_host_palette(palette);
+        pane.parser.set_host_graphics(graphics);
         read(pane);
+        pane.note_change(Instant::now());
         let dropped = pane.input.lost_reply();
         self.read_into(id, place, dropped);
     }
@@ -1116,6 +1358,52 @@ impl Session {
         // Nothing ran, so nothing shows anything new.
         self.settle();
         outcome
+    }
+
+    /// Begins a command line from the CLI: one that waits gives its wait,
+    /// which the server asks for its answer until it has one; any other
+    /// runs as `run` runs it.
+    pub fn begin(&mut self, argv: &[String], origin: &Origin) -> Begun {
+        let (target, wait) = match command::parse(argv) {
+            Ok(Command::Wait { target, wait }) => (target, wait),
+            Ok(
+                command @ Command::SendKeys {
+                    target,
+                    then: Some(_),
+                    ..
+                },
+            ) => {
+                let outcome = self.run_command(&command, origin);
+                let Command::SendKeys {
+                    then: Some(wait), ..
+                } = command
+                else {
+                    return Begun::Done(outcome);
+                };
+                if outcome.status != 0 {
+                    return Begun::Done(outcome);
+                }
+                (target, wait)
+            }
+            _ => return Begun::Done(self.run(argv, origin)),
+        };
+        let pane = (self.here(origin)).and_then(|here| self.pane(target, here));
+        let pane = match pane {
+            Ok(pane) => pane,
+            Err(error) => {
+                return Begun::Done(Outcome {
+                    status: 1,
+                    stdout: String::new(),
+                    stderr: error.to_string(),
+                });
+            }
+        };
+        let now = Instant::now();
+        let mut waiting = crate::wait::Waiting::new(pane, wait, now);
+        match waiting.answer(self, now) {
+            Some(outcome) => Begun::Done(outcome),
+            None => Begun::Waiting(Box::new(waiting)),
+        }
     }
 
     /// Runs a command, parsed already: from a line, a binding or a menu.
@@ -1255,37 +1543,157 @@ impl Session {
                 }
                 Ok(out)
             }
-            Command::NewWorkspace { name, cmd } => {
+            Command::NewWorkspace {
+                name,
+                cmd,
+                size,
+                json,
+            } => {
                 let cwd = self.cwd_for(here, None);
-                let ws = self.create_workspace(name.clone(), cmd, &cwd)?;
+                let fit = size.map_or(Fit::Clients, Fit::Fixed);
+                let start = (Start::Shell(cmd), cwd.as_path());
+                let made =
+                    self.create_workspace(name.clone(), start, (fit, self.start_size(fit, here)))?;
+                let (ws, tab, pane) = made;
                 self.follow(here, ws, None, None);
-                Ok(format!("{ws}\n"))
+                Ok(made_ids(
+                    made,
+                    &[ws.to_string(), tab.to_string(), pane.to_string()],
+                    *json,
+                ))
             }
-            Command::NewTab { target, name, cmd } => {
-                let at = self.ws_target(target.as_ref(), here)?;
+            Command::NewTab {
+                target,
+                name,
+                cmd,
+                size,
+                json,
+            } => {
+                let ws = self.ws_target(target.as_ref(), here)?;
                 let cwd = self.cwd_for(here, None);
-                let ws = self.workspaces.iter_mut().find(|w| w.id == at);
-                let ws = ws.ok_or(Error::NoWorkspace(at))?;
-                if let Some(name) = &name {
-                    check_name(name)?;
+                let fit = size.map_or(Fit::Clients, Fit::Fixed);
+                let start = (Start::Shell(cmd), cwd.as_path());
+                let (tab, pane) =
+                    self.create_tab(ws, name.clone(), start, (fit, self.start_size(fit, here)))?;
+                self.follow(here, ws, Some(tab), None);
+                Ok(made_ids(
+                    (ws, tab, pane),
+                    &[tab.to_string(), pane.to_string()],
+                    *json,
+                ))
+            }
+            Command::Run {
+                workspace,
+                name,
+                size,
+                cwd,
+                env,
+                argv,
+                json,
+            } => {
+                let here_cwd = self.cwd_for(here, None);
+                let cwd = match cwd {
+                    Some(dir) => here_cwd.join(dir),
+                    None => here_cwd,
+                };
+                if !cwd.is_dir() {
+                    return Err(Error::NotADirectory(cwd));
                 }
-                // As for a workspace: the ID first, committed after the pane.
-                let mut ids = self.ids;
-                let id = ids.tab()?;
-                let launch = self.launch.as_deref();
-                let pane = new_pane(&self.config, launch, &mut ids, cmd, &cwd, default_size())?;
-                self.ids = ids;
-                ws.add_tab(id, name.clone(), Some(Tree::Pane(pane.id)));
-                self.panes.insert(pane.id, pane);
-                self.follow(here, at, Some(id), None);
-                Ok(format!("{id}\n"))
+                let fit = size.map_or(Fit::Clients, Fit::Fixed);
+                // Its place is out of every client's way: no client follows.
+                let place = (fit, self.start_size(fit, Here::Cli(None, None, None)));
+                let name = name.clone().or_else(|| argv.first().map(|p| basename(p)));
+                let start = (Start::Program(argv, env), cwd.as_path());
+                let workspace = workspace
+                    .clone()
+                    .unwrap_or(WsRef::Name(RUN_WORKSPACE.into()));
+                let made = match (self.resolve_ws(&workspace), workspace) {
+                    (Ok(ws), _) => {
+                        let (tab, pane) = self.create_tab(ws, name, start, place)?;
+                        (ws, tab, pane)
+                    }
+                    (Err(_), WsRef::Name(ws_name)) => {
+                        let (ws, tab, pane) = self.create_workspace(Some(ws_name), start, place)?;
+                        if let Some(tab) = (self.workspaces.iter_mut())
+                            .find(|w| w.id == ws)
+                            .and_then(|w| w.tabs_mut().first_mut())
+                        {
+                            tab.name = name.unwrap_or_else(|| MAIN.into());
+                        }
+                        (ws, tab, pane)
+                    }
+                    (Err(error), WsRef::Id(_)) => return Err(error),
+                };
+                Ok(made_ids(made, &[made.2.to_string()], *json))
+            }
+            Command::Resize { what, size } => {
+                match what {
+                    Resized::Tabs(target) => {
+                        let fit = size.map_or(Fit::Clients, Fit::Fixed);
+                        let target = self.any_target(&Subject::from(target.clone()), here)?;
+                        let tabs: Vec<TabId> = match target {
+                            AnyRef::Tab(tab) => vec![tab],
+                            AnyRef::Workspace(ws) => (self.workspace(ws).into_iter())
+                                .flat_map(|w| w.tabs().iter().map(|t| t.id))
+                                .collect(),
+                            AnyRef::Pane(_) => Vec::new(),
+                        };
+                        for tab in tabs_mut(&mut self.workspaces).filter(|t| tabs.contains(&t.id)) {
+                            tab.set_fit(fit);
+                        }
+                    }
+                    &Resized::Client(client) => {
+                        let view = self.views.get(&client).ok_or(Error::NoClient(client))?;
+                        if view.kind != ClientKind::Headless {
+                            return Err(Error::NotHeadless(client));
+                        }
+                        if let Some(size) = size {
+                            self.resize(client, size.rows(), size.cols());
+                        }
+                    }
+                }
+                Ok(String::new())
+            }
+            Command::Wait { .. } => Err(Error::WaitsOnlyFromCli),
+            &Command::SendMouse {
+                target,
+                mouse,
+                row,
+                col,
+            } => {
+                let p = self.live_pane_mut(target, here)?;
+                let mut report = Vec::new();
+                let event = |action, button| fux_vt::keys::mouse::MouseEvent {
+                    action,
+                    button,
+                    mods: fux_vt::keys::Modifiers::default(),
+                    row,
+                    col,
+                };
+                use fux_vt::keys::mouse::MouseAction::{Motion, Press, Release};
+                let events = match mouse {
+                    Mouse::Click(button) => {
+                        vec![event(Press, Some(button)), event(Release, Some(button))]
+                    }
+                    Mouse::Press(button) | Mouse::Wheel(button) => vec![event(Press, Some(button))],
+                    Mouse::Release(button) => vec![event(Release, Some(button))],
+                    Mouse::Move => vec![event(Motion, None)],
+                };
+                for event in events {
+                    if !p.screen().encode_mouse(event, &mut report) {
+                        return Err(Error::NoMouse(p.id));
+                    }
+                }
+                p.input.push(&report)?;
+                Ok(String::new())
             }
             &Command::Split {
                 axis,
                 target,
                 ref cmd,
+                json,
             } => {
-                let (target, size) = self.pane(target, here).map(|p| (p.id, p.size()))?;
+                let target = self.pane(target, here)?.id;
                 let cwd = self.cwd_for(here, Some(target));
                 // The splitting client follows the new pane; from the CLI, the
                 // clients that focus the split one.
@@ -1294,10 +1702,18 @@ impl Session {
                     Here::Client(client, _) => vec![client],
                     Here::Cli(..) => self.views.keys().copied().filter(shown).collect(),
                 };
+                let size = self.split_size(target, axis, here)?;
                 let tab = tab_of(&mut self.workspaces, target)?;
                 let mut ids = self.ids;
                 let launch = self.launch.as_deref();
-                let pane = new_pane(&self.config, launch, &mut ids, cmd, &cwd, size)?;
+                let pane = new_pane(
+                    &self.config,
+                    launch,
+                    &mut ids,
+                    Start::Shell(cmd),
+                    &cwd,
+                    size,
+                )?;
                 self.ids = ids;
                 let new = pane.id;
                 tab.edit(|root| {
@@ -1310,7 +1726,8 @@ impl Session {
                     tab.set_focus(view.id, new);
                     view.zoom = false;
                 }
-                Ok(format!("{new}\n"))
+                let at = self.locate(new).ok_or(Error::NoPane(new))?;
+                Ok(made_ids((at.0, at.1, new), &[new.to_string()], json))
             }
             &Command::KillPane { target } => {
                 let pane = self.pane(target, here)?.id;
@@ -1343,23 +1760,26 @@ impl Session {
                 self.swap(source, other);
                 Ok(String::new())
             }
-            &Command::ResizePane {
-                target,
-                direction,
-                amount,
-            } => {
+            &Command::ResizePane { target, by } => {
                 let pane = self.pane(target, here)?.id;
                 let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
                 let area = self.reference_area(tab, here);
-                let tab = tab_of(&mut self.workspaces, pane)?;
-                let resize = |root: &mut Option<Tree>| {
-                    let root = root.as_mut();
-                    root.is_some_and(|root| layout::resize(root, area, pane, direction, amount))
-                };
-                if tab.edit(resize) {
-                    Ok(String::new())
-                } else {
-                    Err(Error::NoBorder { pane, direction })
+                match by {
+                    PaneResize::Border(direction, amount) => {
+                        let tab = tab_of(&mut self.workspaces, pane)?;
+                        let resize = |root: &mut Option<Tree>| {
+                            let root = root.as_mut();
+                            root.is_some_and(|root| {
+                                layout::resize(root, area, pane, direction, amount)
+                            })
+                        };
+                        if tab.edit(resize) {
+                            Ok(String::new())
+                        } else {
+                            Err(Error::NoBorder { pane, direction })
+                        }
+                    }
+                    PaneResize::To { cols, rows } => self.resize_pane_to(pane, area, (cols, rows)),
                 }
             }
             &Command::SendPrefix { target } => {
@@ -1371,31 +1791,84 @@ impl Session {
                 Ok(String::new())
             }
             &Command::SendKeys {
-                target,
-                literal,
-                ref keys,
+                client: Some(client),
+                ref inputs,
+                repeat,
+                ..
             } => {
-                let p = self.pane_mut(target, here)?;
-                // Each argument is a key name (`C-c`, `Enter`, `a`), or, as in
-                // tmux, text sent as it is; `-l` makes every argument text.
-                let mode = p.screen().key_mode();
-                p.input.push_with(|out| {
-                    for key in keys {
-                        match key.parse::<KeyPress>() {
-                            Ok(press) if !literal => {
-                                crate::encode::key_bytes(press.into(), mode, out)
-                            }
-                            _ => out.extend_from_slice(key.as_bytes()),
+                if !self.views.contains_key(&client) {
+                    return Err(Error::NoClient(client));
+                }
+                // As the client's terminal would have them decoded.
+                let mut typed = Vec::new();
+                for input in std::iter::repeat_n(inputs, usize::from(repeat)).flatten() {
+                    match input {
+                        Input::Key(key) => {
+                            typed.push(fux_vt::keys::decode::Input::Key((*key).into()))
+                        }
+                        Input::Text(text) => {
+                            typed.extend(text.chars().map(|c| {
+                                fux_vt::keys::decode::Input::Key(KeyPress::char(c).into())
+                            }))
+                        }
+                        Input::Paste(text) => {
+                            typed.push(fux_vt::keys::decode::Input::Paste(text.clone()))
                         }
                     }
-                })?;
+                }
+                self.dispatch(client, typed);
+                Ok(String::new())
+            }
+            &Command::SendKeys {
+                target,
+                ref inputs,
+                repeat,
+                client: None,
+                ..
+            } => {
+                let p = self.live_pane_mut(target, here)?;
+                let (mode, bracketed) = (
+                    p.screen().key_mode(),
+                    p.screen().mode(fux_vt::Mode::BracketedPaste),
+                );
+                // Each input is a piece, and one the program must read alone,
+                // a lone Escape or text, is paced apart from what follows.
+                let mut pieces: Vec<(Vec<u8>, bool)> = Vec::new();
+                for input in std::iter::repeat_n(inputs, usize::from(repeat)).flatten() {
+                    let mut bytes = Vec::new();
+                    let alone = match input {
+                        Input::Key(key) => {
+                            crate::encode::key_bytes((*key).into(), mode, &mut bytes);
+                            bytes == b"\x1b"
+                        }
+                        Input::Text(text) => {
+                            bytes.extend_from_slice(text.as_bytes());
+                            true
+                        }
+                        Input::Paste(text) => {
+                            crate::encode::paste(text, bracketed, &mut bytes);
+                            true
+                        }
+                    };
+                    match pieces.last_mut() {
+                        Some((last, false)) if !alone => last.extend_from_slice(&bytes),
+                        _ => pieces.push((bytes, alone)),
+                    }
+                }
+                p.send(pieces, Instant::now())?;
                 Ok(String::new())
             }
             &Command::CapturePane {
                 target,
                 history,
+                view,
                 json,
-            } => Ok(capture(self.pane(target, here)?, history, json)),
+            } => Ok(crate::capture::pane(
+                self.pane(target, here)?,
+                history,
+                view,
+                json,
+            )),
             &Command::Terminate { target } => {
                 let p = self.pane(target, here)?;
                 let group = p.process.job().ok_or(Error::OnlyShell(p.id))?;
@@ -1497,7 +1970,7 @@ impl Session {
             ClientAction::Capture { json } => {
                 let mut grid = crate::render::Grid::new(0, 0);
                 crate::render::compose_view(self, view, &mut grid, &mut Placement::default());
-                Ok(capture_client(view.id, &grid, json))
+                Ok(crate::capture::client(view.id, &grid, json))
             }
             ClientAction::Zoom => {
                 view.zoom = !view.zoom;
@@ -1651,7 +2124,7 @@ impl Session {
                 let ws = ws.ok_or(Error::NoPane(pane))?;
                 let mut ids = self.ids;
                 let id = ids.tab()?;
-                ws.add_tab(id, None, None);
+                ws.add_tab(id, None, (None, Fit::Clients));
                 self.ids = ids;
                 (ws.id, id)
             }
@@ -1663,7 +2136,13 @@ impl Session {
                 self.ids = ids;
                 let name = self.workspace_name(id);
                 let clients = self.views.keys().copied();
-                (self.workspaces).push(Workspace::new(id, name, tab, None, clients));
+                (self.workspaces).push(Workspace::new(
+                    id,
+                    name,
+                    tab,
+                    (None, Fit::Clients),
+                    clients,
+                ));
                 (id, tab)
             }
         };
@@ -1774,16 +2253,18 @@ impl Session {
                 let Some(root) = tab.root() else { continue };
                 root.for_each_pane(&mut |pane| {
                     if let Some(p) = self.panes.get(&pane) {
+                        let process = match (p.process.child(), p.process.exit_status()) {
+                            (Some(child), _) => format!(" pid {}", child.leader.pid()),
+                            (None, Some(status)) => format!(" exited {status}"),
+                            (None, None) => String::new(),
+                        };
                         out.push_str(&format!(
                             "    {} {} {}x{}{}\n",
                             pane,
                             p.label(),
                             p.size().cols(),
                             p.size().rows(),
-                            p.process
-                                .child()
-                                .map(|c| format!(" pid {}", c.leader.pid()))
-                                .unwrap_or_default()
+                            process,
                         ));
                     }
                 });
@@ -1806,6 +2287,7 @@ impl Session {
     }
 
     fn ls_json(&self) -> String {
+        let now = Instant::now();
         let panes = |tab: &Tab| {
             let mut panes = Vec::new();
             let Some(root) = tab.root() else {
@@ -1815,7 +2297,7 @@ impl Session {
                 let Some(p) = self.panes.get(&id) else {
                     return;
                 };
-                panes.push(Json::Object(vec![
+                let mut fields = vec![
                     ("id", Json::str(p.id.to_string())),
                     ("name", Json::str(p.name.as_str())),
                     ("title", Json::str(p.title.as_str())),
@@ -1827,7 +2309,9 @@ impl Session {
                             Json::Number(i64::from(c.leader.pid().as_raw()))
                         }),
                     ),
-                ]));
+                ];
+                fields.extend(crate::capture::state(p, now));
+                panes.push(Json::Object(fields));
             });
             Json::Array(panes)
         };
@@ -1899,12 +2383,38 @@ pub fn describe(target: AnyRef<WsId>) -> String {
     }
 }
 
-/// A new pane running the shell, with `cmd` typed into it if given.
+/// What a program's terminal holds, unread, up to a mebibyte: read as it
+/// exits, so that its last screen is whole.
+fn unread(process: &Process) -> Vec<u8> {
+    let mut left = Vec::new();
+    if let Process::Reading(child) = process {
+        let mut buffer = [0u8; 16384];
+        while left.len() < 1 << 20 {
+            match fuxix::io::read(&child.master, &mut buffer) {
+                Ok(n) if n > 0 => left.extend_from_slice(buffer.get(..n).unwrap_or_default()),
+                Err(fuxix::Errno::INTR) => {}
+                Ok(_) | Err(_) => break,
+            }
+        }
+    }
+    left
+}
+
+/// What a new pane starts.
+#[derive(Clone, Copy)]
+enum Start<'a> {
+    /// The shell, with a command line typed into it if one is given.
+    Shell(&'a [String]),
+    /// A program, run in place of a shell, with variables set for it.
+    Program(&'a [String], &'a [(String, String)]),
+}
+
+/// A new pane running what `start` says.
 fn new_pane(
     config: &Config,
     launch: Option<&Path>,
     ids: &mut Ids,
-    cmd: &[String],
+    start: Start<'_>,
     cwd: &Path,
     size: fux_vt::Size,
 ) -> Result<Pane, Error> {
@@ -1913,29 +2423,35 @@ fn new_pane(
         .first()
         .cloned()
         .unwrap_or_else(|| "/bin/sh".into());
-    let fish = basename(&shell_program) == "fish";
+    let (argv, cmd, runs, env) = match start {
+        Start::Shell(cmd) => (config.shell.as_slice(), cmd, Runs::Shell, &[][..]),
+        Start::Program(argv, env) => (argv, argv, Runs::Program, env),
+    };
     // The line to type is made before anything else: a line too long to
     // type must not leave a process behind.
-    let typed = if cmd.is_empty() {
-        None
-    } else {
-        let mut line = crate::words::shell_line(cmd, fish)?.into_bytes();
-        line.push(b'\r');
-        let deadline = crate::after(Instant::now(), TYPE_WAIT);
-        Some(Typed::new(line, deadline).ok_or(Error::LineTooLong)?)
+    let typed = match start {
+        Start::Shell([]) | Start::Program(..) => None,
+        Start::Shell(cmd) => {
+            let fish = basename(&shell_program) == "fish";
+            let mut line = crate::words::shell_line(cmd, fish)?.into_bytes();
+            line.push(b'\r');
+            let deadline = crate::after(Instant::now(), TYPE_WAIT);
+            Some(Typed::new(line, deadline).ok_or(Error::LineTooLong)?)
+        }
     };
     let id = ids.pane()?;
     let name = cmd
         .first()
         .map(|c| basename(c))
         .unwrap_or_else(|| basename(&shell_program));
-    let mut pane = Pane::new(id, name, shell_program, size, config.history_lines)?;
+    let mut pane = Pane::new(id, name, runs, size, config.history_lines)?;
     if let Some(socket) = launch {
-        let env = [
+        let mut vars = vec![
             ("FUX_PANE", id.to_string()),
             ("FUX_SOCKET", socket.to_string_lossy().into_owned()),
         ];
-        pane.process = Process::Reading(crate::process::spawn(&config.shell, cwd, &env, size)?);
+        vars.extend(env.iter().map(|(k, v)| (k.as_str(), v.clone())));
+        pane.process = Process::Reading(crate::process::spawn(argv, cwd, &vars, size)?);
     }
     if let Some(typed) = typed {
         pane.input = InputQueue::from(typed);
@@ -2025,76 +2541,6 @@ fn tab_of(workspaces: &mut [Workspace], id: PaneId) -> Result<&mut Tab, Error> {
     tabs_mut(workspaces)
         .find(|t| t.holds(id))
         .ok_or(Error::NoPane(id))
-}
-
-/// The text of a pane's screen, and `history` lines before it.
-fn capture(pane: &Pane, history: Option<usize>, json: bool) -> String {
-    let screen = pane.screen();
-    // History rows above the screen, oldest first, then the screen itself.
-    let top = screen
-        .window()
-        .row(0)
-        .map(|top| top.up(history.unwrap_or(0)));
-    let lines = std::iter::successors(top, fux_vt::Row::below)
-        .map(row_text)
-        .collect();
-    let cursor = Some(screen.cursor_position());
-    captured(
-        ("pane", pane.id.to_string()),
-        screen.size().into(),
-        cursor,
-        lines,
-        json,
-    )
-}
-
-/// What a client's terminal shows, row by row, as `capture-client` prints
-/// it.
-fn capture_client(client: ClientId, grid: &crate::render::Grid, json: bool) -> String {
-    let lines = (0..grid.rows).map(|y| grid.row_text(y)).collect();
-    let size = (grid.rows, grid.cols);
-    captured(
-        ("client", client.to_string()),
-        size,
-        grid.cursor,
-        lines,
-        json,
-    )
-}
-
-/// A capture as it is printed: its lines, or with `--json` an object naming
-/// what was captured, with its size, cursor and lines.
-fn captured(
-    (key, id): (&'static str, String),
-    (rows, cols): (u16, u16),
-    cursor: Option<(u16, u16)>,
-    lines: Vec<String>,
-    json: bool,
-) -> String {
-    let mut text = if json {
-        let number = |n: u16| Json::Number(i64::from(n));
-        let cursor = cursor.map_or(Json::Null, |(y, x)| Json::Array(vec![number(y), number(x)]));
-        let lines = Json::Array(lines.into_iter().map(Json::str).collect());
-        let fields = vec![
-            (key, Json::str(id)),
-            ("rows", number(rows)),
-            ("cols", number(cols)),
-            ("cursor", cursor),
-            ("lines", lines),
-        ];
-        Json::Object(fields).render()
-    } else {
-        lines.join("\n")
-    };
-    text.push('\n');
-    text
-}
-
-/// A row's text, wide glyphs whole and trailing blanks trimmed.
-pub fn row_text(row: fux_vt::Row<'_>) -> String {
-    let row = row.cells().filter(|c| !c.is_wide_continuation());
-    let line: String = row.map(crate::render::shown).collect();
-    line.trim_end_matches(' ').to_owned()
 }
 
 /// What the other modules' tests share: a session started with the default
@@ -2243,17 +2689,26 @@ mod tests {
             PaneId::of(2),
             "a\tb \"q\" 界\x1b]2;tab\\title\x07".as_bytes(),
         );
+        // How long each pane has been quiet varies: read as 0.
+        let quiet = |json: String| {
+            let mut parts = json.split("\"idle_ms\":");
+            let first = parts.next().unwrap_or_default().to_owned();
+            parts.fold(first, |out, part| {
+                let rest = part.trim_start_matches(|c: char| c.is_ascii_digit());
+                format!("{out}\"idle_ms\":0{rest}")
+            })
+        };
         assert_eq!(
-            output(&mut s, "ls --json")?,
+            quiet(output(&mut s, "ls --json")?),
             concat!(
-                r#"{"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[{"id":"%1","name":"say \"hi\" \\ 界","title":"","rows":3,"cols":15,"pid":null},{"id":"%2","name":"sh","title":"tab\\title","rows":3,"cols":14,"pid":null}]},{"id":"@2","name":"two","panes":[{"id":"%3","name":"sh","title":"","rows":3,"cols":30,"pid":null}]}]}],"clients":[{"id":"c1","rows":4,"cols":30,"workspace":"+1","tab":"@1","pane":"%2","zoom":false}]}"#,
+                r#"{"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[{"id":"%1","name":"say \"hi\" \\ 界","title":"","rows":3,"cols":15,"pid":null,"program":null,"exited":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[]},{"id":"%2","name":"sh","title":"tab\\title","rows":3,"cols":14,"pid":null,"program":null,"exited":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[]}]},{"id":"@2","name":"two","panes":[{"id":"%3","name":"sh","title":"","rows":3,"cols":30,"pid":null,"program":null,"exited":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[]}]}]}],"clients":[{"id":"c1","rows":4,"cols":30,"workspace":"+1","tab":"@1","pane":"%2","zoom":false}]}"#,
                 "\n"
             )
         );
         assert_eq!(
-            output(&mut s, "capture-pane -t %2 --json")?,
+            quiet(output(&mut s, "capture-pane -t %2 --json")?),
             concat!(
-                r#"{"pane":"%2","rows":3,"cols":14,"cursor":[1,2],"lines":["a       b \"q\"","界",""]}"#,
+                r#"{"pane":"%2","rows":3,"cols":14,"cursor":[1,2],"lines":["a       b \"q\"","界"],"program":null,"exited":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[]}"#,
                 "\n"
             )
         );
@@ -2319,9 +2774,12 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let mut s = started(Config::default())?;
         assert!(run(&mut s, "new-workspace -n main").is_err());
-        assert_eq!(output(&mut s, "new-workspace -n workspace-3")?, "+2\n");
+        assert_eq!(
+            output(&mut s, "new-workspace -n workspace-3")?,
+            "+2 @2 %2\n"
+        );
         // +3 would be workspace-3, which is taken.
-        assert_eq!(output(&mut s, "new-workspace")?, "+3\n");
+        assert_eq!(output(&mut s, "new-workspace")?, "+3 @3 %3\n");
         let names: Vec<&str> = s.workspaces.iter().map(|w| w.name.as_str()).collect();
         assert_eq!(names, ["main", "workspace-3", "workspace-4"]);
         // A move to a new workspace with no tab ID left takes no workspace

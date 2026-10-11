@@ -128,8 +128,20 @@ pub enum Reply {
     },
     /// The kitty keyboard protocol's flags: `CSI ? flags u`.
     KittyFlags(u8),
-    /// Primary device attributes, `CSI ? … c`.
-    Attributes,
+    /// Primary device attributes, `CSI ? … c`: whether they name sixel
+    /// graphics (`4`).
+    Attributes {
+        /// The terminal draws sixel graphics.
+        sixel: bool,
+    },
+    /// The size of a cell in pixels, `CSI 6 ; height ; width t`: the answer
+    /// to `CSI 16 t`.
+    CellSize {
+        /// A cell's width in pixels.
+        width: u16,
+        /// A cell's height in pixels.
+        height: u16,
+    },
     /// The terminal draws underline styles (`outer`): its terminfo has
     /// `Smulx`, as its XTGETTCAP answer says (`DCS 1 + r 536d756c78 = … ST`,
     /// `Smulx` in hex), or it kept the curly underline fux set, as its
@@ -440,7 +452,7 @@ impl Decoder {
         while !bytes.is_empty() {
             let rest = match decode(bytes, flush, self.expecting.is_some()) {
                 Step::Done(n, input) => {
-                    if input == Some(Input::Reply(Reply::Attributes)) {
+                    if matches!(input, Some(Input::Reply(Reply::Attributes { .. }))) {
                         self.expecting = self.expecting.and_then(|e| {
                             let rounds = NonZeroU8::new(e.rounds.get().saturating_sub(1))?;
                             Some(Expecting { rounds, ..e })
@@ -726,12 +738,29 @@ fn colour_reply(payload: &[u8]) -> Option<Reply> {
     params.next().is_none().then_some(reply)
 }
 
+/// `6 ; height ; width`: the size of a cell, answering `CSI 16 t`.
+fn cell_size(params: &[u8]) -> Option<Reply> {
+    let text = std::str::from_utf8(params).ok()?;
+    let mut numbers = text.split(';');
+    if numbers.next()? != "6" {
+        return None;
+    }
+    let height = numbers.next()?.parse().ok().filter(|n| *n > 0)?;
+    let width = numbers.next()?.parse().ok().filter(|n| *n > 0)?;
+    numbers
+        .next()
+        .is_none()
+        .then_some(Reply::CellSize { width, height })
+}
+
 /// A CSI answer from the terminal, `params` from its `?` on, ending with
 /// `last`.
 fn csi_reply(params: &[u8], last: u8) -> Option<Reply> {
     let text = std::str::from_utf8(params.get(1..)?).ok()?;
     match last {
-        b'c' => Some(Reply::Attributes),
+        b'c' => Some(Reply::Attributes {
+            sixel: text.split(';').any(|attribute| attribute == "4"),
+        }),
         b'u' => {
             let flags = text.parse::<u32>().ok()?;
             Some(Reply::KittyFlags(u8::try_from(flags).unwrap_or(u8::MAX)))
@@ -862,6 +891,11 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     if params.first() == Some(&b'<') {
         // An SGR mouse report: `CSI < code ; column ; row M`, `m` a release.
         return Step::Done(consumed, sgr_mouse(params, last).map(Input::Mouse));
+    }
+    if last == b't' {
+        // No key ends in `t`: a window report, of which fux reads the cell
+        // size alone.
+        return Step::Done(consumed, cell_size(params).map(Input::Reply));
     }
     if params.first() == Some(&b'?') {
         // Answers fux does not use are dropped.
@@ -1437,7 +1471,7 @@ mod tests {
             key("c"),
             Input::Reply(Reply::Scheme(Scheme::Light)),
             Input::Reply(Reply::KittyFlags(5)),
-            Input::Reply(Reply::Attributes),
+            Input::Reply(Reply::Attributes { sixel: false }),
             key("Up"),
             key("d"),
         ];
@@ -1450,7 +1484,7 @@ mod tests {
         assert_eq!(
             all(b"\x1b[?1;2c\x1b]12;rgb:0/0/0\x07\x1b]11;red\x07\x1b]4;256;rgb:0/0/0\x07\x1b]4;x;rgb:0/0/0\x07\x1b]4;1\x07\x1b[?6;1$yx"),
             vec![
-                Input::Reply(Reply::Attributes),
+                Input::Reply(Reply::Attributes { sixel: false }),
                 Input::Reply(Reply::Mode { mode: 6, status: 1 }),
                 key("x")
             ]
@@ -1597,7 +1631,7 @@ mod tests {
             waits(&mut d, b"\x1b[?1;2c\x1b]", &mut out),
             Some(ESCAPE_DELAY)
         );
-        assert_eq!(out, vec![Input::Reply(Reply::Attributes)]);
+        assert_eq!(out, vec![Input::Reply(Reply::Attributes { sixel: false })]);
         let mut d = Decoder::default();
         d.expect(t0);
         d.expire(t0 + REPLY_WINDOW);

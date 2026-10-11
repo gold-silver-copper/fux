@@ -212,6 +212,25 @@ pub fn processes() -> Vec<Pid> {
     pids.into_iter().filter_map(Pid::from_raw).collect()
 }
 
+/// The name of `pid`'s program, when the system says.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn name(pid: Pid) -> Option<String> {
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    Some(comm.trim_end_matches('\n').to_owned()).filter(|n| !n.is_empty())
+}
+
+/// The name of `pid`'s program, when the system says.
+#[cfg(target_os = "macos")]
+pub fn name(pid: Pid) -> Option<String> {
+    let mut buffer = [0u8; 256];
+    let room = u32::try_from(buffer.len()).ok()?;
+    // SAFETY: the buffer is `room` bytes long and writable; the call writes
+    // at most that, and says how much.
+    let written = unsafe { libc::proc_name(pid.as_raw(), buffer.as_mut_ptr().cast(), room) };
+    let name = buffer.get(..usize::try_from(written).ok()?)?;
+    Some(String::from_utf8_lossy(name).into_owned()).filter(|n| !n.is_empty())
+}
+
 /// The current directory of `pid`, when the system says.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn cwd(pid: Pid) -> Option<PathBuf> {

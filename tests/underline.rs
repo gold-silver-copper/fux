@@ -29,7 +29,7 @@ fn a_terminal_that_draws_styles_is_painted_curly_underlines() -> Outcome {
     // underline, before DA1, the pen reset after.
     wait_painted(
         &mut client,
-        "\x1bP+q536d756c78\x1b\\\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\\x1b[0m\x1b[?u\x1b[c",
+        "\x1bP+q536d756c78\x1b\\\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\\x1b[0m\x1b[16t\x1b[?u\x1b[c",
         1,
     )?;
     client.send(GHOSTTY)?;

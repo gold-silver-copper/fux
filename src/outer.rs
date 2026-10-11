@@ -90,13 +90,19 @@ macro_rules! styles {
 /// whether it knows mode 2031 (DECRQM), its foreground and background, its
 /// palette entries 0 to 15 (each its own OSC 4, as not every terminal reads
 /// several in one),
-/// whether it draws underline styles (`styles!`), its kitty keyboard flags,
-/// and last the primary device attributes, which every terminal answers: once
-/// that answer is in, any other the terminal will give is in too
+/// whether it draws underline styles (`styles!`), the size of its cells in
+/// pixels (`CSI 16 t`), its kitty keyboard flags, and last the primary
+/// device attributes, which say whether it draws sixel and which every
+/// terminal answers: once that answer is in, any other the terminal will give is in too
 /// (terminals answer in order), so the decoder stops waiting for them. The
 /// kitty spec detects the protocol so: an answer to `CSI ? u` before DA1's.
-pub const QUERIES: &[u8] =
-    concat!("\x1b[?2031$p", colours!(), styles!(), "\x1b[?u\x1b[c").as_bytes();
+pub const QUERIES: &[u8] = concat!(
+    "\x1b[?2031$p",
+    colours!(),
+    styles!(),
+    "\x1b[16t\x1b[?u\x1b[c"
+)
+.as_bytes();
 /// Pushes disambiguate and alternate keys (see the module documentation).
 pub const KITTY_PUSH: &[u8] = b"\x1b[>5u";
 /// Asked again after the terminal reports that its scheme changed: a theme
@@ -145,6 +151,22 @@ pub struct Terminal {
     pub underline_styles: bool,
     /// Its palette entries 0 to 15, answered to the panes it answers for.
     pub palette: Palette,
+    /// Whether it draws sixel graphics (DA1's `4`), and the size of its cells
+    /// in pixels (`CSI 16 t`): pictures in panes are shown on it, and the
+    /// panes it answers for are told so.
+    pub sixel: bool,
+    pub cell: Option<(u16, u16)>,
+}
+
+impl Terminal {
+    /// What it draws, as the panes it answers for are told: sixel only with
+    /// a known cell size, which pictures are laid out in.
+    pub fn graphics(&self) -> fux_vt::Graphics {
+        fux_vt::Graphics {
+            cell: self.cell,
+            sixel: self.sixel && self.cell.is_some(),
+        }
+    }
 }
 
 impl Terminal {
@@ -216,7 +238,17 @@ impl Session {
             }
             // DA1, the last answer to every round of questions: a change
             // waiting on colours the terminal did not give is told now.
-            Reply::Attributes => self.tell_change(client),
+            Reply::Attributes { sixel } => {
+                if terminal.sixel != sixel {
+                    terminal.sixel = sixel;
+                    view.dirty = true;
+                }
+                self.tell_change(client);
+            }
+            Reply::CellSize { width, height } => {
+                terminal.cell = Some((width, height));
+                view.dirty = true;
+            }
             // The terminal speaks the kitty protocol: its keys are read
             // exactly from now on.
             Reply::KittyFlags(_) if !terminal.kitty => {
@@ -323,6 +355,16 @@ impl Session {
         self.colour_client(tab)
             .and_then(|c| self.views.get(&c))
             .map_or(self.last_palette, |v| v.terminal.palette)
+    }
+
+    /// What the panes of `tab` are told their terminal draws, as
+    /// `colours_for` finds the terminal: nothing in a tab no client shows,
+    /// so a program started there draws in text, which a capture reads.
+    pub(crate) fn graphics_for(&self, tab: Option<TabId>) -> fux_vt::Graphics {
+        let shown = tab.filter(|t| self.views.keys().any(|c| self.shows(*c, *t)));
+        self.colour_client(shown)
+            .and_then(|c| self.views.get(&c))
+            .map_or_else(fux_vt::Graphics::default, |v| v.terminal.graphics())
     }
 
     /// Pane `id`'s program rang the bell: each client showing its workspace

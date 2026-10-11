@@ -147,7 +147,8 @@ each terminal showing the pane. fux never reads the clipboard.
 ## Commands
 
 Commands run from the command line (`fux COMMAND …`), a key binding or the
-command prompt; `fux help` lists them. Targets: a pane is `%N`, a tab
+command prompt; `fux help` lists them, and `fux help COMMAND` (or
+`fux COMMAND --help`) explains one, its flags and an example. Targets: a pane is `%N`, a tab
 `@N`, a workspace `+N` or its name, a client `cN`. Inside a pane,
 `FUX_PANE` and `FUX_SOCKET` name the pane and the server, so commands there
 need no `-t`. Elsewhere a command that needs a target and has none fails.
@@ -156,30 +157,37 @@ From a key or the prompt, commands act on your focused pane.
 | Command | Does |
 | --- | --- |
 | `fux` / `fux attach [-t WS] [--nested]` | attach, starting a server if none answers |
+| `fux attach --headless [--size COLSxROWS] [--log FILE]` | a client with no terminal, for tests and scripts: prints its id, records what it is sent to FILE, ends on a signal |
 | `fux server [--socket PATH] [--config FILE]` | run a server in the foreground |
 | `fux kill-server` | stop the server |
 | `fux ls [--json]` | workspaces, tabs, panes and clients |
-| `fux new-workspace [-n NAME] [-- CMD…]` | a workspace with a shell, CMD typed into it; names are unique, and do not start with `+`, `%`, `@` or `-`, which targets read otherwise |
-| `fux new-tab [-t WS] [-n NAME] [-- CMD…]` | a tab with a shell, CMD typed into it |
-| `fux split -h\|-v [-t %N] [-- CMD…]` | split a pane: `-h` side by side, `-v` stacked |
+| `fux new-workspace [-n NAME] [--size COLSxROWS] [--json] [-- CMD…]` | a workspace with a shell, CMD typed into it; prints `+N @N %N`. Names are unique, and do not start with `+`, `%`, `@` or `-`, which targets read otherwise |
+| `fux new-tab [-t WS] [-n NAME] [--size COLSxROWS] [--json] [-- CMD…]` | a tab with a shell, CMD typed into it; prints `@N %N` |
+| `fux split -h\|-v [-t %N] [--json] [-- CMD…]` | split a pane: `-h` side by side, `-v` stacked; prints `%N` |
+| `fux run [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--json] -- PROGRAM…` | start a program in place of a shell, in a tab of its own in workspace `agent` (or WS), no client moved to it; prints `%N`. Its pane stays once it exits, with its last screen and status |
+| `fux wait [-t %N] --text T\|--gone T\|--idle MS\|--change\|--exit [--timeout SECS] [--print]` | wait until the pane shows text (`--text` again for any of several), stops showing it, shows no change for MS (redrawing the same screen is no change), changes, or its program exits (prints `exited STATUS`); 1 after `--timeout` (60 s). `--print` prints the screen as it ends |
+| `fux resize -t @N\|+N COLSxROWS\|auto` | what a tab (or a workspace's tabs) is laid out on while no client shows it; `auto`: a client's screen |
+| `fux resize -c CLIENT COLSxROWS` | a headless client's size |
 | `fux kill-pane\|kill-tab\|kill-workspace [-t …]` | close, without asking |
 | `fux rename -t TARGET NAME` | rename a pane, tab or workspace |
 | `fux move-pane [-t %N] --to @N\|+N\|new-tab\|new-workspace` | move a pane (to a workspace: its first tab) |
 | `fux move-pane [-t %N] -L\|-R\|-U\|-D` | move a pane beside its neighbour that way |
 | `fux swap-pane [-t %N] %M\|-L\|-R\|-U\|-D` | swap two panes, anywhere |
 | `fux resize-pane [-t %N] -L\|-R\|-U\|-D [CELLS]` | move the nearest border (default one cell) |
+| `fux resize-pane [-t %N] [-x COLS[%]] [-y ROWS[%]]` | make a pane a width, a height or both, in cells or a percentage of its tab; refused, nothing changed, if it cannot be |
 | `fux reorder pane\|tab\|workspace [-t TARGET] --next\|--previous` | move one place in its order |
 | `fux terminate [-t %N]` | SIGTERM to the pane's foreground job, not the shell or background jobs |
-| `fux send-keys [-t %N] [-l] KEYS…` | send keys (`C-c`, `Enter`, …); other words, or all with `-l`, as text |
+| `fux send-keys [-t %N \| -c CLIENT] [-l] [-N COUNT] KEYS… [--wait-idle MS [--print]]` | send keys (`C-c`, `Enter`, …); other words, all with `-l`, and `--text TEXT` as text; `--paste TEXT` as a paste, bracketed if the program asked. `-N` sends them COUNT times; `--wait-idle` then waits as `wait --idle` does. `-c` types them at a client instead, as at its terminal: its bindings, overlays and prompts take them |
+| `fux send-mouse [-t %N] click\|right\|middle\|press\|release\|wheel-up\|wheel-down\|move ROW COL` | a mouse event at a cell, from 0, encoded as the program asked; refused if it did not ask for mouse reports |
 | `fux send-prefix [-t %N]` | send the prefix key to the pane, as its program asked for keys |
-| `fux capture-pane [-t %N] [-S -LINES] [--json]` | the pane's text, after LINES of history |
+| `fux capture-pane [-t %N] [-S -LINES] [--full] [-J] [--rows A-B] [--cols A-B] [--styles] [--json]` | the pane's text, after LINES of history, trailing blanks and blank rows trimmed (`--full` keeps them); `-J` joins soft-wrapped rows; `--rows`/`--cols` a region, from 0; `--styles` colours and attributes as SGR |
 | `fux capture-client [-c CLIENT] [--json]` | what a client's terminal shows, bar included |
 | `fux set`, `bind`, `unbind`, `unbind-all` | change the configuration |
 | `fux reload` | run the config file again over the defaults |
 | `fux list-buffers`, `show-buffer [-b N]`, `paste-buffer [-b N] [-t %N]` | paste buffers, newest `0` |
 | `fux list-keys` | key names and the current bindings |
 | `fux detach [-c CLIENT]` | detach a client |
-| `fux help`, `fux --version` | usage, version |
+| `fux help [COMMAND\|agents]`, `fux --version` | usage, one command at length, the recipe for scripts and agents; version |
 
 These act on a client's screen: yours from a key or the prompt, `-c CLIENT`
 from the command line. `zoom` and `copy-mode` take no `-t`.
@@ -194,7 +202,23 @@ from the command line. `zoom` and `copy-mode` take no `-t`.
   `select-tab -t @N|--next|--previous`,
   `select-workspace -t WS|--next|--previous`
 
-Exit status: 0 done; 1 failed, with the reason on stderr; 2 a usage error.
+Exit status: 0 done; 1 failed, with the reason on stderr; 2 a usage error,
+with the command's usage. A tmux name (`list-panes`, `new-window`, …) gets
+a hint at fux's.
+
+**Scripts and agents** drive programs with `run`, `send-keys`, `wait` and
+`capture-pane`, each step one call, without touching anyone's tabs:
+
+```sh
+P=$(fux run --size 100x30 -- htop)         # out of every client's way
+fux wait -t $P --text Load                 # until it has drawn
+fux send-keys -t $P F6 --wait-idle 200 --print   # press, settle, read
+fux send-keys -t $P q && fux wait -t $P --exit   # prints: exited 0
+fux kill-workspace -t agent                # everything run started
+```
+
+`fux help agents` prints the whole recipe, the same as
+[docs/agents.md](docs/agents.md).
 
 **Key names**, for `send-keys` and `set prefix`, are tmux's (`C-x`, `M-x`,
 `S-Left`, `Enter`, `BTab`, `BSpace`, `PageUp`, `F1`–`F12`, …) and any
@@ -213,16 +237,32 @@ change.
 
 ```json
 {"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main",
-  "panes":[{"id":"%1","name":"zsh","title":"","rows":23,"cols":80,"pid":4242}]}]}],
+  "panes":[{"id":"%1","name":"zsh","title":"","rows":23,"cols":80,"pid":4242,
+    "program":"vim","exited":null,"idle_ms":1520,"alt_screen":true,
+    "mouse":true,"bracketed_paste":true}]}]}],
  "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false}]}
 ```
 
-That is `fux ls --json`. `fux capture-pane --json` prints
-`{"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":[…]}`, the
-history asked for with `-S` then the screen. `fux capture-client --json`
-prints `{"client":"c1","rows":24,"cols":80,"cursor":[ROW,COL],"lines":[…]}`,
-every row the client shows, with `cursor` `null` while it is hidden. Lines
-have trailing blanks trimmed.
+That is `fux ls --json`. Each pane says what it runs in its foreground
+(`program`, `null` if unknown), the status its program exited with
+(`exited`, for a pane `run` started, else `null`), how long its screen has
+shown no change (`idle_ms`), and whether its program is on the alternate screen, asked
+for mouse reports and for bracketed paste.
+
+`fux capture-pane --json` prints
+`{"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":[…]}` and the
+same pane fields: the history asked for with `-S` then the screen, trimmed
+as without `--json`. With `--styles` it adds `"styles":[[RUN…]…]`, a list
+per line of its runs of cells that are not plain, each
+`{"col":0,"len":3,"fg":1,"bg":"#1e1e20","bold":true,"inverse":true}` with
+the colours (palette numbers, or `#rrggbb`) and attributes it has.
+`fux capture-client --json` prints
+`{"client":"c1","rows":24,"cols":80,"cursor":[ROW,COL],"lines":[…]}`,
+every row the client shows, with `cursor` `null` while it is hidden.
+Rows and columns count from 0.
+
+`split`, `new-tab`, `new-workspace` and `run` with `--json` print where
+the new pane is: `{"workspace":"+2","tab":"@3","pane":"%4"}`.
 
 ## Configuration
 
@@ -312,6 +352,15 @@ shows the error to each terminal that attaches until a reload succeeds.
   pane's (or its tab's name). fux saves your terminal's own title first and
   restores it when you detach or turn titles off.
 - **Hyperlinks** (OSC 8) reach your terminal as links.
+- **Pictures** (sixel). A pane's program is told your terminal draws sixel
+  graphics, and the size of its cells (`CSI 16 t`), if your terminal says
+  so, and the pictures it draws are shown on your terminal, clipped to the
+  pane; they scroll with the text, and text over one, or an overlay, takes
+  it away. A pane no sixel-drawing terminal shows is told none, so its
+  programs draw in text (half blocks), which captures read; `--json` says
+  where pictures are. Drawn by foot, WezTerm, xterm (`-ti vt340`), Konsole,
+  mlterm and others; not by kitty, whose graphics protocol fux does not
+  speak, nor Ghostty, Alacritty or Apple's Terminal.
 - **Underline styles** (curly, dotted, dashed, double) reach your terminal
   if it draws them, else a plain underline.
 - **In-band resize reports** (mode 2048) are sent when a pane's size
