@@ -163,7 +163,7 @@ impl Mode {
 }
 
 /// Where a mode's state is kept.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum Kind {
     /// A bit of the screen's [`Modes`], and no more.
     Flag,

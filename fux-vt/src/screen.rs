@@ -1954,12 +1954,7 @@ impl Screen {
                 None if mode.savable() => self.saved_modes.contains(mode),
                 None => continue,
             };
-            // A mode that is a bit and no more is set here, without a call.
-            if mode.kind() == Kind::Flag {
-                self.modes.set(mode, on);
-            } else {
-                report |= self.set_mode(mode, on)?;
-            }
+            report |= self.set_mode(mode, on)?;
         }
         Ok(match (handled, report) {
             (_, true) => Dispatch::Reply(self.size_report()),
