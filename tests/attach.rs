@@ -238,6 +238,13 @@ fn attaching_inside_a_pane_is_refused_unless_nested() -> Outcome {
     let out = server.fux_env(&["attach"], &[("FUX_PANE", "%1")])?;
     assert_eq!(out.status, 1);
     assert!(out.stderr.contains("--nested"), "{}", out.stderr);
+    // `attach` may be left out before its flags.
+    let out = server.fux_env(&["-t", "main"], &[("FUX_PANE", "%1")])?;
+    assert_eq!(out.status, 1);
+    assert!(out.stderr.contains("--nested"), "{}", out.stderr);
+    let out = server.fux_env(&["--nested"], &[("FUX_PANE", "%1")])?;
+    assert_eq!(out.status, 1);
+    assert!(out.stderr.contains("needs a terminal"), "{}", out.stderr);
     Ok(())
 }
 

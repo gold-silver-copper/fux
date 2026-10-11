@@ -298,7 +298,7 @@ pub const GRACE: Duration = Duration::from_millis(100);
 /// The longest a typed command waits for the new shell to write and then
 /// go quiet (`pane::QUIET`): a shell that writes nothing still gets it.
 pub const TYPE_WAIT: Duration = Duration::from_secs(1);
-/// The size a pane gets when no client shows it yet.
+/// The size a pane starts at, until it is laid out on a client's screen.
 const DEFAULT_SIZE: (u16, u16) = (24, 80);
 
 fn default_size() -> fux_vt::Size {
@@ -835,8 +835,10 @@ impl Session {
         keys.map(KeyPress::to_string).collect::<Vec<_>>().join(" ")
     }
 
-    /// A PTY is the smallest rectangle any client shows it in; a pane nobody
-    /// shows keeps its size.
+    /// A PTY is the smallest rectangle any client shows it in. A tab no
+    /// client shows whose layout changed is laid out on any client's screen,
+    /// as commands resizing it are; otherwise its panes keep their size, so
+    /// leaving a tab resizes nothing.
     fn size_panes(&mut self) {
         let mut sizes = std::mem::take(&mut self.shown_sizes);
         let mut placed = std::mem::take(&mut self.placed);
@@ -844,6 +846,16 @@ impl Session {
         for view in self.views.values() {
             self.placement_into(view, &mut placed);
             sizes.extend(placed.panes.iter().map(|(p, r)| (*p, (r.h(), r.w()))));
+        }
+        if let Some(area) = self.views.values().next().map(Self::pane_area) {
+            let changed = self
+                .workspaces
+                .iter_mut()
+                .flat_map(Workspace::changed_unshown);
+            for root in changed {
+                layout::place_into(root, area, &mut placed);
+                sizes.extend(placed.panes.iter().map(|(p, r)| (*p, (r.h(), r.w()))));
+            }
         }
         self.placed = placed;
         // A pane's rectangles side by side, for the smallest.
@@ -2093,6 +2105,30 @@ mod tests {
     use super::testing::{attached, output, run, started};
     use super::*;
 
+    /// A tab no client shows is laid out on a client's screen, so its
+    /// programs see the size they will be shown at, not the size they
+    /// started at.
+    #[test]
+    fn a_tab_no_client_shows_is_sized_as_on_a_clients_screen() -> Result<(), String> {
+        let (mut s, _) = attached(11, 40)?;
+        run(&mut s, "new-tab -t +1")?;
+        let size = |s: &Session, p| s.panes.get(&PaneId::of(p)).map(Pane::size);
+        assert_eq!(size(&s, 2), Some(crate::pane::size(10, 40)));
+        run(&mut s, "split -v -t %2")?;
+        let (top, bottom) = (size(&s, 2), size(&s, 3));
+        let rows = top
+            .zip(bottom)
+            .map(|(t, b)| (t.rows(), b.rows(), t.cols(), b.cols()));
+        assert_eq!(rows, Some((5, 4, 40, 40)), "stacked, a separator between");
+        // Leaving a tab whose layout is unchanged resizes nothing: a zoomed
+        // pane keeps the whole screen.
+        run(&mut s, "select-tab -c c1 -t @2")?;
+        run(&mut s, "zoom -c c1")?;
+        run(&mut s, "select-tab -c c1 -t @1")?;
+        assert_eq!(size(&s, 2), Some(crate::pane::size(10, 40)));
+        Ok(())
+    }
+
     /// The `--json` outputs, byte for byte: escapes, borrowed names and
     /// formatted IDs alike.
     #[test]
@@ -2109,7 +2145,7 @@ mod tests {
         assert_eq!(
             output(&mut s, "ls --json")?,
             concat!(
-                r#"{"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[{"id":"%1","name":"say \"hi\" \\ 界","title":"","rows":3,"cols":15,"pid":null},{"id":"%2","name":"sh","title":"tab\\title","rows":3,"cols":14,"pid":null}]},{"id":"@2","name":"two","panes":[{"id":"%3","name":"sh","title":"","rows":24,"cols":80,"pid":null}]}]}],"clients":[{"id":"c1","rows":4,"cols":30,"workspace":"+1","tab":"@1","pane":"%2","zoom":false}]}"#,
+                r#"{"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[{"id":"%1","name":"say \"hi\" \\ 界","title":"","rows":3,"cols":15,"pid":null},{"id":"%2","name":"sh","title":"tab\\title","rows":3,"cols":14,"pid":null}]},{"id":"@2","name":"two","panes":[{"id":"%3","name":"sh","title":"","rows":3,"cols":30,"pid":null}]}]}],"clients":[{"id":"c1","rows":4,"cols":30,"workspace":"+1","tab":"@1","pane":"%2","zoom":false}]}"#,
                 "\n"
             )
         );
