@@ -263,8 +263,10 @@ fn kitty(stroke: Keystroke, alternate: bool, report: Report, out: &mut Vec<u8>) 
             out.push(b'u');
         }
         // Enter, Tab and Backspace: the legacy byte, which is also the code.
-        Form::Control(byte) if byte != 0x1b && held == 0 && !all => out.push(byte),
-        Form::Control(byte) => csi_u(out, u32::from(byte)),
+        Form::Control(control) if control != Control::Escape && held == 0 && !all => {
+            out.push(control.code());
+        }
+        Form::Control(control) => csi_u(out, u32::from(control.code())),
         // F3 is `CSI 13 ~`: the protocol leaves `CSI R` to cursor position reports.
         Form::Numbered(_, 'R') => numbered(out, 13, modifier, '~'),
         Form::Numbered(number, final_byte) => numbered(out, number, modifier, final_byte),
@@ -281,8 +283,8 @@ fn kitty(stroke: Keystroke, alternate: bool, report: Report, out: &mut Vec<u8>) 
 enum Form {
     /// A key that types a character.
     Text(char),
-    /// Enter, Tab, Escape and Backspace: their C0 control or DEL.
-    Control(u8),
+    /// Enter, Tab, Escape and Backspace.
+    Control(Control),
     /// `CSI number ; mods final` ([`numbered`]): the arrows, Home, End and
     /// F1 to F4 numbered 1, the others with xterm's numbers and gaps, as
     /// `decode.rs` (`csi`) reads them back.
@@ -296,10 +298,10 @@ impl From<Key> for Form {
     fn from(key: Key) -> Form {
         match key {
             Key::Char(c) => Form::Text(c),
-            Key::Enter => Form::Control(0x0d),
-            Key::Tab => Form::Control(0x09),
-            Key::Escape => Form::Control(0x1b),
-            Key::Backspace => Form::Control(0x7f),
+            Key::Enter => Form::Control(Control::Enter),
+            Key::Tab => Form::Control(Control::Tab),
+            Key::Escape => Form::Control(Control::Escape),
+            Key::Backspace => Form::Control(Control::Backspace),
             Key::Arrow(Direction::Up) => Form::Numbered(1, 'A'),
             Key::Arrow(Direction::Down) => Form::Numbered(1, 'B'),
             Key::Arrow(Direction::Right) => Form::Numbered(1, 'C'),
@@ -318,6 +320,27 @@ impl From<Key> for Form {
                 Some(&number) => Form::Numbered(number, '~'),
                 None => Form::Unnumbered(n),
             },
+        }
+    }
+}
+
+/// A key whose legacy bytes are a C0 control or DEL.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Control {
+    Enter,
+    Tab,
+    Escape,
+    Backspace,
+}
+
+impl Control {
+    /// Its byte unmodified, which is also its code in `CSI code u`.
+    fn code(self) -> u8 {
+        match self {
+            Control::Enter => 0x0d,
+            Control::Tab => 0x09,
+            Control::Escape => 0x1b,
+            Control::Backspace => 0x7f,
         }
     }
 }
@@ -525,7 +548,9 @@ fn allowed(sym: Sym, state: Modifiers) -> Modifiers {
 
 /// Legacy xterm bytes for a key: what xterm sends with its default
 /// resources, for a pane that asked for neither the kitty protocol nor
-/// modifyOtherKeys. Every key has an encoding.
+/// modifyOtherKeys. Every key has an encoding but a function key past
+/// F12, which xterm has no bytes for: it sends nothing, where an ESC
+/// would be read as Escape.
 fn legacy(press: KeyPress, application: bool, out: &mut Vec<u8>) {
     let KeyPress { key, mods } = press;
     let Modifiers { ctrl, alt, shift } = mods;
@@ -541,9 +566,16 @@ fn legacy(press: KeyPress, application: bool, out: &mut Vec<u8>) {
             let _ = write!(out, "\x1bO{final_byte}");
         }
         Form::Numbered(number, final_byte) => numbered(out, number, modifier, final_byte),
-        Form::Control(0x09) if shift => out.extend_from_slice(b"\x1b[Z"),
-        Form::Control(byte) => out.push(byte),
-        Form::Unnumbered(_) => out.push(27),
+        Form::Control(control) => match control {
+            Control::Tab if shift => out.extend_from_slice(b"\x1b[Z"),
+            // Ctrl-Backspace is BS, as xterm, kitty's legacy encoding, VTE
+            // and Alacritty send it, and as modifyOtherKeys's code says.
+            Control::Backspace if ctrl => out.push(0x08),
+            Control::Enter | Control::Tab | Control::Escape | Control::Backspace => {
+                out.push(control.code());
+            }
+        },
+        Form::Unnumbered(_) => return,
         Form::Text(c) if ctrl && c.is_ascii() => out.push(control_byte(c).unwrap_or(c as u8)),
         Form::Text(c) => out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
     }
@@ -839,7 +871,7 @@ mod tests {
             ("S-BSpace", "\x1b[27;2;127~"),
             ("C-S-BSpace", "\x1b[27;6;8~"),
             ("C-M-BSpace", "\x1b[27;7;8~"),
-            ("C-BSpace", "\x7f"),
+            ("C-BSpace", "\x08"),
             ("a", "a"),
             ("A", "A"),
             ("!", "!"),
@@ -916,6 +948,26 @@ mod tests {
             ("M-Delete", LEGACY, "\x1b[3;3~"),
         ] {
             assert_eq!(named(name, mode), bytes, "{name}");
+        }
+    }
+
+    /// A legacy pane gets Ctrl-Backspace as BS, as xterm, kitty's legacy
+    /// encoding, VTE and Alacritty send it, whatever terminal it was typed
+    /// in; and nothing for a function key past F12, which xterm has no
+    /// bytes for, rather than an ESC a program reads as Escape.
+    #[test]
+    fn legacy_ctrl_backspace_is_bs_and_an_unnumbered_key_is_nothing() {
+        for (name, bytes) in [
+            ("BSpace", "\x7f"),
+            ("M-BSpace", "\x1b\x7f"),
+            ("C-BSpace", "\x08"),
+            ("C-M-BSpace", "\x1b\x08"),
+        ] {
+            assert_eq!(named(name, LEGACY), bytes, "{name}");
+        }
+        for mods in [Modifiers::NONE, Modifiers::CTRL, Modifiers::ALT] {
+            let f13 = KeyPress::new(Key::F(13), mods);
+            assert_eq!(stroke(f13.into(), LEGACY), "", "{mods:?}");
         }
     }
 
