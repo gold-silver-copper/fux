@@ -19,7 +19,7 @@ impl Grid {
     /// reflowed line keeps the identity of the line's k-th row before, if it
     /// had one; every row takes `version`.
     pub fn reflowed(&self, size: Size, next: &mut u64, version: u64) -> Result<Self, Error> {
-        Self::check_size(size, self.history_limit)?;
+        Self::check_size(size, self.history_limit())?;
         let cols = size.cols();
         // The cursor and the saved cursor go with their characters; one
         // waiting to wrap is laid out one past its glyph.
@@ -49,7 +49,7 @@ impl Grid {
             .min(layout.rows.saturating_sub(cursor_row.saturating_add(1)));
         let total = layout.rows.saturating_sub(drop);
         let live_top = total.saturating_sub(screen).min(cursor_row);
-        let base = live_top.saturating_sub(self.history_limit);
+        let base = live_top.saturating_sub(self.history_limit());
         let end = total.min(live_top.checked_add(screen).ok_or(Error::Capacity)?);
         // A row on the screen, the first if above it, the last if below;
         // one past the last column of the text is the last column, waiting

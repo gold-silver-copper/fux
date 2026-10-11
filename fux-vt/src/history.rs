@@ -181,6 +181,18 @@ impl History {
     pub(crate) fn len(&self) -> usize {
         self.rows.len()
     }
+    pub(crate) fn limit(&self) -> usize {
+        self.limit
+    }
+    /// Keeps at most `limit` rows from now on, letting the oldest go at
+    /// once if it holds more.
+    pub(crate) fn set_limit(&mut self, limit: usize) {
+        self.limit = limit;
+        while self.rows.len() > limit {
+            self.pop();
+        }
+        self.rows.shrink_to(limit.saturating_add(1));
+    }
     /// The cells the rows keep.
     pub(crate) fn kept_cells(&self) -> usize {
         self.cells

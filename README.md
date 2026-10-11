@@ -140,7 +140,9 @@ trailing blanks. One copy is at most 262,144 cells.
 buffers`); `C-b p` pastes the newest, bracketed if the program asked for
 bracketed paste. It is also sent to your terminal's clipboard as OSC 52,
 up to 1 MiB encoded, unless `set clipboard off`; your terminal must allow
-OSC 52 writes. fux never reads the clipboard.
+OSC 52 writes. A program in a pane that copies with OSC 52, as Neovim and
+Helix do, copies the same way: to the buffers, and to the clipboard of
+each terminal showing the pane. fux never reads the clipboard.
 
 ## Commands
 
@@ -249,8 +251,8 @@ bind -n M-h select-pane -L       # -n: no prefix, Alt-h alone
 | --- | --- | --- |
 | `prefix` | a key name; not one bound with `bind -n` | `C-b` |
 | `shell` | a program and its arguments | `$SHELL`, else `/bin/sh` |
-| `history-lines` | lines per pane, 0 to 1,000,000 | 10000 |
-| `clipboard` | `on` or `off`: OSC 52 writes | `on` |
+| `history-lines` | lines per pane, 0 to 1,000,000; a change applies to every pane | 10000 |
+| `clipboard` | `on` or `off`: copies, fux's and programs', reach your terminal's clipboard | `on` |
 | `buffers` | paste buffers kept, 1 to 1000 | 16 |
 | `bell` | `on` or `off`: a pane's bell rings your terminal and marks its tab | `on` |
 | `titles` | `on` or `off`: your terminal's title follows the focused pane | `off` |
@@ -274,7 +276,7 @@ menu or a prompt, the key is theirs. `unbind-all` removes these too.
 
 `set`, `bind` and `unbind` are ordinary commands, so they change a running
 server from the command line or the prompt too. `fux reload` reruns the
-file over the defaults; on an error it names the file and line and changes
+file over the defaults, and says so when there is no file; on an error it names the file and line and changes
 nothing. A server started with an invalid file runs on the defaults and
 shows the error to each terminal that attaches until a reload succeeds.
 

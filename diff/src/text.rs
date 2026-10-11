@@ -54,7 +54,7 @@ const CONFIG: &[&str] = &[
 ];
 
 macro_rules! stack {
-    ($name:ident, $fux:ident, $folded:expr, $bindings:expr) => {
+    ($name:ident, $fux:ident, $folded:expr, $bindings:expr, $file:expr) => {
         mod $name {
             use $fux::config::Config;
             use $fux::keys::KeyPress;
@@ -117,7 +117,8 @@ macro_rules! stack {
 
             /// A config file read whole.
             pub fn file(path: &std::path::Path) -> String {
-                match Config::from_file(path) {
+                let read = $file;
+                match read(path) {
                     Ok(config) => config.describe().join("\n"),
                     Err(error) => format!("error: {error}"),
                 }
@@ -139,16 +140,28 @@ macro_rules! stack {
 
 // How each folds a key typed after the prefix, KeyPress::folded, and lists
 // its bindings after the prefix (their keys are in `describe`).
-stack!(base, baseline, |p: KeyPress| p.folded(), |c: &Config| c
-    .bindings
-    .clone());
-stack!(cur, fux, |p: KeyPress| p.folded(), |c: &Config| {
-    c.bindings
-        .all()
-        .into_iter()
-        .map(|(_, b, _)| b.clone())
-        .collect::<Vec<_>>()
-});
+// And reads a file: the current's says when there is none, which reads as
+// the defaults, as the baseline's does.
+stack!(
+    base,
+    baseline,
+    |p: KeyPress| p.folded(),
+    |c: &Config| c.bindings.clone(),
+    |p: &std::path::Path| Config::from_file(p)
+);
+stack!(
+    cur,
+    fux,
+    |p: KeyPress| p.folded(),
+    |c: &Config| {
+        c.bindings
+            .all()
+            .into_iter()
+            .map(|(_, b, _)| b.clone())
+            .collect::<Vec<_>>()
+    },
+    |p: &std::path::Path| Config::from_file(p).map(Option::unwrap_or_default)
+);
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
     let mut lines = 0u64;

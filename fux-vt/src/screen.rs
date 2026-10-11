@@ -908,6 +908,17 @@ impl Screen {
         Ok(())
     }
 
+    pub(crate) fn set_history_limit(&mut self, lines: usize) -> Result<(), Error> {
+        if self.primary.history_limit() == lines {
+            return Ok(());
+        }
+        self.primary.set_history_limit(lines)?;
+        // Rows may have left history: every reader reads again.
+        self.version = self.version.wrapping_add(1);
+        self.structural = self.version;
+        Ok(())
+    }
+
     fn scroll(&mut self, region: Span, count: u16, up: bool, history: bool) -> Result<(), Error> {
         if self.grid().lr() {
             self.scroll_columns(region, count, up);
@@ -1341,7 +1352,7 @@ impl Screen {
             return Ok(());
         };
         let lines = usize::from(g.size().rows())
-            .saturating_add(g.history_limit)
+            .saturating_add(g.history_limit())
             .saturating_add(1);
         let full = lines.saturating_mul(per_row);
         let mut count = usize::from(count);
@@ -1633,7 +1644,7 @@ impl Screen {
                     self.primary.clear(&mut next, self.version)?;
                     self.alternate.clear(&mut next, self.version)?;
                 } else {
-                    let history = self.primary.history_limit;
+                    let history = self.primary.history_limit();
                     let primary = Grid::new(size, history, &mut next, self.version)?;
                     let alternate = Grid::unmade(size, &mut next, self.version)?;
                     self.primary = primary;

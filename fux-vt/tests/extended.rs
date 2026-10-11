@@ -759,3 +759,33 @@ fn a_string_ended_by_st_leaves_nothing_unhandled() -> Result {
     }
     Ok(())
 }
+
+/// The history limit changes on a live parser: lowered, the oldest rows go
+/// at once and readers read every row again; raised, rows gather again.
+#[test]
+fn the_history_limit_changes_on_a_live_parser() -> Result {
+    let mut p = Parser::new(Size::new(2, 10)?, 100)?;
+    for n in 0..50 {
+        p.process(format!("{n}\r\n").as_bytes())?;
+    }
+    assert_eq!(p.screen().history_len(), 49);
+    let mark = p.screen().mark();
+    p.set_history_lines(3)?;
+    assert!(p.screen().full_refresh_since(mark));
+    assert_eq!(window_lines(&p, 3), ["46", "47"], "the newest rows stay");
+    assert_eq!(p.screen().history_len(), 3);
+    p.process(b"x\r\ny\r\n")?;
+    assert_eq!(p.screen().history_len(), 3, "the limit holds");
+    p.set_history_lines(0)?;
+    assert_eq!(p.screen().history_len(), 0);
+    p.set_history_lines(10)?;
+    p.process(b"a\r\nb\r\n")?;
+    assert_eq!(p.screen().history_len(), 2);
+    assert!(p.set_history_lines(usize::MAX).is_err());
+    assert_eq!(
+        p.screen().history_len(),
+        2,
+        "a refused limit changes nothing"
+    );
+    Ok(())
+}

@@ -474,7 +474,7 @@ impl std::error::Error for Error {
 pub fn serve(socket: &SocketPath, config_path: Option<PathBuf>) -> Result<(), Error> {
     let (config, error) = match &config_path {
         Some(path) => match Config::from_file(path) {
-            Ok(config) => (config, None),
+            Ok(config) => (config.unwrap_or_default(), None),
             Err(error) => {
                 log(&format!("{error}; running on the defaults"));
                 (Config::default(), Some(error))

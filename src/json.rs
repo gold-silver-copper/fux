@@ -107,6 +107,36 @@ pub fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// The bytes standard base64 `text` encodes, padded or not, as a program's
+/// OSC 52 sends them; `None` if it is not base64.
+pub fn unbase64(text: &[u8]) -> Option<Vec<u8>> {
+    let text = (text.strip_suffix(b"==").or_else(|| text.strip_suffix(b"="))).unwrap_or(text);
+    // A capacity hint only.
+    let mut out = Vec::with_capacity(text.len().div_ceil(4).saturating_mul(3));
+    // Four characters at a time, and what is left over.
+    let (whole, rest) = text.as_chunks::<4>();
+    for chunk in
+        (whole.iter().map(|chunk| chunk.as_slice())).chain((!rest.is_empty()).then_some(rest))
+    {
+        let mut n = 0u32;
+        for (c, shift) in chunk.iter().zip([18u32, 12, 6, 0]) {
+            let value = match c {
+                b'A'..=b'Z' => c.wrapping_sub(b'A'),
+                b'a'..=b'z' => c.wrapping_sub(b'a').wrapping_add(26),
+                b'0'..=b'9' => c.wrapping_sub(b'0').wrapping_add(52),
+                b'+' => 62,
+                b'/' => 63,
+                _ => return None,
+            };
+            n |= u32::from(value) << shift;
+        }
+        // Four characters are three bytes, three two, two one; one is none.
+        let bytes = n.to_be_bytes();
+        out.extend_from_slice(bytes.get(1..chunk.len()).filter(|b| !b.is_empty())?);
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +168,18 @@ mod tests {
             ("foobar", "Zm9vYmFy"),
         ] {
             assert_eq!(base64(input.as_bytes()), output);
+            assert_eq!(
+                unbase64(output.as_bytes()).as_deref(),
+                Some(input.as_bytes())
+            );
+        }
+        assert_eq!(
+            unbase64(b"Zm9vYg").as_deref(),
+            Some(&b"foob"[..]),
+            "unpadded"
+        );
+        for bad in [&b"Zm9v!"[..], b"Z", b"Zm=v", b"Zm9vY"] {
+            assert_eq!(unbase64(bad), None, "{bad:?}");
         }
     }
 }

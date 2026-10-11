@@ -277,6 +277,9 @@ struct Sink<'a> {
     title: &'a mut Title,
     /// Set by a bell (BEL).
     bell: &'a mut bool,
+    /// Set by an OSC 52 write of UTF-8 text, at most `MAX_CLIPBOARD`
+    /// encoded.
+    copied: &'a mut Option<String>,
     /// What colour queries are answered with (`outer`).
     colours: &'a crate::outer::Colours,
 }
@@ -297,7 +300,12 @@ impl fux_vt::Sink for Sink<'_> {
                 }
             }
             fux_vt::Event::Bell => *self.bell = true,
-            // fux's clipboard policy: a program's OSC 52 is not taken.
+            fux_vt::Event::Clipboard { data, .. } if data.len() <= crate::copy::MAX_CLIPBOARD => {
+                let text = crate::json::unbase64(data).and_then(|d| String::from_utf8(d).ok());
+                if let Some(text) = text {
+                    *self.copied = Some(text);
+                }
+            }
             fux_vt::Event::IconName(_) | fux_vt::Event::Clipboard { .. } | _ => {}
         }
     }
@@ -393,6 +401,9 @@ pub struct Pane {
     /// The program rang the bell since the session last looked
     /// (`Session::ring`).
     pub bell: bool,
+    /// The text the program last put on the clipboard (OSC 52) since the
+    /// session last looked, which copies it (`Session::copied`).
+    pub copied: Option<String>,
 }
 
 /// After the shell's output has been quiet this long, it is taken to be
@@ -467,6 +478,7 @@ impl Pane {
             frame: None,
             colours: crate::outer::Colours::default(),
             bell: false,
+            copied: None,
         })
     }
 
@@ -535,6 +547,7 @@ impl Pane {
             replies: Vec::new(),
             title: &mut self.title,
             bell: &mut self.bell,
+            copied: &mut self.copied,
             colours: &self.colours,
         };
         // The parser refuses only allocations beyond its limits; the screen
