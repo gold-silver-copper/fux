@@ -70,7 +70,7 @@ enum Change {
 }
 
 macro_rules! stack {
-    ($name:ident, $fux:ident, $ids:ident, $tree:ident, $area:expr, $line:expr) => {
+    ($name:ident, $fux:ident, $ids:ident, $tree:ident, $area:expr, $line:expr, $split:expr) => {
         mod $name {
             use super::{Change, Shape};
             use $fux::keys::Direction;
@@ -166,7 +166,7 @@ macro_rules! stack {
                         } => {
                             let side = if after { Side::After } else { Side::Before };
                             let axis = axis(horizontal);
-                            let split = |(t, n)| layout::split(&mut self.root, t, n, axis, side);
+                            let split = |(t, n)| $split(&mut self.root, t, n, axis, side);
                             pane(target).zip(pane(new)).is_some_and(split).to_string()
                         }
                         Change::Remove(p) => pane(p)
@@ -208,7 +208,8 @@ stack!(
     layout,
     Node,
     |x, y, w, h| Rect { x, y, w, h },
-    |s: &Separator| (s.axis, s.x, s.y, s.len)
+    |s: &Separator| (s.axis, s.x, s.y, s.len),
+    layout::split
 );
 // A rect is cut from a screen, so it fits one.
 stack!(
@@ -227,6 +228,11 @@ stack!(
             Axis::Vertical => s.rect.w(),
         };
         (s.axis, s.rect.x(), s.rect.y(), len)
+    },
+    // A split needs a tree with a pane in it.
+    |root: &mut Option<Tree>, target, new, axis, side| {
+        root.as_mut()
+            .is_some_and(|r| r.split(target, new, axis, side))
     }
 );
 
