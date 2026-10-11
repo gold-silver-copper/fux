@@ -853,11 +853,9 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
             17..=21 => function(11),
             23 | 24 => function(12),
             // xterm modifyOtherKeys: `CSI 27 ; mod ; code ~`.
-            // A control character's code names no key.
             27 => part(2, 0)
-                .and_then(char::from_u32)
-                .filter(|c| !c.is_control())
-                .and_then(|c| press(Key::Char(c), mods)),
+                .and_then(|code| coded(code, mods, |c| c))
+                .map(|press| Input::Key(press.into())),
             _ => None,
         },
         // `CSI code ; mod u`: xterm's formatOtherKeys, and the kitty
@@ -869,22 +867,8 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
                 base: part(0, 2),
                 mods: bits,
             };
-            let key = match first {
-                13 => Some(Key::Enter),
-                9 => Some(Key::Tab),
-                27 => Some(Key::Escape),
-                127 => Some(Key::Backspace),
-                // The Unicode Private Use Area: the kitty protocol's
-                // functional keys.
-                0xe000..=0xf8ff => functional(first),
-                // A control character's code names no key.
-                _ => char::from_u32(first)
-                    .map(|c| typed(c, &kitty))
-                    .filter(|c| !c.is_control())
-                    .map(Key::Char),
-            };
-            let stroke = key.map(|key| Keystroke {
-                press: KeyPress::new(key, mods),
+            let stroke = coded(first, mods, |c| typed(c, &kitty)).map(|press| Keystroke {
+                press,
                 kitty: Some(kitty),
             });
             return Step::Done(consumed, stroke.map(Input::Key));
@@ -906,6 +890,33 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
         other => other,
     };
     Step::Done(consumed, input)
+}
+
+/// The key that `code` names in both forms that carry one, xterm's
+/// modifyOtherKeys (`CSI 27 ; mods ; code ~`) and `CSI code ; mods u`,
+/// held with `mods`: Enter, Tab, Escape and Backspace by their controls, 8
+/// as Ctrl-Backspace (BS, which Ctrl makes of Backspace); a kitty
+/// functional key by its number in the Private Use Area; else the
+/// character, as `char_of` reads it, unless it is another control, which
+/// names no key.
+fn coded(code: u32, mods: Modifiers, char_of: impl FnOnce(char) -> char) -> Option<KeyPress> {
+    let key = match code {
+        8 => {
+            let mods = Modifiers { ctrl: true, ..mods };
+            return Some(KeyPress::new(Key::Backspace, mods));
+        }
+        9 => Key::Tab,
+        13 => Key::Enter,
+        27 => Key::Escape,
+        127 => Key::Backspace,
+        0xe000..=0xf8ff => functional(code)?,
+        _ => Key::Char(
+            char::from_u32(code)
+                .map(char_of)
+                .filter(|c| !c.is_control())?,
+        ),
+    };
+    Some(KeyPress::new(key, mods))
 }
 
 /// The character a legacy terminal sends for the kitty-protocol key `c`,
@@ -1068,6 +1079,32 @@ mod tests {
 
     fn name_press(name: &str) -> Option<KeyPress> {
         name.parse().ok()
+    }
+
+    /// xterm's modifyOtherKeys form names a key by the code `CSI code ;
+    /// mods u` does: Enter, Tab, Escape and Backspace too, and 8 as
+    /// Ctrl-Backspace, which `encode.rs` sends for it.
+    #[test]
+    fn both_coded_forms_name_the_same_keys() {
+        for (code, mods, name) in [
+            (13, 5, "C-Enter"),
+            (13, 2, "S-Enter"),
+            (9, 5, "C-Tab"),
+            (27, 3, "M-Escape"),
+            (127, 5, "C-BSpace"),
+            (127, 3, "M-BSpace"),
+            (8, 5, "C-BSpace"),
+            (8, 6, "C-S-BSpace"),
+            (97, 5, "C-a"),
+        ] {
+            for form in [
+                format!("\x1b[27;{mods};{code}~"),
+                format!("\x1b[{code};{mods}u"),
+            ] {
+                let press = presses(all(form.as_bytes()));
+                assert_eq!(press, vec![name_press(name)], "{form:?}");
+            }
+        }
     }
 
     /// The deadline runs from when decoding began waiting, through bytes
