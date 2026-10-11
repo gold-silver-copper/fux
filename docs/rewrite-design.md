@@ -445,6 +445,8 @@ notice if the pane closes or its history drops the anchored rows.
   - and to the copying client's own terminal as OSC 52, unless
     `set clipboard off`. The outer terminal must allow OSC 52 writes; many do
     by default, and some ask first or need an option.
+  - A program's own OSC 52 write is a copy too: to the buffers, and to the
+    terminals of the clients showing its pane.
 - **Selection rules:**
   - rows are tracked by fux-vt row ID, as today, so new output and scrolling
     do not break a selection over rows that did not change;

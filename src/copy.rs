@@ -8,7 +8,7 @@ use crate::id::ClientId;
 use crate::id::PaneId;
 use crate::keys::{Direction, Key, KeyPress};
 use crate::render::shown;
-use crate::session::{self, Error, Outgoing, Session};
+use crate::session::{self, Error, Session};
 use crate::view::{Line, Mode, Notice, View};
 use fux_vt::{CellRef, Row, RowId, Screen};
 
@@ -793,20 +793,9 @@ fn yank(session: &mut Session, client: ClientId, copied: Result<String, String>)
         "copied {characters} character{}",
         if characters == 1 { "" } else { "s" }
     );
-    // Encoded for the clipboard before the text moves into the buffers.
-    if session.config.clipboard {
-        let encoded = crate::json::base64(copied.as_bytes());
-        if encoded.len() <= MAX_CLIPBOARD {
-            session.outbox.push(Outgoing::Bytes(
-                client,
-                format!("\x1b]52;c;{encoded}\x07").into_bytes(),
-            ));
-        } else {
-            note.push_str(" to buffer 0; too large for the clipboard");
-        }
+    if !session.copied(copied, &[client]) {
+        note.push_str(" to buffer 0; too large for the clipboard");
     }
-    session.buffers.push_front(copied);
-    session.buffers.truncate(session.config.buffers);
     leave(session, client);
     session.info_to(client, note);
 }

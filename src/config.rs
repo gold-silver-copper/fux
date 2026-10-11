@@ -720,12 +720,13 @@ impl Config {
     }
 
     /// The configuration a file gives, applied line by line over the
-    /// defaults. Any error names its file and line, and nothing applies.
-    pub fn from_file(path: &Path) -> Result<Config, Error> {
+    /// defaults; `None` if there is no file. Any error names its file and
+    /// line, and nothing applies.
+    pub fn from_file(path: &Path) -> Result<Option<Config>, Error> {
         let mut config = Config::default();
         let text = match read_bounded(path) {
             Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(config),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(source) => {
                 return Err(Error::Read {
                     path: path.to_owned(),
@@ -745,7 +746,7 @@ impl Config {
             }
             config.apply(&argv).map_err(at)?;
         }
-        Ok(config)
+        Ok(Some(config))
     }
 
     /// Settings as `fux` commands, for display.
@@ -1082,7 +1083,7 @@ mod tests {
         let line = "# a comment, as long as a line may be\n";
         let fits: String = std::iter::repeat_n(line, (1 << 20) / line.len()).collect();
         std::fs::write(&path, &fits).map_err(|e| e.to_string())?;
-        assert!(Config::from_file(&path).is_ok_and(|c| c == Config::default()));
+        assert!(Config::from_file(&path).is_ok_and(|c| c == Some(Config::default())));
         std::fs::write(&path, format!("{fits}{line}{line}")).map_err(|e| e.to_string())?;
         let error = Config::from_file(&path).err().map(|e| e.to_string());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1105,7 +1106,7 @@ mod tests {
             "# comment\nset prefix C-a\n\nbind q detach # trailing\n",
         )
         .map_err(|e| e.to_string())?;
-        let config = Config::from_file(&path)?;
+        let config = Config::from_file(&path)?.ok_or("the file is there")?;
         assert_eq!(config.prefix.to_string(), "C-a");
         assert!(bound(&config, "q").is_some());
         std::fs::write(&path, "set prefix C-a\nset prefix Nope\n").map_err(|e| e.to_string())?;
@@ -1119,7 +1120,7 @@ mod tests {
             error.ends_with(":2: unknown key \"Nope\"; `fux list-keys` lists them"),
             "{error}"
         );
-        assert!(Config::from_file(&dir.join("missing")).is_ok_and(|c| c == Config::default()));
+        assert!(Config::from_file(&dir.join("missing")).is_ok_and(|c| c.is_none()));
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }

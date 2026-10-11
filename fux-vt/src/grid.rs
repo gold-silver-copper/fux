@@ -253,7 +253,6 @@ pub(crate) struct Grid {
     order: Order,
     history: History,
     size: Size,
-    pub history_limit: usize,
     pub cursor: Cursor,
     /// The cursor DECSC saved, which DECRC restores.
     pub saved: Cursor,
@@ -287,6 +286,20 @@ pub(crate) fn next_id(next: &mut u64) -> RowId {
 }
 
 impl Grid {
+    /// The most rows its history keeps.
+    pub(crate) fn history_limit(&self) -> usize {
+        self.history.limit()
+    }
+
+    /// Keeps at most `limit` rows of history from now on, letting the
+    /// oldest go at once if it holds more; nothing changes if `limit` and
+    /// the size are more than a grid can hold.
+    pub(crate) fn set_history_limit(&mut self, limit: usize) -> Result<(), Error> {
+        Self::check_size(self.size, limit)?;
+        self.history.set_limit(limit);
+        Ok(())
+    }
+
     pub fn check_size(size: Size, history: usize) -> Result<(), Error> {
         let retained = history
             .checked_add(usize::from(size.rows()))
@@ -370,7 +383,6 @@ impl Grid {
             order: Order::default(),
             history: History::new(history_limit),
             size,
-            history_limit,
             cursor: Cursor::default(),
             saved: Cursor::default(),
             lines: size.lines(),
@@ -389,7 +401,7 @@ impl Grid {
             recent: self.recent,
             epoch: self.epoch,
             unmade: self.unmade,
-            ..Self::bare(size, self.history_limit)
+            ..Self::bare(size, self.history_limit())
         }
     }
 
@@ -1240,7 +1252,7 @@ impl Grid {
         // goes straight to history.
         if direction == (Scroll::Up { history: true })
             && region == self.size.lines()
-            && self.history_limit > 0
+            && self.history_limit() > 0
         {
             for _ in 0..count.min(self.size.rows()) {
                 self.scroll_into_history(blank, next, version)?;
@@ -1449,7 +1461,7 @@ impl Grid {
         if !taken {
             self.take_row_with_extras(slot)?;
         }
-        if self.history.len() > self.history_limit {
+        if self.history.len() > self.history_limit() {
             self.history.pop();
         }
         let id = next_id(next);
@@ -1563,7 +1575,7 @@ impl Grid {
     /// new storage is built before anything changes, so a failed allocation
     /// leaves this grid as it was.
     pub fn resized(&self, size: Size, next: &mut u64, version: u64) -> Result<Self, Error> {
-        Self::check_size(size, self.history_limit)?;
+        Self::check_size(size, self.history_limit())?;
         let (rows, cols) = (size.rows(), size.cols());
         let history = self.history_len();
         // Rows are placed around the cursor, so that the line it is on stays
@@ -1588,9 +1600,9 @@ impl Grid {
                     .ok_or(Error::Capacity)?
             }
         };
-        let new_history = live_top.min(self.history_limit);
+        let new_history = live_top.min(self.history_limit());
         // Rows past the history limit are dropped, oldest first.
-        let base = live_top.saturating_sub(self.history_limit);
+        let base = live_top.saturating_sub(self.history_limit());
         let keep_total = new_history
             .checked_add(usize::from(rows))
             .ok_or(Error::Capacity)?;
@@ -1681,7 +1693,7 @@ impl Grid {
         if !self.recyclable() {
             // The links' table is kept, which counts the link the program
             // has open (`Screen::link_cells`), and finds it by its `id`.
-            let mut grid = Self::made(self.size, self.history_limit, next, version, self.unmade)?;
+            let mut grid = Self::made(self.size, self.history_limit(), next, version, self.unmade)?;
             grid.links = std::mem::take(&mut self.links);
             grid.epoch = self.epoch.wrapping_add(1);
             *self = grid;

@@ -803,6 +803,17 @@ impl Session {
     /// The bindings changed: each client's command column and repeat mode
     /// is found in them again, the column keeping its place; one whose
     /// layer went closes, saying so.
+    /// The configuration changed: the bindings follow it, and every pane
+    /// keeps the history it says. A pane whose history cannot be that long
+    /// at its size keeps its own, as a new pane of that size would fail.
+    fn configured(&mut self) {
+        self.rebind();
+        let lines = self.config.history_lines;
+        for pane in self.panes.values_mut() {
+            let _ = pane.parser.set_history_lines(lines);
+        }
+    }
+
     fn rebind(&mut self) {
         let clients: Vec<ClientId> = self.views.keys().copied().collect();
         for id in clients {
@@ -1026,6 +1037,15 @@ impl Session {
         {
             self.ring(id, Instant::now());
         }
+        // A program's copy, as a copy in copy mode, to the clients showing
+        // it; none with `set clipboard off`.
+        let copied = self.panes.get_mut(&id).and_then(|p| p.copied.take());
+        if let Some(text) = copied.filter(|_| self.config.clipboard) {
+            let to: Vec<ClientId> = (self.views.keys().copied())
+                .filter(|&c| place.is_some_and(|(_, tab)| self.shows(c, tab)))
+                .collect();
+            self.copied(text, &to);
+        }
         for view in self.views.values_mut() {
             let shown = shown_tab(&self.workspaces, view.id).map(|t| t.id);
             if place.is_some_and(|(_, t)| shown == Some(t)) {
@@ -1037,6 +1057,27 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// `text`, copied, goes to the paste buffers and, unless `set clipboard
+    /// off`, to the clipboard of each client in `to` (OSC 52): false if it
+    /// is too large for the clipboard.
+    pub(crate) fn copied(&mut self, text: String, to: &[ClientId]) -> bool {
+        let mut fits = true;
+        // Encoded for the clipboard before the text moves into the buffers.
+        if self.config.clipboard {
+            let encoded = crate::json::base64(text.as_bytes());
+            fits = encoded.len() <= crate::copy::MAX_CLIPBOARD;
+            if fits {
+                let osc = format!("\x1b]52;c;{encoded}\x07").into_bytes();
+                for &client in to {
+                    self.outbox.push(Outgoing::Bytes(client, osc.clone()));
+                }
+            }
+        }
+        self.buffers.push_front(text);
+        self.buffers.truncate(self.config.buffers);
+        fits
     }
 
     /// Everything the server shuts down: every pane is hung up.
@@ -1361,17 +1402,21 @@ impl Session {
                 // command that can show something new: `set titles`
                 // shows at each client's next paint.
                 self.config.apply(argv).map_err(Error::Config)?;
-                self.rebind();
+                self.configured();
                 Ok(String::new())
             }
             &Command::Reload => {
                 let path = self.config_path.clone().ok_or(Error::NoConfigFile)?;
                 match Config::from_file(&path) {
                     Ok(config) => {
-                        self.config = config;
+                        let said = match &config {
+                            Some(_) => format!("reloaded {}\n", path.display()),
+                            None => format!("no {}: the defaults apply\n", path.display()),
+                        };
+                        self.config = config.unwrap_or_default();
                         self.config_error = None;
-                        self.rebind();
-                        Ok(format!("reloaded {}\n", path.display()))
+                        self.configured();
+                        Ok(said)
                     }
                     Err(error) => Err(Error::Reload(error)),
                 }
@@ -2092,6 +2137,62 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::{attached, output, run, started};
     use super::*;
+
+    /// `set history-lines` changes every pane's history, not only the next
+    /// pane's.
+    #[test]
+    fn set_history_lines_applies_to_panes_there_are() -> Result<(), String> {
+        let (mut s, _) = attached(5, 20)?;
+        s.output(
+            PaneId::of(1),
+            std::iter::repeat_n("line\r\n", 50)
+                .collect::<String>()
+                .as_bytes(),
+        );
+        let history = |s: &Session| {
+            s.panes
+                .get(&PaneId::of(1))
+                .map(|p| p.screen().history_len())
+        };
+        assert!(history(&s) > Some(2));
+        run(&mut s, "set history-lines 2")?;
+        assert_eq!(history(&s), Some(2));
+        Ok(())
+    }
+
+    /// A reload with no file says the defaults apply, not that it read one.
+    #[test]
+    fn a_reload_without_a_file_says_the_defaults_apply() -> Result<(), String> {
+        let (mut s, _) = attached(5, 20)?;
+        s.config_path = Some(PathBuf::from("/nonexistent/fux.conf"));
+        run(&mut s, "set prefix C-a")?;
+        let said = output(&mut s, "reload")?;
+        assert_eq!(said, "no /nonexistent/fux.conf: the defaults apply\n");
+        assert_eq!(s.config.prefix.to_string(), "C-b");
+        Ok(())
+    }
+
+    /// A program's OSC 52 write is a copy: to the paste buffers and the
+    /// clipboard of the clients showing it, unless `set clipboard off`.
+    #[test]
+    fn a_programs_clipboard_write_is_a_copy() -> Result<(), String> {
+        let (mut s, client) = attached(5, 20)?;
+        s.outbox.clear();
+        s.output(PaneId::of(1), b"\x1b]52;c;Zm9v\x07");
+        assert_eq!(s.buffers.front().map(String::as_str), Some("foo"));
+        let sent = |s: &Session| {
+            s.outbox
+                .iter()
+                .any(|o| matches!(o, Outgoing::Bytes(c, b) if *c == client && b == b"\x1b]52;c;Zm9v\x07"))
+        };
+        assert!(sent(&s));
+        s.outbox.clear();
+        run(&mut s, "set clipboard off")?;
+        s.output(PaneId::of(1), b"\x1b]52;c;YmFy\x07");
+        assert!(!sent(&s) && s.outbox.is_empty());
+        assert_eq!(s.buffers.front().map(String::as_str), Some("foo"));
+        Ok(())
+    }
 
     /// The `--json` outputs, byte for byte: escapes, borrowed names and
     /// formatted IDs alike.

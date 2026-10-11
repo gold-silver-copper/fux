@@ -727,6 +727,13 @@ impl Parser {
     pub fn resize(&mut self, size: Size) -> Result<(), Error> {
         self.screen.resize(size, self.options.has(Feature::Reflow))
     }
+    /// Keeps at most `lines` rows of the primary screen's history from now
+    /// on, as `history_lines` did when the parser was made: lowering it lets
+    /// the oldest rows go at once. Fails, with nothing changed, as
+    /// [`Parser::new`] would with `lines`.
+    pub fn set_history_lines(&mut self, lines: usize) -> Result<(), Error> {
+        self.screen.set_history_limit(lines)
+    }
     /// The size report a program that set in-band resize (mode 2048) is to
     /// be sent after the terminal's size changed: `CSI 48 ; rows ; cols ; 0
     /// ; 0 t`, or `None` if it did not set it or

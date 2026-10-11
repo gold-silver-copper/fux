@@ -279,7 +279,7 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
             m.used = cols;
         }
     }
-    if grid.history_limit > 0 && r.chance(50) {
+    if grid.history_limit() > 0 && r.chance(50) {
         let mut next = max_id(&grid).saturating_add(1);
         let (lines, rows) = (grid.size.lines(), grid.size.rows());
         grid.scroll(lines, r.small(rows), UP, 0, &mut next, 999)?;
