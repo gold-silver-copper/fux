@@ -33,7 +33,8 @@ impl Grid {
         // Blank lines below the cursor are dropped before any line scrolls
         // into history: a mostly empty screen keeps its text on screen.
         let screen = usize::from(size.rows());
-        let [(cursor_row, cursor_col), (saved_row, saved_col)] = layout.marks;
+        let [cursor, saved] = layout.marks;
+        let cursor_row = cursor.row();
         // Only as many as the screen's own lines are past the new height:
         // rows in history stay there, and a resize never brings one back
         // above the cursor to fill the place of dropped blank lines.
@@ -51,24 +52,31 @@ impl Grid {
         let base = live_top.saturating_sub(self.history_limit);
         let end = total.min(live_top.checked_add(screen).ok_or(Error::Capacity)?);
         // A row on the screen, the first if above it, the last if below;
-        // one past the last column is the last column, waiting to wrap.
-        let placed = |cursor: Cursor, (row, col): (usize, usize)| Cursor {
-            pending_wrap: col >= usize::from(cols),
-            ..cursor.placed(
-                (
-                    u16::try_from(row.saturating_sub(live_top)).unwrap_or(u16::MAX),
-                    u16::try_from(col).unwrap_or(u16::MAX),
-                ),
-                size,
-            )
+        // one past the last column of the text is the last column, waiting
+        // to wrap, and any column past the text's end at most the last.
+        let placed = |cursor: Cursor, mark: Mark| {
+            let (row, col, pending_wrap) = match mark {
+                Mark::Text(row, col) => (row, col, col >= usize::from(cols)),
+                Mark::Blank(row, col) => (row, col, false),
+            };
+            Cursor {
+                pending_wrap,
+                ..cursor.placed(
+                    (
+                        u16::try_from(row.saturating_sub(live_top)).unwrap_or(u16::MAX),
+                        u16::try_from(col).unwrap_or(u16::MAX),
+                    ),
+                    size,
+                )
+            }
         };
         let mut replacement = Self {
             // The cursor's row is on screen: `live_top` is at most its row,
             // and the screen reaches past it.
-            cursor: placed(self.cursor, (cursor_row, cursor_col)),
+            cursor: placed(self.cursor, cursor),
             // The saved cursor moves with its character as the cursor
             // does, so DECRC (as 1049 leaves the alternate screen) finds it.
-            saved: placed(self.saved, (saved_row, saved_col)),
+            saved: placed(self.saved, saved),
             ..self.successor(size)
         };
         replacement.reserve_screen()?;
@@ -108,7 +116,7 @@ impl Grid {
             marks,
             out: Reflowed {
                 rows: 0,
-                marks: [(0, 0); 2],
+                marks: [Mark::Text(0, 0); 2],
                 trailing_blank: 0,
                 screen_line: 0,
             },
@@ -131,7 +139,7 @@ impl Grid {
         let mut out = pass.out;
         for (mark, found) in out.marks.iter_mut().zip(pass.found) {
             if !found {
-                *mark = (out.rows.saturating_sub(1), 0);
+                *mark = Mark::Blank(out.rows.saturating_sub(1), 0);
             }
         }
         Ok(out)
@@ -223,11 +231,12 @@ impl Grid {
             if let Some(offset) = offset
                 && !*placed
             {
-                // At or past the end of the line's text: as far past it
-                // on the last row, at most waiting to wrap after the
-                // last column.
-                let past = offset.saturating_sub(length);
-                *mark = (out.rows, line.used.saturating_add(past).min(pass.width));
+                // At the end of the line's text, after its last glyph; or
+                // as far past it on the last row, in its blanks.
+                *mark = match offset.saturating_sub(length) {
+                    0 => Mark::Text(out.rows, line.used),
+                    past => Mark::Blank(out.rows, line.used.saturating_add(past)),
+                };
                 *placed = true;
             }
             *found |= *placed;
@@ -455,7 +464,7 @@ impl Run {
             if let Some(offset) = *offset
                 && (start..end).contains(&offset)
             {
-                *mark = (
+                *mark = Mark::Text(
                     pass.out.rows,
                     self.used.saturating_add(offset.saturating_sub(start)),
                 );
@@ -471,11 +480,32 @@ impl Run {
     }
 }
 
+/// Where a mark, the cursor or the saved cursor, is laid out: a reflowed
+/// row and a column in it.
+#[derive(Clone, Copy)]
+enum Mark {
+    /// On a glyph of its line's text, or just after the last: one past the
+    /// last column waits to wrap.
+    Text(usize, usize),
+    /// In the blanks past the end of its line's text, as far past it as
+    /// before: in the last column at most, never waiting to wrap, as
+    /// resizing without reflow keeps it.
+    Blank(usize, usize),
+}
+
+impl Mark {
+    fn row(self) -> usize {
+        match self {
+            Mark::Text(row, _) | Mark::Blank(row, _) => row,
+        }
+    }
+}
+
 /// The shape of a reflow: how many rows, where the cursor and the saved
 /// cursor are, and how many rows at the end hold blank lines.
 struct Reflowed {
     rows: usize,
-    marks: [(usize, usize); 2],
+    marks: [Mark; 2],
     trailing_blank: usize,
     /// The laid-out row the screen's line begins on: the line holding the
     /// screen's first row before.

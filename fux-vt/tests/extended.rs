@@ -544,6 +544,23 @@ fn reflow_moves_the_saved_cursor_with_its_character() -> Result {
     Ok(())
 }
 
+/// A cursor in the blanks past a line's text stays on the line's last
+/// row, in its last column at most, as resizing without reflow keeps it:
+/// it never waits to wrap, so the next glyph leaves no empty soft-wrapped
+/// row behind.
+#[test]
+fn reflow_keeps_a_cursor_past_the_text_on_its_row() -> Result {
+    let mut p = Parser::with_options(Size::new(3, 10)?, 100, REFLOW)?;
+    p.process(b"\x1b[9C")?;
+    p.resize(Size::new(3, 5)?)?;
+    assert_eq!(p.screen().cursor_position(), (0, 4));
+    assert!(!p.screen().pending_wrap());
+    p.process(b"X")?;
+    assert_eq!(lines(&p), ["    X", "", ""]);
+    assert!(!p.screen().row_wrapped(0));
+    Ok(())
+}
+
 /// DL and IL move rows across the region's top: the row above it, which
 /// went on into the row that moved, no longer does, so reflow joins it to
 /// nothing that follows.
