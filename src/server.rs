@@ -12,7 +12,7 @@ use crate::protocol::{
 };
 use crate::render::{self, Grid};
 use crate::session::{Dying, Origin, Outgoing, Session, Timer};
-use crate::socket::SocketPath;
+use crate::socket::{Endpoint, SocketPath};
 use fuxix::poll::{Events as PollFlags, PollFd};
 use signal_hook::consts::{SIGCHLD, SIGHUP, SIGINT, SIGTERM};
 use std::io::{ErrorKind, Write};
@@ -62,16 +62,27 @@ struct Shortage {
     refused: u64,
 }
 
+/// The socket the server is found by: held only while it serves, so the
+/// moment it stops, its listener closes and the socket is gone, and a
+/// client finds no server rather than one that never answers.
+struct Listening {
+    listener: UnixListener,
+    /// Removes the socket once dropped, after the listener closes.
+    _endpoint: Endpoint,
+}
+
 /// Where the server is in its life, each stage holding the moment it waits
-/// for (`Server::wakes`).
+/// for (`Server::wakes`), and the socket while it has one.
 enum Phase {
-    /// The listener is polled.
-    Serving,
-    /// An `accept` failed in a way that retrying at once would repeat: the
-    /// listener, which stays readable meanwhile, rests until then.
-    Resting(Instant),
-    /// Stopping: no connection is accepted, and the server waits for its
-    /// clients and processes until then.
+    /// The listener is polled, unless an `accept` failed in a way that
+    /// retrying at once would repeat: then the listener, which stays
+    /// readable meanwhile, rests until `resting`.
+    Serving {
+        listening: Listening,
+        resting: Option<Instant>,
+    },
+    /// Stopping, its socket gone: the server waits for its clients and
+    /// processes until then.
     Stopping(Instant),
 }
 
@@ -383,7 +394,6 @@ impl Conn {
 
 pub struct Server {
     session: Session,
-    listener: UnixListener,
     phase: Phase,
     conns: Vec<Conn>,
     children: UnixStream,
@@ -468,8 +478,13 @@ pub fn serve(socket: &SocketPath, config_path: Option<PathBuf>) -> Result<(), Er
     session.start().map_err(Error::Start)?;
     let mut server = Server {
         session,
-        listener,
-        phase: Phase::Serving,
+        phase: Phase::Serving {
+            listening: Listening {
+                listener,
+                _endpoint: endpoint,
+            },
+            resting: None,
+        },
         conns: Vec::new(),
         children,
         killed: Vec::new(),
@@ -483,7 +498,6 @@ pub fn serve(socket: &SocketPath, config_path: Option<PathBuf>) -> Result<(), Er
         accept_logged: None,
     };
     server.run();
-    drop(endpoint);
     Ok(())
 }
 
@@ -561,8 +575,7 @@ impl Server {
         let session = (self.session.timers()).map(|(at, timer)| (at, Wake::Session(timer)));
         let grace = (self.session.dying.iter()).map(|(pane, d)| (d.deadline, Wake::Grace(*pane)));
         let phase = match self.phase {
-            Phase::Serving => None,
-            Phase::Resting(at) => Some((at, Wake::Listen)),
+            Phase::Serving { resting, .. } => resting.map(|at| (at, Wake::Listen)),
             Phase::Stopping(by) => Some((by, Wake::Stop)),
         };
         let paints = (self.conns.iter().enumerate())
@@ -579,7 +592,11 @@ impl Server {
                 let dying = self.session.dying.remove(&pane);
                 self.killed.extend(dying.and_then(Dying::kill));
             }
-            Wake::Listen => self.phase = Phase::Serving,
+            Wake::Listen => {
+                if let Phase::Serving { resting, .. } = &mut self.phase {
+                    *resting = None;
+                }
+            }
             Wake::Stop => {
                 self.finish();
                 return ControlFlow::Break(());
@@ -611,8 +628,12 @@ impl Server {
         slots.clear();
         // Built afresh, as it borrows the descriptors.
         let mut fds = Vec::new();
-        if let Phase::Serving = self.phase {
-            fds.push(PollFd::new(&self.listener, PollFlags::IN));
+        if let Phase::Serving {
+            listening,
+            resting: None,
+        } = &self.phase
+        {
+            fds.push(PollFd::new(&listening.listener, PollFlags::IN));
             slots.push(Slot::Listener);
         }
         fds.push(PollFd::new(&self.children, PollFlags::IN));
@@ -665,14 +686,20 @@ impl Server {
             return;
         }
         log(&reason);
+        // The socket goes first: from now on a client finds no server.
+        self.phase = Phase::Stopping(crate::after(Instant::now(), STOP_WAIT));
         self.session.shutdown();
+        // Every connection still open ends, so no command runs on what is
+        // left of the session.
+        let exit = format!("the fux server stopped: {reason}");
         for conn in &mut self.conns {
-            if matches!(conn.stage, Stage::Attaching(_) | Stage::Attached(_)) {
-                let exit = format!("the fux server stopped: {reason}");
-                conn.end(&mut self.session, &ServerFrame::Exit(&exit));
+            match conn.stage {
+                Stage::Hello(_) | Stage::Attaching(_) | Stage::Attached(_) | Stage::Command => {
+                    conn.end(&mut self.session, &ServerFrame::Exit(&exit));
+                }
+                Stage::Closing | Stage::Dead => {}
             }
         }
-        self.phase = Phase::Stopping(crate::after(Instant::now(), STOP_WAIT));
     }
 
     fn flush_outbox(&mut self) {
@@ -754,7 +781,10 @@ impl Server {
             // The spare makes room for this accept, and is taken back after
             // it: if it cannot be, the connection took the last descriptor.
             self.spare = None;
-            let accepted = self.listener.accept();
+            let Phase::Serving { listening, .. } = &self.phase else {
+                return;
+            };
+            let accepted = listening.listener.accept();
             let room = match std::fs::File::open("/dev/null") {
                 Ok(spare) => {
                     self.spare = Some(spare);
@@ -812,7 +842,9 @@ impl Server {
                     // else persists. The listener stays readable, so it
                     // rests rather than being polled again at once.
                     let now = Instant::now();
-                    self.phase = Phase::Resting(crate::after(now, ACCEPT_REST));
+                    if let Phase::Serving { resting, .. } = &mut self.phase {
+                        *resting = Some(crate::after(now, ACCEPT_REST));
+                    }
                     if self
                         .accept_logged
                         .is_none_or(|at| now.duration_since(at) >= REPORT_EVERY)

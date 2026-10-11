@@ -18,20 +18,22 @@ fn a_server_answers_ls_and_stops_on_kill_server() -> Outcome {
     assert!(json.contains("\"clients\":[]"), "{json}");
     let killed = server.fux(&["kill-server"])?;
     assert_eq!(killed.status, 0, "{}", killed.stderr);
-    assert!(server.wait_exit()?.success());
-    assert!(!server.socket.exists(), "the socket is removed");
-    assert!(
-        server.log().contains("stopped by fux kill-server"),
-        "{}",
-        server.log()
-    );
-    // No server: a command says so, and fails.
+    // The socket goes as the server starts stopping, before its panes'
+    // programs have ended: a command right after finds no server, and
+    // says so.
+    assert!(!server.socket.exists(), "the socket is removed at once");
     let out = server.fux(&["ls"])?;
     assert_eq!(out.status, 1);
     assert!(
         out.stderr.contains("no fux server is running"),
         "{}",
         out.stderr
+    );
+    assert!(server.wait_exit()?.success());
+    assert!(
+        server.log().contains("stopped by fux kill-server"),
+        "{}",
+        server.log()
     );
     Ok(())
 }
