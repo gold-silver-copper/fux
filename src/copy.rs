@@ -9,7 +9,7 @@ use crate::id::PaneId;
 use crate::keys::{Direction, Key, KeyPress};
 use crate::render::shown;
 use crate::session::{self, Error, Outgoing, Session};
-use crate::view::{Mode, Notice, View};
+use crate::view::{Line, Mode, Notice, View};
 use fux_vt::{CellRef, Row, RowId, Screen};
 
 /// The most cells one copy takes.
@@ -55,7 +55,7 @@ pub struct Copy {
     pub selection: Option<(Select, (RowId, u16))>,
     pub search: Option<Search>,
     /// A search being typed: its direction and text.
-    pub typing: Option<(Seek, String)>,
+    pub typing: Option<(Seek, Line<SEARCH_MAX>)>,
     /// The screen as it was when the rows copy mode holds were last found
     /// still there; forgotten when a key moves it.
     pub held_at: Option<fux_vt::Mark>,
@@ -140,7 +140,7 @@ impl Copy {
 
     /// What the bar shows in place of the tabs, with the cursor where `at`
     /// found it.
-    pub fn bar(&self, screen: &Screen, at: &Resolved) -> Bar {
+    pub fn bar(&self, screen: &Screen, at: &Resolved) -> Bar<'_> {
         // Counted from 1; exact, as rows are far fewer than a usize holds.
         let line = at.cursor.0.index().saturating_add(1);
         let position = format!("{line}/{}", screen.rows().len());
@@ -150,7 +150,7 @@ impl Copy {
                 Seek::Backward => "?",
             };
             return Bar {
-                badge: format!("{prompt}{text}▏"),
+                badge: Badge::Typing(prompt, text),
                 hints: vec![("Enter", "search"), ("Esc", "cancel")],
                 position,
             };
@@ -189,18 +189,28 @@ impl Copy {
             }
         };
         Bar {
-            badge: badge.to_owned(),
+            badge: Badge::Label(badge),
             hints,
             position,
         }
     }
 }
 
+/// The most bytes a search holds.
+const SEARCH_MAX: usize = 1024;
+
+/// What copy mode's bar says it is doing: a label, or the search being
+/// typed after its prompt, which the bar scrolls as a prompt's line.
+pub enum Badge<'a> {
+    Label(&'static str),
+    Typing(&'static str, &'a Line<SEARCH_MAX>),
+}
+
 /// Copy mode's bar: what it is doing, the keys that act now, most
 /// important first so a narrow bar drops the least, and where the cursor
 /// is.
-pub struct Bar {
-    pub badge: String,
+pub struct Bar<'a> {
+    pub badge: Badge<'a>,
     pub hints: Vec<(&'static str, &'static str)>,
     /// The cursor's line, counted from 1, of all the rows retained.
     pub position: String,
@@ -565,7 +575,7 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
             copy.typing = None;
         } else if press.key == Key::Enter {
             let search = Search {
-                query: text.clone(),
+                query: text.clone().text(),
                 seek: *seek,
             };
             copy.typing = None;
@@ -576,14 +586,13 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
                 }
             }
         } else if press.key == Key::Backspace {
-            text.pop();
+            text.backspace();
         } else if let Key::Char(c) = press.key
             && !press.mods.ctrl
             && !press.mods.alt
             && !c.is_control()
-            && text.len() < 1024
         {
-            text.push(c);
+            text.insert(c.encode_utf8(&mut [0; 4]));
         }
         return;
     }
@@ -637,8 +646,8 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
         (Some('d'), _) => scroll = Some(Scroll::Down(half)),
         (_, Key::PageUp) => scroll = Some(Scroll::Up(page)),
         (_, Key::PageDown) => scroll = Some(Scroll::Down(page)),
-        (Some('f'), _) => copy.typing = Some((Seek::Forward, String::new())),
-        (Some('r'), _) => copy.typing = Some((Seek::Backward, String::new())),
+        (Some('f'), _) => copy.typing = Some((Seek::Forward, Line::new(String::new()))),
+        (Some('r'), _) => copy.typing = Some((Seek::Backward, Line::new(String::new()))),
         (Some(key @ ('n' | 'p')), _) => {
             match copy.search.clone() {
                 Some(search) => {
@@ -886,6 +895,20 @@ mod tests {
         s.input(c, b"]]");
         let history = first.history_len();
         assert_eq!(at(&s), Some((15, 0, history)));
+        Ok(())
+    }
+
+    /// A search typed past the bar's room scrolls, as a prompt's line does:
+    /// what was typed last, with the cursor bar after it, stays in sight.
+    #[test]
+    fn a_long_search_shows_its_end() -> Result<(), String> {
+        let (mut s, c) = crate::session::testing::attached(6, 40)?;
+        s.input(c, b"\x02cf");
+        s.input(c, &[b'x'; 60]);
+        s.input(c, b"END");
+        let shown = crate::session::testing::output(&mut s, "capture-client -c c1")?;
+        let bar = shown.lines().last().ok_or("no bar")?;
+        assert!(bar.contains("END\u{258f}"), "{bar}");
         Ok(())
     }
 
