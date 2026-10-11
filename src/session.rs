@@ -1255,7 +1255,10 @@ impl Session {
                 let pane = new_pane(&self.config, launch, &mut ids, cmd, &cwd, size)?;
                 self.ids = ids;
                 let new = pane.id;
-                tab.edit(|root| layout::split(root, target, new, axis, Side::After));
+                tab.edit(|root| {
+                    root.as_mut()
+                        .map(|r| r.split(target, new, axis, Side::After))
+                });
                 self.panes.insert(new, pane);
                 let views = self.views.values_mut();
                 for view in views.filter(|v| followers.contains(&v.id)) {
@@ -1580,12 +1583,9 @@ impl Session {
                     Direction::Right | Direction::Down => Side::After,
                     Direction::Left | Direction::Up => Side::Before,
                 };
-                for tab in tabs_mut(&mut self.workspaces) {
-                    tab.edit(|root| {
-                        layout::remove(root, pane);
-                        layout::split(root, destination, pane, Axis::of(direction), side)
-                    });
-                }
+                let axis = Axis::of(direction);
+                tab_of(&mut self.workspaces, pane)?
+                    .edit(|root| layout::move_beside(root, pane, destination, axis, side));
                 return Ok(String::new());
             }
             &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, tab),
@@ -2158,6 +2158,27 @@ mod tests {
         run(&mut s, "select-tab -c c1 -t @2")?;
         s.exited(PaneId::of(3), 7);
         assert_eq!(notice(&s).as_deref(), Some("%3 sh exited with status 7"));
+        Ok(())
+    }
+
+    /// A pane moved beside another moves within its own tab: a tab emptied
+    /// by an earlier move takes no copy of it, so none is left naming it
+    /// once it closes.
+    #[test]
+    fn a_pane_moved_beside_another_stays_out_of_empty_tabs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, _) = attached(10, 40)?;
+        run(&mut s, "split -h -t %1")?;
+        run(&mut s, "new-tab -t +1")?;
+        run(&mut s, "move-pane -t %3 --to @1")?;
+        run(&mut s, "move-pane -t %1 -R")?;
+        let holding = |s: &Session, pane| {
+            let tabs = s.workspaces.iter().flat_map(|w| w.tabs());
+            tabs.filter(|t| t.holds(pane)).count()
+        };
+        assert_eq!(holding(&s, PaneId::of(1)), 1);
+        run(&mut s, "kill-pane -t %1")?;
+        assert_eq!(holding(&s, PaneId::of(1)), 0);
         Ok(())
     }
 
