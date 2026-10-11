@@ -6,7 +6,7 @@ use crate::{
     Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Mark, Options, Reply, Rgb, Row,
     RowId, Rows, UnderlineStyle, Window,
     geometry::{Size, Span},
-    grid::{Cursor, Grid, Scroll},
+    grid::{Cursor, Grid, Scroll, Written},
     parser::Parameters,
 };
 use std::collections::VecDeque;
@@ -1391,14 +1391,22 @@ impl Screen {
             // A run too long for a u16 still stops at the margin.
             let count = u16::try_from(bytes.len()).map_or(room, |n| n.min(room));
             let style = self.pen_style() | self.protect;
-            let run = bytes.get(..usize::from(count)).unwrap_or_default();
-            // Written to the first cell that is half of a wide glyph, which
-            // the general path repairs, the glyph printed there.
-            let written = self.with_grid(|g, _, v| g.write_ascii(row, col, run, style, v));
-            let (Some(run), Some(end)) = (
-                run.get(..written).filter(|run| !run.is_empty()),
-                u16::try_from(written).ok().and_then(|n| col.checked_add(n)),
-            ) else {
+            let mut run = bytes.get(..usize::from(count)).unwrap_or_default();
+            // A run that meets half of a wide glyph, which the general path
+            // repairs, is written up to it, and the glyph there printed.
+            let written = loop {
+                match self.with_grid(|g, _, v| g.write_ascii(row, col, run, style, v)) {
+                    Written::All => break true,
+                    Written::Before(n) => match run.get(..n) {
+                        Some(before) if !before.is_empty() && n < run.len() => run = before,
+                        Some(_) | None => break false,
+                    },
+                }
+            };
+            let end = u16::try_from(run.len())
+                .ok()
+                .and_then(|n| col.checked_add(n));
+            let Some(end) = end.filter(|_| written) else {
                 self.print(char::from(first))?;
                 bytes = tail;
                 continue;
@@ -1418,7 +1426,7 @@ impl Screen {
             if let Some(&last) = run.last() {
                 self.repeat = Some(char::from(last));
             }
-            bytes = bytes.get(written..).unwrap_or_default();
+            bytes = bytes.get(run.len()..).unwrap_or_default();
         }
         Ok(())
     }
