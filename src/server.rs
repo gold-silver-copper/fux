@@ -11,8 +11,10 @@ use crate::protocol::{
     Attach, AttachedFrame, Command, Decoder, Frame, Hello, Mismatch, PROTOCOL, Role, ServerFrame,
 };
 use crate::render::{self, Grid};
-use crate::session::{Dying, Origin, Outgoing, Session, Timer};
+use crate::session::{Begun, Dying, Origin, Outcome, Outgoing, Session, Timer};
 use crate::socket::{Endpoint, SocketPath};
+use crate::view::ClientKind;
+use crate::wait::Waiting;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use signal_hook::consts::{SIGCHLD, SIGHUP, SIGINT, SIGTERM};
 use std::io::{ErrorKind, Write};
@@ -98,6 +100,8 @@ enum Wake {
     Stop,
     /// A connection's client may be painted (`Conn::paint_due`).
     Paint(usize),
+    /// A connection's wait is to be asked for its answer (`Waiting::due`).
+    Answer,
 }
 
 /// A client's connection: its socket, and where it is in its life.
@@ -121,12 +125,15 @@ enum Stage {
     /// its terminal, waits here until then.
     Hello(Option<OwnedFd>),
     /// It said hello as `fux attach`: its `Attach` is next, with the
-    /// descriptor it sent.
-    Attaching(Option<OwnedFd>),
+    /// descriptor it sent, and the kind of client it is.
+    Attaching(Option<OwnedFd>, ClientKind),
     /// Its client is attached: its input, resizes and detach come next.
     Attached(Box<Attached>),
     /// It said hello as a command client: its `Command` is next.
     Command,
+    /// Its command waits for its pane (`fux wait`): it is answered once the
+    /// wait has an answer. It is read only to notice the client go.
+    Waiting(Box<Waiting>),
     /// Its last frame is sent: it closes once what waits is written, and
     /// is read no more, so a client that has stopped sending, or shut its
     /// side, still gets it all.
@@ -139,7 +146,11 @@ impl Stage {
     /// Whether what the client sends is read.
     fn reads(&self) -> bool {
         match self {
-            Stage::Hello(_) | Stage::Attaching(_) | Stage::Attached(_) | Stage::Command => true,
+            Stage::Hello(_)
+            | Stage::Attaching(..)
+            | Stage::Attached(_)
+            | Stage::Command
+            | Stage::Waiting(_) => true,
             Stage::Closing | Stage::Dead => false,
         }
     }
@@ -376,6 +387,22 @@ impl Conn {
 
     /// Sends the connection's last frame, its client detached and its
     /// terminal given back first: it closes once what waits is sent.
+    /// Sends a command's outcome, and ends: its output, nothing for none,
+    /// then its status.
+    fn answer(&mut self, session: &mut Session, outcome: Outcome) {
+        let stdout = outcome.stdout.as_bytes();
+        ServerFrame::split_into(stdout, ServerFrame::Stdout, &mut self.out);
+        if !outcome.stderr.is_empty() {
+            let mut stderr = outcome.stderr;
+            if !stderr.ends_with('\n') {
+                stderr.push('\n');
+            }
+            ServerFrame::split_into(stderr.as_bytes(), ServerFrame::Stderr, &mut self.out);
+        }
+        let status = outcome.status;
+        self.end(session, &ServerFrame::Done { status });
+    }
+
     fn end(&mut self, session: &mut Session, frame: &ServerFrame) {
         self.enter(session, Stage::Closing);
         self.send(session, frame);
@@ -542,6 +569,9 @@ impl Server {
                     return;
                 }
             }
+            // What the last round read or changed may be what a wait waits
+            // for.
+            self.answer_waits(now);
             // Input given to panes since the last poll is written now rather
             // than when the next poll says their terminals can take it.
             self.session.panes.values_mut().for_each(Pane::write_input);
@@ -594,7 +624,20 @@ impl Server {
         };
         let paints = (self.conns.iter().enumerate())
             .filter_map(|(i, conn)| Some((conn.paint_due(&self.session)?, Wake::Paint(i))));
-        session.chain(grace).chain(phase).chain(paints)
+        let answers = self.conns.iter().filter_map(|conn| match &conn.stage {
+            Stage::Waiting(waiting) => Some((waiting.due(&self.session), Wake::Answer)),
+            Stage::Hello(_)
+            | Stage::Attaching(..)
+            | Stage::Attached(_)
+            | Stage::Command
+            | Stage::Closing
+            | Stage::Dead => None,
+        });
+        session
+            .chain(grace)
+            .chain(phase)
+            .chain(answers)
+            .chain(paints)
     }
 
     /// What `wake` waited for is done, now that it is due at `now`; a break
@@ -620,8 +663,21 @@ impl Server {
                 self.flush_outbox();
                 self.paint(index, now);
             }
+            Wake::Answer => self.answer_waits(now),
         }
         ControlFlow::Continue(())
+    }
+
+    /// Answers each wait that has its answer.
+    fn answer_waits(&mut self, now: Instant) {
+        for conn in &mut self.conns {
+            let Stage::Waiting(waiting) = &mut conn.stage else {
+                continue;
+            };
+            if let Some(outcome) = waiting.answer(&self.session, now) {
+                conn.answer(&mut self.session, outcome);
+            }
+        }
     }
 
     /// Drops every connection that is dead, or closing with nothing left to
@@ -630,7 +686,11 @@ impl Server {
         self.conns.retain(|conn| match conn.stage {
             Stage::Dead => false,
             Stage::Closing => !conn.out.is_empty(),
-            Stage::Hello(_) | Stage::Attaching(_) | Stage::Attached(_) | Stage::Command => true,
+            Stage::Hello(_)
+            | Stage::Attaching(..)
+            | Stage::Attached(_)
+            | Stage::Command
+            | Stage::Waiting(_) => true,
         });
     }
 
@@ -714,7 +774,11 @@ impl Server {
         let exit = format!("the fux server stopped: {reason}");
         for conn in &mut self.conns {
             match conn.stage {
-                Stage::Hello(_) | Stage::Attaching(_) | Stage::Attached(_) | Stage::Command => {
+                Stage::Hello(_)
+                | Stage::Attaching(..)
+                | Stage::Attached(_)
+                | Stage::Command
+                | Stage::Waiting(_) => {
                     conn.end(&mut self.session, &ServerFrame::Exit(&exit));
                 }
                 Stage::Closing | Stage::Dead => {}
@@ -1008,8 +1072,10 @@ impl Server {
             match fuxix::socket::recv_with_fd(&conn.stream, &mut self.read_buffer) {
                 Ok((0, _)) => break true,
                 Ok((n, fd)) => {
-                    if let (Some(fd), Stage::Hello(passed) | Stage::Attaching(passed)) =
-                        (fd, &mut conn.stage)
+                    if let (
+                        Some(fd),
+                        Stage::Hello(passed) | Stage::Attaching(passed, ClientKind::Terminal),
+                    ) = (fd, &mut conn.stage)
                     {
                         *passed = Some(fd);
                     }
@@ -1076,11 +1142,17 @@ impl Server {
                         conn.end(session, &ServerFrame::Done { status: 0 });
                         self.stop("stopped by fux kill-server".into());
                     }
-                    (Ok(()), Role::Attach) => conn.enter(session, Stage::Attaching(passed)),
+                    (Ok(()), Role::Attach) => {
+                        conn.enter(session, Stage::Attaching(passed, ClientKind::Terminal));
+                    }
+                    // A headless client has no terminal to pass.
+                    (Ok(()), Role::Headless) => {
+                        conn.enter(session, Stage::Attaching(None, ClientKind::Headless));
+                    }
                     (Ok(()), Role::Command) => conn.enter(session, Stage::Command),
                 }
             }
-            Stage::Attaching(passed) => {
+            Stage::Attaching(passed, kind) => {
                 let Some(Attach {
                     rows,
                     cols,
@@ -1089,8 +1161,8 @@ impl Server {
                 else {
                     return Ok(false);
                 };
-                let passed = passed.take();
-                match session.attach(rows.get(), cols.get(), workspace) {
+                let (passed, kind) = (passed.take(), *kind);
+                match session.attach_as(kind, rows.get(), cols.get(), workspace) {
                     Ok(client) => {
                         // The client's terminal, if it sent it: taken, the
                         // client is told before anything is painted.
@@ -1103,6 +1175,11 @@ impl Server {
                         );
                         if let Some(taken) = taken {
                             conn.send(session, &ServerFrame::Terminal { taken });
+                        }
+                        // A headless client is told its ID, to size it by.
+                        if kind == ClientKind::Headless {
+                            let id = format!("{client}\n");
+                            conn.send(session, &ServerFrame::Stdout(id.as_bytes()));
                         }
                     }
                     Err(error) => conn.end(session, &ServerFrame::Exit(&error.to_string())),
@@ -1129,23 +1206,15 @@ impl Server {
                     pane: pane.and_then(|p| crate::command::parse_pane(&p).ok()),
                     cwd: Some(PathBuf::from(cwd)).filter(|p| p.is_dir()),
                 };
-                let outcome = session.run(&argv, &origin);
-                // Nothing is sent for no output.
-                let stdout = outcome.stdout.as_bytes();
-                ServerFrame::split_into(stdout, ServerFrame::Stdout, &mut conn.out);
-                if !outcome.stderr.is_empty() {
-                    let mut stderr = outcome.stderr;
-                    if !stderr.ends_with('\n') {
-                        stderr.push('\n');
-                    }
-                    ServerFrame::split_into(stderr.as_bytes(), ServerFrame::Stderr, &mut conn.out);
+                match session.begin(&argv, &origin) {
+                    Begun::Done(outcome) => conn.answer(session, outcome),
+                    Begun::Waiting(waiting) => conn.enter(session, Stage::Waiting(waiting)),
                 }
-                conn.end(
-                    session,
-                    &ServerFrame::Done {
-                        status: outcome.status,
-                    },
-                );
+            }
+            // Nothing more is asked of a waiting command.
+            Stage::Waiting(_) => {
+                *decoder = Decoder::default();
+                return Ok(false);
             }
             // A connection that is ending has had its last word: what came
             // with the Detach, Command or refused Hello that ended it is

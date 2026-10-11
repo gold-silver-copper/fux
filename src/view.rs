@@ -221,8 +221,19 @@ pub enum Mode {
     Copy(Box<Copy>),
 }
 
+/// Where a client shows what it is sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClientKind {
+    /// A terminal, which says its size and sends keys.
+    Terminal,
+    /// Nowhere a person sees (`fux attach --headless`): its size is set by
+    /// `fux resize -c`, and it sends no keys.
+    Headless,
+}
+
 pub struct View {
     pub id: ClientId,
+    pub kind: ClientKind,
     pub rows: u16,
     pub cols: u16,
     pub zoom: bool,
@@ -244,6 +255,7 @@ impl View {
     pub fn new(id: ClientId, rows: u16, cols: u16) -> View {
         View {
             id,
+            kind: ClientKind::Terminal,
             rows,
             cols,
             zoom: false,

@@ -99,13 +99,7 @@ impl InputQueue {
     /// Queues what `write` appends to its vector as a piece, in place, or
     /// takes it back and refuses it whole, as `push` does.
     pub fn push_with(&mut self, write: impl FnOnce(&mut Vec<u8>)) -> Result<(), Error> {
-        let held = self.held.as_ref().map_or(0, |typed| typed.line.len());
-        let used = self.bytes.len().saturating_add(held);
-        let room = if self.refusing {
-            0
-        } else {
-            INPUT_BYTES.saturating_sub(used)
-        };
+        let room = self.room();
         let fits = self.bytes.push_with(|out| {
             let start = out.len();
             write(out);
@@ -117,6 +111,16 @@ impl InputQueue {
         });
         self.refusing |= !fits;
         fits.then_some(()).ok_or(Error::NotReading)
+    }
+    /// How many bytes more it takes now.
+    pub fn room(&self) -> usize {
+        let held = self.held.as_ref().map_or(0, |typed| typed.line.len());
+        let used = self.bytes.len().saturating_add(held);
+        if self.refusing {
+            0
+        } else {
+            INPUT_BYTES.saturating_sub(used)
+        }
     }
     /// Queues terminal replies, as `push`: a program that is not reading
     /// loses them.
@@ -350,13 +354,24 @@ pub enum Process {
     /// end on every poll, so it is neither polled nor written; its exit, by
     /// SIGCHLD, ends the pane.
     HungUp(Child),
+    /// The program `fux run` started exited with this status, as a shell
+    /// reports it: the pane stays, its last screen kept to be read.
+    Exited(i32),
 }
 
 impl Process {
     pub fn child(&self) -> Option<&Child> {
         match self {
-            Process::Absent => None,
+            Process::Absent | Process::Exited(_) => None,
             Process::Reading(child) | Process::HungUp(child) => Some(child),
+        }
+    }
+
+    /// The status its program exited with, once it has.
+    pub fn exit_status(&self) -> Option<i32> {
+        match self {
+            Process::Exited(status) => Some(*status),
+            Process::Absent | Process::Reading(_) | Process::HungUp(_) => None,
         }
     }
 
@@ -373,9 +388,19 @@ impl Process {
     pub fn stop_reading(&mut self) {
         *self = match std::mem::replace(self, Process::Absent) {
             Process::Reading(child) | Process::HungUp(child) => Process::HungUp(child),
-            Process::Absent => Process::Absent,
+            other @ (Process::Absent | Process::Exited(_)) => other,
         };
     }
+}
+
+/// What a pane runs, which says what its program's exit does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Runs {
+    /// The shell: its exit closes the pane.
+    Shell,
+    /// A program `fux run` started in place of a shell: its exit leaves the
+    /// pane, with its last screen and its status (`Process::Exited`).
+    Program,
 }
 
 pub struct Pane {
@@ -388,10 +413,7 @@ pub struct Pane {
     pub parser: fux_vt::Parser,
     pub process: Process,
     pub input: InputQueue,
-    /// The shell's program the pane was started with. fux reads it nowhere
-    /// itself; a typed command is quoted for the shell before the pane is
-    /// made (`Session::new_pane`).
-    pub shell: String,
+    pub runs: Runs,
     /// The output of a frame the program is drawing in synchronized output,
     /// from BSU on, and since when; see [`Pane::output`].
     frame: Option<(Vec<u8>, Instant)>,
@@ -404,6 +426,27 @@ pub struct Pane {
     /// The text the program last put on the clipboard (OSC 52) since the
     /// session last looked, which copies it (`Session::copied`).
     pub copied: Option<String>,
+    paced: Paced,
+    /// When the program last wrote, or the pane started.
+    pub wrote_at: Instant,
+}
+
+/// How long a piece of input that must be read alone (`Paced`) is given
+/// before the next: longer than a program waits to tell a lone Escape from
+/// one that begins a sequence, and than a burst of input it takes as a
+/// paste, as typing would leave.
+pub const PACE: Duration = Duration::from_millis(30);
+
+/// Input that `send-keys` sends in pieces a program must read apart: a lone
+/// Escape, read with what follows, is Alt and that key; text and the key
+/// after it, read together, are a paste whose Enter is a newline. Each such
+/// piece is followed by a gap of [`PACE`] before the next is written.
+#[derive(Default)]
+pub struct Paced {
+    /// Pieces waiting for the gap, each with whether it is read alone.
+    waiting: VecDeque<(Vec<u8>, bool)>,
+    /// Until when the last piece read alone is given.
+    until: Option<Instant>,
 }
 
 /// After the shell's output has been quiet this long, it is taken to be
@@ -456,7 +499,7 @@ impl Pane {
     pub fn new(
         id: PaneId,
         name: String,
-        shell: String,
+        runs: Runs,
         size: fux_vt::Size,
         history: usize,
     ) -> Result<Pane, Error> {
@@ -474,11 +517,13 @@ impl Pane {
             parser,
             process: Process::Absent,
             input: InputQueue::default(),
-            shell,
+            runs,
             frame: None,
             colours: crate::outer::Colours::default(),
             bell: false,
             copied: None,
+            paced: Paced::default(),
+            wrote_at: Instant::now(),
         })
     }
 
@@ -497,6 +542,7 @@ impl Pane {
 
     /// [`Pane::output`] at `now`.
     pub fn output_at(&mut self, bytes: &[u8], now: Instant) {
+        self.wrote_at = now;
         let mut after: Vec<u8>;
         let mut rest = bytes;
         loop {
@@ -625,6 +671,47 @@ impl Pane {
     }
 
     /// The name the bar shows: the program's title, else the pane's name.
+    /// Sends `pieces` of input in order, each with whether the program must
+    /// read it alone (`Paced`): at once while no gap holds them, the rest
+    /// when the gaps end ([`Pane::pace_due`]). Refused whole, as
+    /// `InputQueue::push` refuses, if they would not fit.
+    pub fn send(&mut self, pieces: Vec<(Vec<u8>, bool)>, now: Instant) -> Result<(), Error> {
+        let held: usize = self.paced.waiting.iter().map(|(p, _)| p.len()).sum();
+        let total = pieces
+            .iter()
+            .map(|(p, _)| p.len())
+            .fold(held, usize::saturating_add);
+        if total > self.input.room() {
+            return Err(Error::NotReading);
+        }
+        self.paced.waiting.extend(pieces);
+        self.release_paced(now);
+        Ok(())
+    }
+
+    /// When paced input waits for its gap to end.
+    pub fn pace_due(&self) -> Option<Instant> {
+        self.paced.until.filter(|_| !self.paced.waiting.is_empty())
+    }
+
+    /// Writes the paced input whose gap has ended at `now`, up to and
+    /// including the next piece read alone.
+    pub fn release_paced(&mut self, now: Instant) {
+        while self.paced.until.is_none_or(|until| until <= now) {
+            let Some((piece, alone)) = self.paced.waiting.pop_front() else {
+                self.paced.until = None;
+                return;
+            };
+            let _ = self.input.push(&piece);
+            self.paced.until = alone.then(|| crate::after(now, PACE));
+        }
+    }
+
+    /// Whether every piece of input sent has been written to the program.
+    pub fn input_written(&self) -> bool {
+        self.paced.waiting.is_empty() && self.input.is_empty()
+    }
+
     pub fn label(&self) -> &str {
         match self.title.as_str() {
             "" => &self.name,
@@ -768,8 +855,13 @@ mod tests {
     }
 
     fn pane(rows: u16, cols: u16) -> Result<Pane, Error> {
-        let shell = "/bin/sh".to_owned();
-        Pane::new(PaneId::of(1), "sh".into(), shell, size(rows, cols), 10)
+        Pane::new(
+            PaneId::of(1),
+            "sh".into(),
+            Runs::Shell,
+            size(rows, cols),
+            10,
+        )
     }
 
     /// A frame drawn in synchronized output reaches the screen whole, when

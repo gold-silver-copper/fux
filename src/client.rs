@@ -380,6 +380,64 @@ pub fn attach(socket: &SocketPath, workspace: Option<String>) -> Result<(), Erro
     Ok(())
 }
 
+/// Attaches a client with no terminal, `rows` by `cols`, until the server
+/// ends it or a signal detaches it: its ID goes to stdout as it attaches,
+/// and everything it is sent, its paints, to `log` if given.
+pub fn headless(
+    socket: &SocketPath,
+    workspace: Option<String>,
+    (rows, cols): (NonZeroU16, NonZeroU16),
+    log: Option<&std::path::Path>,
+) -> Result<(), Error> {
+    let signals = Signals::new()?;
+    let mut log: Box<dyn Write> = match log {
+        Some(path) => Box::new(std::fs::File::create(path).map_err(Error::Log)?),
+        None => Box::new(std::io::sink()),
+    };
+    let (mut stream, mut decoder) = connect(socket, Role::Headless)?;
+    let attach = Attach {
+        rows,
+        cols,
+        workspace: workspace.as_deref(),
+    };
+    send(&mut stream, &attach)?;
+    let mut stdout = std::io::stdout();
+    let mut buffer = vec![0u8; 64 * 1024];
+    let reason = loop {
+        while let Some(frame) = decoder.frame()? {
+            match frame {
+                ServerFrame::Paint(bytes) => log.write_all(bytes).map_err(Error::Log)?,
+                ServerFrame::Stdout(bytes) => {
+                    let _ = stdout.write_all(bytes).and_then(|()| stdout.flush());
+                }
+                ServerFrame::Exit(reason) => return say(reason),
+                ServerFrame::Hello(_)
+                | ServerFrame::Stderr(_)
+                | ServerFrame::Done { .. }
+                | ServerFrame::Terminal { .. } => {}
+            }
+        }
+        let _ = log.flush();
+        if wait(&stream, &signals)? == Woken::Stopped {
+            let _ = send(&mut stream, &AttachedFrame::Detach);
+            break STOPPED.to_owned();
+        }
+        match stream.read(&mut buffer) {
+            Ok(0) => break "the server closed the connection".to_owned(),
+            Ok(n) => decoder.push(buffer.get(..n).unwrap_or_default()),
+            Err(e) if matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock) => {}
+            Err(e) => return Err(Error::Read(e)),
+        }
+    };
+    say(&reason)
+}
+
+/// Says why a client detached, on its stdout.
+fn say(reason: &str) -> Result<(), Error> {
+    let _ = writeln!(std::io::stdout(), "[{reason}]");
+    Ok(())
+}
+
 /// Why a client detached when a signal told it to.
 const STOPPED: &str = "detached by a signal";
 

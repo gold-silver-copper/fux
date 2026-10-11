@@ -1161,7 +1161,7 @@ fn column(grid: &mut Grid, session: &Session, view: &View, column: &overlay::Col
 /// underline at all (xterm, avt) or reads the colon as a semicolon,
 /// underline and italic, and one that does not know 21 may read it as bold
 /// off (alacritty, avt). The underline colour goes either way: see below.
-fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
+pub(crate) fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
     out.extend_from_slice(b"\x1b[0");
     if a.bold() {
         out.extend_from_slice(b";1");
@@ -1866,7 +1866,7 @@ mod tests {
             .map(|y| {
                 window
                     .row(y)
-                    .map(crate::session::row_text)
+                    .map(crate::capture::row_text)
                     .unwrap_or_default()
             })
             .collect()

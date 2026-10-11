@@ -4,6 +4,7 @@
 pub use fux_vt::bytes;
 pub use fux_vt::keys;
 pub use fux_vt::keys::{decode, encode};
+pub mod capture;
 pub mod client;
 pub mod command;
 pub mod config;
@@ -22,10 +23,12 @@ pub mod server;
 pub mod session;
 pub mod socket;
 pub mod view;
+pub mod wait;
 pub mod words;
 pub mod workspace;
 
 use std::io::{Read, Write};
+use std::num::NonZeroU16;
 use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -58,6 +61,7 @@ fn usage() -> String {
     format!(
         "\
 usage: fux [attach] [-t WORKSPACE] [--nested]
+       fux attach --headless [--size COLSxROWS] [--log FILE] [-t WORKSPACE]
        fux server [--socket PATH] [--config FILE]
        fux COMMAND [ARGS...]
 
@@ -67,7 +71,10 @@ command prompt or a menu, it is the client that ran it.
 
 The socket is FUX_SOCKET, else $XDG_RUNTIME_DIR/fux/server.sock, else
 $TMPDIR/fux/server.sock. Inside a pane, FUX_PANE names it, so commands there
-target it without -t.",
+target it without -t.
+
+Scripts and agents: run, send-keys, wait and capture-pane drive a program
+step by step; docs/agents.md in fux's repository has the recipe.",
         command::help()
     )
 }
@@ -138,9 +145,25 @@ impl From<client::Error> for Error {
     }
 }
 
-fn usage_error(message: &str) -> Result<u8, Error> {
+/// `COLSxROWS`, as `attach --size` takes it: rows and columns.
+fn headless_size(text: &str) -> Option<(NonZeroU16, NonZeroU16)> {
+    let (cols, rows) = text.split_once('x')?;
+    Some((rows.parse().ok()?, cols.parse().ok()?))
+}
+
+fn nonzero(n: u16) -> NonZeroU16 {
+    NonZeroU16::new(n).unwrap_or(NonZeroU16::MIN)
+}
+
+/// A usage error: what is wrong, and the usage of the command it was in,
+/// if it names one, rather than every command's.
+fn usage_error(message: &str, command: Option<&str>) -> Result<u8, Error> {
+    let usage = (command.and_then(command::usage_of)).map_or_else(
+        || "`fux help` lists commands".to_owned(),
+        |usage| format!("usage: fux {usage}"),
+    );
     // The status says it, if stderr cannot.
-    let _ = writeln!(std::io::stderr(), "fux: {message}\n{}", usage());
+    let _ = writeln!(std::io::stderr(), "fux: {message}\n{usage}");
     Ok(2)
 }
 
@@ -149,28 +172,48 @@ fn run(args: &[String]) -> Result<u8, Error> {
     match first {
         Some(fuxix::pty::LAUNCH) => Ok(fuxix::pty::launched(args.get(1..).unwrap_or_default())),
         // `attach` may be left out before its flags, as usage says.
-        None | Some("attach" | "-t" | "--nested") => {
+        None | Some("attach" | "-t" | "--nested" | "--headless") => {
             let mut workspace = None;
-            let mut nested = false;
+            let (mut nested, mut headless, mut size, mut log) = (false, false, None, None);
             let mut rest = args.iter().skip(usize::from(first == Some("attach")));
             while let Some(arg) = rest.next() {
                 match arg.as_str() {
                     "-t" => match rest.next() {
                         Some(name) => workspace = Some(name.clone()),
-                        None => return usage_error("attach -t needs a workspace"),
+                        None => return usage_error("attach -t needs a workspace", None),
                     },
                     "--nested" => nested = true,
-                    other => return usage_error(&format!("attach: unexpected {other:?}")),
+                    "--headless" => headless = true,
+                    "--size" => match rest.next().and_then(|s| headless_size(s)) {
+                        Some(cells) => size = Some(cells),
+                        None => {
+                            return usage_error("attach --size needs COLSxROWS, as 100x30", None);
+                        }
+                    },
+                    "--log" => match rest.next() {
+                        Some(path) => log = Some(std::path::PathBuf::from(path)),
+                        None => return usage_error("attach --log needs a file", None),
+                    },
+                    other => return usage_error(&format!("attach: unexpected {other:?}"), None),
                 }
             }
-            if !nested && std::env::var_os("FUX_PANE").is_some_and(|p| !p.is_empty()) {
+            if !headless && (size.is_some() || log.is_some()) {
+                return usage_error("attach --size and --log go with --headless", None);
+            }
+            // A headless client takes no terminal, so may attach from a pane.
+            if !nested && !headless && std::env::var_os("FUX_PANE").is_some_and(|p| !p.is_empty()) {
                 return Err(Error::Nested);
             }
             let socket = socket::socket_path(None)?;
             if UnixStream::connect(socket.path()).is_err() {
                 client::start_server(&socket)?;
             }
-            client::attach(&socket, workspace)?;
+            if headless {
+                let size = size.unwrap_or((nonzero(24), nonzero(80)));
+                client::headless(&socket, workspace, size, log.as_deref())?;
+            } else {
+                client::attach(&socket, workspace)?;
+            }
             Ok(0)
         }
         Some("server") => {
@@ -183,7 +226,7 @@ fn run(args: &[String]) -> Result<u8, Error> {
                     client::SETSID => {
                         fuxix::process::setsid().map_err(Error::Setsid)?;
                     }
-                    other => return usage_error(&format!("server: unexpected {other:?}")),
+                    other => return usage_error(&format!("server: unexpected {other:?}"), None),
                 }
             }
             let socket = socket::socket_path(socket_flag.as_deref())?;
@@ -210,7 +253,7 @@ fn run(args: &[String]) -> Result<u8, Error> {
         Some(_) => {
             // Parsed here as well, so a usage error needs no server.
             if let Err(usage) = command::parse(args) {
-                return usage_error(&usage.to_string());
+                return usage_error(&usage.to_string(), args.first().map(String::as_str));
             }
             let socket = socket::socket_path(None)?;
             Ok(client::command(&socket, args)?)

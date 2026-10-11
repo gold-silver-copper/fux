@@ -673,6 +673,37 @@ pub fn resize(
         || split.resize_by(*axis, area, pane, direction, amount, false)
 }
 
+/// `root` with `pane` resized to `len` cells along `axis`, as placed in
+/// `area`, by moving the borders `resize` moves; `None` if no way of moving
+/// them gets it there.
+pub fn resize_to(root: &Tree, area: Rect, pane: PaneId, axis: Axis, len: u16) -> Option<Tree> {
+    let size = |tree: &Tree| place(tree, area).rect(pane).map(|r| r.len(axis));
+    let mut tree = root.clone();
+    let directions = match axis {
+        Axis::Horizontal => [Direction::Left, Direction::Right],
+        Axis::Vertical => [Direction::Up, Direction::Down],
+    };
+    // A border can stop short of the length, at another pane's least; the
+    // next border then takes up the rest, a few times at most.
+    for _ in 0..4 {
+        let now = size(&tree)?;
+        if now == len {
+            return Some(tree);
+        }
+        let amount = now.abs_diff(len);
+        let tried = directions.iter().filter_map(|&direction| {
+            let mut moved = tree.clone();
+            resize(&mut moved, area, pane, direction, amount).then_some(())?;
+            Some((size(&moved)?.abs_diff(len), moved))
+        });
+        match tried.min_by_key(|(off, _)| *off) {
+            Some((off, moved)) if off < amount => tree = moved,
+            _ => return None,
+        }
+    }
+    (size(&tree)? == len).then_some(tree)
+}
+
 impl Split {
     /// `resize`, at this split, along `axis`, and those below it: with
     /// `toward`, only a split with a sibling on the direction's side acts;
