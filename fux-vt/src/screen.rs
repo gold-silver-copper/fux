@@ -205,16 +205,17 @@ impl TabStops {
         }
         last
     }
-    /// The last stop before `col`, or the first column.
-    fn previous(&self, col: u16) -> u16 {
+    /// The last stop before `col` from `first` on, or `first`, the first
+    /// column the cursor may go back to.
+    fn previous(&self, col: u16, first: u16) -> u16 {
         let mut at = col;
-        while at > 0 {
+        while at > first {
             at = at.saturating_sub(1);
             if self.is_stop(at) {
                 return at;
             }
         }
-        0
+        first
     }
 }
 
@@ -1462,16 +1463,24 @@ impl Screen {
     /// scrolling region: see the README's departures); back, in origin
     /// mode, at the left margin (`TabToPrevStop`). Without margins the
     /// right margin is the last column.
+    ///
+    /// Each stop is found from the last, never past the column it stops
+    /// at, and once the cursor stops moving the rest of the count is
+    /// spent: the work is the line's width at most, whatever the count.
     fn tab(&mut self, count: u16, forward: bool) {
         let g = self.grid();
         let (mut col, last) = (g.cursor.col(), g.columns().last());
         let first = g.addressed().1.first();
         for _ in 0..count {
-            col = if forward {
+            let to = if forward {
                 self.tabs.next(col, last)
             } else {
-                self.tabs.previous(col).max(first)
+                self.tabs.previous(col, first)
             };
+            if to == col {
+                break;
+            }
+            col = to;
         }
         self.grid_mut().set_col(col);
     }
