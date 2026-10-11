@@ -128,10 +128,21 @@ enum Stage {
     /// It said hello as a command client: its `Command` is next.
     Command,
     /// Its last frame is sent: it closes once what waits is written, and
-    /// what it sends is dropped unread.
+    /// is read no more, so a client that has stopped sending, or shut its
+    /// side, still gets it all.
     Closing,
     /// It failed or hung up: it closes at the end of the tick.
     Dead,
+}
+
+impl Stage {
+    /// Whether what the client sends is read.
+    fn reads(&self) -> bool {
+        match self {
+            Stage::Hello(_) | Stage::Attaching(_) | Stage::Attached(_) | Stage::Command => true,
+            Stage::Closing | Stage::Dead => false,
+        }
+    }
 }
 
 /// An attached client: its view's id, its terminal if the server took it,
@@ -644,7 +655,13 @@ impl Server {
         fds.push(PollFd::new(&self.stops, PollFlags::IN));
         slots.push(Slot::Stops);
         for (i, conn) in self.conns.iter().enumerate() {
-            let mut flags = PollFlags::IN;
+            // A connection that is not read is open only while it has
+            // something to write.
+            let mut flags = if conn.stage.reads() {
+                PollFlags::IN
+            } else {
+                PollFlags::OUT
+            };
             if !conn.out.is_empty() {
                 flags |= PollFlags::OUT;
             }
@@ -959,12 +976,15 @@ impl Server {
 
     /// A client's connection is ready, as found at `now`.
     fn serve_conn(&mut self, index: usize, flags: PollFlags, now: Instant) {
-        if flags.contains(PollFlags::OUT)
-            && let Some(conn) = self.conns.get_mut(index)
-        {
+        let Some(conn) = self.conns.get_mut(index) else {
+            return;
+        };
+        let gone = flags.intersects(PollFlags::HUP | PollFlags::ERR);
+        // One that is not read learns that its peer is gone by writing.
+        if flags.contains(PollFlags::OUT) || (gone && !conn.stage.reads()) {
             conn.flush(&mut self.session);
         }
-        if flags.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
+        if flags.contains(PollFlags::IN) || gone {
             self.read_conn(index, now);
         }
     }
@@ -980,7 +1000,8 @@ impl Server {
         let mut decoder = std::mem::take(&mut conn.decoder);
         let (mut frames, mut read) = (0usize, 0usize);
         let closed = 'read: loop {
-            let Some(conn) = self.conns.get_mut(index) else {
+            // A frame it sent may have ended it: it is read no more.
+            let Some(conn) = self.conns.get_mut(index).filter(|c| c.stage.reads()) else {
                 break false;
             };
             // A client may send its terminal with its `Attach`.
@@ -1126,9 +1147,9 @@ impl Server {
                     },
                 );
             }
-            // A connection that is ending has had its last word: what it
-            // sends after a Detach, a Command, a refused Hello or a bad
-            // frame is dropped unread.
+            // A connection that is ending has had its last word: what came
+            // with the Detach, Command or refused Hello that ended it is
+            // dropped unread.
             Stage::Closing | Stage::Dead => {
                 *decoder = Decoder::default();
                 return Ok(false);
