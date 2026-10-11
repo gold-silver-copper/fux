@@ -320,8 +320,11 @@ impl Conn {
             return None;
         };
         let dirty = session.views.get(&attached.client)?.dirty;
+        // A screen not known is painted whole, whether or not the view
+        // changed: forgetting it is asking for that paint.
+        let unknown = attached.screen != Screen::Shown;
         let starved = attached.screen == Screen::Starved && self.pending() != 0;
-        (dirty && !starved).then_some(attached.clock.due)
+        ((dirty || unknown) && !starved).then_some(attached.clock.due)
     }
 
     /// Whether `client` is attached here.
@@ -1089,7 +1092,7 @@ impl Server {
                 Some(AttachedFrame::Input(bytes)) => attached.input(session, bytes, now),
                 // The client's terminal was resized, which may have moved
                 // what it shows even if the size it ends at is the same:
-                // it is repainted in full either way.
+                // forgotten, it is repainted in full either way.
                 Some(AttachedFrame::Resize { rows, cols }) => {
                     attached.screen.forget();
                     session.resize(attached.client, rows.get(), cols.get());
@@ -1276,6 +1279,23 @@ mod tests {
             }
         }
         (painted, exit)
+    }
+
+    /// A client whose screen is forgotten, as on a resize that ends at the
+    /// same size, is due a full paint though nothing it views changed.
+    #[test]
+    fn a_forgotten_screen_is_due_a_paint() -> Result<(), String> {
+        let (mut session, mut conn, _peer, _far) = with_terminal()?;
+        session.views.values_mut().for_each(|v| v.dirty = false);
+        if let Some(attached) = conn.attached() {
+            attached.screen = Screen::Shown;
+        }
+        assert_eq!(conn.paint_due(&session), None, "nothing to paint");
+        if let Some(attached) = conn.attached() {
+            attached.screen.forget();
+        }
+        assert!(conn.paint_due(&session).is_some());
+        Ok(())
     }
 
     /// A terminal given back that takes no more at once (a slow link) has
