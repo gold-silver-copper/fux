@@ -357,25 +357,7 @@ pub fn attach(socket: &SocketPath, workspace: Option<String>) -> Result<(), Erro
     }
     let (mut stream, mut decoder) = connect(socket, Role::Attach)?;
     let (rows, cols) = window_size();
-
-    let original = fuxix::terminal::attributes(&stdin).map_err(Error::Modes)?;
-    let mut raw = original.clone();
-    raw.make_raw();
-    if let Ok(mut saved) = SAVED.lock() {
-        *saved = Some(original);
-    }
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        restore();
-        previous(info);
-    }));
-    fuxix::terminal::set_attributes(&stdin, &raw).map_err(|e| {
-        restore();
-        Error::RawMode(e)
-    })?;
-    let mut stdout = std::io::stdout();
-    let _ = stdout.write_all(ENTER.as_bytes());
-    let _ = stdout.flush();
+    let raw = Raw::enter(Signals::new()?, &stdin)?;
 
     // The terminal goes with the `Attach`, now that it is set up: if the
     // server takes it, it reads the keys and writes the paints there
@@ -386,13 +368,101 @@ pub fn attach(socket: &SocketPath, workspace: Option<String>) -> Result<(), Erro
         workspace: workspace.as_deref(),
     };
     let result = send_with_terminal(&mut stream, &attach, &stdin)
-        .and_then(|()| terminal_taken(&mut stream, &mut decoder))
-        .and_then(|taken| attached(&mut stream, &mut decoder, !taken));
-    restore();
+        .and_then(|()| terminal_taken(&mut stream, &mut decoder, &raw.signals))
+        .and_then(|taken| match taken {
+            Some(taken) => attached(&mut stream, &mut decoder, &raw.signals, !taken),
+            None => Ok(STOPPED.into()),
+        });
+    drop(raw);
     // Why the client detached, on a terminal that may be gone: a hung-up
     // one fails the write, and the detach is no less done.
-    let _ = writeln!(stdout, "[{}]", result?);
+    let _ = writeln!(std::io::stdout(), "[{}]", result?);
     Ok(())
+}
+
+/// Why a client detached when a signal told it to.
+const STOPPED: &str = "detached by a signal";
+
+/// The signals an attached client answers: a new size, and those that
+/// detach it. Made before the terminal goes raw, so that no wait in raw
+/// mode can miss one.
+struct Signals {
+    winch: UnixStream,
+    stops: UnixStream,
+}
+
+impl Signals {
+    fn new() -> Result<Signals, Error> {
+        Ok(Signals {
+            winch: crate::signal_pipe(&[SIGWINCH]).map_err(Error::Signals)?,
+            stops: crate::signal_pipe(&[SIGTERM, SIGHUP, SIGINT]).map_err(Error::Signals)?,
+        })
+    }
+}
+
+/// The terminal in raw mode on the alternate screen, which only the
+/// signals that end it can make, and which puts the terminal back as it
+/// was once dropped, however the attachment ends.
+struct Raw {
+    signals: Signals,
+}
+
+impl Raw {
+    fn enter(signals: Signals, stdin: &std::io::Stdin) -> Result<Raw, Error> {
+        let original = fuxix::terminal::attributes(stdin).map_err(Error::Modes)?;
+        let mut raw = original.clone();
+        raw.make_raw();
+        if let Ok(mut saved) = SAVED.lock() {
+            *saved = Some(original);
+        }
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            restore();
+            previous(info);
+        }));
+        // Made before raw mode, so that failing to set it restores too.
+        let entered = Raw { signals };
+        fuxix::terminal::set_attributes(stdin, &raw).map_err(Error::RawMode)?;
+        let mut stdout = std::io::stdout();
+        let _ = stdout.write_all(ENTER.as_bytes());
+        let _ = stdout.flush();
+        Ok(entered)
+    }
+}
+
+impl Drop for Raw {
+    fn drop(&mut self) {
+        restore();
+    }
+}
+
+/// What woke a client waiting on the server: the server, or a signal that
+/// detaches it.
+#[derive(PartialEq, Eq)]
+enum Woken {
+    Server,
+    Stopped,
+}
+
+/// Waits until the server's socket can be read, or a signal says to detach.
+fn wait(stream: &UnixStream, signals: &Signals) -> Result<Woken, Error> {
+    loop {
+        let mut fds = [
+            PollFd::new(stream, PollFlags::IN),
+            PollFd::new(&signals.stops, PollFlags::IN),
+        ];
+        match fuxix::poll::poll(&mut fds, None) {
+            Ok(_) | Err(fuxix::Errno::INTR) => {}
+            Err(e) => return Err(Error::Poll(e)),
+        }
+        let [server, stops] = fds.each_ref().map(|fd| !fd.revents().is_empty());
+        if stops {
+            return Ok(Woken::Stopped);
+        }
+        if server {
+            return Ok(Woken::Server);
+        }
+    }
 }
 
 /// Sends `frame` with this process's terminal attached, its first bytes
@@ -416,24 +486,44 @@ fn send_with_terminal<'a>(
 }
 
 /// The server's first answer to an `Attach` sent with the terminal: whether
-/// it took it. A server that ends the attachment first says why. A paint
-/// first says it did not: the server sends `ServerFrame::Terminal` before any
-/// paint, and one that never got the descriptor (lost on its way) sends
-/// none, and relays; the paint is written, as relaying writes it.
-fn terminal_taken(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<bool, Error> {
+/// it took it, or none if a signal detached the client first. A server that
+/// ends the attachment first says why. A paint first says it did not: the
+/// server sends `ServerFrame::Terminal` before any paint, and one that never
+/// got the descriptor (lost on its way) sends none, and relays; the paint
+/// is written, as relaying writes it.
+fn terminal_taken(
+    stream: &mut UnixStream,
+    decoder: &mut Decoder,
+    signals: &Signals,
+) -> Result<Option<bool>, Error> {
+    let _ = stream.set_read_timeout(None);
     let mut buffer = vec![0u8; 4096];
     loop {
-        match read_frame(stream, decoder, &mut buffer, None)? {
-            Some(ServerFrame::Terminal { taken }) => return Ok(taken),
-            Some(ServerFrame::Paint(bytes)) => {
-                let mut stdout = std::io::stdout();
-                stdout.write_all(bytes).map_err(Error::WriteTerminal)?;
-                let _ = stdout.flush();
-                return Ok(false);
+        while let Some(frame) = decoder.frame()? {
+            match frame {
+                ServerFrame::Terminal { taken } => return Ok(Some(taken)),
+                ServerFrame::Paint(bytes) => {
+                    let mut stdout = std::io::stdout();
+                    stdout.write_all(bytes).map_err(Error::WriteTerminal)?;
+                    let _ = stdout.flush();
+                    return Ok(Some(false));
+                }
+                ServerFrame::Exit(reason) => return Err(Error::Refused(reason.to_owned())),
+                ServerFrame::Hello(_)
+                | ServerFrame::Stdout(_)
+                | ServerFrame::Stderr(_)
+                | ServerFrame::Done { .. } => {}
             }
-            Some(ServerFrame::Exit(reason)) => return Err(Error::Refused(reason.to_owned())),
-            Some(_) => {}
-            None => return Err(Error::Closed),
+        }
+        if wait(stream, signals)? == Woken::Stopped {
+            let _ = send(stream, &AttachedFrame::Detach);
+            return Ok(None);
+        }
+        match stream.read(&mut buffer) {
+            Ok(0) => return Err(Error::Closed),
+            Ok(n) => decoder.push(buffer.get(..n).unwrap_or_default()),
+            Err(e) if matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock) => {}
+            Err(e) => return Err(Error::Read(e)),
         }
     }
 }
@@ -444,9 +534,13 @@ fn terminal_taken(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<bool
 /// terminal. Without, the server reads and writes the terminal itself, and
 /// this only passes on the terminal's new size, a paint the server relays
 /// after all, and a signal that detaches.
-fn attached(stream: &mut UnixStream, decoder: &mut Decoder, relay: bool) -> Result<String, Error> {
-    let mut winch = crate::signal_pipe(&[SIGWINCH]).map_err(Error::Signals)?;
-    let stops = crate::signal_pipe(&[SIGTERM, SIGHUP, SIGINT]).map_err(Error::Signals)?;
+fn attached(
+    stream: &mut UnixStream,
+    decoder: &mut Decoder,
+    signals: &Signals,
+    relay: bool,
+) -> Result<String, Error> {
+    let Signals { winch, stops } = signals;
     let _ = stream.set_read_timeout(None);
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
@@ -465,8 +559,8 @@ fn attached(stream: &mut UnixStream, decoder: &mut Decoder, relay: bool) -> Resu
     loop {
         let mut fds = [
             PollFd::new(&*stream, PollFlags::IN),
-            PollFd::new(&winch, PollFlags::IN),
-            PollFd::new(&stops, PollFlags::IN),
+            PollFd::new(winch, PollFlags::IN),
+            PollFd::new(stops, PollFlags::IN),
             PollFd::new(&stdin, PollFlags::IN),
         ];
         match fuxix::poll::poll(fds.get_mut(..polled).unwrap_or_default(), None) {
@@ -478,10 +572,10 @@ fn attached(stream: &mut UnixStream, decoder: &mut Decoder, relay: bool) -> Resu
         let is = |i: usize| ready.get(i).is_some_and(|f| !f.is_empty());
         if is(STOPS) {
             let _ = send(stream, &AttachedFrame::Detach);
-            return Ok("detached by a signal".into());
+            return Ok(STOPPED.into());
         }
         if is(WINCH) {
-            crate::drain(&mut winch);
+            crate::drain(winch);
             let (rows, cols) = window_size();
             send(stream, &AttachedFrame::Resize { rows, cols })?;
         }
@@ -547,12 +641,16 @@ mod tests {
         let (done, ended) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut decoder = Decoder::default();
-            let _ = done.send(terminal_taken(&mut client, &mut decoder).map_err(|e| e.to_string()));
+            let signals = Signals::new().map_err(|e| e.to_string());
+            let taken = signals.and_then(|signals| {
+                terminal_taken(&mut client, &mut decoder, &signals).map_err(|e| e.to_string())
+            });
+            let _ = done.send(taken);
         });
         let taken = ended
             .recv_timeout(Duration::from_secs(5))
             .map_err(|_| "still waiting for ServerFrame::Terminal after 5 s")??;
-        assert!(!taken);
+        assert_eq!(taken, Some(false));
         Ok(())
     }
 
@@ -568,8 +666,11 @@ mod tests {
         }
         let (done, ended) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ =
-                done.send(attached(&mut client, &mut decoder, false).map_err(|e| e.to_string()));
+            let signals = Signals::new().map_err(|e| e.to_string());
+            let ended = signals.and_then(|signals| {
+                attached(&mut client, &mut decoder, &signals, false).map_err(|e| e.to_string())
+            });
+            let _ = done.send(ended);
         });
         let reason = ended
             .recv_timeout(Duration::from_secs(5))

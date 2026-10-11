@@ -556,11 +556,11 @@ impl Server {
                 match slot {
                     Slot::Listener => self.accept(),
                     Slot::Children => {
-                        crate::drain(&mut self.children);
+                        crate::drain(&self.children);
                         self.reap();
                     }
                     Slot::Stops => {
-                        crate::drain(&mut self.stops);
+                        crate::drain(&self.stops);
                         self.stop("stopped by a signal".into());
                     }
                     Slot::Conn(i) => self.serve_conn(i, flags, now),

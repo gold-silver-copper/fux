@@ -48,7 +48,7 @@ pub(crate) fn signal_pipe(signals: &[std::ffi::c_int]) -> std::io::Result<UnixSt
 }
 
 /// Reads whatever a signal pipe holds.
-pub(crate) fn drain(pipe: &mut UnixStream) {
+pub(crate) fn drain(mut pipe: &UnixStream) {
     let mut buffer = [0u8; 256];
     while matches!(pipe.read(&mut buffer), Ok(n) if n > 0) {}
 }
