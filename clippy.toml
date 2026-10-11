@@ -65,3 +65,7 @@ disallowed-methods = [
   { path = "slice::repeat", reason = "panics when the length overflows: iter::repeat_n" },
   { path = "core::iter::Iterator::step_by", reason = "panics on a zero step" },
 ]
+
+# Tests may print what they found; the crates themselves write through
+# handles whose errors they handle (`print_stdout`, `print_stderr`).
+allow-print-in-tests = true

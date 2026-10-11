@@ -409,8 +409,10 @@ pub struct Server {
     accept_logged: Option<Instant>,
 }
 
+/// Writes to the server's log, its stderr. A log that cannot be written,
+/// a full disk, say, loses the line and stops nothing.
 fn log(message: &str) {
-    eprintln!("fux server: {message}");
+    let _ = writeln!(std::io::stderr(), "fux server: {message}");
 }
 
 /// Why a server could not start.

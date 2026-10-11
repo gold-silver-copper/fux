@@ -227,6 +227,10 @@ impl Server {
 }
 
 impl Drop for Server {
+    #[expect(
+        clippy::print_stderr,
+        reason = "the harness captures eprintln! alone, showing it for a failing test"
+    )]
     fn drop(&mut self) {
         // Test output is shown only for a failing test, so the server's log
         // is always printed; it explains a failure the assertion cannot.

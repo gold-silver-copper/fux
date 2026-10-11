@@ -383,7 +383,9 @@ pub fn attach(socket: &SocketPath, workspace: Option<String>) -> Result<(), Erro
         .and_then(|()| terminal_taken(&mut stream, &mut decoder))
         .and_then(|taken| attached(&mut stream, &mut decoder, !taken));
     restore();
-    println!("[{}]", result?);
+    // Why the client detached, on a terminal that may be gone: a hung-up
+    // one fails the write, and the detach is no less done.
+    let _ = writeln!(stdout, "[{}]", result?);
     Ok(())
 }
 

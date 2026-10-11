@@ -316,3 +316,22 @@ fn typed_command_after_a_noisy_startup() -> Result<Result<(), String>, String> {
     );
     Ok(Ok(()))
 }
+
+/// Output that cannot be written, as to a pipe nobody reads, fails the
+/// command with a message, never a panic.
+#[test]
+fn unwritable_output_fails_without_a_panic() -> Outcome {
+    for arg in ["--version", "help"] {
+        let (reader, writer) = std::io::pipe().map_err(|e| e.to_string())?;
+        drop(reader);
+        let out = std::process::Command::new(FUX)
+            .arg(arg)
+            .stdout(writer)
+            .output()
+            .map_err(|e| e.to_string())?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{arg}: {stderr}");
+        assert!(stderr.contains("writing the output"), "{arg}: {stderr}");
+    }
+    Ok(())
+}
