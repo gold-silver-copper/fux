@@ -83,7 +83,8 @@ pub fn client(client: ClientId, grid: &crate::render::Grid, json: bool) -> Strin
 }
 
 /// What a pane's program is doing, for `--json`: its foreground program,
-/// the status it exited with, how long since it last wrote, and the modes
+/// the status it exited with, how long its screen has shown no change, and
+/// the modes
 /// that say how it takes input.
 pub fn state(pane: &Pane, now: Instant) -> Vec<(&'static str, Json<'static>)> {
     let screen = pane.screen();
@@ -92,7 +93,7 @@ pub fn state(pane: &Pane, now: Instant) -> Vec<(&'static str, Json<'static>)> {
         .child()
         .map(|child| pane.process.job().unwrap_or(child.leader.pid()))
         .and_then(fuxix::process::name);
-    let idle = now.saturating_duration_since(pane.wrote_at).as_millis();
+    let idle = now.saturating_duration_since(pane.changed_at).as_millis();
     let exited = pane.process.exit_status();
     vec![
         ("program", program.map_or(Json::Null, Json::str)),

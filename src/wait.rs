@@ -41,7 +41,7 @@ impl Waiting {
     pub fn due(&self, session: &Session) -> Instant {
         let quiet = match (&self.wait.until, session.panes.get(&self.pane)) {
             (Until::Idle(idle), Some(pane)) => {
-                Some(crate::after(pane.wrote_at.max(self.began), *idle))
+                Some(crate::after(pane.changed_at.max(self.began), *idle))
             }
             _ => None,
         };
@@ -66,7 +66,7 @@ impl Waiting {
                 .exit_status()
                 .map(|status| format!("exited {status}\n")),
             Until::Idle(idle) => {
-                let quiet = crate::after(pane.wrote_at.max(self.began), *idle);
+                let quiet = crate::after(pane.changed_at.max(self.began), *idle);
                 (pane.input_written() && now >= quiet).then(String::new)
             }
             Until::Text(texts) => reread(&mut self.read, pane).and_then(|text| {

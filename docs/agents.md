@@ -26,13 +26,15 @@ fux kill-workspace -t agent                             # all run started
   somewhere else. A program that cannot start fails `run`, saying why.
 - **`fux wait -t %N …`** answers as soon as the pane shows `--text TEXT`
   (give `--text` again to wait for any of several), stops showing
-  `--gone TEXT`, writes nothing for `--idle MS`, `--change`s at all, or its
+  `--gone TEXT`, shows no change for `--idle MS` (a program that redraws
+  the same screen is idle), `--change`s at all, or its
   program `--exit`s. It exits 1 after `--timeout SECS` (60 by default,
   under what a tool waits for one command), saying so. `--print` prints the
   screen as it ends, timeout or not. The server checks as output arrives,
   so a wait costs nothing while it waits.
-  - A busy Claude Code (or any program with a spinner) writes all the time;
-    `--idle 5000` waits until it has been quiet for five seconds.
+  - A busy Claude Code (or any program with a spinner or a clock) changes
+    its screen all the time; `--idle 5000` waits until it has shown no
+    change for five seconds.
 - **`fux send-keys -t %N KEYS…`** sends key names (`Enter`, `Escape`,
   `C-c`, `M-x`, `S-Tab`, `Up`, `F5`, `BSpace`; `fux list-keys` lists them)
   as the program asked for keys, and every other word as text.
@@ -54,7 +56,8 @@ fux kill-workspace -t agent                             # all run started
   with `--json`, as runs per line, so a selection or a cursor drawn in
   reverse video is visible.
 - **`--json`**, on `capture-pane` and `ls`, says what each pane's program
-  is doing: `program` (its foreground process), `exited`, `idle_ms`,
+  is doing: `program` (its foreground process), `exited`, `idle_ms` (how
+  long its screen has shown no change),
   `alt_screen`, `mouse` and `bracketed_paste`.
 
 Rows and columns count from 0 everywhere: `--rows`, `--cols`,
@@ -89,9 +92,9 @@ to FILE, and detaches on SIGTERM. `fux resize -c c2 80x24` resizes it, and
 - `fux ls --json` lists everything; `fux help` lists every command, and a
   tmux name (`list-panes`, `new-window`) says what fux calls it.
 - Exit status: 0 done, 1 failed (the reason on stderr), 2 a usage error.
-- To find your own processes with `pgrep -f` or `pkill -f`, bracket a
-  letter (`pgrep -f '[c]k --flag'`), so the pattern does not match the
-  shell running it.
+- Stop what you start by the pid you started (`fux attach --headless … &`
+  then `kill $!`), not with `pkill -f`: a pattern also matches the shell
+  line that runs it, and kills that.
 
 ## What fux does not do
 

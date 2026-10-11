@@ -1262,6 +1262,7 @@ impl Session {
         pane.colours = colours;
         pane.set_host_palette(palette);
         read(pane);
+        pane.note_change(Instant::now());
         let dropped = pane.input.lost_reply();
         self.read_into(id, place, dropped);
     }

@@ -202,7 +202,8 @@ pub enum Until {
     Text(Vec<String>),
     /// None of these texts is on the screen.
     Gone(Vec<String>),
-    /// The program has written nothing for this long.
+    /// The screen has shown no change for this long: the same screen
+    /// drawn again is none.
     Idle(Duration),
     /// The screen changed at all.
     Change,

@@ -112,7 +112,7 @@ pub(crate) const ASCII: &str = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b
 /// A colour as stored: a tag (0 default, 1 indexed, 2 RGB) and its bytes,
 /// all of them always set, so attributes compare, copy and clear as plain
 /// bytes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 struct Packed([u8; 4]);
 
 impl Packed {
@@ -134,7 +134,7 @@ impl Packed {
 
 /// Attributes are independent of glyph storage. An erase fills cells with
 /// the pen's colours alone (`erased`).
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Attributes {
     foreground: Packed,
     background: Packed,

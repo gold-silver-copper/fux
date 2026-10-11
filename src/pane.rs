@@ -393,6 +393,22 @@ impl Process {
     }
 }
 
+/// A digest of what `screen` shows: its glyphs, their attributes, and the
+/// cursor.
+fn digest(screen: &fux_vt::Screen) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    let window = screen.window();
+    for row in (0..window.rows()).filter_map(|y| window.row(y)) {
+        for cell in row.cells() {
+            cell.contents().hash(&mut hasher);
+            cell.attributes().hash(&mut hasher);
+        }
+    }
+    screen.cursor_position().hash(&mut hasher);
+    hasher.finish()
+}
+
 /// What a pane runs, which says what its program's exit does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Runs {
@@ -427,8 +443,10 @@ pub struct Pane {
     /// session last looked, which copies it (`Session::copied`).
     pub copied: Option<String>,
     paced: Paced,
-    /// When the program last wrote, or the pane started.
-    pub wrote_at: Instant,
+    /// A digest of what the screen shows (`digest`), and since when it
+    /// has: a program that redraws the same screen has not changed it.
+    shown: u64,
+    pub changed_at: Instant,
 }
 
 /// How long a piece of input that must be read alone (`Paced`) is given
@@ -523,7 +541,8 @@ impl Pane {
             bell: false,
             copied: None,
             paced: Paced::default(),
-            wrote_at: Instant::now(),
+            shown: 0,
+            changed_at: Instant::now(),
         })
     }
 
@@ -542,7 +561,6 @@ impl Pane {
 
     /// [`Pane::output`] at `now`.
     pub fn output_at(&mut self, bytes: &[u8], now: Instant) {
-        self.wrote_at = now;
         let mut after: Vec<u8>;
         let mut rest = bytes;
         loop {
@@ -704,6 +722,16 @@ impl Pane {
             };
             let _ = self.input.push(&piece);
             self.paced.until = alone.then(|| crate::after(now, PACE));
+        }
+    }
+
+    /// Notes, after the screen was read into at `now`, whether what it
+    /// shows changed.
+    pub fn note_change(&mut self, now: Instant) {
+        let shown = digest(self.screen());
+        if shown != self.shown {
+            self.shown = shown;
+            self.changed_at = now;
         }
     }
 

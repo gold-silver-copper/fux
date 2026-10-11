@@ -164,7 +164,7 @@ From a key or the prompt, commands act on your focused pane.
 | `fux new-tab [-t WS] [-n NAME] [--size COLSxROWS] [--json] [-- CMD…]` | a tab with a shell, CMD typed into it; prints `@N %N` |
 | `fux split -h\|-v [-t %N] [--json] [-- CMD…]` | split a pane: `-h` side by side, `-v` stacked; prints `%N` |
 | `fux run [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--json] -- PROGRAM…` | start a program in place of a shell, in a tab of its own in workspace `agent` (or WS), no client moved to it; prints `%N`. Its pane stays once it exits, with its last screen and status |
-| `fux wait [-t %N] --text T\|--gone T\|--idle MS\|--change\|--exit [--timeout SECS] [--print]` | wait until the pane shows text (`--text` again for any of several), stops showing it, writes nothing for MS, changes, or its program exits (prints `exited STATUS`); 1 after `--timeout` (60 s). `--print` prints the screen as it ends |
+| `fux wait [-t %N] --text T\|--gone T\|--idle MS\|--change\|--exit [--timeout SECS] [--print]` | wait until the pane shows text (`--text` again for any of several), stops showing it, shows no change for MS (redrawing the same screen is no change), changes, or its program exits (prints `exited STATUS`); 1 after `--timeout` (60 s). `--print` prints the screen as it ends |
 | `fux resize -t @N\|+N COLSxROWS\|auto` | what a tab (or a workspace's tabs) is laid out on while no client shows it; `auto`: a client's screen |
 | `fux resize -c CLIENT COLSxROWS` | a headless client's size |
 | `fux kill-pane\|kill-tab\|kill-workspace [-t …]` | close, without asking |
@@ -243,8 +243,8 @@ change.
 
 That is `fux ls --json`. Each pane says what it runs in its foreground
 (`program`, `null` if unknown), the status its program exited with
-(`exited`, for a pane `run` started, else `null`), how long since it last
-wrote (`idle_ms`), and whether its program is on the alternate screen, asked
+(`exited`, for a pane `run` started, else `null`), how long its screen has
+shown no change (`idle_ms`), and whether its program is on the alternate screen, asked
 for mouse reports and for bracketed paste.
 
 `fux capture-pane --json` prints
