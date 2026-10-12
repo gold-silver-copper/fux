@@ -1,11 +1,11 @@
 # fux's bundled words, written in fuxth: every program may use them.
 # `explain NAME` says what each does.
 
-# pane text -- : type text into a pane, nothing pressed after it
+# pane text -- : type text into a pane, nothing pressed after it; it prints nothing
 define type keys swap text send-keys end
-# pane name -- : press a key in a pane: Enter, C-c, Up
+# pane name -- : press a key in a pane: Enter, C-c, Up; it prints nothing
 define press keys swap key send-keys end
-# pane text -- outcome : type a line, press Enter, and wait for the shell's command to end
+# pane text -- outcome : in a shell: type a line, press Enter, wait for its command to end (a program: type, press, then wait-text)
 define line keys swap text str Enter key wait-done send-keys end
 # pane -- capture : the pane's screen as it is now
 define screen opts capture end

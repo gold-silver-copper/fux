@@ -837,7 +837,7 @@ fn run_job(server: &mut crate::script::Server, me: crate::id::ClientId, job: Job
             last_bound: None,
             out: &mut out,
         };
-        crate::script::run_capped(&mut machine, &mut host, &mut asks, Some(KEY_STEPS))
+        crate::script::run_capped(&mut machine, &mut host, &mut asks, Some(KEY_STEPS), None)
     })();
     let notice = match result {
         Err(failed) => Some((failed.to_string(), true)),

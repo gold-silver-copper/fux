@@ -17,7 +17,7 @@ use fuxth::{AppValue, Compiler, Limits, Machine, Outcome, Token, Value};
 use std::io::Write;
 use std::time::Duration;
 
-pub use words::{WORDS, Word};
+pub use words::{WORDS, Word, usage};
 
 /// The bundled words, written in fuxth.
 pub const LIBRARY: &str = include_str!("library.fux");
@@ -287,6 +287,39 @@ pub enum Chosen {
 pub struct Server {
     chosen: Chosen,
     requests: Option<crate::client::Requests>,
+    /// What stops a run from another thread, if one may.
+    stop: Option<Stop>,
+}
+
+/// What stops a run from another thread (the prefix then Esc, for a key's
+/// program): a flag it looks at between steps, and its connection, shut
+/// under a request that waits.
+#[derive(Clone, Default)]
+pub struct Stop {
+    flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stream: std::sync::Arc<std::sync::Mutex<Option<std::os::unix::net::UnixStream>>>,
+}
+
+impl Stop {
+    /// Stops the run under way.
+    pub fn stop(&self) {
+        self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(stream) = self.stream.lock()
+            && let Some(stream) = stream.as_ref()
+        {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    /// Ready for the next run.
+    pub fn reset(&self) {
+        self.flag.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether the run is to stop.
+    pub fn stopped(&self) -> bool {
+        self.flag.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 impl Server {
@@ -294,6 +327,15 @@ impl Server {
         Server {
             chosen,
             requests: None,
+            stop: None,
+        }
+    }
+
+    /// A server whose runs `stop` can stop.
+    pub fn stoppable(chosen: Chosen, stop: Stop) -> Server {
+        Server {
+            stop: Some(stop),
+            ..Server::new(chosen)
         }
     }
 
@@ -320,8 +362,14 @@ impl Server {
             Some(requests) => requests,
             None => {
                 let socket = self.socket()?;
-                self.requests
-                    .insert(crate::client::Requests::open(&socket).map_err(client_failed)?)
+                let opened = crate::client::Requests::open(&socket).map_err(client_failed)?;
+                // A connection a stop can shut.
+                if let Some(stop) = &self.stop
+                    && let Ok(mut held) = stop.stream.lock()
+                {
+                    *held = opened.stream().try_clone().ok();
+                }
+                self.requests.insert(opened)
             }
         };
         let asked = requests.ask(request, out).map_err(client_failed);
@@ -436,7 +484,7 @@ pub fn run(
     host: &mut Host<'_>,
     asks: &mut dyn Asks,
 ) -> Result<Ended, Failed> {
-    run_capped(machine, host, asks, None)
+    run_capped(machine, host, asks, None, None)
 }
 
 /// The steps a run takes between looks at its budget.
@@ -448,11 +496,19 @@ pub fn run_capped(
     host: &mut Host<'_>,
     asks: &mut dyn Asks,
     steps: Option<u64>,
+    stop: Option<&Stop>,
 ) -> Result<Ended, Failed> {
     // A wait met by its program's exit: the run ends with that status.
     let mut status = 0;
     let mut taken: u64 = 0;
     loop {
+        if stop.is_some_and(Stop::stopped) {
+            return Err(Failed {
+                status: 1,
+                code: "stopped".to_owned(),
+                message: "stopped (the prefix, then Esc)".to_owned(),
+            });
+        }
         if let Some(steps) = steps.filter(|steps| taken > *steps) {
             return Err(Failed {
                 status: 1,
@@ -767,6 +823,7 @@ fn run_file(
         &mut host,
         &mut Settings(server),
         Some(PROGRAM_STEPS),
+        None,
     )
     .map(drop)
 }
@@ -844,6 +901,7 @@ pub fn restore(
         &mut host,
         &mut Layout(&mut server),
         Some(PROGRAM_STEPS),
+        None,
     )
     .map(drop)
 }
@@ -925,6 +983,13 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         }
         // A whole program in one word, as a shell passes `fux 'ls json'`.
         [line] if line.contains(char::is_whitespace) => fuxth::token::source("command line", line)?,
+        // Help as other programs give it, and older notes say: `help agents`,
+        // `help json`, `help WORD`.
+        [help, topic] if help == "help" => match topic.as_str() {
+            "agents" => fuxth::token::arguments(&["help-agents"]),
+            "json" => fuxth::token::arguments(&["help-json"]),
+            word => fuxth::token::arguments(&["str", word, "explain"]),
+        },
         // What other programs take for help and their version.
         [flag] if matches!(flag.as_str(), "--help" | "-h") => fuxth::token::arguments(&["help"]),
         [flag] if matches!(flag.as_str(), "--version" | "-V") => {

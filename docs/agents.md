@@ -1,57 +1,62 @@
 # Driving programs with fux
 
 (`fux help-agents`; `fux help` lists every word, `fux str WORD explain` one.)
-A fux command line is a fuxth program: words run left to right on a stack,
-each taking what the words before it left. `str WORD` pushes WORD as text;
-`%3`, `@2`, `+1` are a pane, tab, workspace. What is left is printed, a value
-a line. Each step is one command; none touches a person's tabs; no `sleep`.
-The server is `FUX_SOCKET`'s, or the default; start one with `fux start`.
+A fux command line is a fuxth program: words run left to right, each taking
+what the words before it left. `str WORD` pushes WORD as text. `%2` alone is
+a pane (`@2` a tab, `+1` a workspace). What is left is printed, a value a
+line. The server is `FUX_SOCKET`'s; `fux start` starts one if none runs.
+
+Every step has one of these shapes (UPPER = what you fill in):
 
 ```sh
-fux opts str app name 100 30 size str './app --fast' command str Ready wait-text run   # start; waits for Ready
-fux str app pane opts marks capture                # the screen; ⟦selection⟧ marked (or %3 opts …)
-fux str app pane keys str j key str Enter key 300 wait-idle with-screen send-keys  # keys, settle, read
-fux opts str sh name str bash program 300 wait-idle run   # a shell: it marks its commands
-fux str sh pane str 'make test' line               # a shell command, to its end: done STATUS
-fux str app pane opts wait-exit wait               # exited 0, and exits with the program's status
-fux str app pane str exited get                    # one value: 0
-fux str app pane opts json capture                 # the screen and state as JSON
-fux str agent workspace kill                       # everything run started
+fux opts OPTIONS run                 # start a program; prints its pane: %2
+fux %2 keys INPUT [WAIT] send-keys   # type; INPUT: str T text | str Enter key | str T paste | 3 times
+fux %2 opts WAIT wait                # wait; WAIT: str T wait-text | 300 wait-idle | wait-exit | … 30 timeout
+fux %2 opts READ capture             # read; READ: 100 history | all-history | marks | styles | json | …
+fux %2 str FIELD get                 # one value: exited (null while it runs), pid, revision, cwd
 ```
 
-- **Start:** `opts … run` starts a program (not a shell) in a tab of its own
-  in workspace `agent`, out of every client's way, and leaves its pane
-  (`%3`). Options: `str NAME name`, `COLS ROWS size`, `str DIR cwd`, `str K
-  str V env`, and the program: `str 'prog a b' command` (split as a shell
-  splits), or `str PROG program` then `str A arg` per argument. `str NAME
-  pane` finds it later. The pane stays after the program exits.
-- **Wait:** a condition on `run`'s options, on `keys` (`send-keys`), on a
-  `mouse` event, or on `opts` for `PANE opts … wait`; armed before it acts:
-  `str T wait-text` (T shows anew, even scrolled away; not a typed line's
-  echo), `str T wait-gone`, `MS wait-idle` (no change for MS; after keys,
+```sh
+fux opts str app name 100 30 size str './app --fast' command str Ready wait-text run  # start; waits for Ready
+fux %2 keys str j key str Enter key 300 wait-idle with-screen send-keys   # keys, settle, read
+fux %2 opts marks capture            # the screen; ⟦selection⟧ marked
+fux %2 opts json capture             # the screen and state as JSON
+fux %2 opts wait-exit 30 timeout wait   # exited 0; fux then exits with the program's status
+fux opts str bash program 300 wait-idle run   # a shell: it marks its commands; prints %3
+fux %3 str 'make test' line          # a shell command, typed and waited to its end: done STATUS
+fux %2 kill                          # close its pane (str agent workspace kill: all run started)
+```
+
+- **Start:** `run` starts a program (not a shell) in a tab of its own in
+  workspace `agent`. OPTIONS: `str NAME name` (the tab's), `COLS ROWS size`,
+  `str DIR cwd`, `str K str V env`, and the program: `str 'prog -x a' command`
+  (split as a shell splits), or `str PROG program` and `str A arg` per
+  argument. A WAIT among them waits from its first output (`str T wait-text`).
+  Use the `%2` it prints: names repeat, and each `fux` is a fresh program
+  (a `constant` lasts only within one). The pane stays after the program ends.
+- **Wait:** `str T wait-text` (T shows anew, even scrolled away; not a typed
+  line's echo), `str T wait-gone`, `MS wait-idle` (no change for MS; after keys,
   status 5 if they changed nothing), `wait-change`, `wait-done` (a shell's
-  command ended: `done STATUS`), `wait-exit` (`exited STATUS`; fux exits
-  with that status), `wait-bell`. `SECS timeout` (60), `with-screen`. A crash
-  ends a wait (status 3, last lines shown); a timeout (124) says what the
-  pane is doing. A tab or workspace waits on all its panes.
-- **Read:** `PANE opts capture` (`PANE screen`), trimmed; options `marks`
-  (highlights, a menu's selection, as `⟦beta⟧`), `styles`, `100 history`,
-  `all-history`, `last-output`, `alt-screen`, `main-screen`, `json` (state
-  too: `exited`, `signal`, `cursor_visible`, `alt_screen`, …).
-- **Keys:** `PANE keys … send-keys`: `str TEXT text`, `str C-c key` (tmux's
-  names: `Enter`, `Escape`, `Up`, `F5`, `BSpace`; a typo is refused), `str
-  TEXT paste`, `5 times`, `N if-revision` (status 6 if it changed). They
-  print nothing; add a wait, or capture after. Bundled: `PANE str T type`,
-  `PANE str Enter press`, `PANE str LINE line` (for a shell: typed, Enter,
-  waited to its end).
-- **Mouse:** `PANE str click ROW COL mouse send-mouse` (`wheel-up`, …), from 0.
-- **Sizes:** `PANE tab COLS ROWS resize`; `PANE 50 percent resize-x`; `PANE
-  opts horizontal str PROG program split` (or `vertical`).
-- **Stop:** `PANE str TERM signal` (or `KILL`); `PANE kill`; `PANE opts
-  respawn` starts it again.
-- **Status:** 0 done; 1 failed, `fux: CODE: MESSAGE` on stderr, which says
-  how the word is used; a wait's own: 3 exited first, 4 closed, 5 no change,
-  6 changed, 124 timed out. `fux ls` (`ls json`) lists everything.
+  command ended: `done STATUS`), `wait-exit`, `wait-bell`; `SECS timeout`
+  (60), `with-screen`, `marks`. On `keys` it is armed before they go in. A
+  program that exits ends any other wait with status 3: if it may, wait for
+  `wait-exit`. A timeout (124) says what the pane is doing. A tab or
+  workspace waits on all its panes.
+- **Read:** READ also takes `main-screen` (what was printed before a program
+  took the screen), `alt-screen`, `last-output` (a shell command's output).
+- **Keys:** names are tmux's (`Enter`, `Escape`, `Up`, `C-c`, `F5`, `BSpace`;
+  a typo is refused). Keys print nothing: add a WAIT, or capture after.
+  Bundled: `%2 str T type`, `%2 str Enter press` (each takes its pane), and
+  `%3 str LINE line`, for a shell only: a program never ends a command, so
+  give it `type`, `press` and a `wait-text`.
+- **Mouse:** `%2 str click ROW COL mouse send-mouse` (`wheel-up`, …), from 0.
+- **Sizes:** `%2 tab 40 12 resize`; `%2 50 percent resize-x`; `%2 opts
+  horizontal str PROG program split` (or `vertical`).
+- **Stop:** `%2 str TERM signal` (or `KILL`); `%2 kill`; `%2 opts respawn`.
+- **Status:** 0 done; 1 failed, `fux: CODE: MESSAGE` on stderr, with how the
+  word is used; a wait's own: 3 exited first, 4 closed, 5 no change, 6
+  changed, 124 timed out. Words before a failing one have already acted.
+  `fux ls` (`ls json`) lists everything.
 
 ## A program
 

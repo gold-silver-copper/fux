@@ -18,16 +18,25 @@ usage: fux                 attach, starting a server if none runs
        fux FILE            run a file of fuxth (a word with a / or ending .fux)
        fux -               run fuxth read from stdin
 
-fuxth is a small Forth: words run left to right, taking their values from
-the stack and leaving theirs. A number is a value, any other bare word runs;
-`str WORD` pushes WORD as text, however it looks. What is left at the end is printed,
-a value a line. A failure prints `fux: CODE: MESSAGE` on stderr; a wait's
-status is the exit status (3 exited, 4 closed, 5 unchanged, 6 changed,
-124 timeout), any other failure 1.
+fuxth is a small Forth: words run left to right, each taking what the words
+before it left. A number is a value; `%2`, `@2`, `+1` alone are a pane, a tab,
+a workspace; `str WORD` pushes WORD as text, however it looks; any other bare
+word runs. What is left at the end is printed, a value a line. A failure
+prints `fux: CODE: MESSAGE` on stderr, with how the word is used; a wait's
+status is the exit status (3 exited, 4 closed, 5 unchanged, 6 changed, 124
+timeout), any other failure 1. Each `fux` is a fresh program.
 
-  fux opts str htop program run                 start htop, print its pane
-  fux str %3 pane str Load await                wait until a pane shows Load
-  fux ls                                        what there is
+Most steps have one of these shapes (UPPER = what you fill in):
+
+  fux opts OPTIONS run                  start a program; prints its pane, %2
+  fux %2 keys INPUT [WAIT] send-keys    type: str T text, str Enter key, …
+  fux %2 opts WAIT wait                 wait: str T wait-text, 300 wait-idle, …
+  fux %2 opts READ capture              read: 100 history, marks, json, …
+  fux %2 str FIELD get                  one value: exited, pid, revision, …
+
+  fux opts str 'htop -d 5' command run  start htop
+  fux %2 str Load await                 wait until it shows Load
+  fux ls                                what there is
 
 Language: dup drop swap over  add sub mul div mod  eq lt gt not
   if … else … then   begin … until   define NAME … end   constant NAME
@@ -82,6 +91,19 @@ fn library() -> Vec<(&'static str, &'static str, &'static str)> {
 pub fn explain(name: &str) -> Option<String> {
     if let Some(word) = WORDS.iter().find(|w| w.name == name) {
         let mut out = format!("{}  ( {} )\n\n{}.\n", word.name, word.effect, word.about);
+        if let Some(usage) = crate::script::usage(name) {
+            out.push_str(&format!("\n{usage}\n"));
+        }
+        if let Some(takes) = options(name) {
+            out.push_str(&format!(
+                "\nIts options, after opts (or keys) and before {name}:\n"
+            ));
+            for option in takes {
+                if let Some(w) = WORDS.iter().find(|w| w.name == *option) {
+                    out.push_str(&format!("  {:<14} {:<26} {}\n", w.name, w.effect, w.about));
+                }
+            }
+        }
         if let Some(example) = example(name) {
             out.push_str(&format!("\n  {example}\n"));
         }
@@ -118,29 +140,123 @@ pub fn explain(name: &str) -> Option<String> {
     Some(format!("{name}  {language}\n"))
 }
 
+/// The words that build what a word takes: its options, or its input.
+fn options(name: &str) -> Option<&'static [&'static str]> {
+    const WAITS: [&str; 10] = [
+        "wait-text",
+        "wait-gone",
+        "wait-idle",
+        "wait-change",
+        "wait-exit",
+        "wait-done",
+        "wait-bell",
+        "timeout",
+        "with-screen",
+        "marks",
+    ];
+    Some(match name {
+        "run" => &[
+            "name",
+            "size",
+            "cwd",
+            "env",
+            "command",
+            "program",
+            "arg",
+            "in",
+            "log-to",
+            "id",
+            "wait-text",
+            "wait-idle",
+            "wait-exit",
+            "timeout",
+        ],
+        "split" => &[
+            "horizontal",
+            "vertical",
+            "cwd",
+            "env",
+            "command",
+            "program",
+            "arg",
+            "typed",
+            "id",
+        ],
+        "new-tab" | "new-workspace" => &["name", "size", "cwd", "env", "typed", "in", "id"],
+        "respawn" => &[
+            "kill-first",
+            "env",
+            "command",
+            "program",
+            "arg",
+            "wait-text",
+            "wait-exit",
+            "timeout",
+        ],
+        "capture" => &[
+            "history",
+            "all-history",
+            "joined",
+            "full",
+            "styles",
+            "marks",
+            "main-screen",
+            "alt-screen",
+            "last-output",
+            "rows",
+            "cols",
+            "json",
+        ],
+        "wait" => &WAITS,
+        "send-keys" => &[
+            "text",
+            "key",
+            "paste",
+            "paste-file",
+            "times",
+            "if-revision",
+            "wait-text",
+            "wait-idle",
+            "wait-done",
+            "wait-change",
+            "timeout",
+            "with-screen",
+            "marks",
+        ],
+        "send-mouse" => &[
+            "wait-text",
+            "wait-idle",
+            "wait-change",
+            "timeout",
+            "with-screen",
+        ],
+        _ => return None,
+    })
+}
+
 /// An example of a word in use, as a command line.
 pub(crate) fn example(name: &str) -> Option<&'static str> {
     Some(match name {
         "run" => "fux opts str app name 120 40 size str ./app program str --flag arg run",
-        "split" => "fux str %3 pane opts vertical split",
+        "split" => "fux %3 opts vertical split",
         "command" => "fux opts str 'python3 -I app.py --fast' command run",
         "new-tab" => "fux opts str logs name new-tab",
         "new-workspace" => "fux opts str work name new-workspace",
-        "respawn" => "fux str %3 pane opts kill-first respawn",
-        "wait-text" | "wait" => "fux str %3 pane opts str ready wait-text 30 timeout wait",
-        "wait-idle" => "fux str %3 pane opts 500 wait-idle wait",
-        "wait-done" => "fux str %3 pane keys str make text str Enter key wait-done send-keys",
-        "send-keys" => "fux str %3 pane keys str 'ls -l' text str Enter key send-keys",
-        "key" => "fux str %3 pane keys str C-c key send-keys",
-        "capture" => "fux str %3 pane opts 100 history capture",
-        "get" => "fux str %3 pane str exited get",
+        "respawn" => "fux %3 opts kill-first respawn",
+        "wait-text" | "wait" => "fux %3 opts str ready wait-text 30 timeout wait",
+        "wait-idle" => "fux %3 opts 500 wait-idle wait",
+        "wait-done" => "fux %3 keys str make text str Enter key wait-done send-keys",
+        "send-keys" => "fux %3 keys str 'ls -l' text str Enter key send-keys",
+        "key" => "fux %3 keys str C-c key send-keys",
+        "capture" => "fux %3 opts 100 history capture",
+        "get" => "fux %3 str exited get",
         "json" => "fux ls json",
-        "info" => "fux str %3 pane info json",
+        "info" => "fux %3 info json",
         "dump" => "fux str work workspace dump-of > work.fux; fux work.fux",
-        "rename" => "fux str %3 pane str editor rename",
-        "kill" => "fux str %3 pane kill",
-        "resize-x" => "fux str %3 pane 30 percent resize-x",
-        "move-to" => "fux str %3 pane str new-tab move-to",
+        "rename" => "fux %3 str editor rename",
+        "kill" => "fux %3 kill",
+        "resize-x" => "fux %3 30 percent resize-x",
+        "move-to" => "fux %3 str new-tab move-to",
         "focus" => "fux str c1 client str left focus",
         "bind" => "str 'v h' str 'me focused opts horizontal split drop' bind",
         "bind-root" => "str M-n str 'me next-tab' bind-root",
@@ -149,7 +265,7 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "server" => "fux str test server start opts str ./app program run",
         "headless" => "fux 100 30 headless",
         "grant" => "fux str agent workspace str /run/user/1000/agent.sock grant",
-        "if-revision" => "fux str %3 pane keys 42 if-revision str y text send-keys",
+        "if-revision" => "fux %3 keys 42 if-revision str y text send-keys",
         _ => return None,
     })
 }

@@ -74,7 +74,8 @@ fux str %3 pane opts wait-exit wait               # prints: exited 0
   quoting beyond the text you give `str`.
 
 `fux help` lists every word with what it takes and leaves (`pane opts --
-pane`); `fux str WORD explain` says one at length, with an example;
+pane`); `fux help WORD` (`fux str WORD explain`) says one at length, with
+its options and an example;
 `fux help-agents` is the recipe for scripts and agents
 ([docs/agents.md](docs/agents.md)), and `fux help-json` what `json` gives
 ([docs/json.md](docs/json.md)).

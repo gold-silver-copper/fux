@@ -102,7 +102,7 @@ pub const WORDS: &[Word] = &[
     word("Reading", "joined", 1, "opts -- opts", "capture: wrapped rows joined into their lines"),
     word("Reading", "full", 1, "opts -- opts", "capture: every row and cell, untrimmed"),
     word("Reading", "styles", 1, "opts -- opts", "capture: colours and attributes"),
-    word("Reading", "marks", 1, "opts -- opts", "capture: highlighted text as ⟦this⟧"),
+    word("Reading", "marks", 1, "x -- x", "highlighted text as ⟦this⟧: in a capture, or a wait's screen (options, keys or a mouse event)"),
     word("Reading", "main-screen", 1, "opts -- opts", "capture: what was printed before a program took the screen"),
     word("Reading", "alt-screen", 1, "opts -- opts", "capture: the full screen a program drew last"),
     word("Reading", "last-output", 1, "opts -- opts", "capture: the last shell command's output"),
@@ -111,7 +111,7 @@ pub const WORDS: &[Word] = &[
     word("Reading", "ls", 0, "-- listing", "workspaces, tabs, panes, clients and grants"),
     word("Reading", "info", 1, "handle -- record", "a pane, tab or workspace, all of it"),
     word("Reading", "get", 2, "handle field -- value", "one field of a pane, tab or workspace: exited, revision, cwd"),
-    word("Reading", "json", 1, "x -- text", "x as JSON"),
+    word("Reading", "json", 1, "x -- text", "x as JSON; among a capture's options, the capture as JSON"),
     word("Reading", "print", 1, "x -- ", "print x now"),
     word("Reading", "events", 0, "-- ", "what happens, a line each, as it happens"),
     word("Reading", "events-json", 0, "-- ", "what happens, as JSON lines"),
@@ -228,7 +228,7 @@ fn kind_of(value: &Value<Fux>) -> &'static str {
 
 /// How a word of fux's is used, for a mistake in using it: what goes
 /// before it, what it leaves, and an example.
-pub(super) fn usage(word: &str) -> Option<String> {
+pub fn usage(word: &str) -> Option<String> {
     let w = WORDS.iter().find(|w| w.name == word)?;
     let (takes, leaves) = w.effect.split_once("--").unwrap_or((w.effect, ""));
     let takes = takes.trim().to_uppercase();
@@ -622,8 +622,23 @@ impl fuxth::Host for Host<'_> {
                 opts(name, &mut o)?.env.push((key, value));
                 now(out, o)
             }
+            // On a capture's options, and on a wait's screen (`with-screen`),
+            // whether among options, keys or a mouse event.
+            "marks" => {
+                let mut x = next()?;
+                if let Value::App(Fux::Opts(opts)) = &mut x {
+                    opts.view.marks = true;
+                }
+                now(
+                    out,
+                    with(name, x, |w| {
+                        w.marks = true;
+                        Ok(())
+                    })?,
+                )
+            }
             "horizontal" | "vertical" | "kill-first" | "all-history" | "joined" | "full"
-            | "styles" | "marks" | "main-screen" | "alt-screen" | "last-output" => {
+            | "styles" | "main-screen" | "alt-screen" | "last-output" => {
                 let mut o = next()?;
                 let built = opts(name, &mut o)?;
                 match name {
@@ -634,7 +649,6 @@ impl fuxth::Host for Host<'_> {
                     "joined" => built.view.join = true,
                     "full" => built.view.full = true,
                     "styles" => built.view.styles = true,
-                    "marks" => built.view.marks = true,
                     "main-screen" => built.view.main = true,
                     "alt-screen" => built.view.alt = true,
                     _ => built.view.last_output = true,
