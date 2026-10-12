@@ -245,6 +245,9 @@ pub struct Wait {
     pub echo: Vec<String>,
     /// `--print`'s screen with reverse video marked, as `capture-pane --marks`.
     pub marks: bool,
+    /// How many command lines send-keys types (each Enter, or newline in
+    /// text): a wait for `--done` waits for the last of them.
+    pub lines: u32,
 }
 
 /// How long a wait lasts at most if `--timeout` does not say: well inside
@@ -675,7 +678,12 @@ fn parse_move_to(value: &str) -> Result<MoveTo, Usage> {
 /// `COLSxROWS`, as `--size` takes it.
 fn parse_size(text: &str) -> Option<fux_vt::Size> {
     let (cols, rows) = text.split_once('x')?;
-    let cells = |n: &str| number(n).and_then(|n| u16::try_from(n).ok());
+    // At most 500 cells each way: a bigger pane would hold up the server.
+    let cells = |n: &str| {
+        number(n)
+            .and_then(|n| u16::try_from(n).ok())
+            .filter(|n| *n <= 500)
+    };
     fux_vt::Size::new(cells(rows)?, cells(cols)?).ok()
 }
 
@@ -761,7 +769,7 @@ const PANES: &[Spec] = &[
     spec("notify [-t TARGET] TEXT  a notice on the clients showing TARGET (all without)", Flags(notify)),
     spec("run [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--log FILE] [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json] -- PROGRAM...  \
           a program in a tab of its own, in workspace agent; it stays once the program exits", Flags(run)),
-    spec("signal [-t %N] TERM|KILL|INT|HUP|QUIT|USR1|USR2|STOP|CONT [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json]  \
+    spec("signal [-t %N] TERM|KILL|INT|HUP|QUIT|USR1|USR2|STOP|CONT|TSTP|WINCH [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json]  \
           a signal to what runs in the pane's foreground, never its shell", Flags(signal)),
     spec("kill-pane [-t %N]  close, without asking", Flags(|a| {
         Ok(Command::KillPane { target: a.pane()? })
@@ -1114,7 +1122,7 @@ impl<'a> Args<'a> {
         })
     }
     fn size(&self) -> Result<Size, Usage> {
-        self.read_as("--size", parse_size, "COLSxROWS, as 120x40")
+        self.read_as("--size", parse_size, "COLSxROWS, each 1 to 500, as 120x40")
     }
     /// The pane, tab or workspace a positional kind and `-t` name, if
     /// either does: of another kind than the kind given, `-t` is refused in
@@ -1161,13 +1169,13 @@ fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
     let workspace = a.target(parse_workspace)?;
     let env = env_pairs(a, "run")?;
     let argv = a.rest();
-    if argv.is_empty() {
-        return Err(Usage::Needs("usage: run [flags] -- PROGRAM [ARGS...]"));
-    }
-    if argv.iter().any(|w| w.starts_with("--wait-")) {
+    if argv.is_empty() && !a.positional.is_empty() {
         return Err(Usage::Needs(
-            "run's flags go before --; what follows -- is the program's own",
+            "run: the program goes after -- (fux run -n NAME -- PROGRAM ARGS...)",
         ));
+    }
+    if argv.is_empty() {
+        return Err(Usage::Needs("run needs a program, after --"));
     }
     let then = flag_wait(a, false)?;
     Ok(Command::Run {
@@ -1188,7 +1196,9 @@ fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
 /// `after`: only what comes after it counts).
 fn flag_wait(a: &Args<'_>, after: bool) -> Result<Option<Box<Wait>>, Usage> {
     let mut until = texts(a, "--wait-text")?;
-    until.extend(a.values("--wait-gone").map(|t| Until::Gone(t.to_owned())));
+    for text in a.values("--wait-gone") {
+        until.push(Until::Gone(checked_text(text)?.to_owned()));
+    }
     until.extend(
         a.read_as("--wait-idle", parse_millis, "milliseconds")?
             .map(Until::Idle),
@@ -1218,6 +1228,7 @@ fn flag_wait(a: &Args<'_>, after: bool) -> Result<Option<Box<Wait>>, Usage> {
             after,
             echo: Vec::new(),
             marks: a.has("--marks"),
+            lines: 0,
         })
     }))
 }
@@ -1230,26 +1241,48 @@ const EMPTY_TEXT: &str = "an empty text is on every screen; to wait for the firs
 /// shows, is refused.
 fn texts(a: &Args<'_>, flag: &'static str) -> Result<Vec<Until>, Usage> {
     a.values(flag)
-        .map(|t| {
-            if t.is_empty() {
-                Err(Usage::Needs(EMPTY_TEXT))
-            } else {
-                Ok(Until::Text(t.to_owned()))
-            }
-        })
+        .map(|t| checked_text(t).map(|t| Until::Text(t.to_owned())))
         .collect()
+}
+
+/// A text a wait can find: not empty, which every screen shows, and on one
+/// line, as a screen's lines are.
+fn checked_text(text: &str) -> Result<&str, Usage> {
+    if text.is_empty() {
+        return Err(Usage::Needs(EMPTY_TEXT));
+    }
+    if text.contains('\n') {
+        return Err(Usage::Needs(
+            "a text to wait for is on one line: a screen's lines hold no newline",
+        ));
+    }
+    if text.contains('\t') {
+        return Err(Usage::Needs(
+            "a text to wait for holds no tab: a screen shows a tab as spaces",
+        ));
+    }
+    Ok(text)
 }
 
 /// `--env K=V` pairs.
 fn env_pairs(a: &Args<'_>, command: &'static str) -> Result<Vec<(String, String)>, Usage> {
     a.values("--env")
         .map(|pair| match pair.split_once('=') {
-            Some((key, value)) if !key.is_empty() => Ok((key.to_owned(), value.to_owned())),
+            // A name a shell takes: letters, digits and _, not first a digit.
+            Some((key, value))
+                if key
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') =>
+            {
+                Ok((key.to_owned(), value.to_owned()))
+            }
             _ => Err(Usage::Bad {
                 command,
                 flag: "--env",
                 value: pair.to_owned(),
-                expected: "KEY=VALUE",
+                expected: "KEY=VALUE, KEY a name of letters, digits and _, not first a digit",
             }),
         })
         .collect()
@@ -1289,7 +1322,7 @@ fn resize_to(a: &mut Args<'_>) -> Result<Command, Usage> {
             command: "resize",
             flag: "SIZE",
             value: text.to_owned(),
-            expected: "COLSxROWS or auto",
+            expected: "COLSxROWS (each 1 to 500) or auto",
         })?),
         None => return Err(Usage::Needs(needs)),
     };
@@ -1312,6 +1345,11 @@ fn capture(a: &mut Args<'_>) -> Result<Command, Usage> {
         last_output: a.has("--last-output"),
         marks: a.has("--marks"),
     };
+    if view.marks && (view.styles || a.has("--json")) {
+        return Err(Usage::Needs(
+            "capture-pane --marks is for plain text; --styles (and --json --styles) gives every style",
+        ));
+    }
     Ok(Command::CapturePane {
         target: a.pane()?,
         history: a.lines()?,
@@ -1322,7 +1360,9 @@ fn capture(a: &mut Args<'_>) -> Result<Command, Usage> {
 
 fn wait(a: &mut Args<'_>) -> Result<Command, Usage> {
     let mut until = texts(a, "--text")?;
-    until.extend(a.values("--gone").map(|t| Until::Gone(t.to_owned())));
+    for text in a.values("--gone") {
+        until.push(Until::Gone(checked_text(text)?.to_owned()));
+    }
     until.extend(
         a.read_as("--idle", parse_millis, "milliseconds")?
             .map(Until::Idle),
@@ -1363,6 +1403,7 @@ fn wait(a: &mut Args<'_>) -> Result<Command, Usage> {
             after: false,
             echo: Vec::new(),
             marks: a.has("--marks"),
+            lines: 0,
         },
     })
 }
@@ -1405,7 +1446,7 @@ fn send_mouse(a: &mut Args<'_>) -> Result<Command, Usage> {
 }
 
 fn signal(a: &mut Args<'_>) -> Result<Command, Usage> {
-    let usage = "usage: signal [-t %N] TERM|KILL|INT|HUP|QUIT|USR1|USR2|STOP|CONT";
+    let usage = "usage: signal [-t %N] TERM|KILL|INT|HUP|QUIT|USR1|USR2|STOP|CONT|TSTP|WINCH";
     let name = match a.positional.as_slice() {
         [name] => *name,
         _ => return Err(Usage::Needs(usage)),
@@ -1415,7 +1456,7 @@ fn signal(a: &mut Args<'_>) -> Result<Command, Usage> {
         command: "signal",
         flag: "SIGNAL",
         value: name.to_owned(),
-        expected: "TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP or CONT",
+        expected: "TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP, CONT, TSTP or WINCH",
     })?;
     Ok(Command::Signal {
         target: a.pane()?,
@@ -1573,8 +1614,13 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
         (None, Vec::new(), None, false, false);
     let mut marks = false;
     let mut words = argv.get(1..).unwrap_or_default().iter().peekable();
+    let mut dashed = false;
     while let Some(word) = words.next_if(|w| ["-t", "-c", "-l", "-N", "--"].contains(&w.as_str())) {
         match word.as_str() {
+            "--" => {
+                dashed = true;
+                break;
+            }
             "-t" => target = Some(parse_pane(value(word, &mut words)?)?),
             "-c" => client = Some(parse_client(value(word, &mut words)?)?),
             "-l" => literal = true,
@@ -1589,18 +1635,24 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
         }
     }
     let mut inputs = Vec::new();
+    // `--` after the leading flags: every word after it is text.
+    if dashed {
+        inputs.extend(words.by_ref().map(|w| Input::Text(w.clone())));
+    }
     while let Some(word) = words.next() {
         match word.as_str() {
+            // After `--`, every word is text, however it looks.
+            "--" => inputs.extend(words.by_ref().map(|w| Input::Text(w.clone()))),
             "--text" => inputs.push(Input::Text(value(word, &mut words)?.to_owned())),
             "--paste" => inputs.push(Input::Paste(value(word, &mut words)?.to_owned())),
             "--wait-text" => {
-                let text = value(word, &mut words)?;
-                if text.is_empty() {
-                    return Err(Usage::Needs(EMPTY_TEXT));
-                }
+                let text = checked_text(value(word, &mut words)?)?;
                 until.push(Until::Text(text.to_owned()));
             }
-            "--wait-gone" => until.push(Until::Gone(value(word, &mut words)?.to_owned())),
+            "--wait-gone" => {
+                let text = checked_text(value(word, &mut words)?)?;
+                until.push(Until::Gone(text.to_owned()));
+            }
             "--wait-idle" => {
                 let text = value(word, &mut words)?;
                 let ms =
@@ -1641,6 +1693,16 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
                     "send-keys -t, -c, -l and -N go before the keys; after them, a word is typed",
                 ));
             }
+            // A flag mistyped (`--wait-idel 300`) would be typed into the
+            // program, a stray line to a shell.
+            flag if flag.starts_with("--") && flag.len() > 2 && !literal => {
+                return Err(Usage::Bad {
+                    command: "send-keys",
+                    flag: "a word",
+                    value: flag.to_owned(),
+                    expected: "a flag of send-keys (to type it as text: after --, or --text)",
+                });
+            }
             text => inputs.push(match text.parse::<KeyPress>() {
                 Ok(key) if !literal => Input::Key(key),
                 _ if !literal && looks_like_a_key(text) => {
@@ -1663,17 +1725,7 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
             "send-keys -c CLIENT types at a client; -t and the waits are for a pane",
         ));
     }
-    // What is typed in one go, between keys: its echo is one line.
-    let mut echo: Vec<String> = Vec::new();
-    let mut joined = false;
-    for input in &inputs {
-        match (input, echo.last_mut()) {
-            (Input::Text(text), Some(last)) if joined => last.push_str(text),
-            (Input::Text(text), _) => echo.push(text.clone()),
-            (Input::Key(_) | Input::Paste(_), _) => {}
-        }
-        joined = matches!(input, Input::Text(_));
-    }
+    let (echo, lines) = typed_lines(&inputs, repeat);
     let then = (!until.is_empty()).then(|| Wait {
         until,
         timeout: timeout.unwrap_or(WAIT_TIMEOUT),
@@ -1682,6 +1734,7 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
         after: true,
         echo,
         marks,
+        lines,
     });
     Ok(Command::SendKeys {
         target,
@@ -1690,6 +1743,52 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
         repeat,
         then,
     })
+}
+
+/// The lines send-keys types, as a shell or an input box would echo them
+/// (Space joins words, BSpace takes the last character back, pasted text is
+/// shown too), and how many it ends (Enter, or a newline in text).
+fn typed_lines(inputs: &[Input], repeat: u16) -> (Vec<String>, u32) {
+    let mut lines: Vec<String> = vec![String::new()];
+    let mut ended = 0u32;
+    let add = |text: &str, lines: &mut Vec<String>, counts: bool, ended: &mut u32| {
+        for (i, part) in text.split('\n').enumerate() {
+            if i > 0 {
+                lines.push(String::new());
+                if counts {
+                    *ended = ended.saturating_add(1);
+                }
+            }
+            if let Some(last) = lines.last_mut() {
+                last.push_str(part);
+            }
+        }
+    };
+    for input in std::iter::repeat_n(inputs, usize::from(repeat)).flatten() {
+        match input {
+            Input::Text(text) => add(text, &mut lines, true, &mut ended),
+            Input::Paste(text) => add(text, &mut lines, false, &mut ended),
+            Input::Key(key) => match (key.key, key.mods == fux_vt::keys::Modifiers::default()) {
+                (fux_vt::keys::Key::Char(c), true) => {
+                    add(&c.to_string(), &mut lines, true, &mut ended)
+                }
+                (fux_vt::keys::Key::Backspace, true) => {
+                    if let Some(last) = lines.last_mut() {
+                        last.pop();
+                    }
+                }
+                (fux_vt::keys::Key::Enter, _) => {
+                    ended = ended.saturating_add(1);
+                    lines.push(String::new());
+                }
+                // Another key (an arrow, Tab, a control key) leaves the
+                // line as the program makes it: its echo is not known.
+                _ => lines.push(String::new()),
+            },
+        }
+    }
+    lines.retain(|l| !l.trim().is_empty());
+    (lines, ended)
 }
 
 impl Command {
@@ -1940,8 +2039,9 @@ mod tests {
                     print: true,
                     json: false,
                     after: true,
-                    echo: vec!["two words".into()],
+                    echo: vec!["two wordsp".into(), "two wordsp".into()],
                     marks: false,
+                    lines: 2,
                 }),
             })
         );
@@ -1967,6 +2067,7 @@ mod tests {
                     after: true,
                     echo: vec!["go".into()],
                     marks: false,
+                    lines: 1,
                 }),
             })
         );
@@ -2006,6 +2107,7 @@ mod tests {
                     after: false,
                     echo: Vec::new(),
                     marks: false,
+                    lines: 0,
                 },
             })
         );

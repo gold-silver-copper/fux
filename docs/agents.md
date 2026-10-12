@@ -22,19 +22,22 @@ fux kill-workspace -t agent                     # everything run started
   `--wait-…` flags, armed before they act so nothing is missed; `fux wait -t
   NAME` takes the same without `wait-` (`--text`, `--gone`, `--idle`,
   `--change`, `--exit`, `--done`, `--bell`):
-  - `--wait-text TEXT`: until TEXT shows (also in a line that scrolled away;
-    not the echo of what you typed); prints its line. `fux wait --text A
+  - `--wait-text TEXT`: until TEXT shows on a line that changed since (also
+    one that scrolled away; not the echo of a typed line, nor a line drawn
+    again the same); prints its line. `fux wait --text A
     --text B -t x -t y`: any of several, in any of several panes.
   - `--wait-idle MS`: no change for MS (a spinner is change); after keys or a
     click, status 5 means it changed nothing. `--wait-change`: any change.
-  - `--wait-done`: a shell command ends; prints `done STATUS`.
+  - `--wait-done`: the shell is back at its prompt after a command ends;
+    prints `done STATUS` (after Ctrl-C too).
   - `--wait-exit`: the program exits; prints `exited STATUS`, exits with it.
   - `--wait-gone TEXT`; `--wait-bell` (a bell or notification: it needs you).
   - `--timeout SECS` (60), `--print` (the screen after), `--json`.
   A crash ends a wait at once (status 3, its last lines printed); a timeout
   (124) says what the pane is doing ("no change for 58s; last line: `> `").
 - **Read:** `capture-pane -t NAME` prints the screen, trimmed. `--marks` shows
-  reverse video, a menu's selection, as `⟦beta⟧` (a menu may start on any
+  highlights (reverse video, or a background other than the screen's: a
+  menu's selection) as `⟦beta⟧` (a menu may start on any
   item); `--styles` adds colours (with `--json`, as runs). `-S all` adds
   history; `--last-output` is the last shell command's output; `--alt` is a
   full-screen program's last screen after it exits; `--main` what was
@@ -43,7 +46,7 @@ fux kill-workspace -t agent                     # everything run started
 - **Keys:** tmux's names (`Enter`, `Escape`, `C-c`, `Up`, `F5`, `S-Tab`,
   `BSpace`; `fux list-keys`); other words, and `--text TEXT`, are typed; a
   misspelled name (`Entr`) is refused; `-l` types every word. `--paste TEXT`
-  pastes; `-N 5` repeats. Flags (`-t`, `-N`) go before the keys.
+  pastes; `-N 5` repeats. Flags (`-t`, `-N`) go before the keys; words after `--` are all typed.
 - **Mouse:** `send-mouse -t NAME click|wheel-up|wheel-down… ROW COL`, from 0.
 - **Sizes:** `resize -t NAME 40x12` (its tab); `resize-pane -t %N -x 50%`;
   `split -h|-v -t %N [--cwd DIR] -- PROG` (one word is typed as a line).
@@ -61,7 +64,7 @@ Each shell fux starts reads your own startup files, then marks its commands
 just work. Your prompt, `PROMPT_COMMAND`, hooks and history behave as
 before. `set shell-marks off` in the config turns this off. A shell fux does
 not know, or one started with a script or `-c`, is left alone (bash with
-`--norc` is marked through its variables, unless you set them); it
+`--norc`, or a login bash, is marked through `PS0` and `PROMPT_COMMAND`); it
 can still mark itself (`printf '\e]133;C\a'` as a command's output begins,
 `printf '\e]133;D;%s\a' $?` as it ends). Without marks, wait for text only
 the output has, or for `--wait-idle`.
@@ -76,7 +79,8 @@ A tab no client shows is laid out on its `--size` (on `run`, `new-tab` and
 `new-workspace`); a program starts at its size. `fux resize -t app 40x12`
 changes it later (a pane: its tab; `auto` goes back to a client's screen).
 `fux resize-pane -t %N -x 95%` sizes a pane within its tab. A size that
-cannot be had is refused, and nothing changes.
+cannot be had (over 500 a side, or too small for a tab's panes, or a split
+with no room left) is refused, and nothing changes.
 
 ## More
 

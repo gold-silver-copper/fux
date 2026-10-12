@@ -171,6 +171,10 @@ impl<'a> Row<'a> {
     pub fn version(&self) -> u64 {
         self.version
     }
+    /// Whether the row changed since `mark` was taken: an edit, or a resize.
+    pub fn changed_since(&self, mark: Mark) -> bool {
+        self.version > mark.0
+    }
     /// Whether the row is soft-wrapped: its line goes on in the next row.
     pub fn wrapped(&self) -> bool {
         self.wrapped
@@ -446,6 +450,12 @@ impl<'a> Window<'a> {
         }
         Ok(output)
     }
+}
+
+/// Whether a screen of `size` keeping `history` rows of history can be
+/// made: the most cells and rows one holds are bounded.
+pub fn fits(size: Size, history: usize) -> bool {
+    grid::Grid::check_size(size, history).is_ok()
 }
 
 #[cfg(test)]

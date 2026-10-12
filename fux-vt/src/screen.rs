@@ -2414,6 +2414,13 @@ impl Screen {
             }
             b'J' | b'K' => {
                 let mode = p.first(0, 0);
+                // ED 3 (`CSI 3 J`, xterm's): the scrollback goes, as `clear`
+                // asks; the screen stays.
+                if byte == b'J' && mode == 3 && !private {
+                    self.grid_mut().clear_history();
+                    self.structural = self.version;
+                    return Ok(Dispatch::Done);
+                }
                 if mode > 2 {
                     return Ok(Dispatch::Unhandled);
                 }
@@ -2432,6 +2439,9 @@ impl Screen {
                         false
                     })
                 });
+                if byte == b'J' && mode == 2 {
+                    self.screen_erased();
+                }
             }
             // IL and DL, ignored outside the margins, leave the cursor in
             // the first column (DEC STD 070, IL and DL, note 2).

@@ -205,7 +205,7 @@ impl std::fmt::Display for Error {
             Error::UnknownOption { option } => write!(
                 f,
                 "unknown option {option}; options are prefix, shell, history-lines, clipboard, \
-                 buffers, bell, titles"
+                 buffers, bell, titles, shell-marks"
             ),
             Error::Read { path, source } => write!(f, "{}: {source}", path.display()),
             Error::Line { path, line, error } => {
@@ -334,7 +334,7 @@ pub struct Config {
 }
 
 /// The largest history a pane keeps.
-pub const MAX_HISTORY: usize = 1_000_000;
+pub const MAX_HISTORY: usize = 250_000;
 pub const MAX_BUFFERS: usize = 1000;
 
 /// The default bindings, as `bind` takes them, in command-column order.

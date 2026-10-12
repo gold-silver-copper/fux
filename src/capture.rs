@@ -28,22 +28,32 @@ pub fn pane(
     let mut lines: Vec<Cells<'_>> = Vec::new();
     // A soft-wrapped row goes on in the next, joined with `-J`.
     let mut wraps = false;
-    for (_, (row, span)) in rows_of(screen, history, view)
-        .into_iter()
-        .enumerate()
-        .filter(|(i, _)| in_rows(i))
-    {
+    let read = rows_of(screen, history, view);
+    // History rows above the screen, which the cursor's row counts past
+    // in `lines` (`-S`).
+    let above = if view.last_output || view.main || view.alt || view.join {
+        0
+    } else {
+        read.len().saturating_sub(usize::from(screen.size().rows()))
+    };
+    // Whether the row before ended in a blank no glyph was written to: the
+    // cell a wide glyph left, not fitting at the row's end.
+    let mut padded = false;
+    for (_, (row, span)) in read.into_iter().enumerate().filter(|(i, _)| in_rows(i)) {
+        // A wide glyph's second cell is drawn as its first: the same style,
+        // so a run of it is not broken in two.
+        let mut lead = Attributes::default();
         let cells = row
             .cells()
             .enumerate()
             .filter(|(col, _)| span.contains(col))
-            .map(|(_, cell)| {
-                let text = if cell.is_wide_continuation() {
-                    ""
+            .map(move |(_, cell)| {
+                if cell.is_wide_continuation() {
+                    ("", lead)
                 } else {
-                    crate::render::shown(cell)
-                };
-                (text, cell.attributes())
+                    lead = cell.attributes();
+                    (crate::render::shown(cell), lead)
+                }
             });
         let cells: Cells<'_> = match view.cols {
             Some((start, end)) => {
@@ -56,21 +66,69 @@ pub fn pane(
             None => cells.collect(),
         };
         match lines.last_mut() {
-            Some(last) if wraps => last.extend(cells),
+            Some(last) if wraps => {
+                // The blank a wide glyph left at the row's end, not fitting
+                // there, is no part of the line.
+                if padded && cells.get(1).is_some_and(|(text, _)| text.is_empty()) {
+                    last.pop();
+                }
+                last.extend(cells);
+            }
             _ => lines.push(cells),
         }
         wraps = view.join && row.wrapped();
+        padded = (row.cells().last())
+            .is_some_and(|c| c.contents().is_empty() && !c.is_wide_continuation());
     }
     let (rows, cols) = screen.size().into();
-    let cursor = Some(screen.cursor_position());
+    // The cursor's row in `lines`: past the history `-S` adds, from the
+    // first row `--rows` takes; none if outside them.
+    let cursor = Some(screen.cursor_position()).and_then(|(row, col)| {
+        let above = u16::try_from(above).unwrap_or(u16::MAX);
+        let row = row.saturating_add(above);
+        match view.rows {
+            Some((start, end)) => (start..=end)
+                .contains(&row)
+                .then(|| (row.saturating_sub(start), col)),
+            None => Some((row, col)),
+        }
+    });
     let state = json.then(|| state(pane, Instant::now(), copy_mode));
     print(
         ("pane", pane.id.to_string()),
         (rows, cols),
         cursor,
-        (lines, view),
+        (lines, view, screen_background(screen)),
         state,
     )
+}
+
+/// The screen's own background, against which a highlight shows: the
+/// terminal's default if a quarter of the screen has it, else the colour
+/// most of the screen's cells have (a program that paints its whole
+/// screen). Read over the whole screen, whatever part is captured.
+fn screen_background(screen: &fux_vt::Screen) -> fux_vt::Color {
+    let mut counts: Vec<(fux_vt::Color, usize)> = Vec::new();
+    let mut total = 0usize;
+    let rows = screen.rows().skip(screen.history_len());
+    for cell in rows.flat_map(|row| row.cells()) {
+        let colour = cell.attributes().background();
+        total = total.saturating_add(1);
+        match counts.iter_mut().find(|(c, _)| *c == colour) {
+            Some((_, n)) => *n = n.saturating_add(1),
+            None => counts.push((colour, 1)),
+        }
+    }
+    let default = fux_vt::Color::default();
+    let plain = (counts.iter())
+        .find(|(c, _)| *c == default)
+        .map_or(0, |(_, n)| *n);
+    if plain.saturating_mul(4) >= total {
+        return default;
+    }
+    (counts.into_iter())
+        .max_by_key(|(_, n)| *n)
+        .map_or(default, |(c, _)| c)
 }
 
 /// The rows a capture reads, each with the columns of it it reads: the
@@ -86,9 +144,19 @@ fn rows_of(
         let Some((start, end)) = screen.commands().last_output else {
             return Vec::new();
         };
-        let (Some(first), Some(last)) = (screen.row_index(start.row), screen.row_index(end.row))
-        else {
+        let Some(last) = screen.row_index(end.row) else {
             return Vec::new();
+        };
+        // A start gone (history's limit cut it, or the screen was cleared or
+        // switched) or below the end: from what is kept above the end, the
+        // screen's top if the start was cleared.
+        let (first, start) = match screen.row_index(start.row) {
+            Some(first) if first <= last && (first, start.col) <= (last, end.col) => (first, start),
+            Some(_) => (
+                screen.history_len().min(last),
+                fux_vt::CommandMark { col: 0, ..start },
+            ),
+            None => (0, fux_vt::CommandMark { col: 0, ..start }),
         };
         let rows: Vec<fux_vt::Row<'_>> = screen
             .rows()
@@ -143,7 +211,7 @@ pub fn client(client: ClientId, grid: &crate::render::Grid, json: bool) -> Strin
         ("client", client.to_string()),
         (grid.rows, grid.cols),
         grid.cursor,
-        (lines, view),
+        (lines, view, fux_vt::Color::default()),
         json.then(Vec::new),
     )
 }
@@ -196,6 +264,18 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
             "mouse",
             Json::Bool(screen.mouse_protocol_mode() != MouseProtocolMode::None),
         ),
+        // What it asked for: whether a move without a button is reported.
+        (
+            "mouse_mode",
+            match screen.mouse_protocol_mode() {
+                MouseProtocolMode::None => Json::Null,
+                MouseProtocolMode::Press => Json::str("press"),
+                MouseProtocolMode::PressRelease => Json::str("press_release"),
+                MouseProtocolMode::ButtonMotion => Json::str("button_motion"),
+                MouseProtocolMode::AnyMotion => Json::str("any_motion"),
+                _ => Json::str("other"),
+            },
+        ),
         (
             "bracketed_paste",
             Json::Bool(screen.mode(Mode::BracketedPaste)),
@@ -211,7 +291,10 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
             "revision",
             count(usize::try_from(pane.revision).unwrap_or(usize::MAX)),
         ),
-        ("command_running", Json::Bool(commands.running)),
+        (
+            "command_running",
+            Json::Bool(commands.running && pane.process.exit_status().is_none()),
+        ),
         (
             "last_status",
             commands
@@ -268,12 +351,24 @@ fn print(
     (key, id): (&'static str, String),
     (rows, cols): (u16, u16),
     cursor: Option<(u16, u16)>,
-    (mut lines, view): (Vec<Cells<'_>>, CaptureView),
+    (mut lines, view, base): (Vec<Cells<'_>>, CaptureView, fux_vt::Color),
     state: Option<Vec<(&'static str, Json<'static>)>>,
 ) -> String {
+    // What a selection is drawn with: reverse video, or a background
+    // other than the screen's own.
+    let highlighted = |a: &Attributes| a.inverse() || a.background() != base;
+    let json = state.is_some();
     if !view.full {
+        // Blanks are trimmed, unless they show: highlighted with --marks,
+        // styled with --styles (as SGR; JSON's lines read alike either way).
+        let shows = |a: &Attributes| {
+            (view.marks && highlighted(a)) || (view.styles && !json && *a != Attributes::default())
+        };
         for line in &mut lines {
-            while line.last().is_some_and(|(text, _)| *text == " ") {
+            while line
+                .last()
+                .is_some_and(|(text, a)| *text == " " && !shows(a))
+            {
                 line.pop();
             }
         }
@@ -307,26 +402,29 @@ fn print(
             let styled: Vec<String> = lines.iter().map(sgr_line).collect();
             styled.join("\n")
         }
-        None if view.marks => lines.iter().map(marked).collect::<Vec<_>>().join("\n"),
+        None if view.marks => (lines.iter())
+            .map(|line| marked(line, &highlighted))
+            .collect::<Vec<_>>()
+            .join("\n"),
         None => lines.iter().map(text).collect::<Vec<_>>().join("\n"),
     };
     out.push('\n');
     out
 }
 
-/// A line with its reverse video, how programs draw a selection, between
+/// A line with what is highlighted, how programs draw a selection, between
 /// `⟦` and `⟧`: marks no program's output is likely to hold.
-fn marked(line: &Cells<'_>) -> String {
+fn marked(line: &Cells<'_>, highlighted: &impl Fn(&Attributes) -> bool) -> String {
     let mut out = String::new();
-    let mut inverse = false;
+    let mut on = false;
     for (text, attributes) in line {
-        if attributes.inverse() != inverse {
-            inverse = attributes.inverse();
-            out.push(if inverse { '⟦' } else { '⟧' });
+        if highlighted(attributes) != on {
+            on = !on;
+            out.push(if on { '⟦' } else { '⟧' });
         }
         out.push_str(text);
     }
-    if inverse {
+    if on {
         out.push('⟧');
     }
     out
@@ -398,7 +496,11 @@ fn described(a: Attributes) -> Vec<(&'static str, Json<'static>)> {
 
 /// A row's text, wide glyphs whole and trailing blanks trimmed.
 pub fn row_text(row: fux_vt::Row<'_>) -> String {
+    row_cells_text(row).trim_end_matches(' ').to_owned()
+}
+
+/// A row's text, every cell, blanks at its end kept.
+pub fn row_cells_text(row: fux_vt::Row<'_>) -> String {
     let row = row.cells().filter(|c| !c.is_wide_continuation());
-    let line: String = row.map(crate::render::shown).collect();
-    line.trim_end_matches(' ').to_owned()
+    row.map(crate::render::shown).collect()
 }

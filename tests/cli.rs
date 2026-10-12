@@ -109,7 +109,7 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
     server.ok(&["new-workspace", "-n", "other"])?;
     let clash = server.fux(&["rename", "-t", "other", "work2"])?;
     assert!(
-        clash.stderr.contains("another workspace"),
+        clash.stderr.contains("a workspace is named"),
         "{}",
         clash.stderr
     );

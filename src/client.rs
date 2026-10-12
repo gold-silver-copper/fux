@@ -80,6 +80,17 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Socket(error) => error.fmt(f),
+            // A socket left by a server that is gone.
+            Error::Connect { path, source }
+                if source.kind() == std::io::ErrorKind::ConnectionRefused =>
+            {
+                write!(
+                    f,
+                    "no fux server is running at {} (its socket is left from one that stopped); \
+                     `fux` in a terminal starts one, or `fux server --socket PATH &` one with no terminal",
+                    path.display()
+                )
+            }
             Error::Connect { path, source } => {
                 write!(f, "connecting to {}: {source}", path.display())
             }
@@ -92,7 +103,7 @@ impl std::fmt::Display for Error {
             Error::Write(error) => write!(f, "writing to the server: {error}"),
             Error::Read(error) => write!(f, "reading from the server: {error}"),
             Error::Exe(error) => write!(f, "finding the fux binary: {error}"),
-            Error::Log(error) => write!(f, "opening the server log: {error}"),
+            Error::Log(error) => write!(f, "the log file: {error}"),
             Error::Spawn(error) => write!(f, "starting a server: {error}"),
             Error::Exited { status, log } => {
                 write!(f, "the server exited ({status}); see {}", log.display())
@@ -403,12 +414,19 @@ pub fn headless(
     send(&mut stream, &attach)?;
     let mut stdout = std::io::stdout();
     let mut buffer = vec![0u8; 64 * 1024];
+    // The server tells the client its id once attached: an end before it
+    // is a refusal (no such workspace), an error, not a detach.
+    let mut attached = false;
     let reason = loop {
         while let Some(frame) = decoder.frame()? {
             match frame {
                 ServerFrame::Paint(bytes) => log.write_all(bytes).map_err(Error::Log)?,
                 ServerFrame::Stdout(bytes) => {
+                    attached = true;
                     let _ = stdout.write_all(bytes).and_then(|()| stdout.flush());
+                }
+                ServerFrame::Exit(reason) if !attached => {
+                    return Err(Error::Refused(reason.to_owned()));
                 }
                 ServerFrame::Exit(reason) => return say(reason),
                 ServerFrame::Hello(_)

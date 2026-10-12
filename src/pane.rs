@@ -49,8 +49,8 @@ impl std::fmt::Display for Error {
             } => write!(
                 f,
                 "a {}x{} terminal with {history} lines of history: {source}",
-                size.rows(),
-                size.cols()
+                size.cols(),
+                size.rows()
             ),
         }
     }
@@ -111,6 +111,11 @@ impl InputQueue {
         });
         self.refusing |= !fits;
         fits.then_some(()).ok_or(Error::NotReading)
+    }
+    /// How many bytes it holds, not yet written to the program.
+    pub fn len(&self) -> usize {
+        let held = self.held.as_ref().map_or(0, |typed| typed.line.len());
+        self.bytes.len().saturating_add(held)
     }
     /// How many bytes more it takes now.
     pub fn room(&self) -> usize {
@@ -486,6 +491,12 @@ pub struct Pane {
     /// How many times what the screen shows has changed: a wait for a change
     /// past one read earlier waits for it to grow.
     pub revision: u64,
+    /// The mouse button `send-mouse press` holds down until its release: a
+    /// `move` meanwhile is a drag.
+    pub mouse_held: Option<fux_vt::keys::mouse::MouseButton>,
+    /// How many times its program was started again (`respawn`), each on a
+    /// screen of its own: a wait on the program before ends with it.
+    pub starts: u64,
     pub alerts: Alerts,
     /// Where everything the program writes is kept too (`fux run --log`).
     pub log: Option<std::fs::File>,
@@ -499,13 +510,13 @@ pub const PACE: Duration = Duration::from_millis(30);
 
 /// Input that `send-keys` sends in pieces a program must read apart: a lone
 /// Escape, read with what follows, is Alt and that key; text and the key
-/// after it, read together, are a paste whose Enter is a newline. Each such
-/// piece is followed by a gap of [`PACE`] before the next is written.
+/// after it, read together, are a paste whose Enter is a newline. Each piece
+/// is followed by a gap of [`PACE`] before the next is written.
 #[derive(Default)]
 pub struct Paced {
-    /// Pieces waiting for the gap, each with whether it is read alone.
-    waiting: VecDeque<(Vec<u8>, bool)>,
-    /// Until when the last piece read alone is given.
+    /// Pieces waiting for the gap.
+    waiting: VecDeque<Vec<u8>>,
+    /// Until when the last piece written is given.
     until: Option<Instant>,
 }
 
@@ -586,6 +597,8 @@ impl Pane {
             shown: 0,
             changed_at: Instant::now(),
             revision: 0,
+            starts: 0,
+            mouse_held: None,
             alerts: Alerts::default(),
             log: None,
         })
@@ -741,15 +754,15 @@ impl Pane {
     }
 
     /// The name the bar shows: the program's title, else the pane's name.
-    /// Sends `pieces` of input in order, each with whether the program must
-    /// read it alone (`Paced`): at once while no gap holds them, the rest
-    /// when the gaps end ([`Pane::pace_due`]). Refused whole, as
-    /// `InputQueue::push` refuses, if they would not fit.
-    pub fn send(&mut self, pieces: Vec<(Vec<u8>, bool)>, now: Instant) -> Result<(), Error> {
-        let held: usize = self.paced.waiting.iter().map(|(p, _)| p.len()).sum();
+    /// Sends `pieces` of input in order, each read by the program apart
+    /// (`Paced`): the first at once if no gap holds it, the rest as the gaps
+    /// end ([`Pane::pace_due`]). Refused whole, as `InputQueue::push`
+    /// refuses, if they would not fit.
+    pub fn send(&mut self, pieces: Vec<Vec<u8>>, now: Instant) -> Result<(), Error> {
+        let held: usize = self.paced.waiting.iter().map(Vec::len).sum();
         let total = pieces
             .iter()
-            .map(|(p, _)| p.len())
+            .map(Vec::len)
             .fold(held, usize::saturating_add);
         if total > self.input.room() {
             return Err(Error::NotReading);
@@ -764,16 +777,17 @@ impl Pane {
         self.paced.until.filter(|_| !self.paced.waiting.is_empty())
     }
 
-    /// Writes the paced input whose gap has ended at `now`, up to and
-    /// including the next piece read alone.
+    /// Writes the next paced piece if its gap has ended at `now`.
     pub fn release_paced(&mut self, now: Instant) {
-        while self.paced.until.is_none_or(|until| until <= now) {
-            let Some((piece, alone)) = self.paced.waiting.pop_front() else {
-                self.paced.until = None;
-                return;
-            };
-            let _ = self.input.push(&piece);
-            self.paced.until = alone.then(|| crate::after(now, PACE));
+        if self.paced.until.is_some_and(|until| until > now) {
+            return;
+        }
+        match self.paced.waiting.pop_front() {
+            Some(piece) => {
+                let _ = self.input.push(&piece);
+                self.paced.until = Some(crate::after(now, PACE));
+            }
+            None => self.paced.until = None,
         }
     }
 
@@ -805,6 +819,8 @@ impl Pane {
         self.runs = Runs::Program(launch);
         self.alerts = Alerts::default();
         self.revision = self.revision.wrapping_add(1);
+        self.starts = self.starts.wrapping_add(1);
+        self.mouse_held = None;
         self.changed_at = Instant::now();
         Ok(std::mem::replace(
             &mut self.process,
@@ -821,6 +837,12 @@ impl Pane {
             self.changed_at = now;
             self.revision = self.revision.wrapping_add(1);
         }
+    }
+
+    /// How many bytes of input sent the program has not read yet.
+    pub fn input_queued(&self) -> usize {
+        let paced: usize = self.paced.waiting.iter().map(Vec::len).sum();
+        paced.saturating_add(self.input.len())
     }
 
     /// Whether every piece of input sent has been written to the program.

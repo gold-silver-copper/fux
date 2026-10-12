@@ -44,7 +44,7 @@ impl std::error::Error for Error {
 /// ID and cannot be reused, so it is signalled through this alone; reaping
 /// it takes it.
 #[must_use = "a leader dropped unreaped is a zombie no one reaps"]
-pub struct Leader(Pid);
+pub struct Leader(Pid, bool);
 
 /// A pane's program and the master side of its PTY.
 pub struct Child {
@@ -87,7 +87,7 @@ pub fn spawn(
     // std never waits on a dropped child.
     drop(child);
     Ok(Child {
-        leader: Leader(pid),
+        leader: Leader(pid, false),
         master,
     })
 }
@@ -117,6 +117,12 @@ impl Leader {
         self.0
     }
 
+    /// Its pane is closed by fux, not ended by itself: its whole session
+    /// goes when it is finished.
+    pub fn closed(&mut self) {
+        self.1 = true;
+    }
+
     /// Whether it has exited, without reaping it: its exit status, or
     /// `None` while it lives, stopped or not (bevy-final finding 020). The
     /// check does not wait, so no signal interrupts it, and it fails only
@@ -139,11 +145,23 @@ impl Leader {
         }
     }
 
-    /// Ends its group and reaps it, without waiting, so uninterrupted:
+    /// Ends its group and the rest of its session and reaps it, without
+    /// waiting, so uninterrupted:
     /// itself back if it has not exited yet, to try again once it has.
     /// Called after `hang_up` and a grace period, with the master closed.
     pub fn finish(self) -> Result<(), Leader> {
         let _ = fuxix::process::kill_group(self.0, Signal::Kill);
+        // Its pane closed by fux: as the hangup, every process left in its
+        // session, a job in a group of its own that ignored the hangup
+        // (`nohup cmd &`) too. A program that ended by itself leaves those
+        // it meant to (`nohup job & exit`).
+        if self.1 {
+            for pid in fuxix::process::processes() {
+                if pid != self.0 && fuxix::process::session(pid) == Some(self.0) {
+                    let _ = fuxix::process::kill(pid, Signal::Kill);
+                }
+            }
+        }
         match fuxix::process::reap(self.0) {
             Ok(None) => Err(self),
             Ok(Some(_)) | Err(_) => Ok(()),

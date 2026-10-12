@@ -1427,11 +1427,15 @@ impl Parser {
                 Some(self.screen.rectangle_checksum(&self.params))
             }
             // DECRQM: 1 set, 2 reset, 0 not recognized (and 1048, an
-            // action), and 4 permanently reset for DECARM.
+            // action), 4 permanently reset for DECARM, and 3 permanently set
+            // for 2027: graphemes are always clustered, as kitty's and
+            // Ghostty's mode 2027 does, so a program measuring them counts
+            // their cells as fux does.
             (b"?$" | b"$", b'p') if modes => {
                 let private = intermediates == b"?$";
                 let mode = Mode::of(n, private, &self.options);
                 let status = match mode.map(|m| (m, m.kind())) {
+                    None if private && n == 2027 => 3,
                     None | Some((_, Kind::SaveCursor)) => 0,
                     Some((_, Kind::Reset)) => 4,
                     Some((mode, _)) if self.screen.mode(mode) => 1,
