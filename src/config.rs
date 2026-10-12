@@ -324,6 +324,8 @@ pub struct Config {
     pub bell: bool,
     /// Each client's terminal title is its focused pane's.
     pub titles: bool,
+    /// The shells fux starts mark their commands (OSC 133): `crate::marks`.
+    pub shell_marks: bool,
     /// The keys after the prefix.
     pub bindings: Layer,
     /// Keys bound without the prefix (`bind -n`), in the order they were
@@ -397,6 +399,7 @@ impl Default for Config {
             clipboard: true,
             buffers: 16,
             bell: true,
+            shell_marks: true,
             titles: false,
             bindings: Layer::default(),
             root: Vec::new(),
@@ -703,6 +706,7 @@ impl Config {
             "clipboard" => self.clipboard = on()?,
             "bell" => self.bell = on()?,
             "titles" => self.titles = on()?,
+            "shell-marks" => self.shell_marks = on()?,
             "buffers" => {
                 let n = number(MAX_BUFFERS)?;
                 if n == 0 {
@@ -916,7 +920,7 @@ mod tests {
             ),
             (
                 "bind g kill-pane -t 3",
-                "bind g: \"3\" is not a pane; panes are %N",
+                "bind g: \"3\" is not a pane; panes are %N, or the name of a tab with one pane (`run -n NAME`)",
             ),
         ] {
             assert_eq!(apply(&mut c, line), Err(error.to_owned()), "{line}");

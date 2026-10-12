@@ -379,7 +379,8 @@ def wide():
 
 def mouse():
     """Buttons drawn at known cells; a left click on one writes its name to
-    clicked.txt; the wheel moves a counter, written to wheel.txt."""
+    clicked.txt and shows `clicked: NAME`, as a dialog answers; the wheel
+    moves a counter, written to wheel.txt."""
     put = raw()
     w(f"{ESC}[?1049h{ESC}[?1000h{ESC}[?1006h{ESC}[H{ESC}[2J")
     w(f"{ESC}[3;5H[ OK ]{ESC}[3;20H[ Cancel ]{ESC}[6;1Hwheel: 0")
@@ -394,6 +395,7 @@ def mouse():
                     name = "OK" if 5 <= col <= 10 else "Cancel" if 20 <= col <= 29 else ""
                     if name:
                         record("clicked.txt", name)
+                        w(f"{ESC}[8;1Hclicked: {name}      ")
                 elif button in (64, 65):
                     count += 1 if button == 65 else -1
                     record("wheel.txt", f"{count}\n")

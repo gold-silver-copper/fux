@@ -39,6 +39,16 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
+      # zsh and fish, so the shell marks of every shell fux knows are tested
+      # (macOS has zsh; fish is installed there too).
+      - name: Shells
+        run: |
+          if [[ "$RUNNER_OS" == macOS ]]; then brew install fish; else sudo apt-get update -q && sudo apt-get install -y -q zsh fish; fi
+          # The runner's group-writable function directories would have zsh's
+          # completion setup ask whether to trust them, at every start.
+          { zsh -c 'autoload -U compaudit; compaudit' 2>/dev/null || true; } | xargs -r sudo chmod g-w,o-w
+          echo "FUX_TEST_SHELLS=1" >> "$GITHUB_ENV"
+
       - name: Platform and pinned toolchain
         run: |
           set -euo pipefail
@@ -167,3 +177,33 @@ jobs:
           path: ${{ runner.temp }}/fux-ci/
           retention-days: 7
           if-no-files-found: ignore
+
+  # The agent benchmark's scripted tier for fux: every task, once, with fux
+  # and python3 alone (no tmux, zellij, herdr or claude). A task fux used to
+  # pass and fails now is a regression in how scripts and agents drive it.
+  agentbench:
+    name: agentbench (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: agentbench
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+
+      - name: Scripted tier, fux, every task once
+        run: |
+          set -euo pipefail
+          python3 -I agentbench/guide_check.py
+          cargo build --release --locked
+          python3 -I agentbench/run.py --tools fux --repeats 1 --workers 4 --skip-expensive \
+            --strict --fux-bin "$GITHUB_WORKSPACE/target/release/fux" \
+            --out "$RUNNER_TEMP/agentbench.json"

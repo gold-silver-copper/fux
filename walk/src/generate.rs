@@ -358,7 +358,7 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
         33 => "list-keys".into(),
         34 => "list-buffers".into(),
         35 => format!("paste-buffer -t {}", pane(rng)),
-        36 => format!("terminate -t {}", pane(rng)),
+        36 => format!("signal -t {} TERM", pane(rng)),
         37 if clients.len() > 1 => format!("detach -c {}", client(rng)),
         38 => format!("capture-client -c {}", client(rng)),
         _ => format!("select-workspace -c {} --next", client(rng)),

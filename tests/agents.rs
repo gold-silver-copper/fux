@@ -20,7 +20,9 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
     let server = Server::start("")?;
     let script = "stty size; echo started; exit 3";
     let pane = id(&server.ok(&["run", "--size", "40x10", "--", "sh", "-c", script])?);
-    assert_eq!(server.ok(&["wait", "-t", &pane, "--exit"])?, "exited 3\n");
+    // As timeout(1), a wait for the exit exits with the program's status.
+    let ended = server.fux(&["wait", "-t", &pane, "--exit"])?;
+    assert_eq!((ended.status, ended.stdout.as_str()), (3, "exited 3\n"));
     let screen = server.ok(&["capture-pane", "-t", &pane])?;
     assert_eq!(
         screen, "10 40\nstarted\n",
@@ -239,7 +241,7 @@ fn tmux_habits_get_hints_and_usage_errors_stay_short() -> Outcome {
     assert!(out.stderr.contains("`fux ls` lists"), "{}", out.stderr);
     let out = server.fux(&["capture-pane", "-p"])?;
     assert!(
-        out.stderr.contains("prints the screen without it"),
+        out.stderr.contains("always prints the screen"),
         "{}",
         out.stderr
     );
@@ -308,7 +310,8 @@ fn waits_see_what_scrolled_past_and_end_when_the_program_does() -> Outcome {
     let ended = server.fux(&["send-keys", "-t", &pane, "Enter", "--wait-text", "never"])?;
     assert_eq!(ended.status, 3, "{}", ended.stderr);
     assert!(ended.stderr.contains("exited 2"), "{}", ended.stderr);
-    assert_eq!(server.ok(&["wait", "-t", &pane, "--exit"])?, "exited 2\n");
+    let ended = server.fux(&["wait", "-t", &pane, "--exit"])?;
+    assert_eq!((ended.status, ended.stdout.as_str()), (2, "exited 2\n"));
     // run waits from the program's first output: a flood cannot outrun it.
     let flood = "echo 'a needle'; seq 300; exec cat";
     let started = server.ok(&["run", "--wait-text", "needle", "--", "sh", "-c", flood])?;
@@ -384,7 +387,7 @@ fn shell_marks_and_bells_are_heard() -> Outcome {
     server.ok(&["send-keys", "-t", &pane, "Enter", "--wait-bell"])?;
     let json = server.ok(&["capture-pane", "-t", &pane, "--json"])?;
     for field in [
-        r#""running":false"#,
+        r#""command_running":false"#,
         r#""last_status":7"#,
         r#""notification":"tests passed""#,
     ] {
@@ -467,5 +470,372 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
         server.ok(&["capture-pane", "-t", menu, "--alt"])?,
         "picked beta\n"
     );
+    Ok(())
+}
+
+/// The shells fux starts mark their commands with no setup, after the
+/// user's own startup, whose prompt and `PROMPT_COMMAND` behave as before;
+/// a wait after typed keys does not take their echo for the output; and
+/// `set shell-marks off` leaves shells as they are.
+#[test]
+fn shells_mark_their_commands_with_no_setup() -> Outcome {
+    let server = Server::start("")?;
+    let home = server.dir.join("home");
+    std::fs::create_dir_all(&home).map_err(e)?;
+    let rc = "PS1='mine> '\nPROMPT_COMMAND='echo \"[saw $?]\"'\n";
+    std::fs::write(home.join(".bashrc"), rc).map_err(e)?;
+    let home_env = format!("HOME={}", home.display());
+    let start = [
+        "run",
+        "-n",
+        "sh",
+        "--env",
+        &home_env,
+        "--wait-text",
+        "mine>",
+    ];
+    server.ok(&[&start[..], &["--", "bash"]].concat())?;
+    let typed = [
+        "send-keys",
+        "-t",
+        "sh",
+        "--text",
+        "sleep 0.2; false",
+        "Enter",
+    ];
+    assert_eq!(
+        server.ok(&[&typed[..], &["--wait-done"]].concat())?,
+        "done 1\n"
+    );
+    let echo = "sleep 0.2; echo RESULT=$((6*7))";
+    let trap = [
+        "send-keys",
+        "-t",
+        "sh",
+        "--text",
+        echo,
+        "Enter",
+        "--wait-text",
+        "RESULT=",
+    ];
+    assert_eq!(server.ok(&trap)?, "RESULT=42\n", "not the typed line");
+    server.ok(&["wait", "-t", "sh", "--text", "[saw 0]"])?;
+    assert_eq!(
+        server.ok(&["capture-pane", "-t", "sh", "--last-output"])?,
+        "RESULT=42\n"
+    );
+    let screen = server.ok(&["capture-pane", "-t", "sh"])?;
+    assert!(
+        screen.contains("[saw 1]") && screen.contains("mine> "),
+        "{screen}"
+    );
+    // zsh and fish, where there are (CI, with FUX_TEST_SHELLS, insists).
+    let has = |shell: &str| -> Result<bool, String> {
+        let here = std::process::Command::new(shell)
+            .args(["-c", "true"])
+            .status()
+            .is_ok_and(|s| s.success());
+        if !here && std::env::var_os("FUX_TEST_SHELLS").is_some() {
+            return Err(format!("{shell} is not installed"));
+        }
+        Ok(here)
+    };
+    if has("zsh")? {
+        let zdot = server.dir.join("zdot");
+        std::fs::create_dir_all(&zdot).map_err(e)?;
+        std::fs::write(zdot.join(".zshrc"), "PROMPT='zed> '\n").map_err(e)?;
+        // Read through fux's shim; it also spares Ubuntu's global compinit.
+        std::fs::write(zdot.join(".zshenv"), "skip_global_compinit=1\n").map_err(e)?;
+        let zenv = format!("ZDOTDIR={}", zdot.display());
+        let start = [
+            "run",
+            "-n",
+            "z",
+            "--env",
+            &zenv,
+            "--wait-text",
+            "zed>",
+            "--",
+            "zsh",
+        ];
+        server.ok(&start)?;
+        let typed = [
+            "send-keys",
+            "-t",
+            "z",
+            "--text",
+            "(exit 3)",
+            "Enter",
+            "--wait-done",
+        ];
+        assert_eq!(server.ok(&typed)?, "done 3\n");
+    }
+    // bash without its startup files, as agents start it, is marked too.
+    server.ok(&[
+        "run",
+        "-n",
+        "bare",
+        "--wait-idle",
+        "200",
+        "--",
+        "bash",
+        "--norc",
+        "-i",
+    ])?;
+    // `true` first: bash before 4.4 (macOS's) marks from a trap, which a
+    // subshell alone does not set off.
+    let typed = [
+        "send-keys",
+        "-t",
+        "bare",
+        "--text",
+        "true; (exit 4)",
+        "Enter",
+        "--wait-done",
+    ];
+    assert_eq!(server.ok(&typed)?, "done 4\n");
+    // fish, its prompt from its own config, marked by an event handler.
+    if has("fish")? {
+        let xdg = server.dir.join("xdg");
+        std::fs::create_dir_all(xdg.join("fish")).map_err(e)?;
+        let prompt = "function fish_prompt; echo -n 'fsh> '; end\n";
+        std::fs::write(xdg.join("fish").join("config.fish"), prompt).map_err(e)?;
+        let xenv = format!("XDG_CONFIG_HOME={}", xdg.display());
+        let start = [
+            "run",
+            "-n",
+            "f",
+            "--env",
+            &xenv,
+            "--wait-text",
+            "fsh>",
+            "--",
+            "fish",
+        ];
+        server.ok(&start)?;
+        let typed = [
+            "send-keys",
+            "-t",
+            "f",
+            "--text",
+            "sh -c 'exit 6'",
+            "Enter",
+            "--wait-done",
+        ];
+        assert_eq!(server.ok(&typed)?, "done 6\n");
+        let echo = [
+            "send-keys",
+            "-t",
+            "f",
+            "--text",
+            "echo fish-$status",
+            "Enter",
+            "--wait-done",
+        ];
+        server.ok(&echo)?;
+        assert_eq!(
+            server.ok(&["capture-pane", "-t", "f", "--last-output"])?,
+            "fish-6\n"
+        );
+    }
+    let off = Server::start("set shell-marks off")?;
+    let start = [
+        "run",
+        "-n",
+        "sh",
+        "--env",
+        &home_env,
+        "--wait-text",
+        "mine>",
+        "--",
+        "bash",
+    ];
+    off.ok(&start)?;
+    let typed = [
+        "send-keys",
+        "-t",
+        "sh",
+        "--text",
+        "true",
+        "Enter",
+        "--wait-done",
+    ];
+    let unmarked = off.fux(&[&typed[..], &["--timeout", "0.5"]].concat())?;
+    assert_eq!(unmarked.status, 124, "{}", unmarked.stderr);
+    Ok(())
+}
+
+const CLICKS: &str = r#"
+import os, tty
+tty.setraw(0)
+os.write(1, b"\x1b[?1000h\x1b[?1006hready\r\n")
+clicks = 0
+while True:
+    data = os.read(0, 64)
+    if not data or data == b"q":
+        break
+    clicks += 1
+    if clicks == 1:
+        os.write(1, b"clicked once\r\n")
+"#;
+
+/// Every action can be confirmed: a click waits as keys do, and says when
+/// it changed nothing; a selection shows in plain text; a signal reaches a
+/// program that ignores hangups; a close says what it closed; and a wait
+/// that ends unmet says what the pane is doing.
+#[test]
+fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
+    let server = Server::start("")?;
+    let path = server.dir.join("clicks.py");
+    std::fs::write(&path, CLICKS).map_err(e)?;
+    let script = path.to_string_lossy().into_owned();
+    let start = [
+        "run",
+        "-n",
+        "dialog",
+        "--wait-text",
+        "ready",
+        "--",
+        "python3",
+        "-I",
+        &script,
+    ];
+    server.ok(&start)?;
+    let click = ["send-mouse", "-t", "dialog", "click", "0", "0"];
+    let answered = server.ok(&[&click[..], &["--wait-text", "clicked"]].concat())?;
+    assert_eq!(answered, "clicked once\n");
+    let ignored = server.fux(&[&click[..], &["--wait-idle", "200"]].concat())?;
+    assert_eq!(ignored.status, 5, "nothing changed: {}", ignored.stderr);
+    // A selection in reverse video, marked in plain text.
+    let menu = r"printf 'alpha\n\033[7mbeta\033[0m\ngamma\n'; exec cat";
+    let started = server.ok(&[
+        "run",
+        "-n",
+        "menu",
+        "--wait-text",
+        "gamma",
+        "--",
+        "sh",
+        "-c",
+        menu,
+    ])?;
+    let menu_pane = started.lines().next().ok_or("its id")?.to_owned();
+    let marked = server.ok(&["capture-pane", "-t", &menu_pane, "--marks"])?;
+    assert_eq!(marked, "alpha\n⟦beta⟧\ngamma\n");
+    // A program that ignores TERM and hangups: a timeout says what it is
+    // doing, KILL ends it, and the wait says so.
+    let stubborn = "trap '' TERM HUP INT; echo still here; exec sleep 100";
+    server.ok(&[
+        "run",
+        "-n",
+        "stub",
+        "--wait-text",
+        "here",
+        "--",
+        "sh",
+        "-c",
+        stubborn,
+    ])?;
+    let term = server.fux(&[
+        "signal",
+        "-t",
+        "stub",
+        "TERM",
+        "--wait-exit",
+        "--timeout",
+        "0.5",
+    ])?;
+    assert_eq!(term.status, 124);
+    assert!(
+        term.stderr.contains("still running") && term.stderr.contains("last line: `still here`"),
+        "{}",
+        term.stderr
+    );
+    let kill = server.fux(&["signal", "-t", "stub", "KILL", "--wait-exit"])?;
+    assert_eq!(
+        (kill.status, kill.stdout.as_str()),
+        (137, "killed by SIGKILL\n")
+    );
+    // A program that exits first: its last words come with the error.
+    let crash = server.fux(&[
+        "run",
+        "--wait-text",
+        "READY",
+        "--",
+        "sh",
+        "-c",
+        "echo 'fatal: no config'; exit 2",
+    ])?;
+    assert_eq!(crash.status, 3);
+    assert!(
+        crash.stderr.contains("fatal: no config"),
+        "{}",
+        crash.stderr
+    );
+    // A tab closed by its name, saying what went.
+    let closed = server.ok(&["kill-tab", "-t", "dialog"])?;
+    assert!(
+        closed.starts_with("closed @") && closed.contains(" %"),
+        "{closed}"
+    );
+    // A split where it is asked, a line typed as it is.
+    let sub = server.dir.join("sub");
+    std::fs::create_dir_all(&sub).map_err(e)?;
+    let sub_arg = sub.to_string_lossy().into_owned();
+    let split = [
+        "split",
+        "-h",
+        "-t",
+        &menu_pane,
+        "--cwd",
+        &sub_arg,
+        "--",
+        "pwd && echo split-$((1+1))",
+    ];
+    let new = id(&server.ok(&split)?);
+    let screen = server.ok(&["wait", "-t", &new, "--text", "split-2", "--print"])?;
+    assert!(screen.contains(&sub_arg), "{screen}");
+    // A program just started has drawn nothing: its text goes only once it
+    // has come.
+    let loading = r"sleep 0.3; printf loading; sleep 0.3; printf '\r\033[Kready\n'; exec cat";
+    let gone = [
+        "run",
+        "--wait-gone",
+        "loading",
+        "--print",
+        "--",
+        "sh",
+        "-c",
+        loading,
+    ];
+    let done = server.ok(&gone)?;
+    assert!(
+        done.ends_with("ready\n") || done.contains("\nready"),
+        "{done}"
+    );
+    let late = server.fux(&["send-keys", "-t", &menu_pane, "BSpace", "-N", "10"])?;
+    assert!(late.stderr.contains("before the keys"), "{}", late.stderr);
+    let valued = server.fux(&["send-keys", "-t", &menu_pane, "q", "--wait-exit", "5"])?;
+    assert!(valued.stderr.contains("--timeout"), "{}", valued.stderr);
+    let hint = server.fux(&["wait", "-t", &menu_pane, "--wait-gone", "x"])?;
+    assert!(hint.stderr.contains("--gone"), "{}", hint.stderr);
+    let after = server.fux(&["run", "--", "cat", "--wait-text", "x"])?;
+    assert!(after.stderr.contains("before --"), "{}", after.stderr);
+    // A name `-t` finds is one tab's only: a second is refused, saying why.
+    let again = server.fux(&["run", "-n", "menu", "--", "cat"])?;
+    assert_eq!(again.status, 1);
+    assert!(
+        again.stderr.contains("already") && again.stderr.contains(&menu_pane),
+        "{}",
+        again.stderr
+    );
+    // A line printed just before a program takes the full screen is seen,
+    // and a full-screen program's last screen is what --print prints.
+    let behind = r"echo 'error: disk full'; printf '\033[?1049hFULL SCREEN'; exec cat";
+    let seen = server.ok(&["run", "--wait-text", "disk full", "--", "sh", "-c", behind])?;
+    assert!(seen.ends_with("\nerror: disk full\n"), "{seen}");
+    let quits = r"printf '\033[?1049hpicked beta'; printf '\033[?1049l'";
+    let printed = server.ok(&["run", "--wait-exit", "--print", "--", "sh", "-c", quits])?;
+    assert!(printed.contains("exited 0\npicked beta"), "{printed}");
     Ok(())
 }

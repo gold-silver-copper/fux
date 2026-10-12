@@ -225,7 +225,11 @@ pub fn open_menu(session: &Session, view: &mut View, about: AnyRef<WsId>) -> Str
         AnyRef::Pane(p) => items.extend([
             item(
                 "terminate the running command",
-                Command::Terminate { target: Some(p) },
+                Command::Signal {
+                    target: Some(p),
+                    signal: fuxix::process::Signal::Term,
+                    then: None,
+                },
             ),
             item(
                 "swap with…",
@@ -1253,7 +1257,7 @@ mod tests {
                 &[
                     "rename-prompt pane -t %2",
                     "confirm-close pane -t %2",
-                    "terminate -t %2",
+                    "signal -t %2 TERM",
                     "choose-pane -t %2",
                     "choose-tab -t %2",
                     "move-pane -t %2 --to new-tab",

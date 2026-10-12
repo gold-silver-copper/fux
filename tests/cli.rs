@@ -151,7 +151,7 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
 }
 
 #[test]
-fn send_keys_terminate_and_buffers() -> Outcome {
+fn send_keys_signal_and_buffers() -> Outcome {
     let server = Server::start("")?;
     // send-keys types at once; after the prompt, so the output is a line
     // of its own however slowly the shell starts.
@@ -159,8 +159,8 @@ fn send_keys_terminate_and_buffers() -> Outcome {
     server.ok(&["send-keys", "-t", "%1", "-l", "echo lit", "eral"])?;
     server.ok(&["send-keys", "-t", "%1", "Enter"])?;
     shows(&server, "%1", "\nliteral")?;
-    // terminate stops what runs in the foreground, never the shell.
-    let idle = server.fux(&["terminate", "-t", "%1"])?;
+    // signal stops what runs in the foreground, never the shell.
+    let idle = server.fux(&["signal", "-t", "%1", "TERM"])?;
     assert!(
         idle.stderr.contains("nothing is running"),
         "{}",
@@ -174,7 +174,7 @@ fn send_keys_terminate_and_buffers() -> Outcome {
         "Enter",
     ])?;
     eventually("sleep in the foreground", || {
-        Ok(server.fux(&["terminate", "-t", "%1"])?.status == 0)
+        Ok(server.fux(&["signal", "-t", "%1", "TERM"])?.status == 0)
     })?;
     shows(&server, "%1", "after-sleep")?;
     assert!(server.ok(&["ls"])?.contains("%1"), "the shell survives");

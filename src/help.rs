@@ -63,8 +63,10 @@ does any of what is asked:
   --print        prints the screen as it ends
   --json         says what happened: {\"met\":\"text\",\"line\":…,\"status\":0}
 A shell echoes typed commands: wait for text only their output has, or --done.
-A program that exits first ends the wait (status 3), as a closed pane does (4);
-a timeout is status 124. The server checks as output comes.
+A program that exits first ends the wait (status 3, its last lines printed), as
+a closed pane does (4); a timeout is status 124, saying what the pane is doing;
+--exit met exits with the program's status, as timeout(1). The server checks
+as output comes.
 
   fux wait -t %3 --text PASS --text FAIL --timeout 120"
         }
@@ -114,7 +116,7 @@ The pane's screen as text, trailing blanks and blank rows trimmed.
   --last-output the last shell command's output alone (OSC 133 marks)
   --json        an object: size, cursor, lines (and with --styles, style
                 runs per line), and what the program is doing: program, argv,
-                cwd, exited, signal, idle_ms, revision, running, last_status,
+                cwd, exited, signal, idle_ms, revision, command_running, last_status,
                 bells, notification, cursor_visible, alt_screen, mouse,
                 bracketed_paste, copy_mode, history_lines, pictures
 
@@ -188,7 +190,6 @@ workspace; -L, -R, -U or -D beside its neighbour that way."
         }
         "swap-pane" => "Swaps two panes, anywhere: another pane by id, or the neighbour that way.",
         "reorder" => "Moves a pane, tab or workspace one place among its siblings.",
-        "terminate" => "SIGTERM to what runs in the pane's foreground, not its shell.",
         "paste-buffer" | "show-buffer" | "list-buffers" => {
             "Paste buffers: copies, newest first (0), from copy mode and programs' OSC 52."
         }
@@ -216,6 +217,16 @@ flags wait as run's do, from its first output on. Refused while
 the program runs, unless -k, which ends it first.
 
   fux respawn -t %4 -k"
+        }
+        "signal" => {
+            "\
+Sends a signal to what runs in the pane's foreground, what its terminal's
+keys reach: a job its shell runs, or the program `fux run` started; never a
+shell itself. For a program that ignores Ctrl-C and hangups. TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP or
+CONT, with or without SIG. The --wait-… flags wait as send-keys' do, armed
+before the signal goes.
+
+  fux signal -t %3 KILL --wait-exit"
         }
         "notify" => {
             "\
@@ -254,7 +265,15 @@ mod tests {
             for line in lines {
                 let words = crate::words::split(&line).unwrap_or_default();
                 let parsed = crate::command::parse(&words);
-                assert!(parsed.is_ok(), "{doc}: `fux {line}`: {parsed:?}");
+                // A tab's name, which only a server can resolve, is fine.
+                let named = matches!(
+                    parsed,
+                    Err(crate::command::Usage::Not(
+                        crate::command::Kind::Pane | crate::command::Kind::Tab,
+                        _
+                    ))
+                );
+                assert!(parsed.is_ok() || named, "{doc}: `fux {line}`: {parsed:?}");
             }
         }
     }

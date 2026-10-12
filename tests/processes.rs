@@ -79,10 +79,10 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
     Ok(())
 }
 
-/// `terminate` ends what runs in the pane's foreground and nothing else: a
+/// `signal TERM` ends what runs in the pane's foreground and nothing else: a
 /// background job and the shell stay, as the README says.
 #[test]
-fn terminate_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
+fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
     let server = Server::start("")?;
     server.ok(&["split", "-h", "-t", "%1"])?;
     let (pane, shell) = server.newest_pane()?;
@@ -99,11 +99,11 @@ fn terminate_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
     let (job, front) = (pid_in(&job)?, pid_in(&front)?);
     let _reap = Reap(vec![job, front]);
     eventually("the foreground program running", || {
-        Ok(server.fux(&["terminate", "-t", &pane])?.status == 0)
+        Ok(server.fux(&["signal", "-t", &pane, "TERM"])?.status == 0)
     })?;
-    gone(front, "the foreground program, after terminate")?;
-    assert!(alive(job), "terminate ended a background job");
-    assert!(alive(shell), "terminate ended the shell");
+    gone(front, "the foreground program, after signal TERM")?;
+    assert!(alive(job), "signal ended a background job");
+    assert!(alive(shell), "signal ended the shell");
     assert!(server.panes()?.iter().any(|(id, _)| *id == pane));
     // Closing the pane ends the job.
     server.ok(&["kill-pane", "-t", &pane])?;

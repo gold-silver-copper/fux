@@ -14,6 +14,7 @@ pub mod id;
 pub mod input;
 pub mod json;
 pub mod layout;
+pub mod marks;
 pub mod outer;
 pub mod overlay;
 pub mod pane;
@@ -274,9 +275,10 @@ fn run(args: &[String]) -> Result<u8, Error> {
         }
         Some(_) => {
             // Parsed here as well, so a usage error needs no server; a
-            // pane named by its tab's name only the server can tell.
+            // tab, or its pane, named by the tab's name only the server can
+            // tell.
             match command::parse(args) {
-                Err(command::Usage::Not(command::Kind::Pane, _)) | Ok(_) => {}
+                Err(command::Usage::Not(command::Kind::Pane | command::Kind::Tab, _)) | Ok(_) => {}
                 Err(usage) => {
                     return usage_error(&usage.to_string(), args.first().map(String::as_str));
                 }

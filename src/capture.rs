@@ -211,7 +211,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
             "revision",
             count(usize::try_from(pane.revision).unwrap_or(usize::MAX)),
         ),
-        ("running", Json::Bool(commands.running)),
+        ("command_running", Json::Bool(commands.running)),
         (
             "last_status",
             commands
@@ -307,9 +307,28 @@ fn print(
             let styled: Vec<String> = lines.iter().map(sgr_line).collect();
             styled.join("\n")
         }
+        None if view.marks => lines.iter().map(marked).collect::<Vec<_>>().join("\n"),
         None => lines.iter().map(text).collect::<Vec<_>>().join("\n"),
     };
     out.push('\n');
+    out
+}
+
+/// A line with its reverse video, how programs draw a selection, between
+/// `⟦` and `⟧`: marks no program's output is likely to hold.
+fn marked(line: &Cells<'_>) -> String {
+    let mut out = String::new();
+    let mut inverse = false;
+    for (text, attributes) in line {
+        if attributes.inverse() != inverse {
+            inverse = attributes.inverse();
+            out.push(if inverse { '⟦' } else { '⟧' });
+        }
+        out.push_str(text);
+    }
+    if inverse {
+        out.push('⟧');
+    }
     out
 }
 

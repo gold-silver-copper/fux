@@ -132,12 +132,12 @@ args = { cmd = "seq 1 500 | sed 's/^250$/MARKER/'", marker = "MARKER" }
 check = { answer = "249" }
 
 [[task]]
-id = "sh-quiet-then-done"
+id = "sh-echo-trap"
 cat = "shell"
-goal = "In an interactive shell, run `sleep 3; echo done-ok`. Once it has finished, write what it printed to answer.txt."
-recipe = "sh_output"
-args = { cmd = "sleep 3; echo done-ok" }
-check = { answer = "done-ok" }
+goal = "In an interactive shell, run `sleep 2; echo RESULT=$((6*7))`. Once it has printed its result, write the number it printed to answer.txt."
+recipe = "sh_number"
+args = { cmd = "sleep 2; echo RESULT=$((6*7))", prefix = "RESULT=" }
+check = { answer = "42" }
 
 [[task]]
 id = "sh-env"
@@ -344,12 +344,12 @@ args = { prog = "menu", target = "delta" }
 check = { file = "chosen.txt", equals = "delta" }
 
 [[task]]
-id = "menu-zeta"
+id = "click-feedback"
 cat = "tui"
-goal = "Start `{fx} menu`. Choose `zeta`, the last item."
-recipe = "menu"
-args = { prog = "menu", target = "zeta" }
-check = { file = "chosen.txt", equals = "zeta" }
+goal = "Start `{fx} mouse`. Click the `[ Cancel ]` button with the mouse, then write the line the program shows in reply to the click to answer.txt."
+recipe = "click"
+args = { prog = "mouse", label = "[ Cancel ]" }
+check = { answer = "clicked: Cancel" }
 
 [[task]]
 id = "menu-up"
@@ -443,6 +443,7 @@ check = { file = "keys.txt", lines_exact = ["1b", "1b"] }
 id = "less-search"
 cat = "tui"
 goal = "Open lines.data with `less` (the file is in the current directory). Search for `needle`, and write the whole line it is on to answer.txt. Quit less."
+needs = ["less"]
 recipe = "less_search"
 args = { needle = "needle" }
 check = { answer = "row 338 needle here" }
@@ -451,6 +452,7 @@ check = { answer = "row 338 needle here" }
 id = "nvim-edit"
 cat = "tui"
 goal = "Open edit.txt with `nvim --clean edit.txt`, insert the text `hello from the agent`, save and quit."
+needs = ["nvim"]
 recipe = "nvim_edit"
 args = { text = "hello from the agent" }
 check = { file = "edit.txt", contains = "hello from the agent" }
@@ -697,6 +699,7 @@ check = { answer = "DONE?" }
 id = "claude-word"
 cat = "agents"
 goal = "Start `claude --model haiku` (Claude Code). Once it is ready for input, send it `Reply with only the word mango, lowercase.` and Enter. When it has answered, write its one-word answer to answer.txt, and quit it."
+needs = ["claude"]
 recipe = "claude"
 args = { msg = "Reply with only the word mango, lowercase.", expect = "mango" }
 check = { answer = "mango" }
@@ -706,6 +709,7 @@ expensive = true
 id = "claude-sum"
 cat = "agents"
 goal = "Start `claude --model haiku`. Send it `What is 2+3? Reply with only the digit.` and Enter. Write its answer to answer.txt and quit it."
+needs = ["claude"]
 recipe = "claude"
 args = { msg = "What is 2+3? Reply with only the digit.", expect = "5" }
 check = { answer = "5" }
