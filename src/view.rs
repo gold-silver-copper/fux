@@ -249,6 +249,12 @@ pub struct View {
     /// The title its terminal was last given, with `titles` on; `None`
     /// while it shows its own.
     pub title: Option<String>,
+    /// It only watches (`attach --read-only`): its keys and clicks do
+    /// nothing but detach it.
+    pub read_only: bool,
+    /// Its terminal's environment, of which panes started from its keys
+    /// take what `update-environment` names.
+    pub env: Vec<(String, String)>,
 }
 
 impl View {
@@ -266,6 +272,8 @@ impl View {
             dirty: true,
             last_bell: None,
             title: None,
+            read_only: false,
+            env: Vec::new(),
         }
     }
 

@@ -69,15 +69,26 @@ pub enum Timer {
 pub enum Origin {
     /// A client's key, prompt or menu: where the client is.
     Client(ClientId),
-    /// The CLI: its caller's pane (`FUX_PANE`) and working directory, each
-    /// if it gave one.
-    Cli {
-        pane: Option<PaneId>,
-        cwd: Option<PathBuf>,
-    },
+    /// The CLI: who runs the command, and from where.
+    Cli(Caller),
     /// Nowhere: no client and no caller.
     #[default]
     Nowhere,
+}
+
+/// A command line's caller on the CLI.
+#[derive(Clone, Debug, Default)]
+pub struct Caller {
+    /// Its pane (`FUX_PANE`), if it runs in one of this server's.
+    pub pane: Option<PaneId>,
+    /// Its working directory.
+    pub cwd: Option<PathBuf>,
+    /// The `FUX_PANE` it gave of another server's pane (its `FUX_SERVER`
+    /// is not this server's), which nothing here is done to.
+    pub stray: Option<String>,
+    /// Its environment, of which panes it starts take what
+    /// `update-environment` names.
+    pub env: Vec<(String, String)>,
 }
 
 /// Where an attached client is: the workspace and tab it is shown, and the
@@ -128,6 +139,15 @@ pub enum Error {
     NoTabGiven,
     NoTab(TabId),
     NoWorkspaceGiven,
+    /// The caller's `FUX_PANE`, a pane of another server.
+    StrayPane(String),
+    /// `kill-server` from the CLI, run in one of the server's own panes.
+    OwnServer(PaneId),
+    /// `kill-server` from the CLI, with people's terminals attached.
+    PeopleAttached(usize),
+    /// A kill from the CLI that names nothing, which would close the
+    /// caller's own pane, tab or workspace: its usage.
+    KillNeedsTarget(&'static str),
     NoClientGiven,
     NoClient(ClientId),
     NoWorkspaces,
@@ -228,6 +248,65 @@ pub enum Error {
     Reload(crate::config::Error),
 }
 
+impl Error {
+    /// What kind of failure it is, as `--json` names it: stable, for a
+    /// script to tell failures apart by.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Error::NoWorkspace(_) | Error::NoWorkspaceNamed(_) | Error::NoWorkspaces => {
+                "no_workspace"
+            }
+            Error::NoPane(_) => "no_pane",
+            Error::NoTab(_) => "no_tab",
+            Error::NoPaneGiven
+            | Error::NoTabGiven
+            | Error::NoWorkspaceGiven
+            | Error::NoClientGiven
+            | Error::KillNeedsTarget(_) => "no_target",
+            Error::StrayPane(_) => "stray_pane",
+            Error::OwnServer(_) => "own_server",
+            Error::PeopleAttached(_) => "people_attached",
+            Error::NoClient(_) => "no_client",
+            Error::NotHeadless(_) => "not_headless",
+            Error::NoBuffer(_) => "no_buffer",
+            Error::NoConfigFile => "no_config",
+            Error::NoLastPane | Error::NoPaneToCopy | Error::TabEmpty => "no_pane",
+            Error::OnlyOne(_) | Error::AtEnd(_) | Error::NoBorder { .. } | Error::NoNeighbor { .. } => {
+                "nothing_there"
+            }
+            Error::OnlyShell(_) => "only_shell",
+            Error::Exited { .. } => "exited",
+            Error::NoMouse(_)
+            | Error::NoMotion(_)
+            | Error::OnlyPresses(_)
+            | Error::MouseUnencodable { .. }
+            | Error::OutsidePane { .. } => "mouse",
+            Error::TooBig(..) | Error::TooSmall(..) | Error::NoRoom(_) | Error::CannotResize { .. } => {
+                "size"
+            }
+            Error::Named(_) => "ambiguous",
+            Error::WaitsOnlyFromCli => "cli_only",
+            Error::NotADirectory(_) => "not_a_directory",
+            Error::Log(..) => "log",
+            Error::Signal(_) => "signal",
+            Error::NotRun(_) => "not_run",
+            Error::StillRunning(_) => "still_running",
+            Error::NoRows | Error::SelectionTooLarge => "selection",
+            Error::EmptyName
+            | Error::ControlInName
+            | Error::LongName
+            | Error::NameReadAsTarget(_) => "bad_name",
+            Error::NameTaken(_) | Error::TabNameTaken(..) => "name_taken",
+            Error::IdsExhausted(_) => "ids_exhausted",
+            Error::LineTooLong => "too_long",
+            Error::Usage(_) | Error::Words(_) => "usage",
+            Error::Pane(crate::pane::Error::NotReading) => "not_reading",
+            Error::Pane(_) | Error::Process(_) => "start",
+            Error::Config(_) | Error::Reload(_) => "config",
+        }
+    }
+}
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -238,6 +317,27 @@ impl std::fmt::Display for Error {
             Error::NoTabGiven => f.write_str("no tab given: use -t @N"),
             Error::NoTab(id) => write!(f, "no tab {id}"),
             Error::NoWorkspaceGiven => f.write_str("no workspace given: use -t +N or a name"),
+            Error::OwnServer(pane) => write!(
+                f,
+                "this runs in {pane}, a pane of the server it would stop, with everything else \
+                 in it; --force stops it anyway"
+            ),
+            Error::PeopleAttached(1) => {
+                f.write_str("a person is attached to this server; --force stops it anyway")
+            }
+            Error::PeopleAttached(n) => {
+                write!(f, "{n} people are attached to this server; --force stops it anyway")
+            }
+            Error::KillNeedsTarget(usage) => write!(
+                f,
+                "from the command line, name what to close ({usage}): without, it would be the \
+                 pane, tab or workspace this runs in"
+            ),
+            Error::StrayPane(pane) => write!(
+                f,
+                "FUX_PANE {pane} is a pane of another fux server, not of this one, so it is not \
+                 acted on; use -t"
+            ),
             Error::NoClientGiven => f.write_str(
                 "this command acts on a client's screen: use -c CLIENT (`fux ls` lists clients)",
             ),
@@ -372,6 +472,10 @@ impl std::error::Error for Error {
             | Error::NoTabGiven
             | Error::NoTab(_)
             | Error::NoWorkspaceGiven
+            | Error::StrayPane(_)
+            | Error::OwnServer(_)
+            | Error::PeopleAttached(_)
+            | Error::KillNeedsTarget(_)
             | Error::NoClientGiven
             | Error::NoClient(_)
             | Error::NoWorkspaces
@@ -470,9 +574,12 @@ pub struct Session {
     pub config_error: Option<crate::config::Error>,
     /// Paste buffers, newest first.
     pub buffers: VecDeque<String>,
-    /// The socket a started pane is told of, if panes start real
+    /// What a started pane is told of its server, if panes start real
     /// processes; tests of the state alone start none.
-    launch: Option<PathBuf>,
+    launch: Option<Launcher>,
+    /// Which run of a server this is: its panes' `FUX_SERVER`, by which a
+    /// command from a pane tells whether the pane is this server's.
+    pub server_id: String,
     pub outbox: Vec<Outgoing>,
     /// Closed panes' programs, by the pane they were in.
     pub dying: BTreeMap<PaneId, Dying>,
@@ -490,6 +597,8 @@ pub struct Session {
     /// Commands run that may change what any client shows; input that runs
     /// one repaints every client, input that runs none only its own.
     changes: u64,
+    /// The code of the last command's error, for `--json` to name it.
+    last_error: Option<&'static str>,
 }
 
 /// The name of the first workspace, and of each workspace's first tab.
@@ -536,6 +645,25 @@ fn shows_nothing_new(command: &Command) -> bool {
     )
 }
 
+/// Whether a command line asks for JSON: its failure is then JSON too.
+fn wants_json(argv: &[String]) -> bool {
+    argv.iter().take_while(|a| *a != "--").any(|a| a == "--json")
+}
+
+/// A command that needed its caller's pane, tab or workspace, from a caller
+/// whose `FUX_PANE` is another server's pane: why it got none.
+fn stray(error: Error, origin: &Origin) -> Error {
+    match (error, origin) {
+        (
+            Error::NoPaneGiven | Error::NoTabGiven | Error::NoWorkspaceGiven,
+            Origin::Cli(Caller {
+                stray: Some(pane), ..
+            }),
+        ) => Error::StrayPane(pane.clone()),
+        (error, _) => error,
+    }
+}
+
 fn basename(program: &str) -> String {
     Path::new(program)
         .file_name()
@@ -544,6 +672,11 @@ fn basename(program: &str) -> String {
 
 impl Session {
     pub fn new(config: Config, socket: PathBuf, launch: bool) -> Session {
+        // The process and the moment it started: no two runs share both.
+        let since = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let server_id = format!("{}-{since:x}", std::process::id());
         Session {
             workspaces: Vec::new(),
             panes: BTreeMap::new(),
@@ -552,7 +685,11 @@ impl Session {
             config_path: None,
             config_error: None,
             buffers: VecDeque::new(),
-            launch: launch.then_some(socket),
+            launch: launch.then(|| Launcher {
+                socket,
+                server: server_id.clone(),
+            }),
+            server_id,
             outbox: Vec::new(),
             dying: BTreeMap::new(),
             last_colours: crate::outer::Colours::default(),
@@ -561,6 +698,7 @@ impl Session {
             placed: Placement::default(),
             ids: Ids::default(),
             changes: 0,
+            last_error: None,
         }
     }
 
@@ -643,10 +781,11 @@ impl Session {
                 let place = self.place(client).ok_or(Error::NoClient(client))?;
                 Ok(Here::Client(client, place))
             }
-            Origin::Cli { pane, ref cwd } => {
+            Origin::Cli(ref caller) => {
+                let pane = caller.pane;
                 let at = pane.and_then(|p| self.locate(p));
                 let at = at.map(|(ws, tab)| Place { ws, tab, pane });
-                Ok(Here::Cli(pane, at, cwd.as_deref()))
+                Ok(Here::Cli(pane, at, caller.cwd.as_deref()))
             }
             Origin::Nowhere => Ok(Here::Cli(None, None, None)),
         }
@@ -698,13 +837,13 @@ impl Session {
         }
         let size = pane.size();
         let mut vars = Vec::new();
-        if let Some(socket) = &self.launch {
-            vars.push(("FUX_PANE", id.to_string()));
-            vars.push(("FUX_SOCKET", socket.to_string_lossy().into_owned()));
+        if let Some(launcher) = &self.launch {
+            vars.extend(launcher.vars(id));
         }
         vars.extend(launch.env.iter().map(|(k, v)| (k.as_str(), v.clone())));
         let child = match &self.launch {
-            Some(socket) => {
+            Some(launcher) => {
+                let socket = &launcher.socket;
                 let (argv, marks) = with_marks(&self.config, socket, &launch.argv, &launch.env);
                 vars.extend(marks.iter().map(|(k, v)| (k.as_str(), v.clone())));
                 Some(crate::process::spawn(&argv, &launch.cwd, &vars, size)?)
@@ -976,7 +1115,7 @@ impl Session {
         let mut ids = self.ids;
         let id = ids.workspace()?;
         let tab = ids.tab()?;
-        let launch = self.launch.as_deref();
+        let launch = self.launch.as_ref();
         let pane = new_pane(&self.config, launch, &mut ids, start, cwd, size)?;
         self.ids = ids;
         let name = name.unwrap_or_else(|| self.workspace_name(id));
@@ -1005,7 +1144,7 @@ impl Session {
         // As for a workspace: the ID first, committed after the pane.
         let mut ids = self.ids;
         let id = ids.tab()?;
-        let launch = self.launch.as_deref();
+        let launch = self.launch.as_ref();
         let pane = new_pane(&self.config, launch, &mut ids, start, cwd, size)?;
         self.ids = ids;
         let made = (id, pane.id);
@@ -1650,6 +1789,30 @@ impl Session {
     /// which the server asks for its answer until it has one; any other
     /// runs as `run` runs it.
     pub fn begin(&mut self, argv: &[String], origin: &Origin) -> Begun {
+        self.last_error = None;
+        match self.begin_line(argv, origin) {
+            // With --json, its failure is JSON too, on stderr.
+            Begun::Done(mut outcome) if wants_json(argv) && outcome.status != 0 => {
+                let text = outcome.stderr.trim_end();
+                if !text.is_empty() && !text.starts_with('{') {
+                    let code = match (outcome.status, self.last_error) {
+                        (_, Some(code)) => code,
+                        (2, None) => "usage",
+                        (_, None) => "failed",
+                    };
+                    outcome.stderr = Json::Object(vec![
+                        ("error", Json::str(code)),
+                        ("message", Json::str(text)),
+                    ])
+                    .render();
+                }
+                Begun::Done(outcome)
+            }
+            begun => begun,
+        }
+    }
+
+    fn begin_line(&mut self, argv: &[String], origin: &Origin) -> Begun {
         let argv = match self.named(argv) {
             Ok(argv) => argv,
             Err(stderr) => {
@@ -1664,7 +1827,7 @@ impl Session {
             Begun::Done(Outcome {
                 status: 1,
                 stdout: String::new(),
-                stderr: error.to_string(),
+                stderr: stray(error, origin).to_string(),
             })
         };
         let (targets, wait, keys) = match command::parse(&argv) {
@@ -1868,11 +2031,15 @@ impl Session {
                 stdout,
                 stderr: String::new(),
             },
-            Err(error) => Outcome {
-                status: 1,
-                stdout: String::new(),
-                stderr: error.to_string(),
-            },
+            Err(error) => {
+                let error = stray(error, origin);
+                self.last_error = Some(error.code());
+                Outcome {
+                    status: 1,
+                    stdout: String::new(),
+                    stderr: error.to_string(),
+                }
+            }
         };
         if !shows_nothing_new(command) {
             self.changes = self.changes.wrapping_add(1);
@@ -1961,7 +2128,18 @@ impl Session {
         let here = self.here(origin)?;
         match command {
             &Command::Ls { json } => Ok(if json { self.ls_json() } else { self.ls_text() }),
-            &Command::KillServer => {
+            &Command::KillServer { force } => {
+                if let (Origin::Cli(caller), false) = (origin, force) {
+                    if let Some(pane) = caller.pane.filter(|p| self.panes.contains_key(p)) {
+                        return Err(Error::OwnServer(pane));
+                    }
+                    let people = (self.views.values())
+                        .filter(|v| v.kind == ClientKind::Terminal)
+                        .count();
+                    if people > 0 {
+                        return Err(Error::PeopleAttached(people));
+                    }
+                }
                 self.outbox
                     .push(Outgoing::Shutdown("stopped by fux kill-server".into()));
                 Ok(String::new())
@@ -2290,7 +2468,7 @@ impl Session {
                 let size = self.split_size(target, axis, here)?;
                 let tab = tab_of(&mut self.workspaces, target)?;
                 let mut ids = self.ids;
-                let launch = self.launch.as_deref();
+                let launch = self.launch.as_ref();
                 let pane = new_pane(
                     &self.config,
                     launch,
@@ -2322,6 +2500,9 @@ impl Session {
             // From the command line each says what it closed, so a script
             // or an agent knows; a key's close shows on the screen anyway.
             &Command::KillPane { target } => {
+                if let (Origin::Cli(_), None) = (origin, target) {
+                    return Err(Error::KillNeedsTarget("kill-pane -t %N"));
+                }
                 let pane = self.pane(target, here)?.id;
                 // A tab's last pane takes its tab, and a workspace's last
                 // tab its workspace: all of it is said.
@@ -2344,6 +2525,9 @@ impl Session {
                 Ok(closed(origin, &gone))
             }
             &Command::KillTab { target } => {
+                if let (Origin::Cli(_), None) = (origin, target) {
+                    return Err(Error::KillNeedsTarget("kill-tab -t @N"));
+                }
                 let tab = self.tab_target(target, here)?;
                 let panes = self.panes_of_tabs(&[tab]);
                 self.remove_tab(tab);
@@ -2351,6 +2535,9 @@ impl Session {
                 Ok(closed(origin, &[vec![tab.to_string()], panes].concat()))
             }
             Command::KillWorkspace { target } => {
+                if let (Origin::Cli(_), None) = (origin, target) {
+                    return Err(Error::KillNeedsTarget("kill-workspace -t WS"));
+                }
                 let ws = self.ws_target(target.as_ref(), here)?;
                 let tabs: Vec<TabId> = (self.workspace(ws).into_iter())
                     .flat_map(|w| w.tabs().iter().map(|t| t.id))
@@ -3033,7 +3220,7 @@ const SHELLS: &[&str] = &[
 /// What a close from the command line prints: `closed` and the ids gone.
 fn closed(origin: &Origin, ids: &[String]) -> String {
     match origin {
-        Origin::Cli { .. } => format!("closed {}\n", ids.join(" ")),
+        Origin::Cli(_) => format!("closed {}\n", ids.join(" ")),
         Origin::Client(_) | Origin::Nowhere => String::new(),
     }
 }
@@ -3059,6 +3246,25 @@ fn with_marks(
     }
 }
 
+/// What a started pane is told of its server: the socket to reach it by,
+/// and which run of it this is.
+#[derive(Clone, Debug)]
+struct Launcher {
+    socket: PathBuf,
+    server: String,
+}
+
+impl Launcher {
+    /// The variables that say so, to pane `id`.
+    fn vars(&self, id: PaneId) -> [(&'static str, String); 3] {
+        [
+            ("FUX_PANE", id.to_string()),
+            ("FUX_SOCKET", self.socket.to_string_lossy().into_owned()),
+            ("FUX_SERVER", self.server.clone()),
+        ]
+    }
+}
+
 /// What a new pane starts.
 #[derive(Clone, Copy)]
 enum Start<'a> {
@@ -3072,7 +3278,7 @@ enum Start<'a> {
 /// A new pane running what `start` says.
 fn new_pane(
     config: &Config,
-    launch: Option<&Path>,
+    launch: Option<&Launcher>,
     ids: &mut Ids,
     start: Start<'_>,
     cwd: &Path,
@@ -3112,13 +3318,10 @@ fn new_pane(
         .map(|c| basename(c))
         .unwrap_or_else(|| basename(&shell_program));
     let mut pane = Pane::new(id, name, runs, size, config.history_lines)?;
-    if let Some(socket) = launch {
-        let mut vars = vec![
-            ("FUX_PANE", id.to_string()),
-            ("FUX_SOCKET", socket.to_string_lossy().into_owned()),
-        ];
+    if let Some(launcher) = launch {
+        let mut vars = launcher.vars(id).to_vec();
         vars.extend(env.iter().map(|(k, v)| (k.as_str(), v.clone())));
-        let (argv, marks) = with_marks(config, socket, argv, env);
+        let (argv, marks) = with_marks(config, &launcher.socket, argv, env);
         vars.extend(marks.iter().map(|(k, v)| (k.as_str(), v.clone())));
         pane.process = Process::Reading(crate::process::spawn(&argv, cwd, &vars, size)?);
     }

@@ -6,6 +6,8 @@
 
 /// `docs/agents.md`.
 pub const AGENTS: &str = include_str!("../docs/agents.md");
+/// What `--json` prints, command by command (`fux help json`).
+pub const JSON: &str = include_str!("../docs/json.md");
 
 /// The help for the command named `name`: its usage, what it does, and
 /// more on its flags with an example where it has them; `None` if no

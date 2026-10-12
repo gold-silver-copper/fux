@@ -727,6 +727,24 @@ impl Config {
     /// defaults; `None` if there is no file. Any error names its file and
     /// line, and nothing applies.
     pub fn from_file(path: &Path) -> Result<Option<Config>, Error> {
+        let Some((config, errors)) = Config::read(path)? else {
+            return Ok(None);
+        };
+        match errors.into_iter().next() {
+            Some(error) => Err(error),
+            None => Ok(Some(config)),
+        }
+    }
+
+    /// Every error in the config file at `path`, each with its line; none
+    /// if there is no file (`fux check-config`).
+    pub fn check(path: &Path) -> Result<Vec<Error>, Error> {
+        Ok(Config::read(path)?.map_or_else(Vec::new, |(_, errors)| errors))
+    }
+
+    /// The config file at `path`, every line applied that can be, and why
+    /// each other line is refused; `None` if there is no file.
+    fn read(path: &Path) -> Result<Option<(Config, Vec<Error>)>, Error> {
         let mut config = Config::default();
         let text = match read_bounded(path) {
             Ok(text) => text,
@@ -738,19 +756,23 @@ impl Config {
                 });
             }
         };
+        let mut errors = Vec::new();
         for (number, line) in text.lines().enumerate() {
             let at = |error: Error| Error::Line {
                 path: path.to_owned(),
                 line: number.saturating_add(1),
                 error: Box::new(error),
             };
-            let argv = words::split(line).map_err(|e| at(e.into()))?;
-            if argv.is_empty() {
-                continue;
+            let applied = (words::split(line).map_err(Error::from))
+                .and_then(|argv| match argv.is_empty() {
+                    true => Ok(()),
+                    false => config.apply(&argv),
+                });
+            if let Err(error) = applied {
+                errors.push(at(error));
             }
-            config.apply(&argv).map_err(at)?;
         }
-        Ok(Some(config))
+        Ok(Some((config, errors)))
     }
 
     /// Settings as `fux` commands, for display.

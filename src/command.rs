@@ -272,7 +272,11 @@ pub enum Command {
     Ls {
         json: bool,
     },
-    KillServer,
+    /// Stops the server; from the CLI, refused from one of its own panes
+    /// or with people attached unless forced.
+    KillServer {
+        force: bool,
+    },
     ListKeys,
     NewWorkspace {
         name: Option<String>,
@@ -771,7 +775,7 @@ const PANES: &[Spec] = &[
           a program in a tab of its own, in workspace agent; it stays once the program exits", Flags(run)),
     spec("signal [-t %N] TERM|KILL|INT|HUP|QUIT|USR1|USR2|STOP|CONT|TSTP|WINCH [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json]  \
           a signal to what runs in the pane's foreground, never its shell", Flags(signal)),
-    spec("kill-pane [-t %N]  close, without asking", Flags(|a| {
+    spec("kill-pane [-t %N]  close, without asking; -t is needed from the command line", Flags(|a| {
         Ok(Command::KillPane { target: a.pane()? })
     })),
     spec("zoom [-c CLIENT]", Screen(|_| Ok(ClientAction::Zoom))),
@@ -857,7 +861,9 @@ const SESSION: &[Spec] = &[
     spec("command-prompt [-c CLIENT]", Screen(|_| Ok(ClientAction::CommandPrompt))),
     spec("command-column [-c CLIENT]", Screen(|_| Ok(ClientAction::CommandColumn))),
     spec("reload  run the config file again", Flags(|_| Ok(Command::Reload))),
-    spec("kill-server", Flags(|_| Ok(Command::KillServer))),
+    spec("kill-server [--force]  stop the server; from one of its panes, or with people attached, only --force", Flags(|a| {
+        Ok(Command::KillServer { force: a.has("--force") })
+    })),
 ];
 
 #[rustfmt::skip]
@@ -991,7 +997,8 @@ impl<'a> Args<'a> {
                 args.positional.push(word);
                 continue;
             }
-            let value = match spec.flag(word) {
+            // Any command takes --json: its errors are then JSON.
+            let value = match spec.flag(word).or((word == "--json").then_some(false)) {
                 None => {
                     return Err(Usage::UnknownFlag {
                         command: name,

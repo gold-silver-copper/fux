@@ -87,7 +87,7 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "no fux server is running at {} (its socket is left from one that stopped); \
-                     `fux` in a terminal starts one, or `fux server --socket PATH &` one with no terminal",
+                     `fux` in a terminal starts one, or `fux [-L NAME] server --background` one with no terminal",
                     path.display()
                 )
             }
@@ -255,13 +255,15 @@ pub fn command(socket: &SocketPath, argv: &[String]) -> Result<u8, Error> {
     let cwd = std::env::current_dir()
         .map(|d| d.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let pane = std::env::var("FUX_PANE").ok().filter(|p| !p.is_empty());
+    let var = |name| std::env::var(name).ok().filter(|v| !v.is_empty());
     send(
         &mut stream,
         &Command {
             argv: argv.to_vec(),
             cwd,
-            pane,
+            pane: var("FUX_PANE"),
+            server: var("FUX_SERVER"),
+            env: environment(),
         },
     )?;
     let (mut stdout, mut stderr) = (std::io::stdout(), std::io::stderr());
@@ -283,6 +285,14 @@ pub fn command(socket: &SocketPath, argv: &[String]) -> Result<u8, Error> {
             None => return Err(Error::Closed),
         }
     }
+}
+
+/// This process's environment, as far as it is UTF-8: the server gives
+/// panes started for it what `update-environment` names of it.
+fn environment() -> Vec<(String, String)> {
+    std::env::vars_os()
+        .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+        .collect()
 }
 
 /// Stops the server, whatever fux version it is.
@@ -308,9 +318,55 @@ pub fn kill_server(socket: &SocketPath) -> Result<(), Error> {
 /// outlives the terminal the client ran in.
 pub const SETSID: &str = "--setsid";
 
+/// What answers on a socket: nothing, or a server, its protocol and
+/// version.
+pub enum Probe {
+    Absent,
+    Server { protocol: u32, version: String },
+}
+
+/// Who answers on `socket`, asking only for its `Hello`, which every
+/// version answers.
+pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
+    match crate::socket::check_client_socket(socket) {
+        Err(crate::socket::Error::NoServer(_)) => return Ok(Probe::Absent),
+        Err(error) => return Err(error.into()),
+        Ok(()) => {}
+    }
+    let mut stream = match UnixStream::connect(socket.path()) {
+        Ok(stream) => stream,
+        // A socket left by a server that is gone.
+        Err(e) if e.kind() == ErrorKind::ConnectionRefused => return Ok(Probe::Absent),
+        Err(source) => {
+            return Err(Error::Connect {
+                path: socket.path().to_owned(),
+                source,
+            });
+        }
+    };
+    let ours = Hello {
+        protocol: PROTOCOL,
+        version: env!("CARGO_PKG_VERSION"),
+        role: Role::Command,
+    };
+    send(&mut stream, &ours)?;
+    let mut decoder = Decoder::default();
+    let mut buffer = vec![0u8; 4096];
+    let wait = Some(Duration::from_secs(5));
+    match read_frame(&mut stream, &mut decoder, &mut buffer, wait)? {
+        Some(ServerFrame::Hello(theirs)) => Ok(Probe::Server {
+            protocol: theirs.protocol,
+            version: theirs.version.to_owned(),
+        }),
+        Some(ServerFrame::Exit(reason)) => Err(Error::Refused(reason.to_owned())),
+        Some(_) | None => Err(Error::NoAnswer),
+    }
+}
+
 /// Starts a server in the background, in a new session with its output in
-/// `fux.log` beside the socket, and waits for it to answer.
-pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
+/// `fux.log` beside the socket, given `flags` (`--config FILE`), and waits
+/// for it to answer.
+pub fn start_server(socket: &SocketPath, flags: &[String]) -> Result<(), Error> {
     let exe = std::env::current_exe().map_err(Error::Exe)?;
     crate::socket::prepare_directory(socket)?;
     let log = socket.directory().join("fux.log");
@@ -326,6 +382,7 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
         .arg("--socket")
         .arg(socket.path())
         .arg(SETSID)
+        .args(flags)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(output);
@@ -360,8 +417,13 @@ fn window_size() -> (NonZeroU16, NonZeroU16) {
         .map_or((fallback(24), fallback(80)), |s| (s.rows, s.cols))
 }
 
-/// Attaches this terminal to the server until detach or the server's end.
-pub fn attach(socket: &SocketPath, workspace: Option<String>) -> Result<(), Error> {
+/// Attaches this terminal to the server until detach or the server's end;
+/// `read_only`, to watch it.
+pub fn attach(
+    socket: &SocketPath,
+    workspace: Option<String>,
+    read_only: bool,
+) -> Result<(), Error> {
     let stdin = std::io::stdin();
     if !std::io::IsTerminal::is_terminal(&stdin) {
         return Err(Error::NotATerminal);
@@ -377,6 +439,8 @@ pub fn attach(socket: &SocketPath, workspace: Option<String>) -> Result<(), Erro
         rows,
         cols,
         workspace: workspace.as_deref(),
+        read_only,
+        env: environment(),
     };
     let result = send_with_terminal(&mut stream, &attach, &stdin)
         .and_then(|()| terminal_taken(&mut stream, &mut decoder, &raw.signals))
@@ -410,6 +474,8 @@ pub fn headless(
         rows,
         cols,
         workspace: workspace.as_deref(),
+        read_only: false,
+        env: environment(),
     };
     send(&mut stream, &attach)?;
     let mut stdout = std::io::stdout();

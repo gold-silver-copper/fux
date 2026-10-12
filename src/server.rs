@@ -11,7 +11,7 @@ use crate::protocol::{
     Attach, AttachedFrame, Command, Decoder, Frame, Hello, Mismatch, PROTOCOL, Role, ServerFrame,
 };
 use crate::render::{self, Grid};
-use crate::session::{Begun, Dying, Origin, Outcome, Outgoing, Session, Timer};
+use crate::session::{Begun, Caller, Dying, Origin, Outcome, Outgoing, Session, Timer};
 use crate::socket::{Endpoint, SocketPath};
 use crate::view::ClientKind;
 use crate::wait::Waiting;
@@ -501,7 +501,7 @@ impl std::error::Error for Error {
 
 /// Runs a server on `socket` until it is told to stop or its last pane
 /// closes.
-pub fn serve(socket: &SocketPath, config_path: Option<PathBuf>) -> Result<(), Error> {
+pub fn serve(socket: &SocketPath, config_path: Option<PathBuf>, fresh: bool) -> Result<(), Error> {
     let (config, error) = match &config_path {
         Some(path) => match Config::from_file(path) {
             Ok(config) => (config.unwrap_or_default(), None),
@@ -1186,6 +1186,8 @@ impl Server {
                     rows,
                     cols,
                     workspace,
+                    read_only,
+                    env,
                 }) = decoder.frame()?
                 else {
                     return Ok(false);
@@ -1193,6 +1195,10 @@ impl Server {
                 let (passed, kind) = (passed.take(), *kind);
                 match session.attach_as(kind, rows.get(), cols.get(), workspace) {
                     Ok(client) => {
+                        if let Some(view) = session.views.get_mut(&client) {
+                            view.read_only = read_only;
+                            view.env = env;
+                        }
                         // The client's terminal, if it sent it: taken, the
                         // client is told before anything is painted.
                         let tty = passed.map(|fd| fuxix::terminal::reopen(&fd).ok());
@@ -1228,13 +1234,26 @@ impl Server {
                 None => return Ok(false),
             },
             Stage::Command => {
-                let Some(Command { argv, cwd, pane }) = decoder.frame()? else {
+                let Some(Command {
+                    argv,
+                    cwd,
+                    pane,
+                    server,
+                    env,
+                }) = decoder.frame()?
+                else {
                     return Ok(false);
                 };
-                let origin = Origin::Cli {
+                // A pane of another server's (FUX_PANE kept as FUX_SOCKET
+                // or -L chose this one) is not the caller's here.
+                let ours = server.as_deref().is_none_or(|s| s == session.server_id);
+                let (pane, stray) = if ours { (pane, None) } else { (None, pane) };
+                let origin = Origin::Cli(Caller {
                     pane: pane.and_then(|p| crate::command::parse_pane(&p).ok()),
                     cwd: Some(PathBuf::from(cwd)).filter(|p| p.is_dir()),
-                };
+                    stray,
+                    env,
+                });
                 match session.begin(&argv, &origin) {
                     Begun::Done(outcome) => conn.answer(session, outcome),
                     Begun::Waiting(waiting) => conn.enter(session, Stage::Waiting(waiting)),
