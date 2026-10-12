@@ -419,7 +419,7 @@ impl Wire for CopyAct {
                 tag(out, 255);
                 line.put(out);
             }
-            other => {
+            other @ (CopyAct::Leave | CopyAct::Left | CopyAct::Right | CopyAct::Up | CopyAct::Down | CopyAct::WordForward | CopyAct::WordBack | CopyAct::FirstInk | CopyAct::LastInk | CopyAct::LineStart | CopyAct::Top | CopyAct::Bottom | CopyAct::HalfUp | CopyAct::HalfDown | CopyAct::PageUp | CopyAct::PageDown | CopyAct::SearchForward | CopyAct::SearchBackward | CopyAct::Next | CopyAct::Previous | CopyAct::PromptBack | CopyAct::PromptForward | CopyAct::SelectChar | CopyAct::SelectLine | CopyAct::SelectBlock | CopyAct::OtherEnd | CopyAct::Yank) => {
                 let index = COPY.iter().position(|c| c == other).unwrap_or(0);
                 out.push(u8::try_from(index).unwrap_or(0));
             }

@@ -593,7 +593,7 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
                 let typed: String = typed.chars().filter(|c| !c.is_control()).collect();
                 text.insert(&typed);
             }
-            line => edit(text, &line),
+            line @ (LineAct::Backspace | LineAct::Delete | LineAct::Left | LineAct::Right | LineAct::Home | LineAct::End) => edit(text, &line),
         }
         return;
     }

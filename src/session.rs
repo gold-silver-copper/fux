@@ -673,6 +673,20 @@ pub struct Outcome {
     pub code: Option<&'static str>,
 }
 
+impl From<Outcome> for crate::protocol::Reply {
+    fn from(outcome: Outcome) -> crate::protocol::Reply {
+        crate::protocol::Reply {
+            status: outcome.status,
+            code: outcome.code.map(str::to_owned),
+            message: outcome.stderr,
+            text: outcome.stdout,
+            json: outcome.json,
+            ids: outcome.ids,
+            value: outcome.value,
+        }
+    }
+}
+
 /// What a command line from the CLI begins: its outcome, now, or a wait
 /// for one (`wait`, `send-keys --wait-idle`).
 pub enum Begun {
@@ -738,6 +752,12 @@ pub struct Session {
     /// The sockets `fux grant` made, each with the workspace it reaches,
     /// for `ls` to list: the server holds them.
     pub grants: Vec<(PathBuf, String)>,
+    /// In tests, each client's keys as its own client would read them
+    /// (`Session::input`), and the keymap every client and run shares.
+    #[cfg(test)]
+    pub(crate) test_keys: BTreeMap<ClientId, testing::Keys>,
+    #[cfg(test)]
+    pub(crate) test_keymap: crate::keymap::Keymap,
 }
 
 /// How the panes a command starts start: the variables they take from
@@ -1019,6 +1039,10 @@ impl Session {
             starting: Starting::default(),
             restoring: false,
             grants: Vec::new(),
+            #[cfg(test)]
+            test_keys: BTreeMap::new(),
+            #[cfg(test)]
+            test_keymap: crate::keymap::Keymap::default(),
         }
     }
 
@@ -1375,6 +1399,31 @@ impl Session {
                 }
             }
         };
+        // A pane's or tab's id stands for its tab or workspace, and a tab
+        // of one pane for that pane.
+        let pane = text.parse::<PaneId>().ok();
+        let tab = text.parse::<TabId>().ok();
+        if let (Kind::Tab | Kind::Workspace, Some(p)) = (kind, pane) {
+            let (ws, tab) = self.locate(p).ok_or(Error::NoPane(p))?;
+            return Ok(match kind {
+                Kind::Tab => AnyRef::Tab(tab),
+                Kind::Pane | Kind::Workspace => AnyRef::Workspace(ws),
+            });
+        }
+        if let (Kind::Workspace, Some(t)) = (kind, tab) {
+            return self.tab_workspace(t).map(AnyRef::Workspace);
+        }
+        if let (Kind::Pane, Some(t)) = (kind, tab) {
+            let panes = self.root(t).map(Tree::panes).ok_or(Error::NoTab(t))?;
+            return match panes.as_slice() {
+                [pane] => Ok(AnyRef::Pane(*pane)),
+                panes => Err(Error::NotNamed(format!(
+                    "{t} is a tab of {} panes ({}): use a pane's id",
+                    panes.len(),
+                    ids(panes).join(" ")
+                ))),
+            };
+        }
         match kind {
             Kind::Pane if text.is_empty() => Ok(AnyRef::Pane(self.pane(None, here)?.id)),
             Kind::Pane => match text.parse::<PaneId>() {
@@ -2341,7 +2390,9 @@ impl Session {
             Command::Wait { targets, wait } => {
                 (targets.into_iter().map(AnyRef::Pane).collect(), wait, None)
             }
-            command if command.acting_wait().is_some() => {
+            command @ (Command::Ls { .. } | Command::KillServer { .. } | Command::NewWorkspace { .. } | Command::NewTab { .. } | Command::Split { .. } | Command::Run { .. } | Command::Respawn { .. } | Command::Notify { .. } | Command::Resize { .. } | Command::SendMouse { .. } | Command::KillPane { .. } | Command::Signal { .. } | Command::KillTab { .. } | Command::KillWorkspace { .. } | Command::Rename { .. } | Command::MovePane { .. } | Command::SwapPane { .. } | Command::ResizePane { .. } | Command::SendKeys { .. } | Command::DumpLayout { .. } | Command::Grant { .. } | Command::Log { .. } | Command::ClearHistory { .. } | Command::CapturePane { .. } | Command::Reorder { .. } | Command::Set { .. } | Command::Resolve { .. } | Command::ListBuffers | Command::ShowBuffer { .. } | Command::PasteBuffer { .. } | Command::Client { .. })
+                if command.acting_wait().is_some() =>
+            {
                 let Some((targets, wait)) = command.acting_wait() else {
                     return Begun::Done(self.run_command(&command, origin));
                 };
@@ -2391,7 +2442,7 @@ impl Session {
                 };
                 return self.start_waiting(&respawn, *wait, origin);
             }
-            command => return Begun::Done(self.run_command(&command, origin)),
+            command @ (Command::Ls { .. } | Command::KillServer { .. } | Command::NewWorkspace { .. } | Command::NewTab { .. } | Command::Split { .. } | Command::Run { .. } | Command::Respawn { .. } | Command::Notify { .. } | Command::Resize { .. } | Command::SendMouse { .. } | Command::KillPane { .. } | Command::Signal { .. } | Command::KillTab { .. } | Command::KillWorkspace { .. } | Command::Rename { .. } | Command::MovePane { .. } | Command::SwapPane { .. } | Command::ResizePane { .. } | Command::SendKeys { .. } | Command::DumpLayout { .. } | Command::Grant { .. } | Command::Log { .. } | Command::ClearHistory { .. } | Command::CapturePane { .. } | Command::Reorder { .. } | Command::Set { .. } | Command::Resolve { .. } | Command::ListBuffers | Command::ShowBuffer { .. } | Command::PasteBuffer { .. } | Command::Client { .. }) => return Begun::Done(self.run_command(&command, origin)),
         };
         let here = match self.here(origin) {
             Ok(here) => here,
@@ -2483,7 +2534,7 @@ impl Session {
             Command::DumpLayout { target: None } => Command::DumpLayout {
                 target: Some(AnyRef::Workspace(WsRef::Name(scope.to_owned()))),
             },
-            other => other,
+            other @ (Command::Ls { .. } | Command::KillServer { .. } | Command::NewWorkspace { .. } | Command::NewTab { .. } | Command::Split { .. } | Command::Run { .. } | Command::Respawn { .. } | Command::Notify { .. } | Command::Resize { .. } | Command::Wait { .. } | Command::SendMouse { .. } | Command::KillPane { .. } | Command::Signal { .. } | Command::KillTab { .. } | Command::KillWorkspace { .. } | Command::Rename { .. } | Command::MovePane { .. } | Command::SwapPane { .. } | Command::ResizePane { .. } | Command::SendKeys { .. } | Command::Events { .. } | Command::DumpLayout { .. } | Command::Grant { .. } | Command::Log { .. } | Command::ClearHistory { .. } | Command::CapturePane { .. } | Command::Reorder { .. } | Command::Set { .. } | Command::Resolve { .. } | Command::ListBuffers | Command::ShowBuffer { .. } | Command::PasteBuffer { .. } | Command::Client { .. }) => other,
         };
         let reach = Reach {
             session: self,
@@ -4031,7 +4082,8 @@ fn tab_of(workspaces: &mut [Workspace], id: PaneId) -> Result<&mut Tab, Error> {
 /// config, a client attached, and a command line run in it.
 #[cfg(test)]
 pub(crate) mod testing {
-    use super::{Origin, Session};
+    use super::{Origin, Outcome, Session};
+    use std::io::Write;
     use crate::config::Config;
     use crate::id::ClientId;
 
@@ -4057,21 +4109,155 @@ pub(crate) mod testing {
         Ok((session, client))
     }
 
-    /// Runs `line` as a command from no client: what it printed, or its
-    /// error if it fails.
-    pub(crate) fn output(session: &mut Session, line: &str) -> Result<String, String> {
-        let words = crate::words::split(line).map_err(|e| e.to_string())?;
-        let outcome = session.run(&words, &Origin::default());
-        if outcome.status == 0 {
-            Ok(outcome.stdout)
-        } else {
-            Err(outcome.stderr)
+    /// A session itself, as what a program's requests go to: each is begun
+    /// at once, and a wait answered as it stands, there being no programs
+    /// to wait on.
+    pub(crate) struct InProcess<'s>(pub &'s mut Session);
+
+    impl crate::script::Asks for InProcess<'_> {
+        fn ask(
+            &mut self,
+            request: &crate::protocol::Request,
+            out: &mut dyn std::io::Write,
+        ) -> Result<crate::protocol::Reply, crate::script::Failed> {
+            let session = &mut *self.0;
+            let origin = match request.context.client {
+                Some(client) if session.views.contains_key(&client) => Origin::Client(client),
+                Some(_) | None => Origin::default(),
+            };
+            let outcome = match session.begin(request.command.clone(), &origin) {
+                super::Begun::Done(outcome) => outcome,
+                super::Begun::Waiting(mut waiting) => {
+                    let later = crate::after(std::time::Instant::now(), waiting.wait.timeout);
+                    waiting.answer(session, later).unwrap_or_default()
+                }
+                super::Begun::Events(_) => {
+                    let _ = writeln!(out, "events stream from a real server only");
+                    Outcome::default()
+                }
+            };
+            Ok(outcome.into())
         }
     }
 
-    /// Runs `line` as a command from no client; its error, if it fails.
-    pub(crate) fn run(session: &mut Session, line: &str) -> Result<(), String> {
-        output(session, line).map(|_| ())
+    /// Runs fuxth `code` as client `client` would, or from no client: what
+    /// it printed and what it left, a value a line; or its failure.
+    pub(crate) fn output_as(session: &mut Session, client: Option<ClientId>, code: &str) -> Result<String, String> {
+        let tokens = fuxth::token::source("test", code).map_err(|e| e.to_string())?;
+        let mut machine = crate::script::compile(&tokens).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        let mut keymap = std::mem::take(&mut session.test_keymap);
+        let context = crate::protocol::Context {
+            client,
+            ..crate::protocol::Context::default()
+        };
+        let mut host = crate::script::Host {
+            context,
+            keymap: Some(&mut keymap),
+            last_bound: None,
+            out: &mut out,
+        };
+        let ended = crate::script::run(&mut machine, &mut host, &mut InProcess(session));
+        session.test_keymap = keymap;
+        let ended = ended.map_err(|e| e.to_string())?;
+        let mut text = String::from_utf8_lossy(&out).into_owned();
+        for value in &ended.stack {
+            text.push_str(&crate::script::display(value));
+            text.push('\n');
+        }
+        Ok(text)
+    }
+
+    /// Runs fuxth `code` from no client: what it printed and left, or its
+    /// failure.
+    pub(crate) fn output(session: &mut Session, code: &str) -> Result<String, String> {
+        output_as(session, None, code)
+    }
+
+    /// Runs fuxth `code` from no client; its failure, if it fails.
+    pub(crate) fn run(session: &mut Session, code: &str) -> Result<(), String> {
+        output(session, code).map(drop)
+    }
+
+    /// A client's keys, as its client reads them: its decoder, and what its
+    /// keys are in the middle of.
+    #[derive(Default)]
+    pub(crate) struct Keys {
+        held: crate::keymap::Held,
+        decoder: crate::decode::Decoder,
+    }
+
+    impl Session {
+        /// Bytes typed at client `client`'s terminal, as its client would
+        /// take them: through its keys (the session's `test_keymap`), each
+        /// action sent, each binding's program run as the client.
+        pub(crate) fn input(&mut self, client: ClientId, bytes: &[u8]) {
+            let mut keys = self.test_keys.remove(&client).unwrap_or_default();
+            let mut inputs = Vec::new();
+            let now = std::time::Instant::now();
+            keys.decoder.expire(now);
+            keys.decoder.bytes(bytes, &mut inputs);
+            keys.decoder.mark(now);
+            self.inputs(client, &mut keys, inputs);
+            self.test_keys.insert(client, keys);
+        }
+
+        /// The decoder's wait passed: what waited is taken as it is.
+        pub(crate) fn escape(&mut self, client: ClientId) {
+            let mut keys = self.test_keys.remove(&client).unwrap_or_default();
+            let mut inputs = Vec::new();
+            keys.decoder.timeout(&mut inputs);
+            self.inputs(client, &mut keys, inputs);
+            self.test_keys.insert(client, keys);
+        }
+
+        fn inputs(&mut self, client: ClientId, keys: &mut Keys, inputs: Vec<crate::decode::Input>) {
+            use crate::act::Act;
+            use crate::decode::Input;
+            for input in inputs {
+                let Some(view) = self.views.get(&client) else {
+                    return;
+                };
+                let (mode, read_only) = (crate::view::mode_name(&view.mode), view.read_only);
+                if !matches!(mode, "normal" | "column" | "repeat") {
+                    keys.held = crate::keymap::Held::Normal;
+                }
+                let act = match input {
+                    Input::Key(stroke) => {
+                        let keymap = self.test_keymap.clone();
+                        for step in keys.held.press(&keymap, mode, stroke, read_only) {
+                            match step {
+                                crate::keymap::Step::Send(act) => self.acts(client, vec![act]),
+                                crate::keymap::Step::Run(code) => match output_as(self, Some(client), &code) {
+                                    Err(error) => self.error_to(client, error),
+                                    Ok(said) if !said.trim().is_empty() => {
+                                        self.info_to(client, said.trim().replace('\n', "  "));
+                                    }
+                                    Ok(_) => {}
+                                },
+                            }
+                        }
+                        continue;
+                    }
+                    Input::Reply(reply) => Act::Reply(reply),
+                    Input::Paste(_) | Input::PasteTooLong | Input::FocusIn | Input::FocusOut | Input::Mouse(_)
+                        if read_only =>
+                    {
+                        continue;
+                    }
+                    Input::Paste(text) => Act::Paste(text),
+                    Input::PasteTooLong => {
+                        let limit = crate::decode::PASTE_LIMIT / 1024;
+                        let text = format!("paste exceeds {limit} KiB; discarded");
+                        Act::Notice { text, error: true }
+                    }
+                    Input::FocusIn => Act::Focus(true),
+                    Input::FocusOut => Act::Focus(false),
+                    Input::Mouse(event) => Act::Mouse(event),
+                };
+                self.acts(client, vec![act]);
+            }
+        }
     }
 }
 

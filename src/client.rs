@@ -506,25 +506,26 @@ struct Ran {
     notice: Option<(String, bool)>,
 }
 
-/// The client's own keys: its keymap, what its keys are in the middle of,
-/// the mode the server says its view is in, and the worker that runs the
-/// programs its bindings and prompt give, one after another.
-struct Keyboard {
+/// An attached client's own keys: its keymap, what its keys are in the
+/// middle of, the mode the server says its view is in, the decoder its
+/// terminal's bytes go through, and the worker that runs the programs its
+/// bindings and prompt give, one after another, as the client. What each
+/// takes, it turns into the actions to send the server.
+pub struct Keyboard {
     keymap: Keymap,
     held: Held,
     mode: String,
     read_only: bool,
+    decoder: crate::decode::Decoder,
     jobs: std::sync::mpsc::Sender<Job>,
+    told: std::sync::mpsc::Receiver<Ran>,
+    wake: UnixStream,
 }
 
 impl Keyboard {
-    /// A keyboard for the client attached as `me` on `socket`: its worker
-    /// tells it what each job came to, and pokes `wake` to say so.
-    fn new(
-        socket: &SocketPath,
-        me: crate::id::ClientId,
-        attaching: &Attaching,
-    ) -> Result<(Keyboard, std::sync::mpsc::Receiver<Ran>, UnixStream), Error> {
+    /// The keyboard of the client attached as `me` on `socket`, with
+    /// `keymap`; `read_only` if it only watches.
+    pub fn new(socket: &SocketPath, me: crate::id::ClientId, keymap: Keymap, read_only: bool) -> Result<Keyboard, Error> {
         let (jobs, todo) = std::sync::mpsc::channel::<Job>();
         let (tell, told) = std::sync::mpsc::channel::<Ran>();
         let (wake, mut poke) = UnixStream::pair().map_err(Error::Signals)?;
@@ -541,14 +542,89 @@ impl Keyboard {
             }
         });
         spawned.map_err(Error::Signals)?;
-        let keyboard = Keyboard {
-            keymap: attaching.keymap.clone(),
+        let mut decoder = crate::decode::Decoder::default();
+        // The server asks the terminal about itself as the client attaches.
+        decoder.expect(Instant::now());
+        Ok(Keyboard {
+            keymap,
             held: Held::default(),
             mode: "normal".to_owned(),
-            read_only: attaching.read_only,
+            read_only,
+            decoder,
             jobs,
-        };
-        Ok((keyboard, told, wake))
+            told,
+            wake,
+        })
+    }
+
+    /// Readable when a program it ran is done (`Keyboard::ran`).
+    pub fn wake(&self) -> &UnixStream {
+        &self.wake
+    }
+
+    /// When what its terminal sent last is to be taken as it is: a lone
+    /// Escape, or an answer cut short (`Keyboard::timeout`).
+    pub fn deadline(&self) -> Option<Instant> {
+        self.decoder.deadline()
+    }
+
+    /// Bytes from its terminal, read at `now`.
+    pub fn bytes(&mut self, bytes: &[u8], now: Instant) -> Vec<Act> {
+        let mut inputs = Vec::new();
+        self.decoder.expire(now);
+        self.decoder.bytes(bytes, &mut inputs);
+        self.decoder.mark(now);
+        self.inputs(inputs)
+    }
+
+    /// The decoder's deadline passed: what waited is taken as it is.
+    pub fn timeout(&mut self) -> Vec<Act> {
+        let mut inputs = Vec::new();
+        self.decoder.timeout(&mut inputs);
+        self.inputs(inputs)
+    }
+
+    fn inputs(&mut self, inputs: Vec<Input>) -> Vec<Act> {
+        let mut acts = Vec::new();
+        for input in inputs {
+            self.input(input, &mut acts);
+        }
+        acts
+    }
+
+    /// A frame from the server: the mode its view is in, a program to run
+    /// (typed at its prompt), keys to take as typed (`send-keys` to it).
+    pub fn frame(&mut self, frame: ServerFrame<'_>) -> Vec<Act> {
+        let mut acts = Vec::new();
+        match frame {
+            ServerFrame::Mode(mode) => self.told(mode),
+            ServerFrame::Run(code) => self.run(code.to_owned()),
+            ServerFrame::Keys(typed) => self.typed(typed, &mut acts),
+            ServerFrame::Hello(_)
+            | ServerFrame::Paint(_)
+            | ServerFrame::Exit(_)
+            | ServerFrame::Stdout(_)
+            | ServerFrame::Stderr(_)
+            | ServerFrame::Done { .. }
+            | ServerFrame::Terminal { .. }
+            | ServerFrame::Reply(_) => {}
+        }
+        acts
+    }
+
+    /// What the programs it ran came to, those done.
+    pub fn ran(&mut self) -> Vec<Act> {
+        crate::drain(&self.wake);
+        let mut acts = Vec::new();
+        while let Ok(ran) = self.told.try_recv() {
+            if let Some(keymap) = ran.keymap {
+                self.keymap = keymap;
+            }
+            if let Some((text, error)) = ran.notice {
+                acts.push(Act::Notice { text, error });
+            }
+        }
+        acts
     }
 
     /// A key typed: the actions to send the server; the programs it runs go
@@ -582,7 +658,8 @@ impl Keyboard {
         match input {
             Input::Key(stroke) => self.press(stroke, acts),
             Input::Reply(reply) => acts.push(Act::Reply(reply)),
-            _ if self.read_only => {}
+            Input::Paste(_) | Input::PasteTooLong | Input::FocusIn | Input::FocusOut | Input::Mouse(_)
+                if self.read_only => {}
             Input::Paste(text) => acts.push(Act::Paste(text)),
             Input::PasteTooLong => {
                 let limit = crate::decode::PASTE_LIMIT / 1024;
@@ -609,16 +686,6 @@ impl Keyboard {
             }
         }
     }
-
-    /// A job done: its keymap kept, what it said shown.
-    fn ran(&mut self, ran: Ran, acts: &mut Vec<Act>) {
-        if let Some(keymap) = ran.keymap {
-            self.keymap = keymap;
-        }
-        if let Some((text, error)) = ran.notice {
-            acts.push(Act::Notice { text, error });
-        }
-    }
 }
 
 /// Runs a key's or the prompt's program as client `me`.
@@ -637,7 +704,7 @@ fn run_job(server: &mut crate::script::Server, me: crate::id::ClientId, job: Job
             last_bound: None,
             out: &mut out,
         };
-        crate::script::run(&mut machine, &mut host, server, &mut crate::script::refuse_local)
+        crate::script::run(&mut machine, &mut host, server)
     })();
     let notice = match result {
         Err(failed) => Some((failed.to_string(), true)),
@@ -804,12 +871,8 @@ fn attached(
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     let mut buffer = vec![0u8; 64 * 1024];
-    let mut keys = crate::decode::Decoder::default();
-    // The server asks the terminal about itself as the client attaches.
-    keys.expect(Instant::now());
-    let mut keyboard: Option<(Keyboard, std::sync::mpsc::Receiver<Ran>, UnixStream)> = None;
+    let mut keyboard: Option<Keyboard> = None;
     let mut acts = Vec::new();
-    let mut inputs = Vec::new();
     const STREAM: usize = 0;
     const WINCH: usize = 1;
     const STOPS: usize = 2;
@@ -818,69 +881,49 @@ fn attached(
     loop {
         // Every whole frame the server sent.
         while let Some(frame) = decoder.frame()? {
-            match frame {
-                ServerFrame::Paint(bytes) if terminal => {
-                    stdout.write_all(bytes).map_err(Error::WriteTerminal)?;
+            match (frame, &mut keyboard) {
+                (ServerFrame::Paint(bytes), _) => {
+                    if terminal {
+                        stdout.write_all(bytes).map_err(Error::WriteTerminal)?;
+                    }
                 }
-                ServerFrame::Paint(_) => {}
-                ServerFrame::Exit(reason) if keyboard.is_none() => {
-                    return Err(Error::Refused(reason.to_owned()));
-                }
-                ServerFrame::Exit(reason) => return Ok(reason.to_owned()),
-                ServerFrame::Stdout(said) if keyboard.is_none() => {
+                (ServerFrame::Exit(reason), None) => return Err(Error::Refused(reason.to_owned())),
+                (ServerFrame::Exit(reason), Some(_)) => return Ok(reason.to_owned()),
+                (ServerFrame::Stdout(said), None) => {
                     let said = String::from_utf8_lossy(said);
                     let me = said.trim().parse().map_err(|_| Error::NoAnswer)?;
                     if !terminal {
                         let _ = stdout.write_all(said.as_bytes()).and_then(|()| stdout.flush());
                     }
-                    let made = Keyboard::new(socket, me, attaching)?;
+                    let keymap = attaching.keymap.clone();
+                    keyboard = Some(Keyboard::new(socket, me, keymap, attaching.read_only)?);
                     if let Some(problem) = &attaching.problem {
                         acts.push(Act::Notice { text: problem.clone(), error: true });
                     }
-                    keyboard = Some(made);
                 }
-                ServerFrame::Mode(mode) => {
-                    if let Some((keyboard, ..)) = &mut keyboard {
-                        keyboard.told(mode);
-                    }
-                }
-                ServerFrame::Run(code) => {
-                    if let Some((keyboard, ..)) = &mut keyboard {
-                        keyboard.run(code.to_owned());
-                    }
-                }
-                ServerFrame::Keys(typed) => {
-                    if let Some((keyboard, ..)) = &mut keyboard {
-                        keyboard.typed(typed, &mut acts);
-                    }
-                }
-                ServerFrame::Hello(_)
-                | ServerFrame::Stdout(_)
-                | ServerFrame::Stderr(_)
-                | ServerFrame::Done { .. }
-                | ServerFrame::Terminal { .. }
-                | ServerFrame::Reply(_) => {}
+                (frame, Some(keyboard)) => acts.extend(keyboard.frame(frame)),
+                (_, None) => {}
             }
         }
         let _ = stdout.flush();
-        for act in acts.drain(..) {
+        for act in std::mem::take(&mut acts) {
             send(stream, &AttachedFrame::Act(Box::new(act)))?;
         }
-        let wake = keyboard.as_ref().map(|(_, _, wake)| wake);
         let mut fds = vec![
             PollFd::new(&*stream, PollFlags::IN),
             PollFd::new(winch, PollFlags::IN),
             PollFd::new(stops, PollFlags::IN),
         ];
-        if let Some(wake) = wake {
-            fds.push(PollFd::new(wake, PollFlags::IN));
-            // The keys only once the client knows itself, to run them.
+        // The keys only once the client knows itself, to run them.
+        if let Some(keyboard) = &keyboard {
+            fds.push(PollFd::new(keyboard.wake(), PollFlags::IN));
             if terminal {
                 fds.push(PollFd::new(&stdin, PollFlags::IN));
             }
         }
         // A lone Escape, or an answer cut short, waits until its deadline.
-        let timeout = keys.deadline().map(|at| at.saturating_duration_since(Instant::now()));
+        let deadline = keyboard.as_ref().and_then(Keyboard::deadline);
+        let timeout = deadline.map(|at| at.saturating_duration_since(Instant::now()));
         match fuxix::poll::poll(&mut fds, timeout) {
             Ok(_) | Err(fuxix::Errno::INTR) => {}
             Err(e) => return Err(Error::Poll(e)),
@@ -899,16 +942,13 @@ fn attached(
                 send(stream, &AttachedFrame::Resize { rows, cols })?;
             }
         }
-        if let Some((keyboard, told, wake)) = &mut keyboard {
+        if let Some(keyboard) = &mut keyboard {
             if is(WAKE) {
-                crate::drain(wake);
-                while let Ok(ran) = told.try_recv() {
-                    keyboard.ran(ran, &mut acts);
-                }
+                acts.extend(keyboard.ran());
             }
             let now = Instant::now();
-            if keys.deadline().is_some_and(|at| at <= now) {
-                keys.timeout(&mut inputs);
+            if keyboard.deadline().is_some_and(|at| at <= now) {
+                acts.extend(keyboard.timeout());
             }
             if is(TERMINAL) {
                 match fuxix::io::read(&stdin, &mut buffer) {
@@ -916,17 +956,10 @@ fn attached(
                         let _ = send(stream, &AttachedFrame::Detach);
                         return Ok("detached: the terminal closed".into());
                     }
-                    Ok(n) => {
-                        keys.expire(now);
-                        keys.bytes(buffer.get(..n).unwrap_or_default(), &mut inputs);
-                        keys.mark(now);
-                    }
+                    Ok(n) => acts.extend(keyboard.bytes(buffer.get(..n).unwrap_or_default(), now)),
                     Err(fuxix::Errno::INTR | fuxix::Errno::AGAIN) => {}
                     Err(e) => return Err(Error::ReadTerminal(e)),
                 }
-            }
-            for input in inputs.drain(..) {
-                keyboard.input(input, &mut acts);
             }
         }
         if is(STREAM) {

@@ -377,7 +377,7 @@ pub fn list_act(session: &mut Session, client: ClientId, act: ListAct) {
             };
             match act {
                 ListAct::Rename => ClientAction::RenamePrompt(subject).here(),
-                _ => ClientAction::ConfirmClose(subject).here(),
+                ListAct::Up | ListAct::Down | ListAct::PageUp | ListAct::PageDown | ListAct::First | ListAct::Last | ListAct::Choose | ListAct::Cancel | ListAct::Close => ClientAction::ConfirmClose(subject).here(),
             }
         }
     };
@@ -409,7 +409,7 @@ pub fn prompt_act(session: &mut Session, client: ClientId, act: LineAct) {
                 .collect();
             prompt.line.insert(&line);
         }
-        act => crate::copy::edit(&mut prompt.line, &act),
+        act @ (LineAct::Backspace | LineAct::Delete | LineAct::Left | LineAct::Right | LineAct::Home | LineAct::End) => crate::copy::edit(&mut prompt.line, &act),
     }
 }
 

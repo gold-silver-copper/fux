@@ -215,7 +215,7 @@ fn wrong(word: &str, wanted: &str, got: &Value<Fux>) -> Failure {
 fn string(word: &str, value: &Value<Fux>) -> Result<String, Failure> {
     match value {
         Value::Str(s) => Ok(s.to_string()),
-        other => Err(wrong(word, "a string", other)),
+        other @ (Value::Int(_) | Value::Bool(_) | Value::App(_)) => Err(wrong(word, "a string", other)),
     }
 }
 
@@ -232,7 +232,7 @@ fn text(word: &str, value: &Value<Fux>) -> Result<String, Failure> {
 fn int(word: &str, value: &Value<Fux>) -> Result<i64, Failure> {
     match value {
         Value::Int(n) => Ok(*n),
-        other => Err(wrong(word, "an integer", other)),
+        other @ (Value::Bool(_) | Value::Str(_) | Value::App(_)) => Err(wrong(word, "an integer", other)),
     }
 }
 
@@ -245,14 +245,14 @@ fn count<T: TryFrom<i64>>(word: &str, value: &Value<Fux>) -> Result<T, Failure> 
 fn pane(word: &str, value: &Value<Fux>) -> Result<crate::id::PaneId, Failure> {
     match value {
         Value::App(Fux::Pane(p)) => Ok(*p),
-        other => Err(wrong(word, "a pane (from pane, run or split)", other)),
+        other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => Err(wrong(word, "a pane (from pane, run or split)", other)),
     }
 }
 
 fn client(word: &str, value: &Value<Fux>) -> Result<crate::id::ClientId, Failure> {
     match value {
         Value::App(Fux::Client(c)) => Ok(*c),
-        other => Err(wrong(word, "a client (from me or client)", other)),
+        other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => Err(wrong(word, "a client (from me or client)", other)),
     }
 }
 
@@ -262,7 +262,7 @@ fn target(word: &str, value: &Value<Fux>) -> Result<AnyRef<WsId>, Failure> {
         Value::App(Fux::Pane(p)) => Ok(AnyRef::Pane(*p)),
         Value::App(Fux::Tab(t)) => Ok(AnyRef::Tab(*t)),
         Value::App(Fux::Workspace(w)) => Ok(AnyRef::Workspace(*w)),
-        other => Err(wrong(word, "a pane, tab or workspace", other)),
+        other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => Err(wrong(word, "a pane, tab or workspace", other)),
     }
 }
 
@@ -299,7 +299,7 @@ fn with<T>(
         Value::App(Fux::Opts(opts)) => &mut opts.waits,
         Value::App(Fux::Keys(keys)) => &mut keys.waits,
         Value::App(Fux::Mouse(mouse)) => &mut mouse.waits,
-        other => return Err(wrong(word, "options, keys or a mouse event", other)),
+        other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => return Err(wrong(word, "options, keys or a mouse event", other)),
     };
     change(waits)?;
     Ok(value)
@@ -308,14 +308,14 @@ fn with<T>(
 fn opts<'a>(word: &str, value: &'a mut Value<Fux>) -> Result<&'a mut Opts, Failure> {
     match value {
         Value::App(Fux::Opts(opts)) => Ok(opts),
-        other => Err(wrong(word, "options (from opts)", other)),
+        other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => Err(wrong(word, "options (from opts)", other)),
     }
 }
 
 fn keys<'a>(word: &str, value: &'a mut Value<Fux>) -> Result<&'a mut Keys, Failure> {
     match value {
         Value::App(Fux::Keys(keys)) => Ok(keys),
-        other => Err(wrong(word, "keys (from keys)", other)),
+        other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => Err(wrong(word, "keys (from keys)", other)),
     }
 }
 
@@ -408,7 +408,7 @@ impl fuxth::Host for Host<'_> {
                             _ => resolve(super::display(&Value::App(app)), kind),
                         }
                     }
-                    other => Err(wrong(name, "a name, or a pane, tab or workspace", &other)),
+                    other @ (Value::Int(_) | Value::Bool(_) | Value::App(_)) => Err(wrong(name, "a name, or a pane, tab or workspace", &other)),
                 }
             }
             "here" => resolve(String::new(), Kind::Pane),
@@ -449,7 +449,7 @@ impl fuxth::Host for Host<'_> {
                     "in" => {
                         built.place = Some(match &v {
                             Value::App(Fux::Workspace(w)) => WsRef::Id(*w),
-                            other => WsRef::Name(string(name, other)?),
+                            other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => WsRef::Name(string(name, other)?),
                         })
                     }
                     "id" => built.ids.push(asked_id(&string(name, &v)?)?),
@@ -674,7 +674,7 @@ impl fuxth::Host for Host<'_> {
                 let waited = then.is_some();
                 let (targets, to_client) = match &to {
                     Value::App(Fux::Client(c)) => (Vec::new(), Some(*c)),
-                    other => (vec![target(name, other)?.map(WsRef::Id)], None),
+                    other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => (vec![target(name, other)?.map(WsRef::Id)], None),
                 };
                 later(ask(
                     Command::SendKeys {
@@ -708,7 +708,7 @@ impl fuxth::Host for Host<'_> {
                 let p = pane(name, &next()?)?;
                 let m = match next()? {
                     Value::App(Fux::Mouse(m)) => m,
-                    other => return Err(wrong(name, "a mouse event (from mouse)", &other)),
+                    other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => return Err(wrong(name, "a mouse event (from mouse)", &other)),
                 };
                 let then = wait(&m.waits, true);
                 let waited = then.is_some();
@@ -820,7 +820,7 @@ impl fuxth::Host for Host<'_> {
                 let extent = match next()? {
                     Value::App(Fux::Extent(e)) => e,
                     v @ Value::Int(_) => Extent::Cells(count(name, &v)?),
-                    other => return Err(wrong(name, "cells or a percent", &other)),
+                    other @ (Value::Bool(_) | Value::Str(_) | Value::App(_)) => return Err(wrong(name, "cells or a percent", &other)),
                 };
                 let by = match name {
                     "resize-x" => PaneResize::To { cols: Some(extent), rows: None },
@@ -848,7 +848,7 @@ impl fuxth::Host for Host<'_> {
                     Value::App(Fux::Workspace(w)) => MoveTo::Workspace(WsRef::Id(w)),
                     Value::Str(s) if &*s == "new-tab" => MoveTo::NewTab,
                     Value::Str(s) if &*s == "new-workspace" => MoveTo::NewWorkspace,
-                    other => return Err(wrong(name, "a tab, a workspace, new-tab or new-workspace", &other)),
+                    other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => return Err(wrong(name, "a tab, a workspace, new-tab or new-workspace", &other)),
                 };
                 later(ask(Command::MovePane { target: Some(p), to }, Then::Nothing))
             }
@@ -890,7 +890,7 @@ impl fuxth::Host for Host<'_> {
             "attach-to" => {
                 let workspace = match next()? {
                     Value::App(Fux::Workspace(w)) => w.to_string(),
-                    other => string(name, &other)?,
+                    other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => string(name, &other)?,
                 };
                 later(Ask::Local(Local::Attach { workspace: Some(workspace), read_only: false }))
             }
@@ -917,7 +917,7 @@ impl fuxth::Host for Host<'_> {
                 let c = client(name, &next()?)?;
                 let t = match next()? {
                     Value::App(Fux::Tab(t)) => t,
-                    other => return Err(wrong(name, "a tab", &other)),
+                    other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => return Err(wrong(name, "a tab", &other)),
                 };
                 later(act(c, ClientAction::SelectTab(Pick::Id(t))))
             }
@@ -930,7 +930,7 @@ impl fuxth::Host for Host<'_> {
                 let c = client(name, &next()?)?;
                 let w = match next()? {
                     Value::App(Fux::Workspace(w)) => WsRef::Id(w),
-                    other => WsRef::Name(string(name, &other)?),
+                    other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => WsRef::Name(string(name, &other)?),
                 };
                 later(act(c, ClientAction::SelectWorkspace(Pick::Id(w))))
             }
@@ -990,7 +990,7 @@ impl fuxth::Host for Host<'_> {
             "grant" => {
                 let workspace = match next()? {
                     Value::App(Fux::Workspace(w)) => WsRef::Id(w),
-                    other => WsRef::Name(string(name, &other)?),
+                    other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => WsRef::Name(string(name, &other)?),
                 };
                 let socket = string(name, &next()?)?;
                 later(ask(Command::Grant { workspace: Some(workspace), socket, revoke: false }, Then::Text))
@@ -1120,7 +1120,7 @@ fn as_json(query: Command) -> Command {
         Command::Ls { target, get, .. } => Command::Ls { json: true, target, get },
         Command::CapturePane { target, history, view, .. } => Command::CapturePane { target, history, view, json: true },
         Command::Client { client, action: ClientAction::Capture { .. } } => Command::Client { client, action: ClientAction::Capture { json: true } },
-        other => other,
+        other @ (Command::KillServer { .. } | Command::NewWorkspace { .. } | Command::NewTab { .. } | Command::Split { .. } | Command::Run { .. } | Command::Respawn { .. } | Command::Notify { .. } | Command::Resize { .. } | Command::Wait { .. } | Command::SendMouse { .. } | Command::KillPane { .. } | Command::Signal { .. } | Command::KillTab { .. } | Command::KillWorkspace { .. } | Command::Rename { .. } | Command::MovePane { .. } | Command::SwapPane { .. } | Command::ResizePane { .. } | Command::SendKeys { .. } | Command::Events { .. } | Command::DumpLayout { .. } | Command::Grant { .. } | Command::Log { .. } | Command::ClearHistory { .. } | Command::Reorder { .. } | Command::Set { .. } | Command::Resolve { .. } | Command::ListBuffers | Command::ShowBuffer { .. } | Command::PasteBuffer { .. } | Command::Client { .. }) => other,
     }
 }
 

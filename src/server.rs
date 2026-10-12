@@ -433,15 +433,7 @@ impl Conn {
 
     /// Answers a request with its outcome, and takes the next.
     fn answer(&mut self, session: &mut Session, outcome: Outcome) {
-        let reply = Reply {
-            status: outcome.status,
-            code: outcome.code.map(str::to_owned),
-            message: outcome.stderr,
-            text: outcome.stdout,
-            json: outcome.json,
-            ids: outcome.ids,
-            value: outcome.value,
-        };
+        let reply = Reply::from(outcome);
         self.send(session, &ServerFrame::Reply(Box::new(reply)));
         if matches!(self.stage, Stage::Waiting(_) | Stage::Events(_)) {
             self.enter(session, Stage::Command);

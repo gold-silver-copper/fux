@@ -293,7 +293,7 @@ fn client_failed(error: crate::client::Error) -> Failed {
         crate::client::Error::Socket(crate::socket::Error::NoServer(_))
         | crate::client::Error::Connect { .. } => "no_server",
         crate::client::Error::Mismatch(_) => "mismatch",
-        _ => "client",
+        crate::client::Error::Socket(_) | crate::client::Error::Refused(_) | crate::client::Error::NoAnswer | crate::client::Error::Timeout | crate::client::Error::Closed | crate::client::Error::Protocol(_) | crate::client::Error::Write(_) | crate::client::Error::Read(_) | crate::client::Error::Exe(_) | crate::client::Error::Log(_) | crate::client::Error::Spawn(_) | crate::client::Error::Exited { .. } | crate::client::Error::NotStarted { .. } | crate::client::Error::NotATerminal | crate::client::Error::Modes(_) | crate::client::Error::RawMode(_) | crate::client::Error::Signals(_) | crate::client::Error::Poll(_) | crate::client::Error::ReadTerminal(_) | crate::client::Error::WriteTerminal(_) => "client",
     };
     Failed {
         status: 1,
@@ -302,14 +302,40 @@ fn client_failed(error: crate::client::Error) -> Failed {
     }
 }
 
-/// Runs `machine` to its end, asking `server` what its words ask; with
-/// `local`, doing what the client itself does. Its stack at the end.
-pub fn run(
-    machine: &mut Machine<Fux>,
-    host: &mut Host<'_>,
-    server: &mut Server,
-    local: &mut dyn FnMut(&Local, &mut Server, &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed>,
-) -> Result<Ended, Failed> {
+/// What a program's requests go to, and what does what the client does
+/// itself: a server (`Server`), the command line's (`Cli`), or in tests a
+/// session itself.
+pub trait Asks {
+    /// Asks `request`, what is streamed before its reply going to `out`.
+    fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed>;
+    /// Does what the client does itself: by default, nothing, refused.
+    fn local(&mut self, what: &Local, _out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
+        refuse_local(what)
+    }
+}
+
+impl Asks for Server {
+    fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
+        Server::ask(self, request, out)
+    }
+}
+
+/// The command line's: a server, and the client's own words.
+#[derive(Default)]
+pub struct Cli(pub Server);
+
+impl Asks for Cli {
+    fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
+        self.0.ask(request, out)
+    }
+    fn local(&mut self, what: &Local, out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
+        local(what, &mut self.0, out)
+    }
+}
+
+/// Runs `machine` to its end, asking `asks` what its words ask. Its stack
+/// at the end.
+pub fn run(machine: &mut Machine<Fux>, host: &mut Host<'_>, asks: &mut dyn Asks) -> Result<Ended, Failed> {
     loop {
         match machine.run(host, 100_000)? {
             Outcome::Finished => {
@@ -329,13 +355,13 @@ pub fn run(
                     context.client = client;
                 }
                 let query = command.clone();
-                let reply = server.ask(&Request { command, context }, host.out)?;
+                let reply = asks.ask(&Request { command, context }, host.out)?;
                 for value in answered(reply, then, query)? {
                     machine.push(value)?;
                 }
             }
             Outcome::Suspended(Ask::Local(what)) => {
-                for value in local(&what, server, host.out)? {
+                for value in asks.local(&what, host.out)? {
                     machine.push(value)?;
                 }
             }
@@ -429,7 +455,7 @@ pub fn display(value: &Value<Fux>) -> String {
 
 /// What a program does that the client does itself, from the command line:
 /// attaching, choosing and starting a server, and asking after servers.
-pub fn local(what: &Local, server: &mut Server, _out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
+fn local(what: &Local, server: &mut Server, _out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
     let failed = |code: &str, message: String| Failed {
         status: 1,
         code: code.to_owned(),
@@ -520,6 +546,15 @@ pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
     (keymap, problem.map(|failed| format!("config: {failed}")))
 }
 
+/// Runs the config file at `path` against the server on `socket`, as a
+/// client does as it attaches: the keymap it makes, or its failure.
+pub fn configure(path: &std::path::Path, socket: &crate::socket::SocketPath) -> Result<Keymap, Failed> {
+    let mut keymap = Keymap::default();
+    let mut server = Server::new(Chosen::Path(socket.path().to_string_lossy().into_owned()));
+    run_file(path, &mut keymap, &mut server)?;
+    Ok(keymap)
+}
+
 /// Runs a config file, its words changing `keymap`, its settings sent to
 /// `server`. A config attaches nothing, and chooses no other server.
 fn run_file(path: &std::path::Path, keymap: &mut Keymap, server: &mut Server) -> Result<(), Failed> {
@@ -537,12 +572,12 @@ fn run_file(path: &std::path::Path, keymap: &mut Keymap, server: &mut Server) ->
         last_bound: None,
         out: &mut out,
     };
-    run(&mut machine, &mut host, server, &mut refuse_local).map(drop)
+    run(&mut machine, &mut host, server).map(drop)
 }
 
 /// A program that may not do what the client does itself: a config's, a
 /// key's, a saved session's.
-pub fn refuse_local(what: &Local, _: &mut Server, _: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
+pub fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
     let word = match what {
         Local::Attach { .. } => "attach",
         Local::Headless { .. } => "headless",
@@ -574,7 +609,7 @@ pub fn restore(socket: &crate::socket::SocketPath, path: &std::path::Path, text:
         out: &mut out,
     };
     let mut server = Server::new(Chosen::Path(socket.path().to_string_lossy().into_owned()));
-    run(&mut machine, &mut host, &mut server, &mut refuse_local).map(drop)
+    run(&mut machine, &mut host, &mut server).map(drop)
 }
 
 /// The `fux` binary's words: attaches with none, runs `-` (stdin) or a file,
@@ -607,8 +642,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         last_bound: None,
         out,
     };
-    let mut server = Server::default();
-    let ended = run(&mut machine, &mut host, &mut server, &mut local)?;
+    let ended = run(&mut machine, &mut host, &mut Cli::default())?;
     for value in &ended.stack {
         let _ = writeln!(host.out, "{}", display(value));
     }

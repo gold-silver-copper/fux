@@ -722,11 +722,11 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
         // Its keys are the client's: the server names what to do.
         let hint = "empty tab: split it or close it";
         let y = area.h() / 2;
-        let x = area.w().saturating_sub(width(&hint)) / 2;
+        let x = area.w().saturating_sub(width(hint)) / 2;
         grid.text(
             y,
             x,
-            &hint,
+            hint,
             style(Color::Idx(244), Color::Default),
             area.w(),
         );

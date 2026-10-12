@@ -4,6 +4,9 @@
     dead_code,
     reason = "each test binary uses a different part of this module"
 )]
+use fux::act::Act;
+use fux::client::Keyboard;
+use fux::keymap::Keymap;
 use fux::protocol::{Attach, AttachedFrame, Decoder, Frame, Hello, PROTOCOL, Role, ServerFrame};
 use std::io::{Read, Write};
 use std::num::NonZeroU16;
@@ -60,6 +63,8 @@ pub struct Server {
     pub dir: PathBuf,
     pub socket: PathBuf,
     child: Option<Child>,
+    /// Its clients' keys: the defaults, and what the config binds.
+    pub keymap: Keymap,
 }
 
 pub struct Output {
@@ -69,7 +74,8 @@ pub struct Output {
 }
 
 impl Server {
-    /// A server whose shell is `sh` with a plain prompt, and `config` lines.
+    /// A server whose shell is `sh` with a plain prompt, and `config`, a
+    /// fuxth config its clients run: what it `set`s, set as it starts.
     pub fn start(config: &str) -> Result<Server, String> {
         Server::start_limited(config, None)
     }
@@ -103,8 +109,10 @@ impl Server {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).map_err(e)?;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
-        let config_path = dir.join("fux.conf");
-        std::fs::write(&config_path, format!("set shell /bin/sh\n{config}\n")).map_err(e)?;
+        let config_dir = dir.join("config").join("fux");
+        std::fs::create_dir_all(&config_dir).map_err(e)?;
+        let config_path = config_dir.join("config.fux");
+        std::fs::write(&config_path, format!("{config}\n")).map_err(e)?;
         let socket = dir.join("s").join("fux.sock");
         let log = std::fs::File::create(dir.join("server.log")).map_err(e)?;
         let (child, held) = {
@@ -127,11 +135,8 @@ impl Server {
                 None => Command::new(FUX),
             };
             let child = command
-                .arg("server")
-                .arg("--socket")
+                .arg(fux::SERVE)
                 .arg(&socket)
-                .arg("--config")
-                .arg(&config_path)
                 .env("PS1", "$ ")
                 .env("SHELL", "/bin/sh")
                 .env("ENV", "/dev/null")
@@ -147,10 +152,11 @@ impl Server {
             let held = leaked.as_ref().map(std::os::fd::AsRawFd::as_raw_fd);
             (child, held)
         };
-        let server = Server {
+        let mut server = Server {
             dir,
             socket,
             child: Some(child),
+            keymap: Keymap::default(),
         };
         let deadline = after(PATIENCE);
         while UnixStream::connect(&server.socket).is_err() {
@@ -159,7 +165,17 @@ impl Server {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+        // The config, as a client runs it: its settings to the server, its
+        // bindings to the keymap the scripted clients type through.
+        let socket = server.socket_path()?;
+        server.keymap = fux::script::configure(&config_path, &socket).map_err(e)?;
         Ok((server, held))
+    }
+
+    /// Its socket, as fux takes it.
+    pub fn socket_path(&self) -> Result<fux::socket::SocketPath, String> {
+        let path = self.socket.to_string_lossy();
+        fux::socket::socket_path(fux::socket::Choice::Path(&path, "socket")).map_err(e)
     }
 
     /// The server's process id, while it runs.
@@ -181,6 +197,7 @@ impl Server {
         command
             .args(args)
             .env("FUX_SOCKET", &self.socket)
+            .env("XDG_CONFIG_HOME", self.dir.join("config"))
             .env_remove("FUX_PANE");
         for (k, v) in env {
             command.env(k, v);
@@ -206,12 +223,17 @@ impl Server {
     }
 
     pub fn attach(&self, rows: u16, cols: u16) -> Result<Client, String> {
-        Client::attach(&self.socket, rows, cols, None)
+        Client::connect(self, (rows, cols), None, false)
     }
 
-    /// A client that only watches (`attach --read-only`).
+    /// A client attached to `workspace`.
+    pub fn attach_to(&self, rows: u16, cols: u16, workspace: &str) -> Result<Client, String> {
+        Client::connect(self, (rows, cols), Some(workspace), false)
+    }
+
+    /// A client that only watches (`watch`).
     pub fn watch(&self, rows: u16, cols: u16) -> Result<Client, String> {
-        Client::connect(&self.socket, (rows, cols), None, true)
+        Client::connect(self, (rows, cols), None, true)
     }
 
     /// Waits until the server has exited; its exit status.
@@ -246,7 +268,7 @@ impl Drop for Server {
         );
         if let Some(mut child) = self.child.take() {
             let _ = Command::new(FUX)
-                .args(["kill-server", "--force"])
+                .args(["force-kill-server"])
                 .env("FUX_SOCKET", &self.socket)
                 .output();
             let deadline = after(Duration::from_secs(3));
@@ -260,10 +282,20 @@ impl Drop for Server {
     }
 }
 
-/// A scripted attach client: what it sends, and a terminal of what it was sent.
+/// A scripted attach client: its keys typed through fux's own keyboard
+/// (`fux::client::Keyboard`, as the real client's are), what it sends, and a
+/// terminal of what it was sent.
 pub struct Client {
     stream: UnixStream,
     decoder: Decoder,
+    socket: fux::socket::SocketPath,
+    keymap: Keymap,
+    read_only: bool,
+    /// Its keys, once the server has said its id.
+    keyboard: Option<Keyboard>,
+    /// Bytes typed before then, typed once it has.
+    typed: Vec<u8>,
+    pub id: Option<String>,
     pub terminal: fux_vt::Parser,
     pub rows: u16,
     pub cols: u16,
@@ -273,24 +305,15 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn attach(
-        socket: &Path,
-        rows: u16,
-        cols: u16,
-        workspace: Option<&str>,
-    ) -> Result<Client, String> {
-        Client::connect(socket, (rows, cols), workspace, false)
-    }
-
     /// A client attached to `workspace`, or the first; with `read_only`,
     /// one that only watches.
     pub fn connect(
-        socket: &Path,
+        server: &Server,
         (rows, cols): (u16, u16),
         workspace: Option<&str>,
         read_only: bool,
     ) -> Result<Client, String> {
-        let mut stream = UnixStream::connect(socket).map_err(e)?;
+        let mut stream = UnixStream::connect(&server.socket).map_err(e)?;
         let hello = Hello {
             protocol: PROTOCOL,
             version: "test",
@@ -309,6 +332,12 @@ impl Client {
         Ok(Client {
             stream,
             decoder: Decoder::default(),
+            socket: server.socket_path()?,
+            keymap: server.keymap.clone(),
+            read_only,
+            keyboard: None,
+            typed: Vec::new(),
+            id: None,
             terminal: terminal(rows, cols)?,
             rows,
             cols,
@@ -317,13 +346,36 @@ impl Client {
         })
     }
 
+    /// Bytes typed at its terminal: through its keys, as the real client
+    /// takes them.
     pub fn send(&mut self, bytes: &[u8]) -> Outcome {
-        self.frame(&AttachedFrame::Input(bytes))
+        if self.keyboard.is_none() {
+            self.typed.extend_from_slice(bytes);
+            return self.pump();
+        }
+        let acts = match &mut self.keyboard {
+            Some(keyboard) => keyboard.bytes(bytes, Instant::now()),
+            None => Vec::new(),
+        };
+        self.acts(acts)?;
+        self.pump()
     }
 
     /// Types text, as keys.
     pub fn keys(&mut self, text: &str) -> Outcome {
         self.send(text.as_bytes())
+    }
+
+    /// An action, sent as it is, as a client that made it of its keys.
+    pub fn act(&mut self, act: Act) -> Outcome {
+        self.frame(&AttachedFrame::Act(Box::new(act)))
+    }
+
+    fn acts(&mut self, acts: Vec<Act>) -> Outcome {
+        for act in acts {
+            self.act(act)?;
+        }
+        Ok(())
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) -> Outcome {
@@ -353,7 +405,8 @@ impl Client {
         self.frame(&AttachedFrame::Detach)
     }
 
-    /// Reads whatever the server has sent.
+    /// Reads whatever the server has sent, and does what its keys owe: the
+    /// programs they ran told of, a lone Escape taken once its wait passes.
     pub fn pump(&mut self) -> Outcome {
         let mut buffer = vec![0u8; 64 * 1024];
         loop {
@@ -370,6 +423,7 @@ impl Client {
                 Err(err) => return Err(e(err)),
             }
         }
+        let mut acts = Vec::new();
         while let Some(frame) = self.decoder.frame().map_err(e)? {
             match frame {
                 ServerFrame::Paint(bytes) => {
@@ -377,14 +431,40 @@ impl Client {
                     self.terminal.process(bytes).map_err(e)?;
                 }
                 ServerFrame::Exit(reason) => self.exit = Some(reason.to_owned()),
-                ServerFrame::Hello(_)
-                | ServerFrame::Stdout(_)
-                | ServerFrame::Stderr(_)
-                | ServerFrame::Done { .. }
-                | ServerFrame::Terminal { .. } => {}
+                ServerFrame::Stdout(said) if self.keyboard.is_none() => {
+                    let said = String::from_utf8_lossy(said).trim().to_owned();
+                    let me = said.parse().map_err(|_| format!("a client's id, not {said:?}"))?;
+                    let keymap = self.keymap.clone();
+                    self.keyboard = Some(Keyboard::new(&self.socket, me, keymap, self.read_only).map_err(e)?);
+                    self.id = Some(said);
+                }
+                frame => {
+                    if let Some(keyboard) = &mut self.keyboard {
+                        acts.extend(keyboard.frame(frame));
+                    }
+                }
             }
         }
-        Ok(())
+        if let Some(keyboard) = &mut self.keyboard {
+            acts.extend(keyboard.ran());
+            if keyboard.deadline().is_some_and(|at| at <= Instant::now()) {
+                acts.extend(keyboard.timeout());
+            }
+            if !self.typed.is_empty() {
+                let typed = std::mem::take(&mut self.typed);
+                acts.extend(keyboard.bytes(&typed, Instant::now()));
+            }
+        }
+        self.acts(acts)
+    }
+
+    /// Waits until the server has said the client's id, so that its keys
+    /// run.
+    pub fn ready(&mut self) -> Outcome {
+        eventually("the client's id", || {
+            self.pump()?;
+            Ok(self.keyboard.is_some())
+        })
     }
 
     /// The screen's rows, as text.
@@ -578,10 +658,9 @@ impl Server {
     /// Types a line into a pane once its shell shows a prompt.
     pub fn type_line(&self, pane: &str, line: &str) -> Outcome {
         eventually(&format!("a prompt in {pane}"), || {
-            Ok(self.ok(&["capture-pane", "-t", pane])?.contains('$'))
+            Ok(self.ok(&["str", pane, "pane", "screen"])?.contains('$'))
         })?;
-        self.ok(&["send-keys", "-t", pane, "-l", line])?;
-        self.ok(&["send-keys", "-t", pane, "Enter"])?;
+        self.ok(&["str", pane, "pane", "keys", "str", line, "text", "str", "Enter", "key", "send-keys"])?;
         Ok(())
     }
 }
@@ -600,8 +679,8 @@ pub fn eventually(what: &str, mut test: impl FnMut() -> Result<bool, String>) ->
     }
 }
 
-/// The real `fux attach`, on a PTY of its own, and a fux-vt screen of what it
-/// shows.
+/// The real `fux` attached (no words, or `attach-to`, `watch`), on a PTY of
+/// its own, and a fux-vt screen of what it shows.
 pub struct Terminal {
     /// `None` once the terminal is closed.
     master: Option<fuxix::pty::Master>,
@@ -617,12 +696,11 @@ impl Terminal {
         cols: u16,
         args: &[&str],
     ) -> Result<Terminal, String> {
-        let argv: Vec<&str> = [FUX, "attach"]
-            .into_iter()
-            .chain(args.iter().copied())
-            .collect();
+        let argv: Vec<&str> = [FUX].into_iter().chain(args.iter().copied()).collect();
         Terminal::start(rows, cols, &argv, |command| {
-            command.env("FUX_SOCKET", &server.socket);
+            command
+                .env("FUX_SOCKET", &server.socket)
+                .env("XDG_CONFIG_HOME", server.dir.join("config"));
         })
     }
 

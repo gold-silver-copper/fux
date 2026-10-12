@@ -38,7 +38,7 @@ const DONE_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
 /// A wait under way.
 pub struct Waiting {
     watches: Vec<Watch>,
-    wait: Wait,
+    pub(crate) wait: Wait,
     /// When it began: a pane is quiet from then at the soonest.
     began: Instant,
     deadline: Instant,
