@@ -273,9 +273,13 @@ fn run(args: &[String]) -> Result<u8, Error> {
             Ok(0)
         }
         Some(_) => {
-            // Parsed here as well, so a usage error needs no server.
-            if let Err(usage) = command::parse(args) {
-                return usage_error(&usage.to_string(), args.first().map(String::as_str));
+            // Parsed here as well, so a usage error needs no server; a
+            // pane named by its tab's name only the server can tell.
+            match command::parse(args) {
+                Err(command::Usage::Not(command::Kind::Pane, _)) | Ok(_) => {}
+                Err(usage) => {
+                    return usage_error(&usage.to_string(), args.first().map(String::as_str));
+                }
             }
             let socket = socket::socket_path(None)?;
             Ok(client::command(&socket, args)?)

@@ -547,8 +547,8 @@ fuzz_target!(|data: &[u8]| {
             _ => {
                 let pick = input.next();
                 if let Some(p) = given.pane(pick) {
-                    given.s.exited(p, 0);
-                    bytewise.s.exited(p, 0);
+                    given.s.exited(p, fux::process::Ended::Exited(0));
+                    bytewise.s.exited(p, fux::process::Ended::Exited(0));
                 }
             }
         }

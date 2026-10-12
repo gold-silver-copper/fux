@@ -1319,7 +1319,7 @@ impl Server {
     /// coalesce.
     fn reap(&mut self) {
         self.reap_killed();
-        let exited: Vec<(PaneId, i32)> = self
+        let exited: Vec<(PaneId, crate::process::Ended)> = self
             .session
             .panes
             .iter()

@@ -193,31 +193,51 @@ pub struct CaptureView {
     pub cols: Option<(u16, u16)>,
     /// Colours and attributes, as SGR escapes, or with `--json` as runs.
     pub styles: bool,
+    /// The main screen and its history, though a program holds the
+    /// alternate one: what was printed before it took the screen.
+    pub main: bool,
+    /// The alternate screen as a full-screen program last drew it, though
+    /// it has left it, or exited.
+    pub alt: bool,
+    /// The last shell command's output alone, between its OSC 133 marks.
+    pub last_output: bool,
 }
 
 /// What `wait` waits for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Until {
-    /// Any of these texts is on the screen.
-    Text(Vec<String>),
-    /// None of these texts is on the screen.
-    Gone(Vec<String>),
+    /// The text appears: on the screen, or in a line written since the wait
+    /// began that has scrolled into history.
+    Text(String),
+    /// The text is no longer on the screen.
+    Gone(String),
     /// The screen has shown no change for this long: the same screen
     /// drawn again is none.
     Idle(Duration),
-    /// The screen changed at all.
-    Change,
-    /// The program exited, or its pane closed.
+    /// The screen changes: past the revision given (`--since N`), or the
+    /// one it had as the wait began.
+    Change(Option<u64>),
+    /// The program exits.
     Exit,
+    /// A shell command ends (shell integration's OSC 133 `D`).
+    Done,
+    /// The program rings the bell or sends a desktop notification.
+    Bell,
 }
 
-/// A wait: what for, how long at most, and whether to print the screen as
-/// it ends.
+/// A wait: for any of its conditions, in any of its panes, how long at
+/// most, and how it is told.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wait {
-    pub until: Until,
+    pub until: Vec<Until>,
     pub timeout: Duration,
+    /// The screen as the wait ends, after what it says.
     pub print: bool,
+    /// What happened as JSON.
+    pub json: bool,
+    /// Only what comes after it began counts: text that appears anew, a
+    /// screen that changed (send-keys' waits, armed before the keys).
+    pub after: bool,
 }
 
 /// How long a wait lasts at most if `--timeout` does not say: well inside
@@ -273,13 +293,34 @@ pub enum Command {
         env: Vec<(String, String)>,
         argv: Vec<String>,
         json: bool,
+        /// A file everything the program writes goes to too.
+        log: Option<String>,
+        /// Then waits, armed before the program writes anything.
+        then: Option<Box<Wait>>,
+    },
+    /// The program `run` started, started again in its pane.
+    Respawn {
+        target: Option<PaneId>,
+        /// Ends it first if it still runs.
+        kill: bool,
+        env: Vec<(String, String)>,
+        /// Another program instead: the one it ran without.
+        argv: Vec<String>,
+        /// Then waits, as run's does.
+        then: Option<Box<Wait>>,
+    },
+    /// A notice on the clients showing the target: every client without.
+    Notify {
+        target: Option<AnyRef>,
+        text: String,
     },
     Resize {
         what: Resized,
         size: Size,
     },
     Wait {
-        target: Option<PaneId>,
+        /// The panes, any of which answers it: the caller's without one.
+        targets: Vec<PaneId>,
         wait: Wait,
     },
     SendMouse {
@@ -456,6 +497,8 @@ pub enum Usage {
     },
     NotCells(String),
     NotLines(String),
+    /// A word sent as keys that looks like a key name mistyped.
+    NotAKey(String),
     /// A flag's value that is not what the flag takes: `expected` says what.
     Bad {
         command: &'static str,
@@ -507,7 +550,12 @@ impl std::fmt::Display for Usage {
                 write!(f, "{command} -b: {value:?} is not a buffer number")
             }
             Usage::NotCells(text) => write!(f, "resize-pane: {text:?} is not a number of cells"),
-            Usage::NotLines(text) => write!(f, "capture-pane -S: {text:?} is not -N"),
+            Usage::NotLines(text) => write!(f, "capture-pane -S: {text:?} is not -N or all"),
+            Usage::NotAKey(word) => write!(
+                f,
+                "send-keys: {word:?} is no key name (`fux list-keys` lists them); \
+                 to send it as text, use --text {word:?}"
+            ),
             Usage::Bad {
                 command,
                 flag,
@@ -685,7 +733,10 @@ pub const COMMANDS: &[(&str, &[Spec])] = &[
 #[rustfmt::skip]
 const PANES: &[Spec] = &[
     spec("split -h|-v [-t %N] [--json] [-- CMD...]  -h side by side, -v stacked", Flags(split)),
-    spec("run [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--json] -- PROGRAM...  \
+    spec("respawn [-t %N] [-k] [--env K=V] [--wait-text TEXT] [--wait-idle MS] [--wait-exit] [--wait-bell] [--timeout SECS] [--print] [--json] [-- PROGRAM...]  \
+          start again in its pane what run started; -k ends it first if it runs", Flags(respawn)),
+    spec("notify [-t TARGET] TEXT  a notice on the clients showing TARGET (all without)", Flags(notify)),
+    spec("run [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--log FILE] [--wait-text TEXT] [--wait-idle MS] [--wait-exit] [--wait-bell] [--timeout SECS] [--print] [--json] -- PROGRAM...  \
           a program in a tab of its own, in workspace agent; it stays once the program exits", Flags(run)),
     spec("kill-pane [-t %N]  close, without asking", Flags(|a| {
         Ok(Command::KillPane { target: a.pane()? })
@@ -715,13 +766,13 @@ const PANES: &[Spec] = &[
     spec("choose-pane [-c CLIENT] [-t %N]  a pane to swap with", Screen(|a| {
         Ok(ClientAction::ChoosePane { target: a.pane()? })
     })),
-    spec("send-keys [-t %N | -c CLIENT] [-l] [-N COUNT] KEYS... [--wait-idle MS [--print]]  \
+    spec("send-keys [-t %N | -c CLIENT] [-l] [-N COUNT] KEYS... [--wait-text TEXT | --wait-gone TEXT | --wait-idle MS | --wait-change | --wait-exit | --wait-done | --wait-bell] [--timeout SECS] [--print] [--json]  \
           keys, words that are not key names as text, and --text TEXT or --paste TEXT; \
           -c types them at a client", Line(send_keys)),
     spec("send-mouse [-t %N] click|right|middle|press|release|wheel-up|wheel-down|move ROW COL  \
           a mouse event at a cell, from 0", Flags(send_mouse)),
-    spec("wait [-t %N] (--text TEXT | --gone TEXT | --idle MS | --change | --exit) [--timeout SECS] [--print]  \
-          until the pane shows or stops showing TEXT, goes quiet, changes or exits", Flags(wait)),
+    spec("wait [-t %N] (--text TEXT | --gone TEXT | --idle MS | --change [--since N] | --exit | --done | --bell) [--timeout SECS] [--print] [--json]  \
+          until a pane shows or stops showing TEXT, settles, changes, exits, ends a command or rings", Flags(wait)),
     spec("send-prefix [-t %N]  the prefix key, to the pane", Flags(|a| {
         Ok(Command::SendPrefix { target: a.pane()? })
     })),
@@ -748,8 +799,8 @@ const TABS: &[Spec] = &[
         Ok(ClientAction::ChooseTab { moving: a.moving()? })
     })),
     spec("kill-tab [-t @N]", Flags(|a| Ok(Command::KillTab { target: a.target(parse_tab)? }))),
-    spec("resize (-t @N|+N | -c CLIENT) COLSxROWS|auto  \
-          what a tab nobody views is laid out on, or a headless client's size", Flags(resize_to)),
+    spec("resize (-t %N|@N|+N | -c CLIENT) COLSxROWS|auto  \
+          what a tab nobody views (a pane's: its tab) is laid out on, or a headless client's size", Flags(resize_to)),
 ];
 
 #[rustfmt::skip]
@@ -785,7 +836,7 @@ const OTHER: &[Spec] = &[
         Ok(Command::Ls { json: a.has("--json") })
     })),
     spec("rename -t TARGET [--] NAME  TARGET: %N, @N, +N or a name", Flags(rename)),
-    spec("capture-pane [-t %N] [-S LINES] [--full] [-J] [--rows A-B] [--cols A-B] [--styles] [--json]  \
+    spec("capture-pane [-t %N] [-S LINES|all] [--full] [-J] [--rows A-B] [--cols A-B] [--styles] [--main] [--alt] [--last-output] [--json]  \
           the screen, trimmed; -J joins wrapped lines", Flags(capture)),
     spec("capture-client [-c CLIENT] [--json]", Screen(|a| {
         Ok(ClientAction::Capture { json: a.has("--json") })
@@ -1008,9 +1059,12 @@ impl<'a> Args<'a> {
         Ok(buffer.map_or(0, |n| n as usize))
     }
     fn lines(&self) -> Result<Option<usize>, Usage> {
-        self.parsed("-S", |v| {
-            let lines = v.strip_prefix('-').unwrap_or(v).parse();
-            lines.map_err(|_| Usage::NotLines(v.to_owned()))
+        self.parsed("-S", |v| match v {
+            "all" | "-" => Ok(usize::MAX),
+            v => {
+                let lines = v.strip_prefix('-').unwrap_or(v).parse();
+                lines.map_err(|_| Usage::NotLines(v.to_owned()))
+            }
         })
     }
     fn rest(&mut self) -> Vec<String> {
@@ -1083,22 +1137,12 @@ fn configure(argv: &[String]) -> Result<Command, Usage> {
 
 fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
     let workspace = a.target(parse_workspace)?;
-    let env = a
-        .values("--env")
-        .map(|pair| match pair.split_once('=') {
-            Some((key, value)) if !key.is_empty() => Ok((key.to_owned(), value.to_owned())),
-            _ => Err(Usage::Bad {
-                command: "run",
-                flag: "--env",
-                value: pair.to_owned(),
-                expected: "KEY=VALUE",
-            }),
-        })
-        .collect::<Result<_, _>>()?;
+    let env = env_pairs(a, "run")?;
     let argv = a.rest();
     if argv.is_empty() {
         return Err(Usage::Needs("usage: run [flags] -- PROGRAM [ARGS...]"));
     }
+    let then = program_wait(a, "run")?;
     Ok(Command::Run {
         workspace,
         name: a.name(),
@@ -1107,17 +1151,98 @@ fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
         env,
         argv,
         json: a.has("--json"),
+        log: a.value("--log").map(str::to_owned),
+        then,
+    })
+}
+
+/// The wait `run` and `respawn` take: from the program's first output on.
+fn program_wait(a: &Args<'_>, command: &'static str) -> Result<Option<Box<Wait>>, Usage> {
+    let mut until = texts(a, "--wait-text", command)?;
+    until.extend(
+        a.read_as("--wait-idle", parse_millis, "milliseconds")?
+            .map(Until::Idle),
+    );
+    for (flag, condition) in [("--wait-exit", Until::Exit), ("--wait-bell", Until::Bell)] {
+        if a.has(flag) {
+            until.push(condition);
+        }
+    }
+    let timeout = a.read_as("--timeout", parse_seconds, "seconds, at most a day")?;
+    if (a.has("--print") || timeout.is_some()) && until.is_empty() {
+        return Err(Usage::Needs(
+            "--print and --timeout go with a --wait-… condition",
+        ));
+    }
+    Ok((!until.is_empty()).then(|| {
+        Box::new(Wait {
+            until,
+            timeout: timeout.unwrap_or(WAIT_TIMEOUT),
+            print: a.has("--print"),
+            json: a.has("--json"),
+            after: false,
+        })
+    }))
+}
+
+/// A text flag's values as conditions; an empty one, which every screen
+/// shows, is refused.
+fn texts(a: &Args<'_>, flag: &'static str, command: &'static str) -> Result<Vec<Until>, Usage> {
+    a.values(flag)
+        .map(|t| {
+            if t.is_empty() {
+                Err(Usage::Bad {
+                    command,
+                    flag,
+                    value: String::new(),
+                    expected: "text: an empty one is on every screen",
+                })
+            } else {
+                Ok(Until::Text(t.to_owned()))
+            }
+        })
+        .collect()
+}
+
+/// `--env K=V` pairs.
+fn env_pairs(a: &Args<'_>, command: &'static str) -> Result<Vec<(String, String)>, Usage> {
+    a.values("--env")
+        .map(|pair| match pair.split_once('=') {
+            Some((key, value)) if !key.is_empty() => Ok((key.to_owned(), value.to_owned())),
+            _ => Err(Usage::Bad {
+                command,
+                flag: "--env",
+                value: pair.to_owned(),
+                expected: "KEY=VALUE",
+            }),
+        })
+        .collect()
+}
+
+fn respawn(a: &mut Args<'_>) -> Result<Command, Usage> {
+    Ok(Command::Respawn {
+        target: a.pane()?,
+        kill: a.has("-k"),
+        env: env_pairs(a, "respawn")?,
+        argv: a.rest(),
+        then: program_wait(a, "respawn")?,
+    })
+}
+
+fn notify(a: &mut Args<'_>) -> Result<Command, Usage> {
+    let text = std::mem::take(&mut a.positional).join(" ");
+    if text.is_empty() {
+        return Err(Usage::Needs("usage: notify [-t TARGET] TEXT"));
+    }
+    Ok(Command::Notify {
+        target: a.target(parse_any)?,
+        text,
     })
 }
 
 fn resize_to(a: &mut Args<'_>) -> Result<Command, Usage> {
-    let needs = "usage: resize (-t @N|+N | -c CLIENT) COLSxROWS|auto";
+    let needs = "usage: resize (-t %N|@N|+N | -c CLIENT) COLSxROWS|auto";
     let what = match (a.target(parse_any)?, a.parsed("-c", parse_client)?) {
-        (Some(AnyRef::Pane(_)), None) => {
-            return Err(Usage::Needs(
-                "resize sizes a tab or a workspace; resize-pane sizes a pane",
-            ));
-        }
         (Some(target), None) => Resized::Tabs(target),
         (None, Some(client)) => Resized::Client(client),
         (Some(_), Some(_)) | (None, None) => return Err(Usage::Needs(needs)),
@@ -1146,6 +1271,9 @@ fn capture(a: &mut Args<'_>) -> Result<Command, Usage> {
         rows: a.read_as("--rows", parse_span, span)?,
         cols: a.read_as("--cols", parse_span, span)?,
         styles: a.has("--styles"),
+        main: a.has("--main"),
+        alt: a.has("--alt"),
+        last_output: a.has("--last-output"),
     };
     Ok(Command::CapturePane {
         target: a.pane()?,
@@ -1156,30 +1284,46 @@ fn capture(a: &mut Args<'_>) -> Result<Command, Usage> {
 }
 
 fn wait(a: &mut Args<'_>) -> Result<Command, Usage> {
-    let texts = |flag| a.values(flag).map(str::to_owned).collect::<Vec<_>>();
-    let (text, gone) = (texts("--text"), texts("--gone"));
-    let idle = a.read_as("--idle", parse_millis, "milliseconds")?;
-    let mut until = [
-        (!text.is_empty()).then_some(Until::Text(text)),
-        (!gone.is_empty()).then_some(Until::Gone(gone)),
-        idle.map(Until::Idle),
-        a.has("--change").then_some(Until::Change),
-        a.has("--exit").then_some(Until::Exit),
-    ]
-    .into_iter()
-    .flatten();
-    let (Some(first), None) = (until.next(), until.next()) else {
+    let mut until = texts(a, "--text", "wait")?;
+    until.extend(a.values("--gone").map(|t| Until::Gone(t.to_owned())));
+    until.extend(
+        a.read_as("--idle", parse_millis, "milliseconds")?
+            .map(Until::Idle),
+    );
+    let since = a.read_as(
+        "--since",
+        |n| n.parse::<u64>().ok(),
+        "a revision, from --json",
+    )?;
+    if a.has("--change") {
+        until.push(Until::Change(since));
+    } else if since.is_some() {
+        return Err(Usage::Needs("wait --since goes with --change"));
+    }
+    for (flag, condition) in [
+        ("--exit", Until::Exit),
+        ("--done", Until::Done),
+        ("--bell", Until::Bell),
+    ] {
+        if a.has(flag) {
+            until.push(condition);
+        }
+    }
+    if until.is_empty() {
         return Err(Usage::Needs(
-            "wait needs one of --text, --gone, --idle, --change, --exit",
+            "wait needs one of --text, --gone, --idle, --change, --exit, --done, --bell",
         ));
-    };
+    }
+    let targets = a.values("-t").map(parse_pane).collect::<Result<_, _>>()?;
     let timeout = a.read_as("--timeout", parse_seconds, "seconds, at most a day")?;
     Ok(Command::Wait {
-        target: a.pane()?,
+        targets,
         wait: Wait {
-            until: first,
+            until,
             timeout: timeout.unwrap_or(WAIT_TIMEOUT),
             print: a.has("--print"),
+            json: a.has("--json"),
+            after: false,
         },
     })
 }
@@ -1362,8 +1506,9 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
         value: value.to_owned(),
         expected,
     };
-    let (mut target, mut literal, mut repeat, mut idle, mut print) = (None, false, 1, None, false);
-    let mut client = None;
+    let (mut target, mut literal, mut repeat) = (None, false, 1);
+    let (mut client, mut until, mut timeout, mut print, mut json) =
+        (None, Vec::new(), None, false, false);
     let mut words = argv.get(1..).unwrap_or_default().iter().peekable();
     while let Some(word) = words.next_if(|w| ["-t", "-c", "-l", "-N", "--"].contains(&w.as_str())) {
         match word.as_str() {
@@ -1385,15 +1530,40 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
         match word.as_str() {
             "--text" => inputs.push(Input::Text(value(word, &mut words)?.to_owned())),
             "--paste" => inputs.push(Input::Paste(value(word, &mut words)?.to_owned())),
+            "--wait-text" => {
+                let text = value(word, &mut words)?;
+                if text.is_empty() {
+                    return Err(bad(
+                        "--wait-text",
+                        text,
+                        "text: an empty one is on every screen",
+                    ));
+                }
+                until.push(Until::Text(text.to_owned()));
+            }
+            "--wait-gone" => until.push(Until::Gone(value(word, &mut words)?.to_owned())),
             "--wait-idle" => {
                 let text = value(word, &mut words)?;
-                idle = Some(
-                    parse_millis(text).ok_or_else(|| bad("--wait-idle", text, "milliseconds"))?,
-                );
+                let ms =
+                    parse_millis(text).ok_or_else(|| bad("--wait-idle", text, "milliseconds"))?;
+                until.push(Until::Idle(ms));
+            }
+            "--wait-change" => until.push(Until::Change(None)),
+            "--wait-exit" => until.push(Until::Exit),
+            "--wait-done" => until.push(Until::Done),
+            "--wait-bell" => until.push(Until::Bell),
+            "--timeout" => {
+                let text = value(word, &mut words)?;
+                timeout =
+                    Some(parse_seconds(text).ok_or_else(|| bad("--timeout", text, "seconds"))?);
             }
             "--print" => print = true,
+            "--json" => json = true,
             text => inputs.push(match text.parse::<KeyPress>() {
                 Ok(key) if !literal => Input::Key(key),
+                _ if !literal && looks_like_a_key(text) => {
+                    return Err(Usage::NotAKey(text.to_owned()));
+                }
                 _ => Input::Text(text.to_owned()),
             }),
         }
@@ -1401,18 +1571,22 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
     if inputs.is_empty() {
         return Err(Usage::Needs("send-keys needs keys to send"));
     }
-    if print && idle.is_none() {
-        return Err(Usage::Needs("send-keys --print goes with --wait-idle MS"));
-    }
-    if client.is_some() && (target.is_some() || idle.is_some()) {
+    if (print || json || timeout.is_some()) && until.is_empty() {
         return Err(Usage::Needs(
-            "send-keys -c CLIENT types at a client; -t and --wait-idle are for a pane",
+            "send-keys --print, --json and --timeout go with a --wait-… condition",
         ));
     }
-    let then = idle.map(|idle| Wait {
-        until: Until::Idle(idle),
-        timeout: WAIT_TIMEOUT,
+    if client.is_some() && (target.is_some() || !until.is_empty()) {
+        return Err(Usage::Needs(
+            "send-keys -c CLIENT types at a client; -t and the waits are for a pane",
+        ));
+    }
+    let then = (!until.is_empty()).then(|| Wait {
+        until,
+        timeout: timeout.unwrap_or(WAIT_TIMEOUT),
         print,
+        json,
+        after: true,
     });
     Ok(Command::SendKeys {
         target,
@@ -1421,6 +1595,46 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
         repeat,
         then,
     })
+}
+
+/// Whether a word that is no key name looks like one mistyped, as a person
+/// sending keys means it: a modifier before something that is no key
+/// (`C-Ent`), a key name in another case (`enter`), or a capitalised word a
+/// letter off one or the start of one (`Entr`, `Esc`). Typed as text, it would
+/// go to the program unnoticed.
+fn looks_like_a_key(word: &str) -> bool {
+    if word.len() > 2 && ["C-", "M-", "S-"].iter().any(|m| word.starts_with(m)) {
+        return true;
+    }
+    let capital = word.chars().next().is_some_and(char::is_uppercase);
+    let lower = word.to_lowercase();
+    crate::keys::all_names().iter().any(|name| {
+        let name = name.to_lowercase();
+        lower == name
+            || capital && word.len() >= 3 && (name.starts_with(&lower) || one_off(&lower, &name))
+    })
+}
+
+/// Whether two words are a letter apart: one changed, added or dropped.
+fn one_off(a: &str, b: &str) -> bool {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let (short, long) = if a.len() <= b.len() {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    match long.len().checked_sub(short.len()) {
+        Some(0) => short.iter().zip(long).filter(|(x, y)| x != y).count() == 1,
+        Some(1) => (0..long.len()).any(|skip| {
+            let rest = long
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != skip)
+                .map(|(_, c)| c);
+            rest.eq(short.iter())
+        }),
+        _ => false,
+    }
 }
 
 /// Parses one command line.
@@ -1594,11 +1808,47 @@ mod tests {
                 ],
                 repeat: 2,
                 then: Some(Wait {
-                    until: Until::Idle(Duration::from_millis(300)),
+                    until: vec![Until::Idle(Duration::from_millis(300))],
                     timeout: WAIT_TIMEOUT,
                     print: true,
+                    json: false,
+                    after: true,
                 }),
             })
+        );
+        // Any wait condition, armed before the keys; a key name mistyped
+        // is refused, not typed.
+        assert_eq!(
+            cmd(
+                "send-keys -t %1 --text go Enter --wait-text PASS --wait-text FAIL --timeout 5 --json"
+            ),
+            Ok(Command::SendKeys {
+                target: Some(PaneId::of(1)),
+                client: None,
+                inputs: vec![
+                    Input::Text("go".into()),
+                    Input::Key("Enter".parse().map_err(|_| Usage::NoCommand)?)
+                ],
+                repeat: 1,
+                then: Some(Wait {
+                    until: vec![Until::Text("PASS".into()), Until::Text("FAIL".into())],
+                    timeout: Duration::from_secs(5),
+                    print: false,
+                    json: true,
+                    after: true,
+                }),
+            })
+        );
+        for typo in ["Entr", "C-Ent", "Escpe", "Pag"] {
+            assert_eq!(
+                cmd(&format!("send-keys {typo}")),
+                Err(Usage::NotAKey(typo.into())),
+                "{typo}"
+            );
+        }
+        assert!(
+            cmd("send-keys Hello world").is_ok(),
+            "words that are no key are text"
         );
         assert_eq!(
             cmd("capture-pane -t %1 -S -100 -J --rows 2-5 --json"),
@@ -1614,17 +1864,31 @@ mod tests {
             })
         );
         assert_eq!(
-            cmd("wait -t %2 --text a --text b --timeout 1.5 --print"),
+            cmd("wait -t %2 -t %3 --text a --exit --change --since 7 --timeout 1.5 --print --json"),
             Ok(Command::Wait {
-                target: Some(PaneId::of(2)),
+                targets: vec![PaneId::of(2), PaneId::of(3)],
                 wait: Wait {
-                    until: Until::Text(vec!["a".into(), "b".into()]),
+                    until: vec![Until::Text("a".into()), Until::Change(Some(7)), Until::Exit],
                     timeout: Duration::from_millis(1500),
                     print: true,
+                    json: true,
+                    after: false,
                 },
             })
         );
-        assert!(cmd("wait --text a --idle 5").is_err(), "one condition");
+        assert!(cmd("wait --since 3").is_err(), "--since goes with --change");
+        assert_eq!(
+            cmd("capture-pane -S all --main"),
+            Ok(Command::CapturePane {
+                target: None,
+                history: Some(usize::MAX),
+                view: CaptureView {
+                    main: true,
+                    ..CaptureView::default()
+                },
+                json: false
+            })
+        );
         assert_eq!(
             cmd("run -n tool --size 80x24 --env A=1 --json -- ck -v"),
             Ok(Command::Run {
@@ -1635,6 +1899,8 @@ mod tests {
                 env: vec![("A".into(), "1".into())],
                 argv: vec!["ck".into(), "-v".into()],
                 json: true,
+                log: None,
+                then: None,
             })
         );
         assert_eq!(
@@ -1758,7 +2024,10 @@ mod tests {
                 "resize-pane -L zero",
                 r#"resize-pane: "zero" is not a number of cells"#,
             ),
-            ("capture-pane -S x", r#"capture-pane -S: "x" is not -N"#),
+            (
+                "capture-pane -S x",
+                r#"capture-pane -S: "x" is not -N or all"#,
+            ),
             ("capture-pane -t", "capture-pane -t needs a value"),
             ("capture-pane -S", "capture-pane -S needs a value"),
             ("capture-pane --nope", "capture-pane: unknown flag --nope"),
@@ -1856,6 +2125,10 @@ mod tests {
                         "--gone",
                         "--idle",
                         "--timeout",
+                        "--log",
+                        "--since",
+                        "--wait-text",
+                        "--wait-idle",
                     ]
                     .contains(&flag);
                     assert_eq!(spec.flag(flag), Some(value), "{}: {flag}", spec.usage);

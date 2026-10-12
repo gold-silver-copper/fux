@@ -123,7 +123,7 @@ macro_rules! stack {
                         };
                     }
                     Event::Detach(c) => client(c).into_iter().for_each(|c| s.detach(c)),
-                    Event::Exited(p, status) => pane(p).into_iter().for_each(|p| s.exited(p, *status)),
+                    Event::Exited(p, status) => pane(p).into_iter().for_each(|p| s.exited(p, super::$side::ended(*status))),
                     Event::Drain(p, n) => {
                         if let Some(pane) = pane(p).and_then(|p| s.panes.get_mut(&p)) {
                             let queued = pane.input.front().map_or(0, <[u8]>::len);
@@ -249,6 +249,10 @@ mod base_side {
     use baseline::session::{Ctx, Session, Tab, Workspace};
     use baseline::view::{Mode, View};
 
+    pub fn ended(status: i32) -> i32 {
+        status
+    }
+
     pub fn origin(c: Option<ClientId>, p: Option<PaneId>) -> Ctx {
         let cwd = Some("/".into());
         Ctx {
@@ -299,6 +303,10 @@ mod cur_side {
     use fux::session::{Origin, Session};
     use fux::view::{Choice, Mode, View};
     use fux::workspace::{Tab, Workspace};
+
+    pub fn ended(status: i32) -> fux::process::Ended {
+        fux::process::Ended::Exited(status)
+    }
 
     /// A client's command, or the CLI's: a command has one origin.
     pub fn origin(c: Option<ClientId>, p: Option<PaneId>) -> Origin {

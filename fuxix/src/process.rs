@@ -212,6 +212,25 @@ pub fn processes() -> Vec<Pid> {
     pids.into_iter().filter_map(Pid::from_raw).collect()
 }
 
+/// `pid`'s command line, when the system says.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn argv(pid: Pid) -> Option<Vec<String>> {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let words: Vec<String> = raw
+        .split(|b| *b == 0)
+        .filter(|w| !w.is_empty())
+        .map(|w| String::from_utf8_lossy(w).into_owned())
+        .collect();
+    (!words.is_empty()).then_some(words)
+}
+
+/// `pid`'s command line: macOS keeps it where only a privileged reader
+/// finds it reliably, so it is not said.
+#[cfg(target_os = "macos")]
+pub fn argv(_pid: Pid) -> Option<Vec<String>> {
+    None
+}
+
 /// The name of `pid`'s program, when the system says.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn name(pid: Pid) -> Option<String> {
