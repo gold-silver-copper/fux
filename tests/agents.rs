@@ -575,12 +575,14 @@ fn shells_mark_their_commands_with_no_setup() -> Outcome {
         "--norc",
         "-i",
     ])?;
+    // `true` first: bash before 4.4 (macOS's) marks from a trap, which a
+    // subshell alone does not set off.
     let typed = [
         "send-keys",
         "-t",
         "bare",
         "--text",
-        "(exit 4)",
+        "true; (exit 4)",
         "Enter",
         "--wait-done",
     ];
