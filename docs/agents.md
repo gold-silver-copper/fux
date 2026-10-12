@@ -2,52 +2,56 @@
 
 (`fux help-agents`; `fux help` lists every word, `fux str WORD explain` one.)
 A fux command line is a fuxth program: words run left to right on a stack,
-`str WORD` pushes WORD as text, and what is left is printed, a value a line.
-Each step is one command; none touches a person's tabs; no `sleep` or loop.
+each taking what the words before it left. `str WORD` pushes WORD as text;
+`%3`, `@2`, `+1` are a pane, tab, workspace. What is left is printed, a value
+a line. Each step is one command; none touches a person's tabs; no `sleep`.
+The server is `FUX_SOCKET`'s, or the default; start one with `fux start`.
 
 ```sh
-fux str mine server start                          # a private server: `str mine server` on each
-fux opts str app name 100 30 size str ./app program str Ready wait-text run   # start; waits for Ready
-fux str app pane opts marks capture                # the screen; ⟦selection⟧ marked
+fux opts str app name 100 30 size str './app --fast' command str Ready wait-text run   # start; waits for Ready
+fux str app pane opts marks capture                # the screen; ⟦selection⟧ marked (or %3 opts …)
 fux str app pane keys str j key str Enter key 300 wait-idle with-screen send-keys  # keys, settle, read
 fux opts str sh name str bash program 300 wait-idle run   # a shell: it marks its commands
-fux str sh pane str 'make test' line               # a command, to its end: done STATUS
-fux str app pane opts wait-exit wait               # prints: exited 0
+fux str sh pane str 'make test' line               # a shell command, to its end: done STATUS
+fux str app pane opts wait-exit wait               # exited 0, and exits with the program's status
 fux str app pane str exited get                    # one value: 0
+fux str app pane opts json capture                 # the screen and state as JSON
 fux str agent workspace kill                       # everything run started
 ```
 
 - **Start:** `opts … run` starts a program (not a shell) in a tab of its own
   in workspace `agent`, out of every client's way, and leaves its pane
   (`%3`). Options: `str NAME name`, `COLS ROWS size`, `str DIR cwd`, `str K
-  str V env`, `str PROG program`, `str A arg` per argument. `str NAME pane`
-  finds it later. The pane stays after the program exits.
+  str V env`, and the program: `str 'prog a b' command` (split as a shell
+  splits), or `str PROG program` then `str A arg` per argument. `str NAME
+  pane` finds it later. The pane stays after the program exits.
 - **Wait:** a condition on `run`'s options, on `keys` (`send-keys`), on a
   `mouse` event, or on `opts` for `PANE opts … wait`; armed before it acts:
   `str T wait-text` (T shows anew, even scrolled away; not a typed line's
   echo), `str T wait-gone`, `MS wait-idle` (no change for MS; after keys,
-  status 5 if they changed nothing), `wait-change`, `wait-done` (the shell's
-  command ended: `done STATUS`), `wait-exit` (`exited STATUS`, the run's
-  status), `wait-bell`. `SECS timeout` (60), `with-screen`, `json` after.
-  A crash ends a wait (status 3, last lines shown); a timeout (124) says
-  what the pane is doing. `fux events-json` streams what happens instead.
+  status 5 if they changed nothing), `wait-change`, `wait-done` (a shell's
+  command ended: `done STATUS`), `wait-exit` (`exited STATUS`; fux exits
+  with that status), `wait-bell`. `SECS timeout` (60), `with-screen`. A crash
+  ends a wait (status 3, last lines shown); a timeout (124) says what the
+  pane is doing. A tab or workspace waits on all its panes.
 - **Read:** `PANE opts capture` (`PANE screen`), trimmed; options `marks`
   (highlights, a menu's selection, as `⟦beta⟧`), `styles`, `100 history`,
-  `all-history`, `last-output`, `alt-screen`, `main-screen`. `json` after it
-  adds state: `exited`, `signal`, `cursor_visible`, `alt_screen`, ….
+  `all-history`, `last-output`, `alt-screen`, `main-screen`, `json` (state
+  too: `exited`, `signal`, `cursor_visible`, `alt_screen`, …).
 - **Keys:** `PANE keys … send-keys`: `str TEXT text`, `str C-c key` (tmux's
-  names: `Enter`, `Escape`, `Up`, `F5`, `BSpace`; `fux key-names`; a typo is
-  refused), `str TEXT paste`, `5 times`, `N if-revision` (status 6 if it
-  changed). Bundled: `PANE str T type`, `PANE str Enter press`, `PANE str
-  LINE line` (typed, Enter, its end waited for).
+  names: `Enter`, `Escape`, `Up`, `F5`, `BSpace`; a typo is refused), `str
+  TEXT paste`, `5 times`, `N if-revision` (status 6 if it changed). They
+  print nothing; add a wait, or capture after. Bundled: `PANE str T type`,
+  `PANE str Enter press`, `PANE str LINE line` (for a shell: typed, Enter,
+  waited to its end).
 - **Mouse:** `PANE str click ROW COL mouse send-mouse` (`wheel-up`, …), from 0.
 - **Sizes:** `PANE tab COLS ROWS resize`; `PANE 50 percent resize-x`; `PANE
   opts horizontal str PROG program split` (or `vertical`).
 - **Stop:** `PANE str TERM signal` (or `KILL`); `PANE kill`; `PANE opts
-  respawn` starts it again. `fux str mine server force-kill-server` at the end.
-- **Status:** 0 done; 1 failed, `fux: CODE: MESSAGE` on stderr (`no_pane`,
-  `timeout`, `type`, …); a wait's own: 3 exited first, 4 closed, 5 no
-  change, 6 changed, 124 timed out. `fux ls` (`ls json`) lists everything.
+  respawn` starts it again.
+- **Status:** 0 done; 1 failed, `fux: CODE: MESSAGE` on stderr, which says
+  how the word is used; a wait's own: 3 exited first, 4 closed, 5 no change,
+  6 changed, 124 timed out. `fux ls` (`ls json`) lists everything.
 
 ## A program
 
@@ -87,8 +91,8 @@ split with no room left) is refused, and nothing changes.
 
 ## Which server
 
-`str NAME server` (a server of your own, `NAME.sock` in fux's directory) or
-`str PATH socket` first chooses the server; `start` starts one and returns
+`FUX_SOCKET` chooses the server; `str NAME server` (a server of your own,
+`NAME.sock` in fux's directory) or `str PATH socket` first chooses another; `start` starts one and returns
 once it answers; `status` says whether one answers. Inside a person's pane,
 `here` is that pane, but only on that pane's own server (`FUX_SERVER` says
 which): on yours it is not acted on. A person can give you `str agent str

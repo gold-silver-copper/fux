@@ -4919,6 +4919,21 @@ mod tests {
         Ok(())
     }
 
+    /// A bare id names its pane, tab or workspace, but not as `str`'s text;
+    /// `json` among a capture's options gives JSON; `command` splits a line.
+    #[test]
+    fn ids_json_and_command_lines_read_as_written() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, _) = attached(10, 40)?;
+        assert_eq!(output(&mut s, "%1 str name get")?, "sh\n");
+        assert_eq!(output(&mut s, "@1 str name get")?, "main\n");
+        assert_eq!(output(&mut s, "str %1")?, "%1\n");
+        let json = output(&mut s, "%1 opts json capture")?;
+        assert!(json.starts_with(r#"{"pane":"%1""#), "{json}");
+        let made = output(&mut s, "opts str 'sh -c \"exit 0\"' command run")?;
+        assert!(made.starts_with('%'), "{made}");
+        Ok(())
+    }
+
     /// What a caller tells apart, it tells by variant.
     #[test]
     fn failures_are_told_apart_by_kind() -> Result<(), Box<dyn std::error::Error>> {

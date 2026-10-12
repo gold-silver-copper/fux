@@ -84,6 +84,8 @@ pub struct Opts {
     pub waits: Waits,
     pub view: crate::command::CaptureView,
     pub history: Option<usize>,
+    /// `json` among the options: the capture is given as JSON.
+    pub json: bool,
 }
 
 /// Input, as words give it.
@@ -204,7 +206,13 @@ impl std::fmt::Display for Failed {
 }
 
 impl From<fuxth::Error> for Failed {
-    fn from(error: fuxth::Error) -> Failed {
+    fn from(mut error: fuxth::Error) -> Failed {
+        // A word of fux's given too few values says how it is used.
+        if error.code == fuxth::Code::StackUnderflow
+            && let Some(usage) = error.word.as_deref().and_then(words::usage)
+        {
+            error.message.push_str(&format!(" ({usage})"));
+        }
         let message = match (&error.place, &error.word) {
             (Some(place), Some(word)) => format!("{place}: {word}: {}", error.message),
             (Some(place), None) => format!("{place}: {}", error.message),
@@ -232,8 +240,36 @@ pub fn vocabulary() -> fuxth::Vocabulary {
 pub fn compile(tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
     let mut compiler = Compiler::new(vocabulary());
     compiler.add(&fuxth::token::source("library.fux", LIBRARY)?)?;
-    compiler.add(tokens)?;
+    compiler.add(&handles(tokens))?;
     Ok(Machine::new(compiler.finish()?, Limits::default()))
+}
+
+/// A bare id is the handle it names: `%3` is `str %3 pane`, `@2` is
+/// `str @2 tab`, `+1` is `str +1 workspace`; but not where it is the text
+/// `str` takes, nor the name `define` or `constant` gives.
+fn handles(tokens: &[Token]) -> Vec<Token> {
+    let mut out = Vec::with_capacity(tokens.len());
+    let mut quoted = false;
+    for token in tokens {
+        let word = match token.text.chars().next() {
+            Some('%') => "pane",
+            Some('@') => "tab",
+            Some('+') => "workspace",
+            Some(_) | None => "",
+        };
+        let id = token.text.len() > 1 && token.text.chars().skip(1).all(|c| c.is_ascii_digit());
+        if !quoted && id && !word.is_empty() {
+            let at = |text: &str| Token {
+                text: text.into(),
+                place: token.place.clone(),
+            };
+            out.extend([at("str"), token.clone(), at(word)]);
+        } else {
+            out.push(token.clone());
+        }
+        quoted = matches!(&*token.text, "str" | "define" | "constant") && !quoted;
+    }
+    out
 }
 
 /// The server a program names: the default (`FUX_SOCKET`, else

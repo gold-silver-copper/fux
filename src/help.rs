@@ -119,10 +119,11 @@ pub fn explain(name: &str) -> Option<String> {
 }
 
 /// An example of a word in use, as a command line.
-fn example(name: &str) -> Option<&'static str> {
+pub(crate) fn example(name: &str) -> Option<&'static str> {
     Some(match name {
         "run" => "fux opts str app name 120 40 size str ./app program str --flag arg run",
         "split" => "fux str %3 pane opts vertical split",
+        "command" => "fux opts str 'python3 -I app.py --fast' command run",
         "new-tab" => "fux opts str logs name new-tab",
         "new-workspace" => "fux opts str work name new-workspace",
         "respawn" => "fux str %3 pane opts kill-first respawn",

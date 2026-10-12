@@ -59,6 +59,7 @@ pub const WORDS: &[Word] = &[
     word("Starting", "env", 3, "opts key value -- opts", "a variable for it"),
     word("Starting", "program", 2, "opts path -- opts", "the program to start, in place of a shell"),
     word("Starting", "arg", 2, "opts word -- opts", "an argument for the program"),
+    word("Starting", "command", 2, "opts line -- opts", "the program and its arguments, one line split as a shell splits it"),
     word("Starting", "typed", 2, "opts line -- opts", "a command line typed into its new shell"),
     word("Starting", "horizontal", 1, "opts -- opts", "split side by side"),
     word("Starting", "vertical", 1, "opts -- opts", "split stacked"),
@@ -225,10 +226,26 @@ fn kind_of(value: &Value<Fux>) -> &'static str {
     }
 }
 
+/// How a word of fux's is used, for a mistake in using it: what goes
+/// before it, what it leaves, and an example.
+pub(super) fn usage(word: &str) -> Option<String> {
+    let w = WORDS.iter().find(|w| w.name == word)?;
+    let (takes, leaves) = w.effect.split_once("--").unwrap_or((w.effect, ""));
+    let takes = takes.trim().to_uppercase();
+    let leaves = match leaves.trim() {
+        "" => String::new(),
+        leaves => format!(", which leaves {leaves}"),
+    };
+    let example = crate::help::example(word).map_or_else(String::new, |e| format!("; e.g. {e}"));
+    Some(format!("use: {takes} {word}{leaves}{example}"))
+}
+
 fn wrong(word: &str, wanted: &str, got: &Value<Fux>) -> Failure {
+    // With how the word is used, which says what goes before it.
+    let usage = usage(word).map_or_else(String::new, |u| format!(" ({u})"));
     fail(
         "type",
-        format!("{word} takes {wanted}, not {}", kind_of(got)),
+        format!("{word} takes {wanted}, not {}{usage}", kind_of(got)),
     )
 }
 
@@ -534,6 +551,17 @@ impl fuxth::Host for Host<'_> {
                     ..Keys::default()
                 }))),
             ),
+            "command" => {
+                let mut o = next()?;
+                let line = string(name, &next()?)?;
+                let argv =
+                    crate::words::split(&line).map_err(|e| fail("bad_value", e.to_string()))?;
+                if argv.first().is_none_or(|p| p.is_empty()) {
+                    return Err(fail("no_program", "an empty command line"));
+                }
+                opts(name, &mut o)?.argv = argv;
+                now(out, o)
+            }
             "name" | "cwd" | "program" | "arg" | "typed" | "in" | "id" | "log-to" | "history" => {
                 let mut o = next()?;
                 let v = next()?;
@@ -949,14 +977,15 @@ impl fuxth::Host for Host<'_> {
                 let p = pane(name, &next()?)?;
                 let mut o = next()?;
                 let built = opts(name, &mut o)?.clone();
+                let then = if built.json { Then::Text } else { Then::Answer };
                 later(ask(
                     Command::CapturePane {
                         target: Some(p),
                         history: built.history,
                         view: built.view,
-                        json: false,
+                        json: built.json,
                     },
-                    Then::Answer,
+                    then,
                 ))
             }
             "ls" => later(ask(
@@ -991,6 +1020,12 @@ impl fuxth::Host for Host<'_> {
                 ))
             }
             "json" => match next()? {
+                // Among the options, as after what they make: `opts json
+                // capture` is `opts capture json`.
+                Value::App(Fux::Opts(mut opts)) => {
+                    opts.json = true;
+                    now(out, Value::App(Fux::Opts(opts)))
+                }
                 Value::App(Fux::Answer(answer)) => match (&answer.json, &answer.query) {
                     (Some(json), _) => now(out, Value::str(json.clone())),
                     (None, Some(query)) => later(ask(as_json(query.clone()), Then::Text)),

@@ -50,8 +50,9 @@ fux str %3 pane keys str q text send-keys         # press q
 fux str %3 pane opts wait-exit wait               # prints: exited 0
 ```
 
-- A number is a value; any other bare word is a word to run. `str WORD`
-  pushes WORD as text, whatever it looks like: `str %3`, `str 'two words'`.
+- A number is a value; `%3`, `@2` and `+1` alone are a pane, a tab and a
+  workspace; any other bare word is a word to run. `str WORD` pushes WORD as
+  text, whatever it looks like: `str 'two words'`.
 - What is left at the end is printed, a value a line: a pane as `%3`, a tab
   `@2`, a workspace `+1`, a client `c1`, a capture or listing as its text.
   `json` turns a value into JSON: `fux ls json`, `fux str %3 pane info json`.
@@ -82,7 +83,7 @@ Words that start, wait, type and read build their request from **options**:
 `opts` is empty options, and words add to them before the word that acts.
 
 ```sh
-fux opts str app name 120 40 size str ./app program str --verbose arg run
+fux opts str app name 120 40 size str './app --verbose' command run
 fux str %3 pane opts str ready wait-text 30 timeout wait
 fux str %3 pane opts 200 history joined capture
 fux str %3 pane keys str 'make test' text str Enter key wait-done send-keys
