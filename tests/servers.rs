@@ -145,8 +145,17 @@ fn events_tell_what_happens() -> Outcome {
     let created = next(r#""event":"created""#)?;
     assert!(created.contains(r#""name":"agent""#), "{created}");
     next(&format!(r#""event":"created","pane":"{pane}""#))?;
-    next(&format!(r#""event":"bell","pane":"{pane}""#))?;
-    let exited = next(&format!(r#""event":"exited","pane":"{pane}""#))?;
+    // The bell and the exit may come in one round, which tells them by
+    // kind rather than by time: either first.
+    let (mut bell, mut exited) = (false, None);
+    while !bell || exited.is_none() {
+        let line = next(&format!(r#""pane":"{pane}""#))?;
+        bell |= line.contains(r#""event":"bell""#);
+        if line.contains(r#""event":"exited""#) {
+            exited = Some(line);
+        }
+    }
+    let exited = exited.unwrap_or_default();
     assert!(exited.ends_with(r#""status":7}"#), "{exited}");
     server.ok(&["kill-pane", "-t", pane])?;
     next(&format!(r#""event":"closed","pane":"{pane}""#))?;
