@@ -139,9 +139,9 @@ language's: `type` (a word given the wrong kind of value), `stack_underflow`,
 ## `status json`, `servers json`
 
 ```json
-{"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.22.0","protocol":5,
- "server_version":"0.22.0","server_protocol":5,"compatible":true}
-[{"name":"test","socket":"/run/user/1000/fux/test.sock","version":"0.22.0","compatible":true}]
+{"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.23.0","protocol":5,
+ "server_version":"0.23.0","server_protocol":5,"compatible":true}
+[{"name":"test","socket":"/run/user/1000/fux/test.sock","version":"0.23.0","compatible":true}]
 ```
 
 With no server, `status` gives `running`, `socket`, `version` and `protocol`
