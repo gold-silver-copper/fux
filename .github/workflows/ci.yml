@@ -46,7 +46,7 @@ jobs:
           if [[ "$RUNNER_OS" == macOS ]]; then brew install fish; else sudo apt-get update -q && sudo apt-get install -y -q zsh fish; fi
           # The runner's group-writable function directories would have zsh's
           # completion setup ask whether to trust them, at every start.
-          zsh -c 'autoload -U compaudit; compaudit' 2>/dev/null | xargs -r sudo chmod g-w,o-w
+          { zsh -c 'autoload -U compaudit; compaudit' 2>/dev/null || true; } | xargs -r sudo chmod g-w,o-w
           echo "FUX_TEST_SHELLS=1" >> "$GITHUB_ENV"
 
       - name: Platform and pinned toolchain
