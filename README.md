@@ -244,7 +244,7 @@ change.
 {"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main",
   "panes":[{"id":"%1","name":"zsh","title":"","rows":23,"cols":80,"pid":4242,
     "program":"vim","exited":null,"signal":null,"idle_ms":1520,"alt_screen":true,
-    "mouse":true,"bracketed_paste":true,"pictures":[],"cursor_visible":true,
+    "mouse":true,"mouse_mode":"press_release","bracketed_paste":true,"pictures":[],"cursor_visible":true,
     "history_lines":0,"copy_mode":false,"revision":38,"command_running":false,
     "last_status":null,"bells":0,"notification":null,"cwd":"/home/me",
     "argv":["vim","notes.md"]}]}]}],

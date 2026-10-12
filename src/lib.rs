@@ -186,8 +186,14 @@ fn usage_error(message: &str, command: Option<&str>) -> Result<u8, Error> {
         || "`fux help` lists commands".to_owned(),
         |usage| format!("usage: fux {usage}"),
     );
+    // A message that is itself the usage, or names `fux help`, needs no more.
+    let usage = if message.contains("fux help") || message.starts_with("usage:") {
+        String::new()
+    } else {
+        format!("\n{usage}")
+    };
     // The status says it, if stderr cannot.
-    let _ = writeln!(std::io::stderr(), "fux: {message}\n{usage}");
+    let _ = writeln!(std::io::stderr(), "fux: {message}{usage}");
     Ok(2)
 }
 

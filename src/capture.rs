@@ -227,6 +227,18 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
             "mouse",
             Json::Bool(screen.mouse_protocol_mode() != MouseProtocolMode::None),
         ),
+        // What it asked for: whether a move without a button is reported.
+        (
+            "mouse_mode",
+            match screen.mouse_protocol_mode() {
+                MouseProtocolMode::None => Json::Null,
+                MouseProtocolMode::Press => Json::str("press"),
+                MouseProtocolMode::PressRelease => Json::str("press_release"),
+                MouseProtocolMode::ButtonMotion => Json::str("button_motion"),
+                MouseProtocolMode::AnyMotion => Json::str("any_motion"),
+                _ => Json::str("other"),
+            },
+        ),
         (
             "bracketed_paste",
             Json::Bool(screen.mode(Mode::BracketedPaste)),

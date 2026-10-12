@@ -310,7 +310,7 @@ impl std::fmt::Display for Error {
             }
             Error::NoRows => f.write_str("the pane has no rows"),
             Error::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
-            Error::EmptyName => f.write_str("a name cannot be empty"),
+            Error::EmptyName => f.write_str("a name cannot be empty or blank"),
             Error::ControlInName => f.write_str("a name cannot contain control characters"),
             Error::LongName => f.write_str("a name is at most 256 bytes"),
             Error::NameTaken(name) => write!(f, "another workspace is named {name:?}"),
@@ -3063,7 +3063,7 @@ fn new_pane(
 }
 
 fn check_name(name: &str) -> Result<(), Error> {
-    if name.is_empty() {
+    if name.trim().is_empty() {
         return Err(Error::EmptyName);
     }
     if name.chars().any(char::is_control) {
@@ -3301,14 +3301,14 @@ mod tests {
         assert_eq!(
             quiet(output(&mut s, "ls --json")?),
             concat!(
-                r#"{"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[{"id":"%1","name":"say \"hi\" \\ 界","title":"","rows":3,"cols":15,"pid":null,"program":null,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":0,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null},{"id":"%2","name":"sh","title":"tab\\title","rows":3,"cols":14,"pid":null,"program":null,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":1,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}]},{"id":"@2","name":"two","panes":[{"id":"%3","name":"sh","title":"","rows":3,"cols":30,"pid":null,"program":null,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":0,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}]}]}],"clients":[{"id":"c1","rows":4,"cols":30,"workspace":"+1","tab":"@1","pane":"%2","zoom":false}]}"#,
+                r#"{"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[{"id":"%1","name":"say \"hi\" \\ 界","title":"","rows":3,"cols":15,"pid":null,"program":null,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":0,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null},{"id":"%2","name":"sh","title":"tab\\title","rows":3,"cols":14,"pid":null,"program":null,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":1,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}]},{"id":"@2","name":"two","panes":[{"id":"%3","name":"sh","title":"","rows":3,"cols":30,"pid":null,"program":null,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":0,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}]}]}],"clients":[{"id":"c1","rows":4,"cols":30,"workspace":"+1","tab":"@1","pane":"%2","zoom":false}]}"#,
                 "\n"
             )
         );
         assert_eq!(
             quiet(output(&mut s, "capture-pane -t %2 --json")?),
             concat!(
-                r#"{"pane":"%2","rows":3,"cols":14,"cursor":[1,2],"lines":["a       b \"q\"","界"],"program":null,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":1,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}"#,
+                r#"{"pane":"%2","rows":3,"cols":14,"cursor":[1,2],"lines":["a       b \"q\"","界"],"program":null,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":1,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}"#,
                 "\n"
             )
         );
@@ -3581,7 +3581,7 @@ mod tests {
                 r#""-x" cannot be a name: a target would read it as a pane, tab or workspace number"#,
             ),
             ("reload", 1, "no config file to reload"),
-            ("rename -t %1 ''", 1, "a name cannot be empty"),
+            ("rename -t %1 ''", 1, "a name cannot be empty or blank"),
             (
                 "rename -t %1 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
                 1,
@@ -3631,7 +3631,7 @@ mod tests {
                 "this command acts on a client's screen: use -c CLIENT (`fux ls` lists clients)",
             ),
             ("copy-mode -c c9", 1, "no client c9"),
-            ("new-workspace -n ''", 1, "a name cannot be empty"),
+            ("new-workspace -n ''", 1, "a name cannot be empty or blank"),
             ("send-keys -t %99 x", 1, "no pane %99"),
             ("select-pane -c c1 -t %99", 1, "no pane %99"),
             ("select-tab -c c1 -t @99", 1, "no tab @99"),

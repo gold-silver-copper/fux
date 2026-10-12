@@ -1169,8 +1169,13 @@ fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
     let workspace = a.target(parse_workspace)?;
     let env = env_pairs(a, "run")?;
     let argv = a.rest();
+    if argv.is_empty() && !a.positional.is_empty() {
+        return Err(Usage::Needs(
+            "run: the program goes after -- (fux run -n NAME -- PROGRAM ARGS...)",
+        ));
+    }
     if argv.is_empty() {
-        return Err(Usage::Needs("usage: run [flags] -- PROGRAM [ARGS...]"));
+        return Err(Usage::Needs("run needs a program, after --"));
     }
     let then = flag_wait(a, false)?;
     Ok(Command::Run {
@@ -1258,12 +1263,21 @@ fn checked_text(text: &str) -> Result<&str, Usage> {
 fn env_pairs(a: &Args<'_>, command: &'static str) -> Result<Vec<(String, String)>, Usage> {
     a.values("--env")
         .map(|pair| match pair.split_once('=') {
-            Some((key, value)) if !key.is_empty() => Ok((key.to_owned(), value.to_owned())),
+            // A name a shell takes: letters, digits and _, not first a digit.
+            Some((key, value))
+                if key
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') =>
+            {
+                Ok((key.to_owned(), value.to_owned()))
+            }
             _ => Err(Usage::Bad {
                 command,
                 flag: "--env",
                 value: pair.to_owned(),
-                expected: "KEY=VALUE",
+                expected: "KEY=VALUE, KEY letters, digits and _",
             }),
         })
         .collect()
