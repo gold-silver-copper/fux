@@ -780,7 +780,9 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
     // The mouse: reported by the client's terminal only while the focused
     // pane's program asked for it and nothing of fux's has the keys, so
     // that the rest of the time the terminal selects text as it does.
+    // A client that only watches sends no clicks: its terminal selects.
     if matches!(view.mode, Mode::Normal)
+        && !view.read_only
         && let Some(focus) = focus
         && placement.rect(focus).is_some()
         && let Some(pane) = session.panes.get(&focus)

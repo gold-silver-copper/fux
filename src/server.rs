@@ -120,11 +120,27 @@ struct Conn {
     grant: Option<PathBuf>,
 }
 
-/// A socket `fux grant` made: its commands reach `workspace` alone.
+/// A socket `fux grant` made: its commands reach `workspace` alone, the
+/// workspace of that name it was given, or the first that has it once
+/// there is one, whatever it is renamed after.
 struct Grant {
     listening: Listening,
     socket: PathBuf,
     workspace: String,
+    pinned: Option<crate::id::WsId>,
+}
+
+impl Grant {
+    /// The name its workspace has now: the one pinned, while it is there,
+    /// else the name it was granted, pinned once a workspace has it.
+    fn scope(&mut self, session: &Session) -> String {
+        if let Some(ws) = self.pinned.and_then(|id| session.workspace(id)) {
+            return ws.name.clone();
+        }
+        let named = crate::command::WsRef::Name(self.workspace.clone());
+        self.pinned = session.resolve_ws(&named).ok();
+        self.workspace.clone()
+    }
 }
 
 /// Where a connection is in its life, each stage holding what it alone
@@ -461,6 +477,8 @@ pub struct Server {
     phase: Phase,
     conns: Vec<Conn>,
     grants: Vec<Grant>,
+    /// A grant was revoked: what waits or streams through it ends.
+    revoked: bool,
     /// Where the layout is saved, for a server after a crash to bring
     /// back; none if there is nowhere to.
     saved: Option<Saved>,
@@ -514,9 +532,10 @@ impl Saved {
                 let home = std::env::var_os("HOME").map(PathBuf::from)?;
                 Some(home.join(".local").join("state"))
             })?;
-        let name: String = (socket.path().to_string_lossy().chars())
-            .map(|c| if c == '/' { '%' } else { c })
-            .collect();
+        // `/` read as `%`, and `%` itself as `%25`: no two sockets share one.
+        let name = (socket.path().to_string_lossy())
+            .replace('%', "%25")
+            .replace('/', "%");
         let name = format!("{}.layout", name.trim_start_matches('%'));
         Some(Saved {
             path: base.join("fux").join(name),
@@ -539,8 +558,13 @@ impl Saved {
         match session.restore(&text) {
             Ok(0) => false,
             Ok(panes) => {
+                let panes = if panes == 1 {
+                    "1 pane".to_owned()
+                } else {
+                    format!("{panes} panes")
+                };
                 log(&format!(
-                    "brought back {panes} panes from {}",
+                    "brought back {panes} from {}",
                     self.path.display()
                 ));
                 true
@@ -548,9 +572,13 @@ impl Saved {
             Err(error) => {
                 // What it made is gone; nothing of it may stop the server.
                 session.outbox.clear();
+                // Kept aside, not saved over, for a person to look at.
+                let aside = self.path.with_extension("layout.failed");
+                let _ = std::fs::rename(&self.path, &aside);
                 log(&format!(
-                    "could not bring back {}: {error}; starting afresh",
-                    self.path.display()
+                    "could not bring back {}: {error}; starting afresh, the file kept as {}",
+                    self.path.display(),
+                    aside.display()
                 ));
                 false
             }
@@ -667,6 +695,9 @@ fn grant(
         },
         None => return failed("grant needs -t WS".to_owned()),
     };
+    if grants.iter().any(|g| g.socket == path) {
+        return failed(format!("a grant made {} already", path.display()));
+    }
     let checked = crate::socket::socket_path(crate::socket::Choice::Path(
         &path.to_string_lossy(),
         "grant --socket",
@@ -680,6 +711,9 @@ fn grant(
         return failed(format!("{}: {error}", path.display()));
     }
     session.grants.push((path.clone(), workspace.clone()));
+    let pinned = session
+        .resolve_ws(&crate::command::WsRef::Name(workspace.clone()))
+        .ok();
     grants.push(Grant {
         listening: Listening {
             listener,
@@ -687,6 +721,7 @@ fn grant(
         },
         socket: path.clone(),
         workspace,
+        pinned,
     });
     Outcome {
         status: 0,
@@ -774,6 +809,7 @@ pub fn serve(socket: &SocketPath, config_path: Option<PathBuf>, fresh: bool) -> 
         },
         conns: Vec::new(),
         grants: Vec::new(),
+        revoked: false,
         saved,
         children,
         killed: Vec::new(),
@@ -822,6 +858,7 @@ impl Server {
             // What the last round read or changed may be what a wait waits
             // for, or an event to tell.
             self.answer_waits(now);
+            self.end_revoked();
             self.tell_events();
             if let Some(saved) = &mut self.saved {
                 saved.save_by(&self.session, now);
@@ -941,6 +978,21 @@ impl Server {
             };
             if let Some(outcome) = waiting.answer(&self.session, now) {
                 conn.answer(&mut self.session, outcome);
+            }
+        }
+    }
+
+    /// Ends what waits or streams through a grant that was revoked.
+    fn end_revoked(&mut self) {
+        if !std::mem::take(&mut self.revoked) {
+            return;
+        }
+        let live: Vec<&PathBuf> = self.grants.iter().map(|g| &g.socket).collect();
+        for conn in &mut self.conns {
+            let gone = conn.grant.as_ref().is_some_and(|g| !live.contains(&g));
+            if gone && matches!(conn.stage, Stage::Waiting(_) | Stage::Events(_)) {
+                let why = "the grant this came through was revoked";
+                conn.end(&mut self.session, &ServerFrame::Exit(why));
             }
         }
     }
@@ -1584,9 +1636,9 @@ impl Server {
                 // Through a grant, the workspace it reaches; one revoked
                 // reaches none.
                 let scope = conn.grant.as_ref().map(|socket| {
-                    (self.grants.iter())
+                    (self.grants.iter_mut())
                         .find(|g| &g.socket == socket)
-                        .map_or_else(String::new, |g| g.workspace.clone())
+                        .map_or_else(String::new, |g| g.scope(session))
                 });
                 if let Ok(crate::command::Command::Grant {
                     workspace,
@@ -1598,6 +1650,8 @@ impl Server {
                         Some(_) => (refused_grant(), "not_granted"),
                         None => {
                             let made = (workspace, socket, revoke);
+                            // What came through a revoked grant ends.
+                            self.revoked |= revoke;
                             (grant(&mut self.grants, session, made, cwd), "grant")
                         }
                     };
@@ -1619,6 +1673,7 @@ impl Server {
                     env,
                     scope,
                     inside,
+                    grant: conn.grant.clone(),
                 });
                 match session.begin(&argv, &origin) {
                     Begun::Done(outcome) => conn.answer(session, outcome),

@@ -148,6 +148,10 @@ impl Ids {
         if n == 0 || (n <= last && !again) {
             return Err(Error::IdTaken(crate::session::describe(id)));
         }
+        // An id far ahead would leave none after it: the ids would run out.
+        if n > last.saturating_add(MAX_JUMP) || n > u32::MAX - MAX_JUMP {
+            return Err(Error::IdTooHigh(crate::session::describe(id)));
+        }
         *wanted = Some(n);
         Ok(())
     }
@@ -157,6 +161,9 @@ impl Ids {
         self.wanted = Wanted::default();
     }
 }
+
+/// How far ahead of the last id given an asked-for one may be.
+const MAX_JUMP: u32 = 1 << 16;
 
 /// An id of any kind: what `--id` asks for.
 pub type AnyId = crate::command::AnyRef<WsId>;

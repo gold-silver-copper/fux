@@ -97,6 +97,10 @@ pub struct Caller {
     /// It runs in one of this server's panes (its `FUX_SERVER` is this
     /// server's), whether or not it gave the pane.
     pub inside: bool,
+    /// The socket of the grant it came through: what panes it starts are
+    /// told to reach the server by, so that what runs there is held to the
+    /// grant too.
+    pub grant: Option<PathBuf>,
 }
 
 /// Where an attached client is: the workspace and tab it is shown, and the
@@ -161,6 +165,8 @@ pub enum Error {
     IdTaken(String),
     /// `--id` of a kind the command makes none of, or two of one kind.
     IdKind(String),
+    /// `--id` so far ahead that ids would run out after it.
+    IdTooHigh(String),
     /// A command from a granted socket that names something outside its
     /// workspace.
     OutOfScope {
@@ -311,7 +317,7 @@ impl Error {
             Error::NoField { .. } => "no_field",
             Error::OutOfScope { .. } | Error::NotGranted { .. } | Error::Revoked => "not_granted",
             Error::NotNamed(_) => "no_target",
-            Error::IdTaken(_) | Error::IdKind(_) => "id",
+            Error::IdTaken(_) | Error::IdKind(_) | Error::IdTooHigh(_) => "id",
             Error::LayoutLine(..) | Error::LayoutFile(..) => "layout",
             Error::OwnServer(_) => "own_server",
             Error::PeopleAttached(_) => "people_attached",
@@ -381,13 +387,17 @@ impl std::fmt::Display for Error {
                 f,
                 "--id {id}: that id, or a higher one, was given before, and ids are never given twice"
             ),
+            Error::IdTooHigh(id) => write!(
+                f,
+                "--id {id}: too far ahead of the ids given so far, which would run out after it"
+            ),
             Error::IdKind(id) => write!(
                 f,
                 "--id {id}: not an id this command makes, or one of a kind given twice"
             ),
             Error::OutOfScope { what, scope } => write!(
                 f,
-                "{what} is outside workspace {scope}, the only one this socket reaches (fux grant)"
+                "{what} is not in workspace {scope}, the only one this socket reaches (fux grant)"
             ),
             Error::NotGranted { what, scope } => write!(
                 f,
@@ -573,6 +583,7 @@ impl std::error::Error for Error {
             | Error::Revoked
             | Error::IdTaken(_)
             | Error::IdKind(_)
+            | Error::IdTooHigh(_)
             | Error::LayoutLine(..)
             | Error::LayoutFile(..)
             | Error::OutOfScope { .. }
@@ -724,6 +735,8 @@ struct Starting {
     set: Vec<(String, String)>,
     unset: Vec<String>,
     paused: bool,
+    /// The socket they reach the server by, if not its own: a grant's.
+    socket: Option<PathBuf>,
 }
 
 /// The name of the first workspace, and of each workspace's first tab.
@@ -807,14 +820,22 @@ impl Reach<'_> {
         })
     }
     fn pane(&self, id: Option<PaneId>) -> Result<(), Error> {
-        let id = self.session.pane(id, self.here)?.id;
+        let id = match self.session.pane(id, self.here) {
+            Ok(pane) => pane.id,
+            Err(Error::NoPane(id)) => return Err(self.outside(id.to_string())),
+            Err(error) => return Err(error),
+        };
         match self.session.locate(id) {
             Some((ws, _)) if Some(ws) == self.ws => Ok(()),
             Some(_) | None => Err(self.outside(id.to_string())),
         }
     }
     fn tab(&self, id: Option<TabId>) -> Result<(), Error> {
-        let tab = self.session.tab_target(id, self.here)?;
+        let tab = match self.session.tab_target(id, self.here) {
+            Ok(tab) => tab,
+            Err(Error::NoTab(tab)) => return Err(self.outside(tab.to_string())),
+            Err(error) => return Err(error),
+        };
         match self.session.tab_workspace(tab) {
             Ok(ws) if Some(ws) == self.ws => Ok(()),
             Ok(_) | Err(_) => Err(self.outside(tab.to_string())),
@@ -824,7 +845,10 @@ impl Reach<'_> {
         match self.session.resolve_ws(ws) {
             Ok(id) if Some(id) == self.ws => Ok(()),
             Ok(id) => Err(self.outside(id.to_string())),
-            Err(error) => Err(error),
+            Err(_) => Err(self.outside(match ws {
+                WsRef::Id(id) => id.to_string(),
+                WsRef::Name(name) => format!("{name:?}"),
+            })),
         }
     }
     fn any(&self, target: &AnyRef) -> Result<(), Error> {
@@ -1136,7 +1160,7 @@ impl Session {
         let size = pane.size();
         let mut vars = Vec::new();
         if let Some(launcher) = &self.launch {
-            vars.extend(launcher.vars(id));
+            vars.extend(launcher.vars(id, self.starting.socket.as_deref()));
         }
         vars.extend(
             self.starting
@@ -1261,14 +1285,20 @@ impl Session {
             Origin::Nowhere => &[],
         };
         let paused = self.restoring;
+        let socket = match origin {
+            Origin::Cli(caller) => caller.grant.clone(),
+            Origin::Client(_) | Origin::Nowhere => None,
+        };
         if env.is_empty() {
             return Starting {
                 paused,
+                socket,
                 ..Starting::default()
             };
         }
         let mut fresh = Starting {
             paused,
+            socket,
             ..Starting::default()
         };
         for name in &self.config.update_environment {
@@ -1944,7 +1974,9 @@ impl Session {
         let mut sizes = std::mem::take(&mut self.shown_sizes);
         let mut placed = std::mem::take(&mut self.placed);
         sizes.clear();
-        for view in self.views.values() {
+        // A client that only watches sizes nothing: it shows the panes as
+        // they are.
+        for view in self.views.values().filter(|v| !v.read_only) {
             self.placement_into(view, &mut placed);
             sizes.extend(placed.panes.iter().map(|(p, r)| (*p, (r.h(), r.w()))));
         }
@@ -2413,7 +2445,11 @@ impl Session {
         if scope.is_empty() {
             return Err(Error::Revoked);
         }
-        let mut argv = self.named(argv).map_err(Error::NotNamed)?;
+        // A name outside reads as one not there: nothing outside is told.
+        let mut argv = self.named(argv).map_err(|_| Error::OutOfScope {
+            what: "a target".to_owned(),
+            scope: scope.to_owned(),
+        })?;
         let command = command::parse(&argv).map_err(Error::Usage)?;
         let anywhere = matches!(
             command,
@@ -3962,11 +3998,13 @@ struct Launcher {
 }
 
 impl Launcher {
-    /// The variables that say so, to pane `id`.
-    fn vars(&self, id: PaneId) -> [(&'static str, String); 3] {
+    /// The variables that say so, to pane `id`: the socket to reach the
+    /// server by is `socket` if given (a grant's), else its own.
+    fn vars(&self, id: PaneId, socket: Option<&Path>) -> [(&'static str, String); 3] {
+        let socket = socket.unwrap_or(&self.socket);
         [
             ("FUX_PANE", id.to_string()),
-            ("FUX_SOCKET", self.socket.to_string_lossy().into_owned()),
+            ("FUX_SOCKET", socket.to_string_lossy().into_owned()),
             ("FUX_SERVER", self.server.clone()),
         ]
     }
@@ -4028,7 +4066,7 @@ fn new_pane(
     // A program brought back by a restore waits for `respawn`.
     let paused = fresh.paused && matches!(start, Start::Program(..));
     if let Some(launcher) = launch.filter(|_| !paused) {
-        let mut vars = launcher.vars(id).to_vec();
+        let mut vars = launcher.vars(id, fresh.socket.as_deref()).to_vec();
         vars.extend(fresh.set.iter().map(|(k, v)| (k.as_str(), v.clone())));
         vars.extend(env.iter().map(|(k, v)| (k.as_str(), v.clone())));
         let (argv, marks) = with_marks(config, &launcher.socket, argv, env);

@@ -122,6 +122,7 @@ impl Session {
                     "rename".into(),
                     "-t".into(),
                     tab.id.to_string(),
+                    "--".into(),
                     tab.name.clone(),
                 ],
             );
@@ -129,10 +130,12 @@ impl Session {
         if let Tree::Split(axis, split) = root {
             self.dump_split(*axis, split, out);
         }
-        // Each pane's size, for the shares of its splits; the last takes
-        // what is left.
+        // Each pane's size, for the shares of its splits, the last taking
+        // what is left: in a tab of a fixed size, the only one whose panes'
+        // sizes stay as they are wherever it is made.
         let panes = root.panes();
-        if let Some((_, sized)) = panes.split_last() {
+        let fixed = matches!(tab.fit(), Fit::Fixed(_));
+        if let (Some((_, sized)), true) = (panes.split_last(), fixed) {
             for pane in sized {
                 let Some(size) = self.panes.get(pane).map(|p| p.size()) else {
                     continue;
@@ -166,6 +169,7 @@ impl Session {
                         "rename".into(),
                         "-t".into(),
                         pane.to_string(),
+                        "--".into(),
                         p.name.clone(),
                     ],
                 );
@@ -265,6 +269,20 @@ impl Session {
                 Err(usage) => return Err(Error::LayoutLine(at, usage.to_string())),
             }
         }
+        // Every directory is there before anything starts.
+        if !again {
+            let base = self.cwd_for(self.here(origin)?, None);
+            for (at, argv) in &lines {
+                let dirs = argv.iter().zip(argv.iter().skip(1));
+                let cwd = dirs
+                    .take_while(|(w, _)| *w != "--")
+                    .find(|(w, _)| *w == "--cwd");
+                if let Some((_, dir)) = cwd.filter(|(_, d)| !base.join(d).is_dir()) {
+                    let missing = Error::NotADirectory(base.join(dir));
+                    return Err(Error::LayoutLine(*at, missing.to_string()));
+                }
+            }
+        }
         let place = match workspace {
             Some(WsRef::Id(id)) => id.to_string(),
             Some(WsRef::Name(name)) => name.clone(),
@@ -278,8 +296,13 @@ impl Session {
         let mut made: Vec<AnyRef<WsId>> = Vec::new();
         let mut said = Vec::new();
         for (at, argv) in lines {
-            let result =
-                self.layout_line(&argv, &place, (origin, scope.as_deref()), again, &mut ids);
+            let result = self.layout_line(
+                &argv,
+                &place,
+                (origin, scope.as_deref()),
+                again,
+                (&mut ids, &made),
+            );
             match result {
                 Ok(line_made) => {
                     if !line_made.is_empty() {
@@ -319,7 +342,7 @@ impl Session {
         place: &str,
         (origin, scope): (&Origin, Option<&str>),
         again: bool,
-        ids: &mut HashMap<String, String>,
+        (ids, made): (&mut HashMap<String, String>, &[AnyRef<WsId>]),
     ) -> Result<Vec<AnyRef<WsId>>, Error> {
         let mut words: Vec<String> = Vec::new();
         let mut asked: Vec<String> = Vec::new();
@@ -342,6 +365,20 @@ impl Session {
                 }
                 continue;
             }
+            // A directory gone since the save (a deleted worktree, a
+            // drive not mounted) is home instead, in a restore.
+            if again && word == "--cwd" {
+                if let Some(dir) = rest.next() {
+                    let there = std::path::Path::new(dir).is_dir();
+                    let dir = if there {
+                        dir.clone()
+                    } else {
+                        super::home().to_string_lossy().into_owned()
+                    };
+                    words.extend([word.clone(), dir]);
+                }
+                continue;
+            }
             words.push(ids.get(word).cloned().unwrap_or_else(|| word.clone()));
         }
         let mut command =
@@ -360,6 +397,33 @@ impl Session {
             words.extend(["-t".to_owned(), place.to_owned()]);
             words.extend(rest);
             command = command::parse(&words).map_err(Error::Usage)?;
+        }
+        // A layout shapes what it made, never what was there: so a line that
+        // fails leaves nothing changed.
+        let acts_on: Option<Option<AnyRef<WsId>>> =
+            if let Command::Split { target, .. } | Command::ResizePane { target, .. } = &command {
+                Some(target.map(AnyRef::Pane))
+            } else if let Command::Rename { target, .. }
+            | Command::Resize {
+                what: command::Resized::Tabs(target),
+                ..
+            } = &command
+            {
+                Some(match target {
+                    AnyRef::Pane(p) => Some(AnyRef::Pane(*p)),
+                    AnyRef::Tab(t) => Some(AnyRef::Tab(*t)),
+                    AnyRef::Workspace(w) => self.resolve_ws(w).ok().map(AnyRef::Workspace),
+                })
+            } else {
+                None
+            };
+        if let Some(target) = acts_on
+            && !target.is_some_and(|t| made.contains(&t))
+        {
+            let what = target.map_or_else(|| "its target".to_owned(), super::describe);
+            return Err(Error::NotNamed(format!(
+                "{what} is not one this file made, and a layout shapes only what it makes"
+            )));
         }
         if let Some(scope) = scope {
             let reach = Reach {

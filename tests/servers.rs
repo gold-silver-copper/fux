@@ -380,7 +380,7 @@ fn layouts_are_made_whole_or_not_at_all() -> Outcome {
         "{dump}"
     );
     assert!(
-        dump.contains(&format!("rename -t {worker} worker")),
+        dump.contains(&format!("rename -t {worker} -- worker")),
         "{dump}"
     );
     Ok(())

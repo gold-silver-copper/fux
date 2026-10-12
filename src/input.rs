@@ -180,7 +180,9 @@ impl Session {
             return false;
         };
         if std::mem::take(&mut view.prefixed) {
-            if detach_key == Some(press) {
+            // `d` too, as fux binds it, so that a watcher can always leave.
+            let d = KeyPress::char('d');
+            if detach_key == Some(press) || press == d {
                 self.run_command(&ClientAction::Detach.here(), &Origin::Client(client));
             }
             return true;
@@ -189,9 +191,9 @@ impl Session {
             view.prefixed = true;
             return false;
         }
-        let how = detach_key.map_or_else(
-            || "nothing is bound to detach".to_owned(),
-            |key| format!("{prefix} {key} detaches"),
+        let how = format!(
+            "{prefix} {} detaches",
+            detach_key.unwrap_or(KeyPress::char('d'))
         );
         self.info_to(client, format!("watching only (attach --read-only): {how}"));
         true
