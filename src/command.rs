@@ -293,7 +293,7 @@ pub enum Command {
         /// A file everything the program writes goes to too.
         log: Option<String>,
         /// Then waits, armed before the program writes anything.
-        then: Option<Wait>,
+        then: Option<Box<Wait>>,
     },
     /// The program `run` started, started again in its pane.
     Respawn {
@@ -1156,12 +1156,14 @@ fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
             "run --print and --timeout go with a --wait-… condition",
         ));
     }
-    let then = (!until.is_empty()).then(|| Wait {
-        until,
-        timeout: timeout.unwrap_or(WAIT_TIMEOUT),
-        print: a.has("--print"),
-        json: a.has("--json"),
-        after: false,
+    let then = (!until.is_empty()).then(|| {
+        Box::new(Wait {
+            until,
+            timeout: timeout.unwrap_or(WAIT_TIMEOUT),
+            print: a.has("--print"),
+            json: a.has("--json"),
+            after: false,
+        })
     });
     Ok(Command::Run {
         workspace,

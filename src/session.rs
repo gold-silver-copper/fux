@@ -1516,7 +1516,7 @@ impl Session {
                     });
                 };
                 let now = Instant::now();
-                let mut waiting = crate::wait::Waiting::new(&[pane], wait, now);
+                let mut waiting = crate::wait::Waiting::new(&[pane], *wait, now);
                 waiting.lead = lead;
                 return match waiting.answer(self, now) {
                     Some(outcome) => Begun::Done(outcome),

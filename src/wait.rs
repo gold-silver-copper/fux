@@ -131,9 +131,11 @@ impl Waiting {
     /// its panes, a pane's program exited first, a pane went, or its time is
     /// up.
     pub fn answer(&mut self, session: &Session, now: Instant) -> Option<Outcome> {
-        let mut outcome = self.look(session, now)?;
-        outcome.stdout.insert_str(0, &self.lead);
-        Some(outcome)
+        let outcome = self.look(session, now)?;
+        Some(Outcome {
+            stdout: format!("{}{}", self.lead, outcome.stdout),
+            ..outcome
+        })
     }
 
     fn look(&mut self, session: &Session, now: Instant) -> Option<Outcome> {
