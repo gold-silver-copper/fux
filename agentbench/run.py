@@ -128,10 +128,10 @@ def reap(work):
                     pass
 
 
-def cleanup_slot(tool, slot):
+def cleanup_slot(tool, slot, fux_bin):
     """Stops whatever server a killed run left in its slot."""
     env = isolated_env(slot)
-    cmds = {"fux": [[os.path.expanduser("~/code/fux/target/release/fux"), "kill-server"]],
+    cmds = {"fux": [[fux_bin, "kill-server"]],
             "tmux": [["tmux", "-L", "ab", "kill-server"]],
             "zellij": [["zellij", "kill-session", "ab"], ["zellij", "delete-session", "ab", "--force"]],
             "herdr": [["herdr", "--session", "ab", "server", "stop"]]}[tool]
@@ -196,6 +196,7 @@ def main():
     ap.add_argument("--timeout", type=int, default=90)
     ap.add_argument("--fux-bin", default=os.path.expanduser("~/code/fux/target/release/fux"))
     ap.add_argument("--skip-expensive", action="store_true")
+    ap.add_argument("--strict", action="store_true", help="exit 1 unless every run succeeded")
     ap.add_argument("--out", default=os.path.join(HERE, "results", "scripted.json"))
     ap.add_argument("--one", nargs=4, metavar=("TOOL", "TASK", "REP", "SLOT"))
     args = ap.parse_args()
@@ -205,6 +206,10 @@ def main():
         return
     chosen = [t for t in tasks() if (not args.tasks or t["id"] in args.tasks.split(","))
               and not (args.skip_expensive and t.get("expensive"))]
+    missing = [t["id"] for t in chosen if any(not shutil.which(n) for n in t.get("needs", []))]
+    if missing:
+        print(f"skipped, a program they need is missing: {', '.join(missing)}", flush=True)
+    chosen = [t for t in chosen if t["id"] not in missing]
     jobs = [(tool, t["id"], rep) for tool in args.tools.split(",") for t in chosen
             for rep in range(args.repeats if not t.get("expensive") else 1)]
     slots = list(range(args.slot_base, args.slot_base + args.workers))
@@ -219,7 +224,7 @@ def main():
                                  env=isolated_env(slot))
             return json.loads(out.stdout.strip().split("\n")[-1])
         except subprocess.TimeoutExpired:
-            cleanup_slot(tool, slot)
+            cleanup_slot(tool, slot, args.fux_bin)
             return {"tool": tool, "task": task, "rep": rep, "ok": False, "error": "harness timeout",
                     "why": "", "calls": 0, "sleep_s": 0, "polls": 0, "seconds": args.timeout}
         except Exception as e:
@@ -248,6 +253,8 @@ def main():
     with open(args.out, "w") as f:
         json.dump(results, f, indent=1)
     print(f"{sum(r['ok'] for r in results)}/{len(results)} runs ok -> {args.out}")
+    if args.strict and not all(r["ok"] for r in results):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

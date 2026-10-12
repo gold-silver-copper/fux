@@ -396,9 +396,16 @@ class Fux(Driver):
 
 
 class FuxAfter(Fux):
-    """fux with this PR's commands: waits that end when the program does and
-    see text that scrolled away, send-keys that waits, shell commands told
-    by OSC 133, the bell, respawn, the main screen and the cursor."""
+    """fux with the agent CLI's commands: waits that end when the program
+    does and see text that scrolled away, send-keys that waits, shell
+    commands told by OSC 133, the bell, respawn, the main screen and the
+    cursor; and, where the binary has them (`marks`), shells marked with no
+    setup and send-mouse that waits."""
+
+    def __init__(self, work, env, binary):
+        super().__init__(work, env, binary)
+        help_ = subprocess.run([binary, "help", "send-mouse"], capture_output=True, text=True, env=env)
+        self.marks = "--wait-text" in help_.stdout
 
     def wait(self, pane, *cond, timeout=10):
         out = self.fux("wait", "-t", pane, *cond, "--timeout", str(timeout), check=False,
@@ -445,11 +452,27 @@ class FuxAfter(Fux):
         self.fux("respawn", "-t", pane)
 
     def shell(self, size=None):
-        args = ["run", "--env", "PS0=\\e]133;C\\a",
-                "--env", 'PROMPT_COMMAND=printf "\\e]133;D;%s\\a" "$?"']
+        """bash, which marks its commands with no setup when this fux has
+        shell marks (`set shell-marks`), else as told to by variables."""
+        args = ["run"]
+        if not self.marks:
+            args += ["--env", "PS0=\\e]133;C\\a",
+                     "--env", 'PROMPT_COMMAND=printf "\\e]133;D;%s\\a" "$?"']
         if size:
             args += ["--size", f"{size[0]}x{size[1]}"]
-        return self.fux(*args, "--", "bash", "--norc", "-i").stdout.strip()
+        return self.fux(*args, "--", "bash", *([] if self.marks else ["--norc", "-i"])).stdout.strip()
+
+    def click_and_wait(self, pane, row, col, text, timeout=10):
+        """Clicks, and waits for the text the click brings: the line."""
+        if not self.marks:
+            self.mouse(pane, 0, row, col)
+            self.wait_text(pane, text, timeout=timeout)
+            return next((l.strip() for l in self.screen(pane).split("\n") if text in l), None)
+        out = self.fux("send-mouse", "-t", pane, "click", str(row), str(col), "--wait-text", text,
+                       "--timeout", str(timeout), check=False, timeout=timeout + 10)
+        if out.returncode != 0:
+            raise Timeout(out.stderr.strip())
+        return out.stdout.strip()
 
     def run_command(self, pane, cmd, timeout=15):
         out = self.fux("send-keys", "-t", pane, "--text", cmd, "Enter", "--wait-done",
