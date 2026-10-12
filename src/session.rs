@@ -161,6 +161,8 @@ pub enum Error {
     NoMouse(PaneId),
     /// It asked for clicks, not for motion (with no button held, or at all).
     NoMotion(PaneId),
+    /// It asked for X10 reports: presses alone.
+    OnlyPresses(PaneId),
     /// A cell the encoding it asked for cannot say (legacy: past 223).
     MouseUnencodable {
         pane: PaneId,
@@ -265,7 +267,12 @@ impl std::fmt::Display for Error {
             },
             Error::NoMotion(pane) => write!(
                 f,
-                "the program in {pane} asked for clicks, not for motion (press a button first for a drag)"
+                "the program in {pane} takes no motion here: with no button pressed it asked for none, \
+                 and asking for clicks alone (mode 1000) it takes no drags either"
+            ),
+            Error::OnlyPresses(pane) => write!(
+                f,
+                "the program in {pane} asked for X10 mouse reports: presses alone, no releases or wheel"
             ),
             Error::MouseUnencodable { pane, row, col } => write!(
                 f,
@@ -311,12 +318,15 @@ impl std::fmt::Display for Error {
             Error::NoRows => f.write_str("the pane has no rows"),
             Error::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
             Error::EmptyName => f.write_str("a name cannot be empty or blank"),
-            Error::ControlInName => f.write_str("a name cannot contain control characters"),
+            Error::ControlInName => {
+                f.write_str("a name cannot contain control or invisible characters")
+            }
             Error::LongName => f.write_str("a name is at most 256 bytes"),
-            Error::NameTaken(name) => write!(f, "another workspace is named {name:?}"),
+            Error::NameTaken(name) => write!(f, "a workspace is named {name:?}"),
             Error::TabNameTaken(name, ids) => write!(
                 f,
-                "a tab is named {name:?} already ({ids}); close it (`fux kill-tab -t {name}`) or choose another name"
+                "a tab is named {name:?} already ({ids}); close it (`fux kill-tab -t {}`) or choose another name",
+                ids.split(' ').next().unwrap_or(name)
             ),
             Error::NameReadAsTarget(name) => write!(
                 f,
@@ -366,6 +376,7 @@ impl std::error::Error for Error {
             | Error::Exited { .. }
             | Error::NoMouse(_)
             | Error::NoMotion(_)
+            | Error::OnlyPresses(_)
             | Error::MouseUnencodable { .. }
             | Error::OutsidePane { .. }
             | Error::NoRoom(_)
@@ -691,7 +702,8 @@ impl Session {
             return Err(Error::NoPane(id));
         };
         let old = pane.respawned(launch, child.map(Process::Reading), history)?;
-        if let Process::Reading(child) | Process::HungUp(child) = old {
+        if let Process::Reading(mut child) | Process::HungUp(mut child) = old {
+            child.leader.closed();
             child.leader.hang_up();
             let deadline = crate::after(Instant::now(), GRACE);
             self.dying.insert(id, Dying { child, deadline });
@@ -734,10 +746,14 @@ impl Session {
     /// one another tab has.
     fn check_tab_name(&self, name: &str, except: Option<TabId>) -> Result<(), Error> {
         check_name(name)?;
-        // One `-t` would read as an id; a name like `-x` it reads as a flag
-        // is only one `-t` cannot give.
+        // One `-t` would read as an id (a name like `-x`, read as a flag,
+        // is only one -t cannot give).
         if name.starts_with(['%', '@', '+']) {
             return Err(Error::NameReadAsTarget(name.to_owned()));
+        }
+        // A workspace's name finds the workspace, never this tab.
+        if self.workspaces.iter().any(|w| w.name == name) {
+            return Err(Error::NameTaken(name.to_owned()));
         }
         let taken: Vec<TabId> = (self.workspaces.iter())
             .flat_map(Workspace::tabs)
@@ -799,9 +815,13 @@ impl Session {
         let new = ids.pane()?;
         let mut root = self.root(tab).cloned().ok_or(Error::NoPane(target))?;
         root.split(target, new, axis, Side::After);
-        // No place for it: the tab is too small to show another pane.
-        let rect = layout::place(&root, area)
+        // No place for it, or one it takes from another pane: the tab is
+        // too small to show another pane.
+        let placed = layout::place(&root, area);
+        let shows_all = root.panes().iter().all(|p| placed.rect(*p).is_some());
+        let rect = placed
             .rect(new)
+            .filter(|_| shows_all)
             .ok_or(Error::NoRoom(target))?;
         Ok(crate::pane::size(rect.h(), rect.w()))
     }
@@ -878,6 +898,8 @@ impl Session {
             Subject::Tab(t) => AnyRef::Tab(self.tab_target(*t, here)?),
             // A name no workspace has may be a tab's (`run -n NAME`).
             Subject::Workspace(w) => match (self.ws_target(w.as_ref(), here), w) {
+                // A workspace's name is the workspace's, before a tab's
+                // (`main` names both at first).
                 (Ok(ws), _) => AnyRef::Workspace(ws),
                 (Err(error), Some(WsRef::Name(name))) => {
                     let mut tabs = (self.workspaces.iter())
@@ -1327,8 +1349,13 @@ impl Session {
     // ------------------------------------------------------------- closing
 
     /// Hangs up a pane's process; it is killed and reaped after `GRACE`.
-    fn end(&mut self, pane: Pane) {
-        if let Process::Reading(child) | Process::HungUp(child) = pane.process {
+    /// `closed`: fux closed it (kill-pane, kill-server), not its program's
+    /// end: the rest of its session goes too.
+    fn end(&mut self, pane: Pane, closed: bool) {
+        if let Process::Reading(mut child) | Process::HungUp(mut child) = pane.process {
+            if closed {
+                child.leader.closed();
+            }
             child.leader.hang_up();
             let deadline = crate::after(Instant::now(), GRACE);
             self.dying.insert(pane.id, Dying { child, deadline });
@@ -1353,12 +1380,14 @@ impl Session {
             self.remove_tab(tab);
         }
         if let Some(pane) = self.panes.remove(&id) {
+            // Closed for its program's end (a reason given), or by fux.
+            let closed = why.is_none();
             if let Some(why) = why {
                 for client in &viewers {
                     self.info_to(*client, format!("{id} {} {why}", pane.label()));
                 }
             }
-            self.end(pane);
+            self.end(pane, closed);
         }
         self.after_close();
     }
@@ -1382,7 +1411,7 @@ impl Session {
         if let Some(root) = root {
             root.for_each_pane(&mut |pane| {
                 if let Some(pane) = self.panes.remove(&pane) {
-                    self.end(pane);
+                    self.end(pane, true);
                 }
             });
         }
@@ -1566,7 +1595,7 @@ impl Session {
     /// Everything the server shuts down: every pane is hung up.
     pub fn shutdown(&mut self) {
         for pane in std::mem::take(&mut self.panes).into_values() {
-            self.end(pane);
+            self.end(pane, true);
         }
     }
 
@@ -1804,6 +1833,8 @@ impl Session {
             value = match word.as_str() {
                 "-t" => Some(true),
                 "-c" | "-N" if keys => Some(false),
+                // Text to type, never a target.
+                "--text" | "--paste" | "--wait-text" | "--wait-gone" => Some(false),
                 _ => None,
             };
         }
@@ -2166,21 +2197,30 @@ impl Session {
                 // A click is a press and, where the program takes them (not
                 // in X10 mode), a release; a move while a button is held is
                 // a drag.
+                // Released, or clicked, it is held no more; another button's
+                // release leaves it held.
+                let unheld = |button| p.mouse_held.filter(|held| *held != button);
                 let (events, held) = match mouse {
                     Mouse::Click(button) => (
                         vec![event(Press, Some(button)), event(Release, Some(button))],
-                        None,
+                        unheld(button),
                     ),
                     Mouse::Press(button) => (vec![event(Press, Some(button))], Some(button)),
                     Mouse::Wheel(button) => (vec![event(Press, Some(button))], p.mouse_held),
-                    Mouse::Release(button) => (vec![event(Release, Some(button))], None),
+                    Mouse::Release(button) => (vec![event(Release, Some(button))], unheld(button)),
                     Mouse::Move => (vec![event(Motion, p.mouse_held)], p.mouse_held),
                 };
-                let x10 = p.screen().mouse_protocol_mode() == fux_vt::MouseProtocolMode::Press;
+                let mode = p.screen().mouse_protocol_mode();
+                let x10 = mode == fux_vt::MouseProtocolMode::Press;
+                // X10 reports presses alone: a click is its press, and a
+                // release or the wheel, which it cannot say, is refused.
+                if x10 && matches!(mouse, Mouse::Wheel(_) | Mouse::Release(_)) {
+                    return Err(Error::OnlyPresses(p.id));
+                }
                 for event in events {
                     let release = event.action == Release;
                     if !p.screen().encode_mouse(event, &mut report) && !(release && x10) {
-                        return Err(match (event.action, p.screen().mouse_protocol_mode()) {
+                        return Err(match (event.action, mode) {
                             (_, fux_vt::MouseProtocolMode::None) => Error::NoMouse(p.id),
                             (Motion, _) => Error::NoMotion(p.id),
                             _ => Error::MouseUnencodable {
@@ -3066,7 +3106,10 @@ fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {
         return Err(Error::EmptyName);
     }
-    if name.chars().any(char::is_control) {
+    // Control characters, and the invisible ones that change how text
+    // around them shows (zero-width, direction overrides).
+    let invisible = |c: char| matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}');
+    if name.chars().any(|c| c.is_control() || invisible(c)) {
         return Err(Error::ControlInName);
     }
     if name.len() > 256 {
@@ -3639,17 +3682,9 @@ mod tests {
             ("confirm-close -c c1 pane -t %99", 1, "no pane %99"),
             ("rename-prompt -c c1 tab -t @99", 1, "no tab @99"),
             ("choose-tab -c c1 -t %99", 1, "no pane %99"),
-            (
-                "new-workspace -n main",
-                1,
-                r#"another workspace is named "main""#,
-            ),
+            ("new-workspace -n main", 1, r#"a workspace is named "main""#),
             ("new-workspace -n two", 0, ""),
-            (
-                "rename -t +2 main",
-                1,
-                r#"another workspace is named "main""#,
-            ),
+            ("rename -t +2 main", 1, r#"a workspace is named "main""#),
             (
                 "reorder workspace -t two --next",
                 1,

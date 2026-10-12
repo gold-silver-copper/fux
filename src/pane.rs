@@ -820,6 +820,7 @@ impl Pane {
         self.alerts = Alerts::default();
         self.revision = self.revision.wrapping_add(1);
         self.starts = self.starts.wrapping_add(1);
+        self.mouse_held = None;
         self.changed_at = Instant::now();
         Ok(std::mem::replace(
             &mut self.process,

@@ -897,7 +897,18 @@ fn waits_hold_up_under_stress() -> Outcome {
         "READY",
     ];
     server.ok(&again)?;
-    assert_eq!(server.ok(&again)?, "READY\n", "the same line, drawn again");
+    // Cleared and printed again, other text: new, on the same row.
+    let other = [
+        "send-keys",
+        "-t",
+        "sh",
+        "--text",
+        "clear; echo READY 2",
+        "Enter",
+        "--wait-text",
+        "READY",
+    ];
+    assert_eq!(server.ok(&other)?, "READY 2\n");
     let spaced = [
         "send-keys",
         "-t",

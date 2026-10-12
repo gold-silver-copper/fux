@@ -28,6 +28,10 @@ pub const UNCHANGED: u8 = 5;
 /// As `timeout(1)`.
 pub const TIMED_OUT: u8 = 124;
 
+/// How long a shell back at its prompt, fewer commands ended than lines
+/// typed, shows no change before `--done` takes it as done.
+const DONE_SETTLE: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// A wait under way.
 pub struct Waiting {
     watches: Vec<Watch>,
@@ -47,8 +51,14 @@ struct Watch {
     pane: PaneId,
     /// The screen's top row as the wait began: lines from it on count.
     anchor: Option<fux_vt::RowId>,
-    /// The screen as the wait began: a row changed since is new.
+    /// The screen as the wait began: a row changed since may be new; and
+    /// its lines then, by first row, for a wait armed before an action: a
+    /// line that reads as it did (a redraw, a reflow on resize) is not.
     mark: fux_vt::Mark,
+    was: std::collections::HashMap<fux_vt::RowId, String>,
+    /// Lines whose text has read otherwise than as the wait began, at
+    /// some look since: one erased and written again the same is new.
+    touched: std::collections::HashSet<fux_vt::RowId>,
     /// The last history row read, and for each text, the first line found
     /// holding it in the history rows read: they do not change.
     read: Option<fux_vt::RowId>,
@@ -89,18 +99,25 @@ impl Waiting {
             .map(|pane| {
                 let screen = pane.screen();
                 let commands = screen.commands();
-                // Keys typed while a command runs wait for it, then run: a
-                // wait for their end waits for that first.
-                let ahead = u64::from(wait.after && commands.running);
+                // The command lines typed, each a command's end to wait for.
                 let typed = if wait.after {
                     u64::from(wait.lines.max(1))
                 } else {
                     1
                 };
+                let was = if wait.after {
+                    (lines(screen.rows().skip(screen.history_len()), None).into_iter())
+                        .map(|l| (l.first, l.text))
+                        .collect()
+                } else {
+                    std::collections::HashMap::new()
+                };
                 Watch {
                     pane: pane.id,
                     anchor: screen.window().row(0).map(|row| row.id()),
                     mark: screen.mark(),
+                    was,
+                    touched: std::collections::HashSet::new(),
                     read: None,
                     in_history: vec![None; texts.len()],
                     on_main: !screen.mode(fux_vt::Mode::AlternateScreen),
@@ -108,10 +125,7 @@ impl Waiting {
                     echo_skipped: false,
                     revision: pane.revision,
                     finished: commands.finished,
-                    done_at: commands
-                        .finished
-                        .saturating_add(ahead)
-                        .saturating_add(typed),
+                    done_at: commands.finished.saturating_add(typed),
                     starts: pane.starts,
                     alerts: pane.alerts.count(),
                 }
@@ -150,7 +164,18 @@ impl Waiting {
                 .filter(|at| *at > now)
                 .min()
         });
-        quiet.map_or(self.deadline, |at| at.min(self.deadline))
+        // A wait for a command's end looks again once the screen settles.
+        let settle = self.wait.until.contains(&Until::Done).then(|| {
+            (self.watches.iter())
+                .filter_map(|w| session.panes.get(&w.pane))
+                .map(|pane| crate::after(pane.changed_at, DONE_SETTLE))
+                .filter(|at| *at > now)
+                .min()
+        });
+        [quiet, settle.flatten()]
+            .into_iter()
+            .flatten()
+            .fold(self.deadline, Instant::min)
     }
 
     /// Its answer, if it has one at `now`: what it waited for came in one of
@@ -220,7 +245,12 @@ impl Waiting {
             );
         }
         if now >= self.deadline {
-            let first = self.watches.first();
+            // Said of a pane still running, if one is: what it is doing.
+            let first = (self.watches.iter())
+                .find(|w| {
+                    (session.panes.get(&w.pane)).is_some_and(|p| p.process.exit_status().is_none())
+                })
+                .or(self.watches.first());
             let pane = first.and_then(|w| session.panes.get(&w.pane));
             let hint = first.zip(pane).and_then(|(w, p)| w.hint(p, &self.wait));
             let first = first.map(|w| w.pane);
@@ -510,22 +540,28 @@ impl Watch {
                      replaced)",
                 );
             }
-        }
-        if self.echo_skipped {
             return Some(
-                "a line held the text along with what was typed, and was taken as its \
-                 echo; wait for text only the output has, or use `fux wait --text`",
+                "the shell is at its prompt with no command running: --done waits for a \
+                 command to end after the wait begins",
             );
         }
+        // Shown, on a line that reads as it did when the wait began.
         let texts = texts(wait);
         let shown = lines(pane.screen().rows().skip(pane.screen().history_len()), None);
-        (wait.after
-            && shown
-                .iter()
-                .any(|l| texts.iter().any(|t| found_in(&l.text, t) > 0)))
-        .then_some(
-            "the text is on the screen, but on no line that changed after the keys; \
-                 `fux wait --text` takes what is shown",
+        let unchanged = shown.iter().any(|l| {
+            self.was.get(&l.first) == Some(&l.text)
+                && texts.iter().any(|t| found_in(&l.text, t) > 0)
+        });
+        if wait.after && unchanged {
+            return Some(
+                "the text is on the screen, but on a line that reads as it did when the \
+                 wait began (drawn again the same, it brings nothing new); `fux wait --text` \
+                 takes what is shown",
+            );
+        }
+        self.echo_skipped.then_some(
+            "a line held the text along with what was typed, and was taken as its echo; \
+             wait for text only the output has, or use `fux wait --text`",
         )
     }
 
@@ -542,6 +578,15 @@ impl Watch {
         // A send-keys wait takes only lines changed since it began.
         let mark = wait.after.then_some(self.mark);
         let shown = lines(screen.rows().skip(screen.history_len()), mark);
+        for line in &shown {
+            if self
+                .was
+                .get(&line.first)
+                .is_some_and(|was| *was != line.text)
+            {
+                self.touched.insert(line.first);
+            }
+        }
         if !texts.is_empty() {
             self.read_history(screen, texts, wait);
         }
@@ -562,10 +607,11 @@ impl Watch {
                     let i = texts.iter().position(|t| t == text).unwrap_or(0);
                     let scrolled = self.in_history.get(i).cloned().flatten();
                     let mut skipped = false;
+                    let (was, touched) = (&self.was, &self.touched);
                     // The newest line holding it, on the screen or behind it.
                     let line = (shown.iter().rev())
                         .chain(behind.iter().rev())
-                        .filter(|l| l.new && found_in(&l.text, text) > 0)
+                        .filter(|l| is_new(l, was, touched) && found_in(&l.text, text) > 0)
                         .find(|l| {
                             let echo = echoes(&l.text, text, &wait.echo);
                             skipped |= echo;
@@ -598,9 +644,18 @@ impl Watch {
                     (pane.revision > past).then_some(Found::Change(pane.revision))
                 }
                 Until::Exit => pane.process.exit_status().map(Found::Exit),
+                // A command ended since, the shell is back at its prompt and
+                // everything typed has gone in; and either as many commands
+                // ended as lines were typed, or nothing has changed for a
+                // moment (a line read by the running command, a loop over
+                // several lines, Ctrl-C: fewer ends than lines).
                 Until::Done => {
                     let commands = screen.commands();
-                    (commands.finished >= self.done_at && commands.finished > self.finished)
+                    let settled = now >= crate::after(pane.changed_at, DONE_SETTLE);
+                    (commands.finished > self.finished
+                        && !commands.running
+                        && pane.input_written()
+                        && (commands.finished >= self.done_at || settled))
                         .then_some(Found::Done(commands.last_status))
                 }
                 Until::Bell => (pane.alerts.count() > self.alerts).then(|| {
@@ -644,18 +699,20 @@ impl Watch {
         }
         let mark = wait.after.then_some(self.mark);
         let read = lines(rows.into_iter(), mark);
+        let mut skipped = false;
         for (found, text) in self.in_history.iter_mut().zip(texts) {
             if found.is_none() {
                 *found = (read.iter())
-                    .filter(|l| l.new && found_in(&l.text, text) > 0)
+                    .filter(|l| is_new(l, &self.was, &self.touched) && found_in(&l.text, text) > 0)
                     .find(|l| {
                         let echo = echoes(&l.text, text, &wait.echo);
-                        self.echo_skipped |= echo;
+                        skipped |= echo;
                         !echo
                     })
                     .map(|l| l.text.clone());
             }
         }
+        self.echo_skipped |= skipped;
     }
 }
 
@@ -680,6 +737,20 @@ fn texts(wait: &Wait) -> Vec<String> {
 struct Line {
     text: String,
     new: bool,
+    /// Its first row, which keeps its identity through edits and reflow.
+    first: fux_vt::RowId,
+}
+
+/// Whether a line is new to a wait: a row of it changed since the wait
+/// began, and it does not read as the line that began at its first row then
+/// (a program redrawing its screen, or a reflow on a resize, brings nothing)
+/// unless it read otherwise meanwhile (erased, then written the same again).
+fn is_new(
+    line: &Line,
+    was: &std::collections::HashMap<fux_vt::RowId, String>,
+    touched: &std::collections::HashSet<fux_vt::RowId>,
+) -> bool {
+    line.new && (was.get(&line.first) != Some(&line.text) || touched.contains(&line.first))
 }
 
 /// Rows as lines: soft-wrapped rows joined into the lines they wrap.
@@ -694,7 +765,11 @@ fn lines<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>, mark: Option<fux_vt::M
                 last.text.push_str(&text);
                 last.new |= new;
             }
-            _ => out.push(Line { text, new }),
+            _ => out.push(Line {
+                text,
+                new,
+                first: row.id(),
+            }),
         }
         wraps = row.wrapped();
     }

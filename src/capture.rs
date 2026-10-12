@@ -36,6 +36,9 @@ pub fn pane(
     } else {
         read.len().saturating_sub(usize::from(screen.size().rows()))
     };
+    // Whether the row before ended in a blank no glyph was written to: the
+    // cell a wide glyph left, not fitting at the row's end.
+    let mut padded = false;
     for (_, (row, span)) in read.into_iter().enumerate().filter(|(i, _)| in_rows(i)) {
         // A wide glyph's second cell is drawn as its first: the same style,
         // so a run of it is not broken in two.
@@ -66,11 +69,7 @@ pub fn pane(
             Some(last) if wraps => {
                 // The blank a wide glyph left at the row's end, not fitting
                 // there, is no part of the line.
-                let pads = cells.get(1).is_some_and(|(text, _)| text.is_empty())
-                    && last
-                        .last()
-                        .is_some_and(|(text, a)| *text == " " && *a == Attributes::default());
-                if pads {
+                if padded && cells.get(1).is_some_and(|(text, _)| text.is_empty()) {
                     last.pop();
                 }
                 last.extend(cells);
@@ -78,6 +77,8 @@ pub fn pane(
             _ => lines.push(cells),
         }
         wraps = view.join && row.wrapped();
+        padded = (row.cells().last())
+            .is_some_and(|c| c.contents().is_empty() && !c.is_wide_continuation());
     }
     let (rows, cols) = screen.size().into();
     let cursor = Some(screen.cursor_position()).map(|(row, col)| {
@@ -89,9 +90,37 @@ pub fn pane(
         ("pane", pane.id.to_string()),
         (rows, cols),
         cursor,
-        (lines, view),
+        (lines, view, screen_background(screen)),
         state,
     )
+}
+
+/// The screen's own background, against which a highlight shows: the
+/// terminal's default if a quarter of the screen has it, else the colour
+/// most of the screen's cells have (a program that paints its whole
+/// screen). Read over the whole screen, whatever part is captured.
+fn screen_background(screen: &fux_vt::Screen) -> fux_vt::Color {
+    let mut counts: Vec<(fux_vt::Color, usize)> = Vec::new();
+    let mut total = 0usize;
+    let rows = screen.rows().skip(screen.history_len());
+    for cell in rows.flat_map(|row| row.cells()) {
+        let colour = cell.attributes().background();
+        total = total.saturating_add(1);
+        match counts.iter_mut().find(|(c, _)| *c == colour) {
+            Some((_, n)) => *n = n.saturating_add(1),
+            None => counts.push((colour, 1)),
+        }
+    }
+    let default = fux_vt::Color::default();
+    let plain = (counts.iter())
+        .find(|(c, _)| *c == default)
+        .map_or(0, |(_, n)| *n);
+    if plain.saturating_mul(4) >= total {
+        return default;
+    }
+    (counts.into_iter())
+        .max_by_key(|(_, n)| *n)
+        .map_or(default, |(c, _)| c)
 }
 
 /// The rows a capture reads, each with the columns of it it reads: the
@@ -174,7 +203,7 @@ pub fn client(client: ClientId, grid: &crate::render::Grid, json: bool) -> Strin
         ("client", client.to_string()),
         (grid.rows, grid.cols),
         grid.cursor,
-        (lines, view),
+        (lines, view, fux_vt::Color::default()),
         json.then(Vec::new),
     )
 }
@@ -314,18 +343,18 @@ fn print(
     (key, id): (&'static str, String),
     (rows, cols): (u16, u16),
     cursor: Option<(u16, u16)>,
-    (mut lines, view): (Vec<Cells<'_>>, CaptureView),
+    (mut lines, view, base): (Vec<Cells<'_>>, CaptureView, fux_vt::Color),
     state: Option<Vec<(&'static str, Json<'static>)>>,
 ) -> String {
     // What a selection is drawn with: reverse video, or a background
-    // other than the screen's own (the one most cells have).
-    let base = base_background(&lines);
+    // other than the screen's own.
     let highlighted = |a: &Attributes| a.inverse() || a.background() != base;
+    let json = state.is_some();
     if !view.full {
         // Blanks are trimmed, unless they show: highlighted with --marks,
-        // styled with --styles.
+        // styled with --styles (as SGR; JSON's lines read alike either way).
         let shows = |a: &Attributes| {
-            (view.marks && highlighted(a)) || (view.styles && *a != Attributes::default())
+            (view.marks && highlighted(a)) || (view.styles && !json && *a != Attributes::default())
         };
         for line in &mut lines {
             while line
@@ -391,22 +420,6 @@ fn marked(line: &Cells<'_>, highlighted: &impl Fn(&Attributes) -> bool) -> Strin
         out.push('⟧');
     }
     out
-}
-
-/// The background most cells of `lines` have: the screen's own colour,
-/// against which a highlight shows.
-fn base_background(lines: &[Cells<'_>]) -> fux_vt::Color {
-    let mut counts: Vec<(fux_vt::Color, usize)> = Vec::new();
-    for (_, a) in lines.iter().flatten() {
-        let colour = a.background();
-        match counts.iter_mut().find(|(c, _)| *c == colour) {
-            Some((_, n)) => *n = n.saturating_add(1),
-            None => counts.push((colour, 1)),
-        }
-    }
-    (counts.into_iter())
-        .max_by_key(|(_, n)| *n)
-        .map_or_else(fux_vt::Color::default, |(c, _)| c)
 }
 
 /// A line in SGR: each change of attributes set from nothing, and reset at

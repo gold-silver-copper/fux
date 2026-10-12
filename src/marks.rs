@@ -22,7 +22,20 @@ use std::path::{Path, PathBuf};
 /// not exported, so shells started from this one do not inherit it.
 const BASHRC: &str = r#"# fux: OSC 133 shell marks, after your own startup. Off: `set shell-marks off`.
 if [ -r ~/.bashrc ]; then . ~/.bashrc; fi
-__fux_end() {
+"#;
+
+/// A login bash's startup, read as `bash -l` reads it (a login shell takes
+/// no --rcfile, so fux starts bash interactive with this one instead).
+const BASH_LOGIN: &str = r#"# fux: a login shell's startup, as bash -l reads it, then OSC 133 marks.
+if [ -r /etc/profile ]; then . /etc/profile; fi
+for __fux_f in ~/.bash_profile ~/.bash_login ~/.profile; do
+  if [ -r "$__fux_f" ]; then . "$__fux_f"; break; fi
+done
+unset __fux_f
+"#;
+
+/// The marks, after either startup.
+const BASH_MARKS: &str = r#"__fux_end() {
   local s=$? h=${HISTCMD-0}
   if [ -z "${__fux_c+x}" ] && [ "$h" != "${__fux_h-$h}" ]; then printf '\033]133;C\007' >&2; fi
   unset __fux_c; __fux_h=$h; __fux_armed=
@@ -54,7 +67,7 @@ export -n PROMPT_COMMAND PS0
 /// the next command's start, or before bash 4.4, a DEBUG trap armed last
 /// does (fux's commands, an empty line, and a line that starts with a
 /// subshell, which the trap does not see, mark nothing).
-const BARE_END: &str = r#"__fux_s=$?; __fux_a=; export -n PS0 PROMPT_COMMAND; __fux_n=${HISTCMD-0}; if [ -z "${__fux_c+x}" ] && [ "$__fux_n" != "${__fux_h-$__fux_n}" ]; then printf '\033]133;C\007' >&2; fi; unset __fux_c; __fux_h=$__fux_n; printf '\033]133;D;%s\007' "$__fux_s" >&2; (exit $__fux_s)"#;
+const BARE_END: &str = r#"__fux_s=$?; __fux_a=; export -n PS0 PROMPT_COMMAND; __fux_n=${HISTCMD-0}; if [ -z "${__fux_c+x}" ] && [ "$__fux_n" != "${__fux_h-$__fux_n}" ]; then printf '\033]133;C\007' >&2; fi; unset __fux_c; __fux_h=$__fux_n; printf '\033]133;D;%s\007' "$__fux_s" >&2; __fux_r() { return "$1"; }; __fux_r "$__fux_s""#;
 const BARE_ARM: &str = r#"if [ "${BASH_VERSINFO[0]}${BASH_VERSINFO[1]}" -lt 44 ]; then __fux_t() { case "$BASH_COMMAND" in __fux_*) return 0 ;; esac; [ -n "${__fux_a-}" ] || return 0; __fux_a=; __fux_c=; printf '\033]133;C\007' >&2; }; trap __fux_t DEBUG; __fux_a=1; fi"#;
 
 /// zsh: read first of all startup files, from the shim `ZDOTDIR`; it puts
@@ -64,8 +77,8 @@ const ZSHENV: &str = r#"# fux: OSC 133 shell marks, after your own startup. Off:
 if [[ -n "${FUX_ZDOTDIR+x}" ]]; then ZDOTDIR=$FUX_ZDOTDIR; unset FUX_ZDOTDIR; else unset ZDOTDIR; fi
 [[ -r "${ZDOTDIR:-$HOME}/.zshenv" ]] && source "${ZDOTDIR:-$HOME}/.zshenv"
 if [[ -o interactive ]]; then
-  __fux_preexec() { print -n '\e]133;C\a' }
-  __fux_precmd() { print -n "\e]133;D;$?\a" }
+  __fux_preexec() { print -n '\e]133;C\a' >&2 }
+  __fux_precmd() { print -n "\e]133;D;$?\a" >&2 }
   preexec_functions=(__fux_preexec $preexec_functions)
   precmd_functions=(__fux_precmd $precmd_functions)
 fi
@@ -97,10 +110,8 @@ pub fn marked(argv: &[String], env: &[(String, String)], dir: &Path) -> Option<M
         // Without fux's startup file (`--norc`, or a login shell) bash
         // takes the marks from its variables, around the caller's own.
         "bash"
-            if flags_only(&["-i", "--norc", "--noprofile", "-l", "--login"])
-                && args
-                    .iter()
-                    .any(|a| ["--norc", "-l", "--login"].contains(&a.as_str())) =>
+            if flags_only(&["-i", "--norc", "--noprofile"])
+                && args.iter().any(|a| a == "--norc") =>
         {
             let theirs = |key: &str| {
                 (env.iter().rev())
@@ -123,11 +134,23 @@ pub fn marked(argv: &[String], env: &[(String, String)], dir: &Path) -> Option<M
                 ],
             })
         }
-        "bash" if flags_only(&["-i", "--noprofile"]) => {
-            let rc = write(dir, "bashrc", BASHRC)?;
+        // A login shell reads the profile files instead, here from fux's
+        // rc file, a login shell taking none.
+        "bash" if flags_only(&["-i", "--noprofile", "-l", "--login"]) => {
+            let login = args.iter().any(|a| a == "-l" || a == "--login");
+            let (name, startup) = if login {
+                ("bash_login", BASH_LOGIN)
+            } else {
+                ("bashrc", BASHRC)
+            };
+            let rc = write(dir, name, &format!("{startup}{BASH_MARKS}"))?;
             let mut argv = vec![program.clone(), "--rcfile".into()];
             argv.push(rc.to_string_lossy().into_owned());
-            argv.extend(args.iter().cloned());
+            argv.extend(
+                args.iter()
+                    .filter(|a| *a != "-l" && *a != "--login")
+                    .cloned(),
+            );
             Some(Marked {
                 argv,
                 env: Vec::new(),

@@ -44,7 +44,7 @@ impl std::error::Error for Error {
 /// ID and cannot be reused, so it is signalled through this alone; reaping
 /// it takes it.
 #[must_use = "a leader dropped unreaped is a zombie no one reaps"]
-pub struct Leader(Pid);
+pub struct Leader(Pid, bool);
 
 /// A pane's program and the master side of its PTY.
 pub struct Child {
@@ -87,7 +87,7 @@ pub fn spawn(
     // std never waits on a dropped child.
     drop(child);
     Ok(Child {
-        leader: Leader(pid),
+        leader: Leader(pid, false),
         master,
     })
 }
@@ -115,6 +115,12 @@ pub fn shell_status(status: Status) -> i32 {
 impl Leader {
     pub fn pid(&self) -> Pid {
         self.0
+    }
+
+    /// Its pane is closed by fux, not ended by itself: its whole session
+    /// goes when it is finished.
+    pub fn closed(&mut self) {
+        self.1 = true;
     }
 
     /// Whether it has exited, without reaping it: its exit status, or
@@ -145,11 +151,15 @@ impl Leader {
     /// Called after `hang_up` and a grace period, with the master closed.
     pub fn finish(self) -> Result<(), Leader> {
         let _ = fuxix::process::kill_group(self.0, Signal::Kill);
-        // As the hangup: every process left in its session, a job in a
-        // group of its own that ignored the hangup (`nohup cmd &`) too.
-        for pid in fuxix::process::processes() {
-            if pid != self.0 && fuxix::process::session(pid) == Some(self.0) {
-                let _ = fuxix::process::kill(pid, Signal::Kill);
+        // Its pane closed by fux: as the hangup, every process left in its
+        // session, a job in a group of its own that ignored the hangup
+        // (`nohup cmd &`) too. A program that ended by itself leaves those
+        // it meant to (`nohup job & exit`).
+        if self.1 {
+            for pid in fuxix::process::processes() {
+                if pid != self.0 && fuxix::process::session(pid) == Some(self.0) {
+                    let _ = fuxix::process::kill(pid, Signal::Kill);
+                }
             }
         }
         match fuxix::process::reap(self.0) {

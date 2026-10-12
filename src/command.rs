@@ -678,11 +678,11 @@ fn parse_move_to(value: &str) -> Result<MoveTo, Usage> {
 /// `COLSxROWS`, as `--size` takes it.
 fn parse_size(text: &str) -> Option<fux_vt::Size> {
     let (cols, rows) = text.split_once('x')?;
-    // As a client's: at most 4096 cells each way.
+    // At most 1000 cells each way: a bigger pane would hold up the server.
     let cells = |n: &str| {
         number(n)
             .and_then(|n| u16::try_from(n).ok())
-            .filter(|n| *n <= 4096)
+            .filter(|n| *n <= 1000)
     };
     fux_vt::Size::new(cells(rows)?, cells(cols)?).ok()
 }
@@ -1122,7 +1122,7 @@ impl<'a> Args<'a> {
         })
     }
     fn size(&self) -> Result<Size, Usage> {
-        self.read_as("--size", parse_size, "COLSxROWS, as 120x40")
+        self.read_as("--size", parse_size, "COLSxROWS, each 1 to 1000, as 120x40")
     }
     /// The pane, tab or workspace a positional kind and `-t` name, if
     /// either does: of another kind than the kind given, `-t` is refused in
@@ -1256,6 +1256,11 @@ fn checked_text(text: &str) -> Result<&str, Usage> {
             "a text to wait for is on one line: a screen's lines hold no newline",
         ));
     }
+    if text.contains('\t') {
+        return Err(Usage::Needs(
+            "a text to wait for holds no tab: a screen shows a tab as spaces",
+        ));
+    }
     Ok(text)
 }
 
@@ -1317,7 +1322,7 @@ fn resize_to(a: &mut Args<'_>) -> Result<Command, Usage> {
             command: "resize",
             flag: "SIZE",
             value: text.to_owned(),
-            expected: "COLSxROWS or auto",
+            expected: "COLSxROWS (each 1 to 1000) or auto",
         })?),
         None => return Err(Usage::Needs(needs)),
     };
@@ -1609,8 +1614,13 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
         (None, Vec::new(), None, false, false);
     let mut marks = false;
     let mut words = argv.get(1..).unwrap_or_default().iter().peekable();
+    let mut dashed = false;
     while let Some(word) = words.next_if(|w| ["-t", "-c", "-l", "-N", "--"].contains(&w.as_str())) {
         match word.as_str() {
+            "--" => {
+                dashed = true;
+                break;
+            }
             "-t" => target = Some(parse_pane(value(word, &mut words)?)?),
             "-c" => client = Some(parse_client(value(word, &mut words)?)?),
             "-l" => literal = true,
@@ -1625,6 +1635,10 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
         }
     }
     let mut inputs = Vec::new();
+    // `--` after the leading flags: every word after it is text.
+    if dashed {
+        inputs.extend(words.by_ref().map(|w| Input::Text(w.clone())));
+    }
     while let Some(word) = words.next() {
         match word.as_str() {
             // After `--`, every word is text, however it looks.

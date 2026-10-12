@@ -199,15 +199,18 @@ fn usage_error(message: &str, command: Option<&str>) -> Result<u8, Error> {
 
 fn run(args: &[String]) -> Result<u8, Error> {
     let first = args.first().map(String::as_str);
-    // `fux COMMAND … --help`, wherever it is before `--`: that command's
-    // help, not a run of it (`kill-server --help` must not stop anything).
-    let asks_help = (args.iter().skip(1))
+    // `fux COMMAND … --help`: that command's help, not a run of it
+    // (`kill-server --help` must not stop anything). Right after the
+    // command, or anywhere before `--` in a line that does not parse
+    // otherwise (`--text --help` types it); never for a program the server
+    // starts (`__launch … --help`).
+    let anywhere = (args.iter().skip(1))
         .take_while(|a| *a != "--")
         .any(|a| a == "--help");
-    if let (Some(name), true) = (
-        first.filter(|f| !["help", "--help", "-h"].contains(f)),
-        asks_help,
-    ) {
+    let asks_help =
+        args.get(1).is_some_and(|a| a == "--help") || (anywhere && command::parse(args).is_err());
+    let command = first.filter(|f| !f.starts_with("__") && !["help", "--help", "-h"].contains(f));
+    if let (Some(name), true) = (command, asks_help) {
         return match help_of(name) {
             Some(text) => {
                 writeln!(std::io::stdout(), "{}", text.trim_end()).map_err(Error::Output)?;
