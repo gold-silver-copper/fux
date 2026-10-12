@@ -28,8 +28,8 @@ fux %2 kill                          # close its pane (str agent workspace kill:
 ```
 
 - **Start:** `run` starts a program (not a shell) in a tab of its own in
-  workspace `agent`. OPTIONS: `str NAME name` (the tab's), `COLS ROWS size`,
-  `str DIR cwd`, `str K str V env`, and the program: `str 'prog -x a' command`
+  workspace `agent`. OPTIONS: `str app name` (the tab's), `100 30 size`,
+  `str "$PWD" cwd` (a real path), `str K str V env`, and the program: `str 'prog -x a' command`
   (split as a shell splits), or `str PROG program` and `str A arg` per
   argument. A WAIT among them waits from its first output (`str T wait-text`).
   Use the `%2` it prints: names repeat, and each `fux` is a fresh program
@@ -38,14 +38,16 @@ fux %2 kill                          # close its pane (str agent workspace kill:
   line's echo), `str T wait-gone`, `MS wait-idle` (no change for MS; after keys,
   status 5 if they changed nothing), `wait-change`, `wait-done` (a shell's
   command ended: `done STATUS`), `wait-exit`, `wait-bell`; `SECS timeout`
-  (60), `with-screen`, `marks`. On `keys` it is armed before they go in. A
+  (60), `with-screen`, `marks`; several: whichever comes first. On `keys`
+  it is armed before they go in. A
   program that exits ends any other wait with status 3: if it may, wait for
   `wait-exit`. A timeout (124) says what the pane is doing. A tab or
   workspace waits on all its panes.
 - **Read:** READ also takes `main-screen` (what was printed before a program
   took the screen), `alt-screen`, `last-output` (a shell command's output).
 - **Keys:** names are tmux's (`Enter`, `Escape`, `Up`, `C-c`, `F5`, `BSpace`;
-  a typo is refused). Keys print nothing: add a WAIT, or capture after.
+  a typo is refused). Inside `keys … send-keys` text is `text`, not `type`.
+  Keys print nothing: add a WAIT, or capture after.
   Bundled: `%2 str T type`, `%2 str Enter press` (each takes its pane), and
   `%3 str LINE line`, for a shell only: a program never ends a command, so
   give it `type`, `press` and a `wait-text`.
