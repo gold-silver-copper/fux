@@ -633,7 +633,7 @@ fn shells_mark_their_commands_with_no_setup() -> Outcome {
         server.ok(&echo)?;
         assert_eq!(
             server.ok(&["capture-pane", "-t", "f", "--last-output"])?,
-            "fish-0\n"
+            "fish-6\n"
         );
     }
     let off = Server::start("set shell-marks off")?;
