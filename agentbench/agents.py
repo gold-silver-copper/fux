@@ -96,8 +96,8 @@ def agent_env(slot, tool, fux_bin, work):
     return env
 
 
-def one(tool, task, slot, fux_bin, model, timeout):
-    work = os.path.join(SCRATCH, "agent-runs", tool, task["id"])
+def one(tool, task, slot, fux_bin, model, timeout, tag="run"):
+    work = os.path.join(SCRATCH, "agent-runs", tag, tool, task["id"])
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
     env = agent_env(slot, tool, fux_bin, work)
@@ -176,6 +176,7 @@ def main():
     ap.add_argument("--tasks", default="all")
     ap.add_argument("--sample", type=int, default=0, help="a stratified sample of N tasks")
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--slot-base", type=int, default=0, help="first slot, so runs side by side do not share one")
     ap.add_argument("--model", default="haiku")
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--fux-bin", default=os.path.join(SCRATCH, "bins", "fux-base"))
@@ -193,14 +194,15 @@ def main():
     done = {(r["tool"], r["task"]) for r in results}
     jobs = [j for j in jobs if (j[0], j[1]["id"]) not in done]
     print(f"{len(jobs)} agent runs to do", flush=True)
-    free = list(range(args.workers))
+    free = list(range(args.slot_base, args.slot_base + args.workers))
     with concurrent.futures.ThreadPoolExecutor(args.workers) as pool:
         pending = {}
         while jobs or pending:
             while jobs and free:
                 slot = free.pop()
                 tool, task = jobs.pop(0)
-                pending[pool.submit(one, tool, task, slot, args.fux_bin, args.model, args.timeout)] = slot
+                tag = os.path.splitext(os.path.basename(args.out))[0]
+                pending[pool.submit(one, tool, task, slot, args.fux_bin, args.model, args.timeout, tag)] = slot
             finished, _ = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
             for fut in finished:
                 free.append(pending.pop(fut))

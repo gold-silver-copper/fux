@@ -23,7 +23,8 @@ fux kill-workspace -t agent                             # all run started
 - **`fux run [--size COLSxROWS] -- PROGRAM ARGS…`** starts the program
   itself, not a shell, in a tab of its own in workspace `agent` (`-t WS`
   for another), which no client is moved to. `--cwd DIR` and `--env K=V`
-  set where and with what; `-n NAME` names its tab, and `-t NAME` then
+  set where (by default the directory you run `fux` in) and with what;
+  `-n NAME` names its tab, and `-t NAME` then
   finds its pane in any command. `--log FILE` keeps everything it writes,
   past the history limit. `--wait-text TEXT` (or `--wait-idle MS`,
   `--wait-exit`, `--wait-bell`) waits from the program's very first output,
@@ -46,6 +47,10 @@ fux kill-workspace -t agent                             # all run started
   - `--change`s at all (`--since N`: past revision N, from `--json`);
   - its program `--exit`s, or a shell command is `--done`, or it rings the
     `--bell` (below).
+
+  A shell echoes what you type: after `send-keys --text 'echo DONE'`, a wait
+  for `DONE` matches the typed line. Wait for text only the output has, or
+  use `--done` (below).
 
   A program that exits first ends any wait, with status 3, so a crash is
   not waited out. `--timeout SECS` (60 by default) gives up with status
@@ -134,8 +139,8 @@ A tab no client shows is laid out on its `--size` (on `run`, `new-tab`
 and `new-workspace`), or on any attached client's screen without one. A
 program starts at its size, so it never draws for 80x24 and then resizes.
 
-- `fux resize -t @N|+N COLSxROWS` changes it later, to test a narrow
-  layout: `fux resize -t +3 40x12`. `auto` goes back to a client's screen.
+- `fux resize -t %N|@N|+N COLSxROWS` changes it later, to test a narrow
+  layout: `fux resize -t $P 40x12` (a pane: its tab). `auto` goes back to a client's screen.
 - `fux resize-pane -t %N -x 95%` makes a pane 95% of its tab's width;
   `-x COLS`, `-y ROWS` and `-y N%` work the same. A size the layout cannot
   give is refused, and nothing changes.

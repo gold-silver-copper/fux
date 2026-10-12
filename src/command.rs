@@ -794,8 +794,8 @@ const TABS: &[Spec] = &[
         Ok(ClientAction::ChooseTab { moving: a.moving()? })
     })),
     spec("kill-tab [-t @N]", Flags(|a| Ok(Command::KillTab { target: a.target(parse_tab)? }))),
-    spec("resize (-t @N|+N | -c CLIENT) COLSxROWS|auto  \
-          what a tab nobody views is laid out on, or a headless client's size", Flags(resize_to)),
+    spec("resize (-t %N|@N|+N | -c CLIENT) COLSxROWS|auto  \
+          what a tab nobody views (a pane's: its tab) is laid out on, or a headless client's size", Flags(resize_to)),
 ];
 
 #[rustfmt::skip]
@@ -1212,13 +1212,8 @@ fn notify(a: &mut Args<'_>) -> Result<Command, Usage> {
 }
 
 fn resize_to(a: &mut Args<'_>) -> Result<Command, Usage> {
-    let needs = "usage: resize (-t @N|+N | -c CLIENT) COLSxROWS|auto";
+    let needs = "usage: resize (-t %N|@N|+N | -c CLIENT) COLSxROWS|auto";
     let what = match (a.target(parse_any)?, a.parsed("-c", parse_client)?) {
-        (Some(AnyRef::Pane(_)), None) => {
-            return Err(Usage::Needs(
-                "resize sizes a tab or a workspace; resize-pane sizes a pane",
-            ));
-        }
         (Some(target), None) => Resized::Tabs(target),
         (None, Some(client)) => Resized::Client(client),
         (Some(_), Some(_)) | (None, None) => return Err(Usage::Needs(needs)),

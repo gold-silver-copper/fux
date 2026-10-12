@@ -168,7 +168,7 @@ From a key or the prompt, commands act on your focused pane.
 | `fux wait [-t %N]… --text T\|--gone T\|--idle MS\|--change [--since N]\|--exit\|--done\|--bell [--timeout SECS] [--print] [--json]` | wait until the pane shows text, even in a line that scrolled away, and print that line (`--text` again for any of several); stops showing it; shows no change for MS (redrawing the same screen is no change); changes (past revision N); its program exits (prints `exited STATUS`); a shell command ends (OSC 133, prints `done STATUS`); or it rings the bell or notifies. `-t` again watches several panes. Status 3 if the program exits first, 124 after `--timeout` (60 s). `--print` prints the screen as it ends, `--json` what happened |
 | `fux respawn [-t %N] [-k] [--env K=V] [-- PROGRAM…]` | start again in its pane what `run` started, its id and size kept; `-k` ends it first if it still runs |
 | `fux notify [-t TARGET] TEXT` | a notice on the clients showing the target, or every client |
-| `fux resize -t @N\|+N COLSxROWS\|auto` | what a tab (or a workspace's tabs) is laid out on while no client shows it; `auto`: a client's screen |
+| `fux resize -t %N\|@N\|+N COLSxROWS\|auto` | what a pane's tab, a tab (or a workspace's tabs) is laid out on while no client shows it; `auto`: a client's screen |
 | `fux resize -c CLIENT COLSxROWS` | a headless client's size |
 | `fux kill-pane\|kill-tab\|kill-workspace [-t …]` | close, without asking |
 | `fux rename -t TARGET NAME` | rename a pane, tab or workspace |

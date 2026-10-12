@@ -192,6 +192,7 @@ def main():
     ap.add_argument("--tasks", default="")
     ap.add_argument("--repeats", type=int, default=10)
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--slot-base", type=int, default=0, help="first slot, so runs side by side do not share one")
     ap.add_argument("--timeout", type=int, default=90)
     ap.add_argument("--fux-bin", default=os.path.expanduser("~/code/fux/target/release/fux"))
     ap.add_argument("--skip-expensive", action="store_true")
@@ -206,7 +207,7 @@ def main():
               and not (args.skip_expensive and t.get("expensive"))]
     jobs = [(tool, t["id"], rep) for tool in args.tools.split(",") for t in chosen
             for rep in range(args.repeats if not t.get("expensive") else 1)]
-    slots = list(range(args.workers))
+    slots = list(range(args.slot_base, args.slot_base + args.workers))
     results = []
 
     def run(job, slot):

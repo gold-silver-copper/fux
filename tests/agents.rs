@@ -103,6 +103,9 @@ fn sizes_are_set_as_asked() -> Outcome {
             .to_owned())
     };
     assert_eq!(size(left)?, "100x20");
+    server.ok(&["resize", "-t", left, "100x22"])?;
+    assert_eq!(size(left)?, "100x22", "a pane's tab");
+    server.ok(&["resize", "-t", tab, "100x20"])?;
     let right = id(&server.ok(&["split", "-h", "-t", left])?);
     server.ok(&["resize-pane", "-t", right.as_str(), "-x", "25%"])?;
     assert_eq!(size(&right)?, "25x20");

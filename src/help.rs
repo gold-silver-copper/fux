@@ -62,6 +62,7 @@ does any of what is asked:
   --timeout S    gives up after S seconds (default 60)
   --print        prints the screen as it ends
   --json         says what happened: {\"met\":\"text\",\"line\":…,\"status\":0}
+A shell echoes typed commands: wait for text only their output has, or --done.
 A program that exits first ends the wait (status 3), as a closed pane does (4);
 a timeout is status 124. The server checks as output comes.
 
@@ -125,8 +126,8 @@ What a client's terminal shows: every row, the bar and overlays included.
         }
         "resize" => {
             "\
-With -t @N or +N: what the tab, or every tab of the workspace, is laid out
-on while no client shows it; `auto`: any client's screen. With -c CLIENT: a
+With -t %N, @N or +N: what the pane's tab, the tab, or every tab of the
+workspace, is laid out on while no client shows it; `auto`: any client's screen. With -c CLIENT: a
 headless client's size (`fux attach --headless`).
 
   fux resize -t +2 40x12"

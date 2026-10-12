@@ -1869,7 +1869,9 @@ impl Session {
                             AnyRef::Workspace(ws) => (self.workspace(ws).into_iter())
                                 .flat_map(|w| w.tabs().iter().map(|t| t.id))
                                 .collect(),
-                            AnyRef::Pane(_) => Vec::new(),
+                            AnyRef::Pane(pane) => {
+                                self.locate(pane).map(|(_, tab)| tab).into_iter().collect()
+                            }
                         };
                         for tab in tabs_mut(&mut self.workspaces).filter(|t| tabs.contains(&t.id)) {
                             tab.set_fit(fit);
