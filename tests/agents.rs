@@ -911,7 +911,7 @@ fn waits_hold_up_under_stress() -> Outcome {
     ];
     assert_eq!(server.ok(&spaced)?, "done42\n");
     server.ok(&["run", "-n", "r", "--", "sleep", "60"])?;
-    let mut waiting = std::process::Command::new(FUX)
+    let waiting = std::process::Command::new(FUX)
         .args(["wait", "-t", "r", "--exit", "--timeout", "10"])
         .env("FUX_SOCKET", &server.socket)
         .stderr(std::process::Stdio::piped())
