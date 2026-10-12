@@ -122,7 +122,7 @@ pub fn explain(name: &str) -> Option<String> {
 fn example(name: &str) -> Option<&'static str> {
     Some(match name {
         "run" => "fux opts str app name 120 40 size str ./app program str --flag arg run",
-        "split" => "fux here opts vertical split",
+        "split" => "fux str %3 pane opts vertical split",
         "new-tab" => "fux opts str logs name new-tab",
         "new-workspace" => "fux opts str work name new-workspace",
         "respawn" => "fux str %3 pane opts kill-first respawn",
@@ -135,12 +135,12 @@ fn example(name: &str) -> Option<&'static str> {
         "get" => "fux str %3 pane str exited get",
         "json" => "fux ls json",
         "info" => "fux str %3 pane info json",
-        "dump" => "fux dump > session.fux; fux session.fux",
+        "dump" => "fux str work workspace dump-of > work.fux; fux work.fux",
         "rename" => "fux str %3 pane str editor rename",
         "kill" => "fux str %3 pane kill",
         "resize-x" => "fux str %3 pane 30 percent resize-x",
         "move-to" => "fux str %3 pane str new-tab move-to",
-        "focus" => "fux me str left focus",
+        "focus" => "fux str c1 client str left focus",
         "bind" => "str 'v h' str 'me focused opts horizontal split drop' bind",
         "bind-root" => "str M-n str 'me next-tab' bind-root",
         "prefix" => "str C-a prefix",

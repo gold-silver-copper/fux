@@ -107,6 +107,12 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// The token the step just taken came from: where an error is.
+    /// The word it ran last, and where: the one a suspension is for, which
+    /// the host's failure in doing it may name.
+    pub fn at(&self) -> Option<Token> {
+        self.token()
+    }
+
     fn token(&self) -> Option<Token> {
         let frame = self.frames.last()?;
         let code = self.code(frame.code)?;
@@ -217,7 +223,8 @@ impl<A: AppValue> Machine<A> {
     fn take(&mut self, n: usize) -> Result<Vec<Value<A>>, Error> {
         let Some(from) = self.stack.len().checked_sub(n) else {
             let has = self.stack.len();
-            let message = format!("takes {n} values, and the stack has {has}");
+            let values = if n == 1 { "value" } else { "values" };
+            let message = format!("takes {n} {values}, and the stack has {has}");
             return Err(self.fail(ErrorCode::StackUnderflow, message, None));
         };
         Ok(self.stack.split_off_checked(from))
@@ -334,9 +341,13 @@ trait SplitOffChecked<T> {
 
 impl<T> SplitOffChecked<T> for Vec<T> {
     fn split_off_checked(&mut self, from: usize) -> Vec<T> {
+        // Popped from the top, as many as go: no more work than values taken.
         let keep = from.min(self.len());
-        let mut all = std::mem::take(self).into_iter();
-        self.extend(all.by_ref().take(keep));
-        all.collect()
+        let mut taken = Vec::with_capacity(self.len().saturating_sub(keep));
+        while self.len() > keep {
+            taken.extend(self.pop());
+        }
+        taken.reverse();
+        taken
     }
 }

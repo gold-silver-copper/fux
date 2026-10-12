@@ -11,8 +11,8 @@ define line keys swap text str Enter key wait-done send-keys end
 define screen opts capture end
 # path -- pane : start a program in a tab of its own
 define launch opts swap program run end
-# -- pane : a tab with a shell
-define shell opts new-tab end
+# -- pane : a tab with a shell, in workspace agent
+define shell opts str agent in new-tab end
 # pane -- pane : wait until the pane's screen shows no change for 300 ms
 define settle dup opts 300 wait-idle wait drop end
 # pane text -- pane : wait until text shows in the pane

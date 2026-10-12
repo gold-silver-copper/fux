@@ -505,7 +505,7 @@ impl std::fmt::Display for Error {
             Error::Named(name) => write!(f, "{name:?} names several tabs: use an id"),
             Error::NoRoom(pane) => write!(
                 f,
-                "{pane}'s tab has no room for another pane; make it bigger (`fux resize`) first"
+                "{pane}'s tab has no room for another pane; make it bigger first (`TAB COLS ROWS resize`)"
             ),
             Error::OutsidePane { pane, rows, cols } => write!(
                 f,
@@ -534,7 +534,10 @@ impl std::fmt::Display for Error {
                 "{pane} runs a shell; respawn starts again what `fux run` started"
             ),
             Error::StillRunning(pane) => {
-                write!(f, "the program in {pane} still runs; -k ends it first")
+                write!(
+                    f,
+                    "the program in {pane} still runs; `kill-first` ends it first"
+                )
             }
             Error::NoRows => f.write_str("the pane has no rows"),
             Error::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
@@ -2072,7 +2075,10 @@ impl Session {
             self.placement_into(view, &mut placed);
             sizes.extend(placed.panes.iter().map(|(p, r)| (*p, (r.h(), r.w()))));
         }
-        let client = self.views.values().next().map(Self::pane_area);
+        // With no client, a tab that fits clients is laid out as a typical
+        // terminal would show it (`tab_area`).
+        let typical = Rect::screen(DEFAULT_SIZE.0, DEFAULT_SIZE.1);
+        let client = Some(self.views.values().next().map_or(typical, Self::pane_area));
         let changed = (self.workspaces.iter_mut()).flat_map(|w| w.changed_unshown(client));
         for (root, area) in changed {
             layout::place_into(root, area, &mut placed);
@@ -4866,9 +4872,9 @@ mod tests {
             ),
             ("opts str main name new-workspace", r#"a workspace is named "main""#.to_owned()),
         ] {
+            // `CODE: test:LINE: WORD: MESSAGE`: the message after where.
             let failed = run(&mut s, code).err().unwrap_or_default();
-            let said = failed.split_once(": ").map(|(_, message)| message);
-            assert_eq!(said, Some(message.as_str()), "{code}");
+            assert!(failed.ends_with(&format!(": {message}")), "{code}: {failed}");
         }
         run(&mut s, "opts str two name new-workspace")?;
         for (code, message) in [
@@ -4882,10 +4888,9 @@ mod tests {
             ),
         ] {
             let failed = run(&mut s, code).err().unwrap_or_default();
-            assert_eq!(
-                failed.split_once(": ").map(|(_, m)| m),
-                Some(message),
-                "{code}"
+            assert!(
+                failed.ends_with(&format!(": {message}")),
+                "{code}: {failed}"
             );
         }
         Ok(())
@@ -4902,7 +4907,10 @@ mod tests {
             .get(&c)
             .and_then(|v| v.notice.clone())
             .map(|n| n.text);
-        assert_eq!(notice.as_deref(), Some("nothing_there: only one pane"));
+        assert_eq!(
+            notice.as_deref(),
+            Some("nothing_there: test:1: choose-pane: only one pane")
+        );
         run(&mut s, "str c1 client str %1 pane menu")?;
         assert!(matches!(
             s.views.get(&c).map(|v| &v.mode),

@@ -9,7 +9,8 @@ columns count from 0; times are milliseconds; ids are strings (`"%3"`,
 
 ## A pane
 
-`ls json` gives each pane these, and `PANE opts capture json` the same:
+`ls json` gives each pane these; `PANE opts capture json` gives them too, but
+for `id`, `name`, `title` and `pid` (it says `pane`):
 
 | Field | Value |
 | --- | --- |
@@ -77,6 +78,9 @@ all of it.
 
 `json` of a wait's outcome (`… wait`, or `send-keys`, `send-mouse` given a
 wait condition): one object, or a line each for keys sent to several panes.
+A wait that fails (`exited`, `closed`, `respawned`, `timeout`, `idle` with
+nothing changed) ends the program, its status the wait's, and says why on
+stderr: those rows below are what `events`, and its status, tell of it.
 
 ```json
 {"pane":"%3","met":"text","text":"PASS","line":"12 tests PASS","status":0}
@@ -125,7 +129,9 @@ the file, line and word it came from. CODE stays: `no_server`, `mismatch`,
 `no_pane`, `no_tab`, `no_workspace`, `no_target`, `stray_pane`, `exited`,
 `still_running`, `not_run`, `changed`, `own_server`, `people_attached`,
 `not_granted`, `name_taken`, `bad_name`, `ambiguous`, `size`, `mouse`,
-`no_field`, `id`, `not_reading`, `start`, `paste`, `timeout`; and the
+`no_field`, `id`, `not_reading`, `start`, `paste`, `timeout`, `closed`,
+`unchanged`, `gone`, `no_buffer`, `not_a_key`, `no_program`, `no_condition`,
+`no_keys`, `not_a_client`, `grant`, `config`, `unused`, `too_long`; and the
 language's: `type` (a word given the wrong kind of value), `stack_underflow`,
 `unknown_word`, `open_quote`, `unmatched`, `unclosed`, `range`, `bad_value`,
 `overflow`, `div_by_zero`, `call_depth`, and a few more for rarer failures.

@@ -64,8 +64,24 @@ impl Session {
             Act::Reply(reply) => self.terminal_reply(client, reply),
             // The client's screen, drawn as it says; copy mode left, if
             // the client has moved on from it.
-            Act::Show(panel) => self.set_mode(client, Mode::Panel(panel)),
-            Act::Hide => self.set_mode(client, Mode::Normal),
+            // A notice from before the screen opened or closed is old news;
+            // one the screen's keys bring comes after.
+            Act::Show(panel) => {
+                let fresh = !matches!(
+                    (self.views.get(&client).map(|v| &v.mode), &panel),
+                    (Some(Mode::Panel(was)), now) if std::mem::discriminant(was) == std::mem::discriminant(now)
+                );
+                if fresh && let Some(view) = self.views.get_mut(&client) {
+                    view.notice = None;
+                }
+                self.set_mode(client, Mode::Panel(panel));
+            }
+            Act::Hide => {
+                if let Some(view) = self.views.get_mut(&client) {
+                    view.notice = None;
+                }
+                self.set_mode(client, Mode::Normal);
+            }
             Act::Notice { text, error } => {
                 if let Some(view) = self.views.get_mut(&client) {
                     view.notice = Some(Notice { text, error });
@@ -700,7 +716,10 @@ mod tests {
             let (mut ran, d) = busy()?;
             if let Err(error) = output_as(&mut ran, Some(d), &binding.code) {
                 refused.push(keys.clone());
-                ran.error_to(d, error);
+                // Leaving a repeat mode clears what its keys said.
+                if !repeat {
+                    ran.error_to(d, error);
+                }
             }
             assert_eq!(state(&mut typed, c)?, state(&mut ran, d)?, "{keys}");
         }

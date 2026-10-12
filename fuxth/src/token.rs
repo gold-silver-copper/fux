@@ -106,11 +106,15 @@ pub fn source(source: &str, text: &str) -> Result<Vec<Token>, Error> {
                     }
                 }
             }
+            // A backslash and newline join lines, as in a shell: neither is
+            // part of a word, nor starts one.
+            '\\' if chars.peek() == Some(&'\n') => {
+                chars.next();
+                line = next_line(line);
+            }
             '\\' => {
                 let (text, _) = word.get_or_insert_with(|| (String::new(), line));
                 match chars.next() {
-                    // A backslash and newline join lines, as in a shell.
-                    Some('\n') => line = next_line(line),
                     Some(c) => text.push(c),
                     None => text.push('\\'),
                 }

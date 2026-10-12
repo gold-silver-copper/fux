@@ -400,10 +400,32 @@ pub fn run(
     host: &mut Host<'_>,
     asks: &mut dyn Asks,
 ) -> Result<Ended, Failed> {
+    run_capped(machine, host, asks, None)
+}
+
+/// The steps a run takes between looks at its budget.
+const SLICE: u64 = 100_000;
+
+/// `run`, failing once it has taken more than `steps` steps, if given.
+pub fn run_capped(
+    machine: &mut Machine<Fux>,
+    host: &mut Host<'_>,
+    asks: &mut dyn Asks,
+    steps: Option<u64>,
+) -> Result<Ended, Failed> {
     // A wait met by its program's exit: the run ends with that status.
     let mut status = 0;
+    let mut taken: u64 = 0;
     loop {
-        match machine.run(host, 100_000)? {
+        if let Some(steps) = steps.filter(|steps| taken > *steps) {
+            return Err(Failed {
+                status: 1,
+                code: "too_long".to_owned(),
+                message: format!("ran more than {steps} steps"),
+            });
+        }
+        taken = taken.saturating_add(SLICE);
+        match machine.run(host, SLICE)? {
             Outcome::Finished => {
                 return Ok(Ended {
                     status,
@@ -421,20 +443,37 @@ pub fn run(
                     context.client = client;
                 }
                 let query = command.clone();
-                let reply = asks.ask(&Request { command, context }, host.out)?;
+                let reply = asks
+                    .ask(&Request { command, context }, host.out)
+                    .map_err(|f| placed(machine, f))?;
                 if met(&reply) && reply.status != 0 {
                     status = reply.status;
                 }
-                for value in answered(reply, then, query)? {
+                for value in answered(reply, then, query).map_err(|f| placed(machine, f))? {
                     machine.push(value)?;
                 }
             }
             Outcome::Suspended(Ask::Local(what)) => {
-                for value in asks.local(&what, host.out)? {
+                for value in asks
+                    .local(&what, host.out)
+                    .map_err(|f| placed(machine, f))?
+                {
                     machine.push(value)?;
                 }
             }
         }
+    }
+}
+
+/// A failure in doing what the word the program stopped at asks, named
+/// with that word and where it is, as the language's own errors are.
+fn placed(machine: &Machine<Fux>, failed: Failed) -> Failed {
+    let Some(at) = machine.at() else {
+        return failed;
+    };
+    Failed {
+        message: format!("{}: {}: {}", at.place, at.text, failed.message),
+        ..failed
     }
 }
 
@@ -490,7 +529,13 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
             Some(Scalar::Int(n)) => Value::Int(n),
             Some(Scalar::Bool(b)) => Value::Bool(b),
             Some(Scalar::Str(s)) => Value::str(s),
-            Some(Scalar::Null) | None => Value::str(text),
+            // JSON that is no one value of fuxth's: `null`, a list, an
+            // object, as text that `json` gives as it is.
+            Some(Scalar::Null) | None => Value::App(Fux::Answer(Box::new(Answer {
+                json: Some(text.clone()),
+                text,
+                query: None,
+            }))),
         }],
         Then::Outcome { waited: false } => Vec::new(),
         Then::Outcome { waited: true } => vec![Value::App(Fux::Answer(Box::new(Answer {
@@ -633,11 +678,19 @@ pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
     let Some(path) = crate::config::default_path().filter(|p| p.exists()) else {
         return (keymap, None);
     };
-    match run_file(&path, &mut keymap, server) {
+    match run_file(&path, &mut keymap, Some(server)) {
         Ok(()) => (keymap, None),
         // Half a config is no config: the defaults, and why.
         Err(failed) => (Keymap::default(), Some(format!("config: {failed}"))),
     }
+}
+
+/// The keymap the config file at `path` makes, run dry: its bindings made,
+/// its settings checked and sent nowhere; or why it would fail.
+pub fn dry_config(path: &std::path::Path) -> Result<Keymap, Failed> {
+    let mut keymap = Keymap::default();
+    run_file(path, &mut keymap, None)?;
+    Ok(keymap)
 }
 
 /// Runs the config file at `path` against the server on `socket`, as a
@@ -648,7 +701,7 @@ pub fn configure(
 ) -> Result<Keymap, Failed> {
     let mut keymap = Keymap::default();
     let mut server = Server::new(Chosen::Path(socket.path().to_string_lossy().into_owned()));
-    run_file(path, &mut keymap, &mut server)?;
+    run_file(path, &mut keymap, Some(&mut server))?;
     Ok(keymap)
 }
 
@@ -657,7 +710,7 @@ pub fn configure(
 fn run_file(
     path: &std::path::Path,
     keymap: &mut Keymap,
-    server: &mut Server,
+    server: Option<&mut Server>,
 ) -> Result<(), Failed> {
     let shown = path.display().to_string();
     let text = std::fs::read_to_string(path).map_err(|e| Failed {
@@ -677,13 +730,24 @@ fn run_file(
 }
 
 /// What a config's requests go to: settings alone, as a config runs each
-/// time a client attaches, and must make nothing.
-struct Settings<'a>(&'a mut Server);
+/// time a client attaches, and must make nothing. With no server, a dry
+/// run: each setting checked, none sent.
+struct Settings<'a>(Option<&'a mut Server>);
 
 impl Asks for Settings<'_> {
     fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
-        if let Command::Set { .. } = &request.command {
-            return self.0.ask(request, out);
+        if let Command::Set { option, value } = &request.command {
+            return match &mut self.0 {
+                Some(server) => server.ask(request, out),
+                None => match crate::config::Config::default().set(option, value) {
+                    Ok(()) => Ok(Reply::default()),
+                    Err(error) => Err(Failed {
+                        status: 1,
+                        code: "config".to_owned(),
+                        message: error.to_string(),
+                    }),
+                },
+            };
         }
         Err(Failed {
             status: 1,
@@ -740,23 +804,23 @@ pub fn restore(
 /// or runs the words given. What is left on the stack is printed, a value a
 /// line. Its status, or why it failed.
 pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
-    let read = |name: &str, text: std::io::Result<String>| {
-        text.map_err(|e| Failed {
-            status: 1,
-            code: "read".to_owned(),
-            message: format!("{name}: {e}"),
-        })
-    };
     let tokens = match args {
         [] => fuxth::token::arguments(&["attach"]),
+        // A program read whole, at most `SOURCE_MAX` bytes of it.
         [dash] if dash == "-" => {
-            let mut text = String::new();
-            let read_all =
-                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).map(|_| text);
-            fuxth::token::source("stdin", &read("stdin", read_all)?)?
+            fuxth::token::source("stdin", &source("stdin", std::io::stdin())?)?
         }
         [file] if file.contains('/') || file.ends_with(".fux") => {
-            fuxth::token::source(file, &read(file, std::fs::read_to_string(file))?)?
+            let opened =
+                std::fs::File::open(file).map_err(|e| read_failed(file, &e.to_string()))?;
+            fuxth::token::source(file, &source(file, opened)?)?
+        }
+        // A whole program in one word, as a shell passes `fux 'ls json'`.
+        [line] if line.contains(char::is_whitespace) => fuxth::token::source("command line", line)?,
+        // What other programs take for help and their version.
+        [flag] if matches!(flag.as_str(), "--help" | "-h") => fuxth::token::arguments(&["help"]),
+        [flag] if matches!(flag.as_str(), "--version" | "-V") => {
+            fuxth::token::arguments(&["version"])
         }
         words => fuxth::token::arguments(words),
     };
@@ -781,6 +845,34 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         }),
         None => Ok(ended.status),
     }
+}
+
+/// The most a program read from a file or stdin may be.
+const SOURCE_MAX: u64 = 16 << 20;
+
+fn read_failed(name: &str, why: &str) -> Failed {
+    Failed {
+        status: 1,
+        code: "read".to_owned(),
+        message: format!("{name}: {why}"),
+    }
+}
+
+/// A program's text from `from`, which may be anything (`/dev/zero`): at
+/// most `SOURCE_MAX` bytes of UTF-8.
+fn source(name: &str, from: impl std::io::Read) -> Result<String, Failed> {
+    let mut bytes = Vec::new();
+    use std::io::Read;
+    from.take(SOURCE_MAX.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| read_failed(name, &e.to_string()))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > SOURCE_MAX {
+        return Err(read_failed(
+            name,
+            "more than 16 MiB: no program is that long",
+        ));
+    }
+    String::from_utf8(bytes).map_err(|_| read_failed(name, "not UTF-8 text: no fuxth program"))
 }
 
 /// Output that keeps its first failure, so that a run whose output cannot

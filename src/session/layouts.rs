@@ -58,16 +58,18 @@ impl Session {
             None if index == 0 => MAIN.to_owned(),
             None => format!("tab-{}", index.saturating_add(1)),
         };
+        // A saved session makes each workspace, with the ids it had, on a
+        // server that has none; a dump run anywhere puts each tab in the
+        // workspace of its name, made if there is none (`in`).
+        let makes = opens && ids && program.is_none();
         let mut line = vec!["opts".to_owned()];
-        match (program.is_some(), opens) {
-            // `run` makes the workspace it is put in.
-            (true, true) => line.extend(string(&ws.name).chain(["in".to_owned()])),
-            (false, true) => line.extend(string(&ws.name).chain(["name".to_owned()])),
-            (_, false) if whole => line.extend([workspace(ws.id), "in".to_owned()]),
-            (_, false) => {}
+        match (makes, whole && !opens) {
+            (true, _) => line.extend(string(&ws.name).chain(["name".to_owned()])),
+            (false, true) => line.extend([workspace(ws.id), "in".to_owned()]),
+            (false, false) => line.extend(string(&ws.name).chain(["in".to_owned()])),
         }
         let named = tab.name != default_name;
-        if named && !(program.is_none() && opens) {
+        if named && !makes {
             line.extend(string(&tab.name).chain(["name".to_owned()]));
         }
         if let Fit::Fixed(size) = tab.fit() {
@@ -84,7 +86,7 @@ impl Session {
             line.extend(asked(&tab.id.to_string()));
         }
         self.pane_words(first, ids, &mut line);
-        line.push(match (program.is_some(), opens) {
+        line.push(match (program.is_some(), makes) {
             (true, _) => "run".to_owned(),
             (false, true) => "new-workspace".to_owned(),
             (false, false) => "new-tab".to_owned(),
@@ -102,7 +104,7 @@ impl Session {
                 ],
             );
         }
-        if named && program.is_none() && opens {
+        if named && makes {
             let mut rename = vec![constant(first), "tab".to_owned()];
             rename.extend(string(&tab.name).chain(["rename".to_owned()]));
             push(out, &rename);

@@ -358,7 +358,12 @@ impl Client {
             None => Vec::new(),
         };
         self.acts(acts)?;
-        self.pump()
+        // Done with them before the next keys, at a person's pace: the
+        // programs they ran, and the keys held for them.
+        eventually("the keys taken", || {
+            self.pump()?;
+            Ok(self.keyboard.as_ref().is_none_or(Keyboard::idle))
+        })
     }
 
     /// Types text, as keys.

@@ -183,6 +183,11 @@ fn errors_at_run_time_say_what_and_where() {
     assert_eq!(code(run("1 if 2 then")), Some("type"), "if takes a boolean");
     assert_eq!(code(run("define loop loop end loop")), Some("call_depth"));
     assert_eq!(
+        code(run("99999999999999999999")),
+        Some("overflow"),
+        "too big, not unknown"
+    );
+    assert_eq!(
         code(run("str x ask")),
         Some("not_a_number"),
         "the host's own code"
@@ -221,4 +226,25 @@ fn a_budget_pauses_a_loop_that_never_asks() -> Result<(), Error> {
         assert_eq!(machine.run(&mut host, 1000)?, Outcome::Paused);
     }
     Ok(())
+}
+
+/// A backslash and newline join lines, starting no word.
+#[test]
+fn a_backslash_newline_joins_lines() -> Result<(), Error> {
+    assert_eq!(run("1 \\\n 2 add")?, ints(&[3]));
+    Ok(())
+}
+
+/// Words that take values take them in time to the values taken, not the
+/// stack's depth: a deep stack fills and fails at once.
+#[test]
+fn a_deep_stack_costs_no_more_per_word() {
+    let started = std::time::Instant::now();
+    let filled = code(run("begin 1 1 0 eq until"));
+    assert_eq!(filled, Some("stack_overflow"));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
 }

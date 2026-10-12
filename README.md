@@ -58,9 +58,12 @@ fux str %3 pane opts wait-exit wait               # prints: exited 0
 - A failure prints `fux: CODE: MESSAGE` on stderr, with the file, line and
   word, and exits 1; a wait's own status is the exit status: 3 the program
   exited first, 4 the pane closed, 5 nothing changed, 6 the screen changed
-  (`if-revision`), 124 a timeout.
+  (`if-revision`), 124 a timeout. A wait met by its program's exit (`wait-exit`)
+  is no failure: the run exits with the program's own status, as
+  `timeout(1)` does.
 - `fux FILE` runs a file (a word with a `/` or ending `.fux`); `fux -` runs
-  what stdin says. `#` starts a comment.
+  what stdin says; a single word with spaces is a whole program
+  (`fux 'ls json'`). `#` starts a comment. A paste is at most 900 KiB.
 - The language is small on purpose: `dup drop swap over`, `add sub mul div
   mod`, `eq lt gt not`, `if … else … then`, `begin … until`, `define NAME …
   end` (a word of your own; it may call itself) and `constant NAME` (`x
@@ -88,13 +91,14 @@ fux str %3 pane keys str 'make test' text str Enter key wait-done send-keys
 A program can name what it made:
 
 ```sh
-fux opts str sh program run constant P   P str 'echo hi' type   P str Enter press   P screen
+fux opts str sh program run constant P   P str 'echo hi' type   P str Enter press   P settle screen
 ```
 
 The bundled words are written in fuxth themselves: `type` and `press` (text
 and a key into a pane), `line` (a line typed, then the shell's command
 waited for), `screen` (a capture), `await` (text waited for), `settle` (the
-screen waited for to be still), `done`, `exited`, `launch` and `shell`.
+screen waited for to be still), `done`, `exited`, `launch` and `shell` (a
+tab with a shell in workspace `agent`).
 
 ### Finding things
 
@@ -223,7 +227,7 @@ and Helix do, copies the same way. fux never reads the clipboard.
 | Words | Do |
 | --- | --- |
 | `opts … run` (`-- pane`) | start a program in a tab of its own in workspace `agent` (`str WS in` elsewhere), no client moved to it; its pane stays once it exits, with its last screen and status. Options: `name`, `size` (COLS ROWS), `cwd`, `env` (KEY VALUE), `program`, `arg`, `log-to`, and any wait condition, which waits from its first output on |
-| `pane opts split`, `opts new-tab`, `opts new-workspace` | a shell (or with `program`, that program) beside a pane, in a new tab or workspace; `horizontal`/`vertical`, `typed LINE` types a line into the new shell. Names are unique, and do not start with `+`, `%` or `@` |
+| `pane opts split`, `opts new-tab`, `opts new-workspace` | a shell beside a pane (or with `program`, that program), in a new tab (`str WS in`: a workspace, made if missing) or a new workspace; `horizontal`/`vertical`, `typed LINE` types a line into the new shell. Names are unique, and do not start with `+`, `%` or `@`. An option a word does not use is refused |
 | `pane opts respawn` | start again in its pane what `run` started, its id and size kept; `kill-first` ends it first |
 | `pane opts … wait` | wait until the pane shows text anew (`str T wait-text`, even in a line that scrolled away), stops showing it (`wait-gone`), shows no change for a while (`MS wait-idle`), changes (`wait-change`), its program exits (`wait-exit`), its shell command ends (`wait-done`, OSC 133), or it rings or notifies (`wait-bell`); `SECS timeout` (60), `with-screen` adds the screen as it ends |
 | `pane keys … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked); `N times`; `N if-revision` sends nothing, status 6, if the screen changed; any wait condition waits for what the keys brought, armed before they go in. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
@@ -320,7 +324,9 @@ both. Esc after the prefix always closes the column. `label`, `group` and
 
 `dump` prints what there is as a fuxth program that makes it again, each
 pane a constant later lines name; `X dump-of` one tab or workspace. Run it
-to make it again: `fux dump-of @1 > dev.fux; fux dev.fux`.
+to make it again on a running server, each tab in the workspace of its
+name (made if missing; a tab's name is the server's alone, so close what it
+holds first): `fux str dev workspace dump-of > dev.fux; fux dev.fux`.
 
 A **server saves its session** the same way, with the ids it had, about a
 second after each change, in `$XDG_STATE_HOME/fux` (`~/.local/state/fux`),
@@ -383,7 +389,7 @@ back with the same ids: shells start fresh in their directories; a program
 - **Hooks** (tmux's `set-hook`): read `fux events` and run fux
   instead.
 - **Programs that outlive their server**: a crash ends them; the next server
-  brings back the layout, and `fux respawn` starts each again.
+  brings back the layout, and `PANE opts respawn` starts each again.
 - **A format language** for output (tmux's `#{…}`): `json`, and `X str
   FIELD get` for one value.
 - **Watching the config file**: a client runs it as it attaches.

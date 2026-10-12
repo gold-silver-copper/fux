@@ -602,18 +602,20 @@ impl Keymap {
     /// repeats: `RESIZE  h j k l · Esc`.
     pub fn repeat_bar(&self, path: &[KeyPress]) -> Option<String> {
         let layer = self.bindings.layer(path)?;
+        // The keys that repeat, titled by the first one's group.
         let mut keys = Vec::new();
-        let mut repeats = false;
+        let mut title = None;
         for (key, node) in layer.iter() {
-            if let Node::Run { repeat, .. } = node {
+            if let Node::Run {
+                binding,
+                repeat: true,
+            } = node
+            {
                 keys.push(key.to_string());
-                repeats |= repeat;
+                title.get_or_insert(binding.group.as_str());
             }
         }
-        let title = layer
-            .first()
-            .map(|b| b.group.as_str())
-            .filter(|_| repeats)?;
+        let title = title?;
         Some(format!(
             "{}  {} · Esc",
             title.to_uppercase(),
@@ -815,10 +817,21 @@ impl Held {
             return vec![Step::Send(Act::Hide)];
         }
         match bound {
-            Some(Node::Run { binding, .. }) => {
+            Some(Node::Run {
+                binding,
+                repeat: true,
+            }) => {
                 let code = binding.code.clone();
                 *self = Held::Repeat { path };
                 vec![Step::Run(code)]
+            }
+            // A key of the layer that does not repeat runs once, and ends
+            // the mode.
+            Some(Node::Run {
+                binding,
+                repeat: false,
+            }) => {
+                vec![Step::Send(Act::Hide), Step::Run(binding.code.clone())]
             }
             Some(Node::Layer(_)) | None => {
                 let text = format!("{press} is not one of this mode's keys");

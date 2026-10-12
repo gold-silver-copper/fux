@@ -352,6 +352,15 @@ impl<A: Clone> Compiler<A> {
                         (Err(_), Some(Entry::App(id))) => Op::App(*id),
                         (Err(_), Some(Entry::Word(id))) => Op::Call(*id),
                         (Err(_), Some(Entry::Const(slot))) => Op::GetConst(*slot),
+                        // Digits, but more than an integer holds.
+                        (Err(_), None) if is_number(text) => {
+                            return Err(Error {
+                                code: Code::Overflow,
+                                message: "a number past what an integer holds (64 bits)".to_owned(),
+                                place: Some(token.place.clone()),
+                                word: Some(Rc::clone(&token.text)),
+                            });
+                        }
                         (Err(_), None) => {
                             return Err(Error {
                                 code: Code::UnknownWord,
@@ -464,4 +473,10 @@ fn mismatched(token: &Token, open: &Open) -> Error {
         place: Some(token.place.clone()),
         word: Some(Rc::clone(&token.text)),
     }
+}
+
+/// Whether `text` is written as an integer: digits, after a `-` or not.
+fn is_number(text: &str) -> bool {
+    let digits = text.strip_prefix('-').unwrap_or(text);
+    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
 }

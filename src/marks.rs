@@ -1,8 +1,10 @@
 //! Shell marks for the shells fux starts: bash, zsh and fish are started so
 //! that they mark each command (OSC 133 `C` as its output begins, `D;STATUS`
-//! as it ends), after reading the user's own startup files as they would.
-//! A host then knows when a command typed into them is done, how, and which
-//! output was its, with nothing set up (`wait --done`, `--last-output`).
+//! as it ends, and `A` where the next prompt starts), after reading the
+//! user's own startup files as they would. A host then knows when a command
+//! typed into them is done, how, which output was its, and where each
+//! prompt is, with nothing set up (`wait-done`, `last-output`, copy mode's
+//! `[` and `]`).
 //!
 //! Each shell is given a startup file fux writes beside its socket, which
 //! reads the user's own first: bash's `--rcfile` sources `~/.bashrc`, zsh's
@@ -21,7 +23,7 @@ use std::path::{Path, PathBuf};
 /// before 4.4 only `history 1` tells, as `HISTCMD` reads 1 in
 /// PROMPT_COMMAND) gets one as it ends. Marks go to stderr, as the prompt does; fux's PROMPT_COMMAND is
 /// not exported, so shells started from this one do not inherit it.
-const BASHRC: &str = r#"# fux: OSC 133 shell marks, after your own startup. Off: `set shell-marks off`.
+const BASHRC: &str = r#"# fux: OSC 133 shell marks, after your own startup. Off: `str shell-marks str off set`.
 if [ -r ~/.bashrc ]; then . ~/.bashrc; fi
 "#;
 
@@ -41,7 +43,7 @@ const BASH_MARKS: &str = r#"__fux_end() {
   if [ -n "${__fux_old-}" ]; then h=$(history 1); h=${h#"${h%%[0-9]*}"}; h=${h%%[!0-9]*}; fi
   if [ -z "${__fux_c+x}" ] && [ "$h" != "${__fux_h-$h}" ]; then printf '\033]133;C\007' >&2; fi
   unset __fux_c; __fux_h=$h; __fux_armed=
-  printf '\033]133;D;%s\007' "$s" >&2
+  printf '\033]133;D;%s\007\033]133;A\007' "$s" >&2
   return $s
 }
 case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
@@ -70,18 +72,18 @@ export -n PROMPT_COMMAND PS0
 /// the next command's start, or before bash 4.4, a DEBUG trap armed last
 /// does (fux's commands, an empty line, and a line that starts with a
 /// subshell, which the trap does not see, mark nothing).
-const BARE_END: &str = r#"__fux_s=$?; __fux_a=; export -n PS0 PROMPT_COMMAND; __fux_n=${HISTCMD-0}; if [ "${BASH_VERSINFO[0]}${BASH_VERSINFO[1]}" -lt 44 ]; then __fux_n=$(history 1); __fux_n=${__fux_n#"${__fux_n%%[0-9]*}"}; __fux_n=${__fux_n%%[!0-9]*}; fi; if [ -z "${__fux_c+x}" ] && [ "$__fux_n" != "${__fux_h-$__fux_n}" ]; then printf '\033]133;C\007' >&2; fi; unset __fux_c; __fux_h=$__fux_n; printf '\033]133;D;%s\007' "$__fux_s" >&2; __fux_r() { return "$1"; }; __fux_r "$__fux_s""#;
+const BARE_END: &str = r#"__fux_s=$?; __fux_a=; export -n PS0 PROMPT_COMMAND; __fux_n=${HISTCMD-0}; if [ "${BASH_VERSINFO[0]}${BASH_VERSINFO[1]}" -lt 44 ]; then __fux_n=$(history 1); __fux_n=${__fux_n#"${__fux_n%%[0-9]*}"}; __fux_n=${__fux_n%%[!0-9]*}; fi; if [ -z "${__fux_c+x}" ] && [ "$__fux_n" != "${__fux_h-$__fux_n}" ]; then printf '\033]133;C\007' >&2; fi; unset __fux_c; __fux_h=$__fux_n; printf '\033]133;D;%s\007\033]133;A\007' "$__fux_s" >&2; __fux_r() { return "$1"; }; __fux_r "$__fux_s""#;
 const BARE_ARM: &str = r#"if [ "${BASH_VERSINFO[0]}${BASH_VERSINFO[1]}" -lt 44 ]; then __fux_t() { case "$BASH_COMMAND" in __fux_*) return 0 ;; esac; [ -n "${__fux_a-}" ] || return 0; __fux_a=; __fux_c=; printf '\033]133;C\007' >&2; }; trap __fux_t DEBUG; __fux_a=1; fi"#;
 
 /// zsh: read first of all startup files, from the shim `ZDOTDIR`; it puts
 /// the user's `ZDOTDIR` back, so the rest of their files are read from
 /// there as always, and sources their `.zshenv`.
-const ZSHENV: &str = r#"# fux: OSC 133 shell marks, after your own startup. Off: `set shell-marks off`.
+const ZSHENV: &str = r#"# fux: OSC 133 shell marks, after your own startup. Off: `str shell-marks str off set`.
 if [[ -n "${FUX_ZDOTDIR+x}" ]]; then ZDOTDIR=$FUX_ZDOTDIR; unset FUX_ZDOTDIR; else unset ZDOTDIR; fi
 [[ -r "${ZDOTDIR:-$HOME}/.zshenv" ]] && source "${ZDOTDIR:-$HOME}/.zshenv"
 if [[ -o interactive ]]; then
   __fux_preexec() { print -n '\e]133;C\a' >&2 }
-  __fux_precmd() { print -n "\e]133;D;$?\a" >&2 }
+  __fux_precmd() { print -n "\e]133;D;$?\a\e]133;A\a" >&2 }
   preexec_functions=(__fux_preexec $preexec_functions)
   precmd_functions=(__fux_precmd $precmd_functions)
 fi
@@ -89,7 +91,7 @@ fi
 
 /// fish: two event handlers, after its own startup.
 const FISH: &str = "function __fux_preexec --on-event fish_preexec; printf '\\e]133;C\\a' >&2; end; \
-     function __fux_postexec --on-event fish_postexec; printf '\\e]133;D;%s\\a' $status >&2; end";
+     function __fux_postexec --on-event fish_postexec; printf '\\e]133;D;%s\\a\\e]133;A\\a' $status >&2; end";
 
 /// How a shell is started so that it marks its commands: its words, and
 /// variables to add.

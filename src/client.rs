@@ -507,6 +507,15 @@ pub struct Attaching {
     pub problem: Option<String>,
 }
 
+/// How long keys wait for a program a key runs, which may open a screen
+/// they go to; after that, a program that waits or computes is no reason
+/// for the keyboard to stop.
+const HOLD: Duration = Duration::from_millis(300);
+
+/// The most steps a key's or a screen's program takes: one that loops
+/// without end fails rather than spinning the client.
+const KEY_STEPS: u64 = 10_000_000;
+
 /// A program a client's key or prompt runs, on its worker, in order.
 struct Job {
     code: String,
@@ -539,8 +548,10 @@ pub struct Keyboard {
     jobs: std::sync::mpsc::Sender<Job>,
     told: std::sync::mpsc::Receiver<Ran>,
     wake: UnixStream,
-    /// Programs sent to the worker and not yet done.
+    /// Programs sent to the worker and not yet done, and since when one
+    /// has run.
     running: usize,
+    running_since: Option<Instant>,
     /// What was typed while a program ran, in order.
     waiting: std::collections::VecDeque<Input>,
 }
@@ -585,8 +596,14 @@ impl Keyboard {
             told,
             wake,
             running: 0,
+            running_since: None,
             waiting: std::collections::VecDeque::new(),
         })
+    }
+
+    /// Whether nothing waits: no program running, no keys held for one.
+    pub fn idle(&self) -> bool {
+        self.running == 0 && self.waiting.is_empty()
     }
 
     /// Readable when a program it ran is done (`Keyboard::ran`).
@@ -594,10 +611,20 @@ impl Keyboard {
         &self.wake
     }
 
-    /// When what its terminal sent last is to be taken as it is: a lone
-    /// Escape, or an answer cut short (`Keyboard::timeout`).
+    /// When what waits is to be taken (`Keyboard::timeout`): a lone Escape
+    /// or an answer cut short, as it is; keys held for a program that runs
+    /// longer than a screen takes to open, as typed.
     pub fn deadline(&self) -> Option<Instant> {
-        self.decoder.deadline()
+        let held = self.running_since.filter(|_| !self.waiting.is_empty());
+        let held = held.map(|since| crate::after(since, HOLD));
+        [self.decoder.deadline(), held].into_iter().flatten().min()
+    }
+
+    /// Whether the keys typed wait for a program that runs: one that may
+    /// open a screen, for a moment, which is all opening one takes.
+    fn holding(&self) -> bool {
+        self.running_since
+            .is_some_and(|since| since.elapsed() < HOLD)
     }
 
     /// Bytes from its terminal, read at `now`.
@@ -609,10 +636,16 @@ impl Keyboard {
         self.inputs(inputs)
     }
 
-    /// The decoder's deadline passed: what waited is taken as it is.
+    /// A deadline passed (`Keyboard::deadline`): what waited is taken.
     pub fn timeout(&mut self) -> Vec<Act> {
         let mut inputs = Vec::new();
-        self.decoder.timeout(&mut inputs);
+        if self
+            .decoder
+            .deadline()
+            .is_some_and(|at| at <= Instant::now())
+        {
+            self.decoder.timeout(&mut inputs);
+        }
         self.inputs(inputs)
     }
 
@@ -621,10 +654,10 @@ impl Keyboard {
         self.release()
     }
 
-    /// What waits, taken while no program runs.
+    /// What waits, taken unless a program holds it.
     fn release(&mut self) -> Vec<Act> {
         let mut acts = Vec::new();
-        while self.running == 0 {
+        while !self.holding() {
             let Some(input) = self.waiting.pop_front() else {
                 break;
             };
@@ -662,6 +695,9 @@ impl Keyboard {
         let mut acts = Vec::new();
         while let Ok(ran) = self.told.try_recv() {
             self.running = self.running.saturating_sub(1);
+            if self.running == 0 {
+                self.running_since = None;
+            }
             if let Some(keymap) = ran.keymap {
                 self.keymap = keymap;
             }
@@ -676,8 +712,14 @@ impl Keyboard {
         acts
     }
 
-    /// Opens `screen`, in place of what was open.
+    /// Opens `screen`, in place of what was open. A client that only
+    /// watches opens none: it says why.
     fn open(&mut self, screen: Screen, acts: &mut Vec<Act>) {
+        if self.read_only {
+            let text = "watching only: no menus, prompts or copy mode here".to_owned();
+            acts.push(Act::Notice { text, error: true });
+            return;
+        }
         self.held = Held::Normal;
         if let Screen::Copy(_) = self.screen {
             acts.push(Act::Copy(crate::act::CopyAct::Leave));
@@ -709,6 +751,7 @@ impl Keyboard {
         let keymap = self.keymap.clone();
         if self.jobs.send(Job { code, keymap }).is_ok() {
             self.running = self.running.saturating_add(1);
+            self.running_since.get_or_insert_with(Instant::now);
         }
     }
 
@@ -731,7 +774,14 @@ impl Keyboard {
                     }
                 }
             }
-            Input::Paste(text) => acts.push(Act::Paste(text)),
+            Input::Paste(text) => {
+                // A paste is the pane's: the column or a repeat mode ends.
+                if self.held != Held::Normal {
+                    self.held = Held::Normal;
+                    acts.push(Act::Hide);
+                }
+                acts.push(Act::Paste(text));
+            }
             Input::PasteTooLong => {
                 let limit = crate::decode::PASTE_LIMIT / 1024;
                 let text = format!("paste exceeds {limit} KiB; discarded");
@@ -787,7 +837,7 @@ fn run_job(server: &mut crate::script::Server, me: crate::id::ClientId, job: Job
             last_bound: None,
             out: &mut out,
         };
-        crate::script::run(&mut machine, &mut host, &mut asks)
+        crate::script::run_capped(&mut machine, &mut host, &mut asks, Some(KEY_STEPS))
     })();
     let notice = match result {
         Err(failed) => Some((failed.to_string(), true)),

@@ -1031,6 +1031,7 @@ impl Server {
                     Outcome {
                         status,
                         code,
+                        stderr: "everything it watched has closed".to_owned(),
                         ..Outcome::default()
                     },
                 );

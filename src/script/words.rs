@@ -196,7 +196,7 @@ pub const WORDS: &[Word] = &[
     word("Help", "help-agents", 0, "-- ", "how to drive programs from a script or an agent"),
     word("Help", "help-json", 0, "-- ", "what json gives"),
     word("Help", "explain", 1, "word -- ", "one word at length"),
-    word("Help", "check", 1, "file -- ", "read a fuxth file without running it: its mistakes"),
+    word("Help", "check", 1, "file -- ", "read a fuxth file without running it: its mistakes; a config.fux is run dry too"),
 ];
 
 /// At most `limit` bytes of the file at `path`, and one more if it has
@@ -263,7 +263,7 @@ fn int(word: &str, value: &Value<Fux>) -> Result<i64, Failure> {
 /// A count or a cell: an integer from 0 that fits.
 fn count<T: TryFrom<i64>>(word: &str, value: &Value<Fux>) -> Result<T, Failure> {
     let n = int(word, value)?;
-    T::try_from(n).map_err(|_| fail("range", format!("{word}: {n} is out of range")))
+    T::try_from(n).map_err(|_| fail("range", format!("{n} is out of range")))
 }
 
 fn pane(word: &str, value: &Value<Fux>) -> Result<crate::id::PaneId, Failure> {
@@ -308,7 +308,7 @@ fn direction(word: &str, value: &Value<Fux>) -> Result<Direction, Failure> {
         "down" => Ok(Direction::Down),
         other => Err(fail(
             "bad_value",
-            format!("{word}: {other:?} is not left, right, up or down"),
+            format!("{other:?} is not left, right, up or down"),
         )),
     }
 }
@@ -319,8 +319,32 @@ fn sibling(word: &str, value: &Value<Fux>) -> Result<Sibling, Failure> {
         "previous" => Ok(Sibling::Previous),
         other => Err(fail(
             "bad_value",
-            format!("{word}: {other:?} is not next or previous"),
+            format!("{other:?} is not next or previous"),
         )),
+    }
+}
+
+/// Options a word would leave unused, refused rather than ignored: a
+/// program for words that start a shell, a typed line for `run`, a tab's
+/// name, size or log for `split`, a wait for words that do not wait.
+fn ignored(word: &str, built: &Opts) -> Result<(), Failure> {
+    let refuse = |what: &str, instead: &str| {
+        Err(fail("unused", format!("{word} takes no {what}: {instead}")))
+    };
+    match word {
+        "new-tab" | "new-workspace" if !built.argv.is_empty() => refuse(
+            "program",
+            "it starts a shell; run starts a program, or `str LINE typed` types one",
+        ),
+        "new-tab" | "new-workspace" | "split" if !built.waits.until.is_empty() => {
+            refuse("wait", "wait on the pane it leaves: PANE opts … wait")
+        }
+        "run" if built.typed.is_some() => refuse("typed line", "it starts no shell to type into"),
+        "split" if built.name.is_some() || built.size.is_some() || built.log.is_some() => refuse(
+            "name, size or log",
+            "a pane takes its tab's; name, size and log-to are run's",
+        ),
+        _ => Ok(()),
     }
 }
 
@@ -406,7 +430,7 @@ fn act(client: crate::id::ClientId, action: ClientAction) -> Ask {
 
 /// The id `text` gives, for `id`.
 fn asked_id(text: &str) -> Result<crate::id::AnyId, Failure> {
-    let bad = || fail("bad_value", format!("id: {text:?} is not %N, @N or +N"));
+    let bad = || fail("bad_value", format!("{text:?} is not %N, @N or +N"));
     match text.chars().next() {
         Some('%') => text.parse().map(AnyRef::Pane).map_err(|_| bad()),
         Some('@') => text.parse().map(AnyRef::Tab).map_err(|_| bad()),
@@ -451,6 +475,13 @@ impl fuxth::Host for Host<'_> {
                     _ => Kind::Workspace,
                 };
                 match next()? {
+                    // An empty name names nothing: never the caller's own,
+                    // which `here` is, so that an empty variable closes
+                    // nothing.
+                    Value::Str(s) if s.trim().is_empty() => Err(fail(
+                        "no_target",
+                        format!("an empty name names no {name}: `here` is the pane this runs in"),
+                    )),
                     Value::Str(s) => resolve(s.to_string(), kind),
                     Value::App(app @ (Fux::Pane(_) | Fux::Tab(_) | Fux::Workspace(_))) => {
                         match (kind, &app) {
@@ -524,6 +555,11 @@ impl fuxth::Host for Host<'_> {
                     "in" => {
                         built.place = Some(match &v {
                             Value::App(Fux::Workspace(w)) => WsRef::Id(*w),
+                            // `+N` is a workspace's id, as `workspace` reads it.
+                            Value::Str(s) if s.starts_with('+') => WsRef::Id(
+                                s.parse()
+                                    .map_err(|_| fail("bad_value", format!("{s:?} is not +N")))?,
+                            ),
                             other @ (Value::Int(_)
                             | Value::Bool(_)
                             | Value::Str(_)
@@ -552,7 +588,7 @@ impl fuxth::Host for Host<'_> {
                 if !crate::command::shell_name(&key) {
                     return Err(fail(
                         "bad_value",
-                        format!("env: {key:?} is no variable's name (letters, digits and _)"),
+                        format!("{key:?} is no variable's name (letters, digits and _)"),
                     ));
                 }
                 opts(name, &mut o)?.env.push((key, value));
@@ -590,6 +626,7 @@ impl fuxth::Host for Host<'_> {
             "run" | "new-tab" | "new-workspace" => {
                 let mut o = next()?;
                 let built = opts(name, &mut o)?.clone();
+                ignored(name, &built)?;
                 let typed: Vec<String> = built.typed.into_iter().collect();
                 let command = match name {
                     "run" => {
@@ -638,6 +675,7 @@ impl fuxth::Host for Host<'_> {
                 let p = pane(name, &next()?)?;
                 let mut o = next()?;
                 let built = opts(name, &mut o)?.clone();
+                ignored(name, &built)?;
                 let run = !built.argv.is_empty();
                 let cmd = if run {
                     built.argv
@@ -680,7 +718,7 @@ impl fuxth::Host for Host<'_> {
                 if t.is_empty() || t.contains(['\n', '\t']) {
                     return Err(fail(
                         "bad_value",
-                        format!("{name}: a text of one line, not empty, with no tab"),
+                        "a text of one line, not empty, with no tab",
                     ));
                 }
                 now(
@@ -780,7 +818,7 @@ impl fuxth::Host for Host<'_> {
                         built.repeat = count(name, &v)
                             .ok()
                             .filter(|n| *n > 0)
-                            .ok_or_else(|| fail("range", "times: a count from 1"))?
+                            .ok_or_else(|| fail("range", "a count from 1"))?
                     }
                     _ => built.if_revision = Some(count(name, &v)?),
                 }
@@ -1043,7 +1081,7 @@ impl fuxth::Host for Host<'_> {
                 let size = fux_vt::Size::new(rows, cols)
                     .ok()
                     .filter(|_| cols <= 500 && rows <= 500)
-                    .ok_or_else(|| fail("range", "resize: each 1 to 500"))?;
+                    .ok_or_else(|| fail("range", "columns and rows each 1 to 500"))?;
                 later(ask(
                     Command::Resize {
                         what: Resized::Tabs(t),
@@ -1067,7 +1105,7 @@ impl fuxth::Host for Host<'_> {
                 let (cols, rows) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
                 let size = fux_vt::Size::new(rows, cols)
                     .ok()
-                    .ok_or_else(|| fail("range", "resize-client: each from 1"))?;
+                    .ok_or_else(|| fail("range", "columns and rows each from 1"))?;
                 later(ask(
                     Command::Resize {
                         what: Resized::Client(c),
@@ -1106,7 +1144,7 @@ impl fuxth::Host for Host<'_> {
             "percent" => {
                 let n = count::<u8>(name, &next()?)?;
                 if n == 0 || n > 100 {
-                    return Err(fail("range", "percent: 1 to 100"));
+                    return Err(fail("range", "a percent from 1 to 100"));
                 }
                 now(out, Value::App(Fux::Extent(Extent::Percent(n))))
             }
@@ -1212,7 +1250,7 @@ impl fuxth::Host for Host<'_> {
                 },
                 Then::Nothing,
             )),
-            "buffers" => later(ask(Command::ListBuffers, Then::Answer)),
+            "buffers" => later(ask(Command::ListBuffers, Then::Text)),
             "buffer" => later(ask(
                 Command::ShowBuffer {
                     index: count(name, &next()?)?,
@@ -1249,6 +1287,9 @@ impl fuxth::Host for Host<'_> {
             }
             "headless" => {
                 let (cols, rows) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
+                if cols == 0 || rows == 0 {
+                    return Err(fail("range", "a size of at least 1 by 1"));
+                }
                 later(Ask::Local(Local::Headless { cols, rows }))
             }
             "focus" => {
@@ -1403,9 +1444,19 @@ impl fuxth::Host for Host<'_> {
             "prefix" | "bind" | "bind-root" | "unbind" | "unbind-root" | "unbind-all" | "label"
             | "group" | "repeat" => self.configure(name, &mut next),
             "list-keys" => {
+                // A client's own; else, from the command line, what the
+                // config makes.
                 let text = match &self.keymap {
                     Some(keymap) => keymap.describe(),
-                    None => crate::keymap::Keymap::default().describe(),
+                    None => {
+                        let config = crate::config::default_path().filter(|p| p.exists());
+                        let keymap = match config {
+                            Some(path) => super::dry_config(&path)
+                                .map_err(|e| fail("config", e.to_string()))?,
+                            None => crate::keymap::Keymap::default(),
+                        };
+                        keymap.describe()
+                    }
                 };
                 let _ = write!(self.out, "{text}");
                 Ok(Done::Now)
@@ -1450,6 +1501,15 @@ impl fuxth::Host for Host<'_> {
                 let tokens =
                     fuxth::token::source(&path, &text).map_err(|e| fail("check", e.to_string()))?;
                 super::compile(&tokens).map_err(|e| fail("check", e.to_string()))?;
+                // A config is run dry too: its bindings made, its settings
+                // checked, nothing sent.
+                let config = std::path::Path::new(&path)
+                    .file_name()
+                    .is_some_and(|n| n == "config.fux");
+                if config {
+                    super::dry_config(std::path::Path::new(&path))
+                        .map_err(|e| fail("check", e.to_string()))?;
+                }
                 let _ = writeln!(self.out, "{path}: ok");
                 Ok(Done::Now)
             }
@@ -1468,7 +1528,7 @@ impl Host<'_> {
         let Some(keymap) = self.keymap.as_deref_mut() else {
             return Err(fail(
                 "not_config",
-                format!("{name} changes a client's keys: it goes in a config file"),
+                format!("{name} changes a client's keys: in its config, or typed at its prompt"),
             ));
         };
         let refused = |why: String| fail("bad_binding", why);

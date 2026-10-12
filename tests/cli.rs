@@ -101,7 +101,7 @@ fn targets_are_named_or_here_and_never_guessed() -> Outcome {
     let gone = server.fux(&["str", "@9", "tab", "kill"])?;
     assert_eq!(
         (gone.status, gone.stderr.as_str()),
-        (1, "fux: no_tab: no tab @9\n")
+        (1, "fux: no_tab: argument 3: tab: no tab @9\n")
     );
     let named = server.fux(&["str", "nope", "workspace", "kill"])?;
     assert!(

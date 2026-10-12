@@ -355,13 +355,17 @@ fn a_crashed_server_comes_back() -> Outcome {
         let saved = std::fs::read_dir(&layout)
             .map_err(e)?
             .filter_map(Result::ok);
+        // The file itself, not the one written beside it and moved in.
         Ok(saved
+            .filter(|f| f.path().extension().is_some_and(|x| x == "layout"))
             .filter_map(|f| std::fs::read_to_string(f.path()).ok())
             .any(|text| text.contains("70 resize-x")))
     })?;
     let pid = server.pid().ok_or("the server's pid")?;
     let pid = fuxix::process::Pid::from_raw(i32::try_from(pid).map_err(e)?).ok_or("a pid")?;
     fuxix::process::kill(pid, fuxix::process::Signal::Kill).map_err(e)?;
+    // Gone before another starts: else `start` finds it still answering.
+    eventually("the server gone", || Ok(!alive(pid.as_raw())))?;
     let socket = server.socket.to_string_lossy().into_owned();
     let again = Command::new(FUX)
         .args(["str", &socket, "socket", "start"])
@@ -384,7 +388,14 @@ fn a_crashed_server_comes_back() -> Outcome {
         after = server.ok(&["ls"])?;
         Ok(after.contains(&format!("{shell} ")) && after.contains(&format!("{app} sh 70x30")))
     })
-    .map_err(|e| format!("{e}: {after}\nas before:\n{before}"))?;
+    .map_err(|e| {
+        // The server `start` started logs beside its socket.
+        let log = server.socket.parent().map(|d| d.join("fux.log"));
+        let log = log
+            .and_then(|l| std::fs::read_to_string(l).ok())
+            .unwrap_or_default();
+        format!("{e}: {after}\nas before:\n{before}\nits log:\n{log}")
+    })?;
     assert!(
         after.contains(&format!("{app} sh 70x30")),
         "{app} in\n{after}\nas before:\n{before}"
