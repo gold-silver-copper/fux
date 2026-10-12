@@ -24,7 +24,7 @@ fux %2 opts json capture             # the screen and state as JSON
 fux %2 opts wait-exit 30 timeout wait   # exited 0; fux then exits with the program's status
 fux opts str bash program 300 wait-idle run   # a shell: it marks its commands; prints %3
 fux %3 str 'make test' line          # a shell command, typed and waited to its end: done STATUS
-fux %2 kill                          # close its pane (str agent workspace kill: all run started)
+fux str agent workspace kill         # at the end: all run started, closed at once
 ```
 
 - **Start:** `run` starts a program (not a shell) in a tab of its own in
@@ -54,7 +54,9 @@ fux %2 kill                          # close its pane (str agent workspace kill:
 - **Mouse:** `%2 str click ROW COL mouse send-mouse` (`wheel-up`, …), from 0.
 - **Sizes:** `%2 tab 40 12 resize`; `%2 50 percent resize-x`; `%2 opts
   horizontal str PROG program split` (or `vertical`).
-- **Stop:** `%2 str TERM signal` (or `KILL`); `%2 kill`; `%2 opts respawn`.
+- **Stop:** `%2 str TERM signal` (or `KILL`); `%2 kill` closes one pane, and
+  the panes left in its tab grow, which their programs see; `str agent
+  workspace kill` closes all at once; `%2 opts respawn` starts it again.
 - **Status:** 0 done; 1 failed, `fux: CODE: MESSAGE` on stderr, with how the
   word is used; a wait's own: 3 exited first, 4 closed, 5 no change, 6
   changed, 124 timed out. Words before a failing one have already acted.
