@@ -1023,11 +1023,28 @@ fn the_server_takes_a_terminal_sent_with_attach() -> Outcome {
         let bytes = fux::protocol::Frame::encode(&frame).map_err(e)?;
         std::io::Write::write_all(&mut &stream, &bytes).map_err(e)?;
     }
+    // As the terminal shows it, however the paints that drew it were cut:
+    // the line typed, then what it printed.
+    let mut screen = fux_vt::Parser::new(fux_vt::Size::new(8, 30).map_err(e)?, 0).map_err(e)?;
+    let shows = |screen: &fux_vt::Parser| {
+        let window = screen.screen().window();
+        (0..window.rows())
+            .filter_map(|y| window.row(y))
+            .filter(|row| {
+                row.cells()
+                    .map(|c| c.contents())
+                    .collect::<String>()
+                    .contains("taken-ok")
+            })
+            .count()
+    };
     eventually("the echo on the terminal", || {
         if let Ok(n) = fuxix::io::read(&master, &mut buffer) {
             seen.extend_from_slice(buffer.get(..n).unwrap_or_default());
         }
-        Ok(String::from_utf8_lossy(&seen).matches("taken-ok").count() >= 2)
+        screen.process(&seen).map_err(e)?;
+        seen.clear();
+        Ok(shows(&screen) >= 2)
     })
     .map_err(|error| format!("{error}: {:?}", String::from_utf8_lossy(&seen)))?;
     drop(stream);
