@@ -147,6 +147,17 @@ fn output(command: &mut Command) -> Result<String, String> {
 }
 
 /// A word quoted for `sh`.
+/// A program and its arguments as fuxth's options for `new-tab`, `split`
+/// and `run`: `str PROGRAM program str ARG arg`…
+fn program_words(program: &[String]) -> Vec<&str> {
+    let mut words = Vec::new();
+    for (i, word) in program.iter().enumerate() {
+        let kind = if i == 0 { "program" } else { "arg" };
+        words.extend(["str", word.as_str(), kind]);
+    }
+    words
+}
+
 fn quoted(word: &str) -> String {
     format!("'{}'", word.replace('\'', "'\\''"))
 }
@@ -219,11 +230,9 @@ impl Session {
         match self.mux {
             Mux::Direct => Err("no multiplexer".into()),
             Mux::Fux => {
-                let mut args = vec!["new-tab", "-t", "main"];
-                if let Some(p) = program {
-                    args.push("--");
-                    args.extend(p.iter().map(String::as_str));
-                }
+                let mut args = vec!["opts", "str", "main", "workspace", "in"];
+                args.extend(program_words(program.unwrap_or_default()));
+                args.push("new-tab");
                 self.command(place, &args).map(drop)
             }
             Mux::Tmux => {
@@ -410,20 +419,29 @@ fn start(
         }
         Mux::Fux => {
             let socket = dir.join("s");
-            let config = dir.join("fux.conf");
+            // Where its client finds it: `$XDG_CONFIG_HOME/fux/config.fux`.
+            let config_home = dir.join("config");
+            let config = config_home.join("fux").join("config.fux");
+            std::fs::create_dir_all(config_home.join("fux")).map_err(|e| e.to_string())?;
             std::fs::write(
                 &config,
-                format!("set shell /bin/sh\nset history-lines {HISTORY}\n"),
+                format!("str shell str /bin/sh set\nstr history-lines {HISTORY} set\n"),
             )
             .map_err(|e| e.to_string())?;
+            env.push((
+                "XDG_CONFIG_HOME".into(),
+                config_home.to_string_lossy().into_owned(),
+            ));
+            env.push((
+                "XDG_STATE_HOME".into(),
+                dir.join("state").to_string_lossy().into_owned(),
+            ));
             let log = std::fs::File::create(dir.join("server.log")).map_err(|e| e.to_string())?;
+            // As a client starts one.
             let mut command = clean(&place.fux);
             command
-                .arg("server")
-                .arg("--socket")
+                .arg(fux::SERVE)
                 .arg(&socket)
-                .arg("--config")
-                .arg(&config)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(log);
@@ -440,6 +458,11 @@ fn start(
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
+            // Its settings at once, as the test harness applies them.
+            let path = socket.to_string_lossy();
+            let chosen = fux::socket::socket_path(fux::socket::Choice::Path(&path, "socket"))
+                .map_err(|e| e.to_string())?;
+            fux::script::configure(&config, &chosen).map_err(|e| e.to_string())?;
             let socket = socket.to_string_lossy().into_owned();
             env.push(("FUX_SOCKET".into(), socket.clone()));
             env.push(("FUX_BIN".into(), place.fux.clone()));
@@ -449,7 +472,8 @@ fn start(
                 ROWS.saturating_add(1),
                 COLS,
                 &place.fux,
-                &["attach"],
+                // No words attaches.
+                &[],
                 &env_ref,
                 ready,
             )?;
@@ -464,10 +488,25 @@ fn start(
             };
             for (i, p) in programs.iter().enumerate() {
                 if i == 0 {
-                    session.command(place, &["send-keys", "-t", "%1", &line(p), "Enter"])?;
+                    let line = line(p);
+                    let args = [
+                        "str",
+                        "%1",
+                        "pane",
+                        "keys",
+                        "str",
+                        &line,
+                        "text",
+                        "str",
+                        "Enter",
+                        "key",
+                        "send-keys",
+                    ];
+                    session.command(place, &args)?;
                 } else {
-                    let mut args = vec!["split", "-h", "-t", "%1", "--"];
-                    args.extend(p.iter().map(String::as_str));
+                    let mut args = vec!["str", "%1", "pane", "opts", "horizontal"];
+                    args.extend(program_words(p));
+                    args.push("split");
                     session.command(place, &args)?;
                 }
             }
@@ -968,7 +1007,7 @@ pub fn run(options: &Options) -> Result<bool, String> {
     for mux in &muxes {
         let version = match mux {
             Mux::Direct => Ok(String::new()),
-            Mux::Fux => output(Command::new(&fux).arg("--version")),
+            Mux::Fux => output(Command::new(&fux).arg("version")),
             Mux::Tmux => output(Command::new("tmux").arg("-V")),
             Mux::Zellij => output(Command::new("zellij").arg("--version")),
             Mux::Herdr => output(Command::new("herdr").arg("--version")),

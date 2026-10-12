@@ -15,6 +15,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 fux = { path = ".." }
 fux-vt = { path = "../fux-vt" }
+fuxth = { path = "../fuxth" }
 
 [[bin]]
 name = "protocol"

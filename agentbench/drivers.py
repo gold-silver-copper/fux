@@ -276,22 +276,25 @@ class Driver:
 
 
 class Fux(Driver):
+    """fux, driven with fuxth: each call one program, `str` before each
+    text, waits armed as part of the step that acts."""
     name = "fux"
 
     def __init__(self, work, env, binary):
         super().__init__(work, env)
         self.bin = binary
         self.server = None
+        self.marks = True
 
-    def fux(self, *args, check=True, timeout=120):
-        return self.run([self.bin, *args], check=check, timeout=timeout)
+    def fux(self, *words, check=True, timeout=120):
+        return self.run([self.bin, *words], check=check, timeout=timeout)
 
     def start(self):
-        # Its saved layouts stay with the run, not in the user's home.
+        # Its saved sessions stay with the run, not in the user's home.
         self.env["XDG_STATE_HOME"] = os.path.join(self.work, ".fux-state")
-        self.run([self.bin, "kill-server", "--force"], check=False)
+        self.run([self.bin, "force-kill-server"], check=False)
         self.calls -= 1
-        self.server = subprocess.Popen([self.bin, "server", "--socket", self.env["FUX_SOCKET"]],
+        self.server = subprocess.Popen([self.bin, "__serve", self.env["FUX_SOCKET"]],
                                        env=self.env, cwd=self.work,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         end = time.time() + 5
@@ -299,124 +302,79 @@ class Fux(Driver):
             time.sleep(0.02)
 
     def stop(self):
-        self.fux("kill-server", "--force", check=False)
+        self.fux("force-kill-server", check=False)
         if self.server:
             try:
                 self.server.wait(5)
             except subprocess.TimeoutExpired:
                 self.server.kill()
 
+    @staticmethod
+    def pane(pane):
+        return ["str", pane, "pane"]
+
+    @staticmethod
+    def keyed(keys):
+        """`keys …`: each a key by its name, or text (`text:…`, or a word no
+        key is called)."""
+        words = ["keys"]
+        for k in keys:
+            if k.startswith("text:"):
+                words += ["str", k[5:], "text"]
+            elif is_key_name(k):
+                words += ["str", k, "key"]
+            else:
+                words += ["str", k, "text"]
+        return words
+
+    def checked(self, out):
+        """A wait's output, or why it failed: the program exited first (3),
+        or anything else, a timeout."""
+        if out.returncode == 3 and out.stderr.strip():
+            raise Exited(out.stderr.strip())
+        if out.returncode != 0 and out.stderr.strip():
+            raise Timeout(out.stderr.strip())
+        return out.stdout
+
     def spawn(self, argv, size=None, name=None):
-        args = ["run"]
-        if size:
-            args += ["--size", f"{size[0]}x{size[1]}"]
+        words = ["opts"]
         if name:
-            args += ["-n", name]
-        return self.fux(*args, "--", *argv).stdout.strip()
+            words += ["str", name, "name"]
+        if size:
+            words += [str(size[0]), str(size[1]), "size"]
+        words += ["str", argv[0], "program"]
+        for a in argv[1:]:
+            words += ["str", a, "arg"]
+        return self.fux(*words, "run").stdout.strip()
+
+    def shell(self, size=None):
+        """bash, which marks its commands with no setup."""
+        return self.spawn(["bash"], size=size)
 
     def keys(self, pane, *keys):
-        self.fux("send-keys", "-t", pane, *keys)
+        self.fux(*self.pane(pane), *self.keyed(keys), "send-keys")
 
     def text(self, pane, text):
-        self.fux("send-keys", "-t", pane, "--text", text)
+        self.fux(*self.pane(pane), "keys", "str", text, "text", "send-keys")
 
     def paste(self, pane, text):
-        self.fux("send-keys", "-t", pane, "--paste", text)
+        self.fux(*self.pane(pane), "keys", "str", text, "paste", "send-keys")
 
     def raw(self, pane, data):
-        self.fux("send-keys", "-t", pane, "-l", data)
+        self.text(pane, data)
 
     def mouse(self, pane, button, row, col):
         kind = {0: "click", 64: "wheel-up", 65: "wheel-down"}[button]
-        self.fux("send-mouse", "-t", pane, kind, str(row), str(col))
+        self.fux(*self.pane(pane), "str", kind, str(row), str(col), "mouse", "send-mouse")
 
     def screen(self, pane, history=False):
-        args = ["capture-pane", "-t", pane] + (["-S", "-100000"] if history else [])
-        return self.fux(*args).stdout
+        return self.fux(*self.pane(pane), "opts", *(["all-history"] if history else []), "capture").stdout
 
     def ansi(self, pane):
-        return self.fux("capture-pane", "-t", pane, "--styles").stdout
+        return self.fux(*self.pane(pane), "opts", "styles", "capture").stdout
 
     def state(self, pane):
-        return json.loads(self.fux("capture-pane", "-t", pane, "--json").stdout)
-
-    def exit_status(self, pane):
-        return self.state(pane)["exited"]
-
-    def wait(self, pane, *cond, timeout=10):
-        out = self.fux("wait", "-t", pane, *cond, "--timeout", str(timeout), check=False,
-                       timeout=timeout + 10)
-        if out.returncode != 0:
-            raise Timeout(out.stderr.strip())
-        return out.stdout
-
-    def wait_text(self, pane, text, timeout=10):
-        return self.wait(pane, "--text", text, timeout=timeout)
-
-    def wait_gone(self, pane, text, timeout=10):
-        return self.wait(pane, "--gone", text, timeout=timeout)
-
-    def wait_idle(self, pane, ms=300, timeout=10):
-        return self.wait(pane, "--idle", str(ms), timeout=timeout)
-
-    def wait_exit(self, pane, timeout=10):
-        out = self.wait(pane, "--exit", timeout=timeout)
-        return int(out.split()[1]) if out.startswith("exited") else None
-
-    def resize(self, pane, cols, rows):
-        tab = self.tab_of(pane)
-        self.fux("resize", "-t", tab, f"{cols}x{rows}")
-
-    def tab_of(self, pane):
-        data = json.loads(self.fux("ls", "--json").stdout)
-        for ws in data["workspaces"]:
-            for tab in ws["tabs"]:
-                if any(p["id"] == pane for p in tab["panes"]):
-                    return tab["id"]
-        raise RuntimeError(f"no tab holds {pane}")
-
-    def resize_pct(self, pane, pct):
-        self.fux("resize-pane", "-t", pane, "-x", f"{pct}%")
-
-    def split(self, pane, argv):
-        return self.fux("split", "-h", "-t", pane, "--", *argv).stdout.strip()
-
-    def kill(self, pane):
-        self.fux("kill-pane", "-t", pane)
-
-    def size_of(self, pane):
-        s = self.state(pane)
-        return s["cols"], s["rows"]
-
-    def find(self, name):
-        data = json.loads(self.fux("ls", "--json").stdout)
-        for ws in data["workspaces"]:
-            for tab in ws["tabs"]:
-                if tab["name"] == name and len(tab["panes"]) == 1:
-                    return tab["panes"][0]["id"]
-        raise RuntimeError(f"no tab named {name}")
-
-
-class FuxAfter(Fux):
-    """fux with the agent CLI's commands: waits that end when the program
-    does and see text that scrolled away, send-keys that waits, shell
-    commands told by OSC 133, the bell, respawn, the main screen and the
-    cursor; and, where the binary has them (`marks`), shells marked with no
-    setup and send-mouse that waits."""
-
-    def __init__(self, work, env, binary):
-        super().__init__(work, env, binary)
-        help_ = subprocess.run([binary, "help", "send-mouse"], capture_output=True, text=True, env=env)
-        self.marks = "--wait-text" in help_.stdout
-
-    def wait(self, pane, *cond, timeout=10):
-        out = self.fux("wait", "-t", pane, *cond, "--timeout", str(timeout), check=False,
-                       timeout=timeout + 10)
-        if out.returncode == 3:
-            raise Exited(out.stderr.strip())
-        if out.returncode != 0:
-            raise Timeout(out.stderr.strip())
-        return out.stdout
+        return json.loads(self.fux(*self.pane(pane), "opts", "capture", "json").stdout)
 
     def exit_status(self, pane):
         s = self.state(pane)
@@ -424,11 +382,24 @@ class FuxAfter(Fux):
             return s["exited"]
         return 128 + s["signal"] if s.get("signal") else None
 
+    def wait(self, pane, *cond, timeout=10):
+        out = self.fux(*self.pane(pane), "opts", *cond, str(timeout), "timeout", "wait",
+                       check=False, timeout=timeout + 10)
+        return self.checked(out)
+
+    def wait_text(self, pane, text, timeout=10):
+        return self.wait(pane, "str", text, "wait-text", timeout=timeout)
+
+    def wait_gone(self, pane, text, timeout=10):
+        return self.wait(pane, "str", text, "wait-gone", timeout=timeout)
+
+    def wait_idle(self, pane, ms=300, timeout=10):
+        return self.wait(pane, str(ms), "wait-idle", timeout=timeout)
+
     def wait_exit(self, pane, timeout=10):
-        """The program's status: the wait prints it, and exits with it once
-        it is met (fux after round 3), or 0."""
-        out = self.fux("wait", "-t", pane, "--exit", "--timeout", str(timeout), check=False,
-                       timeout=timeout + 10)
+        """The program's status: the wait says it, and the run exits with it."""
+        out = self.fux(*self.pane(pane), "opts", "wait-exit", str(timeout), "timeout", "wait",
+                       check=False, timeout=timeout + 10)
         words = out.stdout.split()
         if words[:1] == ["exited"]:
             return int(words[1])
@@ -437,94 +408,116 @@ class FuxAfter(Fux):
         raise Timeout(out.stderr.strip())
 
     def wait_history(self, pane, text, timeout=10):
-        if text in self.fux("capture-pane", "-t", pane, "-S", "all").stdout:
+        if text in self.screen(pane, history=True):
             return True
-        return self.wait(pane, "--text", text, timeout=timeout)
+        return self.wait_text(pane, text, timeout=timeout)
 
     def wait_bell(self, pane, timeout=10):
-        return self.wait(pane, "--bell", timeout=timeout)
+        return self.wait(pane, "wait-bell", timeout=timeout)
+
+    def done(self, pane, timeout=10):
+        return self.wait(pane, "wait-done", timeout=timeout)
 
     def send_and_wait_text(self, pane, keys, text, timeout=10):
-        args = []
-        for k in keys:
-            args += ["--text", k[5:]] if k.startswith("text:") else [k]
-        out = self.fux("send-keys", "-t", pane, *args, "--wait-text", text, "--timeout",
-                       str(timeout), check=False, timeout=timeout + 10)
-        if out.returncode == 3:
-            raise Exited(out.stderr.strip())
-        if out.returncode != 0:
-            raise Timeout(out.stderr.strip())
-        return out.stdout
+        out = self.fux(*self.pane(pane), *self.keyed(keys), "str", text, "wait-text",
+                       str(timeout), "timeout", "send-keys", check=False, timeout=timeout + 10)
+        return self.checked(out)
+
+    def send_wait(self, pane, keys, *until, timeout=20):
+        """Sends keys and waits, the wait armed first; the screen after.
+        `until` is old-style: `--wait-idle MS`, `--wait-text T`."""
+        cond = []
+        it = iter(until)
+        for flag in it:
+            if flag == "--wait-idle":
+                cond += [next(it), "wait-idle"]
+            elif flag == "--wait-text":
+                cond += ["str", next(it), "wait-text"]
+            elif flag == "--wait-change":
+                cond += ["wait-change"]
+            elif flag == "--wait-done":
+                cond += ["wait-done"]
+            elif flag == "--wait-exit":
+                cond += ["wait-exit"]
+        out = self.fux(*self.pane(pane), *self.keyed(keys), *cond, "with-screen", str(timeout),
+                       "timeout", "send-keys", check=False, timeout=timeout + 10)
+        return self.checked(out)
+
+    def click_and_wait(self, pane, row, col, text, timeout=10):
+        """Clicks, and waits for the text the click brings: the line."""
+        out = self.fux(*self.pane(pane), "str", "click", str(row), str(col), "mouse",
+                       "str", text, "wait-text", str(timeout), "timeout", "send-mouse",
+                       check=False, timeout=timeout + 10)
+        return self.checked(out).strip()
+
+    def run_command(self, pane, cmd, timeout=15):
+        out = self.fux(*self.pane(pane), "keys", "str", cmd, "text", "str", "Enter", "key",
+                       "wait-done", str(timeout), "timeout", "send-keys", check=False,
+                       timeout=timeout + 10)
+        said = self.checked(out).split()
+        status = said[1] if len(said) > 1 else None
+        body = self.fux(*self.pane(pane), "opts", "last-output", "capture").stdout
+        return body.rstrip("\n"), status
+
+    def wait_first_exit(self, panes, timeout=15):
+        """The name of the first of several panes whose program exits: a
+        wait on each, which ever ends first."""
+        end = time.time() + timeout
+        while time.time() < end:
+            for name, p in panes.items():
+                if self.exit_status(p) is not None:
+                    return name
+            time.sleep(0.05)
+        raise Timeout("no program exited")
+
+    def wait_any_text(self, pane, texts, timeout=15):
+        """Which of several texts the pane shows first."""
+        cond = [w for t in texts for w in ("str", t, "wait-text")]
+        out = self.fux(*self.pane(pane), "opts", *cond, str(timeout), "timeout", "wait", "json",
+                       check=False, timeout=timeout + 10)
+        return json.loads(self.checked(out))["text"]
 
     def cursor_hidden(self, pane):
         return not self.state(pane)["cursor_visible"]
 
     def main_screen(self, pane):
-        return self.fux("capture-pane", "-t", pane, "--main", "-S", "all").stdout
+        return self.fux(*self.pane(pane), "opts", "main-screen", "all-history", "capture").stdout
 
     def respawn(self, pane):
-        self.fux("respawn", "-t", pane)
+        self.fux(*self.pane(pane), "opts", "respawn")
 
-    def shell(self, size=None):
-        """bash, which marks its commands with no setup when this fux has
-        shell marks (`set shell-marks`), else as told to by variables."""
-        args = ["run"]
-        if not self.marks:
-            args += ["--env", "PS0=\\e]133;C\\a",
-                     "--env", 'PROMPT_COMMAND=printf "\\e]133;D;%s\\a" "$?"']
-        if size:
-            args += ["--size", f"{size[0]}x{size[1]}"]
-        return self.fux(*args, "--", "bash", *([] if self.marks else ["--norc", "-i"])).stdout.strip()
+    def resize(self, pane, cols, rows):
+        self.fux(*self.pane(pane), "tab", str(cols), str(rows), "resize")
 
-    def click_and_wait(self, pane, row, col, text, timeout=10):
-        """Clicks, and waits for the text the click brings: the line."""
-        if not self.marks:
-            self.mouse(pane, 0, row, col)
-            self.wait_text(pane, text, timeout=timeout)
-            return next((l.strip() for l in self.screen(pane).split("\n") if text in l), None)
-        out = self.fux("send-mouse", "-t", pane, "click", str(row), str(col), "--wait-text", text,
-                       "--timeout", str(timeout), check=False, timeout=timeout + 10)
-        if out.returncode != 0:
-            raise Timeout(out.stderr.strip())
-        return out.stdout.strip()
+    def resize_pct(self, pane, pct):
+        self.fux(*self.pane(pane), str(pct), "percent", "resize-x")
 
-    def run_command(self, pane, cmd, timeout=15):
-        out = self.fux("send-keys", "-t", pane, "--text", cmd, "Enter", "--wait-done",
-                       "--timeout", str(timeout), check=False, timeout=timeout + 10)
-        if out.returncode != 0:
-            raise Timeout(out.stderr.strip())
-        status = out.stdout.split()[1] if len(out.stdout.split()) > 1 else None
-        body = self.fux("capture-pane", "-t", pane, "--last-output").stdout
-        return body.rstrip("\n"), status
+    def split(self, pane, argv):
+        words = [*self.pane(pane), "opts", "horizontal", "str", argv[0], "program"]
+        for a in argv[1:]:
+            words += ["str", a, "arg"]
+        return self.fux(*words, "split").stdout.strip()
 
-    def done(self, pane, timeout=10):
-        return self.wait(pane, "--done", timeout=timeout)
+    def kill(self, pane):
+        self.fux(*self.pane(pane), "kill")
 
-    def wait_first_exit(self, panes, timeout=15):
-        """The name of the first of several panes whose program exits."""
-        args = [w for p in panes.values() for w in ("-t", p)]
-        out = self.fux("wait", *args, "--exit", "--timeout", str(timeout), check=False,
-                       timeout=timeout + 10)
-        if out.returncode != 0:
-            raise Timeout(out.stderr.strip())
-        first = out.stdout.split()[0]
-        return next(name for name, p in panes.items() if p == first)
+    def size_of(self, pane):
+        s = self.state(pane)
+        return s["cols"], s["rows"]
 
-    def wait_any_text(self, pane, texts, timeout=15):
-        """Which of several texts the pane shows first."""
-        args = [w for t in texts for w in ("--text", t)]
-        return json.loads(self.wait(pane, *args, "--json", timeout=timeout))["text"]
+    def find(self, name):
+        return self.fux("str", name, "pane").stdout.strip()
 
-    def send_wait(self, pane, keys, *until, timeout=20):
-        """Sends keys and waits, the wait armed first; the screen after."""
-        args = []
-        for k in keys:
-            args += ["--text", k[5:]] if k.startswith("text:") else [k]
-        out = self.fux("send-keys", "-t", pane, *args, *until, "--print", "--timeout",
-                       str(timeout), check=False, timeout=timeout + 10)
-        if out.returncode != 0:
-            raise Timeout(out.stderr.strip())
-        return out.stdout
+
+#: Keys by name, as fux (and tmux) call them: the rest is text.
+KEY_NAMES = {"Enter", "Escape", "Tab", "BTab", "BSpace", "Space", "Up", "Down", "Left", "Right",
+             "Home", "End", "PageUp", "PageDown", "PPage", "NPage", "DC", "IC", "Delete", "Insert",
+             "Backspace"}
+
+
+def is_key_name(word):
+    return (len(word) == 1 or word in KEY_NAMES or re.fullmatch(r"F([1-9]|1[0-2])", word) is not None
+            or re.fullmatch(r"([CMS]-)+.+", word) is not None)
 
 
 # ---------------------------------------------------------------------- tmux

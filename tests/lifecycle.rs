@@ -8,7 +8,7 @@
 mod support;
 use fuxix::process::Signal;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 use support::*;
 
@@ -38,12 +38,12 @@ fn a_signal_stops_the_server_telling_clients_why_and_removing_its_socket() -> Ou
     Ok(())
 }
 
-/// A server started outside the test harness's own setup: no `FUX_SOCKET`,
-/// no `set shell`, and the environment given.
+/// A server started outside the test harness's own setup, by `fux start`:
+/// no `FUX_SOCKET`, no `set shell`, and the environment given.
 struct Bare {
     dir: PathBuf,
-    child: Option<Child>,
     env: Vec<(String, String)>,
+    remove: Vec<String>,
 }
 
 impl Bare {
@@ -62,42 +62,29 @@ impl Bare {
             ("ENV".to_owned(), "/dev/null".to_owned()),
             ("PS1".to_owned(), "$ ".to_owned()),
         ]);
-        let mut command = Command::new(FUX);
-        command
-            .arg("server")
-            .env_remove("FUX_SOCKET")
-            .env_remove("FUX_PANE")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        for variable in remove {
-            command.env_remove(variable);
-        }
-        for (k, v) in &env {
-            command.env(k, v);
-        }
-        let child = {
-            let _guard = spawning()?;
-            command.spawn().map_err(e)?
-        };
         let bare = Bare {
             dir,
-            child: Some(child),
             env,
+            remove: remove.iter().map(|v| (*v).to_owned()).collect(),
         };
-        eventually("the server to answer", || {
-            Ok(bare.fux(&["ls"], remove)?.status.success())
-        })?;
+        let started = {
+            let _guard = spawning()?;
+            bare.fux(&["start"])?
+        };
+        if !started.status.success() {
+            return Err(String::from_utf8_lossy(&started.stderr).into_owned());
+        }
         Ok(bare)
     }
 
-    fn fux(&self, args: &[&str], remove: &[&str]) -> Result<Output, String> {
+    fn fux(&self, args: &[&str]) -> Result<Output, String> {
         let mut command = Command::new(FUX);
         command
             .args(args)
             .env_remove("FUX_SOCKET")
-            .env_remove("FUX_PANE");
-        for variable in remove {
+            .env_remove("FUX_PANE")
+            .stdin(Stdio::null());
+        for variable in &self.remove {
             command.env_remove(variable);
         }
         for (k, v) in &self.env {
@@ -109,10 +96,7 @@ impl Bare {
 
 impl Drop for Bare {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        let _ = self.fux(&["force-kill-server"]);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -163,7 +147,7 @@ fn the_default_socket_is_under_xdg_runtime_dir_else_tmpdir() -> Outcome {
             "{}",
             expected.display()
         );
-        assert!(server.fux(&["kill-server"], remove)?.status.success());
+        assert!(server.fux(&["kill-server"])?.status.success());
         eventually("the socket to go", || Ok(!socket.exists()))?;
     }
     let _ = std::fs::remove_dir_all(&base);
@@ -188,7 +172,7 @@ fn a_pane_runs_shell_else_bin_sh() -> Outcome {
         let socket = dir.join("fux.sock");
         let mut command = Command::new(FUX);
         command
-            .args(["server", "--socket"])
+            .arg(fux::SERVE)
             .arg(&socket)
             .env("XDG_STATE_HOME", dir.join("state"))
             .stdin(Stdio::null())
@@ -204,7 +188,7 @@ fn a_pane_runs_shell_else_bin_sh() -> Outcome {
         let mut child = command.spawn().map_err(e)?;
         let ls = || {
             Command::new(FUX)
-                .args(["ls", "--json"])
+                .args(["ls", "json"])
                 .env("FUX_SOCKET", &socket)
                 .output()
                 .map_err(e)
@@ -216,7 +200,7 @@ fn a_pane_runs_shell_else_bin_sh() -> Outcome {
             Ok(ls.contains(&format!(r#""id":"%1","name":"{name}""#)))
         });
         let _ = Command::new(FUX)
-            .args(["kill-server", "--force"])
+            .args(["force-kill-server"])
             .env("FUX_SOCKET", &socket)
             .output();
         let _ = child.wait();
@@ -232,7 +216,7 @@ fn a_pane_runs_shell_else_bin_sh() -> Outcome {
 #[test]
 fn a_client_that_stops_reading_catches_up_when_it_reads_again() -> Outcome {
     // Little history, so the memory measured is what waits for the client.
-    let server = Server::start("set history-lines 100")?;
+    let server = Server::start("str history-lines 100 set")?;
     let pid = server.pid().ok_or("the server's pid")?;
     let mut client = server.attach(60, 200)?;
     client.wait_for("$")?;
@@ -245,11 +229,11 @@ fn a_client_that_stops_reading_catches_up_when_it_reads_again() -> Outcome {
     // Not read for three seconds.
     std::thread::sleep(Duration::from_secs(3));
     let memory = resident_mib(pid)?;
-    server.ok(&["send-keys", "-t", "%1", "C-c"])?;
+    server.ok(&["str", "%1", "pane", "str", "C-c", "press"])?;
     server.type_line("%1", "echo caught-up")?;
     eventually("the client to show what the server composes for it", || {
         client.pump()?;
-        let composed = server.ok(&["capture-client", "-c", "c1"])?;
+        let composed = server.ok(&["str", "c1", "client", "capture-client"])?;
         Ok(composed.contains("caught-up") && client.text().trim_end() == composed.trim_end())
     })?;
     // What was waiting for it stayed bounded (4 MiB, and the paint being
@@ -265,11 +249,15 @@ fn a_client_that_stops_reading_catches_up_when_it_reads_again() -> Outcome {
 /// encoded; then only to the paste buffer, saying so.
 #[test]
 fn the_clipboard_takes_a_copy_up_to_a_mebibyte() -> Outcome {
-    let server = Server::start("set history-lines 2000")?;
+    let server = Server::start("str history-lines 2000 set")?;
     let mut client = server.attach(20, 120)?;
     client.wait_for("$")?;
     let copy_all = |client: &mut Client| -> Outcome {
-        server.ok(&["copy-mode", "-c", "c1"])?;
+        server.ok(&["str", "c1", "client", "copy-mode"])?;
+        // Its keys are copy mode's once the client is told it is in it.
+        client.wait("copy mode", |t| {
+            t.lines().last().is_some_and(|b| b.contains("COPY"))
+        })?;
         client.keys("tszy")?;
         Ok(())
     };
@@ -285,7 +273,7 @@ fn the_clipboard_takes_a_copy_up_to_a_mebibyte() -> Outcome {
     let before = client.painted.len();
     // Large: 1200 lines of 50 family emoji, 25 bytes each, about 2 MiB
     // encoded, in fewer cells than a copy may take.
-    server.ok(&["send-keys", "-t", "%1", "clear", "Enter"])?;
+    server.type_line("%1", "clear")?;
     server.type_line(
         "%1",
         "i=0; while [ $i -lt 1200 ]; do i=$((i+1)); printf '\\360\\237\\221\\250\\342\\200\\215\\360\\237\\221\\251\\342\\200\\215\\360\\237\\221\\247\\342\\200\\215\\360\\237\\221\\246%.0s' $(seq 50); echo; done; echo done-printing",
@@ -300,7 +288,7 @@ fn the_clipboard_takes_a_copy_up_to_a_mebibyte() -> Outcome {
     let after =
         String::from_utf8_lossy(client.painted.get(before..).unwrap_or_default()).into_owned();
     assert!(!after.contains("\x1b]52;"), "no OSC 52 write for it");
-    let buffer = server.ok(&["show-buffer"])?;
+    let buffer = server.ok(&["0", "buffer"])?;
     assert!(
         buffer.len() > 1 << 20,
         "the buffer holds it all: {} bytes",

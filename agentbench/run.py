@@ -131,7 +131,7 @@ def reap(work):
 def cleanup_slot(tool, slot, fux_bin):
     """Stops whatever server a killed run left in its slot."""
     env = isolated_env(slot)
-    cmds = {"fux": [[fux_bin, "kill-server", "--force"]],
+    cmds = {"fux": [[fux_bin, "force-kill-server"]],
             "tmux": [["tmux", "-L", "ab", "kill-server"]],
             "zellij": [["zellij", "kill-session", "ab"], ["zellij", "delete-session", "ab", "--force"]],
             "herdr": [["herdr", "--session", "ab", "server", "stop"]]}[tool]
@@ -142,9 +142,7 @@ def cleanup_slot(tool, slot, fux_bin):
 def driver_for(tool, work, env, fux_bin):
     import drivers
     if tool == "fux":
-        # This PR's fux, if the binary has its commands; else as on master.
-        new = subprocess.run([fux_bin, "help", "respawn"], capture_output=True, env=env).returncode == 0
-        return (drivers.FuxAfter if new else drivers.Fux)(work, env, fux_bin)
+        return drivers.Fux(work, env, fux_bin)
     return {"tmux": drivers.Tmux, "zellij": drivers.Zellij, "herdr": drivers.Herdr}[tool](work, env)
 
 

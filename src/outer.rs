@@ -178,17 +178,16 @@ impl Terminal {
 
 impl Session {
     /// Asks client `client`'s terminal `queries`, which end with DA1, in its
-    /// paint stream; its decoder expects the answers.
-    fn ask(&mut self, client: ClientId, queries: &[u8], now: Instant) {
-        if let Some(view) = self.views.get_mut(&client) {
-            view.decoder.expect(now);
+    /// paint stream; the client's decoder expects the answers.
+    fn ask(&mut self, client: ClientId, queries: &[u8]) {
+        if self.views.contains_key(&client) {
             self.outbox.push(Outgoing::Bytes(client, queries.to_vec()));
         }
     }
 
     /// Asks a newly attached client's terminal what fux wants to know of it.
     pub(crate) fn ask_terminal(&mut self, client: ClientId) {
-        self.ask(client, QUERIES, Instant::now());
+        self.ask(client, QUERIES);
     }
 
     /// An answer or report from client `client`'s terminal.
@@ -222,7 +221,7 @@ impl Session {
                 if unknown {
                     self.tell_change(client);
                 } else {
-                    self.ask(client, COLOUR_QUERIES, Instant::now());
+                    self.ask(client, COLOUR_QUERIES);
                 }
             }
             Reply::Mode { mode: 2031, status } => {
@@ -538,7 +537,11 @@ mod tests {
         mine.into_iter()
             .filter_map(|o| match o {
                 Outgoing::Bytes(_, bytes) => Some(bytes),
-                Outgoing::Exit(..) | Outgoing::Shutdown { .. } => None,
+                Outgoing::Exit(..)
+                | Outgoing::Run(..)
+                | Outgoing::Keys(..)
+                | Outgoing::Ended(..)
+                | Outgoing::Shutdown { .. } => None,
             })
             .collect()
     }
@@ -563,32 +566,35 @@ mod tests {
         s.output(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         // In a tab the client does not show: its tab is marked until shown.
-        run(&mut s, "new-tab -t +1 -n other")?;
-        run(&mut s, "select-tab -c c1 -t @2")?;
+        run(&mut s, "opts str +1 workspace in str other name new-tab")?;
+        run(&mut s, "str c1 client str @2 tab show-tab")?;
         s.settle();
         let _ = s.before_paint(c);
         std::thread::sleep(BELL_GAP);
         s.output(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         assert!(tab_label(&s, c).contains(" main! "), "{}", tab_label(&s, c));
-        run(&mut s, "select-tab -c c1 -t @1")?;
+        run(&mut s, "str c1 client str @1 tab show-tab")?;
         let _ = s.before_paint(c);
-        run(&mut s, "select-tab -c c1 -t @2")?;
+        run(&mut s, "str c1 client str @2 tab show-tab")?;
         let _ = s.before_paint(c);
         assert!(!tab_label(&s, c).contains('!'), "{}", tab_label(&s, c));
         // A client on another workspace is not rung.
-        run(&mut s, "select-tab -c c1 -t @1")?;
+        run(&mut s, "str c1 client str @1 tab show-tab")?;
         let _ = s.before_paint(c);
-        run(&mut s, "new-workspace -n elsewhere")?;
+        run(&mut s, "opts str elsewhere name new-workspace")?;
         let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
-        run(&mut s, "select-workspace -c c2 -t elsewhere")?;
+        run(
+            &mut s,
+            "str c2 client str elsewhere workspace show-workspace",
+        )?;
         let _ = sent(&mut s, d);
         std::thread::sleep(BELL_GAP);
         s.output(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         assert!(sent(&mut s, d).is_empty());
         // Off: no bell and no mark.
-        run(&mut s, "set bell off")?;
+        run(&mut s, "str bell str off set")?;
         std::thread::sleep(BELL_GAP);
         s.output(PaneId::of(1), b"\x07");
         assert!(sent(&mut s, c).is_empty());
@@ -602,7 +608,7 @@ mod tests {
         // Off by default: nothing.
         s.output(PaneId::of(1), b"\x1b]2;vim notes\x07");
         assert!(s.before_paint(c).is_empty());
-        run(&mut s, "set titles on")?;
+        run(&mut s, "str titles str on set")?;
         let first = s.before_paint(c);
         assert_eq!(first, b"\x1b]2;vim notes\x1b\\");
         // Unchanged: nothing more; changed: the title alone.
@@ -610,13 +616,13 @@ mod tests {
         s.output(PaneId::of(1), b"\x1b]2;make\x07");
         assert_eq!(s.before_paint(c), b"\x1b]2;make\x1b\\");
         // A pane with no title: its tab's name.
-        run(&mut s, "split -h -t %1")?;
-        run(&mut s, "select-pane -c c1 -t %2")?;
-        run(&mut s, "rename -t @1 notes")?;
+        run(&mut s, "str %1 pane opts horizontal split")?;
+        run(&mut s, "str c1 client str %2 pane focus-pane")?;
+        run(&mut s, "str @1 tab str notes rename")?;
         assert_eq!(s.before_paint(c), b"\x1b]2;notes\x1b\\");
         // Off again: the terminal's own title is restored, once, and saved
         // again for the client's leaving.
-        run(&mut s, "set titles off")?;
+        run(&mut s, "str titles str off set")?;
         assert_eq!(s.before_paint(c), [TITLE_POP, TITLE_PUSH].concat());
         assert!(s.before_paint(c).is_empty());
         Ok(())

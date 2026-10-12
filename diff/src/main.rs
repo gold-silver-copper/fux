@@ -1,16 +1,15 @@
 //! `fux-diff`: fux run side by side with its last release. The same random
-//! inputs go to both, and everything each gives back is compared: sessions
-//! after every event, what each client is shown and painted, parsed
-//! commands, layouts, frames, terminal screens, decoded input, copy mode,
-//! words and config, and fuxix's calls. For a change meant to leave
+//! inputs go to both, and everything each gives back is compared: layouts,
+//! frames, terminal screens, decoded input, copy mode, words, and fuxix's
+//! calls. Sessions, command lines and config files are not: since the
+//! command line and the config became fuxth, and keys moved to clients,
+//! the baseline's and the current ones take different inputs. For a change meant to leave
 //! behaviour as it was; any difference is reported with what led to it.
-mod commands;
 mod copy;
 mod input;
 mod layout;
 mod protocol;
 mod rng;
-mod sessions;
 mod speed;
 mod system;
 mod terminal;
@@ -38,21 +37,6 @@ type Run = fn(&mut Rng, usize) -> Outcome;
 
 /// The areas, each with its run and what it compares.
 const AREAS: &[(&str, Run, &str)] = &[
-    (
-        "sessions",
-        sessions::states,
-        "whole sessions: views, modes, notices, focus, queued input, outbox, layout",
-    ),
-    (
-        "screens",
-        sessions::screens,
-        "the screens sessions compose for each client, and the paints made of them",
-    ),
-    (
-        "commands",
-        commands::run,
-        "command lines: commands, usage messages and labels",
-    ),
     (
         "layout",
         layout::run,

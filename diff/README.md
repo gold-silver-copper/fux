@@ -21,7 +21,7 @@ fail (see [The baseline](#the-baseline)).
 ```sh
 cargo build --release --manifest-path diff/Cargo.toml
 diff/target/release/fux-diff                                # every area
-diff/target/release/fux-diff --scale 10 --seed 7 sessions layout
+diff/target/release/fux-diff --scale 10 --seed 7 terminal layout
 diff/target/release/fux-diff --list                         # what each area compares
 diff/target/release/fux-diff --speed                        # fux-vt's parse time beside its last release
 ```
@@ -42,15 +42,12 @@ area differed, 2 for a bad argument.
 
 | Area | Input | Compared |
 | --- | --- | --- |
-| `sessions` | whole sessions of random events: keys through every mode and overlay, pastes, commands with and without a client and with good and bad targets, program output, resizes, attaches, detaches, exits, paints, shutdowns | after every event: its result, every view, pane, workspace and tab, the outbox, the paste buffers and the bindings |
-| `screens` | the same sessions | the above, and each client's composed screen painted from nothing and from its last screen, byte for byte |
-| `commands` | random command lines | the command or usage error, usage message, label, and every word read as each kind of target |
 | `layout` | random trees, weights 0 to `u32::MAX`, areas up to `u16::MAX` wide | placements, neighbours, resizes, splits, removals and swaps |
-| `protocol` | random frames and byte streams, broken ones included | encoded bytes; frames, errors and bytes held, decoding whole and in pieces |
+| `protocol` | random frames and byte streams, broken ones included | encoded bytes; frames, errors and bytes held, decoding whole and in pieces; a command frame stops both (the baseline's is a command line, the current one a typed request) |
 | `terminal` | fux-vt fed random output in pieces, with resizes | after every piece: replies, events, errors, every retained row, the cursor, modes, scroll region, changed rows. Leaves out what fux-vt 0.2.0 changed on purpose (SGR 5, 6, 8, 9, 25, 28, 29, 58, 59; CSI f, s, u; characters that join a cluster) |
 | `input` | client input in pieces with Escape timeouts, key names, pastes, held command lines, pane input queues | decoded input and the Escape deadline, encoded keys and pastes, the queues |
-| `copy` | screens and history from random lines; searches both ways; every copy-mode error | matches, copied text, row positions, each error's notice |
-| `text` | random words, key names, config lines and files | `split`, `quote`, `join`, `shell_line`, key names, config results, JSON strings, base64 |
+| `copy` | screens and history from random lines; searches both ways | matches, copied text, row positions |
+| `text` | random words and key names | `split`, `quote`, `join`, `shell_line`, key names, JSON strings, base64 |
 | `system` | errnos, nonblocking requests on pipes, sockets and PTYs | fuxix's results, and the config file's path for every mix of `XDG_CONFIG_HOME` and `HOME` |
 
 `--speed` parses five synthetic streams (ASCII, SGR, CJK, emoji, cursor
@@ -60,7 +57,11 @@ neither.
 
 Not covered: the server's connection handling in `server.rs` (the walk,
 `walk/`, and the integration tests cover it), and performance beyond
-`--speed` (see `bench/`).
+`--speed` (see `bench/`). Nor, since fuxth, whole sessions, command
+lines, copy mode's errors in a session, or config files: the command line
+and the config are fuxth programs and keys are read by each client, so the
+baseline (0.20.0) and the current fux take different inputs there. Areas
+for them return once the baseline is a release with fuxth.
 
 ### The baseline
 

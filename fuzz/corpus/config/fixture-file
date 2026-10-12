@@ -1,5 +1,13 @@
 # comment
-set prefix C-a
+str shell str /bin/sh set
+str C-a prefix
 
-bind q detach # trailing
-set prefix Nope
+str 'g n' str 'opts new-tab drop' bind str Tools group # trailing
+str 'y l' str 'me focused str right 1 move-border' bind str Grow group repeat
+str M-t str 'me zoom' bind-root str 'zoom it' label
+str C-a str 'me zoom' bind-root
+str Nope prefix
+str 'g' str 'me zoom' bind
+str 't n m' unbind
+define split-wide me focused opts horizontal split drop end
+begin 1 until

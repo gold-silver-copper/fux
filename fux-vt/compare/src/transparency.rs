@@ -351,7 +351,11 @@ impl Through {
                     return Err(format!("fux detached the client: {reason}"));
                 }
                 Outgoing::Shutdown { reason, .. } => return Err(format!("fux stopped: {reason}")),
-                Outgoing::Bytes(..) | Outgoing::Exit(..) => {}
+                Outgoing::Bytes(..)
+                | Outgoing::Exit(..)
+                | Outgoing::Run(..)
+                | Outgoing::Keys(..)
+                | Outgoing::Ended(..) => {}
             }
         }
         let dirty = self

@@ -1,14 +1,19 @@
 //! Choosing the next step from the live state. Choices are small random
-//! indices resolved against `ls --json` when the step is made, and the
-//! step records what they resolved to.
+//! indices resolved against `ls json` when the step is made, and the step
+//! records what they resolved to. Commands are fuxth programs.
 use crate::rng::Rng;
 use crate::step::{Act, Config, Step, Stop};
 use crate::world::World;
+use std::collections::BTreeMap;
 
 /// What the generator remembers between steps.
 pub struct State {
-    /// The prefix key, as its byte.
+    /// The prefix the configuration file gives a client that attaches,
+    /// as its byte.
     pub prefix: u8,
+    /// Each client's prefix, by id: what the configuration file gave it
+    /// as it attached. Keys are each client's own.
+    pub prefixes: BTreeMap<String, u8>,
     /// Panes whose shell it stopped, by id.
     pub stopped: Vec<String>,
 }
@@ -17,7 +22,17 @@ impl State {
     pub fn new() -> State {
         State {
             prefix: 0x02,
+            prefixes: BTreeMap::new(),
             stopped: Vec::new(),
+        }
+    }
+
+    /// The clients there are now: one new since the last step attached
+    /// after it, with the configuration file as it is.
+    pub fn clients(&mut self, clients: &[String]) {
+        self.prefixes.retain(|id, _| clients.contains(id));
+        for id in clients {
+            self.prefixes.entry(id.clone()).or_insert(self.prefix);
         }
     }
 
@@ -25,7 +40,8 @@ impl State {
     pub fn after(&mut self, step: &Step) {
         match step {
             Step::Config(Config::PrefixA) => self.prefix = 0x01,
-            Step::Config(Config::PrefixB | Config::Valid) => self.prefix = 0x02,
+            // A configuration that fails gives the defaults.
+            Step::Config(Config::PrefixB | Config::Valid | Config::Invalid) => self.prefix = 0x02,
             Step::Signal {
                 pane,
                 stop: Stop::Stop,
@@ -38,8 +54,7 @@ impl State {
                 pane,
                 stop: Stop::Cont,
             } => self.stopped.retain(|p| p != pane),
-            Step::Config(Config::Invalid)
-            | Step::Keys { .. }
+            Step::Keys { .. }
             | Step::Cli(_)
             | Step::Resize { .. }
             | Step::Attach { .. }
@@ -69,17 +84,18 @@ const OVERLAY: &[&str] = &[
 /// Copy mode's letters.
 const COPY: &[u8] = b"hjklwbaeudtzfrnpvsxoyq";
 
-/// Lines typed into the command prompt, some of them wrong.
+/// Lines typed into the command prompt, fuxth the client runs as its
+/// own, some of it wrong.
 const PROMPT: &[&str] = &[
-    "split -h\r",
-    "zoom\r",
+    "me focused opts horizontal split drop\r",
+    "me zoom\r",
     "ls\r",
-    "select-tab --next\r",
+    "me next-tab\r",
     "nonsense\r",
-    "kill-pane -t %99\r",
-    "rename-prompt tab\r",
-    "copy-mode\r",
-    "bind -r g l resize-pane -R\r",
+    "str %99 pane kill\r",
+    "me me focused tab rename-prompt\r",
+    "me copy-mode\r",
+    "str 'g l' str 'me focused str right 1 move-border' bind repeat\r",
 ];
 
 /// Sizes a client's terminal is resized to: tiny, one row, one column,
@@ -107,7 +123,7 @@ pub fn step(rng: &mut Rng, world: &World, clients: &[String], state: &State) -> 
     // there are fewer than two panes, the walk makes one first.
     if panes.len() < 2 {
         let pane = panes.first().copied().unwrap_or("%1");
-        return Step::Cli(words(&format!("split -h -t {pane}")));
+        return Step::Cli(words(&format!("str {pane} pane opts horizontal split")));
     }
     if clients.is_empty() {
         return Step::Attach { rows: 24, cols: 80 };
@@ -123,10 +139,11 @@ pub fn step(rng: &mut Rng, world: &World, clients: &[String], state: &State) -> 
     }
     let client = rng.pick(clients).cloned().unwrap_or_default();
     let pane = rng.pick(&panes).copied().unwrap_or("%1").to_owned();
+    let prefix = state.prefixes.get(&client).copied().unwrap_or(state.prefix);
     match rng.weighted(&[45, 30, 6, 7, 2, 3, 2, 3, 1]) {
         0 => Step::Keys {
             client,
-            bytes: keys(rng, state.prefix),
+            bytes: keys(rng, prefix),
         },
         1 => Step::Cli(cli(rng, world, clients)),
         2 => {
@@ -221,7 +238,7 @@ fn keys(rng: &mut Rng, prefix: u8) -> Vec<u8> {
     out
 }
 
-/// A command line from the whole command set, targets taken from the
+/// A command line from the whole vocabulary, targets taken from the
 /// state, some of them wrong.
 fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
     let pane = |rng: &mut Rng| -> String {
@@ -252,7 +269,9 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
         rng.pick(clients).cloned().unwrap_or_else(|| "c1".into())
     };
     let direction = |rng: &mut Rng| -> &'static str {
-        rng.pick(&["-L", "-R", "-U", "-D"]).copied().unwrap_or("-L")
+        rng.pick(&["left", "right", "up", "down"])
+            .copied()
+            .unwrap_or("left")
     };
     let kind = |rng: &mut Rng| -> &'static str {
         rng.pick(&["pane", "tab", "workspace"])
@@ -263,105 +282,123 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
     let tabs = world.tabs().count();
     let spaces = world.workspaces.len();
     let line = match rng.below(40) {
-        0 => format!("new-tab -t {}", workspace(rng)),
-        1 => format!("new-tab -t {} -n t{}", workspace(rng), rng.below(9)),
-        2 => format!("new-workspace -n w{}", rng.below(9)),
-        3 | 4 => format!("split -h -t {}", pane(rng)),
-        5 => format!("split -v -t {} -- echo split-typed", pane(rng)),
-        6 if panes > 2 => format!("kill-pane -t {}", pane(rng)),
-        7 if tabs > 1 && panes > 2 => format!("kill-tab -t {}", tab(rng)),
-        8 if spaces > 1 && panes > 2 => format!("kill-workspace -t {}", workspace(rng)),
-        9 => format!("rename -t {} renamed-{}", pane(rng), rng.below(9)),
-        10 => format!("rename -t {} tab-{}", tab(rng), rng.below(9)),
+        0 => format!("opts str {} workspace in new-tab", workspace(rng)),
+        1 => format!(
+            "opts str {} workspace in str t{} name new-tab",
+            workspace(rng),
+            rng.below(9)
+        ),
+        2 => format!("opts str w{} name new-workspace", rng.below(9)),
+        3 | 4 => format!("str {} pane opts horizontal split", pane(rng)),
+        5 => format!(
+            "str {} pane opts vertical str echo program str split-typed arg split",
+            pane(rng)
+        ),
+        6 if panes > 2 => format!("str {} pane kill", pane(rng)),
+        7 if tabs > 1 && panes > 2 => format!("str {} tab kill", tab(rng)),
+        8 if spaces > 1 && panes > 2 => format!("str {} workspace kill", workspace(rng)),
+        9 => format!("str {} pane str renamed-{} rename", pane(rng), rng.below(9)),
+        10 => format!("str {} tab str tab-{} rename", tab(rng), rng.below(9)),
         11 => format!(
-            "move-pane -t {} --to {}",
+            "str {} pane {} move-to",
             pane(rng),
             match rng.below(4) {
-                0 => tab(rng),
-                1 => workspace(rng),
-                2 => "new-tab".into(),
-                _ => "new-workspace".into(),
+                0 => format!("str {} tab", tab(rng)),
+                1 => format!("str {} workspace", workspace(rng)),
+                2 => "str new-tab".into(),
+                _ => "str new-workspace".into(),
             }
         ),
-        12 => format!("move-pane -t {} {}", pane(rng), direction(rng)),
-        13 => format!("swap-pane -t {} {}", pane(rng), pane(rng)),
-        14 => format!("swap-pane -t {} {}", pane(rng), direction(rng)),
+        12 => format!("str {} pane str {} move-beside", pane(rng), direction(rng)),
+        13 => format!("str {} pane str {} pane swap-panes", pane(rng), pane(rng)),
+        14 => format!("str {} pane str {} swap-toward", pane(rng), direction(rng)),
         15 => format!(
-            "resize-pane -t {} {} {}",
+            "str {} pane str {} {} move-border",
             pane(rng),
             direction(rng),
             rng.below(6)
         ),
         16 => format!(
-            "reorder {} -t {} {}",
-            kind(rng),
+            "str {} {} str {} reorder",
             match rng.below(3) {
                 0 => pane(rng),
                 1 => tab(rng),
                 _ => workspace(rng),
             },
-            if rng.chance(50) {
-                "--next"
-            } else {
-                "--previous"
-            }
+            kind(rng),
+            if rng.chance(50) { "next" } else { "previous" }
         ),
-        17 => format!("select-pane -c {} -t {}", client(rng), pane(rng)),
-        18 => format!(
-            "select-pane -c {} {}",
+        17 => format!(
+            "str {} client str {} pane focus-pane",
             client(rng),
-            rng.pick(&["--next", "--previous", "--last", "-L", "-R", "-U", "-D"])
+            pane(rng)
+        ),
+        18 => format!(
+            "str {} client str {} focus",
+            client(rng),
+            rng.pick(&["next", "previous", "last", "left", "right", "up", "down"])
                 .copied()
-                .unwrap_or("--next")
+                .unwrap_or("next")
         ),
-        19 => format!("select-tab -c {} -t {}", client(rng), tab(rng)),
-        20 => format!("select-tab -c {} --next", client(rng)),
-        21 => format!("select-workspace -c {} -t {}", client(rng), workspace(rng)),
-        22 => format!("zoom -c {}", client(rng)),
-        23 => format!(
-            "{} -c {}",
-            rng.pick(&[
-                "command-column",
-                "command-prompt",
-                "copy-mode",
-                "choose-tab",
-                "choose-workspace"
-            ])
-            .copied()
-            .unwrap_or("command-column"),
-            client(rng)
+        19 => format!("str {} client str {} tab show-tab", client(rng), tab(rng)),
+        20 => format!("str {} client next-tab", client(rng)),
+        21 => format!(
+            "str {} client str {} workspace show-workspace",
+            client(rng),
+            workspace(rng)
         ),
-        24 => format!("menu -c {} {}", client(rng), kind(rng)),
-        25 => format!("rename-prompt -c {} {}", client(rng), kind(rng)),
-        26 => format!("confirm-close -c {} {}", client(rng), kind(rng)),
+        22 => format!("str {} client zoom", client(rng)),
+        // The prefix sent to a client is taken as typed there: it opens
+        // the column if it is that client's prefix.
+        23 => match rng.below(5) {
+            0 => format!("str {} client keys str C-b key send-keys", client(rng)),
+            n => format!(
+                "str {} client {}",
+                client(rng),
+                match n {
+                    1 => "command-prompt",
+                    2 => "copy-mode",
+                    3 => "choose-tab",
+                    _ => "choose-workspace",
+                }
+            ),
+        },
+        24 => format!("str {} client dup focused {} menu", client(rng), kind(rng)),
+        25 => format!(
+            "str {} client dup focused {} rename-prompt",
+            client(rng),
+            kind(rng)
+        ),
+        26 => format!(
+            "str {} client dup focused {} confirm-close",
+            client(rng),
+            kind(rng)
+        ),
         27 => rng
             .pick(&[
-                "bind -r g h resize-pane -L",
-                "bind g n new-tab",
-                "unbind g",
-                "unbind t",
-                "bind t n new-tab",
-                "unbind-all",
-                "set clipboard off",
-                "set clipboard on",
-                "set history-lines 100",
-                "set buffers 4",
+                "str clipboard str off set",
+                "str clipboard str on set",
+                "str history-lines 100 set",
+                "str buffers 4 set",
             ])
             .copied()
-            .unwrap_or("unbind g")
+            .unwrap_or("str buffers 4 set")
             .to_owned(),
-        28 => "reload".into(),
-        29 => format!("send-keys -t {} -l typed-by-send-keys", pane(rng)),
-        30 => format!("send-keys -t {} Enter", pane(rng)),
-        31 => format!("capture-pane -t {} -S -20", pane(rng)),
+        28 => "dump".into(),
+        29 => format!(
+            "str {} pane keys str typed-by-send-keys text send-keys",
+            pane(rng)
+        ),
+        30 => format!("str {} pane keys str Enter key send-keys", pane(rng)),
+        31 => format!("str {} pane opts 20 history capture", pane(rng)),
         32 => "ls".into(),
         33 => "list-keys".into(),
-        34 => "list-buffers".into(),
-        35 => format!("paste-buffer -t {}", pane(rng)),
-        36 => format!("signal -t {} TERM", pane(rng)),
-        37 if clients.len() > 1 => format!("detach -c {}", client(rng)),
-        38 => format!("capture-client -c {}", client(rng)),
-        _ => format!("select-workspace -c {} --next", client(rng)),
+        34 => "buffers".into(),
+        35 => format!("str {} pane 0 paste-buffer", pane(rng)),
+        36 => format!("str {} pane str TERM signal", pane(rng)),
+        37 if clients.len() > 1 => format!("str {} client detach", client(rng)),
+        38 => format!("str {} client capture-client", client(rng)),
+        _ => format!("str {} client next-workspace", client(rng)),
     };
     words(&line)
 }

@@ -1,11 +1,11 @@
 [workspace]
-members = ["fux-vt", "fuxix"]
+members = ["fux-vt", "fuxix", "fuxth"]
 exclude = ["fux-vt/fuzz", "fux-vt/gen", "fux-vt/compare", "fuzz", "walk", "diff", "bench"]
 resolver = "3"
 
 [package]
 name = "fux"
-version = "0.22.0"
+version = "0.23.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
@@ -21,6 +21,7 @@ fux-vt = { path = "fux-vt", version = "0.4.1" }
 signal-hook = "0.4"
 unicode-width = "0.2"
 fuxix = { path = "fuxix", version = "0.2.0" }
+fuxth = { path = "fuxth", version = "0.1.0" }
 
 [profile.dev]
 debug = 0

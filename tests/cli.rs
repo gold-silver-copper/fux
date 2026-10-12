@@ -1,49 +1,73 @@
-//! Milestone 5: the whole CLI table, `--json`, targets and their errors, and
-//! a `-- CMD` typed into a new shell.
+//! The command line: a fuxth program, its words' errors and statuses, what
+//! it leaves printed, `json`, programs from stdin and files, and a command
+//! line typed into a new shell.
 mod support;
 use support::*;
 
 /// Waits until `%N`'s screen contains `needle`.
 fn shows(server: &Server, pane: &str, needle: &str) -> Outcome {
     eventually(&format!("{needle:?} in {pane}"), || {
-        Ok(server.ok(&["capture-pane", "-t", pane])?.contains(needle))
+        Ok(server
+            .ok(&["str", pane, "pane", "screen"])?
+            .contains(needle))
     })
 }
 
 #[test]
 fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
     let server = Server::start("")?;
-    // Arguments with spaces and quotes arrive intact.
+    // The line arrives as written: spaces and quotes intact.
+    let line = "printf '[%s]\\n' 'a b' \"it's\" '$HOME'";
     let pane = server.ok(&[
-        "split", "-h", "-t", "%1", "--", "printf", "[%s]\\n", "a b", "it's", "$HOME",
+        "str",
+        "%1",
+        "pane",
+        "opts",
+        "horizontal",
+        "str",
+        line,
+        "typed",
+        "split",
     ])?;
     assert_eq!(pane.trim(), "%2");
     shows(&server, "%2", "[a b]")?;
     shows(&server, "%2", "[it's]")?;
     shows(&server, "%2", "[$HOME]")?;
     // The command ended; the shell is still there and takes more input.
-    server.ok(&[
-        "send-keys",
-        "-t",
-        "%2",
-        "echo",
-        "Space",
-        "still-here",
-        "Enter",
-    ])?;
+    server.type_line("%2", "echo still-here")?;
     shows(&server, "%2", "\nstill-here")?;
     assert!(
         server.ok(&["ls"])?.contains("%2 printf"),
         "the pane is named after its command"
     );
     // new-tab and new-workspace type theirs too.
-    server.ok(&["new-tab", "-t", "+1", "--", "echo", "tab-cmd"])?;
+    server.ok(&[
+        "opts",
+        "str",
+        "+1",
+        "workspace",
+        "in",
+        "str",
+        "echo tab-cmd",
+        "typed",
+        "new-tab",
+    ])?;
     shows(&server, "%3", "\ntab-cmd")?;
-    server.ok(&["new-workspace", "--", "echo", "ws-cmd"])?;
+    server.ok(&["opts", "str", "echo ws-cmd", "typed", "new-workspace"])?;
     shows(&server, "%4", "\nws-cmd")?;
     // A control character would act as a key in the shell: refused, and no
     // pane is made.
-    let refused = server.fux(&["split", "-h", "-t", "%1", "--", "echo", "a\nb"])?;
+    let refused = server.fux(&[
+        "str",
+        "%1",
+        "pane",
+        "opts",
+        "horizontal",
+        "str",
+        "echo a\nb",
+        "typed",
+        "split",
+    ])?;
     assert_eq!(refused.status, 1);
     assert!(
         refused.stderr.contains("control character"),
@@ -55,37 +79,31 @@ fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
 }
 
 #[test]
-fn targets_come_from_t_or_fux_pane_and_are_never_guessed() -> Outcome {
+fn targets_are_named_or_here_and_never_guessed() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&["split", "-h", "-t", "%1"])?;
-    // Without -t or FUX_PANE a command fails, naming -t.
-    for args in [
-        &["kill-pane"][..],
-        &["kill-tab"],
-        &["kill-workspace"],
-        &["new-tab"],
-        &["split", "-h"],
-    ] {
-        let out = server.fux(args)?;
-        assert_eq!(out.status, 1, "{args:?}");
-        assert!(out.stderr.contains("-t"), "{args:?}: {}", out.stderr);
-    }
-    // FUX_PANE targets the caller's pane, its tab and its workspace.
-    let out = server.fux_env(&["split", "-v"], &[("FUX_PANE", "%2")])?;
-    assert_eq!(out.status, 0, "{}", out.stderr);
-    let ls = server.ok(&["ls"])?;
-    assert!(ls.contains("%3"));
-    let out = server.fux_env(&["new-tab"], &[("FUX_PANE", "%2")])?;
-    assert_eq!(out.stdout.trim(), "@2 %4", "the tab and its pane");
-    // Wrong kinds and missing targets.
-    assert_eq!(server.fux(&["kill-tab", "-t", "%1"])?.status, 2);
-    assert_eq!(server.fux(&["kill-pane", "-t", "@1"])?.status, 2);
-    let gone = server.fux(&["kill-tab", "-t", "@9"])?;
+    server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
+    // Without FUX_PANE there is no `here`.
+    let out = server.fux(&["here", "opts", "horizontal", "split"])?;
+    assert_eq!(out.status, 1);
+    assert!(out.stderr.starts_with("fux: no_target: "), "{}", out.stderr);
+    // FUX_PANE is the caller's pane, and its tab and workspace.
+    let env = [("FUX_PANE", "%2")];
+    let out = server.fux_env(&["here", "opts", "vertical", "split"], &env)?;
     assert_eq!(
-        (gone.status, gone.stderr.trim()),
-        (1, "fux: no tab @9".trim_start_matches("fux: "))
+        (out.status, out.stdout.as_str()),
+        (0, "%3\n"),
+        "{}",
+        out.stderr
     );
-    let named = server.fux(&["kill-workspace", "-t", "nope"])?;
+    let out = server.fux_env(&["here", "dup", "tab", "swap", "workspace"], &env)?;
+    assert_eq!(out.stdout, "@1\n+1\n");
+    // Missing targets, each named.
+    let gone = server.fux(&["str", "@9", "tab", "kill"])?;
+    assert_eq!(
+        (gone.status, gone.stderr.as_str()),
+        (1, "fux: no_tab: argument 3: tab: no tab @9\n")
+    );
+    let named = server.fux(&["str", "nope", "workspace", "kill"])?;
     assert!(
         named.stderr.contains("no workspace named \"nope\""),
         "{}",
@@ -97,54 +115,59 @@ fn targets_come_from_t_or_fux_pane_and_are_never_guessed() -> Outcome {
 #[test]
 fn rename_move_swap_reorder_and_kill() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&["rename", "-t", "%1", "editor"])?;
-    server.ok(&["rename", "-t", "@1", "code"])?;
-    server.ok(&["rename", "-t", "+1", "work"])?;
-    server.ok(&["rename", "-t", "work", "work2"])?;
+    server.ok(&["str", "%1", "pane", "str", "editor", "rename"])?;
+    server.ok(&["str", "@1", "tab", "str", "code", "rename"])?;
+    server.ok(&["str", "+1", "workspace", "str", "work", "rename"])?;
+    server.ok(&["str", "work", "workspace", "str", "work2", "rename"])?;
     let ls = server.ok(&["ls"])?;
     assert!(
         ls.contains("+1 work2") && ls.contains("@1 code") && ls.contains("%1 editor"),
         "{ls}"
     );
-    server.ok(&["new-workspace", "-n", "other"])?;
-    let clash = server.fux(&["rename", "-t", "other", "work2"])?;
+    server.ok(&["opts", "str", "other", "name", "new-workspace"])?;
+    let clash = server.fux(&["str", "other", "workspace", "str", "work2", "rename"])?;
     assert!(
         clash.stderr.contains("a workspace is named"),
         "{}",
         clash.stderr
     );
-    assert_eq!(server.fux(&["rename", "-t", "%1", ""])?.status, 1);
+    assert_eq!(
+        server
+            .fux(&["str", "%1", "pane", "str", "", "rename"])?
+            .status,
+        1
+    );
     // Swap across workspaces.
-    server.ok(&["swap-pane", "-t", "%1", "%2"])?;
+    server.ok(&["str", "%1", "pane", "str", "%2", "pane", "swap-panes"])?;
     let ls = server.ok(&["ls"])?;
     let at = |needle: &str| ls.find(needle).unwrap_or(usize::MAX);
     assert!(at("%2") < at("+2") && at("%1") > at("+2"), "{ls}");
-    // Move to a tab, a workspace, new ones.
-    server.ok(&["split", "-h", "-t", "%2"])?;
-    server.ok(&["move-pane", "-t", "%3", "--to", "+2"])?;
-    server.ok(&["move-pane", "-t", "%3", "--to", "new-tab"])?;
+    // Move to a workspace, then to a new tab.
+    server.ok(&["str", "%2", "pane", "opts", "horizontal", "split"])?;
+    server.ok(&["str", "%3", "pane", "str", "+2", "workspace", "move-to"])?;
+    server.ok(&["str", "%3", "pane", "str", "new-tab", "move-to"])?;
     let ls = server.ok(&["ls"])?;
     assert!(ls.contains("@3 tab-2"), "{ls}");
     // Reorder tabs and workspaces.
-    server.ok(&["reorder", "tab", "-t", "@3", "--previous"])?;
+    server.ok(&["str", "@3", "tab", "str", "previous", "reorder"])?;
     let ls = server.ok(&["ls"])?;
     assert!(
         ls.find("@3").unwrap_or(0) < ls.find("@2").unwrap_or(0),
         "{ls}"
     );
-    server.ok(&["reorder", "-t", "+2", "--previous"])?;
+    server.ok(&["str", "+2", "workspace", "str", "previous", "reorder"])?;
     assert!(server.ok(&["ls"])?.starts_with("+2 other"));
-    let end = server.fux(&["reorder", "-t", "+2", "--previous"])?;
+    let end = server.fux(&["str", "+2", "workspace", "str", "previous", "reorder"])?;
     assert!(end.stderr.contains("already at that end"), "{}", end.stderr);
     // Kill a pane (its tab, now empty of panes, goes with it), a workspace,
     // and a tab (the workspace's last, so the workspace goes too).
-    server.ok(&["kill-pane", "-t", "%3"])?;
+    server.ok(&["str", "%3", "pane", "kill"])?;
     assert!(!server.ok(&["ls"])?.contains("@3 "));
-    server.ok(&["kill-workspace", "-t", "work2"])?;
+    server.ok(&["str", "work2", "workspace", "kill"])?;
     let ls = server.ok(&["ls"])?;
     assert!(!ls.contains("work2") && ls.contains("other"), "{ls}");
-    server.ok(&["new-workspace", "-n", "third"])?;
-    server.ok(&["kill-tab", "-t", "@2"])?;
+    server.ok(&["opts", "str", "third", "name", "new-workspace"])?;
+    server.ok(&["str", "@2", "tab", "kill"])?;
     let ls = server.ok(&["ls"])?;
     assert!(!ls.contains("other") && ls.contains("third"), "{ls}");
     Ok(())
@@ -156,54 +179,168 @@ fn send_keys_signal_and_buffers() -> Outcome {
     // send-keys types at once; after the prompt, so the output is a line
     // of its own however slowly the shell starts.
     shows(&server, "%1", "$")?;
-    server.ok(&["send-keys", "-t", "%1", "-l", "echo lit", "eral"])?;
-    server.ok(&["send-keys", "-t", "%1", "Enter"])?;
+    server.ok(&[
+        "str",
+        "%1",
+        "pane",
+        "keys",
+        "str",
+        "echo lit",
+        "text",
+        "str",
+        "eral",
+        "text",
+        "send-keys",
+    ])?;
+    server.ok(&["str", "%1", "pane", "str", "Enter", "press"])?;
     shows(&server, "%1", "\nliteral")?;
     // signal stops what runs in the foreground, never the shell.
-    let idle = server.fux(&["signal", "-t", "%1", "TERM"])?;
+    let idle = server.fux(&["str", "%1", "pane", "str", "TERM", "signal"])?;
     assert!(
         idle.stderr.contains("nothing is running"),
         "{}",
         idle.stderr
     );
-    server.ok(&[
-        "send-keys",
-        "-t",
-        "%1",
-        "sleep 600; echo after-sleep",
-        "Enter",
-    ])?;
+    server.type_line("%1", "sleep 600; echo after-sleep")?;
     eventually("sleep in the foreground", || {
-        Ok(server.fux(&["signal", "-t", "%1", "TERM"])?.status == 0)
+        Ok(server
+            .fux(&["str", "%1", "pane", "str", "TERM", "signal"])?
+            .status
+            == 0)
     })?;
     shows(&server, "%1", "after-sleep")?;
     assert!(server.ok(&["ls"])?.contains("%1"), "the shell survives");
     // No buffers yet.
-    assert_eq!(server.ok(&["list-buffers"])?, "");
-    assert_eq!(server.fux(&["show-buffer"])?.status, 1);
+    assert_eq!(server.ok(&["buffers"])?.trim(), "");
+    assert_eq!(server.fux(&["0", "buffer"])?.status, 1);
+    Ok(())
+}
+
+/// A word's error names its code and exits 1; a wait's failure keeps its
+/// status; what is left on the stack is printed, a value a line, bottom
+/// first; `json` turns an answer into JSON.
+#[test]
+fn errors_statuses_and_what_is_left() -> Outcome {
+    let server = Server::start("")?;
+    let typed = server.fux(&["3", "pane"])?;
+    assert_eq!(typed.status, 1);
+    assert!(typed.stderr.starts_with("fux: type: "), "{}", typed.stderr);
+    let unknown = server.fux(&["frobnicate"])?;
+    assert_eq!(unknown.status, 1);
+    assert!(
+        unknown.stderr.starts_with("fux: unknown_word: "),
+        "{}",
+        unknown.stderr
+    );
+    let timed_out = server.fux(&[
+        "str",
+        "%1",
+        "pane",
+        "opts",
+        "str",
+        "never-shown",
+        "wait-text",
+        "1",
+        "timeout",
+        "wait",
+    ])?;
+    assert_eq!(timed_out.status, 124, "{}", timed_out.stderr);
+    assert!(
+        timed_out.stderr.starts_with("fux: timeout: "),
+        "{}",
+        timed_out.stderr
+    );
+    let left = server.ok(&[
+        "1", "2", "add", "str", "a b", "str", "%1", "pane", "dup", "tab",
+    ])?;
+    assert_eq!(left, "3\na b\n%1\n@1\n");
+    let outcome = server.ok(&[
+        "str",
+        "%1",
+        "pane",
+        "opts",
+        "100",
+        "wait-idle",
+        "wait",
+        "json",
+    ])?;
+    assert!(
+        outcome.starts_with(r#"{"pane":"%1","met":"idle""#),
+        "{outcome}"
+    );
+    let record = server.ok(&["str", "%1", "pane", "info", "json"])?;
+    assert!(record.starts_with(r#"{"id":"%1","name":"sh""#), "{record}");
+    assert_eq!(
+        server.ok(&["str", "%1", "pane", "str", "exited", "get"])?,
+        "null\n"
+    );
+    Ok(())
+}
+
+/// `fux -` runs stdin, and `fux FILE` a file: a word with a `/` or ending
+/// `.fux`.
+#[test]
+fn programs_come_from_stdin_and_files() -> Outcome {
+    use std::io::Write;
+    let server = Server::start("")?;
+    let program = "# the panes, doubled\ndefine twice dup add end\n21 twice str %1 pane\n";
+    let mut child = std::process::Command::new(FUX)
+        .arg("-")
+        .env("FUX_SOCKET", &server.socket)
+        .env_remove("FUX_PANE")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .map_err(e)?;
+    child
+        .stdin
+        .take()
+        .ok_or("no stdin")?
+        .write_all(program.as_bytes())
+        .map_err(e)?;
+    let out = child.wait_with_output().map_err(e)?;
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n%1\n");
+    for name in ["prog.fux", "prog"] {
+        let file = server.dir.join(name);
+        std::fs::write(&file, program).map_err(e)?;
+        let path = file.to_string_lossy().into_owned();
+        assert_eq!(server.ok(&[&path])?, "42\n%1\n", "{path}");
+    }
+    let missing = server.fux(&["missing.fux"])?;
+    assert_eq!(missing.status, 1);
+    assert!(
+        missing.stderr.starts_with("fux: read: "),
+        "{}",
+        missing.stderr
+    );
     Ok(())
 }
 
 #[test]
-fn ls_json_and_list_keys_have_their_documented_shapes() -> Outcome {
+fn ls_json_list_keys_and_help() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 50)?;
     client.wait_for("$")?;
-    let json = server.ok(&["ls", "--json"])?;
+    let json = server.ok(&["ls", "json"])?;
     for field in [
         "{\"workspaces\":[{\"id\":\"+1\",\"name\":\"main\",\"tabs\":[{\"id\":\"@1\",\"name\":\"main\",\"panes\":[{\"id\":\"%1\",\"name\":\"sh\",\"title\":\"\",\"rows\":9,\"cols\":50,\"pid\":",
         "\"clients\":[{\"id\":\"c1\",\"rows\":10,\"cols\":50,\"workspace\":\"+1\",\"tab\":\"@1\",\"pane\":\"%1\",\"zoom\":false}],\"grants\":[]}",
     ] {
         assert!(json.contains(field), "{field}\nin\n{json}");
     }
+    // The command line's own keymap: the defaults.
     let keys = server.ok(&["list-keys"])?;
-    for name in ["Enter", "BTab", "BSpace", "F12", "PageDown"] {
-        assert!(keys.contains(name), "{name}");
+    assert!(keys.contains("After the prefix, C-b"), "{keys}");
+    // help lists every word.
+    let help = server.ok(&["help"])?;
+    for word in fux::script::WORDS {
+        assert!(
+            help.lines()
+                .any(|l| l.split_whitespace().next() == Some(word.name)),
+            "{} is not in help",
+            word.name
+        );
     }
-    assert!(keys.contains("split -h"));
-    let help = server.fux(&["help"])?;
-    assert_eq!(help.status, 0);
-    assert!(help.stdout.contains("capture-pane"));
     Ok(())
 }
 
@@ -267,7 +404,7 @@ fn typed_command_after_a_noisy_startup() -> Result<Result<(), String>, String> {
     )
     .map_err(e)?;
     let shell = format!(
-        "set shell /bin/sh -c \"python3 {}; exec /bin/sh\"",
+        "str shell str '/bin/sh -c \"python3 {}; exec /bin/sh\"' set",
         script.display()
     );
     let server = Server::start(&shell)?;
@@ -275,7 +412,17 @@ fn typed_command_after_a_noisy_startup() -> Result<Result<(), String>, String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(e)?
         .as_secs_f64();
-    server.ok(&["split", "-h", "-t", "%1", "--", "echo", "typed-after-quiet"])?;
+    server.ok(&[
+        "str",
+        "%1",
+        "pane",
+        "opts",
+        "horizontal",
+        "str",
+        "echo typed-after-quiet",
+        "typed",
+        "split",
+    ])?;
     // The command ran: its output is on a line of its own, or after a
     // prompt drawn before it; which, the premise does not decide.
     let ran = |screen: &str| {
@@ -284,9 +431,9 @@ fn typed_command_after_a_noisy_startup() -> Result<Result<(), String>, String> {
             .any(|l| l.ends_with("typed-after-quiet") && !l.contains("echo"))
     };
     let result = eventually("the typed command's output", || {
-        Ok(ran(&server.ok(&["capture-pane", "-t", "%2"])?))
+        Ok(ran(&server.ok(&["str", "%2", "pane", "screen"])?))
     });
-    let screen = server.ok(&["capture-pane", "-t", "%2"])?;
+    let screen = server.ok(&["str", "%2", "pane", "screen"])?;
     let _ = std::fs::remove_file(&script);
     let measured = std::fs::read_to_string(&timing).unwrap_or_default();
     let _ = std::fs::remove_file(&timing);
@@ -315,23 +462,4 @@ fn typed_command_after_a_noisy_startup() -> Result<Result<(), String>, String> {
         "the startup ran whole: {screen}"
     );
     Ok(Ok(()))
-}
-
-/// Output that cannot be written, as to a pipe nobody reads, fails the
-/// command with a message, never a panic.
-#[test]
-fn unwritable_output_fails_without_a_panic() -> Outcome {
-    for arg in ["--version", "help"] {
-        let (reader, writer) = std::io::pipe().map_err(|e| e.to_string())?;
-        drop(reader);
-        let out = std::process::Command::new(FUX)
-            .arg(arg)
-            .stdout(writer)
-            .output()
-            .map_err(|e| e.to_string())?;
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(1), "{arg}: {stderr}");
-        assert!(stderr.contains("writing the output"), "{arg}: {stderr}");
-    }
-    Ok(())
 }

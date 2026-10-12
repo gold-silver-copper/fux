@@ -1,17 +1,27 @@
-//! Milestone 6: the config file, set, bind, unbind, reload, and the prefix.
+//! The config: a fuxth file each client runs as it attaches. Its `set`s go
+//! to the server, its `prefix`, `bind` and `unbind` make the client's keys;
+//! a bad one is reported.
 mod support;
 use support::*;
 
 #[test]
-fn the_config_file_sets_the_prefix_and_bindings() -> Outcome {
+fn the_config_sets_the_prefix_and_bindings() -> Outcome {
     let server = Server::start(
-        "set prefix C-a\nbind y split -v\nunbind h\nbind -g Tools g split -h -- echo from-g",
+        "str C-a prefix\n\
+         str y str 'me focused opts vertical split drop' bind\n\
+         str h unbind\n\
+         str g str 'me focused opts horizontal str \"echo from-g\" typed split drop' bind\n\
+         str Tools group\n",
     )?;
     let mut client = server.attach(24, 90)?;
     client.wait_for("$")?;
+    client.ready()?;
     // C-a y splits; C-b is an ordinary key now.
     client.keys("\x01y")?;
-    eventually("split by C-a y", || Ok(focused(&server)? == "%2"))?;
+    eventually("split by C-a y", || {
+        client.pump()?;
+        Ok(focused(&server)? == "%2")
+    })?;
     // The prefix twice sends it to the pane. Keys typed while the shell is
     // still reading its command line reach the terminal in the shell's raw
     // mode, where Enter stays a carriage return and cat never sees a line:
@@ -42,97 +52,78 @@ fn the_config_file_sets_the_prefix_and_bindings() -> Outcome {
     Ok(())
 }
 
+/// A config's `set`s reach the server as it starts; `set` from the command
+/// line changes a running one; bad values are refused.
 #[test]
-fn set_and_bind_change_a_running_server() -> Outcome {
-    let server = Server::start("")?;
-    let mut client = server.attach(24, 90)?;
-    client.wait_for("$")?;
-    server.ok(&["bind", "q", "split", "-h"])?;
-    client.keys("\x02q")?;
-    eventually("split by the new binding", || Ok(focused(&server)? == "%2"))?;
-    server.ok(&["unbind", "q"])?;
-    assert!(!server.ok(&["list-keys"])?.contains("split -h\n        q"));
-    // A new shell program applies to new panes.
-    server.ok(&["set", "shell", "/usr/bin/env PS1=custom\\$ /bin/sh"])?;
-    server.ok(&["split", "-v", "-t", "%2"])?;
-    client.wait_for("custom$")?;
+fn settings_reach_the_server() -> Outcome {
+    let server = Server::start("str history-lines 3 set")?;
     // History lines apply to new panes.
-    server.ok(&["set", "history-lines", "3"])?;
-    server.ok(&["split", "-v", "-t", "%1"])?;
-    server.ok(&[
-        "send-keys",
-        "-t",
-        "%4",
+    let pane = server.ok(&["str", "%1", "pane", "opts", "vertical", "split"])?;
+    let pane = pane.trim();
+    server.type_line(
+        pane,
         "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do echo h$i; done",
-        "Enter",
-    ])?;
+    )?;
     eventually("the loop", || {
-        Ok(server.ok(&["capture-pane", "-t", "%4"])?.contains("h15"))
+        Ok(server.ok(&["str", pane, "pane", "screen"])?.contains("h15"))
     })?;
-    let history = server.ok(&["capture-pane", "-t", "%4", "-S", "-100"])?;
+    let history = server.ok(&["str", pane, "pane", "opts", "100", "history", "capture"])?;
     let rows = history.lines().count();
-    let screen = server.ok(&["capture-pane", "-t", "%4"])?.lines().count();
+    let screen = server.ok(&["str", pane, "pane", "screen"])?.lines().count();
     assert!(rows <= screen + 3, "at most 3 lines of history: {history}");
-    // Bad values are refused and change nothing.
+    // A new shell program applies to new panes.
+    server.ok(&[
+        "str",
+        "shell",
+        "str",
+        "/usr/bin/env PS1=custom$ /bin/sh",
+        "set",
+    ])?;
+    let custom = server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
+    eventually("the custom prompt", || {
+        Ok(server
+            .ok(&["str", custom.trim(), "pane", "screen"])?
+            .contains("custom$"))
+    })?;
+    // Bad values are refused; keys are a client's, never the server's.
     for args in [
-        &["set", "prefix", "Nope"][..],
-        &["set", "buffers", "0"],
-        &["set", "clipboard", "maybe"],
-        &["set", "nonsense", "1"],
-        &["bind", "x"],
-        &["unbind", "Nope"],
+        &["str", "buffers", "0", "set"][..],
+        &["str", "clipboard", "str", "maybe", "set"],
+        &["str", "nonsense", "1", "set"],
+        &["str", "C-a", "prefix"],
+        &["str", "q", "str", "me zoom", "bind"],
     ] {
         let out = server.fux(args)?;
         assert_eq!(out.status, 1, "{args:?}: {}", out.stderr);
     }
-    // A binding's command is checked when the binding is made.
-    let out = server.fux(&["bind", "g", "no-such-command", "--flag"])?;
-    assert_eq!(
-        (out.status, out.stderr.as_str()),
-        (
-            1,
-            "bind g: unknown command \"no-such-command\"; `fux help` lists commands\n"
-        )
-    );
-    assert!(!server.ok(&["list-keys"])?.contains("no-such-command"));
-    assert!(server.ok(&["list-keys"])?.contains("after the prefix, C-b"));
-    server.ok(&["unbind-all"])?;
-    client.keys("\x02")?;
-    client.wait("an empty column", |t| t.contains("no bindings"))?;
     Ok(())
 }
 
+/// A config that fails is reported to the client attaching with it, which
+/// keeps the default keys; `check` finds its mistakes without running it.
 #[test]
-fn an_invalid_config_is_shown_to_attaching_clients_until_a_reload_fixes_it() -> Outcome {
-    let server = Server::start("bind")?;
-    let mut client = server.attach(10, 100)?;
-    client.wait("the config error", |t| {
-        t.lines()
-            .last()
-            .is_some_and(|b| b.contains("config:") && b.contains("fux.conf:2"))
-    })?;
-    // Layout commands are refused in a config file, naming the line.
-    std::fs::write(server.dir.join("fux.conf"), "set shell /bin/sh\nsplit -h\n").map_err(e)?;
-    let out = server.fux(&["reload"])?;
+fn a_bad_config_is_reported() -> Outcome {
+    let server = Server::start("")?;
+    let config = server.dir.join("config").join("fux").join("config.fux");
+    std::fs::write(&config, "str Nope prefix\n").map_err(e)?;
+    let mut terminal = Terminal::attach(&server, 10, 100, &[])?;
+    terminal.wait_for("config:")?;
+    // The defaults: C-b opens the column.
+    terminal.type_bytes(b"\x02")?;
+    terminal.wait_for("Commands")?;
+    terminal.type_bytes(b"d")?;
+    terminal.wait_exit()?;
+    // An unknown word is found before anything runs, naming its line.
+    std::fs::write(&config, "str history-lines 5 set\nfrobnicate\n").map_err(e)?;
+    let path = config.to_string_lossy().into_owned();
+    let checked = server.fux(&["str", &path, "check"])?;
+    assert_eq!(checked.status, 1);
     assert!(
-        out.stderr
-            .contains("fux.conf:2: split changes panes or layout"),
+        checked.stderr.contains("config.fux:2: frobnicate"),
         "{}",
-        out.stderr
+        checked.stderr
     );
-    std::fs::write(
-        server.dir.join("fux.conf"),
-        "set shell /bin/sh\nset prefix C-a\n",
-    )
-    .map_err(e)?;
-    server.ok(&["reload"])?;
-    client.detach()?;
-    let mut again = server.attach(10, 100)?;
-    again.wait_for("$")?;
-    assert!(!again.bar().contains("config:"), "{}", again.bar());
-    again.keys("\x01")?;
-    again.wait("the column under the new prefix", |t| {
-        t.contains("Commands")
-    })?;
+    std::fs::write(&config, "str C-a prefix\n").map_err(e)?;
+    assert!(server.ok(&["str", &path, "check"])?.ends_with(": ok\n"));
     Ok(())
 }

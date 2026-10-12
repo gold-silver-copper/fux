@@ -1,5 +1,5 @@
 //! Milestone 2: one pane. Attach, detach and reattach, resize, and
-//! `capture-pane`.
+//! `capture`.
 mod support;
 use std::os::fd::AsFd;
 use support::*;
@@ -29,14 +29,14 @@ fn a_read_only_client_watches_and_can_only_detach() -> Outcome {
     let server = Server::start("")?;
     let mut watcher = server.watch(10, 40)?;
     watcher.wait_for("$")?;
-    server.ok(&["send-keys", "-t", "%1", "--text", "echo shown", "Enter"])?;
+    server.type_line("%1", "echo shown")?;
     watcher.wait("output typed elsewhere", |t| {
         t.lines().any(|l| l == "shown")
     })?;
     watcher.keys("echo typed\r")?;
     watcher.wait("the notice", |t| t.contains("watching only"))?;
     watcher.keys("\x02c")?;
-    let screen = server.ok(&["capture-pane", "-t", "%1"])?;
+    let screen = server.ok(&["str", "%1", "pane", "opts", "capture"])?;
     assert!(
         !screen.contains("typed"),
         "its keys reached the pane: {screen}"
@@ -65,7 +65,7 @@ fn detach_and_reattach_keep_the_shell_and_its_screen() -> Outcome {
     again.keys("echo after\r")?;
     again.wait("new output", |t| t.lines().any(|l| l == "after"))?;
     // detach from the command line needs the client.
-    let out = server.fux(&["detach", "-c", "c2"])?;
+    let out = server.fux(&["str", "c2", "client", "detach"])?;
     assert_eq!(out.status, 0, "{}", out.stderr);
     assert_eq!(again.wait_exit()?, "detached");
     Ok(())
@@ -130,7 +130,7 @@ fn an_unchanged_screen_is_not_painted_again() -> Outcome {
     client.pump()?;
     let before = client.painted.len();
     // Selecting the pane already selected changes nothing on screen.
-    server.ok(&["select-pane", "-c", "c1", "-t", "%1"])?;
+    server.ok(&["str", "c1", "client", "str", "%1", "pane", "focus-pane"])?;
     std::thread::sleep(std::time::Duration::from_millis(200));
     client.pump()?;
     assert_eq!(
@@ -161,37 +161,37 @@ fn a_resize_reaches_the_program() -> Outcome {
 
 #[test]
 fn capture_pane_shows_the_screen_and_history() -> Outcome {
-    let server = Server::start("set history-lines 100")?;
+    let server = Server::start("str history-lines 100 set")?;
     let mut client = server.attach(6, 30)?;
     client.wait_for("$")?;
     client.keys("for i in 1 2 3 4 5 6 7 8; do echo line$i; done\r")?;
     client.wait("the loop", |t| t.lines().any(|l| l == "line8"))?;
-    let screen = server.ok(&["capture-pane", "-t", "%1"])?;
+    let screen = server.ok(&["str", "%1", "pane", "opts", "capture"])?;
     assert!(screen.contains("line8"), "{screen}");
     assert!(
         !screen.contains("line1\n"),
         "line1 has scrolled into history: {screen}"
     );
-    let history = server.ok(&["capture-pane", "-t", "%1", "-S", "-20"])?;
+    let history = server.ok(&["str", "%1", "pane", "opts", "20", "history", "capture"])?;
     assert!(history.contains("line1\n"), "{history}");
-    let json = server.ok(&["capture-pane", "-t", "%1", "--json"])?;
+    let json = server.ok(&["str", "%1", "pane", "opts", "capture", "json"])?;
     assert!(
         json.starts_with("{\"pane\":\"%1\",\"rows\":5,\"cols\":30,\"cursor\":["),
         "{json}"
     );
     assert!(json.contains("\"line8\""), "{json}");
-    // From inside the pane, FUX_PANE targets it without -t.
-    let inside = server.fux_env(&["capture-pane"], &[("FUX_PANE", "%1")])?;
+    // From inside the pane, FUX_PANE is `here`.
+    let inside = server.fux_env(&["here", "opts", "capture"], &[("FUX_PANE", "%1")])?;
     assert_eq!(inside.status, 0);
     assert!(inside.stdout.contains("line8"));
     Ok(())
 }
 
-/// With `set titles on`, the real client's terminal is given its pane's
+/// With `str titles str on set`, the real client's terminal is given its pane's
 /// title, its own saved first and restored on leaving; a bell rings it.
 #[test]
 fn the_real_client_gets_titles_and_bells_and_its_title_back() -> Outcome {
-    let server = Server::start("set titles on")?;
+    let server = Server::start("str titles str on set")?;
     let mut terminal = Terminal::attach(&server, 12, 50, &[])?;
     terminal.wait_for("%1 sh")?;
     terminal.type_bytes(b"printf '\\033]2;my-title\\007\\007'; echo rang''-it\r")?;
@@ -261,16 +261,15 @@ fn the_real_client_attaches_restores_its_terminal_and_reattaches() -> Outcome {
 }
 
 #[test]
-fn attaching_inside_a_pane_is_refused_unless_nested() -> Outcome {
+fn attaching_inside_a_pane_is_refused_unless_unset() -> Outcome {
     let server = Server::start("")?;
-    let out = server.fux_env(&["attach"], &[("FUX_PANE", "%1")])?;
-    assert_eq!(out.status, 1);
-    assert!(out.stderr.contains("--nested"), "{}", out.stderr);
-    // `attach` may be left out before its flags.
-    let out = server.fux_env(&["-t", "main"], &[("FUX_PANE", "%1")])?;
-    assert_eq!(out.status, 1);
-    assert!(out.stderr.contains("--nested"), "{}", out.stderr);
-    let out = server.fux_env(&["--nested"], &[("FUX_PANE", "%1")])?;
+    for words in [&[][..], &["attach"], &["str", "main", "attach-to"]] {
+        let out = server.fux_env(words, &[("FUX_PANE", "%1")])?;
+        assert_eq!(out.status, 1);
+        assert!(out.stderr.contains("unset FUX_PANE"), "{}", out.stderr);
+    }
+    // With FUX_PANE emptied it would attach, if it had a terminal.
+    let out = server.fux_env(&["attach"], &[("FUX_PANE", "")])?;
     assert_eq!(out.status, 1);
     assert!(out.stderr.contains("needs a terminal"), "{}", out.stderr);
     Ok(())
@@ -332,7 +331,7 @@ fn attach_starts_a_server_when_none_answers() -> Outcome {
     });
     let log = std::fs::read_to_string(dir.join("s").join("fux.log"));
     let _ = std::process::Command::new(FUX)
-        .args(["kill-server", "--force"])
+        .arg("force-kill-server")
         .env("FUX_SOCKET", &socket)
         .output();
     let _ = child.wait();
@@ -476,11 +475,11 @@ fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
     let reason = exit.ok_or("no Exit frame")?;
     assert!(
         reason.contains(&format!("protocol {}", fux::protocol::PROTOCOL))
-            && reason.contains("fux kill-server"),
+            && reason.contains("fux force-kill-server"),
         "{reason}"
     );
-    // kill-server works whatever the version.
-    assert_eq!(server.fux(&["kill-server"])?.status, 0);
+    // force-kill-server works whatever the version.
+    assert_eq!(server.fux(&["force-kill-server"])?.status, 0);
     Ok(())
 }
 
@@ -529,7 +528,7 @@ fn a_server_of_another_protocol_is_named_by_the_client() -> Outcome {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(1), "{stderr}");
     assert!(
-        stderr.contains("protocol 999 (fux 9.9.9)") && stderr.contains("fux kill-server"),
+        stderr.contains("protocol 999 (fux 9.9.9)") && stderr.contains("fux force-kill-server"),
         "{stderr}"
     );
     Ok(())
@@ -616,12 +615,19 @@ fn a_panes_program_has_the_pty_as_its_controlling_terminal() -> Outcome {
     // says here is what fux gave it: as controlling terminal the PTY on its
     // stdin, with the program's own group in the foreground. (Without one,
     // macOS names some other terminal, and Linux none.)
-    let server = Server::start(
-        "set shell /bin/sh -c 'echo $(tty) $(ps -o tty=,tpgid=,pgid= -p $$); echo checked; exec sleep 60'",
-    )?;
+    let server = Server::start("")?;
+    server.ok(&[
+        "str",
+        "shell",
+        "str",
+        "/bin/sh -c 'echo $(tty) $(ps -o tty=,tpgid=,pgid= -p $$); echo checked; exec sleep 60'",
+        "set",
+    ])?;
+    let pane = server.ok(&["opts", "new-workspace"])?;
+    let pane = pane.trim();
     let mut fields = Vec::new();
     eventually("the program's report", || {
-        let screen = server.ok(&["capture-pane", "-t", "%1"])?;
+        let screen = server.ok(&["str", pane, "pane", "opts", "capture"])?;
         let mut lines = screen.lines().skip_while(|l| l.trim().is_empty());
         fields = lines
             .next()
@@ -695,20 +701,25 @@ fn a_panes_shell_has_the_pty_as_its_terminal_and_job_control() -> Outcome {
 fn a_program_that_cannot_start_is_reported_as_before() -> Outcome {
     let server = Server::start("")?;
     let missing = server.dir.join("no-such-shell");
-    let not_executable = server.dir.join("fux.conf");
+    let not_executable = server.dir.join("server.log");
     for (program, error) in [
         (&missing, "No such file or directory (os error 2)"),
         (&not_executable, "Permission denied (os error 13)"),
     ] {
         let program = program.to_string_lossy();
-        server.ok(&["set", "shell", &program])?;
-        let out = server.fux(&["new-workspace"])?;
+        server.ok(&["str", "shell", "str", &program, "set"])?;
+        let out = server.fux(&["opts", "new-workspace"])?;
         assert_eq!(out.status, 1);
-        assert_eq!(out.stderr, format!("starting {program}: {error}\n"));
+        assert!(
+            out.stderr
+                .ends_with(&format!(": starting {program}: {error}\n")),
+            "{}",
+            out.stderr
+        );
     }
     // The server is unharmed, and a good shell starts again.
-    server.ok(&["set", "shell", "/bin/sh"])?;
-    server.ok(&["new-workspace"])?;
+    server.ok(&["str", "shell", "str", "/bin/sh", "set"])?;
+    server.ok(&["opts", "new-workspace"])?;
     Ok(())
 }
 
@@ -757,7 +768,7 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
         Ok(out.status.success() && !String::from_utf8_lossy(&out.stdout).contains("client c1"))
     });
     let _ = std::process::Command::new(FUX)
-        .args(["kill-server", "--force"])
+        .arg("force-kill-server")
         .env("FUX_SOCKET", &socket)
         .output();
     drop(terminal);
@@ -971,7 +982,7 @@ fn attach_with(
 
 /// A client that sends its terminal with its `Attach` is told the server
 /// took it, first; then the server writes the paints to the terminal
-/// itself, and reads the keys from it: none come in frames.
+/// itself. The client still reads its keys and sends them as actions.
 #[test]
 fn the_server_takes_a_terminal_sent_with_attach() -> Outcome {
     let server = Server::start("")?;
@@ -998,14 +1009,44 @@ fn the_server_takes_a_terminal_sent_with_attach() -> Outcome {
     })?;
     let text = String::from_utf8_lossy(&seen).into_owned();
     assert!(text.contains("\x1b[?2026h"), "a paint: {text:?}");
-    // Keys typed at the terminal reach the shell, and its echo comes back.
-    fuxix::io::write(&master, b"echo taken-ok\r").map_err(e)?;
+    // Keys the client sends reach the shell, and its echo comes back on
+    // the terminal.
+    let enter = fux::keys::Keystroke {
+        press: fux::keymap::key("Enter")?,
+        kitty: None,
+    };
+    for act in [
+        fux::act::Act::Paste("echo taken-ok".to_owned()),
+        fux::act::Act::Key(enter),
+    ] {
+        let frame = fux::protocol::AttachedFrame::Act(Box::new(act));
+        let bytes = fux::protocol::Frame::encode(&frame).map_err(e)?;
+        std::io::Write::write_all(&mut &stream, &bytes).map_err(e)?;
+    }
+    // As the terminal shows it, however the paints that drew it were cut:
+    // the line typed, then what it printed.
+    let mut screen = fux_vt::Parser::new(fux_vt::Size::new(8, 30).map_err(e)?, 0).map_err(e)?;
+    let shows = |screen: &fux_vt::Parser| {
+        let window = screen.screen().window();
+        (0..window.rows())
+            .filter_map(|y| window.row(y))
+            .filter(|row| {
+                row.cells()
+                    .map(|c| c.contents())
+                    .collect::<String>()
+                    .contains("taken-ok")
+            })
+            .count()
+    };
     eventually("the echo on the terminal", || {
         if let Ok(n) = fuxix::io::read(&master, &mut buffer) {
             seen.extend_from_slice(buffer.get(..n).unwrap_or_default());
         }
-        Ok(String::from_utf8_lossy(&seen).matches("taken-ok").count() >= 2)
-    })?;
+        screen.process(&seen).map_err(e)?;
+        seen.clear();
+        Ok(shows(&screen) >= 2)
+    })
+    .map_err(|error| format!("{error}: {:?}", String::from_utf8_lossy(&seen)))?;
     drop(stream);
     Ok(())
 }

@@ -1,128 +1,11 @@
 //! One attached client's own view of the shared state.
-use crate::command::{AnyRef, Command};
 use crate::copy::Copy;
-use crate::decode::Decoder;
-use crate::id::{ClientId, WsId};
-use crate::overlay::{Column, Repeat};
+use crate::id::ClientId;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notice {
     pub text: String,
     pub error: bool,
-}
-
-/// One row of a chooser or an action menu: what it shows and the command it
-/// runs, with every target given, so it acts on the item it was built for
-/// and never on another.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Item {
-    pub label: String,
-    pub command: Command,
-    /// Marked as the current one in a chooser.
-    pub current: bool,
-    /// What `r` renames and `x` closes: a chooser's items each have one,
-    /// a menu's none.
-    pub subject: Option<AnyRef<WsId>>,
-}
-
-/// Items to choose from, one of them chosen: there is always at least one,
-/// and the choice is always one of them.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Choice<T> {
-    before: Vec<T>,
-    chosen: T,
-    /// The items after the chosen one, the last first.
-    after: Vec<T>,
-}
-
-impl<T> Choice<T> {
-    /// `first` and the `rest`, `first` chosen.
-    pub fn of(first: T, mut rest: Vec<T>) -> Choice<T> {
-        rest.reverse();
-        Choice {
-            before: Vec::new(),
-            chosen: first,
-            after: rest,
-        }
-    }
-
-    /// `items`, the first chosen; none if there are none.
-    pub fn new(items: Vec<T>) -> Option<Choice<T>> {
-        let mut items = items.into_iter();
-        Some(Choice::of(items.next()?, items.collect()))
-    }
-
-    pub fn chosen(&self) -> &T {
-        &self.chosen
-    }
-
-    /// Where the chosen item is, counted from the first.
-    pub fn index(&self) -> usize {
-        self.before.len()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &T> + Clone {
-        let chosen = std::iter::once(&self.chosen);
-        self.before
-            .iter()
-            .chain(chosen)
-            .chain(self.after.iter().rev())
-    }
-
-    /// Chooses the item `n` before, or the first.
-    pub fn up(&mut self, n: usize) {
-        for _ in 0..n {
-            let Some(item) = self.before.pop() else { break };
-            self.after.push(std::mem::replace(&mut self.chosen, item));
-        }
-    }
-
-    /// Chooses the item `n` after, or the last.
-    pub fn down(&mut self, n: usize) {
-        for _ in 0..n {
-            let Some(item) = self.after.pop() else { break };
-            self.before.push(std::mem::replace(&mut self.chosen, item));
-        }
-    }
-
-    /// Moves the choice for a key that moves it, `page` items for a page,
-    /// and says whether `key` was one.
-    pub fn moved(&mut self, key: Option<crate::keys::Key>, page: usize) -> bool {
-        use crate::keys::{Direction, Key};
-        match key {
-            Some(Key::Arrow(Direction::Up)) => self.up(1),
-            Some(Key::Arrow(Direction::Down)) => self.down(1),
-            Some(Key::PageUp) => self.up(page),
-            Some(Key::PageDown) => self.down(page),
-            Some(Key::Home) => self.up(usize::MAX),
-            Some(Key::End) => self.down(usize::MAX),
-            _ => return false,
-        }
-        true
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct List {
-    pub title: String,
-    pub items: Choice<Item>,
-    /// What the list was opened for; if it goes, the list closes.
-    pub about: Option<AnyRef<WsId>>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PromptFor {
-    /// The command prompt: any fux command.
-    Command,
-    /// A new name for this target.
-    Rename(AnyRef<WsId>),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Prompt {
-    pub title: String,
-    pub purpose: PromptFor,
-    pub line: Line,
 }
 
 /// The most bytes a prompt's line holds.
@@ -202,22 +85,36 @@ impl<const MAX: usize> Line<MAX> {
     pub fn end(&mut self) {
         self.before.push_str(&std::mem::take(&mut self.after));
     }
+
+    /// An edit of the line: typed text (one line of it, nothing that
+    /// controls), or a move or a deletion; Enter and Esc are the caller's.
+    pub fn edit(&mut self, act: &crate::act::LineAct) {
+        use crate::act::LineAct;
+        match act {
+            LineAct::Insert(text) => {
+                let typed: String = (text.chars())
+                    .take_while(|c| *c != '\n' && *c != '\r')
+                    .filter(|c| !c.is_control())
+                    .collect();
+                self.insert(&typed);
+            }
+            LineAct::Backspace => self.backspace(),
+            LineAct::Delete => self.delete(),
+            LineAct::Left => self.left(),
+            LineAct::Right => self.right(),
+            LineAct::Home => self.home(),
+            LineAct::End => self.end(),
+            LineAct::Submit | LineAct::Cancel => {}
+        }
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Confirm {
-    pub question: String,
-    pub command: Command,
-    pub about: AnyRef<WsId>,
-}
-
+/// What a view shows over its panes: nothing, one of its client's
+/// screens (the client owns it, and the server draws it), or copy mode,
+/// whose cursor the server keeps.
 pub enum Mode {
     Normal,
-    Column(Column),
-    Repeat(Repeat),
-    List(List),
-    Prompt(Prompt),
-    Confirm(Confirm),
+    Panel(crate::act::Panel),
     Copy(Box<Copy>),
 }
 
@@ -239,7 +136,6 @@ pub struct View {
     pub zoom: bool,
     pub mode: Mode,
     pub notice: Option<Notice>,
-    pub decoder: Decoder,
     /// What the client's terminal said of itself (`outer`).
     pub terminal: crate::outer::Terminal,
     /// Something this view shows may have changed since its last paint.
@@ -249,12 +145,9 @@ pub struct View {
     /// The title its terminal was last given, with `titles` on; `None`
     /// while it shows its own.
     pub title: Option<String>,
-    /// It only watches (`attach --read-only`): its keys and clicks do
-    /// nothing but detach it.
+    /// It only watches (`watch`): its keys and clicks do nothing but
+    /// detach it.
     pub read_only: bool,
-    /// A watching client typed the prefix: its next key detaches, if that
-    /// is the key bound to detach.
-    pub prefixed: bool,
     /// Its terminal's environment, of which panes started from its keys
     /// take what `update-environment` names.
     pub env: Vec<(String, String)>,
@@ -270,13 +163,11 @@ impl View {
             zoom: false,
             mode: Mode::Normal,
             notice: None,
-            decoder: Decoder::default(),
             terminal: crate::outer::Terminal::default(),
             dirty: true,
             last_bell: None,
             title: None,
             read_only: false,
-            prefixed: false,
             env: Vec::new(),
         }
     }

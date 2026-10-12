@@ -5,6 +5,7 @@
 /// fux's sources, read when the walk is built.
 const SOURCES: &[&str] = &[
     include_str!("../../fux-vt/src/bytes.rs"),
+    include_str!("../../src/act.rs"),
     include_str!("../../src/client.rs"),
     include_str!("../../src/command.rs"),
     include_str!("../../src/config.rs"),
@@ -13,6 +14,7 @@ const SOURCES: &[&str] = &[
     include_str!("../../fux-vt/src/keys/encode.rs"),
     include_str!("../../src/input.rs"),
     include_str!("../../src/json.rs"),
+    include_str!("../../src/keymap.rs"),
     include_str!("../../fux-vt/src/keys.rs"),
     include_str!("../../src/layout.rs"),
     include_str!("../../src/lib.rs"),
@@ -21,11 +23,18 @@ const SOURCES: &[&str] = &[
     include_str!("../../src/process.rs"),
     include_str!("../../src/protocol.rs"),
     include_str!("../../src/render.rs"),
+    include_str!("../../src/script/mod.rs"),
+    include_str!("../../src/script/words.rs"),
     include_str!("../../src/server.rs"),
     include_str!("../../src/session.rs"),
     include_str!("../../src/socket.rs"),
     include_str!("../../src/view.rs"),
+    include_str!("../../src/wait.rs"),
     include_str!("../../src/words.rs"),
+    include_str!("../../fuxth/src/compile.rs"),
+    include_str!("../../fuxth/src/error.rs"),
+    include_str!("../../fuxth/src/machine.rs"),
+    include_str!("../../fuxth/src/token.rs"),
 ];
 
 /// A template with less fixed text than this matches too much to mean
@@ -214,7 +223,8 @@ mod tests {
             "nothing selected: v, s or x starts a selection",
             "the pane's program is not reading its input; nothing more is queued until it does",
             "C-b t q is not bound",
-            "config: fux.conf:2: bind: \"C-Left\" is not a letter: keys after the prefix are a–z, without modifiers",
+            "config: bad_binding: /w/config/fux/config.fux:3: bind: unknown_word: binding:1: nonsense: no such word",
+            "unknown_word: prompt:1: nonsense: no such word",
             "the pane's program is not reading its in…",
         ] {
             assert!(notices.known(known), "{known}");

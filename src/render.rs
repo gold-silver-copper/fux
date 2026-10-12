@@ -4,12 +4,13 @@
 //! echo, when it is all that changed, is written as a terminal shows it
 //! typed, without the synchronized envelope (`echo`). Every paint leaves
 //! the terminal's attributes at their default, which the next one assumes.
+use crate::act::{List, Panel};
 use crate::id::ClientId;
 use crate::id::PaneId;
 use crate::layout::{Axis, Placement, Rect};
 use crate::overlay;
 use crate::session::Session;
-use crate::view::{Choice, List, Mode, View};
+use crate::view::{Mode, View};
 use fux_vt::{Attributes, CellRef, Cells, Color, Rgb, Row, UnderlineStyle};
 use std::borrow::Cow;
 use std::io::Write;
@@ -719,31 +720,11 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
     };
     put_panes(grid, session, view, placement, focus, copy);
     if tab.is_some_and(|t| t.root().is_none()) && area.h() > 0 {
-        // The keys bound to these commands, whatever they are; the command
-        // itself if none is.
-        let key_for = |argv: &[&str]| {
-            session
-                .config
-                .bindings
-                .all()
-                .into_iter()
-                .find(|(_, b, _)| b.command == argv)
-                .map_or_else(|| argv.join(" "), |(keys, ..)| session.keys_named(&keys))
-        };
-        let hint = format!(
-            "empty tab: {} splits it, {} closes it",
-            key_for(&["split", "-h"]),
-            key_for(&["confirm-close", "tab"])
-        );
+        // Its keys are the client's: the server names what to do.
+        let hint = "empty tab: split it or close it";
         let y = area.h() / 2;
-        let x = area.w().saturating_sub(width(&hint)) / 2;
-        grid.text(
-            y,
-            x,
-            &hint,
-            style(Color::Idx(244), Color::Default),
-            area.w(),
-        );
+        let x = area.w().saturating_sub(width(hint)) / 2;
+        grid.text(y, x, hint, style(Color::Idx(244), Color::Default), area.w());
     }
     // The cursor: copy mode's in its pane, else the focused pane's, but only
     // in normal mode: none under an overlay, nor in a repeat mode, whose
@@ -791,27 +772,32 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
     }
     bar(grid, session, view, copy);
     match &view.mode {
-        Mode::Column(c) => column(grid, session, view, c),
-        Mode::List(list) => list_panel(grid, session, view, list),
-        Mode::Prompt(prompt) => {
+        Mode::Panel(Panel::Column(c)) => column(grid, view, c),
+        Mode::Panel(Panel::List(list)) => list_panel(grid, view, list),
+        Mode::Panel(Panel::Prompt {
+            title,
+            before,
+            after,
+            ..
+        }) => {
             // The panel's border takes a cell each side.
             let room = view.cols.saturating_sub(2);
             let lines: [Line<'_>; 3] = [
-                (prompt.title.as_str().into(), panel().with_bold(true)),
-                (prompt_line(&prompt.line, room).into(), panel()),
+                (title.as_str().into(), panel().with_bold(true)),
+                (prompt_line(before, after, room).into(), panel()),
                 ("Enter accepts · Esc cancels".into(), panel().with_dim(true)),
             ];
             surface(grid, view, &lines);
         }
-        Mode::Confirm(confirm) => {
+        Mode::Panel(Panel::Confirm { question, .. }) => {
             let lines: [Line<'_>; 2] = [
-                (confirm.question.as_str().into(), panel().with_bold(true)),
+                (question.as_str().into(), panel().with_bold(true)),
                 ("y confirms · n or Esc cancels".into(), panel()),
             ];
             surface(grid, view, &lines);
         }
         // A repeat mode shows in the bar, leaving the layout in view.
-        Mode::Normal | Mode::Copy(_) | Mode::Repeat(_) => {}
+        Mode::Normal | Mode::Copy(_) | Mode::Panel(Panel::Repeat(_)) => {}
     }
 }
 
@@ -895,13 +881,13 @@ fn put_panes(
 /// A prompt's text with its cursor bar, in at most `room` cells: when it is
 /// wider, the line scrolls so the bar shows, with a few cells of what
 /// follows it, and an ellipsis marks each side cut off.
-fn prompt_line<const MAX: usize>(text: &crate::view::Line<MAX>, room: u16) -> String {
-    let line = format!("{}▏{}", text.before(), text.after());
+fn prompt_line(before: &str, after: &str, room: u16) -> String {
+    let line = format!("{before}▏{after}");
     if width(&line) <= room {
         return line;
     }
     let chars: Vec<char> = line.chars().filter(|c| !c.is_control()).collect();
-    let bar = text.before().chars().filter(|c| !c.is_control()).count();
+    let bar = before.chars().filter(|c| !c.is_control()).count();
     // An ellipsis each side, at most.
     let inner = room.saturating_sub(2);
     let ahead = inner / 4;
@@ -1068,14 +1054,14 @@ fn bar(
         ))
     } else if let Some(copy) = &copy_bar {
         Some((copy.position.as_str().into(), base))
-    } else if let Mode::Column(column) = &view.mode {
+    } else if let Mode::Panel(Panel::Column(column)) = &view.mode {
         Some((
-            format!("{} …", session.keys_named(&column.path)).into(),
+            format!("{} …", column.keys).into(),
             style(Color::Idx(0), Color::Idx(11)),
         ))
-    } else if let Mode::Repeat(repeat) = &view.mode {
+    } else if let Mode::Panel(Panel::Repeat(bar)) = &view.mode {
         Some((
-            repeat.bar.as_str().into(),
+            bar.as_str().into(),
             style(Color::Idx(0), Color::Idx(11)).with_bold(true),
         ))
     } else {
@@ -1103,9 +1089,9 @@ fn bar(
         let badge = style(Color::Idx(0), Color::Idx(11)).with_bold(true);
         let text = match &copy.badge {
             crate::copy::Badge::Label(label) => fit(&format!(" {label} "), left_limit).into_owned(),
-            crate::copy::Badge::Typing(prompt, line) => {
+            crate::copy::Badge::Typing(prompt, before, after) => {
                 let room = left_limit.saturating_sub(width(prompt).saturating_add(2));
-                format!(" {prompt}{} ", prompt_line(line, room))
+                format!(" {prompt}{} ", prompt_line(before, after, room))
             }
         };
         x = grid.text(y, x, &text, badge, left_limit);
@@ -1207,20 +1193,19 @@ fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
 
 /// A list to choose from or run: the entries that fit, the selected one
 /// highlighted and, but in a chooser, those that cannot run now dimmed.
-fn list_panel(grid: &mut Grid, session: &Session, view: &View, list: &List) {
+fn list_panel(grid: &mut Grid, view: &View, list: &List) {
     let mut lines: Vec<Line<'_>> = vec![(list.title.as_str().into(), panel().with_bold(true))];
     let capacity = overlay::list_room(view.rows);
-    let (len, chosen) = (list.items.iter().count(), list.items.index());
+    let (len, chosen) = (list.items.len(), list.selected);
     let start = overlay::window_start(len, chosen, capacity);
     let shown = list.items.iter().enumerate().skip(start).take(capacity);
     let shown = shown.map(|(i, item)| {
-        let dim = item.subject.is_none() && session.unavailable(&item.command, view.id).is_some();
-        let marker = if item.current { "*" } else { " " };
-        let attrs = panel().with_inverse(i == chosen).with_dim(dim);
-        (format!("{marker} {}", item.label).into(), attrs)
+        let marker = if list.current == Some(i) { "*" } else { " " };
+        let attrs = panel().with_inverse(i == chosen);
+        (format!("{marker} {item}").into(), attrs)
     });
     windowed(&mut lines, len, start, capacity, shown);
-    let help = if list.items.chosen().subject.is_some() {
+    let help = if list.chooser {
         "Enter selects · r renames · x closes · Esc"
     } else {
         "Enter runs · Esc cancels"
@@ -1231,30 +1216,27 @@ fn list_panel(grid: &mut Grid, session: &Session, view: &View, list: &List) {
 
 /// The command column: the bindings and layers of its layer, grouped, the
 /// selected one highlighted and those that cannot run now dimmed.
-fn column(grid: &mut Grid, session: &Session, view: &View, column: &overlay::Column) {
-    let all = column.entries.iter().flat_map(Choice::iter);
-    let chosen = column.entries.as_ref().map(Choice::index);
-    // Each entry's key as it is typed, written out once.
-    let keys: Vec<String> = all.clone().map(|e| e.key.to_string()).collect();
-    let key_width = keys.iter().map(|k| width(k)).max().unwrap_or(0);
+fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
+    let key_width = column
+        .entries
+        .iter()
+        .map(|e| width(&e.key))
+        .max()
+        .unwrap_or(0);
     let mut entries: Vec<Line<'_>> = Vec::new();
     let mut heading = None;
     let mut selected_row = 0usize;
-    for (index, (entry, key)) in all.zip(&keys).enumerate() {
+    for (index, entry) in column.entries.iter().enumerate() {
         let group = (entry.root, entry.group.as_str());
         if heading != Some(group) {
             entries.push((group.1.into(), panel().with_bold(true)));
             heading = Some(group);
         }
-        // Whether it cannot run now; a layer's entry opens it.
-        let dim = entry
-            .command
-            .as_ref()
-            .is_some_and(|command| session.unavailable(command, view.id).is_some());
-        let more = if entry.command.is_none() { "…" } else { "" };
+        let more = if entry.layer { "…" } else { "" };
+        let key = &entry.key;
         let pad = usize::from(key_width.saturating_sub(width(key)));
-        let mut attrs = panel().with_dim(dim);
-        if Some(index) == chosen {
+        let mut attrs = panel();
+        if index == column.selected {
             attrs = attrs.with_inverse(true);
             selected_row = entries.len();
         }
@@ -1270,7 +1252,7 @@ fn column(grid: &mut Grid, session: &Session, view: &View, column: &overlay::Col
     let total = entries.len();
     let shown = entries.into_iter().skip(start).take(body_room);
     windowed(&mut lines, total, start, body_room, shown);
-    if column.entries.is_none() {
+    if column.entries.is_empty() {
         lines.push(("no bindings".into(), panel().with_dim(true)));
     }
     surface(grid, view, &lines);
@@ -1818,7 +1800,7 @@ mod tests {
         for case in 0..30 {
             let (mut s, c) = crate::session::testing::attached(10, 40)?;
             if r.below(3) == 0 {
-                crate::session::testing::run(&mut s, "split -h -t %1")?;
+                crate::session::testing::run(&mut s, "str %1 pane opts horizontal split")?;
             }
             let mut fast = terminal(10, 40)?;
             let mut whole = terminal(10, 40)?;
@@ -1884,13 +1866,13 @@ mod tests {
             b"\x1b[2;4r\x1b[4H\n\n\x1b[r",
         ];
         let commands = [
-            "split -h -t %1",
-            "split -v -t %1",
-            "zoom -c c1",
-            "copy-mode -c c1",
-            "command-column -c c1",
-            "select-pane -c c1 --next",
-            "kill-pane -t %2",
+            "str %1 pane opts horizontal split",
+            "str %1 pane opts vertical split",
+            "str c1 client zoom",
+            "str c1 client copy-mode",
+            "str c1 client command-prompt",
+            "str c1 client str next focus",
+            "str %2 pane kill",
         ];
         let mut r = Rng(0x00c0_ffee);
         for case in 0..40 {
@@ -1904,14 +1886,15 @@ mod tests {
                         let line = commands.get(r.below(commands.len())).copied().unwrap_or("");
                         let _ = crate::session::testing::run(&mut s, line);
                     }
-                    1 => s.input(c, b"\x1b"),
+                    // The column opens, or what is open closes.
+                    1 => s.input(c, if r.below(2) == 0 { b"\x02" } else { b"\x1b" }),
                     2 => {
                         let rows = u16::try_from(4 + r.below(12)).unwrap_or(8);
                         let cols = u16::try_from(10 + r.below(50)).unwrap_or(40);
                         s.resize(c, rows, cols);
                     }
                     3 => {
-                        crate::session::testing::run(&mut s, "rename -t @1 n")?;
+                        crate::session::testing::run(&mut s, "str @1 tab str n rename")?;
                     }
                     _ => {
                         let panes: Vec<PaneId> = s.panes.keys().copied().collect();
@@ -2067,7 +2050,7 @@ mod tests {
         let (mut s, c) = crate::session::testing::attached(12, 50)?;
         s.output(PaneId::of(1), b"first screen\r\n\x1b[5 q");
         let before = compose(&s, c).ok_or("a screen")?;
-        crate::session::testing::run(&mut s, "split -h -t %1")?;
+        crate::session::testing::run(&mut s, "str %1 pane opts horizontal split")?;
         // The focused pane hides its cursor, and a smaller client makes the
         // panes smaller than their places: compose leaves cells untouched.
         s.output(PaneId::of(2), "界 second\r\n\x1b[?25l".as_bytes());
@@ -2196,15 +2179,16 @@ mod tests {
         let end = text.chars().count();
         for (left, starts, ends) in [(0, "…", "TAIL▏"), (end, "▏spl", "…"), (20, "…", "…")]
         {
-            let shown = prompt_line(&line(text, left), 12);
+            let line = line(text, left);
+            let shown = prompt_line(line.before(), line.after(), 12);
             assert!(width(&shown) <= 12, "{shown:?} fits");
             assert!(shown.contains('▏'), "{shown:?} shows the cursor");
             assert!(shown.starts_with(starts), "{shown:?} starts {starts:?}");
             assert!(shown.ends_with(ends), "{shown:?} ends {ends:?}");
         }
         // Wide chars count two cells; short text is as it was.
-        assert!(width(&prompt_line(&line("界界界界界界界界", 0), 7)) <= 7);
-        assert_eq!(prompt_line(&line("ls", 0), 12), "ls▏");
+        assert!(width(&prompt_line("界界界界界界界界", "", 7)) <= 7);
+        assert_eq!(prompt_line("ls", "", 12), "ls▏");
     }
 
     fn grid_lines(g: &Grid) -> Vec<String> {
@@ -2400,7 +2384,7 @@ mod tests {
     #[test]
     fn a_panes_palette_is_painted_and_stays_the_panes() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 41)?;
-        crate::session::testing::run(&mut s, "split -h -t %1")?;
+        crate::session::testing::run(&mut s, "str %1 pane opts horizontal split")?;
         let set = b"\x1b]4;1;#ff0000\x1b\\\x1b]10;rgb:11/22/33;#000080\x07";
         s.output(PaneId::of(1), &[&set[..], b"\x1b[31mR\x1b[39mD"].concat());
         s.output(PaneId::of(2), b"\x1b[31mR\x1b[39mD");
@@ -2474,7 +2458,7 @@ mod tests {
     #[test]
     fn hyperlinks_are_painted_with_their_panes_ids() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 41)?;
-        crate::session::testing::run(&mut s, "split -h -t %1")?;
+        crate::session::testing::run(&mut s, "str %1 pane opts horizontal split")?;
         let linked = b"a\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\b";
         s.output(PaneId::of(1), linked);
         s.output(PaneId::of(2), linked);

@@ -9,11 +9,15 @@
 //! or one `Command`; by a client, `ServerFrame`s. Its bytes are lent from
 //! the decoder. Any other kind, or a size of zero, does not decode.
 
+use crate::act::Act;
 use crate::bytes::ByteQueue;
+use crate::command::{AnyRef, Command};
+use crate::id::{ClientId, WsId};
+use crate::wire::Wire;
 use std::num::NonZeroU16;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 4;
+pub const PROTOCOL: u32 = 5;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -23,7 +27,7 @@ pub const MAX_PAYLOAD: usize = MAX_FRAME - 1;
 mod kind {
     pub const HELLO: u8 = 1;
     pub const ATTACH: u8 = 2;
-    pub const INPUT: u8 = 3;
+    pub const ACT: u8 = 3;
     pub const RESIZE: u8 = 4;
     pub const DETACH: u8 = 5;
     pub const COMMAND: u8 = 6;
@@ -33,6 +37,12 @@ mod kind {
     pub const STDERR: u8 = 10;
     pub const DONE: u8 = 11;
     pub const TERMINAL: u8 = 12;
+    pub const REPLY: u8 = 13;
+    pub const ENDED: u8 = 14;
+    pub const RUN: u8 = 15;
+    pub const KEYS: u8 = 16;
+    pub const PART: u8 = 17;
+    pub const PARTS_END: u8 = 18;
 }
 
 /// Why bytes are not a frame, or a frame cannot be sent.
@@ -61,6 +71,8 @@ pub enum Error {
     UnknownRole(u8),
     /// A kind unknown, or not one the frames decoded here may have.
     UnexpectedKind(u8),
+    /// A request or an action that does not read.
+    Wire(crate::wire::Error),
 }
 
 impl std::fmt::Display for Error {
@@ -78,6 +90,7 @@ impl std::fmt::Display for Error {
             Error::ZeroSize => f.write_str("a frame's size has no rows or no columns"),
             Error::UnknownRole(role) => write!(f, "unknown client role {role}"),
             Error::UnexpectedKind(kind) => write!(f, "unexpected frame kind {kind}"),
+            Error::Wire(error) => error.fmt(f),
         }
     }
 }
@@ -111,7 +124,7 @@ impl std::fmt::Display for Mismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the server speaks protocol {} (fux {}); restart it: `fux kill-server --force` stops it",
+            "the server speaks protocol {} (fux {}); restart it: `fux force-kill-server` stops it",
             self.protocol, self.version
         )
     }
@@ -261,17 +274,20 @@ impl<'a> Frame<'a> for Attach<'a> {
 }
 
 /// An attached client's frames.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AttachedFrame<'a> {
-    Input(&'a [u8]),
+#[derive(Clone, Debug, PartialEq)]
+pub enum AttachedFrame {
+    Act(Box<Act>),
     Resize { rows: NonZeroU16, cols: NonZeroU16 },
     Detach,
 }
 
-impl<'a> Frame<'a> for AttachedFrame<'a> {
-    fn decode(kind: u8, payload: &'a [u8]) -> Result<Self, Error> {
+impl Frame<'_> for AttachedFrame {
+    fn decode(kind: u8, payload: &[u8]) -> Result<Self, Error> {
         whole(payload, |r| match kind {
-            kind::INPUT => Ok(AttachedFrame::Input(r.rest())),
+            kind::ACT => crate::wire::Reader::new(r.rest())
+                .whole::<Act>()
+                .map(|act| AttachedFrame::Act(Box::new(act)))
+                .map_err(Error::Wire),
             kind::RESIZE => Ok(AttachedFrame::Resize {
                 rows: r.size()?,
                 cols: r.size()?,
@@ -283,9 +299,9 @@ impl<'a> Frame<'a> for AttachedFrame<'a> {
 
     fn write(&self, out: &mut Vec<u8>) -> u8 {
         match self {
-            AttachedFrame::Input(bytes) => {
-                out.extend_from_slice(bytes);
-                kind::INPUT
+            AttachedFrame::Act(act) => {
+                crate::wire::Wire::put(&**act, out);
+                kind::ACT
             }
             AttachedFrame::Resize { rows, cols } => {
                 put_size(out, *rows, *cols);
@@ -296,50 +312,143 @@ impl<'a> Frame<'a> for AttachedFrame<'a> {
     }
 }
 
-/// A command client's one frame after its `Hello`: the command line, and
-/// where it runs: its directory, its pane (`FUX_PANE`) and the server that
-/// pane is of (`FUX_SERVER`), and its environment, which panes it starts
-/// take what `update-environment` names from.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Command {
-    pub argv: Vec<String>,
+/// Where a request comes from: the caller's directory, its pane
+/// (`FUX_PANE`) and the server that pane is of (`FUX_SERVER`), its
+/// environment, which panes it starts take what `update-environment` names
+/// from, the client whose binding or prompt runs it, and whether it brings
+/// back a saved session.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Context {
     pub cwd: String,
     pub pane: Option<String>,
     pub server: Option<String>,
     pub env: Vec<(String, String)>,
+    pub client: Option<ClientId>,
+    pub restoring: bool,
 }
 
-impl Frame<'_> for Command {
+/// A command client's frames after its `Hello`: requests, each answered
+/// before the next.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Request {
+    pub command: Command,
+    pub context: Context,
+}
+
+impl crate::wire::Wire for Context {
+    fn put(&self, out: &mut Vec<u8>) {
+        self.cwd.put(out);
+        self.pane.put(out);
+        self.server.put(out);
+        self.env.put(out);
+        self.client.put(out);
+        self.restoring.put(out);
+    }
+    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
+        Ok(Context {
+            cwd: String::get(r)?,
+            pane: Option::get(r)?,
+            server: Option::get(r)?,
+            env: Vec::get(r)?,
+            client: Option::get(r)?,
+            restoring: bool::get(r)?,
+        })
+    }
+}
+
+impl Frame<'_> for Request {
     fn decode(kind: u8, payload: &[u8]) -> Result<Self, Error> {
         expect(kind, kind::COMMAND)?;
-        whole(payload, |r| {
-            let count = r.u32()?;
-            // Each argument takes at least its 4-byte length.
-            if count as usize > payload.len() / 4 {
-                return Err(Error::BadCount);
-            }
-            Ok(Command {
-                argv: (0..count)
-                    .map(|_| r.str().map(str::to_owned))
-                    .collect::<Result<_, _>>()?,
-                cwd: r.str()?.to_owned(),
-                pane: r.option()?.map(str::to_owned),
-                server: r.option()?.map(str::to_owned),
-                env: r.pairs(payload.len())?,
+        let mut r = crate::wire::Reader::new(payload);
+        let request = (|| -> Result<Request, crate::wire::Error> {
+            Ok(Request {
+                command: crate::wire::Wire::get(&mut r)?,
+                context: crate::wire::Wire::get(&mut r)?,
             })
-        })
+        })();
+        request.map_err(Error::Wire)
     }
 
     fn write(&self, out: &mut Vec<u8>) -> u8 {
-        put_len(out, self.argv.len());
-        for arg in &self.argv {
-            put_bytes(out, arg.as_bytes());
-        }
-        put_bytes(out, self.cwd.as_bytes());
-        put_option(out, self.pane.as_deref());
-        put_option(out, self.server.as_deref());
-        put_pairs(out, &self.env);
+        self.command.put(out);
+        self.context.put(out);
         kind::COMMAND
+    }
+}
+
+/// A field's value, as its JSON has it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Scalar {
+    Int(i64),
+    Bool(bool),
+    Str(String),
+    Null,
+}
+
+/// The server's answer to a request: its status; why it failed, if it did,
+/// with a stable code; what it says as text, and as JSON where it has a
+/// JSON form; the panes, tabs or workspaces it made or found; a field's
+/// value.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reply {
+    pub status: u8,
+    pub code: Option<String>,
+    pub message: String,
+    pub text: String,
+    pub json: String,
+    pub ids: Vec<AnyRef<WsId>>,
+    pub value: Option<Scalar>,
+}
+
+impl crate::wire::Wire for Scalar {
+    fn put(&self, out: &mut Vec<u8>) {
+        match self {
+            Scalar::Int(n) => {
+                out.push(0);
+                n.put(out);
+            }
+            Scalar::Bool(b) => {
+                out.push(1);
+                b.put(out);
+            }
+            Scalar::Str(s) => {
+                out.push(2);
+                s.put(out);
+            }
+            Scalar::Null => out.push(3),
+        }
+    }
+    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
+        Ok(match u8::get(r)? {
+            0 => Scalar::Int(i64::get(r)?),
+            1 => Scalar::Bool(bool::get(r)?),
+            2 => Scalar::Str(String::get(r)?),
+            3 => Scalar::Null,
+            other => return Err(crate::wire::Error::Tag("scalar", other)),
+        })
+    }
+}
+
+impl crate::wire::Wire for Reply {
+    fn put(&self, out: &mut Vec<u8>) {
+        self.status.put(out);
+        self.code.put(out);
+        self.message.put(out);
+        self.text.put(out);
+        self.json.put(out);
+        self.ids.put(out);
+        self.value.put(out);
+    }
+    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
+        Ok(Reply {
+            status: u8::get(r)?,
+            code: Option::get(r)?,
+            message: String::get(r)?,
+            text: String::get(r)?,
+            json: String::get(r)?,
+            ids: Vec::get(r)?,
+            value: Option::get(r)?,
+        })
     }
 }
 
@@ -362,6 +471,23 @@ pub enum ServerFrame<'a> {
     Terminal {
         taken: bool,
     },
+    /// A request's answer.
+    Reply(Box<Reply>),
+    /// To an attached client: the server ended its screen by itself (copy
+    /// mode whose rows dropped from history, whose pane went or is no longer
+    /// focused, or with no pane to copy; a menu, chooser, prompt or
+    /// confirmation whose subject closed), the mode being the client's.
+    Ended,
+    /// To an attached client: fuxth to run as its own, asked of it from
+    /// elsewhere (`str c1 client menu`).
+    Run(&'a str),
+    /// To an attached client: keys to take as typed at its terminal
+    /// (`send-keys` to a client).
+    Keys(Vec<crate::command::Input>),
+    /// A piece of a reply too large for one frame: its encoding, in order,
+    /// whole once `PartsEnd` comes.
+    Part(&'a [u8]),
+    PartsEnd,
 }
 
 impl<'a> ServerFrame<'a> {
@@ -394,6 +520,21 @@ impl<'a> Frame<'a> for ServerFrame<'a> {
             kind::STDERR => Ok(ServerFrame::Stderr(r.rest())),
             kind::DONE => Ok(ServerFrame::Done { status: r.u8()? }),
             kind::TERMINAL => Ok(ServerFrame::Terminal { taken: r.flag()? }),
+            kind::REPLY => crate::wire::Reader::new(r.rest())
+                .whole::<Reply>()
+                .map(|reply| ServerFrame::Reply(Box::new(reply)))
+                .map_err(Error::Wire),
+            kind::ENDED => Ok(ServerFrame::Ended),
+            kind::RUN => std::str::from_utf8(r.rest())
+                .map(ServerFrame::Run)
+                .map_err(|_| Error::NotUtf8),
+            kind::PART => Ok(ServerFrame::Part(r.rest())),
+            kind::PARTS_END => Ok(ServerFrame::PartsEnd),
+
+            kind::KEYS => crate::wire::Reader::new(r.rest())
+                .whole::<Vec<crate::command::Input>>()
+                .map(ServerFrame::Keys)
+                .map_err(Error::Wire),
             other => Err(Error::UnexpectedKind(other)),
         })
     }
@@ -401,6 +542,18 @@ impl<'a> Frame<'a> for ServerFrame<'a> {
     fn write(&self, out: &mut Vec<u8>) -> u8 {
         let (kind, payload) = match self {
             ServerFrame::Hello(hello) => return hello.write(out),
+            ServerFrame::Reply(reply) => {
+                crate::wire::Wire::put(&**reply, out);
+                return kind::REPLY;
+            }
+            ServerFrame::Keys(keys) => {
+                crate::wire::Wire::put(keys, out);
+                return kind::KEYS;
+            }
+            ServerFrame::Ended => (kind::ENDED, &[][..]),
+            ServerFrame::Run(source) => (kind::RUN, source.as_bytes()),
+            ServerFrame::Part(bytes) => (kind::PART, *bytes),
+            ServerFrame::PartsEnd => (kind::PARTS_END, &[][..]),
             ServerFrame::Paint(bytes) => (kind::PAINT, *bytes),
             ServerFrame::Exit(reason) => (kind::EXIT, reason.as_bytes()),
             ServerFrame::Stdout(bytes) => (kind::STDOUT, *bytes),
@@ -641,18 +794,26 @@ mod tests {
                 env: vec![("DISPLAY".into(), ":0".into())],
             }
         );
-        round_trip!(AttachedFrame, 3, AttachedFrame::Input(b"\x1b[A"));
+        let act = Act::Paste("界\n".into());
+        round_trip!(AttachedFrame, 3, AttachedFrame::Act(Box::new(act)));
         round_trip!(AttachedFrame, 4, AttachedFrame::Resize { rows, cols });
         round_trip!(AttachedFrame, 5, AttachedFrame::Detach);
         round_trip!(
-            Command,
+            Request,
             6,
-            Command {
-                argv: vec!["split".into(), "-h".into(), "".into(), "界".into()],
-                cwd: "/tmp".into(),
-                pane: Some("%3".into()),
-                server: Some("1-2".into()),
-                env: vec![("K".into(), "V".into())],
+            Request {
+                command: Command::Rename {
+                    target: AnyRef::Pane(crate::id::PaneId::of(3)),
+                    name: "界".into(),
+                },
+                context: Context {
+                    cwd: "/somewhere".into(),
+                    pane: Some("%3".into()),
+                    server: Some("1-2".into()),
+                    env: vec![("K".into(), "V".into())],
+                    client: "c2".parse().ok(),
+                    restoring: true,
+                },
             }
         );
         round_trip!(ServerFrame, 7, ServerFrame::Paint(&[0, 1, 2, 255]));
@@ -662,6 +823,10 @@ mod tests {
         round_trip!(ServerFrame, 11, ServerFrame::Done { status: 2 });
         round_trip!(ServerFrame, 12, ServerFrame::Terminal { taken: true });
         round_trip!(ServerFrame, 12, ServerFrame::Terminal { taken: false });
+        round_trip!(ServerFrame, 13, ServerFrame::Reply(Box::default()));
+        round_trip!(ServerFrame, 14, ServerFrame::Ended);
+        round_trip!(ServerFrame, 15, ServerFrame::Run("me zoom"));
+        round_trip!(ServerFrame, 16, ServerFrame::Keys(Vec::new()));
         // Each role's byte is the wire format's too: after the length, the
         // kind and the protocol's four bytes.
         for (role, byte) in [(Role::Attach, 0), (Role::Command, 1), (Role::Kill, 2)] {
@@ -715,7 +880,7 @@ mod tests {
         let hello: Decode = |d| d.frame::<Hello>().map(drop);
         let attach: Decode = |d| d.frame::<Attach>().map(drop);
         let attached: Decode = |d| d.frame::<AttachedFrame>().map(drop);
-        let command: Decode = |d| d.frame::<Command>().map(drop);
+        let command: Decode = |d| d.frame::<Request>().map(drop);
         let utf8 = "a frame string is not UTF-8";
         for (decode, bytes, message) in [
             (server, vec![0, 0, 0, 1, 99], "unexpected frame kind 99"),
@@ -734,7 +899,7 @@ mod tests {
             (
                 command,
                 vec![0, 0, 0, 5, 6, 255, 255, 255, 255],
-                "bad argument count in frame",
+                "a request's command has no variant 255",
             ),
             (server, vec![0, 0, 0, 0], "an empty frame"),
             (server, vec![0, 0, 0, 2, 8, 0xff], utf8),

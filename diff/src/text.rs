@@ -1,9 +1,9 @@
 //! Text, in the baseline and the current fux: lines split into the same
 //! words or errors, words quote and join alike, command lines for a shell
 //! are the same with and without fish; key names read and print alike;
-//! config lines apply alike, one after another, to the same configuration,
-//! described the same way, and config files read alike; JSON strings and
-//! base64 are written the same.
+//! JSON strings and base64 are written the same. Config files are no longer
+//! compared: the baseline's grammar is gone, and a config is a fuxth
+//! program its clients run.
 use crate::rng::Rng;
 use crate::{Outcome, bump, same, times};
 
@@ -12,51 +12,9 @@ const PIECES: &[&str] = &[
     "é", "", ".", "=", "%", "@", "+", ":", ",", "*", "(", "!",
 ];
 
-const CONFIG: &[&str] = &[
-    "set prefix C-a",
-    "set prefix M-x",
-    "set prefix nonsense",
-    "set shell /bin/zsh -l",
-    "set shell '/bin/bash --norc'",
-    "set shell ''",
-    "set history-lines 99",
-    "set history-lines 1000001",
-    "set history-lines x",
-    "set clipboard off",
-    "set clipboard write-only",
-    "set clipboard maybe",
-    "set buffers 0",
-    "set buffers 3",
-    "set buffers 1 2",
-    "set nothing 1",
-    "set",
-    "bind x zoom",
-    "bind -g Mine x zoom",
-    "bind -r r h resize-pane -L",
-    "bind t n new-tab",
-    "bind t select-tab --next",
-    "bind t n m zoom",
-    "bind 1 zoom",
-    "bind X",
-    "bind -g",
-    "bind q bogus-command",
-    "unbind x",
-    "unbind t",
-    "unbind t n",
-    "unbind",
-    "unbind Z",
-    "unbind-all",
-    "unbind-all now",
-    "split -h",
-    "# a comment",
-    "",
-    "bind 'unterminated",
-];
-
 macro_rules! stack {
-    ($name:ident, $fux:ident, $folded:expr, $bindings:expr, $file:expr) => {
+    ($name:ident, $fux:ident, $folded:expr) => {
         mod $name {
-            use $fux::config::Config;
             use $fux::keys::KeyPress;
             use $fux::words;
 
@@ -88,42 +46,6 @@ macro_rules! stack {
                 $fux::keys::all_names()
             }
 
-            /// The configuration each line leaves, and what it said.
-            pub fn config(lines: &[&str]) -> Vec<String> {
-                let mut config = Config::default();
-                let mut out = Vec::new();
-                for line in lines {
-                    let result = words::split(line)
-                        .map_err(|e| e.to_string())
-                        .and_then(|argv| config.apply(&argv).map_err(|e| e.to_string()));
-                    out.push(format!("{line:?}: {result:?}"));
-                }
-                out.extend(config.describe());
-                out.extend(
-                    ($bindings)(&config)
-                        .iter()
-                        .map(|b| format!("{} {} {:?}", b.group(), b.derived_group(), b.parsed)),
-                );
-                out.push(format!(
-                    "{:?} {:?} {} {} {}",
-                    config.prefix,
-                    config.shell,
-                    config.history_lines,
-                    config.clipboard,
-                    config.buffers
-                ));
-                out
-            }
-
-            /// A config file read whole.
-            pub fn file(path: &std::path::Path) -> String {
-                let read = $file;
-                match read(path) {
-                    Ok(config) => config.describe().join("\n"),
-                    Err(error) => format!("error: {error}"),
-                }
-            }
-
             pub fn json(text: &str) -> String {
                 let json = $fux::json::Json::Array(vec![
                     $fux::json::Json::str(text),
@@ -138,30 +60,9 @@ macro_rules! stack {
     };
 }
 
-// How each folds a key typed after the prefix, KeyPress::folded, and lists
-// its bindings after the prefix (their keys are in `describe`).
-// And reads a file: the current's says when there is none, which reads as
-// the defaults, as the baseline's does.
-stack!(
-    base,
-    baseline,
-    |p: KeyPress| p.folded(),
-    |c: &Config| c.bindings.clone(),
-    |p: &std::path::Path| Config::from_file(p)
-);
-stack!(
-    cur,
-    fux,
-    |p: KeyPress| p.folded(),
-    |c: &Config| {
-        c.bindings
-            .all()
-            .into_iter()
-            .map(|(_, b, _)| b.clone())
-            .collect::<Vec<_>>()
-    },
-    |p: &std::path::Path| Config::from_file(p).map(Option::unwrap_or_default)
-);
+// How each folds a key typed after the prefix, KeyPress::folded.
+stack!(base, baseline, |p: KeyPress| p.folded());
+stack!(cur, fux, |p: KeyPress| p.folded());
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
     let mut lines = 0u64;
@@ -203,37 +104,7 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
         )?;
         bump(&mut keys);
     }
-    let mut configs = 0u64;
-    let dir = fuxix::file::scratch()
-        .map_err(|e| e.to_string())?
-        .join(format!("fux-diff-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    for case in 0..times(2_000, scale) {
-        let config: Vec<&str> = (0..r.below(12))
-            .map(|_| r.pick(CONFIG).copied().unwrap_or_default())
-            .collect();
-        same(
-            &format!("config {case}: {config:?}"),
-            base::config(&config),
-            cur::config(&config),
-        )?;
-        let path = dir.join("fux.conf");
-        std::fs::write(&path, config.join("\n")).map_err(|e| format!("{}: {e}", path.display()))?;
-        same(
-            &format!("config file {case}: {config:?}"),
-            base::file(&path),
-            cur::file(&path),
-        )?;
-        bump(&mut configs);
-    }
-    let missing = dir.join("none.conf");
-    same(
-        "a missing config file",
-        base::file(&missing),
-        cur::file(&missing),
-    )?;
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(format!(
-        "{lines} lines split, quoted and written as JSON, {keys} key names, {configs} configurations and files"
+        "{lines} lines split, quoted and written as JSON, {keys} key names"
     ))
 }

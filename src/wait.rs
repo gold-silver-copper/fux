@@ -38,7 +38,7 @@ const DONE_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
 /// A wait under way.
 pub struct Waiting {
     watches: Vec<Watch>,
-    wait: Wait,
+    pub(crate) wait: Wait,
     /// When it began: a pane is quiet from then at the soonest.
     began: Instant,
     deadline: Instant,
@@ -47,6 +47,8 @@ pub struct Waiting {
     /// The program has just started (`run`, `respawn`): its screen is
     /// blank, so a text is gone only once it has appeared.
     pub fresh: bool,
+    /// What the command it follows made, for its reply.
+    pub made: Vec<crate::command::AnyRef<crate::id::WsId>>,
     /// What each pane said, for a wait on each of several (`Wait::all`).
     answers: Vec<Option<Outcome>>,
 }
@@ -149,6 +151,7 @@ impl Waiting {
             wait,
             began: now,
             lead: String::new(),
+            made: Vec::new(),
             fresh: false,
         }
     }
@@ -197,6 +200,7 @@ impl Waiting {
         let outcome = self.look(session, now)?;
         Some(Outcome {
             stdout: format!("{}{}", self.lead, outcome.stdout),
+            ids: self.made.clone(),
             ..outcome
         })
     }
@@ -322,6 +326,8 @@ impl Waiting {
             status,
             stdout: answers.iter().map(|a| a.stdout.as_str()).collect(),
             stderr,
+            json: answers.iter().map(|a| a.json.as_str()).collect(),
+            ..Outcome::default()
         })
     }
 }
@@ -453,26 +459,24 @@ impl Wait {
                 )
             }
         };
-        let stdout = if self.json {
-            let mut fields = vec![("pane", Json::str(id.to_string()))];
-            fields.extend(json);
-            fields.push(("status", Json::Number(i64::from(status))));
-            if let Some(screen) = &screen {
-                fields.push(("screen", Json::str(screen.clone())));
-            }
-            format!("{}\n", Json::Object(fields).render())
+        let mut fields = vec![("pane", Json::str(id.to_string()))];
+        fields.extend(json);
+        fields.push(("status", Json::Number(i64::from(status))));
+        if let Some(screen) = &screen {
+            fields.push(("screen", Json::str(screen.clone())));
+        }
+        let json = format!("{}\n", Json::Object(fields).render());
+        let said = if said.is_empty() {
+            said
         } else {
-            let said = if said.is_empty() {
-                said
-            } else {
-                format!("{prefix}{said}\n")
-            };
-            format!("{said}{}", screen.unwrap_or_default())
+            format!("{prefix}{said}\n")
         };
         Outcome {
             status,
-            stdout,
-            stderr: problem.filter(|_| !self.json).unwrap_or_default(),
+            stdout: format!("{said}{}", screen.unwrap_or_default()),
+            stderr: problem.unwrap_or_default(),
+            json,
+            ..Outcome::default()
         }
     }
 }
@@ -610,9 +614,9 @@ impl Watch {
         if wait.until.contains(&Until::Done) {
             if commands.finished == 0 && !commands.running {
                 return Some(
-                    "no command has been marked in this pane: --done needs a shell that \
+                    "no command has been marked in this pane: wait-done needs a shell that \
                      marks its commands (bash, zsh and fish started by fux, unless \
-                     `set shell-marks off`); for a program, wait for its text, or --idle",
+                     `str shell-marks str off set`); for a program, wait for its text, or wait-idle",
                 );
             }
             if commands.running {
@@ -623,7 +627,7 @@ impl Watch {
                 );
             }
             return Some(
-                "the shell is at its prompt with no command running: --done waits for a \
+                "the shell is at its prompt with no command running: wait-done waits for a \
                  command to end after the wait begins",
             );
         }
@@ -637,13 +641,13 @@ impl Watch {
         if wait.after && unchanged {
             return Some(
                 "the text is on the screen, but on a line that reads as it did when the \
-                 wait began (drawn again the same, it brings nothing new); `fux wait --text` \
-                 takes what is shown",
+                 wait began (drawn again the same, it brings nothing new); `PANE opts str T \
+                 wait-text wait` takes what is shown",
             );
         }
         self.echo_skipped.then_some(
             "a line held the text along with what was typed, and was taken as its echo; \
-             wait for text only the output has, or use `fux wait --text`",
+             wait for text only the output has, or use `PANE opts str T wait-text wait`",
         )
     }
 
