@@ -1,0 +1,54 @@
+[package]
+name = "fuxth"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "A small Forth for the shell: shell-friendly words, typed values, and an evaluator that pauses for its host"
+repository = "https://github.com/gold-silver-copper/fux"
+readme = "README.md"
+keywords = ["forth", "interpreter", "embedded", "scripting", "fux"]
+categories = ["compilers", "command-line-interface"]
+
+[dependencies]
+
+[lints.rust]
+unused_must_use = "forbid"
+unconditional_recursion = "forbid"
+unsafe_op_in_unsafe_fn = "forbid"
+
+[lints.clippy]
+suspicious = { level = "forbid", priority = -1 }
+print_stdout = "forbid"
+print_stderr = "forbid"
+dbg_macro = "forbid"
+unwrap_used = "forbid"
+expect_used = "forbid"
+panic = "forbid"
+unreachable = "forbid"
+todo = "forbid"
+unimplemented = "forbid"
+indexing_slicing = "forbid"
+exit = "forbid"
+infinite_loop = "forbid"
+large_stack_frames = "forbid"
+unchecked_time_subtraction = "forbid"
+read_zero_byte_vec = "forbid"
+unused_result_ok = "forbid"
+debug_assert_with_mut_call = "forbid"
+allow_attributes = "forbid"
+undocumented_unsafe_blocks = "forbid"
+multiple_unsafe_ops_per_block = "forbid"
+significant_drop_in_scrutinee = "forbid"
+significant_drop_tightening = "forbid"
+cast_lossless = "forbid"
+string_slice = "forbid"
+mem_forget = "forbid"
+large_stack_arrays = "forbid"
+allow_attributes_without_reason = "forbid"
+wildcard_enum_match_arm = "forbid"
+cast_possible_truncation = "forbid"
+cast_possible_wrap = "forbid"
+cast_sign_loss = "forbid"
+arithmetic_side_effects = "forbid"
+disallowed_methods = "forbid"

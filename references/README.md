@@ -102,3 +102,14 @@ that sets its expected value.
 | control strings, ST inside a DCS, U+FFFD | ECMA-48 §5.6, §8.3.27, §8.3.143; ctlseqs on UTF-8 and C1 |
 | grapheme clusters and widths | UAX #29, UAX #11, UTS #51; mode 2027 |
 | kitty keyboard flags | `modern/kitty_keyboard_protocol.html` |
+
+### `forth/`
+
+Small Forths, read for `fuxth`, fux's command language. Cloned shallow.
+
+| Directory | What | For |
+| --- | --- | --- |
+| `zForth` | zevv's embeddable Forth in C: one `.c` and a header | the host-call boundary: how an application registers words and reaches the stacks |
+| `forth-rs` | twolodzko's minimal Forth in Rust: `Vec` stacks, `HashMap` dictionary | a plain Rust evaluator, and its README's notes on where it departs from Forth |
+| `libforth` | howerj's C99 Forth as a library with a separate executable | what belongs in the library and what in the program that embeds it |
+| `jonesforth` | the heavily commented assembly Forth and its Forth half | how a dictionary, compiled definitions and a small primitive core fit together |

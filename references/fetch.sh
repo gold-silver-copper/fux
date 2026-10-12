@@ -137,6 +137,17 @@ get modern/osc133_semantic_prompts.md \
   https://gitlab.freedesktop.org/Per_Bothner/specifications/-/raw/master/proposals/semantic-prompts.md \
   curl/8
 
+# Small Forths, read for fuxth: an embedding boundary (zForth, libforth), a
+# plain Rust one (forth-rs), and the classic tutorial (JonesForth).
+for repo in zevv/zForth twolodzko/forth-rs howerj/libforth nornagon/jonesforth; do
+  dir=$here/forth/${repo#*/}
+  if [[ ! -d $dir || $force == --force ]]; then
+    rm -rf "$dir"
+    git clone -q --depth 1 "https://github.com/$repo" "$dir" \
+      && echo "cloned forth/${repo#*/}" || failed+=("forth/${repo#*/}")
+  fi
+done
+
 if (( ${#failed[@]} )); then
   printf 'could not fetch:\n' >&2
   printf '  %s\n' "${failed[@]}" >&2
