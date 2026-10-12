@@ -5,6 +5,7 @@
 use crate::act::Act;
 use crate::decode::Input;
 use crate::keymap::{Held, Keymap, Step};
+use crate::keys::KeyPress;
 use crate::protocol::{
     Attach, AttachedFrame, Context, Decoder, Frame, Hello, Mismatch, PROTOCOL, Reply, Request,
     Role, ServerFrame,
@@ -507,10 +508,35 @@ pub struct Attaching {
     pub problem: Option<String>,
 }
 
-/// How long keys wait for a program a key runs, which may open a screen
-/// they go to; after that, a program that waits or computes is no reason
-/// for the keyboard to stop.
-const HOLD: Duration = Duration::from_millis(300);
+/// The words that open one of a client's screens: a program that has one
+/// may open a screen the keys typed after its key go to, so they wait for
+/// it; any other runs while the keys go on.
+const OPENS: [&str; 10] = [
+    "menu",
+    "choose-tab",
+    "choose-workspace",
+    "choose-tab-for",
+    "choose-workspace-for",
+    "choose-pane",
+    "rename-prompt",
+    "confirm-close",
+    "command-prompt",
+    "copy-mode",
+];
+
+/// Whether a key's program may open a screen: a word that opens one, other
+/// than the text `str` takes.
+fn may_open(code: &str) -> bool {
+    let Ok(tokens) = fuxth::token::source("key", code) else {
+        return false;
+    };
+    let mut quoted = false;
+    tokens.iter().any(|token| {
+        let opens = !quoted && OPENS.contains(&&*token.text);
+        quoted = &*token.text == "str" && !quoted;
+        opens
+    })
+}
 
 /// The most steps a key's or a screen's program takes: one that loops
 /// without end fails rather than spinning the client.
@@ -548,10 +574,11 @@ pub struct Keyboard {
     jobs: std::sync::mpsc::Sender<Job>,
     told: std::sync::mpsc::Receiver<Ran>,
     wake: UnixStream,
-    /// Programs sent to the worker and not yet done, and since when one
-    /// has run.
-    running: usize,
-    running_since: Option<Instant>,
+    /// Programs sent to the worker and not yet done, in order, each with
+    /// whether it may open a screen.
+    running: std::collections::VecDeque<bool>,
+    /// What stops the program the worker runs (the prefix, then Esc).
+    stop: crate::script::Stop,
     /// What was typed while a program ran, in order.
     waiting: std::collections::VecDeque<Input>,
 }
@@ -570,12 +597,16 @@ impl Keyboard {
         let (wake, mut poke) = UnixStream::pair().map_err(Error::Signals)?;
         wake.set_nonblocking(true).map_err(Error::Signals)?;
         let path = socket.path().to_string_lossy().into_owned();
+        let stop = crate::script::Stop::default();
+        let stops = stop.clone();
         let spawned = std::thread::Builder::new()
             .name("keys".into())
             .spawn(move || {
-                let mut server = crate::script::Server::new(crate::script::Chosen::Path(path));
+                let chosen = crate::script::Chosen::Path(path);
+                let mut server = crate::script::Server::stoppable(chosen, stops.clone());
                 for job in todo {
-                    let ran = run_job(&mut server, me, job);
+                    stops.reset();
+                    let ran = run_job(&mut server, me, job, &stops);
                     if tell.send(ran).is_err() {
                         break;
                     }
@@ -595,15 +626,15 @@ impl Keyboard {
             jobs,
             told,
             wake,
-            running: 0,
-            running_since: None,
+            running: std::collections::VecDeque::new(),
+            stop,
             waiting: std::collections::VecDeque::new(),
         })
     }
 
     /// Whether nothing waits: no program running, no keys held for one.
     pub fn idle(&self) -> bool {
-        self.running == 0 && self.waiting.is_empty()
+        self.running.is_empty() && self.waiting.is_empty()
     }
 
     /// Readable when a program it ran is done (`Keyboard::ran`).
@@ -611,20 +642,26 @@ impl Keyboard {
         &self.wake
     }
 
-    /// When what waits is to be taken (`Keyboard::timeout`): a lone Escape
-    /// or an answer cut short, as it is; keys held for a program that runs
-    /// longer than a screen takes to open, as typed.
+    /// When what its terminal sent last is to be taken as it is: a lone
+    /// Escape, or an answer cut short (`Keyboard::timeout`).
     pub fn deadline(&self) -> Option<Instant> {
-        let held = self.running_since.filter(|_| !self.waiting.is_empty());
-        let held = held.map(|since| crate::after(since, HOLD));
-        [self.decoder.deadline(), held].into_iter().flatten().min()
+        self.decoder.deadline()
     }
 
-    /// Whether the keys typed wait for a program that runs: one that may
-    /// open a screen, for a moment, which is all opening one takes.
+    /// Whether the keys typed wait: a program that may open a screen they
+    /// go to runs, until it opens one or ends.
     fn holding(&self) -> bool {
-        self.running_since
-            .is_some_and(|since| since.elapsed() < HOLD)
+        self.running.iter().any(|opens| *opens)
+    }
+
+    /// Stops the program that runs, if one does, saying so.
+    fn stop(&mut self, acts: &mut Vec<Act>) {
+        if self.running.is_empty() {
+            return;
+        }
+        self.stop.stop();
+        let text = "stopping…".to_owned();
+        acts.push(Act::Notice { text, error: false });
     }
 
     /// Bytes from its terminal, read at `now`.
@@ -651,7 +688,24 @@ impl Keyboard {
 
     fn inputs(&mut self, inputs: Vec<Input>) -> Vec<Act> {
         self.waiting.extend(inputs);
-        self.release()
+        let mut acts = Vec::new();
+        // The prefix, then Esc, typed while keys wait for a program, stops
+        // it, the two keys taken for that.
+        if self.holding() && self.held_stop() {
+            self.waiting.pop_back();
+            self.waiting.pop_back();
+            self.stop(&mut acts);
+        }
+        acts.extend(self.release());
+        acts
+    }
+
+    /// Whether the keys waiting end with the prefix then Esc.
+    fn held_stop(&self) -> bool {
+        let mut last = self.waiting.iter().rev();
+        let is = |input: Option<&Input>, key: KeyPress| matches!(input, Some(Input::Key(stroke)) if stroke.press == key);
+        let escape = KeyPress::new(crate::keys::Key::Escape, crate::keys::Modifiers::NONE);
+        is(last.next(), escape) && is(last.next(), self.keymap.prefix)
     }
 
     /// What waits, taken unless a program holds it.
@@ -694,10 +748,7 @@ impl Keyboard {
         crate::drain(&self.wake);
         let mut acts = Vec::new();
         while let Ok(ran) = self.told.try_recv() {
-            self.running = self.running.saturating_sub(1);
-            if self.running == 0 {
-                self.running_since = None;
-            }
+            self.running.pop_front();
             if let Some(keymap) = ran.keymap {
                 self.keymap = keymap;
             }
@@ -728,8 +779,14 @@ impl Keyboard {
         self.screen = screen;
     }
 
-    /// A key typed: to the screen open, else through the bindings.
+    /// A key typed: to the screen open, else through the bindings. Esc
+    /// right after the prefix also stops a program its key ran, if one runs.
     fn press(&mut self, stroke: crate::keys::Keystroke, acts: &mut Vec<Act>) {
+        let escape = KeyPress::new(crate::keys::Key::Escape, crate::keys::Modifiers::NONE);
+        let column = matches!(&self.held, Held::Column { path, .. } if path.is_empty());
+        if column && stroke.press == escape {
+            self.stop(acts);
+        }
         if self.screen != Screen::None {
             for effect in self.screen.key(stroke.press) {
                 match effect {
@@ -749,9 +806,9 @@ impl Keyboard {
 
     fn run(&mut self, code: String) {
         let keymap = self.keymap.clone();
+        let opens = may_open(&code);
         if self.jobs.send(Job { code, keymap }).is_ok() {
-            self.running = self.running.saturating_add(1);
-            self.running_since.get_or_insert_with(Instant::now);
+            self.running.push_back(opens);
         }
     }
 
@@ -817,7 +874,12 @@ impl Keyboard {
 }
 
 /// Runs a key's or a screen's program as client `me`.
-fn run_job(server: &mut crate::script::Server, me: crate::id::ClientId, job: Job) -> Ran {
+fn run_job(
+    server: &mut crate::script::Server,
+    me: crate::id::ClientId,
+    job: Job,
+    stop: &crate::script::Stop,
+) -> Ran {
     let Job { code, keymap } = job;
     let mut changed = keymap.clone();
     let mut out = Vec::new();
@@ -837,9 +899,17 @@ fn run_job(server: &mut crate::script::Server, me: crate::id::ClientId, job: Job
             last_bound: None,
             out: &mut out,
         };
-        crate::script::run_capped(&mut machine, &mut host, &mut asks, Some(KEY_STEPS), None)
+        crate::script::run_capped(
+            &mut machine,
+            &mut host,
+            &mut asks,
+            Some(KEY_STEPS),
+            Some(stop),
+        )
     })();
     let notice = match result {
+        // Stopped as asked (the prefix, then Esc): no failure of its own.
+        Err(_) if stop.stopped() => Some(("stopped".to_owned(), false)),
         Err(failed) => Some((failed.to_string(), true)),
         Ok(ended) => {
             let mut said = String::from_utf8_lossy(&out).into_owned();
@@ -1134,6 +1204,16 @@ fn attached(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Keys wait only for a program that may open a screen: one with a
+    /// word that opens one, not as `str`'s text.
+    #[test]
+    fn keys_wait_only_for_a_program_that_may_open_a_screen() {
+        assert!(may_open("me me focused menu"));
+        assert!(may_open("me command-prompt"));
+        assert!(!may_open("me focused opts horizontal split drop"));
+        assert!(!may_open("str menu rename"));
+    }
 
     /// What the client makes of the server's answer to Hello, as read from
     /// a socket in `wait`.

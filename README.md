@@ -179,6 +179,10 @@ are free for your own bindings; `fux list-keys` prints them all.
   (`me focused opts vertical str htop program split`), and shows what it
   printed, or its failure, in the bar. It and the rename prompts edit with
   the arrows, Home, End, Backspace and Delete.
+- **A key's program** runs as your client, one at a time. While one that may
+  open a screen runs (it has `menu`, `copy-mode` or another such word), the
+  keys you type wait for it, and go to the screen it opens. The prefix, then
+  Esc, stops a program a key or the prompt runs, if it takes long.
 
 Directional focus picks, among the panes beyond the focused pane's edge,
 the one whose centre is closest across the direction, then along it, then

@@ -42,6 +42,7 @@ Language: dup drop swap over  add sub mul div mod  eq lt gt not
   if … else … then   begin … until   define NAME … end   constant NAME
   str WORD   # a comment to the end of the line
 
+At a terminal, the prefix then Esc stops a program a key or the prompt runs.
 Driving programs from a script or an agent: `fux help-agents`.
 One word at length: `fux str WORD explain`.
 ",
