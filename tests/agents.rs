@@ -529,13 +529,18 @@ fn shells_mark_their_commands_with_no_setup() -> Outcome {
         screen.contains("[saw 1]") && screen.contains("mine> "),
         "{screen}"
     );
-    // zsh, where there is one, through its ZDOTDIR.
-    if std::process::Command::new("zsh")
-        .arg("-c")
-        .arg("true")
-        .status()
-        .is_ok_and(|s| s.success())
-    {
+    // zsh and fish, where there are (CI, with FUX_TEST_SHELLS, insists).
+    let has = |shell: &str| -> Result<bool, String> {
+        let here = std::process::Command::new(shell)
+            .args(["-c", "true"])
+            .status()
+            .is_ok_and(|s| s.success());
+        if !here && std::env::var_os("FUX_TEST_SHELLS").is_some() {
+            return Err(format!("{shell} is not installed"));
+        }
+        Ok(here)
+    };
+    if has("zsh")? {
         let zdot = server.dir.join("zdot");
         std::fs::create_dir_all(&zdot).map_err(e)?;
         std::fs::write(zdot.join(".zshrc"), "PROMPT='zed> '\n").map_err(e)?;
@@ -587,6 +592,50 @@ fn shells_mark_their_commands_with_no_setup() -> Outcome {
         "--wait-done",
     ];
     assert_eq!(server.ok(&typed)?, "done 4\n");
+    // fish, its prompt from its own config, marked by an event handler.
+    if has("fish")? {
+        let xdg = server.dir.join("xdg");
+        std::fs::create_dir_all(xdg.join("fish")).map_err(e)?;
+        let prompt = "function fish_prompt; echo -n 'fsh> '; end\n";
+        std::fs::write(xdg.join("fish").join("config.fish"), prompt).map_err(e)?;
+        let xenv = format!("XDG_CONFIG_HOME={}", xdg.display());
+        let start = [
+            "run",
+            "-n",
+            "f",
+            "--env",
+            &xenv,
+            "--wait-text",
+            "fsh>",
+            "--",
+            "fish",
+        ];
+        server.ok(&start)?;
+        let typed = [
+            "send-keys",
+            "-t",
+            "f",
+            "--text",
+            "sh -c 'exit 6'",
+            "Enter",
+            "--wait-done",
+        ];
+        assert_eq!(server.ok(&typed)?, "done 6\n");
+        let echo = [
+            "send-keys",
+            "-t",
+            "f",
+            "--text",
+            "echo fish-$status",
+            "Enter",
+            "--wait-done",
+        ];
+        server.ok(&echo)?;
+        assert_eq!(
+            server.ok(&["capture-pane", "-t", "f", "--last-output"])?,
+            "fish-0\n"
+        );
+    }
     let off = Server::start("set shell-marks off")?;
     let start = [
         "run",

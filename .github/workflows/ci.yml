@@ -39,6 +39,13 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
+      # zsh and fish, so the shell marks of every shell fux knows are tested
+      # (macOS has zsh; fish is installed there too).
+      - name: Shells
+        run: |
+          if [[ "$RUNNER_OS" == macOS ]]; then brew install fish; else sudo apt-get update -q && sudo apt-get install -y -q zsh fish; fi
+          echo "FUX_TEST_SHELLS=1" >> "$GITHUB_ENV"
+
       - name: Platform and pinned toolchain
         run: |
           set -euo pipefail
