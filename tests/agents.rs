@@ -1249,7 +1249,11 @@ fn the_rechecks_hold() -> Outcome {
         started.elapsed() >= std::time::Duration::from_millis(400),
         "not the echo"
     );
-    server.ok(&typed("sh", "sleep 0.6; (exit 3)", &["200", "wait-idle"]))?;
+    // Each command's end is its own: the next waits for the next.
+    assert_eq!(
+        server.ok(&typed("sh", "sleep 0.6; (exit 3)", &["wait-done"]))?,
+        "done 3\n"
+    );
     assert_eq!(server.ok(&typed("sh", "true", &["wait-done"]))?, "done 0\n");
     server.ok(&typed("sh", "clear; printf 'a\\nb\\n'", &["wait-done"]))?;
     assert_eq!(last_output(&server, "sh")?, "a\nb\n");
