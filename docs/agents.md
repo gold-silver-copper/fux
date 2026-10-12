@@ -11,7 +11,8 @@ polling loop or helper script is needed.
 fux run -n app --size 100x30 --wait-text Ready -- ./app   # start; waits for Ready
 fux capture-pane -t app --marks                 # the screen; ⟦selection⟧ marked
 fux send-keys -t app j j Enter --wait-idle 300 --print    # keys, settle, read
-fux send-keys -t app --text 'make test' Enter --wait-done # a shell command, to its end
+fux run -n sh --wait-idle 300 -- bash            # a shell: it marks its commands
+fux send-keys -t sh --text 'make test' Enter --wait-done  # a command, to its end
 fux wait -t app --exit                          # prints: exited 0
 fux kill-workspace -t agent                     # everything run started
 ```
@@ -20,7 +21,7 @@ fux kill-workspace -t agent                     # everything run started
   `-t NAME` finds it in every command, so ids need not be kept; a name
   already in use is refused. `run` starts the program itself (not a shell),
   in the directory you are in, in workspace `agent`, which no client is
-  moved to.
+  moved to. Its flags go before `--`; what follows is the program's.
 - **Every action can wait,** armed before it acts so nothing comes too soon
   to be seen: `run`, `respawn`, `send-keys`, `send-mouse` and `signal` take
   the same flags as `wait`:
@@ -61,7 +62,7 @@ fux kill-workspace -t agent                     # everything run started
   `kill-workspace` print what they closed. `respawn -t app` starts it again
   in the same pane.
 - **State:** `capture-pane --json` (and `ls --json`) says `exited`,
-  `signal`, `running`, `last_status`, `idle_ms`, `revision`, `bells`,
+  `signal`, `command_running` and `last_status` (a shell's command), `idle_ms`, `revision`, `bells`,
   `notification`, `cursor_visible`, `alt_screen`, `mouse`, `cwd`, `argv`…
 - **Exit status:** 0 done, 1 failed (why on stderr), 2 a usage error; a wait
   also 3 (the program exited first), 4 (the pane closed), 5 (no change) and
@@ -71,7 +72,7 @@ fux kill-workspace -t agent                     # everything run started
 ## Shells
 
 Each shell fux starts reads your own startup files, then marks its commands
-(OSC 133): `--wait-done`, `--last-output`, `running` and `last_status` then
+(OSC 133): `--wait-done`, `--last-output`, `command_running` and `last_status` then
 just work. Your prompt, `PROMPT_COMMAND`, hooks and history behave as
 before. `set shell-marks off` in the config turns this off. A shell fux does
 not know, or one started with a script or `-c`, is left alone (bash with

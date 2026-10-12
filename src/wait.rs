@@ -189,9 +189,14 @@ impl Waiting {
             }
         }
         if now >= self.deadline {
-            let first = self.watches.first().map(|w| w.pane);
-            let pane = first.and_then(|id| session.panes.get(&id));
-            return first.map(|id| self.wait.told(id, pane, TIMED_OUT, Told::TimedOut, several));
+            let first = self.watches.first();
+            let pane = first.and_then(|w| session.panes.get(&w.pane));
+            let hint = first.zip(pane).and_then(|(w, p)| w.hint(p, &self.wait));
+            let first = first.map(|w| w.pane);
+            return first.map(|id| {
+                self.wait
+                    .told(id, pane, TIMED_OUT, Told::TimedOut(hint), several)
+            });
         }
         None
     }
@@ -202,7 +207,8 @@ enum Told {
     Found(Found),
     Exited(Ended),
     Gone,
-    TimedOut,
+    /// With why the wait may never be met, if a reason shows.
+    TimedOut(Option<&'static str>),
 }
 
 impl Wait {
@@ -249,7 +255,7 @@ impl Wait {
                 Some(format!("{id}: the pane closed")),
                 vec![("met", Json::str("gone"))],
             ),
-            Told::TimedOut => {
+            Told::TimedOut(hint) => {
                 // What the pane is doing, so the next step is clear: still
                 // busy, or settled on a prompt that will not change.
                 let seconds = self.timeout.as_secs_f64();
@@ -267,6 +273,9 @@ impl Wait {
                 }
                 if let Some(line) = &last {
                     message.push_str(&format!("; last line: `{line}`"));
+                }
+                if let Some(hint) = hint {
+                    message.push_str(&format!("\n  {hint}"));
                 }
                 let millis = |d: std::time::Duration| {
                     Json::Number(i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
@@ -430,6 +439,24 @@ fn ended_json(met: &'static str, ended: Ended) -> Vec<(&'static str, Json<'stati
 }
 
 impl Watch {
+    /// Why a wait that timed out may never have been met: a command's end
+    /// awaited in a pane that marks none, or a text that was already on the
+    /// screen as the keys went in, which send-keys does not count.
+    fn hint(&self, pane: &Pane, wait: &Wait) -> Option<&'static str> {
+        let commands = pane.screen().commands();
+        if wait.until.contains(&Until::Done) && commands.finished == 0 && !commands.running {
+            return Some(
+                "no command has been marked in this pane: --done needs a shell that marks \
+                 its commands (the bash, zsh and fish fux starts do); for a program, wait \
+                 for its text, or --idle",
+            );
+        }
+        (wait.after && self.before.iter().any(|n| *n > 0)).then_some(
+            "the text was on the screen already as the keys went in; send-keys waits for \
+             it to appear anew, and `fux wait --text` takes what is shown",
+        )
+    }
+
     /// What the pane shows of what the wait asks, if anything.
     fn look(
         &mut self,

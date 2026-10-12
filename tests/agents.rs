@@ -387,7 +387,7 @@ fn shell_marks_and_bells_are_heard() -> Outcome {
     server.ok(&["send-keys", "-t", &pane, "Enter", "--wait-bell"])?;
     let json = server.ok(&["capture-pane", "-t", &pane, "--json"])?;
     for field in [
-        r#""running":false"#,
+        r#""command_running":false"#,
         r#""last_status":7"#,
         r#""notification":"tests passed""#,
     ] {

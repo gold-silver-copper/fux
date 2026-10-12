@@ -245,7 +245,7 @@ change.
   "panes":[{"id":"%1","name":"zsh","title":"","rows":23,"cols":80,"pid":4242,
     "program":"vim","exited":null,"signal":null,"idle_ms":1520,"alt_screen":true,
     "mouse":true,"bracketed_paste":true,"pictures":[],"cursor_visible":true,
-    "history_lines":0,"copy_mode":false,"revision":38,"running":false,
+    "history_lines":0,"copy_mode":false,"revision":38,"command_running":false,
     "last_status":null,"bells":0,"notification":null,"cwd":"/home/me",
     "argv":["vim","notes.md"]}]}]}],
  "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false}]}
@@ -257,7 +257,7 @@ That is `fux ls --json`. Each pane says what it runs in its foreground
 killed it (`signal`, its number: 11 for SIGSEGV), how long its screen has shown no change
 (`idle_ms`), and whether its program is on the alternate screen, asked
 for mouse reports and for bracketed paste. `revision` grows with every
-change to the screen (`fux wait --change --since N`); `running` and
+change to the screen (`fux wait --change --since N`); `command_running` and
 `last_status` come from the shell's OSC 133 marks; `bells` counts bells
 and notifications, and `notification` is the last one's text. `cwd` and
 `argv` are the foreground process's, where the system says (Linux).

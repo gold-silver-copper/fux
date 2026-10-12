@@ -211,7 +211,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
             "revision",
             count(usize::try_from(pane.revision).unwrap_or(usize::MAX)),
         ),
-        ("running", Json::Bool(commands.running)),
+        ("command_running", Json::Bool(commands.running)),
         (
             "last_status",
             commands

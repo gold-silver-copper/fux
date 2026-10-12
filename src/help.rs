@@ -116,7 +116,7 @@ The pane's screen as text, trailing blanks and blank rows trimmed.
   --last-output the last shell command's output alone (OSC 133 marks)
   --json        an object: size, cursor, lines (and with --styles, style
                 runs per line), and what the program is doing: program, argv,
-                cwd, exited, signal, idle_ms, revision, running, last_status,
+                cwd, exited, signal, idle_ms, revision, command_running, last_status,
                 bells, notification, cursor_visible, alt_screen, mouse,
                 bracketed_paste, copy_mode, history_lines, pictures
 

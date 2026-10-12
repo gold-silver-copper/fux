@@ -161,7 +161,12 @@ impl std::fmt::Display for Error {
                 },
             ),
             Error::NoServer(path) => {
-                write!(f, "no fux server is running at {}", path.display())
+                write!(
+                    f,
+                    "no fux server is running at {}; `fux` in a terminal starts one, or \
+                     `fux server --socket PATH &` one with no terminal",
+                    path.display()
+                )
             }
             Error::NotOurs(path) => write!(
                 f,
