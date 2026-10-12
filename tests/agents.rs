@@ -544,6 +544,8 @@ fn shells_mark_their_commands_with_no_setup() -> Outcome {
         let zdot = server.dir.join("zdot");
         std::fs::create_dir_all(&zdot).map_err(e)?;
         std::fs::write(zdot.join(".zshrc"), "PROMPT='zed> '\n").map_err(e)?;
+        // Read through fux's shim; it also spares Ubuntu's global compinit.
+        std::fs::write(zdot.join(".zshenv"), "skip_global_compinit=1\n").map_err(e)?;
         let zenv = format!("ZDOTDIR={}", zdot.display());
         let start = [
             "run",
