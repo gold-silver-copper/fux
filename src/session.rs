@@ -89,6 +89,9 @@ pub struct Caller {
     /// Its environment, of which panes it starts take what
     /// `update-environment` names.
     pub env: Vec<(String, String)>,
+    /// The workspace it may reach, and nothing else, if it came through a
+    /// socket `fux grant` made.
+    pub scope: Option<String>,
 }
 
 /// Where an attached client is: the workspace and tab it is shown, and the
@@ -141,6 +144,21 @@ pub enum Error {
     NoWorkspaceGiven,
     /// The caller's `FUX_PANE`, a pane of another server.
     StrayPane(String),
+    /// A `-t NAME` that names no tab, or several: why.
+    NotNamed(String),
+    /// A command through a socket whose grant was revoked.
+    Revoked,
+    /// A command from a granted socket that names something outside its
+    /// workspace.
+    OutOfScope {
+        what: String,
+        scope: String,
+    },
+    /// A command from a granted socket that reaches what is not its.
+    NotGranted {
+        what: &'static str,
+        scope: String,
+    },
     /// `ls --get` of a field the target has not: those it has.
     NoField {
         target: String,
@@ -278,6 +296,8 @@ impl Error {
             Error::StrayPane(_) => "stray_pane",
             Error::Changed { .. } => "changed",
             Error::NoField { .. } => "no_field",
+            Error::OutOfScope { .. } | Error::NotGranted { .. } | Error::Revoked => "not_granted",
+            Error::NotNamed(_) => "no_target",
             Error::OwnServer(_) => "own_server",
             Error::PeopleAttached(_) => "people_attached",
             Error::NoClient(_) => "no_client",
@@ -338,6 +358,16 @@ impl std::fmt::Display for Error {
                 field,
                 fields,
             } => write!(f, "{target} has no field {field:?}; it has {fields}"),
+            Error::NotNamed(why) => f.write_str(why),
+            Error::Revoked => f.write_str("the grant this socket came through was revoked"),
+            Error::OutOfScope { what, scope } => write!(
+                f,
+                "{what} is outside workspace {scope}, the only one this socket reaches (fux grant)"
+            ),
+            Error::NotGranted { what, scope } => write!(
+                f,
+                "this socket reaches workspace {scope} alone (fux grant), not {what}"
+            ),
             Error::Changed {
                 pane,
                 revision,
@@ -442,7 +472,9 @@ impl std::fmt::Display for Error {
             Error::CannotResize { pane, cols, rows } => {
                 write!(f, "{pane} cannot be made {cols}x{rows} in its tab")
             }
-            Error::WaitsOnlyFromCli => f.write_str("wait runs from the command line"),
+            Error::WaitsOnlyFromCli => {
+                f.write_str("wait, events and grant run from the command line")
+            }
             Error::NotHeadless(client) => write!(
                 f,
                 "{client} has a terminal, which sets its size; resize sizes headless clients"
@@ -508,6 +540,10 @@ impl std::error::Error for Error {
             | Error::StrayPane(_)
             | Error::Changed { .. }
             | Error::NoField { .. }
+            | Error::NotNamed(_)
+            | Error::Revoked
+            | Error::OutOfScope { .. }
+            | Error::NotGranted { .. }
             | Error::OwnServer(_)
             | Error::PeopleAttached(_)
             | Error::KillNeedsTarget(_)
@@ -639,6 +675,9 @@ pub struct Session {
     /// What `update-environment` takes from whoever runs the command under
     /// way, for the panes it starts.
     fresh: Fresh,
+    /// The sockets `fux grant` made, each with the workspace it reaches,
+    /// for `ls` to list: the server holds them.
+    pub grants: Vec<(PathBuf, String)>,
 }
 
 /// The variables a pane takes from whoever starts it, rather than the
@@ -708,6 +747,135 @@ fn open_log(path: &Path) -> Result<std::fs::File, Error> {
     .map_err(|e| Error::Log(path.to_owned(), e))
 }
 
+/// What a command from a granted socket may reach: the granted workspace,
+/// if it is there, and nothing outside it.
+struct Reach<'a> {
+    session: &'a Session,
+    ws: Option<WsId>,
+    scope: &'a str,
+    here: Here<'a>,
+}
+
+impl Reach<'_> {
+    fn outside(&self, what: String) -> Error {
+        Error::OutOfScope {
+            what,
+            scope: self.scope.to_owned(),
+        }
+    }
+    fn refuse(&self, what: &'static str) -> Result<(), Error> {
+        Err(Error::NotGranted {
+            what,
+            scope: self.scope.to_owned(),
+        })
+    }
+    fn pane(&self, id: Option<PaneId>) -> Result<(), Error> {
+        let id = self.session.pane(id, self.here)?.id;
+        match self.session.locate(id) {
+            Some((ws, _)) if Some(ws) == self.ws => Ok(()),
+            Some(_) | None => Err(self.outside(id.to_string())),
+        }
+    }
+    fn tab(&self, id: Option<TabId>) -> Result<(), Error> {
+        let tab = self.session.tab_target(id, self.here)?;
+        match self.session.tab_workspace(tab) {
+            Ok(ws) if Some(ws) == self.ws => Ok(()),
+            Ok(_) | Err(_) => Err(self.outside(tab.to_string())),
+        }
+    }
+    fn workspace(&self, ws: &WsRef) -> Result<(), Error> {
+        match self.session.resolve_ws(ws) {
+            Ok(id) if Some(id) == self.ws => Ok(()),
+            Ok(id) => Err(self.outside(id.to_string())),
+            Err(error) => Err(error),
+        }
+    }
+    fn any(&self, target: &AnyRef) -> Result<(), Error> {
+        match target {
+            AnyRef::Pane(p) => self.pane(Some(*p)),
+            AnyRef::Tab(t) => self.tab(Some(*t)),
+            AnyRef::Workspace(w) => self.workspace(w),
+        }
+    }
+
+    /// Whether `command` reaches only the granted workspace.
+    fn command(&self, command: &Command) -> Result<(), Error> {
+        match command {
+            Command::Ls { target, .. } => target.as_ref().map_or(Ok(()), |t| self.any(t)),
+            Command::ListKeys => Ok(()),
+            Command::KillServer { .. } => self.refuse("kill-server"),
+            Command::NewWorkspace { .. } => self.refuse("new-workspace"),
+            Command::KillWorkspace { .. } => self.refuse("kill-workspace"),
+            Command::NewTab { target, .. } => target.as_ref().map_or(Ok(()), |w| self.workspace(w)),
+            Command::Run { workspace, .. } => match workspace {
+                // Run makes the workspace it names if it is not there.
+                Some(WsRef::Name(name)) if name == self.scope => Ok(()),
+                Some(ws) => self.workspace(ws),
+                None => Ok(()),
+            },
+            Command::Split { target, .. }
+            | Command::Respawn { target, .. }
+            | Command::SendMouse { target, .. }
+            | Command::KillPane { target }
+            | Command::Signal { target, .. }
+            | Command::ResizePane { target, .. }
+            | Command::Log { target, .. }
+            | Command::ClearHistory { target }
+            | Command::SendPrefix { target }
+            | Command::CapturePane { target, .. } => self.pane(*target),
+            Command::KillTab { target } => self.tab(*target),
+            Command::Notify { target, .. } => match target {
+                Some(target) => self.any(target),
+                None => self.refuse("a notice to every client"),
+            },
+            Command::Resize { what, .. } => match what {
+                Resized::Tabs(target) => self.any(target),
+                Resized::Client(_) => self.refuse("a client's size"),
+            },
+            Command::Wait { targets, .. } if targets.is_empty() => self.pane(None),
+            Command::Wait { targets, .. } => targets.iter().try_for_each(|p| self.pane(Some(*p))),
+            Command::SendKeys {
+                client: Some(_), ..
+            } => self.refuse("a client's keys"),
+            Command::SendKeys { targets, .. } if targets.is_empty() => self.pane(None),
+            Command::SendKeys { targets, .. } | Command::Events { targets, .. } => {
+                targets.iter().try_for_each(|t| self.any(t))
+            }
+            Command::Rename { target, .. } => match target {
+                AnyRef::Workspace(_) => self.refuse("renaming the workspace"),
+                AnyRef::Pane(_) | AnyRef::Tab(_) => self.any(target),
+            },
+            Command::MovePane { target, to } => {
+                self.pane(*target)?;
+                match to {
+                    MoveTo::Tab(tab) => self.tab(Some(*tab)),
+                    MoveTo::Workspace(ws) => self.workspace(ws),
+                    MoveTo::NewTab | MoveTo::Beside(_) => Ok(()),
+                    MoveTo::NewWorkspace => self.refuse("a new workspace"),
+                }
+            }
+            Command::SwapPane { target, with } => {
+                self.pane(*target)?;
+                match with {
+                    SwapWith::Pane(pane) => self.pane(Some(*pane)),
+                    SwapWith::Toward(_) => Ok(()),
+                }
+            }
+            Command::Reorder { subject, .. } => match subject {
+                Subject::Pane(pane) => self.pane(*pane),
+                Subject::Tab(tab) => self.tab(*tab),
+                Subject::Workspace(_) => self.refuse("reordering workspaces"),
+            },
+            Command::Configure { .. } | Command::Reload => self.refuse("the config"),
+            Command::ListBuffers | Command::ShowBuffer { .. } | Command::PasteBuffer { .. } => {
+                self.refuse("the paste buffers, which are everyone's")
+            }
+            Command::Client { .. } => self.refuse("a client's screen"),
+            Command::Grant { .. } => self.refuse("another grant"),
+        }
+    }
+}
+
 /// Whether a command line asks for JSON: its failure is then JSON too.
 fn wants_json(argv: &[String]) -> bool {
     argv.iter()
@@ -765,6 +933,7 @@ impl Session {
             changes: 0,
             last_error: None,
             fresh: Fresh::default(),
+            grants: Vec::new(),
         }
     }
 
@@ -2008,6 +2177,19 @@ impl Session {
     /// runs as `run` runs it.
     pub fn begin(&mut self, argv: &[String], origin: &Origin) -> Begun {
         self.last_error = None;
+        let scoped;
+        let argv = match origin {
+            Origin::Cli(Caller {
+                scope: Some(scope), ..
+            }) => match self.scoped(argv, scope, origin) {
+                Ok(argv) => {
+                    scoped = argv;
+                    scoped.as_slice()
+                }
+                Err(error) => return self.failed(error, origin),
+            },
+            Origin::Cli(_) | Origin::Client(_) | Origin::Nowhere => argv,
+        };
         match self.begin_line(argv, origin) {
             // With --json, its failure is JSON too, on stderr.
             Begun::Done(mut outcome) if wants_json(argv) && outcome.status != 0 => {
@@ -2141,6 +2323,43 @@ impl Session {
             Some(outcome) => Begun::Done(outcome),
             None => Begun::Waiting(Box::new(waiting)),
         }
+    }
+
+    /// A command line from a granted socket, if it may run: with no target,
+    /// one that would act anywhere (`ls`, `run`, `new-tab`, `events`) acts
+    /// on the granted workspace; one that names, or comes from, anything
+    /// outside it, or reaches what is everyone's (the config, the buffers,
+    /// clients, the server), is refused.
+    fn scoped(&self, argv: &[String], scope: &str, origin: &Origin) -> Result<Vec<String>, Error> {
+        if scope.is_empty() {
+            return Err(Error::Revoked);
+        }
+        let mut argv = self.named(argv).map_err(Error::NotNamed)?;
+        let command = command::parse(&argv).map_err(Error::Usage)?;
+        let anywhere = matches!(
+            command,
+            Command::Ls { target: None, .. }
+                | Command::Run {
+                    workspace: None,
+                    ..
+                }
+                | Command::NewTab { target: None, .. }
+        ) || matches!(&command, Command::Events { targets, .. } if targets.is_empty());
+        if anywhere {
+            let mut words = std::mem::take(&mut argv).into_iter();
+            argv.extend(words.next());
+            argv.extend(["-t".to_owned(), scope.to_owned()]);
+            argv.extend(words);
+        }
+        let command = command::parse(&argv).map_err(Error::Usage)?;
+        let reach = Reach {
+            session: self,
+            ws: self.resolve_ws(&WsRef::Name(scope.to_owned())).ok(),
+            scope,
+            here: self.here(origin)?,
+        };
+        reach.command(&command)?;
+        Ok(argv)
     }
 
     /// A command line from the CLI that failed before it ran: why, its code
@@ -2620,7 +2839,9 @@ impl Session {
                 }
                 Ok(String::new())
             }
-            Command::Wait { .. } | Command::Events { .. } => Err(Error::WaitsOnlyFromCli),
+            Command::Wait { .. } | Command::Events { .. } | Command::Grant { .. } => {
+                Err(Error::WaitsOnlyFromCli)
+            }
             &Command::SendMouse {
                 target,
                 if_revision,
@@ -3339,6 +3560,9 @@ impl Session {
                 });
             }
         }
+        for (socket, ws) in self.grants.iter().filter(|_| only.is_none()) {
+            out.push_str(&format!("grant {} {ws}\n", socket.display()));
+        }
         let shown = |id: Option<String>| id.unwrap_or_else(|| "-".into());
         for view in self.views.values().filter(|_| only.is_none()) {
             let place = self.place(view.id);
@@ -3471,9 +3695,18 @@ impl Session {
                 ])
             })
             .collect();
+        let grants = (self.grants.iter())
+            .map(|(socket, ws)| {
+                Json::Object(vec![
+                    ("socket", Json::str(socket.to_string_lossy())),
+                    ("workspace", Json::str(ws.as_str())),
+                ])
+            })
+            .collect();
         let mut text = Json::Object(vec![
             ("workspaces", Json::Array(workspaces)),
             ("clients", Json::Array(clients)),
+            ("grants", Json::Array(grants)),
         ])
         .render();
         text.push('\n');

@@ -416,6 +416,13 @@ pub enum Command {
         targets: Vec<AnyRef>,
         json: bool,
     },
+    /// A socket whose commands reach workspace `workspace` alone; or with
+    /// `revoke`, that socket closed.
+    Grant {
+        workspace: Option<WsRef>,
+        socket: String,
+        revoke: bool,
+    },
     /// What the pane's program writes, kept in a file from now on; `None`
     /// stops it.
     Log {
@@ -918,6 +925,16 @@ const SESSION: &[Spec] = &[
     spec("command-prompt [-c CLIENT]", Screen(|_| Ok(ClientAction::CommandPrompt))),
     spec("command-column [-c CLIENT]", Screen(|_| Ok(ClientAction::CommandColumn))),
     spec("reload  run the config file again", Flags(|_| Ok(Command::Reload))),
+    spec("grant (-t WS --socket PATH | --revoke --socket PATH)  a socket whose commands reach workspace WS alone", Flags(|a| {
+        let (workspace, revoke) = (a.target(parse_workspace)?, a.has("--revoke"));
+        let Some(socket) = a.value("--socket").map(str::to_owned) else {
+            return Err(Usage::Needs("grant needs --socket PATH: the socket to make, or with --revoke to close"));
+        };
+        if workspace.is_some() == revoke {
+            return Err(Usage::Needs("usage: grant -t WS --socket PATH, or grant --revoke --socket PATH"));
+        }
+        Ok(Command::Grant { workspace, socket, revoke })
+    })),
     spec("kill-server [--force]  stop the server; from one of its panes, or with people attached, only --force", Flags(|a| {
         Ok(Command::KillServer { force: a.has("--force") })
     })),

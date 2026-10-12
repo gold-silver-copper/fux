@@ -112,6 +112,16 @@ struct Conn {
     decoder: Decoder,
     out: ByteQueue,
     stage: Stage,
+    /// The socket `fux grant` made that it came through, if one did: its
+    /// commands reach that grant's workspace alone, while it lasts.
+    grant: Option<PathBuf>,
+}
+
+/// A socket `fux grant` made: its commands reach `workspace` alone.
+struct Grant {
+    listening: Listening,
+    socket: PathBuf,
+    workspace: String,
 }
 
 /// Where a connection is in its life, each stage holding what it alone
@@ -325,12 +335,13 @@ impl Attached {
 }
 
 impl Conn {
-    fn new(stream: UnixStream) -> Conn {
+    fn new(stream: UnixStream, grant: Option<PathBuf>) -> Conn {
         Conn {
             stream,
             decoder: Decoder::default(),
             out: ByteQueue::default(),
             stage: Stage::Hello(None),
+            grant,
         }
     }
 
@@ -446,6 +457,7 @@ pub struct Server {
     session: Session,
     phase: Phase,
     conns: Vec<Conn>,
+    grants: Vec<Grant>,
     children: UnixStream,
     /// Closed panes' programs killed but not yet exited, reaped once SIGCHLD
     /// says they have.
@@ -467,6 +479,83 @@ pub struct Server {
     shortage: Option<Shortage>,
     /// When an `accept` failure other than a shortage was last logged.
     accept_logged: Option<Instant>,
+}
+
+/// `fux grant` from a granted socket: refused.
+fn refused_grant() -> Outcome {
+    Outcome {
+        status: 1,
+        stdout: String::new(),
+        stderr: "a socket `fux grant` made cannot grant another".to_owned(),
+    }
+}
+
+/// `fux grant`: a socket made at `socket`, from the caller's directory
+/// `cwd`, whose commands reach `workspace` alone; or with `revoke`, the
+/// one made there closed, and what came through it reaching nothing more.
+fn grant(
+    grants: &mut Vec<Grant>,
+    session: &mut Session,
+    (workspace, socket, revoke): (Option<crate::command::WsRef>, String, bool),
+    cwd: Option<PathBuf>,
+) -> Outcome {
+    let failed = |stderr: String| Outcome {
+        status: 1,
+        stdout: String::new(),
+        stderr,
+    };
+    let path = cwd.map_or_else(|| PathBuf::from(&socket), |cwd| cwd.join(&socket));
+    if revoke {
+        let before = grants.len();
+        grants.retain(|g| g.socket != path);
+        session.grants.retain(|(s, _)| *s != path);
+        return match grants.len() < before {
+            true => Outcome {
+                status: 0,
+                stdout: String::new(),
+                stderr: String::new(),
+            },
+            false => failed(format!("no grant made {}", path.display())),
+        };
+    }
+    // A workspace by its id must be there; by its name it may be made later
+    // (`run` makes the one it names).
+    let workspace = match workspace {
+        Some(crate::command::WsRef::Name(name)) => name,
+        Some(ws @ crate::command::WsRef::Id(_)) => match session.resolve_ws(&ws) {
+            Ok(id) => session
+                .workspace(id)
+                .map_or_else(String::new, |w| w.name.clone()),
+            Err(error) => return failed(error.to_string()),
+        },
+        None => return failed("grant needs -t WS".to_owned()),
+    };
+    let checked = crate::socket::socket_path(crate::socket::Choice::Path(
+        &path.to_string_lossy(),
+        "grant --socket",
+    ));
+    let bound = checked.and_then(|socket| crate::socket::bind_socket(&socket));
+    let (endpoint, listener) = match bound {
+        Ok(bound) => bound,
+        Err(error) => return failed(error.to_string()),
+    };
+    if let Err(error) = listener.set_nonblocking(true) {
+        return failed(format!("{}: {error}", path.display()));
+    }
+    session.grants.push((path.clone(), workspace.clone()));
+    grants.push(Grant {
+        listening: Listening {
+            listener,
+            _endpoint: endpoint,
+        },
+        socket: path.clone(),
+        workspace,
+    });
+    Outcome {
+        status: 0,
+        stdout: format!("{}\n", path.display()),
+        stderr: String::new(),
+    }
 }
 
 /// Writes to the server's log, its stderr. A log that cannot be written,
@@ -536,6 +625,7 @@ pub fn serve(socket: &SocketPath, config_path: Option<PathBuf>, fresh: bool) -> 
             resting: None,
         },
         conns: Vec::new(),
+        grants: Vec::new(),
         children,
         killed: Vec::new(),
         stops,
@@ -558,6 +648,8 @@ pub fn serve(socket: &SocketPath, config_path: Option<PathBuf>, fresh: bool) -> 
 #[derive(Clone, Copy)]
 enum Slot {
     Listener,
+    /// A socket `fux grant` made, by its index into `grants`.
+    Grant(usize),
     Children,
     Stops,
     Conn(usize),
@@ -605,7 +697,8 @@ impl Server {
             let now = Instant::now();
             for &(slot, flags) in &ready {
                 match slot {
-                    Slot::Listener => self.accept(),
+                    Slot::Listener => self.accept(None),
+                    Slot::Grant(i) => self.accept(Some(i)),
                     Slot::Children => {
                         crate::drain(&self.children);
                         self.reap();
@@ -751,6 +844,10 @@ impl Server {
         {
             fds.push(PollFd::new(&listening.listener, PollFlags::IN));
             slots.push(Slot::Listener);
+            for (i, grant) in self.grants.iter().enumerate() {
+                fds.push(PollFd::new(&grant.listening.listener, PollFlags::IN));
+                slots.push(Slot::Grant(i));
+            }
         }
         fds.push(PollFd::new(&self.children, PollFlags::IN));
         slots.push(Slot::Children);
@@ -808,8 +905,10 @@ impl Server {
             return;
         }
         log(&reason);
-        // The socket goes first: from now on a client finds no server.
+        // The sockets go first: from now on a client finds no server.
         self.phase = Phase::Stopping(crate::after(Instant::now(), STOP_WAIT));
+        self.grants.clear();
+        self.session.grants.clear();
         self.session.shutdown();
         // Every connection still open ends, so no command runs on what is
         // left of the session.
@@ -936,7 +1035,9 @@ impl Server {
         }
     }
 
-    fn accept(&mut self) {
+    /// Accepts the connections waiting on the server's socket, or with
+    /// `grant` on that socket `fux grant` made.
+    fn accept(&mut self, grant: Option<usize>) {
         // Accept until the backlog is empty, so one tick drains it.
         loop {
             // The spare makes room for this accept, and is taken back after
@@ -945,7 +1046,12 @@ impl Server {
             let Phase::Serving { listening, .. } = &self.phase else {
                 return;
             };
-            let accepted = listening.listener.accept();
+            let (listener, through) = match grant.and_then(|i| self.grants.get(i)) {
+                Some(grant) => (&grant.listening.listener, Some(grant.socket.clone())),
+                None if grant.is_some() => return,
+                None => (&listening.listener, None),
+            };
+            let accepted = listener.accept();
             let room = match std::fs::File::open("/dev/null") {
                 Ok(spare) => {
                     self.spare = Some(spare);
@@ -985,7 +1091,7 @@ impl Server {
                     if stream.set_nonblocking(true).is_err() {
                         continue;
                     }
-                    self.conns.push(Conn::new(stream));
+                    self.conns.push(Conn::new(stream, through));
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => return,
                 // A peer that gave up before it was accepted: the next may
@@ -1210,6 +1316,13 @@ impl Server {
                     version: env!("CARGO_PKG_VERSION"),
                     role: hello.role,
                 };
+                // Refused before the answer, which a client reads as why.
+                if conn.grant.is_some() && hello.role != Role::Command {
+                    let refused = "a socket `fux grant` made takes commands only: no client \
+                                   attaches through it, and it stops no server";
+                    conn.end(session, &ServerFrame::Exit(refused));
+                    return Ok(true);
+                }
                 conn.send(session, &ServerFrame::Hello(ours));
                 match (Mismatch::between(&hello, &ours), hello.role) {
                     (Err(mismatch), _) => {
@@ -1296,11 +1409,33 @@ impl Server {
                 // or -L chose this one) is not the caller's here.
                 let ours = server.as_deref().is_none_or(|s| s == session.server_id);
                 let (pane, stray) = if ours { (pane, None) } else { (None, pane) };
+                let cwd = Some(PathBuf::from(cwd)).filter(|p| p.is_dir());
+                // Through a grant, the workspace it reaches; one revoked
+                // reaches none.
+                let scope = conn.grant.as_ref().map(|socket| {
+                    (self.grants.iter())
+                        .find(|g| &g.socket == socket)
+                        .map_or_else(String::new, |g| g.workspace.clone())
+                });
+                if let Ok(crate::command::Command::Grant {
+                    workspace,
+                    socket,
+                    revoke,
+                }) = crate::command::parse(&argv)
+                {
+                    let outcome = match scope {
+                        Some(_) => refused_grant(),
+                        None => grant(&mut self.grants, session, (workspace, socket, revoke), cwd),
+                    };
+                    conn.answer(session, outcome);
+                    return Ok(true);
+                }
                 let origin = Origin::Cli(Caller {
                     pane: pane.and_then(|p| crate::command::parse_pane(&p).ok()),
-                    cwd: Some(PathBuf::from(cwd)).filter(|p| p.is_dir()),
+                    cwd,
                     stray,
                     env,
+                    scope,
                 });
                 match session.begin(&argv, &origin) {
                     Begun::Done(outcome) => conn.answer(session, outcome),
@@ -1450,7 +1585,7 @@ mod tests {
         let (stream, peer) = UnixStream::pair().map_err(|e| e.to_string())?;
         let (tty, far) = UnixStream::pair().map_err(|e| e.to_string())?;
         tty.set_nonblocking(true).map_err(|e| e.to_string())?;
-        let mut conn = Conn::new(stream);
+        let mut conn = Conn::new(stream, None);
         let tty = TakenTerminal::new(OwnedFd::from(tty));
         conn.stage = Stage::Attached(Box::new(Attached::new(client, Some(tty))));
         Ok((session, conn, peer, far))

@@ -1,12 +1,14 @@
 //! Routing a client's input: to its overlay, its copy mode, the command
 //! column, or its focused pane.
+use crate::command::{ClientAction, Command};
+use crate::config::Node;
 use crate::decode::Input;
 use crate::id::ClientId;
-use crate::keys::Keystroke;
 use crate::keys::mouse::{MouseAction, MouseEvent};
+use crate::keys::{KeyPress, Keystroke};
 use crate::layout::Placement;
 use crate::overlay;
-use crate::session::Session;
+use crate::session::{Origin, Session};
 use crate::view::Mode;
 use std::time::Instant;
 
@@ -66,6 +68,23 @@ impl Session {
         for input in inputs {
             if !self.views.contains_key(&client) {
                 break;
+            }
+            // A client that only watches is answered by its terminal, and
+            // may detach; nothing else it sends does anything.
+            if self.views.get(&client).is_some_and(|v| v.read_only) {
+                match input {
+                    Input::Key(stroke) => shown |= self.watching_key(client, stroke.press),
+                    Input::Reply(reply) => {
+                        shown = true;
+                        self.terminal_reply(client, reply);
+                    }
+                    Input::Paste(_)
+                    | Input::PasteTooLong
+                    | Input::FocusIn
+                    | Input::FocusOut
+                    | Input::Mouse(_) => {}
+                }
+                continue;
             }
             match input {
                 Input::Key(stroke) => shown |= self.key(client, stroke),
@@ -140,6 +159,41 @@ impl Session {
                 }
             }
         }
+        true
+    }
+
+    /// A key from a client that only watches: the prefix, then the key
+    /// bound to detach, detaches it; any other key says so. Whether it
+    /// shows anything.
+    fn watching_key(&mut self, client: ClientId, press: KeyPress) -> bool {
+        let detaches = |node: &Node| {
+            matches!(node, Node::Run { binding, .. } if matches!(
+                binding.parsed,
+                Command::Client { action: ClientAction::Detach, .. }
+            ))
+        };
+        let prefix = self.config.prefix;
+        let detach_key = (self.config.bindings.iter())
+            .find(|(_, node)| detaches(node))
+            .map(|(key, _)| *key);
+        let Some(view) = self.views.get_mut(&client) else {
+            return false;
+        };
+        if std::mem::take(&mut view.prefixed) {
+            if detach_key == Some(press) {
+                self.run_command(&ClientAction::Detach.here(), &Origin::Client(client));
+            }
+            return true;
+        }
+        if press == prefix {
+            view.prefixed = true;
+            return false;
+        }
+        let how = detach_key.map_or_else(
+            || "nothing is bound to detach".to_owned(),
+            |key| format!("{prefix} {key} detaches"),
+        );
+        self.info_to(client, format!("watching only (attach --read-only): {how}"));
         true
     }
 
