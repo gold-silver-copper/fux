@@ -216,10 +216,14 @@ mod tests {
         }
         let argv = marked(&words("bash"), &[], &dir).unwrap_or_default().argv;
         assert_eq!(argv.get(1).map(String::as_str), Some("--rcfile"));
+        // The caller's own PROMPT_COMMAND goes along: bare bash keeps it.
         let own = [("PROMPT_COMMAND".to_owned(), "mine".to_owned())];
+        let bare = marked(&words("bash --norc"), &own, &dir)
+            .unwrap_or_default()
+            .env;
         assert!(
-            marked(&words("bash"), &own, &dir).is_none(),
-            "the caller's own marks"
+            bare.iter()
+                .any(|(k, v)| k == "PROMPT_COMMAND" && v.contains("\nmine\n"))
         );
         let zdot = [("ZDOTDIR".to_owned(), "/home/me/.config/zsh".to_owned())];
         let vars = marked(&words("zsh"), &zdot, &dir).unwrap_or_default().env;

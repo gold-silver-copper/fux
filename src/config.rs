@@ -205,7 +205,7 @@ impl std::fmt::Display for Error {
             Error::UnknownOption { option } => write!(
                 f,
                 "unknown option {option}; options are prefix, shell, history-lines, clipboard, \
-                 buffers, bell, titles"
+                 buffers, bell, titles, shell-marks"
             ),
             Error::Read { path, source } => write!(f, "{}: {source}", path.display()),
             Error::Line { path, line, error } => {

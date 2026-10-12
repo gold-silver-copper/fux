@@ -2414,6 +2414,13 @@ impl Screen {
             }
             b'J' | b'K' => {
                 let mode = p.first(0, 0);
+                // ED 3 (`CSI 3 J`, xterm's): the scrollback goes, as `clear`
+                // asks; the screen stays.
+                if byte == b'J' && mode == 3 && !private {
+                    self.grid_mut().clear_history();
+                    self.structural = self.version;
+                    return Ok(Dispatch::Done);
+                }
                 if mode > 2 {
                     return Ok(Dispatch::Unhandled);
                 }

@@ -294,6 +294,13 @@ impl Grid {
     /// Keeps at most `limit` rows of history from now on, letting the
     /// oldest go at once if it holds more; nothing changes if `limit` and
     /// the size are more than a grid can hold.
+    /// Lets every row of history go, its limit kept.
+    pub(crate) fn clear_history(&mut self) {
+        let limit = self.history.limit();
+        self.history.set_limit(0);
+        self.history.set_limit(limit);
+    }
+
     pub(crate) fn set_history_limit(&mut self, limit: usize) -> Result<(), Error> {
         Self::check_size(self.size, limit)?;
         self.history.set_limit(limit);

@@ -193,8 +193,11 @@ impl Workspace {
 
     /// A client detaches: nothing here names it.
     pub(crate) fn forget(&mut self, client: ClientId) {
-        self.viewers.remove(&client);
+        let viewed = self.viewers.remove(&client);
         for tab in &mut self.tabs {
+            // A tab the client showed is laid out again on its own fit (its
+            // `--size`), not left at the client's.
+            tab.changed |= viewed && tab.shown_to(client);
             tab.seats.remove(&client);
             tab.typist = tab.typist.filter(|t| *t != client);
         }

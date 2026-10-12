@@ -28,22 +28,29 @@ pub fn pane(
     let mut lines: Vec<Cells<'_>> = Vec::new();
     // A soft-wrapped row goes on in the next, joined with `-J`.
     let mut wraps = false;
-    for (_, (row, span)) in rows_of(screen, history, view)
-        .into_iter()
-        .enumerate()
-        .filter(|(i, _)| in_rows(i))
-    {
+    let read = rows_of(screen, history, view);
+    // History rows above the screen, which the cursor's row counts past
+    // in `lines` (`-S`).
+    let above = if view.last_output || view.main || view.alt || view.rows.is_some() || view.join {
+        0
+    } else {
+        read.len().saturating_sub(usize::from(screen.size().rows()))
+    };
+    for (_, (row, span)) in read.into_iter().enumerate().filter(|(i, _)| in_rows(i)) {
+        // A wide glyph's second cell is drawn as its first: the same style,
+        // so a run of it is not broken in two.
+        let mut lead = Attributes::default();
         let cells = row
             .cells()
             .enumerate()
             .filter(|(col, _)| span.contains(col))
-            .map(|(_, cell)| {
-                let text = if cell.is_wide_continuation() {
-                    ""
+            .map(move |(_, cell)| {
+                if cell.is_wide_continuation() {
+                    ("", lead)
                 } else {
-                    crate::render::shown(cell)
-                };
-                (text, cell.attributes())
+                    lead = cell.attributes();
+                    (crate::render::shown(cell), lead)
+                }
             });
         let cells: Cells<'_> = match view.cols {
             Some((start, end)) => {
@@ -56,13 +63,27 @@ pub fn pane(
             None => cells.collect(),
         };
         match lines.last_mut() {
-            Some(last) if wraps => last.extend(cells),
+            Some(last) if wraps => {
+                // The blank a wide glyph left at the row's end, not fitting
+                // there, is no part of the line.
+                let pads = cells.get(1).is_some_and(|(text, _)| text.is_empty())
+                    && last
+                        .last()
+                        .is_some_and(|(text, a)| *text == " " && *a == Attributes::default());
+                if pads {
+                    last.pop();
+                }
+                last.extend(cells);
+            }
             _ => lines.push(cells),
         }
         wraps = view.join && row.wrapped();
     }
     let (rows, cols) = screen.size().into();
-    let cursor = Some(screen.cursor_position());
+    let cursor = Some(screen.cursor_position()).map(|(row, col)| {
+        let above = u16::try_from(above).unwrap_or(u16::MAX);
+        (row.saturating_add(above), col)
+    });
     let state = json.then(|| state(pane, Instant::now(), copy_mode));
     print(
         ("pane", pane.id.to_string()),
@@ -284,9 +305,21 @@ fn print(
     (mut lines, view): (Vec<Cells<'_>>, CaptureView),
     state: Option<Vec<(&'static str, Json<'static>)>>,
 ) -> String {
+    // What a selection is drawn with: reverse video, or a background
+    // other than the screen's own (the one most cells have).
+    let base = base_background(&lines);
+    let highlighted = |a: &Attributes| a.inverse() || a.background() != base;
     if !view.full {
+        // Blanks are trimmed, unless they show: highlighted with --marks,
+        // styled with --styles.
+        let shows = |a: &Attributes| {
+            (view.marks && highlighted(a)) || (view.styles && *a != Attributes::default())
+        };
         for line in &mut lines {
-            while line.last().is_some_and(|(text, _)| *text == " ") {
+            while line
+                .last()
+                .is_some_and(|(text, a)| *text == " " && !shows(a))
+            {
                 line.pop();
             }
         }
@@ -320,29 +353,48 @@ fn print(
             let styled: Vec<String> = lines.iter().map(sgr_line).collect();
             styled.join("\n")
         }
-        None if view.marks => lines.iter().map(marked).collect::<Vec<_>>().join("\n"),
+        None if view.marks => (lines.iter())
+            .map(|line| marked(line, &highlighted))
+            .collect::<Vec<_>>()
+            .join("\n"),
         None => lines.iter().map(text).collect::<Vec<_>>().join("\n"),
     };
     out.push('\n');
     out
 }
 
-/// A line with its reverse video, how programs draw a selection, between
+/// A line with what is highlighted, how programs draw a selection, between
 /// `⟦` and `⟧`: marks no program's output is likely to hold.
-fn marked(line: &Cells<'_>) -> String {
+fn marked(line: &Cells<'_>, highlighted: &impl Fn(&Attributes) -> bool) -> String {
     let mut out = String::new();
-    let mut inverse = false;
+    let mut on = false;
     for (text, attributes) in line {
-        if attributes.inverse() != inverse {
-            inverse = attributes.inverse();
-            out.push(if inverse { '⟦' } else { '⟧' });
+        if highlighted(attributes) != on {
+            on = !on;
+            out.push(if on { '⟦' } else { '⟧' });
         }
         out.push_str(text);
     }
-    if inverse {
+    if on {
         out.push('⟧');
     }
     out
+}
+
+/// The background most cells of `lines` have: the screen's own colour,
+/// against which a highlight shows.
+fn base_background(lines: &[Cells<'_>]) -> fux_vt::Color {
+    let mut counts: Vec<(fux_vt::Color, usize)> = Vec::new();
+    for (_, a) in lines.iter().flatten() {
+        let colour = a.background();
+        match counts.iter_mut().find(|(c, _)| *c == colour) {
+            Some((_, n)) => *n = n.saturating_add(1),
+            None => counts.push((colour, 1)),
+        }
+    }
+    (counts.into_iter())
+        .max_by_key(|(_, n)| *n)
+        .map_or_else(fux_vt::Color::default, |(c, _)| c)
 }
 
 /// A line in SGR: each change of attributes set from nothing, and reset at

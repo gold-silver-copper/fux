@@ -819,8 +819,9 @@ fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
     assert!(valued.stderr.contains("--timeout"), "{}", valued.stderr);
     let hint = server.fux(&["wait", "-t", &menu_pane, "--wait-gone", "x"])?;
     assert!(hint.stderr.contains("--gone"), "{}", hint.stderr);
-    let after = server.fux(&["run", "--", "cat", "--wait-text", "x"])?;
-    assert!(after.stderr.contains("before --"), "{}", after.stderr);
+    // After --, words are the program's, however they look.
+    let theirs = server.ok(&["run", "--wait-exit", "--", "echo", "--wait-for-it"])?;
+    assert!(theirs.ends_with("exited 0\n"), "{theirs}");
     // A name `-t` finds is one tab's only: a second is refused, saying why.
     let again = server.fux(&["run", "-n", "menu", "--", "cat"])?;
     assert_eq!(again.status, 1);

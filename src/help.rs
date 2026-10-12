@@ -38,10 +38,13 @@ Prints the new pane's id (--json: {\"workspace\",\"tab\",\"pane\"}).
   --cwd DIR         where it starts (default: here)
   --env K=V         a variable for it; again for more
   --log FILE        everything it writes, kept in FILE past the history limit
-  --wait-text TEXT, --wait-idle MS, --wait-exit, --wait-bell
+  --wait-text TEXT, --wait-gone TEXT, --wait-idle MS, --wait-change,
+  --wait-exit, --wait-done, --wait-bell, --timeout S, --print, --marks
                     then waits as `fux wait` does, from its first output on,
                     so nothing it prints at once is missed; prints the pane's
                     id, then what the wait says (--json: the wait's object)
+Its flags go before --; what follows is the program's. The program gets the
+server's environment, with --env's on top, and starts in your directory.
 When the program exits its pane stays, its last screen kept: `fux wait
 --exit` prints `exited STATUS`, and send-keys to it fails.
 
@@ -103,12 +106,14 @@ left button alone; `wheel-up` and `wheel-down` one notch; `move` no button.
         "capture-pane" => {
             "\
 The pane's screen as text, trailing blanks and blank rows trimmed.
-  -S -LINES     LINES of history first; -S all, all of it
+  -S LINES      LINES of history first (-S 100, or tmux's -S -100); -S all
   --full        every row and cell, untrimmed
   -J            rows the terminal wrapped joined into their lines
   --rows A-B    rows A to B only, from 0 (A alone: one)
   --cols A-B    columns A to B only, from 0
   --styles      colours and attributes, as SGR escapes
+  --marks       highlighted text, how a menu draws its selection (reverse
+                video, or a background other than the screen's), as ⟦beta⟧
   --main        the main screen and its history, while a program holds the full
                 screen: what was printed before it took it
   --alt         the full screen a program drew last, kept after it left it
@@ -166,9 +171,23 @@ Prints `+N @N %N`. Names are unique and do not start with +, %, @ or -.
 
   fux new-workspace -n work --size 100x30"
         }
-        "kill-pane" | "kill-tab" | "kill-workspace" => {
+        "kill-pane" => {
             "\
-Closes it, without asking; its programs are hung up.
+Closes the pane, without asking: its programs are hung up, then killed. From
+the command line it prints what closed (`closed %3 @2`: a last pane takes its
+tab, and a last tab its workspace).
+
+  fux kill-pane -t %3"
+        }
+        "kill-tab" => {
+            "\
+Closes the tab and its panes, without asking. -t takes @N or the tab's name.
+
+  fux kill-tab -t build"
+        }
+        "kill-workspace" => {
+            "\
+Closes the workspace, its tabs and panes, without asking.
 
   fux kill-workspace -t agent"
         }
@@ -195,18 +214,25 @@ workspace; -L, -R, -U or -D beside its neighbour that way."
         }
         "set" => {
             "\
-Options: prefix, shell, history-lines, clipboard, buffers, bell, titles; as
-the config file has them.
+Options: prefix, shell, history-lines (at most 250000), clipboard, buffers,
+bell, titles, shell-marks; as the config file has them.
 
   fux set history-lines 50000"
         }
-        "bind" | "unbind" | "unbind-all" => {
+        "bind" => {
             "\
 Keys after the prefix (-n: alone), then the command they run, as the config
 file has them.
 
   fux bind -n M-h select-pane -L"
         }
+        "unbind" => {
+            "\
+Takes a binding away: the keys after the prefix (-n: bound alone).
+
+  fux unbind -n M-h"
+        }
+        "unbind-all" => "Takes every binding away, the prefix's and -n's: a config starting afresh.",
         "list-keys" => "Key names, for send-keys and set prefix, and the bindings.",
         "respawn" => {
             "\
@@ -222,8 +248,8 @@ the program runs, unless -k, which ends it first.
             "\
 Sends a signal to what runs in the pane's foreground, what its terminal's
 keys reach: a job its shell runs, or the program `fux run` started; never a
-shell itself. For a program that ignores Ctrl-C and hangups. TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP or
-CONT, with or without SIG. The --wait-… flags wait as send-keys' do, armed
+shell itself. For a program that ignores Ctrl-C and hangups. TERM, KILL, INT,
+HUP, QUIT, USR1, USR2, STOP, CONT, TSTP or WINCH, with or without SIG. The --wait-… flags wait as send-keys' do, armed
 before the signal goes.
 
   fux signal -t %3 KILL --wait-exit"

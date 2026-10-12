@@ -251,9 +251,18 @@ impl std::fmt::Display for Error {
                 write!(f, "no pane {} of {from}", direction.name())
             }
             Error::OnlyShell(pane) => write!(f, "nothing is running in {pane} but its shell"),
-            Error::Exited { pane, status } => {
-                write!(f, "the program in {pane} {}", crate::process::told(*status))
-            }
+            Error::Exited { pane, status } => match status {
+                crate::process::Ended::Exited(_) => {
+                    write!(f, "the program in {pane} {}", crate::process::told(*status))
+                }
+                crate::process::Ended::Signalled(_) => {
+                    write!(
+                        f,
+                        "the program in {pane} was {}",
+                        crate::process::told(*status)
+                    )
+                }
+            },
             Error::NoMotion(pane) => write!(
                 f,
                 "the program in {pane} asked for clicks, not for motion (press a button first for a drag)"
@@ -290,7 +299,7 @@ impl std::fmt::Display for Error {
                 "{client} has a terminal, which sets its size; resize sizes headless clients"
             ),
             Error::NotADirectory(path) => write!(f, "{} is not a directory", path.display()),
-            Error::Log(path, error) => write!(f, "{}: {error}", path.display()),
+            Error::Log(path, error) => write!(f, "run --log {}: {error}", path.display()),
             Error::Signal(error) => write!(f, "sending the signal: {error}"),
             Error::NotRun(pane) => write!(
                 f,
@@ -705,13 +714,10 @@ impl Session {
         // its foreground job, if any, is what a signal is for.
         let program = match (&pane.runs, pane.process.child()) {
             (crate::pane::Runs::Program(launch), Some(child)) => {
-                let shell = launch.argv.first().is_some_and(|p| {
-                    let name = basename(p);
-                    [
-                        "bash", "zsh", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh", "nu",
-                        "elvish", "xonsh",
-                    ]
-                    .contains(&name.trim_start_matches('-'))
+                // A shell taking commands typed at it: no -c, no script.
+                let shell = launch.argv.split_first().is_some_and(|(p, args)| {
+                    let interactive = args.iter().all(|a| a.starts_with('-') && a != "-c");
+                    interactive && SHELLS.contains(&basename(p).trim_start_matches('-'))
                 });
                 (!shell).then(|| child.leader.pid())
             }
@@ -728,7 +734,9 @@ impl Session {
     /// one another tab has.
     fn check_tab_name(&self, name: &str, except: Option<TabId>) -> Result<(), Error> {
         check_name(name)?;
-        if command::parse_workspace(name) != Ok(WsRef::Name(name.to_owned())) {
+        // One `-t` would read as an id; a name like `-x` it reads as a flag
+        // is only one `-t` cannot give.
+        if name.starts_with(['%', '@', '+']) {
             return Err(Error::NameReadAsTarget(name.to_owned()));
         }
         let taken: Vec<TabId> = (self.workspaces.iter())
@@ -1996,8 +2004,17 @@ impl Session {
                 let here_cwd = self.cwd_for(here, None);
                 let log = match log {
                     Some(path) => Some(
-                        std::fs::File::create(here_cwd.join(path))
-                            .map_err(|e| Error::Log(here_cwd.join(path), e))?,
+                        // What a program writes may be secret: the log is the
+                        // user's alone.
+                        std::os::unix::fs::OpenOptionsExt::mode(
+                            std::fs::OpenOptions::new()
+                                .write(true)
+                                .create(true)
+                                .truncate(true),
+                            0o600,
+                        )
+                        .open(here_cwd.join(path))
+                        .map_err(|e| Error::Log(here_cwd.join(path), e))?,
                     ),
                     None => None,
                 };
@@ -2237,8 +2254,25 @@ impl Session {
             // or an agent knows; a key's close shows on the screen anyway.
             &Command::KillPane { target } => {
                 let pane = self.pane(target, here)?.id;
+                // A tab's last pane takes its tab, and a workspace's last
+                // tab its workspace: all of it is said.
+                let mut gone = vec![pane.to_string()];
+                if let Some((ws, tab)) = self.locate(pane) {
+                    let workspace = self.workspace(ws);
+                    let tab_panes = (workspace.into_iter())
+                        .flat_map(Workspace::tabs)
+                        .find(|t| t.id == tab)
+                        .and_then(Tab::root)
+                        .map_or(0, |root| root.panes().len());
+                    if tab_panes == 1 {
+                        gone.push(tab.to_string());
+                        if workspace.is_some_and(|w| w.tabs().len() == 1) {
+                            gone.push(ws.to_string());
+                        }
+                    }
+                }
                 self.close_pane(pane, None);
-                Ok(closed(origin, &[pane.to_string()]))
+                Ok(closed(origin, &gone))
             }
             &Command::KillTab { target } => {
                 let tab = self.tab_target(target, here)?;
@@ -2922,6 +2956,11 @@ fn unread(process: &Process) -> Vec<u8> {
     left
 }
 
+/// Shells a pane may run, taking commands typed at them.
+const SHELLS: &[&str] = &[
+    "bash", "zsh", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh",
+];
+
 /// What a close from the command line prints: `closed` and the ids gone.
 fn closed(origin: &Origin, ids: &[String]) -> String {
     match origin {
@@ -3578,7 +3617,7 @@ mod tests {
             (
                 "set nope 1",
                 1,
-                "unknown option nope; options are prefix, shell, history-lines, clipboard, buffers, bell, titles",
+                "unknown option nope; options are prefix, shell, history-lines, clipboard, buffers, bell, titles, shell-marks",
             ),
             (
                 "bind g nope",

@@ -678,7 +678,12 @@ fn parse_move_to(value: &str) -> Result<MoveTo, Usage> {
 /// `COLSxROWS`, as `--size` takes it.
 fn parse_size(text: &str) -> Option<fux_vt::Size> {
     let (cols, rows) = text.split_once('x')?;
-    let cells = |n: &str| number(n).and_then(|n| u16::try_from(n).ok());
+    // As a client's: at most 4096 cells each way.
+    let cells = |n: &str| {
+        number(n)
+            .and_then(|n| u16::try_from(n).ok())
+            .filter(|n| *n <= 4096)
+    };
     fux_vt::Size::new(cells(rows)?, cells(cols)?).ok()
 }
 
@@ -764,7 +769,7 @@ const PANES: &[Spec] = &[
     spec("notify [-t TARGET] TEXT  a notice on the clients showing TARGET (all without)", Flags(notify)),
     spec("run [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--log FILE] [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json] -- PROGRAM...  \
           a program in a tab of its own, in workspace agent; it stays once the program exits", Flags(run)),
-    spec("signal [-t %N] TERM|KILL|INT|HUP|QUIT|USR1|USR2|STOP|CONT [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json]  \
+    spec("signal [-t %N] TERM|KILL|INT|HUP|QUIT|USR1|USR2|STOP|CONT|TSTP|WINCH [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json]  \
           a signal to what runs in the pane's foreground, never its shell", Flags(signal)),
     spec("kill-pane [-t %N]  close, without asking", Flags(|a| {
         Ok(Command::KillPane { target: a.pane()? })
@@ -1321,6 +1326,11 @@ fn capture(a: &mut Args<'_>) -> Result<Command, Usage> {
         last_output: a.has("--last-output"),
         marks: a.has("--marks"),
     };
+    if view.marks && (view.styles || a.has("--json")) {
+        return Err(Usage::Needs(
+            "capture-pane --marks is for plain text; --styles (and --json --styles) gives every style",
+        ));
+    }
     Ok(Command::CapturePane {
         target: a.pane()?,
         history: a.lines()?,
@@ -1417,7 +1427,7 @@ fn send_mouse(a: &mut Args<'_>) -> Result<Command, Usage> {
 }
 
 fn signal(a: &mut Args<'_>) -> Result<Command, Usage> {
-    let usage = "usage: signal [-t %N] TERM|KILL|INT|HUP|QUIT|USR1|USR2|STOP|CONT";
+    let usage = "usage: signal [-t %N] TERM|KILL|INT|HUP|QUIT|USR1|USR2|STOP|CONT|TSTP|WINCH";
     let name = match a.positional.as_slice() {
         [name] => *name,
         _ => return Err(Usage::Needs(usage)),
@@ -1427,7 +1437,7 @@ fn signal(a: &mut Args<'_>) -> Result<Command, Usage> {
         command: "signal",
         flag: "SIGNAL",
         value: name.to_owned(),
-        expected: "TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP or CONT",
+        expected: "TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP, CONT, TSTP or WINCH",
     })?;
     Ok(Command::Signal {
         target: a.pane()?,
@@ -2001,9 +2011,9 @@ mod tests {
                     print: true,
                     json: false,
                     after: true,
-                    echo: vec!["two words".into()],
+                    echo: vec!["two wordsp".into(), "two wordsp".into()],
                     marks: false,
-                    lines: 0,
+                    lines: 2,
                 }),
             })
         );
@@ -2029,7 +2039,7 @@ mod tests {
                     after: true,
                     echo: vec!["go".into()],
                     marks: false,
-                    lines: 0,
+                    lines: 1,
                 }),
             })
         );

@@ -80,6 +80,17 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Socket(error) => error.fmt(f),
+            // A socket left by a server that is gone.
+            Error::Connect { path, source }
+                if source.kind() == std::io::ErrorKind::ConnectionRefused =>
+            {
+                write!(
+                    f,
+                    "no fux server is running at {} (its socket is left from one that stopped); \
+                     `fux` in a terminal starts one, or `fux server --socket PATH &` one with no terminal",
+                    path.display()
+                )
+            }
             Error::Connect { path, source } => {
                 write!(f, "connecting to {}: {source}", path.display())
             }
@@ -92,7 +103,7 @@ impl std::fmt::Display for Error {
             Error::Write(error) => write!(f, "writing to the server: {error}"),
             Error::Read(error) => write!(f, "reading from the server: {error}"),
             Error::Exe(error) => write!(f, "finding the fux binary: {error}"),
-            Error::Log(error) => write!(f, "opening the server log: {error}"),
+            Error::Log(error) => write!(f, "the log file: {error}"),
             Error::Spawn(error) => write!(f, "starting a server: {error}"),
             Error::Exited { status, log } => {
                 write!(f, "the server exited ({status}); see {}", log.display())
