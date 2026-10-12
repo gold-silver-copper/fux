@@ -38,10 +38,12 @@ else
 fi
 "#;
 
-/// bash with no startup files, from `PROMPT_COMMAND` alone: it ends a
-/// command, and sets a DEBUG trap, armed last, that marks the next one's
-/// start; fux's own commands, and an empty line's prompt, mark nothing.
-const BARE_BASH: &str = r#"__fux_s=$?; __fux_a=; printf '\033]133;D;%s\007' "$__fux_s"; __fux_c() { case "$BASH_COMMAND" in __fux_*) return 0 ;; esac; [ -n "$__fux_a" ] || return 0; __fux_a=; printf '\033]133;C\007'; }; trap __fux_c DEBUG; __fux_a=1"#;
+/// bash with no startup files, from its variables: `PROMPT_COMMAND` ends a
+/// command; `PS0` marks the next one's start, or before bash 4.4, which has
+/// no `PS0`, a DEBUG trap armed last does (fux's own commands, and an empty
+/// line's prompt, mark nothing; a line that starts with a subshell, which
+/// the trap does not see, is not marked).
+const BARE_BASH: &str = r#"__fux_s=$?; __fux_a=; printf '\033]133;D;%s\007' "$__fux_s"; if [ "${BASH_VERSINFO[0]}${BASH_VERSINFO[1]}" -lt 44 ]; then __fux_c() { case "$BASH_COMMAND" in __fux_*) return 0 ;; esac; [ -n "$__fux_a" ] || return 0; __fux_a=; printf '\033]133;C\007'; }; trap __fux_c DEBUG; __fux_a=1; fi"#;
 
 /// zsh: read first of all startup files, from the shim `ZDOTDIR`; it puts
 /// the user's `ZDOTDIR` back, so the rest of their files are read from
@@ -92,7 +94,10 @@ pub fn marked(argv: &[String], env: &[(String, String)], dir: &Path) -> Option<M
         {
             Some(Marked {
                 argv: argv.to_vec(),
-                env: vec![("PROMPT_COMMAND".to_owned(), BARE_BASH.to_owned())],
+                env: vec![
+                    ("PROMPT_COMMAND".to_owned(), BARE_BASH.to_owned()),
+                    ("PS0".to_owned(), "\\e]133;C\\a".to_owned()),
+                ],
             })
         }
         "bash" if flags_only(&["-i", "--noprofile"]) => {
