@@ -53,6 +53,14 @@ def read(timeout=None):
     return data
 
 
+def hold(seconds=3600.0):
+    """Stays for SECONDS, ending with the terminal: a multiplexer that
+    closes a pane without a hangup leaves no program behind."""
+    end = time.time() + float(seconds)
+    while (left := end - time.time()) > 0:
+        read(min(left, 1.0))
+
+
 def size():
     s = os.get_terminal_size()
     return s.lines, s.columns
@@ -133,13 +141,13 @@ def loader(seconds="2", then="READY", crash="", redraw=""):
         put()
 
 
-def scroll(lines="300", marker="MARKER-42", at="150", hold="1"):
+def scroll(lines="300", marker="MARKER-42", at="150", hours="1"):
     """Prints LINES numbered lines at once, MARKER on line AT, then holds."""
     out = []
     for n in range(1, int(lines) + 1):
         out.append(marker if n == int(at) else f"line {n}")
     w("\n".join(out) + "\n")
-    time.sleep(float(hold) * 3600)
+    hold(float(hours) * 3600)
 
 
 def form():
@@ -254,7 +262,7 @@ def table():
     for name, status in rows:
         colour = 31 if status == "FAIL" else 32
         w(f"{name:<10}{ESC}[{colour}m{'down' if status == 'FAIL' else 'up'}{ESC}[0m\n")
-    time.sleep(3600)
+    hold()
 
 
 def agent(seconds="2", ask=""):
@@ -312,7 +320,7 @@ def confirm():
         w("\r\ndone\r\n")
     finally:
         put()
-    time.sleep(3600)
+    hold()
 
 
 def stubborn():
@@ -334,8 +342,7 @@ def sizer():
         w(f"{ESC}[H{ESC}[2Jsize {cols}x{rows}\n")
     signal.signal(signal.SIGWINCH, note)
     note()
-    while True:
-        time.sleep(1)
+    hold()
 
 
 def mainalt():
@@ -410,7 +417,7 @@ def bell(seconds="1"):
     w("background job running\n")
     time.sleep(float(seconds))
     w("\a")
-    time.sleep(3600)
+    hold()
 
 
 def main():
