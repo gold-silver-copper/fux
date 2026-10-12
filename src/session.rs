@@ -1597,6 +1597,7 @@ impl Session {
         let now = Instant::now();
         let mut waiting = crate::wait::Waiting::new(&[pane], wait, now);
         waiting.lead = lead;
+        waiting.fresh = true;
         match waiting.answer(self, now) {
             Some(outcome) => Begun::Done(outcome),
             None => Begun::Waiting(Box::new(waiting)),

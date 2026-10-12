@@ -34,6 +34,9 @@ pub struct Waiting {
     deadline: Instant,
     /// Printed before what the wait says: the pane `run` started.
     pub lead: String,
+    /// The program has just started (`run`, `respawn`): its screen is
+    /// blank, so a text is gone only once it has appeared.
+    pub fresh: bool,
 }
 
 /// One pane a wait watches, and what it found as it began.
@@ -49,6 +52,8 @@ struct Watch {
     /// screen, what the main screen got since (from the anchor) counts
     /// too, so a line printed just before it took the screen is seen.
     on_main: bool,
+    /// The `--gone` texts seen since the wait began, for a fresh program.
+    appeared: Vec<String>,
     /// How many times each text was there as the wait began, for a wait
     /// that counts only what comes after.
     before: Vec<usize>,
@@ -90,6 +95,7 @@ impl Waiting {
                     read: None,
                     in_history: vec![(0, None); texts.len()],
                     on_main: !screen.mode(fux_vt::Mode::AlternateScreen),
+                    appeared: Vec::new(),
                     before,
                     revision: pane.revision,
                     finished: screen.commands().finished,
@@ -103,6 +109,7 @@ impl Waiting {
             wait,
             began: now,
             lead: String::new(),
+            fresh: false,
         }
     }
 
@@ -151,14 +158,18 @@ impl Waiting {
                 let id = watch.pane;
                 return Some(self.wait.told(id, None, GONE, Told::Gone, several));
             };
-            if let Some(found) = watch.look(pane, &self.wait, &texts, self.began, now) {
+            if let Some(found) = watch.look(pane, &self.wait, &texts, (self.began, now), self.fresh)
+            {
                 let status = match &found {
                     Found::Idle { changed: false } if self.wait.after => UNCHANGED,
+                    // As timeout(1): the program's own status, once it exits.
+                    Found::Exit(ended) => {
+                        u8::try_from(crate::process::shell_status(*ended)).unwrap_or(u8::MAX)
+                    }
                     Found::Text { .. }
                     | Found::Gone(_)
                     | Found::Idle { .. }
                     | Found::Change(_)
-                    | Found::Exit(_)
                     | Found::Done(_)
                     | Found::Bell(_) => 0,
                 };
@@ -425,8 +436,8 @@ impl Watch {
         pane: &Pane,
         wait: &Wait,
         texts: &[String],
-        began: Instant,
-        now: Instant,
+        (began, now): (Instant, Instant),
+        fresh: bool,
     ) -> Option<Found> {
         let screen = pane.screen();
         // The screen's lines, and any text found in history lines written
@@ -476,8 +487,14 @@ impl Watch {
                             .unwrap_or_else(|| text.clone()),
                     })
                 }
-                Until::Gone(text) => (!lines.iter().any(|l| found_in(l, text) > 0))
-                    .then(|| Found::Gone(text.clone())),
+                Until::Gone(text) => {
+                    let shown = lines.iter().any(|l| found_in(l, text) > 0);
+                    if shown && !self.appeared.contains(text) {
+                        self.appeared.push(text.clone());
+                    }
+                    let had = !fresh || self.appeared.contains(text);
+                    (!shown && had).then(|| Found::Gone(text.clone()))
+                }
                 Until::Idle(idle) => {
                     let quiet = crate::after(pane.changed_at.max(began), *idle);
                     (pane.input_written() && now >= quiet).then_some(Found::Idle {

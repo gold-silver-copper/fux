@@ -20,7 +20,9 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
     let server = Server::start("")?;
     let script = "stty size; echo started; exit 3";
     let pane = id(&server.ok(&["run", "--size", "40x10", "--", "sh", "-c", script])?);
-    assert_eq!(server.ok(&["wait", "-t", &pane, "--exit"])?, "exited 3\n");
+    // As timeout(1), a wait for the exit exits with the program's status.
+    let ended = server.fux(&["wait", "-t", &pane, "--exit"])?;
+    assert_eq!((ended.status, ended.stdout.as_str()), (3, "exited 3\n"));
     let screen = server.ok(&["capture-pane", "-t", &pane])?;
     assert_eq!(
         screen, "10 40\nstarted\n",
@@ -308,7 +310,8 @@ fn waits_see_what_scrolled_past_and_end_when_the_program_does() -> Outcome {
     let ended = server.fux(&["send-keys", "-t", &pane, "Enter", "--wait-text", "never"])?;
     assert_eq!(ended.status, 3, "{}", ended.stderr);
     assert!(ended.stderr.contains("exited 2"), "{}", ended.stderr);
-    assert_eq!(server.ok(&["wait", "-t", &pane, "--exit"])?, "exited 2\n");
+    let ended = server.fux(&["wait", "-t", &pane, "--exit"])?;
+    assert_eq!((ended.status, ended.stdout.as_str()), (2, "exited 2\n"));
     // run waits from the program's first output: a flood cannot outrun it.
     let flood = "echo 'a needle'; seq 300; exec cat";
     let started = server.ok(&["run", "--wait-text", "needle", "--", "sh", "-c", flood])?;
@@ -560,6 +563,28 @@ fn shells_mark_their_commands_with_no_setup() -> Outcome {
         ];
         assert_eq!(server.ok(&typed)?, "done 3\n");
     }
+    // bash without its startup files, as agents start it, is marked too.
+    server.ok(&[
+        "run",
+        "-n",
+        "bare",
+        "--wait-idle",
+        "200",
+        "--",
+        "bash",
+        "--norc",
+        "-i",
+    ])?;
+    let typed = [
+        "send-keys",
+        "-t",
+        "bare",
+        "--text",
+        "(exit 4)",
+        "Enter",
+        "--wait-done",
+    ];
+    assert_eq!(server.ok(&typed)?, "done 4\n");
     let off = Server::start("set shell-marks off")?;
     let start = [
         "run",
@@ -673,8 +698,11 @@ fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
         "{}",
         term.stderr
     );
-    let kill = server.ok(&["signal", "-t", "stub", "KILL", "--wait-exit"])?;
-    assert_eq!(kill, "killed by SIGKILL\n");
+    let kill = server.fux(&["signal", "-t", "stub", "KILL", "--wait-exit"])?;
+    assert_eq!(
+        (kill.status, kill.stdout.as_str()),
+        (137, "killed by SIGKILL\n")
+    );
     // A program that exits first: its last words come with the error.
     let crash = server.fux(&[
         "run",
@@ -714,6 +742,28 @@ fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
     let new = id(&server.ok(&split)?);
     let screen = server.ok(&["wait", "-t", &new, "--text", "split-2", "--print"])?;
     assert!(screen.contains(&sub_arg), "{screen}");
+    // A program just started has drawn nothing: its text goes only once it
+    // has come.
+    let loading = r"sleep 0.3; printf loading; sleep 0.3; printf '\r\033[Kready\n'; exec cat";
+    let gone = [
+        "run",
+        "--wait-gone",
+        "loading",
+        "--print",
+        "--",
+        "sh",
+        "-c",
+        loading,
+    ];
+    let done = server.ok(&gone)?;
+    assert!(
+        done.ends_with("ready\n") || done.contains("\nready"),
+        "{done}"
+    );
+    let hint = server.fux(&["wait", "-t", &menu_pane, "--wait-gone", "x"])?;
+    assert!(hint.stderr.contains("--gone"), "{}", hint.stderr);
+    let after = server.fux(&["run", "--", "cat", "--wait-text", "x"])?;
+    assert!(after.stderr.contains("before --"), "{}", after.stderr);
     // A name `-t` finds is one tab's only: a second is refused, saying why.
     let again = server.fux(&["run", "-n", "menu", "--", "cat"])?;
     assert_eq!(again.status, 1);

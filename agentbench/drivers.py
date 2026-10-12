@@ -422,6 +422,18 @@ class FuxAfter(Fux):
             return s["exited"]
         return 128 + s["signal"] if s.get("signal") else None
 
+    def wait_exit(self, pane, timeout=10):
+        """The program's status: the wait prints it, and exits with it once
+        it is met (fux after round 3), or 0."""
+        out = self.fux("wait", "-t", pane, "--exit", "--timeout", str(timeout), check=False,
+                       timeout=timeout + 10)
+        words = out.stdout.split()
+        if words[:1] == ["exited"]:
+            return int(words[1])
+        if words[:2] == ["killed", "by"]:
+            return self.exit_status(pane)
+        raise Timeout(out.stderr.strip())
+
     def wait_history(self, pane, text, timeout=10):
         if text in self.fux("capture-pane", "-t", pane, "-S", "all").stdout:
             return True

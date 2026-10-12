@@ -7,9 +7,9 @@
 //! Each shell is given a startup file fux writes beside its socket, which
 //! reads the user's own first: bash's `--rcfile` sources `~/.bashrc`, zsh's
 //! `ZDOTDIR` shim puts the user's back and sources their `.zshenv`, fish's
-//! `--init-command` only adds two event handlers. A shell started with a
-//! script, a command or no startup files is left as it is, as is any other
-//! program.
+//! `--init-command` only adds two event handlers; bash with `--norc` reads
+//! no file, so takes them from `PS0` and `PROMPT_COMMAND`. A shell started
+//! with a script or a command is left as it is, as is any other program.
 use std::path::{Path, PathBuf};
 
 /// bash: the user's own startup, then the marks. bash 4.4 and later print
@@ -69,13 +69,33 @@ pub struct Marked {
 /// reads are written under `dir`. `None` leaves it as it is.
 pub fn marked(argv: &[String], env: &[(String, String)], dir: &Path) -> Option<Marked> {
     let (program, args) = argv.split_first()?;
+    // Marks of the caller's own, given as variables, are left to work.
+    if env.iter().any(|(k, _)| k == "PS0" || k == "PROMPT_COMMAND") {
+        return None;
+    }
     let name = Path::new(program.trim_start_matches('-'))
         .file_name()?
         .to_str()?;
     // Only an interactive shell: no script or command, startup files read.
     let flags_only = |allowed: &[&str]| args.iter().all(|a| allowed.contains(&a.as_str()));
     match name {
-        "bash" if flags_only(&["-i"]) => {
+        // Without startup files bash takes the marks from its variables,
+        // which nothing then sets (4.4 and later, which print PS0).
+        "bash"
+            if flags_only(&["-i", "--norc", "--noprofile"])
+                && args.iter().any(|a| a == "--norc") =>
+        {
+            let mut vars = vec![("PS0".to_owned(), "\\e]133;C\\a".to_owned())];
+            vars.push((
+                "PROMPT_COMMAND".to_owned(),
+                r#"printf '\033]133;D;%s\007' "$?""#.to_owned(),
+            ));
+            Some(Marked {
+                argv: argv.to_vec(),
+                env: vars,
+            })
+        }
+        "bash" if flags_only(&["-i", "--noprofile"]) => {
             let rc = write(dir, "bashrc", BASHRC)?;
             let mut argv = vec![program.clone(), "--rcfile".into()];
             argv.push(rc.to_string_lossy().into_owned());
@@ -145,13 +165,20 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join(format!("marks-test-{}", std::process::id()));
-        for shell in ["bash", "/bin/bash", "-bash", "zsh", "zsh -l", "fish"] {
+        for shell in [
+            "bash",
+            "/bin/bash",
+            "-bash",
+            "bash --norc -i",
+            "zsh",
+            "zsh -l",
+            "fish",
+        ] {
             assert!(marked(&words(shell), &[], &dir).is_some(), "{shell}");
         }
         for other in [
             "bash script.sh",
             "bash -c ls",
-            "bash --norc",
             "bash -l",
             "sh",
             "zsh -c ls",
@@ -162,6 +189,11 @@ mod tests {
         }
         let argv = marked(&words("bash"), &[], &dir).unwrap_or_default().argv;
         assert_eq!(argv.get(1).map(String::as_str), Some("--rcfile"));
+        let own = [("PROMPT_COMMAND".to_owned(), "mine".to_owned())];
+        assert!(
+            marked(&words("bash"), &own, &dir).is_none(),
+            "the caller's own marks"
+        );
         let zdot = [("ZDOTDIR".to_owned(), "/home/me/.config/zsh".to_owned())];
         let vars = marked(&words("zsh"), &zdot, &dir).unwrap_or_default().env;
         assert!(vars.contains(&("FUX_ZDOTDIR".to_owned(), "/home/me/.config/zsh".to_owned())));

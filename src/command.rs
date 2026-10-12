@@ -613,10 +613,15 @@ fn tmux_command(name: &str) -> Option<&'static str> {
     })
 }
 
-/// What fux has for a flag of tmux's that a fux command does not take.
+/// A hint for a flag a fux command does not take: tmux's, or another fux
+/// command's.
 fn tmux_flag(command: &str, flag: &str) -> Option<&'static str> {
     Some(match (command, flag) {
         ("capture-pane", "-p" | "--print") => "capture-pane always prints the screen",
+        ("wait", flag) if flag.starts_with("--wait-") => {
+            "wait takes its conditions without wait-: --text, --gone, --idle, --change, \
+             --exit, --done, --bell"
+        }
         ("capture-pane", "-e") => "--styles keeps colours and attributes",
         ("resize-pane", "-Z") => "zoom with `fux zoom`",
         ("split" | "new-tab" | "new-workspace", "-d") => {
@@ -1158,6 +1163,11 @@ fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
     let argv = a.rest();
     if argv.is_empty() {
         return Err(Usage::Needs("usage: run [flags] -- PROGRAM [ARGS...]"));
+    }
+    if argv.iter().any(|w| w.starts_with("--wait-")) {
+        return Err(Usage::Needs(
+            "run's flags go before --; what follows -- is the program's own",
+        ));
     }
     let then = flag_wait(a, false)?;
     Ok(Command::Run {

@@ -32,7 +32,8 @@ fux kill-workspace -t agent                     # everything run started
     nothing.
   - `--wait-done`: until a shell command ends; prints `done STATUS`. Shells
     fux starts (bash, zsh, fish) mark their commands with no setup.
-  - `--wait-exit`: until the program exits; prints `exited STATUS`.
+  - `--wait-exit`: until the program exits; prints `exited STATUS` and,
+    as `timeout(1)` does, exits with that status.
   - `--wait-change`: until anything changes; on `run`, its first output.
   - `--wait-gone TEXT`, `--wait-bell` (a bell or desktop notification: a
     program that needs you).
@@ -64,7 +65,8 @@ fux kill-workspace -t agent                     # everything run started
   `notification`, `cursor_visible`, `alt_screen`, `mouse`, `cwd`, `argv`…
 - **Exit status:** 0 done, 1 failed (why on stderr), 2 a usage error; a wait
   also 3 (the program exited first), 4 (the pane closed), 5 (no change) and
-  124 (timed out).
+  124 (timed out). A wait met by the exit itself exits with the program's
+  status (128 plus the signal that killed it).
 
 ## Shells
 
@@ -72,7 +74,8 @@ Each shell fux starts reads your own startup files, then marks its commands
 (OSC 133): `--wait-done`, `--last-output`, `running` and `last_status` then
 just work. Your prompt, `PROMPT_COMMAND`, hooks and history behave as
 before. `set shell-marks off` in the config turns this off. A shell fux does
-not know, or one started with a script, `-c` or `--norc`, is left alone; it
+not know, or one started with a script or `-c`, is left alone (bash with
+`--norc` is marked through its variables, unless you set them); it
 can still mark itself (`printf '\e]133;C\a'` as a command's output begins,
 `printf '\e]133;D;%s\a' $?` as it ends). Without marks, wait for text only
 the output has, or for `--wait-idle`.

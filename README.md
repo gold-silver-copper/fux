@@ -207,7 +207,8 @@ from the command line. `zoom` and `copy-mode` take no `-t`.
 Exit status: 0 done; 1 failed, with the reason on stderr; 2 a usage error,
 with the command's usage. A wait also exits 3 when the program exited
 first, 4 when the pane closed, 5 when `--wait-idle` saw no change and 124
-on a timeout. A tmux name (`list-panes`, `new-window`, …) gets
+on a timeout; one met by the program's exit exits with its status, as
+`timeout(1)` does. A tmux name (`list-panes`, `new-window`, …) gets
 a hint at fux's.
 
 **Scripts and agents** drive programs with `run`, `send-keys`, `wait` and
