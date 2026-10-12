@@ -538,7 +538,7 @@ mod tests {
         mine.into_iter()
             .filter_map(|o| match o {
                 Outgoing::Bytes(_, bytes) => Some(bytes),
-                Outgoing::Exit(..) | Outgoing::Shutdown(_) => None,
+                Outgoing::Exit(..) | Outgoing::Shutdown { .. } => None,
             })
             .collect()
     }

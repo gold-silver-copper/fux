@@ -22,7 +22,7 @@ impl Axis {
         }
     }
     /// The other axis: that of a split's child splits.
-    fn cross(self) -> Axis {
+    pub fn cross(self) -> Axis {
         match self {
             Axis::Horizontal => Axis::Vertical,
             Axis::Vertical => Axis::Horizontal,
@@ -279,6 +279,10 @@ impl Tree<()> {
 }
 
 impl Split {
+    /// Its children, in order.
+    pub fn children(&self) -> impl Iterator<Item = &Tree<()>> {
+        self.0.iter().map(|(_, child)| child)
+    }
     /// `target` and `new` beside it, on `side`, sharing alike.
     fn pair(target: PaneId, new: PaneId, side: Side) -> Split {
         let (target, new) = ((WEIGHT, Tree::Pane(target)), (WEIGHT, Tree::Pane(new)));

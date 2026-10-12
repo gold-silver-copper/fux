@@ -22,6 +22,7 @@ use signal_hook::consts::{SIGCHLD, SIGHUP, SIGINT, SIGTERM};
 use std::io::{ErrorKind, Write};
 use std::ops::ControlFlow;
 use std::os::fd::OwnedFd;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -104,6 +105,8 @@ enum Wake {
     Paint(usize),
     /// A connection's wait is to be asked for its answer (`Waiting::due`).
     Answer,
+    /// The layout is saved, if it changed.
+    Save,
 }
 
 /// A client's connection: its socket, and where it is in its life.
@@ -458,6 +461,9 @@ pub struct Server {
     phase: Phase,
     conns: Vec<Conn>,
     grants: Vec<Grant>,
+    /// Where the layout is saved, for a server after a crash to bring
+    /// back; none if there is nowhere to.
+    saved: Option<Saved>,
     children: UnixStream,
     /// Closed panes' programs killed but not yet exited, reaped once SIGCHLD
     /// says they have.
@@ -479,6 +485,137 @@ pub struct Server {
     shortage: Option<Shortage>,
     /// When an `accept` failure other than a shortage was last logged.
     accept_logged: Option<Instant>,
+}
+
+/// How long after a change the layout is saved at the latest.
+const SAVE_EVERY: Duration = Duration::from_secs(1);
+
+/// The layout a server saves as it changes, for the next server on its
+/// socket to bring back after a crash or a reboot: in
+/// `$XDG_STATE_HOME/fux` (`~/.local/state/fux`), which outlives a reboot,
+/// written whole to a file of the user's alone, then moved in place.
+struct Saved {
+    path: PathBuf,
+    /// What it holds.
+    written: String,
+    /// When it may be saved next.
+    at: Instant,
+    /// Something happened since it was last saved.
+    pending: bool,
+}
+
+impl Saved {
+    /// Where the server on `socket` saves its layout, if anywhere.
+    fn of(socket: &SocketPath) -> Option<Saved> {
+        let base = std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| {
+                let home = std::env::var_os("HOME").map(PathBuf::from)?;
+                Some(home.join(".local").join("state"))
+            })?;
+        let name: String = (socket.path().to_string_lossy().chars())
+            .map(|c| if c == '/' { '%' } else { c })
+            .collect();
+        let name = format!("{}.layout", name.trim_start_matches('%'));
+        Some(Saved {
+            path: base.join("fux").join(name),
+            written: String::new(),
+            at: Instant::now(),
+            pending: false,
+        })
+    }
+
+    /// Brings back the layout saved, if there is one: whether it did.
+    fn restore(&self, session: &mut Session) -> bool {
+        let text = match std::fs::read_to_string(&self.path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == ErrorKind::NotFound => return false,
+            Err(e) => {
+                log(&format!("{}: {e}; starting afresh", self.path.display()));
+                return false;
+            }
+        };
+        match session.restore(&text) {
+            Ok(0) => false,
+            Ok(panes) => {
+                log(&format!(
+                    "brought back {panes} panes from {}",
+                    self.path.display()
+                ));
+                true
+            }
+            Err(error) => {
+                // What it made is gone; nothing of it may stop the server.
+                session.outbox.clear();
+                log(&format!(
+                    "could not bring back {}: {error}; starting afresh",
+                    self.path.display()
+                ));
+                false
+            }
+        }
+    }
+
+    /// Saves the layout if it changed and `SAVE_EVERY` has passed since it
+    /// was last saved; else it is saved then.
+    fn save_by(&mut self, session: &Session, now: Instant) {
+        if now < self.at {
+            self.pending = true;
+            return;
+        }
+        self.save(session);
+        self.at = crate::after(now, SAVE_EVERY);
+    }
+
+    /// Saves the layout as it is, if it changed.
+    fn save(&mut self, session: &Session) {
+        self.pending = false;
+        let text = session.saved_layout();
+        if text == self.written {
+            return;
+        }
+        match self.write(&text) {
+            Ok(()) => self.written = text,
+            Err(e) => log(&format!(
+                "saving the layout to {}: {e}",
+                self.path.display()
+            )),
+        }
+    }
+
+    /// Writes `text` to a file of the user's alone beside it, and moves
+    /// that in place: a crash leaves the old layout or the new, never half.
+    fn write(&self, text: &str) -> std::io::Result<()> {
+        if let Some(dir) = self.path.parent() {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)?;
+        }
+        let temporary = self.path.with_extension("layout.new");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, &self.path)
+    }
+
+    /// The layout is not to be brought back: the server was stopped on
+    /// purpose, or its last pane closed.
+    fn forget(&mut self) {
+        self.pending = false;
+        self.at = crate::after(Instant::now(), Duration::from_secs(3600));
+        self.forget_file();
+    }
+
+    fn forget_file(&self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// `fux grant` from a granted socket: refused.
@@ -614,7 +751,18 @@ pub fn serve(socket: &SocketPath, config_path: Option<PathBuf>, fresh: bool) -> 
     let mut session = Session::new(config, socket.path().to_owned(), true);
     session.config_path = config_path;
     session.config_error = error;
-    session.start().map_err(Error::Start)?;
+    let saved = Saved::of(socket);
+    let restored = match &saved {
+        Some(saved) if fresh => {
+            saved.forget_file();
+            false
+        }
+        Some(saved) => saved.restore(&mut session),
+        None => false,
+    };
+    if !restored {
+        session.start().map_err(Error::Start)?;
+    }
     let mut server = Server {
         session,
         phase: Phase::Serving {
@@ -626,6 +774,7 @@ pub fn serve(socket: &SocketPath, config_path: Option<PathBuf>, fresh: bool) -> 
         },
         conns: Vec::new(),
         grants: Vec::new(),
+        saved,
         children,
         killed: Vec::new(),
         stops,
@@ -674,6 +823,9 @@ impl Server {
             // for, or an event to tell.
             self.answer_waits(now);
             self.tell_events();
+            if let Some(saved) = &mut self.saved {
+                saved.save_by(&self.session, now);
+            }
             // Input given to panes since the last poll is written now rather
             // than when the next poll says their terminals can take it.
             self.session.panes.values_mut().for_each(Pane::write_input);
@@ -705,7 +857,9 @@ impl Server {
                     }
                     Slot::Stops => {
                         crate::drain(&self.stops);
-                        self.stop("stopped by a signal".into());
+                        // A signal (a shutdown, a logout) keeps the layout
+                        // for the next server to bring back.
+                        self.stop("stopped by a signal".into(), true);
                     }
                     Slot::Conn(i) => self.serve_conn(i, flags, now),
                     Slot::Tty(i) => self.serve_tty(i, flags, now),
@@ -725,6 +879,7 @@ impl Server {
             Phase::Serving { resting, .. } => resting.map(|at| (at, Wake::Listen)),
             Phase::Stopping(by) => Some((by, Wake::Stop)),
         };
+        let save = (self.saved.as_ref()).and_then(|s| s.pending.then_some((s.at, Wake::Save)));
         let paints = (self.conns.iter().enumerate())
             .filter_map(|(i, conn)| Some((conn.paint_due(&self.session)?, Wake::Paint(i))));
         let answers = self.conns.iter().filter_map(|conn| match &conn.stage {
@@ -740,6 +895,7 @@ impl Server {
         session
             .chain(grace)
             .chain(phase)
+            .chain(save)
             .chain(answers)
             .chain(paints)
     }
@@ -768,6 +924,11 @@ impl Server {
                 self.paint(index, now);
             }
             Wake::Answer => self.answer_waits(now),
+            Wake::Save => {
+                if let Some(saved) = &mut self.saved {
+                    saved.save_by(&self.session, now);
+                }
+            }
         }
         ControlFlow::Continue(())
     }
@@ -900,11 +1061,20 @@ impl Server {
         );
     }
 
-    fn stop(&mut self, reason: String) {
+    /// Stops the server, saying why; with `keep`, its layout is saved for
+    /// the next server to bring back, else forgotten.
+    fn stop(&mut self, reason: String, keep: bool) {
         if let Phase::Stopping(_) = self.phase {
             return;
         }
         log(&reason);
+        if let Some(saved) = &mut self.saved {
+            match keep {
+                // As it is, before its panes end.
+                true => saved.save(&self.session),
+                false => saved.forget(),
+            }
+        }
         // The sockets go first: from now on a client finds no server.
         self.phase = Phase::Stopping(crate::after(Instant::now(), STOP_WAIT));
         self.grants.clear();
@@ -951,7 +1121,7 @@ impl Server {
                         conn.end(&mut self.session, &ServerFrame::Exit(&reason));
                     }
                 }
-                Outgoing::Shutdown(reason) => self.stop(reason),
+                Outgoing::Shutdown { reason, keep } => self.stop(reason, keep),
             }
         }
     }
@@ -1330,7 +1500,7 @@ impl Server {
                     }
                     (Ok(()), Role::Kill) => {
                         conn.end(session, &ServerFrame::Done { status: 0 });
-                        self.stop("stopped by fux kill-server".into());
+                        self.stop("stopped by fux kill-server".into(), false);
                     }
                     (Ok(()), Role::Attach) => {
                         conn.enter(session, Stage::Attaching(passed, ClientKind::Terminal));

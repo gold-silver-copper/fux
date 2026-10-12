@@ -103,30 +103,69 @@ impl WsId {
 /// one that would wrap round is refused. A copy taken for something being
 /// made is committed back once it is made, so that a failure part way uses
 /// none up.
+/// The last id of each kind given out, and the next asked for (`--id`):
+/// ids count up, and none is given twice.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Ids {
     pane: u32,
     tab: u32,
     workspace: u32,
     client: u32,
+    wanted: Wanted,
+}
+
+/// The next id of each kind, as asked for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Wanted {
+    pane: Option<u32>,
+    tab: Option<u32>,
+    workspace: Option<u32>,
 }
 
 impl Ids {
     pub(crate) fn pane(&mut self) -> Result<PaneId, Error> {
-        take(&mut self.pane, "pane").map(PaneId)
+        take(&mut self.pane, &mut self.wanted.pane, "pane").map(PaneId)
     }
     pub(crate) fn tab(&mut self) -> Result<TabId, Error> {
-        take(&mut self.tab, "tab").map(TabId)
+        take(&mut self.tab, &mut self.wanted.tab, "tab").map(TabId)
     }
     pub(crate) fn workspace(&mut self) -> Result<WsId, Error> {
-        take(&mut self.workspace, "workspace").map(WsId)
+        take(&mut self.workspace, &mut self.wanted.workspace, "workspace").map(WsId)
     }
     pub(crate) fn client(&mut self) -> Result<ClientId, Error> {
-        take(&mut self.client, "client").map(ClientId)
+        take(&mut self.client, &mut None, "client").map(ClientId)
+    }
+
+    /// The next id of its kind is `id`: refused if one as high was ever
+    /// given, which would give it twice, unless `again` (a restore, whose
+    /// ids these were, and are free).
+    pub(crate) fn want(&mut self, id: AnyId, again: bool) -> Result<(), Error> {
+        let (last, wanted, n) = match id {
+            AnyId::Pane(PaneId(n)) => (self.pane, &mut self.wanted.pane, n),
+            AnyId::Tab(TabId(n)) => (self.tab, &mut self.wanted.tab, n),
+            AnyId::Workspace(WsId(n)) => (self.workspace, &mut self.wanted.workspace, n),
+        };
+        if n == 0 || (n <= last && !again) {
+            return Err(Error::IdTaken(crate::session::describe(id)));
+        }
+        *wanted = Some(n);
+        Ok(())
+    }
+
+    /// No id is asked for any more.
+    pub(crate) fn unwant(&mut self) {
+        self.wanted = Wanted::default();
     }
 }
 
-fn take(counter: &mut u32, what: &'static str) -> Result<u32, Error> {
+/// An id of any kind: what `--id` asks for.
+pub type AnyId = crate::command::AnyRef<WsId>;
+
+fn take(counter: &mut u32, wanted: &mut Option<u32>, what: &'static str) -> Result<u32, Error> {
+    if let Some(n) = wanted.take() {
+        *counter = (*counter).max(n);
+        return Ok(n);
+    }
     *counter = counter.checked_add(1).ok_or(Error::IdsExhausted(what))?;
     Ok(*counter)
 }

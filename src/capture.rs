@@ -239,8 +239,14 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         (crate::pane::Runs::Shell, None) => foreground.and_then(fuxix::process::argv),
     };
     let exited = pane.process.exit_status();
+    // A program a restore brought back, waiting for `respawn`.
+    let paused = matches!(
+        (&pane.process, &pane.runs),
+        (crate::pane::Process::Absent, crate::pane::Runs::Program(_))
+    );
     vec![
         ("program", program.map_or(Json::Null, Json::str)),
+        ("paused", Json::Bool(paused)),
         (
             "exited",
             match exited {

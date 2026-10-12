@@ -14,7 +14,7 @@ pub struct Binding {
     /// labels.
     pub command: Vec<String>,
     /// The command it runs, parsed when the binding was made.
-    pub parsed: Command,
+    pub parsed: Box<Command>,
     /// The command-column group; derived from the command when not given.
     /// A layer's title is the group of its first binding.
     pub group: Option<String>,
@@ -617,7 +617,7 @@ impl Config {
                 };
                 let binding = Binding {
                     command: command.to_vec(),
-                    parsed,
+                    parsed: Box::new(parsed),
                     group,
                 };
                 match (root, keys.as_slice()) {
@@ -993,7 +993,7 @@ mod tests {
         // Bound, the parsed command is what its words say.
         apply(&mut c, "bind g split -v -- htop")?;
         assert_eq!(
-            bound(&c, "g").map(|(b, _)| &b.parsed),
+            bound(&c, "g").map(|(b, _)| &*b.parsed),
             Some(
                 &crate::command::parse(
                     &words::split("split -v -- htop").map_err(|e| e.to_string())?

@@ -48,7 +48,7 @@ impl Entry {
             root,
             group: group.to_owned(),
             label,
-            command: (!layer).then(|| binding.parsed.clone()),
+            command: (!layer).then(|| (*binding.parsed).clone()),
         }
     }
 }
@@ -274,6 +274,7 @@ pub fn open_menu(session: &Session, view: &mut View, about: AnyRef<WsId>) -> Str
                     size: None,
                     cwd: None,
                     env: Vec::new(),
+                    ids: Vec::new(),
                     json: false,
                 },
             ));
@@ -286,6 +287,7 @@ pub fn open_menu(session: &Session, view: &mut View, about: AnyRef<WsId>) -> Str
                 size: None,
                 cwd: None,
                 env: Vec::new(),
+                ids: Vec::new(),
                 json: false,
             },
         )),
@@ -463,7 +465,7 @@ fn run_binding(session: &mut Session, client: ClientId, keys: &[KeyPress]) -> bo
     let Some(Node::Run { binding, repeat }) = layer.and_then(|l| l.get(*last)) else {
         return false;
     };
-    let command = binding.parsed.clone();
+    let command = (*binding.parsed).clone();
     let repeat = repeat
         .then(|| Repeat::of(&session.config, path.to_vec()))
         .flatten();
@@ -614,7 +616,7 @@ pub fn run_root(session: &mut Session, client: ClientId, press: KeyPress) -> boo
     let Some(binding) = session.config.root_binding(press) else {
         return false;
     };
-    let command = binding.parsed.clone();
+    let command = (*binding.parsed).clone();
     run_entry(session, client, &command, None);
     true
 }
@@ -1039,6 +1041,7 @@ mod tests {
         assert!(text.contains("C-b g: Tabs"), "{text}");
         assert!(text.contains("C-b g …"), "{text}");
         let new_tab = Command::NewTab {
+            ids: Vec::new(),
             target: None,
             name: None,
             cmd: Vec::new(),

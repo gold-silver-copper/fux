@@ -1,6 +1,6 @@
 //! The command grammar: the one set of commands that the CLI, key bindings,
 //! the command prompt and the config file all speak.
-use crate::id::{ClientId, PaneId, TabId, WsId, number};
+use crate::id::{AnyId, ClientId, PaneId, TabId, WsId, number};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
@@ -292,6 +292,8 @@ pub enum Command {
         /// Where its shell starts (default: the caller's directory).
         cwd: Option<String>,
         env: Vec<(String, String)>,
+        /// The ids it makes, if asked for (`--id`, as layout files have).
+        ids: Vec<AnyId>,
         json: bool,
     },
     NewTab {
@@ -301,6 +303,7 @@ pub enum Command {
         size: Size,
         cwd: Option<String>,
         env: Vec<(String, String)>,
+        ids: Vec<AnyId>,
         json: bool,
     },
     Split {
@@ -310,6 +313,10 @@ pub enum Command {
         /// Where its shell starts (default: where the split pane's is).
         cwd: Option<String>,
         env: Vec<(String, String)>,
+        /// `cmd` is the program, started in place of a shell, as `run`
+        /// starts one.
+        run: bool,
+        ids: Vec<AnyId>,
         json: bool,
     },
     /// A program, started in place of a shell in a tab of its own, in a
@@ -324,6 +331,7 @@ pub enum Command {
         json: bool,
         /// A file everything the program writes goes to too.
         log: Option<String>,
+        ids: Vec<AnyId>,
         /// Then waits, armed before the program writes anything.
         then: Option<Box<Wait>>,
     },
@@ -408,13 +416,25 @@ pub enum Command {
         /// How many times to send them all.
         repeat: u16,
         /// A wait for the program to go quiet once they are sent.
-        then: Option<Wait>,
+        then: Option<Box<Wait>>,
     },
     /// What happens, a line each as it happens, until the client goes:
     /// where the targets are, or anywhere without any.
     Events {
         targets: Vec<AnyRef>,
         json: bool,
+    },
+    /// What a layout file says, made all or nothing: its new tabs go to
+    /// `workspace` unless they say where.
+    Layout {
+        workspace: Option<WsRef>,
+        file: String,
+        json: bool,
+    },
+    /// What is there, as a layout file: everything, or one tab or
+    /// workspace.
+    DumpLayout {
+        target: Option<AnyRef>,
     },
     /// A socket whose commands reach workspace `workspace` alone; or with
     /// `revoke`, that socket closed.
@@ -703,6 +723,23 @@ pub fn parse_any(text: &str) -> Result<AnyRef, Usage> {
         parse_workspace(text).map(AnyRef::Workspace)
     }
 }
+/// The ids `--id` asks for: `%N`, `@N` or `+N`.
+fn ids(a: &Args<'_>) -> Result<Vec<AnyId>, Usage> {
+    a.values("--id")
+        .map(|id| match id.chars().next() {
+            Some('%') => parse_pane(id).map(AnyRef::Pane),
+            Some('@') => parse_tab(id).map(AnyRef::Tab),
+            Some('+') => id.parse().map(AnyRef::Workspace),
+            _ => Err(Usage::Bad {
+                command: a.name,
+                flag: "--id",
+                value: id.to_owned(),
+                expected: "an id: %N, @N or +N",
+            }),
+        })
+        .collect()
+}
+
 /// A pane, or a tab for every pane in it: `%N`, `@N`, or a tab's name
 /// (`Usage::Not`), which the server reads as its one pane.
 fn parse_pane_or_tab(text: &str) -> Result<AnyRef, Usage> {
@@ -817,11 +854,11 @@ pub const COMMANDS: &[(&str, &[Spec])] = &[
 
 #[rustfmt::skip]
 const PANES: &[Spec] = &[
-    spec("split -h|-v [-t %N] [--cwd DIR] [--env K=V] [--json] [-- CMD...]  -h side by side, -v stacked", Flags(split)),
+    spec("split -h|-v [-t %N] [--cwd DIR] [--env K=V] [--run] [--id %N] [--json] [-- CMD...]  -h side by side, -v stacked; --run starts CMD itself, as run does", Flags(split)),
     spec("respawn [-t %N] [-k] [--env K=V] [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json] [-- PROGRAM...]  \
           start again in its pane what run started; -k ends it first if it runs", Flags(respawn)),
     spec("notify [-t TARGET] TEXT  a notice on the clients showing TARGET (all without)", Flags(notify)),
-    spec("run [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--log FILE] [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json] -- PROGRAM...  \
+    spec("run [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--log FILE] [--id ID] [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json] -- PROGRAM...  \
           a program in a tab of its own, in workspace agent; it stays once the program exits", Flags(run)),
     spec("signal [-t %N] TERM|KILL|INT|HUP|QUIT|USR1|USR2|STOP|CONT|TSTP|WINCH [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json]  \
           a signal to what runs in the pane's foreground, never its shell", Flags(signal)),
@@ -883,10 +920,10 @@ const FOCUS: &[Spec] = &[spec(
 
 #[rustfmt::skip]
 const TABS: &[Spec] = &[
-    spec("new-tab [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--json] [-- CMD...]", Flags(|a| {
+    spec("new-tab [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--id ID] [--json] [-- CMD...]  a workspace named that is not there is made", Flags(|a| {
         let (target, size, env) = (a.target(parse_workspace)?, a.size()?, env_pairs(a, "new-tab")?);
-        let cwd = a.value("--cwd").map(str::to_owned);
-        Ok(Command::NewTab { target, name: a.name(), cmd: a.rest(), size, cwd, env, json: a.has("--json") })
+        let (cwd, ids) = (a.value("--cwd").map(str::to_owned), ids(a)?);
+        Ok(Command::NewTab { target, name: a.name(), cmd: a.rest(), size, cwd, env, ids, json: a.has("--json") })
     })),
     spec("select-tab [-c CLIENT] -t @N|--next|--previous", Screen(|a| {
         let needs = "select-tab needs one of -t @N, --next, --previous";
@@ -902,10 +939,21 @@ const TABS: &[Spec] = &[
 
 #[rustfmt::skip]
 const WORKSPACES: &[Spec] = &[
-    spec("new-workspace [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--json] [-- CMD...]", Flags(|a| {
+    spec("new-workspace [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--id ID] [--json] [-- CMD...]", Flags(|a| {
         let (size, env) = (a.size()?, env_pairs(a, "new-workspace")?);
-        let cwd = a.value("--cwd").map(str::to_owned);
-        Ok(Command::NewWorkspace { name: a.name(), cmd: a.rest(), size, cwd, env, json: a.has("--json") })
+        let (cwd, ids) = (a.value("--cwd").map(str::to_owned), ids(a)?);
+        Ok(Command::NewWorkspace { name: a.name(), cmd: a.rest(), size, cwd, env, ids, json: a.has("--json") })
+    })),
+    spec("layout [-t WS] FILE [--json]  make what a layout file says, all or nothing; its new tabs go to WS (agent)", Flags(|a| {
+        let file = match a.positional.as_slice() {
+            [file] => (*file).to_owned(),
+            _ => return Err(Usage::Needs("usage: layout [-t WS] FILE: a file of fux commands")),
+        };
+        a.positional.clear();
+        Ok(Command::Layout { workspace: a.target(parse_workspace)?, file, json: a.has("--json") })
+    })),
+    spec("dump-layout [-t TAB|WS]  what is there as a layout file, to make again", Flags(|a| {
+        Ok(Command::DumpLayout { target: a.target(parse_any)? })
     })),
     spec("select-workspace [-c CLIENT] -t WS|--next|--previous", Screen(|a| {
         let needs = "select-workspace needs one of -t +N, --next, --previous";
@@ -1267,7 +1315,9 @@ fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
         return Err(Usage::Needs("run needs a program, after --"));
     }
     let then = flag_wait(a, false)?;
+    let ids = ids(a)?;
     Ok(Command::Run {
+        ids,
         workspace,
         name: a.name(),
         size: a.size()?,
@@ -1571,12 +1621,18 @@ fn split(a: &mut Args<'_>) -> Result<Command, Usage> {
             ));
         }
     };
+    let (run, cmd) = (a.has("--run"), a.rest());
+    if run && cmd.is_empty() {
+        return Err(Usage::Needs("split --run needs a program, after --"));
+    }
     Ok(Command::Split {
         axis,
         target,
-        cmd: a.rest(),
+        cmd,
         cwd: a.value("--cwd").map(str::to_owned),
         env: env_pairs(a, "split")?,
+        run,
+        ids: ids(a)?,
         json: a.has("--json"),
     })
 }
@@ -1833,16 +1889,18 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
         ));
     }
     let (echo, lines) = typed_lines(&inputs, repeat);
-    let then = (!until.is_empty()).then(|| Wait {
-        until,
-        timeout: timeout.unwrap_or(WAIT_TIMEOUT),
-        print,
-        json,
-        after: true,
-        echo,
-        marks,
-        lines,
-        all: true,
+    let then = (!until.is_empty()).then(|| {
+        Box::new(Wait {
+            until,
+            timeout: timeout.unwrap_or(WAIT_TIMEOUT),
+            print,
+            json,
+            after: true,
+            echo,
+            marks,
+            lines,
+            all: true,
+        })
     });
     Ok(Command::SendKeys {
         targets,
@@ -1911,7 +1969,7 @@ impl Command {
             ..
         } = self
         {
-            return Some((targets.clone(), wait.clone()));
+            return Some((targets.clone(), (**wait).clone()));
         }
         if let Command::SendMouse {
             target,
@@ -2079,6 +2137,8 @@ mod tests {
         assert_eq!(
             cmd("split -h -t %3 --cwd src --env A=1 -- htop -d 5"),
             Ok(Command::Split {
+                run: false,
+                ids: Vec::new(),
                 axis: Axis::Horizontal,
                 target: Some(PaneId::of(3)),
                 cmd: vec!["htop".into(), "-d".into(), "5".into()],
@@ -2090,6 +2150,7 @@ mod tests {
         assert_eq!(
             cmd("new-tab -t work -n logs"),
             Ok(Command::NewTab {
+                ids: Vec::new(),
                 target: Some(WsRef::Name("work".into())),
                 name: Some("logs".into()),
                 cmd: vec![],
@@ -2156,7 +2217,7 @@ mod tests {
                     Input::Key("Enter".parse().map_err(|_| Usage::NoCommand)?),
                 ],
                 repeat: 2,
-                then: Some(Wait {
+                then: Some(Box::new(Wait {
                     until: vec![Until::Idle(Duration::from_millis(300))],
                     timeout: WAIT_TIMEOUT,
                     print: true,
@@ -2166,7 +2227,7 @@ mod tests {
                     marks: false,
                     lines: 2,
                     all: true,
-                }),
+                })),
             })
         );
         // Any wait condition, armed before the keys; a key name mistyped
@@ -2184,7 +2245,7 @@ mod tests {
                     Input::Key("Enter".parse().map_err(|_| Usage::NoCommand)?)
                 ],
                 repeat: 1,
-                then: Some(Wait {
+                then: Some(Box::new(Wait {
                     until: vec![Until::Text("PASS".into()), Until::Text("FAIL".into())],
                     timeout: Duration::from_secs(5),
                     print: false,
@@ -2194,7 +2255,7 @@ mod tests {
                     marks: false,
                     lines: 1,
                     all: true,
-                }),
+                })),
             })
         );
         for typo in ["Entr", "C-Ent", "Escpe", "Pag"] {
@@ -2254,6 +2315,7 @@ mod tests {
         assert_eq!(
             cmd("run -n tool --size 80x24 --env A=1 --json -- ck -v"),
             Ok(Command::Run {
+                ids: Vec::new(),
                 workspace: None,
                 name: Some("tool".into()),
                 size: fux_vt::Size::new(24, 80).ok(),

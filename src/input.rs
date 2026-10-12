@@ -168,7 +168,7 @@ impl Session {
     fn watching_key(&mut self, client: ClientId, press: KeyPress) -> bool {
         let detaches = |node: &Node| {
             matches!(node, Node::Run { binding, .. } if matches!(
-                binding.parsed,
+                *binding.parsed,
                 Command::Client { action: ClientAction::Detach, .. }
             ))
         };
