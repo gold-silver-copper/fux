@@ -3,7 +3,9 @@
 //! client and every pane's PTY.
 use crate::bytes::ByteQueue;
 use crate::config::Config;
+use crate::events::{Event, Snapshot, Subscription};
 use crate::id::{ClientId, PaneId};
+use crate::json::Json;
 use crate::layout::Placement;
 use crate::pane::{Pane, Process};
 use crate::process::Leader;
@@ -134,6 +136,9 @@ enum Stage {
     /// Its command waits for its pane (`fux wait`): it is answered once the
     /// wait has an answer. It is read only to notice the client go.
     Waiting(Box<Waiting>),
+    /// Its command streams events (`fux events`) until the client goes,
+    /// or the server stops. It is read only to notice the client go.
+    Events(Box<Subscription>),
     /// Its last frame is sent: it closes once what waits is written, and
     /// is read no more, so a client that has stopped sending, or shut its
     /// side, still gets it all.
@@ -150,7 +155,8 @@ impl Stage {
             | Stage::Attaching(..)
             | Stage::Attached(_)
             | Stage::Command
-            | Stage::Waiting(_) => true,
+            | Stage::Waiting(_)
+            | Stage::Events(_) => true,
             Stage::Closing | Stage::Dead => false,
         }
     }
@@ -573,8 +579,9 @@ impl Server {
                 }
             }
             // What the last round read or changed may be what a wait waits
-            // for.
+            // for, or an event to tell.
             self.answer_waits(now);
+            self.tell_events();
             // Input given to panes since the last poll is written now rather
             // than when the next poll says their terminals can take it.
             self.session.panes.values_mut().for_each(Pane::write_input);
@@ -633,6 +640,7 @@ impl Server {
             | Stage::Attaching(..)
             | Stage::Attached(_)
             | Stage::Command
+            | Stage::Events(_)
             | Stage::Closing
             | Stage::Dead => None,
         });
@@ -683,6 +691,36 @@ impl Server {
         }
     }
 
+    /// Tells each stream of events what changed since it last looked; one
+    /// whose reader has fallen too far behind is told it lost events, and
+    /// ends.
+    fn tell_events(&mut self) {
+        let streams = self
+            .conns
+            .iter()
+            .any(|c| matches!(c.stage, Stage::Events(_)));
+        if !streams {
+            return;
+        }
+        let now = Snapshot::of(&self.session);
+        for conn in &mut self.conns {
+            let Stage::Events(subscription) = &mut conn.stage else {
+                continue;
+            };
+            let lines = subscription.told(&now);
+            if lines.is_empty() {
+                continue;
+            }
+            if conn.out.len() > crate::events::BACKLOG {
+                let lost = Event::stream("lost", Vec::new()).line(subscription.json);
+                ServerFrame::split_into(lost.as_bytes(), ServerFrame::Stdout, &mut conn.out);
+                conn.end(&mut self.session, &ServerFrame::Done { status: 1 });
+                continue;
+            }
+            ServerFrame::split_into(lines.as_bytes(), ServerFrame::Stdout, &mut conn.out);
+        }
+    }
+
     /// Drops every connection that is dead, or closing with nothing left to
     /// send. Neither has a client attached: it was detached as it ended.
     fn close_conns(&mut self) {
@@ -693,7 +731,8 @@ impl Server {
             | Stage::Attaching(..)
             | Stage::Attached(_)
             | Stage::Command
-            | Stage::Waiting(_) => true,
+            | Stage::Waiting(_)
+            | Stage::Events(_) => true,
         });
     }
 
@@ -777,6 +816,15 @@ impl Server {
         let exit = format!("the fux server stopped: {reason}");
         for conn in &mut self.conns {
             match conn.stage {
+                // A stream says why it ends, as one of its lines, and ends
+                // as a command that is done.
+                Stage::Events(ref subscription) => {
+                    let reason = Json::str(reason.clone());
+                    let stopped = Event::stream("stopped", vec![("reason", reason)]);
+                    let line = stopped.line(subscription.json);
+                    ServerFrame::split_into(line.as_bytes(), ServerFrame::Stdout, &mut conn.out);
+                    conn.end(&mut self.session, &ServerFrame::Done { status: 0 });
+                }
                 Stage::Hello(_)
                 | Stage::Attaching(..)
                 | Stage::Attached(_)
@@ -1257,10 +1305,16 @@ impl Server {
                 match session.begin(&argv, &origin) {
                     Begun::Done(outcome) => conn.answer(session, outcome),
                     Begun::Waiting(waiting) => conn.enter(session, Stage::Waiting(waiting)),
+                    Begun::Events(subscription) => {
+                        // Told it is armed: from here on, nothing is missed.
+                        let ready = Event::stream("ready", Vec::new()).line(subscription.json);
+                        conn.send(session, &ServerFrame::Stdout(ready.as_bytes()));
+                        conn.enter(session, Stage::Events(subscription));
+                    }
                 }
             }
-            // Nothing more is asked of a waiting command.
-            Stage::Waiting(_) => {
+            // Nothing more is asked of a waiting command, or a stream.
+            Stage::Waiting(_) | Stage::Events(_) => {
                 *decoder = Decoder::default();
                 return Ok(false);
             }

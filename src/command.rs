@@ -410,6 +410,12 @@ pub enum Command {
         /// A wait for the program to go quiet once they are sent.
         then: Option<Wait>,
     },
+    /// What happens, a line each as it happens, until the client goes:
+    /// where the targets are, or anywhere without any.
+    Events {
+        targets: Vec<AnyRef>,
+        json: bool,
+    },
     /// What the pane's program writes, kept in a file from now on; `None`
     /// stops it.
     Log {
@@ -919,6 +925,10 @@ const SESSION: &[Spec] = &[
 
 #[rustfmt::skip]
 const OTHER: &[Spec] = &[
+    spec("events [-t TARGET] [--json]  what happens, a line each as it happens: made, closed, exited, done, bell, …; -t again for more", Flags(|a| {
+        let targets = a.values("-t").map(parse_any).collect::<Result<_, _>>()?;
+        Ok(Command::Events { targets, json: a.has("--json") })
+    })),
     spec("ls|list [-t TARGET] [--get FIELD] [--json]  workspaces, tabs, panes and clients; -t one, --get a field of it", Flags(|a| {
         let (target, get) = (a.target(parse_any)?, a.value("--get").map(str::to_owned));
         if get.is_some() && target.is_none() {

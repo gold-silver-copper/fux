@@ -585,6 +585,8 @@ pub struct Outcome {
 pub enum Begun {
     Done(Outcome),
     Waiting(Box<crate::wait::Waiting>),
+    /// `fux events`: a stream, until the client goes.
+    Events(Box<crate::events::Subscription>),
 }
 
 /// How long a closing pane's processes have to exit after the hangup.
@@ -2024,7 +2026,7 @@ impl Session {
                 }
                 Begun::Done(outcome)
             }
-            begun @ (Begun::Done(_) | Begun::Waiting(_)) => begun,
+            begun @ (Begun::Done(_) | Begun::Waiting(_) | Begun::Events(_)) => begun,
         }
     }
 
@@ -2039,14 +2041,25 @@ impl Session {
                 });
             }
         };
-        let failed = |error: Error| {
-            Begun::Done(Outcome {
-                status: 1,
-                stdout: String::new(),
-                stderr: stray(error, origin).to_string(),
-            })
-        };
+
         let (targets, wait, keys) = match command::parse(&argv) {
+            Ok(Command::Events { targets, json }) => {
+                let here = match self.here(origin) {
+                    Ok(here) => here,
+                    Err(error) => return self.failed(error, origin),
+                };
+                let targets: Result<Vec<_>, Error> = (targets.into_iter())
+                    .map(|t| self.any_target(&Subject::from(t), here))
+                    .collect();
+                return match targets {
+                    Ok(targets) => Begun::Events(Box::new(crate::events::Subscription {
+                        targets,
+                        json,
+                        seen: crate::events::Snapshot::of(self),
+                    })),
+                    Err(error) => self.failed(error, origin),
+                };
+            }
             Ok(Command::Wait { targets, wait }) => {
                 (targets.into_iter().map(AnyRef::Pane).collect(), wait, None)
             }
@@ -2102,11 +2115,11 @@ impl Session {
         };
         let here = match self.here(origin) {
             Ok(here) => here,
-            Err(error) => return failed(error),
+            Err(error) => return self.failed(error, origin),
         };
         let ids = match self.panes_of(&targets, here) {
             Ok(ids) => ids,
-            Err(error) => return failed(error),
+            Err(error) => return self.failed(error, origin),
         };
         let panes: Result<Vec<&Pane>, Error> = ids
             .into_iter()
@@ -2116,7 +2129,7 @@ impl Session {
         // Armed before any keys go in: what the keys bring is what it sees.
         let mut waiting = match panes {
             Ok(panes) => crate::wait::Waiting::new(&panes, wait, now),
-            Err(error) => return failed(error),
+            Err(error) => return self.failed(error, origin),
         };
         if let Some(command) = keys {
             let outcome = self.run_command(&command, origin);
@@ -2128,6 +2141,18 @@ impl Session {
             Some(outcome) => Begun::Done(outcome),
             None => Begun::Waiting(Box::new(waiting)),
         }
+    }
+
+    /// A command line from the CLI that failed before it ran: why, its code
+    /// kept for `--json`.
+    fn failed(&mut self, error: Error, origin: &Origin) -> Begun {
+        let error = stray(error, origin);
+        self.last_error = Some(error.code());
+        Begun::Done(Outcome {
+            status: 1,
+            stdout: String::new(),
+            stderr: error.to_string(),
+        })
     }
 
     /// Runs a command that starts a program and prints its pane's id, then
@@ -2595,7 +2620,7 @@ impl Session {
                 }
                 Ok(String::new())
             }
-            Command::Wait { .. } => Err(Error::WaitsOnlyFromCli),
+            Command::Wait { .. } | Command::Events { .. } => Err(Error::WaitsOnlyFromCli),
             &Command::SendMouse {
                 target,
                 if_revision,

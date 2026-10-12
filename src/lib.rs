@@ -9,6 +9,7 @@ pub mod client;
 pub mod command;
 pub mod config;
 pub mod copy;
+pub mod events;
 pub mod help;
 pub mod id;
 pub mod input;
