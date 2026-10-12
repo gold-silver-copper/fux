@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 /// `PROMPT_COMMAND`, so it fires once, for the command typed.
 const BASHRC: &str = r#"# fux: OSC 133 shell marks, after your own startup. Off: `set shell-marks off`.
 if [ -r ~/.bashrc ]; then . ~/.bashrc; fi
-__fux_end() { local s=$?; printf '\033]133;D;%s\007' "$s"; return $s; }
+__fux_end() { local s=$?; __fux_armed=; printf '\033]133;D;%s\007' "$s"; return $s; }
 case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
   "declare -a"*) PROMPT_COMMAND=(__fux_end "${PROMPT_COMMAND[@]}") ;;
   *) PROMPT_COMMAND="__fux_end${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
@@ -29,7 +29,7 @@ else
   # Armed last thing before the prompt, so the trap fires for the first
   # command typed, not for PROMPT_COMMAND's own.
   __fux_arm() { __fux_armed=1; }
-  __fux_start() { [ -n "$__fux_armed" ] || return 0; __fux_armed=; printf '\033]133;C\007'; }
+  __fux_start() { case "$BASH_COMMAND" in __fux_*) return 0 ;; esac; [ -n "$__fux_armed" ] || return 0; __fux_armed=; printf '\033]133;C\007'; }
   case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
     "declare -a"*) PROMPT_COMMAND+=(__fux_arm) ;;
     *) PROMPT_COMMAND="${PROMPT_COMMAND};__fux_arm" ;;
@@ -37,6 +37,11 @@ else
   trap '__fux_start' DEBUG
 fi
 "#;
+
+/// bash with no startup files, from `PROMPT_COMMAND` alone: it ends a
+/// command, and sets a DEBUG trap, armed last, that marks the next one's
+/// start; fux's own commands, and an empty line's prompt, mark nothing.
+const BARE_BASH: &str = r#"__fux_s=$?; __fux_a=; printf '\033]133;D;%s\007' "$__fux_s"; __fux_c() { case "$BASH_COMMAND" in __fux_*) return 0 ;; esac; [ -n "$__fux_a" ] || return 0; __fux_a=; printf '\033]133;C\007'; }; trap __fux_c DEBUG; __fux_a=1"#;
 
 /// zsh: read first of all startup files, from the shim `ZDOTDIR`; it puts
 /// the user's `ZDOTDIR` back, so the rest of their files are read from
@@ -79,20 +84,15 @@ pub fn marked(argv: &[String], env: &[(String, String)], dir: &Path) -> Option<M
     // Only an interactive shell: no script or command, startup files read.
     let flags_only = |allowed: &[&str]| args.iter().all(|a| allowed.contains(&a.as_str()));
     match name {
-        // Without startup files bash takes the marks from its variables,
-        // which nothing then sets (4.4 and later, which print PS0).
+        // Without startup files bash takes the marks from PROMPT_COMMAND,
+        // which nothing then sets.
         "bash"
             if flags_only(&["-i", "--norc", "--noprofile"])
                 && args.iter().any(|a| a == "--norc") =>
         {
-            let mut vars = vec![("PS0".to_owned(), "\\e]133;C\\a".to_owned())];
-            vars.push((
-                "PROMPT_COMMAND".to_owned(),
-                r#"printf '\033]133;D;%s\007' "$?""#.to_owned(),
-            ));
             Some(Marked {
                 argv: argv.to_vec(),
-                env: vars,
+                env: vec![("PROMPT_COMMAND".to_owned(), BARE_BASH.to_owned())],
             })
         }
         "bash" if flags_only(&["-i", "--noprofile"]) => {
