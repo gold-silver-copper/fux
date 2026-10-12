@@ -344,8 +344,9 @@ pub enum Command {
     KillPane {
         target: Option<PaneId>,
     },
-    /// A signal to the pane's foreground processes, what its terminal's
-    /// keys reach: for a program that ignores Ctrl-C and hangups.
+    /// A signal to what runs in the pane's foreground, what its terminal's
+    /// keys reach (a job its shell runs, or the program `run` started), never
+    /// a shell itself: for a program that ignores Ctrl-C and hangups.
     Signal {
         target: Option<PaneId>,
         signal: fuxix::process::Signal,
@@ -393,9 +394,6 @@ pub enum Command {
         history: Option<usize>,
         view: CaptureView,
         json: bool,
-    },
-    Terminate {
-        target: Option<PaneId>,
     },
     Reorder {
         subject: Subject,
@@ -758,7 +756,7 @@ const PANES: &[Spec] = &[
     spec("run [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--log FILE] [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json] -- PROGRAM...  \
           a program in a tab of its own, in workspace agent; it stays once the program exits", Flags(run)),
     spec("signal [-t %N] TERM|KILL|INT|HUP|QUIT|USR1|USR2|STOP|CONT [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json]  \
-          a signal to the pane's foreground processes", Flags(signal)),
+          a signal to what runs in the pane's foreground, never its shell", Flags(signal)),
     spec("kill-pane [-t %N]  close, without asking", Flags(|a| {
         Ok(Command::KillPane { target: a.pane()? })
     })),
@@ -780,9 +778,6 @@ const PANES: &[Spec] = &[
     })),
     spec("confirm-close [pane|tab|workspace] [-c CLIENT] [-t TARGET]", Screen(|a| {
         Ok(ClientAction::ConfirmClose(a.subject()?.unwrap_or(Subject::Pane(None))))
-    })),
-    spec("terminate [-t %N]  SIGTERM to the pane's foreground job", Flags(|a| {
-        Ok(Command::Terminate { target: a.pane()? })
     })),
     spec("choose-pane [-c CLIENT] [-t %N]  a pane to swap with", Screen(|a| {
         Ok(ClientAction::ChoosePane { target: a.pane()? })

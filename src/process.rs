@@ -151,7 +151,6 @@ impl Leader {
     }
 }
 
-/// Sends SIGTERM to a process group.
 /// How an end is told: `exited 3`, or `killed by SIGSEGV`.
 pub fn told(ended: Status) -> String {
     match ended {
@@ -174,8 +173,4 @@ pub fn told(ended: Status) -> String {
             format!("killed by {name}")
         }
     }
-}
-
-pub fn terminate(group: Pid) -> Result<(), fuxix::Errno> {
-    fuxix::process::kill_group(group, Signal::Term)
 }

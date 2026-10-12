@@ -197,7 +197,6 @@ pub enum Error {
     Words(crate::words::Error),
     Pane(crate::pane::Error),
     Process(crate::process::Error),
-    Terminate(fuxix::Errno),
     Config(crate::config::Error),
     Reload(crate::config::Error),
 }
@@ -271,7 +270,6 @@ impl std::fmt::Display for Error {
             Error::Words(error) => error.fmt(f),
             Error::Pane(error) => error.fmt(f),
             Error::Process(error) => error.fmt(f),
-            Error::Terminate(error) => error.fmt(f),
             Error::Config(error) => error.fmt(f),
             Error::Reload(error) => write!(f, "{error}; the previous configuration is kept"),
         }
@@ -285,7 +283,7 @@ impl std::error::Error for Error {
             Error::Words(error) => Some(error),
             Error::Pane(error) => Some(error),
             Error::Process(error) => Some(error),
-            Error::Terminate(error) => Some(error),
+            Error::Signal(error) => Some(error),
             Error::Config(error) | Error::Reload(error) => Some(error),
             Error::NoWorkspace(_)
             | Error::NoWorkspaceNamed(_)
@@ -314,7 +312,6 @@ impl std::error::Error for Error {
             | Error::NotHeadless(_)
             | Error::NotADirectory(_)
             | Error::Log(..)
-            | Error::Signal(_)
             | Error::NotRun(_)
             | Error::StillRunning(_)
             | Error::NoRows
@@ -443,7 +440,6 @@ fn shows_nothing_new(command: &Command) -> bool {
             | Command::SendKeys { .. }
             | Command::SendPrefix { .. }
             | Command::Signal { .. }
-            | Command::Terminate { .. }
             | Command::Client {
                 action: ClientAction::Capture { .. },
                 ..
@@ -638,6 +634,26 @@ impl Session {
         }
         self.touch();
         Ok(())
+    }
+
+    /// The process group `fux signal` signals in a pane: the job its shell
+    /// runs in the foreground, or the program `run` started; never a shell.
+    fn signalled(&self, target: Option<PaneId>, here: Here) -> Result<crate::process::Pid, Error> {
+        let pane = self.pane(target, here)?;
+        if let Some(status) = pane.process.exit_status() {
+            return Err(Error::Exited {
+                pane: pane.id,
+                status,
+            });
+        }
+        let program = match (&pane.runs, pane.process.child()) {
+            (crate::pane::Runs::Program(_), Some(child)) => Some(child.leader.pid()),
+            _ => None,
+        };
+        pane.process
+            .job()
+            .or(program)
+            .ok_or(Error::OnlyShell(pane.id))
     }
 
     /// The panes of `tabs`, as ids, in their order.
@@ -1705,11 +1721,8 @@ impl Session {
                 .is_none()
                 .then_some(Error::NoBuffer(*index));
         }
-        if let Command::Terminate { target } = command {
-            return match self.pane(*target, here) {
-                Ok(pane) => (pane.process.job().is_none()).then_some(Error::OnlyShell(pane.id)),
-                Err(error) => Some(error),
-            };
+        if let Command::Signal { target, .. } = command {
+            return self.signalled(*target, here).err();
         }
         if let Command::KillPane { target }
         | Command::SwapPane { target, .. }
@@ -2007,19 +2020,7 @@ impl Session {
                 Ok(made_ids((at.0, at.1, new), &[new.to_string()], json))
             }
             &Command::Signal { target, signal, .. } => {
-                let pane = self.pane(target, here)?;
-                let id = pane.id;
-                let child =
-                    pane.process
-                        .child()
-                        .ok_or_else(|| match pane.process.exit_status() {
-                            Some(status) => Error::Exited { pane: id, status },
-                            None => Error::NoPane(id),
-                        })?;
-                // What the terminal's keys reach: the job in front, else the
-                // program and its group.
-                let group = fuxix::terminal::foreground_group(&child.master)
-                    .unwrap_or_else(|| child.leader.pid());
+                let group = self.signalled(target, here)?;
                 fuxix::process::kill_group(group, signal).map_err(Error::Signal)?;
                 Ok(String::new())
             }
@@ -2168,12 +2169,6 @@ impl Session {
                 let pane = self.pane(target, here)?;
                 let copying = self.copying(pane.id);
                 Ok(crate::capture::pane(pane, history, view, json, copying))
-            }
-            &Command::Terminate { target } => {
-                let p = self.pane(target, here)?;
-                let group = p.process.job().ok_or(Error::OnlyShell(p.id))?;
-                crate::process::terminate(group).map_err(Error::Terminate)?;
-                Ok(String::new())
             }
             &Command::Reorder {
                 ref subject,
@@ -3423,7 +3418,10 @@ mod tests {
             ("select-tab --next", Some("only one tab")),
             ("select-workspace --next", None),
             ("paste-buffer", Some("no buffer 0")),
-            ("terminate", Some("nothing is running in %1 but its shell")),
+            (
+                "signal TERM",
+                Some("nothing is running in %1 but its shell"),
+            ),
             ("kill-pane -t %99", Some("no pane %99")),
             ("choose-pane", Some("only one pane")),
         ] {

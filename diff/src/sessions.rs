@@ -602,7 +602,7 @@ fn line(r: &mut Rng, w: &World) -> Vec<String> {
             one(r, &["h", "l", "m"]),
         ],
         35 => vec![s("capture-client")],
-        36 => vec![s("terminate"), s("-t"), p],
+        36 => vec![s("capture-pane"), s("-t"), p],
         37 => vec![s("show-buffer")],
         38 => vec![s("detach")],
         39 => {
