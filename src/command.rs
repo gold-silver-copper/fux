@@ -245,6 +245,9 @@ pub struct Wait {
     pub echo: Vec<String>,
     /// `--print`'s screen with reverse video marked, as `capture-pane --marks`.
     pub marks: bool,
+    /// How many command lines send-keys types (each Enter, or newline in
+    /// text): a wait for `--done` waits for the last of them.
+    pub lines: u32,
 }
 
 /// How long a wait lasts at most if `--timeout` does not say: well inside
@@ -1218,6 +1221,7 @@ fn flag_wait(a: &Args<'_>, after: bool) -> Result<Option<Box<Wait>>, Usage> {
             after,
             echo: Vec::new(),
             marks: a.has("--marks"),
+            lines: 0,
         })
     }))
 }
@@ -1363,6 +1367,7 @@ fn wait(a: &mut Args<'_>) -> Result<Command, Usage> {
             after: false,
             echo: Vec::new(),
             marks: a.has("--marks"),
+            lines: 0,
         },
     })
 }
@@ -1663,17 +1668,7 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
             "send-keys -c CLIENT types at a client; -t and the waits are for a pane",
         ));
     }
-    // What is typed in one go, between keys: its echo is one line.
-    let mut echo: Vec<String> = Vec::new();
-    let mut joined = false;
-    for input in &inputs {
-        match (input, echo.last_mut()) {
-            (Input::Text(text), Some(last)) if joined => last.push_str(text),
-            (Input::Text(text), _) => echo.push(text.clone()),
-            (Input::Key(_) | Input::Paste(_), _) => {}
-        }
-        joined = matches!(input, Input::Text(_));
-    }
+    let (echo, lines) = typed_lines(&inputs, repeat);
     let then = (!until.is_empty()).then(|| Wait {
         until,
         timeout: timeout.unwrap_or(WAIT_TIMEOUT),
@@ -1682,6 +1677,7 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
         after: true,
         echo,
         marks,
+        lines,
     });
     Ok(Command::SendKeys {
         target,
@@ -1690,6 +1686,52 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
         repeat,
         then,
     })
+}
+
+/// The lines send-keys types, as a shell or an input box would echo them
+/// (Space joins words, BSpace takes the last character back, pasted text is
+/// shown too), and how many it ends (Enter, or a newline in text).
+fn typed_lines(inputs: &[Input], repeat: u16) -> (Vec<String>, u32) {
+    let mut lines: Vec<String> = vec![String::new()];
+    let mut ended = 0u32;
+    let add = |text: &str, lines: &mut Vec<String>, counts: bool, ended: &mut u32| {
+        for (i, part) in text.split('\n').enumerate() {
+            if i > 0 {
+                lines.push(String::new());
+                if counts {
+                    *ended = ended.saturating_add(1);
+                }
+            }
+            if let Some(last) = lines.last_mut() {
+                last.push_str(part);
+            }
+        }
+    };
+    for input in std::iter::repeat_n(inputs, usize::from(repeat)).flatten() {
+        match input {
+            Input::Text(text) => add(text, &mut lines, true, &mut ended),
+            Input::Paste(text) => add(text, &mut lines, false, &mut ended),
+            Input::Key(key) => match (key.key, key.mods == fux_vt::keys::Modifiers::default()) {
+                (fux_vt::keys::Key::Char(c), true) => {
+                    add(&c.to_string(), &mut lines, true, &mut ended)
+                }
+                (fux_vt::keys::Key::Backspace, true) => {
+                    if let Some(last) = lines.last_mut() {
+                        last.pop();
+                    }
+                }
+                (fux_vt::keys::Key::Enter, _) => {
+                    ended = ended.saturating_add(1);
+                    lines.push(String::new());
+                }
+                // Another key (an arrow, Tab, a control key) leaves the
+                // line as the program makes it: its echo is not known.
+                _ => lines.push(String::new()),
+            },
+        }
+    }
+    lines.retain(|l| !l.trim().is_empty());
+    (lines, ended)
 }
 
 impl Command {
@@ -1942,6 +1984,7 @@ mod tests {
                     after: true,
                     echo: vec!["two words".into()],
                     marks: false,
+                    lines: 0,
                 }),
             })
         );
@@ -1967,6 +2010,7 @@ mod tests {
                     after: true,
                     echo: vec!["go".into()],
                     marks: false,
+                    lines: 0,
                 }),
             })
         );
@@ -2006,6 +2050,7 @@ mod tests {
                     after: false,
                     echo: Vec::new(),
                     marks: false,
+                    lines: 0,
                 },
             })
         );

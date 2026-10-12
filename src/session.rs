@@ -2157,29 +2157,46 @@ impl Session {
                     p.screen().key_mode(),
                     p.screen().mode(fux_vt::Mode::BracketedPaste),
                 );
-                // Each input is a piece, and one the program must read alone,
-                // a lone Escape or text, is paced apart from what follows.
-                let mut pieces: Vec<(Vec<u8>, bool)> = Vec::new();
+                // Inputs go in pieces, each read by the program on its own,
+                // paced apart: text typed in a row is one piece, keys pressed
+                // in a row another, and a lone Escape and a paste each their
+                // own. So in `--text msg Enter` the Enter is read alone, as a
+                // submit, not as a newline pasted with the text.
+                #[derive(PartialEq)]
+                enum Kind {
+                    Text,
+                    Keys,
+                    Alone,
+                }
+                let mut pieces: Vec<Vec<u8>> = Vec::new();
+                let mut last = Kind::Alone;
                 for input in std::iter::repeat_n(inputs, usize::from(repeat)).flatten() {
                     let mut bytes = Vec::new();
-                    let alone = match input {
+                    let kind = match input {
                         Input::Key(key) => {
                             crate::encode::key_bytes((*key).into(), mode, &mut bytes);
-                            bytes == b"\x1b"
+                            if bytes == b"\x1b" {
+                                Kind::Alone
+                            } else {
+                                Kind::Keys
+                            }
                         }
                         Input::Text(text) => {
                             bytes.extend_from_slice(text.as_bytes());
-                            true
+                            Kind::Text
                         }
                         Input::Paste(text) => {
                             crate::encode::paste(text, bracketed, &mut bytes);
-                            true
+                            Kind::Alone
                         }
                     };
                     match pieces.last_mut() {
-                        Some((last, false)) if !alone => last.extend_from_slice(&bytes),
-                        _ => pieces.push((bytes, alone)),
+                        Some(piece) if kind != Kind::Alone && kind == last => {
+                            piece.extend_from_slice(&bytes);
+                        }
+                        _ => pieces.push(bytes),
                     }
+                    last = kind;
                 }
                 p.send(pieces, Instant::now())?;
                 Ok(String::new())
