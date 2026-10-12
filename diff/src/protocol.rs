@@ -4,7 +4,9 @@
 //! decode to the same frames, which encode to the same bytes again, and the
 //! same errors. The current fux decodes each kind as the frame type of the
 //! stage it is allowed in, and refuses a size of zero and (as the baseline
-//! does not know it) a `Terminal` where the baseline is compared.
+//! does not know it) a `Terminal` where the baseline is compared. A command
+//! is not compared: the baseline's is a command line, the current one's a
+//! typed request.
 use crate::rng::Rng;
 use crate::{Outcome, bump, same, times};
 
@@ -16,7 +18,6 @@ enum Spec {
     Input(Vec<u8>),
     Resize(u16, u16),
     Detach,
-    Command(Vec<String>, String, Option<String>),
     Paint(Vec<u8>),
     Exit(String),
     Stdout(Vec<u8>),
@@ -71,12 +72,7 @@ fn spec(r: &mut Rng, big: bool) -> Spec {
             u16::try_from(r.below(65_536)).unwrap_or(0),
         ),
         4 => Spec::Detach,
-        5 => Spec::Command(
-            (0..r.below(4)).map(|_| text(r)).collect(),
-            text(r),
-            maybe(r),
-        ),
-        6 | 7 => Spec::Paint(bytes(r, big)),
+        5..=7 => Spec::Paint(bytes(r, big)),
         8 => Spec::Exit(text(r)),
         9 | 10 => Spec::Stdout(bytes(r, big)),
         11 | 12 => Spec::Stderr(bytes(r, big)),
@@ -139,7 +135,8 @@ fn stream(r: &mut Rng) -> Vec<u8> {
 
 /// What the current fux refuses of the whole frame `held` begins with,
 /// whatever its payload, which the baseline takes: a `Terminal`, or a size
-/// of zero, read before the fields after it.
+/// of zero, read before the fields after it. A command, which each reads
+/// as a frame of its own, both stop at.
 fn refused(held: &[u8]) -> Option<String> {
     let (header, rest) = held.split_first_chunk::<4>()?;
     let length = usize::try_from(u32::from_be_bytes(*header)).ok()?;
@@ -149,7 +146,7 @@ fn refused(held: &[u8]) -> Option<String> {
     let cols = payload.get(2..).and_then(<[u8]>::first_chunk::<2>);
     let zero = rows == Some(&[0, 0]) || (rows.is_some() && cols == Some(&[0, 0]));
     match kind {
-        12 => Some("UnexpectedKind(12)".into()),
+        6 | 12 => Some(format!("UnexpectedKind({kind})")),
         2 | 4 if zero => Some("ZeroSize".into()),
         _ => None,
     }
@@ -211,7 +208,7 @@ decoded!(base, baseline::protocol::Decoder, |d, _kind| d
     .transpose());
 
 decoded!(cur, fux::protocol::Decoder, |d, kind| {
-    use fux::protocol::{Attach, AttachedFrame, Command, Frame, Hello, ServerFrame};
+    use fux::protocol::{Attach, AttachedFrame, Frame, Hello, ServerFrame};
     fn again<'a>(frame: Option<impl Frame<'a>>) -> Result<Option<Vec<u8>>, String> {
         frame
             .map(|f| f.encode().map_err(|e| format!("{e:?}")))
@@ -222,7 +219,6 @@ decoded!(cur, fux::protocol::Decoder, |d, kind| {
         Some(1) => again(d.frame::<Hello>().map_err(error)?),
         Some(2) => again(d.frame::<Attach>().map_err(error)?),
         Some(3..=5) => again(d.frame::<AttachedFrame>().map_err(error)?),
-        Some(6) => again(d.frame::<Command>().map_err(error)?),
         _ => again(d.frame::<ServerFrame>().map_err(error)?),
     }
 });
@@ -273,7 +269,6 @@ fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
         Spec::Input(bytes) => Frame::Input(bytes),
         Spec::Resize(rows, cols) => Frame::Resize { rows, cols },
         Spec::Detach => Frame::Detach,
-        Spec::Command(argv, cwd, pane) => Frame::Command { argv, cwd, pane },
         Spec::Paint(bytes) => Frame::Paint(bytes),
         Spec::Exit(reason) => Frame::Exit(reason),
         Spec::Stdout(bytes) => Frame::Stdout(bytes),

@@ -7,7 +7,7 @@ saves each walk as a trace, and minimizes a failing walk to the steps that
 matter.
 
 Besides fux, fux-vt and fuxix by path it uses `serde_json` (to read `ls
---json` and `capture-client --json`) and `signal-hook` (to stop cleanly
+json`) and `signal-hook` (to stop cleanly
 between steps on SIGINT or SIGTERM). It forbids fux's lints. CI runs its
 fmt, clippy and `cargo test`, but no walks.
 
@@ -39,12 +39,14 @@ Walk a debug build of fux: it checks arithmetic for overflow.
 
 ## The fixture
 
-Each walk and replay starts a fresh `fux server` in a new 0700 directory
+Each walk and replay starts a fresh fux server in a new 0700 directory
 in `$TMPDIR` if it is short, else `~/.cache/fux` (macOS's `$TMPDIR` is
 too long for a socket path, and `/tmp` is memory on some machines), with a
-config file the walk may rewrite (`set shell /bin/sh`), an environment
-cleared but for `PATH`, `HOME` set to the directory, and `act.sh`, the
-script panes act through. The first client is a `fux attach` at 24×80,
+config file each client runs as it attaches, which the walk may rewrite
+(`str shell str /bin/sh set`), an environment cleared but for `PATH`,
+`HOME`, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` in the directory, and
+`act.sh`, the script panes act through. The first client is a plain `fux`
+(no words attaches) at 24×80,
 whose screen the walk parses with fux-vt.
 
 Only what the walk started is ever signalled, every wait is bounded, and
@@ -53,23 +55,24 @@ is a failure.
 
 ## Steps
 
-Each step is a small random index resolved against the live `ls --json`,
+Each step is a small random index resolved against the live `ls json`,
 recorded as the concrete step it became:
 
-- **keys:** default bindings, layers and repeat modes; overlays and copy
-  mode driven by their keys; command-prompt lines, some wrong; a lone Esc,
+- **keys:** default bindings, layers and repeat modes, each client with
+  the prefix its config gave it; overlays and copy mode driven by their
+  keys; command-prompt lines (fuxth the client runs), some wrong; a lone Esc,
   the doubled prefix, unbound, capital and Ctrl letters; a bracketed paste;
   plain typing; `C-b d`;
-- **commands** from the whole set, with valid and invalid targets (never
-  `kill-server`);
+- **commands:** fuxth programs from the whole vocabulary, with valid and
+  invalid targets (never `kill-server`);
 - **what no command expresses:** a client resized (down to 1×1, 1×200,
   40×1); a client asking for 9000×9000, which must get 4096×4096; a pane's
   program acting through `act.sh` (alternate screen, mouse reporting,
   bracketed paste, application cursor keys, `stty`, a burst of output, not
   reading, exiting with a status); SIGSTOP and SIGCONT to a pane's shell
   (every stopped pane is continued within a few steps); SIGHUP to a client;
-  the config file rewritten, then `reload`; one to three clients attaching
-  and leaving.
+  the config file rewritten, for clients that attach after; one to three
+  clients attaching and leaving.
 
 While fewer than two panes are left, the walk splits one first. A key path
 may still close the last pane and with it the server: that walk ends
@@ -82,7 +85,7 @@ sleep: an act's marker shows in its pane, and every client's painted
 screen equals its `capture-client`. Then:
 
 - **the server** runs, answers, and its log has no panic;
-- **structure** (`ls --json`): ids are unique (a client's workspace, tab
+- **structure** (`ls json`): ids are unique (a client's workspace, tab
   and focused pane belong together by fux's types);
 - **processes:** a pane's shell ends within three seconds of its pane
   closing;
@@ -116,12 +119,13 @@ Narrowed, and why:
 Each walk is saved in `--output` as `SECONDS-seed-N/`:
 
 - `trace.txt`: `fux-walk trace 1`, comments, then one step per line in
-  fux's word grammar, for example `keys c1 '\x02tn'`, `cli split -h -t %3`,
+  fux's word grammar, for example `keys c1 '\x02tn'`,
+  `cli str %3 pane opts horizontal split`,
   `resize c1 2 2`, `child %2 burst 40`, `signal %2 stop`, `config
   prefix-a`. Bytes are printable ASCII as is, `\\` for a backslash and
   `\xNN` for the rest. Replay reads the steps, never the seed.
 - `metadata.txt`: the seed, the fux binary's path, size and FNV-1a hash,
-  `fux --version`, `uname -a`, the settle time.
+  `fux version`, `uname -a`, the settle time.
 - For a failure: `failure.txt` (the step, the invariant, what was seen, the
   end of the server's log; the fixture directory is kept too) and
   `minimized-NNN.txt`.

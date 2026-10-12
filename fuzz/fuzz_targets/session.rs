@@ -1,92 +1,107 @@
 #![no_main]
 //! Input: two bytes for the first client's size, then operations, each a
 //! tag byte and its arguments: bytes a client types, the Escape deadline,
-//! a resize, a client attaching or detaching, a command from the side, a
-//! pane's output, a pane's shell exiting. Two sessions run the same
-//! operations: one given each client's bytes as the input says, the other
-//! one byte at a time.
+//! a resize, a client attaching or detaching, a fuxth program from the
+//! side, a pane's output, a pane's shell exiting. Two sessions run the
+//! same operations: one given each client's bytes as the input says, the
+//! other one byte at a time.
+//!
+//! Each client's keys are read as its client reads them: by the screen it
+//! has open (`screens::Screen`), else through its bindings (`keymap::Held`,
+//! one keymap all clients share). Its actions go to the session, and its
+//! programs run in-process as that client (a screen one opens opens), as do
+//! the programs the session hands a client (`Outgoing::Run`) and keys sent
+//! to it (`Outgoing::Keys`).
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 
-use fux::config::{Config, Node};
+use fux::act::Act;
+use fux::act::{CopyAct, Panel};
+use fux::config::Config;
 use fux::copy::MAX_CLIPBOARD;
 use fux::decode::{Decoder, Input};
 use fux::id::{ClientId, PaneId};
-use fux::keys::KeyPress;
+use fux::keymap::{Held, Keymap, Step};
+use fux::keys::Keystroke;
 use fux::outer;
+use fux::protocol::{Context, Reply, Request};
 use fux::render::{Grid, compose};
-use fux::session::{Origin, Outgoing, Session};
-use fux::view::{Choice, Mode};
+use fux::screens::{Effect, Screen};
+use fux::script::{Ask, Failed, Host, Local};
+use fux::session::{Begun, Origin, Outcome, Outgoing, Session};
+use fux::view::Mode;
+use fuxth::Outcome as Ran;
 use libfuzzer_sys::fuzz_target;
 
-/// Commands from the command line, while clients type: they change what
+/// Programs from the command line, while clients type: they change what
 /// clients are looking at, and the bindings and layers they are in.
 /// Seeds pick them by position, so a new one goes at the end.
 const SIDE: &[&str] = &[
-    "new-tab -t +1",
-    "new-tab -t +1 -n two -- htop",
-    "new-workspace -n ws",
-    "split -h -t %1",
-    "split -v -t %2",
-    "split -h -t %2",
-    "split -h -t %3",
-    "kill-pane -t %1",
-    "kill-pane -t %2",
-    "kill-tab -t @1",
-    "kill-workspace -t +2",
-    "move-pane -t %1 -R",
-    "move-pane -t %2 --to new-tab",
-    "swap-pane -t %1 %2",
-    "resize-pane -t %1 -R 5",
-    "rename -t @1 renamed",
-    "reorder tab -t @1 --next",
-    "zoom -c c1",
-    "select-pane -c c1 --next",
-    "select-tab -c c1 --next",
-    "select-workspace -c c2 --next",
-    "command-column -c c1",
-    "copy-mode -c c1",
-    "menu -c c2 pane",
-    "choose-tab -c c1",
-    "confirm-close -c c1 tab",
-    "rename-prompt -c c2 workspace",
-    "command-prompt -c c1",
-    "bind t zoom",
-    "unbind t",
-    "unbind r",
-    "unbind t m",
+    "opts str +1 workspace in new-tab drop",
+    "opts str +1 workspace in str two name str htop program new-tab drop",
+    "opts str ws name new-workspace drop",
+    "str %1 pane opts horizontal split drop",
+    "str %2 pane opts vertical split drop",
+    "str %2 pane opts horizontal split drop",
+    "str %3 pane opts horizontal split drop",
+    "str %1 pane kill",
+    "str %2 pane kill",
+    "str @1 tab kill",
+    "str +2 workspace kill",
+    "str %1 pane str right move-beside",
+    "str %2 pane str new-tab move-to",
+    "str %1 pane str %2 pane swap-panes",
+    "str %1 pane str right 5 move-border",
+    "str @1 tab str renamed rename",
+    "str @1 tab str next reorder",
+    "str c1 client zoom",
+    "str c1 client str next focus",
+    "str c1 client next-tab",
+    "str c2 client next-workspace",
+    "str c1 client keys str C-b key send-keys",
+    "str c1 client copy-mode",
+    "str c2 client str c2 client focused menu",
+    "str c1 client choose-tab",
+    "str c1 client str c1 client focused tab confirm-close",
+    "str c2 client str c2 client focused workspace rename-prompt",
+    "str c1 client command-prompt",
+    "str t str 'me zoom' bind",
+    "str t unbind",
+    "str r unbind",
+    "str 't m' unbind",
     "unbind-all",
-    "bind -r g h resize-pane -L",
-    "bind -g Grow -r t m j zoom",
-    "bind g n new-tab",
-    "bind -g Grow -r y l resize-pane -R",
-    "bind -g Grow -r y h resize-pane -L",
-    "select-pane -c c1 -t %1",
-    "select-pane -c c1 -t %2",
-    "select-pane -c c1 -t %3",
-    "select-tab -c c1 -t @1",
-    "unbind g",
-    "set prefix C-a",
-    "set prefix C-b",
-    "set clipboard off",
-    "set clipboard on",
-    "reload",
-    "detach -c c1",
-    "paste-buffer -t %1",
-    "send-keys -t %1 x",
-    "send-prefix -t %1",
-    "bind V split -v",
-    "bind Up zoom",
-    "bind C-b new-tab",
-    "bind -r g Enter resize-pane -R",
-    "bind -n M-t new-tab",
-    "bind -n x zoom",
-    "bind -n y send-keys -t %1 z",
-    "unbind -n x",
-    "set titles on",
-    "set titles off",
-    "set bell off",
-    "set bell on",
+    "str 'g h' str 'me focused str left 1 move-border' bind repeat",
+    "str 't m j' str 'me zoom' bind str Grow group repeat",
+    "str 'g n' str 'opts new-tab drop' bind",
+    "str 'y l' str 'me focused str right 1 move-border' bind str Grow group repeat",
+    "str 'y h' str 'me focused str left 1 move-border' bind str Grow group repeat",
+    "str c1 client str %1 pane focus-pane",
+    "str c1 client str %2 pane focus-pane",
+    "str c1 client str %3 pane focus-pane",
+    "str c1 client str @1 tab show-tab",
+    "str g unbind",
+    "str C-a prefix",
+    "str C-b prefix",
+    "str clipboard str off set",
+    "str clipboard str on set",
+    "str c1 client keys str hjkl text send-keys",
+    "str c1 client detach",
+    "str %1 pane 0 paste-buffer",
+    "str %1 pane keys str x key send-keys",
+    "str %1 pane keys str C-b key send-keys",
+    "str V str 'me focused opts vertical split drop' bind",
+    "str Up str 'me zoom' bind",
+    "str C-b str 'opts new-tab drop' bind",
+    "str 'g Enter' str 'me focused str right 1 move-border' bind repeat",
+    "str M-t str 'opts new-tab drop' bind-root",
+    "str x str 'me zoom' bind-root",
+    "str y str 'str %1 pane keys str z key send-keys' bind-root",
+    "str x unbind-root",
+    "str titles str on set",
+    "str titles str off set",
+    "str bell str off set",
+    "str bell str on set",
+    "str c2 client keys str ls text str Enter key send-keys",
 ];
 
 /// What a pane's program may say of the mouse.
@@ -102,7 +117,7 @@ const MOUSE_MODES: &[&[u8]] = &[
     b"\x1b[?1003l",
 ];
 
-/// Commands that write to a pane: a repeating binding of one may.
+/// Words that write to a pane: a repeating binding of one may.
 const WRITES: &[&str] = &["send-keys", "paste-buffer"];
 
 struct Bytes<'a>(&'a [u8]);
@@ -134,24 +149,44 @@ fn size(rows: u8, cols: u8) -> (u16, u16) {
     (1 + u16::from(rows) % 60, 1 + u16::from(cols) % 200)
 }
 
+/// Words that read files, which a program typed at a prompt is not run
+/// with: a fuzzer finds /dev/zero.
+const READS: &[&str] = &["check", "paste-file"];
+
+/// How many steps a program may take: enough for any binding, few enough
+/// for a loop typed at the prompt to end.
+const BUDGET: u64 = 20_000;
+
 /// What anyone can tell apart: the session's items, each client's mode,
-/// notice and screen, the configuration and the paste buffers.
+/// notice and screen, the configuration, the paste buffers, and each
+/// client's keymap and keys.
 type State = (
     String,
     Vec<(ClientId, String, Option<Grid>)>,
     Config,
     Vec<String>,
+    Keymap,
+    Vec<(ClientId, Held, Screen)>,
 );
 
-/// One session, and what drove it that the checks need.
+/// A client's keys, as its client reads them: its decoder, what its keys
+/// are in the middle of, and the screen it has open.
+#[derive(Default)]
+struct Keys {
+    held: Held,
+    screen: Screen,
+    decoder: Decoder,
+}
+
+/// One session, its clients' keys, and what drove it that the checks need.
 struct Run {
     s: Session,
+    /// The keymap of every client: bindings change it, as programs run.
+    keymap: Keymap,
+    keys: BTreeMap<ClientId, Keys>,
     /// Each client's grids as the server keeps them: composed into the
     /// spare, painted against the shown, swapped.
     grids: BTreeMap<ClientId, (Grid, Grid, fux::layout::Placement, bool)>,
-    /// A decoder beside each client's, fed the same bytes, to tell which
-    /// inputs each byte completes.
-    shadows: BTreeMap<ClientId, Decoder>,
     shut: bool,
 }
 
@@ -161,8 +196,9 @@ impl Run {
         s.start().expect("a session starts");
         let mut run = Run {
             s,
+            keymap: Keymap::default(),
+            keys: BTreeMap::new(),
             grids: BTreeMap::new(),
-            shadows: BTreeMap::new(),
             shut: false,
         };
         run.attach(rows, cols);
@@ -171,8 +207,13 @@ impl Run {
 
     fn attach(&mut self, rows: u16, cols: u16) {
         if let Ok(id) = self.s.attach(rows, cols, None) {
-            self.shadows.insert(id, Decoder::default());
+            self.keys.insert(id, Keys::default());
         }
+    }
+
+    fn detach(&mut self, client: ClientId) {
+        self.s.detach(client);
+        self.keys.remove(&client);
     }
 
     fn client(&self, pick: u8) -> Option<ClientId> {
@@ -187,48 +228,218 @@ impl Run {
         panes.get(usize::from(pick) % panes.len().max(1)).copied()
     }
 
+    /// A request of the session, as a server answers it: begun at once; a
+    /// wait not waited on, there being no programs, and no time that both
+    /// sessions share.
+    fn ask(&mut self, request: Request) -> Reply {
+        let origin = match request.context.client {
+            Some(client) if self.s.views.contains_key(&client) => Origin::Client(client),
+            Some(_) | None => Origin::default(),
+        };
+        match self.s.begin(request.command, &origin) {
+            Begun::Done(outcome) => outcome.into(),
+            Begun::Waiting(_) | Begun::Events(_) => Outcome::default().into(),
+        }
+    }
+
+    /// Runs fuxth `code` as `client` (or from no client) runs it, the
+    /// keymap its own: what it printed and left, a value a line, or why it
+    /// failed; and the screen it opened, if it opened one.
+    fn program(
+        &mut self,
+        client: Option<ClientId>,
+        code: &str,
+    ) -> (Result<String, String>, Option<Screen>) {
+        let mut opened = None;
+        let said = self.program_opening(client, code, &mut opened);
+        (said, opened)
+    }
+
+    fn program_opening(
+        &mut self,
+        client: Option<ClientId>,
+        code: &str,
+        opened: &mut Option<Screen>,
+    ) -> Result<String, String> {
+        let tokens = fuxth::token::source("fuzz", code).map_err(|e| e.to_string())?;
+        if tokens.iter().any(|t| READS.contains(&&*t.text)) {
+            return Err("reads a file".to_owned());
+        }
+        let mut machine = fux::script::compile(&tokens).map_err(|e| e.to_string())?;
+        let mut keymap = self.keymap.clone();
+        let mut out = Vec::new();
+        let mut host = Host {
+            context: Context {
+                client,
+                ..Context::default()
+            },
+            keymap: Some(&mut keymap),
+            last_bound: None,
+            out: &mut out,
+        };
+        let ended = loop {
+            let ran = machine.run(&mut host, BUDGET).map_err(Failed::from);
+            match ran {
+                Err(failed) => break Err(failed.to_string()),
+                Ok(Ran::Finished) => break Ok(machine.stack().to_vec()),
+                Ok(Ran::Paused) => break Err("too long".to_owned()),
+                Ok(Ran::Suspended(Ask::Local(Local::Open(open)))) if client.is_some() => {
+                    // Built with what the session answers, as a client
+                    // builds it.
+                    let context = host.context.clone();
+                    let built = open.build(&mut |command| {
+                        Ok(self.ask(Request {
+                            command,
+                            context: context.clone(),
+                        }))
+                    });
+                    match built {
+                        Ok(screen) => *opened = Some(screen),
+                        Err(failed) => break Err(failed.to_string()),
+                    }
+                }
+                Ok(Ran::Suspended(Ask::Local(_))) => break Err("not in-process".to_owned()),
+                Ok(Ran::Suspended(Ask::Server {
+                    command,
+                    client,
+                    then,
+                })) => {
+                    let mut context = host.context.clone();
+                    if client.is_some() {
+                        context.client = client;
+                    }
+                    let request = Request {
+                        command: command.clone(),
+                        context,
+                    };
+                    let reply = self.ask(request);
+                    let values = fux::script::answered(reply, then, command);
+                    let pushed = values.and_then(|values| {
+                        values
+                            .into_iter()
+                            .try_for_each(|v| machine.push(v).map_err(Failed::from))
+                    });
+                    if let Err(failed) = pushed {
+                        break Err(failed.to_string());
+                    }
+                }
+            }
+        };
+        // As a client keeps what its program did to its keymap.
+        self.keymap = keymap;
+        let mut text = String::from_utf8_lossy(&out).into_owned();
+        for value in &ended? {
+            text.push_str(&fux::script::display(value));
+            text.push('\n');
+        }
+        Ok(text)
+    }
+
+    /// Runs `code` as `client`, telling it what came of it, as a client
+    /// does with its bindings' and its prompt's programs.
+    fn run_as(&mut self, client: ClientId, code: &str) {
+        let (said, opened) = self.program(Some(client), code);
+        if let Some(screen) = opened {
+            self.open(client, screen);
+        }
+        let notice = match said {
+            Err(text) => Some((text, true)),
+            Ok(said) => {
+                let said: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).collect();
+                (!said.is_empty()).then(|| (said.join("  "), false))
+            }
+        };
+        if let Some((text, error)) = notice {
+            self.s.acts(client, vec![Act::Notice { text, error }]);
+        }
+    }
+
+    /// Opens `screen` at `client`, in place of what was open.
+    fn open(&mut self, client: ClientId, screen: Screen) {
+        let mut acts = Vec::new();
+        if let Some(keys) = self.keys.get_mut(&client) {
+            keys.held = Held::Normal;
+            if let Screen::Copy(_) = keys.screen {
+                acts.push(Act::Copy(CopyAct::Leave));
+            }
+            acts.extend(screen.opened());
+            keys.screen = screen;
+        }
+        self.s.acts(client, acts);
+    }
+
     /// What the server does after every event: settle, then act on the
     /// outbox. The panes' queued input is taken, as a PTY would.
     fn after(&mut self) {
-        self.s.settle();
-        for outgoing in std::mem::take(&mut self.s.outbox) {
-            match outgoing {
-                // What fux asks a client's terminal: when it attaches, and
-                // after the terminal's answers.
-                Outgoing::Bytes(_, bytes)
-                    if [
-                        outer::QUERIES,
-                        outer::COLOUR_QUERIES,
-                        outer::REPORTS_ON,
-                        outer::SCHEME_QUERY,
-                        outer::KITTY_PUSH,
-                        outer::BELL,
-                    ]
-                    .contains(&bytes.as_slice()) => {}
-                Outgoing::Bytes(_, bytes) => {
-                    // Else OSC 52, with at most MAX_CLIPBOARD bytes of base64.
-                    let payload = bytes
-                        .strip_prefix(b"\x1b]52;c;")
-                        .and_then(|b| b.strip_suffix(b"\x07"))
-                        .unwrap_or_else(|| panic!("not a question nor OSC 52: {bytes:?}"));
-                    assert!(payload.len() <= MAX_CLIPBOARD, "{} bytes", payload.len());
-                    assert!(
-                        payload
-                            .iter()
-                            .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(b))
-                    );
-                }
-                Outgoing::Exit(client, _) => {
-                    self.s.detach(client);
-                    self.shadows.remove(&client);
-                }
-                Outgoing::Shutdown { .. } => self.shut = true,
+        // What the clients do with what they were sent can send more: a
+        // few rounds, the rest left for the next event.
+        for _ in 0..4 {
+            self.s.settle();
+            let outbox = std::mem::take(&mut self.s.outbox);
+            if outbox.is_empty() {
+                break;
+            }
+            for outgoing in outbox {
+                self.outgoing(outgoing);
             }
         }
         for pane in self.s.panes.values_mut() {
             pane.input.drain_all();
         }
         self.check_memo();
+    }
+
+    fn outgoing(&mut self, outgoing: Outgoing) {
+        match outgoing {
+            // What fux asks a client's terminal: when it attaches, and
+            // after the terminal's answers.
+            Outgoing::Bytes(_, bytes)
+                if [
+                    outer::QUERIES,
+                    outer::COLOUR_QUERIES,
+                    outer::REPORTS_ON,
+                    outer::SCHEME_QUERY,
+                    outer::KITTY_PUSH,
+                    outer::BELL,
+                ]
+                .contains(&bytes.as_slice()) => {}
+            Outgoing::Bytes(_, bytes) => {
+                // Else OSC 52, with at most MAX_CLIPBOARD bytes of base64.
+                let payload = bytes
+                    .strip_prefix(b"\x1b]52;c;")
+                    .and_then(|b| b.strip_suffix(b"\x07"))
+                    .unwrap_or_else(|| panic!("not a question nor OSC 52: {bytes:?}"));
+                assert!(payload.len() <= MAX_CLIPBOARD, "{} bytes", payload.len());
+                assert!(
+                    payload
+                        .iter()
+                        .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(b))
+                );
+            }
+            Outgoing::Exit(client, _) => self.detach(client),
+            Outgoing::Shutdown { .. } => self.shut = true,
+            Outgoing::Run(client, code) => self.run_as(client, &code),
+            Outgoing::Ended(client) => {
+                if let Some(keys) = self.keys.get_mut(&client) {
+                    keys.screen.ended();
+                }
+            }
+            Outgoing::Keys(client, typed) => {
+                for input in typed {
+                    match input {
+                        fux::command::Input::Key(press) => self.press(client, press.into()),
+                        fux::command::Input::Text(text) => {
+                            for c in text.chars() {
+                                self.press(client, fux::keys::KeyPress::char(c).into());
+                            }
+                        }
+                        fux::command::Input::Paste(text) => {
+                            self.inputs(client, vec![Input::Paste(text)]);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Composing a client's screen into the grid it was composed into last
@@ -274,66 +485,134 @@ impl Run {
 
     /// Types `bytes` in pieces of `piece` bytes (all at once for 0).
     fn type_in(&mut self, client: ClientId, bytes: &[u8], piece: usize) {
-        if let Some(shadow) = self.shadows.get_mut(&client) {
-            shadow.bytes(bytes, &mut Vec::new());
-        }
-        match NonZeroUsize::new(piece) {
-            Some(piece) => {
-                for chunk in pieces(bytes, piece) {
-                    self.s.input(client, chunk);
-                }
+        let chunks: Vec<&[u8]> = match NonZeroUsize::new(piece) {
+            Some(piece) => pieces(bytes, piece).collect(),
+            None => vec![bytes],
+        };
+        for chunk in chunks {
+            let mut inputs = Vec::new();
+            if let Some(keys) = self.keys.get_mut(&client) {
+                keys.decoder.bytes(chunk, &mut inputs);
             }
-            None => self.s.input(client, bytes),
+            self.inputs(client, inputs);
         }
     }
 
-    /// Types `bytes` one at a time, checking that a key typed in a repeat
-    /// mode reaches no pane.
-    fn type_bytewise(&mut self, client: ClientId, bytes: &[u8]) {
-        for byte in bytes {
-            let mut inputs = Vec::new();
-            if let Some(shadow) = self.shadows.get_mut(&client) {
-                shadow.bytes(std::slice::from_ref(byte), &mut inputs);
+    /// The decoder's wait passed: what waited is taken as it is.
+    fn escape(&mut self, client: ClientId) {
+        let mut inputs = Vec::new();
+        if let Some(keys) = self.keys.get_mut(&client) {
+            keys.decoder.timeout(&mut inputs);
+        }
+        self.inputs(client, inputs);
+    }
+
+    /// What a client's terminal sent, decoded, as its client takes it.
+    fn inputs(&mut self, client: ClientId, inputs: Vec<Input>) {
+        for input in inputs {
+            let Some(view) = self.s.views.get(&client) else {
+                return;
+            };
+            let read_only = view.read_only;
+            let act = match input {
+                Input::Key(stroke) => {
+                    self.press(client, stroke);
+                    continue;
+                }
+                Input::Reply(reply) => Act::Reply(reply),
+                Input::Paste(_)
+                | Input::PasteTooLong
+                | Input::FocusIn
+                | Input::FocusOut
+                | Input::Mouse(_)
+                    if read_only =>
+                {
+                    continue;
+                }
+                Input::Paste(text) if self.screen_open(client) => {
+                    let effects = match self.keys.get_mut(&client) {
+                        Some(keys) => keys.screen.paste(&text),
+                        None => Vec::new(),
+                    };
+                    self.effects(client, effects);
+                    continue;
+                }
+                Input::Mouse(_) if self.screen_open(client) => continue,
+                Input::Paste(text) => Act::Paste(text),
+                Input::PasteTooLong => {
+                    let limit = fux::decode::PASTE_LIMIT / 1024;
+                    let text = format!("paste exceeds {limit} KiB; discarded");
+                    Act::Notice { text, error: true }
+                }
+                Input::FocusIn => Act::Focus(true),
+                Input::FocusOut => Act::Focus(false),
+                Input::Mouse(event) => Act::Mouse(event),
+            };
+            self.s.acts(client, vec![act]);
+        }
+    }
+
+    fn screen_open(&self, client: ClientId) -> bool {
+        self.keys
+            .get(&client)
+            .is_some_and(|k| k.screen != Screen::None)
+    }
+
+    /// What a screen's key or paste led to: actions sent, programs run.
+    fn effects(&mut self, client: ClientId, effects: Vec<Effect>) {
+        for effect in effects {
+            match effect {
+                Effect::Send(act) => self.s.acts(client, vec![act]),
+                Effect::Run(code) => self.run_as(client, &code),
             }
-            let checked = self.repeat_key(client, &inputs);
-            self.s.input(client, std::slice::from_ref(byte));
-            if let Some(key) = checked {
-                self.assert_no_pane_input(key);
-            }
-            // Between bytes, so the next byte's check starts empty.
+        }
+    }
+
+    /// A key typed at `client`: to the screen it has open, else through its
+    /// bindings, the actions sent and the programs run. A key typed in a
+    /// repeat mode reaches no pane, unless the binding it runs there writes
+    /// to one.
+    fn press(&mut self, client: ClientId, stroke: Keystroke) {
+        let Some(view) = self.s.views.get(&client) else {
+            return;
+        };
+        let read_only = view.read_only;
+        let mut keys = self.keys.remove(&client).unwrap_or_default();
+        if keys.screen != Screen::None && !read_only {
+            let effects = keys.screen.key(stroke.press);
+            self.keys.insert(client, keys);
+            self.effects(client, effects);
+            return;
+        }
+        let repeating = matches!(keys.held, Held::Repeat { .. }) && !read_only;
+        let steps = keys.held.press(&self.keymap, stroke, read_only);
+        self.keys.insert(client, keys);
+        if repeating {
             for pane in self.s.panes.values_mut() {
                 pane.input.drain_all();
             }
         }
-    }
-
-    fn escape(&mut self, client: ClientId) {
-        let mut inputs = Vec::new();
-        if let Some(shadow) = self.shadows.get_mut(&client) {
-            shadow.timeout(&mut inputs);
+        let mut writes = false;
+        for step in steps {
+            match step {
+                Step::Send(act) => {
+                    let key = matches!(act, Act::Key(_));
+                    assert!(
+                        !(repeating && key),
+                        "{} sent on in a repeat mode",
+                        stroke.press
+                    );
+                    self.s.acts(client, vec![act]);
+                }
+                Step::Run(code) => {
+                    writes |= WRITES.iter().any(|w| code.contains(w));
+                    self.run_as(client, &code);
+                }
+            }
         }
-        let checked = self.repeat_key(client, &inputs);
-        self.s.escape(client);
-        if let Some(key) = checked {
-            self.assert_no_pane_input(key);
+        if repeating && !writes {
+            self.assert_no_pane_input(stroke.press);
         }
-    }
-
-    /// The key `inputs` is, if it is one key, typed in a repeat mode, and
-    /// not a key of a binding there that writes to a pane.
-    fn repeat_key(&self, client: ClientId, inputs: &[Input]) -> Option<KeyPress> {
-        let [Input::Key(stroke)] = inputs else {
-            return None;
-        };
-        let press = &stroke.press;
-        let Some(Mode::Repeat(repeat)) = self.s.views.get(&client).map(|v| &v.mode) else {
-            return None;
-        };
-        let layer = self.s.config.bindings.layer(&repeat.path);
-        let writes = matches!(layer.and_then(|l| l.get(*press)),
-            Some(Node::Run { binding, .. }) if binding.command.first()
-                .is_some_and(|c| WRITES.contains(&c.as_str())));
-        (!writes).then_some(*press)
     }
 
     /// Types a mouse report in pieces of `piece` bytes (whole for 0), its
@@ -358,7 +637,7 @@ impl Run {
         }
     }
 
-    fn assert_no_pane_input(&mut self, key: KeyPress) {
+    fn assert_no_pane_input(&mut self, key: fux::keys::KeyPress) {
         for (id, pane) in &mut self.s.panes {
             let queued = pane.input.drain_all();
             assert!(
@@ -370,7 +649,7 @@ impl Run {
 
     /// What anyone can tell apart, as `State` lists it.
     fn state(&mut self) -> State {
-        let ls = self.s.run(&["ls".to_owned()], &Origin::default()).stdout;
+        let ls = self.program(None, "ls").0.unwrap_or_else(|e| e);
         let screens = self
             .s
             .views
@@ -381,11 +660,16 @@ impl Run {
                 (c, seen, compose(&self.s, c))
             })
             .collect();
+        let held = (self.keys.iter())
+            .map(|(&c, keys)| (c, keys.held.clone(), keys.screen.clone()))
+            .collect();
         (
             ls,
             screens,
             self.s.config.clone(),
             self.s.buffers.iter().cloned().collect(),
+            self.keymap.clone(),
+            held,
         )
     }
 }
@@ -394,26 +678,17 @@ impl Run {
 fn mode_text(mode: &Mode) -> String {
     match mode {
         Mode::Normal => "normal".into(),
-        Mode::Column(column) => {
-            let selected = column.entries.as_ref().map(Choice::index);
-            format!("column {:?} {selected:?}", column.path)
-        }
-        Mode::Repeat(repeat) => format!("repeat {:?}", repeat.path),
-        Mode::List(list) => format!("list {} {}", list.title, list.items.index()),
-        Mode::Prompt(prompt) => {
-            format!(
-                "prompt {:?} {:?}",
-                prompt.line.before(),
-                prompt.line.after()
-            )
-        }
-        Mode::Confirm(confirm) => format!("confirm {:?}", confirm.question),
-        Mode::Copy(copy) => format!("copy {} {:?} {:?}", copy.pane, copy.top, copy.cursor),
+        Mode::Panel(panel) => format!("{panel:?}"),
+        Mode::Copy(copy) => format!(
+            "copy {} {:?} {:?} {:?}",
+            copy.pane, copy.top, copy.cursor, copy.typing
+        ),
     }
 }
 
 /// Everything that must hold between events.
-fn check(s: &Session) {
+fn check(run: &Run) {
+    let s = &run.s;
     // Every pane is in exactly one tab's layout, and every pane there is.
     let mut seen: BTreeMap<PaneId, usize> = BTreeMap::new();
     for ws in &s.workspaces {
@@ -439,22 +714,17 @@ fn check(s: &Session) {
     for (id, view) in &s.views {
         let grid = compose(s, *id).expect("a client's screen composes");
         assert_eq!((grid.rows, grid.cols), (view.rows, view.cols));
-        let bindings = &s.config.bindings;
-        // Found again whenever the bindings change.
-        match &view.mode {
-            Mode::Column(column) => assert!(
-                bindings.layer(&column.path).is_some(),
-                "{id}'s column shows a layer that is gone: {:?}",
-                column.path
-            ),
-            Mode::Repeat(repeat) => assert!(
-                bindings.layer(&repeat.path).is_some_and(|l| l
-                    .iter()
-                    .any(|(_, node)| matches!(node, Node::Run { repeat: true, .. }))),
-                "{id} repeats {:?}, which holds no repeating binding",
-                repeat.path
-            ),
-            Mode::Normal | Mode::List(_) | Mode::Prompt(_) | Mode::Confirm(_) | Mode::Copy(_) => {}
+        assert!(run.keys.contains_key(id), "{id} attached, but has no keys");
+    }
+    // A repeat mode's bar is shown only to a client in one.
+    for (id, keys) in &run.keys {
+        let shown = s.views.get(id).map(|v| &v.mode);
+        if matches!(shown, Some(Mode::Panel(Panel::Repeat(_)))) {
+            assert!(
+                matches!(keys.held, Held::Repeat { .. }),
+                "{id} shows a repeat bar, its keys {:?}",
+                keys.held
+            );
         }
     }
 }
@@ -466,7 +736,7 @@ fuzz_target!(|data: &[u8]| {
     // one at a time. However the bytes arrive, the same result.
     let mut given = Run::new(rows, cols);
     let mut bytewise = Run::new(rows, cols);
-    check(&given.s);
+    check(&given);
     while !input.0.is_empty() && !given.shut {
         let tag = input.next();
         match tag % 18 {
@@ -498,7 +768,7 @@ fuzz_target!(|data: &[u8]| {
                 let bytes = input.take(len);
                 if let Some(c) = given.client(pick) {
                     given.type_in(c, bytes, piece);
-                    bytewise.type_bytewise(c, bytes);
+                    bytewise.type_in(c, bytes, 1);
                 }
             }
             8 => {
@@ -521,19 +791,15 @@ fuzz_target!(|data: &[u8]| {
                     given.attach(rows, cols);
                     bytewise.attach(rows, cols);
                 } else if let Some(c) = given.client(pick) {
-                    given.s.detach(c);
-                    bytewise.s.detach(c);
+                    given.detach(c);
+                    bytewise.detach(c);
                 }
             }
             11 | 12 => {
-                let line = SIDE[usize::from(input.next()) % SIDE.len()];
-                let argv: Vec<String> = line.split(' ').map(str::to_owned).collect();
-                let a = given.s.run(&argv, &Origin::default());
-                let b = bytewise.s.run(&argv, &Origin::default());
-                assert_eq!(
-                    (a.status, a.stdout, a.stderr),
-                    (b.status, b.stdout, b.stderr)
-                );
+                let code = SIDE[usize::from(input.next()) % SIDE.len()];
+                let a = given.program(None, code).0;
+                let b = bytewise.program(None, code).0;
+                assert_eq!(a, b, "{code}");
             }
             13 => {
                 let pick = input.next();
@@ -570,7 +836,7 @@ fuzz_target!(|data: &[u8]| {
             given.attach(rows, cols);
             bytewise.attach(rows, cols);
         }
-        check(&given.s);
+        check(&given);
     }
     // Compared once, at the end: composing every screen after every
     // operation fills AddressSanitizer's quarantine past the RSS limit.

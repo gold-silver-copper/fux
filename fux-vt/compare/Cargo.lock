@@ -601,6 +601,7 @@ version = "0.22.0"
 dependencies = [
  "fux-vt",
  "fuxix",
+ "fuxth",
  "signal-hook 0.4.5",
  "unicode-width 0.2.2",
 ]
@@ -635,6 +636,10 @@ version = "0.2.0"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "fuxth"
+version = "0.1.0"
 
 [[package]]
 name = "generic-array"

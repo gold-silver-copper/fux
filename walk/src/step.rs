@@ -23,7 +23,7 @@ pub enum Act {
     Deaf(u32),
 }
 
-/// A configuration file to write before a `reload`.
+/// A configuration file to write, which clients run as they attach.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Config {
     Valid,
@@ -42,7 +42,7 @@ pub enum Stop {
 pub enum Step {
     /// Bytes typed into a real client's terminal.
     Keys { client: String, bytes: Vec<u8> },
-    /// A command from the command line.
+    /// A fuxth program from the command line, one word an argument.
     Cli(Vec<String>),
     /// A client's terminal resized.
     Resize {
@@ -60,7 +60,7 @@ pub enum Step {
     Exit { pane: String, code: u8 },
     /// A pane's shell stopped or continued.
     Signal { pane: String, stop: Stop },
-    /// The configuration rewritten, then reloaded.
+    /// The configuration rewritten, for the clients that attach after.
     Config(Config),
     /// A client that asks for 9000 by 9000 and must get 4096 by 4096.
     Clamp,

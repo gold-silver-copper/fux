@@ -164,7 +164,8 @@ impl<A: AppValue> Machine<A> {
                     let args = self.take(takes)?;
                     let mut out = Vec::new();
                     let done = host.call(*id, args, &mut out);
-                    let done = done.map_err(|f| self.fail(ErrorCode::Host(f.code), f.message, None))?;
+                    let done =
+                        done.map_err(|f| self.fail(ErrorCode::Host(f.code), f.message, None))?;
                     for value in out {
                         self.push(value)?;
                     }
@@ -174,7 +175,8 @@ impl<A: AppValue> Machine<A> {
                 }
                 Op::Call(id) => {
                     if self.frames.len() >= self.limits.calls {
-                        let message = format!("calls nest past {}: recursion too deep", self.limits.calls);
+                        let message =
+                            format!("calls nest past {}: recursion too deep", self.limits.calls);
                         return Err(self.fail(ErrorCode::CallDepth, message, None));
                     }
                     self.frames.push(Frame {
@@ -233,7 +235,10 @@ impl<A: AppValue> Machine<A> {
         match self.take_n::<1>()? {
             [Value::Bool(flag)] => Ok(flag),
             [other] => {
-                let message = format!("takes a boolean (from eq, lt, gt or not), not {}", other.kind());
+                let message = format!(
+                    "takes a boolean (from eq, lt, gt or not), not {}",
+                    other.kind()
+                );
                 Err(self.fail(ErrorCode::Type, message, None))
             }
         }

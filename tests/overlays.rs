@@ -55,7 +55,9 @@ fn the_column_runs_the_selected_command_and_explains_unavailable_ones() -> Outco
     // Down to the second binding, `split stacked`, and Enter.
     client.keys(DOWN)?;
     client.keys("\r")?;
-    pumped(&mut client, "a stacked split", || Ok(focused(&server)? == "%2"))?;
+    pumped(&mut client, "a stacked split", || {
+        Ok(focused(&server)? == "%2")
+    })?;
     client.wait("the column closed", |t| !t.contains("Commands"))?;
     // Arrows, Home/End and PageUp move; Esc closes without running anything.
     client.keys(&format!("{PREFIX}{DOWN}{DOWN}{UP}\x1b[F\x1b[H\x1b[5~"))?;
@@ -165,8 +167,28 @@ fn choosers_select_rename_and_close() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(30, 100)?;
     client.wait_for("$")?;
-    server.ok(&["opts", "str", "+1", "workspace", "in", "str", "second", "name", "new-tab"])?;
-    server.ok(&["opts", "str", "+1", "workspace", "in", "str", "third", "name", "new-tab"])?;
+    server.ok(&[
+        "opts",
+        "str",
+        "+1",
+        "workspace",
+        "in",
+        "str",
+        "second",
+        "name",
+        "new-tab",
+    ])?;
+    server.ok(&[
+        "opts",
+        "str",
+        "+1",
+        "workspace",
+        "in",
+        "str",
+        "third",
+        "name",
+        "new-tab",
+    ])?;
     client.keys(&format!("{PREFIX}tg"))?;
     client.wait("the tab chooser, current marked", |t| {
         t.contains("* @1 main") && t.contains("@3 third")
@@ -181,14 +203,18 @@ fn choosers_select_rename_and_close() -> Outcome {
     client.keys(&format!("{DOWN}r"))?;
     client.wait_for("rename tab @3")?;
     client.keys(&format!("{CLEAR}renamed\r"))?;
-    pumped(&mut client, "renamed", || Ok(server.ok(&["ls"])?.contains("@3 renamed")))?;
+    pumped(&mut client, "renamed", || {
+        Ok(server.ok(&["ls"])?.contains("@3 renamed"))
+    })?;
     // x closes it, after asking.
     client.keys(&format!("{PREFIX}tg"))?;
     client.wait_for("Enter selects")?;
     client.keys(&format!("{DOWN}{DOWN}x"))?;
     client.wait_for("close tab @3 renamed?")?;
     client.keys("y")?;
-    pumped(&mut client, "closed", || Ok(!server.ok(&["ls"])?.contains("@3")))?;
+    pumped(&mut client, "closed", || {
+        Ok(!server.ok(&["ls"])?.contains("@3"))
+    })?;
     // The workspace chooser lists every workspace with its panes.
     server.ok(&["opts", "str", "elsewhere", "name", "new-workspace"])?;
     client.keys(&format!("{PREFIX}wg"))?;
@@ -229,7 +255,9 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accepts")?;
     client.keys("str %1 pane str left rename\r")?;
-    pumped(&mut client, "renamed", || Ok(server.ok(&["ls"])?.contains("%1 left")))?;
+    pumped(&mut client, "renamed", || {
+        Ok(server.ok(&["ls"])?.contains("%1 left"))
+    })?;
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accepts")?;
     client.keys("nope\r")?;
@@ -237,7 +265,9 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     // Editing: typing, moving and deleting before Enter.
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accepts")?;
-    client.keys("opts str edited nameX\x7f new-tab\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[H\x1b[F\r")?;
+    client.keys(
+        "opts str edited nameX\x7f new-tab\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[H\x1b[F\r",
+    )?;
     pumped(&mut client, "the edited command ran", || {
         Ok(server.ok(&["ls"])?.contains("edited"))
     })?;
@@ -264,7 +294,9 @@ fn rename_prompts_start_from_the_current_name() -> Outcome {
     client.wait_for("rename pane %1")?;
     client.wait_for("sh▏")?;
     client.keys("ell\r")?;
-    pumped(&mut client, "renamed", || Ok(server.ok(&["ls"])?.contains("%1 shell")))?;
+    pumped(&mut client, "renamed", || {
+        Ok(server.ok(&["ls"])?.contains("%1 shell"))
+    })?;
     // An empty name is refused, and says so.
     server.ok(&["str", "c1", "client", "str", "%1", "pane", "rename-prompt"])?;
     client.wait_for("rename pane %1")?;

@@ -3,8 +3,8 @@
 //! built, and never reads words itself. Big-endian numbers; a string or a
 //! list is its length then its items; an option or an enum its tag first.
 use crate::command::{
-    AnyRef, CaptureView, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick,
-    PaneResize, Pick, Resized, Sibling, Subject, SwapWith, Until, Wait, WsRef,
+    AnyRef, CaptureView, Choices, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo,
+    PanePick, PaneResize, Pick, Resized, Sibling, Subject, SwapWith, Until, Wait, WsRef,
 };
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
@@ -217,6 +217,17 @@ impl<A: Wire, B: Wire> Wire for (A, B) {
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         Ok((A::get(r)?, B::get(r)?))
+    }
+}
+
+impl<A: Wire, B: Wire, C: Wire> Wire for (A, B, C) {
+    fn put(&self, out: &mut Vec<u8>) {
+        self.0.put(out);
+        self.1.put(out);
+        self.2.put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Ok((A::get(r)?, B::get(r)?, C::get(r)?))
     }
 }
 
@@ -742,31 +753,20 @@ impl Wire for ClientAction {
                 tag(out, 1);
                 json.put(out);
             }
-            ClientAction::ChooseTab { moving } => {
+            ClientAction::Choices(choices) => {
                 tag(out, 2);
-                moving.put(out);
+                match choices {
+                    Choices::Tabs => tag(out, 0),
+                    Choices::Workspaces => tag(out, 1),
+                    Choices::Panes(pane) => {
+                        tag(out, 2);
+                        pane.put(out);
+                    }
+                }
             }
-            ClientAction::ChooseWorkspace { moving } => {
+            ClientAction::Run(code) => {
                 tag(out, 3);
-                moving.put(out);
-            }
-            ClientAction::ChoosePane { target } => {
-                tag(out, 4);
-                target.put(out);
-            }
-            ClientAction::Menu(s) => {
-                tag(out, 5);
-                s.put(out);
-            }
-            ClientAction::CommandPrompt => tag(out, 6),
-            ClientAction::CopyMode => tag(out, 7),
-            ClientAction::RenamePrompt(s) => {
-                tag(out, 8);
-                s.put(out);
-            }
-            ClientAction::ConfirmClose(s) => {
-                tag(out, 9);
-                s.put(out);
+                code.put(out);
             }
             ClientAction::Zoom => tag(out, 10),
             ClientAction::SelectPane(p) => {
@@ -789,20 +789,13 @@ impl Wire for ClientAction {
             1 => Ok(ClientAction::Capture {
                 json: bool::get(r)?,
             }),
-            2 => Ok(ClientAction::ChooseTab {
-                moving: Option::get(r)?,
-            }),
-            3 => Ok(ClientAction::ChooseWorkspace {
-                moving: Option::get(r)?,
-            }),
-            4 => Ok(ClientAction::ChoosePane {
-                target: Option::get(r)?,
-            }),
-            5 => Subject::get(r).map(ClientAction::Menu),
-            6 => Ok(ClientAction::CommandPrompt),
-            7 => Ok(ClientAction::CopyMode),
-            8 => Subject::get(r).map(ClientAction::RenamePrompt),
-            9 => Subject::get(r).map(ClientAction::ConfirmClose),
+            2 => Ok(ClientAction::Choices(match u8::get(r)? {
+                0 => Choices::Tabs,
+                1 => Choices::Workspaces,
+                2 => Choices::Panes(PaneId::get(r)?),
+                other => return Err(Error::Tag("choices", other)),
+            })),
+            3 => String::get(r).map(ClientAction::Run),
             10 => Ok(ClientAction::Zoom),
             11 => PanePick::get(r).map(ClientAction::SelectPane),
             12 => Pick::get(r).map(ClientAction::SelectTab),

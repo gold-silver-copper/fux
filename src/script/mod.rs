@@ -165,6 +165,9 @@ pub enum Local {
     Servers,
     /// Stop the server, whatever its version.
     ForceKill,
+    /// Open one of the client's own screens: a client running its keys'
+    /// programs does (`client::Keyboard`); nothing else has one.
+    Open(crate::screens::Open),
 }
 
 /// What runs a program's words: where its requests come from, the client's
@@ -354,6 +357,39 @@ impl Asks for Cli {
     }
     fn local(&mut self, what: &Local, out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
         local(what, &mut self.0, out)
+    }
+}
+
+/// What a client's own program asks goes to: its keys', its prompt's, one
+/// relayed to it. It may open one of the client's screens, built with what
+/// `asks` answers; the last it opened is `opened`.
+pub struct AsClient<'a> {
+    pub asks: &'a mut dyn Asks,
+    pub context: Context,
+    pub opened: Option<crate::screens::Screen>,
+}
+
+impl Asks for AsClient<'_> {
+    fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
+        self.asks.ask(request, out)
+    }
+    fn local(&mut self, what: &Local, out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
+        let Local::Open(open) = what else {
+            return self.asks.local(what, out);
+        };
+        let (asks, context) = (&mut *self.asks, &self.context);
+        let mut sink = std::io::sink();
+        let screen = open.build(&mut |command| {
+            asks.ask(
+                &Request {
+                    command,
+                    context: context.clone(),
+                },
+                &mut sink,
+            )
+        })?;
+        self.opened = Some(screen);
+        Ok(Vec::new())
     }
 }
 
@@ -550,6 +586,7 @@ fn local(
             let socket = server.socket()?;
             crate::client::kill_server(&socket).map_err(client_failed)?;
         }
+        Local::Open(_) => return refuse_local(what),
         Local::Status => {
             let socket = server.socket()?;
             let probe = crate::client::probe(&socket).map_err(client_failed)?;
@@ -667,6 +704,7 @@ pub fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
         Local::Status => "status",
         Local::Servers => "servers",
         Local::ForceKill => "force-kill-server",
+        Local::Open(_) => "a client's screen",
     };
     Err(Failed {
         status: 1,

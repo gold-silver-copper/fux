@@ -9,6 +9,7 @@ use crate::protocol::{
     Attach, AttachedFrame, Context, Decoder, Frame, Hello, Mismatch, PROTOCOL, Reply, Request,
     Role, ServerFrame,
 };
+use crate::screens::{Effect, Screen};
 use crate::socket::SocketPath;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use fuxix::terminal::Termios;
@@ -315,14 +316,16 @@ impl Requests {
                 ServerFrame::PartsEnd => {
                     let parts = std::mem::take(&mut self.parts);
                     let reply = crate::wire::Reader::new(&parts).whole::<Reply>();
-                    return reply.map(Some).map_err(|e| Error::Protocol(crate::protocol::Error::Wire(e)));
+                    return reply
+                        .map(Some)
+                        .map_err(|e| Error::Protocol(crate::protocol::Error::Wire(e)));
                 }
                 ServerFrame::Exit(reason) => return Err(Error::Refused(reason.to_owned())),
                 ServerFrame::Hello(_)
                 | ServerFrame::Paint(_)
                 | ServerFrame::Done { .. }
                 | ServerFrame::Terminal { .. }
-                | ServerFrame::Mode(_)
+                | ServerFrame::Ended
                 | ServerFrame::Run(_)
                 | ServerFrame::Keys(_) => {}
             }
@@ -511,26 +514,35 @@ struct Job {
 }
 
 /// What a job came to: the keymap, if its program changed it (`bind`
-/// typed at the prompt), and what to say of it.
+/// typed at the prompt), what to say of it, and the screen it opened.
 struct Ran {
     keymap: Option<Keymap>,
     notice: Option<(String, bool)>,
+    opened: Option<Screen>,
 }
 
 /// An attached client's own keys: its keymap, what its keys are in the
-/// middle of, the mode the server says its view is in, the decoder its
-/// terminal's bytes go through, and the worker that runs the programs its
-/// bindings and prompt give, one after another, as the client. What each
-/// takes, it turns into the actions to send the server.
+/// middle of, the screen it has open, the decoder its terminal's bytes go
+/// through, and the worker that runs the programs its bindings and screens
+/// give, one after another, as the client. What each takes, it turns into
+/// the actions to send the server.
+///
+/// Every mode is the client's (`crate::screens`), changed here at the key
+/// that changes it. A program it runs may open a screen, so the keys typed
+/// while one runs wait for it, and go to the screen it opened, if any.
 pub struct Keyboard {
     keymap: Keymap,
     held: Held,
-    mode: String,
+    screen: Screen,
     read_only: bool,
     decoder: crate::decode::Decoder,
     jobs: std::sync::mpsc::Sender<Job>,
     told: std::sync::mpsc::Receiver<Ran>,
     wake: UnixStream,
+    /// Programs sent to the worker and not yet done.
+    running: usize,
+    /// What was typed while a program ran, in order.
+    waiting: std::collections::VecDeque<Input>,
 }
 
 impl Keyboard {
@@ -566,12 +578,14 @@ impl Keyboard {
         Ok(Keyboard {
             keymap,
             held: Held::default(),
-            mode: "normal".to_owned(),
+            screen: Screen::None,
             read_only,
             decoder,
             jobs,
             told,
             wake,
+            running: 0,
+            waiting: std::collections::VecDeque::new(),
         })
     }
 
@@ -603,21 +617,30 @@ impl Keyboard {
     }
 
     fn inputs(&mut self, inputs: Vec<Input>) -> Vec<Act> {
+        self.waiting.extend(inputs);
+        self.release()
+    }
+
+    /// What waits, taken while no program runs.
+    fn release(&mut self) -> Vec<Act> {
         let mut acts = Vec::new();
-        for input in inputs {
+        while self.running == 0 {
+            let Some(input) = self.waiting.pop_front() else {
+                break;
+            };
             self.input(input, &mut acts);
         }
         acts
     }
 
-    /// A frame from the server: the mode its view is in, a program to run
-    /// (typed at its prompt), keys to take as typed (`send-keys` to it).
+    /// A frame from the server: copy mode it ended, a program to run (a
+    /// screen asked of it from elsewhere), keys to take as typed
+    /// (`send-keys` to it).
     pub fn frame(&mut self, frame: ServerFrame<'_>) -> Vec<Act> {
-        let mut acts = Vec::new();
         match frame {
-            ServerFrame::Mode(mode) => self.told(mode),
+            ServerFrame::Ended => self.screen.ended(),
             ServerFrame::Run(code) => self.run(code.to_owned()),
-            ServerFrame::Keys(typed) => self.typed(typed, &mut acts),
+            ServerFrame::Keys(typed) => self.typed(typed),
             ServerFrame::Hello(_)
             | ServerFrame::Paint(_)
             | ServerFrame::Exit(_)
@@ -629,31 +652,52 @@ impl Keyboard {
             | ServerFrame::Part(_)
             | ServerFrame::PartsEnd => {}
         }
-        acts
+        self.release()
     }
 
-    /// What the programs it ran came to, those done.
+    /// What the programs it ran came to, those done: a screen one opened
+    /// opens, what one said shows, and the keys that waited go on.
     pub fn ran(&mut self) -> Vec<Act> {
         crate::drain(&self.wake);
         let mut acts = Vec::new();
         while let Ok(ran) = self.told.try_recv() {
+            self.running = self.running.saturating_sub(1);
             if let Some(keymap) = ran.keymap {
                 self.keymap = keymap;
             }
             if let Some((text, error)) = ran.notice {
                 acts.push(Act::Notice { text, error });
             }
+            if let Some(screen) = ran.opened {
+                self.open(screen, &mut acts);
+            }
         }
+        acts.extend(self.release());
         acts
     }
 
-    /// A key typed: the actions to send the server; the programs it runs go
-    /// to the worker.
+    /// Opens `screen`, in place of what was open.
+    fn open(&mut self, screen: Screen, acts: &mut Vec<Act>) {
+        self.held = Held::Normal;
+        if let Screen::Copy(_) = self.screen {
+            acts.push(Act::Copy(crate::act::CopyAct::Leave));
+        }
+        acts.extend(screen.opened());
+        self.screen = screen;
+    }
+
+    /// A key typed: to the screen open, else through the bindings.
     fn press(&mut self, stroke: crate::keys::Keystroke, acts: &mut Vec<Act>) {
-        let steps = self
-            .held
-            .press(&self.keymap, &self.mode, stroke, self.read_only);
-        for step in steps {
+        if self.screen != Screen::None {
+            for effect in self.screen.key(stroke.press) {
+                match effect {
+                    Effect::Send(act) => acts.push(act),
+                    Effect::Run(code) => self.run(code),
+                }
+            }
+            return;
+        }
+        for step in self.held.press(&self.keymap, stroke, self.read_only) {
             match step {
                 Step::Send(act) => acts.push(act),
                 Step::Run(code) => self.run(code),
@@ -663,16 +707,9 @@ impl Keyboard {
 
     fn run(&mut self, code: String) {
         let keymap = self.keymap.clone();
-        let _ = self.jobs.send(Job { code, keymap });
-    }
-
-    /// The server says the client's view is in `mode`: one of its own
-    /// screens takes the keys from here, the column and repeat bar gone.
-    fn told(&mut self, mode: &str) {
-        if !matches!(mode, "normal" | "column" | "repeat") {
-            self.held = Held::Normal;
+        if self.jobs.send(Job { code, keymap }).is_ok() {
+            self.running = self.running.saturating_add(1);
         }
-        mode.clone_into(&mut self.mode);
     }
 
     /// What the terminal sent, decoded.
@@ -686,6 +723,14 @@ impl Keyboard {
             | Input::FocusOut
             | Input::Mouse(_)
                 if self.read_only => {}
+            Input::Paste(text) if self.screen != Screen::None => {
+                for effect in self.screen.paste(&text) {
+                    match effect {
+                        Effect::Send(act) => acts.push(act),
+                        Effect::Run(code) => self.run(code),
+                    }
+                }
+            }
             Input::Paste(text) => acts.push(Act::Paste(text)),
             Input::PasteTooLong => {
                 let limit = crate::decode::PASTE_LIMIT / 1024;
@@ -694,43 +739,55 @@ impl Keyboard {
             }
             Input::FocusIn => acts.push(Act::Focus(true)),
             Input::FocusOut => acts.push(Act::Focus(false)),
+            // The mouse is a program's, while the client shows none of its
+            // own screens.
+            Input::Mouse(_) if self.screen != Screen::None => {}
             Input::Mouse(event) => acts.push(Act::Mouse(event)),
         }
     }
 
-    /// Keys the server says were typed here (`send-keys` to this client).
-    fn typed(&mut self, inputs: Vec<crate::command::Input>, acts: &mut Vec<Act>) {
+    /// Keys the server says were typed here (`send-keys` to this client),
+    /// in turn with what the terminal sent.
+    fn typed(&mut self, inputs: Vec<crate::command::Input>) {
         for input in inputs {
             match input {
-                crate::command::Input::Key(press) => self.press(press.into(), acts),
-                crate::command::Input::Text(text) => {
-                    for c in text.chars() {
-                        self.press(crate::keys::KeyPress::char(c).into(), acts);
-                    }
+                crate::command::Input::Key(press) => {
+                    self.waiting.push_back(Input::Key(press.into()))
                 }
-                crate::command::Input::Paste(text) => self.input(Input::Paste(text), acts),
+                crate::command::Input::Text(text) => {
+                    let keys = text
+                        .chars()
+                        .map(|c| Input::Key(crate::keys::KeyPress::char(c).into()));
+                    self.waiting.extend(keys);
+                }
+                crate::command::Input::Paste(text) => self.waiting.push_back(Input::Paste(text)),
             }
         }
     }
 }
 
-/// Runs a key's or the prompt's program as client `me`.
+/// Runs a key's or a screen's program as client `me`.
 fn run_job(server: &mut crate::script::Server, me: crate::id::ClientId, job: Job) -> Ran {
     let Job { code, keymap } = job;
     let mut changed = keymap.clone();
     let mut out = Vec::new();
+    let mut context = context();
+    context.client = Some(me);
+    let mut asks = crate::script::AsClient {
+        asks: server,
+        context: context.clone(),
+        opened: None,
+    };
     let result = (|| {
         let tokens = fuxth::token::source("key", &code)?;
         let mut machine = crate::script::compile(&tokens)?;
-        let mut context = context();
-        context.client = Some(me);
         let mut host = crate::script::Host {
             context,
             keymap: Some(&mut changed),
             last_bound: None,
             out: &mut out,
         };
-        crate::script::run(&mut machine, &mut host, server)
+        crate::script::run(&mut machine, &mut host, &mut asks)
     })();
     let notice = match result {
         Err(failed) => Some((failed.to_string(), true)),
@@ -747,6 +804,7 @@ fn run_job(server: &mut crate::script::Server, me: crate::id::ClientId, job: Job
     Ran {
         keymap: (changed != keymap).then_some(changed),
         notice,
+        opened: asks.opened,
     }
 }
 

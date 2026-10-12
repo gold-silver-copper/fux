@@ -10,7 +10,6 @@ use crate::id::{AnyId, ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::Json;
 use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
-use crate::overlay::pane_chooser;
 use crate::pane::{InputQueue, Pane, Process, Runs, Typed};
 use crate::process::Child;
 use crate::view::{ClientKind, Mode, View};
@@ -33,6 +32,8 @@ pub enum Outgoing {
     /// Keys for a client to take as typed at its terminal (`send-keys` to
     /// a client): its bindings see them.
     Keys(ClientId, Vec<command::Input>),
+    /// Tell a client the server ended its screen by itself.
+    Ended(ClientId),
     /// Stop the server, saying why; with `keep`, its layout is kept for
     /// the next server to bring back, as after a crash.
     Shutdown { reason: String, keep: bool },
@@ -378,7 +379,9 @@ impl std::fmt::Display for Error {
             Error::NoPane(id) => write!(f, "no pane {id}"),
             Error::NoTabGiven => f.write_str("no tab given: name one (`str @N tab`)"),
             Error::NoTab(id) => write!(f, "no tab {id}"),
-            Error::NoWorkspaceGiven => f.write_str("no workspace given: name one (`str NAME workspace`)"),
+            Error::NoWorkspaceGiven => {
+                f.write_str("no workspace given: name one (`str NAME workspace`)")
+            }
             Error::NoField {
                 target,
                 field,
@@ -426,9 +429,9 @@ impl std::fmt::Display for Error {
                 "this runs in a pane of the server it would stop, with everything else in it; \
                  force-kill-server stops it anyway",
             ),
-            Error::PeopleAttached(1) => {
-                f.write_str("a person is attached to this server; force-kill-server stops it anyway")
-            }
+            Error::PeopleAttached(1) => f.write_str(
+                "a person is attached to this server; force-kill-server stops it anyway",
+            ),
             Error::PeopleAttached(n) => {
                 write!(
                     f,
@@ -1976,8 +1979,13 @@ impl Session {
     pub fn settle(&mut self) {
         // Out of the session while they are repaired, which reads no view.
         let mut views = std::mem::take(&mut self.views);
-        views.values_mut().for_each(|view| self.repair(view));
+        let ended: Vec<ClientId> = (views.values_mut())
+            .filter_map(|view| self.repair(view).then_some(view.id))
+            .collect();
         self.views = views;
+        for client in ended {
+            self.outbox.push(Outgoing::Ended(client));
+        }
         self.size_panes();
         self.hold_copies();
     }
@@ -2003,40 +2011,41 @@ impl Session {
             } else {
                 view.mode = Mode::Normal;
                 view.error("copy mode ended: the history dropped the rows it held");
+                self.outbox.push(Outgoing::Ended(view.id));
             }
         }
     }
 
-    fn repair(&self, view: &mut View) {
+    /// Ends what a view shows if what it is about is gone: copy mode whose
+    /// pane closed or is no longer focused, a client's screen about a pane,
+    /// tab or workspace that closed. Whether it did, which its client is
+    /// told (`Outgoing::Ended`), the mode being the client's.
+    fn repair(&self, view: &mut View) -> bool {
+        use crate::act::{List, Panel};
         let focus = self.focused(view.id);
-        // What the view's mode refers to must still exist. Copy mode's rows
-        // are looked for once the panes are sized (`hold_copies`).
-        let gone: Option<String> = match &view.mode {
+        // Copy mode's rows are looked for once the panes are sized
+        // (`hold_copies`).
+        let gone = match &view.mode {
             Mode::Copy(copy) if !self.panes.contains_key(&copy.pane) => {
-                Some("copy mode ended: its pane closed".into())
+                "copy mode ended: its pane closed".to_owned()
             }
             Mode::Copy(copy) if Some(copy.pane) != focus => {
-                Some("copy mode ended: its pane is no longer focused".into())
+                "copy mode ended: its pane is no longer focused".to_owned()
             }
-            Mode::List(list) => list
-                .about
-                .filter(|a| !self.exists(*a))
-                .map(|a| format!("closed: {} is gone", describe(a))),
-            Mode::Confirm(confirm) => (!self.exists(confirm.about))
-                .then(|| format!("closed: {} is gone", describe(confirm.about))),
-            Mode::Prompt(prompt) => match prompt.purpose {
-                crate::view::PromptFor::Rename(target) if !self.exists(target) => {
-                    Some(format!("closed: {} is gone", describe(target)))
+            Mode::Panel(
+                Panel::List(List {
+                    about: Some(about), ..
+                })
+                | Panel::Prompt {
+                    about: Some(about), ..
                 }
-                crate::view::PromptFor::Command | crate::view::PromptFor::Rename(_) => None,
-            },
-            // Found again whenever the bindings change (`rebind`).
-            Mode::Normal | Mode::Column(_) | Mode::Repeat(_) | Mode::Copy(_) => None,
+                | Panel::Confirm { about, .. },
+            ) if !self.exists(*about) => format!("closed: {} is gone", describe(*about)),
+            Mode::Normal | Mode::Panel(_) | Mode::Copy(_) => return false,
         };
-        if let Some(reason) = gone {
-            view.mode = Mode::Normal;
-            view.error(reason);
-        }
+        view.mode = Mode::Normal;
+        view.error(gone);
+        true
     }
 
     /// The settings changed: every pane keeps the history they say. A pane
@@ -2732,66 +2741,9 @@ impl Session {
         outcome
     }
 
-    /// Runs a command one of fux's own screens gives client `client` (a
-    /// menu's entry, a confirmation, a rename prompt), telling it in its
-    /// notice the first line of its error. A program's request is told by
-    /// the program, which has its failure.
-    pub(crate) fn run_for(&mut self, client: ClientId, command: &Command) {
-        let outcome = self.run_command(command, &Origin::Client(client));
-        if outcome.status != 0 {
-            self.error_to(client, outcome.stderr.lines().next().unwrap_or("failed"));
-        }
-    }
-
     /// How many commands have run that may change what clients show.
     pub fn changes(&self) -> u64 {
         self.changes
-    }
-
-    /// Why a command cannot run now, if it cannot: menus and the command
-    /// column dim such entries, and running one says why.
-    pub fn unavailable(&self, command: &Command, client: ClientId) -> Option<Error> {
-        let (Some(place), Some(view)) = (self.place(client), self.views.get(&client)) else {
-            return Some(Error::NoClient(client));
-        };
-        let here = Here::Client(client, place);
-        let action = if let Command::Client { action, .. } = command {
-            Some(action)
-        } else {
-            None
-        };
-        if let Some(&ClientAction::SelectPane(pick)) = action {
-            return self.pick_pane(view, place, pick).err();
-        }
-        if let Some(&ClientAction::SelectTab(pick)) = action {
-            return self.pick_tab(place, pick).err();
-        }
-        if let Some(ClientAction::SelectWorkspace(pick)) = action {
-            return self.pick_ws(view, pick).err();
-        }
-        if let Some(&ClientAction::ChoosePane { target }) = action {
-            return self
-                .pane(target, here)
-                .and_then(|p| pane_chooser(self, p.id))
-                .err();
-        }
-        if let Command::PasteBuffer { index, .. } = command {
-            return self
-                .buffers
-                .get(*index)
-                .is_none()
-                .then_some(Error::NoBuffer(*index));
-        }
-        if let Command::Signal { target, .. } = command {
-            return self.signalled(*target, here).err();
-        }
-        if let Command::KillPane { target }
-        | Command::SwapPane { target, .. }
-        | Command::MovePane { target, .. } = command
-        {
-            return self.pane(*target, here).err();
-        }
-        None
     }
 
     fn execute(&mut self, command: &Command, origin: &Origin) -> Result<String, Error> {
@@ -3393,6 +3345,27 @@ impl Session {
                     (None, Here::Client(client, place)) => (client, place),
                     (None, Here::Cli(..)) => return Err(Error::NoClientGiven),
                 };
+                match action {
+                    ClientAction::Choices(choices) => {
+                        let chosen = crate::overlay::choices(self, client, *choices)?;
+                        self.made = chosen.ids;
+                        self.value = chosen
+                            .current
+                            .and_then(|i| i64::try_from(i).ok())
+                            .map(crate::protocol::Scalar::Int);
+                        return Ok(chosen.labels.iter().map(|l| format!("{l}\n")).collect());
+                    }
+                    ClientAction::Run(code) => {
+                        self.outbox.push(Outgoing::Run(client, code.clone()));
+                        return Ok(String::new());
+                    }
+                    ClientAction::Detach
+                    | ClientAction::Capture { .. }
+                    | ClientAction::Zoom
+                    | ClientAction::SelectPane(_)
+                    | ClientAction::SelectTab(_)
+                    | ClientAction::SelectWorkspace(_) => {}
+                }
                 // The client's view is the command's while it runs: out of
                 // the map, so that nothing looks it up again.
                 let mut view = self.views.remove(&client).ok_or(Error::NoClient(client))?;
@@ -3416,7 +3389,6 @@ impl Session {
         place: Place,
         action: &ClientAction,
     ) -> Result<String, Error> {
-        let here = Here::Client(view.id, place);
         match *action {
             // `execute` does not put the view back.
             ClientAction::Detach => Ok(String::new()),
@@ -3432,50 +3404,9 @@ impl Session {
             ClientAction::SelectPane(pick) => self.select(self.pick_pane(view, place, pick)?, view),
             ClientAction::SelectTab(pick) => self.select(self.pick_tab(place, pick)?, view),
             ClientAction::SelectWorkspace(ref pick) => self.select(self.pick_ws(view, pick)?, view),
-            ClientAction::CommandPrompt => {
-                let purpose = crate::view::PromptFor::Command;
-                Ok(crate::overlay::open_prompt(
-                    view,
-                    purpose,
-                    ":".into(),
-                    String::new(),
-                ))
-            }
-            ClientAction::RenamePrompt(ref subject) => {
-                let target = self.any_target(subject, here)?;
-                let current = self.name_of(target);
-                let title = format!("rename {} {}", subject.kind().name(), describe(target));
-                let purpose = crate::view::PromptFor::Rename(target);
-                Ok(crate::overlay::open_prompt(view, purpose, title, current))
-            }
-            ClientAction::ConfirmClose(ref subject) => {
-                let target = self.any_target(subject, here)?;
-                Ok(crate::overlay::open_confirm(self, view, target))
-            }
-            ClientAction::Menu(ref subject) => {
-                let target = self.any_target(subject, here)?;
-                Ok(crate::overlay::open_menu(self, view, target))
-            }
-            ClientAction::ChooseTab { moving } => {
-                let moving = self.moving(moving, here)?;
-                crate::overlay::open_tab_chooser(self, view, place, moving)
-            }
-            ClientAction::ChooseWorkspace { moving } => {
-                let moving = self.moving(moving, here)?;
-                crate::overlay::open_workspace_chooser(self, view, moving)
-            }
-            ClientAction::ChoosePane { target } => {
-                let source = self.pane(target, here)?.id;
-                view.mode = Mode::List(pane_chooser(self, source)?);
-                Ok(String::new())
-            }
-            ClientAction::CopyMode => crate::copy::enter(self, view, place),
+            // Answered before the view is taken (`execute`).
+            ClientAction::Choices(_) | ClientAction::Run(_) => Ok(String::new()),
         }
-    }
-
-    /// The pane a chooser moves: none, the one named, or the client's.
-    fn moving(&self, moving: Option<Option<PaneId>>, here: Here) -> Result<Option<PaneId>, Error> {
-        moving.map(|p| self.pane(p, here).map(|p| p.id)).transpose()
     }
 
     pub fn name_of(&self, target: AnyRef<WsId>) -> String {
@@ -4254,7 +4185,9 @@ pub(crate) mod testing {
     }
 
     /// Runs fuxth `code` as client `client` would, or from no client: what
-    /// it printed and what it left, a value a line; or its failure.
+    /// it printed and what it left, a value a line; or its failure. A screen
+    /// it opens opens on the client (`Session::input` reads its keys), and
+    /// what the server sends clients meanwhile reaches them (`deliver`).
     pub(crate) fn output_as(
         session: &mut Session,
         client: Option<ClientId>,
@@ -4269,13 +4202,24 @@ pub(crate) mod testing {
             ..crate::protocol::Context::default()
         };
         let mut host = crate::script::Host {
-            context,
+            context: context.clone(),
             keymap: Some(&mut keymap),
             last_bound: None,
             out: &mut out,
         };
-        let ended = crate::script::run(&mut machine, &mut host, &mut InProcess(session));
+        let mut process = InProcess(session);
+        let mut asks = crate::script::AsClient {
+            asks: &mut process,
+            context,
+            opened: None,
+        };
+        let ended = crate::script::run(&mut machine, &mut host, &mut asks);
+        let opened = asks.opened;
         session.test_keymap = keymap;
+        if let (Some(client), Some(screen)) = (client, opened) {
+            session.open_screen(client, screen);
+        }
+        deliver(session);
         let ended = ended.map_err(|e| e.to_string())?;
         let mut text = String::from_utf8_lossy(&out).into_owned();
         for value in &ended.stack {
@@ -4283,6 +4227,42 @@ pub(crate) mod testing {
             text.push('\n');
         }
         Ok(text)
+    }
+
+    /// What the server sent clients, taken as their clients take it: a
+    /// program to run, keys typed, copy mode ended. The rest is left.
+    pub(crate) fn deliver(session: &mut Session) {
+        let outbox = std::mem::take(&mut session.outbox);
+        let mut kept = Vec::new();
+        for outgoing in outbox {
+            match outgoing {
+                super::Outgoing::Run(client, code) => session.run_as(client, &code),
+                super::Outgoing::Ended(client) => {
+                    if let Some(keys) = session.test_keys.get_mut(&client) {
+                        keys.screen.ended();
+                    }
+                }
+                super::Outgoing::Keys(client, inputs) => {
+                    use crate::decode::Input;
+                    let typed = inputs.into_iter().flat_map(|input| match input {
+                        crate::command::Input::Key(press) => vec![Input::Key(press.into())],
+                        crate::command::Input::Text(text) => text
+                            .chars()
+                            .map(|c| Input::Key(crate::keys::KeyPress::char(c).into()))
+                            .collect(),
+                        crate::command::Input::Paste(text) => vec![Input::Paste(text)],
+                    });
+                    session.inputs(client, typed.collect());
+                }
+                other @ (super::Outgoing::Bytes(..)
+                | super::Outgoing::Exit(..)
+                | super::Outgoing::Shutdown { .. }) => {
+                    kept.push(other);
+                }
+            }
+        }
+        kept.extend(std::mem::take(&mut session.outbox));
+        session.outbox = kept;
     }
 
     /// Runs fuxth `code` from no client: what it printed and left, or its
@@ -4317,7 +4297,37 @@ pub(crate) mod testing {
                         self.1.push(action.clone().here());
                         Ok(crate::protocol::Reply::default())
                     }
-                    other => {
+                    other @ (crate::command::Command::Ls { .. }
+                    | crate::command::Command::KillServer { .. }
+                    | crate::command::Command::NewWorkspace { .. }
+                    | crate::command::Command::NewTab { .. }
+                    | crate::command::Command::Split { .. }
+                    | crate::command::Command::Run { .. }
+                    | crate::command::Command::Respawn { .. }
+                    | crate::command::Command::Notify { .. }
+                    | crate::command::Command::Resize { .. }
+                    | crate::command::Command::Wait { .. }
+                    | crate::command::Command::SendMouse { .. }
+                    | crate::command::Command::KillPane { .. }
+                    | crate::command::Command::Signal { .. }
+                    | crate::command::Command::KillTab { .. }
+                    | crate::command::Command::KillWorkspace { .. }
+                    | crate::command::Command::Rename { .. }
+                    | crate::command::Command::MovePane { .. }
+                    | crate::command::Command::SwapPane { .. }
+                    | crate::command::Command::ResizePane { .. }
+                    | crate::command::Command::SendKeys { .. }
+                    | crate::command::Command::Events { .. }
+                    | crate::command::Command::DumpLayout { .. }
+                    | crate::command::Command::Grant { .. }
+                    | crate::command::Command::Log { .. }
+                    | crate::command::Command::ClearHistory { .. }
+                    | crate::command::Command::CapturePane { .. }
+                    | crate::command::Command::Reorder { .. }
+                    | crate::command::Command::Set { .. }
+                    | crate::command::Command::ListBuffers
+                    | crate::command::Command::ShowBuffer { .. }
+                    | crate::command::Command::PasteBuffer { .. }) => {
                         self.1.push(other.clone());
                         Ok(crate::protocol::Reply::default())
                     }
@@ -4341,66 +4351,100 @@ pub(crate) mod testing {
         Ok(recorder.1)
     }
 
-    /// A client's keys, as its client reads them: its decoder, and what its
-    /// keys are in the middle of.
+    /// A client's keys, as its client reads them: its decoder, what its
+    /// keys are in the middle of, and the screen it has open.
     #[derive(Default)]
     pub(crate) struct Keys {
         held: crate::keymap::Held,
         decoder: crate::decode::Decoder,
+        pub(crate) screen: crate::screens::Screen,
     }
 
     impl Session {
         /// Bytes typed at client `client`'s terminal, as its client would
-        /// take them: through its keys (the session's `test_keymap`), each
-        /// action sent, each binding's program run as the client.
+        /// take them: through its screen, else its keys (the session's
+        /// `test_keymap`), each action sent, each program run as the client.
         pub(crate) fn input(&mut self, client: ClientId, bytes: &[u8]) {
-            let mut keys = self.test_keys.remove(&client).unwrap_or_default();
             let mut inputs = Vec::new();
             let now = std::time::Instant::now();
+            let keys = self.test_keys.entry(client).or_default();
             keys.decoder.expire(now);
             keys.decoder.bytes(bytes, &mut inputs);
             keys.decoder.mark(now);
-            self.inputs(client, &mut keys, inputs);
-            self.test_keys.insert(client, keys);
+            self.inputs(client, inputs);
         }
 
         /// The decoder's wait passed: what waited is taken as it is.
         pub(crate) fn escape(&mut self, client: ClientId) {
-            let mut keys = self.test_keys.remove(&client).unwrap_or_default();
             let mut inputs = Vec::new();
-            keys.decoder.timeout(&mut inputs);
-            self.inputs(client, &mut keys, inputs);
-            self.test_keys.insert(client, keys);
+            self.test_keys
+                .entry(client)
+                .or_default()
+                .decoder
+                .timeout(&mut inputs);
+            self.inputs(client, inputs);
         }
 
-        fn inputs(&mut self, client: ClientId, keys: &mut Keys, inputs: Vec<crate::decode::Input>) {
+        /// Opens a screen on client `client`, as its client does.
+        pub(crate) fn open_screen(&mut self, client: ClientId, screen: crate::screens::Screen) {
+            let keys = self.test_keys.entry(client).or_default();
+            keys.held = crate::keymap::Held::Normal;
+            let mut acts = Vec::new();
+            if let crate::screens::Screen::Copy(_) = keys.screen {
+                acts.push(crate::act::Act::Copy(crate::act::CopyAct::Leave));
+            }
+            acts.extend(screen.opened());
+            keys.screen = screen;
+            self.acts(client, acts);
+            deliver(self);
+        }
+
+        /// Runs fuxth as client `client`: a failure, or what it says, in its
+        /// notice, as its client shows them.
+        pub(crate) fn run_as(&mut self, client: ClientId, code: &str) {
+            match output_as(self, Some(client), code) {
+                Err(error) => self.error_to(client, error),
+                Ok(said) if !said.trim().is_empty() => {
+                    self.info_to(client, said.trim().replace('\n', "  "));
+                }
+                Ok(_) => {}
+            }
+        }
+
+        fn effects(&mut self, client: ClientId, effects: Vec<crate::screens::Effect>) {
+            for effect in effects {
+                match effect {
+                    crate::screens::Effect::Send(act) => self.acts(client, vec![act]),
+                    crate::screens::Effect::Run(code) => self.run_as(client, &code),
+                }
+                deliver(self);
+            }
+        }
+
+        pub(crate) fn inputs(&mut self, client: ClientId, inputs: Vec<crate::decode::Input>) {
             use crate::act::Act;
             use crate::decode::Input;
+            use crate::screens::{Effect, Screen};
             for input in inputs {
-                let Some(view) = self.views.get(&client) else {
+                let Some(read_only) = self.views.get(&client).map(|v| v.read_only) else {
                     return;
                 };
-                let (mode, read_only) = (crate::view::mode_name(&view.mode), view.read_only);
-                if !matches!(mode, "normal" | "column" | "repeat") {
-                    keys.held = crate::keymap::Held::Normal;
-                }
+                let keys = self.test_keys.entry(client).or_default();
+                let open = keys.screen != Screen::None;
                 let act = match input {
+                    Input::Key(stroke) if open => {
+                        let effects = keys.screen.key(stroke.press);
+                        self.effects(client, effects);
+                        continue;
+                    }
                     Input::Key(stroke) => {
                         let keymap = self.test_keymap.clone();
-                        for step in keys.held.press(&keymap, mode, stroke, read_only) {
-                            match step {
-                                crate::keymap::Step::Send(act) => self.acts(client, vec![act]),
-                                crate::keymap::Step::Run(code) => {
-                                    match output_as(self, Some(client), &code) {
-                                        Err(error) => self.error_to(client, error),
-                                        Ok(said) if !said.trim().is_empty() => {
-                                            self.info_to(client, said.trim().replace('\n', "  "));
-                                        }
-                                        Ok(_) => {}
-                                    }
-                                }
-                            }
-                        }
+                        let steps = keys.held.press(&keymap, stroke, read_only);
+                        let effects = steps.into_iter().map(|step| match step {
+                            crate::keymap::Step::Send(act) => Effect::Send(act),
+                            crate::keymap::Step::Run(code) => Effect::Run(code),
+                        });
+                        self.effects(client, effects.collect());
                         continue;
                     }
                     Input::Reply(reply) => Act::Reply(reply),
@@ -4413,6 +4457,11 @@ pub(crate) mod testing {
                     {
                         continue;
                     }
+                    Input::Paste(text) if open => {
+                        let effects = keys.screen.paste(&text);
+                        self.effects(client, effects);
+                        continue;
+                    }
                     Input::Paste(text) => Act::Paste(text),
                     Input::PasteTooLong => {
                         let limit = crate::decode::PASTE_LIMIT / 1024;
@@ -4421,9 +4470,11 @@ pub(crate) mod testing {
                     }
                     Input::FocusIn => Act::Focus(true),
                     Input::FocusOut => Act::Focus(false),
+                    Input::Mouse(_) if open => continue,
                     Input::Mouse(event) => Act::Mouse(event),
                 };
                 self.acts(client, vec![act]);
+                deliver(self);
             }
         }
     }
@@ -4773,7 +4824,10 @@ mod tests {
     #[test]
     fn command_errors_keep_their_words() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(10, 40)?;
-        let long = format!("str %1 pane str {} rename", "x".repeat(257));
+        let long = format!(
+            "str %1 pane str {} rename",
+            std::iter::repeat_n("x", 257).collect::<String>()
+        );
         let not_a_name =
             "cannot be a name: a target would read it as a pane, tab or workspace number";
         for (code, message) in [
@@ -4800,7 +4854,6 @@ mod tests {
             ("str @1 tab str next reorder", "the tab is already at that end".to_owned()),
             ("str %1 pane str previous reorder", "the pane is already at that end".to_owned()),
             ("str +1 workspace str previous reorder", "the workspace is already at that end".to_owned()),
-            ("str c1 client str %1 pane choose-pane", "only one pane".to_owned()),
             ("str %1 pane str left move-beside", "no pane left of %1".to_owned()),
             (
                 "str nope 1 set",
@@ -4835,30 +4888,26 @@ mod tests {
                 "{code}"
             );
         }
-        // Why a menu entry cannot run now: as running it says. The
-        // client's tab has one pane; workspace two's, two.
-        run(&mut s, "str %2 pane opts horizontal split")?;
-        let client = "c1".parse()?;
-        for (code, reason) in [
-            ("me str next focus", Some("only one pane")),
-            ("me str last focus", Some("no previously focused pane")),
-            ("me str left focus", Some("no pane left of %1")),
-            ("me str %2 pane choose-pane", None),
-            ("me next-tab", Some("only one tab")),
-            ("me next-workspace", None),
-            ("me focused 0 paste-buffer", Some("no buffer 0")),
-            (
-                "me focused str TERM signal",
-                Some("nothing is running in %1 but its shell"),
-            ),
-            ("me me focused choose-pane", Some("only one pane")),
-        ] {
-            let commands = requests(&mut s, client, code)?;
-            let got: Vec<Option<String>> = (commands.iter())
-                .map(|command| s.unavailable(command, client).map(|e| e.to_string()))
-                .collect();
-            assert_eq!(got, [reason.map(str::to_owned)], "{code}");
-        }
+        Ok(())
+    }
+
+    /// A client's screen asked for from elsewhere is relayed to the client,
+    /// which opens it, or shows why it cannot.
+    #[test]
+    fn a_screen_asked_from_elsewhere_is_the_clients() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, c) = attached(10, 40)?;
+        run(&mut s, "str c1 client str %1 pane choose-pane")?;
+        let notice = s
+            .views
+            .get(&c)
+            .and_then(|v| v.notice.clone())
+            .map(|n| n.text);
+        assert_eq!(notice.as_deref(), Some("nothing_there: only one pane"));
+        run(&mut s, "str c1 client str %1 pane menu")?;
+        assert!(matches!(
+            s.views.get(&c).map(|v| &v.mode),
+            Some(Mode::Panel(crate::act::Panel::List(list))) if list.title == "pane %1 sh"
+        ));
         Ok(())
     }
 
@@ -4883,7 +4932,6 @@ mod tests {
             run("str nope 1 set")?.as_slice(),
             [Err(Error::Config(_))]
         ));
-        assert!(matches!(run("me copy-mode")?.as_slice(), [Ok(_)]));
         let kill = Command::KillPane {
             target: Some(PaneId::of(9)),
         };

@@ -379,7 +379,9 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
             continue;
         }
         let key = b'a'.saturating_add(u8::try_from(i % 26).unwrap_or(0));
-        s.input(c, &[key]);
+        // As the client sends a key its bindings leave for the pane.
+        let press = fux::keys::KeyPress::char(char::from(key));
+        s.acts(c, vec![fux::act::Act::Key(press.into())]);
         // What the PTY would carry to the program, and its echo back.
         let typed = s
             .panes
@@ -432,8 +434,17 @@ fn paint(
         .attach(first.rows.saturating_add(1), first.cols, None)
         .map_err(|e| e.to_string())?;
     if split {
-        let argv = ["split", "-h", "-t", "%1"].map(str::to_owned);
-        s.run(&argv, &Default::default());
+        let split = fux::command::Command::Split {
+            axis: fux::layout::Axis::Horizontal,
+            target: s.panes.keys().next().copied(),
+            cmd: Vec::new(),
+            cwd: None,
+            env: Vec::new(),
+            run: false,
+            ids: Vec::new(),
+            json: false,
+        };
+        s.run_command(&split, &fux::session::Origin::default());
     }
     let panes: Vec<_> = s.panes.keys().copied().collect();
     let mut shown = fux::render::Grid::new(0, 0);

@@ -37,14 +37,16 @@ Where they run:
 Every target checks that nothing panics. Each target's input format is
 documented at the top of its file in `fuzz_targets/`.
 
-**`protocol`**: bytes from a peer on the server's socket, into
+**`protocol`**: bytes from a peer on the server's socket (a client's
+hello, attach, actions and requests, or the server's frames), into
 `protocol::Decoder`, whole or in pieces of a size the first byte picks.
 - The frames and first error are the same pushed whole, in pieces and byte
   by byte.
 - After draining, `buffered()` is under `4 + MAX_FRAME`.
 - Each frame round-trips through `Frame::encode`; `Frame::encode_into`
-  after other bytes appends the same bytes; a paint, stdout or stderr frame
-  is what `Stream::encode_into` writes for its payload.
+  after other bytes appends the same bytes; a paint, stdout, stderr or
+  reply-part frame is what `ServerFrame::split_into` writes for its
+  payload.
 
 **`paint`**: `render::paint` diffs applied to a fux-vt terminal.
 - Input: a size (1–40 by 1–120, or one row of `u16::MAX` columns), a flags
@@ -67,39 +69,58 @@ splits, then `resize`. After every placement:
   without room for its first child shows nothing, by design;
 - `neighbor` names only another placed pane.
 
-**`config`**: `set`, `bind`, `unbind` and `unbind-all` lines into
-`Config::apply`, from the defaults; lines are text, or structured (a
-leading `0xff`) to reach every command and word. After every line:
-- a failing line changes nothing;
-- a small model of `bind`, `unbind` and `unbind-all`, written from the
-  README's rules, accepts the same lines and holds the same bindings in
-  the same order;
-- `split(&join(&words))` gives the words back.
-
-After a line that changes the configuration: every binding has keys and a
-command; keys are lower-case letters without modifiers; no binding's keys
-equal or start another's; and `describe()` applied after `unbind-all` gives
-the same configuration back.
+**`config`**: one client's keys, from the default keymap. Lines are
+config statements (a leading `0xff`: `bind`, `bind-root`, `unbind`,
+`unbind-root`, `unbind-all`, `prefix`, `label`, `group` or `repeat`, written
+as fuxth, compiled with `script::compile` and run as a config is, against
+the `Keymap`), keys typed (a leading `0xfe`: through `keymap::Held::press`,
+as a client that types or only watches), or
+any other text, as fuxth source (`fuxth::token::source`, `compile`, then
+run as a config for a bounded number of steps up to its first request for
+the server; words that read files are not run). After every line:
+- a failing statement changes nothing;
+- a small model of the statements, written from the README's rules (a
+  sequence is a binding or a layer, never both; no Escape after the
+  prefix; the prefix never bound without it; code compiled as it is
+  bound), accepts the same ones and holds the same prefix, bindings,
+  labels, groups and repeats;
+- source's tokens, quoted as a saved session quotes words, split back to
+  the same tokens; a program that does not compile fails with status 1
+  and a code;
+- after a change to the keymap: no empty layer, no Escape after the
+  prefix, no binding of the prefix without it nor of one key twice, and
+  every layer's column shows;
+- a key runs only a program that is bound, and that compiles; with
+  nothing held the prefix opens the column, a key bound without the prefix runs its program, and
+  any other key goes to the pane; the column a client shows and its repeat
+  mode are of layers that exist (unless the keymap changed under them).
 
 **`session`**: clients typing into a whole `Session` with no processes
-while commands arrive from the side. Operations: bytes a client types
-(whole or in pieces), the Escape deadline, resizes, one to three clients
-attaching and detaching, a fixed list of commands (tabs, splits, overlays
-with `-c`, `bind`/`unbind`, `set prefix`, `reload`, `detach`,
-`paste-buffer`, `send-keys` and more), pane output, a shell exiting. After
-each, the target does what the server does (settles, acts on the outbox,
-takes queued pane input), then checks:
-- every pane is in exactly one tab's layout, and every view's workspace,
-  tab and focus exist and its screen composes;
-- each overlay's state is valid (a column's layer exists, a repeat mode's
-  layer repeats, a prompt's cursor is in its text of at most 4096 bytes, a
-  list selects an item);
+while fuxth programs arrive from the side. Each client reads its keys as
+its client does: by the screen it has open (`screens::Screen`: a menu,
+chooser, prompt, confirmation or copy mode), else through its bindings
+(`keymap::Held`, one keymap the clients share). It sends the session its
+actions, and runs its programs in-process as itself (a screen one opens,
+built with what the session answers, opens), as it does the programs the
+session hands it (`Outgoing::Run`) and the keys sent to it
+(`Outgoing::Keys`); `Outgoing::Ended` ends its copy mode. Operations: bytes a
+client types (whole or in pieces), the Escape deadline, resizes, one to
+three clients attaching and detaching, a fixed list of programs (tabs,
+splits, overlays for a client, `bind`/`unbind`, `prefix`, `set`, `detach`,
+`paste-buffer`, `send-keys` to panes and clients and more), pane output, a
+shell exiting. Waits are not waited on, and words that read files are not
+run. After each, the target does what the server does (settles, acts on
+the outbox, takes queued pane input), then checks:
+- every pane is in exactly one tab's layout, every view's screen composes,
+  and every attached client has keys;
+- a client shown a repeat bar is in a repeat mode;
 - every `Outgoing::Bytes` is OSC 52 with at most `MAX_CLIPBOARD` bytes of
   base64;
-- a key typed in a repeat mode reaches no pane, unless bound there to
-  `send-keys` or `paste-buffer`;
+- a key typed in a repeat mode is not sent on to the pane, and reaches no
+  pane unless the binding it runs there sends keys or pastes;
 - a second session given every byte one at a time ends with the same `ls`,
-  modes, notices, screens, configuration and paste buffers.
+  modes, notices, screens, configuration, paste buffers, keymap and
+  clients' keys and screens.
 
 ## Corpus
 

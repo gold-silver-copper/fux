@@ -124,7 +124,11 @@ Every key below follows the prefix, `C-b` by default, and is a lower-case
 letter: case counts, so `C-b T` is not `C-b t`. The keys are your client's:
 each terminal attached has its own prefix and bindings, from its config, and
 the server knows none of them. A key that is not fux's reaches the focused
-pane as you typed it.
+pane as you typed it. So are fux's screens: the command column, menus,
+choosers, prompts, confirmations and copy mode belong to your client, which
+switches between them at the key that does it, so a key typed fast is never
+read in the wrong one; the server draws what your client shows, and keeps
+copy mode's cursor in the history only it holds.
 
 The prefix alone opens the **command column**, listing every binding, and
 those without the prefix last: arrows, PageUp/PageDown and Home/End move,

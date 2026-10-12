@@ -225,7 +225,10 @@ fn a_line_too_long_to_type_leaves_no_process_behind() -> Outcome {
     let server = Server::start("")?;
     let pid = server.pid().ok_or("the server's pid")?;
     // From a file: Linux takes at most 128 KiB in one argument.
-    let line = format!("echo {}", "x".repeat(fux::pane::INPUT_BYTES));
+    let line = format!(
+        "echo {}",
+        std::iter::repeat_n("x", fux::pane::INPUT_BYTES).collect::<String>()
+    );
     let file = server.dir.join("long.fux");
     std::fs::write(
         &file,

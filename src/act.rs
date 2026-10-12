@@ -1,9 +1,13 @@
 //! What an attached client sends the server about its terminal: typed
-//! actions, never keys to be read. The client reads its keyboard itself,
-//! runs its own bindings, and sends a key only as literal input to the pane
-//! it focuses (`Act::Key`). fux's own screens, the command column, menus,
-//! the prompt, confirmations and copy mode, take actions the client's mode
-//! tables made of its keys (`crate::keymap`).
+//! actions, never keys to be read. The client reads its keyboard, runs its
+//! own bindings and owns every mode: the command column, repeat modes,
+//! menus, choosers, prompts, confirmations, copy mode and its search
+//! (`crate::screens`). The server is sent a key only as literal input to
+//! the pane the client focuses (`Act::Key`), what to draw of the client's
+//! screens (`Act::Show`), and the moves of copy mode, whose cursor is the
+//! server's as it alone holds the scrollback (`Act::Copy`).
+use crate::command::AnyRef;
+use crate::id::WsId;
 use crate::keys::decode::Reply;
 use crate::keys::mouse::{MouseAction, MouseButton, MouseEvent};
 use crate::keys::{Keystroke, Kitty, Modifiers};
@@ -14,28 +18,46 @@ use crate::wire::{Error, Reader, Wire};
 pub enum Act {
     /// A key typed, as literal input to the focused pane.
     Key(Keystroke),
-    /// Pasted text: to the prompt if one is open, else the focused pane.
+    /// Pasted text, for the focused pane.
     Paste(String),
     Mouse(MouseEvent),
     Focus(bool),
     /// The terminal's answer to a question fux asked it.
     Reply(Reply),
-    /// Show the command column: the client's bindings of one layer, one
-    /// selected.
-    Column(Column),
-    /// Show a repeat mode's bar.
-    Repeat(String),
-    /// Close what the client showed of its own (column, repeat bar).
-    Normal,
+    /// Draw one of the client's screens over its panes.
+    Show(Panel),
+    /// Draw none: the client is back to its panes (copy mode left too).
+    Hide,
     /// A notice, from a binding's program: an error if `error`.
     Notice {
         text: String,
         error: bool,
     },
-    List(ListAct),
-    Prompt(LineAct),
-    Confirm(bool),
     Copy(CopyAct),
+}
+
+/// What the server draws of a client's screen: the client holds all of its
+/// state, and sends it again as it changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Panel {
+    /// The command column: the client's bindings of one layer.
+    Column(Column),
+    /// A repeat mode's bar: `RESIZE  h j k l · Esc`.
+    Repeat(String),
+    /// A menu or a chooser.
+    List(List),
+    /// A line being typed: the command prompt, a rename (of `about`).
+    Prompt {
+        title: String,
+        before: String,
+        after: String,
+        about: Option<AnyRef<WsId>>,
+    },
+    /// A question answered y or n, about closing `about`.
+    Confirm {
+        question: String,
+        about: AnyRef<WsId>,
+    },
 }
 
 /// The command column as a client shows it.
@@ -61,40 +83,24 @@ pub struct ColumnEntry {
     pub root: bool,
 }
 
-/// What moves a list (a menu, a chooser).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ListAct {
-    Up,
-    Down,
-    PageUp,
-    PageDown,
-    First,
-    Last,
-    Choose,
-    Cancel,
-    /// Rename what the chosen entry is about.
-    Rename,
-    /// Close what the chosen entry is about.
-    Close,
-}
-
-/// What edits a line being typed (the prompt, a copy-mode search).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LineAct {
-    Insert(String),
-    Backspace,
-    Delete,
-    Left,
-    Right,
-    Home,
-    End,
-    Submit,
-    Cancel,
+/// A menu or a chooser, as drawn: its rows, the one marked current, the one
+/// selected, and whether `r` and `x` act on its rows (a chooser's do).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct List {
+    pub title: String,
+    pub items: Vec<String>,
+    pub current: Option<usize>,
+    pub selected: usize,
+    pub chooser: bool,
+    /// What it was opened for: if it goes, the server closes the list.
+    pub about: Option<AnyRef<WsId>>,
 }
 
 /// What moves, selects and copies in copy mode.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CopyAct {
+    /// Copy mode starts, on the focused pane.
+    Enter,
     Leave,
     Left,
     Right,
@@ -113,8 +119,6 @@ pub enum CopyAct {
     HalfDown,
     PageUp,
     PageDown,
-    SearchForward,
-    SearchBackward,
     Next,
     Previous,
     PromptBack,
@@ -124,9 +128,48 @@ pub enum CopyAct {
     SelectBlock,
     /// The other end of the selection.
     OtherEnd,
+    /// Copy what is selected, and leave.
     Yank,
-    /// The search being typed.
-    Search(LineAct),
+    /// The search line the client is typing, for the bar: forward or back,
+    /// and its text before and after the cursor; none once it is done.
+    Typing(Option<(bool, String, String)>),
+    /// Find `query`, forward or back, from the cursor.
+    Find {
+        query: String,
+        forward: bool,
+    },
+}
+
+/// What moves a list (a menu, a chooser), made of the client's keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListAct {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    First,
+    Last,
+    Choose,
+    Cancel,
+    /// Rename what the chosen entry is about.
+    Rename,
+    /// Close what the chosen entry is about.
+    Close,
+}
+
+/// What edits a line being typed (the prompt, a copy-mode search), made of
+/// the client's keys.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LineAct {
+    Insert(String),
+    Backspace,
+    Delete,
+    Left,
+    Right,
+    Home,
+    End,
+    Submit,
+    Cancel,
 }
 
 fn tag(out: &mut Vec<u8>, tag: u8) {
@@ -151,22 +194,6 @@ macro_rules! plain {
     };
 }
 
-plain!(
-    ListAct,
-    "list action",
-    [
-        ListAct::Up,
-        ListAct::Down,
-        ListAct::PageUp,
-        ListAct::PageDown,
-        ListAct::First,
-        ListAct::Last,
-        ListAct::Choose,
-        ListAct::Cancel,
-        ListAct::Rename,
-        ListAct::Close,
-    ]
-);
 plain!(
     MouseAction,
     "mouse action",
@@ -363,41 +390,84 @@ impl Wire for Column {
     }
 }
 
-impl Wire for LineAct {
+impl Wire for List {
     fn put(&self, out: &mut Vec<u8>) {
-        match self {
-            LineAct::Insert(text) => {
-                tag(out, 0);
-                text.put(out);
-            }
-            LineAct::Backspace => tag(out, 1),
-            LineAct::Delete => tag(out, 2),
-            LineAct::Left => tag(out, 3),
-            LineAct::Right => tag(out, 4),
-            LineAct::Home => tag(out, 5),
-            LineAct::End => tag(out, 6),
-            LineAct::Submit => tag(out, 7),
-            LineAct::Cancel => tag(out, 8),
-        }
+        self.title.put(out);
+        self.items.put(out);
+        self.current.put(out);
+        self.selected.put(out);
+        self.chooser.put(out);
+        self.about.put(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        Ok(match u8::get(r)? {
-            0 => LineAct::Insert(String::get(r)?),
-            1 => LineAct::Backspace,
-            2 => LineAct::Delete,
-            3 => LineAct::Left,
-            4 => LineAct::Right,
-            5 => LineAct::Home,
-            6 => LineAct::End,
-            7 => LineAct::Submit,
-            8 => LineAct::Cancel,
-            other => return Err(Error::Tag("line action", other)),
+        Ok(List {
+            title: String::get(r)?,
+            items: Vec::get(r)?,
+            current: Option::get(r)?,
+            selected: usize::get(r)?,
+            chooser: bool::get(r)?,
+            about: Option::get(r)?,
         })
     }
 }
 
-/// Copy mode's actions but a search's, in order.
-const COPY: [CopyAct; 27] = [
+impl Wire for Panel {
+    fn put(&self, out: &mut Vec<u8>) {
+        match self {
+            Panel::Column(column) => {
+                tag(out, 0);
+                column.put(out);
+            }
+            Panel::Repeat(bar) => {
+                tag(out, 1);
+                bar.put(out);
+            }
+            Panel::List(list) => {
+                tag(out, 2);
+                list.put(out);
+            }
+            Panel::Prompt {
+                title,
+                before,
+                after,
+                about,
+            } => {
+                tag(out, 3);
+                title.put(out);
+                before.put(out);
+                after.put(out);
+                about.put(out);
+            }
+            Panel::Confirm { question, about } => {
+                tag(out, 4);
+                question.put(out);
+                about.put(out);
+            }
+        }
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Ok(match u8::get(r)? {
+            0 => Panel::Column(Wire::get(r)?),
+            1 => Panel::Repeat(String::get(r)?),
+            2 => Panel::List(Wire::get(r)?),
+            3 => Panel::Prompt {
+                title: String::get(r)?,
+                before: String::get(r)?,
+                after: String::get(r)?,
+                about: Option::get(r)?,
+            },
+            4 => Panel::Confirm {
+                question: String::get(r)?,
+                about: Wire::get(r)?,
+            },
+            other => return Err(Error::Tag("panel", other)),
+        })
+    }
+}
+
+/// Copy mode's moves with no data, in their order on the wire.
+const COPY: [CopyAct; 26] = [
+    CopyAct::Enter,
     CopyAct::Leave,
     CopyAct::Left,
     CopyAct::Right,
@@ -414,8 +484,6 @@ const COPY: [CopyAct; 27] = [
     CopyAct::HalfDown,
     CopyAct::PageUp,
     CopyAct::PageDown,
-    CopyAct::SearchForward,
-    CopyAct::SearchBackward,
     CopyAct::Next,
     CopyAct::Previous,
     CopyAct::PromptBack,
@@ -430,11 +498,17 @@ const COPY: [CopyAct; 27] = [
 impl Wire for CopyAct {
     fn put(&self, out: &mut Vec<u8>) {
         match self {
-            CopyAct::Search(line) => {
-                tag(out, 255);
+            CopyAct::Typing(line) => {
+                tag(out, 254);
                 line.put(out);
             }
-            other @ (CopyAct::Leave
+            CopyAct::Find { query, forward } => {
+                tag(out, 255);
+                query.put(out);
+                forward.put(out);
+            }
+            plain @ (CopyAct::Enter
+            | CopyAct::Leave
             | CopyAct::Left
             | CopyAct::Right
             | CopyAct::Up
@@ -450,8 +524,6 @@ impl Wire for CopyAct {
             | CopyAct::HalfDown
             | CopyAct::PageUp
             | CopyAct::PageDown
-            | CopyAct::SearchForward
-            | CopyAct::SearchBackward
             | CopyAct::Next
             | CopyAct::Previous
             | CopyAct::PromptBack
@@ -461,14 +533,18 @@ impl Wire for CopyAct {
             | CopyAct::SelectBlock
             | CopyAct::OtherEnd
             | CopyAct::Yank) => {
-                let index = COPY.iter().position(|c| c == other).unwrap_or(0);
+                let index = COPY.iter().position(|c| c == plain).unwrap_or(0);
                 out.push(u8::try_from(index).unwrap_or(0));
             }
         }
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         match u8::get(r)? {
-            255 => LineAct::get(r).map(CopyAct::Search),
+            254 => Ok(CopyAct::Typing(Option::get(r)?)),
+            255 => Ok(CopyAct::Find {
+                query: String::get(r)?,
+                forward: bool::get(r)?,
+            }),
             index => {
                 (COPY.get(usize::from(index)).cloned()).ok_or(Error::Tag("copy action", index))
             }
@@ -499,34 +575,18 @@ impl Wire for Act {
                 tag(out, 4);
                 reply.put(out);
             }
-            Act::Column(column) => {
+            Act::Show(panel) => {
                 tag(out, 5);
-                column.put(out);
+                panel.put(out);
             }
-            Act::Repeat(bar) => {
-                tag(out, 6);
-                bar.put(out);
-            }
-            Act::Normal => tag(out, 7),
+            Act::Hide => tag(out, 6),
             Act::Notice { text, error } => {
-                tag(out, 8);
+                tag(out, 7);
                 text.put(out);
                 error.put(out);
             }
-            Act::List(a) => {
-                tag(out, 9);
-                a.put(out);
-            }
-            Act::Prompt(a) => {
-                tag(out, 10);
-                a.put(out);
-            }
-            Act::Confirm(yes) => {
-                tag(out, 11);
-                yes.put(out);
-            }
             Act::Copy(a) => {
-                tag(out, 12);
+                tag(out, 8);
                 a.put(out);
             }
         }
@@ -538,17 +598,13 @@ impl Wire for Act {
             2 => Act::Mouse(Wire::get(r)?),
             3 => Act::Focus(bool::get(r)?),
             4 => Act::Reply(Wire::get(r)?),
-            5 => Act::Column(Wire::get(r)?),
-            6 => Act::Repeat(String::get(r)?),
-            7 => Act::Normal,
-            8 => Act::Notice {
+            5 => Act::Show(Wire::get(r)?),
+            6 => Act::Hide,
+            7 => Act::Notice {
                 text: String::get(r)?,
                 error: bool::get(r)?,
             },
-            9 => Act::List(Wire::get(r)?),
-            10 => Act::Prompt(Wire::get(r)?),
-            11 => Act::Confirm(bool::get(r)?),
-            12 => Act::Copy(Wire::get(r)?),
+            8 => Act::Copy(Wire::get(r)?),
             other => return Err(Error::Tag("action", other)),
         })
     }

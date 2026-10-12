@@ -234,21 +234,7 @@ fn asked(id: &str) -> impl Iterator<Item = String> {
 /// Appends a line of words, each quoted as fuxth's tokenizer reads it
 /// back.
 fn push(out: &mut String, line: &[String]) {
-    let words: Vec<String> = line.iter().map(|w| quote(w)).collect();
+    let words: Vec<String> = line.iter().map(|w| crate::screens::quote(w)).collect();
     out.push_str(&words.join(" "));
     out.push('\n');
-}
-
-/// A word as fuxth reads it back: bare if nothing in it is special, else
-/// in single quotes.
-pub fn quote(word: &str) -> String {
-    let bare = !word.is_empty()
-        && !word.starts_with('#')
-        && word
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c));
-    match bare {
-        true => word.to_owned(),
-        false => format!("'{}'", word.replace('\'', "'\\''")),
-    }
 }

@@ -1,8 +1,8 @@
 //! Copy mode, in the baseline and the current fux: searches over a pane's
 //! history find the same matches either way; selections copy the same text
-//! or the same error; and every error copy mode can reach in a session --
-//! no pane to copy from, the history dropping the rows it held, a selection
-//! too large, a client or pane that is gone -- says the same.
+//! or the same error. Its errors in a session are no longer compared: the
+//! baseline reaches them by keys its server reads and command lines it
+//! parses, and the current fux by its clients' actions and fuxth.
 use crate::rng::Rng;
 use crate::{Outcome, bump, same, times};
 
@@ -26,19 +26,15 @@ const QUERIES: &[&str] = &[
 
 macro_rules! stack {
     (
-        $name:ident, $fux:ident, $vt:ident, $ids:ident,
+        $name:ident, $fux:ident, $vt:ident,
         |$rows:ident, $cols:ident| [$($size:tt)*],
         |$s:ident| $retained:expr,
         |$at:ident, $index:ident| $row:expr,
         |$found:ident, $from:ident, $query:ident, $seek:ident| $find:expr,
-        |$copied:ident, $kind:ident, $start:ident, $end:ident| $text:expr,
-        $origin:ident::$client:ident
+        |$copied:ident, $kind:ident, $start:ident, $end:ident| $text:expr
     ) => {
         mod $name {
-            use $fux::config::Config;
             use $fux::copy::{self, Seek, Select};
-            use $fux::session::{$origin, Session};
-            use $fux::$ids::ClientId;
             use $vt::Parser;
 
             pub fn terminal(
@@ -94,72 +90,6 @@ macro_rules! stack {
                 let (id, index) = row(p, from.0).unzip();
                 format!("{found:?} {texts:?} {id:?} {:?}", index.flatten())
             }
-
-            fn session(
-                history: usize,
-                rows: u16,
-                cols: u16,
-            ) -> Result<(Session, ClientId), String> {
-                let mut config = Config::default();
-                config.history_lines = history;
-                let mut s = Session::new(config, "/nonexistent/fux.sock".into(), false);
-                s.start().map_err(|e| e.to_string())?;
-                let c = s.attach(rows, cols, None).map_err(|e| e.to_string())?;
-                Ok((s, c))
-            }
-
-            fn notice(s: &Session, c: ClientId) -> String {
-                format!("{:?}", s.views.get(&c).and_then(|v| v.notice.clone()))
-            }
-
-            fn run(s: &mut Session, c: ClientId, line: &str) -> String {
-                let argv: Vec<String> = line.split(' ').map(str::to_owned).collect();
-                format!("{:?}", s.run(&argv, &$origin::$client(c)))
-            }
-
-            /// Every copy-mode error a session can reach, `lines` lines of
-            /// output into it; what each step gave back.
-            pub fn errors(lines: usize) -> Result<Vec<String>, String> {
-                let mut out = Vec::new();
-                // No pane to copy from: a tab emptied by moving its pane out.
-                let (mut s, c) = session(100, 24, 80)?;
-                out.push(run(&mut s, c, "move-pane --to new-tab"));
-                out.push(run(&mut s, c, "select-tab --previous"));
-                out.push(run(&mut s, c, "copy-mode"));
-                s.input(c, b"\x02c");
-                out.push(notice(&s, c));
-                // The history drops the rows copy mode holds.
-                let (mut s, c) = session(3, 6, 20)?;
-                out.push(run(&mut s, c, "copy-mode"));
-                s.input(c, b"kkkk");
-                let text: String = std::iter::repeat_n("line\r\n", lines).collect();
-                if let Ok(p) = $fux::command::parse_pane("%1") {
-                    s.output(p, text.as_bytes());
-                }
-                s.settle();
-                out.push(notice(&s, c));
-                // A selection past the most cells one copy takes.
-                let (mut s, c) = session(3000, 30, 300)?;
-                let row: String = std::iter::repeat_n('x', 299)
-                    .chain("\r\n".chars())
-                    .collect();
-                let text: String = std::iter::repeat_n(row.as_str(), lines).collect();
-                if let Ok(p) = $fux::command::parse_pane("%1") {
-                    s.output(p, text.as_bytes());
-                }
-                out.push(run(&mut s, c, "copy-mode"));
-                s.input(c, b"tszy");
-                out.push(notice(&s, c));
-                out.push(format!("{} buffers", s.buffers.len()));
-                // No such client, and no such pane, straight to copy mode.
-                let (mut s, c) = session(10, 24, 80)?;
-                s.detach(c);
-                out.push(run(&mut s, c, "copy-mode"));
-                let (mut s, c) = session(10, 24, 80)?;
-                s.panes.clear();
-                out.push(run(&mut s, c, "copy-mode"));
-                Ok(out)
-            }
         }
     };
 }
@@ -167,16 +97,15 @@ macro_rules! stack {
 // The baseline counts rows from the oldest in copy mode's own functions;
 // now they are fux-vt's rows, which know their place.
 stack! {
-    base, baseline, baseline_vt, command,
+    base, baseline, baseline_vt,
     |r, c| [r, c],
     |s| copy::retained(s),
     |s, index| copy::row_at(s, index).map(|row| (row.id(), copy::index_of(s, row.id()))),
     |s, from, query, seek| copy::find(s, query, from, seek),
-    |s, kind, start, end| copy::text(s, kind, start, end).map_err(|e| e.to_string()),
-    Ctx::client
+    |s, kind, start, end| copy::text(s, kind, start, end).map_err(|e| e.to_string())
 }
 stack! {
-    cur, fux, fux_vt, id,
+    cur, fux, fux_vt,
     |r, c| [crate::size(r, c)],
     |s| s.rows().len(),
     |s, index| s.rows().nth(index).map(|row| (row.id(), Some(row.index()))),
@@ -191,8 +120,7 @@ stack! {
             Some((start, end)) => copy::text(s, kind, start, end).map_err(|e| e.to_string()),
             None => Err("no such row".to_owned()),
         }
-    },
-    Origin::Client
+    }
 }
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
@@ -237,33 +165,7 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
             bump(&mut searches);
         }
     }
-    let mut scenarios = 0u64;
-    let mut seen = String::new();
-    for lines in [0usize, 1, 5, 900, 1000] {
-        let errors = base::errors(lines)?;
-        seen.push_str(&errors.join("\n"));
-        same(
-            &format!("copy-mode errors, with {lines} lines of output"),
-            errors,
-            cur::errors(lines)?,
-        )?;
-        bump(&mut scenarios);
-    }
-    // Each is still reached, or the comparison says less than it seems to.
-    for error in [
-        "no pane to copy from",
-        "the history dropped the rows it held",
-        "the selection is larger than",
-        "no such client",
-        "no such pane",
-    ] {
-        if !seen.contains(error) {
-            return Err(format!(
-                "no scenario reaches the copy-mode error {error:?} any more"
-            ));
-        }
-    }
     Ok(format!(
-        "{searches} searches ({found} found) with their selections, {scenarios} runs of every copy-mode error"
+        "{searches} searches ({found} found) with their selections"
     ))
 }

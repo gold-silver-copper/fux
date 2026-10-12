@@ -60,6 +60,7 @@ version = "0.22.0"
 dependencies = [
  "fux-vt 0.4.1",
  "fuxix 0.2.0",
+ "fuxth",
  "signal-hook",
  "unicode-width",
 ]
@@ -132,6 +133,10 @@ version = "0.2.0"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "fuxth"
+version = "0.1.0"
 
 [[package]]
 name = "getrandom"

@@ -379,10 +379,12 @@ fn a_crashed_server_comes_back() -> Outcome {
         String::from_utf8_lossy(&again.stderr)
     );
     let mut after = String::new();
-    eventually("the panes back", || {
+    // The saved session is run line by line: its sizes come last.
+    eventually("the panes back, at their sizes", || {
         after = server.ok(&["ls"])?;
-        Ok(after.contains(&format!("{shell} ")))
-    })?;
+        Ok(after.contains(&format!("{shell} ")) && after.contains(&format!("{app} sh 70x30")))
+    })
+    .map_err(|e| format!("{e}: {after}\nas before:\n{before}"))?;
     assert!(
         after.contains(&format!("{app} sh 70x30")),
         "{app} in\n{after}\nas before:\n{before}"

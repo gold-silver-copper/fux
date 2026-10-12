@@ -195,6 +195,7 @@ fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
     let _alone = alone();
     let server = Server::start("")?;
     let mut client = server.attach(20, 100)?;
+    client.ready()?;
     let (cat, out) = recorder(&server)?;
     let _reap = Reap(vec![cat]);
     let mut expected = Vec::new();
@@ -208,7 +209,16 @@ fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
     }
     for i in 0..200u32 {
         let key = char::from(b'A'.saturating_add(u8::try_from(i % 26).map_err(e)?));
-        server.ok(&["send-keys", "-t", "%1", "-l", &key.to_string()])?;
+        server.ok(&[
+            "str",
+            "%1",
+            "pane",
+            "keys",
+            "str",
+            &key.to_string(),
+            "text",
+            "send-keys",
+        ])?;
         expected.extend(key.to_string().bytes());
     }
     client.pump()?;
@@ -299,19 +309,34 @@ fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
 fn a_program_that_closes_its_terminal_does_not_make_the_server_spin() -> Outcome {
     let _alone = alone();
     let zsh = std::path::Path::new("/bin/zsh").exists();
-    let server = Server::start(if zsh { "set shell /bin/zsh" } else { "" })?;
+    let server = Server::start(if zsh {
+        "str shell str /bin/zsh set"
+    } else {
+        ""
+    })?;
     let pid = server.pid().ok_or("the server's pid")?;
     eventually("a prompt", || {
-        let screen = server.ok(&["capture-pane", "-t", "%1"])?;
+        let screen = server.ok(&["str", "%1", "pane", "opts", "capture"])?;
         Ok(screen.contains('$') || screen.contains('%'))
     })?;
-    server.ok(&["split", "-h", "-t", "%1"])?;
+    server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
     eventually("a prompt in %2", || {
-        let screen = server.ok(&["capture-pane", "-t", "%2"])?;
+        let screen = server.ok(&["str", "%2", "pane", "opts", "capture"])?;
         Ok(screen.contains('$') || screen.contains('%'))
     })?;
-    server.ok(&["send-keys", "-t", "%2", "-l", "exec sleep 2 <&- >&- 2>&-"])?;
-    server.ok(&["send-keys", "-t", "%2", "Enter"])?;
+    server.ok(&[
+        "str",
+        "%2",
+        "pane",
+        "keys",
+        "str",
+        "exec sleep 2 <&- >&- 2>&-",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "send-keys",
+    ])?;
     // Let the shell exec, then measure a second of the server's CPU.
     std::thread::sleep(Duration::from_millis(300));
     let before = cpu_seconds(pid)?;
@@ -326,12 +351,13 @@ fn a_program_that_closes_its_terminal_does_not_make_the_server_spin() -> Outcome
 
 /// One client flooding a pane whose program does not read its input holds
 /// up no one: the server reads at most a bounded amount from it per tick,
-/// drops what the full queue refuses without working on each key, and
+/// drops what the full queue refuses, and
 /// gives back the memory the flood took. Other commands are served
 /// meanwhile, and the server's memory stays small.
 #[test]
 fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
     let _alone = alone();
+    use fux::act::Act;
     use fux::protocol::{Attach, AttachedFrame, Frame, Hello, PROTOCOL, Role};
     use std::io::Write;
     let server = Server::start("")?;
@@ -356,11 +382,13 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
         };
         stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
         stream.write_all(&attach.encode().map_err(e)?).map_err(e)?;
-        let input = AttachedFrame::Input(&vec![b'a'; 1_000_000])
-            .encode()
-            .map_err(e)?;
+        let input = AttachedFrame::Act(Box::new(Act::Paste(
+            std::iter::repeat_n('a', 500_000).collect(),
+        )))
+        .encode()
+        .map_err(e)?;
         // Until the server stops reading, or the test ends and it goes.
-        for _ in 0..64 {
+        for _ in 0..128 {
             stream.write_all(&input).map_err(e)?;
         }
         Ok(())

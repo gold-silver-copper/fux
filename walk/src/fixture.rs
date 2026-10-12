@@ -167,17 +167,19 @@ impl Fixture {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
             .map_err(|e| e.to_string())?;
         std::fs::write(dir.join("act.sh"), ACT).map_err(|e| e.to_string())?;
-        let config = dir.join("fux.conf");
+        // Where each client finds it: `$XDG_CONFIG_HOME/fux/config.fux`.
+        let config = dir.join("config").join("fux").join("config.fux");
+        if let Some(parent) = config.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
         std::fs::write(&config, CONFIG_VALID).map_err(|e| e.to_string())?;
         let socket = dir.join("s").join("fux.sock");
         let log = std::fs::File::create(dir.join("server.log")).map_err(|e| e.to_string())?;
+        // As a client starts one; its settings come with the first client.
         let mut server = Command::new(fux);
         server
-            .arg("server")
-            .arg("--socket")
+            .arg(fux::SERVE)
             .arg(&socket)
-            .arg("--config")
-            .arg(&config)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log);
@@ -269,6 +271,23 @@ impl Fixture {
         })
     }
 
+    /// Types `line` into `pane`, and Enter.
+    pub fn type_line(&self, pane: &str, line: &str) -> Result<Output, String> {
+        self.fux(&[
+            "str",
+            pane,
+            "pane",
+            "keys",
+            "str",
+            line,
+            "text",
+            "str",
+            "Enter",
+            "key",
+            "send-keys",
+        ])
+    }
+
     /// The client ids `ls` lists.
     pub fn listed_clients(&self) -> Result<Vec<String>, String> {
         Ok(self
@@ -286,7 +305,8 @@ impl Fixture {
         let before = self.listed_clients()?;
         let size = fuxix::terminal::Size::new(rows, cols).ok_or("a zero size")?;
         let (master, slave) = fuxix::pty::open(size).map_err(|e| e.to_string())?;
-        let argv = [self.fux.as_os_str(), std::ffi::OsStr::new("attach")];
+        // No words attaches.
+        let argv = [self.fux.as_os_str()];
         let socket = self.socket.clone();
         let dir = self.dir.clone();
         let (child, _) = slave
@@ -397,7 +417,7 @@ impl Fixture {
         let pids: Vec<i32> = crate::world::World::read(self)
             .map(|w| w.panes().map(|p| p.pid).collect())
             .unwrap_or_default();
-        let _ = self.fux(&["kill-server", "--force"]);
+        let _ = self.fux(&["force-kill-server"]);
         if let Some(mut server) = self.server.take() {
             let deadline = after(Duration::from_secs(5));
             while server.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
@@ -434,7 +454,7 @@ impl Drop for Fixture {
 }
 
 /// The configuration a walk starts from, and returns to.
-pub const CONFIG_VALID: &str = "set shell /bin/sh\nset history-lines 500\n";
+pub const CONFIG_VALID: &str = "str shell str /bin/sh set\nstr history-lines 500 set\n";
 
 /// The environment of everything the walk starts: nothing inherited but
 /// `PATH`, and `HOME` the fixture.
@@ -443,6 +463,8 @@ pub fn environment(command: &mut Command, dir: &Path) {
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir.join("config"))
+        .env("XDG_STATE_HOME", dir.join("state"))
         .env("PS1", "$ ")
         .env("ENV", "/dev/null")
         .env("SHELL", "/bin/sh")

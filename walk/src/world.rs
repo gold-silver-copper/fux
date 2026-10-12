@@ -1,4 +1,4 @@
-//! The server's state as `ls --json` tells it.
+//! The server's state as `ls json` tells it.
 use crate::fixture::Fixture;
 use serde_json::Value;
 
@@ -61,7 +61,7 @@ fn list<'a>(value: &'a Value, key: &str) -> Result<&'a Vec<Value>, String> {
 
 impl World {
     pub fn parse(json: &str) -> Result<World, String> {
-        let root: Value = serde_json::from_str(json).map_err(|e| format!("ls --json: {e}"))?;
+        let root: Value = serde_json::from_str(json).map_err(|e| format!("ls json: {e}"))?;
         let mut workspaces = Vec::new();
         for ws in list(&root, "workspaces")? {
             let mut tabs = Vec::new();
@@ -111,9 +111,9 @@ impl World {
     }
 
     pub fn read(fixture: &Fixture) -> Result<World, String> {
-        let out = fixture.fux(&["ls", "--json"])?;
+        let out = fixture.fux(&["ls", "json"])?;
         if out.status != 0 {
-            return Err(format!("ls --json failed: {}", out.stderr));
+            return Err(format!("ls json failed: {}", out.stderr));
         }
         World::parse(&out.stdout)
     }

@@ -36,7 +36,10 @@ impl Host for Toy {
                 self.asked.push(*n);
                 Ok(Done::Later(*n))
             }
-            (1, [other]) => Err(Failure::new("not_a_number", format!("ask takes an integer, not {}", other.kind()))),
+            (1, [other]) => Err(Failure::new(
+                "not_a_number",
+                format!("ask takes an integer, not {}", other.kind()),
+            )),
             _ => Err(Failure::new("refused", "no")),
         }
     }
@@ -55,7 +58,13 @@ fn vocabulary() -> Vocabulary {
 fn run(text: &str) -> Result<Vec<Value<Ticket>>, Error> {
     let mut compiler = Compiler::new(vocabulary());
     compiler.add(&token::source("t", text)?)?;
-    let mut machine = Machine::new(compiler.finish()?, Limits { stack: 1000, calls: 100 });
+    let mut machine = Machine::new(
+        compiler.finish()?,
+        Limits {
+            stack: 1000,
+            calls: 100,
+        },
+    );
     let mut host = Toy { asked: Vec::new() };
     loop {
         match machine.run(&mut host, 1)? {
@@ -84,8 +93,14 @@ fn numbers_strings_and_words() -> Result<(), Error> {
         [Value::str("hello world"), Value::str("define")],
         "str takes the next word, whatever it is"
     );
-    assert_eq!(run("1 1 eq 1 2 lt 1 2 gt not")?, [Value::Bool(true), Value::Bool(true), Value::Bool(true)]);
-    assert_eq!(run("str a str a eq 1 str 1 eq")?, [Value::Bool(true), Value::Bool(false)]);
+    assert_eq!(
+        run("1 1 eq 1 2 lt 1 2 gt not")?,
+        [Value::Bool(true), Value::Bool(true), Value::Bool(true)]
+    );
+    assert_eq!(
+        run("str a str a eq 1 str 1 eq")?,
+        [Value::Bool(true), Value::Bool(false)]
+    );
     Ok(())
 }
 
@@ -150,7 +165,11 @@ fn mistakes_are_found_before_anything_runs() {
         let compiled = token::source("t", text)
             .and_then(|tokens| compiler.add(&tokens))
             .and_then(|()| compiler.finish().map(|_| ()));
-        assert_eq!(compiled.err().map(|e| e.code.name()), Some(expected), "{text}");
+        assert_eq!(
+            compiled.err().map(|e| e.code.name()),
+            Some(expected),
+            "{text}"
+        );
     }
 }
 
@@ -163,7 +182,11 @@ fn errors_at_run_time_say_what_and_where() {
     assert_eq!(code(run("1 str a add")), Some("type"));
     assert_eq!(code(run("1 if 2 then")), Some("type"), "if takes a boolean");
     assert_eq!(code(run("define loop loop end loop")), Some("call_depth"));
-    assert_eq!(code(run("str x ask")), Some("not_a_number"), "the host's own code");
+    assert_eq!(
+        code(run("str x ask")),
+        Some("not_a_number"),
+        "the host's own code"
+    );
     let error = run("1 2\n  frob").err();
     assert_eq!(
         error.map(|e| e.to_string()).as_deref(),
@@ -178,8 +201,14 @@ fn errors_at_run_time_say_what_and_where() {
 
 #[test]
 fn nothing_is_used_before_it_is_defined() {
-    assert_eq!(code(run("define peek x end 1 constant x")), Some("unknown_word"));
-    assert_eq!(code(run("define early later end define later 1 end")), Some("unknown_word"));
+    assert_eq!(
+        code(run("define peek x end 1 constant x")),
+        Some("unknown_word")
+    );
+    assert_eq!(
+        code(run("define early later end define later 1 end")),
+        Some("unknown_word")
+    );
 }
 
 #[test]

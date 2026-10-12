@@ -114,8 +114,7 @@ pub fn take(fixture: &mut Fixture, step: &Step, at: usize) -> Result<(), End> {
                 Act::Deaf(s) => format!("deaf {s}"),
             };
             let line = format!("sh {} {args} {serial}", script.display());
-            let _ = fixture.fux(&["send-keys", "-t", pane, "-l", &line]);
-            let _ = fixture.fux(&["send-keys", "-t", pane, "Enter"]);
+            let _ = fixture.type_line(pane, &line);
             // Done when its marker shows, if the pane shows it at all: it
             // may be busy, stopped, or in the alternate screen.
             let marker = format!("act-done-{}", serial.saturating_add(1000));
@@ -131,7 +130,7 @@ pub fn take(fixture: &mut Fixture, step: &Step, at: usize) -> Result<(), End> {
             let deadline = after(wait);
             while Instant::now() < deadline {
                 let shown = fixture
-                    .fux(&["capture-pane", "-t", pane, "-S", "-500"])
+                    .fux(&["str", pane, "pane", "opts", "500", "history", "capture"])
                     .map(|o| o.stdout.contains(&marker))
                     .unwrap_or(false);
                 if shown {
@@ -144,8 +143,7 @@ pub fn take(fixture: &mut Fixture, step: &Step, at: usize) -> Result<(), End> {
             }
         }
         Step::Exit { pane, code } => {
-            let _ = fixture.fux(&["send-keys", "-t", pane, "-l", &format!("exit {code}")]);
-            let _ = fixture.fux(&["send-keys", "-t", pane, "Enter"]);
+            let _ = fixture.type_line(pane, &format!("exit {code}"));
         }
         Step::Signal { pane, stop } => {
             let world = World::read(fixture).map_err(|e| fail(at, "the server answers", e))?;
@@ -160,16 +158,17 @@ pub fn take(fixture: &mut Fixture, step: &Step, at: usize) -> Result<(), End> {
                 let _ = fuxix::process::kill(pid, signal);
             }
         }
+        // Each client runs the configuration as it attaches: clients that
+        // attach from now on have it.
         Step::Config(config) => {
             let text = match config {
                 Config::Valid => CONFIG_VALID.to_owned(),
-                Config::Invalid => format!("{CONFIG_VALID}bind C-Left resize-pane -L\n"),
-                Config::PrefixA => format!("{CONFIG_VALID}set prefix C-a\n"),
-                Config::PrefixB => format!("{CONFIG_VALID}set prefix C-b\n"),
+                Config::Invalid => format!("{CONFIG_VALID}str C-Left str nonsense bind\n"),
+                Config::PrefixA => format!("{CONFIG_VALID}str C-a prefix\n"),
+                Config::PrefixB => format!("{CONFIG_VALID}str C-b prefix\n"),
             };
             std::fs::write(&fixture.config, text)
                 .map_err(|e| fail(at, "writing the configuration", e.to_string()))?;
-            let _ = fixture.fux(&["reload"]);
         }
         Step::Clamp => {
             let (rows, cols) = fixture.clamped().map_err(|e| fail(at, "attaching", e))?;
@@ -386,7 +385,7 @@ impl Checker {
             let mut captured: Vec<String>;
             loop {
                 let out = fixture
-                    .fux(&["capture-client", "-c", &id])
+                    .fux(&["str", &id, "client", "capture-client"])
                     .map_err(|e| fail(at, "the server answers", e))?;
                 if out.status != 0 {
                     // It went while we looked.

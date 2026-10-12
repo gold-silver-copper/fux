@@ -9,8 +9,8 @@ use crate::layout::Placement;
 use crate::pane::{Pane, Process};
 use crate::process::Leader;
 use crate::protocol::{
-    Attach, AttachedFrame, Decoder, Frame, Hello, MAX_PAYLOAD, Mismatch, PROTOCOL, Reply, Request, Role,
-    ServerFrame,
+    Attach, AttachedFrame, Decoder, Frame, Hello, MAX_PAYLOAD, Mismatch, PROTOCOL, Reply, Request,
+    Role, ServerFrame,
 };
 use crate::render::{self, Grid};
 use crate::session::{Begun, Caller, Dying, Origin, Outcome, Outgoing, Session, Timer};
@@ -209,9 +209,6 @@ struct Attached {
     clock: PaintClock,
     /// The pictures its terminal was last sent, as they show there.
     pictures: Vec<render::Visible>,
-    /// The mode the client was last told its view is in, which says what
-    /// its keys become (`keymap::Held::press`).
-    mode: &'static str,
 }
 
 /// What is known of what an attached client's terminal shows.
@@ -330,7 +327,6 @@ impl Attached {
             spare: Grid::new(0, 0),
             placement: Placement::default(),
             pictures: Vec::new(),
-            mode: "normal",
             clock: PaintClock {
                 next: now,
                 due: now,
@@ -1217,26 +1213,12 @@ impl Server {
                         conn.send(&mut self.session, &ServerFrame::Keys(keys));
                     }
                 }
+                Outgoing::Ended(client) => {
+                    if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
+                        conn.send(&mut self.session, &ServerFrame::Ended);
+                    }
+                }
                 Outgoing::Shutdown { reason, keep } => self.stop(reason, keep),
-            }
-        }
-        self.tell_modes();
-    }
-
-    /// Tells each attached client the mode its view is in, when it changed:
-    /// what its keys become is the client's to work out.
-    fn tell_modes(&mut self) {
-        for conn in &mut self.conns {
-            let Stage::Attached(attached) = &mut conn.stage else {
-                continue;
-            };
-            let Some(view) = self.session.views.get(&attached.client) else {
-                continue;
-            };
-            let mode = crate::view::mode_name(&view.mode);
-            if mode != attached.mode {
-                attached.mode = mode;
-                conn.send(&mut self.session, &ServerFrame::Mode(mode));
             }
         }
     }

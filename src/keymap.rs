@@ -5,7 +5,7 @@
 //!
 //! A binding runs fuxth: its code is compiled and run by the client, fresh,
 //! each time its keys are typed, the client itself its `me`.
-use crate::act::{Act, Column, ColumnEntry, CopyAct, LineAct, ListAct};
+use crate::act::{Act, Column, ColumnEntry, CopyAct, LineAct, ListAct, Panel};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Modifiers};
 
 /// What a key runs: fuxth code, what the column says it does, and the
@@ -673,54 +673,13 @@ pub enum Step {
 const PAGE: usize = 10;
 
 impl Held {
-    /// A key typed at the client's terminal, the server's view of it in
-    /// `mode`: what it leads to. `read_only`: it only watches, and the
-    /// prefix then `d` detaches it.
-    pub fn press(
-        &mut self,
-        keymap: &Keymap,
-        mode: &str,
-        stroke: Keystroke,
-        read_only: bool,
-    ) -> Vec<Step> {
+    /// A key typed at the client's terminal while none of its screens is
+    /// open (`crate::screens`): what it leads to. `read_only`: it only
+    /// watches, and the prefix then `d` detaches it.
+    pub fn press(&mut self, keymap: &Keymap, stroke: Keystroke, read_only: bool) -> Vec<Step> {
         let press = stroke.press;
         if read_only {
             return self.watching(keymap, press);
-        }
-        match mode {
-            "list" => {
-                return list_act(press)
-                    .map(Act::List)
-                    .map(Step::Send)
-                    .into_iter()
-                    .collect();
-            }
-            "prompt" => {
-                return line_act(press)
-                    .map(Act::Prompt)
-                    .map(Step::Send)
-                    .into_iter()
-                    .collect();
-            }
-            "confirm" => {
-                return confirm_act(press)
-                    .map(Act::Confirm)
-                    .map(Step::Send)
-                    .into_iter()
-                    .collect();
-            }
-            "copy" => {
-                return copy_act(press)
-                    .map(Act::Copy)
-                    .map(Step::Send)
-                    .into_iter()
-                    .collect();
-            }
-            "copy-search" => {
-                let act = line_act(press).map(|line| Act::Copy(CopyAct::Search(line)));
-                return act.map(Step::Send).into_iter().collect();
-            }
-            _ => {}
         }
         match std::mem::take(self) {
             Held::Normal | Held::Prefixed => {
@@ -743,9 +702,9 @@ impl Held {
             Some(column) => {
                 let selected = column.selected;
                 *self = Held::Column { path, selected };
-                vec![Step::Send(Act::Column(column))]
+                vec![Step::Send(Act::Show(Panel::Column(column)))]
             }
-            None => vec![Step::Send(Act::Normal)],
+            None => vec![Step::Send(Act::Hide)],
         }
     }
 
@@ -760,11 +719,11 @@ impl Held {
                 let shown = match bar {
                     Some(bar) => {
                         *self = Held::Repeat { path };
-                        Act::Repeat(bar)
+                        Act::Show(Panel::Repeat(bar))
                     }
                     None => {
                         *self = Held::Normal;
-                        Act::Normal
+                        Act::Hide
                     }
                 };
                 vec![Step::Send(shown), Step::Run(binding.code.clone())]
@@ -794,7 +753,7 @@ impl Held {
     ) -> Vec<Step> {
         let press = stroke.press;
         if is_escape(&press) {
-            return vec![Step::Send(Act::Normal)];
+            return vec![Step::Send(Act::Hide)];
         }
         if keymap
             .bindings
@@ -805,7 +764,7 @@ impl Held {
         }
         if press == keymap.prefix {
             // The prefix, at any depth, goes to the pane.
-            return vec![Step::Send(Act::Normal), Step::Send(Act::Key(stroke))];
+            return vec![Step::Send(Act::Hide), Step::Send(Act::Key(stroke))];
         }
         let count = keymap.column(&path, 0).map_or(0, |c| c.entries.len());
         let last = count.saturating_sub(1);
@@ -834,12 +793,12 @@ impl Held {
                         .iter()
                         .find(|(k, _)| *k == press)
                         .map(|(_, b)| b.code.clone());
-                    std::iter::once(Step::Send(Act::Normal))
+                    std::iter::once(Step::Send(Act::Hide))
                         .chain(code.map(Step::Run))
                         .collect()
                 }
                 Some((key, false)) => self.follow(keymap, path, key),
-                None => vec![Step::Send(Act::Normal)],
+                None => vec![Step::Send(Act::Hide)],
             };
         }
         self.follow(keymap, path, press)
@@ -853,7 +812,7 @@ impl Held {
         let plain = !press.mods.ctrl && !press.mods.alt;
         let leaves = press.key == Key::Escape || (press.key == Key::Enter && bound.is_none());
         if plain && leaves {
-            return vec![Step::Send(Act::Normal)];
+            return vec![Step::Send(Act::Hide)];
         }
         match bound {
             Some(Node::Run { binding, .. }) => {
@@ -864,7 +823,7 @@ impl Held {
             Some(Node::Layer(_)) | None => {
                 let text = format!("{press} is not one of this mode's keys");
                 vec![
-                    Step::Send(Act::Normal),
+                    Step::Send(Act::Hide),
                     Step::Send(Act::Notice { text, error: false }),
                 ]
             }
@@ -956,9 +915,10 @@ pub fn confirm_act(press: KeyPress) -> Option<bool> {
     }
 }
 
-/// A key in copy mode. Letters, in either case, and the brackets; one with
-/// Ctrl or Alt is no key's. The arrows, paging keys, Home, End, Enter and
-/// Esc too.
+/// A key in copy mode that moves, selects, copies or leaves. Letters, in
+/// either case, and the brackets; one with Ctrl or Alt is no key's. The
+/// arrows, paging keys, Home, End, Enter and Esc too. `f` and `r`, which
+/// open its search line, are the client's own (`crate::screens`).
 pub fn copy_act(press: KeyPress) -> Option<CopyAct> {
     let letter = match press.plain_key() {
         Some(Key::Char(c)) => Some(c.to_ascii_lowercase()),
@@ -981,8 +941,6 @@ pub fn copy_act(press: KeyPress) -> Option<CopyAct> {
         (Some('d'), _) => CopyAct::HalfDown,
         (_, Key::PageUp) => CopyAct::PageUp,
         (_, Key::PageDown) => CopyAct::PageDown,
-        (Some('f'), _) => CopyAct::SearchForward,
-        (Some('r'), _) => CopyAct::SearchBackward,
         (Some('n'), _) => CopyAct::Next,
         (Some('p'), _) => CopyAct::Previous,
         (Some('['), _) => CopyAct::PromptBack,
@@ -1025,15 +983,15 @@ mod tests {
     fn the_prefix_opens_the_column_a_key_runs_its_binding() -> Result<(), String> {
         let keymap = Keymap::default();
         let mut held = Held::default();
-        let steps = held.press(&keymap, "normal", stroke("C-b")?, false);
-        assert!(matches!(steps.as_slice(), [Step::Send(Act::Column(_))]));
-        let steps = held.press(&keymap, "normal", stroke("z")?, false);
-        assert_eq!(
-            steps,
-            [Step::Send(Act::Normal), Step::Run("me zoom".into())]
-        );
+        let steps = held.press(&keymap, stroke("C-b")?, false);
+        assert!(matches!(
+            steps.as_slice(),
+            [Step::Send(Act::Show(Panel::Column(_)))]
+        ));
+        let steps = held.press(&keymap, stroke("z")?, false);
+        assert_eq!(steps, [Step::Send(Act::Hide), Step::Run("me zoom".into())]);
         assert_eq!(held, Held::Normal);
-        let steps = held.press(&keymap, "normal", stroke("x")?, false);
+        let steps = held.press(&keymap, stroke("x")?, false);
         assert!(
             matches!(steps.as_slice(), [Step::Send(Act::Key(_))]),
             "an unbound key is the pane's"
@@ -1046,32 +1004,16 @@ mod tests {
         let keymap = Keymap::default();
         let mut held = Held::default();
         for name in ["C-b", "r", "h"] {
-            held.press(&keymap, "normal", stroke(name)?, false);
+            held.press(&keymap, stroke(name)?, false);
         }
         assert!(matches!(held, Held::Repeat { .. }));
-        let steps = held.press(&keymap, "normal", stroke("l")?, false);
+        let steps = held.press(&keymap, stroke("l")?, false);
         assert_eq!(
             steps,
             [Step::Run("me focused str right 1 move-border".into())]
         );
-        held.press(&keymap, "normal", stroke("Escape")?, false);
+        held.press(&keymap, stroke("Escape")?, false);
         assert_eq!(held, Held::Normal);
-        Ok(())
-    }
-
-    #[test]
-    fn other_modes_take_typed_actions() -> Result<(), String> {
-        let keymap = Keymap::default();
-        let mut held = Held::default();
-        let steps = held.press(&keymap, "copy", stroke("v")?, false);
-        assert_eq!(steps, [Step::Send(Act::Copy(CopyAct::SelectChar))]);
-        let steps = held.press(&keymap, "prompt", stroke("a")?, false);
-        assert_eq!(
-            steps,
-            [Step::Send(Act::Prompt(LineAct::Insert("a".into())))]
-        );
-        let steps = held.press(&keymap, "list", stroke("Enter")?, false);
-        assert_eq!(steps, [Step::Send(Act::List(ListAct::Choose))]);
         Ok(())
     }
 
@@ -1079,10 +1021,10 @@ mod tests {
     fn a_watching_client_only_detaches() -> Result<(), String> {
         let keymap = Keymap::default();
         let mut held = Held::default();
-        let steps = held.press(&keymap, "normal", stroke("x")?, true);
+        let steps = held.press(&keymap, stroke("x")?, true);
         assert!(matches!(steps.as_slice(), [Step::Send(Act::Notice { .. })]));
-        held.press(&keymap, "normal", stroke("C-b")?, true);
-        let steps = held.press(&keymap, "normal", stroke("d")?, true);
+        held.press(&keymap, stroke("C-b")?, true);
+        let steps = held.press(&keymap, stroke("d")?, true);
         assert_eq!(steps, [Step::Run("me detach".into())]);
         Ok(())
     }
@@ -1114,11 +1056,11 @@ mod tests {
         );
         let mut held = Held::default();
         let mut press = |name: &str| -> Result<Vec<Step>, String> {
-            Ok(held.press(&keymap, "column", stroke(name)?, false))
+            Ok(held.press(&keymap, stroke(name)?, false))
         };
         press("C-b")?;
         let selected = |steps: Vec<Step>| match steps.as_slice() {
-            [Step::Send(Act::Column(column))] => Some(column.selected),
+            [Step::Send(Act::Show(Panel::Column(column)))] => Some(column.selected),
             _ => None,
         };
         for _ in 0..last {
@@ -1138,18 +1080,12 @@ mod tests {
         assert_eq!(selected(press("End")?), Some(last));
         assert_eq!(
             press("Enter")?,
-            [
-                Step::Send(Act::Normal),
-                Step::Run("opts new-tab drop".into())
-            ]
+            [Step::Send(Act::Hide), Step::Run("opts new-tab drop".into())]
         );
         press("C-b")?;
         assert_eq!(
             press("j")?,
-            [
-                Step::Send(Act::Normal),
-                Step::Run("me str down focus".into())
-            ]
+            [Step::Send(Act::Hide), Step::Run("me str down focus".into())]
         );
         Ok(())
     }

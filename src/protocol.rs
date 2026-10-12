@@ -38,7 +38,7 @@ mod kind {
     pub const DONE: u8 = 11;
     pub const TERMINAL: u8 = 12;
     pub const REPLY: u8 = 13;
-    pub const MODE: u8 = 14;
+    pub const ENDED: u8 = 14;
     pub const RUN: u8 = 15;
     pub const KEYS: u8 = 16;
     pub const PART: u8 = 17;
@@ -473,11 +473,13 @@ pub enum ServerFrame<'a> {
     },
     /// A request's answer.
     Reply(Box<Reply>),
-    /// To an attached client: the mode its view is in, for its keys
-    /// (`normal`, `list`, `prompt`, `confirm`, `copy`, `copy-search`).
-    Mode(&'a str),
-    /// To an attached client: fuxth to run as its own, the line its
-    /// prompt was given or the binding its column chose.
+    /// To an attached client: the server ended its screen by itself (copy
+    /// mode whose rows dropped from history, whose pane went or is no longer
+    /// focused, or with no pane to copy; a menu, chooser, prompt or
+    /// confirmation whose subject closed), the mode being the client's.
+    Ended,
+    /// To an attached client: fuxth to run as its own, asked of it from
+    /// elsewhere (`str c1 client menu`).
     Run(&'a str),
     /// To an attached client: keys to take as typed at its terminal
     /// (`send-keys` to a client).
@@ -522,14 +524,13 @@ impl<'a> Frame<'a> for ServerFrame<'a> {
                 .whole::<Reply>()
                 .map(|reply| ServerFrame::Reply(Box::new(reply)))
                 .map_err(Error::Wire),
-            kind::MODE => std::str::from_utf8(r.rest())
-                .map(ServerFrame::Mode)
-                .map_err(|_| Error::NotUtf8),
+            kind::ENDED => Ok(ServerFrame::Ended),
             kind::RUN => std::str::from_utf8(r.rest())
                 .map(ServerFrame::Run)
                 .map_err(|_| Error::NotUtf8),
             kind::PART => Ok(ServerFrame::Part(r.rest())),
             kind::PARTS_END => Ok(ServerFrame::PartsEnd),
+
             kind::KEYS => crate::wire::Reader::new(r.rest())
                 .whole::<Vec<crate::command::Input>>()
                 .map(ServerFrame::Keys)
@@ -549,7 +550,7 @@ impl<'a> Frame<'a> for ServerFrame<'a> {
                 crate::wire::Wire::put(keys, out);
                 return kind::KEYS;
             }
-            ServerFrame::Mode(mode) => (kind::MODE, mode.as_bytes()),
+            ServerFrame::Ended => (kind::ENDED, &[][..]),
             ServerFrame::Run(source) => (kind::RUN, source.as_bytes()),
             ServerFrame::Part(bytes) => (kind::PART, *bytes),
             ServerFrame::PartsEnd => (kind::PARTS_END, &[][..]),
@@ -823,7 +824,7 @@ mod tests {
         round_trip!(ServerFrame, 12, ServerFrame::Terminal { taken: true });
         round_trip!(ServerFrame, 12, ServerFrame::Terminal { taken: false });
         round_trip!(ServerFrame, 13, ServerFrame::Reply(Box::default()));
-        round_trip!(ServerFrame, 14, ServerFrame::Mode("copy"));
+        round_trip!(ServerFrame, 14, ServerFrame::Ended);
         round_trip!(ServerFrame, 15, ServerFrame::Run("me zoom"));
         round_trip!(ServerFrame, 16, ServerFrame::Keys(Vec::new()));
         // Each role's byte is the wire format's too: after the length, the

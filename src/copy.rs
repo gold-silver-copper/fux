@@ -4,12 +4,12 @@
 //! anchored to fux-vt row IDs, so new output does not move them, while other
 //! clients see the pane live. The mode ends if the pane closes or its history
 //! drops the rows it holds.
-use crate::act::{CopyAct, LineAct};
+use crate::act::CopyAct;
 use crate::id::ClientId;
 use crate::id::PaneId;
 use crate::render::shown;
 use crate::session::{self, Error, Session};
-use crate::view::{Line, Mode, Notice, View};
+use crate::view::{Mode, Notice, View};
 use fux_vt::{CellRef, Row, RowId, Screen};
 
 /// The most cells one copy takes.
@@ -54,8 +54,9 @@ pub struct Copy {
     pub cursor: (RowId, u16),
     pub selection: Option<(Select, (RowId, u16))>,
     pub search: Option<Search>,
-    /// A search being typed: its direction and text.
-    pub typing: Option<(Seek, Line<SEARCH_MAX>)>,
+    /// A search the client is typing, for the bar: its direction and its
+    /// text before and after the cursor.
+    pub typing: Option<(Seek, String, String)>,
     /// The screen as it was when the rows copy mode holds were last found
     /// still there; forgotten when a key moves it.
     pub held_at: Option<fux_vt::Mark>,
@@ -144,13 +145,13 @@ impl Copy {
         // Counted from 1; exact, as rows are far fewer than a usize holds.
         let line = at.cursor.0.index().saturating_add(1);
         let position = format!("{line}/{}", screen.rows().len());
-        if let Some((seek, text)) = &self.typing {
+        if let Some((seek, before, after)) = &self.typing {
             let prompt = match seek {
                 Seek::Forward => "/",
                 Seek::Backward => "?",
             };
             return Bar {
-                badge: Badge::Typing(prompt, text),
+                badge: Badge::Typing(prompt, before, after),
                 hints: vec![("Enter", "search"), ("Esc", "cancel")],
                 position,
             };
@@ -203,7 +204,7 @@ const SEARCH_MAX: usize = 1024;
 /// typed after its prompt, which the bar scrolls as a prompt's line.
 pub enum Badge<'a> {
     Label(&'static str),
-    Typing(&'static str, &'a Line<SEARCH_MAX>),
+    Typing(&'static str, &'a str, &'a str),
 }
 
 /// Copy mode's bar: what it is doing, the keys that act now, most
@@ -500,6 +501,24 @@ pub fn text(
 
 // ------------------------------------------------------------------- keys
 
+/// Starts copy mode for client `client`, on its focused pane; if it cannot
+/// (no pane), says why, and tells the client, whose mode it is.
+fn start(session: &mut Session, client: ClientId) {
+    let Some(place) = session.place(client) else {
+        return;
+    };
+    let Some(mut view) = session.views.remove(&client) else {
+        return;
+    };
+    let entered = enter(session, &mut view, place);
+    view.dirty = true;
+    session.views.insert(client, view);
+    if let Err(error) = entered {
+        session.error_to(client, error.to_string());
+        session.outbox.push(crate::session::Outgoing::Ended(client));
+    }
+}
+
 /// Enters copy mode on the client's focused pane.
 pub fn enter(session: &Session, view: &mut View, place: session::Place) -> Result<String, Error> {
     let pane = place.pane.ok_or(Error::NoPaneToCopy)?;
@@ -544,6 +563,9 @@ enum Scroll {
 
 /// An action in copy mode, its keys the client's (`keymap::copy_act`).
 pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
+    if act == CopyAct::Enter {
+        return start(session, client);
+    }
     let Some(view) = session.views.get(&client) else {
         return;
     };
@@ -569,38 +591,73 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
     view.dirty = true;
     view.notice = None;
 
-    // A search being typed takes the line's actions.
-    if let Some((seek, text)) = &mut copy.typing {
-        let CopyAct::Search(line) = act else {
-            return;
-        };
-        match line {
-            LineAct::Cancel => copy.typing = None,
-            LineAct::Submit => {
-                let search = Search {
-                    query: text.clone().text(),
-                    seek: *seek,
+    // The search line the client types, shown; the search it asks for.
+    match act {
+        CopyAct::Typing(line) => {
+            copy.typing = line.map(|(forward, before, after)| {
+                let seek = if forward {
+                    Seek::Forward
+                } else {
+                    Seek::Backward
                 };
-                copy.typing = None;
-                if !search.query.is_empty() {
-                    copy.search = Some(search.clone());
-                    if let Some(at) = copy.resolve(screen) {
-                        jump(copy, screen, height, at, &search, &mut view.notice);
-                    }
-                }
-            }
-            LineAct::Insert(typed) => {
-                let typed: String = typed.chars().filter(|c| !c.is_control()).collect();
-                text.insert(&typed);
-            }
-            line @ (LineAct::Backspace
-            | LineAct::Delete
-            | LineAct::Left
-            | LineAct::Right
-            | LineAct::Home
-            | LineAct::End) => edit(text, &line),
+                let clean = |text: String| -> String {
+                    text.chars()
+                        .filter(|c| !c.is_control())
+                        .take(SEARCH_MAX)
+                        .collect()
+                };
+                (seek, clean(before), clean(after))
+            });
+            return;
         }
-        return;
+        CopyAct::Find { query, forward } => {
+            copy.typing = None;
+            let seek = if forward {
+                Seek::Forward
+            } else {
+                Seek::Backward
+            };
+            let query: String = query
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(SEARCH_MAX)
+                .collect();
+            if query.is_empty() {
+                return;
+            }
+            let search = Search { query, seek };
+            copy.search = Some(search.clone());
+            if let Some(at) = copy.resolve(screen) {
+                jump(copy, screen, height, at, &search, &mut view.notice);
+            }
+            return;
+        }
+        CopyAct::Enter
+        | CopyAct::Leave
+        | CopyAct::Left
+        | CopyAct::Right
+        | CopyAct::Up
+        | CopyAct::Down
+        | CopyAct::WordForward
+        | CopyAct::WordBack
+        | CopyAct::FirstInk
+        | CopyAct::LastInk
+        | CopyAct::LineStart
+        | CopyAct::Top
+        | CopyAct::Bottom
+        | CopyAct::HalfUp
+        | CopyAct::HalfDown
+        | CopyAct::PageUp
+        | CopyAct::PageDown
+        | CopyAct::Next
+        | CopyAct::Previous
+        | CopyAct::PromptBack
+        | CopyAct::PromptForward
+        | CopyAct::SelectChar
+        | CopyAct::SelectLine
+        | CopyAct::SelectBlock
+        | CopyAct::OtherEnd
+        | CopyAct::Yank => {}
     }
 
     let Some(at) = copy.resolve(screen) else {
@@ -618,7 +675,7 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
     let mut target: Option<Place<'_>> = None;
     let mut scroll: Option<Scroll> = None;
     match act {
-        CopyAct::Search(_) => return,
+        CopyAct::Enter | CopyAct::Typing(_) | CopyAct::Find { .. } => return,
         CopyAct::Leave => {
             leave(session, client);
             return;
@@ -646,8 +703,6 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
         CopyAct::HalfDown => scroll = Some(Scroll::Down(half)),
         CopyAct::PageUp => scroll = Some(Scroll::Up(page)),
         CopyAct::PageDown => scroll = Some(Scroll::Down(page)),
-        CopyAct::SearchForward => copy.typing = Some((Seek::Forward, Line::new(String::new()))),
-        CopyAct::SearchBackward => copy.typing = Some((Seek::Backward, Line::new(String::new()))),
         key @ (CopyAct::Next | CopyAct::Previous) => {
             match copy.search.clone() {
                 Some(search) => {
@@ -722,19 +777,6 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
     }
 }
 
-/// A line's editing action that moves or deletes.
-pub(crate) fn edit<const MAX: usize>(line: &mut Line<MAX>, act: &LineAct) {
-    match act {
-        LineAct::Backspace => line.backspace(),
-        LineAct::Delete => line.delete(),
-        LineAct::Left => line.left(),
-        LineAct::Right => line.right(),
-        LineAct::Home => line.home(),
-        LineAct::End => line.end(),
-        LineAct::Insert(_) | LineAct::Submit | LineAct::Cancel => {}
-    }
-}
-
 /// `col` of `row`, or the first half of the wide glyph whose second half it
 /// is: where copy mode's cursor goes, so that what it highlights is what
 /// `y` copies.
@@ -800,9 +842,13 @@ fn jump(
 /// to the client's clipboard through OSC 52 when allowed; then leaves copy
 /// mode. Why nothing was copied, if nothing was, is the client's notice.
 fn yank(session: &mut Session, client: ClientId, copied: Result<String, String>) {
+    // Copy mode ends either way, as the client has left it.
     let copied = match copied {
         Ok(copied) => copied,
-        Err(why) => return session.error_to(client, why),
+        Err(why) => {
+            leave(session, client);
+            return session.error_to(client, why);
+        }
     };
     let characters = copied.chars().count();
     let mut note = format!(

@@ -199,6 +199,17 @@ pub const WORDS: &[Word] = &[
     word("Help", "check", 1, "file -- ", "read a fuxth file without running it: its mistakes"),
 ];
 
+/// At most `limit` bytes of the file at `path`, and one more if it has
+/// them: never more is read, whatever it is (`/dev/zero`).
+fn bounded(path: &str, limit: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut read = Vec::new();
+    std::fs::File::open(path)?
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut read)?;
+    Ok(read)
+}
+
 /// A failure of a word's own: its code and why.
 fn fail(code: &'static str, message: impl Into<String>) -> Failure {
     Failure::new(code, message)
@@ -753,7 +764,7 @@ impl fuxth::Host for Host<'_> {
                     "paste" => built.inputs.push(Input::Paste(string(name, &v)?)),
                     "paste-file" => {
                         let path = string(name, &v)?;
-                        let read = std::fs::read(&path)
+                        let read = bounded(&path, 900 * 1024)
                             .map_err(|e| fail("paste", format!("{path}: {e}")))?;
                         if read.len() > 900 * 1024 {
                             return Err(fail(
@@ -1293,42 +1304,44 @@ impl fuxth::Host for Host<'_> {
                 };
                 later(act(c, ClientAction::SelectWorkspace(Pick::Step(step))))
             }
-            "choose-tab" | "choose-workspace" | "zoom" | "copy-mode" | "command-prompt"
-            | "detach" => {
+            "zoom" | "detach" => {
                 let c = client(name, &next()?)?;
                 let action = match name {
-                    "choose-tab" => ClientAction::ChooseTab { moving: None },
-                    "choose-workspace" => ClientAction::ChooseWorkspace { moving: None },
                     "zoom" => ClientAction::Zoom,
-                    "copy-mode" => ClientAction::CopyMode,
-                    "command-prompt" => ClientAction::CommandPrompt,
                     _ => ClientAction::Detach,
                 };
                 later(act(c, action))
             }
-            "choose-tab-for" | "choose-workspace-for" | "choose-pane" => {
+            // A client's own screens, which it opens itself: from its keys
+            // or prompt, here; asked from elsewhere, relayed for it to run.
+            "choose-tab"
+            | "choose-workspace"
+            | "copy-mode"
+            | "command-prompt"
+            | "choose-tab-for"
+            | "choose-workspace-for"
+            | "choose-pane"
+            | "menu"
+            | "rename-prompt"
+            | "confirm-close" => {
                 let c = client(name, &next()?)?;
-                let p = pane(name, &next()?)?;
-                let action = match name {
-                    "choose-tab-for" => ClientAction::ChooseTab {
-                        moving: Some(Some(p)),
-                    },
-                    "choose-workspace-for" => ClientAction::ChooseWorkspace {
-                        moving: Some(Some(p)),
-                    },
-                    _ => ClientAction::ChoosePane { target: Some(p) },
+                use crate::screens::Open;
+                let open = match name {
+                    "choose-tab" => Open::ChooseTab(None),
+                    "choose-workspace" => Open::ChooseWorkspace(None),
+                    "copy-mode" => Open::Copy,
+                    "command-prompt" => Open::Prompt,
+                    "choose-tab-for" => Open::ChooseTab(Some(pane(name, &next()?)?)),
+                    "choose-workspace-for" => Open::ChooseWorkspace(Some(pane(name, &next()?)?)),
+                    "choose-pane" => Open::ChoosePane(pane(name, &next()?)?),
+                    "menu" => Open::Menu(target(name, &next()?)?),
+                    "rename-prompt" => Open::Rename(target(name, &next()?)?),
+                    _ => Open::Confirm(target(name, &next()?)?),
                 };
-                later(act(c, action))
-            }
-            "menu" | "rename-prompt" | "confirm-close" => {
-                let c = client(name, &next()?)?;
-                let s = subject(target(name, &next()?)?);
-                let action = match name {
-                    "menu" => ClientAction::Menu(s),
-                    "rename-prompt" => ClientAction::RenamePrompt(s),
-                    _ => ClientAction::ConfirmClose(s),
-                };
-                later(act(c, action))
+                match self.context.client == Some(c) {
+                    true => later(Ask::Local(Local::Open(open))),
+                    false => later(act(c, ClientAction::Run(open.code()))),
+                }
             }
             "capture-client" => {
                 let c = client(name, &next()?)?;
@@ -1424,8 +1437,16 @@ impl fuxth::Host for Host<'_> {
             }
             "check" => {
                 let path = string(name, &next()?)?;
-                let text = std::fs::read_to_string(&path)
-                    .map_err(|e| fail("read", format!("{path}: {e}")))?;
+                let text = bounded(&path, 16 << 20)
+                    .ok()
+                    .filter(|t| t.len() <= 16 << 20)
+                    .and_then(|t| String::from_utf8(t).ok())
+                    .ok_or_else(|| {
+                        fail(
+                            "read",
+                            format!("{path}: not a fuxth file of at most 16 MiB"),
+                        )
+                    })?;
                 let tokens =
                     fuxth::token::source(&path, &text).map_err(|e| fail("check", e.to_string()))?;
                 super::compile(&tokens).map_err(|e| fail("check", e.to_string()))?;

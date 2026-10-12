@@ -125,7 +125,7 @@ fn metadata(o: &Options, seed: u64) -> String {
         .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
         .unwrap_or_default();
     let version = std::process::Command::new(&o.fux)
-        .arg("--version")
+        .arg("version")
         .output()
         .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
         .unwrap_or_default();
@@ -277,6 +277,7 @@ fn walk(o: &Options, seed: u64, deadline: Instant) -> Result<Outcome, String> {
                 .filter(|id| world.clients.iter().any(|c| &c.id == *id))
                 .cloned()
                 .collect();
+            state.clients(&clients);
             let step = generate::step(&mut rng, &world, &clients, &state);
             trace.push(step.clone());
             let before = run::overlays(&mut fixture);

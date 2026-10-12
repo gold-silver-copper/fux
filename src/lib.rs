@@ -24,6 +24,7 @@ pub mod pane;
 pub mod process;
 pub mod protocol;
 pub mod render;
+pub mod screens;
 pub mod script;
 pub mod server;
 pub mod session;

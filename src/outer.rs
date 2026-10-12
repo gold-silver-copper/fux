@@ -540,6 +540,7 @@ mod tests {
                 Outgoing::Exit(..)
                 | Outgoing::Run(..)
                 | Outgoing::Keys(..)
+                | Outgoing::Ended(..)
                 | Outgoing::Shutdown { .. } => None,
             })
             .collect()

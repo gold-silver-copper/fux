@@ -4,12 +4,13 @@
 //! echo, when it is all that changed, is written as a terminal shows it
 //! typed, without the synchronized envelope (`echo`). Every paint leaves
 //! the terminal's attributes at their default, which the next one assumes.
+use crate::act::{List, Panel};
 use crate::id::ClientId;
 use crate::id::PaneId;
 use crate::layout::{Axis, Placement, Rect};
 use crate::overlay;
 use crate::session::Session;
-use crate::view::{List, Mode, View};
+use crate::view::{Mode, View};
 use fux_vt::{Attributes, CellRef, Cells, Color, Rgb, Row, UnderlineStyle};
 use std::borrow::Cow;
 use std::io::Write;
@@ -771,27 +772,32 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
     }
     bar(grid, session, view, copy);
     match &view.mode {
-        Mode::Column(c) => column(grid, view, c),
-        Mode::List(list) => list_panel(grid, session, view, list),
-        Mode::Prompt(prompt) => {
+        Mode::Panel(Panel::Column(c)) => column(grid, view, c),
+        Mode::Panel(Panel::List(list)) => list_panel(grid, view, list),
+        Mode::Panel(Panel::Prompt {
+            title,
+            before,
+            after,
+            ..
+        }) => {
             // The panel's border takes a cell each side.
             let room = view.cols.saturating_sub(2);
             let lines: [Line<'_>; 3] = [
-                (prompt.title.as_str().into(), panel().with_bold(true)),
-                (prompt_line(&prompt.line, room).into(), panel()),
+                (title.as_str().into(), panel().with_bold(true)),
+                (prompt_line(before, after, room).into(), panel()),
                 ("Enter accepts · Esc cancels".into(), panel().with_dim(true)),
             ];
             surface(grid, view, &lines);
         }
-        Mode::Confirm(confirm) => {
+        Mode::Panel(Panel::Confirm { question, .. }) => {
             let lines: [Line<'_>; 2] = [
-                (confirm.question.as_str().into(), panel().with_bold(true)),
+                (question.as_str().into(), panel().with_bold(true)),
                 ("y confirms · n or Esc cancels".into(), panel()),
             ];
             surface(grid, view, &lines);
         }
         // A repeat mode shows in the bar, leaving the layout in view.
-        Mode::Normal | Mode::Copy(_) | Mode::Repeat(_) => {}
+        Mode::Normal | Mode::Copy(_) | Mode::Panel(Panel::Repeat(_)) => {}
     }
 }
 
@@ -875,13 +881,13 @@ fn put_panes(
 /// A prompt's text with its cursor bar, in at most `room` cells: when it is
 /// wider, the line scrolls so the bar shows, with a few cells of what
 /// follows it, and an ellipsis marks each side cut off.
-fn prompt_line<const MAX: usize>(text: &crate::view::Line<MAX>, room: u16) -> String {
-    let line = format!("{}▏{}", text.before(), text.after());
+fn prompt_line(before: &str, after: &str, room: u16) -> String {
+    let line = format!("{before}▏{after}");
     if width(&line) <= room {
         return line;
     }
     let chars: Vec<char> = line.chars().filter(|c| !c.is_control()).collect();
-    let bar = text.before().chars().filter(|c| !c.is_control()).count();
+    let bar = before.chars().filter(|c| !c.is_control()).count();
     // An ellipsis each side, at most.
     let inner = room.saturating_sub(2);
     let ahead = inner / 4;
@@ -1048,12 +1054,12 @@ fn bar(
         ))
     } else if let Some(copy) = &copy_bar {
         Some((copy.position.as_str().into(), base))
-    } else if let Mode::Column(column) = &view.mode {
+    } else if let Mode::Panel(Panel::Column(column)) = &view.mode {
         Some((
             format!("{} …", column.keys).into(),
             style(Color::Idx(0), Color::Idx(11)),
         ))
-    } else if let Mode::Repeat(bar) = &view.mode {
+    } else if let Mode::Panel(Panel::Repeat(bar)) = &view.mode {
         Some((
             bar.as_str().into(),
             style(Color::Idx(0), Color::Idx(11)).with_bold(true),
@@ -1083,9 +1089,9 @@ fn bar(
         let badge = style(Color::Idx(0), Color::Idx(11)).with_bold(true);
         let text = match &copy.badge {
             crate::copy::Badge::Label(label) => fit(&format!(" {label} "), left_limit).into_owned(),
-            crate::copy::Badge::Typing(prompt, line) => {
+            crate::copy::Badge::Typing(prompt, before, after) => {
                 let room = left_limit.saturating_sub(width(prompt).saturating_add(2));
-                format!(" {prompt}{} ", prompt_line(line, room))
+                format!(" {prompt}{} ", prompt_line(before, after, room))
             }
         };
         x = grid.text(y, x, &text, badge, left_limit);
@@ -1187,20 +1193,19 @@ fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
 
 /// A list to choose from or run: the entries that fit, the selected one
 /// highlighted and, but in a chooser, those that cannot run now dimmed.
-fn list_panel(grid: &mut Grid, session: &Session, view: &View, list: &List) {
+fn list_panel(grid: &mut Grid, view: &View, list: &List) {
     let mut lines: Vec<Line<'_>> = vec![(list.title.as_str().into(), panel().with_bold(true))];
     let capacity = overlay::list_room(view.rows);
-    let (len, chosen) = (list.items.iter().count(), list.items.index());
+    let (len, chosen) = (list.items.len(), list.selected);
     let start = overlay::window_start(len, chosen, capacity);
     let shown = list.items.iter().enumerate().skip(start).take(capacity);
     let shown = shown.map(|(i, item)| {
-        let dim = item.subject.is_none() && session.unavailable(&item.command, view.id).is_some();
-        let marker = if item.current { "*" } else { " " };
-        let attrs = panel().with_inverse(i == chosen).with_dim(dim);
-        (format!("{marker} {}", item.label).into(), attrs)
+        let marker = if list.current == Some(i) { "*" } else { " " };
+        let attrs = panel().with_inverse(i == chosen);
+        (format!("{marker} {item}").into(), attrs)
     });
     windowed(&mut lines, len, start, capacity, shown);
-    let help = if list.items.chosen().subject.is_some() {
+    let help = if list.chooser {
         "Enter selects · r renames · x closes · Esc"
     } else {
         "Enter runs · Esc cancels"
@@ -2174,15 +2179,16 @@ mod tests {
         let end = text.chars().count();
         for (left, starts, ends) in [(0, "…", "TAIL▏"), (end, "▏spl", "…"), (20, "…", "…")]
         {
-            let shown = prompt_line(&line(text, left), 12);
+            let line = line(text, left);
+            let shown = prompt_line(line.before(), line.after(), 12);
             assert!(width(&shown) <= 12, "{shown:?} fits");
             assert!(shown.contains('▏'), "{shown:?} shows the cursor");
             assert!(shown.starts_with(starts), "{shown:?} starts {starts:?}");
             assert!(shown.ends_with(ends), "{shown:?} ends {ends:?}");
         }
         // Wide chars count two cells; short text is as it was.
-        assert!(width(&prompt_line(&line("界界界界界界界界", 0), 7)) <= 7);
-        assert_eq!(prompt_line(&line("ls", 0), 12), "ls▏");
+        assert!(width(&prompt_line("界界界界界界界界", "", 7)) <= 7);
+        assert_eq!(prompt_line("ls", "", 12), "ls▏");
     }
 
     fn grid_lines(g: &Grid) -> Vec<String> {

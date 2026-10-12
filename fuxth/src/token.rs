@@ -70,9 +70,7 @@ pub fn source(source: &str, text: &str) -> Result<Vec<Token>, Error> {
                     line = next_line(line);
                 }
             }
-            '#' if word.is_none() => {
-                while chars.next_if(|c| *c != '\n').is_some() {}
-            }
+            '#' if word.is_none() => while chars.next_if(|c| *c != '\n').is_some() {},
             '\'' => {
                 let (text, _) = word.get_or_insert_with(|| (String::new(), line));
                 let opened = line;
@@ -169,7 +167,14 @@ mod tests {
         let lines: Vec<String> = tokens.iter().map(|t| t.place.to_string()).collect();
         assert_eq!(lines, ["f:1", "f:2", "f:3"]);
         let open = source("f", "a\n'b\nc d");
-        assert!(matches!(open, Err(Error { code: Code::OpenQuote, place: Some(Place::Line { line: 2, .. }), .. })));
+        assert!(matches!(
+            open,
+            Err(Error {
+                code: Code::OpenQuote,
+                place: Some(Place::Line { line: 2, .. }),
+                ..
+            })
+        ));
         Ok(())
     }
 
@@ -178,6 +183,9 @@ mod tests {
         let tokens = arguments(&["str", "hello world", "# not a comment"]);
         let texts: Vec<&str> = tokens.iter().map(|t| &*t.text).collect();
         assert_eq!(texts, ["str", "hello world", "# not a comment"]);
-        assert_eq!(tokens.last().map(|t| t.place.to_string()), Some("argument 3".into()));
+        assert_eq!(
+            tokens.last().map(|t| t.place.to_string()),
+            Some("argument 3".into())
+        );
     }
 }

@@ -441,7 +441,17 @@ impl Client {
                         Some(Keyboard::new(&self.socket, me, keymap, self.read_only).map_err(e)?);
                     self.id = Some(said);
                 }
-                frame => {
+                frame @ (ServerFrame::Hello(_)
+                | ServerFrame::Stdout(_)
+                | ServerFrame::Stderr(_)
+                | ServerFrame::Done { .. }
+                | ServerFrame::Terminal { .. }
+                | ServerFrame::Reply(_)
+                | ServerFrame::Ended
+                | ServerFrame::Run(_)
+                | ServerFrame::Keys(_)
+                | ServerFrame::Part(_)
+                | ServerFrame::PartsEnd) => {
                     if let Some(keyboard) = &mut self.keyboard {
                         acts.extend(keyboard.frame(frame));
                     }

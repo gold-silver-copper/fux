@@ -495,26 +495,26 @@ pub enum ClientAction {
     Capture {
         json: bool,
     },
-    /// `moving`: the pane to move to the tab chosen, if one: the one given,
-    /// or (`None`) the focused one.
-    ChooseTab {
-        moving: Option<Option<PaneId>>,
-    },
-    ChooseWorkspace {
-        moving: Option<Option<PaneId>>,
-    },
-    ChoosePane {
-        target: Option<PaneId>,
-    },
-    Menu(Subject),
-    CommandPrompt,
-    CopyMode,
-    RenamePrompt(Subject),
-    ConfirmClose(Subject),
+    /// The rows of a chooser the client shows: what each is, its label,
+    /// and which is the client's current one.
+    Choices(Choices),
+    /// fuxth for the client to run as its own: what opens one of its
+    /// screens (a menu, the prompt, copy mode), asked from elsewhere.
+    Run(String),
     Zoom,
     SelectPane(PanePick),
     SelectTab(Pick<TabId>),
     SelectWorkspace(Pick<WsRef>),
+}
+
+/// What a chooser lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Choices {
+    /// The tabs of the client's workspace.
+    Tabs,
+    Workspaces,
+    /// The other panes of this one's tab.
+    Panes(PaneId),
 }
 
 impl ClientAction {

@@ -136,7 +136,9 @@ impl Vocabulary {
 
     /// The word `id`'s name and how many values it takes.
     pub fn word(&self, id: usize) -> Option<(&str, usize)> {
-        self.words.get(id).map(|(name, takes)| (name.as_str(), *takes))
+        self.words
+            .get(id)
+            .map(|(name, takes)| (name.as_str(), *takes))
     }
 }
 
@@ -257,7 +259,8 @@ impl<A: Clone> Compiler<A> {
             match text {
                 "str" => {
                     let next = tokens.next().ok_or_else(|| missing(token, "a string"))?;
-                    self.code().push(Op::Push(Value::Str(Rc::clone(&next.text))), token);
+                    self.code()
+                        .push(Op::Push(Value::Str(Rc::clone(&next.text))), token);
                 }
                 "define" => {
                     self.top_level(token)?;
@@ -270,10 +273,13 @@ impl<A: Clone> Compiler<A> {
                         ops: Vec::new(),
                         tokens: Vec::new(),
                     });
-                    self.current = Some((id, Steps {
-                        ops: Vec::new(),
-                        tokens: Vec::new(),
-                    }));
+                    self.current = Some((
+                        id,
+                        Steps {
+                            ops: Vec::new(),
+                            tokens: Vec::new(),
+                        },
+                    ));
                     self.open.push(Open::Define { at: token.clone() });
                 }
                 "end" => match self.open.pop() {

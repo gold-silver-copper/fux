@@ -111,7 +111,12 @@ fn resizing_moves_the_border_and_reaches_the_programs() -> Outcome {
     // neighbour, so its left border moves right: it shrinks. Resize mode
     // repeats the key without the prefix, until Enter.
     client.keys(&format!("{PREFIX}rlllll\r"))?;
-    eventually("the border moved", || Ok(size(&server, "%2")?.1 == 35))?;
+    // The keys after `r l` wait for its binding to run: the client sends
+    // them as it goes on.
+    eventually("the border moved", || {
+        client.pump()?;
+        Ok(size(&server, "%2")?.1 == 35)
+    })?;
     assert_eq!(size(&server, "%1")?.1, 45);
     server.ok(&["str", "%1", "pane", "str", "left", "10", "move-border"])?;
     assert_eq!(size(&server, "%1")?.1, 35);
