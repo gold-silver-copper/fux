@@ -467,8 +467,8 @@ control.
 
 Against mistakes, rather than against a program of yours that means harm:
 
-- `kill-server` from one of the server's own panes, or while people are
-  attached, needs `--force`; `kill-pane`, `kill-tab` and `kill-workspace`
+- `kill-server` from one of the server's own panes, or while a person's
+  terminal is attached (headless clients do not count), needs `--force`; `kill-pane`, `kill-tab` and `kill-workspace`
   from the command line need `-t`, so an empty variable closes nothing.
 - `fux grant -t WS --socket PATH` makes a second socket whose commands reach
   workspace WS alone: an agent given only it can run, read and close what is

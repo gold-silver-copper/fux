@@ -95,7 +95,9 @@ with no room left) is refused, and nothing changes.
 PATH` before any command chooses the server; `fux -L NAME server
 --background` starts one and returns once it answers; `fux status` says
 whether one answers. Inside a person's pane, `FUX_PANE` is that pane, but only
-on that pane's own server: on yours it is not acted on. A person can give you
+on that pane's own server (`FUX_SERVER` says which): on yours it is not acted
+on. A `FUX_PANE` set by hand, with no `FUX_SERVER`, is taken as given.
+A person can give you
 `fux grant -t agent --socket PATH`: a socket that reaches workspace `agent`
 alone, which they can watch in their own server (`-S PATH` on each command).
 `kill-server` from inside the server you would stop needs `--force`.

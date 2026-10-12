@@ -325,7 +325,12 @@ pub const SETSID: &str = "--setsid";
 /// version.
 pub enum Probe {
     Absent,
-    Server { protocol: u32, version: String },
+    /// A socket left by a server that stopped.
+    Left,
+    Server {
+        protocol: u32,
+        version: String,
+    },
 }
 
 /// Who answers on `socket`, asking only for its `Hello`, which every
@@ -339,7 +344,7 @@ pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
     let mut stream = match UnixStream::connect(socket.path()) {
         Ok(stream) => stream,
         // A socket left by a server that is gone.
-        Err(e) if e.kind() == ErrorKind::ConnectionRefused => return Ok(Probe::Absent),
+        Err(e) if e.kind() == ErrorKind::ConnectionRefused => return Ok(Probe::Left),
         Err(source) => {
             return Err(Error::Connect {
                 path: socket.path().to_owned(),

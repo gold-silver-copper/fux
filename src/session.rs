@@ -94,6 +94,9 @@ pub struct Caller {
     /// The workspace it may reach, and nothing else, if it came through a
     /// socket `fux grant` made.
     pub scope: Option<String>,
+    /// It runs in one of this server's panes (its `FUX_SERVER` is this
+    /// server's), whether or not it gave the pane.
+    pub inside: bool,
 }
 
 /// Where an attached client is: the workspace and tab it is shown, and the
@@ -182,7 +185,7 @@ pub enum Error {
         now: u64,
     },
     /// `kill-server` from the CLI, run in one of the server's own panes.
-    OwnServer(PaneId),
+    OwnServer(Option<PaneId>),
     /// `kill-server` from the CLI, with people's terminals attached.
     PeopleAttached(usize),
     /// A kill from the CLI that names nothing, which would close the
@@ -399,10 +402,14 @@ impl std::fmt::Display for Error {
                 "{pane}: the screen changed since revision {revision} (it is at {now}); \
                  nothing was sent: read it again"
             ),
-            Error::OwnServer(pane) => write!(
+            Error::OwnServer(Some(pane)) => write!(
                 f,
                 "this runs in {pane}, a pane of the server it would stop, with everything else \
                  in it; --force stops it anyway"
+            ),
+            Error::OwnServer(None) => f.write_str(
+                "this runs in a pane of the server it would stop, with everything else in it; \
+                 --force stops it anyway",
             ),
             Error::PeopleAttached(1) => {
                 f.write_str("a person is attached to this server; --force stops it anyway")
@@ -415,8 +422,8 @@ impl std::fmt::Display for Error {
             }
             Error::KillNeedsTarget(usage) => write!(
                 f,
-                "from the command line, name what to close ({usage}): without, it would be the \
-                 pane, tab or workspace this runs in"
+                "from the command line, name what to close: {usage} (so that an empty variable \
+                 closes nothing, nor the pane this runs in)"
             ),
             Error::StrayPane(pane) => write!(
                 f,
@@ -909,6 +916,26 @@ impl Reach<'_> {
             Command::DumpLayout { target } => target.as_ref().map_or(Ok(()), |t| self.any(t)),
         }
     }
+}
+
+/// A failed outcome as `--json` gives it: its message as JSON on stderr,
+/// with `code`, or what its status says.
+pub fn json_failure(mut outcome: Outcome, code: Option<&str>) -> Outcome {
+    let text = outcome.stderr.trim_end();
+    if outcome.status == 0 || text.is_empty() || text.starts_with('{') {
+        return outcome;
+    }
+    let code = match (outcome.status, code) {
+        (_, Some(code)) => code,
+        (2, None) => "usage",
+        (_, None) => "failed",
+    };
+    outcome.stderr = Json::Object(vec![
+        ("error", Json::str(code)),
+        ("message", Json::str(text)),
+    ])
+    .render();
+    outcome
 }
 
 /// Whether a command line asks for JSON: its failure is then JSON too.
@@ -2250,36 +2277,19 @@ impl Session {
     /// runs as `run` runs it.
     pub fn begin(&mut self, argv: &[String], origin: &Origin) -> Begun {
         self.last_error = None;
-        let scoped;
-        let argv = match origin {
+        let begun = match origin {
             Origin::Cli(Caller {
                 scope: Some(scope), ..
             }) => match self.scoped(argv, scope, origin) {
-                Ok(argv) => {
-                    scoped = argv;
-                    scoped.as_slice()
-                }
-                Err(error) => return self.failed(error, origin),
+                Ok(scoped) => self.begin_line(&scoped, origin),
+                Err(error) => self.failed(error, origin),
             },
-            Origin::Cli(_) | Origin::Client(_) | Origin::Nowhere => argv,
+            Origin::Cli(_) | Origin::Client(_) | Origin::Nowhere => self.begin_line(argv, origin),
         };
-        match self.begin_line(argv, origin) {
-            // With --json, its failure is JSON too, on stderr.
-            Begun::Done(mut outcome) if wants_json(argv) && outcome.status != 0 => {
-                let text = outcome.stderr.trim_end();
-                if !text.is_empty() && !text.starts_with('{') {
-                    let code = match (outcome.status, self.last_error) {
-                        (_, Some(code)) => code,
-                        (2, None) => "usage",
-                        (_, None) => "failed",
-                    };
-                    outcome.stderr = Json::Object(vec![
-                        ("error", Json::str(code)),
-                        ("message", Json::str(text)),
-                    ])
-                    .render();
-                }
-                Begun::Done(outcome)
+        // With --json, its failure is JSON too, on stderr.
+        match begun {
+            Begun::Done(outcome) if wants_json(argv) => {
+                Begun::Done(json_failure(outcome, self.last_error))
             }
             begun @ (Begun::Done(_) | Begun::Waiting(_) | Begun::Events(_)) => begun,
         }
@@ -2288,13 +2298,7 @@ impl Session {
     fn begin_line(&mut self, argv: &[String], origin: &Origin) -> Begun {
         let argv = match self.named(argv) {
             Ok(argv) => argv,
-            Err(stderr) => {
-                return Begun::Done(Outcome {
-                    status: 1,
-                    stdout: String::new(),
-                    stderr,
-                });
-            }
+            Err(why) => return self.failed(Error::NotNamed(why), origin),
         };
 
         let (targets, wait, keys) = match command::parse(&argv) {
@@ -2413,12 +2417,10 @@ impl Session {
         let command = command::parse(&argv).map_err(Error::Usage)?;
         let anywhere = matches!(
             command,
-            Command::Ls { target: None, .. }
-                | Command::Run {
-                    workspace: None,
-                    ..
-                }
-                | Command::NewTab { target: None, .. }
+            Command::Run {
+                workspace: None,
+                ..
+            } | Command::NewTab { target: None, .. }
                 | Command::Layout {
                     workspace: None,
                     ..
@@ -2504,7 +2506,16 @@ impl Session {
         };
         // A tab named so, if one is; for a pane, that tab's one pane.
         let id = match (tabs.as_slice(), kind) {
-            ([], _) => return Ok(argv.to_vec()),
+            // An id of the wrong kind is no name: a usage error.
+            ([], _) if name.starts_with(['%', '@', '+']) => return Ok(argv.to_vec()),
+            ([], _) => {
+                return Err(match kind {
+                    Kind::Tab => format!("no tab named {name:?}: tabs are @N, or a tab's name"),
+                    Kind::Pane | Kind::Workspace => format!(
+                        "no pane {name:?}: panes are %N, or the name of a tab with one pane"
+                    ),
+                });
+            }
             ([tab], Kind::Tab) => tab.id.to_string(),
             ([tab], _) => match panes_of(tab).as_slice() {
                 [pane] => pane.clone(),
@@ -2675,17 +2686,27 @@ impl Session {
         let here = self.here(origin)?;
         self.starting = self.starting_for(origin);
         match command {
-            Command::Ls { json, target, get } => match target {
-                Some(target) => {
-                    let target = self.any_target(&Subject::from(target.clone()), here)?;
-                    self.ls_one(target, *json, get.as_deref())
+            Command::Ls { json, target, get } => {
+                // Through a grant, the granted workspace alone.
+                let scope = match origin {
+                    Origin::Cli(Caller {
+                        scope: Some(scope), ..
+                    }) => Some(self.resolve_ws(&WsRef::Name(scope.clone()))?),
+                    Origin::Cli(_) | Origin::Client(_) | Origin::Nowhere => None,
+                };
+                match target {
+                    Some(target) => {
+                        let target = self.any_target(&Subject::from(target.clone()), here)?;
+                        self.ls_one(target, *json, get.as_deref())
+                    }
+                    None if *json => Ok(self.ls_json(scope)),
+                    None => Ok(self.ls_text(scope.map(AnyRef::Workspace))),
                 }
-                None if *json => Ok(self.ls_json()),
-                None => Ok(self.ls_text(None)),
-            },
+            }
             &Command::KillServer { force } => {
                 if let (Origin::Cli(caller), false) = (origin, force) {
-                    if let Some(pane) = caller.pane.filter(|p| self.panes.contains_key(p)) {
+                    let pane = caller.pane.filter(|p| self.panes.contains_key(p));
+                    if pane.is_some() || caller.inside {
                         return Err(Error::OwnServer(pane));
                     }
                     let people = (self.views.values())
@@ -2695,8 +2716,12 @@ impl Session {
                         return Err(Error::PeopleAttached(people));
                     }
                 }
+                let reason = match origin {
+                    Origin::Client(_) => "stopped by kill-server, from a key or the prompt",
+                    Origin::Cli(_) | Origin::Nowhere => "stopped by fux kill-server",
+                };
                 self.outbox.push(Outgoing::Shutdown {
-                    reason: "stopped by fux kill-server".into(),
+                    reason: reason.into(),
                     keep: false,
                 });
                 Ok(String::new())
@@ -3806,15 +3831,19 @@ impl Session {
         }
     }
 
-    fn ls_json(&self) -> String {
+    /// `ls --json`: everything, or `only` that workspace, with no clients
+    /// or grants (what a granted socket sees).
+    fn ls_json(&self, only: Option<WsId>) -> String {
         let now = Instant::now();
         let workspaces = (self.workspaces.iter())
+            .filter(|ws| only.is_none_or(|id| id == ws.id))
             .map(|ws| self.ws_json(ws, now))
             .collect();
         let opt = |v: Option<String>| v.map_or(Json::Null, Json::str);
         let clients = self
             .views
             .values()
+            .filter(|_| only.is_none())
             .map(|v| {
                 let place = self.place(v.id);
                 let pane = place.and_then(|p| p.pane);
@@ -3830,6 +3859,7 @@ impl Session {
             })
             .collect();
         let grants = (self.grants.iter())
+            .filter(|_| only.is_none())
             .map(|(socket, ws)| {
                 Json::Object(vec![
                     ("socket", Json::str(socket.to_string_lossy())),

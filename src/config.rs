@@ -191,6 +191,10 @@ impl std::fmt::Display for Error {
             Error::UnbindUsage => f.write_str("usage: unbind [-n] KEY…"),
             Error::NotBound { keys } => write!(f, "{} is not bound", keys_text(keys)),
             Error::UnbindAllUsage => f.write_str("usage: unbind-all"),
+            Error::NotConfig { command } if crate::command::usage_of(command).is_none() => write!(
+                f,
+                "{command:?} is no command; a config file holds set, bind, unbind and unbind-all lines"
+            ),
             Error::NotConfig { command } => write!(
                 f,
                 "{command} changes panes or layout, which a config file cannot do; \

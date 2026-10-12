@@ -352,8 +352,9 @@ workspace), or every client's: for an agent working out of sight to say so.
         "kill-server" => {
             "\
 Stops the server: every pane is hung up, and every client told why. From the
-command line it is refused in one of the server's own panes, and while people
-are attached: --force stops it anyway (and one of another fux version).
+command line it is refused in one of the server's own panes, and while a
+person's terminal is attached (a headless client is a script's, and does not
+count): --force stops it anyway (and one of another fux version).
 
   fux -L test kill-server"
         }

@@ -100,11 +100,12 @@ fn help_of(name: &str) -> Option<String> {
         }
         "server" => {
             "usage: fux [-L NAME | -S PATH] server [--background] [--fresh] [--config FILE]\n\n\
-             Runs a server with no client: what `fux` starts on its own when none \
-             runs. In the\nforeground; --background returns once it answers, and \
-             prints its socket. A server\nbrings back what one on its socket held \
-             when it crashed or the machine stopped\n(programs `run` started wait for \
-             `respawn`); --fresh starts empty. A private one:\n\n  \
+             Runs a server with no client: what `fux` starts on its own when none runs.\n\
+             In the foreground; --background returns once it answers, and prints its\n\
+             socket. -S PATH (or --socket PATH) and -L NAME choose the socket. A server\n\
+             brings back what one on its socket held when it crashed or the machine\n\
+             stopped (programs `run` started wait for `respawn`); --fresh starts empty.\n\
+             A private one:\n\n  \
              fux -L test server --background && fux -L test run -n app -- ./app"
         }
         "status" => {
@@ -359,6 +360,32 @@ fn run(args: &[String]) -> Result<u8, Error> {
         Ok(chosen) => chosen,
         Err(message) => return usage_error(&message, None, json),
     };
+    // The binary's own commands take --json too: their errors, and
+    // check-config's findings, are then JSON.
+    let own = matches!(
+        args.first().map(String::as_str),
+        None | Some(
+            "attach"
+                | "-t"
+                | "--nested"
+                | "--headless"
+                | "--read-only"
+                | "server"
+                | "help"
+                | "--help"
+                | "-h"
+                | "check-config"
+                | "--json"
+        )
+    );
+    let plain: Vec<String>;
+    let args = match own {
+        true => {
+            plain = args.iter().filter(|a| *a != "--json").cloned().collect();
+            plain.as_slice()
+        }
+        false => args,
+    };
     let first = args.first().map(String::as_str);
     // `fux COMMAND … --help`: that command's help, not a run of it
     // (`kill-server --help` must not stop anything). Right after the
@@ -431,6 +458,10 @@ fn run(args: &[String]) -> Result<u8, Error> {
             if !nested && !headless && std::env::var_os("FUX_PANE").is_some_and(|p| !p.is_empty()) {
                 return Err(Error::Nested);
             }
+            // Before a server is started for it, which would be left behind.
+            if !headless && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                return Err(Error::Client(client::Error::NotATerminal));
+            }
             let socket = socket::socket_path(choice)?;
             if UnixStream::connect(socket.path()).is_err() {
                 client::start_server(&socket, &[])?;
@@ -483,6 +514,22 @@ fn run(args: &[String]) -> Result<u8, Error> {
             };
             let socket = socket::socket_path(choice)?;
             if background {
+                // A config that will not do is said here, where someone
+                // reads it, not only in the server's log.
+                if let Some(path) = &config {
+                    let path = std::path::Path::new(path);
+                    let problem = match config::Config::from_file(path) {
+                        Ok(Some(_)) => None,
+                        Ok(None) => Some(format!("{}: no such file", path.display())),
+                        Err(error) => Some(error.to_string()),
+                    };
+                    if let Some(problem) = problem {
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "fux: config: {problem}; the server runs on the defaults"
+                        );
+                    }
+                }
                 if let client::Probe::Server { .. } = client::probe(&socket)? {
                     let path = socket.path().display();
                     let _ = writeln!(std::io::stderr(), "fux: a server already answers at {path}");
@@ -519,9 +566,9 @@ fn run(args: &[String]) -> Result<u8, Error> {
             Ok(0)
         }
         Some("check-config") => {
-            let path = match args.get(1..).unwrap_or_default() {
-                [] => config::default_path(),
-                [path] => Some(std::path::PathBuf::from(path)),
+            let (path, named) = match args.get(1..).unwrap_or_default() {
+                [] => (config::default_path(), false),
+                [path] => (Some(std::path::PathBuf::from(path)), true),
                 _ => return usage_error("usage: fux check-config [FILE]", None, json),
             };
             let Some(path) = path else {
@@ -531,7 +578,7 @@ fn run(args: &[String]) -> Result<u8, Error> {
                 );
                 return Ok(1);
             };
-            check_config(&path)
+            check_config(&path, named, json)
         }
         Some("help" | "--help" | "-h") => {
             let text = match args.get(1).map(String::as_str) {
@@ -588,8 +635,9 @@ fn run(args: &[String]) -> Result<u8, Error> {
 fn status(socket: &socket::SocketPath, probe: &client::Probe, json: bool) -> (String, bool) {
     let path = socket.path().display().to_string();
     let ours = env!("CARGO_PKG_VERSION");
+    let left = matches!(probe, client::Probe::Left);
     let (running, theirs) = match probe {
-        client::Probe::Absent => (false, None),
+        client::Probe::Absent | client::Probe::Left => (false, None),
         client::Probe::Server { protocol, version } => (true, Some((*protocol, version.as_str()))),
     };
     let compatible = theirs.is_some_and(|(protocol, _)| protocol == protocol::PROTOCOL);
@@ -603,6 +651,9 @@ fn status(socket: &socket::SocketPath, probe: &client::Probe, json: bool) -> (St
                 json::Json::Number(i64::from(protocol::PROTOCOL)),
             ),
         ];
+        if left {
+            fields.push(("left", json::Json::Bool(true)));
+        }
         if let Some((protocol, version)) = theirs {
             fields.push(("server_version", json::Json::str(version)));
             fields.push(("server_protocol", json::Json::Number(i64::from(protocol))));
@@ -611,6 +662,9 @@ fn status(socket: &socket::SocketPath, probe: &client::Probe, json: bool) -> (St
         json::Json::Object(fields).render()
     } else {
         match theirs {
+            None if left => {
+                format!("no fux server at {path} (its socket is left from one that stopped)")
+            }
             None => format!("no fux server at {path}"),
             Some((_, version)) if compatible => format!("fux {version} at {path}"),
             Some((protocol, version)) => format!(
@@ -662,28 +716,43 @@ fn servers(json: bool) -> Result<String, Error> {
     })
 }
 
-/// `fux check-config`: every line of the file a server would refuse.
-fn check_config(path: &std::path::Path) -> Result<u8, Error> {
-    let errors = match config::Config::check(path) {
-        Ok(errors) => errors,
-        Err(error) => {
-            let _ = writeln!(std::io::stderr(), "fux: {error}");
-            return Ok(1);
-        }
+/// `fux check-config`: every line of the file a server would refuse. A
+/// file `named` that is not there is an error; the default one missing
+/// leaves the defaults, which is fine.
+fn check_config(path: &std::path::Path, named: bool, json: bool) -> Result<u8, Error> {
+    let shown = path.display().to_string();
+    let errors: Vec<String> = match (config::Config::check(path), path.exists(), named) {
+        (_, false, true) => vec![format!("{shown}: no such file")],
+        (_, false, false) => Vec::new(),
+        (Ok(errors), true, _) => errors.iter().map(ToString::to_string).collect(),
+        (Err(error), true, _) => vec![error.to_string()],
     };
-    let mut out = String::new();
+    let ok = errors.is_empty();
+    if json {
+        let text = json::Json::Object(vec![
+            ("file", json::Json::str(shown.as_str())),
+            ("ok", json::Json::Bool(ok)),
+            (
+                "errors",
+                json::Json::Array(errors.iter().map(|e| json::Json::str(e.as_str())).collect()),
+            ),
+        ])
+        .render();
+        writeln!(std::io::stdout(), "{text}").map_err(Error::Output)?;
+        return Ok(u8::from(!ok));
+    }
+    if ok {
+        let said = match path.exists() {
+            true => format!("{shown}: ok"),
+            false => format!("{shown}: no such file; a server runs on the defaults"),
+        };
+        writeln!(std::io::stdout(), "{said}").map_err(Error::Output)?;
+        return Ok(0);
+    }
     for error in &errors {
-        out.push_str(&format!("{error}\n"));
+        let _ = writeln!(std::io::stderr(), "fux: {error}");
     }
-    if errors.is_empty() {
-        out = format!("{}: ok\n", path.display());
-    }
-    let mut stream: Box<dyn Write> = match errors.is_empty() {
-        true => Box::new(std::io::stdout()),
-        false => Box::new(std::io::stderr()),
-    };
-    stream.write_all(out.as_bytes()).map_err(Error::Output)?;
-    Ok(u8::from(!errors.is_empty()))
+    Ok(1)
 }
 
 #[cfg(test)]

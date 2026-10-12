@@ -174,7 +174,7 @@ impl std::fmt::Display for Error {
             Error::BadName(name) => write!(
                 f,
                 "-L {name:?}: a server's name is 1 to 64 letters, digits, '.', '_' or '-', \
-                 not starting with '.'"
+                 not starting with '.' or '-'"
             ),
             Error::NotOurs(path) => write!(
                 f,
@@ -299,7 +299,7 @@ pub fn socket_path(choice: Choice<'_>) -> Result<SocketPath, Error> {
         Choice::Path(path, from) => checked(path, from),
         Choice::Name(name) => {
             let valid = (1..=64).contains(&name.len())
-                && !name.starts_with('.')
+                && !name.starts_with(['.', '-'])
                 && (name.chars()).all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
             if !valid {
                 return Err(Error::BadName(name.to_owned()));

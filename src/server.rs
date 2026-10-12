@@ -1578,6 +1578,7 @@ impl Server {
                 // A pane of another server's (FUX_PANE kept as FUX_SOCKET
                 // or -L chose this one) is not the caller's here.
                 let ours = server.as_deref().is_none_or(|s| s == session.server_id);
+                let inside = server.as_deref() == Some(session.server_id.as_str());
                 let (pane, stray) = if ours { (pane, None) } else { (None, pane) };
                 let cwd = Some(PathBuf::from(cwd)).filter(|p| p.is_dir());
                 // Through a grant, the workspace it reaches; one revoked
@@ -1593,9 +1594,20 @@ impl Server {
                     revoke,
                 }) = crate::command::parse(&argv)
                 {
-                    let outcome = match scope {
-                        Some(_) => refused_grant(),
-                        None => grant(&mut self.grants, session, (workspace, socket, revoke), cwd),
+                    let (outcome, code) = match scope {
+                        Some(_) => (refused_grant(), "not_granted"),
+                        None => {
+                            let made = (workspace, socket, revoke);
+                            (grant(&mut self.grants, session, made, cwd), "grant")
+                        }
+                    };
+                    let json = argv
+                        .iter()
+                        .take_while(|a| *a != "--")
+                        .any(|a| a == "--json");
+                    let outcome = match json {
+                        true => crate::session::json_failure(outcome, Some(code)),
+                        false => outcome,
                     };
                     conn.answer(session, outcome);
                     return Ok(true);
@@ -1606,6 +1618,7 @@ impl Server {
                     stray,
                     env,
                     scope,
+                    inside,
                 });
                 match session.begin(&argv, &origin) {
                     Begun::Done(outcome) => conn.answer(session, outcome),
