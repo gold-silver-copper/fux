@@ -747,7 +747,7 @@ fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
     ])?;
     assert_eq!(term.status, 124);
     assert!(
-        term.stderr.contains("still running") && term.stderr.contains("last line: `still here`"),
+        term.stderr.contains("unchanged for") && term.stderr.contains("last line: `still here`"),
         "{}",
         term.stderr
     );

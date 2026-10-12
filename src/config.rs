@@ -334,7 +334,7 @@ pub struct Config {
 }
 
 /// The largest history a pane keeps.
-pub const MAX_HISTORY: usize = 1_000_000;
+pub const MAX_HISTORY: usize = 250_000;
 pub const MAX_BUFFERS: usize = 1000;
 
 /// The default bindings, as `bind` takes them, in command-column order.

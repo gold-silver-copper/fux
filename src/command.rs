@@ -1167,11 +1167,6 @@ fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
     if argv.is_empty() {
         return Err(Usage::Needs("usage: run [flags] -- PROGRAM [ARGS...]"));
     }
-    if argv.iter().any(|w| w.starts_with("--wait-")) {
-        return Err(Usage::Needs(
-            "run's flags go before --; what follows -- is the program's own",
-        ));
-    }
     let then = flag_wait(a, false)?;
     Ok(Command::Run {
         workspace,
@@ -1191,7 +1186,9 @@ fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
 /// `after`: only what comes after it counts).
 fn flag_wait(a: &Args<'_>, after: bool) -> Result<Option<Box<Wait>>, Usage> {
     let mut until = texts(a, "--wait-text")?;
-    until.extend(a.values("--wait-gone").map(|t| Until::Gone(t.to_owned())));
+    for text in a.values("--wait-gone") {
+        until.push(Until::Gone(checked_text(text)?.to_owned()));
+    }
     until.extend(
         a.read_as("--wait-idle", parse_millis, "milliseconds")?
             .map(Until::Idle),
@@ -1234,14 +1231,22 @@ const EMPTY_TEXT: &str = "an empty text is on every screen; to wait for the firs
 /// shows, is refused.
 fn texts(a: &Args<'_>, flag: &'static str) -> Result<Vec<Until>, Usage> {
     a.values(flag)
-        .map(|t| {
-            if t.is_empty() {
-                Err(Usage::Needs(EMPTY_TEXT))
-            } else {
-                Ok(Until::Text(t.to_owned()))
-            }
-        })
+        .map(|t| checked_text(t).map(|t| Until::Text(t.to_owned())))
         .collect()
+}
+
+/// A text a wait can find: not empty, which every screen shows, and on one
+/// line, as a screen's lines are.
+fn checked_text(text: &str) -> Result<&str, Usage> {
+    if text.is_empty() {
+        return Err(Usage::Needs(EMPTY_TEXT));
+    }
+    if text.contains('\n') {
+        return Err(Usage::Needs(
+            "a text to wait for is on one line: a screen's lines hold no newline",
+        ));
+    }
+    Ok(text)
 }
 
 /// `--env K=V` pairs.
@@ -1326,7 +1331,9 @@ fn capture(a: &mut Args<'_>) -> Result<Command, Usage> {
 
 fn wait(a: &mut Args<'_>) -> Result<Command, Usage> {
     let mut until = texts(a, "--text")?;
-    until.extend(a.values("--gone").map(|t| Until::Gone(t.to_owned())));
+    for text in a.values("--gone") {
+        until.push(Until::Gone(checked_text(text)?.to_owned()));
+    }
     until.extend(
         a.read_as("--idle", parse_millis, "milliseconds")?
             .map(Until::Idle),
@@ -1596,16 +1603,18 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
     let mut inputs = Vec::new();
     while let Some(word) = words.next() {
         match word.as_str() {
+            // After `--`, every word is text, however it looks.
+            "--" => inputs.extend(words.by_ref().map(|w| Input::Text(w.clone()))),
             "--text" => inputs.push(Input::Text(value(word, &mut words)?.to_owned())),
             "--paste" => inputs.push(Input::Paste(value(word, &mut words)?.to_owned())),
             "--wait-text" => {
-                let text = value(word, &mut words)?;
-                if text.is_empty() {
-                    return Err(Usage::Needs(EMPTY_TEXT));
-                }
+                let text = checked_text(value(word, &mut words)?)?;
                 until.push(Until::Text(text.to_owned()));
             }
-            "--wait-gone" => until.push(Until::Gone(value(word, &mut words)?.to_owned())),
+            "--wait-gone" => {
+                let text = checked_text(value(word, &mut words)?)?;
+                until.push(Until::Gone(text.to_owned()));
+            }
             "--wait-idle" => {
                 let text = value(word, &mut words)?;
                 let ms =
@@ -1645,6 +1654,16 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
                 return Err(Usage::Needs(
                     "send-keys -t, -c, -l and -N go before the keys; after them, a word is typed",
                 ));
+            }
+            // A flag mistyped (`--wait-idel 300`) would be typed into the
+            // program, a stray line to a shell.
+            flag if flag.starts_with("--") && flag.len() > 2 && !literal => {
+                return Err(Usage::Bad {
+                    command: "send-keys",
+                    flag: "a word",
+                    value: flag.to_owned(),
+                    expected: "a flag of send-keys (to type it as text: after --, or --text)",
+                });
             }
             text => inputs.push(match text.parse::<KeyPress>() {
                 Ok(key) if !literal => Input::Key(key),

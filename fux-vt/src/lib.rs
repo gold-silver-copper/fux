@@ -480,3 +480,9 @@ mod tests {
         assert_eq!(cells, [1, 2, 3, 4]);
     }
 }
+
+/// Whether a screen of `size` keeping `history` rows of history can be
+/// made: the most cells and rows one holds are bounded.
+pub fn fits(size: Size, history: usize) -> bool {
+    grid::Grid::check_size(size, history).is_ok()
+}

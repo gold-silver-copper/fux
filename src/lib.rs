@@ -81,6 +81,28 @@ target it without -t.",
     )
 }
 
+/// A command's help, the client's own (`attach`, `server`) included.
+fn help_of(name: &str) -> Option<String> {
+    let own = match name {
+        "attach" => {
+            "usage: fux [attach] [-t WORKSPACE] [--nested]\n       \
+             fux attach --headless [--size COLSxROWS] [--log FILE] [-t WORKSPACE]\n\n\
+             Shows the server's screen in this terminal, starting a server if none \
+             runs. --headless\nattaches a client with no terminal: it prints its id, \
+             logs what it is sent to FILE,\nand detaches on SIGTERM; send-keys -c and \
+             capture-client act on it.\n\n  fux attach --headless --size 100x30 &"
+        }
+        "server" => {
+            "usage: fux server [--socket PATH] [--config FILE]\n\n\
+             Runs a server in the foreground, with no client: what `fux` starts on \
+             its own when\nnone runs. A private one for tests: --socket PATH, and \
+             FUX_SOCKET=PATH for the commands.\n\n  fux server --socket \"$PWD/s.sock\" &"
+        }
+        _ => return help::command(name),
+    };
+    Some(own.to_owned())
+}
+
 /// The command line of the `fux` binary.
 pub fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -171,6 +193,23 @@ fn usage_error(message: &str, command: Option<&str>) -> Result<u8, Error> {
 
 fn run(args: &[String]) -> Result<u8, Error> {
     let first = args.first().map(String::as_str);
+    // `fux COMMAND … --help`, wherever it is before `--`: that command's
+    // help, not a run of it (`kill-server --help` must not stop anything).
+    let asks_help = (args.iter().skip(1))
+        .take_while(|a| *a != "--")
+        .any(|a| a == "--help");
+    if let (Some(name), true) = (
+        first.filter(|f| !["help", "--help", "-h"].contains(f)),
+        asks_help,
+    ) {
+        return match help_of(name) {
+            Some(text) => {
+                writeln!(std::io::stdout(), "{}", text.trim_end()).map_err(Error::Output)?;
+                Ok(0)
+            }
+            None => usage_error(&format!("unknown command {name:?}"), None),
+        };
+    }
     match first {
         Some(fuxix::pty::LAUNCH) => Ok(fuxix::pty::launched(args.get(1..).unwrap_or_default())),
         // `attach` may be left out before its flags, as usage says.
@@ -223,8 +262,16 @@ fn run(args: &[String]) -> Result<u8, Error> {
             let mut rest = args.iter().skip(1);
             while let Some(arg) = rest.next() {
                 match arg.as_str() {
-                    "--socket" => socket_flag = rest.next().cloned(),
-                    "--config" => config = rest.next().cloned(),
+                    flag @ ("--socket" | "--config") => {
+                        let Some(value) = rest.next().cloned() else {
+                            return usage_error(&format!("server {flag} needs a value"), None);
+                        };
+                        if flag == "--socket" {
+                            socket_flag = Some(value);
+                        } else {
+                            config = Some(value);
+                        }
+                    }
                     client::SETSID => {
                         fuxix::process::setsid().map_err(Error::Setsid)?;
                     }
@@ -239,6 +286,9 @@ fn run(args: &[String]) -> Result<u8, Error> {
             Ok(0)
         }
         Some("kill-server") => {
+            if args.len() > 1 {
+                return usage_error("kill-server takes no arguments", Some("kill-server"));
+            }
             let socket = socket::socket_path(None)?;
             client::kill_server(&socket)?;
             Ok(0)
@@ -247,7 +297,7 @@ fn run(args: &[String]) -> Result<u8, Error> {
             let text = match args.get(1).map(String::as_str) {
                 None => usage(),
                 Some("agents") => help::AGENTS.to_owned(),
-                Some(name) => match help::command(name) {
+                Some(name) => match help_of(name) {
                     Some(text) => text,
                     None => {
                         let message = format!("no command {name:?}");
@@ -257,16 +307,6 @@ fn run(args: &[String]) -> Result<u8, Error> {
             };
             writeln!(std::io::stdout(), "{}", text.trim_end()).map_err(Error::Output)?;
             Ok(0)
-        }
-        // `fux COMMAND --help`: that command's help, not a run of it.
-        Some(name) if args.len() == 2 && args.get(1).is_some_and(|a| a == "--help") => {
-            match help::command(name) {
-                Some(text) => {
-                    writeln!(std::io::stdout(), "{}", text.trim_end()).map_err(Error::Output)?;
-                    Ok(0)
-                }
-                None => usage_error(&format!("unknown command {name:?}"), None),
-            }
         }
         Some("--version" | "-V" | "version") => {
             let version = env!("CARGO_PKG_VERSION");

@@ -159,6 +159,24 @@ pub enum Error {
     },
     /// The pane's program has not asked for mouse reports.
     NoMouse(PaneId),
+    /// It asked for clicks, not for motion (with no button held, or at all).
+    NoMotion(PaneId),
+    /// A cell the encoding it asked for cannot say (legacy: past 223).
+    MouseUnencodable {
+        pane: PaneId,
+        row: u16,
+        col: u16,
+    },
+    /// A size no pane can have, with this much history.
+    TooBig(fux_vt::Size, usize),
+    /// A split that leaves no room for the new pane.
+    NoRoom(PaneId),
+    /// A cell outside the pane.
+    OutsidePane {
+        pane: PaneId,
+        rows: u16,
+        cols: u16,
+    },
     /// No way of moving the pane's borders makes it this size.
     CannotResize {
         pane: PaneId,
@@ -236,6 +254,30 @@ impl std::fmt::Display for Error {
             Error::Exited { pane, status } => {
                 write!(f, "the program in {pane} {}", crate::process::told(*status))
             }
+            Error::NoMotion(pane) => write!(
+                f,
+                "the program in {pane} asked for clicks, not for motion (press a button first for a drag)"
+            ),
+            Error::MouseUnencodable { pane, row, col } => write!(
+                f,
+                "the mouse encoding the program in {pane} asked for cannot say row {row}, column {col}"
+            ),
+            Error::TooBig(size, history) => write!(
+                f,
+                "{}x{} is too big for a pane keeping {history} lines of history",
+                size.cols(),
+                size.rows()
+            ),
+            Error::NoRoom(pane) => write!(
+                f,
+                "{pane}'s tab has no room for another pane; make it bigger (`fux resize`) first"
+            ),
+            Error::OutsidePane { pane, rows, cols } => write!(
+                f,
+                "{pane} is {cols}x{rows}: rows count 0-{} and columns 0-{}",
+                rows.saturating_sub(1),
+                cols.saturating_sub(1)
+            ),
             Error::NoMouse(pane) => {
                 write!(f, "the program in {pane} has not asked for mouse reports")
             }
@@ -269,7 +311,7 @@ impl std::fmt::Display for Error {
             ),
             Error::NameReadAsTarget(name) => write!(
                 f,
-                "{name:?} cannot name a workspace: a target would read it as a pane, tab or workspace number"
+                "{name:?} cannot be a name: a target would read it as a pane, tab or workspace number"
             ),
             Error::IdsExhausted(what) => write!(f, "no {what} IDs are left"),
             Error::LineTooLong => f.write_str("the command line is too long to type"),
@@ -314,6 +356,11 @@ impl std::error::Error for Error {
             | Error::OnlyShell(_)
             | Error::Exited { .. }
             | Error::NoMouse(_)
+            | Error::NoMotion(_)
+            | Error::MouseUnencodable { .. }
+            | Error::OutsidePane { .. }
+            | Error::NoRoom(_)
+            | Error::TooBig(..)
             | Error::CannotResize { .. }
             | Error::WaitsOnlyFromCli
             | Error::NotHeadless(_)
@@ -654,14 +701,49 @@ impl Session {
                 status,
             });
         }
+        // The program `run` started, unless that is a shell (`run -- bash`):
+        // its foreground job, if any, is what a signal is for.
         let program = match (&pane.runs, pane.process.child()) {
-            (crate::pane::Runs::Program(_), Some(child)) => Some(child.leader.pid()),
+            (crate::pane::Runs::Program(launch), Some(child)) => {
+                let shell = launch.argv.first().is_some_and(|p| {
+                    let name = basename(p);
+                    [
+                        "bash", "zsh", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh", "nu",
+                        "elvish", "xonsh",
+                    ]
+                    .contains(&name.trim_start_matches('-'))
+                });
+                (!shell).then(|| child.leader.pid())
+            }
             _ => None,
         };
         pane.process
             .job()
             .or(program)
             .ok_or(Error::OnlyShell(pane.id))
+    }
+
+    /// Refuses a name given to a tab (other than `except`, being renamed)
+    /// that `-t NAME` could not find it by: one a target reads as an id, or
+    /// one another tab has.
+    fn check_tab_name(&self, name: &str, except: Option<TabId>) -> Result<(), Error> {
+        check_name(name)?;
+        if command::parse_workspace(name) != Ok(WsRef::Name(name.to_owned())) {
+            return Err(Error::NameReadAsTarget(name.to_owned()));
+        }
+        let taken: Vec<TabId> = (self.workspaces.iter())
+            .flat_map(Workspace::tabs)
+            .filter(|t| t.name == name && Some(t.id) != except)
+            .map(|t| t.id)
+            .collect();
+        if taken.is_empty() {
+            return Ok(());
+        }
+        let ids = [
+            taken.iter().map(ToString::to_string).collect(),
+            self.panes_of_tabs(&taken),
+        ];
+        Err(Error::TabNameTaken(name.to_owned(), ids.concat().join(" ")))
     }
 
     /// The panes of `tabs`, as ids, in their order.
@@ -709,8 +791,11 @@ impl Session {
         let new = ids.pane()?;
         let mut root = self.root(tab).cloned().ok_or(Error::NoPane(target))?;
         root.split(target, new, axis, Side::After);
-        let rect = layout::place(&root, area).rect(new);
-        Ok(rect.map_or(default_size(), |r| crate::pane::size(r.h(), r.w())))
+        // No place for it: the tab is too small to show another pane.
+        let rect = layout::place(&root, area)
+            .rect(new)
+            .ok_or(Error::NoRoom(target))?;
+        Ok(crate::pane::size(rect.h(), rect.w()))
     }
 
     /// Resizes `pane`, placed in `area`, to `cols` and `rows`, either or
@@ -783,7 +868,20 @@ impl Session {
         Ok(match subject {
             Subject::Pane(p) => AnyRef::Pane(self.pane(*p, here)?.id),
             Subject::Tab(t) => AnyRef::Tab(self.tab_target(*t, here)?),
-            Subject::Workspace(w) => AnyRef::Workspace(self.ws_target(w.as_ref(), here)?),
+            // A name no workspace has may be a tab's (`run -n NAME`).
+            Subject::Workspace(w) => match (self.ws_target(w.as_ref(), here), w) {
+                (Ok(ws), _) => AnyRef::Workspace(ws),
+                (Err(error), Some(WsRef::Name(name))) => {
+                    let mut tabs = (self.workspaces.iter())
+                        .flat_map(Workspace::tabs)
+                        .filter(|t| t.name == *name);
+                    match (tabs.next(), tabs.next()) {
+                        (Some(tab), None) => AnyRef::Tab(tab.id),
+                        _ => return Err(error),
+                    }
+                }
+                (Err(error), _) => return Err(error),
+            },
         })
     }
 
@@ -1468,7 +1566,19 @@ impl Session {
 
     /// Runs a command line from the CLI or the prompt.
     pub fn run(&mut self, argv: &[String], origin: &Origin) -> Outcome {
-        let argv = &self.named(argv);
+        let argv = match self.named(argv) {
+            Ok(argv) => argv,
+            Err(stderr) => {
+                let outcome = Outcome {
+                    status: 1,
+                    stdout: String::new(),
+                    stderr,
+                };
+                self.tell(origin, &outcome, false);
+                return outcome;
+            }
+        };
+        let argv = &argv;
         let usage = match command::parse(argv) {
             Ok(command) => return self.run_command(&command, origin),
             Err(usage) => usage,
@@ -1488,7 +1598,16 @@ impl Session {
     /// which the server asks for its answer until it has one; any other
     /// runs as `run` runs it.
     pub fn begin(&mut self, argv: &[String], origin: &Origin) -> Begun {
-        let argv = self.named(argv);
+        let argv = match self.named(argv) {
+            Ok(argv) => argv,
+            Err(stderr) => {
+                return Begun::Done(Outcome {
+                    status: 1,
+                    stdout: String::new(),
+                    stderr,
+                });
+            }
+        };
         let failed = |error: Error| {
             Begun::Done(Outcome {
                 status: 1,
@@ -1608,39 +1727,81 @@ impl Session {
     /// the tab of that name, if one tab has it, or where a pane is wanted
     /// its one pane: so that `fux wait -t build --exit` finds the program
     /// `fux run -n build` started, and `fux kill-tab -t build` its tab.
-    fn named(&self, argv: &[String]) -> Vec<String> {
+    fn named(&self, argv: &[String]) -> Result<Vec<String>, String> {
         let (kind, name) = match command::parse(argv) {
             Err(command::Usage::Not(kind @ (Kind::Pane | Kind::Tab), name)) => (kind, name),
-            _ => return argv.to_vec(),
+            _ => return Ok(argv.to_vec()),
         };
         let tabs: Vec<&Tab> = (self.workspaces.iter())
             .flat_map(Workspace::tabs)
             .filter(|t| t.name == name)
             .collect();
+        let panes_of = |tab: &Tab| -> Vec<String> {
+            tab.root()
+                .map(Tree::panes)
+                .unwrap_or_default()
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        };
         // A tab named so, if one is; for a pane, that tab's one pane.
         let id = match (tabs.as_slice(), kind) {
-            ([tab], Kind::Tab) => Some(tab.id.to_string()),
-            ([tab], _) => tab.root().and_then(|root| match root {
-                Tree::Pane(pane) => Some(pane.to_string()),
-                Tree::Split(..) => None,
-            }),
-            _ => None,
-        };
-        let Some(id) = id else {
-            return argv.to_vec();
-        };
-        let mut out = argv.to_vec();
-        for i in 1..out.len() {
-            if out.get(i.wrapping_sub(1)).is_some_and(|w| w == "-t")
-                && let Some(word) = out.get_mut(i)
-                && *word == name
-            {
-                word.clone_from(&id);
+            ([], _) => return Ok(argv.to_vec()),
+            ([tab], Kind::Tab) => tab.id.to_string(),
+            ([tab], _) => match panes_of(tab).as_slice() {
+                [pane] => pane.clone(),
+                panes => {
+                    return Err(format!(
+                        "{name:?} is a tab of {} panes ({}): use a pane's id",
+                        panes.len(),
+                        panes.join(" ")
+                    ));
+                }
+            },
+            (tabs, _) => {
+                let each: Vec<String> = (tabs.iter())
+                    .map(|t| format!("{} {}", t.id, panes_of(t).join(" ")))
+                    .collect();
+                return Err(format!(
+                    "{name:?} names {} tabs ({}): use an id",
+                    tabs.len(),
+                    each.join(", ")
+                ));
             }
+        };
+        // Only fux's own -t: never a word after `--`, nor, in send-keys, a
+        // word among the keys, which are typed as they are.
+        let keys = argv.first().is_some_and(|c| c == "send-keys");
+        let mut out = argv.to_vec();
+        // What the word before asked of this one: to be -t's value (true),
+        // or another flag's (false).
+        let mut value: Option<bool> = None;
+        for word in out.iter_mut().skip(1) {
+            if word == "--" {
+                break;
+            }
+            match value.take() {
+                Some(true) => {
+                    if *word == name {
+                        word.clone_from(&id);
+                    }
+                    continue;
+                }
+                Some(false) => continue,
+                None => {}
+            }
+            if keys && !word.starts_with('-') {
+                break;
+            }
+            value = match word.as_str() {
+                "-t" => Some(true),
+                "-c" | "-N" if keys => Some(false),
+                _ => None,
+            };
         }
         // Another -t may name another tab.
         if out == argv {
-            return out;
+            return Ok(out);
         }
         self.named(&out)
     }
@@ -1806,6 +1967,9 @@ impl Session {
                 json,
             } => {
                 let ws = self.ws_target(target.as_ref(), here)?;
+                if let Some(name) = name {
+                    self.check_tab_name(name, None)?;
+                }
                 let cwd = self.cwd_for(here, None);
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
                 let start = (Start::Shell(cmd, &[]), cwd.as_path());
@@ -1849,18 +2013,7 @@ impl Session {
                 let place = (fit, self.start_size(fit, Here::Cli(None, None, None)));
                 // A name given is one `-t NAME` finds: it must be the only one.
                 if let Some(name) = name {
-                    let taken: Vec<TabId> = (self.workspaces.iter())
-                        .flat_map(Workspace::tabs)
-                        .filter(|t| t.name == *name)
-                        .map(|t| t.id)
-                        .collect();
-                    if !taken.is_empty() {
-                        let ids = [
-                            taken.iter().map(ToString::to_string).collect(),
-                            self.panes_of_tabs(&taken),
-                        ];
-                        return Err(Error::TabNameTaken(name.clone(), ids.concat().join(" ")));
-                    }
+                    self.check_tab_name(name, None)?;
                 }
                 let name = name.clone().or_else(|| argv.first().map(|p| basename(p)));
                 let start = (Start::Program(argv, env), cwd.as_path());
@@ -1932,6 +2085,13 @@ impl Session {
             Command::Resize { what, size } => {
                 match what {
                     Resized::Tabs(target) => {
+                        // A size no pane could have, with the history kept,
+                        // is refused, not left unmet.
+                        if let Some(size) = size
+                            && !fux_vt::fits(*size, self.config.history_lines)
+                        {
+                            return Err(Error::TooBig(*size, self.config.history_lines));
+                        }
                         let fit = size.map_or(Fit::Clients, Fit::Fixed);
                         let target = self.any_target(&Subject::from(target.clone()), here)?;
                         let tabs: Vec<TabId> = match target {
@@ -1968,6 +2128,15 @@ impl Session {
                 ..
             } => {
                 let p = self.live_pane_mut(target, here)?;
+                let size = p.size();
+                if row >= size.rows() || col >= size.cols() {
+                    let (rows, cols) = (size.rows(), size.cols());
+                    return Err(Error::OutsidePane {
+                        pane: p.id,
+                        rows,
+                        cols,
+                    });
+                }
                 let mut report = Vec::new();
                 let event = |action, button| fux_vt::keys::mouse::MouseEvent {
                     action,
@@ -1977,20 +2146,36 @@ impl Session {
                     col,
                 };
                 use fux_vt::keys::mouse::MouseAction::{Motion, Press, Release};
-                let events = match mouse {
-                    Mouse::Click(button) => {
-                        vec![event(Press, Some(button)), event(Release, Some(button))]
-                    }
-                    Mouse::Press(button) | Mouse::Wheel(button) => vec![event(Press, Some(button))],
-                    Mouse::Release(button) => vec![event(Release, Some(button))],
-                    Mouse::Move => vec![event(Motion, None)],
+                // A click is a press and, where the program takes them (not
+                // in X10 mode), a release; a move while a button is held is
+                // a drag.
+                let (events, held) = match mouse {
+                    Mouse::Click(button) => (
+                        vec![event(Press, Some(button)), event(Release, Some(button))],
+                        None,
+                    ),
+                    Mouse::Press(button) => (vec![event(Press, Some(button))], Some(button)),
+                    Mouse::Wheel(button) => (vec![event(Press, Some(button))], p.mouse_held),
+                    Mouse::Release(button) => (vec![event(Release, Some(button))], None),
+                    Mouse::Move => (vec![event(Motion, p.mouse_held)], p.mouse_held),
                 };
+                let x10 = p.screen().mouse_protocol_mode() == fux_vt::MouseProtocolMode::Press;
                 for event in events {
-                    if !p.screen().encode_mouse(event, &mut report) {
-                        return Err(Error::NoMouse(p.id));
+                    let release = event.action == Release;
+                    if !p.screen().encode_mouse(event, &mut report) && !(release && x10) {
+                        return Err(match (event.action, p.screen().mouse_protocol_mode()) {
+                            (_, fux_vt::MouseProtocolMode::None) => Error::NoMouse(p.id),
+                            (Motion, _) => Error::NoMotion(p.id),
+                            _ => Error::MouseUnencodable {
+                                pane: p.id,
+                                row,
+                                col,
+                            },
+                        });
                     }
                 }
                 p.input.push(&report)?;
+                p.mouse_held = held;
                 Ok(String::new())
             }
             &Command::Split {
@@ -2381,6 +2566,7 @@ impl Session {
                 self.panes.get_mut(&p).ok_or(Error::NoPane(p))?.name = name;
             }
             AnyRef::Tab(t) => {
+                self.check_tab_name(&name, Some(t))?;
                 let tab = tabs_mut(&mut self.workspaces).find(|tab| tab.id == t);
                 tab.ok_or(Error::NoTab(t))?.name = name;
             }
@@ -3338,22 +3524,22 @@ mod tests {
             (
                 "new-workspace -n @logs",
                 1,
-                r#""@logs" cannot name a workspace: a target would read it as a pane, tab or workspace number"#,
+                r#""@logs" cannot be a name: a target would read it as a pane, tab or workspace number"#,
             ),
             (
                 "rename -t +1 +2",
                 1,
-                r#""+2" cannot name a workspace: a target would read it as a pane, tab or workspace number"#,
+                r#""+2" cannot be a name: a target would read it as a pane, tab or workspace number"#,
             ),
             (
                 "rename -t +1 %x",
                 1,
-                r#""%x" cannot name a workspace: a target would read it as a pane, tab or workspace number"#,
+                r#""%x" cannot be a name: a target would read it as a pane, tab or workspace number"#,
             ),
             (
                 "rename -t +1 -- -x",
                 1,
-                r#""-x" cannot name a workspace: a target would read it as a pane, tab or workspace number"#,
+                r#""-x" cannot be a name: a target would read it as a pane, tab or workspace number"#,
             ),
             ("reload", 1, "no config file to reload"),
             ("rename -t %1 ''", 1, "a name cannot be empty"),

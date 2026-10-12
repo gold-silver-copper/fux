@@ -86,9 +86,19 @@ fn rows_of(
         let Some((start, end)) = screen.commands().last_output else {
             return Vec::new();
         };
-        let (Some(first), Some(last)) = (screen.row_index(start.row), screen.row_index(end.row))
-        else {
+        let Some(last) = screen.row_index(end.row) else {
             return Vec::new();
+        };
+        // A start gone (history's limit cut it, or the screen was cleared or
+        // switched) or below the end: from what is kept above the end, the
+        // screen's top if the start was cleared.
+        let (first, start) = match screen.row_index(start.row) {
+            Some(first) if first <= last && (first, start.col) <= (last, end.col) => (first, start),
+            Some(_) => (
+                screen.history_len().min(last),
+                fux_vt::CommandMark { col: 0, ..start },
+            ),
+            None => (0, fux_vt::CommandMark { col: 0, ..start }),
         };
         let rows: Vec<fux_vt::Row<'_>> = screen
             .rows()
@@ -211,7 +221,10 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
             "revision",
             count(usize::try_from(pane.revision).unwrap_or(usize::MAX)),
         ),
-        ("command_running", Json::Bool(commands.running)),
+        (
+            "command_running",
+            Json::Bool(commands.running && pane.process.exit_status().is_none()),
+        ),
         (
             "last_status",
             commands

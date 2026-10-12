@@ -291,12 +291,19 @@ impl std::str::FromStr for KeyPress {
             if tail.is_empty() {
                 break;
             }
-            match prefix {
-                "C-" | "c-" => mods.ctrl = true,
-                "M-" | "m-" => mods.alt = true,
-                "S-" | "s-" => mods.shift = true,
+            let held = match prefix {
+                "C-" | "c-" => &mut mods.ctrl,
+                "M-" | "m-" => &mut mods.alt,
+                "S-" | "s-" => &mut mods.shift,
                 _ => break,
+            };
+            // A modifier given twice (`M-M-x`) names no key.
+            if *held {
+                return Err(Error {
+                    name: name.to_owned(),
+                });
             }
+            *held = true;
             rest = tail;
         }
         let key = if rest == "BTab" {

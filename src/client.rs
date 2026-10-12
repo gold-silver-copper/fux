@@ -403,12 +403,19 @@ pub fn headless(
     send(&mut stream, &attach)?;
     let mut stdout = std::io::stdout();
     let mut buffer = vec![0u8; 64 * 1024];
+    // The server tells the client its id once attached: an end before it
+    // is a refusal (no such workspace), an error, not a detach.
+    let mut attached = false;
     let reason = loop {
         while let Some(frame) = decoder.frame()? {
             match frame {
                 ServerFrame::Paint(bytes) => log.write_all(bytes).map_err(Error::Log)?,
                 ServerFrame::Stdout(bytes) => {
+                    attached = true;
                     let _ = stdout.write_all(bytes).and_then(|()| stdout.flush());
+                }
+                ServerFrame::Exit(reason) if !attached => {
+                    return Err(Error::Refused(reason.to_owned()));
                 }
                 ServerFrame::Exit(reason) => return say(reason),
                 ServerFrame::Hello(_)

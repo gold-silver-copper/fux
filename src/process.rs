@@ -139,11 +139,19 @@ impl Leader {
         }
     }
 
-    /// Ends its group and reaps it, without waiting, so uninterrupted:
+    /// Ends its group and the rest of its session and reaps it, without
+    /// waiting, so uninterrupted:
     /// itself back if it has not exited yet, to try again once it has.
     /// Called after `hang_up` and a grace period, with the master closed.
     pub fn finish(self) -> Result<(), Leader> {
         let _ = fuxix::process::kill_group(self.0, Signal::Kill);
+        // As the hangup: every process left in its session, a job in a
+        // group of its own that ignored the hangup (`nohup cmd &`) too.
+        for pid in fuxix::process::processes() {
+            if pid != self.0 && fuxix::process::session(pid) == Some(self.0) {
+                let _ = fuxix::process::kill(pid, Signal::Kill);
+            }
+        }
         match fuxix::process::reap(self.0) {
             Ok(None) => Err(self),
             Ok(Some(_)) | Err(_) => Ok(()),

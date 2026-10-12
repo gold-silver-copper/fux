@@ -49,8 +49,8 @@ impl std::fmt::Display for Error {
             } => write!(
                 f,
                 "a {}x{} terminal with {history} lines of history: {source}",
-                size.rows(),
-                size.cols()
+                size.cols(),
+                size.rows()
             ),
         }
     }
@@ -111,6 +111,11 @@ impl InputQueue {
         });
         self.refusing |= !fits;
         fits.then_some(()).ok_or(Error::NotReading)
+    }
+    /// How many bytes it holds, not yet written to the program.
+    pub fn len(&self) -> usize {
+        let held = self.held.as_ref().map_or(0, |typed| typed.line.len());
+        self.bytes.len().saturating_add(held)
     }
     /// How many bytes more it takes now.
     pub fn room(&self) -> usize {
@@ -486,6 +491,9 @@ pub struct Pane {
     /// How many times what the screen shows has changed: a wait for a change
     /// past one read earlier waits for it to grow.
     pub revision: u64,
+    /// The mouse button `send-mouse press` holds down until its release: a
+    /// `move` meanwhile is a drag.
+    pub mouse_held: Option<fux_vt::keys::mouse::MouseButton>,
     /// How many times its program was started again (`respawn`), each on a
     /// screen of its own: a wait on the program before ends with it.
     pub starts: u64,
@@ -590,6 +598,7 @@ impl Pane {
             changed_at: Instant::now(),
             revision: 0,
             starts: 0,
+            mouse_held: None,
             alerts: Alerts::default(),
             log: None,
         })
@@ -827,6 +836,12 @@ impl Pane {
             self.changed_at = now;
             self.revision = self.revision.wrapping_add(1);
         }
+    }
+
+    /// How many bytes of input sent the program has not read yet.
+    pub fn input_queued(&self) -> usize {
+        let paced: usize = self.paced.waiting.iter().map(Vec::len).sum();
+        paced.saturating_add(self.input.len())
     }
 
     /// Whether every piece of input sent has been written to the program.

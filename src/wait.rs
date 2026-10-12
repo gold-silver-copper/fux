@@ -272,7 +272,10 @@ impl Wait {
                 // Its last words, which an agent would otherwise ask for next:
                 // a crash says why.
                 let last = pane.map(|p| tail(p, 3)).unwrap_or_default();
-                let mut message = format!("{id}: {} before {what}", crate::process::told(ended));
+                let mut message = format!(
+                    "{id}: its program {} while waiting for {what}",
+                    crate::process::told(ended)
+                );
                 for line in &last {
                     message.push_str(&format!("\n  {line}"));
                 }
@@ -291,7 +294,7 @@ impl Wait {
             Told::Replaced => (
                 String::new(),
                 Some(format!(
-                    "{id}: its program was started again (respawn) before {}",
+                    "{id}: its program was started again (respawn) while waiting for {}",
                     self.describe()
                 )),
                 vec![("met", Json::str("respawned"))],
@@ -308,12 +311,18 @@ impl Wait {
                 );
                 if let Some(idle) = idle {
                     message.push_str(&format!(
-                        "; still running, no change for {}s",
+                        "; its program runs, the screen unchanged for {}s",
                         idle.as_secs()
                     ));
                 }
                 if let Some(line) = &last {
                     message.push_str(&format!("; last line: `{line}`"));
+                }
+                let queued = pane.map_or(0, Pane::input_queued);
+                if queued > 0 {
+                    message.push_str(&format!(
+                        "; {queued} bytes of input not yet read by the program"
+                    ));
                 }
                 if let Some(hint) = hint {
                     message.push_str(&format!("\n  {hint}"));
@@ -391,12 +400,12 @@ impl Until {
     /// The condition as an error says what did not come.
     fn describe(&self) -> String {
         match self {
-            Until::Text(text) => format!("showing {text:?}"),
-            Until::Gone(text) => format!("{text:?} went"),
-            Until::Idle(idle) => format!("settling for {}ms", idle.as_millis()),
+            Until::Text(text) => format!("{text:?} to show"),
+            Until::Gone(text) => format!("{text:?} to go"),
+            Until::Idle(idle) => format!("the screen to settle for {}ms", idle.as_millis()),
             Until::Change(_) => "a change".into(),
-            Until::Exit => "exiting".into(),
-            Until::Done => "a command ended".into(),
+            Until::Exit => "the program to exit".into(),
+            Until::Done => "a command to end".into(),
             Until::Bell => "a bell".into(),
         }
     }
