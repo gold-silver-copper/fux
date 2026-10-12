@@ -409,8 +409,8 @@ impl std::fmt::Display for Error {
                 now,
             } => write!(
                 f,
-                "{pane}: the screen changed since revision {revision} (it is at {now}); \
-                 nothing was sent: read it again"
+                "{pane}: the screen is at revision {now}, not {revision}; nothing was sent: \
+                 read it again"
             ),
             Error::OwnServer(Some(pane)) => write!(
                 f,
@@ -785,16 +785,26 @@ fn shows_nothing_new(command: &Command) -> bool {
 
 /// A log file, made anew: what a program writes may be secret, so it is
 /// the user's alone.
+/// A link is not followed, and a file there already is emptied and made
+/// the user's alone too.
 fn open_log(path: &Path) -> Result<std::fs::File, Error> {
-    std::os::unix::fs::OpenOptionsExt::mode(
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true),
-        0o600,
-    )
-    .open(path)
-    .map_err(|e| Error::Log(path.to_owned(), e))
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let failed = |e| Error::Log(path.to_owned(), e);
+    if path.is_symlink() {
+        let link = std::io::Error::other("a symbolic link, which a log does not follow");
+        return Err(failed(link));
+    }
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .custom_flags(fuxix::file::NOFOLLOW)
+        .open(path)
+        .map_err(failed)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(failed)?;
+    Ok(file)
 }
 
 /// What a command from a granted socket may reach: the granted workspace,
@@ -2626,8 +2636,13 @@ impl Session {
             Err(error) => {
                 let error = stray(error, origin);
                 self.last_error = Some(error.code());
-                let changed = matches!(error, Error::Changed { .. });
-                let status = if changed { crate::wait::CHANGED } else { 1 };
+                let status = if matches!(error, Error::Changed { .. }) {
+                    crate::wait::CHANGED
+                } else if matches!(error, Error::Usage(_)) {
+                    2
+                } else {
+                    1
+                };
                 Outcome {
                     status,
                     stdout: String::new(),

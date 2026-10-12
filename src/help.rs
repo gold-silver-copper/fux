@@ -187,8 +187,9 @@ Prints `+N @N %N`. Names are unique and do not start with +, %, @ or -.
         }
         "log" => {
             "\
-Keeps what the pane's program writes from now on in FILE (made anew, yours
-alone), as run --log does from the start; --stop ends it.
+Keeps what the pane's program writes from now on in FILE, as run --log does
+from the start; --stop ends it. A file there is emptied and made yours
+alone; a link is not followed. Logging again switches to the new file.
 
   fux log -t %3 build.log"
         }
@@ -206,8 +207,12 @@ and workspaces created, closed, moved and renamed; a program's exit (with its
 status), respawn, title, size, bells and notifications; a shell command's end
 (done, with its status). -t a pane, tab or workspace for only what happens
 there; again for more. The first line, `ready`, says nothing is missed from
-then on; `stopped` ends it as the server stops; a reader too slow to keep up
-is told `lost`, and it ends (status 1).
+then on; `stopped` ends it as the server stops; `gone` once all it watched
+has closed (status 4); a reader too slow to keep up is told `lost`, and it
+ends (status 1). It looks as the server does, after each round of output and
+commands: several bells, notifications or command ends in one round come as
+one line with `count` (a notification's text, a done's status: the last),
+and within a round lines come by kind, not by time.
   --json   one object a line: {\"event\":\"exited\",\"pane\":\"%3\",\"tab\":…,\"status\":1}
 
   fux events --json -t agent | while read -r line; do …; done"
@@ -278,7 +283,8 @@ Workspaces (+N), their tabs (@N) and panes (%N) with their sizes, the
 attached clients (cN) and grants. --json adds what each pane's program is
 doing. -t one pane, tab or workspace only; --get FIELD one field of its JSON,
 a string as it is (a tab of one pane, as run makes, gives its pane's fields
-too): status 1 if it is not there, which answers whether it is.
+too, but `id` and `name` are the tab's): status 1 if it is not there, which
+answers whether it is.
 
   fux ls -t build --get exited"
         }

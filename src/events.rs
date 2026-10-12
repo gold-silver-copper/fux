@@ -189,11 +189,17 @@ pub fn between(old: &Snapshot, new: &Snapshot) -> Vec<Event> {
         if now.starts != was.starts {
             events.push(at("respawned"));
         }
+        // Several of a kind in one look come as one line, with how many.
+        let counted = |event: Event, count: u64| match count {
+            0 | 1 => event,
+            n => event.with("count", Json::Number(i64::try_from(n).unwrap_or(i64::MAX))),
+        };
         if now.finished > was.finished {
             let status = now
                 .last_status
                 .map_or(Json::Null, |s| Json::Number(i64::from(s)));
-            events.push(at("done").with("status", status));
+            let done = at("done").with("status", status);
+            events.push(counted(done, now.finished.saturating_sub(was.finished)));
         }
         if let (Some(ended), true) = (now.ended, now.ended != was.ended) {
             let event = match ended {
@@ -205,11 +211,15 @@ pub fn between(old: &Snapshot, new: &Snapshot) -> Vec<Event> {
             events.push(event);
         }
         if now.bells > was.bells {
-            events.push(at("bell"));
+            events.push(counted(at("bell"), now.bells.saturating_sub(was.bells)));
         }
         if now.notifications > was.notifications {
             let text = now.last_notification.clone().unwrap_or_default();
-            events.push(at("notification").with("text", Json::str(text)));
+            let notification = at("notification").with("text", Json::str(text));
+            events.push(counted(
+                notification,
+                now.notifications.saturating_sub(was.notifications),
+            ));
         }
         if now.title != was.title {
             events.push(at("title").with("title", Json::str(now.title.clone())));
@@ -260,16 +270,27 @@ impl Subscription {
     }
 
     /// What it is told of what changed since it last looked, now that the
-    /// session is `now`.
-    pub fn told(&mut self, now: &Snapshot) -> String {
+    /// session is `now`; and whether it is over, everything it watched
+    /// gone (then its last line says so).
+    pub fn told(&mut self, now: &Snapshot) -> (String, bool) {
         if *now == self.seen {
-            return String::new();
+            return (String::new(), false);
         }
         let events = between(&self.seen, now);
         self.seen = now.clone();
-        (events.iter())
+        let mut lines: String = (events.iter())
             .filter(|e| self.wants(e))
             .map(|e| e.line(self.json))
-            .collect()
+            .collect();
+        let there = |target: &AnyRef<WsId>| match *target {
+            AnyRef::Pane(p) => now.panes.contains_key(&p),
+            AnyRef::Tab(t) => now.tabs.contains_key(&t),
+            AnyRef::Workspace(w) => now.workspaces.contains_key(&w),
+        };
+        let over = !self.targets.is_empty() && !self.targets.iter().any(there);
+        if over {
+            lines.push_str(&Event::stream("gone", Vec::new()).line(self.json));
+        }
+        (lines, over)
     }
 }

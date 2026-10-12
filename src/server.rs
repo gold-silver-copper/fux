@@ -1013,7 +1013,13 @@ impl Server {
             let Stage::Events(subscription) = &mut conn.stage else {
                 continue;
             };
-            let lines = subscription.told(&now);
+            let (lines, over) = subscription.told(&now);
+            if over {
+                ServerFrame::split_into(lines.as_bytes(), ServerFrame::Stdout, &mut conn.out);
+                let status = crate::wait::GONE;
+                conn.end(&mut self.session, &ServerFrame::Done { status });
+                continue;
+            }
             if lines.is_empty() {
                 continue;
             }

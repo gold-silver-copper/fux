@@ -98,16 +98,18 @@ for send-keys to several panes.
 ## `events --json`
 
 One object a line: `{"event":NAME,"pane":"%3","tab":"@2","workspace":"+2",…}`,
-`pane` and `tab` only where they apply.
+`pane` and `tab` only where they apply. `bell`, `notification` and `done`
+that came several times in one round of the server's carry `count`.
 
 | `event` | Also |
 | --- | --- |
 | `ready` | first: nothing is missed from here on |
+| `gone` | last: everything `-t` named has closed (status 4) |
 | `created`, `renamed` | `name`, for a tab or workspace |
 | `closed`, `moved`, `respawned`, `bell` | |
 | `exited` | `status` or `signal` |
 | `done` | `status`: a shell command's |
-| `notification` | `text` |
+| `notification` | `text` (the last of a round) |
 | `title` | `title` |
 | `resized` | `cols`, `rows` |
 | `lost` | last: the reader fell behind (status 1) |

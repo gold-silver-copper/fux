@@ -995,6 +995,9 @@ const OTHER: &[Spec] = &[
         Ok(Command::Events { targets, json: a.has("--json") })
     })),
     spec("ls|list [-t TARGET] [--get FIELD] [--json]  workspaces, tabs, panes and clients; -t one, --get a field of it", Flags(|a| {
+        if a.values("-t").count() > 1 || a.values("--get").count() > 1 {
+            return Err(Usage::Needs("ls takes one -t and one --get"));
+        }
         let (target, get) = (a.target(parse_any)?, a.value("--get").map(str::to_owned));
         if get.is_some() && target.is_none() {
             return Err(Usage::Needs("ls --get FIELD reads a field of one target: ls -t TARGET --get FIELD"));
