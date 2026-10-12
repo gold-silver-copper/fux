@@ -1607,10 +1607,24 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
                     parse_millis(text).ok_or_else(|| bad("--wait-idle", text, "milliseconds"))?;
                 until.push(Until::Idle(ms));
             }
-            "--wait-change" => until.push(Until::Change(None)),
-            "--wait-exit" => until.push(Until::Exit),
-            "--wait-done" => until.push(Until::Done),
-            "--wait-bell" => until.push(Until::Bell),
+            flag @ ("--wait-change" | "--wait-exit" | "--wait-done" | "--wait-bell") => {
+                until.push(match flag {
+                    "--wait-change" => Until::Change(None),
+                    "--wait-exit" => Until::Exit,
+                    "--wait-done" => Until::Done,
+                    _ => Until::Bell,
+                });
+                // A number after one is a value it does not take, not a key
+                // to type (`--wait-exit 5`): --timeout gives the seconds.
+                if let Some(next) = words.peek().filter(|w| w.parse::<f64>().is_ok()) {
+                    return Err(Usage::Bad {
+                        command: "send-keys",
+                        flag: "--wait-…",
+                        value: (*next).clone(),
+                        expected: "a key here: these conditions take no value; --timeout SECS gives the time",
+                    });
+                }
+            }
             "--timeout" => {
                 let text = value(word, &mut words)?;
                 timeout =
@@ -1619,6 +1633,14 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
             "--print" => print = true,
             "--marks" => marks = true,
             "--json" => json = true,
+            // A flag that goes before the keys, given after them, would be
+            // typed: refused, so `BSpace -N 10` does not send "-N10" (with
+            // -l, every word is text).
+            "-t" | "-c" | "-l" | "-N" if !literal => {
+                return Err(Usage::Needs(
+                    "send-keys -t, -c, -l and -N go before the keys; after them, a word is typed",
+                ));
+            }
             text => inputs.push(match text.parse::<KeyPress>() {
                 Ok(key) if !literal => Input::Key(key),
                 _ if !literal && looks_like_a_key(text) => {

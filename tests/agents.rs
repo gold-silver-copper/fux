@@ -813,6 +813,10 @@ fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
         done.ends_with("ready\n") || done.contains("\nready"),
         "{done}"
     );
+    let late = server.fux(&["send-keys", "-t", &menu_pane, "BSpace", "-N", "10"])?;
+    assert!(late.stderr.contains("before the keys"), "{}", late.stderr);
+    let valued = server.fux(&["send-keys", "-t", &menu_pane, "q", "--wait-exit", "5"])?;
+    assert!(valued.stderr.contains("--timeout"), "{}", valued.stderr);
     let hint = server.fux(&["wait", "-t", &menu_pane, "--wait-gone", "x"])?;
     assert!(hint.stderr.contains("--gone"), "{}", hint.stderr);
     let after = server.fux(&["run", "--", "cat", "--wait-text", "x"])?;

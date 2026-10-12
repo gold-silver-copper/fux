@@ -43,7 +43,7 @@ fux kill-workspace -t agent                     # everything run started
 - **Keys:** tmux's names (`Enter`, `Escape`, `C-c`, `Up`, `F5`, `S-Tab`,
   `BSpace`; `fux list-keys`); other words, and `--text TEXT`, are typed; a
   misspelled name (`Entr`) is refused; `-l` types every word. `--paste TEXT`
-  pastes; `-N 5` repeats.
+  pastes; `-N 5` repeats. Flags (`-t`, `-N`) go before the keys.
 - **Mouse:** `send-mouse -t NAME click|wheel-up|wheel-down… ROW COL`, from 0.
 - **Sizes:** `resize -t NAME 40x12` (its tab); `resize-pane -t %N -x 50%`;
   `split -h|-v -t %N [--cwd DIR] -- PROG` (one word is typed as a line).
