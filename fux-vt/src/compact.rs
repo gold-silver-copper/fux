@@ -343,6 +343,10 @@ impl Text {
     pub(crate) fn long_len(&self) -> usize {
         self.long.len()
     }
+    /// The bytes it holds on the heap, as allocated.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.long.capacity().saturating_add(self.short.capacity())
+    }
     /// Whether the row keeps no text at all.
     pub(crate) fn is_empty(&self) -> bool {
         self.long.len() == 0 && self.short.is_empty()

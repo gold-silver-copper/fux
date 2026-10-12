@@ -629,6 +629,15 @@ impl Cells {
     pub fn text_len(&self) -> usize {
         self.text.long_len()
     }
+    /// The bytes these cells hold on the heap, as allocated: each cell's
+    /// storage and the text kept apart from them. For a host that bounds
+    /// the memory it keeps by bytes.
+    pub fn heap_bytes(&self) -> usize {
+        self.cells
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Stored>())
+            .saturating_add(self.text.heap_bytes())
+    }
     /// `len` blank cells.
     pub fn new(len: usize) -> Self {
         Self {

@@ -91,6 +91,24 @@ fn owned_cells_copy_text_from_wherever_it_is_and_compare_by_it() {
     assert_eq!(b.range(2..9).len(), 2);
 }
 
+/// `heap_bytes` counts each cell's storage and the text kept apart, long
+/// clusters and short ones: so a host bounding what it keeps by bytes sees
+/// a row of emoji cost more than a row of letters of the same width.
+#[test]
+fn heap_bytes_count_the_cells_and_the_text_kept_apart() {
+    let blank = Cells::new(8);
+    assert!(blank.heap_bytes() >= 8 * std::mem::size_of::<Stored>());
+    let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
+    let accented = "e\u{301}\u{301}";
+    let (mut long, mut short) = (Cells::new(8), Cells::new(8));
+    for i in [0, 2, 4, 6] {
+        long.set(i, CellRef::new(family, true, Attributes::default()));
+        short.set(i, CellRef::new(accented, false, Attributes::default()));
+    }
+    assert!(long.heap_bytes() >= blank.heap_bytes() + 4 * family.len());
+    assert!(short.heap_bytes() >= blank.heap_bytes() + 4 * accented.len());
+}
+
 /// `range_eq` is `range(..).eq(range(..))`, faster: on two rows of cells
 /// edited at random, every way cells are written (text short and long,
 /// wide halves, attributes, fills, whole cells, copies from the other
