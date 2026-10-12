@@ -17,9 +17,10 @@ fux kill-workspace -t agent                     # everything run started
 ```
 
 - **Name it, then use the name.** `run -n NAME` names the program's tab, and
-  `-t NAME` finds it in every command, so ids need not be kept. `run` starts
-  the program itself (not a shell), in the directory you are in, in
-  workspace `agent`, which no client is moved to.
+  `-t NAME` finds it in every command, so ids need not be kept; a name
+  already in use is refused. `run` starts the program itself (not a shell),
+  in the directory you are in, in workspace `agent`, which no client is
+  moved to.
 - **Every action can wait,** armed before it acts so nothing comes too soon
   to be seen: `run`, `respawn`, `send-keys`, `send-mouse` and `signal` take
   the same flags as `wait`:
@@ -32,8 +33,9 @@ fux kill-workspace -t agent                     # everything run started
   - `--wait-done`: until a shell command ends; prints `done STATUS`. Shells
     fux starts (bash, zsh, fish) mark their commands with no setup.
   - `--wait-exit`: until the program exits; prints `exited STATUS`.
-  - `--wait-gone TEXT`, `--wait-change`, `--wait-bell` (a bell or desktop
-    notification: a program that needs you).
+  - `--wait-change`: until anything changes; on `run`, its first output.
+  - `--wait-gone TEXT`, `--wait-bell` (a bell or desktop notification: a
+    program that needs you).
   - `--timeout SECS` (60), `--print` (the screen after), `--json`.
 - **A wait never waits out a crash:** if the program exits first, the wait
   ends with status 3 and prints its last lines. A timeout is status 124 and

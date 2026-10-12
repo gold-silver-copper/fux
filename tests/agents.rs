@@ -714,5 +714,21 @@ fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
     let new = id(&server.ok(&split)?);
     let screen = server.ok(&["wait", "-t", &new, "--text", "split-2", "--print"])?;
     assert!(screen.contains(&sub_arg), "{screen}");
+    // A name `-t` finds is one tab's only: a second is refused, saying why.
+    let again = server.fux(&["run", "-n", "menu", "--", "cat"])?;
+    assert_eq!(again.status, 1);
+    assert!(
+        again.stderr.contains("already") && again.stderr.contains(&menu_pane),
+        "{}",
+        again.stderr
+    );
+    // A line printed just before a program takes the full screen is seen,
+    // and a full-screen program's last screen is what --print prints.
+    let behind = r"echo 'error: disk full'; printf '\033[?1049hFULL SCREEN'; exec cat";
+    let seen = server.ok(&["run", "--wait-text", "disk full", "--", "sh", "-c", behind])?;
+    assert!(seen.ends_with("\nerror: disk full\n"), "{seen}");
+    let quits = r"printf '\033[?1049hpicked beta'; printf '\033[?1049l'";
+    let printed = server.ok(&["run", "--wait-exit", "--print", "--", "sh", "-c", quits])?;
+    assert!(printed.contains("exited 0\npicked beta"), "{printed}");
     Ok(())
 }

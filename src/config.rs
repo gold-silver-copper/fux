@@ -920,7 +920,7 @@ mod tests {
             ),
             (
                 "bind g kill-pane -t 3",
-                "bind g: \"3\" is not a pane; panes are %N",
+                "bind g: \"3\" is not a pane; panes are %N, or the name of a tab with one pane (`run -n NAME`)",
             ),
         ] {
             assert_eq!(apply(&mut c, line), Err(error.to_owned()), "{line}");

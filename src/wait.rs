@@ -45,6 +45,10 @@ struct Watch {
     /// in the history rows read: they do not change.
     read: Option<fux_vt::RowId>,
     in_history: Vec<(usize, Option<String>)>,
+    /// The wait began on the main screen: while a program holds the full
+    /// screen, what the main screen got since (from the anchor) counts
+    /// too, so a line printed just before it took the screen is seen.
+    on_main: bool,
     /// How many times each text was there as the wait began, for a wait
     /// that counts only what comes after.
     before: Vec<usize>,
@@ -85,6 +89,7 @@ impl Waiting {
                     anchor,
                     read: None,
                     in_history: vec![(0, None); texts.len()],
+                    on_main: !screen.mode(fux_vt::Mode::AlternateScreen),
                     before,
                     revision: pane.revision,
                     finished: screen.commands().finished,
@@ -436,13 +441,26 @@ impl Watch {
         if !texts.is_empty() {
             self.read_history(screen, texts, &wait.echo);
         }
+        // While a program holds the full screen, the main screen's lines
+        // from where the wait began: what was printed just before it.
+        let behind = if self.on_main && screen.mode(fux_vt::Mode::AlternateScreen) {
+            let from = self
+                .anchor
+                .and_then(|a| screen.main_row_index(a))
+                .unwrap_or(0);
+            joined(screen.main_rows().skip(from))
+        } else {
+            Vec::new()
+        };
         for until in &wait.until {
             let found = match until {
                 Until::Text(text) => {
                     let i = texts.iter().position(|t| t == text).unwrap_or(0);
                     let (scrolled, scrolled_line) =
                         self.in_history.get(i).cloned().unwrap_or_default();
-                    let seen = count(&lines, text, &wait.echo).saturating_add(scrolled);
+                    let seen = count(&lines, text, &wait.echo)
+                        .saturating_add(count(&behind, text, &wait.echo))
+                        .saturating_add(scrolled);
                     let base = if wait.after {
                         self.before.get(i).copied().unwrap_or(0)
                     } else {
@@ -450,9 +468,8 @@ impl Watch {
                     };
                     (seen > base).then(|| Found::Text {
                         text: text.clone(),
-                        line: lines
-                            .iter()
-                            .rev()
+                        line: (lines.iter().rev())
+                            .chain(behind.iter().rev())
                             .find(|l| found_in(l, text) > 0 && !echoes(l, text, &wait.echo))
                             .cloned()
                             .or(scrolled_line)
@@ -585,12 +602,20 @@ fn found_in(line: &str, text: &str) -> usize {
         .saturating_add(usize::from(at_end))
 }
 
-/// A pane's screen as a wait prints it: trimmed, soft-wrapped rows joined.
+/// A pane's screen as a wait prints it: trimmed, soft-wrapped rows joined;
+/// a full-screen program's last screen if it has left a blank one.
 fn text(pane: &Pane, marks: bool) -> String {
     let view = CaptureView {
         join: true,
         marks,
         ..CaptureView::default()
     };
-    crate::capture::pane(pane, None, view, false, false)
+    let shown = crate::capture::pane(pane, None, view, false, false);
+    // A full-screen program that has left its screen, or exited, leaves the
+    // shell's, often blank: its last screen is what it said.
+    if shown.trim().is_empty() {
+        let alt = CaptureView { alt: true, ..view };
+        return crate::capture::pane(pane, None, alt, false, false);
+    }
+    shown
 }

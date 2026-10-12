@@ -871,6 +871,11 @@ impl Screen {
             range: 0..grid.retained_len(),
         }
     }
+    /// Where the primary screen's retained row `id` is among
+    /// [`main_rows`](Self::main_rows), whichever screen is in use.
+    pub fn main_row_index(&self, id: crate::RowId) -> Option<usize> {
+        self.primary.index_of(id)
+    }
     /// Where the retained row `id` is, from the oldest, if it is kept.
     pub fn row_index(&self, id: crate::RowId) -> Option<usize> {
         self.grid().index_of(id)

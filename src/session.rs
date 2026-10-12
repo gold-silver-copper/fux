@@ -187,6 +187,9 @@ pub enum Error {
     ControlInName,
     LongName,
     NameTaken(String),
+    /// `run -n NAME` where a tab has the name: `-t NAME` would not know
+    /// which, so the program is not started. The tab and its panes.
+    TabNameTaken(String, String),
     /// A workspace name a target would read as a number, not a name.
     NameReadAsTarget(String),
     /// A counter of IDs, never reused, that would wrap.
@@ -260,6 +263,10 @@ impl std::fmt::Display for Error {
             Error::ControlInName => f.write_str("a name cannot contain control characters"),
             Error::LongName => f.write_str("a name is at most 256 bytes"),
             Error::NameTaken(name) => write!(f, "another workspace is named {name:?}"),
+            Error::TabNameTaken(name, ids) => write!(
+                f,
+                "a tab is named {name:?} already ({ids}); close it (`fux kill-tab -t {name}`) or choose another name"
+            ),
             Error::NameReadAsTarget(name) => write!(
                 f,
                 "{name:?} cannot name a workspace: a target would read it as a pane, tab or workspace number"
@@ -320,6 +327,7 @@ impl std::error::Error for Error {
             | Error::ControlInName
             | Error::LongName
             | Error::NameTaken(_)
+            | Error::TabNameTaken(..)
             | Error::NameReadAsTarget(_)
             | Error::IdsExhausted(_)
             | Error::LineTooLong => None,
@@ -1838,6 +1846,21 @@ impl Session {
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
                 // Its place is out of every client's way: no client follows.
                 let place = (fit, self.start_size(fit, Here::Cli(None, None, None)));
+                // A name given is one `-t NAME` finds: it must be the only one.
+                if let Some(name) = name {
+                    let taken: Vec<TabId> = (self.workspaces.iter())
+                        .flat_map(Workspace::tabs)
+                        .filter(|t| t.name == *name)
+                        .map(|t| t.id)
+                        .collect();
+                    if !taken.is_empty() {
+                        let ids = [
+                            taken.iter().map(ToString::to_string).collect(),
+                            self.panes_of_tabs(&taken),
+                        ];
+                        return Err(Error::TabNameTaken(name.clone(), ids.concat().join(" ")));
+                    }
+                }
                 let name = name.clone().or_else(|| argv.first().map(|p| basename(p)));
                 let start = (Start::Program(argv, env), cwd.as_path());
                 let workspace = workspace

@@ -544,8 +544,9 @@ impl std::fmt::Display for Usage {
                 "{text:?} is not a {}; {}",
                 kind.name(),
                 match kind {
-                    Kind::Pane => "panes are %N",
-                    Kind::Tab => "tabs are @N",
+                    Kind::Pane =>
+                        "panes are %N, or the name of a tab with one pane (`run -n NAME`)",
+                    Kind::Tab => "tabs are @N, or a tab's name",
                     Kind::Workspace => "workspaces are +N or a name",
                 }
             ),
@@ -1158,7 +1159,7 @@ fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
     if argv.is_empty() {
         return Err(Usage::Needs("usage: run [flags] -- PROGRAM [ARGS...]"));
     }
-    let then = flag_wait(a, "run", false)?;
+    let then = flag_wait(a, false)?;
     Ok(Command::Run {
         workspace,
         name: a.name(),
@@ -1175,8 +1176,8 @@ fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
 /// The `--wait-…` flags of a command that starts a program (`run`,
 /// `respawn`: from its first output on) or acts on one (`send-mouse`, with
 /// `after`: only what comes after it counts).
-fn flag_wait(a: &Args<'_>, command: &'static str, after: bool) -> Result<Option<Box<Wait>>, Usage> {
-    let mut until = texts(a, "--wait-text", command)?;
+fn flag_wait(a: &Args<'_>, after: bool) -> Result<Option<Box<Wait>>, Usage> {
+    let mut until = texts(a, "--wait-text")?;
     until.extend(a.values("--wait-gone").map(|t| Until::Gone(t.to_owned())));
     until.extend(
         a.read_as("--wait-idle", parse_millis, "milliseconds")?
@@ -1211,18 +1212,17 @@ fn flag_wait(a: &Args<'_>, command: &'static str, after: bool) -> Result<Option<
     }))
 }
 
+/// Why an empty text is refused, and what to wait for instead.
+const EMPTY_TEXT: &str = "an empty text is on every screen; to wait for the first output, \
+     use --change (--wait-change), or --idle MS (--wait-idle MS) for it to settle";
+
 /// A text flag's values as conditions; an empty one, which every screen
 /// shows, is refused.
-fn texts(a: &Args<'_>, flag: &'static str, command: &'static str) -> Result<Vec<Until>, Usage> {
+fn texts(a: &Args<'_>, flag: &'static str) -> Result<Vec<Until>, Usage> {
     a.values(flag)
         .map(|t| {
             if t.is_empty() {
-                Err(Usage::Bad {
-                    command,
-                    flag,
-                    value: String::new(),
-                    expected: "text: an empty one is on every screen",
-                })
+                Err(Usage::Needs(EMPTY_TEXT))
             } else {
                 Ok(Until::Text(t.to_owned()))
             }
@@ -1251,7 +1251,7 @@ fn respawn(a: &mut Args<'_>) -> Result<Command, Usage> {
         kill: a.has("-k"),
         env: env_pairs(a, "respawn")?,
         argv: a.rest(),
-        then: flag_wait(a, "respawn", false)?,
+        then: flag_wait(a, false)?,
     })
 }
 
@@ -1311,7 +1311,7 @@ fn capture(a: &mut Args<'_>) -> Result<Command, Usage> {
 }
 
 fn wait(a: &mut Args<'_>) -> Result<Command, Usage> {
-    let mut until = texts(a, "--text", "wait")?;
+    let mut until = texts(a, "--text")?;
     until.extend(a.values("--gone").map(|t| Until::Gone(t.to_owned())));
     until.extend(
         a.read_as("--idle", parse_millis, "milliseconds")?
@@ -1390,7 +1390,7 @@ fn send_mouse(a: &mut Args<'_>) -> Result<Command, Usage> {
         mouse,
         row: cell("ROW", row)?,
         col: cell("COL", col)?,
-        then: flag_wait(a, "send-mouse", true)?,
+        then: flag_wait(a, true)?,
     })
 }
 
@@ -1410,7 +1410,7 @@ fn signal(a: &mut Args<'_>) -> Result<Command, Usage> {
     Ok(Command::Signal {
         target: a.pane()?,
         signal,
-        then: flag_wait(a, "signal", true)?,
+        then: flag_wait(a, true)?,
     })
 }
 
@@ -1586,11 +1586,7 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
             "--wait-text" => {
                 let text = value(word, &mut words)?;
                 if text.is_empty() {
-                    return Err(bad(
-                        "--wait-text",
-                        text,
-                        "text: an empty one is on every screen",
-                    ));
+                    return Err(Usage::Needs(EMPTY_TEXT));
                 }
                 until.push(Until::Text(text.to_owned()));
             }
@@ -2093,8 +2089,14 @@ mod tests {
                 "nope",
                 r#"unknown command "nope"; `fux help` lists commands"#,
             ),
-            ("kill-pane -t 3", r#""3" is not a pane; panes are %N"#),
-            ("kill-tab -t %1", r#""%1" is not a tab; tabs are @N"#),
+            (
+                "kill-pane -t 3",
+                r#""3" is not a pane; panes are %N, or the name of a tab with one pane (`run -n NAME`)"#,
+            ),
+            (
+                "kill-tab -t %1",
+                r#""%1" is not a tab; tabs are @N, or a tab's name"#,
+            ),
             (
                 "new-tab -t %1",
                 r#""%1" is not a workspace; workspaces are +N or a name"#,
@@ -2193,12 +2195,18 @@ mod tests {
             ("select-tab -L", "select-tab: unknown flag -L"),
             ("zoom pane", r#"zoom: unexpected argument "pane""#),
             // A target of the wrong form is refused as the kind it must be.
-            ("select-tab -t %x", r#""%x" is not a tab; tabs are @N"#),
+            (
+                "select-tab -t %x",
+                r#""%x" is not a tab; tabs are @N, or a tab's name"#,
+            ),
             (
                 "select-workspace -t @x",
                 r#""@x" is not a workspace; workspaces are +N or a name"#,
             ),
-            ("choose-pane -t @x", r#""@x" is not a pane; panes are %N"#),
+            (
+                "choose-pane -t @x",
+                r#""@x" is not a pane; panes are %N, or the name of a tab with one pane (`run -n NAME`)"#,
+            ),
         ] {
             let usage = cmd(line).err().map(|u| u.to_string());
             assert_eq!(usage.as_deref(), Some(message), "{line:?}");
