@@ -1,73 +1,58 @@
 # Driving programs with fux
 
-(This is `fux help agents`. The first screen is enough for most tasks;
-`fux help COMMAND` has every flag of a command.)
-
-Start a program, send it keys, wait, read its screen, clean up: each step is
-one `fux` command, and none touches the tabs a person uses. No `sleep`,
-polling loop or helper script is needed.
+(`fux help agents`. This first screen is enough for most tasks; `fux help
+COMMAND` has every flag.) Each step is one command, none touches a person's
+tabs, and no `sleep`, polling loop or helper script is needed.
 
 ```sh
 fux run -n app --size 100x30 --wait-text Ready -- ./app   # start; waits for Ready
 fux capture-pane -t app --marks                 # the screen; ⟦selection⟧ marked
 fux send-keys -t app j j Enter --wait-idle 300 --print    # keys, settle, read
-fux run -n sh --wait-idle 300 -- bash            # a shell: it marks its commands
+fux run -n sh --wait-idle 300 -- bash           # a shell: it marks its commands
 fux send-keys -t sh --text 'make test' Enter --wait-done  # a command, to its end
 fux wait -t app --exit                          # prints: exited 0
 fux kill-workspace -t agent                     # everything run started
 ```
 
-- **Name it, then use the name.** `run -n NAME` names the program's tab, and
-  `-t NAME` finds it in every command, so ids need not be kept; a name
-  already in use is refused. `run` starts the program itself (not a shell),
-  in the directory you are in, in workspace `agent`, which no client is
-  moved to. Its flags go before `--`; what follows is the program's.
-- **Every action can wait,** armed before it acts so nothing comes too soon
-  to be seen: `run`, `respawn`, `send-keys`, `send-mouse` and `signal` take
-  the same flags as `wait`:
-  - `--wait-text TEXT`: until TEXT appears; prints the line it is on. It is
-    found even in a line that scrolled away, and the echo of text you typed
-    does not count as output.
-  - `--wait-idle MS`: until the screen shows no change for MS (a spinner or
-    clock is change). After keys or a click, exit status 5 means it changed
-    nothing.
-  - `--wait-done`: until a shell command ends; prints `done STATUS`. Shells
-    fux starts (bash, zsh, fish) mark their commands with no setup.
-  - `--wait-exit`: until the program exits; prints `exited STATUS` and,
-    as `timeout(1)` does, exits with that status.
-  - `--wait-change`: until anything changes; on `run`, its first output.
-  - `--wait-gone TEXT`, `--wait-bell` (a bell or desktop notification: a
-    program that needs you).
+- **Start:** `run -n NAME [--size COLSxROWS] [--cwd DIR] [--env K=V] -- PROG…`
+  starts the program itself (not a shell), here, out of every client's way;
+  its flags go before `--`. `-t NAME` then finds it in every command (a name
+  in use is refused). The pane stays after the program exits.
+- **Wait:** `run`, `respawn`, `send-keys`, `send-mouse` and `signal` take
+  `--wait-…` flags, armed before they act so nothing is missed; `fux wait -t
+  NAME` takes the same without `wait-` (`--text`, `--gone`, `--idle`,
+  `--change`, `--exit`, `--done`, `--bell`):
+  - `--wait-text TEXT`: until TEXT shows (also in a line that scrolled away;
+    not the echo of what you typed); prints its line. `fux wait --text A
+    --text B -t x -t y`: any of several, in any of several panes.
+  - `--wait-idle MS`: no change for MS (a spinner is change); after keys or a
+    click, status 5 means it changed nothing. `--wait-change`: any change.
+  - `--wait-done`: a shell command ends; prints `done STATUS`.
+  - `--wait-exit`: the program exits; prints `exited STATUS`, exits with it.
+  - `--wait-gone TEXT`; `--wait-bell` (a bell or notification: it needs you).
   - `--timeout SECS` (60), `--print` (the screen after), `--json`.
-- **A wait never waits out a crash:** if the program exits first, the wait
-  ends with status 3 and prints its last lines. A timeout is status 124 and
-  says what the pane is doing: "still running, no change for 58s; last
-  line: `> `".
-- **Reading:** `capture-pane` prints the screen, trimmed.
-  - `--marks` shows reverse video, which is how menus draw the selection,
-    as `⟦beta⟧`. A menu may start on any item: read it before moving.
-  - `-S all` adds the history; `--last-output` is the last shell command's
-    output alone.
-  - `--alt` is the last full screen of a program that has left it or exited
-    (a menu's or editor's), and `--main` is what was printed before it took
-    the screen.
-- **Keys:** names as tmux has them (`Enter`, `Escape`, `C-c`, `Up`, `F5`,
-  `S-Tab`, `BSpace`; `fux list-keys`); other words, and `--text TEXT`, are
-  typed. A misspelled key name (`Entr`) is refused. `--paste TEXT` pastes.
-- **Mouse:** `send-mouse -t app click ROW COL` (from 0; also `right`,
-  `wheel-up`, `wheel-down`, `move`…). Add `--wait-text` or `--wait-idle` to
-  know whether it landed.
-- **Stopping:** `send-keys C-c`; for a program that ignores it,
-  `signal -t app TERM` or `KILL`. `kill-pane`, `kill-tab -t NAME` and
-  `kill-workspace` print what they closed. `respawn -t app` starts it again
-  in the same pane.
-- **State:** `capture-pane --json` (and `ls --json`) says `exited`,
-  `signal`, `command_running` and `last_status` (a shell's command), `idle_ms`, `revision`, `bells`,
-  `notification`, `cursor_visible`, `alt_screen`, `mouse`, `cwd`, `argv`…
-- **Exit status:** 0 done, 1 failed (why on stderr), 2 a usage error; a wait
-  also 3 (the program exited first), 4 (the pane closed), 5 (no change) and
-  124 (timed out). A wait met by the exit itself exits with the program's
-  status (128 plus the signal that killed it).
+  A crash ends a wait at once (status 3, its last lines printed); a timeout
+  (124) says what the pane is doing ("no change for 58s; last line: `> `").
+- **Read:** `capture-pane -t NAME` prints the screen, trimmed. `--marks` shows
+  reverse video, a menu's selection, as `⟦beta⟧` (a menu may start on any
+  item); `--styles` adds colours (with `--json`, as runs). `-S all` adds
+  history; `--last-output` is the last shell command's output; `--alt` is a
+  full-screen program's last screen after it exits; `--main` what was
+  printed before it took the screen. `--json` adds state: `exited`,
+  `signal`, `cursor_visible`, `alt_screen`, `last_status`, `bells`, …
+- **Keys:** tmux's names (`Enter`, `Escape`, `C-c`, `Up`, `F5`, `S-Tab`,
+  `BSpace`; `fux list-keys`); other words, and `--text TEXT`, are typed; a
+  misspelled name (`Entr`) is refused; `-l` types every word. `--paste TEXT`
+  pastes; `-N 5` repeats.
+- **Mouse:** `send-mouse -t NAME click|wheel-up|wheel-down… ROW COL`, from 0.
+- **Sizes:** `resize -t NAME 40x12` (its tab); `resize-pane -t %N -x 50%`;
+  `split -h|-v -t %N [--cwd DIR] -- PROG` (one word is typed as a line).
+- **Stop:** `send-keys C-c`; `signal -t NAME TERM|KILL` for one that ignores
+  it; `kill-pane`, `kill-tab -t NAME`, `kill-workspace -t agent` (each says
+  what it closed); `respawn -t NAME` starts it again in its pane.
+- `fux ls [--json]` lists workspaces, tabs and panes.
+- **Status:** 0 done, 1 failed (why on stderr), 2 usage; a wait also 3 (the
+  program exited first), 4 (pane closed), 5 (no change), 124 (timed out).
 
 ## Shells
 

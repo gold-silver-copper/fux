@@ -199,6 +199,7 @@ jobs:
       - name: Scripted tier, fux, every task once
         run: |
           set -euo pipefail
+          python3 -I agentbench/guide_check.py
           cargo build --release --locked
           python3 -I agentbench/run.py --tools fux --repeats 1 --workers 4 --skip-expensive \
             --strict --fux-bin "$GITHUB_WORKSPACE/target/release/fux" \
