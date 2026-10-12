@@ -118,6 +118,8 @@ struct Conn {
     /// The socket `fux grant` made that it came through, if one did: its
     /// commands reach that grant's workspace alone, while it lasts.
     grant: Option<PathBuf>,
+    /// A request that waits for a restore to end (`Server::request`).
+    held: Option<Box<(crate::command::Command, crate::protocol::Context)>>,
 }
 
 /// A socket `fux grant` made: its commands reach `workspace` alone, the
@@ -364,6 +366,7 @@ impl Conn {
             out: ByteQueue::default(),
             stage: Stage::Hello(None),
             grant,
+            held: None,
         }
     }
 
@@ -525,6 +528,9 @@ struct Saved {
     pending: bool,
     /// A restore is under way: what there is is not saved over the file.
     restoring: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// One was started, and its end is yet to be seen to
+    /// (`Server::after_restore`).
+    restored: bool,
 }
 
 impl Saved {
@@ -548,6 +554,7 @@ impl Saved {
             at: Instant::now(),
             pending: false,
             restoring: std::sync::Arc::default(),
+            restored: false,
         })
     }
 
@@ -658,6 +665,18 @@ impl Saved {
         self.pending = false;
         self.at = crate::after(Instant::now(), Duration::from_secs(3600));
         self.forget_file();
+    }
+
+    /// Whether a restore is under way.
+    fn restoring(&self) -> bool {
+        self.restoring.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Saves nothing more: the server stops, and what it saved last, as it
+    /// was before its panes ended, is what the next brings back.
+    fn freeze(&mut self) {
+        self.pending = false;
+        self.at = crate::after(Instant::now(), Duration::from_secs(3600));
     }
 
     fn forget_file(&self) {
@@ -795,13 +814,16 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
         socket.path().to_owned(),
         true,
     );
-    let saved = Saved::of(socket);
-    let restoring = match &saved {
+    let mut saved = Saved::of(socket);
+    let restoring = match &mut saved {
         Some(saved) if fresh => {
             saved.forget_file();
             false
         }
-        Some(saved) => saved.restore(socket, &saved.restoring),
+        Some(saved) => {
+            saved.restored = saved.restore(socket, &saved.restoring);
+            saved.restored
+        }
         None => false,
     };
     if !restoring {
@@ -866,6 +888,7 @@ impl Server {
             }
             // What the last round read or changed may be what a wait waits
             // for, or an event to tell.
+            self.after_restore();
             self.answer_waits(now);
             self.end_revoked();
             self.tell_events();
@@ -976,6 +999,32 @@ impl Server {
             }
         }
         ControlFlow::Continue(())
+    }
+
+    /// Once a restore is over: the requests held for it, answered; and if
+    /// it brought nothing back, a first workspace, as a fresh server has.
+    fn after_restore(&mut self) {
+        let Some(saved) = &mut self.saved else {
+            return;
+        };
+        if saved.restoring() || !std::mem::take(&mut saved.restored) {
+            return;
+        }
+        if self.session.workspaces.is_empty()
+            && let Err(error) = self.session.start()
+        {
+            log(&format!("starting afresh: {error}"));
+        }
+        for index in 0..self.conns.len() {
+            if let Some((command, context)) = self
+                .conns
+                .get_mut(index)
+                .and_then(|c| c.held.take())
+                .map(|h| *h)
+            {
+                self.request(index, command, context);
+            }
+        }
     }
 
     /// Answers each wait that has its answer.
@@ -1152,8 +1201,11 @@ impl Server {
         log(&reason);
         if let Some(saved) = &mut self.saved {
             match keep {
-                // As it is, before its panes end.
-                true => saved.save(&self.session),
+                // As it is, before its panes end, and nothing after.
+                true => {
+                    saved.save(&self.session);
+                    saved.freeze();
+                }
                 false => saved.forget(),
             }
         }
@@ -1657,10 +1709,17 @@ impl Server {
         command: crate::command::Command,
         context: crate::protocol::Context,
     ) {
+        let restore_runs = self.saved.as_ref().is_some_and(Saved::restoring);
         let session = &mut self.session;
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
+        // While a saved session comes back, other requests wait for it,
+        // so that none takes an id it asks for.
+        if restore_runs && !context.restoring {
+            conn.held = Some(Box::new((command, context)));
+            return;
+        }
         let crate::protocol::Context {
             cwd,
             pane,
@@ -1669,6 +1728,8 @@ impl Server {
             client,
             restoring,
         } = context;
+        // A restore is the server's own, which no grant's socket makes.
+        let restoring = restoring && restore_runs && conn.grant.is_none();
         // A pane of another server's (FUX_PANE kept as FUX_SOCKET chose
         // this one) is not the caller's here.
         let ours = server.as_deref().is_none_or(|s| s == session.server_id);

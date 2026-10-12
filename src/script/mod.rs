@@ -726,7 +726,13 @@ fn run_file(
         last_bound: None,
         out: &mut out,
     };
-    run(&mut machine, &mut host, &mut Settings(server)).map(drop)
+    run_capped(
+        &mut machine,
+        &mut host,
+        &mut Settings(server),
+        Some(PROGRAM_STEPS),
+    )
+    .map(drop)
 }
 
 /// What a config's requests go to: settings alone, as a config runs each
@@ -797,7 +803,73 @@ pub fn restore(
         out: &mut out,
     };
     let mut server = Server::new(Chosen::Path(socket.path().to_string_lossy().into_owned()));
-    run(&mut machine, &mut host, &mut server).map(drop)
+    run_capped(
+        &mut machine,
+        &mut host,
+        &mut Layout(&mut server),
+        Some(PROGRAM_STEPS),
+    )
+    .map(drop)
+}
+
+/// The most steps a program the client runs for itself takes (a config, a
+/// saved session): one that loops without end fails.
+pub const PROGRAM_STEPS: u64 = 10_000_000;
+
+/// What a saved session's requests go to: those that make and shape panes,
+/// tabs and workspaces, and find them; never what stops the server, grants,
+/// sets, or reaches a client, whatever the file says.
+struct Layout<'a>(&'a mut Server);
+
+impl Asks for Layout<'_> {
+    fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
+        use Command as C;
+        let refused = match &request.command {
+            C::KillServer { .. } => Some("kill-server"),
+            C::Grant { .. } => Some("grant"),
+            C::Set { .. } => Some("set"),
+            C::Client { .. } => Some("a client's words"),
+            C::Ls { .. }
+            | C::NewWorkspace { .. }
+            | C::NewTab { .. }
+            | C::Split { .. }
+            | C::Run { .. }
+            | C::Respawn { .. }
+            | C::Notify { .. }
+            | C::Resize { .. }
+            | C::Wait { .. }
+            | C::SendMouse { .. }
+            | C::KillPane { .. }
+            | C::Signal { .. }
+            | C::KillTab { .. }
+            | C::KillWorkspace { .. }
+            | C::Rename { .. }
+            | C::MovePane { .. }
+            | C::SwapPane { .. }
+            | C::ResizePane { .. }
+            | C::SendKeys { .. }
+            | C::Events { .. }
+            | C::DumpLayout { .. }
+            | C::Log { .. }
+            | C::ClearHistory { .. }
+            | C::CapturePane { .. }
+            | C::Reorder { .. }
+            | C::Resolve { .. }
+            | C::ListBuffers
+            | C::ShowBuffer { .. }
+            | C::PasteBuffer { .. } => None,
+        };
+        match refused {
+            Some(word) => Err(Failed {
+                status: 1,
+                code: "not_layout".to_owned(),
+                message: format!(
+                    "{word} in a saved session: it makes and shapes, and does nothing else"
+                ),
+            }),
+            None => self.0.ask(request, out),
+        }
+    }
 }
 
 /// The `fux` binary's words: attaches with none, runs `-` (stdin) or a file,

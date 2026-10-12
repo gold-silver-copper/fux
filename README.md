@@ -424,7 +424,9 @@ Against mistakes, rather than against a program of yours that means harm:
   workspace WS alone: an agent given only it can run, read and close what is
   there, where you can watch it in your own server, and nothing else (no
   other workspace, the settings, the buffers, clients or the server). `fux
-  str PATH revoke` closes it.
+  str PATH revoke` closes it. Keys it sends into a shell you started there
+  run as you, with your shell's own socket: grant a workspace of the agent's
+  own panes.
 - `fux watch` watches without typing into anything.
 
 ## Development
