@@ -4,9 +4,9 @@
 //! anchored to fux-vt row IDs, so new output does not move them, while other
 //! clients see the pane live. The mode ends if the pane closes or its history
 //! drops the rows it holds.
+use crate::act::{CopyAct, LineAct};
 use crate::id::ClientId;
 use crate::id::PaneId;
-use crate::act::{CopyAct, LineAct};
 use crate::render::shown;
 use crate::session::{self, Error, Session};
 use crate::view::{Line, Mode, Notice, View};
@@ -593,7 +593,12 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
                 let typed: String = typed.chars().filter(|c| !c.is_control()).collect();
                 text.insert(&typed);
             }
-            line @ (LineAct::Backspace | LineAct::Delete | LineAct::Left | LineAct::Right | LineAct::Home | LineAct::End) => edit(text, &line),
+            line @ (LineAct::Backspace
+            | LineAct::Delete
+            | LineAct::Left
+            | LineAct::Right
+            | LineAct::Home
+            | LineAct::End) => edit(text, &line),
         }
         return;
     }
@@ -673,7 +678,11 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
                     target = Some((found, 0));
                 }
                 None => {
-                    let which = if key == CopyAct::PromptBack { "earlier" } else { "later" };
+                    let which = if key == CopyAct::PromptBack {
+                        "earlier"
+                    } else {
+                        "later"
+                    };
                     view.error(format!("no {which} prompt (shells mark them with OSC 133)"));
                     return;
                 }
@@ -902,7 +911,7 @@ mod tests {
         s.input(c, b"\x02cf");
         s.input(c, &[b'x'; 60]);
         s.input(c, b"END");
-        let shown = crate::session::testing::output(&mut s, "capture-client -c c1")?;
+        let shown = crate::session::testing::output(&mut s, "str c1 client capture-client")?;
         let bar = shown.lines().last().ok_or("no bar")?;
         assert!(bar.contains("END\u{258f}"), "{bar}");
         Ok(())

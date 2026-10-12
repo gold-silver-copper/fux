@@ -614,9 +614,9 @@ impl Watch {
         if wait.until.contains(&Until::Done) {
             if commands.finished == 0 && !commands.running {
                 return Some(
-                    "no command has been marked in this pane: --done needs a shell that \
+                    "no command has been marked in this pane: wait-done needs a shell that \
                      marks its commands (bash, zsh and fish started by fux, unless \
-                     `set shell-marks off`); for a program, wait for its text, or --idle",
+                     `str shell-marks str off set`); for a program, wait for its text, or wait-idle",
                 );
             }
             if commands.running {
@@ -627,7 +627,7 @@ impl Watch {
                 );
             }
             return Some(
-                "the shell is at its prompt with no command running: --done waits for a \
+                "the shell is at its prompt with no command running: wait-done waits for a \
                  command to end after the wait begins",
             );
         }
@@ -641,13 +641,13 @@ impl Watch {
         if wait.after && unchanged {
             return Some(
                 "the text is on the screen, but on a line that reads as it did when the \
-                 wait began (drawn again the same, it brings nothing new); `fux wait --text` \
-                 takes what is shown",
+                 wait began (drawn again the same, it brings nothing new); `PANE opts str T \
+                 wait-text wait` takes what is shown",
             );
         }
         self.echo_skipped.then_some(
             "a line held the text along with what was typed, and was taken as its echo; \
-             wait for text only the output has, or use `fux wait --text`",
+             wait for text only the output has, or use `PANE opts str T wait-text wait`",
         )
     }
 

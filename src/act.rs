@@ -28,7 +28,10 @@ pub enum Act {
     /// Close what the client showed of its own (column, repeat bar).
     Normal,
     /// A notice, from a binding's program: an error if `error`.
-    Notice { text: String, error: bool },
+    Notice {
+        text: String,
+        error: bool,
+    },
     List(ListAct),
     Prompt(LineAct),
     Confirm(bool),
@@ -164,7 +167,15 @@ plain!(
         ListAct::Close,
     ]
 );
-plain!(MouseAction, "mouse action", [MouseAction::Press, MouseAction::Release, MouseAction::Motion]);
+plain!(
+    MouseAction,
+    "mouse action",
+    [
+        MouseAction::Press,
+        MouseAction::Release,
+        MouseAction::Motion
+    ]
+);
 
 impl Wire for Modifiers {
     fn put(&self, out: &mut Vec<u8>) {
@@ -293,7 +304,11 @@ impl Wire for Reply {
                 index: u8::get(r)?,
                 rgb: Wire::get(r)?,
             },
-            3 => Reply::Scheme(if bool::get(r)? { Scheme::Dark } else { Scheme::Light }),
+            3 => Reply::Scheme(if bool::get(r)? {
+                Scheme::Dark
+            } else {
+                Scheme::Light
+            }),
             4 => Reply::Mode {
                 mode: u16::get(r)?,
                 status: u8::get(r)?,
@@ -419,7 +434,33 @@ impl Wire for CopyAct {
                 tag(out, 255);
                 line.put(out);
             }
-            other @ (CopyAct::Leave | CopyAct::Left | CopyAct::Right | CopyAct::Up | CopyAct::Down | CopyAct::WordForward | CopyAct::WordBack | CopyAct::FirstInk | CopyAct::LastInk | CopyAct::LineStart | CopyAct::Top | CopyAct::Bottom | CopyAct::HalfUp | CopyAct::HalfDown | CopyAct::PageUp | CopyAct::PageDown | CopyAct::SearchForward | CopyAct::SearchBackward | CopyAct::Next | CopyAct::Previous | CopyAct::PromptBack | CopyAct::PromptForward | CopyAct::SelectChar | CopyAct::SelectLine | CopyAct::SelectBlock | CopyAct::OtherEnd | CopyAct::Yank) => {
+            other @ (CopyAct::Leave
+            | CopyAct::Left
+            | CopyAct::Right
+            | CopyAct::Up
+            | CopyAct::Down
+            | CopyAct::WordForward
+            | CopyAct::WordBack
+            | CopyAct::FirstInk
+            | CopyAct::LastInk
+            | CopyAct::LineStart
+            | CopyAct::Top
+            | CopyAct::Bottom
+            | CopyAct::HalfUp
+            | CopyAct::HalfDown
+            | CopyAct::PageUp
+            | CopyAct::PageDown
+            | CopyAct::SearchForward
+            | CopyAct::SearchBackward
+            | CopyAct::Next
+            | CopyAct::Previous
+            | CopyAct::PromptBack
+            | CopyAct::PromptForward
+            | CopyAct::SelectChar
+            | CopyAct::SelectLine
+            | CopyAct::SelectBlock
+            | CopyAct::OtherEnd
+            | CopyAct::Yank) => {
                 let index = COPY.iter().position(|c| c == other).unwrap_or(0);
                 out.push(u8::try_from(index).unwrap_or(0));
             }
@@ -428,7 +469,9 @@ impl Wire for CopyAct {
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         match u8::get(r)? {
             255 => LineAct::get(r).map(CopyAct::Search),
-            index => (COPY.get(usize::from(index)).cloned()).ok_or(Error::Tag("copy action", index)),
+            index => {
+                (COPY.get(usize::from(index)).cloned()).ok_or(Error::Tag("copy action", index))
+            }
         }
     }
 }

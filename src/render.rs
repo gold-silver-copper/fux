@@ -723,13 +723,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
         let hint = "empty tab: split it or close it";
         let y = area.h() / 2;
         let x = area.w().saturating_sub(width(hint)) / 2;
-        grid.text(
-            y,
-            x,
-            hint,
-            style(Color::Idx(244), Color::Default),
-            area.w(),
-        );
+        grid.text(y, x, hint, style(Color::Idx(244), Color::Default), area.w());
     }
     // The cursor: copy mode's in its pane, else the focused pane's, but only
     // in normal mode: none under an overlay, nor in a repeat mode, whose
@@ -1218,7 +1212,12 @@ fn list_panel(grid: &mut Grid, session: &Session, view: &View, list: &List) {
 /// The command column: the bindings and layers of its layer, grouped, the
 /// selected one highlighted and those that cannot run now dimmed.
 fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
-    let key_width = column.entries.iter().map(|e| width(&e.key)).max().unwrap_or(0);
+    let key_width = column
+        .entries
+        .iter()
+        .map(|e| width(&e.key))
+        .max()
+        .unwrap_or(0);
     let mut entries: Vec<Line<'_>> = Vec::new();
     let mut heading = None;
     let mut selected_row = 0usize;
@@ -1796,7 +1795,7 @@ mod tests {
         for case in 0..30 {
             let (mut s, c) = crate::session::testing::attached(10, 40)?;
             if r.below(3) == 0 {
-                crate::session::testing::run(&mut s, "split -h -t %1")?;
+                crate::session::testing::run(&mut s, "str %1 pane opts horizontal split")?;
             }
             let mut fast = terminal(10, 40)?;
             let mut whole = terminal(10, 40)?;
@@ -1862,13 +1861,13 @@ mod tests {
             b"\x1b[2;4r\x1b[4H\n\n\x1b[r",
         ];
         let commands = [
-            "split -h -t %1",
-            "split -v -t %1",
-            "zoom -c c1",
-            "copy-mode -c c1",
-            "command-column -c c1",
-            "select-pane -c c1 --next",
-            "kill-pane -t %2",
+            "str %1 pane opts horizontal split",
+            "str %1 pane opts vertical split",
+            "str c1 client zoom",
+            "str c1 client copy-mode",
+            "str c1 client command-prompt",
+            "str c1 client str next focus",
+            "str %2 pane kill",
         ];
         let mut r = Rng(0x00c0_ffee);
         for case in 0..40 {
@@ -1882,14 +1881,15 @@ mod tests {
                         let line = commands.get(r.below(commands.len())).copied().unwrap_or("");
                         let _ = crate::session::testing::run(&mut s, line);
                     }
-                    1 => s.input(c, b"\x1b"),
+                    // The column opens, or what is open closes.
+                    1 => s.input(c, if r.below(2) == 0 { b"\x02" } else { b"\x1b" }),
                     2 => {
                         let rows = u16::try_from(4 + r.below(12)).unwrap_or(8);
                         let cols = u16::try_from(10 + r.below(50)).unwrap_or(40);
                         s.resize(c, rows, cols);
                     }
                     3 => {
-                        crate::session::testing::run(&mut s, "rename -t @1 n")?;
+                        crate::session::testing::run(&mut s, "str @1 tab str n rename")?;
                     }
                     _ => {
                         let panes: Vec<PaneId> = s.panes.keys().copied().collect();
@@ -2045,7 +2045,7 @@ mod tests {
         let (mut s, c) = crate::session::testing::attached(12, 50)?;
         s.output(PaneId::of(1), b"first screen\r\n\x1b[5 q");
         let before = compose(&s, c).ok_or("a screen")?;
-        crate::session::testing::run(&mut s, "split -h -t %1")?;
+        crate::session::testing::run(&mut s, "str %1 pane opts horizontal split")?;
         // The focused pane hides its cursor, and a smaller client makes the
         // panes smaller than their places: compose leaves cells untouched.
         s.output(PaneId::of(2), "界 second\r\n\x1b[?25l".as_bytes());
@@ -2378,7 +2378,7 @@ mod tests {
     #[test]
     fn a_panes_palette_is_painted_and_stays_the_panes() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 41)?;
-        crate::session::testing::run(&mut s, "split -h -t %1")?;
+        crate::session::testing::run(&mut s, "str %1 pane opts horizontal split")?;
         let set = b"\x1b]4;1;#ff0000\x1b\\\x1b]10;rgb:11/22/33;#000080\x07";
         s.output(PaneId::of(1), &[&set[..], b"\x1b[31mR\x1b[39mD"].concat());
         s.output(PaneId::of(2), b"\x1b[31mR\x1b[39mD");
@@ -2452,7 +2452,7 @@ mod tests {
     #[test]
     fn hyperlinks_are_painted_with_their_panes_ids() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 41)?;
-        crate::session::testing::run(&mut s, "split -h -t %1")?;
+        crate::session::testing::run(&mut s, "str %1 pane opts horizontal split")?;
         let linked = b"a\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\b";
         s.output(PaneId::of(1), linked);
         s.output(PaneId::of(2), linked);

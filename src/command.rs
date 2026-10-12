@@ -354,8 +354,9 @@ pub enum Command {
         size: Size,
     },
     Wait {
-        /// The panes, any of which answers it: the caller's without one.
-        targets: Vec<PaneId>,
+        /// The panes, any of which answers it (a tab's or workspace's
+        /// every pane): the caller's without one.
+        targets: Vec<AnyRef>,
         wait: Wait,
     },
     SendMouse {

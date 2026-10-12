@@ -14,8 +14,8 @@ pub mod events;
 pub mod help;
 pub mod id;
 pub mod input;
-pub mod keymap;
 pub mod json;
+pub mod keymap;
 pub mod layout;
 pub mod marks;
 pub mod outer;
@@ -29,8 +29,8 @@ pub mod server;
 pub mod session;
 pub mod socket;
 pub mod view;
-pub mod wire;
 pub mod wait;
+pub mod wire;
 pub mod words;
 pub mod workspace;
 
@@ -116,7 +116,11 @@ fn serve(args: &[String]) -> ExitCode {
 
 /// `fux status`: what answers on `socket`, as text or JSON, and whether it
 /// is a server this fux can drive.
-pub(crate) fn status(socket: &socket::SocketPath, probe: &client::Probe, json: bool) -> (String, bool) {
+pub(crate) fn status(
+    socket: &socket::SocketPath,
+    probe: &client::Probe,
+    json: bool,
+) -> (String, bool) {
     let path = socket.path().display().to_string();
     let ours = env!("CARGO_PKG_VERSION");
     let left = matches!(probe, client::Probe::Left);
@@ -199,4 +203,3 @@ pub(crate) fn servers(json: bool) -> Result<String, socket::Error> {
         false => lines.concat(),
     })
 }
-

@@ -433,9 +433,12 @@ impl Client {
                 ServerFrame::Exit(reason) => self.exit = Some(reason.to_owned()),
                 ServerFrame::Stdout(said) if self.keyboard.is_none() => {
                     let said = String::from_utf8_lossy(said).trim().to_owned();
-                    let me = said.parse().map_err(|_| format!("a client's id, not {said:?}"))?;
+                    let me = said
+                        .parse()
+                        .map_err(|_| format!("a client's id, not {said:?}"))?;
                     let keymap = self.keymap.clone();
-                    self.keyboard = Some(Keyboard::new(&self.socket, me, keymap, self.read_only).map_err(e)?);
+                    self.keyboard =
+                        Some(Keyboard::new(&self.socket, me, keymap, self.read_only).map_err(e)?);
                     self.id = Some(said);
                 }
                 frame => {
@@ -660,7 +663,19 @@ impl Server {
         eventually(&format!("a prompt in {pane}"), || {
             Ok(self.ok(&["str", pane, "pane", "screen"])?.contains('$'))
         })?;
-        self.ok(&["str", pane, "pane", "keys", "str", line, "text", "str", "Enter", "key", "send-keys"])?;
+        self.ok(&[
+            "str",
+            pane,
+            "pane",
+            "keys",
+            "str",
+            line,
+            "text",
+            "str",
+            "Enter",
+            "key",
+            "send-keys",
+        ])?;
         Ok(())
     }
 }

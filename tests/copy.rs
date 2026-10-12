@@ -18,15 +18,41 @@ fn prepared(server: &Server, rows: u16, cols: u16, lines: &[&str]) -> Result<Cli
     Ok(client)
 }
 
+/// Waits until the client is out of copy mode: its keys go to the pane
+/// again only once it has been told so.
+fn left(client: &mut Client) -> Outcome {
+    client.wait("copy mode to end", |t| {
+        t.lines().last().is_some_and(|b| !b.contains("COPY"))
+    })
+}
+
 fn copy_mode(client: &mut Client) -> Outcome {
+    left(client)?;
     client.keys(&format!("{PREFIX}c"))?;
     client.wait("copy mode", |t| {
         t.lines().last().is_some_and(|b| b.contains("COPY"))
     })
 }
 
+/// Types `keys` that open a search, then `term` once the search is open:
+/// keys typed before the client knows of it would be motions.
+fn search(client: &mut Client, keys: &str, term: &str) -> Outcome {
+    client.keys(keys)?;
+    client.wait("the search", |t| {
+        t.lines().last().is_some_and(|b| b.contains("Enter search"))
+    })?;
+    client.keys(&format!("{term}\r"))?;
+    client.wait("the search to end", |t| {
+        t.lines()
+            .last()
+            .is_some_and(|b| b.contains("COPY") && !b.contains("Enter search"))
+    })
+}
+
 fn buffer(server: &Server) -> Result<String, String> {
-    server.ok(&["show-buffer"])
+    server
+        .ok(&["0", "buffer"])
+        .map(|text| text.strip_suffix('\n').unwrap_or(&text).to_owned())
 }
 
 #[test]
@@ -79,9 +105,9 @@ fn a_word_a_line_and_a_block_are_copied() -> Outcome {
             .last()
             .is_some_and(|b| b.contains("copied 1 character") && !b.contains("characters"))
     })?;
-    server.ok(&["show-buffer", "-b", "1"])?;
+    server.ok(&["1", "buffer"])?;
     // Buffers keep the newest first.
-    let list = server.ok(&["list-buffers"])?;
+    let list = server.ok(&["buffers"])?;
     assert!(list.starts_with("0: 1 bytes: a"), "{list}");
     assert!(list.contains("1: 13 bytes: beta"), "{list}");
     assert!(list.contains("3: 5 bytes: alpha"), "{list}");
@@ -111,15 +137,16 @@ fn motions_and_search_move_the_cursor() -> Outcome {
     eventually("in capitals", || Ok(buffer(&server)? == "Four"))?;
     // Search: f forward, literal, smart-case, then n and p.
     copy_mode(&mut client)?;
-    client.keys("tfline\r")?;
+    search(&mut client, "tf", "line")?;
     client.keys("vllly")?;
     eventually("the smart-case match", || Ok(buffer(&server)? == "LINE"))?;
     copy_mode(&mut client)?;
-    client.keys("tfe\rnnp")?;
+    search(&mut client, "tf", "e")?;
+    client.keys("nnp")?;
     client.keys("vy")?;
     eventually("the second e", || Ok(buffer(&server)? == "e"))?;
     copy_mode(&mut client)?;
-    client.keys("fnothing-like-this\r")?;
+    search(&mut client, "f", "nothing-like-this")?;
     client.wait("not found", |t| {
         t.lines()
             .last()
@@ -155,12 +182,12 @@ fn motions_and_search_move_the_cursor() -> Outcome {
 
 #[test]
 fn the_pane_holds_still_for_the_copying_client_only() -> Outcome {
-    let server = Server::start("set history-lines 1000")?;
+    let server = Server::start("str history-lines 1000 set")?;
     let mut copier = prepared(&server, 12, 40, &["first", "second"])?;
     let mut watcher = server.attach(12, 40)?;
     watcher.wait_for("second")?;
     copy_mode(&mut copier)?;
-    server.ok(&["send-keys", "-t", "%1", "seq 100 140", "Enter"])?;
+    server.type_line("%1", "seq 100 140")?;
     // A line that is exactly 140: the echoed command contains "140" too, and
     // would match before any output.
     watcher.wait("the output's end", |t| t.lines().any(|l| l == "140"))?;
@@ -196,21 +223,21 @@ fn the_pane_holds_still_for_the_copying_client_only() -> Outcome {
 
 #[test]
 fn copy_mode_ends_when_its_pane_closes_or_its_rows_are_evicted() -> Outcome {
-    let server = Server::start("set history-lines 5")?;
+    let server = Server::start("str history-lines 5 set")?;
     let mut client = prepared(&server, 10, 40, &["keep"])?;
-    server.ok(&["split", "-h", "-t", "%1"])?;
-    server.ok(&["select-pane", "-c", "c1", "-t", "%1"])?;
+    server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
+    server.ok(&["str", "c1", "client", "str", "%1", "pane", "focus-pane"])?;
     copy_mode(&mut client)?;
     // Hold the top of the history, then push it out.
     client.keys("t")?;
-    server.ok(&["send-keys", "-t", "%1", "seq 1 200", "Enter"])?;
+    server.type_line("%1", "seq 1 200")?;
     client.wait("ended", |t| {
         t.lines()
             .last()
             .is_some_and(|b| b.contains("copy mode ended: the history"))
     })?;
     copy_mode(&mut client)?;
-    server.ok(&["kill-pane", "-t", "%1"])?;
+    server.ok(&["str", "%1", "pane", "kill"])?;
     client.wait("ended by the close", |t| {
         t.lines()
             .last()
@@ -221,7 +248,7 @@ fn copy_mode_ends_when_its_pane_closes_or_its_rows_are_evicted() -> Outcome {
 
 #[test]
 fn paste_buffers_paste_and_the_clipboard_can_be_off() -> Outcome {
-    let server = Server::start("set clipboard off")?;
+    let server = Server::start("str clipboard str off set")?;
     let mut client = prepared(&server, 12, 40, &["hello-paste"])?;
     copy_mode(&mut client)?;
     client.keys("k\x1b[Hvey")?;
@@ -229,20 +256,23 @@ fn paste_buffers_paste_and_the_clipboard_can_be_off() -> Outcome {
     let painted = String::from_utf8_lossy(&client.painted).into_owned();
     assert!(!painted.contains("\x1b]52"), "the clipboard is off");
     // C-b p pastes the newest buffer into the pane.
+    left(&mut client)?;
     client.keys(&format!("{PREFIX}p"))?;
     client.wait("pasted at the prompt", |t| {
         t.lines().any(|l| l == "$ hello-paste")
     })?;
     // paste-buffer from the CLI, into another pane.
-    server.ok(&["split", "-h", "-t", "%1"])?;
-    server.ok(&["paste-buffer", "-t", "%2"])?;
+    server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
+    server.ok(&["str", "%2", "pane", "0", "paste-buffer"])?;
     eventually("pasted into %2", || {
         Ok(server
-            .ok(&["capture-pane", "-t", "%2"])?
+            .ok(&["str", "%2", "pane", "opts", "capture"])?
             .contains("hello-paste"))
     })?;
     assert_eq!(
-        server.fux(&["paste-buffer", "-b", "5", "-t", "%2"])?.status,
+        server
+            .fux(&["str", "%2", "pane", "5", "paste-buffer"])?
+            .status,
         1
     );
     Ok(())

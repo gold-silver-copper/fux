@@ -273,7 +273,16 @@ macro_rules! plain_wire {
         }
     };
 }
-plain_wire!(Direction, "direction", [Direction::Left, Direction::Right, Direction::Up, Direction::Down]);
+plain_wire!(
+    Direction,
+    "direction",
+    [
+        Direction::Left,
+        Direction::Right,
+        Direction::Up,
+        Direction::Down
+    ]
+);
 plain_wire!(Axis, "axis", [Axis::Horizontal, Axis::Vertical]);
 plain_wire!(Kind, "kind", [Kind::Pane, Kind::Tab, Kind::Workspace]);
 plain_wire!(Sibling, "sibling", [Sibling::Next, Sibling::Previous]);
@@ -777,7 +786,9 @@ impl Wire for ClientAction {
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         match u8::get(r)? {
             0 => Ok(ClientAction::Detach),
-            1 => Ok(ClientAction::Capture { json: bool::get(r)? }),
+            1 => Ok(ClientAction::Capture {
+                json: bool::get(r)?,
+            }),
             2 => Ok(ClientAction::ChooseTab {
                 moving: Option::get(r)?,
             }),

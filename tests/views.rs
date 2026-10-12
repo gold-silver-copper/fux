@@ -40,8 +40,21 @@ fn tabs_are_created_and_switched_by_key() -> Outcome {
     eventually("wrapped to @1", || {
         Ok(client_line(&server, "c1")?.contains(" @1 "))
     })?;
-    // new-tab from the CLI, with a name and a command typed into it.
-    server.ok(&["new-tab", "-t", "+1", "-n", "logs", "--", "echo", "in logs"])?;
+    // new-tab from the CLI, with a name and a line typed into it.
+    server.ok(&[
+        "opts",
+        "str",
+        "+1",
+        "workspace",
+        "in",
+        "str",
+        "logs",
+        "name",
+        "str",
+        "echo \"in logs\"",
+        "typed",
+        "new-tab",
+    ])?;
     client.wait("the named tab", |t| {
         t.lines().last().is_some_and(|b| b.contains("logs"))
     })?;
@@ -66,13 +79,21 @@ fn workspaces_are_created_and_switched_by_key() -> Outcome {
     eventually("+2 again", || {
         Ok(client_line(&server, "c1")?.contains(" +2 "))
     })?;
-    server.ok(&["new-workspace", "-n", "third"])?;
-    server.ok(&["select-workspace", "-c", "c1", "-t", "third"])?;
+    server.ok(&["opts", "str", "third", "name", "new-workspace"])?;
+    server.ok(&[
+        "str",
+        "c1",
+        "client",
+        "str",
+        "third",
+        "workspace",
+        "show-workspace",
+    ])?;
     client.wait("the third", |t| {
         t.lines().last().is_some_and(|b| b.contains("third"))
     })?;
     // Attaching to a workspace by name.
-    let mut other = Client::attach(&server.socket, 10, 60, Some("third"))?;
+    let mut other = server.attach_to(10, 60, "third")?;
     other.wait("attached to third", |t| {
         t.lines().last().is_some_and(|b| b.contains("third"))
     })?;
@@ -104,7 +125,7 @@ fn two_clients_have_independent_views() -> Outcome {
         client.wait_for("typed-by-one")?;
         client.wait_for("typed-by-two")?;
     }
-    let right = server.ok(&["capture-pane", "-t", "%2"])?;
+    let right = server.ok(&["str", "%2", "pane", "opts", "capture"])?;
     assert!(
         right.contains("typed-by-one") && !right.contains("typed-by-two"),
         "{right}"
@@ -167,21 +188,21 @@ fn moving_a_panes_out_leaves_an_empty_tab_with_a_hint() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 80)?;
     client.wait_for("$")?;
-    server.ok(&["new-tab", "-t", "+1"])?;
-    server.ok(&["select-tab", "-c", "c1", "-t", "@1"])?;
-    server.ok(&["move-pane", "-t", "%1", "--to", "@2"])?;
+    server.ok(&["opts", "str", "+1", "workspace", "in", "new-tab"])?;
+    server.ok(&["str", "c1", "client", "str", "@1", "tab", "show-tab"])?;
+    server.ok(&["str", "%1", "pane", "str", "@2", "tab", "move-to"])?;
     client.wait("the empty tab's hint", |t| {
-        t.contains("empty tab: C-b v splits it, C-b t x closes it")
+        t.contains("empty tab: split it or close it")
     })?;
     assert!(server.ok(&["ls"])?.contains("@1 main (empty)"));
     // Moving to a new tab and a new workspace creates them.
-    server.ok(&["move-pane", "-t", "%2", "--to", "new-tab"])?;
-    server.ok(&["move-pane", "-t", "%1", "--to", "new-workspace"])?;
+    server.ok(&["str", "%2", "pane", "str", "new-tab", "move-to"])?;
+    server.ok(&["str", "%1", "pane", "str", "new-workspace", "move-to"])?;
     let ls = server.ok(&["ls"])?;
     assert!(ls.contains("+2 workspace-2"), "{ls}");
     // A split in the empty tab seeds it: it needs a pane to split, so the
-    // tab chooser and moves are the way in; kill-tab closes it.
-    server.ok(&["kill-tab", "-t", "@1"])?;
+    // tab chooser and moves are the way in; kill closes it.
+    server.ok(&["str", "@1", "tab", "kill"])?;
     assert!(!server.ok(&["ls"])?.contains("@1 main"));
     Ok(())
 }
@@ -192,12 +213,12 @@ fn moving_a_panes_out_leaves_an_empty_tab_with_a_hint() -> Outcome {
 #[test]
 fn capture_client_shows_what_a_client_shows_in_every_mode() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&["split", "-h", "-t", "%1"])?;
+    server.ok(&["str", "%1", "pane", "opts", "horizontal", "split"])?;
     let mut client = server.attach(20, 90)?;
     client.wait_for("$")?;
     let captured = |server: &Server| -> Result<Vec<String>, String> {
         Ok(server
-            .ok(&["capture-client", "-c", "c1"])?
+            .ok(&["str", "c1", "client", "capture-client"])?
             .lines()
             .map(str::to_owned)
             .collect())
@@ -247,17 +268,19 @@ fn capture_client_shows_what_a_client_shows_in_every_mode() -> Outcome {
         !t.lines().last().is_some_and(|b| b.contains("RESIZE"))
     })?;
     // As JSON: the client, its size, the cursor or null, and the rows.
-    let json = server.ok(&["capture-client", "-c", "c1", "--json"])?;
+    let json = server.ok(&["str", "c1", "client", "capture-client", "json"])?;
     assert!(
         json.starts_with("{\"client\":\"c1\",\"rows\":20,\"cols\":90,\"cursor\":"),
         "{json}"
     );
     let rows = json.split_once("\"lines\":[").map_or("", |(_, rows)| rows);
     assert_eq!(rows.matches("\",\"").count() + 1, 20, "twenty rows: {json}");
-    // From the command line it needs -c; a client that is not there is an error.
-    let out = server.fux(&["capture-client"])?;
-    assert_eq!(out.status, 1, "{}", out.stderr);
-    assert!(out.stderr.contains("-c"), "{}", out.stderr);
-    assert_eq!(server.fux(&["capture-client", "-c", "c9"])?.status, 1);
+    // A client that is not there is an error.
+    assert_eq!(
+        server
+            .fux(&["str", "c9", "client", "capture-client"])?
+            .status,
+        1
+    );
     Ok(())
 }

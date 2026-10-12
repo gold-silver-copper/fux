@@ -7,8 +7,9 @@ use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use support::*;
 
-/// A command line run with only `-L`/`-S` naming the server: no
-/// FUX_SOCKET, FUX_PANE or FUX_SERVER, and fux's directory under `rt`.
+/// A command line run with only its words naming the server (`str NAME
+/// server`): no FUX_SOCKET, FUX_PANE or FUX_SERVER, and fux's directory
+/// under `rt`.
 fn named(rt: &std::path::Path, args: &[&str], env: &[(&str, &str)]) -> Result<Output, String> {
     let mut command = Command::new(FUX);
     command
@@ -38,71 +39,89 @@ fn private(dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
     Ok(rt)
 }
 
-/// `-L NAME` names a server on every command, `server --background` starts
-/// one and returns once it answers, and `status` says what answers. A
-/// FUX_PANE of another server's pane is not acted on; `kill-server` from a
-/// server's own pane, and a kill with no target, are refused.
+/// `str NAME server` names a server for what follows, `start` starts one
+/// and returns once it answers, and `status` says what answers. A FUX_PANE
+/// of another server's pane is not acted on; `kill-server` from a server's
+/// own pane, and a kill with no target, are refused.
 #[test]
 fn servers_are_named_and_kills_are_guarded() -> Outcome {
     let server = Server::start("")?;
     let rt = private(&server.dir)?;
-    let started = named(&rt, &["-L", "t", "server", "--background"], &[])?;
+    let started = named(&rt, &["str", "t", "server", "start"], &[])?;
     assert_eq!(started.status, 0, "{}", started.stderr);
-    assert!(
-        started.stdout.trim_end().ends_with("/fux/t.sock"),
-        "{}",
-        started.stdout
-    );
-    let status = named(&rt, &["-L", "t", "status", "--json"], &[])?;
+    let status = named(&rt, &["str", "t", "server", "status", "json"], &[])?;
     assert_eq!(status.status, 0);
     assert!(
-        status.stdout.contains(r#""running":true"#),
+        status.stdout.contains(r#""running":true"#) && status.stdout.contains("/fux/t.sock"),
         "{}",
         status.stdout
     );
-    let none = named(&rt, &["-L", "none", "status"], &[])?;
-    assert_eq!(
-        (none.status, none.stdout.starts_with("no fux server")),
-        (1, true)
-    );
+    let none = named(&rt, &["str", "none", "server", "status"], &[])?;
+    assert!(none.stdout.starts_with("no fux server"), "{}", none.stdout);
     // The test server's pane, as an agent in it would carry it, reaches
     // the private server: it is not that server's, and nothing is done to
     // what has its number there.
-    let pane = server.ok(&["ls", "-t", "%1", "--get", "id"])?;
+    let pane = server.ok(&["str", "%1", "pane", "str", "id", "get"])?;
     let theirs = [("FUX_PANE", pane.trim()), ("FUX_SERVER", "another-run")];
-    let stray = named(&rt, &["-L", "t", "capture-pane"], &theirs)?;
+    let stray = named(
+        &rt,
+        &["str", "t", "server", "here", "opts", "capture"],
+        &theirs,
+    )?;
     assert_eq!(stray.status, 1);
     assert!(
         stray.stderr.contains("another fux server"),
         "{}",
         stray.stderr
     );
-    let untargeted = named(&rt, &["-L", "t", "kill-pane", "--json"], &[])?;
+    let untargeted = named(&rt, &["str", "t", "server", "here", "kill"], &[])?;
     assert_eq!(untargeted.status, 1);
     assert!(
-        untargeted.stderr.contains(r#""error":"no_target""#),
+        untargeted.stderr.starts_with("fux: no_target: "),
         "{}",
         untargeted.stderr
     );
-    // From one of its own panes, kill-server needs --force.
-    let sh = server.ok(&["run", "-n", "sh", "--wait-idle", "300", "--", "sh"])?;
+    // From one of its own panes, kill-server is refused; force-kill-server
+    // is not.
+    let sh = server.ok(&[
+        "opts",
+        "str",
+        "sh",
+        "name",
+        "str",
+        "sh",
+        "program",
+        "300",
+        "wait-idle",
+        "run",
+    ])?;
     let line = format!("'{FUX}' kill-server; echo status=$?");
     let refused = server.ok(&[
-        "send-keys",
-        "-t",
+        "str",
         sh.trim(),
-        "--text",
+        "pane",
+        "keys",
+        "str",
         &line,
+        "text",
+        "str",
         "Enter",
-        "--wait-text",
+        "key",
+        "str",
         "status=",
+        "wait-text",
+        "with-screen",
+        "send-keys",
     ])?;
     assert!(refused.contains("status=1"), "{refused}");
     assert!(
         server.ok(&["ls"])?.contains("+1 main"),
         "the server still runs"
     );
-    assert_eq!(named(&rt, &["-L", "t", "kill-server"], &[])?.status, 0);
+    assert_eq!(
+        named(&rt, &["str", "t", "server", "kill-server"], &[])?.status,
+        0
+    );
     Ok(())
 }
 
@@ -112,7 +131,7 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
 fn events_tell_what_happens() -> Outcome {
     let server = Server::start("")?;
     let mut events = Command::new(FUX)
-        .args(["events", "--json"])
+        .args(["events-json"])
         .env("FUX_SOCKET", &server.socket)
         .env_remove("FUX_PANE")
         .stdout(Stdio::piped())
@@ -140,7 +159,19 @@ fn events_tell_what_happens() -> Outcome {
         }
     };
     next(r#""event":"ready""#)?;
-    let pane = server.ok(&["run", "--", "sh", "-c", "printf '\\a'; exit 7"])?;
+    let pane = server.ok(&[
+        "opts",
+        "str",
+        "sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        "printf '\\a'; exit 7",
+        "arg",
+        "run",
+    ])?;
     let pane = pane.trim();
     let created = next(r#""event":"created""#)?;
     assert!(created.contains(r#""name":"agent""#), "{created}");
@@ -157,62 +188,54 @@ fn events_tell_what_happens() -> Outcome {
     }
     let exited = exited.unwrap_or_default();
     assert!(exited.ends_with(r#""status":7}"#), "{exited}");
-    server.ok(&["kill-pane", "-t", pane])?;
+    server.ok(&["str", pane, "pane", "kill"])?;
     next(&format!(r#""event":"closed","pane":"{pane}""#))?;
     let _ = events.kill();
     let _ = events.wait();
     Ok(())
 }
 
-/// Input meant for one screen goes only to that screen: `--if-revision`
-/// sends nothing once it changed (status 6). Keys sent to several panes
-/// reach each, and their wait waits for each.
+/// Input meant for one screen goes only to that screen: `if-revision`
+/// sends nothing once it changed (status 6). Keys sent to a tab reach each
+/// of its panes, and their wait waits for each.
 #[test]
 fn input_goes_only_where_it_was_meant() -> Outcome {
     let server = Server::start("")?;
+    let bash = [
+        "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg",
+    ];
     let a = server.ok(&[
-        "run",
-        "-n",
-        "a",
-        "--wait-idle",
-        "300",
-        "--",
-        "bash",
-        "--norc",
-        "-i",
-    ])?;
+        &["opts", "str", "a", "name"][..],
+        &bash,
+        &["300", "wait-idle", "run"],
+    ]
+    .concat())?;
+    let a = a.trim();
     let b = server.ok(&[
-        "split",
-        "-h",
-        "-t",
-        a.trim(),
-        "--run",
-        "--",
-        "bash",
-        "--norc",
-        "-i",
-    ])?;
-    let (a, b) = (a.trim(), b.trim());
-    server.ok(&["wait", "-t", b, "--idle", "300"])?;
-    let revision = server.ok(&["ls", "-t", a, "--get", "revision"])?;
+        &["str", a, "pane", "opts", "horizontal"][..],
+        &bash,
+        &["split"],
+    ]
+    .concat())?;
+    let b = b.trim();
+    server.ok(&["str", b, "pane", "opts", "300", "wait-idle", "wait"])?;
+    let revision = server.ok(&["str", a, "pane", "str", "revision", "get"])?;
     let revision = revision.trim();
-    server.ok(&[
-        "send-keys",
-        "-t",
-        a,
-        "--text",
-        "echo moved",
-        "Enter",
-        "--wait-done",
-    ])?;
+    server.ok(&["str", a, "pane", "str", "echo moved", "line"])?;
     let stale = server.fux(&[
-        "send-keys",
-        "-t",
+        "str",
         a,
-        "--if-revision",
-        revision,
+        "pane",
+        "keys",
+        "str",
         "y",
+        "text",
+        "str",
         "Enter",
+        "key",
+        revision,
+        "if-revision",
+        "send-keys",
     ])?;
     assert_eq!(stale.status, 6, "{}", stale.stderr);
     assert!(
@@ -221,19 +244,23 @@ fn input_goes_only_where_it_was_meant() -> Outcome {
         stale.stderr
     );
     let both = server.ok(&[
-        "send-keys",
-        "-t",
+        "str",
         a,
-        "-t",
-        b,
-        "--text",
+        "pane",
+        "tab",
+        "keys",
+        "str",
         "echo both-$((40+2))",
+        "text",
+        "str",
         "Enter",
-        "--wait-done",
+        "key",
+        "wait-done",
+        "send-keys",
     ])?;
     assert_eq!(both, format!("{a} done 0\n{b} done 0\n"));
     for pane in [a, b] {
-        let screen = server.ok(&["capture-pane", "-t", pane])?;
+        let screen = server.ok(&["str", pane, "pane", "screen"])?;
         assert!(screen.contains("both-42"), "{pane}: {screen}");
     }
     Ok(())
@@ -246,29 +273,38 @@ fn a_grant_reaches_one_workspace() -> Outcome {
     let server = Server::start("")?;
     let granted = server.dir.join("s").join("granted.sock");
     let socket = granted.to_string_lossy().into_owned();
-    server.ok(&["grant", "-t", "sandbox", "--socket", &socket])?;
+    server.ok(&["str", "sandbox", "str", &socket, "grant"])?;
     let through = |args: &[&str]| server.fux_env(args, &[("FUX_SOCKET", &socket)]);
     let job = through(&[
-        "run",
-        "-n",
+        "opts",
+        "str",
         "job",
-        "--",
+        "name",
+        "str",
         "sh",
+        "program",
+        "str",
         "-c",
+        "arg",
+        "str",
         "echo inside; sleep 60",
+        "arg",
+        "run",
     ])?;
     assert_eq!(job.status, 0, "{}", job.stderr);
-    assert!(server.ok(&["ls", "-t", "sandbox"])?.contains("job"));
+    let sandbox = server.ok(&["str", "sandbox", "workspace", "info", "json"])?;
+    assert!(sandbox.contains(r#""name":"job""#), "{sandbox}");
     for refused in [
-        vec!["capture-pane", "-t", "%1"],
-        vec!["kill-server", "--force"],
-        vec!["set", "bell", "off"],
-        vec!["new-workspace"],
+        vec!["str", "%1", "pane", "screen"],
+        vec!["force-kill-server"],
+        vec!["str", "bell", "str", "off", "set"],
+        vec!["opts", "new-workspace"],
     ] {
         let out = through(&refused)?;
         assert_eq!(out.status, 1, "{refused:?} went through");
+        // A stop asks no workspace: it is refused by the grant itself.
         assert!(
-            out.stderr.contains("sandbox"),
+            out.stderr.contains("sandbox") || out.stderr.contains("fux grant"),
             "{refused:?}: {}",
             out.stderr
         );
@@ -278,32 +314,40 @@ fn a_grant_reaches_one_workspace() -> Outcome {
         !ls.contains("main"),
         "only the granted workspace is listed: {ls}"
     );
-    server.ok(&["grant", "--revoke", "--socket", &socket])?;
+    server.ok(&["str", &socket, "revoke"])?;
     assert!(!granted.exists(), "a revoked grant's socket is gone");
     Ok(())
 }
 
 /// A server killed outright comes back on its socket with the panes it
 /// had, their ids, splits and sizes: a program waits for `respawn`, which
-/// starts it again. `kill-server` forgets it.
+/// starts it again. `force-kill-server` forgets it.
 #[test]
 fn a_crashed_server_comes_back() -> Outcome {
     let server = Server::start("")?;
     let app = server.ok(&[
-        "run",
-        "-n",
+        "opts",
+        "str",
         "app",
-        "--size",
-        "100x30",
-        "--",
+        "name",
+        "100",
+        "30",
+        "size",
+        "str",
         "sh",
+        "program",
+        "str",
         "-c",
+        "arg",
+        "str",
         "echo up; sleep 60",
+        "arg",
+        "run",
     ])?;
     let app = app.trim();
-    let shell = server.ok(&["split", "-h", "-t", app])?;
+    let shell = server.ok(&["str", app, "pane", "opts", "horizontal", "split"])?;
     let shell = shell.trim();
-    server.ok(&["resize-pane", "-t", app, "-x", "70"])?;
+    server.ok(&["str", app, "pane", "70", "resize-x"])?;
     let before = server.ok(&["ls"])?;
     // Saved within a second of the last change.
     let layout = server.dir.join("state").join("fux");
@@ -313,19 +357,20 @@ fn a_crashed_server_comes_back() -> Outcome {
             .filter_map(Result::ok);
         Ok(saved
             .filter_map(|f| std::fs::read_to_string(f.path()).ok())
-            .any(|text| text.contains("-x 70")))
+            .any(|text| text.contains("70 resize-x")))
     })?;
     let pid = server.pid().ok_or("the server's pid")?;
     let pid = fuxix::process::Pid::from_raw(i32::try_from(pid).map_err(e)?).ok_or("a pid")?;
     fuxix::process::kill(pid, fuxix::process::Signal::Kill).map_err(e)?;
     let socket = server.socket.to_string_lossy().into_owned();
     let again = Command::new(FUX)
-        .args(["server", "--socket", &socket, "--background", "--config"])
-        .arg(server.dir.join("fux.conf"))
+        .args(["str", &socket, "socket", "start"])
         .env("XDG_STATE_HOME", server.dir.join("state"))
+        .env("XDG_CONFIG_HOME", server.dir.join("config"))
         .env("HOME", &server.dir)
         .env("SHELL", "/bin/sh")
         .env_remove("FUX_PANE")
+        .env_remove("FUX_SOCKET")
         .output()
         .map_err(e)?;
     assert!(
@@ -333,22 +378,29 @@ fn a_crashed_server_comes_back() -> Outcome {
         "{}",
         String::from_utf8_lossy(&again.stderr)
     );
-    let after = server.ok(&["ls"])?;
-    for line in [format!("{app} sh 70x30"), format!("{shell} ")] {
-        assert!(
-            after.contains(&line),
-            "{line:?} in\n{after}\nas before:\n{before}"
-        );
-    }
-    assert_eq!(server.ok(&["ls", "-t", app, "--get", "paused"])?, "true\n");
+    let mut after = String::new();
+    eventually("the panes back", || {
+        after = server.ok(&["ls"])?;
+        Ok(after.contains(&format!("{shell} ")))
+    })?;
     assert!(
-        server
-            .ok(&["capture-pane", "-t", app])?
-            .contains("respawn -t")
+        after.contains(&format!("{app} sh 70x30")),
+        "{app} in\n{after}\nas before:\n{before}"
     );
-    server.ok(&["respawn", "-t", app, "--wait-text", "up"])?;
-    assert_eq!(server.ok(&["ls", "-t", app, "--get", "paused"])?, "false\n");
-    server.ok(&["kill-server", "--force"])?;
+    let paused = ["str", app, "pane", "str", "paused", "get"];
+    assert_eq!(server.ok(&paused)?, "true\n");
+    server.ok(&[
+        "str",
+        app,
+        "pane",
+        "opts",
+        "str",
+        "up",
+        "wait-text",
+        "respawn",
+    ])?;
+    assert_eq!(server.ok(&paused)?, "false\n");
+    server.ok(&["force-kill-server"])?;
     eventually("the layout forgotten", || {
         let saved = std::fs::read_dir(&layout)
             .map_err(e)?
@@ -360,37 +412,42 @@ fn a_crashed_server_comes_back() -> Outcome {
     })
 }
 
-/// A layout file is made whole or not at all, with fresh ids, and
-/// `dump-layout` writes what it made as one again.
+/// `dump-of` writes a workspace as a program, and running that program
+/// makes it again.
 #[test]
-fn layouts_are_made_whole_or_not_at_all() -> Outcome {
+fn a_dump_makes_its_workspace_again() -> Outcome {
     let server = Server::start("")?;
-    let good = "new-tab -n build --id @1 --id %1\n\
-                split -v -t %1 --run --id %2 -- sh -c 'echo built; sleep 60'\n\
-                rename -t %2 worker\n";
-    let file = server.dir.join("good.fux");
-    std::fs::write(&file, format!("{good}split -h -t %9\n")).map_err(e)?;
-    let path = file.to_string_lossy().into_owned();
-    let failed = server.fux(&["layout", &path])?;
-    assert_eq!(failed.status, 1);
-    assert!(failed.stderr.contains("line 4"), "{}", failed.stderr);
-    assert!(!server.ok(&["ls"])?.contains("build"), "nothing was made");
-    std::fs::write(&file, good).map_err(e)?;
-    let made = server.ok(&["layout", &path])?;
-    // The failed try's ids are not given again.
-    let mut ids = made.split_whitespace();
-    assert_eq!(ids.next(), Some("+3"), "{made}");
-    let pane = ids.nth(1).ok_or("the tab's pane")?;
-    let worker = ids.next().ok_or("the split's pane")?;
-    server.ok(&["wait", "-t", worker, "--text", "built"])?;
-    let dump = server.ok(&["dump-layout", "-t", "build"])?;
+    let pane = server.ok(&["opts", "str", "build", "name", "new-workspace"])?;
+    let worker = server.ok(&[
+        "str",
+        pane.trim(),
+        "pane",
+        "opts",
+        "vertical",
+        "str",
+        "sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        "echo built; sleep 60",
+        "arg",
+        "split",
+    ])?;
+    server.ok(&["str", worker.trim(), "pane", "str", "worker", "rename"])?;
+    let dump = server.ok(&["str", "build", "workspace", "dump-of"])?;
+    server.ok(&["str", "build", "workspace", "kill"])?;
+    assert!(!server.ok(&["ls"])?.contains("build"));
+    let file = server.dir.join("build.fux");
+    std::fs::write(&file, &dump).map_err(e)?;
+    server.ok(&[&file.to_string_lossy()])?;
+    let ls = server.ok(&["ls"])?;
     assert!(
-        dump.contains(&format!("split -v -t {pane} --run")),
-        "{dump}"
+        ls.contains(" build\n") && ls.contains(" worker "),
+        "{ls}\nfrom\n{dump}"
     );
-    assert!(
-        dump.contains(&format!("rename -t {worker} -- worker")),
-        "{dump}"
-    );
+    let (made, _) = server.newest_pane()?;
+    server.ok(&["str", &made, "pane", "str", "built", "await"])?;
     Ok(())
 }

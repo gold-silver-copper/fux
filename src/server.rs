@@ -9,7 +9,7 @@ use crate::layout::Placement;
 use crate::pane::{Pane, Process};
 use crate::process::Leader;
 use crate::protocol::{
-    Attach, AttachedFrame, Decoder, Frame, Hello, Mismatch, PROTOCOL, Reply, Request, Role,
+    Attach, AttachedFrame, Decoder, Frame, Hello, MAX_PAYLOAD, Mismatch, PROTOCOL, Reply, Request, Role,
     ServerFrame,
 };
 use crate::render::{self, Grid};
@@ -434,7 +434,14 @@ impl Conn {
     /// Answers a request with its outcome, and takes the next.
     fn answer(&mut self, session: &mut Session, outcome: Outcome) {
         let reply = Reply::from(outcome);
-        self.send(session, &ServerFrame::Reply(Box::new(reply)));
+        let bytes = crate::wire::encode(&reply);
+        if bytes.len() < MAX_PAYLOAD {
+            self.send(session, &ServerFrame::Reply(Box::new(reply)));
+        } else {
+            // Too large for one frame: in pieces, then the end.
+            ServerFrame::split_into(&bytes, ServerFrame::Part, &mut self.out);
+            self.send(session, &ServerFrame::PartsEnd);
+        }
         if matches!(self.stage, Stage::Waiting(_) | Stage::Events(_)) {
             self.enter(session, Stage::Command);
         }
@@ -552,7 +559,11 @@ impl Saved {
     /// fuxth program, as a client of the server on `socket` does: on a
     /// thread of its own, as the server serves it. Whether there is one.
     /// It is not saved over while it comes back (`restoring`).
-    fn restore(&self, socket: &SocketPath, restoring: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> bool {
+    fn restore(
+        &self,
+        socket: &SocketPath,
+        restoring: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> bool {
         let text = match std::fs::read_to_string(&self.path) {
             Ok(text) => text,
             Err(e) if e.kind() == ErrorKind::NotFound => return false,
@@ -563,25 +574,30 @@ impl Saved {
         };
         restoring.store(true, std::sync::atomic::Ordering::SeqCst);
         let (path, socket, done) = (self.path.clone(), socket.clone(), restoring.clone());
-        let spawned = std::thread::Builder::new().name("restore".into()).spawn(move || {
-            match crate::script::restore(&socket, &path, &text) {
-                Ok(()) => log(&format!("brought back the session in {}", path.display())),
-                Err(error) => {
-                    // Kept aside, not saved over, for a person to look at.
-                    let aside = path.with_extension("layout.failed");
-                    let _ = std::fs::rename(&path, &aside);
-                    log(&format!(
-                        "could not bring back {}: {error}; the file kept as {}",
-                        path.display(),
-                        aside.display()
-                    ));
+        let spawned = std::thread::Builder::new()
+            .name("restore".into())
+            .spawn(move || {
+                match crate::script::restore(&socket, &path, &text) {
+                    Ok(()) => log(&format!("brought back the session in {}", path.display())),
+                    Err(error) => {
+                        // Kept aside, not saved over, for a person to look at.
+                        let aside = path.with_extension("layout.failed");
+                        let _ = std::fs::rename(&path, &aside);
+                        log(&format!(
+                            "could not bring back {}: {error}; the file kept as {}",
+                            path.display(),
+                            aside.display()
+                        ));
+                    }
                 }
-            }
-            done.store(false, std::sync::atomic::Ordering::SeqCst);
-        });
+                done.store(false, std::sync::atomic::Ordering::SeqCst);
+            });
         if let Err(error) = spawned {
             restoring.store(false, std::sync::atomic::Ordering::SeqCst);
-            log(&format!("could not bring back {}: {error}", self.path.display()));
+            log(&format!(
+                "could not bring back {}: {error}",
+                self.path.display()
+            ));
             return false;
         }
         true
@@ -778,7 +794,11 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
     let children = crate::signal_pipe(&[SIGCHLD]).map_err(Error::Setup)?;
     let stops = crate::signal_pipe(&[SIGTERM, SIGINT, SIGHUP]).map_err(Error::Setup)?;
     // Settings come from clients (`set`), each running its config.
-    let mut session = Session::new(crate::config::Config::default(), socket.path().to_owned(), true);
+    let mut session = Session::new(
+        crate::config::Config::default(),
+        socket.path().to_owned(),
+        true,
+    );
     let saved = Saved::of(socket);
     let restoring = match &saved {
         Some(saved) if fresh => {
@@ -1010,7 +1030,14 @@ impl Server {
                 ServerFrame::split_into(lines.as_bytes(), ServerFrame::Stdout, &mut conn.out);
                 let status = crate::wait::GONE;
                 let code = Some("gone");
-                conn.answer(&mut self.session, Outcome { status, code, ..Outcome::default() });
+                conn.answer(
+                    &mut self.session,
+                    Outcome {
+                        status,
+                        code,
+                        ..Outcome::default()
+                    },
+                );
                 continue;
             }
             if lines.is_empty() {
@@ -1500,8 +1527,20 @@ impl Server {
         if let Some(conn) = self.conns.get_mut(index) {
             decoder.shrink(CONN_KEEP);
             conn.decoder = decoder;
+            // A command client that shut its side still gets the answers
+            // to what it asked.
             if closed {
-                conn.enter(&mut self.session, Stage::Dead);
+                let next = match conn.stage {
+                    Stage::Command => Stage::Closing,
+                    Stage::Hello(_)
+                    | Stage::Attaching(..)
+                    | Stage::Attached(_)
+                    | Stage::Waiting(_)
+                    | Stage::Events(_)
+                    | Stage::Closing
+                    | Stage::Dead => Stage::Dead,
+                };
+                conn.enter(&mut self.session, next);
             }
         }
     }
@@ -1629,12 +1668,24 @@ impl Server {
 
     /// A request from connection `index`: answered now, or once its wait
     /// has its answer, or streamed.
-    fn request(&mut self, index: usize, command: crate::command::Command, context: crate::protocol::Context) {
+    fn request(
+        &mut self,
+        index: usize,
+        command: crate::command::Command,
+        context: crate::protocol::Context,
+    ) {
         let session = &mut self.session;
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
-        let crate::protocol::Context { cwd, pane, server, env, client, restoring } = context;
+        let crate::protocol::Context {
+            cwd,
+            pane,
+            server,
+            env,
+            client,
+            restoring,
+        } = context;
         // A pane of another server's (FUX_PANE kept as FUX_SOCKET chose
         // this one) is not the caller's here.
         let ours = server.as_deref().is_none_or(|s| s == session.server_id);
@@ -1648,7 +1699,12 @@ impl Server {
                 .find(|g| &g.socket == socket)
                 .map_or_else(String::new, |g| g.scope(session))
         });
-        if let crate::command::Command::Grant { workspace, socket, revoke } = command {
+        if let crate::command::Command::Grant {
+            workspace,
+            socket,
+            revoke,
+        } = command
+        {
             let outcome = match scope {
                 Some(_) => refused_grant(),
                 None => {

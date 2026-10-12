@@ -5,7 +5,9 @@
 //! mode tables (`crate::keymap`); a key reaches a pane only as literal
 //! input (`send_key`).
 use crate::act::{LineAct, ListAct};
-use crate::command::{AnyRef, ClientAction, Command, Kind, MoveTo, Pick, Sibling, Subject, SwapWith, WsRef};
+use crate::command::{
+    AnyRef, ClientAction, Command, Kind, MoveTo, Pick, Sibling, Subject, SwapWith, WsRef,
+};
 use crate::id::{ClientId, PaneId, WsId};
 use crate::keys::Keystroke;
 use crate::layout::Tree;
@@ -372,12 +374,24 @@ pub fn list_act(session: &mut Session, client: ClientId, act: ListAct) {
         ListAct::Cancel => return session.set_mode(client, Mode::Normal),
         ListAct::Choose => items.chosen().command.clone(),
         ListAct::Rename | ListAct::Close => {
-            let Some(subject) = items.chosen().subject.map(|s| Subject::from(s.map(WsRef::Id))) else {
+            let Some(subject) = items
+                .chosen()
+                .subject
+                .map(|s| Subject::from(s.map(WsRef::Id)))
+            else {
                 return;
             };
             match act {
                 ListAct::Rename => ClientAction::RenamePrompt(subject).here(),
-                ListAct::Up | ListAct::Down | ListAct::PageUp | ListAct::PageDown | ListAct::First | ListAct::Last | ListAct::Choose | ListAct::Cancel | ListAct::Close => ClientAction::ConfirmClose(subject).here(),
+                ListAct::Up
+                | ListAct::Down
+                | ListAct::PageUp
+                | ListAct::PageDown
+                | ListAct::First
+                | ListAct::Last
+                | ListAct::Choose
+                | ListAct::Cancel
+                | ListAct::Close => ClientAction::ConfirmClose(subject).here(),
             }
         }
     };
@@ -409,7 +423,12 @@ pub fn prompt_act(session: &mut Session, client: ClientId, act: LineAct) {
                 .collect();
             prompt.line.insert(&line);
         }
-        act @ (LineAct::Backspace | LineAct::Delete | LineAct::Left | LineAct::Right | LineAct::Home | LineAct::End) => crate::copy::edit(&mut prompt.line, &act),
+        act @ (LineAct::Backspace
+        | LineAct::Delete
+        | LineAct::Left
+        | LineAct::Right
+        | LineAct::Home
+        | LineAct::End) => crate::copy::edit(&mut prompt.line, &act),
     }
 }
 
@@ -456,15 +475,13 @@ pub fn confirm(session: &mut Session, client: ClientId, yes: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::id::ClientId;
+    use crate::session::testing::{output, output_as, requests, run};
     use crate::view::Mode;
 
     type Outcome = Result<(), String>;
 
     /// A session without processes, one client attached.
-    use crate::session::testing::run;
-
     fn session() -> Result<(Session, ClientId), String> {
         crate::session::testing::attached(30, 100)
     }
@@ -472,16 +489,12 @@ mod tests {
     fn mode(session: &Session, client: ClientId) -> String {
         match session.views.get(&client).map(|v| &v.mode) {
             Some(Mode::Normal) => "normal".into(),
-            Some(Mode::Column(column)) => {
-                let selected = column.entries.as_ref().map_or(0, Choice::index);
-                match column.path.as_slice() {
-                    [] => format!("column {selected}"),
-                    path => format!("column {} {selected}", crate::config::keys_text(path)),
-                }
-            }
-            Some(Mode::Repeat(repeat)) => {
-                format!("repeat {}", crate::config::keys_text(&repeat.path))
-            }
+            // Its keys after the prefix: `C-b g` is the layer `g`.
+            Some(Mode::Column(column)) => match column.keys.split_once(' ') {
+                None => format!("column {}", column.selected),
+                Some((_, layer)) => format!("column {layer} {}", column.selected),
+            },
+            Some(Mode::Repeat(bar)) => format!("repeat {bar}"),
             Some(Mode::List(list)) => format!("list {} {}", list.title, list.items.index()),
             Some(Mode::Prompt(prompt)) => {
                 format!("prompt {}|{}", prompt.line.before(), prompt.line.after())
@@ -502,16 +515,18 @@ mod tests {
     }
 
     /// A name typed into a rename prompt is the name, whatever it looks
-    /// like: one that starts with `-` is not taken for a flag. (A
-    /// workspace's may not start with one, as no target could read it
-    /// back: its flag-like word comes after.)
+    /// like.
     #[test]
     fn a_rename_prompt_takes_any_name() -> Outcome {
         let (mut session, client) = session()?;
         for (open, name, read) in [
-            ("rename-prompt -c c1 pane -t %1", "-dev", "%1"),
-            ("rename-prompt -c c1 tab -t @1", "--", "@1"),
-            ("rename-prompt -c c1 workspace -t +1", "x -w --", "+1"),
+            ("str c1 client str %1 pane rename-prompt", "-dev", "%1"),
+            ("str c1 client str @1 tab rename-prompt", "--", "@1"),
+            (
+                "str c1 client str +1 workspace rename-prompt",
+                "x -w --",
+                "+1",
+            ),
         ] {
             run(&mut session, open)?;
             // Backspace clears what the prompt starts with, the current name.
@@ -519,7 +534,7 @@ mod tests {
             session.input(client, name.as_bytes());
             session.input(client, b"\r");
             assert_eq!(notice(&session, client), "", "{open}");
-            let listed = crate::session::testing::output(&mut session, "ls")?;
+            let listed = output(&mut session, "ls")?;
             assert!(
                 listed.contains(&format!("{read} {name}")),
                 "{open}: {listed}"
@@ -534,9 +549,9 @@ mod tests {
     fn a_short_screen_keeps_the_selected_entry_in_view() -> Outcome {
         let (mut s, c) = crate::session::testing::attached(3, 40)?;
         for _ in 0..3 {
-            run(&mut s, "new-tab -t +1")?;
+            run(&mut s, NEW_TAB)?;
         }
-        run(&mut s, "choose-tab -c c1")?;
+        run(&mut s, "str c1 client choose-tab")?;
         s.input(c, b"\x1b[H");
         let shown = screen_text(&s, c)?;
         assert!(shown.contains("@1 main"), "{shown}");
@@ -548,7 +563,7 @@ mod tests {
     #[test]
     fn a_prompt_holds_at_most_4096_bytes_typed() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "rename-prompt -c c1 pane -t %1")?;
+        run(&mut s, "str c1 client str %1 pane rename-prompt")?;
         s.input(c, &[0x7f; 16]);
         let mut paste = b"\x1b[200~".to_vec();
         paste.extend(std::iter::repeat_n(b'a', 4095));
@@ -563,14 +578,13 @@ mod tests {
         Ok(())
     }
 
-    /// Like the keys after the prefix and copy mode's, a chooser's and a
-    /// confirmation's letter keys work in either case: Caps Lock changes
-    /// nothing.
+    /// Like copy mode's, a chooser's and a confirmation's letter keys work
+    /// in either case: Caps Lock changes nothing.
     #[test]
     fn list_and_confirm_keys_ignore_case() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "new-tab -t +1")?;
-        run(&mut s, "choose-tab -c c1")?;
+        run(&mut s, NEW_TAB)?;
+        run(&mut s, "str c1 client choose-tab")?;
         s.input(c, b"\x1b[H");
         s.input(c, b"J");
         assert!(mode(&s, c).ends_with(" 1"), "J moves down: {}", mode(&s, c));
@@ -578,10 +592,10 @@ mod tests {
         assert!(mode(&s, c).ends_with(" 0"), "K moves up: {}", mode(&s, c));
         s.input(c, b"Q");
         assert_eq!(mode(&s, c), "normal", "Q closes");
-        run(&mut s, "confirm-close -c c1 tab -t @2")?;
+        run(&mut s, "str c1 client str @2 tab confirm-close")?;
         s.input(c, b"Q");
         assert_eq!(mode(&s, c), "normal", "Q cancels");
-        run(&mut s, "confirm-close -c c1 tab -t @2")?;
+        run(&mut s, "str c1 client str @2 tab confirm-close")?;
         s.input(c, b"Y");
         let gone = crate::command::parse_tab("@2").is_ok_and(|t| s.tab(t).is_none());
         assert!(gone, "Y confirms");
@@ -595,9 +609,9 @@ mod tests {
     fn a_scrolled_list_keeps_its_title() -> Outcome {
         let (mut s, c) = session()?;
         for _ in 0..40 {
-            run(&mut s, "new-tab -t +1")?;
+            run(&mut s, NEW_TAB)?;
         }
-        run(&mut s, "choose-tab -c c1")?;
+        run(&mut s, "str c1 client choose-tab")?;
         s.input(c, b"\x1b[H");
         let downs: Vec<u8> = std::iter::repeat_n(&b"\x1b[B"[..], 30)
             .flatten()
@@ -616,54 +630,23 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn the_column_scrolls_within_its_bindings() -> Outcome {
-        let (mut s, c) = session()?;
-        // Its entries: the bindings and layers right after the prefix.
-        let last = column(&s.config, &[]).len().saturating_sub(1);
-        s.input(c, b"\x02");
-        assert_eq!(mode(&s, c), "column 0");
-        let downs: Vec<u8> = std::iter::repeat_n(&b"\x1b[B"[..], 100)
-            .flatten()
-            .copied()
-            .collect();
-        s.input(c, &downs);
-        assert_eq!(
-            mode(&s, c),
-            format!("column {last}"),
-            "Down stops at the last entry"
-        );
-        s.input(c, b"\x1b[H");
-        assert_eq!(mode(&s, c), "column 0");
-        // A page down, or to the last entry if that is nearer.
-        let page = column_room(30).1.min(last);
-        s.input(c, b"\x1b[6~");
-        assert_eq!(mode(&s, c), format!("column {page}"));
-        s.input(c, b"\x1b[A\x1b[A\x1b[B");
-        assert_eq!(mode(&s, c), format!("column {}", page.saturating_sub(1)));
-        s.input(c, b"\x1b[F");
-        assert_eq!(mode(&s, c), format!("column {last}"));
-        // Panes come first.
-        assert!(matches!(
-            column(&s.config, &[]).first().and_then(|e| e.command.as_ref()),
-            Some(Command::Split {
-                axis: crate::layout::Axis::Horizontal,
-                target: None,
-                cmd,
-                ..
-            }) if cmd.is_empty()
-        ));
-        // Letters are bindings, not moves: `j` focuses down and closes it.
-        s.input(c, b"\x1b[Hj");
-        assert_eq!(mode(&s, c), "normal");
-        Ok(())
-    }
+    /// A tab in the first workspace.
+    const NEW_TAB: &str = "opts str +1 workspace in new-tab";
 
     /// A layer and a repeat mode, bound here rather than by default.
     fn with_layers(s: &mut Session) -> Outcome {
-        run(s, "bind g n new-tab")?;
-        run(s, "bind -g Grow -r y l resize-pane -R")?;
-        run(s, "bind -g Grow -r y h resize-pane -L")
+        run(
+            s,
+            "str 'g n' str 'opts new-tab drop' bind str 'new tab' label str Tabs group",
+        )?;
+        run(
+            s,
+            "str 'y l' str 'me focused str right 1 move-border' bind str Grow group repeat",
+        )?;
+        run(
+            s,
+            "str 'y h' str 'me focused str left 1 move-border' bind str Grow group repeat",
+        )
     }
 
     fn pane_width(s: &Session, pane: u32) -> u16 {
@@ -693,15 +676,10 @@ mod tests {
     fn a_layer_runs_its_binding_on_the_next_key() -> Outcome {
         let (mut s, c) = session()?;
         with_layers(&mut s)?;
-        // Right after the prefix, the layer is one entry, under its
-        // command's group, titled by its first binding's group.
-        let entries = column(&s.config, &[]);
-        let at = entries
+        let at = (s.test_keymap.column(&[], 0).ok_or("a column")?.entries)
             .iter()
-            .position(|e| e.key == KeyPress::char('g'))
+            .position(|e| e.key == "g")
             .ok_or("the layer is listed")?;
-        let layer = entries.get(at).ok_or("the layer")?;
-        assert!(layer.command.is_none() && layer.group == "Tabs" && layer.label == "Tabs");
         s.input(c, b"\x02g");
         assert_eq!(mode(&s, c), "column g 0");
         // The column shows the keys so far and the layer's title, and the
@@ -709,29 +687,10 @@ mod tests {
         let text = screen_text(&s, c)?;
         assert!(text.contains("C-b g: Tabs"), "{text}");
         assert!(text.contains("C-b g …"), "{text}");
-        let new_tab = Command::NewTab {
-            ids: Vec::new(),
-            target: None,
-            name: None,
-            cmd: Vec::new(),
-            size: None,
-            cwd: None,
-            env: Vec::new(),
-            json: false,
-        };
-        assert_eq!(
-            column(&s.config, &[KeyPress::char('g')]),
-            [Entry {
-                key: KeyPress::char('n'),
-                root: false,
-                group: "Tabs".into(),
-                label: "new tab".into(),
-                command: Some(new_tab)
-            }]
-        );
+        assert!(text.contains("new tab"), "{text}");
         s.input(c, b"n");
         assert_eq!(mode(&s, c), "normal");
-        assert_eq!(s.workspaces.first().map(|w| w.tabs().len()), Some(2));
+        assert_eq!(tabs(&s), Some(2));
         // Enter on the layer's entry opens it too.
         s.input(c, b"\x02");
         s.input(
@@ -766,22 +725,22 @@ mod tests {
     fn a_repeating_binding_keeps_its_layer_until_enter_or_esc() -> Outcome {
         let (mut s, c) = session()?;
         with_layers(&mut s)?;
-        run(&mut s, "split -h -t %1")?;
-        run(&mut s, "select-pane -c c1 -t %1")?;
+        run(&mut s, "str %1 pane opts horizontal split")?;
+        run(&mut s, "str c1 client str %1 pane focus-pane")?;
         let start = pane_width(&s, 1);
         s.input(c, b"\x02y");
         assert_eq!(mode(&s, c), "column y 0");
         s.input(c, b"l");
-        assert_eq!(mode(&s, c), "repeat y");
+        // The bar names the mode and its keys.
+        assert_eq!(mode(&s, c), "repeat GROW  l h · Esc");
+        let grid = crate::render::compose(&s, c).ok_or("a screen")?;
+        let bar = grid.row_text(grid.rows.saturating_sub(1));
+        assert!(bar.ends_with("GROW  l h · Esc"), "{bar}");
         // No prefix: the mode's keys run again and again.
         s.input(c, b"ll");
         assert_eq!(start.checked_add(3), Some(pane_width(&s, 1)));
         s.input(c, b"h");
         assert_eq!(start.checked_add(2), Some(pane_width(&s, 1)));
-        // The bar names the mode and its keys.
-        let grid = crate::render::compose(&s, c).ok_or("a screen")?;
-        let bar = grid.row_text(grid.rows.saturating_sub(1));
-        assert!(bar.ends_with("GROW  l h · Esc"), "{bar}");
         s.input(c, b"\r");
         assert_eq!(mode(&s, c), "normal");
         // Esc leaves too, once its deadline passes.
@@ -797,34 +756,6 @@ mod tests {
         Ok(())
     }
 
-    /// Bindings can change under a client from the command line: a column
-    /// or repeat mode whose layer goes closes, as a list whose item goes
-    /// does, and a column's selection stays within it.
-    #[test]
-    fn a_layer_unbound_under_a_client_closes_its_column_or_mode() -> Outcome {
-        let (mut s, c) = session()?;
-        with_layers(&mut s)?;
-        s.input(c, b"\x02g");
-        run(&mut s, "unbind g")?;
-        assert_eq!(mode(&s, c), "normal");
-        assert_eq!(notice(&s, c), "closed: the layer C-b g is gone");
-        s.input(c, b"\x02yl");
-        assert_eq!(mode(&s, c), "repeat y");
-        run(&mut s, "unbind y h")?;
-        assert_eq!(mode(&s, c), "repeat y");
-        run(&mut s, "bind y l zoom")?;
-        assert_eq!(mode(&s, c), "normal");
-        assert_eq!(notice(&s, c), "closed: the repeat mode C-b y is gone");
-        s.input(c, b"\x02\x1b[F");
-        let last = column(&s.config, &[]).len().saturating_sub(1);
-        assert_eq!(mode(&s, c), format!("column {last}"));
-        run(&mut s, "unbind d")?;
-        assert_eq!(mode(&s, c), format!("column {}", last.saturating_sub(1)));
-        run(&mut s, "unbind-all")?;
-        assert_eq!(mode(&s, c), "column 0");
-        Ok(())
-    }
-
     #[test]
     fn another_key_leaves_a_repeat_mode_without_reaching_the_pane() -> Outcome {
         let (mut s, c) = session()?;
@@ -833,29 +764,11 @@ mod tests {
         let _ = queued(&mut s, 1);
         s.input(c, b"f");
         assert_eq!(mode(&s, c), "normal");
-        assert_eq!(notice(&s, c), "Grow ended: f is not one of its keys");
+        assert_eq!(notice(&s, c), "f is not one of this mode's keys");
         assert!(queued(&mut s, 1).is_empty());
         // The prefix leaves it for the column.
         s.input(c, b"\x02yl\x02");
         assert_eq!(mode(&s, c), "column 0");
-        Ok(())
-    }
-
-    #[test]
-    fn list_keys_shows_sequences_and_repeats() -> Outcome {
-        let (mut s, _) = session()?;
-        with_layers(&mut s)?;
-        run(&mut s, "bind -n M-t new-tab")?;
-        let out = s.run(&["list-keys".to_owned()], &Origin::default()).stdout;
-        assert!(out.contains("\n     g n  new-tab\n"), "{out}");
-        assert!(
-            out.contains("\n     y l  resize-pane -R (repeats)\n"),
-            "{out}"
-        );
-        assert!(
-            out.ends_with("\nWithout the prefix (bind -n):\n     M-t  new-tab\n"),
-            "{out}"
-        );
         Ok(())
     }
 
@@ -864,19 +777,19 @@ mod tests {
     /// client on %2.
     fn busy() -> Result<(Session, ClientId), String> {
         let (mut s, c) = session()?;
-        run(&mut s, "split -h -t %1")?;
-        run(&mut s, "split -v -t %2")?;
-        run(&mut s, "new-tab -t +1")?;
-        run(&mut s, "new-workspace")?;
-        run(&mut s, "select-pane -c c1 -t %2")?;
+        run(&mut s, "str %1 pane opts horizontal split")?;
+        run(&mut s, "str %2 pane opts vertical split")?;
+        run(&mut s, NEW_TAB)?;
+        run(&mut s, "opts new-workspace")?;
+        run(&mut s, "str c1 client str %2 pane focus-pane")?;
         Ok((s, c))
     }
 
     /// What a user can tell apart: every workspace, tab, pane and client,
     /// the client's mode, and its notice.
-    fn state(s: &mut Session, c: ClientId) -> String {
-        let ls = s.run(&["ls".to_owned()], &Origin::default()).stdout;
-        format!("{ls}{}\n{}", mode(s, c), notice(s, c))
+    fn state(s: &mut Session, c: ClientId) -> Result<String, String> {
+        let ls = output(s, "ls")?;
+        Ok(format!("{ls}{}\n{}", mode(s, c), notice(s, c)))
     }
 
     /// The prefix, then `keys`.
@@ -890,121 +803,138 @@ mod tests {
         s.escape(c);
     }
 
-    /// Typing a default binding's keys does what running its command does;
-    /// a repeating one also enters its mode.
+    /// Typing a default binding's keys does what running its program as the
+    /// client does, and the program runs; a repeating one also enters its
+    /// mode.
     #[test]
-    fn every_default_binding_runs_its_command() -> Outcome {
-        let config = Config::default();
-        let bindings = config.bindings.all();
+    fn every_default_binding_runs_its_program() -> Outcome {
+        let keymap = crate::keymap::Keymap::default();
+        let bindings = keymap.bindings.all();
         assert!(!bindings.is_empty());
+        let mut refused = Vec::new();
         for (path, binding, repeat) in bindings {
-            let keys: String = path.iter().map(KeyPress::to_string).collect();
+            let keys: String = path.iter().map(crate::keys::KeyPress::to_string).collect();
             let (mut typed, c) = busy()?;
             typed.input(c, &prefixed(&keys));
             if repeat {
-                let layer = path.split_last().map(|(_, l)| l).unwrap_or_default();
-                let expected = format!("repeat {}", crate::config::keys_text(layer));
-                assert_eq!(mode(&typed, c), expected, "{keys}");
+                assert!(
+                    mode(&typed, c).starts_with("repeat "),
+                    "{keys}: {}",
+                    mode(&typed, c)
+                );
                 typed.input(c, b"\r");
             }
             let (mut ran, d) = busy()?;
-            run_entry(&mut ran, d, &binding.parsed, None);
-            assert_eq!(state(&mut typed, c), state(&mut ran, d), "{keys}");
+            if let Err(error) = output_as(&mut ran, Some(d), &binding.code) {
+                refused.push(keys.clone());
+                ran.error_to(d, error);
+            }
+            assert_eq!(state(&mut typed, c)?, state(&mut ran, d)?, "{keys}");
         }
+        // Refused as the session stands: no pane that way, no copy to
+        // paste, nothing before the first tab or workspace.
+        assert_eq!(refused, ["k", "l", "p", "mk", "ml", "tmh", "wmh"]);
         Ok(())
     }
 
     /// Menus, choosers and confirmations build their commands, typed,
-    /// with every target given: each is what the command line they used to
-    /// hold parses to.
+    /// with every target given: each is what the words for it ask.
     #[test]
-    fn listed_commands_are_what_their_lines_parse_to() -> Outcome {
+    fn listed_commands_are_what_their_words_ask() -> Outcome {
         let (mut s, c) = busy()?;
-        let parsed = |line: &str| -> Result<Command, String> {
-            crate::command::parse(&crate::words::split(line).map_err(|e| e.to_string())?)
-                .map_err(|u| u.to_string())
-        };
         let listed = |s: &Session| match s.views.get(&c).map(|v| &v.mode) {
             Some(Mode::List(list)) => list.items.iter().map(|i| i.command.clone()).collect(),
             Some(Mode::Confirm(confirm)) => vec![confirm.command.clone()],
             _ => Vec::new(),
         };
-        for (open, lines) in [
+        for (open, programs) in [
             (
-                "menu -c c1 pane -t %2",
+                "me str %2 pane menu",
                 &[
-                    "rename-prompt pane -t %2",
-                    "confirm-close pane -t %2",
-                    "signal -t %2 TERM",
-                    "choose-pane -t %2",
-                    "choose-tab -t %2",
-                    "move-pane -t %2 --to new-tab",
-                    "choose-workspace -t %2",
-                    "move-pane -t %2 --to new-workspace",
-                    "reorder pane --previous -t %2",
-                    "reorder pane --next -t %2",
+                    "me str %2 pane rename-prompt",
+                    "me str %2 pane confirm-close",
+                    "str %2 pane str TERM signal",
+                    "me str %2 pane choose-pane",
+                    "me str %2 pane choose-tab-for",
+                    "str %2 pane str new-tab move-to",
+                    "me str %2 pane choose-workspace-for",
+                    "str %2 pane str new-workspace move-to",
+                    "str %2 pane str previous reorder",
+                    "str %2 pane str next reorder",
                 ][..],
             ),
             (
-                "menu -c c1 tab -t @1",
+                "me str @1 tab menu",
                 &[
-                    "rename-prompt tab -t @1",
-                    "confirm-close tab -t @1",
-                    "new-tab -t +1",
-                    "reorder tab --previous -t @1",
-                    "reorder tab --next -t @1",
+                    "me str @1 tab rename-prompt",
+                    "me str @1 tab confirm-close",
+                    "opts str +1 workspace in new-tab",
+                    "str @1 tab str previous reorder",
+                    "str @1 tab str next reorder",
                 ],
             ),
             (
-                "menu -c c1 workspace -t main",
+                "me str main workspace menu",
                 &[
-                    "rename-prompt workspace -t +1",
-                    "confirm-close workspace -t +1",
-                    "new-workspace",
-                    "reorder workspace --previous -t +1",
-                    "reorder workspace --next -t +1",
+                    "me str +1 workspace rename-prompt",
+                    "me str +1 workspace confirm-close",
+                    "opts new-workspace",
+                    "str +1 workspace str previous reorder",
+                    "str +1 workspace str next reorder",
                 ],
             ),
             (
-                "choose-tab -c c1",
-                &["select-tab -t @1", "select-tab -t @2"],
+                "me choose-tab",
+                &["me str @1 tab show-tab", "me str @2 tab show-tab"],
             ),
             (
-                "choose-tab -c c1 -t %2",
-                &["move-pane -t %2 --to @1", "move-pane -t %2 --to @2"],
+                "me str %2 pane choose-tab-for",
+                &[
+                    "str %2 pane str @1 tab move-to",
+                    "str %2 pane str @2 tab move-to",
+                ],
             ),
             (
-                "choose-workspace -c c1",
-                &["select-workspace -t +1", "select-workspace -t +2"],
+                "me choose-workspace",
+                &[
+                    "me str +1 workspace show-workspace",
+                    "me str +2 workspace show-workspace",
+                ],
             ),
             (
-                "choose-workspace -c c1 --move",
-                &["move-pane -t %2 --to +1", "move-pane -t %2 --to +2"],
+                "me str %2 pane choose-workspace-for",
+                &[
+                    "str %2 pane str +1 workspace move-to",
+                    "str %2 pane str +2 workspace move-to",
+                ],
             ),
             (
-                "choose-pane -c c1 -t %2",
-                &["swap-pane -t %2 %1", "swap-pane -t %2 %3"],
+                "me str %2 pane choose-pane",
+                &[
+                    "str %2 pane str %1 pane swap-panes",
+                    "str %2 pane str %3 pane swap-panes",
+                ],
             ),
-            ("confirm-close -c c1 pane -t %3", &["kill-pane -t %3"]),
-            ("confirm-close -c c1 tab -t @2", &["kill-tab -t @2"]),
+            ("me str %3 pane confirm-close", &["str %3 pane kill"]),
+            ("me str @2 tab confirm-close", &["str @2 tab kill"]),
             (
-                "confirm-close -c c1 workspace -t main",
-                &["kill-workspace -t +1"],
+                "me str main workspace confirm-close",
+                &["str +1 workspace kill"],
             ),
         ] {
-            run(&mut s, open)?;
-            let expected = lines
-                .iter()
-                .map(|l| parsed(l))
-                .collect::<Result<Vec<_>, _>>()?;
+            output_as(&mut s, Some(c), open)?;
+            let mut expected = Vec::new();
+            for program in programs {
+                expected.extend(requests(&mut s, c, program)?);
+            }
             assert_eq!(listed(&s), expected, "{open}");
         }
         // A chooser's `r` and `x` act on the selected item.
-        run(&mut s, "choose-tab -c c1")?;
+        output_as(&mut s, Some(c), "me choose-tab")?;
         s.input(c, b"r");
         assert_eq!(mode(&s, c), "prompt main|");
         s.input(c, b"\r");
-        run(&mut s, "choose-tab -c c1")?;
+        output_as(&mut s, Some(c), "me choose-tab")?;
         s.input(c, b"x");
         assert_eq!(mode(&s, c), "confirm close tab @1 main?");
         Ok(())
@@ -1018,7 +948,7 @@ mod tests {
     #[test]
     fn keys_after_the_prefix_match_as_typed() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "bind V new-tab")?;
+        run(&mut s, "str V str 'opts new-tab drop' bind")?;
         s.input(c, &prefixed("V"));
         assert_eq!(tabs(&s), Some(2));
         assert_eq!(mode(&s, c), "normal");
@@ -1041,7 +971,7 @@ mod tests {
         s.input(c, &prefixed("\x1b[B\x1b[B\x1b[A"));
         assert_eq!(mode(&s, c), "column 1");
         escape(&mut s, c);
-        run(&mut s, "bind Up new-tab")?;
+        run(&mut s, "str Up str 'opts new-tab drop' bind")?;
         s.input(c, &prefixed("\x1b[A"));
         assert_eq!(tabs(&s), Some(2));
         assert_eq!(mode(&s, c), "normal");
@@ -1054,18 +984,15 @@ mod tests {
         let _ = queued(&mut s, pane);
         s.input(c, &[0x02, 0x02]);
         assert_eq!(queued(&mut s, pane), b"\x02");
-        run(&mut s, "bind C-b new-tab")?;
+        run(&mut s, "str C-b str 'opts new-tab drop' bind")?;
         s.input(c, &[0x02, 0x02]);
         assert_eq!(tabs(&s), Some(3));
         let pane = s.focused(c).map_or(0, PaneId::number);
         assert!(queued(&mut s, pane).is_empty());
-        // `send-prefix` sends it from anywhere.
-        run(&mut s, &format!("send-prefix -t %{pane}"))?;
-        assert_eq!(queued(&mut s, pane), b"\x02");
         // A digit, a function key and a chord bind as letters do.
-        run(&mut s, "bind 1 new-tab")?;
-        run(&mut s, "bind F5 new-tab")?;
-        run(&mut s, "bind M-n new-tab")?;
+        for key in ["1", "F5", "M-n"] {
+            run(&mut s, &format!("str {key} str 'opts new-tab drop' bind"))?;
+        }
         s.input(c, &prefixed("1"));
         s.input(c, &prefixed("\x1b[15~"));
         s.input(c, &prefixed("\x1bn"));
@@ -1076,12 +1003,15 @@ mod tests {
     #[test]
     fn a_repeat_mode_may_bind_enter() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "split -h -t %1")?;
-        run(&mut s, "select-pane -c c1 -t %1")?;
+        run(&mut s, "str %1 pane opts horizontal split")?;
+        run(&mut s, "str c1 client str %1 pane focus-pane")?;
         let start = pane_width(&s, 1);
-        run(&mut s, "bind -r r Enter resize-pane -R")?;
+        run(
+            &mut s,
+            "str 'r Enter' str 'me focused str right 1 move-border' bind repeat",
+        )?;
         s.input(c, &prefixed("r\r\r"));
-        assert_eq!(mode(&s, c), "repeat r");
+        assert!(mode(&s, c).starts_with("repeat "), "{}", mode(&s, c));
         assert_eq!(start.checked_add(2), Some(pane_width(&s, 1)));
         escape(&mut s, c);
         assert_eq!(mode(&s, c), "normal");
@@ -1093,7 +1023,7 @@ mod tests {
     #[test]
     fn keys_without_the_prefix_share_no_heading() -> Outcome {
         let (mut s, c) = crate::session::testing::attached(100, 100)?;
-        run(&mut s, "bind -n -g Session F2 zoom")?;
+        run(&mut s, "str F2 str 'me zoom' bind-root str Session group")?;
         s.input(c, b"\x02");
         let text = screen_text(&s, c)?;
         let headings = text.lines().filter(|l| l.trim() == "Session").count();
@@ -1104,7 +1034,7 @@ mod tests {
     #[test]
     fn a_key_bound_without_the_prefix_runs_at_once_and_reaches_no_pane() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "bind -n M-t new-tab")?;
+        run(&mut s, "str M-t str 'opts new-tab drop' bind-root")?;
         s.input(c, b"\x1bt");
         assert_eq!(tabs(&s), Some(2));
         let pane = s.focused(c).map_or(0, PaneId::number);
@@ -1113,7 +1043,7 @@ mod tests {
         s.input(c, b"\x1bl");
         assert_eq!(queued(&mut s, pane), b"\x1bl");
         // In copy mode and in the column the key is theirs, not the binding's.
-        run(&mut s, "copy-mode -c c1")?;
+        run(&mut s, "str c1 client copy-mode")?;
         s.input(c, b"\x1bt");
         assert_eq!(tabs(&s), Some(2));
         s.input(c, b"q");
@@ -1122,14 +1052,11 @@ mod tests {
         assert_eq!(tabs(&s), Some(2));
         assert_eq!(notice(&s, c), "C-b M-t is not bound");
         escape(&mut s, c);
-        // The column lists it last, under its own heading, and runs it.
-        let entries = column(&s.config, &[]);
-        let last = entries.last().ok_or("an entry")?;
-        assert!(last.root && last.group == ROOT_GROUP, "{entries:?}");
-        assert!(entries.iter().rev().nth(1).is_some_and(|e| !e.root));
-        let last = column(&s.config, &[]).len().saturating_sub(1);
+        // The column lists it last, and runs it.
+        let entries = s.test_keymap.column(&[], 0).ok_or("a column")?.entries;
+        assert!(entries.last().is_some_and(|e| e.root), "{entries:?}");
         s.input(c, &prefixed(""));
-        for _ in 0..last {
+        for _ in 1..entries.len() {
             s.input(c, b"\x1b[B");
         }
         s.input(c, b"\r");
@@ -1152,8 +1079,8 @@ mod tests {
     #[test]
     fn a_mouse_report_reaches_the_focused_pane_in_its_cells() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "split -h -t %1")?;
-        run(&mut s, "select-pane -c c1 -t %2")?;
+        run(&mut s, "str %1 pane opts horizontal split")?;
+        run(&mut s, "str c1 client str %2 pane focus-pane")?;
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
         assert!(right.x() > 1 && right.y() == 0, "{right:?}");
         // Nothing asked: no reporting, and a report is dropped.
@@ -1183,8 +1110,8 @@ mod tests {
         );
         assert_eq!(queued(&mut s, 2), b"\x1b[<0;1;1M");
         // A pane below another: moved down too.
-        run(&mut s, "split -v -t %2")?;
-        run(&mut s, "select-pane -c c1 -t %3")?;
+        run(&mut s, "str %2 pane opts vertical split")?;
+        run(&mut s, "str c1 client str %3 pane focus-pane")?;
         let below = rect_of(&s, c, 3).ok_or("no rect for %3")?;
         assert!(below.y() > 1, "{below:?}");
         s.output(crate::id::PaneId::of(3), b"\x1b[?1000h\x1b[?1006h");
@@ -1196,8 +1123,8 @@ mod tests {
     #[test]
     fn a_drag_out_of_the_pane_is_kept_to_its_edge() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "split -h -t %1")?;
-        run(&mut s, "select-pane -c c1 -t %2")?;
+        run(&mut s, "str %1 pane opts horizontal split")?;
+        run(&mut s, "str c1 client str %2 pane focus-pane")?;
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
         s.output(crate::id::PaneId::of(2), b"\x1b[?1002h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1002));
@@ -1222,8 +1149,8 @@ mod tests {
     #[test]
     fn the_mouse_is_reported_only_while_the_focused_program_has_the_keys() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "split -h -t %1")?;
-        run(&mut s, "select-pane -c c1 -t %2")?;
+        run(&mut s, "str %1 pane opts horizontal split")?;
+        run(&mut s, "str c1 client str %2 pane focus-pane")?;
         s.output(crate::id::PaneId::of(2), b"\x1b[?1003h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1003));
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
@@ -1231,65 +1158,67 @@ mod tests {
         // Copy mode, the column and a prompt have the keys: no reporting,
         // and a report in flight is dropped.
         for (open, close) in [
-            ("copy-mode -c c1", &b"q"[..]),
-            ("command-column -c c1", b"\x1b"),
-            ("command-prompt -c c1", b"\x1b"),
+            (&b"\x02c"[..], &b"q"[..]),
+            (b"\x02", b"\x1b"),
+            (b"\x02e", b"\x1b"),
         ] {
-            run(&mut s, open)?;
-            assert_eq!(asked_mouse_level(&s, c), Some(0), "{open}");
+            let name = String::from_utf8_lossy(open);
+            s.input(c, open);
+            assert_eq!(asked_mouse_level(&s, c), Some(0), "{name:?}");
             s.input(c, press.as_bytes());
-            assert!(queued(&mut s, 2).is_empty(), "{open}");
+            assert!(queued(&mut s, 2).is_empty(), "{name:?}");
             s.input(c, close);
             std::thread::sleep(crate::decode::ESCAPE_DELAY);
             s.escape(c);
-            assert_eq!(mode(&s, c), "normal", "{open}");
-            assert_eq!(asked_mouse_level(&s, c), Some(1003), "{open}");
+            assert_eq!(mode(&s, c), "normal", "{name:?}");
+            assert_eq!(asked_mouse_level(&s, c), Some(1003), "{name:?}");
         }
         // Focus on a pane whose program did not ask: none.
-        run(&mut s, "select-pane -c c1 -t %1")?;
+        run(&mut s, "str c1 client str %1 pane focus-pane")?;
         assert_eq!(asked_mouse_level(&s, c), Some(0));
         s.input(c, b"\x1b[<0;2;2M");
         assert!(queued(&mut s, 1).is_empty() && queued(&mut s, 2).is_empty());
         // Zoomed, the pane fills the screen, and its cells are the screen's.
-        run(&mut s, "select-pane -c c1 -t %2")?;
-        run(&mut s, "zoom -c c1")?;
+        run(&mut s, "str c1 client str %2 pane focus-pane")?;
+        run(&mut s, "str c1 client zoom")?;
         s.input(c, b"\x1b[<0;2;2M");
         assert_eq!(queued(&mut s, 2), b"\x1b[<0;2;2M");
         Ok(())
     }
 
     /// The panes of the client's tab, left to right.
-    fn pane_order(s: &mut Session) -> Vec<String> {
-        let ls = s.run(&["ls".to_owned()], &Origin::default()).stdout;
-        ls.lines()
+    fn pane_order(s: &mut Session) -> Result<Vec<String>, String> {
+        let ls = output(s, "ls")?;
+        Ok(ls
+            .lines()
             .filter_map(|l| l.trim_start().split(' ').next())
             .filter(|w| w.starts_with('%'))
             .map(str::to_owned)
-            .collect()
+            .collect())
     }
 
     #[test]
     fn move_mode_moves_a_pane_until_esc() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "split -h -t %1")?;
-        run(&mut s, "split -h -t %2")?;
-        run(&mut s, "select-pane -c c1 -t %3")?;
-        assert_eq!(pane_order(&mut s), ["%1", "%2", "%3"]);
+        run(&mut s, "str %1 pane opts horizontal split")?;
+        run(&mut s, "str %2 pane opts horizontal split")?;
+        run(&mut s, "str c1 client str %3 pane focus-pane")?;
+        assert_eq!(pane_order(&mut s)?, ["%1", "%2", "%3"]);
         s.input(c, &prefixed("mhh"));
         escape(&mut s, c);
         assert_eq!(mode(&s, c), "normal");
-        assert_eq!(pane_order(&mut s), ["%3", "%1", "%2"]);
+        assert_eq!(pane_order(&mut s)?, ["%3", "%1", "%2"]);
         Ok(())
     }
 
     #[test]
     fn the_tab_layer_reorders_in_a_repeat_mode() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "new-tab -t +1 -n two")?;
-        run(&mut s, "new-tab -t +1 -n three")?;
-        run(&mut s, "select-tab -c c1 -t @1")?;
+        run(&mut s, "opts str +1 workspace in str two name new-tab")?;
+        run(&mut s, "opts str +1 workspace in str three name new-tab")?;
+        run(&mut s, "str c1 client str @1 tab show-tab")?;
         s.input(c, &prefixed("tmll"));
-        assert_eq!(mode(&s, c), "repeat t m");
+        assert_eq!(mode(&s, c), "repeat REORDER  h l · Esc");
         escape(&mut s, c);
         let order: Vec<String> = s
             .workspaces
@@ -1303,10 +1232,10 @@ mod tests {
     #[test]
     fn a_list_whose_item_disappears_closes_and_never_retargets() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "split -h -t %1")?;
-        run(&mut s, "select-pane -c c1 -t %2")?;
+        run(&mut s, "str %1 pane opts horizontal split")?;
+        run(&mut s, "str c1 client str %2 pane focus-pane")?;
         s.input(c, b"\x02a");
-        run(&mut s, "kill-pane -t %2")?;
+        run(&mut s, "str %2 pane kill")?;
         assert_eq!(mode(&s, c), "normal");
         assert!(notice(&s, c).contains("%2 is gone"), "{}", notice(&s, c));
         Ok(())
@@ -1318,13 +1247,13 @@ mod tests {
     #[test]
     fn an_overlay_holds_a_workspace_named_by_name_through_a_rename() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "rename-prompt -c c1 workspace -t main")?;
-        run(&mut s, "rename -t main other")?;
+        run(&mut s, "str c1 client str main workspace rename-prompt")?;
+        run(&mut s, "str main workspace str other rename")?;
         assert_eq!(mode(&s, c), "prompt main|", "{}", notice(&s, c));
         s.input(c, b"\x7f\x7f\x7f\x7fnew\r");
         assert_eq!(s.workspaces.first().map(|w| w.name.as_str()), Some("new"));
-        run(&mut s, "confirm-close -c c1 workspace -t new")?;
-        run(&mut s, "rename -t new again")?;
+        run(&mut s, "str c1 client str new workspace confirm-close")?;
+        run(&mut s, "str new workspace str again rename")?;
         assert_eq!(mode(&s, c), "confirm close workspace +1 new?");
         Ok(())
     }
@@ -1332,8 +1261,8 @@ mod tests {
     #[test]
     fn choosers_mark_the_current_item_and_start_on_it() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "new-tab -t +1 -n second")?;
-        run(&mut s, "select-tab -c c1 -t @2")?;
+        run(&mut s, "opts str +1 workspace in str second name new-tab")?;
+        run(&mut s, "str c1 client str @2 tab show-tab")?;
         s.input(c, b"\x02tg");
         let Some(Mode::List(list)) = s.views.get(&c).map(|v| &v.mode) else {
             return Err(mode(&s, c));

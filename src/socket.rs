@@ -167,7 +167,7 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "no fux server is running at {}; `fux` in a terminal starts one, or \
-                     `fux [-L NAME] server --background` one with no terminal",
+                     `fux start` (or `fux str NAME server start`) one with no terminal",
                     path.display()
                 )
             }

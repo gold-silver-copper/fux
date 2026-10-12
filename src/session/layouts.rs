@@ -71,7 +71,11 @@ impl Session {
             line.extend(string(&tab.name).chain(["name".to_owned()]));
         }
         if let Fit::Fixed(size) = tab.fit() {
-            line.extend([size.cols().to_string(), size.rows().to_string(), "size".to_owned()]);
+            line.extend([
+                size.cols().to_string(),
+                size.rows().to_string(),
+                "size".to_owned(),
+            ]);
         }
         if ids {
             if opens {
@@ -88,7 +92,15 @@ impl Session {
         line.extend(["constant".to_owned(), constant(first)]);
         push(out, &line);
         if opens {
-            push(out, &[constant(first), "workspace".into(), "constant".into(), workspace(ws.id)]);
+            push(
+                out,
+                &[
+                    constant(first),
+                    "workspace".into(),
+                    "constant".into(),
+                    workspace(ws.id),
+                ],
+            );
         }
         if named && program.is_none() && opens {
             let mut rename = vec![constant(first), "tab".to_owned()];
@@ -109,7 +121,10 @@ impl Session {
                     continue;
                 };
                 let name = constant(*pane);
-                push(out, &[name.clone(), size.cols().to_string(), "resize-x".into()]);
+                push(
+                    out,
+                    &[name.clone(), size.cols().to_string(), "resize-x".into()],
+                );
                 push(out, &[name, size.rows().to_string(), "resize-y".into()]);
             }
         }

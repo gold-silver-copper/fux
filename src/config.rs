@@ -7,14 +7,26 @@ use std::path::PathBuf;
 /// Why a setting is refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
-    UnknownOption { option: String },
-    NotANumber { option: String },
-    TooLarge { option: String, max: usize },
-    NotOnOff { option: String, value: String },
+    UnknownOption {
+        option: String,
+    },
+    NotANumber {
+        option: String,
+    },
+    TooLarge {
+        option: String,
+        max: usize,
+    },
+    NotOnOff {
+        option: String,
+        value: String,
+    },
     NoBuffers,
     NoProgram,
     /// A name `update-environment` is given that no variable has.
-    NotAVariable { name: String },
+    NotAVariable {
+        name: String,
+    },
     Words(String),
 }
 
@@ -109,7 +121,10 @@ impl Config {
                 .parse()
                 .map_err(|_| Error::NotANumber { option: name() })?;
             match n > max {
-                true => Err(Error::TooLarge { option: name(), max }),
+                true => Err(Error::TooLarge {
+                    option: name(),
+                    max,
+                }),
                 false => Ok(n),
             }
         };

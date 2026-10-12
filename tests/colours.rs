@@ -126,7 +126,7 @@ fn the_real_client_turns_off_colour_scheme_reports_as_it_leaves() -> Outcome {
     terminal.type_bytes(GHOSTTY_ANSWERS)?;
     terminal.wait_for("\x1b[?2031h")?;
     terminal.type_bytes(b"\x1b[?997;1n")?;
-    server.ok(&["detach", "-c", "c1"])?;
+    server.ok(&["str", "c1", "client", "detach"])?;
     terminal.wait_exit()?;
     let output = String::from_utf8_lossy(&terminal.output).into_owned();
     let on = output.find("\x1b[?2031h").ok_or("never turned on")?;

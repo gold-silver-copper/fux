@@ -142,7 +142,9 @@ pub enum Then {
     /// A field's value.
     Value,
     /// A wait's outcome: its text, and JSON; nothing for no wait.
-    Outcome { waited: bool },
+    Outcome {
+        waited: bool,
+    },
 }
 
 /// What the client does itself.
@@ -161,6 +163,8 @@ pub enum Local {
     Start,
     Status,
     Servers,
+    /// Stop the server, whatever its version.
+    ForceKill,
 }
 
 /// What runs a program's words: where its requests come from, the client's
@@ -277,7 +281,8 @@ impl Server {
             Some(requests) => requests,
             None => {
                 let socket = self.socket()?;
-                self.requests.insert(crate::client::Requests::open(&socket).map_err(client_failed)?)
+                self.requests
+                    .insert(crate::client::Requests::open(&socket).map_err(client_failed)?)
             }
         };
         let asked = requests.ask(request, out).map_err(client_failed);
@@ -293,7 +298,26 @@ fn client_failed(error: crate::client::Error) -> Failed {
         crate::client::Error::Socket(crate::socket::Error::NoServer(_))
         | crate::client::Error::Connect { .. } => "no_server",
         crate::client::Error::Mismatch(_) => "mismatch",
-        crate::client::Error::Socket(_) | crate::client::Error::Refused(_) | crate::client::Error::NoAnswer | crate::client::Error::Timeout | crate::client::Error::Closed | crate::client::Error::Protocol(_) | crate::client::Error::Write(_) | crate::client::Error::Read(_) | crate::client::Error::Exe(_) | crate::client::Error::Log(_) | crate::client::Error::Spawn(_) | crate::client::Error::Exited { .. } | crate::client::Error::NotStarted { .. } | crate::client::Error::NotATerminal | crate::client::Error::Modes(_) | crate::client::Error::RawMode(_) | crate::client::Error::Signals(_) | crate::client::Error::Poll(_) | crate::client::Error::ReadTerminal(_) | crate::client::Error::WriteTerminal(_) => "client",
+        crate::client::Error::Socket(_)
+        | crate::client::Error::Refused(_)
+        | crate::client::Error::NoAnswer
+        | crate::client::Error::Timeout
+        | crate::client::Error::Closed
+        | crate::client::Error::Protocol(_)
+        | crate::client::Error::Write(_)
+        | crate::client::Error::Read(_)
+        | crate::client::Error::Exe(_)
+        | crate::client::Error::Log(_)
+        | crate::client::Error::Spawn(_)
+        | crate::client::Error::Exited { .. }
+        | crate::client::Error::NotStarted { .. }
+        | crate::client::Error::NotATerminal
+        | crate::client::Error::Modes(_)
+        | crate::client::Error::RawMode(_)
+        | crate::client::Error::Signals(_)
+        | crate::client::Error::Poll(_)
+        | crate::client::Error::ReadTerminal(_)
+        | crate::client::Error::WriteTerminal(_) => "client",
     };
     Failed {
         status: 1,
@@ -335,12 +359,18 @@ impl Asks for Cli {
 
 /// Runs `machine` to its end, asking `asks` what its words ask. Its stack
 /// at the end.
-pub fn run(machine: &mut Machine<Fux>, host: &mut Host<'_>, asks: &mut dyn Asks) -> Result<Ended, Failed> {
+pub fn run(
+    machine: &mut Machine<Fux>,
+    host: &mut Host<'_>,
+    asks: &mut dyn Asks,
+) -> Result<Ended, Failed> {
+    // A wait met by its program's exit: the run ends with that status.
+    let mut status = 0;
     loop {
         match machine.run(host, 100_000)? {
             Outcome::Finished => {
                 return Ok(Ended {
-                    status: 0,
+                    status,
                     stack: machine.stack().to_vec(),
                 });
             }
@@ -356,6 +386,9 @@ pub fn run(machine: &mut Machine<Fux>, host: &mut Host<'_>, asks: &mut dyn Asks)
                 }
                 let query = command.clone();
                 let reply = asks.ask(&Request { command, context }, host.out)?;
+                if met(&reply) && reply.status != 0 {
+                    status = reply.status;
+                }
                 for value in answered(reply, then, query)? {
                     machine.push(value)?;
                 }
@@ -369,10 +402,17 @@ pub fn run(machine: &mut Machine<Fux>, host: &mut Host<'_>, asks: &mut dyn Asks)
     }
 }
 
+/// Whether a reply with a status other than 0 is a wait met by its
+/// program's exit, which is no failure: that status is the run's (`run`).
+/// Every failure says why.
+fn met(reply: &Reply) -> bool {
+    reply.message.is_empty() && reply.code.is_none()
+}
+
 /// What a reply puts on the stack, `then` saying what it is; a failure,
 /// with its status, if it failed.
 pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fux>>, Failed> {
-    if reply.status != 0 {
+    if reply.status != 0 && !met(&reply) {
         let message = match (reply.message.trim_end(), reply.text.trim_end()) {
             ("", text) => text.to_owned(),
             (message, "") => message.to_owned(),
@@ -455,7 +495,11 @@ pub fn display(value: &Value<Fux>) -> String {
 
 /// What a program does that the client does itself, from the command line:
 /// attaching, choosing and starting a server, and asking after servers.
-fn local(what: &Local, server: &mut Server, _out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
+fn local(
+    what: &Local,
+    server: &mut Server,
+    _out: &mut dyn Write,
+) -> Result<Vec<Value<Fux>>, Failed> {
     let failed = |code: &str, message: String| Failed {
         status: 1,
         code: code.to_owned(),
@@ -463,7 +507,10 @@ fn local(what: &Local, server: &mut Server, _out: &mut dyn Write) -> Result<Vec<
     };
     match what {
         Local::Server(chosen) => server.choose(chosen.clone()),
-        Local::Attach { workspace, read_only } => {
+        Local::Attach {
+            workspace,
+            read_only,
+        } => {
             if std::env::var_os("FUX_PANE").is_some_and(|p| !p.is_empty()) {
                 let why = "this is a fux pane: attaching here would show fux inside itself \
                            (unset FUX_PANE to do it anyway)";
@@ -499,6 +546,10 @@ fn local(what: &Local, server: &mut Server, _out: &mut dyn Write) -> Result<Vec<
         Local::Start => {
             started(server)?;
         }
+        Local::ForceKill => {
+            let socket = server.socket()?;
+            crate::client::kill_server(&socket).map_err(client_failed)?;
+        }
         Local::Status => {
             let socket = server.socket()?;
             let probe = crate::client::probe(&socket).map_err(client_failed)?;
@@ -531,6 +582,9 @@ fn started(server: &mut Server) -> Result<crate::socket::SocketPath, Failed> {
     let socket = server.socket()?;
     if std::os::unix::net::UnixStream::connect(socket.path()).is_err() {
         crate::client::start_server(&socket).map_err(client_failed)?;
+        if let (_, Some(problem)) = configured(server) {
+            let _ = writeln!(std::io::stderr(), "fux: {problem}");
+        }
     }
     Ok(socket)
 }
@@ -542,13 +596,19 @@ pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
     let Some(path) = crate::config::default_path().filter(|p| p.exists()) else {
         return (keymap, None);
     };
-    let problem = run_file(&path, &mut keymap, server).err();
-    (keymap, problem.map(|failed| format!("config: {failed}")))
+    match run_file(&path, &mut keymap, server) {
+        Ok(()) => (keymap, None),
+        // Half a config is no config: the defaults, and why.
+        Err(failed) => (Keymap::default(), Some(format!("config: {failed}"))),
+    }
 }
 
 /// Runs the config file at `path` against the server on `socket`, as a
 /// client does as it attaches: the keymap it makes, or its failure.
-pub fn configure(path: &std::path::Path, socket: &crate::socket::SocketPath) -> Result<Keymap, Failed> {
+pub fn configure(
+    path: &std::path::Path,
+    socket: &crate::socket::SocketPath,
+) -> Result<Keymap, Failed> {
     let mut keymap = Keymap::default();
     let mut server = Server::new(Chosen::Path(socket.path().to_string_lossy().into_owned()));
     run_file(path, &mut keymap, &mut server)?;
@@ -557,7 +617,11 @@ pub fn configure(path: &std::path::Path, socket: &crate::socket::SocketPath) -> 
 
 /// Runs a config file, its words changing `keymap`, its settings sent to
 /// `server`. A config attaches nothing, and chooses no other server.
-fn run_file(path: &std::path::Path, keymap: &mut Keymap, server: &mut Server) -> Result<(), Failed> {
+fn run_file(
+    path: &std::path::Path,
+    keymap: &mut Keymap,
+    server: &mut Server,
+) -> Result<(), Failed> {
     let shown = path.display().to_string();
     let text = std::fs::read_to_string(path).map_err(|e| Failed {
         status: 1,
@@ -572,7 +636,24 @@ fn run_file(path: &std::path::Path, keymap: &mut Keymap, server: &mut Server) ->
         last_bound: None,
         out: &mut out,
     };
-    run(&mut machine, &mut host, server).map(drop)
+    run(&mut machine, &mut host, &mut Settings(server)).map(drop)
+}
+
+/// What a config's requests go to: settings alone, as a config runs each
+/// time a client attaches, and must make nothing.
+struct Settings<'a>(&'a mut Server);
+
+impl Asks for Settings<'_> {
+    fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
+        if let Command::Set { .. } = &request.command {
+            return self.0.ask(request, out);
+        }
+        Err(Failed {
+            status: 1,
+            code: "not_config".to_owned(),
+            message: "a config sets and binds: it runs each time a client attaches, so it makes and changes nothing else".to_owned(),
+        })
+    }
 }
 
 /// A program that may not do what the client does itself: a config's, a
@@ -585,6 +666,7 @@ pub fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
         Local::Start => "start",
         Local::Status => "status",
         Local::Servers => "servers",
+        Local::ForceKill => "force-kill-server",
     };
     Err(Failed {
         status: 1,
@@ -595,7 +677,11 @@ pub fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
 
 /// Brings back a saved session: its program run against the server on
 /// `socket`, ids asked for as saved, programs left for `respawn`.
-pub fn restore(socket: &crate::socket::SocketPath, path: &std::path::Path, text: &str) -> Result<(), Failed> {
+pub fn restore(
+    socket: &crate::socket::SocketPath,
+    path: &std::path::Path,
+    text: &str,
+) -> Result<(), Failed> {
     let mut machine = compile(&fuxth::token::source(&path.display().to_string(), text)?)?;
     let mut out = std::io::sink();
     let mut context = crate::client::context();
@@ -627,7 +713,8 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         [] => fuxth::token::arguments(&["attach"]),
         [dash] if dash == "-" => {
             let mut text = String::new();
-            let read_all = std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).map(|_| text);
+            let read_all =
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).map(|_| text);
             fuxth::token::source("stdin", &read("stdin", read_all)?)?
         }
         [file] if file.contains('/') || file.ends_with(".fux") => {
@@ -636,15 +723,52 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         words => fuxth::token::arguments(words),
     };
     let mut machine = compile(&tokens)?;
+    let mut out = Checked { out, failed: None };
     let mut host = Host {
         context: crate::client::context(),
         keymap: None,
         last_bound: None,
-        out,
+        out: &mut out,
     };
     let ended = run(&mut machine, &mut host, &mut Cli::default())?;
     for value in &ended.stack {
         let _ = writeln!(host.out, "{}", display(value));
     }
-    Ok(ended.status)
+    let _ = host.out.flush();
+    match out.failed {
+        Some(error) => Err(Failed {
+            status: 1,
+            code: "output".to_owned(),
+            message: format!("writing the output: {error}"),
+        }),
+        None => Ok(ended.status),
+    }
+}
+
+/// Output that keeps its first failure, so that a run whose output cannot
+/// be written fails, however its words wrote it.
+struct Checked<'a> {
+    out: &'a mut dyn Write,
+    failed: Option<std::io::Error>,
+}
+
+impl Write for Checked<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let written = self.out.write(bytes);
+        if let Err(error) = &written
+            && self.failed.is_none()
+        {
+            self.failed = Some(std::io::Error::new(error.kind(), error.to_string()));
+        }
+        written
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        let flushed = self.out.flush();
+        if let Err(error) = &flushed
+            && self.failed.is_none()
+        {
+            self.failed = Some(std::io::Error::new(error.kind(), error.to_string()));
+        }
+        flushed
+    }
 }

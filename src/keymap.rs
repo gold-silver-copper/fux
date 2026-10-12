@@ -23,7 +23,10 @@ pub struct Binding {
 pub enum Node {
     /// With `repeat`, its layer stays after it runs: its keys repeat
     /// without the prefix until Esc.
-    Run { binding: Binding, repeat: bool },
+    Run {
+        binding: Binding,
+        repeat: bool,
+    },
     Layer(Layer),
 }
 
@@ -69,7 +72,11 @@ impl Layer {
     /// What `keys` below this layer are.
     fn node_mut(&mut self, keys: &[KeyPress]) -> Option<&mut Node> {
         let (key, rest) = keys.split_first()?;
-        let node = self.0.iter_mut().find(|(k, _)| k == key).map(|(_, node)| node)?;
+        let node = self
+            .0
+            .iter_mut()
+            .find(|(k, _)| k == key)
+            .map(|(_, node)| node)?;
         match (node, rest.is_empty()) {
             (node, true) => Some(node),
             (Node::Layer(layer), false) => layer.node_mut(rest),
@@ -139,13 +146,18 @@ impl Layer {
 
 /// Keys as they are written: `t n`.
 pub fn keys_text(keys: &[KeyPress]) -> String {
-    keys.iter().map(KeyPress::to_string).collect::<Vec<_>>().join(" ")
+    keys.iter()
+        .map(KeyPress::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A key's name, read: `S-` on a letter is its upper case, as a character
 /// carries its own shift.
 pub fn key(word: &str) -> Result<KeyPress, String> {
-    let press: KeyPress = word.parse().map_err(|_| format!("{word:?} is no key's name"))?;
+    let press: KeyPress = word
+        .parse()
+        .map_err(|_| format!("{word:?} is no key's name"))?;
     let mut rest = word;
     let mut shift = false;
     while let Some((modifier, tail)) = rest.split_at_checked(2) {
@@ -170,7 +182,10 @@ pub fn key(word: &str) -> Result<KeyPress, String> {
 
 /// Keys from their names, separated by spaces: `t n`.
 pub fn keys(words: &str) -> Result<Vec<KeyPress>, String> {
-    let keys: Vec<KeyPress> = words.split_whitespace().map(key).collect::<Result<_, _>>()?;
+    let keys: Vec<KeyPress> = words
+        .split_whitespace()
+        .map(key)
+        .collect::<Result<_, _>>()?;
     match keys.is_empty() {
         true => Err("no keys given".to_owned()),
         false => Ok(keys),
@@ -208,41 +223,197 @@ pub const DEFAULTS: &[(&str, &str, &str, &str, bool)] = &[
     ("l", "me str right focus", "focus right", "Focus", false),
     ("o", "me str next focus", "next pane", "Focus", false),
     ("q", "me str last focus", "last pane", "Focus", false),
-    ("v", "me focused opts horizontal split drop", "split side by side", "Panes", false),
-    ("s", "me focused opts vertical split drop", "split stacked", "Panes", false),
-    ("x", "me me focused confirm-close", "close pane", "Panes", false),
+    (
+        "v",
+        "me focused opts horizontal split drop",
+        "split side by side",
+        "Panes",
+        false,
+    ),
+    (
+        "s",
+        "me focused opts vertical split drop",
+        "split stacked",
+        "Panes",
+        false,
+    ),
+    (
+        "x",
+        "me me focused confirm-close",
+        "close pane",
+        "Panes",
+        false,
+    ),
     ("z", "me zoom", "zoom or restore", "Panes", false),
     ("a", "me me focused menu", "pane actions", "Panes", false),
     ("c", "me copy-mode", "copy and select", "Panes", false),
-    ("p", "me focused 0 paste-buffer", "paste the newest copy", "Panes", false),
-    ("r h", "me focused str left 1 move-border", "shrink or grow left", "Resize", true),
-    ("r j", "me focused str down 1 move-border", "shrink or grow down", "Resize", true),
-    ("r k", "me focused str up 1 move-border", "shrink or grow up", "Resize", true),
-    ("r l", "me focused str right 1 move-border", "shrink or grow right", "Resize", true),
-    ("m h", "me focused str left move-beside", "move left", "Move", true),
-    ("m j", "me focused str down move-beside", "move down", "Move", true),
-    ("m k", "me focused str up move-beside", "move up", "Move", true),
-    ("m l", "me focused str right move-beside", "move right", "Move", true),
+    (
+        "p",
+        "me focused 0 paste-buffer",
+        "paste the newest copy",
+        "Panes",
+        false,
+    ),
+    (
+        "r h",
+        "me focused str left 1 move-border",
+        "shrink or grow left",
+        "Resize",
+        true,
+    ),
+    (
+        "r j",
+        "me focused str down 1 move-border",
+        "shrink or grow down",
+        "Resize",
+        true,
+    ),
+    (
+        "r k",
+        "me focused str up 1 move-border",
+        "shrink or grow up",
+        "Resize",
+        true,
+    ),
+    (
+        "r l",
+        "me focused str right 1 move-border",
+        "shrink or grow right",
+        "Resize",
+        true,
+    ),
+    (
+        "m h",
+        "me focused str left move-beside",
+        "move left",
+        "Move",
+        true,
+    ),
+    (
+        "m j",
+        "me focused str down move-beside",
+        "move down",
+        "Move",
+        true,
+    ),
+    (
+        "m k",
+        "me focused str up move-beside",
+        "move up",
+        "Move",
+        true,
+    ),
+    (
+        "m l",
+        "me focused str right move-beside",
+        "move right",
+        "Move",
+        true,
+    ),
     ("n", "me next-tab", "next tab", "Tabs", false),
     ("b", "me previous-tab", "previous tab", "Tabs", false),
     ("t n", "opts new-tab drop", "new tab", "Tabs", false),
     ("t h", "me previous-tab", "previous tab", "Tabs", false),
     ("t l", "me next-tab", "next tab", "Tabs", false),
     ("t g", "me choose-tab", "choose a tab", "Tabs", false),
-    ("t r", "me me focused tab rename-prompt", "rename tab", "Tabs", false),
-    ("t x", "me me focused tab confirm-close", "close tab", "Tabs", false),
-    ("t a", "me me focused tab menu", "tab actions", "Tabs", false),
-    ("t m h", "me focused tab str previous reorder", "move tab earlier", "Reorder", true),
-    ("t m l", "me focused tab str next reorder", "move tab later", "Reorder", true),
-    ("w n", "opts new-workspace drop", "new workspace", "Workspaces", false),
-    ("w h", "me previous-workspace", "previous workspace", "Workspaces", false),
-    ("w l", "me next-workspace", "next workspace", "Workspaces", false),
-    ("w g", "me choose-workspace", "choose a workspace", "Workspaces", false),
-    ("w r", "me me focused workspace rename-prompt", "rename workspace", "Workspaces", false),
-    ("w x", "me me focused workspace confirm-close", "close workspace", "Workspaces", false),
-    ("w a", "me me focused workspace menu", "workspace actions", "Workspaces", false),
-    ("w m h", "me focused workspace str previous reorder", "move workspace earlier", "Reorder", true),
-    ("w m l", "me focused workspace str next reorder", "move workspace later", "Reorder", true),
+    (
+        "t r",
+        "me me focused tab rename-prompt",
+        "rename tab",
+        "Tabs",
+        false,
+    ),
+    (
+        "t x",
+        "me me focused tab confirm-close",
+        "close tab",
+        "Tabs",
+        false,
+    ),
+    (
+        "t a",
+        "me me focused tab menu",
+        "tab actions",
+        "Tabs",
+        false,
+    ),
+    (
+        "t m h",
+        "me focused tab str previous reorder",
+        "move tab earlier",
+        "Reorder",
+        true,
+    ),
+    (
+        "t m l",
+        "me focused tab str next reorder",
+        "move tab later",
+        "Reorder",
+        true,
+    ),
+    (
+        "w n",
+        "opts new-workspace drop",
+        "new workspace",
+        "Workspaces",
+        false,
+    ),
+    (
+        "w h",
+        "me previous-workspace",
+        "previous workspace",
+        "Workspaces",
+        false,
+    ),
+    (
+        "w l",
+        "me next-workspace",
+        "next workspace",
+        "Workspaces",
+        false,
+    ),
+    (
+        "w g",
+        "me choose-workspace",
+        "choose a workspace",
+        "Workspaces",
+        false,
+    ),
+    (
+        "w r",
+        "me me focused workspace rename-prompt",
+        "rename workspace",
+        "Workspaces",
+        false,
+    ),
+    (
+        "w x",
+        "me me focused workspace confirm-close",
+        "close workspace",
+        "Workspaces",
+        false,
+    ),
+    (
+        "w a",
+        "me me focused workspace menu",
+        "workspace actions",
+        "Workspaces",
+        false,
+    ),
+    (
+        "w m h",
+        "me focused workspace str previous reorder",
+        "move workspace earlier",
+        "Reorder",
+        true,
+    ),
+    (
+        "w m l",
+        "me focused workspace str next reorder",
+        "move workspace later",
+        "Reorder",
+        true,
+    ),
     ("e", "me command-prompt", "command prompt", "Session", false),
     ("d", "me detach", "detach", "Session", false),
 ];
@@ -268,17 +439,25 @@ impl Default for Keymap {
 
 impl Keymap {
     /// Binds `keys` after the prefix to `binding`.
-    pub fn bind(&mut self, keys: &[KeyPress], binding: Binding, repeat: bool) -> Result<(), String> {
+    pub fn bind(
+        &mut self,
+        keys: &[KeyPress],
+        binding: Binding,
+        repeat: bool,
+    ) -> Result<(), String> {
         if keys.iter().any(is_escape) {
             return Err("Escape after the prefix closes the column; it cannot be bound".to_owned());
         }
-        self.bindings.bind(keys, keys, Node::Run { binding, repeat })
+        self.bindings
+            .bind(keys, keys, Node::Run { binding, repeat })
     }
 
     /// Binds `key`, without the prefix, to `binding`.
     pub fn bind_root(&mut self, key: KeyPress, binding: Binding) -> Result<(), String> {
         if key == self.prefix {
-            return Err(format!("{key} is the prefix; it cannot be bound without it"));
+            return Err(format!(
+                "{key} is the prefix; it cannot be bound without it"
+            ));
         }
         match self.root.iter_mut().find(|(k, _)| *k == key) {
             Some((_, existing)) => *existing = binding,
@@ -330,7 +509,9 @@ impl Keymap {
     /// Sets the prefix: refused if a key bound without it is the one.
     pub fn set_prefix(&mut self, key: KeyPress) -> Result<(), String> {
         if self.root.iter().any(|(k, _)| *k == key) {
-            return Err(format!("{key} is bound without the prefix; unbind it first"));
+            return Err(format!(
+                "{key} is bound without the prefix; unbind it first"
+            ));
         }
         self.prefix = key;
         Ok(())
@@ -346,19 +527,24 @@ impl Keymap {
                 // A layer is titled, and listed, by its first binding's
                 // group: `t` is `Tabs…`.
                 let (label, group, layer) = match node {
-                    Node::Run { binding, .. } => (binding.label.clone(), binding.group.clone(), false),
+                    Node::Run { binding, .. } => {
+                        (binding.label.clone(), binding.group.clone(), false)
+                    }
                     Node::Layer(inner) => {
                         let group = inner.first()?.group.clone();
                         (group.clone(), group, true)
                     }
                 };
-                Some((false, ColumnEntry {
-                    key: key.to_string(),
-                    label,
-                    group,
-                    layer,
-                    root: false,
-                }))
+                Some((
+                    false,
+                    ColumnEntry {
+                        key: key.to_string(),
+                        label,
+                        group,
+                        layer,
+                        root: false,
+                    },
+                ))
             })
             .collect();
         if path.is_empty() {
@@ -367,13 +553,16 @@ impl Keymap {
                     "" => ROOT_GROUP.to_owned(),
                     group => group.to_owned(),
                 };
-                (true, ColumnEntry {
-                    key: key.to_string(),
-                    label: binding.label.clone(),
-                    group,
-                    layer: false,
-                    root: true,
-                })
+                (
+                    true,
+                    ColumnEntry {
+                        key: key.to_string(),
+                        label: binding.label.clone(),
+                        group,
+                        layer: false,
+                        root: true,
+                    },
+                )
             }));
         }
         let mut groups: Vec<(bool, String)> = GROUPS.map(|g| (false, g.to_owned())).to_vec();
@@ -399,7 +588,8 @@ impl Keymap {
         };
         let entries: Vec<ColumnEntry> = entries.into_iter().map(|(_, e)| e).collect();
         let selected = selected.min(entries.len().saturating_sub(1));
-        let keys = std::iter::once(self.prefix.to_string()).chain(path.iter().map(KeyPress::to_string));
+        let keys =
+            std::iter::once(self.prefix.to_string()).chain(path.iter().map(KeyPress::to_string));
         Some(Column {
             title,
             keys: keys.collect::<Vec<_>>().join(" "),
@@ -420,13 +610,23 @@ impl Keymap {
                 repeats |= repeat;
             }
         }
-        let title = layer.first().map(|b| b.group.as_str()).filter(|_| repeats)?;
-        Some(format!("{}  {} · Esc", title.to_uppercase(), keys.join(" ")))
+        let title = layer
+            .first()
+            .map(|b| b.group.as_str())
+            .filter(|_| repeats)?;
+        Some(format!(
+            "{}  {} · Esc",
+            title.to_uppercase(),
+            keys.join(" ")
+        ))
     }
 
     /// Every binding, as `list-keys` shows them.
     pub fn describe(&self) -> String {
-        let mut out = format!("After the prefix, {} (case counts, V is Shift-v):\n", self.prefix);
+        let mut out = format!(
+            "After the prefix, {} (case counts, V is Shift-v):\n",
+            self.prefix
+        );
         for (keys, binding, repeat) in self.bindings.all() {
             out.push_str(&format!(
                 "{:>8}  {}{}\n",
@@ -451,7 +651,10 @@ pub enum Held {
     #[default]
     Normal,
     /// The column is shown, on the layer at `path`.
-    Column { path: Vec<KeyPress>, selected: usize },
+    Column {
+        path: Vec<KeyPress>,
+        selected: usize,
+    },
     /// A repeat mode, of the layer at `path`.
     Repeat { path: Vec<KeyPress> },
     /// A client that only watches typed its prefix.
@@ -473,20 +676,46 @@ impl Held {
     /// A key typed at the client's terminal, the server's view of it in
     /// `mode`: what it leads to. `read_only`: it only watches, and the
     /// prefix then `d` detaches it.
-    pub fn press(&mut self, keymap: &Keymap, mode: &str, stroke: Keystroke, read_only: bool) -> Vec<Step> {
+    pub fn press(
+        &mut self,
+        keymap: &Keymap,
+        mode: &str,
+        stroke: Keystroke,
+        read_only: bool,
+    ) -> Vec<Step> {
         let press = stroke.press;
         if read_only {
             return self.watching(keymap, press);
         }
         match mode {
-            "list" => return list_act(press).map(Act::List).map(Step::Send).into_iter().collect(),
+            "list" => {
+                return list_act(press)
+                    .map(Act::List)
+                    .map(Step::Send)
+                    .into_iter()
+                    .collect();
+            }
             "prompt" => {
-                return line_act(press).map(Act::Prompt).map(Step::Send).into_iter().collect();
+                return line_act(press)
+                    .map(Act::Prompt)
+                    .map(Step::Send)
+                    .into_iter()
+                    .collect();
             }
             "confirm" => {
-                return confirm_act(press).map(Act::Confirm).map(Step::Send).into_iter().collect();
+                return confirm_act(press)
+                    .map(Act::Confirm)
+                    .map(Step::Send)
+                    .into_iter()
+                    .collect();
             }
-            "copy" => return copy_act(press).map(Act::Copy).map(Step::Send).into_iter().collect(),
+            "copy" => {
+                return copy_act(press)
+                    .map(Act::Copy)
+                    .map(Step::Send)
+                    .into_iter()
+                    .collect();
+            }
             "copy-search" => {
                 let act = line_act(press).map(|line| Act::Copy(CopyAct::Search(line)));
                 return act.map(Step::Send).into_iter().collect();
@@ -556,12 +785,22 @@ impl Held {
         }
     }
 
-    fn in_column(&mut self, keymap: &Keymap, path: Vec<KeyPress>, selected: usize, stroke: Keystroke) -> Vec<Step> {
+    fn in_column(
+        &mut self,
+        keymap: &Keymap,
+        path: Vec<KeyPress>,
+        selected: usize,
+        stroke: Keystroke,
+    ) -> Vec<Step> {
         let press = stroke.press;
         if is_escape(&press) {
             return vec![Step::Send(Act::Normal)];
         }
-        if keymap.bindings.layer(&path).is_some_and(|l| l.get(press).is_some()) {
+        if keymap
+            .bindings
+            .layer(&path)
+            .is_some_and(|l| l.get(press).is_some())
+        {
             return self.follow(keymap, path, press);
         }
         if press == keymap.prefix {
@@ -585,10 +824,21 @@ impl Held {
         if press.key == Key::Enter && press.mods == Modifiers::NONE {
             let chosen = keymap.column(&path, selected).and_then(|c| {
                 let entry = c.entries.into_iter().nth(c.selected)?;
-                key(&entry.key).ok()
+                Some((key(&entry.key).ok()?, entry.root))
             });
             return match chosen {
-                Some(key) => self.follow(keymap, path, key),
+                // A key bound without the prefix, listed after the rest.
+                Some((press, true)) => {
+                    let code = keymap
+                        .root
+                        .iter()
+                        .find(|(k, _)| *k == press)
+                        .map(|(_, b)| b.code.clone());
+                    std::iter::once(Step::Send(Act::Normal))
+                        .chain(code.map(Step::Run))
+                        .collect()
+                }
+                Some((key, false)) => self.follow(keymap, path, key),
                 None => vec![Step::Send(Act::Normal)],
             };
         }
@@ -613,7 +863,10 @@ impl Held {
             }
             Some(Node::Layer(_)) | None => {
                 let text = format!("{press} is not one of this mode's keys");
-                vec![Step::Send(Act::Normal), Step::Send(Act::Notice { text, error: false })]
+                vec![
+                    Step::Send(Act::Normal),
+                    Step::Send(Act::Notice { text, error: false }),
+                ]
             }
         }
     }
@@ -756,11 +1009,16 @@ mod tests {
     fn the_defaults_bind_and_list_in_groups() {
         let keymap = Keymap::default();
         let column = keymap.column(&[], 0);
-        let groups: Vec<String> = column.map(|c| c.entries.into_iter().map(|e| e.group).collect()).unwrap_or_default();
+        let groups: Vec<String> = column
+            .map(|c| c.entries.into_iter().map(|e| e.group).collect())
+            .unwrap_or_default();
         let first = groups.iter().position(|g| g == "Panes");
         let focus = groups.iter().position(|g| g == "Focus");
         assert!(first < focus, "{groups:?}");
-        assert_eq!(keymap.repeat_bar(&keys("r").unwrap_or_default()).as_deref(), Some("RESIZE  h j k l · Esc"));
+        assert_eq!(
+            keymap.repeat_bar(&keys("r").unwrap_or_default()).as_deref(),
+            Some("RESIZE  h j k l · Esc")
+        );
     }
 
     #[test]
@@ -770,10 +1028,16 @@ mod tests {
         let steps = held.press(&keymap, "normal", stroke("C-b")?, false);
         assert!(matches!(steps.as_slice(), [Step::Send(Act::Column(_))]));
         let steps = held.press(&keymap, "normal", stroke("z")?, false);
-        assert_eq!(steps, [Step::Send(Act::Normal), Step::Run("me zoom".into())]);
+        assert_eq!(
+            steps,
+            [Step::Send(Act::Normal), Step::Run("me zoom".into())]
+        );
         assert_eq!(held, Held::Normal);
         let steps = held.press(&keymap, "normal", stroke("x")?, false);
-        assert!(matches!(steps.as_slice(), [Step::Send(Act::Key(_))]), "an unbound key is the pane's");
+        assert!(
+            matches!(steps.as_slice(), [Step::Send(Act::Key(_))]),
+            "an unbound key is the pane's"
+        );
         Ok(())
     }
 
@@ -786,7 +1050,10 @@ mod tests {
         }
         assert!(matches!(held, Held::Repeat { .. }));
         let steps = held.press(&keymap, "normal", stroke("l")?, false);
-        assert_eq!(steps, [Step::Run("me focused str right 1 move-border".into())]);
+        assert_eq!(
+            steps,
+            [Step::Run("me focused str right 1 move-border".into())]
+        );
         held.press(&keymap, "normal", stroke("Escape")?, false);
         assert_eq!(held, Held::Normal);
         Ok(())
@@ -799,7 +1066,10 @@ mod tests {
         let steps = held.press(&keymap, "copy", stroke("v")?, false);
         assert_eq!(steps, [Step::Send(Act::Copy(CopyAct::SelectChar))]);
         let steps = held.press(&keymap, "prompt", stroke("a")?, false);
-        assert_eq!(steps, [Step::Send(Act::Prompt(LineAct::Insert("a".into())))]);
+        assert_eq!(
+            steps,
+            [Step::Send(Act::Prompt(LineAct::Insert("a".into())))]
+        );
         let steps = held.press(&keymap, "list", stroke("Enter")?, false);
         assert_eq!(steps, [Step::Send(Act::List(ListAct::Choose))]);
         Ok(())
@@ -814,6 +1084,96 @@ mod tests {
         held.press(&keymap, "normal", stroke("C-b")?, true);
         let steps = held.press(&keymap, "normal", stroke("d")?, true);
         assert_eq!(steps, [Step::Run("me detach".into())]);
+        Ok(())
+    }
+
+    /// The column's own keys move its selection within its bindings; a
+    /// letter is a binding's, and Enter runs the selected one, the keys
+    /// bound without the prefix listed last.
+    #[test]
+    fn the_column_scrolls_within_its_bindings() -> Result<(), String> {
+        let mut keymap = Keymap::default();
+        let binding = |code: &str| Binding {
+            code: code.into(),
+            label: code.into(),
+            group: String::new(),
+        };
+        keymap.bind_root(key("M-t")?, binding("opts new-tab drop"))?;
+        let entries = keymap.column(&[], 0).map(|c| c.entries).unwrap_or_default();
+        let last = entries.len().saturating_sub(1);
+        assert!(
+            entries
+                .last()
+                .is_some_and(|e| e.root && e.group == ROOT_GROUP),
+            "{entries:?}"
+        );
+        assert_eq!(
+            entries.first().map(|e| e.key.as_str()),
+            Some("v"),
+            "Panes come first"
+        );
+        let mut held = Held::default();
+        let mut press = |name: &str| -> Result<Vec<Step>, String> {
+            Ok(held.press(&keymap, "column", stroke(name)?, false))
+        };
+        press("C-b")?;
+        let selected = |steps: Vec<Step>| match steps.as_slice() {
+            [Step::Send(Act::Column(column))] => Some(column.selected),
+            _ => None,
+        };
+        for _ in 0..last {
+            press("Down")?;
+        }
+        assert_eq!(
+            selected(press("Down")?),
+            Some(last),
+            "Down stops at the last entry"
+        );
+        assert_eq!(selected(press("Home")?), Some(0));
+        assert_eq!(selected(press("PageDown")?), Some(PAGE.min(last)));
+        assert_eq!(
+            selected(press("Up")?),
+            Some(PAGE.min(last).saturating_sub(1))
+        );
+        assert_eq!(selected(press("End")?), Some(last));
+        assert_eq!(
+            press("Enter")?,
+            [
+                Step::Send(Act::Normal),
+                Step::Run("opts new-tab drop".into())
+            ]
+        );
+        press("C-b")?;
+        assert_eq!(
+            press("j")?,
+            [
+                Step::Send(Act::Normal),
+                Step::Run("me str down focus".into())
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn list_keys_shows_sequences_repeats_and_keys_without_the_prefix() -> Result<(), String> {
+        let mut keymap = Keymap::default();
+        keymap.unbind_all();
+        let binding = |code: &str| Binding {
+            code: code.into(),
+            label: code.into(),
+            group: "Other".into(),
+        };
+        keymap.bind(&keys("g n")?, binding("opts new-tab drop"), false)?;
+        keymap.bind(
+            &keys("y l")?,
+            binding("me focused str right 1 move-border"),
+            true,
+        )?;
+        keymap.bind_root(key("M-t")?, binding("me zoom"))?;
+        assert_eq!(
+            keymap.describe(),
+            "After the prefix, C-b (case counts, V is Shift-v):\n     g n  opts new-tab drop\n     y l  me focused str right 1 move-border  (repeats)\n\nWithout the prefix:\n     M-t  me zoom\n"
+        );
         Ok(())
     }
 }

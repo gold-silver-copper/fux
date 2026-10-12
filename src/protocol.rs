@@ -41,6 +41,8 @@ mod kind {
     pub const MODE: u8 = 14;
     pub const RUN: u8 = 15;
     pub const KEYS: u8 = 16;
+    pub const PART: u8 = 17;
+    pub const PARTS_END: u8 = 18;
 }
 
 /// Why bytes are not a frame, or a frame cannot be sent.
@@ -122,7 +124,7 @@ impl std::fmt::Display for Mismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the server speaks protocol {} (fux {}); restart it: `fux kill-server --force` stops it",
+            "the server speaks protocol {} (fux {}); restart it: `fux force-kill-server` stops it",
             self.protocol, self.version
         )
     }
@@ -480,6 +482,10 @@ pub enum ServerFrame<'a> {
     /// To an attached client: keys to take as typed at its terminal
     /// (`send-keys` to a client).
     Keys(Vec<crate::command::Input>),
+    /// A piece of a reply too large for one frame: its encoding, in order,
+    /// whole once `PartsEnd` comes.
+    Part(&'a [u8]),
+    PartsEnd,
 }
 
 impl<'a> ServerFrame<'a> {
@@ -522,6 +528,8 @@ impl<'a> Frame<'a> for ServerFrame<'a> {
             kind::RUN => std::str::from_utf8(r.rest())
                 .map(ServerFrame::Run)
                 .map_err(|_| Error::NotUtf8),
+            kind::PART => Ok(ServerFrame::Part(r.rest())),
+            kind::PARTS_END => Ok(ServerFrame::PartsEnd),
             kind::KEYS => crate::wire::Reader::new(r.rest())
                 .whole::<Vec<crate::command::Input>>()
                 .map(ServerFrame::Keys)
@@ -543,6 +551,8 @@ impl<'a> Frame<'a> for ServerFrame<'a> {
             }
             ServerFrame::Mode(mode) => (kind::MODE, mode.as_bytes()),
             ServerFrame::Run(source) => (kind::RUN, source.as_bytes()),
+            ServerFrame::Part(bytes) => (kind::PART, *bytes),
+            ServerFrame::PartsEnd => (kind::PARTS_END, &[][..]),
             ServerFrame::Paint(bytes) => (kind::PAINT, *bytes),
             ServerFrame::Exit(reason) => (kind::EXIT, reason.as_bytes()),
             ServerFrame::Stdout(bytes) => (kind::STDOUT, *bytes),
@@ -783,18 +793,26 @@ mod tests {
                 env: vec![("DISPLAY".into(), ":0".into())],
             }
         );
-        round_trip!(AttachedFrame, 3, AttachedFrame::Input(b"\x1b[A"));
+        let act = Act::Paste("界\n".into());
+        round_trip!(AttachedFrame, 3, AttachedFrame::Act(Box::new(act)));
         round_trip!(AttachedFrame, 4, AttachedFrame::Resize { rows, cols });
         round_trip!(AttachedFrame, 5, AttachedFrame::Detach);
         round_trip!(
-            Command,
+            Request,
             6,
-            Command {
-                argv: vec!["split".into(), "-h".into(), "".into(), "界".into()],
-                cwd: "/tmp".into(),
-                pane: Some("%3".into()),
-                server: Some("1-2".into()),
-                env: vec![("K".into(), "V".into())],
+            Request {
+                command: Command::Rename {
+                    target: AnyRef::Pane(crate::id::PaneId::of(3)),
+                    name: "界".into(),
+                },
+                context: Context {
+                    cwd: "/somewhere".into(),
+                    pane: Some("%3".into()),
+                    server: Some("1-2".into()),
+                    env: vec![("K".into(), "V".into())],
+                    client: "c2".parse().ok(),
+                    restoring: true,
+                },
             }
         );
         round_trip!(ServerFrame, 7, ServerFrame::Paint(&[0, 1, 2, 255]));
@@ -804,6 +822,10 @@ mod tests {
         round_trip!(ServerFrame, 11, ServerFrame::Done { status: 2 });
         round_trip!(ServerFrame, 12, ServerFrame::Terminal { taken: true });
         round_trip!(ServerFrame, 12, ServerFrame::Terminal { taken: false });
+        round_trip!(ServerFrame, 13, ServerFrame::Reply(Box::default()));
+        round_trip!(ServerFrame, 14, ServerFrame::Mode("copy"));
+        round_trip!(ServerFrame, 15, ServerFrame::Run("me zoom"));
+        round_trip!(ServerFrame, 16, ServerFrame::Keys(Vec::new()));
         // Each role's byte is the wire format's too: after the length, the
         // kind and the protocol's four bytes.
         for (role, byte) in [(Role::Attach, 0), (Role::Command, 1), (Role::Kill, 2)] {
@@ -857,7 +879,7 @@ mod tests {
         let hello: Decode = |d| d.frame::<Hello>().map(drop);
         let attach: Decode = |d| d.frame::<Attach>().map(drop);
         let attached: Decode = |d| d.frame::<AttachedFrame>().map(drop);
-        let command: Decode = |d| d.frame::<Command>().map(drop);
+        let command: Decode = |d| d.frame::<Request>().map(drop);
         let utf8 = "a frame string is not UTF-8";
         for (decode, bytes, message) in [
             (server, vec![0, 0, 0, 1, 99], "unexpected frame kind 99"),
@@ -876,7 +898,7 @@ mod tests {
             (
                 command,
                 vec![0, 0, 0, 5, 6, 255, 255, 255, 255],
-                "bad argument count in frame",
+                "a request's command has no variant 255",
             ),
             (server, vec![0, 0, 0, 0], "an empty frame"),
             (server, vec![0, 0, 0, 2, 8, 0xff], utf8),

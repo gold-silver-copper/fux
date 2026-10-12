@@ -44,8 +44,18 @@ fn splitting_side_by_side_and_stacked_draws_separators_and_focuses_the_new_pane(
     client.keys("echo in-three\r")?;
     client.wait_for("in-three")?;
     assert!(client.bar().contains("%3 sh"), "{}", client.bar());
-    // The CLI splits too, and a -- CMD is typed into the new shell.
-    server.ok(&["split", "-v", "-t", "%1", "--", "echo", "from cli"])?;
+    // The CLI splits too, and a typed line goes into the new shell.
+    server.ok(&[
+        "str",
+        "%1",
+        "pane",
+        "opts",
+        "vertical",
+        "str",
+        "echo \"from cli\"",
+        "typed",
+        "split",
+    ])?;
     client.wait_for("from cli")?;
     Ok(())
 }
@@ -63,7 +73,7 @@ fn focus_moves_next_previous_last_and_by_direction() -> Outcome {
     client.keys(&format!("{PREFIX}o"))?;
     eventually("next wraps to %1", || Ok(focused(&server)? == "%1"))?;
     // The previous pane has no key of its own: the command.
-    server.ok(&["select-pane", "-c", "c1", "--previous"])?;
+    server.ok(&["str", "c1", "client", "str", "previous", "focus"])?;
     eventually("previous: %3", || Ok(focused(&server)? == "%3"))?;
     client.keys(&format!("{PREFIX}q"))?;
     eventually("last: %1", || Ok(focused(&server)? == "%1"))?;
@@ -84,8 +94,8 @@ fn focus_moves_next_previous_last_and_by_direction() -> Outcome {
             .is_some_and(|b| b.contains("no pane left of %1"))
     })?;
     assert_eq!(focused(&server)?, "%1");
-    // From the CLI, a client's focus needs -c.
-    server.ok(&["select-pane", "-c", "c1", "-t", "%3"])?;
+    // From the CLI, a client's focus is named by its client.
+    server.ok(&["str", "c1", "client", "str", "%3", "pane", "focus-pane"])?;
     assert_eq!(focused(&server)?, "%3");
     Ok(())
 }
@@ -103,15 +113,15 @@ fn resizing_moves_the_border_and_reaches_the_programs() -> Outcome {
     client.keys(&format!("{PREFIX}rlllll\r"))?;
     eventually("the border moved", || Ok(size(&server, "%2")?.1 == 35))?;
     assert_eq!(size(&server, "%1")?.1, 45);
-    server.ok(&["resize-pane", "-t", "%1", "-L", "10"])?;
+    server.ok(&["str", "%1", "pane", "str", "left", "10", "move-border"])?;
     assert_eq!(size(&server, "%1")?.1, 35);
     // The program sees its new size.
     client.keys("stty size\r")?;
     client.wait("the size", |t| t.lines().any(|l| l.ends_with("19 45")))?;
     // Never below the minimum.
-    server.ok(&["resize-pane", "-t", "%2", "-L", "200"])?;
+    server.ok(&["str", "%2", "pane", "str", "left", "200", "move-border"])?;
     assert_eq!(size(&server, "%1")?.1, 2);
-    let stuck = server.fux(&["resize-pane", "-t", "%1", "-U"])?;
+    let stuck = server.fux(&["str", "%1", "pane", "str", "up", "1", "move-border"])?;
     assert_eq!(stuck.status, 1);
     assert!(
         stuck.stderr.contains("no border to move up"),
@@ -157,8 +167,8 @@ fn the_bar_shows_workspace_tabs_pane_and_title() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
-    server.ok(&["rename", "-t", "+1", "work"])?;
-    server.ok(&["rename", "-t", "@1", "code"])?;
+    server.ok(&["str", "+1", "workspace", "str", "work", "rename"])?;
+    server.ok(&["str", "@1", "tab", "str", "code", "rename"])?;
     client.wait("the names", |t| {
         t.lines()
             .last()
@@ -171,7 +181,7 @@ fn the_bar_shows_workspace_tabs_pane_and_title() -> Outcome {
     })?;
     assert!(
         server
-            .ok(&["ls", "--json"])?
+            .ok(&["ls", "json"])?
             .contains("\"title\":\"my-title\"")
     );
     Ok(())
@@ -204,8 +214,8 @@ fn moving_a_pane_by_direction_nests_it_beside_its_neighbour() -> Outcome {
     })?;
     // From the CLI: 2 | (1 / 3), then 2 moves right, beside 1 (the nearer
     // of 1 and 3 by centre, then by number): (1 | 2) / 3.
-    server.ok(&["split", "-v", "-t", "%1"])?;
-    server.ok(&["move-pane", "-t", "%2", "-R"])?;
+    server.ok(&["str", "%1", "pane", "opts", "vertical", "split"])?;
+    server.ok(&["str", "%2", "pane", "str", "right", "move-beside"])?;
     assert_eq!(size(&server, "%3")?.1, 81, "3 spans the width");
     assert_eq!(
         size(&server, "%1")?.0,
@@ -216,10 +226,10 @@ fn moving_a_pane_by_direction_nests_it_beside_its_neighbour() -> Outcome {
     Ok(())
 }
 
-/// The non-blank rows of a pane's screen, from `capture-pane`.
+/// The non-blank rows of a pane's screen, from `capture`.
 fn captured(server: &Server, pane: &str) -> Result<Vec<String>, String> {
     Ok(server
-        .ok(&["capture-pane", "-t", pane])?
+        .ok(&["str", pane, "pane", "opts", "capture"])?
         .lines()
         .map(str::to_owned)
         .filter(|l| !l.trim().is_empty())
@@ -248,7 +258,7 @@ fn a_split_pane_keeps_its_last_line_and_regains_its_rows() -> Outcome {
         Some("last-line"),
         "{before:?}"
     );
-    server.ok(&["split", "-v", "-t", "%1"])?;
+    server.ok(&["str", "%1", "pane", "opts", "vertical", "split"])?;
     client.wait("two panes", |t| t.contains("%2"))?;
     eventually("the shrunk pane", || {
         let rows = captured(&server, "%1")?;
@@ -270,7 +280,7 @@ fn a_split_pane_keeps_its_last_line_and_regains_its_rows() -> Outcome {
             .is_some_and(|above| *above == "row-40")
     })?;
     // Growing again brings back the rows the shrink moved into history.
-    server.ok(&["kill-pane", "-t", "%2"])?;
+    server.ok(&["str", "%2", "pane", "kill"])?;
     eventually("the rows restored", || {
         Ok(captured(&server, "%1")? == before)
     })

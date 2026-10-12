@@ -1,13 +1,15 @@
-# What `--json` prints
+# What `json` gives
 
-(`fux help json`.) Every shape below is part of fux's interface: a field is
-added, never renamed or dropped without a release saying so. Rows and
+(`fux help-json`.) `json` turns the value on top of the stack into JSON:
+what a word left, as below; a string as a JSON string; a number or boolean
+as itself. Every shape below is part of fux's interface: a field is added,
+never renamed or dropped without a release saying so. Rows and
 columns count from 0; times are milliseconds; ids are strings (`"%3"`,
 `"@2"`, `"+1"`, `"c1"`).
 
 ## A pane
 
-`ls --json` gives each pane these, and `capture-pane --json` the same:
+`ls json` gives each pane these, and `PANE opts capture json` the same:
 
 | Field | Value |
 | --- | --- |
@@ -29,14 +31,14 @@ columns count from 0; times are milliseconds; ids are strings (`"%3"`,
 | `cursor_visible` | the cursor shows |
 | `history_lines` | lines of history it holds |
 | `copy_mode` | a client has it in copy mode |
-| `revision` | grows with every change to the screen: `wait --change --since N`, `send-keys --if-revision N` |
+| `revision` | grows with every change to the screen: `keys … N if-revision send-keys` |
 | `command_running` | a shell command runs (OSC 133 marks) |
 | `last_status` | the last shell command's status, else `null` |
 | `bells` | bells and notifications rung since it started |
 | `notification` | the last notification's text, else `null` |
 | `cwd`, `argv` | the foreground process's directory and words, where the system says |
 
-## `ls --json`
+## `ls json`
 
 ```json
 {"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[PANE…]}]}],
@@ -44,36 +46,37 @@ columns count from 0; times are milliseconds; ids are strings (`"%3"`,
  "grants":[{"socket":"/home/me/.cache/agent.sock","workspace":"agent"}]}
 ```
 
-`ls -t TARGET --json` prints that pane, tab (`{"id","name","panes"}`) or
-workspace (`{"id","name","tabs"}`) alone; `ls -t TARGET --get FIELD` one of
-its fields, a string as it is, anything else as JSON.
+`X info json` gives that pane, tab (`{"id","name","panes"}`) or workspace
+(`{"id","name","tabs"}`) alone; `X str FIELD get` leaves one of its fields:
+a number or boolean as itself, a string as text, `null` as the text
+`null`.
 
-## `capture-pane --json`
+## `PANE opts capture json`
 
 ```json
 {"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":["…"],PANE FIELDS…}
 ```
 
-`cursor` is `null` while hidden or outside the rows printed. With
-`--styles`, `"styles"` holds a list per line of its runs of cells that are not
+`cursor` is `null` while hidden or outside the rows printed. With the
+`styles` option, `"styles"` holds a list per line of its runs of cells that are not
 plain: `{"col":0,"len":3,"fg":1,"bg":"#1e1e20","bold":true,"dim":true,
 "italic":true,"underline":true,"blink":true,"inverse":true,
 "hidden":true,"strikeout":true}`, each attribute only when set; colours are
 palette numbers or `"#rrggbb"`.
 
-`capture-client --json`:
+`CLIENT capture-client json`:
 `{"client":"c1","rows":24,"cols":80,"cursor":[ROW,COL],"lines":["…"]}`.
 
-## What a command made
+## What a word made
 
-`split`, `new-tab`, `new-workspace` and `run` with `--json`:
-`{"workspace":"+2","tab":"@3","pane":"%4"}`. `layout --json`: an array, a
-line each, of the ids it made: `[["+2","@3","%4"],["%5"]]`.
+`run`, `split`, `new-tab` and `new-workspace` leave the new pane; `json` of
+a pane, tab or workspace is its id as a string, `"%4"`, and `X info json`
+all of it.
 
 ## Waits
 
-`wait --json`, and `--json` with any `--wait-…`: one object, or a line each
-for send-keys to several panes.
+`json` of a wait's outcome (`… wait`, or `send-keys`, `send-mouse` given a
+wait condition): one object, or a line each for keys sent to several panes.
 
 ```json
 {"pane":"%3","met":"text","text":"PASS","line":"12 tests PASS","status":0}
@@ -93,9 +96,9 @@ for send-keys to several panes.
 | `closed` | the pane closed (status 4) |
 | `timeout` | `idle_ms`, `last_line` (status 124) |
 
-`status` is the wait's exit status; `screen`, with `--print`, the screen.
+`status` is the wait's exit status; `screen`, with `with-screen`, the screen.
 
-## `events --json`
+## `events-json`, `X events-of-json`
 
 One object a line: `{"event":NAME,"pane":"%3","tab":"@2","workspace":"+2",…}`,
 `pane` and `tab` only where they apply. `bell`, `notification` and `done`
@@ -104,7 +107,7 @@ that came several times in one round of the server's carry `count`.
 | `event` | Also |
 | --- | --- |
 | `ready` | first: nothing is missed from here on |
-| `gone` | last: everything `-t` named has closed (status 4) |
+| `gone` | last: everything `events-of-json` named has closed (status 4) |
 | `created`, `renamed` | `name`, for a tab or workspace |
 | `closed`, `moved`, `respawned`, `bell` | |
 | `exited` | `status` or `signal` |
@@ -117,27 +120,23 @@ that came several times in one round of the server's carry `count`.
 
 ## Errors
 
-With `--json`, any command's failure is one object on stderr, and its exit
-status is as without:
-
-```json
-{"error":"no_pane","message":"no pane %99"}
-```
-
-`error` is a code that stays: `usage`, `no_server`, `mismatch`, `no_pane`,
-`no_tab`, `no_workspace`, `no_target`, `stray_pane`, `exited`,
+A failure is one line on stderr, `fux: CODE: MESSAGE`, the message naming
+the file, line and word it came from. CODE stays: `no_server`, `mismatch`,
+`no_pane`, `no_tab`, `no_workspace`, `no_target`, `stray_pane`, `exited`,
 `still_running`, `not_run`, `changed`, `own_server`, `people_attached`,
 `not_granted`, `name_taken`, `bad_name`, `ambiguous`, `size`, `mouse`,
-`no_field`, `layout`, `id`, `config`, `not_reading`, `start`, `paste`, and a
-few more for rarer failures.
+`no_field`, `id`, `not_reading`, `start`, `paste`, `timeout`; and the
+language's: `type` (a word given the wrong kind of value), `stack_underflow`,
+`unknown_word`, `open_quote`, `unmatched`, `unclosed`, `range`, `bad_value`,
+`overflow`, `div_by_zero`, `call_depth`, and a few more for rarer failures.
 
-## `status --json`, `servers --json`
+## `status json`, `servers json`
 
 ```json
-{"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.22.0","protocol":4,
- "server_version":"0.22.0","server_protocol":4,"compatible":true}
+{"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.22.0","protocol":5,
+ "server_version":"0.22.0","server_protocol":5,"compatible":true}
 [{"name":"test","socket":"/run/user/1000/fux/test.sock","version":"0.22.0","compatible":true}]
 ```
 
 With no server, `status` gives `running`, `socket`, `version` and `protocol`
-alone, and exits 1.
+alone.

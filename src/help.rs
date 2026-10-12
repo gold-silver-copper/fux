@@ -19,8 +19,8 @@ usage: fux                 attach, starting a server if none runs
        fux -               run fuxth read from stdin
 
 fuxth is a small Forth: words run left to right, taking their values from
-the stack and leaving theirs. Numbers and bare words are values; `str WORD`
-pushes WORD as text, however it looks. What is left at the end is printed,
+the stack and leaving theirs. A number is a value, any other bare word runs;
+`str WORD` pushes WORD as text, however it looks. What is left at the end is printed,
 a value a line. A failure prints `fux: CODE: MESSAGE` on stderr; a wait's
 status is the exit status (3 exited, 4 closed, 5 unchanged, 6 changed,
 124 timeout), any other failure 1.
@@ -43,7 +43,10 @@ One word at length: `fux str WORD explain`.
             group = word.group;
             out.push_str(&format!("\n{group}:\n"));
         }
-        out.push_str(&format!("  {:<20} {:<28} {}\n", word.name, word.effect, word.about));
+        out.push_str(&format!(
+            "  {:<20} {:<28} {}\n",
+            word.name, word.effect, word.about
+        ));
     }
     out.push_str("\nBundled words (fuxth, from the library):\n");
     for (name, effect, about) in library() {
@@ -87,9 +90,15 @@ pub fn explain(name: &str) -> Option<String> {
     if let Some((name, effect, about)) = library().into_iter().find(|(n, ..)| *n == name) {
         let code = LIBRARY
             .lines()
-            .find(|l| l.strip_prefix("define ").and_then(|r| r.split_whitespace().next()) == Some(name))
+            .find(|l| {
+                l.strip_prefix("define ")
+                    .and_then(|r| r.split_whitespace().next())
+                    == Some(name)
+            })
             .unwrap_or_default();
-        return Some(format!("{name}  ( {effect} )\n\n{about}.\nFrom the library:\n\n  {code}\n"));
+        return Some(format!(
+            "{name}  ( {effect} )\n\n{about}.\nFrom the library:\n\n  {code}\n"
+        ));
     }
     let language = match name {
         "dup" => "x -- x x: a copy of the top value",
@@ -158,9 +167,19 @@ mod tests {
             assert!(explain(word.name).is_some(), "{}", word.name);
             if let Some(example) = example(word.name) {
                 let code = example.strip_prefix("fux ").unwrap_or(example);
-                let code = code.split(';').next().unwrap_or_default().split(" >").next().unwrap_or_default();
+                let code = code
+                    .split(';')
+                    .next()
+                    .unwrap_or_default()
+                    .split(" >")
+                    .next()
+                    .unwrap_or_default();
                 let tokens = fuxth::token::source("example", code);
-                let compiled = tokens.map_err(|e| e.to_string()).and_then(|t| crate::script::compile(&t).map(drop).map_err(|e| e.to_string()));
+                let compiled = tokens.map_err(|e| e.to_string()).and_then(|t| {
+                    crate::script::compile(&t)
+                        .map(drop)
+                        .map_err(|e| e.to_string())
+                });
                 assert!(compiled.is_ok(), "{}: {compiled:?}", word.name);
             }
         }

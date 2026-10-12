@@ -92,7 +92,7 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "no fux server is running at {} (its socket is left from one that stopped); \
-                     `fux` in a terminal starts one, or `fux [-L NAME] server --background` one with no terminal",
+                     `fux` in a terminal starts one, or `fux start` (or `fux str NAME server start`) one with no terminal",
                     path.display()
                 )
             }
@@ -264,6 +264,8 @@ pub struct Requests {
     stream: UnixStream,
     decoder: Decoder,
     buffer: Vec<u8>,
+    /// The pieces of a reply too large for one frame, so far.
+    parts: Vec<u8>,
 }
 
 impl Requests {
@@ -273,6 +275,7 @@ impl Requests {
             stream,
             decoder,
             buffer: vec![0u8; 64 * 1024],
+            parts: Vec::new(),
         })
     }
 
@@ -308,6 +311,12 @@ impl Requests {
                     let _ = out.write_all(bytes).and_then(|()| out.flush());
                 }
                 ServerFrame::Reply(reply) => return Ok(Some(*reply)),
+                ServerFrame::Part(bytes) => self.parts.extend_from_slice(bytes),
+                ServerFrame::PartsEnd => {
+                    let parts = std::mem::take(&mut self.parts);
+                    let reply = crate::wire::Reader::new(&parts).whole::<Reply>();
+                    return reply.map(Some).map_err(|e| Error::Protocol(crate::protocol::Error::Wire(e)));
+                }
                 ServerFrame::Exit(reason) => return Err(Error::Refused(reason.to_owned())),
                 ServerFrame::Hello(_)
                 | ServerFrame::Paint(_)
@@ -333,7 +342,9 @@ impl Requests {
                 self.decoder.push(self.buffer.get(..n).unwrap_or_default());
                 Ok(true)
             }
-            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => Ok(true),
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
+                Ok(true)
+            }
             Err(e) => Err(Error::Read(e)),
         }
     }
@@ -525,22 +536,29 @@ pub struct Keyboard {
 impl Keyboard {
     /// The keyboard of the client attached as `me` on `socket`, with
     /// `keymap`; `read_only` if it only watches.
-    pub fn new(socket: &SocketPath, me: crate::id::ClientId, keymap: Keymap, read_only: bool) -> Result<Keyboard, Error> {
+    pub fn new(
+        socket: &SocketPath,
+        me: crate::id::ClientId,
+        keymap: Keymap,
+        read_only: bool,
+    ) -> Result<Keyboard, Error> {
         let (jobs, todo) = std::sync::mpsc::channel::<Job>();
         let (tell, told) = std::sync::mpsc::channel::<Ran>();
         let (wake, mut poke) = UnixStream::pair().map_err(Error::Signals)?;
         wake.set_nonblocking(true).map_err(Error::Signals)?;
         let path = socket.path().to_string_lossy().into_owned();
-        let spawned = std::thread::Builder::new().name("keys".into()).spawn(move || {
-            let mut server = crate::script::Server::new(crate::script::Chosen::Path(path));
-            for job in todo {
-                let ran = run_job(&mut server, me, job);
-                if tell.send(ran).is_err() {
-                    break;
+        let spawned = std::thread::Builder::new()
+            .name("keys".into())
+            .spawn(move || {
+                let mut server = crate::script::Server::new(crate::script::Chosen::Path(path));
+                for job in todo {
+                    let ran = run_job(&mut server, me, job);
+                    if tell.send(ran).is_err() {
+                        break;
+                    }
+                    let _ = poke.write_all(b"!");
                 }
-                let _ = poke.write_all(b"!");
-            }
-        });
+            });
         spawned.map_err(Error::Signals)?;
         let mut decoder = crate::decode::Decoder::default();
         // The server asks the terminal about itself as the client attaches.
@@ -607,7 +625,9 @@ impl Keyboard {
             | ServerFrame::Stderr(_)
             | ServerFrame::Done { .. }
             | ServerFrame::Terminal { .. }
-            | ServerFrame::Reply(_) => {}
+            | ServerFrame::Reply(_)
+            | ServerFrame::Part(_)
+            | ServerFrame::PartsEnd => {}
         }
         acts
     }
@@ -630,7 +650,9 @@ impl Keyboard {
     /// A key typed: the actions to send the server; the programs it runs go
     /// to the worker.
     fn press(&mut self, stroke: crate::keys::Keystroke, acts: &mut Vec<Act>) {
-        let steps = self.held.press(&self.keymap, &self.mode, stroke, self.read_only);
+        let steps = self
+            .held
+            .press(&self.keymap, &self.mode, stroke, self.read_only);
         for step in steps {
             match step {
                 Step::Send(act) => acts.push(act),
@@ -658,7 +680,11 @@ impl Keyboard {
         match input {
             Input::Key(stroke) => self.press(stroke, acts),
             Input::Reply(reply) => acts.push(Act::Reply(reply)),
-            Input::Paste(_) | Input::PasteTooLong | Input::FocusIn | Input::FocusOut | Input::Mouse(_)
+            Input::Paste(_)
+            | Input::PasteTooLong
+            | Input::FocusIn
+            | Input::FocusOut
+            | Input::Mouse(_)
                 if self.read_only => {}
             Input::Paste(text) => acts.push(Act::Paste(text)),
             Input::PasteTooLong => {
@@ -743,8 +769,16 @@ pub fn attach(socket: &SocketPath, attaching: Attaching) -> Result<(), Error> {
         read_only: attaching.read_only,
         env: environment(),
     };
-    let result = send_with_terminal(&mut stream, &attach, &stdin)
-        .and_then(|()| attached(socket, &mut stream, &mut decoder, &raw.signals, &attaching, true));
+    let result = send_with_terminal(&mut stream, &attach, &stdin).and_then(|()| {
+        attached(
+            socket,
+            &mut stream,
+            &mut decoder,
+            &raw.signals,
+            &attaching,
+            true,
+        )
+    });
     drop(raw);
     // Why the client detached, on a terminal that may be gone: a hung-up
     // one fails the write, and the detach is no less done.
@@ -755,7 +789,11 @@ pub fn attach(socket: &SocketPath, attaching: Attaching) -> Result<(), Error> {
 /// Attaches a client with no terminal, of `size`, until the server ends it
 /// or a signal detaches it: its id goes to stdout as it attaches. It reads
 /// no keys, but takes those sent it (`send-keys` to a client) as typed.
-pub fn headless(socket: &SocketPath, attaching: Attaching, size: fux_vt::Size) -> Result<(), Error> {
+pub fn headless(
+    socket: &SocketPath,
+    attaching: Attaching,
+    size: fux_vt::Size,
+) -> Result<(), Error> {
     let signals = Signals::new()?;
     let (mut stream, mut decoder) = connect(socket, Role::Headless)?;
     let fallback = NonZeroU16::MIN;
@@ -767,7 +805,14 @@ pub fn headless(socket: &SocketPath, attaching: Attaching, size: fux_vt::Size) -
         env: environment(),
     };
     send(&mut stream, &attach)?;
-    let reason = attached(socket, &mut stream, &mut decoder, &signals, &attaching, false)?;
+    let reason = attached(
+        socket,
+        &mut stream,
+        &mut decoder,
+        &signals,
+        &attaching,
+        false,
+    )?;
     say(&reason)
 }
 
@@ -893,12 +938,17 @@ fn attached(
                     let said = String::from_utf8_lossy(said);
                     let me = said.trim().parse().map_err(|_| Error::NoAnswer)?;
                     if !terminal {
-                        let _ = stdout.write_all(said.as_bytes()).and_then(|()| stdout.flush());
+                        let _ = stdout
+                            .write_all(said.as_bytes())
+                            .and_then(|()| stdout.flush());
                     }
                     let keymap = attaching.keymap.clone();
                     keyboard = Some(Keyboard::new(socket, me, keymap, attaching.read_only)?);
                     if let Some(problem) = &attaching.problem {
-                        acts.push(Act::Notice { text: problem.clone(), error: true });
+                        acts.push(Act::Notice {
+                            text: problem.clone(),
+                            error: true,
+                        });
                     }
                 }
                 (frame, Some(keyboard)) => acts.extend(keyboard.frame(frame)),

@@ -65,7 +65,9 @@ impl Session {
             Act::Column(column) => self.set_mode(client, Mode::Column(column)),
             Act::Repeat(bar) => self.set_mode(client, Mode::Repeat(bar)),
             Act::Normal => {
-                if let Some(Mode::Column(_) | Mode::Repeat(_)) = self.views.get(&client).map(|v| &v.mode) {
+                if let Some(Mode::Column(_) | Mode::Repeat(_)) =
+                    self.views.get(&client).map(|v| &v.mode)
+                {
                     self.set_mode(client, Mode::Normal);
                 }
             }
