@@ -14,20 +14,28 @@ use std::path::{Path, PathBuf};
 
 /// bash: the user's own startup, then the marks. bash 4.4 and later print
 /// `PS0` as a command's output begins; older ones (macOS's 3.2) mark it
-/// from a DEBUG trap instead, armed by each prompt so it fires once.
+/// from a DEBUG trap instead, armed at the end of each prompt's
+/// `PROMPT_COMMAND`, so it fires once, for the command typed.
 const BASHRC: &str = r#"# fux: OSC 133 shell marks, after your own startup. Off: `set shell-marks off`.
 if [ -r ~/.bashrc ]; then . ~/.bashrc; fi
-__fux_end() { local s=$?; __fux_armed=1; printf '\033]133;D;%s\007' "$s"; return $s; }
-if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; }; then
-  PS0="${PS0}"$'\033]133;C\007'
-else
-  __fux_start() { [ -n "$__fux_armed" ] && [ "$BASH_COMMAND" != __fux_end ] || return 0; __fux_armed=; printf '\033]133;C\007'; }
-  trap '__fux_start' DEBUG
-fi
+__fux_end() { local s=$?; printf '\033]133;D;%s\007' "$s"; return $s; }
 case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
   "declare -a"*) PROMPT_COMMAND=(__fux_end "${PROMPT_COMMAND[@]}") ;;
   *) PROMPT_COMMAND="__fux_end${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
 esac
+if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; }; then
+  PS0="${PS0}"$'\033]133;C\007'
+else
+  # Armed last thing before the prompt, so the trap fires for the first
+  # command typed, not for PROMPT_COMMAND's own.
+  __fux_arm() { __fux_armed=1; }
+  __fux_start() { [ -n "$__fux_armed" ] || return 0; __fux_armed=; printf '\033]133;C\007'; }
+  case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
+    "declare -a"*) PROMPT_COMMAND+=(__fux_arm) ;;
+    *) PROMPT_COMMAND="${PROMPT_COMMAND};__fux_arm" ;;
+  esac
+  trap '__fux_start' DEBUG
+fi
 "#;
 
 /// zsh: read first of all startup files, from the shim `ZDOTDIR`; it puts
