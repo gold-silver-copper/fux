@@ -559,6 +559,10 @@ pub enum Event<'a> {
     IconName(&'a [u8]),
     /// BEL executed outside a control string.
     Bell,
+    /// A desktop notification: OSC 9 (iTerm2's, its text), OSC 777
+    /// (`notify;title;body`, its title and body) or OSC 99 (kitty's, its
+    /// payload).
+    Notification(&'a [u8]),
     /// OSC 52 set request; a `?` query is not an event.
     Clipboard {
         /// The selection parameter, `Pc`: `c`, `p`, `s` and so on, or empty.
@@ -1336,6 +1340,20 @@ impl Parser {
             }
             b"1" => sink.event(Event::IconName(rest)),
             b"2" => sink.event(Event::Title(rest)),
+            // OSC 9 ; 4 is ConEmu's progress report, not a notification.
+            b"9" if !rest.starts_with(b"4;") => sink.event(Event::Notification(rest)),
+            b"777" => {
+                if let Some(text) = rest.strip_prefix(b"notify;") {
+                    sink.event(Event::Notification(text));
+                }
+            }
+            b"99" => {
+                let text = rest
+                    .iter()
+                    .position(|b| *b == b';')
+                    .and_then(|i| rest.get(i..)?.get(1..));
+                sink.event(Event::Notification(text.unwrap_or_default()));
+            }
             b"52" => {
                 if let Some(i) = rest.iter().position(|b| *b == b';') {
                     let selection = rest.get(..i).unwrap_or_default();

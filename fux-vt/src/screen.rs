@@ -293,6 +293,8 @@ pub struct Screen {
     pictures: VecDeque<pictures::Placement>,
     picture_ids: u64,
     graphics: Graphics,
+    /// The shell's command marks (`shell`).
+    commands: Commands,
     next_id: u64,
     version: u64,
     structural: u64,
@@ -362,7 +364,9 @@ pub struct Screen {
 }
 
 mod pictures;
+mod shell;
 pub use pictures::{Graphics, PLACEHOLDER, Shown};
+pub use shell::{Commands, Mark as CommandMark};
 #[cfg(test)]
 mod tests;
 
@@ -432,6 +436,7 @@ impl Screen {
             pictures: VecDeque::new(),
             picture_ids: 0,
             graphics: Graphics::default(),
+            commands: Commands::default(),
             next_id,
             version: 1,
             structural: 1,
@@ -794,6 +799,10 @@ impl Screen {
     pub(crate) fn prompt_osc(&mut self, payload: &[u8]) -> Result<(), Error> {
         let mut parts = payload.split(|b| *b == b';');
         let command = parts.next().unwrap_or_default();
+        if matches!(command, b"C" | b"D") {
+            self.command_mark(command, parts.next());
+            return Ok(());
+        }
         // P (explicit start of prompt) of the primary kind, `k=i` or none,
         // marks where it is without a fresh line: shells send it in A's
         // place (Ghostty's bash integration under ble.sh does). Right-side
@@ -842,6 +851,19 @@ impl Screen {
             grid,
             range: 0..grid.retained_len(),
         }
+    }
+    /// The primary screen's rows, its history first, whichever screen is in
+    /// use: what a program printed before it took the alternate screen.
+    pub fn main_rows(&self) -> Rows<'_> {
+        let grid = &self.primary;
+        Rows {
+            grid,
+            range: 0..grid.retained_len(),
+        }
+    }
+    /// Where the retained row `id` is, from the oldest, if it is kept.
+    pub fn row_index(&self, id: crate::RowId) -> Option<usize> {
+        self.grid().index_of(id)
     }
     /// The screen's rows: the window no rows up into history.
     pub fn window(&self) -> Window<'_> {

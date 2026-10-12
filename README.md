@@ -164,8 +164,10 @@ From a key or the prompt, commands act on your focused pane.
 | `fux new-workspace [-n NAME] [--size COLSxROWS] [--json] [-- CMD…]` | a workspace with a shell, CMD typed into it; prints `+N @N %N`. Names are unique, and do not start with `+`, `%`, `@` or `-`, which targets read otherwise |
 | `fux new-tab [-t WS] [-n NAME] [--size COLSxROWS] [--json] [-- CMD…]` | a tab with a shell, CMD typed into it; prints `@N %N` |
 | `fux split -h\|-v [-t %N] [--json] [-- CMD…]` | split a pane: `-h` side by side, `-v` stacked; prints `%N` |
-| `fux run [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--json] -- PROGRAM…` | start a program in place of a shell, in a tab of its own in workspace `agent` (or WS), no client moved to it; prints `%N`. Its pane stays once it exits, with its last screen and status |
-| `fux wait [-t %N] --text T\|--gone T\|--idle MS\|--change\|--exit [--timeout SECS] [--print]` | wait until the pane shows text (`--text` again for any of several), stops showing it, shows no change for MS (redrawing the same screen is no change), changes, or its program exits (prints `exited STATUS`); 1 after `--timeout` (60 s). `--print` prints the screen as it ends |
+| `fux run [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--log FILE] [--wait-… [--timeout SECS] [--print]] [--json] -- PROGRAM…` | start a program in place of a shell, in a tab of its own in workspace `agent` (or WS), no client moved to it; prints `%N`. Its pane stays once it exits, with its last screen and status. `--log` keeps all it writes in FILE; `-t NAME` then finds the pane by its tab's name. `--wait-text T`, `--wait-idle MS`, `--wait-exit` and `--wait-bell` wait as `wait` does from its first output on, printing the pane id and then what the wait found |
+| `fux wait [-t %N]… --text T\|--gone T\|--idle MS\|--change [--since N]\|--exit\|--done\|--bell [--timeout SECS] [--print] [--json]` | wait until the pane shows text, even in a line that scrolled away, and print that line (`--text` again for any of several); stops showing it; shows no change for MS (redrawing the same screen is no change); changes (past revision N); its program exits (prints `exited STATUS`); a shell command ends (OSC 133, prints `done STATUS`); or it rings the bell or notifies. `-t` again watches several panes. Status 3 if the program exits first, 124 after `--timeout` (60 s). `--print` prints the screen as it ends, `--json` what happened |
+| `fux respawn [-t %N] [-k] [--env K=V] [-- PROGRAM…]` | start again in its pane what `run` started, its id and size kept; `-k` ends it first if it still runs |
+| `fux notify [-t TARGET] TEXT` | a notice on the clients showing the target, or every client |
 | `fux resize -t @N\|+N COLSxROWS\|auto` | what a tab (or a workspace's tabs) is laid out on while no client shows it; `auto`: a client's screen |
 | `fux resize -c CLIENT COLSxROWS` | a headless client's size |
 | `fux kill-pane\|kill-tab\|kill-workspace [-t …]` | close, without asking |
@@ -177,10 +179,10 @@ From a key or the prompt, commands act on your focused pane.
 | `fux resize-pane [-t %N] [-x COLS[%]] [-y ROWS[%]]` | make a pane a width, a height or both, in cells or a percentage of its tab; refused, nothing changed, if it cannot be |
 | `fux reorder pane\|tab\|workspace [-t TARGET] --next\|--previous` | move one place in its order |
 | `fux terminate [-t %N]` | SIGTERM to the pane's foreground job, not the shell or background jobs |
-| `fux send-keys [-t %N \| -c CLIENT] [-l] [-N COUNT] KEYS… [--wait-idle MS [--print]]` | send keys (`C-c`, `Enter`, …); other words, all with `-l`, and `--text TEXT` as text; `--paste TEXT` as a paste, bracketed if the program asked. `-N` sends them COUNT times; `--wait-idle` then waits as `wait --idle` does. `-c` types them at a client instead, as at its terminal: its bindings, overlays and prompts take them |
+| `fux send-keys [-t %N \| -c CLIENT] [-l] [-N COUNT] KEYS… [--wait-text T\|--wait-idle MS\|… [--timeout SECS] [--print] [--json]]` | send keys (`C-c`, `Enter`, …); other words, all with `-l`, and `--text TEXT` as text, but a mistyped key name (`Entr`) is refused; `--paste TEXT` as a paste, bracketed if the program asked. `-N` sends them COUNT times. `--wait-text`, `--wait-gone`, `--wait-idle`, `--wait-change`, `--wait-exit`, `--wait-done` and `--wait-bell` then wait as `wait` does, armed before the keys go in; `--wait-idle` exits 5 if they changed nothing. `-c` types them at a client instead, as at its terminal: its bindings, overlays and prompts take them |
 | `fux send-mouse [-t %N] click\|right\|middle\|press\|release\|wheel-up\|wheel-down\|move ROW COL` | a mouse event at a cell, from 0, encoded as the program asked; refused if it did not ask for mouse reports |
 | `fux send-prefix [-t %N]` | send the prefix key to the pane, as its program asked for keys |
-| `fux capture-pane [-t %N] [-S -LINES] [--full] [-J] [--rows A-B] [--cols A-B] [--styles] [--json]` | the pane's text, after LINES of history, trailing blanks and blank rows trimmed (`--full` keeps them); `-J` joins soft-wrapped rows; `--rows`/`--cols` a region, from 0; `--styles` colours and attributes as SGR |
+| `fux capture-pane [-t %N] [-S -LINES\|all] [--full] [-J] [--rows A-B] [--cols A-B] [--styles] [--main] [--last-output] [--json]` | the pane's text, after LINES of history (or all), trailing blanks and blank rows trimmed (`--full` keeps them); `-J` joins soft-wrapped rows; `--rows`/`--cols` a region, from 0; `--styles` colours and attributes as SGR; `--main` the main screen under a full-screen program; `--last-output` the last shell command's output (OSC 133) |
 | `fux capture-client [-c CLIENT] [--json]` | what a client's terminal shows, bar included |
 | `fux set`, `bind`, `unbind`, `unbind-all` | change the configuration |
 | `fux reload` | run the config file again over the defaults |
@@ -203,7 +205,9 @@ from the command line. `zoom` and `copy-mode` take no `-t`.
   `select-workspace -t WS|--next|--previous`
 
 Exit status: 0 done; 1 failed, with the reason on stderr; 2 a usage error,
-with the command's usage. A tmux name (`list-panes`, `new-window`, …) gets
+with the command's usage. A wait also exits 3 when the program exited
+first, 4 when the pane closed, 5 when `--wait-idle` saw no change and 124
+on a timeout. A tmux name (`list-panes`, `new-window`, …) gets
 a hint at fux's.
 
 **Scripts and agents** drive programs with `run`, `send-keys`, `wait` and
@@ -238,16 +242,24 @@ change.
 ```json
 {"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main",
   "panes":[{"id":"%1","name":"zsh","title":"","rows":23,"cols":80,"pid":4242,
-    "program":"vim","exited":null,"idle_ms":1520,"alt_screen":true,
-    "mouse":true,"bracketed_paste":true}]}]}],
+    "program":"vim","exited":null,"signal":null,"idle_ms":1520,"alt_screen":true,
+    "mouse":true,"bracketed_paste":true,"pictures":[],"cursor_visible":true,
+    "history_lines":0,"copy_mode":false,"revision":38,"running":false,
+    "last_status":null,"bells":0,"notification":null,"cwd":"/home/me",
+    "argv":["vim","notes.md"]}]}]}],
  "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false}]}
 ```
 
 That is `fux ls --json`. Each pane says what it runs in its foreground
 (`program`, `null` if unknown), the status its program exited with
-(`exited`, for a pane `run` started, else `null`), how long its screen has
-shown no change (`idle_ms`), and whether its program is on the alternate screen, asked
-for mouse reports and for bracketed paste.
+(`exited`, for a pane `run` started, else `null`) or the signal that
+killed it (`signal`, its number: 11 for SIGSEGV), how long its screen has shown no change
+(`idle_ms`), and whether its program is on the alternate screen, asked
+for mouse reports and for bracketed paste. `revision` grows with every
+change to the screen (`fux wait --change --since N`); `running` and
+`last_status` come from the shell's OSC 133 marks; `bells` counts bells
+and notifications, and `notification` is the last one's text. `cwd` and
+`argv` are the foreground process's, where the system says (Linux).
 
 `fux capture-pane --json` prints
 `{"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":[…]}` and the

@@ -101,9 +101,11 @@ fn launcher() -> std::io::Result<PathBuf> {
     std::env::current_exe()
 }
 
+pub use fuxix::process::Status as Ended;
+
 /// The status a shell reports for a process: its exit code, or 128 plus the
 /// signal that killed it, whose numbers are small.
-fn shell_status(status: Status) -> i32 {
+pub fn shell_status(status: Status) -> i32 {
     match status {
         Status::Exited(code) => code,
         Status::Signalled(signal) => 128i32.saturating_add(signal),
@@ -119,8 +121,8 @@ impl Leader {
     /// `None` while it lives, stopped or not (bevy-final finding 020). The
     /// check does not wait, so no signal interrupts it, and it fails only
     /// for a pid that is not an unreaped child, which this always is.
-    pub fn exited(&self) -> Option<i32> {
-        fuxix::process::ended(self.0).map_or(Some(0), |status| status.map(shell_status))
+    pub fn exited(&self) -> Option<Status> {
+        fuxix::process::ended(self.0).unwrap_or(Some(Status::Exited(0)))
     }
 
     /// Signals its process group and every other process in its session.
@@ -150,6 +152,30 @@ impl Leader {
 }
 
 /// Sends SIGTERM to a process group.
+/// How an end is told: `exited 3`, or `killed by SIGSEGV`.
+pub fn told(ended: Status) -> String {
+    match ended {
+        Status::Exited(code) => format!("exited {code}"),
+        Status::Signalled(signal) => {
+            let name = match signal {
+                1 => "SIGHUP",
+                2 => "SIGINT",
+                3 => "SIGQUIT",
+                4 => "SIGILL",
+                6 => "SIGABRT",
+                8 => "SIGFPE",
+                9 => "SIGKILL",
+                11 => "SIGSEGV",
+                13 => "SIGPIPE",
+                14 => "SIGALRM",
+                15 => "SIGTERM",
+                _ => return format!("killed by signal {signal}"),
+            };
+            format!("killed by {name}")
+        }
+    }
+}
+
 pub fn terminate(group: Pid) -> Result<(), fuxix::Errno> {
     fuxix::process::kill_group(group, Signal::Term)
 }

@@ -281,6 +281,7 @@ struct Sink<'a> {
     title: &'a mut Title,
     /// Set by a bell (BEL).
     bell: &'a mut bool,
+    alerts: &'a mut Alerts,
     /// Set by an OSC 52 write of UTF-8 text, at most `MAX_CLIPBOARD`
     /// encoded.
     copied: &'a mut Option<String>,
@@ -303,7 +304,16 @@ impl fux_vt::Sink for Sink<'_> {
                     fux_vt::Sink::reply(self, &answer);
                 }
             }
-            fux_vt::Event::Bell => *self.bell = true,
+            fux_vt::Event::Bell => {
+                *self.bell = true;
+                self.alerts.bells = self.alerts.bells.saturating_add(1);
+            }
+            fux_vt::Event::Notification(text) => {
+                self.alerts.notifications = self.alerts.notifications.saturating_add(1);
+                let text = String::from_utf8_lossy(text);
+                self.alerts.last =
+                    Some(text.chars().filter(|c| !c.is_control()).take(500).collect());
+            }
             fux_vt::Event::Clipboard { data, .. } if data.len() <= crate::copy::MAX_CLIPBOARD => {
                 let text = crate::json::unbase64(data).and_then(|d| String::from_utf8(d).ok());
                 if let Some(text) = text {
@@ -354,9 +364,9 @@ pub enum Process {
     /// end on every poll, so it is neither polled nor written; its exit, by
     /// SIGCHLD, ends the pane.
     HungUp(Child),
-    /// The program `fux run` started exited with this status, as a shell
-    /// reports it: the pane stays, its last screen kept to be read.
-    Exited(i32),
+    /// The program `fux run` started exited so: the pane stays, its last
+    /// screen kept to be read.
+    Exited(crate::process::Ended),
 }
 
 impl Process {
@@ -367,8 +377,8 @@ impl Process {
         }
     }
 
-    /// The status its program exited with, once it has.
-    pub fn exit_status(&self) -> Option<i32> {
+    /// How its program ended, once it has.
+    pub fn exit_status(&self) -> Option<crate::process::Ended> {
         match self {
             Process::Exited(status) => Some(*status),
             Process::Absent | Process::Reading(_) | Process::HungUp(_) => None,
@@ -410,13 +420,39 @@ fn digest(screen: &fux_vt::Screen) -> u64 {
 }
 
 /// What a pane runs, which says what its program's exit does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Runs {
     /// The shell: its exit closes the pane.
     Shell,
     /// A program `fux run` started in place of a shell: its exit leaves the
-    /// pane, with its last screen and its status (`Process::Exited`).
-    Program,
+    /// pane, with its last screen and its status (`Process::Exited`); how it
+    /// was started, which `fux respawn` starts again.
+    Program(Launch),
+}
+
+/// How a program was started: its words, where, and the variables set for
+/// it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Launch {
+    pub argv: Vec<String>,
+    pub cwd: std::path::PathBuf,
+    pub env: Vec<(String, String)>,
+}
+
+/// What a program rang or announced since it started: bells, and desktop
+/// notifications (OSC 9, 777, 99) with the last one's text.
+#[derive(Clone, Debug, Default)]
+pub struct Alerts {
+    pub bells: u64,
+    pub notifications: u64,
+    pub last: Option<String>,
+}
+
+impl Alerts {
+    /// Bells and notifications together, as `wait --bell` counts them.
+    pub fn count(&self) -> u64 {
+        self.bells.saturating_add(self.notifications)
+    }
 }
 
 pub struct Pane {
@@ -447,6 +483,12 @@ pub struct Pane {
     /// has: a program that redraws the same screen has not changed it.
     shown: u64,
     pub changed_at: Instant,
+    /// How many times what the screen shows has changed: a wait for a change
+    /// past one read earlier waits for it to grow.
+    pub revision: u64,
+    pub alerts: Alerts,
+    /// Where everything the program writes is kept too (`fux run --log`).
+    pub log: Option<std::fs::File>,
 }
 
 /// How long a piece of input that must be read alone (`Paced`) is given
@@ -543,6 +585,9 @@ impl Pane {
             paced: Paced::default(),
             shown: 0,
             changed_at: Instant::now(),
+            revision: 0,
+            alerts: Alerts::default(),
+            log: None,
         })
     }
 
@@ -561,6 +606,12 @@ impl Pane {
 
     /// [`Pane::output`] at `now`.
     pub fn output_at(&mut self, bytes: &[u8], now: Instant) {
+        if let Some(log) = &mut self.log {
+            // A log that cannot be written stops; the pane goes on.
+            if std::io::Write::write_all(log, bytes).is_err() {
+                self.log = None;
+            }
+        }
         let mut after: Vec<u8>;
         let mut rest = bytes;
         loop {
@@ -611,6 +662,7 @@ impl Pane {
             replies: Vec::new(),
             title: &mut self.title,
             bell: &mut self.bell,
+            alerts: &mut self.alerts,
             copied: &mut self.copied,
             colours: &self.colours,
         };
@@ -725,6 +777,41 @@ impl Pane {
         }
     }
 
+    /// Starts `launch` in the pane again as `process`, on a screen as new,
+    /// its size and history kept; the process that was there, to end.
+    pub fn respawned(
+        &mut self,
+        launch: Launch,
+        process: Option<Process>,
+        history: usize,
+    ) -> Result<Process, Error> {
+        let size = self.size();
+        let parser = fux_vt::Parser::with_options(size, history, OPTIONS).map_err(|source| {
+            Error::Terminal {
+                size,
+                history,
+                source,
+            }
+        })?;
+        self.parser = parser;
+        self.name = launch.argv.first().map_or_else(String::new, |p| {
+            std::path::Path::new(p)
+                .file_name()
+                .map_or_else(|| p.clone(), |n| n.to_string_lossy().into_owned())
+        });
+        self.title = Title::default();
+        self.input = InputQueue::default();
+        self.frame = None;
+        self.runs = Runs::Program(launch);
+        self.alerts = Alerts::default();
+        self.revision = self.revision.wrapping_add(1);
+        self.changed_at = Instant::now();
+        Ok(std::mem::replace(
+            &mut self.process,
+            process.unwrap_or(Process::Absent),
+        ))
+    }
+
     /// Notes, after the screen was read into at `now`, whether what it
     /// shows changed.
     pub fn note_change(&mut self, now: Instant) {
@@ -732,6 +819,7 @@ impl Pane {
         if shown != self.shown {
             self.shown = shown;
             self.changed_at = now;
+            self.revision = self.revision.wrapping_add(1);
         }
     }
 

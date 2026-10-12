@@ -1,0 +1,828 @@
+# The benchmark's tasks. Each has:
+#   id, cat      a name and a category
+#   goal         what an agent is asked, the same for every tool
+#   recipe       the scripted solution (solutions.py), with its args
+#   check        how the result is judged: a file the program wrote, or the
+#                answer written to answer.txt
+# `{fx}` in a goal or args is the fixtures program; programs run in the
+# task's work directory, where their files go.
+
+# ------------------------------------------------ start and supervise (12)
+
+[[task]]
+id = "start-size-100x30"
+cat = "start"
+goal = "Start `{fx} sizer` in the background so that it starts at 100 columns by 30 rows. It writes the size it sees to sizes.txt."
+recipe = "spawn_sized"
+args = { prog = "sizer", cols = 100, rows = 30 }
+check = { file = "sizes.txt", first_line = "100x30" }
+
+[[task]]
+id = "start-size-40x12"
+cat = "start"
+goal = "Start `{fx} sizer` in the background at 40 columns by 12 rows. It writes the size it sees to sizes.txt."
+recipe = "spawn_sized"
+args = { prog = "sizer", cols = 40, rows = 12 }
+check = { file = "sizes.txt", first_line = "40x12" }
+
+[[task]]
+id = "crash-status"
+cat = "start"
+goal = "Start `{fx} loader seconds=1 crash=3`. It fails during startup. Write its exit status to answer.txt."
+recipe = "exit_status"
+args = { prog = "loader seconds=1 crash=3" }
+check = { answer = "3" }
+
+[[task]]
+id = "crash-instant"
+cat = "start"
+goal = "Start `{fx} loader seconds=0 crash=7` and write its exit status to answer.txt."
+recipe = "exit_status"
+args = { prog = "loader seconds=0 crash=7" }
+check = { answer = "7" }
+
+[[task]]
+id = "crash-message"
+cat = "start"
+goal = "Start `{fx} loader seconds=0.5 crash=2`. It prints an error before it exits. Write the error line (starting with `fatal:`) to answer.txt."
+recipe = "last_line_matching"
+args = { prog = "loader seconds=0.5 crash=2", prefix = "fatal:" }
+check = { answer = "fatal: could not load" }
+
+[[task]]
+id = "restart"
+cat = "start"
+goal = "Start `{fx} quiet seconds=0.5 status=1`. Once it has exited, run it again in the same place, and wait for the second run to finish. Each run adds a line to runs.txt."
+recipe = "restart"
+args = { prog = "quiet seconds=0.5 status=1" }
+check = { file = "runs.txt", lines = 2 }
+
+[[task]]
+id = "first-of-three"
+cat = "start"
+goal = "Start three programs at once, named a, b and c: `{fx} quiet seconds=3`, `{fx} quiet seconds=1` and `{fx} quiet seconds=2`. Write the name of the one that finishes first to answer.txt."
+recipe = "first_of"
+args = { progs = ["quiet seconds=3", "quiet seconds=1", "quiet seconds=2"] }
+check = { answer = "b" }
+
+[[task]]
+id = "which-failed"
+cat = "start"
+goal = "Start three programs, named a, b and c: `{fx} quiet seconds=0.5 status=0`, `{fx} quiet seconds=1 status=2` and `{fx} quiet seconds=0.2 status=0`. Write the name of the one that fails to answer.txt."
+recipe = "which_failed"
+args = { progs = ["quiet seconds=0.5 status=0", "quiet seconds=1 status=2", "quiet seconds=0.2 status=0"] }
+check = { answer = "b" }
+
+[[task]]
+id = "find-by-name"
+cat = "start"
+goal = "Start `{fx} loader seconds=0.5`, naming it builder. Then, as if you had forgotten its id, find it by its name, wait until it shows READY, type `quit` and press Enter."
+recipe = "find_by_name"
+args = { prog = "loader seconds=0.5", name = "builder" }
+check = { file = "lines.txt", contains = "quit" }
+
+[[task]]
+id = "exit-zero"
+cat = "start"
+goal = "Start `{fx} quiet seconds=1 status=0` and write its exit status to answer.txt."
+recipe = "exit_status"
+args = { prog = "quiet seconds=1 status=0" }
+check = { answer = "0" }
+
+[[task]]
+id = "long-runner"
+cat = "start"
+goal = "Start `{fx} quiet seconds=4 status=6`, which prints nothing for a while. Write its exit status to answer.txt."
+recipe = "exit_status"
+args = { prog = "quiet seconds=4 status=6" }
+check = { answer = "6" }
+
+[[task]]
+id = "stop-stubborn"
+cat = "start"
+goal = "Start `{fx} stubborn`. It ignores SIGTERM and SIGHUP, and writes its pid to pid.txt. Stop it so that its process is gone."
+recipe = "stop_stubborn"
+args = { prog = "stubborn" }
+check = { gone = "pid.txt" }
+
+# ---------------------------------------------------- shell commands (14)
+
+[[task]]
+id = "sh-status-false"
+cat = "shell"
+goal = "In an interactive shell, run `false`, and write its exit status to answer.txt."
+recipe = "sh_status"
+args = { cmd = "false" }
+check = { answer = "1" }
+
+[[task]]
+id = "sh-output"
+cat = "shell"
+goal = "In an interactive shell, run `echo $((6*7))`, and write what it prints to answer.txt."
+recipe = "sh_output"
+args = { cmd = "echo $((6*7))" }
+check = { answer = "42" }
+
+[[task]]
+id = "sh-scrolled-output"
+cat = "shell"
+goal = "In an interactive shell, run `seq 1 500 | sed 's/^250$/MARKER/'`. Write the line that comes right before MARKER to answer.txt."
+recipe = "sh_line_before"
+args = { cmd = "seq 1 500 | sed 's/^250$/MARKER/'", marker = "MARKER" }
+check = { answer = "249" }
+
+[[task]]
+id = "sh-quiet-then-done"
+cat = "shell"
+goal = "In an interactive shell, run `sleep 3; echo done-ok`. Once it has finished, write what it printed to answer.txt."
+recipe = "sh_output"
+args = { cmd = "sleep 3; echo done-ok" }
+check = { answer = "done-ok" }
+
+[[task]]
+id = "sh-env"
+cat = "shell"
+goal = "In an interactive shell, run `export FOO=bar`, then `echo $FOO`, and write what it prints to answer.txt."
+recipe = "sh_output"
+args = { cmd = "export FOO=bar; echo $FOO" }
+check = { answer = "bar" }
+
+[[task]]
+id = "sh-cwd"
+cat = "shell"
+goal = "In an interactive shell, change to /usr/share and run `pwd`. Write what it prints to answer.txt."
+recipe = "sh_output"
+args = { cmd = "cd /usr/share && pwd" }
+check = { answer = "/usr/share" }
+
+[[task]]
+id = "sh-confirm"
+cat = "shell"
+goal = "In an interactive shell, run `{fx} confirm`, which asks a y/N question. Answer yes."
+recipe = "sh_confirm"
+args = { cmd = "{fx} confirm" }
+check = { file = "confirm.txt", equals = "yes" }
+
+[[task]]
+id = "sh-status-5"
+cat = "shell"
+goal = "In an interactive shell, run `sh -c 'exit 5'`, and write its exit status to answer.txt."
+recipe = "sh_status"
+args = { cmd = "sh -c 'exit 5'" }
+check = { answer = "5" }
+
+[[task]]
+id = "sh-second-status"
+cat = "shell"
+goal = "In an interactive shell, run `true`, then on its own line `ls /nonexistent-dir`. Write the second command's exit status to answer.txt."
+recipe = "sh_status"
+args = { cmd = "ls /nonexistent-dir", before = "true" }
+check = { answer = "2" }
+
+[[task]]
+id = "sh-stderr"
+cat = "shell"
+goal = "In an interactive shell, run `cat /nonexistent-file`. Write the error message it prints to answer.txt."
+recipe = "sh_output"
+args = { cmd = "cat /nonexistent-file" }
+check = { answer_contains = "No such file" }
+
+[[task]]
+id = "sh-count"
+cat = "shell"
+goal = "In an interactive shell, count the lines of data.txt in the current directory with `wc -l < data.txt`, and write the number to answer.txt."
+recipe = "sh_output"
+args = { cmd = "wc -l < data.txt", setup_lines = 17 }
+check = { answer = "17" }
+
+[[task]]
+id = "sh-progress"
+cat = "shell"
+goal = "In an interactive shell, run `for i in 1 2 3 4; do echo step $i; sleep 0.5; done; echo RESULT=9`. Once it has finished, write the number after RESULT= to answer.txt."
+recipe = "sh_value"
+args = { cmd = "for i in 1 2 3 4; do echo step $i; sleep 0.5; done; echo RESULT=9", key = "RESULT=" }
+check = { answer = "9" }
+
+[[task]]
+id = "sh-interrupt"
+cat = "shell"
+goal = "In an interactive shell, run `sleep 100`. Interrupt it, then run `echo back`, and write what it prints to answer.txt."
+recipe = "sh_interrupt"
+args = { long = "sleep 100", after = "echo back" }
+check = { answer = "back" }
+
+[[task]]
+id = "sh-exit-shell"
+cat = "shell"
+goal = "Start an interactive shell as a program of its own, then type `exit 4` into it. Write the status the shell exited with to answer.txt."
+recipe = "shell_exit"
+args = { status = 4 }
+check = { answer = "4" }
+
+# ----------------------------------------------------------- waiting (14)
+
+[[task]]
+id = "wait-scrolled-marker"
+cat = "wait"
+goal = "Start `{fx} scroll lines=300 at=150 marker=MARKER-42`, which prints 300 lines at once with MARKER-42 among them. Write the line just before the marker to answer.txt."
+recipe = "line_before"
+args = { prog = "scroll lines=300 at=150 marker=MARKER-42", marker = "MARKER-42" }
+check = { answer = "line 149" }
+
+[[task]]
+id = "wait-gone"
+cat = "wait"
+goal = "Start `{fx} loader seconds=1.5`. It shows `loading...` with a spinner. Once `loading` is gone, type `quit` and press Enter."
+recipe = "gone_then_type"
+args = { prog = "loader seconds=1.5", gone = "loading", line = "quit" }
+check = { file = "lines.txt", contains = "quit" }
+
+[[task]]
+id = "wait-spinner"
+cat = "wait"
+goal = "Start `{fx} agent seconds=2`. Once it shows `agent ready`, send it the message `hello` and press Enter. When it has finished working, write its answer (after `answer: `) to answer.txt."
+recipe = "agent_answer"
+args = { prog = "agent seconds=2", msg = "hello" }
+check = { answer = "HELLO" }
+
+[[task]]
+id = "wait-identical-redraw"
+cat = "wait"
+goal = "Start `{fx} loader seconds=1 redraw=1`, which keeps drawing the same screen while it waits. Once it is ready (READY), type `x` and press Enter."
+recipe = "text_then_type"
+args = { prog = "loader seconds=1 redraw=1", text = "READY", line = "x" }
+check = { file = "lines.txt", contains = "x" }
+
+[[task]]
+id = "wait-first-outcome"
+cat = "wait"
+goal = "Run `sh -c 'sleep 1; echo FAIL; sleep 30'`. It prints either PASS or FAIL. Write which one to answer.txt."
+recipe = "first_text"
+args = { argv = ["sh", "-c", "sleep 1; echo FAIL; sleep 30"], texts = ["PASS", "FAIL"] }
+check = { answer = "FAIL" }
+
+[[task]]
+id = "wait-race"
+cat = "wait"
+goal = "Start `{fx} chat`. Send the message `ping` and press Enter. Confirm it was sent (it shows `sent: 'ping'`), then write `ok` to answer.txt."
+recipe = "chat_send"
+args = { prog = "chat", msg = "ping" }
+check = { file = "sent.txt", contains = "ping" }
+
+[[task]]
+id = "wait-timeout"
+cat = "wait"
+goal = "Start `{fx} loader seconds=30`. Wait at most 2 seconds for it to show READY. If it doesn't, write `timeout` to answer.txt."
+recipe = "timeout"
+args = { prog = "loader seconds=30", text = "READY", within = 2 }
+check = { answer = "timeout" }
+
+[[task]]
+id = "wait-crash-before-ready"
+cat = "wait"
+goal = "Start `{fx} loader seconds=0.5 crash=2` and wait for it to show READY. If it exits first, write its exit status to answer.txt."
+recipe = "ready_or_status"
+args = { prog = "loader seconds=0.5 crash=2", text = "READY" }
+check = { answer = "2" }
+
+[[task]]
+id = "wait-bell"
+cat = "wait"
+goal = "Start `{fx} bell seconds=1.5`. It rings the terminal bell when its job is done, and draws nothing new. Once it has rung, write `rang` to answer.txt."
+recipe = "bell"
+args = { prog = "bell seconds=1.5" }
+check = { answer = "rang" }
+
+[[task]]
+id = "wait-quiet-command"
+cat = "wait"
+goal = "Start `{fx} quiet seconds=2`, which prints nothing for two seconds and then `finished`. Once it has printed it, write `finished` to answer.txt."
+recipe = "text_answer"
+args = { prog = "quiet seconds=2", text = "finished" }
+check = { answer = "finished" }
+
+[[task]]
+id = "wait-change"
+cat = "wait"
+goal = "Start `{fx} loader seconds=1 then=GO`. Wait until its screen changes from loading to ready, then write the word it shows when ready to answer.txt."
+recipe = "text_answer"
+args = { prog = "loader seconds=1 then=GO", text = "GO" }
+check = { answer = "GO" }
+
+[[task]]
+id = "wait-error-in-flood"
+cat = "wait"
+goal = "Start `{fx} scroll lines=2000 at=1000 marker='ERROR: boom'`. Write the line that starts with ERROR to answer.txt."
+recipe = "find_line"
+args = { prog = "scroll lines=2000 at=1000 marker='ERROR: boom'", prefix = "ERROR" }
+check = { answer = "ERROR: boom" }
+
+[[task]]
+id = "wait-either-text"
+cat = "wait"
+goal = "Start `{fx} loader seconds=1 then=DONE-B`. It ends showing DONE-A or DONE-B. Write which one to answer.txt."
+recipe = "first_text"
+args = { prog = "loader seconds=1 then=DONE-B", texts = ["DONE-A", "DONE-B"] }
+check = { answer = "DONE-B" }
+
+[[task]]
+id = "wait-agent-permission"
+cat = "wait"
+goal = "Start `{fx} agent seconds=1 ask=1`. Send it `go` and Enter. It asks a permission question: answer `y`. When it has finished, write its answer (after `answer: `) to answer.txt."
+recipe = "agent_permission"
+args = { prog = "agent seconds=1 ask=1", msg = "go" }
+check = { answer = "GO" }
+
+# --------------------------------------------------- TUI navigation (16)
+
+[[task]]
+id = "menu-delta"
+cat = "tui"
+goal = "Start `{fx} menu`. Choose `delta` (move with j/k, Enter chooses)."
+recipe = "menu"
+args = { prog = "menu", target = "delta" }
+check = { file = "chosen.txt", equals = "delta" }
+
+[[task]]
+id = "menu-zeta"
+cat = "tui"
+goal = "Start `{fx} menu`. Choose `zeta`, the last item."
+recipe = "menu"
+args = { prog = "menu", target = "zeta" }
+check = { file = "chosen.txt", equals = "zeta" }
+
+[[task]]
+id = "menu-up"
+cat = "tui"
+goal = "Start `{fx} menu start=4`. Choose `beta`."
+recipe = "menu"
+args = { prog = "menu start=4", target = "beta" }
+check = { file = "chosen.txt", equals = "beta" }
+
+[[task]]
+id = "menu-custom"
+cat = "tui"
+goal = "Start `{fx} menu items=red,green,blue,cyan,magenta`. Choose `cyan`."
+recipe = "menu"
+args = { prog = "menu items=red,green,blue,cyan,magenta", target = "cyan" }
+check = { file = "chosen.txt", equals = "cyan" }
+
+[[task]]
+id = "modal-dismiss"
+cat = "tui"
+goal = "Start `{fx} modal`. A dialog covers it and swallows keys until dismissed with Escape. Dismiss it, then type `hello` and press Enter."
+recipe = "modal"
+args = { prog = "modal", line = "hello" }
+check = { file = "modal.txt", equals = "hello" }
+
+[[task]]
+id = "form-ada"
+cat = "tui"
+goal = "Start `{fx} form`. Fill Name with `Ada` and Age with `36` (Tab moves between fields), then submit with Enter."
+recipe = "form"
+args = { prog = "form", name = "Ada", age = "36" }
+check = { file = "form.txt", equals = "Ada,36" }
+
+[[task]]
+id = "form-spaces"
+cat = "tui"
+goal = "Start `{fx} form`. Fill Name with `Bob Ray` and Age with `7`, then submit with Enter."
+recipe = "form"
+args = { prog = "form", name = "Bob Ray", age = "7" }
+check = { file = "form.txt", equals = "Bob Ray,7" }
+
+[[task]]
+id = "click-ok"
+cat = "tui"
+goal = "Start `{fx} mouse`. Click the `[ OK ]` button with the mouse."
+recipe = "click"
+args = { prog = "mouse", label = "[ OK ]" }
+check = { file = "clicked.txt", equals = "OK" }
+
+[[task]]
+id = "click-cancel"
+cat = "tui"
+goal = "Start `{fx} mouse`. Click the `[ Cancel ]` button with the mouse."
+recipe = "click"
+args = { prog = "mouse", label = "[ Cancel ]" }
+check = { file = "clicked.txt", equals = "Cancel" }
+
+[[task]]
+id = "wheel-down"
+cat = "tui"
+goal = "Start `{fx} mouse`. Turn the mouse wheel down three notches over it."
+recipe = "wheel"
+args = { prog = "mouse", down = 3 }
+check = { file = "wheel.txt", last_line = "3" }
+
+[[task]]
+id = "wheel-up"
+cat = "tui"
+goal = "Start `{fx} mouse`. Turn the mouse wheel up two notches over it."
+recipe = "wheel"
+args = { prog = "mouse", down = -2 }
+check = { file = "wheel.txt", last_line = "-2" }
+
+[[task]]
+id = "escape-then-x"
+cat = "tui"
+goal = "Start `{fx} keys`. Press Escape, then the key x, so that the program reads them as two separate keys, not as Alt-x."
+recipe = "keys_reads"
+args = { prog = "keys", keys = ["Escape", "x"] }
+check = { file = "keys.txt", lines_exact = ["1b", "78"] }
+
+[[task]]
+id = "escape-escape"
+cat = "tui"
+goal = "Start `{fx} keys`. Press Escape twice, so that the program reads two separate Escapes."
+recipe = "keys_reads"
+args = { prog = "keys", keys = ["Escape", "Escape"] }
+check = { file = "keys.txt", lines_exact = ["1b", "1b"] }
+
+[[task]]
+id = "less-search"
+cat = "tui"
+goal = "Open lines.data with `less` (the file is in the current directory). Search for `needle`, and write the whole line it is on to answer.txt. Quit less."
+recipe = "less_search"
+args = { needle = "needle" }
+check = { answer = "row 338 needle here" }
+
+[[task]]
+id = "nvim-edit"
+cat = "tui"
+goal = "Open edit.txt with `nvim --clean edit.txt`, insert the text `hello from the agent`, save and quit."
+recipe = "nvim_edit"
+args = { text = "hello from the agent" }
+check = { file = "edit.txt", contains = "hello from the agent" }
+
+[[task]]
+id = "python-repl"
+cat = "tui"
+goal = "Start `python3 -q`. Compute 2**10 in it, write the result to answer.txt, and quit the REPL."
+recipe = "repl"
+args = { expr = "2**10" }
+check = { answer = "1024" }
+
+# --------------------------------------------------- reading screens (12)
+
+[[task]]
+id = "table-red"
+cat = "read"
+goal = "Start `{fx} table`. One service's status is shown in red. Write that service's name to answer.txt."
+recipe = "table_red"
+args = { prog = "table" }
+check = { answer = "cache" }
+
+[[task]]
+id = "table-count"
+cat = "read"
+goal = "Start `{fx} table`. Write how many services are up (shown in green) to answer.txt."
+recipe = "table_green"
+args = { prog = "table" }
+check = { answer = "4" }
+
+[[task]]
+id = "table-header"
+cat = "read"
+goal = "Start `{fx} table`. Write its first line, exactly as shown, to answer.txt."
+recipe = "first_line"
+args = { prog = "table" }
+check = { answer = "SERVICE   STATUS" }
+
+[[task]]
+id = "wrapped-line"
+cat = "read"
+goal = "Run `python3 -c \"print('7'*300); import time; time.sleep(60)\"` at 80 columns. Write the length of the long line it printed, in characters, to answer.txt."
+recipe = "wrapped_length"
+args = { argv = ["python3", "-c", "print('7'*300); import time; time.sleep(60)"] }
+check = { answer = "300" }
+
+[[task]]
+id = "behind-fullscreen"
+cat = "read"
+goal = "Start `{fx} mainalt`. It prints a log and then takes the full screen. Write the error line from the log (it starts with `error:`) to answer.txt, without quitting it."
+recipe = "behind_alt"
+args = { prog = "mainalt", prefix = "error:" }
+check = { answer = "error: disk full at step 13" }
+
+[[task]]
+id = "all-history"
+cat = "read"
+goal = "Start `{fx} scroll lines=3000 at=5 marker=EARLY`. Write the line just after EARLY to answer.txt."
+recipe = "line_after"
+args = { prog = "scroll lines=3000 at=5 marker=EARLY", marker = "EARLY" }
+check = { answer = "line 6" }
+
+[[task]]
+id = "selection-start"
+cat = "read"
+goal = "Start `{fx} menu start=2`. Without moving, write the selected item to answer.txt."
+recipe = "selected"
+args = { prog = "menu start=2" }
+check = { answer = "gamma" }
+
+[[task]]
+id = "selection-after-keys"
+cat = "read"
+goal = "Start `{fx} menu`. Press j three times, then write the selected item to answer.txt."
+recipe = "selected"
+args = { prog = "menu", presses = 3 }
+check = { answer = "delta" }
+
+[[task]]
+id = "wide-chars"
+cat = "read"
+goal = "Start `{fx} wide`. Write its first line, exactly as shown, to answer.txt."
+recipe = "first_line"
+args = { prog = "wide" }
+check = { answer = "漢字テスト 🙂 ok" }
+
+[[task]]
+id = "screen-size-text"
+cat = "read"
+goal = "Start `{fx} sizer` at 70 columns by 20 rows. Write what it displays to answer.txt."
+recipe = "sized_text"
+args = { prog = "sizer", cols = 70, rows = 20 }
+check = { answer = "size 70x20" }
+
+[[task]]
+id = "last-line"
+cat = "read"
+goal = "Start `{fx} scroll lines=50 at=0 marker=x`. Write the last line it printed to answer.txt."
+recipe = "last_line"
+args = { prog = "scroll lines=50 at=0 marker=x" }
+check = { answer = "line 50" }
+
+[[task]]
+id = "cursor-hidden"
+cat = "read"
+goal = "Start `{fx} menu`. Is the terminal cursor hidden while it runs? Write `hidden` or `shown` to answer.txt."
+recipe = "cursor"
+args = { prog = "menu" }
+check = { answer = "hidden" }
+
+# --------------------------------------------------- input edge cases (10)
+
+[[task]]
+id = "paste-multiline"
+cat = "input"
+goal = "Start `{fx} chat`. Paste the two lines `first` and `second` as one message (as a paste, not typed), then press Enter to send it."
+recipe = "chat_paste"
+args = { prog = "chat", text = "first\nsecond" }
+check = { file = "sent.txt", contains = "first\nsecond" }
+
+[[task]]
+id = "long-message"
+cat = "input"
+goal = "Start `{fx} chat`. Send this message, then press Enter so it is sent: `the quick brown fox jumps over the lazy dog and keeps running far away`."
+recipe = "chat_send"
+args = { prog = "chat", msg = "the quick brown fox jumps over the lazy dog and keeps running far away" }
+check = { file = "sent.txt", line_equals = "the quick brown fox jumps over the lazy dog and keeps running far away" }
+
+[[task]]
+id = "repeat-backspace"
+cat = "input"
+goal = "Start `{fx} keys`. Press Backspace ten times."
+recipe = "keys_repeat"
+args = { prog = "keys", key = "BSpace", count = 10 }
+check = { file = "keys.txt", bytes_hex = "7f7f7f7f7f7f7f7f7f7f" }
+
+[[task]]
+id = "literal-key-name"
+cat = "input"
+goal = "Start `{fx} chat`. Send the word `Enter` as the text of a message (the five letters), then press the Enter key to send it."
+recipe = "chat_send"
+args = { prog = "chat", msg = "Enter" }
+check = { file = "sent.txt", line_equals = "Enter" }
+
+[[task]]
+id = "unicode-input"
+cat = "input"
+goal = "Start `{fx} wide`. Type `héllo 漢字` and press Enter."
+recipe = "type_line"
+args = { prog = "wide", ready = "ok", line = "héllo 漢字" }
+check = { file = "wide.txt", equals = "héllo 漢字" }
+
+[[task]]
+id = "tab-key"
+cat = "input"
+goal = "Start `{fx} keys`. Press the Tab key."
+recipe = "keys_reads"
+args = { prog = "keys", keys = ["Tab"] }
+check = { file = "keys.txt", lines_exact = ["09"] }
+
+[[task]]
+id = "f5-key"
+cat = "input"
+goal = "Start `{fx} keys`. Press F5."
+recipe = "keys_reads"
+args = { prog = "keys", keys = ["F5"] }
+check = { file = "keys.txt", lines_exact = ["1b5b31357e"] }
+
+[[task]]
+id = "alt-x"
+cat = "input"
+goal = "Start `{fx} keys`. Press Alt-x (Meta-x)."
+recipe = "keys_reads"
+args = { prog = "keys", keys = ["M-x"] }
+check = { file = "keys.txt", lines_exact = ["1b78"] }
+
+[[task]]
+id = "shift-tab"
+cat = "input"
+goal = "Start `{fx} keys`. Press Shift-Tab."
+recipe = "keys_reads"
+args = { prog = "keys", keys = ["BTab"] }
+check = { file = "keys.txt", lines_exact = ["1b5b5a"] }
+
+[[task]]
+id = "ctrl-c-agent"
+cat = "input"
+goal = "Start `{fx} agent seconds=5`. Send it `slow` and Enter, and while it is working interrupt it with Escape. Once it says it was interrupted, write `interrupted` to answer.txt."
+recipe = "agent_interrupt"
+args = { prog = "agent seconds=5", msg = "slow", key = "Escape" }
+check = { answer = "interrupted" }
+
+# ------------------------------------------ agents supervising agents (8)
+
+[[task]]
+id = "agent-answer"
+cat = "agents"
+goal = "Start `{fx} agent seconds=1`. Send it `abc` and Enter, and write its answer (after `answer: `) to answer.txt once it is done."
+recipe = "agent_answer"
+args = { prog = "agent seconds=1", msg = "abc" }
+check = { answer = "ABC" }
+
+[[task]]
+id = "agent-slow"
+cat = "agents"
+goal = "Start `{fx} agent seconds=4`. Send it `slow` and Enter, and write its answer to answer.txt once it is done."
+recipe = "agent_answer"
+args = { prog = "agent seconds=4", msg = "slow" }
+check = { answer = "SLOW" }
+
+[[task]]
+id = "agent-ask-ok"
+cat = "agents"
+goal = "Start `{fx} agent seconds=1 ask=1`. Send it `ok` and Enter; allow what it asks with `y`; write its answer to answer.txt once it is done."
+recipe = "agent_permission"
+args = { prog = "agent seconds=1 ask=1", msg = "ok" }
+check = { answer = "OK" }
+
+[[task]]
+id = "agent-interrupt-then-ask"
+cat = "agents"
+goal = "Start `{fx} agent seconds=5`. Send `first` and Enter, interrupt it with Escape while it works, then send `z` and Enter and write its answer to answer.txt once it is done."
+recipe = "agent_interrupt_then"
+args = { prog = "agent seconds=5", first = "first", second = "z" }
+check = { answer = "Z" }
+
+[[task]]
+id = "agent-two-prompts"
+cat = "agents"
+goal = "Start `{fx} agent seconds=1`. Send `a` and Enter, wait for its answer, then send `b` and Enter, and write the second answer to answer.txt."
+recipe = "agent_two"
+args = { prog = "agent seconds=1", first = "a", second = "b" }
+check = { answer = "B" }
+
+[[task]]
+id = "agent-done-signal"
+cat = "agents"
+goal = "Start `{fx} agent seconds=2`. Send `done?` and Enter. It rings the bell and sends a notification when it finishes. Write its answer to answer.txt."
+recipe = "agent_answer"
+args = { prog = "agent seconds=2", msg = "done?" }
+check = { answer = "DONE?" }
+
+[[task]]
+id = "claude-word"
+cat = "agents"
+goal = "Start `claude --model haiku` (Claude Code). Once it is ready for input, send it `Reply with only the word mango, lowercase.` and Enter. When it has answered, write its one-word answer to answer.txt, and quit it."
+recipe = "claude"
+args = { msg = "Reply with only the word mango, lowercase.", expect = "mango" }
+check = { answer = "mango" }
+expensive = true
+
+[[task]]
+id = "claude-sum"
+cat = "agents"
+goal = "Start `claude --model haiku`. Send it `What is 2+3? Reply with only the digit.` and Enter. Write its answer to answer.txt and quit it."
+recipe = "claude"
+args = { msg = "What is 2+3? Reply with only the digit.", expect = "5" }
+check = { answer = "5" }
+expensive = true
+
+# ------------------------------------------------ sizes and layout (8)
+
+[[task]]
+id = "narrow-layout"
+cat = "size"
+goal = "Start `{fx} sizer` at 100x30, then make it 40 columns by 12 rows while it runs. It writes each size it sees to sizes.txt."
+recipe = "resize"
+args = { prog = "sizer", cols = 100, rows = 30, to_cols = 40, to_rows = 12 }
+check = { file = "sizes.txt", last_line = "40x12" }
+
+[[task]]
+id = "resize-back"
+cat = "size"
+goal = "Start `{fx} sizer` at 40x12, then make it 100 columns by 30 rows."
+recipe = "resize"
+args = { prog = "sizer", cols = 40, rows = 12, to_cols = 100, to_rows = 30 }
+check = { file = "sizes.txt", last_line = "100x30" }
+
+[[task]]
+id = "start-size-132x43"
+cat = "size"
+goal = "Start `{fx} sizer` so that it starts at 132 columns by 43 rows."
+recipe = "spawn_sized"
+args = { prog = "sizer", cols = 132, rows = 43 }
+check = { file = "sizes.txt", first_line = "132x43" }
+
+[[task]]
+id = "start-tiny"
+cat = "size"
+goal = "Start `{fx} sizer` at 20 columns by 5 rows."
+recipe = "spawn_sized"
+args = { prog = "sizer", cols = 20, rows = 5 }
+check = { file = "sizes.txt", first_line = "20x5" }
+
+[[task]]
+id = "start-tall"
+cat = "size"
+goal = "Start `{fx} sizer` at 80 columns by 50 rows."
+recipe = "spawn_sized"
+args = { prog = "sizer", cols = 80, rows = 50 }
+check = { file = "sizes.txt", first_line = "80x50" }
+
+[[task]]
+id = "percent-width"
+cat = "size"
+goal = "In a 100x30 area, run `{fx} loader seconds=60` and, beside it, `{fx} sizer`. Make the sizer's pane 25% of the width. It writes its sizes to sizes.txt."
+recipe = "percent"
+args = { left = "loader seconds=60", right = "sizer", cols = 100, rows = 30, pct = 25 }
+check = { file = "sizes.txt", last_width = 25 }
+
+[[task]]
+id = "side-by-side"
+cat = "size"
+goal = "In a 100x30 area, run two copies of `{fx} sizer` side by side. They write their sizes to sizes.txt."
+recipe = "side_by_side"
+args = { prog = "sizer", cols = 100, rows = 30 }
+check = { file = "sizes.txt", widths_under = 100, min_lines = 2 }
+
+[[task]]
+id = "report-size"
+cat = "size"
+goal = "Start `{fx} loader seconds=60` at 77 columns by 22 rows, then write its pane's size as COLSxROWS to answer.txt."
+recipe = "report_size"
+args = { prog = "loader seconds=60", cols = 77, rows = 22 }
+check = { answer = "77x22" }
+
+# ---------------------------------------------- recovery and cleanup (6)
+
+[[task]]
+id = "stop-all"
+cat = "cleanup"
+goal = "Start three copies of `{fx} loader seconds=60` (they write their pids to pids.txt), then stop all of them."
+recipe = "stop_all"
+args = { prog = "loader seconds=60", count = 3 }
+check = { gone = "pids.txt" }
+
+[[task]]
+id = "close-stubborn"
+cat = "cleanup"
+goal = "Start `{fx} stubborn` (it ignores SIGTERM and SIGHUP; its pid is in pid.txt), then close its pane so that the process is gone."
+recipe = "stop_stubborn"
+args = { prog = "stubborn" }
+check = { gone = "pid.txt" }
+
+[[task]]
+id = "read-dead-pane"
+cat = "cleanup"
+goal = "Run `sh -c 'echo last-words; exit 0'`. After it has exited, write what it printed to answer.txt."
+recipe = "dead_output"
+args = { argv = ["sh", "-c", "echo last-words; exit 0"], text = "last-words" }
+check = { answer = "last-words" }
+
+[[task]]
+id = "kill-one"
+cat = "cleanup"
+goal = "Start `{fx} loader seconds=60` (its pid goes to pids.txt), then kill it."
+recipe = "stop_all"
+args = { prog = "loader seconds=60", count = 1 }
+check = { gone = "pids.txt" }
+
+[[task]]
+id = "count-running"
+cat = "cleanup"
+goal = "Start two copies of `{fx} loader seconds=60`. Then, using the multiplexer's own listing, write how many of the panes you started are running to answer.txt."
+recipe = "count_running"
+args = { prog = "loader seconds=60", count = 2 }
+check = { answer = "2" }
+
+[[task]]
+id = "exit-code-of-dead"
+cat = "cleanup"
+goal = "Run `sh -c 'echo bye; exit 9'`. Some time after it exited, write its exit status to answer.txt."
+recipe = "exit_status_argv"
+args = { argv = ["sh", "-c", "echo bye; exit 9"] }
+check = { answer = "9" }

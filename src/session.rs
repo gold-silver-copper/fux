@@ -155,7 +155,7 @@ pub enum Error {
     /// The pane's program has exited: it takes no input.
     Exited {
         pane: PaneId,
-        status: i32,
+        status: crate::process::Ended,
     },
     /// The pane's program has not asked for mouse reports.
     NoMouse(PaneId),
@@ -170,6 +170,12 @@ pub enum Error {
     /// A client with a terminal, which says its size itself.
     NotHeadless(ClientId),
     NotADirectory(PathBuf),
+    /// A file `run --log` cannot make.
+    Log(PathBuf, std::io::Error),
+    /// A pane `respawn` cannot start again: a shell's, or a program that
+    /// still runs.
+    NotRun(PaneId),
+    StillRunning(PaneId),
     // What copy mode cannot do.
     NoRows,
     /// A selection of more than `MAX_CELLS` cells.
@@ -224,7 +230,7 @@ impl std::fmt::Display for Error {
             }
             Error::OnlyShell(pane) => write!(f, "nothing is running in {pane} but its shell"),
             Error::Exited { pane, status } => {
-                write!(f, "the program in {pane} exited with status {status}")
+                write!(f, "the program in {pane} {}", crate::process::told(*status))
             }
             Error::NoMouse(pane) => {
                 write!(f, "the program in {pane} has not asked for mouse reports")
@@ -238,6 +244,14 @@ impl std::fmt::Display for Error {
                 "{client} has a terminal, which sets its size; resize sizes headless clients"
             ),
             Error::NotADirectory(path) => write!(f, "{} is not a directory", path.display()),
+            Error::Log(path, error) => write!(f, "{}: {error}", path.display()),
+            Error::NotRun(pane) => write!(
+                f,
+                "{pane} runs a shell; respawn starts again what `fux run` started"
+            ),
+            Error::StillRunning(pane) => {
+                write!(f, "the program in {pane} still runs; -k ends it first")
+            }
             Error::NoRows => f.write_str("the pane has no rows"),
             Error::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
             Error::EmptyName => f.write_str("a name cannot be empty"),
@@ -296,6 +310,9 @@ impl std::error::Error for Error {
             | Error::WaitsOnlyFromCli
             | Error::NotHeadless(_)
             | Error::NotADirectory(_)
+            | Error::Log(..)
+            | Error::NotRun(_)
+            | Error::StillRunning(_)
             | Error::NoRows
             | Error::SelectionTooLarge
             | Error::EmptyName
@@ -562,6 +579,69 @@ impl Session {
     fn pane_mut(&mut self, explicit: Option<PaneId>, here: Here) -> Result<&mut Pane, Error> {
         let id = explicit.or(here.pane()).ok_or(Error::NoPaneGiven)?;
         self.panes.get_mut(&id).ok_or(Error::NoPane(id))
+    }
+
+    /// Starts the program pane `id` ran again in it: its words, or `argv`
+    /// if given, where it ran, with what it was given and `env` set; first
+    /// hanging up the one there with `kill`, else refused while it runs.
+    fn respawn(
+        &mut self,
+        id: PaneId,
+        kill: bool,
+        env: &[(String, String)],
+        argv: &[String],
+    ) -> Result<(), Error> {
+        let pane = self.panes.get(&id).ok_or(Error::NoPane(id))?;
+        let Runs::Program(launch) = &pane.runs else {
+            return Err(Error::NotRun(id));
+        };
+        if pane.process.child().is_some() && !kill {
+            return Err(Error::StillRunning(id));
+        }
+        let mut launch = launch.clone();
+        if !argv.is_empty() {
+            launch.argv = argv.to_vec();
+        }
+        for (key, value) in env {
+            launch.env.retain(|(k, _)| k != key);
+            launch.env.push((key.clone(), value.clone()));
+        }
+        let size = pane.size();
+        let mut vars = Vec::new();
+        if let Some(socket) = &self.launch {
+            vars.push(("FUX_PANE", id.to_string()));
+            vars.push(("FUX_SOCKET", socket.to_string_lossy().into_owned()));
+        }
+        vars.extend(launch.env.iter().map(|(k, v)| (k.as_str(), v.clone())));
+        let child = match self.launch {
+            Some(_) => Some(crate::process::spawn(
+                &launch.argv,
+                &launch.cwd,
+                &vars,
+                size,
+            )?),
+            None => None,
+        };
+        let history = self.config.history_lines;
+        let Some(pane) = self.panes.get_mut(&id) else {
+            return Err(Error::NoPane(id));
+        };
+        let old = pane.respawned(launch, child.map(Process::Reading), history)?;
+        if let Process::Reading(child) | Process::HungUp(child) = old {
+            child.leader.hang_up();
+            let deadline = crate::after(Instant::now(), GRACE);
+            self.dying.insert(id, Dying { child, deadline });
+        }
+        self.touch();
+        Ok(())
+    }
+
+    /// Whether a client is in copy mode on pane `pane`: keys typed there
+    /// go to copy mode, not the program.
+    fn copying(&self, pane: PaneId) -> bool {
+        self.views
+            .values()
+            .any(|v| matches!(&v.mode, Mode::Copy(copy) if copy.pane == pane))
     }
 
     /// `pane_mut`, for input: a pane whose program has exited takes none.
@@ -1190,10 +1270,15 @@ impl Session {
 
     /// A pane's program exited with `status`: a shell's pane closes, and a
     /// program's stays, the status kept, for its last screen to be read.
-    pub fn exited(&mut self, id: PaneId, status: i32) {
+    pub fn exited(&mut self, id: PaneId, ended: crate::process::Ended) {
+        let status = crate::process::shell_status(ended);
         // What a program wrote as it exited may still be on its terminal,
         // unread: its last screen is read whole before it is kept.
-        if self.panes.get(&id).is_some_and(|p| p.runs == Runs::Program) {
+        if self
+            .panes
+            .get(&id)
+            .is_some_and(|p| matches!(p.runs, Runs::Program(_)))
+        {
             let left = self
                 .panes
                 .get(&id)
@@ -1208,9 +1293,9 @@ impl Session {
         };
         match pane.runs {
             Runs::Shell => self.close_pane(id, Some(format!("exited with status {status}"))),
-            Runs::Program => {
+            Runs::Program(_) => {
                 // Its leader, exited and unreaped, is reaped with the dying.
-                let gone = std::mem::replace(&mut pane.process, Process::Exited(status));
+                let gone = std::mem::replace(&mut pane.process, Process::Exited(ended));
                 if let Process::Reading(child) | Process::HungUp(child) = gone {
                     let deadline = Instant::now();
                     self.dying.insert(id, Dying { child, deadline });
@@ -1220,7 +1305,7 @@ impl Session {
                     .filter(|c| place.is_some_and(|(_, t)| self.shows(*c, t)))
                     .collect();
                 for client in viewers {
-                    self.info_to(client, format!("{id} exited with status {status}"));
+                    self.info_to(client, format!("{id} {}", crate::process::told(ended)));
                 }
                 self.touch();
             }
@@ -1345,6 +1430,7 @@ impl Session {
 
     /// Runs a command line from the CLI or the prompt.
     pub fn run(&mut self, argv: &[String], origin: &Origin) -> Outcome {
+        let argv = &self.named(argv);
         let usage = match command::parse(argv) {
             Ok(command) => return self.run_command(&command, origin),
             Err(usage) => usage,
@@ -1364,8 +1450,16 @@ impl Session {
     /// which the server asks for its answer until it has one; any other
     /// runs as `run` runs it.
     pub fn begin(&mut self, argv: &[String], origin: &Origin) -> Begun {
-        let (target, wait) = match command::parse(argv) {
-            Ok(Command::Wait { target, wait }) => (target, wait),
+        let argv = self.named(argv);
+        let failed = |error: Error| {
+            Begun::Done(Outcome {
+                status: 1,
+                stdout: String::new(),
+                stderr: error.to_string(),
+            })
+        };
+        let (targets, wait, keys) = match command::parse(&argv) {
+            Ok(Command::Wait { targets, wait }) => (targets, wait, None),
             Ok(
                 command @ Command::SendKeys {
                     target,
@@ -1373,37 +1467,125 @@ impl Session {
                     ..
                 },
             ) => {
-                let outcome = self.run_command(&command, origin);
                 let Command::SendKeys {
                     then: Some(wait), ..
-                } = command
+                } = &command
                 else {
-                    return Begun::Done(outcome);
+                    return Begun::Done(self.run(&argv, origin));
                 };
+                let wait = wait.clone();
+                (target.into_iter().collect(), wait, Some(command))
+            }
+            // Started, then waited for from its first output on: the wait is
+            // armed before the server reads anything the program writes.
+            Ok(Command::Run {
+                workspace,
+                name,
+                size,
+                cwd,
+                env,
+                argv,
+                json,
+                log,
+                then: Some(wait),
+            }) => {
+                let run = Command::Run {
+                    workspace,
+                    name,
+                    size,
+                    cwd,
+                    env,
+                    argv,
+                    json: false,
+                    log,
+                    then: None,
+                };
+                let outcome = self.run_command(&run, origin);
                 if outcome.status != 0 {
                     return Begun::Done(outcome);
                 }
-                (target, wait)
+                let Ok(pane) = command::parse_pane(outcome.stdout.trim()) else {
+                    return Begun::Done(outcome);
+                };
+                let lead = if json { String::new() } else { outcome.stdout };
+                let Some(pane) = self.panes.get(&pane) else {
+                    return Begun::Done(Outcome {
+                        status: 0,
+                        stdout: lead,
+                        stderr: String::new(),
+                    });
+                };
+                let now = Instant::now();
+                let mut waiting = crate::wait::Waiting::new(&[pane], wait, now);
+                waiting.lead = lead;
+                return match waiting.answer(self, now) {
+                    Some(outcome) => Begun::Done(outcome),
+                    None => Begun::Waiting(Box::new(waiting)),
+                };
             }
-            _ => return Begun::Done(self.run(argv, origin)),
+            _ => return Begun::Done(self.run(&argv, origin)),
         };
-        let pane = (self.here(origin)).and_then(|here| self.pane(target, here));
-        let pane = match pane {
-            Ok(pane) => pane,
-            Err(error) => {
-                return Begun::Done(Outcome {
-                    status: 1,
-                    stdout: String::new(),
-                    stderr: error.to_string(),
-                });
-            }
+        let here = match self.here(origin) {
+            Ok(here) => here,
+            Err(error) => return failed(error),
         };
+        let ids: Vec<Option<PaneId>> = if targets.is_empty() {
+            vec![None]
+        } else {
+            targets.into_iter().map(Some).collect()
+        };
+        let panes: Result<Vec<&Pane>, Error> =
+            ids.into_iter().map(|id| self.pane(id, here)).collect();
         let now = Instant::now();
-        let mut waiting = crate::wait::Waiting::new(pane, wait, now);
+        // Armed before any keys go in: what the keys bring is what it sees.
+        let mut waiting = match panes {
+            Ok(panes) => crate::wait::Waiting::new(&panes, wait, now),
+            Err(error) => return failed(error),
+        };
+        if let Some(command) = keys {
+            let outcome = self.run_command(&command, origin);
+            if outcome.status != 0 {
+                return Begun::Done(outcome);
+            }
+        }
         match waiting.answer(self, now) {
             Some(outcome) => Begun::Done(outcome),
             None => Begun::Waiting(Box::new(waiting)),
         }
+    }
+
+    /// The command line with a `-t NAME` that names no pane, tab or
+    /// workspace read as the one pane of the tab of that name, if one tab
+    /// has it and that tab one pane: so that `fux wait -t build --exit`
+    /// finds the program `fux run -n build` started.
+    fn named(&self, argv: &[String]) -> Vec<String> {
+        let Err(command::Usage::Not(Kind::Pane, name)) = command::parse(argv) else {
+            return argv.to_vec();
+        };
+        let tabs: Vec<&Tab> = (self.workspaces.iter())
+            .flat_map(Workspace::tabs)
+            .filter(|t| t.name == name)
+            .collect();
+        let pane = match tabs.as_slice() {
+            [tab] => tab.root().and_then(|root| match root {
+                Tree::Pane(pane) => Some(*pane),
+                Tree::Split(..) => None,
+            }),
+            _ => None,
+        };
+        let Some(pane) = pane else {
+            return argv.to_vec();
+        };
+        let mut out = argv.to_vec();
+        for i in 1..out.len() {
+            if out.get(i.wrapping_sub(1)).is_some_and(|w| w == "-t")
+                && let Some(word) = out.get_mut(i)
+                && *word == name
+            {
+                *word = pane.to_string();
+            }
+        }
+        out
     }
 
     /// Runs a command, parsed already: from a line, a binding or a menu.
@@ -1590,8 +1772,17 @@ impl Session {
                 env,
                 argv,
                 json,
+                log,
+                ..
             } => {
                 let here_cwd = self.cwd_for(here, None);
+                let log = match log {
+                    Some(path) => Some(
+                        std::fs::File::create(here_cwd.join(path))
+                            .map_err(|e| Error::Log(here_cwd.join(path), e))?,
+                    ),
+                    None => None,
+                };
                 let cwd = match cwd {
                     Some(dir) => here_cwd.join(dir),
                     None => here_cwd,
@@ -1624,7 +1815,49 @@ impl Session {
                     }
                     (Err(error), WsRef::Id(_)) => return Err(error),
                 };
+                // Before any of its output is read: it all goes there.
+                if let Some(pane) = self.panes.get_mut(&made.2) {
+                    pane.log = log;
+                }
                 Ok(made_ids(made, &[made.2.to_string()], *json))
+            }
+            &Command::Respawn {
+                target,
+                kill,
+                ref env,
+                ref argv,
+            } => {
+                let id = self.pane(target, here)?.id;
+                self.respawn(id, kill, env, argv)?;
+                Ok(format!("{id}\n"))
+            }
+            Command::Notify { target, text } => {
+                let to: Vec<ClientId> = match target {
+                    None => self.views.keys().copied().collect(),
+                    Some(target) => {
+                        let tab = match self.any_target(&Subject::from(target.clone()), here)? {
+                            AnyRef::Pane(p) => self.locate(p).map(|(_, t)| t),
+                            AnyRef::Tab(t) => Some(t),
+                            AnyRef::Workspace(w) => {
+                                let ws = self.workspace(w);
+                                let shown = (self.views.keys().copied())
+                                    .filter(|c| ws.is_some_and(|w| w.viewers.contains(c)))
+                                    .collect::<Vec<_>>();
+                                for client in &shown {
+                                    self.info_to(*client, text.clone());
+                                }
+                                return Ok(String::new());
+                            }
+                        };
+                        (self.views.keys().copied())
+                            .filter(|c| tab.is_some_and(|t| self.shows(*c, t)))
+                            .collect()
+                    }
+                };
+                for client in to {
+                    self.info_to(client, text.clone());
+                }
+                Ok(String::new())
             }
             Command::Resize { what, size } => {
                 match what {
@@ -1863,12 +2096,11 @@ impl Session {
                 history,
                 view,
                 json,
-            } => Ok(crate::capture::pane(
-                self.pane(target, here)?,
-                history,
-                view,
-                json,
-            )),
+            } => {
+                let pane = self.pane(target, here)?;
+                let copying = self.copying(pane.id);
+                Ok(crate::capture::pane(pane, history, view, json, copying))
+            }
             &Command::Terminate { target } => {
                 let p = self.pane(target, here)?;
                 let group = p.process.job().ok_or(Error::OnlyShell(p.id))?;
@@ -2255,7 +2487,7 @@ impl Session {
                     if let Some(p) = self.panes.get(&pane) {
                         let process = match (p.process.child(), p.process.exit_status()) {
                             (Some(child), _) => format!(" pid {}", child.leader.pid()),
-                            (None, Some(status)) => format!(" exited {status}"),
+                            (None, Some(ended)) => format!(" {}", crate::process::told(ended)),
                             (None, None) => String::new(),
                         };
                         out.push_str(&format!(
@@ -2310,7 +2542,7 @@ impl Session {
                         }),
                     ),
                 ];
-                fields.extend(crate::capture::state(p, now));
+                fields.extend(crate::capture::state(p, now, self.copying(p.id)));
                 panes.push(Json::Object(fields));
             });
             Json::Array(panes)
@@ -2425,7 +2657,14 @@ fn new_pane(
         .unwrap_or_else(|| "/bin/sh".into());
     let (argv, cmd, runs, env) = match start {
         Start::Shell(cmd) => (config.shell.as_slice(), cmd, Runs::Shell, &[][..]),
-        Start::Program(argv, env) => (argv, argv, Runs::Program, env),
+        Start::Program(argv, env) => {
+            let launch = crate::pane::Launch {
+                argv: argv.to_vec(),
+                cwd: cwd.to_path_buf(),
+                env: env.to_vec(),
+            };
+            (argv, argv, Runs::Program(launch), env)
+        }
     };
     // The line to type is made before anything else: a line too long to
     // type must not leave a process behind.
@@ -2701,14 +2940,14 @@ mod tests {
         assert_eq!(
             quiet(output(&mut s, "ls --json")?),
             concat!(
-                r#"{"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[{"id":"%1","name":"say \"hi\" \\ 界","title":"","rows":3,"cols":15,"pid":null,"program":null,"exited":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[]},{"id":"%2","name":"sh","title":"tab\\title","rows":3,"cols":14,"pid":null,"program":null,"exited":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[]}]},{"id":"@2","name":"two","panes":[{"id":"%3","name":"sh","title":"","rows":3,"cols":30,"pid":null,"program":null,"exited":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[]}]}]}],"clients":[{"id":"c1","rows":4,"cols":30,"workspace":"+1","tab":"@1","pane":"%2","zoom":false}]}"#,
+                r#"{"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[{"id":"%1","name":"say \"hi\" \\ 界","title":"","rows":3,"cols":15,"pid":null,"program":null,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":0,"running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null},{"id":"%2","name":"sh","title":"tab\\title","rows":3,"cols":14,"pid":null,"program":null,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":1,"running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}]},{"id":"@2","name":"two","panes":[{"id":"%3","name":"sh","title":"","rows":3,"cols":30,"pid":null,"program":null,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":0,"running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}]}]}],"clients":[{"id":"c1","rows":4,"cols":30,"workspace":"+1","tab":"@1","pane":"%2","zoom":false}]}"#,
                 "\n"
             )
         );
         assert_eq!(
             quiet(output(&mut s, "capture-pane -t %2 --json")?),
             concat!(
-                r#"{"pane":"%2","rows":3,"cols":14,"cursor":[1,2],"lines":["a       b \"q\"","界"],"program":null,"exited":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[]}"#,
+                r#"{"pane":"%2","rows":3,"cols":14,"cursor":[1,2],"lines":["a       b \"q\"","界"],"program":null,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":1,"running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}"#,
                 "\n"
             )
         );
@@ -2735,12 +2974,12 @@ mod tests {
         };
         // Two panes: the tab stays.
         run(&mut s, "split -h -t %1")?;
-        s.exited(PaneId::of(2), 3);
+        s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
         assert_eq!(notice(&s).as_deref(), Some("%2 sh exited with status 3"));
         // A second tab, shown; its only pane exits, and the tab with it.
         run(&mut s, "new-tab -t +1")?;
         run(&mut s, "select-tab -c c1 -t @2")?;
-        s.exited(PaneId::of(3), 7);
+        s.exited(PaneId::of(3), crate::process::Ended::Exited(7));
         assert_eq!(notice(&s).as_deref(), Some("%3 sh exited with status 7"));
         Ok(())
     }

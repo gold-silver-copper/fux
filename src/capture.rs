@@ -12,27 +12,39 @@ use std::time::Instant;
 /// empty, a blank one a space) and its attributes.
 type Cells<'a> = Vec<(&'a str, Attributes)>;
 
-/// A pane's screen, and `history` rows before it, as `view` asks.
-pub fn pane(pane: &Pane, history: Option<usize>, view: CaptureView, json: bool) -> String {
+/// A pane's screen, and `history` rows before it, as `view` asks; with
+/// `copy_mode`, its `--json` says a client is in copy mode on it.
+pub fn pane(
+    pane: &Pane,
+    history: Option<usize>,
+    view: CaptureView,
+    json: bool,
+    copy_mode: bool,
+) -> String {
     let screen = pane.screen();
-    // History rows above the screen, oldest first, then the screen itself.
-    let top = (screen.window().row(0)).map(|top| top.up(history.unwrap_or(0)));
-    let rows = std::iter::successors(top, fux_vt::Row::below).enumerate();
     let in_rows = |i: &usize| {
         (view.rows).is_none_or(|(start, end)| (usize::from(start)..=usize::from(end)).contains(i))
     };
     let mut lines: Vec<Cells<'_>> = Vec::new();
     // A soft-wrapped row goes on in the next, joined with `-J`.
     let mut wraps = false;
-    for (_, row) in rows.filter(|(i, _)| in_rows(i)) {
-        let cells = row.cells().map(|cell| {
-            let text = if cell.is_wide_continuation() {
-                ""
-            } else {
-                crate::render::shown(cell)
-            };
-            (text, cell.attributes())
-        });
+    for (_, (row, span)) in rows_of(screen, history, view)
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| in_rows(i))
+    {
+        let cells = row
+            .cells()
+            .enumerate()
+            .filter(|(col, _)| span.contains(col))
+            .map(|(_, cell)| {
+                let text = if cell.is_wide_continuation() {
+                    ""
+                } else {
+                    crate::render::shown(cell)
+                };
+                (text, cell.attributes())
+            });
         let cells: Cells<'_> = match view.cols {
             Some((start, end)) => {
                 let (start, end) = (usize::from(start), usize::from(end));
@@ -51,7 +63,7 @@ pub fn pane(pane: &Pane, history: Option<usize>, view: CaptureView, json: bool) 
     }
     let (rows, cols) = screen.size().into();
     let cursor = Some(screen.cursor_position());
-    let state = json.then(|| state(pane, Instant::now()));
+    let state = json.then(|| state(pane, Instant::now(), copy_mode));
     print(
         ("pane", pane.id.to_string()),
         (rows, cols),
@@ -59,6 +71,58 @@ pub fn pane(pane: &Pane, history: Option<usize>, view: CaptureView, json: bool) 
         (lines, view),
         state,
     )
+}
+
+/// The rows a capture reads, each with the columns of it it reads: the
+/// screen and `history` rows above it (of the main screen with `--main`), or
+/// the last command's output between its marks.
+fn rows_of(
+    screen: &fux_vt::Screen,
+    history: Option<usize>,
+    view: CaptureView,
+) -> Vec<(fux_vt::Row<'_>, std::ops::Range<usize>)> {
+    let all = 0..usize::MAX;
+    if view.last_output {
+        let Some((start, end)) = screen.commands().last_output else {
+            return Vec::new();
+        };
+        let (Some(first), Some(last)) = (screen.row_index(start.row), screen.row_index(end.row))
+        else {
+            return Vec::new();
+        };
+        let rows: Vec<fux_vt::Row<'_>> = screen
+            .rows()
+            .skip(first)
+            .take(last.saturating_sub(first).saturating_add(1))
+            .collect();
+        let count = rows.len();
+        return rows
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, row)| {
+                let from = if i == 0 { usize::from(start.col) } else { 0 };
+                let to = if i.saturating_add(1) == count {
+                    usize::from(end.col)
+                } else {
+                    usize::MAX
+                };
+                // The end mark at a line's start ends the output before it.
+                (from < to).then_some((row, from..to))
+            })
+            .collect();
+    }
+    let rows: Vec<fux_vt::Row<'_>> = if view.main {
+        screen.main_rows().collect()
+    } else {
+        screen.rows().collect()
+    };
+    let shown = usize::from(screen.size().rows());
+    let keep = shown.saturating_add(history.unwrap_or(0));
+    let skip = rows.len().saturating_sub(keep);
+    rows.into_iter()
+        .skip(skip)
+        .map(|row| (row, all.clone()))
+        .collect()
 }
 
 /// What a client's terminal shows, row by row, as `capture-client` prints
@@ -86,7 +150,7 @@ pub fn client(client: ClientId, grid: &crate::render::Grid, json: bool) -> Strin
 /// the status it exited with, how long its screen has shown no change, and
 /// the modes
 /// that say how it takes input.
-pub fn state(pane: &Pane, now: Instant) -> Vec<(&'static str, Json<'static>)> {
+pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, Json<'static>)> {
     let screen = pane.screen();
     let program = pane
         .process
@@ -94,12 +158,32 @@ pub fn state(pane: &Pane, now: Instant) -> Vec<(&'static str, Json<'static>)> {
         .map(|child| pane.process.job().unwrap_or(child.leader.pid()))
         .and_then(fuxix::process::name);
     let idle = now.saturating_duration_since(pane.changed_at).as_millis();
+    let commands = screen.commands();
+    // What runs in the foreground: a job the shell started, else the
+    // program itself.
+    let foreground =
+        (pane.process.child()).map(|child| pane.process.job().unwrap_or(child.leader.pid()));
+    let argv = match (&pane.runs, pane.process.job()) {
+        (_, Some(job)) => fuxix::process::argv(job),
+        (crate::pane::Runs::Program(launch), None) => Some(launch.argv.clone()),
+        (crate::pane::Runs::Shell, None) => foreground.and_then(fuxix::process::argv),
+    };
     let exited = pane.process.exit_status();
     vec![
         ("program", program.map_or(Json::Null, Json::str)),
         (
             "exited",
-            exited.map_or(Json::Null, |s| Json::Number(i64::from(s))),
+            match exited {
+                Some(crate::process::Ended::Exited(code)) => Json::Number(i64::from(code)),
+                _ => Json::Null,
+            },
+        ),
+        (
+            "signal",
+            match exited {
+                Some(crate::process::Ended::Signalled(signal)) => Json::Number(i64::from(signal)),
+                _ => Json::Null,
+            },
         ),
         (
             "idle_ms",
@@ -118,7 +202,45 @@ pub fn state(pane: &Pane, now: Instant) -> Vec<(&'static str, Json<'static>)> {
             "pictures",
             Json::Array(screen.pictures().map(picture).collect()),
         ),
+        ("cursor_visible", Json::Bool(screen.mode(Mode::ShowCursor))),
+        ("history_lines", count(screen.history_len())),
+        ("copy_mode", Json::Bool(copy_mode)),
+        (
+            "revision",
+            count(usize::try_from(pane.revision).unwrap_or(usize::MAX)),
+        ),
+        ("running", Json::Bool(commands.running)),
+        (
+            "last_status",
+            commands
+                .last_status
+                .map_or(Json::Null, |s| Json::Number(i64::from(s))),
+        ),
+        (
+            "bells",
+            count(usize::try_from(pane.alerts.bells).unwrap_or(usize::MAX)),
+        ),
+        (
+            "notification",
+            pane.alerts.last.clone().map_or(Json::Null, Json::str),
+        ),
+        (
+            "cwd",
+            foreground
+                .and_then(fuxix::process::cwd)
+                .map_or(Json::Null, |p| Json::str(p.to_string_lossy().into_owned())),
+        ),
+        (
+            "argv",
+            argv.map_or(Json::Null, |a| {
+                Json::Array(a.into_iter().map(Json::str).collect())
+            }),
+        ),
     ]
+}
+
+fn count(n: usize) -> Json<'static> {
+    Json::Number(i64::try_from(n).unwrap_or(i64::MAX))
 }
 
 /// Where a picture is, for `--json`: its top row (negative once scrolled

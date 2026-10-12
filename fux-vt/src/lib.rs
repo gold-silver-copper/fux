@@ -26,7 +26,10 @@ pub use mode::Mode;
 pub use parser::{
     Event, Feature, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink, Unhandled,
 };
-pub use screen::{Graphics, MouseProtocolEncoding, MouseProtocolMode, PLACEHOLDER, Screen, Shown};
+pub use screen::{
+    CommandMark, Commands, Graphics, MouseProtocolEncoding, MouseProtocolMode, PLACEHOLDER, Screen,
+    Shown,
+};
 pub use unicode::{UNICODE_VERSION, continues_cluster};
 
 /// `slice::copy_from_slice`, checked: copies `src` over `dst`, if they are the

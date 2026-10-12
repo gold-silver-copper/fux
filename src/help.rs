@@ -37,6 +37,11 @@ Prints the new pane's id (--json: {\"workspace\",\"tab\",\"pane\"}).
   --size COLSxROWS  what the tab is laid out on while no client shows it
   --cwd DIR         where it starts (default: here)
   --env K=V         a variable for it; again for more
+  --log FILE        everything it writes, kept in FILE past the history limit
+  --wait-text TEXT, --wait-idle MS, --wait-exit, --wait-bell
+                    then waits as `fux wait` does, from its first output on,
+                    so nothing it prints at once is missed; prints the pane's
+                    id, then what the wait says (--json: the wait's object)
 When the program exits its pane stays, its last screen kept: `fux wait
 --exit` prints `exited STATUS`, and send-keys to it fails.
 
@@ -44,33 +49,44 @@ When the program exits its pane stays, its last screen kept: `fux wait
         }
         "wait" => {
             "\
-Answers as soon as the pane (FUX_PANE without -t) does what is asked:
-  --text TEXT   shows TEXT (again for any of several)
-  --gone TEXT   no longer shows TEXT
-  --idle MS     shows no change for MS (the same screen drawn again is none)
-  --change      changes at all
-  --exit        its program exits; prints `exited STATUS`
-  --timeout S   gives up after S seconds (default 60), exit status 1
-  --print       prints the screen as it ends, timeout or not
-The server checks as output comes: a wait costs nothing while it waits.
+Answers as soon as a pane (FUX_PANE without -t; -t again for any of several)
+does any of what is asked:
+  --text TEXT    shows TEXT, on the screen or in a line written since the wait
+                 began that scrolled into history; prints that line
+  --gone TEXT    no longer shows TEXT
+  --idle MS      shows no change for MS (the same screen drawn again is none)
+  --change       changes at all; with --since N, past revision N (--json)
+  --exit         its program exits; prints `exited STATUS` or `killed by SIG…`
+  --done         a shell command ends (OSC 133 marks); prints `done STATUS`
+  --bell         it rings the bell or sends a desktop notification
+  --timeout S    gives up after S seconds (default 60)
+  --print        prints the screen as it ends
+  --json         says what happened: {\"met\":\"text\",\"line\":…,\"status\":0}
+A program that exits first ends the wait (status 3), as a closed pane does (4);
+a timeout is status 124. The server checks as output comes.
 
-  fux wait -t %3 --text 'ready' --timeout 20 --print"
+  fux wait -t %3 --text PASS --text FAIL --timeout 120"
         }
         "send-keys" => {
             "\
-Each word is a key name (Enter, Escape, Tab, BSpace, Up, F5, C-c, M-x, S-Tab;
-`fux list-keys` lists them) or, if it is not one, text.
+Each word is a key name (Enter, Escape, Tab, BSpace, Up, F5, C-c, M-x, BTab;
+`fux list-keys` lists them) or, if it is not one, text; a word that looks like a
+key name mistyped (Entr, C-Ent) is refused.
   --text TEXT        TEXT as typed, however it looks
   --paste TEXT       TEXT as a paste, bracketed if the program asked
   -l                 every word as text
   -N COUNT           everything COUNT times
-  --wait-idle MS     then wait until the screen shows no change for MS
-  --print            with --wait-idle: then print the screen
   -c CLIENT          type at a client instead, as at its terminal
+Then wait, armed before the keys go in, so nothing they bring is missed:
+  --wait-text TEXT   until TEXT appears anew (not text already there)
+  --wait-gone TEXT, --wait-change, --wait-exit, --wait-done, --wait-bell
+  --wait-idle MS     until the screen shows no change for MS; status 5 if the
+                     keys changed nothing
+  --timeout S, --print, --json   as wait has them
 A lone Escape and text are each read by the program on their own: Escape
 Escape is two Escapes, and in `--text MSG Enter` the Enter submits.
 
-  fux send-keys -t %3 --text 'git status' Enter --wait-idle 300 --print"
+  fux send-keys -t %3 --text 'make test' Enter --wait-text passed --wait-text failed"
         }
         "send-mouse" => {
             "\
@@ -84,15 +100,20 @@ left button alone; `wheel-up` and `wheel-down` one notch; `move` no button.
         "capture-pane" => {
             "\
 The pane's screen as text, trailing blanks and blank rows trimmed.
-  -S -LINES     LINES of history first
+  -S -LINES     LINES of history first; -S all, all of it
   --full        every row and cell, untrimmed
   -J            rows the terminal wrapped joined into their lines
   --rows A-B    rows A to B only, from 0 (A alone: one)
   --cols A-B    columns A to B only, from 0
   --styles      colours and attributes, as SGR escapes
+  --main        the main screen and its history, while a program holds the full
+                screen: what was printed before it took it
+  --last-output the last shell command's output alone (OSC 133 marks)
   --json        an object: size, cursor, lines (and with --styles, style
-                runs per line), and what the program is doing: program,
-                exited, idle_ms, alt_screen, mouse, bracketed_paste, pictures
+                runs per line), and what the program is doing: program, argv,
+                cwd, exited, signal, idle_ms, revision, running, last_status,
+                bells, notification, cursor_visible, alt_screen, mouse,
+                bracketed_paste, copy_mode, history_lines, pictures
 
   fux capture-pane -t %3 --rows 0-5 -J"
         }
@@ -183,6 +204,22 @@ file has them.
   fux bind -n M-h select-pane -L"
         }
         "list-keys" => "Key names, for send-keys and set prefix, and the bindings.",
+        "respawn" => {
+            "\
+Starts again, in its pane, the program `fux run` started there: the same words,
+place and variables (--env adds or replaces; a program after -- replaces it).
+The pane keeps its id, tab and size; its screen starts empty. Refused while
+the program runs, unless -k, which ends it first.
+
+  fux respawn -t %4 -k"
+        }
+        "notify" => {
+            "\
+A notice on the screens of the clients showing TARGET (a pane, tab or
+workspace), or every client's: for an agent working out of sight to say so.
+
+  fux notify -t agent 'tests passed'"
+        }
         "send-prefix" => "The prefix key, to the pane, as its program asked for keys.",
         "reload" => "Runs the config file again over the defaults; on an error, changes nothing.",
         "kill-server" => "Stops the server: every pane is hung up, and every client told why.",
