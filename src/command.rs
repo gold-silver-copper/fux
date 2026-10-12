@@ -2569,6 +2569,9 @@ mod tests {
                         "--wait-gone",
                         "--wait-idle",
                         "--if-revision",
+                        "--id",
+                        "--socket",
+                        "--get",
                     ]
                     .contains(&flag);
                     assert_eq!(spec.flag(flag), Some(value), "{}: {flag}", spec.usage);

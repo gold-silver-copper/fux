@@ -151,26 +151,45 @@ command prompt; `fux help` lists them, and `fux help COMMAND` (or
 `fux COMMAND --help`) explains one, its flags and an example. Targets: a pane is `%N`, a tab
 `@N`, a workspace `+N` or its name, a client `cN`. Inside a pane,
 `FUX_PANE` and `FUX_SOCKET` name the pane and the server, so commands there
-need no `-t`. Elsewhere a command that needs a target and has none fails.
-From a key or the prompt, commands act on your focused pane.
+need no `-t`; `FUX_SERVER` says which run of the server the pane is of, and a
+`FUX_PANE` that reaches another server (`FUX_SOCKET` or `-L` pointed
+elsewhere) is not acted on. Elsewhere a command that needs a target and has
+none fails. From a key or the prompt, commands act on your focused pane.
+
+**Which server**: `-L NAME` before any command is the server named NAME
+(its socket `NAME.sock` in `$XDG_RUNTIME_DIR/fux`), `-S PATH` a socket's
+path; without either, `FUX_SOCKET`, else the default. A private server for a
+test or an agent is one command, and every command after names it:
+
+```sh
+fux -L test server --background             # returns once it answers
+fux -L test run -n app -- ./app
+fux -L test kill-server
+```
 
 | Command | Does |
 | --- | --- |
-| `fux` / `fux attach [-t WS] [--nested]` | attach, starting a server if none answers |
+| `fux` / `fux attach [-t WS] [--nested] [--read-only]` | attach, starting a server if none answers; `--read-only` watches: keys and clicks do nothing but the prefix and the detach key |
 | `fux attach --headless [--size COLSxROWS] [--log FILE]` | a client with no terminal, for tests and scripts: prints its id, records what it is sent to FILE, ends on a signal |
-| `fux server [--socket PATH] [--config FILE]` | run a server in the foreground |
-| `fux kill-server` | stop the server |
-| `fux ls [--json]` | workspaces, tabs, panes and clients |
-| `fux new-workspace [-n NAME] [--size COLSxROWS] [--json] [-- CMD…]` | a workspace with a shell, CMD typed into it; prints `+N @N %N`. Names are unique, and do not start with `+`, `%`, `@` or `-`, which targets read otherwise |
-| `fux new-tab [-t WS] [-n NAME] [--size COLSxROWS] [--json] [-- CMD…]` | a tab with a shell, CMD typed into it; prints `@N %N`. Sizes are at most 500 a side; a tab's name is not a workspace's, another tab's, nor one starting with `%`, `@` or `+` |
-| `fux split -h\|-v [-t %N] [--cwd DIR] [--env K=V] [--json] [-- CMD…]` | split a pane: `-h` side by side, `-v` stacked; prints `%N`. One CMD word is typed as a line (`'cd src && make'`); several are quoted, as a program's arguments |
+| `fux server [--background] [--fresh] [--config FILE]` | run a server: in the foreground, or with `--background` until it answers, printing its socket. It brings back what a server on its socket held when it crashed or the machine stopped; `--fresh` starts empty |
+| `fux status [--json]`, `fux servers [--json]` | whether a server answers, its version and whether this fux can drive it (status 1 if not); every server that answers in fux's directory, by name |
+| `fux check-config [FILE]` | every line of a config file a server would refuse, with why; needs no server |
+| `fux kill-server [--force]` | stop the server; from one of its own panes, or with people attached, only with `--force` |
+| `fux ls [-t TARGET] [--get FIELD] [--json]` | workspaces, tabs, panes, clients and grants; `-t` one of them, `--get` one field of its JSON (status 1 if it is not there) |
+| `fux events [-t TARGET]… [--json]` | what happens, a line each as it happens: made, closed, moved, renamed; a program's exit, respawn, title, size, bells, notifications; a shell command's end. Starts with `ready`, ends with `stopped`; a reader too slow is told `lost` |
+| `fux new-workspace [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--json] [-- CMD…]` | a workspace with a shell, CMD typed into it; prints `+N @N %N`. Names are unique, and do not start with `+`, `%`, `@` or `-`, which targets read otherwise |
+| `fux new-tab [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--json] [-- CMD…]` | a tab with a shell, CMD typed into it, in WS (a name not there is made); prints `@N %N`. Sizes are at most 500 a side; a tab's name is not a workspace's, another tab's, nor one starting with `%`, `@` or `+` |
+| `fux split -h\|-v [-t %N] [--cwd DIR] [--env K=V] [--run] [--json] [-- CMD…]` | split a pane: `-h` side by side, `-v` stacked; prints `%N`. One CMD word is typed as a line (`'cd src && make'`); several are quoted, as a program's arguments. `--run` starts CMD itself, as `run` does |
 | `fux run [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--log FILE] [--wait-… [--timeout SECS] [--print]] [--json] -- PROGRAM…` | start a program in place of a shell, in a tab of its own in workspace `agent` (or WS), no client moved to it; prints `%N`. Its pane stays once it exits, with its last screen and status. `--log` keeps all it writes in FILE; `-t NAME` then finds the pane by its tab's name, and a name already in use is refused. `--wait-text T`, `--wait-idle MS`, `--wait-exit` and `--wait-bell` wait as `wait` does from its first output on, printing the pane id and then what the wait found |
 | `fux wait [-t %N]… --text T\|--gone T\|--idle MS\|--change [--since N]\|--exit\|--done\|--bell [--timeout SECS] [--print] [--marks] [--json]` | wait until the pane shows text, even in a line that scrolled away, and print that line (`--text` again for any of several); stops showing it; shows no change for MS (redrawing the same screen is no change); changes (past revision N); its program exits (prints `exited STATUS`); a shell command ends (OSC 133, prints `done STATUS`); or it rings the bell or notifies. `-t` again watches several panes. Status 3 if the program exits first (its last lines printed), 124 after `--timeout` (60 s), saying what the pane is doing. `--print` prints the screen as it ends, `--json` what happened |
 | `fux respawn [-t %N] [-k] [--env K=V] [--wait-…] [-- PROGRAM…]` | start again in its pane what `run` started, its id and size kept; `-k` ends it first if it still runs; waits as `run` does |
 | `fux notify [-t TARGET] TEXT` | a notice on the clients showing the target, or every client |
 | `fux resize -t %N\|@N\|+N COLSxROWS\|auto` | what a pane's tab, a tab (or a workspace's tabs) is laid out on while no client shows it; `auto`: a client's screen |
 | `fux resize -c CLIENT COLSxROWS` | a headless client's size |
-| `fux kill-pane\|kill-tab\|kill-workspace [-t …]` | close, without asking; from the command line, prints `closed` and the ids gone. A tab or its pane may be named by the tab's name |
+| `fux kill-pane\|kill-tab\|kill-workspace -t …` | close, without asking; from the command line `-t` is needed, and it prints `closed` and the ids gone. A tab or its pane may be named by the tab's name |
+| `fux log [-t %N] FILE\|--stop`, `fux clear-history [-t %N]` | keep what the pane's program writes from now on in FILE (yours alone); drop its history |
+| `fux layout [-t WS] FILE [--json]`, `fux dump-layout [-t TAB\|WS]` | make what a layout file says, all or nothing, printing the ids made; print what is there as one (see [Layouts](#layouts-and-crashes)) |
+| `fux grant -t WS --socket PATH`, `fux grant --revoke --socket PATH` | a socket whose commands reach workspace WS alone (see [Security](#security)) |
 | `fux signal [-t %N] TERM\|KILL\|INT\|HUP\|QUIT\|USR1\|USR2\|STOP\|CONT [--wait-…]` | a signal to what runs in the pane's foreground (what its keys reach: a shell's job, or the program `run` started), never a shell itself; for a program that ignores Ctrl-C and hangups; waits as `send-keys` does |
 | `fux rename -t TARGET NAME` | rename a pane, tab or workspace |
 | `fux move-pane [-t %N] --to @N\|+N\|new-tab\|new-workspace` | move a pane (to a workspace: its first tab) |
@@ -179,8 +198,8 @@ From a key or the prompt, commands act on your focused pane.
 | `fux resize-pane [-t %N] -L\|-R\|-U\|-D [CELLS]` | move the nearest border (default one cell) |
 | `fux resize-pane [-t %N] [-x COLS[%]] [-y ROWS[%]]` | make a pane a width, a height or both, in cells or a percentage of its tab; refused, nothing changed, if it cannot be |
 | `fux reorder pane\|tab\|workspace [-t TARGET] --next\|--previous` | move one place in its order |
-| `fux send-keys [-t %N \| -c CLIENT] [-l] [-N COUNT] KEYS… [--wait-text T\|--wait-idle MS\|… [--timeout SECS] [--print] [--marks] [--json]]` | send keys (`C-c`, `Enter`, …); other words, all with `-l`, and `--text TEXT` as text, but a mistyped key name (`Entr`) is refused; `--paste TEXT` as a paste, bracketed if the program asked. `-N` sends them COUNT times. `--wait-text`, `--wait-gone`, `--wait-idle`, `--wait-change`, `--wait-exit`, `--wait-done` and `--wait-bell` then wait as `wait` does, armed before the keys go in; `--wait-idle` exits 5 if they changed nothing. `--wait-text` counts text only on a line that changed after the keys and reads otherwise than before (a redraw or resize brings nothing), and not on a line holding a typed line (its echo); `--wait-done` answers once the shell is back at its prompt. Words after `--` are all typed; a mistyped flag is refused. `-c` types them at a client instead, as at its terminal: its bindings, overlays and prompts take them |
-| `fux send-mouse [-t %N] click\|right\|middle\|press\|release\|wheel-up\|wheel-down\|move ROW COL [--wait-…]` | a mouse event at a cell, from 0, encoded as the program asked; refused if it did not ask for mouse reports. Waits as `send-keys` does: `--wait-idle` exits 5 if the click changed nothing |
+| `fux send-keys [-t %N\|@N… \| -c CLIENT] [-l] [-N COUNT] KEYS… [--if-revision N] [--wait-text T\|--wait-idle MS\|… [--timeout SECS] [--print] [--marks] [--json]]` | send keys (`C-c`, `Enter`, …); other words, all with `-l`, and `--text TEXT` as text, but a mistyped key name (`Entr`) is refused; `--paste TEXT` as a paste, bracketed if the program asked, `--paste-file FILE` or `--paste -` (stdin) a file's. `-t` again, or a tab, sends them to several panes (each, or none if one cannot take them), and a wait waits for each. `--if-revision N` sends nothing, status 6, if the screen changed since revision N. `-N` sends them COUNT times. `--wait-text`, `--wait-gone`, `--wait-idle`, `--wait-change`, `--wait-exit`, `--wait-done` and `--wait-bell` then wait as `wait` does, armed before the keys go in; `--wait-idle` exits 5 if they changed nothing. `--wait-text` counts text only on a line that changed after the keys and reads otherwise than before (a redraw or resize brings nothing), and not on a line holding a typed line (its echo); `--wait-done` answers once the shell is back at its prompt. Words after `--` are all typed; a mistyped flag is refused. `-c` types them at a client instead, as at its terminal: its bindings, overlays and prompts take them |
+| `fux send-mouse [-t %N] click\|right\|middle\|press\|release\|wheel-up\|wheel-down\|move ROW COL [--if-revision N] [--wait-…]` | a mouse event at a cell, from 0, encoded as the program asked; refused if it did not ask for mouse reports. Waits as `send-keys` does: `--wait-idle` exits 5 if the click changed nothing |
 | `fux send-prefix [-t %N]` | send the prefix key to the pane, as its program asked for keys |
 | `fux capture-pane [-t %N] [-S -LINES\|all] [--full] [-J] [--rows A-B] [--cols A-B] [--styles] [--marks] [--main] [--alt] [--last-output] [--json]` | the pane's text, after LINES of history (or all), trailing blanks and blank rows trimmed (`--full` keeps them); `-J` joins soft-wrapped rows; `--rows`/`--cols` a region, from 0; `--styles` colours and attributes as SGR; `--marks` highlights (reverse video, or a background other than the screen's: how a selection is drawn) as `⟦beta⟧`; `--main` the main screen under a full-screen program; `--alt` the full screen it drew last, after it left or exited; `--last-output` the last shell command's output (OSC 133) |
 | `fux capture-client [-c CLIENT] [--json]` | what a client's terminal shows, bar included |
@@ -189,7 +208,7 @@ From a key or the prompt, commands act on your focused pane.
 | `fux list-buffers`, `show-buffer [-b N]`, `paste-buffer [-b N] [-t %N]` | paste buffers, newest `0` |
 | `fux list-keys` | key names and the current bindings |
 | `fux detach [-c CLIENT]` | detach a client |
-| `fux help [COMMAND\|agents]`, `fux --version` | usage, one command at length, the recipe for scripts and agents; version |
+| `fux help [COMMAND\|agents\|json]`, `fux --version` | usage, one command at length, the recipe for scripts and agents, what `--json` prints; version |
 
 These act on a client's screen: yours from a key or the prompt, `-c CLIENT`
 from the command line. `zoom` and `copy-mode` take no `-t`.
@@ -205,11 +224,13 @@ from the command line. `zoom` and `copy-mode` take no `-t`.
   `select-workspace -t WS|--next|--previous`
 
 Exit status: 0 done; 1 failed, with the reason on stderr; 2 a usage error,
-with the command's usage. A wait also exits 3 when the program exited
-first, 4 when the pane closed, 5 when `--wait-idle` saw no change and 124
-on a timeout; one met by the program's exit exits with its status, as
-`timeout(1)` does. A tmux name (`list-panes`, `new-window`, …) gets
-a hint at fux's.
+with the command's usage; 6 input given `--if-revision` found the screen
+changed. A wait also exits 3 when the program exited first, 4 when the pane
+closed, 5 when `--wait-idle` saw no change and 124 on a timeout; one met by
+the program's exit exits with its status, as `timeout(1)` does. Any command
+takes `--json`, and its errors are then JSON on stderr, with a code that
+stays: `{"error":"no_pane","message":"no pane %99"}`. A tmux name
+(`list-panes`, `new-window`, …) gets a hint at fux's.
 
 **Scripts and agents** drive programs with `run`, `send-keys`, `wait` and
 `capture-pane`, each step one call, without touching anyone's tabs:
@@ -243,16 +264,18 @@ change.
 ```json
 {"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main",
   "panes":[{"id":"%1","name":"zsh","title":"","rows":23,"cols":80,"pid":4242,
-    "program":"vim","exited":null,"signal":null,"idle_ms":1520,"alt_screen":true,
+    "program":"vim","paused":false,"exited":null,"signal":null,"idle_ms":1520,"alt_screen":true,
     "mouse":true,"mouse_mode":"press_release","bracketed_paste":true,"pictures":[],"cursor_visible":true,
     "history_lines":0,"copy_mode":false,"revision":38,"command_running":false,
     "last_status":null,"bells":0,"notification":null,"cwd":"/home/me",
     "argv":["vim","notes.md"]}]}]}],
- "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false}]}
+ "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false}],
+ "grants":[{"socket":"/home/me/.cache/agent.sock","workspace":"agent"}]}
 ```
 
 That is `fux ls --json`. Each pane says what it runs in its foreground
-(`program`, `null` if unknown), the status its program exited with
+(`program`, `null` if unknown), whether its program waits for `respawn`
+after a restore (`paused`), the status its program exited with
 (`exited`, for a pane `run` started, else `null`) or the signal that
 killed it (`signal`, its number: 11 for SIGSEGV), how long its screen has shown no change
 (`idle_ms`), and whether its program is on the alternate screen, asked
@@ -275,7 +298,9 @@ every row the client shows, with `cursor` `null` while it is hidden.
 Rows and columns count from 0.
 
 `split`, `new-tab`, `new-workspace` and `run` with `--json` print where
-the new pane is: `{"workspace":"+2","tab":"@3","pane":"%4"}`.
+the new pane is: `{"workspace":"+2","tab":"@3","pane":"%4"}`. `fux events
+--json` prints an object a line, `{"event":"exited","pane":"%3","tab":"@2",
+"workspace":"+2","status":1}`. `fux help json` lists every shape.
 
 ## Configuration
 
@@ -310,6 +335,7 @@ bind -n M-h select-pane -L       # -n: no prefix, Alt-h alone
 | `bell` | `on` or `off`: a pane's bell rings your terminal and marks its tab | `on` |
 | `titles` | `on` or `off`: your terminal's title follows the focused pane | `off` |
 | `shell-marks` | `on` or `off`: the bash, zsh and fish fux starts mark each command (OSC 133) after reading your own startup files, so `wait --done` and `capture-pane --last-output` work with no setup | `on` |
+| `update-environment` | variable names: a new pane takes these from whoever starts it (a command's caller, the terminal whose key it is), rather than from the server, which may have started long ago; one they lack is unset | `DISPLAY KRB5CCNAME SSH_AGENT_PID SSH_ASKPASS SSH_AUTH_SOCK SSH_CONNECTION WAYLAND_DISPLAY XAUTHORITY` |
 
 **Bindings** take the keys after the prefix, as separate words before the
 command: any key `fux list-keys` names (`Up`, `F5`, `Space`, `Enter`, …),
@@ -333,6 +359,34 @@ server from the command line or the prompt too. `fux reload` reruns the
 file over the defaults, and says so when there is no file; on an error it names the file and line and changes
 nothing. A server started with an invalid file runs on the defaults and
 shows the error to each terminal that attaches until a reload succeeds.
+`fux check-config [FILE]` lists every line a server would refuse, with no
+server.
+
+## Layouts and crashes
+
+A **layout file** is fux command lines, as the config file is:
+`new-workspace`, `new-tab`, `run` and `split` (`--run` for a program) make
+panes, `rename`, `resize` and `resize-pane` shape them. `--id` on a line says
+which id it makes in the file, and later lines name it so:
+
+```sh
+# dev.fux
+new-tab -n dev --cwd ~/code/app --id @1 --id %1
+split -h -t %1 --run --id %2 -- cargo watch -x test
+resize-pane -t %1 -x 60%
+```
+
+`fux layout dev.fux` makes it, all or nothing, with fresh ids, and prints
+them; new tabs go to workspace `agent` (`-t WS` elsewhere). `fux dump-layout
+[-t TAB|WS]` prints what there is as one.
+
+A **server saves its session** as a layout file, about a second after each
+change, in `$XDG_STATE_HOME/fux` (`~/.local/state/fux`), written whole and
+moved in place, yours alone. A server started on the same socket after a
+crash, a `kill -9` or a reboot brings it back with the same ids: shells start
+fresh in their directories; a program `run` started waits, saying so on its
+screen, until `fux respawn` starts it (`paused` in `ls --json`). `kill-server`
+and the last pane closing forget it; `fux server --fresh` starts empty.
 
 ## Terminal features
 
@@ -384,19 +438,20 @@ shows the error to each terminal that attaches until a reload succeeds.
 
 - **fux's own mouse actions**: the mouse reaches only programs that ask for
   it (see [Terminal features](#terminal-features)).
-- **Saving and loading layouts**: a script of `fux split` and `fux new-tab
-  -- CMD` lines makes one.
-- **Hooks** (tmux's `set-hook`): watch `fux ls --json` and run commands
+- **Hooks** (tmux's `set-hook`): read `fux events` and run commands
   instead.
-- **Surviving a server restart**: as in tmux, panes end with their server.
+- **Programs that outlive their server**: a crash ends them; the next server
+  brings back the layout, and `fux respawn` starts each again.
+- **A format language** for output (tmux's `#{…}`): `--json`, and `ls -t X
+  --get FIELD` for one value.
 - **Watching the config file**: run `fux reload`.
 
 ## Security
 
-The server listens only on a Unix socket: `fux server --socket PATH`, else
-`FUX_SOCKET`, else `$XDG_RUNTIME_DIR/fux/server.sock`, else
-`$TMPDIR/fux/server.sock`. An auto-started server logs to `fux.log` beside
-it.
+The server listens only on a Unix socket: `-S PATH` (`server --socket`),
+`-L NAME` (`NAME.sock` in fux's directory), else `FUX_SOCKET`, else
+`$XDG_RUNTIME_DIR/fux/server.sock`, else `$TMPDIR/fux/server.sock`. An
+auto-started server logs to `fux.log` beside it.
 
 - The socket's directory must be yours, mode 0700, reached only through
   directories no other user can change; fux creates the default one so.
@@ -409,6 +464,18 @@ it.
 Anyone who can open the socket can run anything as you (`split -- CMD`,
 `send-keys`). As with tmux, the socket's permissions are the access
 control.
+
+Against mistakes, rather than against a program of yours that means harm:
+
+- `kill-server` from one of the server's own panes, or while people are
+  attached, needs `--force`; `kill-pane`, `kill-tab` and `kill-workspace`
+  from the command line need `-t`, so an empty variable closes nothing.
+- `fux grant -t WS --socket PATH` makes a second socket whose commands reach
+  workspace WS alone: an agent given only it can run, read and close what is
+  there, where you can watch it in your own server, and nothing else (no
+  other workspace, the config, the buffers, clients or the server). `fux
+  grant --revoke --socket PATH` closes it.
+- `fux attach --read-only` watches without typing into anything.
 
 ## Development
 

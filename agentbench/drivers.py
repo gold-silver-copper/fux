@@ -287,6 +287,8 @@ class Fux(Driver):
         return self.run([self.bin, *args], check=check, timeout=timeout)
 
     def start(self):
+        # Its saved layouts stay with the run, not in the user's home.
+        self.env["XDG_STATE_HOME"] = os.path.join(self.work, ".fux-state")
         self.run([self.bin, "kill-server", "--force"], check=False)
         self.calls -= 1
         self.server = subprocess.Popen([self.bin, "server", "--socket", self.env["FUX_SOCKET"]],

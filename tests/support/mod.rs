@@ -136,6 +136,7 @@ impl Server {
                 .env("SHELL", "/bin/sh")
                 .env("ENV", "/dev/null")
                 .env("HOME", &dir)
+                .env("XDG_STATE_HOME", dir.join("state"))
                 .env_remove("FUX_PANE")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -208,6 +209,11 @@ impl Server {
         Client::attach(&self.socket, rows, cols, None)
     }
 
+    /// A client that only watches (`attach --read-only`).
+    pub fn watch(&self, rows: u16, cols: u16) -> Result<Client, String> {
+        Client::connect(&self.socket, (rows, cols), None, true)
+    }
+
     /// Waits until the server has exited; its exit status.
     pub fn wait_exit(&mut self) -> Result<std::process::ExitStatus, String> {
         let deadline = after(PATIENCE);
@@ -273,6 +279,17 @@ impl Client {
         cols: u16,
         workspace: Option<&str>,
     ) -> Result<Client, String> {
+        Client::connect(socket, (rows, cols), workspace, false)
+    }
+
+    /// A client attached to `workspace`, or the first; with `read_only`,
+    /// one that only watches.
+    pub fn connect(
+        socket: &Path,
+        (rows, cols): (u16, u16),
+        workspace: Option<&str>,
+        read_only: bool,
+    ) -> Result<Client, String> {
         let mut stream = UnixStream::connect(socket).map_err(e)?;
         let hello = Hello {
             protocol: PROTOCOL,
@@ -284,7 +301,7 @@ impl Client {
             rows: nonzero(rows)?,
             cols: nonzero(cols)?,
             workspace,
-            read_only: false,
+            read_only,
             env: Vec::new(),
         };
         stream.write_all(&attach.encode().map_err(e)?).map_err(e)?;

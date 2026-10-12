@@ -345,6 +345,8 @@ impl Fixture {
             rows: size,
             cols: size,
             workspace: None,
+            read_only: false,
+            env: Vec::new(),
         };
         stream
             .write_all(&attach.encode().map_err(|e| e.to_string())?)

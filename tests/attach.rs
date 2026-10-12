@@ -21,6 +21,32 @@ fn a_client_sees_the_shell_and_types_into_it() -> Outcome {
     Ok(())
 }
 
+/// A client that only watches sees the screen, but its keys reach no
+/// pane and open nothing: a key says it only watches, and the prefix and
+/// the detach key detach it.
+#[test]
+fn a_read_only_client_watches_and_can_only_detach() -> Outcome {
+    let server = Server::start("")?;
+    let mut watcher = server.watch(10, 40)?;
+    watcher.wait_for("$")?;
+    server.ok(&["send-keys", "-t", "%1", "--text", "echo shown", "Enter"])?;
+    watcher.wait("output typed elsewhere", |t| {
+        t.lines().any(|l| l == "shown")
+    })?;
+    watcher.keys("echo typed\r")?;
+    watcher.wait("the notice", |t| t.contains("watching only"))?;
+    watcher.keys("\x02c")?;
+    let screen = server.ok(&["capture-pane", "-t", "%1"])?;
+    assert!(
+        !screen.contains("typed"),
+        "its keys reached the pane: {screen}"
+    );
+    assert!(!server.ok(&["ls"])?.contains("%2"), "no window opened");
+    watcher.keys("\x02d")?;
+    assert_eq!(watcher.wait_exit()?, "detached");
+    Ok(())
+}
+
 #[test]
 fn detach_and_reattach_keep_the_shell_and_its_screen() -> Outcome {
     let server = Server::start("")?;

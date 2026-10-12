@@ -214,10 +214,13 @@ fn greeted(
 ) -> Result<(), Error> {
     match (answer, sent) {
         (Ok(Some(ServerFrame::Exit(reason))), _) => Err(Error::Refused(reason.to_owned())),
-        (_, Err(error)) => Err(error),
-        (Ok(Some(ServerFrame::Hello(theirs))), Ok(())) => {
-            Mismatch::between(ours, &theirs).map_err(Error::Mismatch)
+        // A server of another protocol says so, though it hung up before
+        // reading the Hello.
+        (Ok(Some(ServerFrame::Hello(theirs))), sent) => {
+            Mismatch::between(ours, &theirs).map_err(Error::Mismatch)?;
+            sent
         }
+        (_, Err(error)) => Err(error),
         (Err(error), Ok(())) => Err(error),
         (Ok(_), Ok(())) => Err(Error::NoAnswer),
     }

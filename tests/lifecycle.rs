@@ -190,6 +190,7 @@ fn a_pane_runs_shell_else_bin_sh() -> Outcome {
         command
             .args(["server", "--socket"])
             .arg(&socket)
+            .env("XDG_STATE_HOME", dir.join("state"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
