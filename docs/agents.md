@@ -79,7 +79,8 @@ A tab no client shows is laid out on its `--size` (on `run`, `new-tab` and
 `new-workspace`); a program starts at its size. `fux resize -t app 40x12`
 changes it later (a pane: its tab; `auto` goes back to a client's screen).
 `fux resize-pane -t %N -x 95%` sizes a pane within its tab. A size that
-cannot be had is refused, and nothing changes.
+cannot be had (over 500 a side, or too small for a tab's panes, or a split
+with no room left) is refused, and nothing changes.
 
 ## More
 
