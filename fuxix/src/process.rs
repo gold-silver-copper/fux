@@ -33,7 +33,7 @@ impl fmt::Display for Pid {
 }
 
 /// The signals fux and its tests and walk send (fux itself: `Hup`, `Term`,
-/// `Kill`), and `Tstp`, which koh's client sends itself to suspend: a shell reports a job `Tstp` stopped as "Stopped", and one
+/// `Kill`, and any of these for `fux signal`), and `Tstp`, which koh's client sends itself to suspend: a shell reports a job `Tstp` stopped as "Stopped", and one
 /// `Stop` stopped as "Stopped (signal)".
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Signal {
@@ -45,6 +45,9 @@ pub enum Signal {
     Tstp,
     Cont,
     Winch,
+    Quit,
+    Usr1,
+    Usr2,
 }
 
 impl Signal {
@@ -58,7 +61,30 @@ impl Signal {
             Signal::Tstp => libc::SIGTSTP,
             Signal::Cont => libc::SIGCONT,
             Signal::Winch => libc::SIGWINCH,
+            Signal::Quit => libc::SIGQUIT,
+            Signal::Usr1 => libc::SIGUSR1,
+            Signal::Usr2 => libc::SIGUSR2,
         }
+    }
+
+    /// The signal a name names: `TERM`, `SIGTERM` or `term`.
+    pub fn named(name: &str) -> Option<Signal> {
+        let name = name.to_ascii_uppercase();
+        let bare = name.strip_prefix("SIG").unwrap_or(&name);
+        Some(match bare {
+            "HUP" => Signal::Hup,
+            "INT" => Signal::Int,
+            "TERM" => Signal::Term,
+            "KILL" => Signal::Kill,
+            "STOP" => Signal::Stop,
+            "TSTP" => Signal::Tstp,
+            "CONT" => Signal::Cont,
+            "WINCH" => Signal::Winch,
+            "QUIT" => Signal::Quit,
+            "USR1" => Signal::Usr1,
+            "USR2" => Signal::Usr2,
+            _ => return None,
+        })
     }
 }
 

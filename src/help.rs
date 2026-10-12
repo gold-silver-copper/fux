@@ -217,6 +217,16 @@ the program runs, unless -k, which ends it first.
 
   fux respawn -t %4 -k"
         }
+        "signal" => {
+            "\
+Sends a signal to the pane's foreground processes, the ones its terminal's
+keys reach (a job its shell runs, else its program): for a program that
+ignores Ctrl-C and hangups. TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP or
+CONT, with or without SIG. The --wait-… flags wait as send-keys' do, armed
+before the signal goes.
+
+  fux signal -t %3 KILL --wait-exit"
+        }
         "notify" => {
             "\
 A notice on the screens of the clients showing TARGET (a pane, tab or

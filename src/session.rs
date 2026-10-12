@@ -172,6 +172,8 @@ pub enum Error {
     NotADirectory(PathBuf),
     /// A file `run --log` cannot make.
     Log(PathBuf, std::io::Error),
+    /// A signal `fux signal` could not send.
+    Signal(fuxix::Errno),
     /// A pane `respawn` cannot start again: a shell's, or a program that
     /// still runs.
     NotRun(PaneId),
@@ -245,6 +247,7 @@ impl std::fmt::Display for Error {
             ),
             Error::NotADirectory(path) => write!(f, "{} is not a directory", path.display()),
             Error::Log(path, error) => write!(f, "{}: {error}", path.display()),
+            Error::Signal(error) => write!(f, "sending the signal: {error}"),
             Error::NotRun(pane) => write!(
                 f,
                 "{pane} runs a shell; respawn starts again what `fux run` started"
@@ -311,6 +314,7 @@ impl std::error::Error for Error {
             | Error::NotHeadless(_)
             | Error::NotADirectory(_)
             | Error::Log(..)
+            | Error::Signal(_)
             | Error::NotRun(_)
             | Error::StillRunning(_)
             | Error::NoRows
@@ -438,6 +442,7 @@ fn shows_nothing_new(command: &Command) -> bool {
             | Command::CapturePane { .. }
             | Command::SendKeys { .. }
             | Command::SendPrefix { .. }
+            | Command::Signal { .. }
             | Command::Terminate { .. }
             | Command::Client {
                 action: ClientAction::Capture { .. },
@@ -477,7 +482,7 @@ impl Session {
     /// One workspace, holding one tab with one shell.
     pub fn start(&mut self) -> Result<(), Error> {
         let home = home();
-        let start = (Start::Shell(&[]), home.as_path());
+        let start = (Start::Shell(&[], &[]), home.as_path());
         self.create_workspace(Some(MAIN.into()), start, (Fit::Clients, default_size()))
             .map(|_| ())
     }
@@ -613,13 +618,12 @@ impl Session {
             vars.push(("FUX_SOCKET", socket.to_string_lossy().into_owned()));
         }
         vars.extend(launch.env.iter().map(|(k, v)| (k.as_str(), v.clone())));
-        let child = match self.launch {
-            Some(_) => Some(crate::process::spawn(
-                &launch.argv,
-                &launch.cwd,
-                &vars,
-                size,
-            )?),
+        let child = match &self.launch {
+            Some(socket) => {
+                let (argv, marks) = with_marks(&self.config, socket, &launch.argv, &launch.env);
+                vars.extend(marks.iter().map(|(k, v)| (k.as_str(), v.clone())));
+                Some(crate::process::spawn(&argv, &launch.cwd, &vars, size)?)
+            }
             None => None,
         };
         let history = self.config.history_lines;
@@ -634,6 +638,16 @@ impl Session {
         }
         self.touch();
         Ok(())
+    }
+
+    /// The panes of `tabs`, as ids, in their order.
+    fn panes_of_tabs(&self, tabs: &[TabId]) -> Vec<String> {
+        (self.workspaces.iter())
+            .flat_map(Workspace::tabs)
+            .filter(|t| tabs.contains(&t.id))
+            .flat_map(|t| t.root().map(Tree::panes).unwrap_or_default())
+            .map(|p| p.to_string())
+            .collect()
     }
 
     /// Whether a client is in copy mode on pane `pane`: keys typed there
@@ -1460,20 +1474,10 @@ impl Session {
         };
         let (targets, wait, keys) = match command::parse(&argv) {
             Ok(Command::Wait { targets, wait }) => (targets, wait, None),
-            Ok(
-                command @ Command::SendKeys {
-                    target,
-                    then: Some(_),
-                    ..
-                },
-            ) => {
-                let Command::SendKeys {
-                    then: Some(wait), ..
-                } = &command
-                else {
+            Ok(command) if command.acting_wait().is_some() => {
+                let Some((target, wait)) = command.acting_wait() else {
                     return Begun::Done(self.run(&argv, origin));
                 };
-                let wait = wait.clone();
                 (target.into_iter().collect(), wait, Some(command))
             }
             // Started, then waited for from its first output on.
@@ -1575,26 +1579,29 @@ impl Session {
         }
     }
 
-    /// The command line with a `-t NAME` that names no pane, tab or
-    /// workspace read as the one pane of the tab of that name, if one tab
-    /// has it and that tab one pane: so that `fux wait -t build --exit`
-    /// finds the program `fux run -n build` started.
+    /// The command line with a `-t NAME` that names no pane or tab read as
+    /// the tab of that name, if one tab has it, or where a pane is wanted
+    /// its one pane: so that `fux wait -t build --exit` finds the program
+    /// `fux run -n build` started, and `fux kill-tab -t build` its tab.
     fn named(&self, argv: &[String]) -> Vec<String> {
-        let Err(command::Usage::Not(Kind::Pane, name)) = command::parse(argv) else {
-            return argv.to_vec();
+        let (kind, name) = match command::parse(argv) {
+            Err(command::Usage::Not(kind @ (Kind::Pane | Kind::Tab), name)) => (kind, name),
+            _ => return argv.to_vec(),
         };
         let tabs: Vec<&Tab> = (self.workspaces.iter())
             .flat_map(Workspace::tabs)
             .filter(|t| t.name == name)
             .collect();
-        let pane = match tabs.as_slice() {
-            [tab] => tab.root().and_then(|root| match root {
-                Tree::Pane(pane) => Some(*pane),
+        // A tab named so, if one is; for a pane, that tab's one pane.
+        let id = match (tabs.as_slice(), kind) {
+            ([tab], Kind::Tab) => Some(tab.id.to_string()),
+            ([tab], _) => tab.root().and_then(|root| match root {
+                Tree::Pane(pane) => Some(pane.to_string()),
                 Tree::Split(..) => None,
             }),
             _ => None,
         };
-        let Some(pane) = pane else {
+        let Some(id) = id else {
             return argv.to_vec();
         };
         let mut out = argv.to_vec();
@@ -1603,7 +1610,7 @@ impl Session {
                 && let Some(word) = out.get_mut(i)
                 && *word == name
             {
-                *word = pane.to_string();
+                word.clone_from(&id);
             }
         }
         // Another -t may name another tab.
@@ -1758,7 +1765,7 @@ impl Session {
             } => {
                 let cwd = self.cwd_for(here, None);
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
-                let start = (Start::Shell(cmd), cwd.as_path());
+                let start = (Start::Shell(cmd, &[]), cwd.as_path());
                 let made =
                     self.create_workspace(name.clone(), start, (fit, self.start_size(fit, here)))?;
                 let (ws, tab, pane) = made;
@@ -1779,7 +1786,7 @@ impl Session {
                 let ws = self.ws_target(target.as_ref(), here)?;
                 let cwd = self.cwd_for(here, None);
                 let fit = size.map_or(Fit::Clients, Fit::Fixed);
-                let start = (Start::Shell(cmd), cwd.as_path());
+                let start = (Start::Shell(cmd, &[]), cwd.as_path());
                 let (tab, pane) =
                     self.create_tab(ws, name.clone(), start, (fit, self.start_size(fit, here)))?;
                 self.follow(here, ws, Some(tab), None);
@@ -1921,6 +1928,7 @@ impl Session {
                 mouse,
                 row,
                 col,
+                ..
             } => {
                 let p = self.live_pane_mut(target, here)?;
                 let mut report = Vec::new();
@@ -1952,10 +1960,18 @@ impl Session {
                 axis,
                 target,
                 ref cmd,
+                ref cwd,
+                ref env,
                 json,
             } => {
                 let target = self.pane(target, here)?.id;
-                let cwd = self.cwd_for(here, Some(target));
+                let cwd = match cwd {
+                    Some(dir) => self.cwd_for(here, None).join(dir),
+                    None => self.cwd_for(here, Some(target)),
+                };
+                if !cwd.is_dir() {
+                    return Err(Error::NotADirectory(cwd));
+                }
                 // The splitting client follows the new pane; from the CLI, the
                 // clients that focus the split one.
                 let shown = |c: &ClientId| self.focused(*c) == Some(target);
@@ -1971,7 +1987,7 @@ impl Session {
                     &self.config,
                     launch,
                     &mut ids,
-                    Start::Shell(cmd),
+                    Start::Shell(cmd, env),
                     &cwd,
                     size,
                 )?;
@@ -1990,22 +2006,46 @@ impl Session {
                 let at = self.locate(new).ok_or(Error::NoPane(new))?;
                 Ok(made_ids((at.0, at.1, new), &[new.to_string()], json))
             }
+            &Command::Signal { target, signal, .. } => {
+                let pane = self.pane(target, here)?;
+                let id = pane.id;
+                let child =
+                    pane.process
+                        .child()
+                        .ok_or_else(|| match pane.process.exit_status() {
+                            Some(status) => Error::Exited { pane: id, status },
+                            None => Error::NoPane(id),
+                        })?;
+                // What the terminal's keys reach: the job in front, else the
+                // program and its group.
+                let group = fuxix::terminal::foreground_group(&child.master)
+                    .unwrap_or_else(|| child.leader.pid());
+                fuxix::process::kill_group(group, signal).map_err(Error::Signal)?;
+                Ok(String::new())
+            }
+            // From the command line each says what it closed, so a script
+            // or an agent knows; a key's close shows on the screen anyway.
             &Command::KillPane { target } => {
                 let pane = self.pane(target, here)?.id;
                 self.close_pane(pane, None);
-                Ok(String::new())
+                Ok(closed(origin, &[pane.to_string()]))
             }
             &Command::KillTab { target } => {
                 let tab = self.tab_target(target, here)?;
+                let panes = self.panes_of_tabs(&[tab]);
                 self.remove_tab(tab);
                 self.after_close();
-                Ok(String::new())
+                Ok(closed(origin, &[vec![tab.to_string()], panes].concat()))
             }
             Command::KillWorkspace { target } => {
                 let ws = self.ws_target(target.as_ref(), here)?;
+                let tabs: Vec<TabId> = (self.workspace(ws).into_iter())
+                    .flat_map(|w| w.tabs().iter().map(|t| t.id))
+                    .collect();
+                let panes = self.panes_of_tabs(&tabs);
                 self.remove_workspace(ws);
                 self.after_close();
-                Ok(String::new())
+                Ok(closed(origin, &[vec![ws.to_string()], panes].concat()))
             }
             Command::Rename { target, name } => {
                 let target = self.any_target(&Subject::from(target.clone()), here)?;
@@ -2660,11 +2700,41 @@ fn unread(process: &Process) -> Vec<u8> {
     left
 }
 
+/// What a close from the command line prints: `closed` and the ids gone.
+fn closed(origin: &Origin, ids: &[String]) -> String {
+    match origin {
+        Origin::Cli { .. } => format!("closed {}\n", ids.join(" ")),
+        Origin::Client(_) | Origin::Nowhere => String::new(),
+    }
+}
+
+/// `argv` as it is started, and variables to add: a shell fux knows
+/// started so that it marks its commands, unless `set shell-marks off`. Its
+/// startup files go beside the server's socket.
+fn with_marks(
+    config: &Config,
+    socket: &Path,
+    argv: &[String],
+    env: &[(String, String)],
+) -> (Vec<String>, Vec<(String, String)>) {
+    let mut dir = socket.as_os_str().to_owned();
+    dir.push(".shell");
+    match config
+        .shell_marks
+        .then(|| crate::marks::marked(argv, env, Path::new(&dir)))
+        .flatten()
+    {
+        Some(marked) => (marked.argv, marked.env),
+        None => (argv.to_vec(), Vec::new()),
+    }
+}
+
 /// What a new pane starts.
 #[derive(Clone, Copy)]
 enum Start<'a> {
-    /// The shell, with a command line typed into it if one is given.
-    Shell(&'a [String]),
+    /// The shell, with a command line typed into it if one is given, and
+    /// variables set for it.
+    Shell(&'a [String], &'a [(String, String)]),
     /// A program, run in place of a shell, with variables set for it.
     Program(&'a [String], &'a [(String, String)]),
 }
@@ -2684,7 +2754,7 @@ fn new_pane(
         .cloned()
         .unwrap_or_else(|| "/bin/sh".into());
     let (argv, cmd, runs, env) = match start {
-        Start::Shell(cmd) => (config.shell.as_slice(), cmd, Runs::Shell, &[][..]),
+        Start::Shell(cmd, env) => (config.shell.as_slice(), cmd, Runs::Shell, env),
         Start::Program(argv, env) => {
             let launch = crate::pane::Launch {
                 argv: argv.to_vec(),
@@ -2697,8 +2767,8 @@ fn new_pane(
     // The line to type is made before anything else: a line too long to
     // type must not leave a process behind.
     let typed = match start {
-        Start::Shell([]) | Start::Program(..) => None,
-        Start::Shell(cmd) => {
+        Start::Shell([], _) | Start::Program(..) => None,
+        Start::Shell(cmd, _) => {
             let fish = basename(&shell_program) == "fish";
             let mut line = crate::words::shell_line(cmd, fish)?.into_bytes();
             line.push(b'\r');
@@ -2718,7 +2788,9 @@ fn new_pane(
             ("FUX_SOCKET", socket.to_string_lossy().into_owned()),
         ];
         vars.extend(env.iter().map(|(k, v)| (k.as_str(), v.clone())));
-        pane.process = Process::Reading(crate::process::spawn(argv, cwd, &vars, size)?);
+        let (argv, marks) = with_marks(config, socket, argv, env);
+        vars.extend(marks.iter().map(|(k, v)| (k.as_str(), v.clone())));
+        pane.process = Process::Reading(crate::process::spawn(&argv, cwd, &vars, size)?);
     }
     if let Some(typed) = typed {
         pane.input = InputQueue::from(typed);

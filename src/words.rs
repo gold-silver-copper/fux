@@ -124,7 +124,8 @@ pub fn join(words: &[String]) -> String {
 /// quotes, with each `'` written `'\''`: literal in sh, dash, bash and zsh.
 /// fish also treats `\` inside single quotes as an escape, so for fish each
 /// `\` is doubled there. A control character would act as a key in the
-/// shell's line editor, so an argument with one is refused.
+/// shell's line editor, so an argument with one is refused. One argument
+/// alone is a line as it is typed (`cd src && make`), unquoted.
 pub fn shell_line(argv: &[String], fish: bool) -> Result<String, Error> {
     let words = argv
         .iter()
@@ -133,6 +134,7 @@ pub fn shell_line(argv: &[String], fish: bool) -> Result<String, Error> {
                 argument: arg.clone(),
                 character,
             }),
+            None if argv.len() == 1 => Ok(arg.clone()),
             None if fish => Ok(quote(&arg.replace('\\', "\\\\"))),
             None => Ok(quote(arg)),
         });
@@ -226,6 +228,11 @@ mod tests {
             assert!(error.contains("control character"), "{bad:?}: {error}");
         }
         // A leading `=` is quoted, as zsh expands `=ls`; `a=b` is left bare.
+        assert_eq!(
+            shell_line(&argv(&["cd src && make"]), false).ok(),
+            Some("cd src && make".to_owned()),
+            "one argument is a line as typed"
+        );
         assert_eq!(
             shell_line(&argv(&["echo", "=ls", "a=b"]), false).ok(),
             Some("echo '=ls' a=b".to_owned())

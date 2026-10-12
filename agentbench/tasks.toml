@@ -132,12 +132,12 @@ args = { cmd = "seq 1 500 | sed 's/^250$/MARKER/'", marker = "MARKER" }
 check = { answer = "249" }
 
 [[task]]
-id = "sh-quiet-then-done"
+id = "sh-echo-trap"
 cat = "shell"
-goal = "In an interactive shell, run `sleep 3; echo done-ok`. Once it has finished, write what it printed to answer.txt."
-recipe = "sh_output"
-args = { cmd = "sleep 3; echo done-ok" }
-check = { answer = "done-ok" }
+goal = "In an interactive shell, run `sleep 2; echo RESULT=$((6*7))`. Once it has printed its result, write the number it printed to answer.txt."
+recipe = "sh_number"
+args = { cmd = "sleep 2; echo RESULT=$((6*7))", prefix = "RESULT=" }
+check = { answer = "42" }
 
 [[task]]
 id = "sh-env"
@@ -344,12 +344,12 @@ args = { prog = "menu", target = "delta" }
 check = { file = "chosen.txt", equals = "delta" }
 
 [[task]]
-id = "menu-zeta"
+id = "click-feedback"
 cat = "tui"
-goal = "Start `{fx} menu`. Choose `zeta`, the last item."
-recipe = "menu"
-args = { prog = "menu", target = "zeta" }
-check = { file = "chosen.txt", equals = "zeta" }
+goal = "Start `{fx} mouse`. Click the `[ Cancel ]` button with the mouse, then write the line the program shows in reply to the click to answer.txt."
+recipe = "click"
+args = { prog = "mouse", label = "[ Cancel ]" }
+check = { answer = "clicked: Cancel" }
 
 [[task]]
 id = "menu-up"

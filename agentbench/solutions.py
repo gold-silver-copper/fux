@@ -143,6 +143,13 @@ def sh_status(d, a, fx):
     return str(status)
 
 
+def sh_number(d, a, fx):
+    """The number a command printed after a prefix its own text also has."""
+    _, body, _ = _sh_result(d, a)
+    found = re.findall("^" + re.escape(a["prefix"]) + r"(\d+)\s*$", body or "", re.M)
+    return found[-1] if found else None
+
+
 def sh_output(d, a, fx):
     if a.get("setup_lines"):
         with open("data.txt", "w") as f:
@@ -433,9 +440,12 @@ def click(d, a, fx):
     for row, line in enumerate(lines(d.screen(p))):
         col = line.find(a["label"])
         if col >= 0:
+            if hasattr(d, "click_and_wait"):
+                return d.click_and_wait(p, row, col + 2, "clicked:")
             d.mouse(p, 0, row, col + 2)
             break
-    d.poll(lambda: _exists("clicked.txt") and open("clicked.txt").read(), 5)
+    d.wait_text(p, "clicked:")
+    return last_matching(d.screen(p), "clicked:")
 
 
 def wheel(d, a, fx):

@@ -79,7 +79,7 @@ impl Waiting {
                         .into_iter()
                         .flat_map(|top| std::iter::successors(Some(top), fux_vt::Row::below)),
                 );
-                let before = texts.iter().map(|t| count(&lines, t)).collect();
+                let before = texts.iter().map(|t| count(&lines, t, &wait.echo)).collect();
                 Watch {
                     pane: pane.id,
                     anchor,
@@ -204,7 +204,7 @@ impl Wait {
         } else {
             String::new()
         };
-        let screen = pane.filter(|_| self.print).map(text);
+        let screen = pane.filter(|_| self.print).map(|p| text(p, self.marks));
         let (said, problem, json) = match told {
             Told::Found(found) => {
                 let (said, json) = found.said();
@@ -213,14 +213,20 @@ impl Wait {
                 (said, problem, json)
             }
             Told::Exited(ended) => {
-                let what = self
-                    .until
-                    .iter()
-                    .map(Until::describe)
-                    .collect::<Vec<_>>()
-                    .join(" or ");
-                let message = format!("{id}: {} before {what}", crate::process::told(ended));
-                (String::new(), Some(message), ended_json("exited", ended))
+                let what = self.describe();
+                // Its last words, which an agent would otherwise ask for next:
+                // a crash says why.
+                let last = pane.map(|p| tail(p, 3)).unwrap_or_default();
+                let mut message = format!("{id}: {} before {what}", crate::process::told(ended));
+                for line in &last {
+                    message.push_str(&format!("\n  {line}"));
+                }
+                let mut json = ended_json("exited", ended);
+                json.push((
+                    "last_lines",
+                    Json::Array(last.into_iter().map(Json::str).collect()),
+                ));
+                (String::new(), Some(message), json)
             }
             Told::Gone => (
                 String::new(),
@@ -228,12 +234,35 @@ impl Wait {
                 vec![("met", Json::str("gone"))],
             ),
             Told::TimedOut => {
+                // What the pane is doing, so the next step is clear: still
+                // busy, or settled on a prompt that will not change.
                 let seconds = self.timeout.as_secs_f64();
-                let message = format!("{id}: timed out after {seconds}s");
+                let idle = pane.map(|p| Instant::now().saturating_duration_since(p.changed_at));
+                let last = pane.and_then(|p| tail(p, 1).pop());
+                let mut message = format!(
+                    "{id}: timed out after {seconds}s waiting for {}",
+                    self.describe()
+                );
+                if let Some(idle) = idle {
+                    message.push_str(&format!(
+                        "; still running, no change for {}s",
+                        idle.as_secs()
+                    ));
+                }
+                if let Some(line) = &last {
+                    message.push_str(&format!("; last line: `{line}`"));
+                }
+                let millis = |d: std::time::Duration| {
+                    Json::Number(i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+                };
                 (
                     String::new(),
                     Some(message),
-                    vec![("met", Json::str("timeout"))],
+                    vec![
+                        ("met", Json::str("timeout")),
+                        ("idle_ms", idle.map_or(Json::Null, millis)),
+                        ("last_line", last.map_or(Json::Null, Json::str)),
+                    ],
                 )
             }
         };
@@ -258,6 +287,37 @@ impl Wait {
             stdout,
             stderr: problem.filter(|_| !self.json).unwrap_or_default(),
         }
+    }
+}
+
+impl Wait {
+    /// Its conditions, as an error says what did not come.
+    fn describe(&self) -> String {
+        (self.until.iter())
+            .map(Until::describe)
+            .collect::<Vec<_>>()
+            .join(" or ")
+    }
+}
+
+/// A pane's last `n` lines with text: of its screen, or once a full-screen
+/// program has left and the screen is blank, of what it last drew.
+fn tail(pane: &Pane, n: usize) -> Vec<String> {
+    let screen = pane.screen();
+    let lines = |rows: fux_vt::Rows<'_>| -> Vec<String> {
+        let all = joined(rows);
+        let kept: Vec<String> = (all.iter().rev())
+            .map(|l| l.trim_end().to_owned())
+            .filter(|l| !l.is_empty())
+            .take(n)
+            .collect();
+        kept.into_iter().rev().collect()
+    };
+    let shown = lines(screen.rows());
+    if shown.is_empty() {
+        lines(screen.alternate_rows())
+    } else {
+        shown
     }
 }
 
@@ -374,7 +434,7 @@ impl Watch {
                 .flat_map(|top| std::iter::successors(Some(top), fux_vt::Row::below)),
         );
         if !texts.is_empty() {
-            self.read_history(screen, texts);
+            self.read_history(screen, texts, &wait.echo);
         }
         for until in &wait.until {
             let found = match until {
@@ -382,7 +442,7 @@ impl Watch {
                     let i = texts.iter().position(|t| t == text).unwrap_or(0);
                     let (scrolled, scrolled_line) =
                         self.in_history.get(i).cloned().unwrap_or_default();
-                    let seen = count(&lines, text).saturating_add(scrolled);
+                    let seen = count(&lines, text, &wait.echo).saturating_add(scrolled);
                     let base = if wait.after {
                         self.before.get(i).copied().unwrap_or(0)
                     } else {
@@ -393,7 +453,7 @@ impl Watch {
                         line: lines
                             .iter()
                             .rev()
-                            .find(|l| found_in(l, text) > 0)
+                            .find(|l| found_in(l, text) > 0 && !echoes(l, text, &wait.echo))
                             .cloned()
                             .or(scrolled_line)
                             .unwrap_or_else(|| text.clone()),
@@ -434,7 +494,7 @@ impl Watch {
 
     /// Counts the texts in history rows written since the wait began and
     /// not read yet: from the anchor, or the last row read, to the screen.
-    fn read_history(&mut self, screen: &fux_vt::Screen, texts: &[String]) {
+    fn read_history(&mut self, screen: &fux_vt::Screen, texts: &[String], echo: &[String]) {
         let history = screen.history_len();
         let from = match (self.read, self.anchor) {
             (Some(read), _) => screen.row_index(read).map(|i| i.saturating_add(1)),
@@ -456,9 +516,11 @@ impl Watch {
         }
         let lines = joined(rows.into_iter());
         for ((seen, line), text) in self.in_history.iter_mut().zip(texts) {
-            *seen = seen.saturating_add(count(&lines, text));
+            *seen = seen.saturating_add(count(&lines, text, echo));
             if line.is_none() {
-                *line = lines.iter().find(|l| found_in(l, text) > 0).cloned();
+                *line = (lines.iter())
+                    .find(|l| found_in(l, text) > 0 && !echoes(l, text, echo))
+                    .cloned();
             }
         }
     }
@@ -496,11 +558,21 @@ fn joined<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>) -> Vec<String> {
 }
 
 /// How many times `text` is in `lines`.
-fn count(lines: &[String], text: &str) -> usize {
+fn count(lines: &[String], text: &str, echo: &[String]) -> usize {
     if text.is_empty() {
         return 1;
     }
-    lines.iter().map(|l| found_in(l, text)).sum()
+    (lines.iter())
+        .filter(|l| !echoes(l, text, echo))
+        .map(|l| found_in(l, text))
+        .sum()
+}
+
+/// Whether a line is the echo of typed text holding `text`: a shell, or an
+/// input box, shows what is typed, and that is not what the keys brought.
+fn echoes(line: &str, text: &str, echo: &[String]) -> bool {
+    echo.iter()
+        .any(|typed| typed.contains(text) && line.contains(typed.as_str()))
 }
 
 /// How many times a line shows TEXT. Lines are trimmed, so blanks that end
@@ -514,9 +586,10 @@ fn found_in(line: &str, text: &str) -> usize {
 }
 
 /// A pane's screen as a wait prints it: trimmed, soft-wrapped rows joined.
-fn text(pane: &Pane) -> String {
+fn text(pane: &Pane, marks: bool) -> String {
     let view = CaptureView {
         join: true,
+        marks,
         ..CaptureView::default()
     };
     crate::capture::pane(pane, None, view, false, false)

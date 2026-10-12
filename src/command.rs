@@ -201,6 +201,8 @@ pub struct CaptureView {
     pub alt: bool,
     /// The last shell command's output alone, between its OSC 133 marks.
     pub last_output: bool,
+    /// Reverse video, how a selection is drawn, between `⟦` and `⟧`.
+    pub marks: bool,
 }
 
 /// What `wait` waits for.
@@ -238,6 +240,11 @@ pub struct Wait {
     /// Only what comes after it began counts: text that appears anew, a
     /// screen that changed (send-keys' waits, armed before the keys).
     pub after: bool,
+    /// The text send-keys types, run by run: a line holding a run that
+    /// holds the awaited text is its echo, not what the keys brought.
+    pub echo: Vec<String>,
+    /// `--print`'s screen with reverse video marked, as `capture-pane --marks`.
+    pub marks: bool,
 }
 
 /// How long a wait lasts at most if `--timeout` does not say: well inside
@@ -281,6 +288,9 @@ pub enum Command {
         axis: Axis,
         target: Option<PaneId>,
         cmd: Vec<String>,
+        /// Where its shell starts (default: where the split pane's is).
+        cwd: Option<String>,
+        env: Vec<(String, String)>,
         json: bool,
     },
     /// A program, started in place of a shell in a tab of its own, in a
@@ -328,9 +338,18 @@ pub enum Command {
         mouse: Mouse,
         row: u16,
         col: u16,
+        /// Then waits, armed before the event goes in, as send-keys' does.
+        then: Option<Box<Wait>>,
     },
     KillPane {
         target: Option<PaneId>,
+    },
+    /// A signal to the pane's foreground processes, what its terminal's
+    /// keys reach: for a program that ignores Ctrl-C and hangups.
+    Signal {
+        target: Option<PaneId>,
+        signal: fuxix::process::Signal,
+        then: Option<Box<Wait>>,
     },
     KillTab {
         target: Option<TabId>,
@@ -590,7 +609,7 @@ fn tmux_command(name: &str) -> Option<&'static str> {
         "source-file" | "source" => "the config file is read again with `fux reload`",
         "set-option" | "set-window-option" | "setw" => "options are set with `fux set`",
         "wait-for" => "`fux wait` waits for a pane to show text, go quiet or exit",
-        "respawn-pane" | "respawnp" => "programs are started with `fux run`",
+        "respawn-pane" | "respawnp" => "use `fux respawn -t %N`",
         _ => return None,
     })
 }
@@ -598,7 +617,7 @@ fn tmux_command(name: &str) -> Option<&'static str> {
 /// What fux has for a flag of tmux's that a fux command does not take.
 fn tmux_flag(command: &str, flag: &str) -> Option<&'static str> {
     Some(match (command, flag) {
-        ("capture-pane", "-p") => "capture-pane prints the screen without it",
+        ("capture-pane", "-p" | "--print") => "capture-pane always prints the screen",
         ("capture-pane", "-e") => "--styles keeps colours and attributes",
         ("resize-pane", "-Z") => "zoom with `fux zoom`",
         ("split" | "new-tab" | "new-workspace", "-d") => {
@@ -732,12 +751,14 @@ pub const COMMANDS: &[(&str, &[Spec])] = &[
 
 #[rustfmt::skip]
 const PANES: &[Spec] = &[
-    spec("split -h|-v [-t %N] [--json] [-- CMD...]  -h side by side, -v stacked", Flags(split)),
-    spec("respawn [-t %N] [-k] [--env K=V] [--wait-text TEXT] [--wait-idle MS] [--wait-exit] [--wait-bell] [--timeout SECS] [--print] [--json] [-- PROGRAM...]  \
+    spec("split -h|-v [-t %N] [--cwd DIR] [--env K=V] [--json] [-- CMD...]  -h side by side, -v stacked", Flags(split)),
+    spec("respawn [-t %N] [-k] [--env K=V] [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json] [-- PROGRAM...]  \
           start again in its pane what run started; -k ends it first if it runs", Flags(respawn)),
     spec("notify [-t TARGET] TEXT  a notice on the clients showing TARGET (all without)", Flags(notify)),
-    spec("run [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--log FILE] [--wait-text TEXT] [--wait-idle MS] [--wait-exit] [--wait-bell] [--timeout SECS] [--print] [--json] -- PROGRAM...  \
+    spec("run [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--log FILE] [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json] -- PROGRAM...  \
           a program in a tab of its own, in workspace agent; it stays once the program exits", Flags(run)),
+    spec("signal [-t %N] TERM|KILL|INT|HUP|QUIT|USR1|USR2|STOP|CONT [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json]  \
+          a signal to the pane's foreground processes", Flags(signal)),
     spec("kill-pane [-t %N]  close, without asking", Flags(|a| {
         Ok(Command::KillPane { target: a.pane()? })
     })),
@@ -766,12 +787,12 @@ const PANES: &[Spec] = &[
     spec("choose-pane [-c CLIENT] [-t %N]  a pane to swap with", Screen(|a| {
         Ok(ClientAction::ChoosePane { target: a.pane()? })
     })),
-    spec("send-keys [-t %N | -c CLIENT] [-l] [-N COUNT] KEYS... [--wait-text TEXT | --wait-gone TEXT | --wait-idle MS | --wait-change | --wait-exit | --wait-done | --wait-bell] [--timeout SECS] [--print] [--json]  \
+    spec("send-keys [-t %N | -c CLIENT] [-l] [-N COUNT] KEYS... [--wait-text TEXT | --wait-gone TEXT | --wait-idle MS | --wait-change | --wait-exit | --wait-done | --wait-bell] [--timeout SECS] [--print] [--marks] [--json]  \
           keys, words that are not key names as text, and --text TEXT or --paste TEXT; \
           -c types them at a client", Line(send_keys)),
-    spec("send-mouse [-t %N] click|right|middle|press|release|wheel-up|wheel-down|move ROW COL  \
+    spec("send-mouse [-t %N] click|right|middle|press|release|wheel-up|wheel-down|move ROW COL [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json]  \
           a mouse event at a cell, from 0", Flags(send_mouse)),
-    spec("wait [-t %N] (--text TEXT | --gone TEXT | --idle MS | --change [--since N] | --exit | --done | --bell) [--timeout SECS] [--print] [--json]  \
+    spec("wait [-t %N] (--text TEXT | --gone TEXT | --idle MS | --change [--since N] | --exit | --done | --bell) [--timeout SECS] [--print] [--marks] [--json]  \
           until a pane shows or stops showing TEXT, settles, changes, exits, ends a command or rings", Flags(wait)),
     spec("send-prefix [-t %N]  the prefix key, to the pane", Flags(|a| {
         Ok(Command::SendPrefix { target: a.pane()? })
@@ -836,7 +857,7 @@ const OTHER: &[Spec] = &[
         Ok(Command::Ls { json: a.has("--json") })
     })),
     spec("rename -t TARGET [--] NAME  TARGET: %N, @N, +N or a name", Flags(rename)),
-    spec("capture-pane [-t %N] [-S LINES|all] [--full] [-J] [--rows A-B] [--cols A-B] [--styles] [--main] [--alt] [--last-output] [--json]  \
+    spec("capture-pane [-t %N] [-S LINES|all] [--full] [-J] [--rows A-B] [--cols A-B] [--styles] [--marks] [--main] [--alt] [--last-output] [--json]  \
           the screen, trimmed; -J joins wrapped lines", Flags(capture)),
     spec("capture-client [-c CLIENT] [--json]", Screen(|a| {
         Ok(ClientAction::Capture { json: a.has("--json") })
@@ -1142,7 +1163,7 @@ fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
     if argv.is_empty() {
         return Err(Usage::Needs("usage: run [flags] -- PROGRAM [ARGS...]"));
     }
-    let then = program_wait(a, "run")?;
+    let then = flag_wait(a, "run", false)?;
     Ok(Command::Run {
         workspace,
         name: a.name(),
@@ -1156,22 +1177,30 @@ fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
     })
 }
 
-/// The wait `run` and `respawn` take: from the program's first output on.
-fn program_wait(a: &Args<'_>, command: &'static str) -> Result<Option<Box<Wait>>, Usage> {
+/// The `--wait-…` flags of a command that starts a program (`run`,
+/// `respawn`: from its first output on) or acts on one (`send-mouse`, with
+/// `after`: only what comes after it counts).
+fn flag_wait(a: &Args<'_>, command: &'static str, after: bool) -> Result<Option<Box<Wait>>, Usage> {
     let mut until = texts(a, "--wait-text", command)?;
+    until.extend(a.values("--wait-gone").map(|t| Until::Gone(t.to_owned())));
     until.extend(
         a.read_as("--wait-idle", parse_millis, "milliseconds")?
             .map(Until::Idle),
     );
-    for (flag, condition) in [("--wait-exit", Until::Exit), ("--wait-bell", Until::Bell)] {
+    for (flag, condition) in [
+        ("--wait-change", Until::Change(None)),
+        ("--wait-exit", Until::Exit),
+        ("--wait-done", Until::Done),
+        ("--wait-bell", Until::Bell),
+    ] {
         if a.has(flag) {
             until.push(condition);
         }
     }
     let timeout = a.read_as("--timeout", parse_seconds, "seconds, at most a day")?;
-    if (a.has("--print") || timeout.is_some()) && until.is_empty() {
+    if (a.has("--print") || a.has("--marks") || timeout.is_some()) && until.is_empty() {
         return Err(Usage::Needs(
-            "--print and --timeout go with a --wait-… condition",
+            "--print, --marks and --timeout go with a --wait-… condition",
         ));
     }
     Ok((!until.is_empty()).then(|| {
@@ -1180,7 +1209,9 @@ fn program_wait(a: &Args<'_>, command: &'static str) -> Result<Option<Box<Wait>>
             timeout: timeout.unwrap_or(WAIT_TIMEOUT),
             print: a.has("--print"),
             json: a.has("--json"),
-            after: false,
+            after,
+            echo: Vec::new(),
+            marks: a.has("--marks"),
         })
     }))
 }
@@ -1225,7 +1256,7 @@ fn respawn(a: &mut Args<'_>) -> Result<Command, Usage> {
         kill: a.has("-k"),
         env: env_pairs(a, "respawn")?,
         argv: a.rest(),
-        then: program_wait(a, "respawn")?,
+        then: flag_wait(a, "respawn", false)?,
     })
 }
 
@@ -1274,6 +1305,7 @@ fn capture(a: &mut Args<'_>) -> Result<Command, Usage> {
         main: a.has("--main"),
         alt: a.has("--alt"),
         last_output: a.has("--last-output"),
+        marks: a.has("--marks"),
     };
     Ok(Command::CapturePane {
         target: a.pane()?,
@@ -1324,6 +1356,8 @@ fn wait(a: &mut Args<'_>) -> Result<Command, Usage> {
             print: a.has("--print"),
             json: a.has("--json"),
             after: false,
+            echo: Vec::new(),
+            marks: a.has("--marks"),
         },
     })
 }
@@ -1361,6 +1395,27 @@ fn send_mouse(a: &mut Args<'_>) -> Result<Command, Usage> {
         mouse,
         row: cell("ROW", row)?,
         col: cell("COL", col)?,
+        then: flag_wait(a, "send-mouse", true)?,
+    })
+}
+
+fn signal(a: &mut Args<'_>) -> Result<Command, Usage> {
+    let usage = "usage: signal [-t %N] TERM|KILL|INT|HUP|QUIT|USR1|USR2|STOP|CONT";
+    let name = match a.positional.as_slice() {
+        [name] => *name,
+        _ => return Err(Usage::Needs(usage)),
+    };
+    a.positional.clear();
+    let signal = fuxix::process::Signal::named(name).ok_or_else(|| Usage::Bad {
+        command: "signal",
+        flag: "SIGNAL",
+        value: name.to_owned(),
+        expected: "TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP or CONT",
+    })?;
+    Ok(Command::Signal {
+        target: a.pane()?,
+        signal,
+        then: flag_wait(a, "signal", true)?,
     })
 }
 
@@ -1379,6 +1434,8 @@ fn split(a: &mut Args<'_>) -> Result<Command, Usage> {
         axis,
         target,
         cmd: a.rest(),
+        cwd: a.value("--cwd").map(str::to_owned),
+        env: env_pairs(a, "split")?,
         json: a.has("--json"),
     })
 }
@@ -1509,6 +1566,7 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
     let (mut target, mut literal, mut repeat) = (None, false, 1);
     let (mut client, mut until, mut timeout, mut print, mut json) =
         (None, Vec::new(), None, false, false);
+    let mut marks = false;
     let mut words = argv.get(1..).unwrap_or_default().iter().peekable();
     while let Some(word) = words.next_if(|w| ["-t", "-c", "-l", "-N", "--"].contains(&w.as_str())) {
         match word.as_str() {
@@ -1558,6 +1616,7 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
                     Some(parse_seconds(text).ok_or_else(|| bad("--timeout", text, "seconds"))?);
             }
             "--print" => print = true,
+            "--marks" => marks = true,
             "--json" => json = true,
             text => inputs.push(match text.parse::<KeyPress>() {
                 Ok(key) if !literal => Input::Key(key),
@@ -1571,9 +1630,9 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
     if inputs.is_empty() {
         return Err(Usage::Needs("send-keys needs keys to send"));
     }
-    if (print || json || timeout.is_some()) && until.is_empty() {
+    if (print || json || marks || timeout.is_some()) && until.is_empty() {
         return Err(Usage::Needs(
-            "send-keys --print, --json and --timeout go with a --wait-… condition",
+            "send-keys --print, --marks, --json and --timeout go with a --wait-… condition",
         ));
     }
     if client.is_some() && (target.is_some() || !until.is_empty()) {
@@ -1581,12 +1640,25 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
             "send-keys -c CLIENT types at a client; -t and the waits are for a pane",
         ));
     }
+    // What is typed in one go, between keys: its echo is one line.
+    let mut echo: Vec<String> = Vec::new();
+    let mut joined = false;
+    for input in &inputs {
+        match (input, echo.last_mut()) {
+            (Input::Text(text), Some(last)) if joined => last.push_str(text),
+            (Input::Text(text), _) => echo.push(text.clone()),
+            (Input::Key(_) | Input::Paste(_), _) => {}
+        }
+        joined = matches!(input, Input::Text(_));
+    }
     let then = (!until.is_empty()).then(|| Wait {
         until,
         timeout: timeout.unwrap_or(WAIT_TIMEOUT),
         print,
         json,
         after: true,
+        echo,
+        marks,
     });
     Ok(Command::SendKeys {
         target,
@@ -1595,6 +1667,36 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
         repeat,
         then,
     })
+}
+
+impl Command {
+    /// The pane a command acts on and the wait it then does, armed before
+    /// it acts: send-keys', send-mouse's and signal's.
+    pub fn acting_wait(&self) -> Option<(Option<PaneId>, Wait)> {
+        if let Command::SendKeys {
+            target,
+            client: None,
+            then: Some(wait),
+            ..
+        } = self
+        {
+            return Some((*target, wait.clone()));
+        }
+        if let Command::SendMouse {
+            target,
+            then: Some(wait),
+            ..
+        }
+        | Command::Signal {
+            target,
+            then: Some(wait),
+            ..
+        } = self
+        {
+            return Some((*target, (**wait).clone()));
+        }
+        None
+    }
 }
 
 /// Whether a word that is no key name looks like one mistyped, as a person
@@ -1734,11 +1836,13 @@ mod tests {
     fn the_cli_table_parses() -> Result<(), Usage> {
         assert_eq!(cmd("ls --json"), Ok(Command::Ls { json: true }));
         assert_eq!(
-            cmd("split -h -t %3 -- htop -d 5"),
+            cmd("split -h -t %3 --cwd src --env A=1 -- htop -d 5"),
             Ok(Command::Split {
                 axis: Axis::Horizontal,
                 target: Some(PaneId::of(3)),
                 cmd: vec!["htop".into(), "-d".into(), "5".into()],
+                cwd: Some("src".into()),
+                env: vec![("A".into(), "1".into())],
                 json: false,
             })
         );
@@ -1813,6 +1917,8 @@ mod tests {
                     print: true,
                     json: false,
                     after: true,
+                    echo: vec!["two words".into()],
+                    marks: false,
                 }),
             })
         );
@@ -1836,6 +1942,8 @@ mod tests {
                     print: false,
                     json: true,
                     after: true,
+                    echo: vec!["go".into()],
+                    marks: false,
                 }),
             })
         );
@@ -1873,6 +1981,8 @@ mod tests {
                     print: true,
                     json: true,
                     after: false,
+                    echo: Vec::new(),
+                    marks: false,
                 },
             })
         );
@@ -1917,6 +2027,7 @@ mod tests {
                 mouse: Mouse::Wheel(MouseButton::WheelUp),
                 row: 3,
                 col: 7,
+                then: None,
             })
         );
         assert_eq!(
@@ -2128,6 +2239,7 @@ mod tests {
                         "--log",
                         "--since",
                         "--wait-text",
+                        "--wait-gone",
                         "--wait-idle",
                     ]
                     .contains(&flag);
