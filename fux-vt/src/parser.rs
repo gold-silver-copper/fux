@@ -721,6 +721,10 @@ impl Parser {
     pub fn screen(&self) -> &Screen {
         &self.screen
     }
+    /// Drops the scrollback, as `CSI 3 J` does; the screen stays.
+    pub fn clear_history(&mut self) {
+        self.screen.clear_history();
+    }
     /// Tells the parser what the host's terminal shows for palette entries
     /// 0 to 15, the ones themes change (`None`: the host does not know
     /// that one), replacing what it told before, with `Feature::Palette`: a

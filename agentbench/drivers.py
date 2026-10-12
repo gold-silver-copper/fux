@@ -287,7 +287,7 @@ class Fux(Driver):
         return self.run([self.bin, *args], check=check, timeout=timeout)
 
     def start(self):
-        self.run([self.bin, "kill-server"], check=False)
+        self.run([self.bin, "kill-server", "--force"], check=False)
         self.calls -= 1
         self.server = subprocess.Popen([self.bin, "server", "--socket", self.env["FUX_SOCKET"]],
                                        env=self.env, cwd=self.work,
@@ -297,7 +297,7 @@ class Fux(Driver):
             time.sleep(0.02)
 
     def stop(self):
-        self.fux("kill-server", check=False)
+        self.fux("kill-server", "--force", check=False)
         if self.server:
             try:
                 self.server.wait(5)

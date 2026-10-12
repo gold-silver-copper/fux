@@ -215,7 +215,7 @@ fn a_pane_runs_shell_else_bin_sh() -> Outcome {
             Ok(ls.contains(&format!(r#""id":"%1","name":"{name}""#)))
         });
         let _ = Command::new(FUX)
-            .arg("kill-server")
+            .args(["kill-server", "--force"])
             .env("FUX_SOCKET", &socket)
             .output();
         let _ = child.wait();

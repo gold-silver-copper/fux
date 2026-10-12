@@ -54,11 +54,12 @@ pub struct Child {
 
 /// Starts `argv` on a new PTY of `size`, in its own session with the PTY as
 /// its controlling terminal, through the launcher in the `fux` binary
-/// (`fuxix::pty::launched`).
+/// (`fuxix::pty::launched`): with `env` set and `unset` removed from the
+/// server's environment.
 pub fn spawn(
     argv: &[String],
     cwd: &Path,
-    env: &[(&str, String)],
+    (env, unset): (&[(&str, String)], &[String]),
     size: fux_vt::Size,
 ) -> Result<Child, Error> {
     let program = argv.first().ok_or(Error::NoProgram)?;
@@ -75,6 +76,9 @@ pub fn spawn(
                 .env("TERM", "xterm-256color")
                 .env("TERM_PROGRAM", "fux")
                 .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+            for key in unset {
+                command.env_remove(key);
+            }
             for (key, value) in env {
                 command.env(key, value);
             }

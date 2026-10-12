@@ -488,6 +488,12 @@ impl Screen {
             &self.primary
         }
     }
+    /// The scrollback, dropped; the screen stays.
+    pub(crate) fn clear_history(&mut self) {
+        self.grid_mut().clear_history();
+        self.structural = self.version;
+    }
+
     fn grid_mut(&mut self) -> &mut Grid {
         if self.alternate_active {
             &mut self.alternate
@@ -2417,8 +2423,7 @@ impl Screen {
                 // ED 3 (`CSI 3 J`, xterm's): the scrollback goes, as `clear`
                 // asks; the screen stays.
                 if byte == b'J' && mode == 3 && !private {
-                    self.grid_mut().clear_history();
-                    self.structural = self.version;
+                    self.clear_history();
                     return Ok(Dispatch::Done);
                 }
                 if mode > 2 {

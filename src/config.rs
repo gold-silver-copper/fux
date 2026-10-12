@@ -98,6 +98,10 @@ pub enum Error {
     NotConfig {
         command: String,
     },
+    /// A name `update-environment` is given that no variable has.
+    NotAVariable {
+        name: String,
+    },
     OneValue {
         option: String,
     },
@@ -193,6 +197,10 @@ impl std::fmt::Display for Error {
                  only set, bind, unbind and unbind-all are allowed there"
             ),
             Error::OneValue { option } => write!(f, "set {option} takes one value"),
+            Error::NotAVariable { name } => write!(
+                f,
+                "set update-environment: {name:?} is no variable's name (letters, digits and _)"
+            ),
             Error::NotANumber { option } => write!(f, "set {option}: not a number"),
             Error::TooLarge { option, max } => write!(f, "set {option}: at most {max}"),
             Error::Key(error) => error.fmt(f),
@@ -241,6 +249,7 @@ impl std::error::Error for Error {
             | Error::UnbindAllUsage
             | Error::NotConfig { .. }
             | Error::OneValue { .. }
+            | Error::NotAVariable { .. }
             | Error::NotANumber { .. }
             | Error::TooLarge { .. }
             | Error::NoProgram
@@ -326,6 +335,11 @@ pub struct Config {
     pub titles: bool,
     /// The shells fux starts mark their commands (OSC 133): `crate::marks`.
     pub shell_marks: bool,
+    /// Variables a new pane takes from whoever starts it (a command's
+    /// caller, the client whose key it is) rather than from the server,
+    /// which may have started long ago: an SSH agent's socket, a display.
+    /// One the starter has not is unset.
+    pub update_environment: Vec<String>,
     /// The keys after the prefix.
     pub bindings: Layer,
     /// Keys bound without the prefix (`bind -n`), in the order they were
@@ -400,6 +414,18 @@ impl Default for Config {
             buffers: 16,
             bell: true,
             shell_marks: true,
+            update_environment: [
+                "DISPLAY",
+                "KRB5CCNAME",
+                "SSH_AGENT_PID",
+                "SSH_ASKPASS",
+                "SSH_AUTH_SOCK",
+                "SSH_CONNECTION",
+                "WAYLAND_DISPLAY",
+                "XAUTHORITY",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
             titles: false,
             bindings: Layer::default(),
             root: Vec::new(),
@@ -707,6 +733,18 @@ impl Config {
             "bell" => self.bell = on()?,
             "titles" => self.titles = on()?,
             "shell-marks" => self.shell_marks = on()?,
+            "update-environment" => {
+                // `set update-environment A B` and `'A B'` alike; none: off.
+                let names: Vec<String> = value
+                    .iter()
+                    .flat_map(|v| v.split_whitespace())
+                    .map(str::to_owned)
+                    .collect();
+                if let Some(bad) = names.iter().find(|n| !crate::command::shell_name(n)) {
+                    return Err(Error::NotAVariable { name: bad.clone() });
+                }
+                self.update_environment = names;
+            }
             "buffers" => {
                 let n = number(MAX_BUFFERS)?;
                 if n == 0 {
@@ -763,8 +801,8 @@ impl Config {
                 line: number.saturating_add(1),
                 error: Box::new(error),
             };
-            let applied = (words::split(line).map_err(Error::from))
-                .and_then(|argv| match argv.is_empty() {
+            let applied =
+                (words::split(line).map_err(Error::from)).and_then(|argv| match argv.is_empty() {
                     true => Ok(()),
                     false => config.apply(&argv),
                 });
@@ -790,6 +828,10 @@ impl Config {
             format!("set buffers {}", self.buffers),
             format!("set bell {}", if self.bell { "on" } else { "off" }),
             format!("set titles {}", if self.titles { "on" } else { "off" }),
+            format!(
+                "set update-environment {}",
+                words::quote(&self.update_environment.join(" "))
+            ),
         ];
         let after = self
             .bindings

@@ -272,6 +272,8 @@ pub fn open_menu(session: &Session, view: &mut View, about: AnyRef<WsId>) -> Str
                     name: None,
                     cmd: Vec::new(),
                     size: None,
+                    cwd: None,
+                    env: Vec::new(),
                     json: false,
                 },
             ));
@@ -282,6 +284,8 @@ pub fn open_menu(session: &Session, view: &mut View, about: AnyRef<WsId>) -> Str
                 name: None,
                 cmd: Vec::new(),
                 size: None,
+                cwd: None,
+                env: Vec::new(),
                 json: false,
             },
         )),
@@ -1039,6 +1043,8 @@ mod tests {
             name: None,
             cmd: Vec::new(),
             size: None,
+            cwd: None,
+            env: Vec::new(),
             json: false,
         };
         assert_eq!(

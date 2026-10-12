@@ -147,7 +147,9 @@ pub fn main() -> ExitCode {
 
 /// Whether a command line asks for JSON: its errors are then JSON too.
 fn wants_json(args: &[String]) -> bool {
-    args.iter().take_while(|a| *a != "--").any(|a| a == "--json")
+    args.iter()
+        .take_while(|a| *a != "--")
+        .any(|a| a == "--json")
 }
 
 /// An error as JSON: a stable code and the message.
@@ -316,7 +318,8 @@ fn pasted(args: &[String]) -> Result<Vec<String>, Error> {
                 PASTE_FILE_LIMIT / 1024
             )));
         }
-        String::from_utf8(bytes).map_err(|_| Error::Paste(format!("--paste {name}: not UTF-8 text")))
+        String::from_utf8(bytes)
+            .map_err(|_| Error::Paste(format!("--paste {name}: not UTF-8 text")))
     };
     let mut out = Vec::with_capacity(args.len());
     let mut words = args.iter();
@@ -417,7 +420,11 @@ fn run(args: &[String]) -> Result<u8, Error> {
                 return usage_error("attach --size and --log go with --headless", None, json);
             }
             if headless && read_only {
-                return usage_error("a headless client takes no keys: --read-only is for a terminal", None, json);
+                return usage_error(
+                    "a headless client takes no keys: --read-only is for a terminal",
+                    None,
+                    json,
+                );
             }
             // A headless client takes no terminal, so may attach from a pane.
             if !nested && !headless && std::env::var_os("FUX_PANE").is_some_and(|p| !p.is_empty()) {
@@ -443,7 +450,11 @@ fn run(args: &[String]) -> Result<u8, Error> {
                 match arg.as_str() {
                     flag @ ("--socket" | "--config") => {
                         let Some(value) = rest.next().cloned() else {
-                            return usage_error(&format!("server {flag} needs a value"), None, json);
+                            return usage_error(
+                                &format!("server {flag} needs a value"),
+                                None,
+                                json,
+                            );
                         };
                         if flag == "--socket" {
                             socket_flag = Some(value);
@@ -477,7 +488,8 @@ fn run(args: &[String]) -> Result<u8, Error> {
                 } else {
                     client::start_server(&socket, &passed)?;
                 }
-                writeln!(std::io::stdout(), "{}", socket.path().display()).map_err(Error::Output)?;
+                writeln!(std::io::stdout(), "{}", socket.path().display())
+                    .map_err(Error::Output)?;
                 return Ok(0);
             }
             let fresh = passed.iter().any(|p| p == "--fresh");
@@ -512,7 +524,10 @@ fn run(args: &[String]) -> Result<u8, Error> {
                 _ => return usage_error("usage: fux check-config [FILE]", None, json),
             };
             let Some(path) = path else {
-                let _ = writeln!(std::io::stderr(), "fux: no config file: neither XDG_CONFIG_HOME nor HOME is set");
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "fux: no config file: neither XDG_CONFIG_HOME nor HOME is set"
+                );
                 return Ok(1);
             };
             check_config(&path)
@@ -539,6 +554,7 @@ fn run(args: &[String]) -> Result<u8, Error> {
             Ok(0)
         }
         Some(_) => {
+            let args = &pasted(args)?;
             // Parsed here as well, so a usage error needs no server; a
             // tab, or its pane, named by the tab's name only the server can
             // tell.
@@ -548,12 +564,14 @@ fn run(args: &[String]) -> Result<u8, Error> {
                     return usage_error(&usage.to_string(), args.first().map(String::as_str), json);
                 }
             }
-            let args = pasted(args)?;
             let socket = socket::socket_path(choice)?;
-            match client::command(&socket, &args) {
+            match client::command(&socket, args) {
                 // A server of another fux, which only a kill reaches.
                 Err(client::Error::Mismatch(_))
-                    if matches!(command::parse(&args), Ok(command::Command::KillServer { force: true })) =>
+                    if matches!(
+                        command::parse(args),
+                        Ok(command::Command::KillServer { force: true })
+                    ) =>
                 {
                     client::kill_server(&socket)?;
                     Ok(0)
@@ -579,7 +597,10 @@ fn status(socket: &socket::SocketPath, probe: &client::Probe, json: bool) -> (St
             ("running", json::Json::Bool(running)),
             ("socket", json::Json::str(&path)),
             ("version", json::Json::str(ours)),
-            ("protocol", json::Json::Number(i64::from(protocol::PROTOCOL))),
+            (
+                "protocol",
+                json::Json::Number(i64::from(protocol::PROTOCOL)),
+            ),
         ];
         if let Some((protocol, version)) = theirs {
             fields.push(("server_version", json::Json::str(version)));
@@ -628,7 +649,10 @@ fn servers(json: bool) -> Result<String, Error> {
             ("name", json::Json::str(name.clone())),
             ("socket", json::Json::str(path.clone())),
             ("version", json::Json::str(version.clone())),
-            ("compatible", json::Json::Bool(protocol == protocol::PROTOCOL)),
+            (
+                "compatible",
+                json::Json::Bool(protocol == protocol::PROTOCOL),
+            ),
         ]));
     }
     Ok(match json {

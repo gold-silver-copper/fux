@@ -25,6 +25,8 @@ pub const GONE: u8 = 4;
 /// Keys sent changed nothing on the screen, and the wait was for it to
 /// settle (send-keys --wait-idle): they may not have reached the program.
 pub const UNCHANGED: u8 = 5;
+/// Input given `--if-revision` found the screen changed, and sent nothing.
+pub const CHANGED: u8 = 6;
 /// As `timeout(1)`.
 pub const TIMED_OUT: u8 = 124;
 
@@ -45,6 +47,8 @@ pub struct Waiting {
     /// The program has just started (`run`, `respawn`): its screen is
     /// blank, so a text is gone only once it has appeared.
     pub fresh: bool,
+    /// What each pane said, for a wait on each of several (`Wait::all`).
+    answers: Vec<Option<Outcome>>,
 }
 
 /// One pane a wait watches, and what it found as it began.
@@ -139,6 +143,7 @@ impl Waiting {
             })
             .collect();
         Waiting {
+            answers: vec![None; panes.len()],
             watches,
             deadline: crate::after(now, wait.timeout),
             wait,
@@ -199,6 +204,9 @@ impl Waiting {
     fn look(&mut self, session: &Session, now: Instant) -> Option<Outcome> {
         let texts = texts(&self.wait);
         let several = self.watches.len() > 1;
+        if self.wait.all && several {
+            return self.look_each(session, now, &texts);
+        }
         // A pane that met it answers; one that can no longer (its program
         // exited or was started again, or the pane went) ends the wait only
         // once none is left that could.
@@ -215,19 +223,7 @@ impl Waiting {
             }
             if let Some(found) = watch.look(pane, &self.wait, &texts, (self.began, now), self.fresh)
             {
-                let status = match &found {
-                    Found::Idle { changed: false } if self.wait.after => UNCHANGED,
-                    // As timeout(1): the program's own status, once it exits.
-                    Found::Exit(ended) => {
-                        u8::try_from(crate::process::shell_status(*ended)).unwrap_or(u8::MAX)
-                    }
-                    Found::Text { .. }
-                    | Found::Gone(_)
-                    | Found::Idle { .. }
-                    | Found::Change(_)
-                    | Found::Done(_)
-                    | Found::Bell(_) => 0,
-                };
+                let status = found.status(self.wait.after);
                 let id = watch.pane;
                 return Some(
                     self.wait
@@ -267,6 +263,85 @@ impl Waiting {
             });
         }
         None
+    }
+}
+
+impl Waiting {
+    /// A wait on each of several panes: each answers on its own, as a
+    /// lone pane's wait would, and the wait once every one has, or its time
+    /// is up; a line from each, in order, and the first failing status.
+    fn look_each(&mut self, session: &Session, now: Instant, texts: &[String]) -> Option<Outcome> {
+        let window = (self.began, now);
+        for (watch, answer) in self.watches.iter_mut().zip(self.answers.iter_mut()) {
+            if answer.is_some() {
+                continue;
+            }
+            let id = watch.pane;
+            let Some(pane) = session.panes.get(&id) else {
+                *answer = Some(self.wait.told(id, None, GONE, Told::Gone, true));
+                continue;
+            };
+            let told = if pane.starts != watch.starts {
+                Some((EXITED, Told::Replaced))
+            } else if let Some(found) = watch.look(pane, &self.wait, texts, window, self.fresh) {
+                Some((found.status(self.wait.after), Told::Found(found)))
+            } else {
+                pane.process
+                    .exit_status()
+                    .map(|ended| (EXITED, Told::Exited(ended)))
+            };
+            if let Some((status, told)) = told {
+                *answer = Some(self.wait.told(id, Some(pane), status, told, true));
+            }
+        }
+        if now >= self.deadline {
+            for (watch, answer) in self.watches.iter().zip(self.answers.iter_mut()) {
+                if answer.is_none() {
+                    let pane = session.panes.get(&watch.pane);
+                    let hint = pane.and_then(|p| watch.hint(p, &self.wait));
+                    let told = Told::TimedOut(hint);
+                    *answer = Some(self.wait.told(watch.pane, pane, TIMED_OUT, told, true));
+                }
+            }
+        }
+        if self.answers.iter().any(Option::is_none) {
+            return None;
+        }
+        let answers: Vec<Outcome> = self.answers.iter().flatten().cloned().collect();
+        let status = (answers.iter().map(|a| a.status))
+            .find(|s| *s != 0)
+            .unwrap_or(0);
+        let mut stderr = String::new();
+        for answer in &answers {
+            if !answer.stderr.is_empty() {
+                stderr.push_str(answer.stderr.trim_end());
+                stderr.push('\n');
+            }
+        }
+        Some(Outcome {
+            status,
+            stdout: answers.iter().map(|a| a.stdout.as_str()).collect(),
+            stderr,
+        })
+    }
+}
+
+impl Found {
+    /// The status a wait that found it ends with.
+    fn status(&self, after: bool) -> u8 {
+        match self {
+            Found::Idle { changed: false } if after => UNCHANGED,
+            // As timeout(1): the program's own status, once it exits.
+            Found::Exit(ended) => {
+                u8::try_from(crate::process::shell_status(*ended)).unwrap_or(u8::MAX)
+            }
+            Found::Text { .. }
+            | Found::Gone(_)
+            | Found::Idle { .. }
+            | Found::Change(_)
+            | Found::Done(_)
+            | Found::Bell(_) => 0,
+        }
     }
 }
 

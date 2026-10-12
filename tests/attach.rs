@@ -65,6 +65,8 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
         rows: nonzero(5)?,
         cols: nonzero(20)?,
         workspace: None,
+        read_only: false,
+        env: Vec::new(),
     };
     let hello = Hello {
         protocol: PROTOCOL,
@@ -304,7 +306,7 @@ fn attach_starts_a_server_when_none_answers() -> Outcome {
     });
     let log = std::fs::read_to_string(dir.join("s").join("fux.log"));
     let _ = std::process::Command::new(FUX)
-        .arg("kill-server")
+        .args(["kill-server", "--force"])
         .env("FUX_SOCKET", &socket)
         .output();
     let _ = child.wait();
@@ -729,7 +731,7 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
         Ok(out.status.success() && !String::from_utf8_lossy(&out.stdout).contains("client c1"))
     });
     let _ = std::process::Command::new(FUX)
-        .arg("kill-server")
+        .args(["kill-server", "--force"])
         .env("FUX_SOCKET", &socket)
         .output();
     drop(terminal);
@@ -906,6 +908,8 @@ fn attach_with(
         rows: nonzero(8)?,
         cols: nonzero(30)?,
         workspace: None,
+        read_only: false,
+        env: Vec::new(),
     };
     let bytes = attach.encode().map_err(e)?;
     let sent = fuxix::socket::send_with_fd(&stream, &bytes, fd).map_err(e)?;

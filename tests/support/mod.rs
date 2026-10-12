@@ -240,7 +240,7 @@ impl Drop for Server {
         );
         if let Some(mut child) = self.child.take() {
             let _ = Command::new(FUX)
-                .arg("kill-server")
+                .args(["kill-server", "--force"])
                 .env("FUX_SOCKET", &self.socket)
                 .output();
             let deadline = after(Duration::from_secs(3));
@@ -284,6 +284,8 @@ impl Client {
             rows: nonzero(rows)?,
             cols: nonzero(cols)?,
             workspace,
+            read_only: false,
+            env: Vec::new(),
         };
         stream.write_all(&attach.encode().map_err(e)?).map_err(e)?;
         stream.set_nonblocking(true).map_err(e)?;
