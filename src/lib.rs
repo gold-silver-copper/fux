@@ -172,7 +172,9 @@ impl From<client::Error> for Error {
 /// `COLSxROWS`, as `attach --size` takes it: rows and columns.
 fn headless_size(text: &str) -> Option<(NonZeroU16, NonZeroU16)> {
     let (cols, rows) = text.split_once('x')?;
-    Some((rows.parse().ok()?, cols.parse().ok()?))
+    // At most 500 cells each way, as a pane's size.
+    let cell = |n: &str| n.parse::<NonZeroU16>().ok().filter(|n| n.get() <= 500);
+    Some((cell(rows)?, cell(cols)?))
 }
 
 fn nonzero(n: u16) -> NonZeroU16 {
@@ -241,7 +243,10 @@ fn run(args: &[String]) -> Result<u8, Error> {
                     "--size" => match rest.next().and_then(|s| headless_size(s)) {
                         Some(cells) => size = Some(cells),
                         None => {
-                            return usage_error("attach --size needs COLSxROWS, as 100x30", None);
+                            return usage_error(
+                                "attach --size needs COLSxROWS, each 1 to 500, as 100x30",
+                                None,
+                            );
                         }
                     },
                     "--log" => match rest.next() {

@@ -22,12 +22,14 @@ fux kill-workspace -t agent                     # everything run started
   `--wait-…` flags, armed before they act so nothing is missed; `fux wait -t
   NAME` takes the same without `wait-` (`--text`, `--gone`, `--idle`,
   `--change`, `--exit`, `--done`, `--bell`):
-  - `--wait-text TEXT`: until TEXT shows (also in a line that scrolled away;
-    not the echo of what you typed); prints its line. `fux wait --text A
+  - `--wait-text TEXT`: until TEXT shows on a line that changed since (also
+    one that scrolled away; not the echo of a typed line, nor a line drawn
+    again the same); prints its line. `fux wait --text A
     --text B -t x -t y`: any of several, in any of several panes.
   - `--wait-idle MS`: no change for MS (a spinner is change); after keys or a
     click, status 5 means it changed nothing. `--wait-change`: any change.
-  - `--wait-done`: a shell command ends; prints `done STATUS`.
+  - `--wait-done`: the shell is back at its prompt after a command ends;
+    prints `done STATUS` (after Ctrl-C too).
   - `--wait-exit`: the program exits; prints `exited STATUS`, exits with it.
   - `--wait-gone TEXT`; `--wait-bell` (a bell or notification: it needs you).
   - `--timeout SECS` (60), `--print` (the screen after), `--json`.

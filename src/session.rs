@@ -171,6 +171,8 @@ pub enum Error {
     },
     /// A size no pane can have, with this much history.
     TooBig(fux_vt::Size, usize),
+    /// A size a tab's panes cannot all have.
+    TooSmall(TabId, usize),
     /// A name several tabs have, and no workspace.
     Named(String),
     /// A split that leaves no room for the new pane.
@@ -286,6 +288,10 @@ impl std::fmt::Display for Error {
                 size.cols(),
                 size.rows()
             ),
+            Error::TooSmall(tab, panes) => write!(
+                f,
+                "{tab} cannot show its {panes} panes at that size; close some, or choose a bigger one"
+            ),
             Error::Named(name) => write!(f, "{name:?} names several tabs: use an id"),
             Error::NoRoom(pane) => write!(
                 f,
@@ -329,7 +335,10 @@ impl std::fmt::Display for Error {
             Error::TabNameTaken(name, ids) => write!(
                 f,
                 "a tab is named {name:?} already ({ids}); close it (`fux kill-tab -t {}`) or choose another name",
-                ids.split(' ').next().unwrap_or(name)
+                ids.split(' ')
+                    .filter(|id| id.starts_with('@'))
+                    .collect::<Vec<_>>()
+                    .join("`, `fux kill-tab -t ")
             ),
             Error::NameReadAsTarget(name) => write!(
                 f,
@@ -384,6 +393,7 @@ impl std::error::Error for Error {
             | Error::OutsidePane { .. }
             | Error::NoRoom(_)
             | Error::Named(_)
+            | Error::TooSmall(..)
             | Error::TooBig(..)
             | Error::CannotResize { .. }
             | Error::WaitsOnlyFromCli
@@ -2156,6 +2166,20 @@ impl Session {
                                 self.locate(pane).map(|(_, tab)| tab).into_iter().collect()
                             }
                         };
+                        // A size that would hide one of a tab's panes is refused,
+                        // as a split that would is.
+                        if size.is_some() {
+                            let area = self.tab_area(fit, here);
+                            for tab in &tabs {
+                                let Some(root) = self.root(*tab) else {
+                                    continue;
+                                };
+                                let placed = layout::place(root, area);
+                                if root.panes().iter().any(|p| placed.rect(*p).is_none()) {
+                                    return Err(Error::TooSmall(*tab, root.panes().len()));
+                                }
+                            }
+                        }
                         for tab in tabs_mut(&mut self.workspaces).filter(|t| tabs.contains(&t.id)) {
                             tab.set_fit(fit);
                         }
@@ -3135,8 +3159,18 @@ fn check_workspace_name<'a>(
     if command::parse_workspace(name) != Ok(WsRef::Name(name.to_owned())) {
         return Err(Error::NameReadAsTarget(name.to_owned()));
     }
-    if others.into_iter().any(|ws| ws.name == name) {
+    let others: Vec<&Workspace> = others.into_iter().collect();
+    if others.iter().any(|ws| ws.name == name) {
         return Err(Error::NameTaken(name.to_owned()));
+    }
+    // A tab's name too: the workspace's would hide it from `-t NAME`.
+    let tabs: Vec<String> = (others.iter())
+        .flat_map(|ws| ws.tabs())
+        .filter(|t| t.name == name)
+        .map(|t| t.id.to_string())
+        .collect();
+    if !tabs.is_empty() {
+        return Err(Error::TabNameTaken(name.to_owned(), tabs.join(" ")));
     }
     Ok(())
 }

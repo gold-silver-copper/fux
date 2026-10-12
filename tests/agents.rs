@@ -1105,3 +1105,112 @@ fn screens_and_shells_hold_up_under_stress() -> Outcome {
     );
     Ok(())
 }
+
+/// What the agents' rechecks found: --done after Ctrl-C, with fewer
+/// command ends than lines; a prompt waited for after typing is not its
+/// echo; a command typed while another runs waits for its own end;
+/// `clear` starts a command's output again; a split or resize that would
+/// hide a pane is refused; `--help` given as text is typed.
+#[test]
+fn the_rechecks_hold() -> Outcome {
+    let server = Server::start("")?;
+    server.ok(&[
+        "run",
+        "-n",
+        "sh",
+        "--wait-idle",
+        "300",
+        "--",
+        "bash",
+        "--norc",
+        "-i",
+    ])?;
+    server.ok(&[
+        "send-keys",
+        "-t",
+        "sh",
+        "--text",
+        "sleep 30",
+        "Enter",
+        "--wait-idle",
+        "200",
+    ])?;
+    assert_eq!(
+        server.ok(&["send-keys", "-t", "sh", "C-c", "--wait-done"])?,
+        "done 130\n"
+    );
+    let prompt = [
+        "send-keys",
+        "-t",
+        "sh",
+        "--text",
+        "sleep 0.5",
+        "Enter",
+        "--wait-text",
+        "$",
+    ];
+    let started = std::time::Instant::now();
+    server.ok(&prompt)?;
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(400),
+        "not the echo"
+    );
+    server.ok(&[
+        "send-keys",
+        "-t",
+        "sh",
+        "--text",
+        "sleep 0.6; (exit 3)",
+        "Enter",
+        "--wait-idle",
+        "200",
+    ])?;
+    assert_eq!(
+        server.ok(&[
+            "send-keys",
+            "-t",
+            "sh",
+            "--text",
+            "true",
+            "Enter",
+            "--wait-done"
+        ])?,
+        "done 0\n"
+    );
+    let cleared = [
+        "send-keys",
+        "-t",
+        "sh",
+        "--text",
+        "clear; printf 'a\\nb\\n'",
+        "Enter",
+        "--wait-done",
+    ];
+    server.ok(&cleared)?;
+    assert_eq!(
+        server.ok(&["capture-pane", "-t", "sh", "--last-output"])?,
+        "a\nb\n"
+    );
+    let typed = server.ok(&[
+        "send-keys",
+        "-t",
+        "sh",
+        "--text",
+        "--help",
+        "--wait-idle",
+        "200",
+        "--print",
+    ])?;
+    assert!(typed.contains("$ --help"), "{typed}");
+    let small = id(&server.ok(&["run", "-n", "small", "--size", "10x5", "--", "sleep", "60"])?);
+    server.ok(&["split", "-v", "-t", &small, "--", "sleep", "60"])?;
+    let full = server.fux(&["split", "-v", "-t", &small, "--", "sleep", "60"])?;
+    assert!(full.stderr.contains("no room"), "{}", full.stderr);
+    let tiny = server.fux(&["resize", "-t", "small", "10x2"])?;
+    assert!(
+        tiny.stderr.contains("cannot show its 2 panes"),
+        "{}",
+        tiny.stderr
+    );
+    Ok(())
+}
