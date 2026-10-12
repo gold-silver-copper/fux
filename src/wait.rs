@@ -794,14 +794,27 @@ fn echoes(line: &str, _text: &str, echo: &[String]) -> bool {
     // A line holding a typed line, or ending in the start of one (an input
     // box redrawn as the keys come in), is its echo, whatever is awaited:
     // a prompt with the command typed after it is not the next prompt.
+    // Only where it stands alone: typed `a` is not the echo in `answer: A`.
+    let line = line.trim_end();
     echo.iter().any(|typed| {
-        let line = line.trim_end();
-        line.contains(typed.trim_end())
+        let typed = typed.trim_end();
+        let alone = line.match_indices(typed).any(|(at, _)| {
+            let after = at.saturating_add(typed.len());
+            !word_char(line.get(..at).and_then(|s| s.chars().next_back()))
+                && !word_char(line.get(after..).and_then(|s| s.chars().next()))
+        });
+        alone
             || (1..typed.chars().count()).any(|n| {
                 let start: String = typed.chars().take(n).collect();
-                n >= 2 && line.ends_with(start.as_str())
+                line.strip_suffix(start.as_str())
+                    .is_some_and(|before| !word_char(before.chars().next_back()))
             })
     })
+}
+
+/// Whether a character joins the typed text it touches into a longer word.
+fn word_char(c: Option<char>) -> bool {
+    c.is_some_and(char::is_alphanumeric)
 }
 
 /// How many times a line shows TEXT. Lines are trimmed, so blanks that end

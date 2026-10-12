@@ -1087,7 +1087,12 @@ fn screens_and_shells_hold_up_under_stress() -> Outcome {
         "Enter",
         "--wait-done",
     ];
-    assert_eq!(server.ok(&broken)?, "done 2\n", "bash could not parse it");
+    // bash could not parse it: 2, or 258 before bash 4.
+    let status = server.ok(&broken)?;
+    assert!(
+        ["done 2\n", "done 258\n"].contains(&status.as_str()),
+        "{status}"
+    );
     let nested = [
         "send-keys",
         "-t",
@@ -1110,7 +1115,8 @@ fn screens_and_shells_hold_up_under_stress() -> Outcome {
 /// command ends than lines; a prompt waited for after typing is not its
 /// echo; a command typed while another runs waits for its own end;
 /// `clear` starts a command's output again; a split or resize that would
-/// hide a pane is refused; `--help` given as text is typed.
+/// hide a pane is refused; `--help` given as text is typed; a
+/// short typed line is its echo only as a word of its own.
 #[test]
 fn the_rechecks_hold() -> Outcome {
     let server = Server::start("")?;
@@ -1212,5 +1218,20 @@ fn the_rechecks_hold() -> Outcome {
         "{}",
         tiny.stderr
     );
+    // Typed `a` is not echoed by the `a` in `answer: A`.
+    let ask = r#"read l; echo "answer: $(echo $l | tr a-z A-Z)"; exec cat"#;
+    server.ok(&["run", "-n", "ask", "--", "sh", "-c", ask])?;
+    let answer = [
+        "send-keys",
+        "-t",
+        "ask",
+        "a",
+        "Enter",
+        "--wait-text",
+        "answer:",
+        "--timeout",
+        "5",
+    ];
+    assert_eq!(server.ok(&answer)?, "answer: A\n");
     Ok(())
 }

@@ -17,8 +17,9 @@ use std::path::{Path, PathBuf};
 /// `PS0` as a command's output begins; older ones (macOS's 3.2) mark it
 /// from a DEBUG trap instead, armed last thing before each prompt, so it
 /// fires once, for the command typed. A line run with no start mark (one
-/// bash could not parse, or a comment: the history count moved) gets one as
-/// it ends. Marks go to stderr, as the prompt does; fux's PROMPT_COMMAND is
+/// bash could not parse, or a comment: the history count moved, which
+/// before 4.4 only `history 1` tells, as `HISTCMD` reads 1 in
+/// PROMPT_COMMAND) gets one as it ends. Marks go to stderr, as the prompt does; fux's PROMPT_COMMAND is
 /// not exported, so shells started from this one do not inherit it.
 const BASHRC: &str = r#"# fux: OSC 133 shell marks, after your own startup. Off: `set shell-marks off`.
 if [ -r ~/.bashrc ]; then . ~/.bashrc; fi
@@ -37,6 +38,7 @@ unset __fux_f
 /// The marks, after either startup.
 const BASH_MARKS: &str = r#"__fux_end() {
   local s=$? h=${HISTCMD-0}
+  if [ -n "${__fux_old-}" ]; then h=$(history 1); h=${h#"${h%%[0-9]*}"}; h=${h%%[!0-9]*}; fi
   if [ -z "${__fux_c+x}" ] && [ "$h" != "${__fux_h-$h}" ]; then printf '\033]133;C\007' >&2; fi
   unset __fux_c; __fux_h=$h; __fux_armed=
   printf '\033]133;D;%s\007' "$s" >&2
@@ -49,6 +51,7 @@ esac
 if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; }; then
   PS0="${PS0-}"$'\033]133;C\007''${__fux_c=}'
 else
+  __fux_old=1
   __fux_arm() { __fux_armed=1; }
   __fux_start() { case "$BASH_COMMAND" in __fux_*) return 0 ;; esac; [ -n "${__fux_armed-}" ] || return 0; __fux_armed=; __fux_c=; printf '\033]133;C\007' >&2; }
   case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
@@ -67,7 +70,7 @@ export -n PROMPT_COMMAND PS0
 /// the next command's start, or before bash 4.4, a DEBUG trap armed last
 /// does (fux's commands, an empty line, and a line that starts with a
 /// subshell, which the trap does not see, mark nothing).
-const BARE_END: &str = r#"__fux_s=$?; __fux_a=; export -n PS0 PROMPT_COMMAND; __fux_n=${HISTCMD-0}; if [ -z "${__fux_c+x}" ] && [ "$__fux_n" != "${__fux_h-$__fux_n}" ]; then printf '\033]133;C\007' >&2; fi; unset __fux_c; __fux_h=$__fux_n; printf '\033]133;D;%s\007' "$__fux_s" >&2; __fux_r() { return "$1"; }; __fux_r "$__fux_s""#;
+const BARE_END: &str = r#"__fux_s=$?; __fux_a=; export -n PS0 PROMPT_COMMAND; __fux_n=${HISTCMD-0}; if [ "${BASH_VERSINFO[0]}${BASH_VERSINFO[1]}" -lt 44 ]; then __fux_n=$(history 1); __fux_n=${__fux_n#"${__fux_n%%[0-9]*}"}; __fux_n=${__fux_n%%[!0-9]*}; fi; if [ -z "${__fux_c+x}" ] && [ "$__fux_n" != "${__fux_h-$__fux_n}" ]; then printf '\033]133;C\007' >&2; fi; unset __fux_c; __fux_h=$__fux_n; printf '\033]133;D;%s\007' "$__fux_s" >&2; __fux_r() { return "$1"; }; __fux_r "$__fux_s""#;
 const BARE_ARM: &str = r#"if [ "${BASH_VERSINFO[0]}${BASH_VERSINFO[1]}" -lt 44 ]; then __fux_t() { case "$BASH_COMMAND" in __fux_*) return 0 ;; esac; [ -n "${__fux_a-}" ] || return 0; __fux_a=; __fux_c=; printf '\033]133;C\007' >&2; }; trap __fux_t DEBUG; __fux_a=1; fi"#;
 
 /// zsh: read first of all startup files, from the shim `ZDOTDIR`; it puts
