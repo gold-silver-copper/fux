@@ -171,6 +171,8 @@ pub enum Error {
     },
     /// A size no pane can have, with this much history.
     TooBig(fux_vt::Size, usize),
+    /// A name several tabs have, and no workspace.
+    Named(String),
     /// A split that leaves no room for the new pane.
     NoRoom(PaneId),
     /// A cell outside the pane.
@@ -284,6 +286,7 @@ impl std::fmt::Display for Error {
                 size.cols(),
                 size.rows()
             ),
+            Error::Named(name) => write!(f, "{name:?} names several tabs: use an id"),
             Error::NoRoom(pane) => write!(
                 f,
                 "{pane}'s tab has no room for another pane; make it bigger (`fux resize`) first"
@@ -380,6 +383,7 @@ impl std::error::Error for Error {
             | Error::MouseUnencodable { .. }
             | Error::OutsidePane { .. }
             | Error::NoRoom(_)
+            | Error::Named(_)
             | Error::TooBig(..)
             | Error::CannotResize { .. }
             | Error::WaitsOnlyFromCli
@@ -907,6 +911,7 @@ impl Session {
                         .filter(|t| t.name == *name);
                     match (tabs.next(), tabs.next()) {
                         (Some(tab), None) => AnyRef::Tab(tab.id),
+                        (Some(_), Some(_)) => return Err(Error::Named(name.clone())),
                         _ => return Err(error),
                     }
                 }

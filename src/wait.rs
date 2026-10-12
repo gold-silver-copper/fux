@@ -30,7 +30,8 @@ pub const TIMED_OUT: u8 = 124;
 
 /// How long a shell back at its prompt, fewer commands ended than lines
 /// typed, shows no change before `--done` takes it as done.
-const DONE_SETTLE: std::time::Duration = std::time::Duration::from_millis(100);
+/// Longer than a slow prompt (git status, starship) takes to draw.
+const DONE_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// A wait under way.
 pub struct Waiting {
@@ -99,6 +100,9 @@ impl Waiting {
             .map(|pane| {
                 let screen = pane.screen();
                 let commands = screen.commands();
+                // Keys typed while a command runs wait for it, then run: a
+                // wait for their end waits for that one's first.
+                let ahead = u64::from(wait.after && commands.running);
                 // The command lines typed, each a command's end to wait for.
                 let typed = if wait.after {
                     u64::from(wait.lines.max(1))
@@ -125,7 +129,10 @@ impl Waiting {
                     echo_skipped: false,
                     revision: pane.revision,
                     finished: commands.finished,
-                    done_at: commands.finished.saturating_add(typed),
+                    done_at: commands
+                        .finished
+                        .saturating_add(ahead)
+                        .saturating_add(typed),
                     starts: pane.starts,
                     alerts: pane.alerts.count(),
                 }
@@ -758,7 +765,12 @@ fn lines<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>, mark: Option<fux_vt::M
     let mut out: Vec<Line> = Vec::new();
     let mut wraps = false;
     for row in rows {
-        let text = crate::capture::row_text(row);
+        // A wrapped row's trailing blanks are part of its line.
+        let text = if row.wrapped() {
+            crate::capture::row_cells_text(row)
+        } else {
+            crate::capture::row_text(row)
+        };
         let new = mark.is_none_or(|m| row.changed_since(m));
         match out.last_mut() {
             Some(last) if wraps => {
@@ -778,9 +790,18 @@ fn lines<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>, mark: Option<fux_vt::M
 
 /// Whether a line is the echo of typed text holding `text`: a shell, or an
 /// input box, shows what is typed, and that is not what the keys brought.
-fn echoes(line: &str, text: &str, echo: &[String]) -> bool {
-    echo.iter()
-        .any(|typed| typed.contains(text) && line.contains(typed.as_str()))
+fn echoes(line: &str, _text: &str, echo: &[String]) -> bool {
+    // A line holding a typed line, or ending in the start of one (an input
+    // box redrawn as the keys come in), is its echo, whatever is awaited:
+    // a prompt with the command typed after it is not the next prompt.
+    echo.iter().any(|typed| {
+        let line = line.trim_end();
+        line.contains(typed.trim_end())
+            || (1..typed.chars().count()).any(|n| {
+                let start: String = typed.chars().take(n).collect();
+                n >= 2 && line.ends_with(start.as_str())
+            })
+    })
 }
 
 /// How many times a line shows TEXT. Lines are trimmed, so blanks that end

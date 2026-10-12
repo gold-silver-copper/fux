@@ -678,11 +678,11 @@ fn parse_move_to(value: &str) -> Result<MoveTo, Usage> {
 /// `COLSxROWS`, as `--size` takes it.
 fn parse_size(text: &str) -> Option<fux_vt::Size> {
     let (cols, rows) = text.split_once('x')?;
-    // At most 1000 cells each way: a bigger pane would hold up the server.
+    // At most 500 cells each way: a bigger pane would hold up the server.
     let cells = |n: &str| {
         number(n)
             .and_then(|n| u16::try_from(n).ok())
-            .filter(|n| *n <= 1000)
+            .filter(|n| *n <= 500)
     };
     fux_vt::Size::new(cells(rows)?, cells(cols)?).ok()
 }
@@ -1122,7 +1122,7 @@ impl<'a> Args<'a> {
         })
     }
     fn size(&self) -> Result<Size, Usage> {
-        self.read_as("--size", parse_size, "COLSxROWS, each 1 to 1000, as 120x40")
+        self.read_as("--size", parse_size, "COLSxROWS, each 1 to 500, as 120x40")
     }
     /// The pane, tab or workspace a positional kind and `-t` name, if
     /// either does: of another kind than the kind given, `-t` is refused in
@@ -1282,7 +1282,7 @@ fn env_pairs(a: &Args<'_>, command: &'static str) -> Result<Vec<(String, String)
                 command,
                 flag: "--env",
                 value: pair.to_owned(),
-                expected: "KEY=VALUE, KEY letters, digits and _",
+                expected: "KEY=VALUE, KEY a name of letters, digits and _, not first a digit",
             }),
         })
         .collect()
@@ -1322,7 +1322,7 @@ fn resize_to(a: &mut Args<'_>) -> Result<Command, Usage> {
             command: "resize",
             flag: "SIZE",
             value: text.to_owned(),
-            expected: "COLSxROWS (each 1 to 1000) or auto",
+            expected: "COLSxROWS (each 1 to 500) or auto",
         })?),
         None => return Err(Usage::Needs(needs)),
     };

@@ -207,8 +207,12 @@ fn run(args: &[String]) -> Result<u8, Error> {
     let anywhere = (args.iter().skip(1))
         .take_while(|a| *a != "--")
         .any(|a| a == "--help");
-    let asks_help =
-        args.get(1).is_some_and(|a| a == "--help") || (anywhere && command::parse(args).is_err());
+    // A name the server resolves (`-t NAME`) is no failure to parse.
+    let unparsed = matches!(
+        command::parse(args),
+        Err(usage) if !matches!(usage, command::Usage::Not(command::Kind::Pane | command::Kind::Tab, _))
+    );
+    let asks_help = args.get(1).is_some_and(|a| a == "--help") || (anywhere && unparsed);
     let command = first.filter(|f| !f.starts_with("__") && !["help", "--help", "-h"].contains(f));
     if let (Some(name), true) = (command, asks_help) {
         return match help_of(name) {

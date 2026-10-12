@@ -85,8 +85,8 @@ fi
 "#;
 
 /// fish: two event handlers, after its own startup.
-const FISH: &str = "function __fux_preexec --on-event fish_preexec; printf '\\e]133;C\\a'; end; \
-     function __fux_postexec --on-event fish_postexec; printf '\\e]133;D;%s\\a' $status; end";
+const FISH: &str = "function __fux_preexec --on-event fish_preexec; printf '\\e]133;C\\a' >&2; end; \
+     function __fux_postexec --on-event fish_postexec; printf '\\e]133;D;%s\\a' $status >&2; end";
 
 /// How a shell is started so that it marks its commands: its words, and
 /// variables to add.
@@ -138,11 +138,14 @@ pub fn marked(argv: &[String], env: &[(String, String)], dir: &Path) -> Option<M
         // rc file, a login shell taking none.
         "bash" if flags_only(&["-i", "--noprofile", "-l", "--login"]) => {
             let login = args.iter().any(|a| a == "-l" || a == "--login");
-            let (name, startup) = if login {
-                ("bash_login", BASH_LOGIN)
-            } else {
-                ("bashrc", BASHRC)
+            let noprofile = args.iter().any(|a| a == "--noprofile");
+            // A login shell reads the profile files, unless --noprofile.
+            let (name, startup) = match (login, noprofile) {
+                (true, true) => ("bash_bare", ""),
+                (true, false) => ("bash_login", BASH_LOGIN),
+                (false, _) => ("bashrc", BASHRC),
             };
+
             let rc = write(dir, name, &format!("{startup}{BASH_MARKS}"))?;
             let mut argv = vec![program.clone(), "--rcfile".into()];
             argv.push(rc.to_string_lossy().into_owned());

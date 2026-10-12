@@ -31,7 +31,7 @@ pub fn pane(
     let read = rows_of(screen, history, view);
     // History rows above the screen, which the cursor's row counts past
     // in `lines` (`-S`).
-    let above = if view.last_output || view.main || view.alt || view.rows.is_some() || view.join {
+    let above = if view.last_output || view.main || view.alt || view.join {
         0
     } else {
         read.len().saturating_sub(usize::from(screen.size().rows()))
@@ -81,9 +81,17 @@ pub fn pane(
             .is_some_and(|c| c.contents().is_empty() && !c.is_wide_continuation());
     }
     let (rows, cols) = screen.size().into();
-    let cursor = Some(screen.cursor_position()).map(|(row, col)| {
+    // The cursor's row in `lines`: past the history `-S` adds, from the
+    // first row `--rows` takes; none if outside them.
+    let cursor = Some(screen.cursor_position()).and_then(|(row, col)| {
         let above = u16::try_from(above).unwrap_or(u16::MAX);
-        (row.saturating_add(above), col)
+        let row = row.saturating_add(above);
+        match view.rows {
+            Some((start, end)) => (start..=end)
+                .contains(&row)
+                .then(|| (row.saturating_sub(start), col)),
+            None => Some((row, col)),
+        }
     });
     let state = json.then(|| state(pane, Instant::now(), copy_mode));
     print(
@@ -488,7 +496,11 @@ fn described(a: Attributes) -> Vec<(&'static str, Json<'static>)> {
 
 /// A row's text, wide glyphs whole and trailing blanks trimmed.
 pub fn row_text(row: fux_vt::Row<'_>) -> String {
+    row_cells_text(row).trim_end_matches(' ').to_owned()
+}
+
+/// A row's text, every cell, blanks at its end kept.
+pub fn row_cells_text(row: fux_vt::Row<'_>) -> String {
     let row = row.cells().filter(|c| !c.is_wide_continuation());
-    let line: String = row.map(crate::render::shown).collect();
-    line.trim_end_matches(' ').to_owned()
+    row.map(crate::render::shown).collect()
 }

@@ -66,6 +66,22 @@ impl Screen {
         }
     }
 
+    /// The screen erased whole while a command runs (`clear`): its output
+    /// begins again at the screen's top, what was above gone.
+    pub(crate) fn screen_erased(&mut self) {
+        if !self.commands.running {
+            return;
+        }
+        let grid = self.grid();
+        let top = grid.row_at(grid.history_len()).map(|row| Mark {
+            row: row.id(),
+            col: 0,
+        });
+        if let Some(top) = top {
+            self.commands.output_start = Some(top);
+        }
+    }
+
     fn cursor_mark(&self) -> Option<Mark> {
         let grid = self.grid();
         let index = grid

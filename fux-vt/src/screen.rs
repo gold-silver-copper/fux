@@ -2439,6 +2439,9 @@ impl Screen {
                         false
                     })
                 });
+                if byte == b'J' && mode == 2 {
+                    self.screen_erased();
+                }
             }
             // IL and DL, ignored outside the margins, leave the cursor in
             // the first column (DEC STD 070, IL and DL, note 2).
