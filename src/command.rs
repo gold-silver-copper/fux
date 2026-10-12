@@ -1,6 +1,6 @@
 //! The command grammar: the one set of commands that the CLI, key bindings,
 //! the command prompt and the config file all speak.
-use crate::id::{ClientId, PaneId, TabId, WsId, number};
+use crate::id::{AnyId, ClientId, PaneId, TabId, WsId, number};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
@@ -248,6 +248,9 @@ pub struct Wait {
     /// How many command lines send-keys types (each Enter, or newline in
     /// text): a wait for `--done` waits for the last of them.
     pub lines: u32,
+    /// Over several panes, it waits for each (send-keys' waits, as each
+    /// pane got the keys), rather than for any (`fux wait`).
+    pub all: bool,
 }
 
 /// How long a wait lasts at most if `--timeout` does not say: well inside
@@ -271,13 +274,26 @@ pub enum Mouse {
 pub enum Command {
     Ls {
         json: bool,
+        /// One pane, tab or workspace only.
+        target: Option<AnyRef>,
+        /// One field of its JSON.
+        get: Option<String>,
     },
-    KillServer,
+    /// Stops the server; from the CLI, refused from one of its own panes
+    /// or with people attached unless forced.
+    KillServer {
+        force: bool,
+    },
     ListKeys,
     NewWorkspace {
         name: Option<String>,
         cmd: Vec<String>,
         size: Size,
+        /// Where its shell starts (default: the caller's directory).
+        cwd: Option<String>,
+        env: Vec<(String, String)>,
+        /// The ids it makes, if asked for (`--id`, as layout files have).
+        ids: Vec<AnyId>,
         json: bool,
     },
     NewTab {
@@ -285,6 +301,9 @@ pub enum Command {
         name: Option<String>,
         cmd: Vec<String>,
         size: Size,
+        cwd: Option<String>,
+        env: Vec<(String, String)>,
+        ids: Vec<AnyId>,
         json: bool,
     },
     Split {
@@ -294,6 +313,10 @@ pub enum Command {
         /// Where its shell starts (default: where the split pane's is).
         cwd: Option<String>,
         env: Vec<(String, String)>,
+        /// `cmd` is the program, started in place of a shell, as `run`
+        /// starts one.
+        run: bool,
+        ids: Vec<AnyId>,
         json: bool,
     },
     /// A program, started in place of a shell in a tab of its own, in a
@@ -308,6 +331,7 @@ pub enum Command {
         json: bool,
         /// A file everything the program writes goes to too.
         log: Option<String>,
+        ids: Vec<AnyId>,
         /// Then waits, armed before the program writes anything.
         then: Option<Box<Wait>>,
     },
@@ -338,6 +362,8 @@ pub enum Command {
     },
     SendMouse {
         target: Option<PaneId>,
+        /// Sent only if the pane's screen is still at this revision.
+        if_revision: Option<u64>,
         mouse: Mouse,
         row: u16,
         col: u16,
@@ -378,15 +404,54 @@ pub enum Command {
         by: PaneResize,
     },
     SendKeys {
-        target: Option<PaneId>,
+        /// The panes: each `-t`, a pane or every pane of a tab; the
+        /// caller's without one.
+        targets: Vec<AnyRef>,
         /// A client to send them to instead, as typed at its terminal: its
         /// bindings, overlays and prompts take them as a person's keys.
         client: Option<ClientId>,
+        /// Sent only if the pane's screen is still at this revision.
+        if_revision: Option<u64>,
         inputs: Vec<Input>,
         /// How many times to send them all.
         repeat: u16,
         /// A wait for the program to go quiet once they are sent.
-        then: Option<Wait>,
+        then: Option<Box<Wait>>,
+    },
+    /// What happens, a line each as it happens, until the client goes:
+    /// where the targets are, or anywhere without any.
+    Events {
+        targets: Vec<AnyRef>,
+        json: bool,
+    },
+    /// What a layout file says, made all or nothing: its new tabs go to
+    /// `workspace` unless they say where.
+    Layout {
+        workspace: Option<WsRef>,
+        file: String,
+        json: bool,
+    },
+    /// What is there, as a layout file: everything, or one tab or
+    /// workspace.
+    DumpLayout {
+        target: Option<AnyRef>,
+    },
+    /// A socket whose commands reach workspace `workspace` alone; or with
+    /// `revoke`, that socket closed.
+    Grant {
+        workspace: Option<WsRef>,
+        socket: String,
+        revoke: bool,
+    },
+    /// What the pane's program writes, kept in a file from now on; `None`
+    /// stops it.
+    Log {
+        target: Option<PaneId>,
+        file: Option<String>,
+    },
+    /// The pane's history, dropped.
+    ClearHistory {
+        target: Option<PaneId>,
     },
     /// The prefix, sent to a pane as its program asked for keys.
     SendPrefix {
@@ -658,6 +723,32 @@ pub fn parse_any(text: &str) -> Result<AnyRef, Usage> {
         parse_workspace(text).map(AnyRef::Workspace)
     }
 }
+/// The ids `--id` asks for: `%N`, `@N` or `+N`.
+fn ids(a: &Args<'_>) -> Result<Vec<AnyId>, Usage> {
+    a.values("--id")
+        .map(|id| match id.chars().next() {
+            Some('%') => parse_pane(id).map(AnyRef::Pane),
+            Some('@') => parse_tab(id).map(AnyRef::Tab),
+            Some('+') => id.parse().map(AnyRef::Workspace),
+            _ => Err(Usage::Bad {
+                command: a.name,
+                flag: "--id",
+                value: id.to_owned(),
+                expected: "an id: %N, @N or +N",
+            }),
+        })
+        .collect()
+}
+
+/// A pane, or a tab for every pane in it: `%N`, `@N`, or a tab's name
+/// (`Usage::Not`), which the server reads as its one pane.
+fn parse_pane_or_tab(text: &str) -> Result<AnyRef, Usage> {
+    match text.starts_with('@') {
+        true => parse_tab(text).map(AnyRef::Tab),
+        false => parse_pane(text).map(AnyRef::Pane),
+    }
+}
+
 pub fn parse_client(text: &str) -> Result<ClientId, Usage> {
     text.parse()
 }
@@ -763,15 +854,15 @@ pub const COMMANDS: &[(&str, &[Spec])] = &[
 
 #[rustfmt::skip]
 const PANES: &[Spec] = &[
-    spec("split -h|-v [-t %N] [--cwd DIR] [--env K=V] [--json] [-- CMD...]  -h side by side, -v stacked", Flags(split)),
+    spec("split -h|-v [-t %N] [--cwd DIR] [--env K=V] [--run] [--id %N] [--json] [-- CMD...]  -h side by side, -v stacked; --run starts CMD itself, as run does", Flags(split)),
     spec("respawn [-t %N] [-k] [--env K=V] [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json] [-- PROGRAM...]  \
           start again in its pane what run started; -k ends it first if it runs", Flags(respawn)),
     spec("notify [-t TARGET] TEXT  a notice on the clients showing TARGET (all without)", Flags(notify)),
-    spec("run [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--log FILE] [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json] -- PROGRAM...  \
+    spec("run [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--log FILE] [--id ID] [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json] -- PROGRAM...  \
           a program in a tab of its own, in workspace agent; it stays once the program exits", Flags(run)),
     spec("signal [-t %N] TERM|KILL|INT|HUP|QUIT|USR1|USR2|STOP|CONT|TSTP|WINCH [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json]  \
           a signal to what runs in the pane's foreground, never its shell", Flags(signal)),
-    spec("kill-pane [-t %N]  close, without asking", Flags(|a| {
+    spec("kill-pane [-t %N]  close, without asking; -t is needed from the command line", Flags(|a| {
         Ok(Command::KillPane { target: a.pane()? })
     })),
     spec("zoom [-c CLIENT]", Screen(|_| Ok(ClientAction::Zoom))),
@@ -796,13 +887,25 @@ const PANES: &[Spec] = &[
     spec("choose-pane [-c CLIENT] [-t %N]  a pane to swap with", Screen(|a| {
         Ok(ClientAction::ChoosePane { target: a.pane()? })
     })),
-    spec("send-keys [-t %N | -c CLIENT] [-l] [-N COUNT] KEYS... [--wait-text TEXT | --wait-gone TEXT | --wait-idle MS | --wait-change | --wait-exit | --wait-done | --wait-bell] [--timeout SECS] [--print] [--marks] [--json]  \
-          keys, words that are not key names as text, and --text TEXT or --paste TEXT; \
-          -c types them at a client", Line(send_keys)),
-    spec("send-mouse [-t %N] click|right|middle|press|release|wheel-up|wheel-down|move ROW COL [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json]  \
+    spec("send-keys [-t %N|@N... | -c CLIENT] [-l] [-N COUNT] KEYS... [--if-revision N] [--wait-text TEXT | --wait-gone TEXT | --wait-idle MS | --wait-change | --wait-exit | --wait-done | --wait-bell] [--timeout SECS] [--print] [--marks] [--json]  \
+          keys, words that are not key names as text, --text TEXT, and --paste TEXT|-, \
+          --paste-file FILE; -t again, or a tab, for several panes; -c types them at a client", Line(send_keys)),
+    spec("send-mouse [-t %N] click|right|middle|press|release|wheel-up|wheel-down|move ROW COL [--if-revision N] [--wait-text TEXT] [--wait-gone TEXT] [--wait-idle MS] [--wait-change] [--wait-exit] [--wait-done] [--wait-bell] [--timeout SECS] [--print] [--marks] [--json]  \
           a mouse event at a cell, from 0", Flags(send_mouse)),
     spec("wait [-t %N] (--text TEXT | --gone TEXT | --idle MS | --change [--since N] | --exit | --done | --bell) [--timeout SECS] [--print] [--marks] [--json]  \
           until a pane shows or stops showing TEXT, settles, changes, exits, ends a command or rings", Flags(wait)),
+    spec("log [-t %N] FILE|--stop  keep what the pane's program writes from now on in FILE (yours alone)", Flags(|a| {
+        let file = match (a.positional.as_slice(), a.has("--stop")) {
+            ([file], false) => Some((*file).to_owned()),
+            ([], true) => None,
+            _ => return Err(Usage::Needs("usage: log [-t %N] FILE|--stop")),
+        };
+        a.positional.clear();
+        Ok(Command::Log { target: a.pane()?, file })
+    })),
+    spec("clear-history [-t %N]  drop the pane's history; the screen stays", Flags(|a| {
+        Ok(Command::ClearHistory { target: a.pane()? })
+    })),
     spec("send-prefix [-t %N]  the prefix key, to the pane", Flags(|a| {
         Ok(Command::SendPrefix { target: a.pane()? })
     })),
@@ -817,9 +920,10 @@ const FOCUS: &[Spec] = &[spec(
 
 #[rustfmt::skip]
 const TABS: &[Spec] = &[
-    spec("new-tab [-t WS] [-n NAME] [--size COLSxROWS] [--json] [-- CMD...]", Flags(|a| {
-        let (target, size) = (a.target(parse_workspace)?, a.size()?);
-        Ok(Command::NewTab { target, name: a.name(), cmd: a.rest(), size, json: a.has("--json") })
+    spec("new-tab [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--id ID] [--json] [-- CMD...]  a workspace named that is not there is made", Flags(|a| {
+        let (target, size, env) = (a.target(parse_workspace)?, a.size()?, env_pairs(a, "new-tab")?);
+        let (cwd, ids) = (a.value("--cwd").map(str::to_owned), ids(a)?);
+        Ok(Command::NewTab { target, name: a.name(), cmd: a.rest(), size, cwd, env, ids, json: a.has("--json") })
     })),
     spec("select-tab [-c CLIENT] -t @N|--next|--previous", Screen(|a| {
         let needs = "select-tab needs one of -t @N, --next, --previous";
@@ -835,9 +939,21 @@ const TABS: &[Spec] = &[
 
 #[rustfmt::skip]
 const WORKSPACES: &[Spec] = &[
-    spec("new-workspace [-n NAME] [--size COLSxROWS] [--json] [-- CMD...]", Flags(|a| {
-        let size = a.size()?;
-        Ok(Command::NewWorkspace { name: a.name(), cmd: a.rest(), size, json: a.has("--json") })
+    spec("new-workspace [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--id ID] [--json] [-- CMD...]", Flags(|a| {
+        let (size, env) = (a.size()?, env_pairs(a, "new-workspace")?);
+        let (cwd, ids) = (a.value("--cwd").map(str::to_owned), ids(a)?);
+        Ok(Command::NewWorkspace { name: a.name(), cmd: a.rest(), size, cwd, env, ids, json: a.has("--json") })
+    })),
+    spec("layout [-t WS] FILE [--json]  make what a layout file says, all or nothing; its new tabs go to WS (agent)", Flags(|a| {
+        let file = match a.positional.as_slice() {
+            [file] => (*file).to_owned(),
+            _ => return Err(Usage::Needs("usage: layout [-t WS] FILE: a file of fux commands")),
+        };
+        a.positional.clear();
+        Ok(Command::Layout { workspace: a.target(parse_workspace)?, file, json: a.has("--json") })
+    })),
+    spec("dump-layout [-t TAB|WS]  what is there as a layout file, to make again", Flags(|a| {
+        Ok(Command::DumpLayout { target: a.target(parse_any)? })
     })),
     spec("select-workspace [-c CLIENT] -t WS|--next|--previous", Screen(|a| {
         let needs = "select-workspace needs one of -t +N, --next, --previous";
@@ -857,13 +973,36 @@ const SESSION: &[Spec] = &[
     spec("command-prompt [-c CLIENT]", Screen(|_| Ok(ClientAction::CommandPrompt))),
     spec("command-column [-c CLIENT]", Screen(|_| Ok(ClientAction::CommandColumn))),
     spec("reload  run the config file again", Flags(|_| Ok(Command::Reload))),
-    spec("kill-server", Flags(|_| Ok(Command::KillServer))),
+    spec("grant (-t WS --socket PATH | --revoke --socket PATH)  a socket whose commands reach workspace WS alone", Flags(|a| {
+        let (workspace, revoke) = (a.target(parse_workspace)?, a.has("--revoke"));
+        let Some(socket) = a.value("--socket").map(str::to_owned) else {
+            return Err(Usage::Needs("grant needs --socket PATH: the socket to make, or with --revoke to close"));
+        };
+        if workspace.is_some() == revoke {
+            return Err(Usage::Needs("usage: grant -t WS --socket PATH, or grant --revoke --socket PATH"));
+        }
+        Ok(Command::Grant { workspace, socket, revoke })
+    })),
+    spec("kill-server [--force]  stop the server; from one of its panes, or with people attached, only --force", Flags(|a| {
+        Ok(Command::KillServer { force: a.has("--force") })
+    })),
 ];
 
 #[rustfmt::skip]
 const OTHER: &[Spec] = &[
-    spec("ls|list [--json]  workspaces, tabs, panes and clients", Flags(|a| {
-        Ok(Command::Ls { json: a.has("--json") })
+    spec("events [-t TARGET] [--json]  what happens, a line each as it happens: made, closed, exited, done, bell, …; -t again for more", Flags(|a| {
+        let targets = a.values("-t").map(parse_any).collect::<Result<_, _>>()?;
+        Ok(Command::Events { targets, json: a.has("--json") })
+    })),
+    spec("ls|list [-t TARGET] [--get FIELD] [--json]  workspaces, tabs, panes and clients; -t one, --get a field of it", Flags(|a| {
+        if a.values("-t").count() > 1 || a.values("--get").count() > 1 {
+            return Err(Usage::Needs("ls takes one -t and one --get"));
+        }
+        let (target, get) = (a.target(parse_any)?, a.value("--get").map(str::to_owned));
+        if get.is_some() && target.is_none() {
+            return Err(Usage::Needs("ls --get FIELD reads a field of one target: ls -t TARGET --get FIELD"));
+        }
+        Ok(Command::Ls { json: a.has("--json"), target, get })
     })),
     spec("rename -t TARGET [--] NAME  TARGET: %N, @N, +N or a name", Flags(rename)),
     spec("capture-pane [-t %N] [-S LINES|all] [--full] [-J] [--rows A-B] [--cols A-B] [--styles] [--marks] [--main] [--alt] [--last-output] [--json]  \
@@ -991,7 +1130,8 @@ impl<'a> Args<'a> {
                 args.positional.push(word);
                 continue;
             }
-            let value = match spec.flag(word) {
+            // Any command takes --json: its errors are then JSON.
+            let value = match spec.flag(word).or((word == "--json").then_some(false)) {
                 None => {
                     return Err(Usage::UnknownFlag {
                         command: name,
@@ -1178,7 +1318,9 @@ fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
         return Err(Usage::Needs("run needs a program, after --"));
     }
     let then = flag_wait(a, false)?;
+    let ids = ids(a)?;
     Ok(Command::Run {
+        ids,
         workspace,
         name: a.name(),
         size: a.size()?,
@@ -1229,6 +1371,7 @@ fn flag_wait(a: &Args<'_>, after: bool) -> Result<Option<Box<Wait>>, Usage> {
             echo: Vec::new(),
             marks: a.has("--marks"),
             lines: 0,
+            all: false,
         })
     }))
 }
@@ -1264,20 +1407,18 @@ fn checked_text(text: &str) -> Result<&str, Usage> {
     Ok(text)
 }
 
+/// Whether `name` is a variable's name a shell takes: letters, digits and
+/// `_`, not first a digit.
+pub fn shell_name(name: &str) -> bool {
+    (name.chars().next()).is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// `--env K=V` pairs.
 fn env_pairs(a: &Args<'_>, command: &'static str) -> Result<Vec<(String, String)>, Usage> {
     a.values("--env")
         .map(|pair| match pair.split_once('=') {
-            // A name a shell takes: letters, digits and _, not first a digit.
-            Some((key, value))
-                if key
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-                    && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') =>
-            {
-                Ok((key.to_owned(), value.to_owned()))
-            }
+            Some((key, value)) if shell_name(key) => Ok((key.to_owned(), value.to_owned())),
             _ => Err(Usage::Bad {
                 command,
                 flag: "--env",
@@ -1404,6 +1545,7 @@ fn wait(a: &mut Args<'_>) -> Result<Command, Usage> {
             echo: Vec::new(),
             marks: a.has("--marks"),
             lines: 0,
+            all: false,
         },
     })
 }
@@ -1436,8 +1578,14 @@ fn send_mouse(a: &mut Args<'_>) -> Result<Command, Usage> {
                 expected: "a cell, from 0",
             })
     };
+    let if_revision = a.read_as(
+        "--if-revision",
+        |v| v.parse().ok(),
+        "a revision, from capture-pane --json or ls --json",
+    )?;
     Ok(Command::SendMouse {
         target: a.pane()?,
+        if_revision,
         mouse,
         row: cell("ROW", row)?,
         col: cell("COL", col)?,
@@ -1476,12 +1624,18 @@ fn split(a: &mut Args<'_>) -> Result<Command, Usage> {
             ));
         }
     };
+    let (run, cmd) = (a.has("--run"), a.rest());
+    if run && cmd.is_empty() {
+        return Err(Usage::Needs("split --run needs a program, after --"));
+    }
     Ok(Command::Split {
         axis,
         target,
-        cmd: a.rest(),
+        cmd,
         cwd: a.value("--cwd").map(str::to_owned),
         env: env_pairs(a, "split")?,
+        run,
+        ids: ids(a)?,
         json: a.has("--json"),
     })
 }
@@ -1609,7 +1763,8 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
         value: value.to_owned(),
         expected,
     };
-    let (mut target, mut literal, mut repeat) = (None, false, 1);
+    let (mut targets, mut literal, mut repeat) = (Vec::new(), false, 1);
+    let mut if_revision = None;
     let (mut client, mut until, mut timeout, mut print, mut json) =
         (None, Vec::new(), None, false, false);
     let mut marks = false;
@@ -1621,7 +1776,7 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
                 dashed = true;
                 break;
             }
-            "-t" => target = Some(parse_pane(value(word, &mut words)?)?),
+            "-t" => targets.push(parse_pane_or_tab(value(word, &mut words)?)?),
             "-c" => client = Some(parse_client(value(word, &mut words)?)?),
             "-l" => literal = true,
             "-N" => {
@@ -1682,6 +1837,17 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
                 timeout =
                     Some(parse_seconds(text).ok_or_else(|| bad("--timeout", text, "seconds"))?);
             }
+            "--if-revision" => {
+                let text = value(word, &mut words)?;
+                let n = text.parse().map_err(|_| {
+                    bad(
+                        "--if-revision",
+                        text,
+                        "a revision, from capture-pane --json or ls --json",
+                    )
+                })?;
+                if_revision = Some(n);
+            }
             "--print" => print = true,
             "--marks" => marks = true,
             "--json" => json = true,
@@ -1715,30 +1881,34 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
     if inputs.is_empty() {
         return Err(Usage::Needs("send-keys needs keys to send"));
     }
-    if (print || json || marks || timeout.is_some()) && until.is_empty() {
+    if (print || marks || timeout.is_some()) && until.is_empty() {
         return Err(Usage::Needs(
-            "send-keys --print, --marks, --json and --timeout go with a --wait-… condition",
+            "send-keys --print, --marks and --timeout go with a --wait-… condition",
         ));
     }
-    if client.is_some() && (target.is_some() || !until.is_empty()) {
+    if client.is_some() && (!targets.is_empty() || !until.is_empty() || if_revision.is_some()) {
         return Err(Usage::Needs(
-            "send-keys -c CLIENT types at a client; -t and the waits are for a pane",
+            "send-keys -c CLIENT types at a client; -t, --if-revision and the waits are for a pane",
         ));
     }
     let (echo, lines) = typed_lines(&inputs, repeat);
-    let then = (!until.is_empty()).then(|| Wait {
-        until,
-        timeout: timeout.unwrap_or(WAIT_TIMEOUT),
-        print,
-        json,
-        after: true,
-        echo,
-        marks,
-        lines,
+    let then = (!until.is_empty()).then(|| {
+        Box::new(Wait {
+            until,
+            timeout: timeout.unwrap_or(WAIT_TIMEOUT),
+            print,
+            json,
+            after: true,
+            echo,
+            marks,
+            lines,
+            all: true,
+        })
     });
     Ok(Command::SendKeys {
-        target,
+        targets,
         client,
+        if_revision,
         inputs,
         repeat,
         then,
@@ -1794,15 +1964,15 @@ fn typed_lines(inputs: &[Input], repeat: u16) -> (Vec<String>, u32) {
 impl Command {
     /// The pane a command acts on and the wait it then does, armed before
     /// it acts: send-keys', send-mouse's and signal's.
-    pub fn acting_wait(&self) -> Option<(Option<PaneId>, Wait)> {
+    pub fn acting_wait(&self) -> Option<(Vec<AnyRef>, Wait)> {
         if let Command::SendKeys {
-            target,
+            targets,
             client: None,
             then: Some(wait),
             ..
         } = self
         {
-            return Some((*target, wait.clone()));
+            return Some((targets.clone(), (**wait).clone()));
         }
         if let Command::SendMouse {
             target,
@@ -1815,7 +1985,10 @@ impl Command {
             ..
         } = self
         {
-            return Some((*target, (**wait).clone()));
+            return Some((
+                target.map(AnyRef::Pane).into_iter().collect(),
+                (**wait).clone(),
+            ));
         }
         None
     }
@@ -1956,10 +2129,19 @@ mod tests {
 
     #[test]
     fn the_cli_table_parses() -> Result<(), Usage> {
-        assert_eq!(cmd("ls --json"), Ok(Command::Ls { json: true }));
+        assert_eq!(
+            cmd("ls --json"),
+            Ok(Command::Ls {
+                json: true,
+                target: None,
+                get: None
+            })
+        );
         assert_eq!(
             cmd("split -h -t %3 --cwd src --env A=1 -- htop -d 5"),
             Ok(Command::Split {
+                run: false,
+                ids: Vec::new(),
                 axis: Axis::Horizontal,
                 target: Some(PaneId::of(3)),
                 cmd: vec!["htop".into(), "-d".into(), "5".into()],
@@ -1971,10 +2153,13 @@ mod tests {
         assert_eq!(
             cmd("new-tab -t work -n logs"),
             Ok(Command::NewTab {
+                ids: Vec::new(),
                 target: Some(WsRef::Name("work".into())),
                 name: Some("logs".into()),
                 cmd: vec![],
                 size: None,
+                cwd: None,
+                env: Vec::new(),
                 json: false,
             })
         );
@@ -2012,8 +2197,9 @@ mod tests {
         assert_eq!(
             cmd("send-keys -t %1 -l -x"),
             Ok(Command::SendKeys {
-                target: Some(PaneId::of(1)),
+                targets: vec![AnyRef::Pane(PaneId::of(1))],
                 client: None,
+                if_revision: None,
                 inputs: vec![Input::Text("-x".into())],
                 repeat: 1,
                 then: None,
@@ -2024,8 +2210,9 @@ mod tests {
         assert_eq!(
             cmd("send-keys -N 2 Escape 'two words' --paste p Enter --wait-idle 300 --print"),
             Ok(Command::SendKeys {
-                target: None,
+                targets: Vec::new(),
                 client: None,
+                if_revision: None,
                 inputs: vec![
                     Input::Key("Escape".parse().map_err(|_| Usage::NoCommand)?),
                     Input::Text("two words".into()),
@@ -2033,7 +2220,7 @@ mod tests {
                     Input::Key("Enter".parse().map_err(|_| Usage::NoCommand)?),
                 ],
                 repeat: 2,
-                then: Some(Wait {
+                then: Some(Box::new(Wait {
                     until: vec![Until::Idle(Duration::from_millis(300))],
                     timeout: WAIT_TIMEOUT,
                     print: true,
@@ -2042,7 +2229,8 @@ mod tests {
                     echo: vec!["two wordsp".into(), "two wordsp".into()],
                     marks: false,
                     lines: 2,
-                }),
+                    all: true,
+                })),
             })
         );
         // Any wait condition, armed before the keys; a key name mistyped
@@ -2052,14 +2240,15 @@ mod tests {
                 "send-keys -t %1 --text go Enter --wait-text PASS --wait-text FAIL --timeout 5 --json"
             ),
             Ok(Command::SendKeys {
-                target: Some(PaneId::of(1)),
+                targets: vec![AnyRef::Pane(PaneId::of(1))],
                 client: None,
+                if_revision: None,
                 inputs: vec![
                     Input::Text("go".into()),
                     Input::Key("Enter".parse().map_err(|_| Usage::NoCommand)?)
                 ],
                 repeat: 1,
-                then: Some(Wait {
+                then: Some(Box::new(Wait {
                     until: vec![Until::Text("PASS".into()), Until::Text("FAIL".into())],
                     timeout: Duration::from_secs(5),
                     print: false,
@@ -2068,7 +2257,8 @@ mod tests {
                     echo: vec!["go".into()],
                     marks: false,
                     lines: 1,
-                }),
+                    all: true,
+                })),
             })
         );
         for typo in ["Entr", "C-Ent", "Escpe", "Pag"] {
@@ -2108,6 +2298,7 @@ mod tests {
                     echo: Vec::new(),
                     marks: false,
                     lines: 0,
+                    all: false,
                 },
             })
         );
@@ -2127,6 +2318,7 @@ mod tests {
         assert_eq!(
             cmd("run -n tool --size 80x24 --env A=1 --json -- ck -v"),
             Ok(Command::Run {
+                ids: Vec::new(),
                 workspace: None,
                 name: Some("tool".into()),
                 size: fux_vt::Size::new(24, 80).ok(),
@@ -2149,6 +2341,7 @@ mod tests {
             cmd("send-mouse -t %1 wheel-up 3 7"),
             Ok(Command::SendMouse {
                 target: Some(PaneId::of(1)),
+                if_revision: None,
                 mouse: Mouse::Wheel(MouseButton::WheelUp),
                 row: 3,
                 col: 7,
@@ -2378,6 +2571,10 @@ mod tests {
                         "--wait-text",
                         "--wait-gone",
                         "--wait-idle",
+                        "--if-revision",
+                        "--id",
+                        "--socket",
+                        "--get",
                     ]
                     .contains(&flag);
                     assert_eq!(spec.flag(flag), Some(value), "{}: {flag}", spec.usage);

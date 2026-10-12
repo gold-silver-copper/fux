@@ -149,6 +149,8 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
         argv: vec!["ls".into()],
         cwd: String::new(),
         pane: None,
+        server: None,
+        env: Vec::new(),
     };
     stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
     stream.write_all(&command.encode().map_err(e)?).map_err(e)?;

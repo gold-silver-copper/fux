@@ -4,6 +4,7 @@ use std::fmt::Write;
 
 /// A value to write, its strings borrowed from what it describes where they
 /// can be.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Json<'a> {
     Null,
     Bool(bool),

@@ -131,7 +131,7 @@ def reap(work):
 def cleanup_slot(tool, slot, fux_bin):
     """Stops whatever server a killed run left in its slot."""
     env = isolated_env(slot)
-    cmds = {"fux": [[fux_bin, "kill-server"]],
+    cmds = {"fux": [[fux_bin, "kill-server", "--force"]],
             "tmux": [["tmux", "-L", "ab", "kill-server"]],
             "zellij": [["zellij", "kill-session", "ab"], ["zellij", "delete-session", "ab", "--force"]],
             "herdr": [["herdr", "--session", "ab", "server", "stop"]]}[tool]

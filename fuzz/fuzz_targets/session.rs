@@ -222,7 +222,7 @@ impl Run {
                     self.s.detach(client);
                     self.shadows.remove(&client);
                 }
-                Outgoing::Shutdown(_) => self.shut = true,
+                Outgoing::Shutdown { .. } => self.shut = true,
             }
         }
         for pane in self.s.panes.values_mut() {

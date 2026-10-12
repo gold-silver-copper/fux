@@ -14,7 +14,7 @@ pub struct Binding {
     /// labels.
     pub command: Vec<String>,
     /// The command it runs, parsed when the binding was made.
-    pub parsed: Command,
+    pub parsed: Box<Command>,
     /// The command-column group; derived from the command when not given.
     /// A layer's title is the group of its first binding.
     pub group: Option<String>,
@@ -97,6 +97,10 @@ pub enum Error {
     /// A command other than `set`, `bind`, `unbind` and `unbind-all`.
     NotConfig {
         command: String,
+    },
+    /// A name `update-environment` is given that no variable has.
+    NotAVariable {
+        name: String,
     },
     OneValue {
         option: String,
@@ -187,12 +191,20 @@ impl std::fmt::Display for Error {
             Error::UnbindUsage => f.write_str("usage: unbind [-n] KEY…"),
             Error::NotBound { keys } => write!(f, "{} is not bound", keys_text(keys)),
             Error::UnbindAllUsage => f.write_str("usage: unbind-all"),
+            Error::NotConfig { command } if crate::command::usage_of(command).is_none() => write!(
+                f,
+                "{command:?} is no command; a config file holds set, bind, unbind and unbind-all lines"
+            ),
             Error::NotConfig { command } => write!(
                 f,
                 "{command} changes panes or layout, which a config file cannot do; \
                  only set, bind, unbind and unbind-all are allowed there"
             ),
             Error::OneValue { option } => write!(f, "set {option} takes one value"),
+            Error::NotAVariable { name } => write!(
+                f,
+                "set update-environment: {name:?} is no variable's name (letters, digits and _)"
+            ),
             Error::NotANumber { option } => write!(f, "set {option}: not a number"),
             Error::TooLarge { option, max } => write!(f, "set {option}: at most {max}"),
             Error::Key(error) => error.fmt(f),
@@ -241,6 +253,7 @@ impl std::error::Error for Error {
             | Error::UnbindAllUsage
             | Error::NotConfig { .. }
             | Error::OneValue { .. }
+            | Error::NotAVariable { .. }
             | Error::NotANumber { .. }
             | Error::TooLarge { .. }
             | Error::NoProgram
@@ -326,6 +339,11 @@ pub struct Config {
     pub titles: bool,
     /// The shells fux starts mark their commands (OSC 133): `crate::marks`.
     pub shell_marks: bool,
+    /// Variables a new pane takes from whoever starts it (a command's
+    /// caller, the client whose key it is) rather than from the server,
+    /// which may have started long ago: an SSH agent's socket, a display.
+    /// One the starter has not is unset.
+    pub update_environment: Vec<String>,
     /// The keys after the prefix.
     pub bindings: Layer,
     /// Keys bound without the prefix (`bind -n`), in the order they were
@@ -400,6 +418,18 @@ impl Default for Config {
             buffers: 16,
             bell: true,
             shell_marks: true,
+            update_environment: [
+                "DISPLAY",
+                "KRB5CCNAME",
+                "SSH_AGENT_PID",
+                "SSH_ASKPASS",
+                "SSH_AUTH_SOCK",
+                "SSH_CONNECTION",
+                "WAYLAND_DISPLAY",
+                "XAUTHORITY",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
             titles: false,
             bindings: Layer::default(),
             root: Vec::new(),
@@ -591,7 +621,7 @@ impl Config {
                 };
                 let binding = Binding {
                     command: command.to_vec(),
-                    parsed,
+                    parsed: Box::new(parsed),
                     group,
                 };
                 match (root, keys.as_slice()) {
@@ -707,6 +737,18 @@ impl Config {
             "bell" => self.bell = on()?,
             "titles" => self.titles = on()?,
             "shell-marks" => self.shell_marks = on()?,
+            "update-environment" => {
+                // `set update-environment A B` and `'A B'` alike; none: off.
+                let names: Vec<String> = value
+                    .iter()
+                    .flat_map(|v| v.split_whitespace())
+                    .map(str::to_owned)
+                    .collect();
+                if let Some(bad) = names.iter().find(|n| !crate::command::shell_name(n)) {
+                    return Err(Error::NotAVariable { name: bad.clone() });
+                }
+                self.update_environment = names;
+            }
             "buffers" => {
                 let n = number(MAX_BUFFERS)?;
                 if n == 0 {
@@ -727,6 +769,24 @@ impl Config {
     /// defaults; `None` if there is no file. Any error names its file and
     /// line, and nothing applies.
     pub fn from_file(path: &Path) -> Result<Option<Config>, Error> {
+        let Some((config, errors)) = Config::read(path)? else {
+            return Ok(None);
+        };
+        match errors.into_iter().next() {
+            Some(error) => Err(error),
+            None => Ok(Some(config)),
+        }
+    }
+
+    /// Every error in the config file at `path`, each with its line; none
+    /// if there is no file (`fux check-config`).
+    pub fn check(path: &Path) -> Result<Vec<Error>, Error> {
+        Ok(Config::read(path)?.map_or_else(Vec::new, |(_, errors)| errors))
+    }
+
+    /// The config file at `path`, every line applied that can be, and why
+    /// each other line is refused; `None` if there is no file.
+    fn read(path: &Path) -> Result<Option<(Config, Vec<Error>)>, Error> {
         let mut config = Config::default();
         let text = match read_bounded(path) {
             Ok(text) => text,
@@ -738,19 +798,23 @@ impl Config {
                 });
             }
         };
+        let mut errors = Vec::new();
         for (number, line) in text.lines().enumerate() {
             let at = |error: Error| Error::Line {
                 path: path.to_owned(),
                 line: number.saturating_add(1),
                 error: Box::new(error),
             };
-            let argv = words::split(line).map_err(|e| at(e.into()))?;
-            if argv.is_empty() {
-                continue;
+            let applied =
+                (words::split(line).map_err(Error::from)).and_then(|argv| match argv.is_empty() {
+                    true => Ok(()),
+                    false => config.apply(&argv),
+                });
+            if let Err(error) = applied {
+                errors.push(at(error));
             }
-            config.apply(&argv).map_err(at)?;
         }
-        Ok(Some(config))
+        Ok(Some((config, errors)))
     }
 
     /// Settings as `fux` commands, for display.
@@ -768,6 +832,10 @@ impl Config {
             format!("set buffers {}", self.buffers),
             format!("set bell {}", if self.bell { "on" } else { "off" }),
             format!("set titles {}", if self.titles { "on" } else { "off" }),
+            format!(
+                "set update-environment {}",
+                words::quote(&self.update_environment.join(" "))
+            ),
         ];
         let after = self
             .bindings
@@ -929,7 +997,7 @@ mod tests {
         // Bound, the parsed command is what its words say.
         apply(&mut c, "bind g split -v -- htop")?;
         assert_eq!(
-            bound(&c, "g").map(|(b, _)| &b.parsed),
+            bound(&c, "g").map(|(b, _)| &*b.parsed),
             Some(
                 &crate::command::parse(
                     &words::split("split -v -- htop").map_err(|e| e.to_string())?

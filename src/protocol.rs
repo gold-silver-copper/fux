@@ -13,7 +13,7 @@ use crate::bytes::ByteQueue;
 use std::num::NonZeroU16;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -111,7 +111,7 @@ impl std::fmt::Display for Mismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the server speaks protocol {} (fux {}); restart it with `fux kill-server`",
+            "the server speaks protocol {} (fux {}); restart it: `fux kill-server --force` stops it",
             self.protocol, self.version
         )
     }
@@ -225,12 +225,16 @@ impl<'a> Frame<'a> for Hello<'a> {
 }
 
 /// An attaching client's one frame after its `Hello`: its terminal's size,
-/// and the workspace it asks for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// the workspace it asks for, whether it only watches, and its
+/// environment, which panes started from its keys take what
+/// `update-environment` names from.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Attach<'a> {
     pub rows: NonZeroU16,
     pub cols: NonZeroU16,
     pub workspace: Option<&'a str>,
+    pub read_only: bool,
+    pub env: Vec<(String, String)>,
 }
 
 impl<'a> Frame<'a> for Attach<'a> {
@@ -241,6 +245,8 @@ impl<'a> Frame<'a> for Attach<'a> {
                 rows: r.size()?,
                 cols: r.size()?,
                 workspace: r.option()?,
+                read_only: r.flag()?,
+                env: r.pairs(payload.len())?,
             })
         })
     }
@@ -248,6 +254,8 @@ impl<'a> Frame<'a> for Attach<'a> {
     fn write(&self, out: &mut Vec<u8>) -> u8 {
         put_size(out, self.rows, self.cols);
         put_option(out, self.workspace);
+        out.push(u8::from(self.read_only));
+        put_pairs(out, &self.env);
         kind::ATTACH
     }
 }
@@ -288,12 +296,17 @@ impl<'a> Frame<'a> for AttachedFrame<'a> {
     }
 }
 
-/// A command client's one frame after its `Hello`.
+/// A command client's one frame after its `Hello`: the command line, and
+/// where it runs: its directory, its pane (`FUX_PANE`) and the server that
+/// pane is of (`FUX_SERVER`), and its environment, which panes it starts
+/// take what `update-environment` names from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Command {
     pub argv: Vec<String>,
     pub cwd: String,
     pub pane: Option<String>,
+    pub server: Option<String>,
+    pub env: Vec<(String, String)>,
 }
 
 impl Frame<'_> for Command {
@@ -311,6 +324,8 @@ impl Frame<'_> for Command {
                     .collect::<Result<_, _>>()?,
                 cwd: r.str()?.to_owned(),
                 pane: r.option()?.map(str::to_owned),
+                server: r.option()?.map(str::to_owned),
+                env: r.pairs(payload.len())?,
             })
         })
     }
@@ -322,6 +337,8 @@ impl Frame<'_> for Command {
         }
         put_bytes(out, self.cwd.as_bytes());
         put_option(out, self.pane.as_deref());
+        put_option(out, self.server.as_deref());
+        put_pairs(out, &self.env);
         kind::COMMAND
     }
 }
@@ -422,6 +439,14 @@ fn put_option(out: &mut Vec<u8>, value: Option<&str>) {
     }
 }
 
+fn put_pairs(out: &mut Vec<u8>, pairs: &[(String, String)]) {
+    put_len(out, pairs.len());
+    for (key, value) in pairs {
+        put_bytes(out, key.as_bytes());
+        put_bytes(out, value.as_bytes());
+    }
+}
+
 /// A cursor over a payload being decoded, lending what it reads.
 struct Reader<'a>(&'a [u8]);
 impl<'a> Reader<'a> {
@@ -454,6 +479,17 @@ impl<'a> Reader<'a> {
     }
     fn option(&mut self) -> Result<Option<&'a str>, Error> {
         self.flag()?.then(|| self.str()).transpose()
+    }
+    /// Pairs of strings, as many as a payload of `room` bytes can hold.
+    fn pairs(&mut self, room: usize) -> Result<Vec<(String, String)>, Error> {
+        let count = self.u32()? as usize;
+        // Each pair takes at least its two 4-byte lengths.
+        if count > room / 8 {
+            return Err(Error::BadCount);
+        }
+        (0..count)
+            .map(|_| Ok((self.str()?.to_owned(), self.str()?.to_owned())))
+            .collect()
     }
     /// The rest of the payload, all of it a byte field.
     fn rest(&mut self) -> &'a [u8] {
@@ -588,7 +624,9 @@ mod tests {
             Attach {
                 rows,
                 cols,
-                workspace
+                workspace,
+                read_only: false,
+                env: Vec::new(),
             }
         );
         let workspace = None;
@@ -598,7 +636,9 @@ mod tests {
             Attach {
                 rows,
                 cols,
-                workspace
+                workspace,
+                read_only: true,
+                env: vec![("DISPLAY".into(), ":0".into())],
             }
         );
         round_trip!(AttachedFrame, 3, AttachedFrame::Input(b"\x1b[A"));
@@ -611,6 +651,8 @@ mod tests {
                 argv: vec!["split".into(), "-h".into(), "".into(), "界".into()],
                 cwd: "/tmp".into(),
                 pane: Some("%3".into()),
+                server: Some("1-2".into()),
+                env: vec![("K".into(), "V".into())],
             }
         );
         round_trip!(ServerFrame, 7, ServerFrame::Paint(&[0, 1, 2, 255]));

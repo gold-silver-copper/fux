@@ -192,7 +192,7 @@ fn ls_json_and_list_keys_have_their_documented_shapes() -> Outcome {
     let json = server.ok(&["ls", "--json"])?;
     for field in [
         "{\"workspaces\":[{\"id\":\"+1\",\"name\":\"main\",\"tabs\":[{\"id\":\"@1\",\"name\":\"main\",\"panes\":[{\"id\":\"%1\",\"name\":\"sh\",\"title\":\"\",\"rows\":9,\"cols\":50,\"pid\":",
-        "\"clients\":[{\"id\":\"c1\",\"rows\":10,\"cols\":50,\"workspace\":\"+1\",\"tab\":\"@1\",\"pane\":\"%1\",\"zoom\":false}]}",
+        "\"clients\":[{\"id\":\"c1\",\"rows\":10,\"cols\":50,\"workspace\":\"+1\",\"tab\":\"@1\",\"pane\":\"%1\",\"zoom\":false}],\"grants\":[]}",
     ] {
         assert!(json.contains(field), "{field}\nin\n{json}");
     }

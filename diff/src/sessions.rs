@@ -310,8 +310,12 @@ mod cur_side {
 
     /// A client's command, or the CLI's: a command has one origin.
     pub fn origin(c: Option<ClientId>, p: Option<PaneId>) -> Origin {
-        let cwd = Some("/".into());
-        c.map_or(Origin::Cli { pane: p, cwd }, Origin::Client)
+        let caller = fux::session::Caller {
+            pane: p,
+            cwd: Some("/".into()),
+            ..fux::session::Caller::default()
+        };
+        c.map_or(Origin::Cli(caller), Origin::Client)
     }
 
     /// A command line is held until the shell is ready, in its input.

@@ -1,7 +1,8 @@
 //! Where the server's socket lives, and the rules that keep it private.
 //!
-//! - The path is `--socket`, else `FUX_SOCKET`, else
-//!   `$XDG_RUNTIME_DIR/fux/server.sock`, else `$TMPDIR/fux/server.sock`.
+//! - The path is `-S PATH` (`server --socket`), or `-L NAME`'s
+//!   `NAME.sock` in fux's directory, else `FUX_SOCKET`, else `server.sock`
+//!   there: fux's directory is `$XDG_RUNTIME_DIR/fux`, else `$TMPDIR/fux`.
 //! - Its directory is owned by the user, mode 0700, reached only through
 //!   directories no other user can rewrite. The socket is mode 0600, set
 //!   before `listen`.
@@ -75,6 +76,8 @@ pub enum Error {
         uid: u32,
     },
     NoServer(PathBuf),
+    /// A `-L` name that is not a plain file name.
+    BadName(String),
     /// A socket not ours to connect to.
     NotOurs(PathBuf),
     /// Something at the socket's path that is not ours to replace.
@@ -164,10 +167,15 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "no fux server is running at {}; `fux` in a terminal starts one, or \
-                     `fux server --socket PATH &` one with no terminal",
+                     `fux [-L NAME] server --background` one with no terminal",
                     path.display()
                 )
             }
+            Error::BadName(name) => write!(
+                f,
+                "-L {name:?}: a server's name is 1 to 64 letters, digits, '.', '_' or '-', \
+                 not starting with '.' or '-'"
+            ),
             Error::NotOurs(path) => write!(
                 f,
                 "{} is not a socket owned by you; refusing to connect",
@@ -217,6 +225,7 @@ impl std::error::Error for Error {
             | Error::Symlink(_)
             | Error::NotPrivate { .. }
             | Error::NoServer(_)
+            | Error::BadName(_)
             | Error::NotOurs(_)
             | Error::Foreign(_)
             | Error::InUse(_)
@@ -263,27 +272,69 @@ impl SocketPath {
     }
 }
 
-/// The socket a command uses: `flag` (a `--socket`), else `FUX_SOCKET`, else
-/// the default under `XDG_RUNTIME_DIR` or `TMPDIR`.
-pub fn socket_path(flag: Option<&str>) -> Result<SocketPath, Error> {
-    if let Some(flag) = flag {
-        return checked(flag, "--socket");
+/// Which server a command names, before the command: `-S PATH`, `-L NAME`,
+/// or neither.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Choice<'a> {
+    #[default]
+    Default,
+    /// A socket's path, and the flag that gave it.
+    Path(&'a str, &'static str),
+    /// A server's name: its socket is `NAME.sock` in fux's directory.
+    Name(&'a str),
+}
+
+impl Choice<'_> {
+    /// Whether the command named its server, rather than taking it from
+    /// the environment.
+    pub fn named(&self) -> bool {
+        !matches!(self, Choice::Default)
     }
-    if let Some(value) = std::env::var_os("FUX_SOCKET") {
-        let value = value.into_string().map_err(|_| Error::NotUtf8 {
-            variable: "FUX_SOCKET",
-        })?;
-        return checked(&value, "FUX_SOCKET");
+}
+
+/// The socket a command uses: the one `choice` names, else `FUX_SOCKET`,
+/// else `server.sock` in fux's directory.
+pub fn socket_path(choice: Choice<'_>) -> Result<SocketPath, Error> {
+    match choice {
+        Choice::Path(path, from) => checked(path, from),
+        Choice::Name(name) => {
+            let valid = (1..=64).contains(&name.len())
+                && !name.starts_with(['.', '-'])
+                && (name.chars()).all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
+            if !valid {
+                return Err(Error::BadName(name.to_owned()));
+            }
+            in_directory(&format!("{name}.sock"))
+        }
+        Choice::Default => match std::env::var_os("FUX_SOCKET") {
+            Some(value) => {
+                let value = value.into_string().map_err(|_| Error::NotUtf8 {
+                    variable: "FUX_SOCKET",
+                })?;
+                checked(&value, "FUX_SOCKET")
+            }
+            None => in_directory(DEFAULT_NAME),
+        },
     }
+}
+
+/// fux's directory: under `XDG_RUNTIME_DIR`, else `TMPDIR`.
+pub fn directory() -> Result<PathBuf, Error> {
     for base in ["XDG_RUNTIME_DIR", "TMPDIR"] {
         if let Some(value) = std::env::var_os(base) {
             let value = value
                 .into_string()
                 .map_err(|_| Error::NotUtf8 { variable: base })?;
-            return socket_path_from(base, &value);
+            return base_directory(base, &value);
         }
     }
     Err(Error::NoLocation)
+}
+
+/// The socket `name` in fux's directory.
+fn in_directory(name: &str) -> Result<SocketPath, Error> {
+    let path = directory()?.join(name);
+    checked(&path.to_string_lossy(), "the socket's directory")
 }
 
 /// Longest socket path, in bytes, that `sockaddr_un` holds with its NUL.
@@ -291,7 +342,7 @@ pub fn max_path_bytes() -> usize {
     if cfg!(target_os = "linux") { 107 } else { 103 }
 }
 
-fn socket_path_from(base: &'static str, value: &str) -> Result<SocketPath, Error> {
+fn base_directory(base: &'static str, value: &str) -> Result<PathBuf, Error> {
     if value.is_empty() {
         return Err(Error::EmptyVariable { variable: base });
     }
@@ -301,8 +352,7 @@ fn socket_path_from(base: &'static str, value: &str) -> Result<SocketPath, Error
             value: value.to_owned(),
         });
     }
-    let path = Path::new(value).join("fux").join(DEFAULT_NAME);
-    checked(&path.to_string_lossy(), base)
+    Ok(Path::new(value).join("fux"))
 }
 
 fn checked(value: &str, from: &'static str) -> Result<SocketPath, Error> {
@@ -579,13 +629,11 @@ mod tests {
         assert!(matches!(too_long, Err(Error::TooLong { .. })));
         assert!(too_long.is_err_and(|e| e.to_string().contains("limit")));
         assert!(checked("/tmp/fux/s.sock", "X").is_ok());
-        assert!(socket_path_from("TMPDIR", "").is_err());
-        assert!(socket_path_from("TMPDIR", "rel").is_err());
+        assert!(base_directory("TMPDIR", "").is_err());
+        assert!(base_directory("TMPDIR", "rel").is_err());
         assert_eq!(
-            socket_path_from("TMPDIR", "/t")
-                .map(|s| s.path().to_owned())
-                .ok(),
-            Some(PathBuf::from("/t/fux/server.sock"))
+            base_directory("TMPDIR", "/t").ok(),
+            Some(PathBuf::from("/t/fux"))
         );
         let message = |r: Result<SocketPath, Error>| r.err().map(|e| e.to_string());
         for (result, expected) in [
@@ -603,11 +651,11 @@ mod tests {
                 "X is \"/s\"; it must name a socket file in a directory below /",
             ),
             (
-                socket_path_from("TMPDIR", ""),
+                base_directory("TMPDIR", "").and_then(|d| checked(&d.to_string_lossy(), "X")),
                 "TMPDIR is set but empty; set it to a directory or set FUX_SOCKET",
             ),
             (
-                socket_path_from("TMPDIR", "rel"),
+                base_directory("TMPDIR", "rel").and_then(|d| checked(&d.to_string_lossy(), "X")),
                 "TMPDIR is \"rel\", not an absolute path; fix it or set FUX_SOCKET",
             ),
         ] {

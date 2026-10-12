@@ -350,7 +350,7 @@ impl Through {
                 Outgoing::Exit(client, reason) if client == self.client => {
                     return Err(format!("fux detached the client: {reason}"));
                 }
-                Outgoing::Shutdown(reason) => return Err(format!("fux stopped: {reason}")),
+                Outgoing::Shutdown { reason, .. } => return Err(format!("fux stopped: {reason}")),
                 Outgoing::Bytes(..) | Outgoing::Exit(..) => {}
             }
         }

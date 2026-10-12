@@ -345,6 +345,8 @@ impl Fixture {
             rows: size,
             cols: size,
             workspace: None,
+            read_only: false,
+            env: Vec::new(),
         };
         stream
             .write_all(&attach.encode().map_err(|e| e.to_string())?)
@@ -395,7 +397,7 @@ impl Fixture {
         let pids: Vec<i32> = crate::world::World::read(self)
             .map(|w| w.panes().map(|p| p.pid).collect())
             .unwrap_or_default();
-        let _ = self.fux(&["kill-server"]);
+        let _ = self.fux(&["kill-server", "--force"]);
         if let Some(mut server) = self.server.take() {
             let deadline = after(Duration::from_secs(5));
             while server.try_wait().ok().flatten().is_none() && Instant::now() < deadline {

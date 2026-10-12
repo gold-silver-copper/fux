@@ -351,6 +351,8 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
             rows: nonzero(10)?,
             cols: nonzero(40)?,
             workspace: None,
+            read_only: false,
+            env: Vec::new(),
         };
         stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
         stream.write_all(&attach.encode().map_err(e)?).map_err(e)?;

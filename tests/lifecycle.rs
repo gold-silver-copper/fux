@@ -190,6 +190,7 @@ fn a_pane_runs_shell_else_bin_sh() -> Outcome {
         command
             .args(["server", "--socket"])
             .arg(&socket)
+            .env("XDG_STATE_HOME", dir.join("state"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -215,7 +216,7 @@ fn a_pane_runs_shell_else_bin_sh() -> Outcome {
             Ok(ls.contains(&format!(r#""id":"%1","name":"{name}""#)))
         });
         let _ = Command::new(FUX)
-            .arg("kill-server")
+            .args(["kill-server", "--force"])
             .env("FUX_SOCKET", &socket)
             .output();
         let _ = child.wait();

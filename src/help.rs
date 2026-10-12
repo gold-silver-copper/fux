@@ -6,6 +6,8 @@
 
 /// `docs/agents.md`.
 pub const AGENTS: &str = include_str!("../docs/agents.md");
+/// What `--json` prints, command by command (`fux help json`).
+pub const JSON: &str = include_str!("../docs/json.md");
 
 /// The help for the command named `name`: its usage, what it does, and
 /// more on its flags with an example where it has them; `None` if no
@@ -81,7 +83,12 @@ key name mistyped (Entr, C-Ent) is refused.
   --text TEXT        TEXT as typed, however it looks
   --paste TEXT       TEXT as a paste, bracketed if the program asked
   -l                 every word as text
+  --paste-file FILE  FILE as a paste; --paste - pastes stdin (900 KiB at most)
   -N COUNT           everything COUNT times
+  -t again, or @N    several panes, or every pane of a tab: each is sent them,
+                     or none is if one cannot take them; a wait waits for each
+  --if-revision N    sent only if the screen is still at revision N (from
+                     capture-pane or ls --json): else nothing, and status 6
   -c CLIENT          type at a client instead, as at its terminal
 Then wait, armed before the keys go in, so nothing they bring is missed:
   --wait-text TEXT   until TEXT appears anew (not text already there)
@@ -100,6 +107,8 @@ A mouse event at a cell of the pane, rows and columns from 0, encoded as the
 program asked; refused if it did not ask for mouse reports.
 `click`, `right` and `middle` press and release; `press` and `release` the
 left button alone; `wheel-up` and `wheel-down` one notch; `move` no button.
+--if-revision N sends it only if the screen is still at revision N (status 6
+if not), and --wait-… waits as send-keys' do.
 
   fux send-mouse -t %3 click 4 10"
         }
@@ -152,49 +161,132 @@ its tab; one the layout cannot give is refused, nothing changed.
         "split" => {
             "\
 Splits the pane: -h side by side, -v stacked. A command after -- is typed
-into the new shell once it is ready. Prints the new pane's id.
+into the new shell once it is ready; with --run it is started itself, in
+place of a shell, as run starts one, and its pane stays when it exits.
+--cwd and --env as run has them; --id %N asks for the new pane's id (layout
+files). Prints the new pane's id.
 
-  fux split -h -t %1 -- htop"
+  fux split -h -t %1 --run -- htop"
         }
         "new-tab" => {
             "\
-A tab with a shell in workspace WS (default: here); a command after -- is
-typed into it. Prints `@N %N`. --size COLSxROWS lays it out on that size
-while no client shows it.
+A tab with a shell in workspace WS (default: here; a name that is not there
+is made); a command after -- is typed into it. Prints `@N %N`. --size
+COLSxROWS lays it out on that size while no client shows it; --cwd DIR and
+--env K=V as run has them.
 
-  fux new-tab -t +1 -n logs -- tail -f /var/log/syslog"
+  fux new-tab -t +1 -n logs --cwd /var/log -- tail -f syslog"
         }
         "new-workspace" => {
             "\
 A workspace with a tab and a shell; a command after -- is typed into it.
 Prints `+N @N %N`. Names are unique and do not start with +, %, @ or -.
+--cwd DIR and --env K=V as run has them.
 
   fux new-workspace -n work --size 100x30"
+        }
+        "log" => {
+            "\
+Keeps what the pane's program writes from now on in FILE, as run --log does
+from the start; --stop ends it. A file there is emptied and made yours
+alone; a link is not followed. Logging again switches to the new file.
+
+  fux log -t %3 build.log"
+        }
+        "clear-history" => {
+            "\
+Drops the pane's history, as `clear` does in most terminals: a capture with
+-S all then shows only what comes after. The screen stays.
+
+  fux clear-history -t %3"
+        }
+        "events" => {
+            "\
+Prints what happens, a line each, as it happens, until stopped: panes, tabs
+and workspaces created, closed, moved and renamed; a program's exit (with its
+status), respawn, title, size, bells and notifications; a shell command's end
+(done, with its status). -t a pane, tab or workspace for only what happens
+there; again for more. The first line, `ready`, says nothing is missed from
+then on; `stopped` ends it as the server stops; `gone` once all it watched
+has closed (status 4); a reader too slow to keep up is told `lost`, and it
+ends (status 1). It looks as the server does, after each round of output and
+commands: several bells, notifications or command ends in one round come as
+one line with `count` (a notification's text, a done's status: the last),
+and within a round lines come by kind, not by time.
+  --json   one object a line: {\"event\":\"exited\",\"pane\":\"%3\",\"tab\":…,\"status\":1}
+
+  fux events --json -t agent | while read -r line; do …; done"
+        }
+        "grant" => {
+            "\
+Makes a socket, PATH, whose commands reach workspace WS alone (a name need
+not be there yet: run makes it): an agent given only it can run, read and
+close what is there, and nothing else, while you watch in your own server.
+Without -t, ls, run, new-tab, events and layout act on WS. Anything outside it,
+the config, the buffers, clients and the server are refused, and no client
+attaches through it. It guards against mistakes, not against a program of
+yours that means harm: that one could reach the server's own socket. --revoke
+closes it, and what came through it can do nothing more. `fux ls` lists
+grants; they end with the server.
+
+  fux grant -t agent --socket ~/.cache/agent.sock && FUX_SOCKET=~/.cache/agent.sock agent-cli"
+        }
+        "layout" => {
+            "\
+Makes what a layout file says, all or nothing: if a line fails, everything the
+file made is closed again. A layout file is fux command lines, as a config
+file is: new-workspace, new-tab, run, split (--run for a program), rename,
+resize, resize-pane. `--id ID` on a line says which id it makes in the file;
+later lines name it so, and fux puts the id it made in its place. A new-tab or
+run that names no workspace goes to WS (default: agent). A size that cannot
+be had here (resize-pane) is left as it comes. Prints the ids each line made,
+a line each (--json: an array of arrays). `fux dump-layout` writes one.
+
+  fux dump-layout -t build > build.fux && fux layout build.fux"
+        }
+        "dump-layout" => {
+            "\
+What there is, as a layout file to make again with `fux layout`: every
+workspace, or -t one tab (made where the file is applied) or one workspace,
+with its tabs, splits, sizes, names, directories, and the programs run
+started. Shells come back fresh in their directories. A server saves this
+of itself as it changes, and brings it back after a crash or a reboot.
+
+  fux dump-layout -t +2"
         }
         "kill-pane" => {
             "\
 Closes the pane, without asking: its programs are hung up, then killed. From
-the command line it prints what closed (`closed %3 @2`: a last pane takes its
-tab, and a last tab its workspace).
+the command line it needs -t (without, it would close the pane it runs in)
+and prints what closed (`closed %3 @2`: a last pane takes its tab, and a last
+tab its workspace).
 
   fux kill-pane -t %3"
         }
         "kill-tab" => {
             "\
-Closes the tab and its panes, without asking. -t takes @N or the tab's name.
+Closes the tab and its panes, without asking. -t takes @N or the tab's name;
+from the command line it is needed.
 
   fux kill-tab -t build"
         }
         "kill-workspace" => {
             "\
-Closes the workspace, its tabs and panes, without asking.
+Closes the workspace, its tabs and panes, without asking; from the command
+line, -t is needed.
 
   fux kill-workspace -t agent"
         }
         "ls" | "list" => {
             "\
-Workspaces (+N), their tabs (@N) and panes (%N) with their sizes, and the
-attached clients (cN). --json adds what each pane's program is doing."
+Workspaces (+N), their tabs (@N) and panes (%N) with their sizes, the
+attached clients (cN) and grants. --json adds what each pane's program is
+doing. -t one pane, tab or workspace only; --get FIELD one field of its JSON,
+a string as it is (a tab of one pane, as run makes, gives its pane's fields
+too, but `id` and `name` are the tab's): status 1 if it is not there, which
+answers whether it is.
+
+  fux ls -t build --get exited"
         }
         "rename" => {
             "\
@@ -263,7 +355,15 @@ workspace), or every client's: for an agent working out of sight to say so.
         }
         "send-prefix" => "The prefix key, to the pane, as its program asked for keys.",
         "reload" => "Runs the config file again over the defaults; on an error, changes nothing.",
-        "kill-server" => "Stops the server: every pane is hung up, and every client told why.",
+        "kill-server" => {
+            "\
+Stops the server: every pane is hung up, and every client told why. From the
+command line it is refused in one of the server's own panes, and while a
+person's terminal is attached (a headless client is a script's, and does not
+count): --force stops it anyway (and one of another fux version).
+
+  fux -L test kill-server"
+        }
         "detach" | "zoom" | "copy-mode" | "command-prompt" | "command-column" | "menu"
         | "rename-prompt" | "confirm-close" | "choose-tab" | "choose-workspace" | "choose-pane"
         | "select-pane" | "select-tab" | "select-workspace" => {
@@ -342,14 +442,27 @@ mod tests {
                     continue;
                 };
                 let command = after.split(')').next().unwrap_or_default().trim();
-                let first = command.split_whitespace().next().unwrap_or_default();
-                if command.is_empty()
-                    || ["attach", "server", "help", "--version", "--nested"].contains(&first)
-                {
+                // The server named before the command is the binary's.
+                let mut command: Vec<&str> = command.split_whitespace().collect();
+                while let Some((&("-L" | "-S"), rest)) = command.split_first() {
+                    command = rest.iter().skip(1).copied().collect();
+                }
+                let first = command.first().copied().unwrap_or_default();
+                let own = [
+                    "attach",
+                    "server",
+                    "help",
+                    "--version",
+                    "--nested",
+                    "status",
+                    "servers",
+                    "check-config",
+                ];
+                if command.is_empty() || own.contains(&first) {
                     continue;
                 }
                 let words: Vec<String> = command
-                    .split_whitespace()
+                    .into_iter()
                     .map(|w| {
                         if w.starts_with('$') {
                             "%1".to_owned()
