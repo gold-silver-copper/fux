@@ -87,6 +87,9 @@ fux kill-workspace -t agent                             # all run started
   and `--cols A-B` read a region; `-S -LINES` adds history (`-S all`, all
   of it); `--full` keeps every cell. `--main` reads the main screen while a
   program holds the full screen: what was printed before it took over.
+  `--alt` reads the full screen a program drew last, after it left it or
+  exited: the pane of a menu or editor that quit shows the shell's screen
+  (often blank), and `--alt` what the program showed before quitting.
   `--last-output` is the last shell command's output alone. `--styles` adds colours and attributes, as SGR escapes or,
   with `--json`, as runs per line, so a selection or a cursor drawn in
   reverse video is visible.

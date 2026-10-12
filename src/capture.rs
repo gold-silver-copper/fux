@@ -113,6 +113,8 @@ fn rows_of(
     }
     let rows: Vec<fux_vt::Row<'_>> = if view.main {
         screen.main_rows().collect()
+    } else if view.alt {
+        screen.alternate_rows().collect()
     } else {
         screen.rows().collect()
     };

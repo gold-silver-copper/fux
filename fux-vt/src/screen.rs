@@ -861,6 +861,16 @@ impl Screen {
             range: 0..grid.retained_len(),
         }
     }
+    /// The alternate screen's rows, whichever screen is in use: what a
+    /// full-screen program drew last, kept after it leaves (1049, 47) until
+    /// the alternate screen is shown again. None if it never was.
+    pub fn alternate_rows(&self) -> Rows<'_> {
+        let grid = &self.alternate;
+        Rows {
+            grid,
+            range: 0..grid.retained_len(),
+        }
+    }
     /// Where the retained row `id` is, from the oldest, if it is kept.
     pub fn row_index(&self, id: crate::RowId) -> Option<usize> {
         self.grid().index_of(id)

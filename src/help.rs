@@ -109,6 +109,8 @@ The pane's screen as text, trailing blanks and blank rows trimmed.
   --styles      colours and attributes, as SGR escapes
   --main        the main screen and its history, while a program holds the full
                 screen: what was printed before it took it
+  --alt         the full screen a program drew last, kept after it left it
+                or exited (a menu's or editor's last screen)
   --last-output the last shell command's output alone (OSC 133 marks)
   --json        an object: size, cursor, lines (and with --styles, style
                 runs per line), and what the program is doing: program, argv,

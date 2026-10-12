@@ -208,7 +208,7 @@ impl Wait {
         let (said, problem, json) = match told {
             Told::Found(found) => {
                 let (said, json) = found.said();
-                let problem = matches!(found, Found::Idle { changed: false })
+                let problem = (self.after && matches!(found, Found::Idle { changed: false }))
                     .then(|| format!("{id}: the screen did not change after the keys"));
                 (said, problem, json)
             }
@@ -393,13 +393,13 @@ impl Watch {
                         line: lines
                             .iter()
                             .rev()
-                            .find(|l| l.contains(text.as_str()))
+                            .find(|l| found_in(l, text) > 0)
                             .cloned()
                             .or(scrolled_line)
                             .unwrap_or_else(|| text.clone()),
                     })
                 }
-                Until::Gone(text) => (!lines.iter().any(|l| l.contains(text.as_str())))
+                Until::Gone(text) => (!lines.iter().any(|l| found_in(l, text) > 0))
                     .then(|| Found::Gone(text.clone())),
                 Until::Idle(idle) => {
                     let quiet = crate::after(pane.changed_at.max(began), *idle);
@@ -458,7 +458,7 @@ impl Watch {
         for ((seen, line), text) in self.in_history.iter_mut().zip(texts) {
             *seen = seen.saturating_add(count(&lines, text));
             if line.is_none() {
-                *line = lines.iter().find(|l| l.contains(text.as_str())).cloned();
+                *line = lines.iter().find(|l| found_in(l, text) > 0).cloned();
             }
         }
     }
@@ -500,7 +500,17 @@ fn count(lines: &[String], text: &str) -> usize {
     if text.is_empty() {
         return 1;
     }
-    lines.iter().map(|l| l.matches(text).count()).sum()
+    lines.iter().map(|l| found_in(l, text)).sum()
+}
+
+/// How many times a line shows TEXT. Lines are trimmed, so blanks that end
+/// TEXT (a prompt's `> `) may also be the line's end.
+fn found_in(line: &str, text: &str) -> usize {
+    let trimmed = text.trim_end();
+    let at_end = trimmed.len() < text.len() && !trimmed.is_empty() && line.ends_with(trimmed);
+    line.matches(text)
+        .count()
+        .saturating_add(usize::from(at_end))
 }
 
 /// A pane's screen as a wait prints it: trimmed, soft-wrapped rows joined.

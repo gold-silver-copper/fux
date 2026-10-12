@@ -196,6 +196,9 @@ pub struct CaptureView {
     /// The main screen and its history, though a program holds the
     /// alternate one: what was printed before it took the screen.
     pub main: bool,
+    /// The alternate screen as a full-screen program last drew it, though
+    /// it has left it, or exited.
+    pub alt: bool,
     /// The last shell command's output alone, between its OSC 133 marks.
     pub last_output: bool,
 }
@@ -831,7 +834,7 @@ const OTHER: &[Spec] = &[
         Ok(Command::Ls { json: a.has("--json") })
     })),
     spec("rename -t TARGET [--] NAME  TARGET: %N, @N, +N or a name", Flags(rename)),
-    spec("capture-pane [-t %N] [-S LINES|all] [--full] [-J] [--rows A-B] [--cols A-B] [--styles] [--main] [--last-output] [--json]  \
+    spec("capture-pane [-t %N] [-S LINES|all] [--full] [-J] [--rows A-B] [--cols A-B] [--styles] [--main] [--alt] [--last-output] [--json]  \
           the screen, trimmed; -J joins wrapped lines", Flags(capture)),
     spec("capture-client [-c CLIENT] [--json]", Screen(|a| {
         Ok(ClientAction::Capture { json: a.has("--json") })
@@ -1245,6 +1248,7 @@ fn capture(a: &mut Args<'_>) -> Result<Command, Usage> {
         cols: a.read_as("--cols", parse_span, span)?,
         styles: a.has("--styles"),
         main: a.has("--main"),
+        alt: a.has("--alt"),
         last_output: a.has("--last-output"),
     };
     Ok(Command::CapturePane {

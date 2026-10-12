@@ -408,6 +408,31 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
     ];
     let pane = id(&server.ok(&[&args[..], &["--", "sh", "-c", script]].concat())?);
     server.ok(&["wait", "-t", "job", "--text", "full a"])?;
+    let other = [
+        "run",
+        "-n",
+        "other",
+        "--",
+        "sh",
+        "-c",
+        "printf 'R> '; exec cat",
+    ];
+    server.ok(&other)?;
+    let prompt = [
+        "wait",
+        "-t",
+        "job",
+        "-t",
+        "other",
+        "--text",
+        "R> ",
+        "--timeout",
+        "5",
+    ];
+    assert!(
+        server.ok(&prompt)?.ends_with("R>\n"),
+        "a prompt's blank is the line's end"
+    );
     let main = server.ok(&["capture-pane", "-t", &pane, "--main", "-S", "all"])?;
     assert!(main.starts_with("before\n1\n"), "{main}");
     assert!(main.contains("\n500\n"), "{main}");
@@ -421,5 +446,15 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
     let kept = std::fs::read_to_string(&log).map_err(e)?;
     assert!(kept.contains("full a") && kept.contains("full b"), "{kept}");
     server.ok(&["notify", "-t", &pane, "done"])?;
+    // A full-screen program's last screen, after it left it and exited.
+    let menu = r"printf '\033[?1049hpicked beta'; printf '\033[?1049l'";
+    let started = server.ok(&["run", "--wait-exit", "--", "sh", "-c", menu])?;
+    let (menu, ended) = started.split_once('\n').ok_or("the id, then the end")?;
+    assert_eq!(ended, "exited 0\n");
+    assert!(!server.ok(&["capture-pane", "-t", menu])?.contains("picked"));
+    assert_eq!(
+        server.ok(&["capture-pane", "-t", menu, "--alt"])?,
+        "picked beta\n"
+    );
     Ok(())
 }

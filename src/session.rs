@@ -1585,7 +1585,11 @@ impl Session {
                 *word = pane.to_string();
             }
         }
-        out
+        // Another -t may name another tab.
+        if out == argv {
+            return out;
+        }
+        self.named(&out)
     }
 
     /// Runs a command, parsed already: from a line, a binding or a menu.
