@@ -306,6 +306,8 @@ pub enum Command {
         env: Vec<(String, String)>,
         /// Another program instead: the one it ran without.
         argv: Vec<String>,
+        /// Then waits, as run's does.
+        then: Option<Box<Wait>>,
     },
     /// A notice on the clients showing the target: every client without.
     Notify {
@@ -731,7 +733,7 @@ pub const COMMANDS: &[(&str, &[Spec])] = &[
 #[rustfmt::skip]
 const PANES: &[Spec] = &[
     spec("split -h|-v [-t %N] [--json] [-- CMD...]  -h side by side, -v stacked", Flags(split)),
-    spec("respawn [-t %N] [-k] [--env K=V] [-- PROGRAM...]  \
+    spec("respawn [-t %N] [-k] [--env K=V] [--wait-text TEXT] [--wait-idle MS] [--wait-exit] [--wait-bell] [--timeout SECS] [--print] [--json] [-- PROGRAM...]  \
           start again in its pane what run started; -k ends it first if it runs", Flags(respawn)),
     spec("notify [-t TARGET] TEXT  a notice on the clients showing TARGET (all without)", Flags(notify)),
     spec("run [-t WS] [-n NAME] [--size COLSxROWS] [--cwd DIR] [--env K=V] [--log FILE] [--wait-text TEXT] [--wait-idle MS] [--wait-exit] [--wait-bell] [--timeout SECS] [--print] [--json] -- PROGRAM...  \
@@ -1140,10 +1142,23 @@ fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
     if argv.is_empty() {
         return Err(Usage::Needs("usage: run [flags] -- PROGRAM [ARGS...]"));
     }
-    let mut until: Vec<Until> = a
-        .values("--wait-text")
-        .map(|t| Until::Text(t.to_owned()))
-        .collect();
+    let then = program_wait(a, "run")?;
+    Ok(Command::Run {
+        workspace,
+        name: a.name(),
+        size: a.size()?,
+        cwd: a.value("--cwd").map(str::to_owned),
+        env,
+        argv,
+        json: a.has("--json"),
+        log: a.value("--log").map(str::to_owned),
+        then,
+    })
+}
+
+/// The wait `run` and `respawn` take: from the program's first output on.
+fn program_wait(a: &Args<'_>, command: &'static str) -> Result<Option<Box<Wait>>, Usage> {
+    let mut until = texts(a, "--wait-text", command)?;
     until.extend(
         a.read_as("--wait-idle", parse_millis, "milliseconds")?
             .map(Until::Idle),
@@ -1156,10 +1171,10 @@ fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
     let timeout = a.read_as("--timeout", parse_seconds, "seconds, at most a day")?;
     if (a.has("--print") || timeout.is_some()) && until.is_empty() {
         return Err(Usage::Needs(
-            "run --print and --timeout go with a --wait-… condition",
+            "--print and --timeout go with a --wait-… condition",
         ));
     }
-    let then = (!until.is_empty()).then(|| {
+    Ok((!until.is_empty()).then(|| {
         Box::new(Wait {
             until,
             timeout: timeout.unwrap_or(WAIT_TIMEOUT),
@@ -1167,18 +1182,26 @@ fn run(a: &mut Args<'_>) -> Result<Command, Usage> {
             json: a.has("--json"),
             after: false,
         })
-    });
-    Ok(Command::Run {
-        workspace,
-        name: a.name(),
-        size: a.size()?,
-        cwd: a.value("--cwd").map(str::to_owned),
-        env,
-        argv,
-        json: a.has("--json"),
-        log: a.value("--log").map(str::to_owned),
-        then,
-    })
+    }))
+}
+
+/// A text flag's values as conditions; an empty one, which every screen
+/// shows, is refused.
+fn texts(a: &Args<'_>, flag: &'static str, command: &'static str) -> Result<Vec<Until>, Usage> {
+    a.values(flag)
+        .map(|t| {
+            if t.is_empty() {
+                Err(Usage::Bad {
+                    command,
+                    flag,
+                    value: String::new(),
+                    expected: "text: an empty one is on every screen",
+                })
+            } else {
+                Ok(Until::Text(t.to_owned()))
+            }
+        })
+        .collect()
 }
 
 /// `--env K=V` pairs.
@@ -1202,6 +1225,7 @@ fn respawn(a: &mut Args<'_>) -> Result<Command, Usage> {
         kill: a.has("-k"),
         env: env_pairs(a, "respawn")?,
         argv: a.rest(),
+        then: program_wait(a, "respawn")?,
     })
 }
 
@@ -1260,8 +1284,7 @@ fn capture(a: &mut Args<'_>) -> Result<Command, Usage> {
 }
 
 fn wait(a: &mut Args<'_>) -> Result<Command, Usage> {
-    let mut until: Vec<Until> = Vec::new();
-    until.extend(a.values("--text").map(|t| Until::Text(t.to_owned())));
+    let mut until = texts(a, "--text", "wait")?;
     until.extend(a.values("--gone").map(|t| Until::Gone(t.to_owned())));
     until.extend(
         a.read_as("--idle", parse_millis, "milliseconds")?
@@ -1507,7 +1530,17 @@ fn send_keys(argv: &[String]) -> Result<Command, Usage> {
         match word.as_str() {
             "--text" => inputs.push(Input::Text(value(word, &mut words)?.to_owned())),
             "--paste" => inputs.push(Input::Paste(value(word, &mut words)?.to_owned())),
-            "--wait-text" => until.push(Until::Text(value(word, &mut words)?.to_owned())),
+            "--wait-text" => {
+                let text = value(word, &mut words)?;
+                if text.is_empty() {
+                    return Err(bad(
+                        "--wait-text",
+                        text,
+                        "text: an empty one is on every screen",
+                    ));
+                }
+                until.push(Until::Text(text.to_owned()));
+            }
             "--wait-gone" => until.push(Until::Gone(value(word, &mut words)?.to_owned())),
             "--wait-idle" => {
                 let text = value(word, &mut words)?;

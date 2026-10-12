@@ -14,8 +14,8 @@ yourself writing one, something is missing from fux.
 ```sh
 fux run -n ck --size 120x40 --wait-text posts -- ~/ck/target/release/ck
 P=ck                                                    # -t NAME finds its pane
+fux capture-pane -t $P --json --styles                  # where the selection is
 fux send-keys -t $P j j Enter --wait-idle 300 --print   # keys, settle, screen
-fux capture-pane -t $P --json --styles                  # the screen, styled
 fux send-keys -t $P q && fux wait -t $P --exit          # prints: exited 0
 fux kill-workspace -t agent                             # all run started
 ```
@@ -37,6 +37,7 @@ fux kill-workspace -t agent                             # all run started
 - **`fux respawn -t %N`** starts it again in the same pane: same words,
   place and variables (`--env K=V` changes one, `-- PROGRAM…` replaces
   it). The pane keeps its id; `-k` ends the program first if it still runs.
+  It takes `run`'s `--wait-…` flags.
 - **`fux wait -t %N …`** answers as soon as the pane:
   - shows `--text TEXT`, on the screen or in a line that scrolled away
     since the wait began, and prints that line (`--text` again: any of
@@ -92,7 +93,8 @@ fux kill-workspace -t agent                             # all run started
   (often blank), and `--alt` what the program showed before quitting.
   `--last-output` is the last shell command's output alone. `--styles` adds colours and attributes, as SGR escapes or,
   with `--json`, as runs per line, so a selection or a cursor drawn in
-  reverse video is visible.
+  reverse video is visible. Plain text shows no selection: a menu may start
+  on any item, so read where it is before pressing keys to move it.
 - **`--json`**, on `capture-pane` and `ls`, says what each pane's program
   is doing:
   - `program` (its foreground process), `argv` and `cwd`;

@@ -1476,8 +1476,7 @@ impl Session {
                 let wait = wait.clone();
                 (target.into_iter().collect(), wait, Some(command))
             }
-            // Started, then waited for from its first output on: the wait is
-            // armed before the server reads anything the program writes.
+            // Started, then waited for from its first output on.
             Ok(Command::Run {
                 workspace,
                 name,
@@ -1485,10 +1484,11 @@ impl Session {
                 cwd,
                 env,
                 argv,
-                json,
                 log,
                 then: Some(wait),
+                ..
             }) => {
+                // The pane's id, to wait on; --json is the wait's.
                 let run = Command::Run {
                     workspace,
                     name,
@@ -1500,28 +1500,23 @@ impl Session {
                     log,
                     then: None,
                 };
-                let outcome = self.run_command(&run, origin);
-                if outcome.status != 0 {
-                    return Begun::Done(outcome);
-                }
-                let Ok(pane) = command::parse_pane(outcome.stdout.trim()) else {
-                    return Begun::Done(outcome);
+                return self.start_waiting(&run, *wait, origin);
+            }
+            Ok(Command::Respawn {
+                target,
+                kill,
+                env,
+                argv,
+                then: Some(wait),
+            }) => {
+                let respawn = Command::Respawn {
+                    target,
+                    kill,
+                    env,
+                    argv,
+                    then: None,
                 };
-                let lead = if json { String::new() } else { outcome.stdout };
-                let Some(pane) = self.panes.get(&pane) else {
-                    return Begun::Done(Outcome {
-                        status: 0,
-                        stdout: lead,
-                        stderr: String::new(),
-                    });
-                };
-                let now = Instant::now();
-                let mut waiting = crate::wait::Waiting::new(&[pane], *wait, now);
-                waiting.lead = lead;
-                return match waiting.answer(self, now) {
-                    Some(outcome) => Begun::Done(outcome),
-                    None => Begun::Waiting(Box::new(waiting)),
-                };
+                return self.start_waiting(&respawn, *wait, origin);
             }
             _ => return Begun::Done(self.run(&argv, origin)),
         };
@@ -1548,6 +1543,32 @@ impl Session {
                 return Begun::Done(outcome);
             }
         }
+        match waiting.answer(self, now) {
+            Some(outcome) => Begun::Done(outcome),
+            None => Begun::Waiting(Box::new(waiting)),
+        }
+    }
+
+    /// Runs a command that starts a program and prints its pane's id, then
+    /// waits on that pane, armed before the server reads anything the
+    /// program writes; the id comes first in what the wait prints.
+    fn start_waiting(&mut self, command: &Command, wait: command::Wait, origin: &Origin) -> Begun {
+        let outcome = self.run_command(command, origin);
+        let pane = command::parse_pane(outcome.stdout.trim()).ok();
+        let Some(pane) = pane
+            .filter(|_| outcome.status == 0)
+            .and_then(|p| self.panes.get(&p))
+        else {
+            return Begun::Done(outcome);
+        };
+        let lead = if wait.json {
+            String::new()
+        } else {
+            outcome.stdout
+        };
+        let now = Instant::now();
+        let mut waiting = crate::wait::Waiting::new(&[pane], wait, now);
+        waiting.lead = lead;
         match waiting.answer(self, now) {
             Some(outcome) => Begun::Done(outcome),
             None => Begun::Waiting(Box::new(waiting)),
@@ -1830,6 +1851,7 @@ impl Session {
                 kill,
                 ref env,
                 ref argv,
+                ..
             } => {
                 let id = self.pane(target, here)?.id;
                 self.respawn(id, kill, env, argv)?;

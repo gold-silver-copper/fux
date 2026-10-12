@@ -463,6 +463,32 @@ class FuxAfter(Fux):
     def done(self, pane, timeout=10):
         return self.wait(pane, "--done", timeout=timeout)
 
+    def wait_first_exit(self, panes, timeout=15):
+        """The name of the first of several panes whose program exits."""
+        args = [w for p in panes.values() for w in ("-t", p)]
+        out = self.fux("wait", *args, "--exit", "--timeout", str(timeout), check=False,
+                       timeout=timeout + 10)
+        if out.returncode != 0:
+            raise Timeout(out.stderr.strip())
+        first = out.stdout.split()[0]
+        return next(name for name, p in panes.items() if p == first)
+
+    def wait_any_text(self, pane, texts, timeout=15):
+        """Which of several texts the pane shows first."""
+        args = [w for t in texts for w in ("--text", t)]
+        return json.loads(self.wait(pane, *args, "--json", timeout=timeout))["text"]
+
+    def send_wait(self, pane, keys, *until, timeout=20):
+        """Sends keys and waits, the wait armed first; the screen after."""
+        args = []
+        for k in keys:
+            args += ["--text", k[5:]] if k.startswith("text:") else [k]
+        out = self.fux("send-keys", "-t", pane, *args, *until, "--print", "--timeout",
+                       str(timeout), check=False, timeout=timeout + 10)
+        if out.returncode != 0:
+            raise Timeout(out.stderr.strip())
+        return out.stdout
+
 
 # ---------------------------------------------------------------------- tmux
 

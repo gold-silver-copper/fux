@@ -441,8 +441,19 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
     assert!(refused.stderr.contains("Entr"), "{}", refused.stderr);
     let busy = server.fux(&["respawn", "-t", &pane])?;
     assert_eq!(busy.status, 1, "it runs: {}", busy.stderr);
-    server.ok(&["respawn", "-t", "job", "-k", "--env", "V=b"])?;
-    server.ok(&["wait", "-t", &pane, "--text", "full b"])?;
+    let again = [
+        "respawn",
+        "-t",
+        "job",
+        "-k",
+        "--env",
+        "V=b",
+        "--wait-text",
+        "full b",
+    ];
+    assert_eq!(server.ok(&again)?, format!("{pane}\nfull b\n"));
+    let empty = server.fux(&["wait", "-t", &pane, "--text", ""])?;
+    assert_eq!(empty.status, 2, "an empty text is on every screen");
     let kept = std::fs::read_to_string(&log).map_err(e)?;
     assert!(kept.contains("full a") && kept.contains("full b"), "{kept}");
     server.ok(&["notify", "-t", &pane, "done"])?;

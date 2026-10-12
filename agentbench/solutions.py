@@ -61,6 +61,8 @@ def restart(d, a, fx):
 
 def first_of(d, a, fx):
     panes = {name: d.spawn(argv(fx, prog), name=name) for name, prog in zip("abc", a["progs"])}
+    if hasattr(d, "wait_first_exit"):
+        return d.wait_first_exit(panes)
     finished = []
 
     def any_done():
@@ -85,6 +87,9 @@ def find_by_name(d, a, fx):
     d.spawn(argv(fx, a["prog"]), name=a["name"])
     p = d.find(a["name"])
     d.wait_text(p, "READY")
+    if hasattr(d, "send_wait"):
+        d.send_wait(p, ["text:quit", "Enter"], "--wait-exit", timeout=5)
+        return
     d.text(p, "quit")
     d.keys(p, "Enter")
     d.poll(lambda: d.exit_status(p) is not None, 5)
@@ -236,6 +241,8 @@ def text_answer(d, a, fx):
 
 def first_text(d, a, fx):
     p = d.spawn(a["argv"] if "argv" in a else argv(fx, a["prog"]))
+    if hasattr(d, "wait_any_text"):
+        return d.wait_any_text(p, a["texts"])
     found = d.poll(lambda: next((t for t in a["texts"] if t in d.screen(p)), None), 15)
     return found
 
@@ -331,6 +338,9 @@ def agent_two(d, a, fx):
     p = d.spawn(argv(fx, a["prog"]))
     d.wait_text(p, "agent ready")
     for msg in (a["first"], a["second"]):
+        if hasattr(d, "send_wait"):
+            d.send_wait(p, ["text:" + msg, "Enter"], "--wait-text", "answer:")
+            continue
         before = d.screen(p, history=True).count("answer:")
         d.text(p, msg)
         d.keys(p, "Enter")
@@ -487,9 +497,12 @@ def nvim_edit(d, a, fx):
 def repl(d, a, fx):
     p = d.spawn(["python3", "-q"])
     d.wait_text(p, ">>>")
-    d.text(p, a["expr"])
-    d.keys(p, "Enter")
-    d.poll(lambda: re.search(r"^\d+$", d.screen(p), re.M), 5)
+    if hasattr(d, "send_wait"):
+        d.send_wait(p, ["text:" + a["expr"], "Enter"], "--wait-text", ">>>", timeout=5)
+    else:
+        d.text(p, a["expr"])
+        d.keys(p, "Enter")
+        d.poll(lambda: re.search(r"^\d+$", d.screen(p), re.M), 5)
     value = re.findall(r"^(\d+)$", d.screen(p), re.M)[-1]
     d.text(p, "exit()")
     d.keys(p, "Enter")

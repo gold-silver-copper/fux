@@ -211,7 +211,8 @@ file has them.
             "\
 Starts again, in its pane, the program `fux run` started there: the same words,
 place and variables (--env adds or replaces; a program after -- replaces it).
-The pane keeps its id, tab and size; its screen starts empty. Refused while
+The pane keeps its id, tab and size; its screen starts empty. The --wait-…
+flags wait as run's do, from its first output on. Refused while
 the program runs, unless -k, which ends it first.
 
   fux respawn -t %4 -k"
