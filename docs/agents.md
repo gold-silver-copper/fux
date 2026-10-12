@@ -34,7 +34,8 @@ fux kill-workspace -t agent                     # everything run started
   A crash ends a wait at once (status 3, its last lines printed); a timeout
   (124) says what the pane is doing ("no change for 58s; last line: `> `").
 - **Read:** `capture-pane -t NAME` prints the screen, trimmed. `--marks` shows
-  reverse video, a menu's selection, as `⟦beta⟧` (a menu may start on any
+  highlights (reverse video, or a background other than the screen's: a
+  menu's selection) as `⟦beta⟧` (a menu may start on any
   item); `--styles` adds colours (with `--json`, as runs). `-S all` adds
   history; `--last-output` is the last shell command's output; `--alt` is a
   full-screen program's last screen after it exits; `--main` what was
@@ -43,7 +44,7 @@ fux kill-workspace -t agent                     # everything run started
 - **Keys:** tmux's names (`Enter`, `Escape`, `C-c`, `Up`, `F5`, `S-Tab`,
   `BSpace`; `fux list-keys`); other words, and `--text TEXT`, are typed; a
   misspelled name (`Entr`) is refused; `-l` types every word. `--paste TEXT`
-  pastes; `-N 5` repeats. Flags (`-t`, `-N`) go before the keys.
+  pastes; `-N 5` repeats. Flags (`-t`, `-N`) go before the keys; words after `--` are all typed.
 - **Mouse:** `send-mouse -t NAME click|wheel-up|wheel-down… ROW COL`, from 0.
 - **Sizes:** `resize -t NAME 40x12` (its tab); `resize-pane -t %N -x 50%`;
   `split -h|-v -t %N [--cwd DIR] -- PROG` (one word is typed as a line).
@@ -61,7 +62,7 @@ Each shell fux starts reads your own startup files, then marks its commands
 just work. Your prompt, `PROMPT_COMMAND`, hooks and history behave as
 before. `set shell-marks off` in the config turns this off. A shell fux does
 not know, or one started with a script or `-c`, is left alone (bash with
-`--norc` is marked through its variables, unless you set them); it
+`--norc`, or a login bash, is marked through `PS0` and `PROMPT_COMMAND`); it
 can still mark itself (`printf '\e]133;C\a'` as a command's output begins,
 `printf '\e]133;D;%s\a' $?` as it ends). Without marks, wait for text only
 the output has, or for `--wait-idle`.

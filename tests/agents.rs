@@ -840,3 +840,257 @@ fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
     assert!(printed.contains("exited 0\npicked beta"), "{printed}");
     Ok(())
 }
+
+/// What the stress tests found waits get wrong: a pane that exited does
+/// not end a wait another pane meets; text that comes again after a clear,
+/// or after a Space key, is new; a respawn ends a wait on the program
+/// before; and Enter typed after text, before more text, is read alone.
+#[test]
+fn waits_hold_up_under_stress() -> Outcome {
+    let server = Server::start("")?;
+    let failed = server.fux(&[
+        "run",
+        "-n",
+        "a",
+        "--wait-exit",
+        "--",
+        "sh",
+        "-c",
+        "echo FAIL-A; exit 1",
+    ])?;
+    assert_eq!(failed.status, 1, "the program's status");
+    let b = id(&server.ok(&[
+        "run",
+        "-n",
+        "b",
+        "--",
+        "sh",
+        "-c",
+        "echo PASS; exec sleep 30",
+    ])?);
+    server.ok(&["wait", "-t", "b", "--text", "PASS"])?;
+    let either = server.ok(&["wait", "-t", "a", "-t", "b", "--text", "PASS"])?;
+    assert_eq!(
+        either,
+        format!("{b} PASS\n"),
+        "an exited pane does not end it"
+    );
+    server.ok(&[
+        "run",
+        "-n",
+        "sh",
+        "--wait-idle",
+        "300",
+        "--",
+        "bash",
+        "--norc",
+        "-i",
+    ])?;
+    let again = [
+        "send-keys",
+        "-t",
+        "sh",
+        "--text",
+        "clear; echo READY",
+        "Enter",
+        "--wait-text",
+        "READY",
+    ];
+    server.ok(&again)?;
+    assert_eq!(server.ok(&again)?, "READY\n", "the same line, drawn again");
+    let spaced = [
+        "send-keys",
+        "-t",
+        "sh",
+        "echo",
+        "Space",
+        "done42",
+        "Enter",
+        "--wait-text",
+        "done42",
+    ];
+    assert_eq!(server.ok(&spaced)?, "done42\n");
+    server.ok(&["run", "-n", "r", "--", "sleep", "60"])?;
+    let mut waiting = std::process::Command::new(FUX)
+        .args(["wait", "-t", "r", "--exit", "--timeout", "10"])
+        .env("FUX_SOCKET", &server.socket)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(e)?;
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    server.ok(&["respawn", "-t", "r", "-k"])?;
+    let ended = waiting.wait_with_output().map_err(e)?;
+    assert_eq!(ended.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&ended.stderr).contains("respawn"));
+    Ok(())
+}
+
+/// What the stress tests found the command line gets wrong: `--help`
+/// stops nothing; a name is put in place of fux's own -t only; a name that
+/// reads as an id, or one taken, is refused; workspace-or-tab targets take
+/// a tab's name; a mistyped flag is not typed into the program; a click
+/// outside the pane is refused; a shell is not signalled.
+#[test]
+fn the_command_line_holds_up_under_stress() -> Outcome {
+    let server = Server::start("")?;
+    let help = server.ok(&["kill-server", "--help"])?;
+    assert!(help.contains("Stops the server"), "{help}");
+    server.ok(&["ls"])?;
+    server.ok(&["run", "-n", "ed", "--wait-idle", "200", "--", "cat"])?;
+    let typed = [
+        "send-keys",
+        "-t",
+        "ed",
+        "-l",
+        "grep",
+        "-t",
+        "ed",
+        "--wait-idle",
+        "200",
+        "--print",
+    ];
+    assert!(
+        server.ok(&typed)?.contains("grep-ted"),
+        "the words are typed as they are"
+    );
+    let printed = server.ok(&["run", "--wait-exit", "--print", "--", "echo", "-t", "ed"])?;
+    assert!(printed.contains("-t ed"), "{printed}");
+    assert_eq!(server.fux(&["run", "-n", "@1", "--", "cat"])?.status, 1);
+    assert_eq!(
+        server.fux(&["new-tab", "-n", "ed"])?.status,
+        1,
+        "a name taken"
+    );
+    server.ok(&["resize", "-t", "ed", "40x12"])?;
+    assert!(
+        server.ok(&["ls"])?.contains(" 40x12"),
+        "resized by its tab's name"
+    );
+    let typo = server.fux(&["send-keys", "-t", "ed", "x", "--wait-idel", "300"])?;
+    assert_eq!(typo.status, 2);
+    assert!(typo.stderr.contains("--wait-idel"), "{}", typo.stderr);
+    let clicks = "printf '\\033[?1000h\\033[?1006hready'; exec cat";
+    server.ok(&[
+        "run",
+        "-n",
+        "m",
+        "--size",
+        "20x5",
+        "--wait-text",
+        "ready",
+        "--",
+        "sh",
+        "-c",
+        clicks,
+    ])?;
+    let outside = server.fux(&["send-mouse", "-t", "m", "click", "5", "0"])?;
+    assert!(
+        outside.stderr.contains("rows count 0-4"),
+        "{}",
+        outside.stderr
+    );
+    server.ok(&[
+        "run",
+        "-n",
+        "shell",
+        "--wait-idle",
+        "300",
+        "--",
+        "bash",
+        "--norc",
+        "-i",
+    ])?;
+    let signalled = server.fux(&["signal", "-t", "shell", "HUP"])?;
+    assert!(
+        signalled.stderr.contains("but its shell"),
+        "{}",
+        signalled.stderr
+    );
+    Ok(())
+}
+
+/// What the stress tests found screens and shells get wrong: a selection
+/// drawn with a background, and one around wide glyphs, is marked whole;
+/// `clear`'s scrollback erase empties the history; a line bash cannot
+/// parse still ends; and an rc file's `set -u` or exported PROMPT_COMMAND
+/// does not break the marks.
+#[test]
+fn screens_and_shells_hold_up_under_stress() -> Outcome {
+    let server = Server::start("")?;
+    let menu = r"printf 'alpha\n\033[48;5;236mbeta\033[0m\n\033[7m 日本 \033[0m\n'; exec cat";
+    server.ok(&[
+        "run",
+        "-n",
+        "menu",
+        "--wait-text",
+        "beta",
+        "--",
+        "sh",
+        "-c",
+        menu,
+    ])?;
+    assert_eq!(
+        server.ok(&["capture-pane", "-t", "menu", "--marks"])?,
+        "alpha\n⟦beta⟧\n⟦ 日本 ⟧\n"
+    );
+    let flood = r"seq 50; printf '\033[H\033[2J\033[3Jnew'; exec cat";
+    server.ok(&[
+        "run",
+        "-n",
+        "clear",
+        "--size",
+        "20x5",
+        "--wait-text",
+        "new",
+        "--",
+        "sh",
+        "-c",
+        flood,
+    ])?;
+    assert_eq!(
+        server.ok(&["capture-pane", "-t", "clear", "-S", "all"])?,
+        "new\n"
+    );
+    let home = server.dir.join("home");
+    std::fs::create_dir_all(&home).map_err(e)?;
+    let rc = "set -u\nexport PROMPT_COMMAND='echo own'\n";
+    std::fs::write(home.join(".bashrc"), rc).map_err(e)?;
+    let env = format!("HOME={}", home.display());
+    server.ok(&[
+        "run",
+        "-n",
+        "b",
+        "--env",
+        &env,
+        "--wait-idle",
+        "300",
+        "--",
+        "bash",
+    ])?;
+    let broken = [
+        "send-keys",
+        "-t",
+        "b",
+        "--text",
+        "if then fi",
+        "Enter",
+        "--wait-done",
+    ];
+    assert_eq!(server.ok(&broken)?, "done 2\n", "bash could not parse it");
+    let nested = [
+        "send-keys",
+        "-t",
+        "b",
+        "--text",
+        "bash --norc -c 'echo $PROMPT_COMMAND'",
+        "Enter",
+        "--wait-done",
+    ];
+    server.ok(&nested)?;
+    let output = server.ok(&["capture-pane", "-t", "b", "--last-output"])?;
+    assert!(
+        !output.contains("__fux"),
+        "fux's PROMPT_COMMAND is not inherited: {output}"
+    );
+    Ok(())
+}
