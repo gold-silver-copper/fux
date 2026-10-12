@@ -1,0 +1,616 @@
+//! fux's command line, config, bindings and prompt: fuxth programs, run in
+//! a client. Words build typed requests (`opts … run`, `keys … send-keys`)
+//! and execution words submit them: the program suspends while the server
+//! does what one asks, and goes on with what it answers, as typed values
+//! (a pane's handle, a capture), never text to be read back.
+//!
+//! Every run is fresh: its own stack and dictionary, the bundled library's
+//! words first (`library.fux`).
+mod words;
+
+use crate::command::{Command, Extent, Input, Kind, Mouse, Until, WsRef};
+use crate::id::{AnyId, ClientId, PaneId, TabId, WsId};
+use crate::keymap::Keymap;
+use crate::layout::Axis;
+use crate::protocol::{Context, Reply, Request, Scalar};
+use fuxth::{AppValue, Compiler, Limits, Machine, Outcome, Token, Value};
+use std::io::Write;
+use std::time::Duration;
+
+pub use words::{WORDS, Word};
+
+/// The bundled words, written in fuxth.
+pub const LIBRARY: &str = include_str!("library.fux");
+
+/// A value of fux's own on the stack.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Fux {
+    Pane(PaneId),
+    Tab(TabId),
+    Workspace(WsId),
+    Client(ClientId),
+    /// Options being built, for `run`, `split`, `wait`, `capture` and the
+    /// rest.
+    Opts(Box<Opts>),
+    /// Input being built, for `send-keys`.
+    Keys(Box<Keys>),
+    /// A mouse event being built, for `send-mouse`.
+    Mouse(Box<MouseEvent>),
+    /// A width or height: cells, or a share of the tab.
+    Extent(Extent),
+    /// What the server said: a capture, a listing, a wait's outcome.
+    Answer(Box<Answer>),
+}
+
+impl AppValue for Fux {
+    fn kind(&self) -> &'static str {
+        match self {
+            Fux::Pane(_) => "a pane",
+            Fux::Tab(_) => "a tab",
+            Fux::Workspace(_) => "a workspace",
+            Fux::Client(_) => "a client",
+            Fux::Opts(_) => "options (from opts)",
+            Fux::Keys(_) => "keys (from keys)",
+            Fux::Mouse(_) => "a mouse event (from mouse)",
+            Fux::Extent(_) => "a size (from percent)",
+            Fux::Answer(_) => "an answer",
+        }
+    }
+}
+
+/// What a wait waits for, as words give it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Waits {
+    pub until: Vec<Until>,
+    pub timeout: Option<Duration>,
+    pub print: bool,
+    pub marks: bool,
+}
+
+/// Options, as words give them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Opts {
+    pub name: Option<String>,
+    pub size: Option<fux_vt::Size>,
+    pub cwd: Option<String>,
+    pub env: Vec<(String, String)>,
+    pub argv: Vec<String>,
+    pub typed: Option<String>,
+    pub axis: Option<Axis>,
+    pub place: Option<WsRef>,
+    pub ids: Vec<AnyId>,
+    pub log: Option<String>,
+    pub kill: bool,
+    pub waits: Waits,
+    pub view: crate::command::CaptureView,
+    pub history: Option<usize>,
+}
+
+/// Input, as words give it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Keys {
+    pub inputs: Vec<Input>,
+    pub repeat: u16,
+    pub if_revision: Option<u64>,
+    pub waits: Waits,
+}
+
+/// A mouse event, as words give it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MouseEvent {
+    pub mouse: Mouse,
+    pub row: u16,
+    pub col: u16,
+    pub if_revision: Option<u64>,
+    pub waits: Waits,
+}
+
+/// What the server answered, to print as text, or as JSON (asked again
+/// for, by `query`, if it was not given).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Answer {
+    pub text: String,
+    pub json: Option<String>,
+    pub query: Option<Command>,
+}
+
+/// What an application word asks while the program waits.
+#[derive(Clone, Debug)]
+pub enum Ask {
+    /// A request, as the client `client` (or the caller), and what to make
+    /// of its reply.
+    Server {
+        command: Command,
+        client: Option<ClientId>,
+        then: Then,
+    },
+    /// Something the client itself does that takes over (attaching), or
+    /// talks to no server (`status`).
+    Local(Local),
+}
+
+/// What a reply becomes on the stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Then {
+    Nothing,
+    /// The pane, tab or workspace it made or found, of `Kind`.
+    Handle(Kind),
+    /// Its text, as an answer `json` can show as JSON.
+    Answer,
+    /// Its text, as a string.
+    Text,
+    /// A field's value.
+    Value,
+    /// A wait's outcome: its text, and JSON; nothing for no wait.
+    Outcome { waited: bool },
+}
+
+/// What the client does itself.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Local {
+    Attach {
+        workspace: Option<String>,
+        read_only: bool,
+    },
+    Headless {
+        cols: u16,
+        rows: u16,
+    },
+    /// The server for what follows: its socket, by name or path.
+    Server(Chosen),
+    Start,
+    Status,
+    Servers,
+}
+
+/// What runs a program's words: where its requests come from, the client's
+/// keymap if it runs as a config, and what its output goes to.
+pub struct Host<'a> {
+    pub context: Context,
+    /// The keymap a config's `bind` and `prefix` change.
+    pub keymap: Option<&'a mut Keymap>,
+    /// The binding `label`, `group` and `repeat` change: its keys, and
+    /// whether it is bound without the prefix.
+    pub last_bound: Option<(Vec<crate::keys::KeyPress>, bool)>,
+    pub out: &'a mut dyn Write,
+}
+
+/// How a run ended: its status, and why it failed, if it did.
+pub struct Ended {
+    pub status: u8,
+    pub stack: Vec<Value<Fux>>,
+}
+
+/// A run's failure: its status (a wait's: 3, 4, 5, 6, 124; else 1), its
+/// stable code and its message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Failed {
+    pub status: u8,
+    pub code: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for Failed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl From<fuxth::Error> for Failed {
+    fn from(error: fuxth::Error) -> Failed {
+        let message = match (&error.place, &error.word) {
+            (Some(place), Some(word)) => format!("{place}: {word}: {}", error.message),
+            (Some(place), None) => format!("{place}: {}", error.message),
+            (None, Some(word)) => format!("{word}: {}", error.message),
+            (None, None) => error.message,
+        };
+        Failed {
+            status: 1,
+            code: error.code.name().to_owned(),
+            message,
+        }
+    }
+}
+
+/// The vocabulary fuxth compiles fux's programs with.
+pub fn vocabulary() -> fuxth::Vocabulary {
+    let mut vocabulary = fuxth::Vocabulary::default();
+    for word in WORDS {
+        vocabulary.add(word.name, word.takes);
+    }
+    vocabulary
+}
+
+/// Compiles `tokens` after the library: a program ready to run.
+pub fn compile(tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
+    let mut compiler = Compiler::new(vocabulary());
+    compiler.add(&fuxth::token::source("library.fux", LIBRARY)?)?;
+    compiler.add(tokens)?;
+    Ok(Machine::new(compiler.finish()?, Limits::default()))
+}
+
+/// The server a program names: the default (`FUX_SOCKET`, else
+/// `server.sock`), one by name, or a socket's path.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Chosen {
+    #[default]
+    Default,
+    Name(String),
+    Path(String),
+}
+
+/// Where a program's requests go: a connection made when the first is.
+#[derive(Default)]
+pub struct Server {
+    chosen: Chosen,
+    requests: Option<crate::client::Requests>,
+}
+
+impl Server {
+    pub fn new(chosen: Chosen) -> Server {
+        Server {
+            chosen,
+            requests: None,
+        }
+    }
+
+    /// The server for what follows.
+    pub fn choose(&mut self, chosen: Chosen) {
+        self.chosen = chosen;
+        self.requests = None;
+    }
+
+    /// Its socket.
+    pub fn socket(&self) -> Result<crate::socket::SocketPath, Failed> {
+        let choice = match &self.chosen {
+            Chosen::Default => crate::socket::Choice::Default,
+            Chosen::Name(name) => crate::socket::Choice::Name(name),
+            Chosen::Path(path) => crate::socket::Choice::Path(path, "socket"),
+        };
+        crate::socket::socket_path(choice).map_err(|e| client_failed(e.into()))
+    }
+
+    /// Asks the server `request`, what it streams before its reply going to
+    /// `out`.
+    pub fn ask(&mut self, request: &Request, out: &mut dyn Write) -> Result<Reply, Failed> {
+        let requests = match &mut self.requests {
+            Some(requests) => requests,
+            None => {
+                let socket = self.socket()?;
+                self.requests.insert(crate::client::Requests::open(&socket).map_err(client_failed)?)
+            }
+        };
+        let asked = requests.ask(request, out).map_err(client_failed);
+        if asked.is_err() {
+            self.requests = None;
+        }
+        asked
+    }
+}
+
+fn client_failed(error: crate::client::Error) -> Failed {
+    let code = match &error {
+        crate::client::Error::Socket(crate::socket::Error::NoServer(_))
+        | crate::client::Error::Connect { .. } => "no_server",
+        crate::client::Error::Mismatch(_) => "mismatch",
+        _ => "client",
+    };
+    Failed {
+        status: 1,
+        code: code.to_owned(),
+        message: error.to_string(),
+    }
+}
+
+/// Runs `machine` to its end, asking `server` what its words ask; with
+/// `local`, doing what the client itself does. Its stack at the end.
+pub fn run(
+    machine: &mut Machine<Fux>,
+    host: &mut Host<'_>,
+    server: &mut Server,
+    local: &mut dyn FnMut(&Local, &mut Server, &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed>,
+) -> Result<Ended, Failed> {
+    loop {
+        match machine.run(host, 100_000)? {
+            Outcome::Finished => {
+                return Ok(Ended {
+                    status: 0,
+                    stack: machine.stack().to_vec(),
+                });
+            }
+            Outcome::Paused => {}
+            Outcome::Suspended(Ask::Server {
+                command,
+                client,
+                then,
+            }) => {
+                let mut context = host.context.clone();
+                if client.is_some() {
+                    context.client = client;
+                }
+                let query = command.clone();
+                let reply = server.ask(&Request { command, context }, host.out)?;
+                for value in answered(reply, then, query)? {
+                    machine.push(value)?;
+                }
+            }
+            Outcome::Suspended(Ask::Local(what)) => {
+                for value in local(&what, server, host.out)? {
+                    machine.push(value)?;
+                }
+            }
+        }
+    }
+}
+
+/// What a reply puts on the stack, `then` saying what it is; a failure,
+/// with its status, if it failed.
+pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fux>>, Failed> {
+    if reply.status != 0 {
+        let message = match (reply.message.trim_end(), reply.text.trim_end()) {
+            ("", text) => text.to_owned(),
+            (message, "") => message.to_owned(),
+            (message, text) => format!("{text}\n{message}"),
+        };
+        let code = reply.code.unwrap_or_else(|| {
+            match reply.status {
+                3 => "exited",
+                4 => "closed",
+                5 => "unchanged",
+                6 => "changed",
+                124 => "timeout",
+                _ => "failed",
+            }
+            .to_owned()
+        });
+        return Err(Failed {
+            status: reply.status,
+            code,
+            message,
+        });
+    }
+    let text = reply.text.trim_end_matches('\n').to_owned();
+    Ok(match then {
+        Then::Nothing => Vec::new(),
+        Then::Handle(kind) => (reply.ids.iter())
+            .rev()
+            .find(|id| id.kind() == kind)
+            .map(|id| Value::App(handle(*id)))
+            .into_iter()
+            .collect(),
+        Then::Answer => vec![Value::App(Fux::Answer(Box::new(Answer {
+            text,
+            json: None,
+            query: Some(query),
+        })))],
+        Then::Text => vec![Value::str(text)],
+        Then::Value => vec![match reply.value {
+            Some(Scalar::Int(n)) => Value::Int(n),
+            Some(Scalar::Bool(b)) => Value::Bool(b),
+            Some(Scalar::Str(s)) => Value::str(s),
+            Some(Scalar::Null) | None => Value::str(text),
+        }],
+        Then::Outcome { waited: false } => Vec::new(),
+        Then::Outcome { waited: true } => vec![Value::App(Fux::Answer(Box::new(Answer {
+            text,
+            json: Some(reply.json.trim_end().to_owned()).filter(|j| !j.is_empty()),
+            query: None,
+        })))],
+    })
+}
+
+/// A handle for `id`.
+pub fn handle(id: crate::command::AnyRef<WsId>) -> Fux {
+    match id {
+        crate::command::AnyRef::Pane(p) => Fux::Pane(p),
+        crate::command::AnyRef::Tab(t) => Fux::Tab(t),
+        crate::command::AnyRef::Workspace(w) => Fux::Workspace(w),
+    }
+}
+
+/// A value as a program's end prints it.
+pub fn display(value: &Value<Fux>) -> String {
+    match value {
+        Value::Int(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Str(s) => s.to_string(),
+        Value::App(app) => match app {
+            Fux::Pane(p) => p.to_string(),
+            Fux::Tab(t) => t.to_string(),
+            Fux::Workspace(w) => w.to_string(),
+            Fux::Client(c) => c.to_string(),
+            Fux::Answer(answer) => answer.text.clone(),
+            Fux::Extent(Extent::Cells(n)) => n.to_string(),
+            Fux::Extent(Extent::Percent(n)) => format!("{n}%"),
+            Fux::Opts(_) | Fux::Keys(_) | Fux::Mouse(_) => format!("({})", app.kind()),
+        },
+    }
+}
+
+/// What a program does that the client does itself, from the command line:
+/// attaching, choosing and starting a server, and asking after servers.
+pub fn local(what: &Local, server: &mut Server, _out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
+    let failed = |code: &str, message: String| Failed {
+        status: 1,
+        code: code.to_owned(),
+        message,
+    };
+    match what {
+        Local::Server(chosen) => server.choose(chosen.clone()),
+        Local::Attach { workspace, read_only } => {
+            if std::env::var_os("FUX_PANE").is_some_and(|p| !p.is_empty()) {
+                let why = "this is a fux pane: attaching here would show fux inside itself \
+                           (unset FUX_PANE to do it anyway)";
+                return Err(failed("nested", why.to_owned()));
+            }
+            // Before a server is started for it, which would be left behind.
+            if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                return Err(client_failed(crate::client::Error::NotATerminal));
+            }
+            let socket = started(server)?;
+            let (keymap, problem) = configured(server);
+            let attach = crate::client::Attaching {
+                workspace: workspace.clone(),
+                read_only: *read_only,
+                keymap,
+                problem,
+            };
+            crate::client::attach(&socket, attach).map_err(client_failed)?;
+        }
+        Local::Headless { cols, rows } => {
+            let socket = started(server)?;
+            let (keymap, problem) = configured(server);
+            let size = fux_vt::Size::new(*rows, *cols)
+                .map_err(|_| failed("range", "headless: a size from 1 by 1".to_owned()))?;
+            let attach = crate::client::Attaching {
+                workspace: None,
+                read_only: false,
+                keymap,
+                problem,
+            };
+            crate::client::headless(&socket, attach, size).map_err(client_failed)?;
+        }
+        Local::Start => {
+            started(server)?;
+        }
+        Local::Status => {
+            let socket = server.socket()?;
+            let probe = crate::client::probe(&socket).map_err(client_failed)?;
+            let (text, _) = crate::status(&socket, &probe, false);
+            let (json, _) = crate::status(&socket, &probe, true);
+            return Ok(vec![answer(text, json)]);
+        }
+        Local::Servers => {
+            let fail = |e: crate::socket::Error| client_failed(e.into());
+            let text = crate::servers(false).map_err(fail)?;
+            let json = crate::servers(true).map_err(fail)?;
+            return Ok(vec![answer(text, json)]);
+        }
+    }
+    Ok(Vec::new())
+}
+
+/// An answer the client made itself, as text and JSON.
+fn answer(text: String, json: String) -> Value<Fux> {
+    Value::App(Fux::Answer(Box::new(Answer {
+        text: text.trim_end().to_owned(),
+        json: Some(json.trim_end().to_owned()),
+        query: None,
+    })))
+}
+
+/// The server, started in the background if none answers: its socket. One
+/// started has the config's settings (`set`) at once.
+fn started(server: &mut Server) -> Result<crate::socket::SocketPath, Failed> {
+    let socket = server.socket()?;
+    if std::os::unix::net::UnixStream::connect(socket.path()).is_err() {
+        crate::client::start_server(&socket).map_err(client_failed)?;
+    }
+    Ok(socket)
+}
+
+/// The client's keymap, its config run on the defaults; and what was wrong
+/// with the config, if anything was.
+pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
+    let mut keymap = Keymap::default();
+    let Some(path) = crate::config::default_path().filter(|p| p.exists()) else {
+        return (keymap, None);
+    };
+    let problem = run_file(&path, &mut keymap, server).err();
+    (keymap, problem.map(|failed| format!("config: {failed}")))
+}
+
+/// Runs a config file, its words changing `keymap`, its settings sent to
+/// `server`. A config attaches nothing, and chooses no other server.
+fn run_file(path: &std::path::Path, keymap: &mut Keymap, server: &mut Server) -> Result<(), Failed> {
+    let shown = path.display().to_string();
+    let text = std::fs::read_to_string(path).map_err(|e| Failed {
+        status: 1,
+        code: "read".to_owned(),
+        message: format!("{shown}: {e}"),
+    })?;
+    let mut machine = compile(&fuxth::token::source(&shown, &text)?)?;
+    let mut out = std::io::sink();
+    let mut host = Host {
+        context: crate::client::context(),
+        keymap: Some(keymap),
+        last_bound: None,
+        out: &mut out,
+    };
+    run(&mut machine, &mut host, server, &mut refuse_local).map(drop)
+}
+
+/// A program that may not do what the client does itself: a config's, a
+/// key's, a saved session's.
+pub fn refuse_local(what: &Local, _: &mut Server, _: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
+    let word = match what {
+        Local::Attach { .. } => "attach",
+        Local::Headless { .. } => "headless",
+        Local::Server(_) => "server",
+        Local::Start => "start",
+        Local::Status => "status",
+        Local::Servers => "servers",
+    };
+    Err(Failed {
+        status: 1,
+        code: "not_here".to_owned(),
+        message: format!("{word} runs from the command line only"),
+    })
+}
+
+/// Brings back a saved session: its program run against the server on
+/// `socket`, ids asked for as saved, programs left for `respawn`.
+pub fn restore(socket: &crate::socket::SocketPath, path: &std::path::Path, text: &str) -> Result<(), Failed> {
+    let mut machine = compile(&fuxth::token::source(&path.display().to_string(), text)?)?;
+    let mut out = std::io::sink();
+    let mut context = crate::client::context();
+    context.restoring = true;
+    // Its panes are its own, not a pane's it runs in.
+    (context.pane, context.server) = (None, None);
+    let mut host = Host {
+        context,
+        keymap: None,
+        last_bound: None,
+        out: &mut out,
+    };
+    let mut server = Server::new(Chosen::Path(socket.path().to_string_lossy().into_owned()));
+    run(&mut machine, &mut host, &mut server, &mut refuse_local).map(drop)
+}
+
+/// The `fux` binary's words: attaches with none, runs `-` (stdin) or a file,
+/// or runs the words given. What is left on the stack is printed, a value a
+/// line. Its status, or why it failed.
+pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
+    let read = |name: &str, text: std::io::Result<String>| {
+        text.map_err(|e| Failed {
+            status: 1,
+            code: "read".to_owned(),
+            message: format!("{name}: {e}"),
+        })
+    };
+    let tokens = match args {
+        [] => fuxth::token::arguments(&["attach"]),
+        [dash] if dash == "-" => {
+            let mut text = String::new();
+            let read_all = std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).map(|_| text);
+            fuxth::token::source("stdin", &read("stdin", read_all)?)?
+        }
+        [file] if file.contains('/') || file.ends_with(".fux") => {
+            fuxth::token::source(file, &read(file, std::fs::read_to_string(file))?)?
+        }
+        words => fuxth::token::arguments(words),
+    };
+    let mut machine = compile(&tokens)?;
+    let mut host = Host {
+        context: crate::client::context(),
+        keymap: None,
+        last_bound: None,
+        out,
+    };
+    let mut server = Server::default();
+    let ended = run(&mut machine, &mut host, &mut server, &mut local)?;
+    for value in &ended.stack {
+        let _ = writeln!(host.out, "{}", display(value));
+    }
+    Ok(ended.status)
+}

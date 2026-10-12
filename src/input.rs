@@ -1,113 +1,35 @@
-//! Routing a client's input: to its overlay, its copy mode, the command
-//! column, or its focused pane.
-use crate::command::{ClientAction, Command};
-use crate::config::Node;
-use crate::decode::Input;
+//! What an attached client sends: typed actions (`crate::act`), routed to
+//! its overlay, its copy mode, or its focused pane. The client reads its
+//! own keyboard and runs its own bindings; a key reaches the server only
+//! as literal input for the pane it focuses.
+use crate::act::Act;
 use crate::id::ClientId;
+use crate::keys::Keystroke;
 use crate::keys::mouse::{MouseAction, MouseEvent};
-use crate::keys::{KeyPress, Keystroke};
 use crate::layout::Placement;
 use crate::overlay;
-use crate::session::{Origin, Session};
-use crate::view::Mode;
-use std::time::Instant;
-
-/// How much of a client's input is decoded and dispatched at once.
-const INPUT_PIECE: usize = 4096;
+use crate::session::Session;
+use crate::view::{Mode, Notice};
 
 impl Session {
-    /// Raw bytes from a client's terminal, now.
-    pub fn input(&mut self, client: ClientId, bytes: &[u8]) {
-        self.input_at(client, bytes, Instant::now());
-    }
-
-    /// Raw bytes from a client's terminal, read at `now`: what they leave
-    /// waiting (a lone Escape, an answer begun) is due when the decoder's
-    /// deadline says (`Decoder::deadline`).
-    ///
-    /// The bytes are decoded and dispatched `INPUT_PIECE` at a time, so a
-    /// large frame of input never becomes a key for every byte at once.
-    pub fn input_at(&mut self, client: ClientId, bytes: &[u8], now: Instant) {
-        let mut inputs = Vec::new();
-        let mut rest = bytes;
-        while !rest.is_empty() {
-            let (piece, later) = rest
-                .split_at_checked(INPUT_PIECE.min(rest.len()))
-                .unwrap_or((rest, &[]));
-            rest = later;
-            match self.views.get_mut(&client) {
-                Some(view) => {
-                    view.decoder.expire(now);
-                    view.decoder.bytes(piece, &mut inputs);
-                    view.decoder.mark(now);
-                }
-                None => return,
-            }
-            self.dispatch(client, std::mem::take(&mut inputs));
-        }
-    }
-
-    /// The decoder's wait passed for a client: what was waiting is taken as
-    /// it is.
-    pub fn escape(&mut self, client: ClientId) {
-        let mut inputs = Vec::new();
-        match self.views.get_mut(&client) {
-            Some(view) => view.decoder.timeout(&mut inputs),
-            None => return,
-        }
-        self.dispatch(client, inputs);
-    }
-
-    pub(crate) fn dispatch(&mut self, client: ClientId, inputs: Vec<Input>) {
-        if inputs.is_empty() {
+    /// Actions from a client.
+    pub fn acts(&mut self, client: ClientId, acts: Vec<Act>) {
+        if acts.is_empty() {
             return;
         }
         let changes = self.changes();
-        // Whether any of the input may have changed what a client shows.
+        // Whether any of it may have changed what a client shows.
         let mut shown = false;
-        for input in inputs {
-            if !self.views.contains_key(&client) {
+        for act in acts {
+            let Some(view) = self.views.get(&client) else {
                 break;
-            }
+            };
             // A client that only watches is answered by its terminal, and
-            // may detach; nothing else it sends does anything.
-            if self.views.get(&client).is_some_and(|v| v.read_only) {
-                match input {
-                    Input::Key(stroke) => shown |= self.watching_key(client, stroke.press),
-                    Input::Reply(reply) => {
-                        shown = true;
-                        self.terminal_reply(client, reply);
-                    }
-                    Input::Paste(_)
-                    | Input::PasteTooLong
-                    | Input::FocusIn
-                    | Input::FocusOut
-                    | Input::Mouse(_) => {}
-                }
+            // shows notices; nothing else it sends does anything.
+            if view.read_only && !matches!(act, Act::Reply(_) | Act::Notice { .. }) {
                 continue;
             }
-            match input {
-                Input::Key(stroke) => shown |= self.key(client, stroke),
-                Input::Paste(text) => {
-                    shown = true;
-                    self.paste(client, &text);
-                }
-                Input::PasteTooLong => {
-                    shown = true;
-                    let limit = fux_vt::keys::decode::PASTE_LIMIT / 1024;
-                    self.error_to(client, format!("paste exceeds {limit} KiB; discarded"));
-                }
-                // A focus change or a mouse report for the program shows
-                // nothing until it answers.
-                Input::FocusIn | Input::FocusOut => {
-                    self.focus_event(client, input == Input::FocusIn)
-                }
-                Input::Reply(reply) => {
-                    shown = true;
-                    self.terminal_reply(client, reply);
-                }
-                Input::Mouse(event) => self.mouse(client, event),
-            }
+            shown |= self.act(client, act);
         }
         // Keys a pane's program reads show when its output does: nothing
         // to paint or settle until then.
@@ -124,79 +46,67 @@ impl Session {
         self.settle();
     }
 
-    /// A key: matched as its press, and given to a pane as it was typed.
-    /// Whether it may have changed what the client shows: a key given to
-    /// the focused pane's program in normal mode, no notice showing, shows
-    /// nothing until the program answers.
-    fn key(&mut self, client: ClientId, stroke: Keystroke) -> bool {
-        let press = stroke.press;
-        let Some(view) = self.views.get_mut(&client) else {
-            return false;
-        };
-        let forwarded = matches!(view.mode, Mode::Normal)
-            && view.notice.is_none()
-            && press != self.config.prefix
-            && self.config.root_binding(press).is_none();
-        if forwarded {
-            overlay::send_key(self, client, stroke);
-            return false;
-        }
-        view.dirty = true;
-        match &view.mode {
-            Mode::Copy(_) => crate::copy::key(self, client, press),
-            Mode::List(_) => overlay::list_key(self, client, press),
-            Mode::Prompt(_) => overlay::prompt_key(self, client, press),
-            Mode::Confirm(_) => overlay::confirm_key(self, client, press),
-            Mode::Column(_) => overlay::column_key(self, client, press),
-            Mode::Repeat(_) => overlay::repeat_key(self, client, press),
-            Mode::Normal => {
-                // Further input clears the last notice.
-                view.notice = None;
-                if press == self.config.prefix {
-                    self.set_mode(client, Mode::Column(overlay::Column::root(self)));
-                } else if !overlay::run_root(self, client, press) {
-                    overlay::send_key(self, client, stroke);
+    /// One action: whether it may have changed what the client shows.
+    fn act(&mut self, client: ClientId, act: Act) -> bool {
+        match act {
+            Act::Key(stroke) => return self.key(client, stroke),
+            Act::Paste(text) => self.paste(client, &text),
+            // A focus change or a mouse report for the program shows
+            // nothing until it answers.
+            Act::Focus(gained) => {
+                self.focus_event(client, gained);
+                return false;
+            }
+            Act::Mouse(event) => {
+                self.mouse(client, event);
+                return false;
+            }
+            Act::Reply(reply) => self.terminal_reply(client, reply),
+            Act::Column(column) => self.set_mode(client, Mode::Column(column)),
+            Act::Repeat(bar) => self.set_mode(client, Mode::Repeat(bar)),
+            Act::Normal => {
+                if let Some(Mode::Column(_) | Mode::Repeat(_)) = self.views.get(&client).map(|v| &v.mode) {
+                    self.set_mode(client, Mode::Normal);
                 }
             }
+            Act::Notice { text, error } => {
+                if let Some(view) = self.views.get_mut(&client) {
+                    view.notice = Some(Notice { text, error });
+                }
+            }
+            Act::List(act) => overlay::list_act(self, client, act),
+            Act::Prompt(act) => overlay::prompt_act(self, client, act),
+            Act::Confirm(yes) => overlay::confirm(self, client, yes),
+            Act::Copy(act) => crate::copy::act(self, client, act),
+        }
+        if let Some(view) = self.views.get_mut(&client) {
+            view.dirty = true;
         }
         true
     }
 
-    /// A key from a client that only watches: the prefix, then the key
-    /// bound to detach, detaches it; any other key says so. Whether it
-    /// shows anything.
-    fn watching_key(&mut self, client: ClientId, press: KeyPress) -> bool {
-        let detaches = |node: &Node| {
-            matches!(node, Node::Run { binding, .. } if matches!(
-                *binding.parsed,
-                Command::Client { action: ClientAction::Detach, .. }
-            ))
-        };
-        let prefix = self.config.prefix;
-        let detach_key = (self.config.bindings.iter())
-            .find(|(_, node)| detaches(node))
-            .map(|(key, _)| *key);
+    /// A key for the focused pane. Whether it may have changed what the
+    /// client shows: one typed with no notice showing shows nothing until
+    /// the program answers. A key typed while the column or a repeat bar
+    /// shows closes it: the client has left them.
+    fn key(&mut self, client: ClientId, stroke: Keystroke) -> bool {
         let Some(view) = self.views.get_mut(&client) else {
             return false;
         };
-        if std::mem::take(&mut view.prefixed) {
-            // `d` too, as fux binds it, so that a watcher can always leave.
-            let d = KeyPress::char('d');
-            if detach_key == Some(press) || press == d {
-                self.run_command(&ClientAction::Detach.here(), &Origin::Client(client));
+        let shown = match view.mode {
+            Mode::Normal => view.notice.take().is_some(),
+            Mode::Column(_) | Mode::Repeat(_) => {
+                view.mode = Mode::Normal;
+                true
             }
-            return true;
+            // A key in flight as an overlay opened: dropped.
+            Mode::List(_) | Mode::Prompt(_) | Mode::Confirm(_) | Mode::Copy(_) => return false,
+        };
+        if shown {
+            view.dirty = true;
         }
-        if press == prefix {
-            view.prefixed = true;
-            return false;
-        }
-        let how = format!(
-            "{prefix} {} detaches",
-            detach_key.unwrap_or(KeyPress::char('d'))
-        );
-        self.info_to(client, format!("watching only (attach --read-only): {how}"));
-        true
+        overlay::send_key(self, client, stroke);
+        shown
     }
 
     fn paste(&mut self, client: ClientId, text: &str) {
@@ -206,7 +116,7 @@ impl Session {
         if let Mode::Prompt(_) = view.mode {
             return overlay::prompt_paste(self, client, text);
         }
-        // Pastes never become commands.
+        // Pastes go to the pane only.
         if !matches!(view.mode, Mode::Normal) {
             return;
         }

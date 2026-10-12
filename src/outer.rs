@@ -178,17 +178,16 @@ impl Terminal {
 
 impl Session {
     /// Asks client `client`'s terminal `queries`, which end with DA1, in its
-    /// paint stream; its decoder expects the answers.
-    fn ask(&mut self, client: ClientId, queries: &[u8], now: Instant) {
-        if let Some(view) = self.views.get_mut(&client) {
-            view.decoder.expect(now);
+    /// paint stream; the client's decoder expects the answers.
+    fn ask(&mut self, client: ClientId, queries: &[u8]) {
+        if self.views.contains_key(&client) {
             self.outbox.push(Outgoing::Bytes(client, queries.to_vec()));
         }
     }
 
     /// Asks a newly attached client's terminal what fux wants to know of it.
     pub(crate) fn ask_terminal(&mut self, client: ClientId) {
-        self.ask(client, QUERIES, Instant::now());
+        self.ask(client, QUERIES);
     }
 
     /// An answer or report from client `client`'s terminal.
@@ -222,7 +221,7 @@ impl Session {
                 if unknown {
                     self.tell_change(client);
                 } else {
-                    self.ask(client, COLOUR_QUERIES, Instant::now());
+                    self.ask(client, COLOUR_QUERIES);
                 }
             }
             Reply::Mode { mode: 2031, status } => {
@@ -538,7 +537,7 @@ mod tests {
         mine.into_iter()
             .filter_map(|o| match o {
                 Outgoing::Bytes(_, bytes) => Some(bytes),
-                Outgoing::Exit(..) | Outgoing::Shutdown { .. } => None,
+                Outgoing::Exit(..) | Outgoing::Run(..) | Outgoing::Keys(..) | Outgoing::Shutdown { .. } => None,
             })
             .collect()
     }

@@ -6,7 +6,7 @@
 //! drops the rows it holds.
 use crate::id::ClientId;
 use crate::id::PaneId;
-use crate::keys::{Direction, Key, KeyPress};
+use crate::act::{CopyAct, LineAct};
 use crate::render::shown;
 use crate::session::{self, Error, Session};
 use crate::view::{Line, Mode, Notice, View};
@@ -542,8 +542,8 @@ enum Scroll {
     Down(usize),
 }
 
-/// A key in copy mode.
-pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
+/// An action in copy mode, its keys the client's (`keymap::copy_act`).
+pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
     let Some(view) = session.views.get(&client) else {
         return;
     };
@@ -569,30 +569,31 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
     view.dirty = true;
     view.notice = None;
 
-    // A search being typed takes the keys.
+    // A search being typed takes the line's actions.
     if let Some((seek, text)) = &mut copy.typing {
-        if press.key == Key::Escape {
-            copy.typing = None;
-        } else if press.key == Key::Enter {
-            let search = Search {
-                query: text.clone().text(),
-                seek: *seek,
-            };
-            copy.typing = None;
-            if !search.query.is_empty() {
-                copy.search = Some(search.clone());
-                if let Some(at) = copy.resolve(screen) {
-                    jump(copy, screen, height, at, &search, &mut view.notice);
+        let CopyAct::Search(line) = act else {
+            return;
+        };
+        match line {
+            LineAct::Cancel => copy.typing = None,
+            LineAct::Submit => {
+                let search = Search {
+                    query: text.clone().text(),
+                    seek: *seek,
+                };
+                copy.typing = None;
+                if !search.query.is_empty() {
+                    copy.search = Some(search.clone());
+                    if let Some(at) = copy.resolve(screen) {
+                        jump(copy, screen, height, at, &search, &mut view.notice);
+                    }
                 }
             }
-        } else if press.key == Key::Backspace {
-            text.backspace();
-        } else if let Key::Char(c) = press.key
-            && !press.mods.ctrl
-            && !press.mods.alt
-            && !c.is_control()
-        {
-            text.insert(c.encode_utf8(&mut [0; 4]));
+            LineAct::Insert(typed) => {
+                let typed: String = typed.chars().filter(|c| !c.is_control()).collect();
+                text.insert(&typed);
+            }
+            line => edit(text, &line),
         }
         return;
     }
@@ -609,50 +610,44 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
         let classes = classes(r).into_iter();
         classes.filter(|(_, k)| *k != 0).map(|(c, _)| c)
     };
-    // Keys are letters, in either case, and the brackets; one with Ctrl or
-    // Alt is no key's. The arrows, paging keys, Home, End, Enter and Esc
-    // also work.
-    let letter = match press.plain_key() {
-        Some(Key::Char(c)) => Some(c),
-        _ => None,
-    };
     let mut target: Option<Place<'_>> = None;
     let mut scroll: Option<Scroll> = None;
-    match (letter, press.key) {
-        (Some('q'), _) | (_, Key::Escape) => {
+    match act {
+        CopyAct::Search(_) => return,
+        CopyAct::Leave => {
             leave(session, client);
             return;
         }
-        (Some('h'), _) | (_, Key::Arrow(Direction::Left)) => {
+        CopyAct::Left => {
             target = Some((row, col.saturating_sub(1)));
         }
-        (Some('l'), _) | (_, Key::Arrow(Direction::Right)) => {
+        CopyAct::Right => {
             let wide = row.cell(usize::from(col)).is_some_and(|c| c.is_wide());
             target = Some((
                 row,
                 col.saturating_add(if wide { 2 } else { 1 }).min(last_col),
             ));
         }
-        (Some('j'), _) | (_, Key::Arrow(Direction::Down)) => target = Some((row.down(1), col)),
-        (Some('k'), _) | (_, Key::Arrow(Direction::Up)) => target = Some((row.up(1), col)),
-        (Some('w'), _) => target = Some(word_forward(row, col)),
-        (Some('b'), _) => target = Some(word_back(row, col)),
-        (Some('a'), _) => target = Some((row, ink(row).next().unwrap_or(0))),
-        (Some('e'), _) | (_, Key::End) => target = Some((row, ink(row).next_back().unwrap_or(0))),
-        (_, Key::Home) => target = Some((row, 0)),
-        (Some('t'), _) => target = Some((row.up(usize::MAX), 0)),
-        (Some('z'), _) => target = Some((row.down(usize::MAX), col)),
-        (Some('u'), _) => scroll = Some(Scroll::Up(half)),
-        (Some('d'), _) => scroll = Some(Scroll::Down(half)),
-        (_, Key::PageUp) => scroll = Some(Scroll::Up(page)),
-        (_, Key::PageDown) => scroll = Some(Scroll::Down(page)),
-        (Some('f'), _) => copy.typing = Some((Seek::Forward, Line::new(String::new()))),
-        (Some('r'), _) => copy.typing = Some((Seek::Backward, Line::new(String::new()))),
-        (Some(key @ ('n' | 'p')), _) => {
+        CopyAct::Down => target = Some((row.down(1), col)),
+        CopyAct::Up => target = Some((row.up(1), col)),
+        CopyAct::WordForward => target = Some(word_forward(row, col)),
+        CopyAct::WordBack => target = Some(word_back(row, col)),
+        CopyAct::FirstInk => target = Some((row, ink(row).next().unwrap_or(0))),
+        CopyAct::LastInk => target = Some((row, ink(row).next_back().unwrap_or(0))),
+        CopyAct::LineStart => target = Some((row, 0)),
+        CopyAct::Top => target = Some((row.up(usize::MAX), 0)),
+        CopyAct::Bottom => target = Some((row.down(usize::MAX), col)),
+        CopyAct::HalfUp => scroll = Some(Scroll::Up(half)),
+        CopyAct::HalfDown => scroll = Some(Scroll::Down(half)),
+        CopyAct::PageUp => scroll = Some(Scroll::Up(page)),
+        CopyAct::PageDown => scroll = Some(Scroll::Down(page)),
+        CopyAct::SearchForward => copy.typing = Some((Seek::Forward, Line::new(String::new()))),
+        CopyAct::SearchBackward => copy.typing = Some((Seek::Backward, Line::new(String::new()))),
+        key @ (CopyAct::Next | CopyAct::Previous) => {
             match copy.search.clone() {
                 Some(search) => {
                     let search = Search {
-                        seek: if key == 'n' {
+                        seek: if key == CopyAct::Next {
                             search.seek
                         } else {
                             search.seek.reversed()
@@ -665,8 +660,8 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
             }
             return;
         }
-        (Some(key @ ('[' | ']')), _) => {
-            let seek = if key == '[' {
+        key @ (CopyAct::PromptBack | CopyAct::PromptForward) => {
+            let seek = if key == CopyAct::PromptBack {
                 Seek::Backward
             } else {
                 Seek::Forward
@@ -678,23 +673,23 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
                     target = Some((found, 0));
                 }
                 None => {
-                    let which = if key == '[' { "earlier" } else { "later" };
+                    let which = if key == CopyAct::PromptBack { "earlier" } else { "later" };
                     view.error(format!("no {which} prompt (shells mark them with OSC 133)"));
                     return;
                 }
             }
         }
-        (Some('v'), _) => toggle(copy, Select::Char),
-        (Some('s'), _) => toggle(copy, Select::Line),
-        (Some('x'), _) => toggle(copy, Select::Block),
-        (Some('o'), _) => {
+        CopyAct::SelectChar => toggle(copy, Select::Char),
+        CopyAct::SelectLine => toggle(copy, Select::Line),
+        CopyAct::SelectBlock => toggle(copy, Select::Block),
+        CopyAct::OtherEnd => {
             if let Some((kind, anchor)) = copy.selection {
                 copy.selection = Some((kind, copy.cursor));
                 copy.cursor = anchor;
                 target = at.selection.map(|(_, anchor)| anchor);
             }
         }
-        (Some('y'), _) | (_, Key::Enter) => {
+        CopyAct::Yank => {
             let copied = match at.ends() {
                 Some((kind, start, end)) => {
                     text(screen, kind, start, end).map_err(|e| e.to_string())
@@ -704,7 +699,6 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
             yank(session, client, copied);
             return;
         }
-        _ => {}
     }
     if let Some(scroll) = scroll {
         let (moved, scrolled) = match scroll {
@@ -716,6 +710,19 @@ pub fn key(session: &mut Session, client: ClientId, press: KeyPress) {
     }
     if let Some(target) = target {
         move_to(copy, screen, height, top, target);
+    }
+}
+
+/// A line's editing action that moves or deletes.
+pub(crate) fn edit<const MAX: usize>(line: &mut Line<MAX>, act: &LineAct) {
+    match act {
+        LineAct::Backspace => line.backspace(),
+        LineAct::Delete => line.delete(),
+        LineAct::Left => line.left(),
+        LineAct::Right => line.right(),
+        LineAct::Home => line.home(),
+        LineAct::End => line.end(),
+        LineAct::Insert(_) | LineAct::Submit | LineAct::Cancel => {}
     }
 }
 

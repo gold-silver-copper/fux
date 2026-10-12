@@ -21,6 +21,7 @@ fux-vt = { path = "fux-vt", version = "0.4.1" }
 signal-hook = "0.4"
 unicode-width = "0.2"
 fuxix = { path = "fuxix", version = "0.2.0" }
+fuxth = { path = "fuxth", version = "0.1.0" }
 
 [profile.dev]
 debug = 0

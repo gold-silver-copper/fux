@@ -47,6 +47,8 @@ pub struct Waiting {
     /// The program has just started (`run`, `respawn`): its screen is
     /// blank, so a text is gone only once it has appeared.
     pub fresh: bool,
+    /// What the command it follows made, for its reply.
+    pub made: Vec<crate::command::AnyRef<crate::id::WsId>>,
     /// What each pane said, for a wait on each of several (`Wait::all`).
     answers: Vec<Option<Outcome>>,
 }
@@ -149,6 +151,7 @@ impl Waiting {
             wait,
             began: now,
             lead: String::new(),
+            made: Vec::new(),
             fresh: false,
         }
     }
@@ -197,6 +200,7 @@ impl Waiting {
         let outcome = self.look(session, now)?;
         Some(Outcome {
             stdout: format!("{}{}", self.lead, outcome.stdout),
+            ids: self.made.clone(),
             ..outcome
         })
     }
@@ -322,6 +326,8 @@ impl Waiting {
             status,
             stdout: answers.iter().map(|a| a.stdout.as_str()).collect(),
             stderr,
+            json: answers.iter().map(|a| a.json.as_str()).collect(),
+            ..Outcome::default()
         })
     }
 }
@@ -453,26 +459,24 @@ impl Wait {
                 )
             }
         };
-        let stdout = if self.json {
-            let mut fields = vec![("pane", Json::str(id.to_string()))];
-            fields.extend(json);
-            fields.push(("status", Json::Number(i64::from(status))));
-            if let Some(screen) = &screen {
-                fields.push(("screen", Json::str(screen.clone())));
-            }
-            format!("{}\n", Json::Object(fields).render())
+        let mut fields = vec![("pane", Json::str(id.to_string()))];
+        fields.extend(json);
+        fields.push(("status", Json::Number(i64::from(status))));
+        if let Some(screen) = &screen {
+            fields.push(("screen", Json::str(screen.clone())));
+        }
+        let json = format!("{}\n", Json::Object(fields).render());
+        let said = if said.is_empty() {
+            said
         } else {
-            let said = if said.is_empty() {
-                said
-            } else {
-                format!("{prefix}{said}\n")
-            };
-            format!("{said}{}", screen.unwrap_or_default())
+            format!("{prefix}{said}\n")
         };
         Outcome {
             status,
-            stdout,
-            stderr: problem.filter(|_| !self.json).unwrap_or_default(),
+            stdout: format!("{said}{}", screen.unwrap_or_default()),
+            stderr: problem.unwrap_or_default(),
+            json,
+            ..Outcome::default()
         }
     }
 }

@@ -1,0 +1,23 @@
+# fux's bundled words, written in fuxth: every program may use them.
+# `explain NAME` says what each does.
+
+# pane text -- : type text into a pane, nothing pressed after it
+define type keys swap text send-keys end
+# pane name -- : press a key in a pane: Enter, C-c, Up
+define press keys swap key send-keys end
+# pane text -- outcome : type a line, press Enter, and wait for the shell's command to end
+define line keys swap text str Enter key wait-done send-keys end
+# pane -- capture : the pane's screen as it is now
+define screen opts capture end
+# path -- pane : start a program in a tab of its own
+define launch opts swap program run end
+# -- pane : a tab with a shell
+define shell opts new-tab end
+# pane -- pane : wait until the pane's screen shows no change for 300 ms
+define settle dup opts 300 wait-idle wait drop end
+# pane text -- pane : wait until text shows in the pane
+define await over swap opts swap wait-text wait drop end
+# pane -- pane : wait until the pane's shell command ends
+define done dup opts wait-done wait drop end
+# pane -- pane : wait until the pane's program exits
+define exited dup opts wait-exit wait drop end

@@ -1,173 +1,16 @@
-//! The keyboard overlays: the command column, choosers, action menus, the
-//! command prompt, rename prompts and confirmations. Each belongs to the client
-//! that opened it. And what keys run outside them: bindings after the
-//! prefix and without it (`run_root`), repeat modes (`repeat_key`), a key
-//! sent to a pane (`send_key`).
-use crate::command::{
-    AnyRef, ClientAction, Command, Kind, MoveTo, Pick, Sibling, Subject, SwapWith, WsRef,
-};
-use crate::config::{Binding, Config, Layer, Node};
+//! fux's own screens: choosers, action menus, the command prompt, rename
+//! prompts and confirmations, each belonging to the client that opened it,
+//! and the command column and repeat bar a client shows of its own keys.
+//! A client's keys reach them as typed actions (`crate::act`), made by its
+//! mode tables (`crate::keymap`); a key reaches a pane only as literal
+//! input (`send_key`).
+use crate::act::{LineAct, ListAct};
+use crate::command::{AnyRef, ClientAction, Command, Kind, MoveTo, Pick, Sibling, Subject, SwapWith, WsRef};
 use crate::id::{ClientId, PaneId, WsId};
-use crate::keys::{Direction, Key, KeyPress, Keystroke};
+use crate::keys::Keystroke;
 use crate::layout::Tree;
-use crate::session::{Error, Origin, Place, Session, describe};
+use crate::session::{Error, Outgoing, Place, Session, describe};
 use crate::view::{Choice, Confirm, Item, Line, List, Mode, Prompt, PromptFor, View};
-
-/// An entry of the command column: a key of its layer, and the binding it
-/// runs or, for a key that opens a layer inside it, that layer. Right after
-/// the prefix the bindings without it (`bind -n`) follow, `root`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Entry {
-    pub key: KeyPress,
-    pub root: bool,
-    /// The group it is listed under: a binding's own, or the group of the
-    /// command that a layer's first binding runs.
-    pub group: String,
-    /// What it shows: what its command does, or its layer's title, the
-    /// group of the layer's first binding.
-    pub label: String,
-    /// The command it runs; none for a layer, which it opens.
-    pub command: Option<Command>,
-}
-
-/// The group of bindings without the prefix that `-g` gave none.
-pub const ROOT_GROUP: &str = "Without the prefix";
-
-impl Entry {
-    fn new(key: KeyPress, binding: &Binding, layer: bool, root: bool) -> Entry {
-        let (group, label) = match (layer, root) {
-            (true, _) => (binding.derived_group(), binding.group().to_owned()),
-            (false, true) => (
-                binding.group.as_deref().unwrap_or(ROOT_GROUP),
-                crate::command::label(&binding.command),
-            ),
-            (false, false) => (binding.group(), crate::command::label(&binding.command)),
-        };
-        Entry {
-            key,
-            root,
-            group: group.to_owned(),
-            label,
-            command: (!layer).then(|| (*binding.parsed).clone()),
-        }
-    }
-}
-
-/// The command column for the layer at `path`: its entries grouped, groups
-/// in their order, custom groups after them and `Other` last; then the
-/// bindings without the prefix, in groups of their own, so that none shares
-/// a heading with keys typed after the prefix.
-pub fn column(config: &Config, path: &[KeyPress]) -> Vec<Entry> {
-    // The keys of the layer, in their order; right after the prefix, then
-    // the keys without it.
-    let layer = config
-        .bindings
-        .layer(path)
-        .into_iter()
-        .flat_map(Layer::iter);
-    let root = config.root.iter().filter(|_| path.is_empty());
-    let mut entries: Vec<Entry> = (layer.filter_map(|(key, node)| match node {
-        Node::Run { binding, .. } => Some(Entry::new(*key, binding, false, false)),
-        Node::Layer(layer) => Some(Entry::new(*key, layer.first()?, true, false)),
-    }))
-    .chain(root.map(|(key, b)| Entry::new(*key, b, false, true)))
-    .collect();
-    let mut groups: Vec<(bool, String)> = crate::command::COMMANDS
-        .iter()
-        .map(|(group, _)| (false, (*group).to_owned()))
-        .filter(|(_, g)| g != "Other")
-        .collect();
-    for group in entries.iter().map(|e| (e.root, e.group.clone())) {
-        if !groups.contains(&group) && group != (false, "Other".into()) {
-            groups.push(group);
-        }
-    }
-    groups.push((false, "Other".into()));
-    // Stable: within a group, in the order of the bindings.
-    entries.sort_by_key(|e| {
-        let group = groups
-            .iter()
-            .position(|(r, g)| *r == e.root && *g == e.group);
-        (e.root, group)
-    });
-    entries
-}
-
-/// The command column, open on a layer that is bound: it is found in the
-/// bindings when it opens and again whenever they change (`Session::rebind`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Column {
-    /// The keys of its layer after the prefix: none right after it.
-    pub path: Vec<KeyPress>,
-    /// Its heading: `Commands`, or the layer's keys and title.
-    pub title: String,
-    /// Its entries, one selected; none if nothing is bound.
-    pub entries: Option<Choice<Entry>>,
-}
-
-impl Column {
-    /// The column right after the prefix.
-    pub fn root(session: &Session) -> Column {
-        Column {
-            path: Vec::new(),
-            title: "Commands".into(),
-            entries: Choice::new(column(&session.config, &[])),
-        }
-    }
-
-    /// The column of the layer at `path`, if it is one, its entry `at`
-    /// chosen, or its last.
-    pub fn layer(session: &Session, path: Vec<KeyPress>, at: usize) -> Option<Column> {
-        let mut column = match path.is_empty() {
-            true => Column::root(session),
-            false => Column {
-                title: format!(
-                    "{}: {}",
-                    session.keys_named(&path),
-                    session.config.bindings.layer(&path)?.first()?.group()
-                ),
-                entries: Choice::new(column(&session.config, &path)),
-                path,
-            },
-        };
-        if let Some(entries) = &mut column.entries {
-            entries.down(at);
-        }
-        Some(column)
-    }
-}
-
-/// A repeat mode: the keys of the layer at `path` run its bindings without
-/// the prefix, until Esc. It is found in the bindings when it starts and
-/// again whenever they change (`Session::rebind`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Repeat {
-    pub path: Vec<KeyPress>,
-    pub title: String,
-    /// What the bar shows: `RESIZE  h j k l · Esc`.
-    pub bar: String,
-}
-
-impl Repeat {
-    /// The repeat mode of the layer at `path`, if a binding there repeats.
-    pub fn of(config: &Config, path: Vec<KeyPress>) -> Option<Repeat> {
-        let layer = config.bindings.layer(&path)?;
-        let mut keys = Vec::new();
-        let mut repeats = false;
-        for (key, node) in layer.iter() {
-            if let Node::Run { repeat, .. } = node {
-                keys.push(key.to_string());
-                repeats |= repeat;
-            }
-        }
-        let title = layer.first().map(Binding::group).filter(|_| repeats)?;
-        Some(Repeat {
-            bar: format!("{}  {} · Esc", title.to_uppercase(), keys.join(" ")),
-            title: title.to_owned(),
-            path,
-        })
-    }
-}
 
 pub fn open_prompt(view: &mut View, purpose: PromptFor, title: String, text: String) -> String {
     view.mode = Mode::Prompt(Prompt {
@@ -442,36 +285,14 @@ pub fn pane_chooser(session: &Session, source: PaneId) -> Result<List, Error> {
 
 // ----------------------------------------------------------------- input
 
-/// Runs an entry of a list or the column, unless it cannot run now, in
-/// which case the reason is shown and nothing happens: a list closes, to
-/// `closed`, only if its entry runs.
-fn run_entry(session: &mut Session, client: ClientId, command: &Command, closed: Option<Mode>) {
+/// Runs an entry of a list, unless it cannot run now, in which case the
+/// reason is shown and the list stays open.
+fn run_entry(session: &mut Session, client: ClientId, command: &Command) {
     if let Some(reason) = session.unavailable(command, client) {
         return session.error_to(client, reason.to_string());
     }
-    if let Some(mode) = closed {
-        session.set_mode(client, mode);
-    }
-    session.run_command(command, &Origin::Client(client));
-}
-
-/// Runs the binding of `keys`, if there is one, entering its layer's repeat
-/// mode if it repeats: whether there is one.
-fn run_binding(session: &mut Session, client: ClientId, keys: &[KeyPress]) -> bool {
-    let Some((last, path)) = keys.split_last() else {
-        return false;
-    };
-    let layer = session.config.bindings.layer(path);
-    let Some(Node::Run { binding, repeat }) = layer.and_then(|l| l.get(*last)) else {
-        return false;
-    };
-    let command = (*binding.parsed).clone();
-    let repeat = repeat
-        .then(|| Repeat::of(&session.config, path.to_vec()))
-        .flatten();
-    session.set_mode(client, repeat.map_or(Mode::Normal, Mode::Repeat));
-    run_entry(session, client, &command, None);
-    true
+    session.set_mode(client, Mode::Normal);
+    session.run_for(client, command);
 }
 
 /// Rows a scrolled panel has for its entries on a screen of `rows`: the
@@ -507,120 +328,6 @@ pub fn column_room(rows: u16) -> (bool, usize) {
     (heading, panel_room(rows, usize::from(heading)))
 }
 
-/// A key while the command column is open.
-pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
-    let prefix = session.config.prefix;
-    let Some(view) = session.views.get_mut(&client) else {
-        return;
-    };
-    let rows = view.rows;
-    let Mode::Column(column) = &mut view.mode else {
-        return;
-    };
-    // Escape always closes the column, and cannot be bound. Any other key
-    // bound in this layer, or opening a layer in it, is the binding's; the
-    // column navigates with the keys left unbound.
-    if press.key == Key::Escape && !press.mods.ctrl && !press.mods.alt {
-        return session.set_mode(client, Mode::Normal);
-    }
-    let path = column.path.clone();
-    if binds(&session.config, &path, press) {
-        return follow(session, client, &path, press);
-    }
-    if press == prefix {
-        // The prefix, at any depth, sends it to the pane.
-        session.set_mode(client, Mode::Normal);
-        return send_key(session, client, prefix.into());
-    }
-    let unmodified = press.mods.is_empty().then_some(press.key);
-    let (_, page) = column_room(rows);
-    let moved = match &mut column.entries {
-        Some(entries) => entries.moved(unmodified, page),
-        // A column of nothing takes the moving keys, which move nothing.
-        None => Choice::of((), Vec::new()).moved(unmodified, page),
-    };
-    if moved {
-        return;
-    }
-    let chosen = column.entries.as_ref().map(|e| e.chosen().clone());
-    match (unmodified, chosen) {
-        (
-            Some(Key::Enter),
-            Some(Entry {
-                command: Some(command),
-                ..
-            }),
-        ) => {
-            session.set_mode(client, Mode::Normal);
-            run_entry(session, client, &command, None);
-        }
-        (Some(Key::Enter), Some(Entry { key, .. })) => follow(session, client, &path, key),
-        (Some(Key::Enter), None) => session.set_mode(client, Mode::Normal),
-        _ => follow(session, client, &path, press),
-    }
-}
-
-/// Whether `press`, typed in the layer at `path`, is bound there or opens a
-/// layer inside it. Keys match as typed: `V` is not `v`.
-fn binds(config: &Config, path: &[KeyPress], press: KeyPress) -> bool {
-    (config.bindings.layer(path)).is_some_and(|layer| layer.get(press).is_some())
-}
-
-/// A key typed in the layer at `path`: it runs its binding, entering the
-/// layer's repeat mode if the binding repeats; opens the layer it starts;
-/// or, unbound, leaves the column open, saying so.
-fn follow(session: &mut Session, client: ClientId, path: &[KeyPress], press: KeyPress) {
-    let mut keys = path.to_vec();
-    keys.push(press);
-    if run_binding(session, client, &keys) {
-        return;
-    }
-    let named = session.keys_named(&keys);
-    match Column::layer(session, keys, 0) {
-        Some(column) => session.set_mode(client, Mode::Column(column)),
-        None => session.error_to(client, format!("{named} is not bound")),
-    }
-}
-
-/// A key in a repeat mode: one of its layer's keys runs its binding again,
-/// without the prefix; Esc or Enter leaves; the prefix leaves and opens the
-/// column; any other key leaves, not reaching the pane, and says so.
-pub fn repeat_key(session: &mut Session, client: ClientId, press: KeyPress) {
-    let Some(Mode::Repeat(repeat)) = session.views.get(&client).map(|v| &v.mode) else {
-        return;
-    };
-    let Repeat { path, title, .. } = repeat.clone();
-    if press == session.config.prefix {
-        return session.set_mode(client, Mode::Column(Column::root(session)));
-    }
-    // Escape leaves; so does Enter, unless the layer binds it.
-    let plain = !press.mods.ctrl && !press.mods.alt;
-    let enter = press.key == Key::Enter && !binds(&session.config, &path, press);
-    if plain && (press.key == Key::Escape || enter) {
-        return session.set_mode(client, Mode::Normal);
-    }
-    let mut keys = path;
-    keys.push(press);
-    if !run_binding(session, client, &keys) {
-        session.set_mode(client, Mode::Normal);
-        session.info_to(
-            client,
-            format!("{title} ended: {press} is not one of its keys"),
-        );
-    }
-}
-
-/// Runs the binding without the prefix of `press`, if there is one, and
-/// says whether there was.
-pub fn run_root(session: &mut Session, client: ClientId, press: KeyPress) -> bool {
-    let Some(binding) = session.config.root_binding(press) else {
-        return false;
-    };
-    let command = (*binding.parsed).clone();
-    run_entry(session, client, &command, None);
-    true
-}
-
 /// Sends a key to the client's focused pane, encoded as its program asked.
 pub fn send_key(session: &mut Session, client: ClientId, stroke: Keystroke) {
     let Some(pane) = session.focused(client) else {
@@ -644,49 +351,42 @@ pub fn send_key(session: &mut Session, client: ClientId, stroke: Keystroke) {
     }
 }
 
-/// A key in a chooser or a menu.
-pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
+/// An action in a chooser or a menu.
+pub fn list_act(session: &mut Session, client: ClientId, act: ListAct) {
     let Some(view) = session.views.get_mut(&client) else {
         return;
     };
-    let rows = view.rows;
+    let page = list_room(view.rows);
     let Mode::List(list) = &mut view.mode else {
         return;
     };
-    let mut run: Option<Command> = None;
-    let mut close = false;
-    let key = match press.plain_key() {
-        Some(Key::Char('k')) => Some(Key::Arrow(Direction::Up)),
-        Some(Key::Char('j')) => Some(Key::Arrow(Direction::Down)),
-        key => key,
-    };
-    match key {
-        _ if list.items.moved(key, list_room(rows)) => {}
-        Some(Key::Escape) | Some(Key::Char('q')) => close = true,
-        Some(Key::Enter) => run = Some(list.items.chosen().command.clone()),
-        Some(Key::Char(key @ ('r' | 'x'))) => {
-            if let Some(subject) = list.items.chosen().subject.map(|s| s.map(WsRef::Id)) {
-                let action = if key == 'r' {
-                    ClientAction::RenamePrompt(subject.into())
-                } else {
-                    ClientAction::ConfirmClose(subject.into())
-                };
-                run = Some(action.here());
+    view.dirty = true;
+    let items = &mut list.items;
+    let run = match act {
+        ListAct::Up => return items.up(1),
+        ListAct::Down => return items.down(1),
+        ListAct::PageUp => return items.up(page),
+        ListAct::PageDown => return items.down(page),
+        ListAct::First => return items.up(usize::MAX),
+        ListAct::Last => return items.down(usize::MAX),
+        ListAct::Cancel => return session.set_mode(client, Mode::Normal),
+        ListAct::Choose => items.chosen().command.clone(),
+        ListAct::Rename | ListAct::Close => {
+            let Some(subject) = items.chosen().subject.map(|s| Subject::from(s.map(WsRef::Id))) else {
+                return;
+            };
+            match act {
+                ListAct::Rename => ClientAction::RenamePrompt(subject).here(),
+                _ => ClientAction::ConfirmClose(subject).here(),
             }
         }
-        _ => {}
-    }
-    view.dirty = true;
-    match run {
-        // An unavailable entry explains itself and the list stays open.
-        Some(command) => run_entry(session, client, &command, Some(Mode::Normal)),
-        None if close => session.set_mode(client, Mode::Normal),
-        None => {}
-    }
+    };
+    // An unavailable entry explains itself and the list stays open.
+    run_entry(session, client, &run);
 }
 
-/// A key in a prompt: a one-line editor.
-pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
+/// An action in a prompt: a one-line editor.
+pub fn prompt_act(session: &mut Session, client: ClientId, act: LineAct) {
     let Some(view) = session.views.get_mut(&client) else {
         return;
     };
@@ -694,76 +394,51 @@ pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
         return;
     };
     view.dirty = true;
-    let line = &mut prompt.line;
-    match press.key {
-        Key::Escape => view.mode = Mode::Normal,
-        Key::Enter => {
+    match act {
+        LineAct::Cancel => view.mode = Mode::Normal,
+        LineAct::Submit => {
             let prompt = prompt.clone();
             view.mode = Mode::Normal;
             submit(session, client, prompt);
         }
-        Key::Backspace => line.backspace(),
-        Key::Delete => line.delete(),
-        Key::Arrow(Direction::Left) => line.left(),
-        Key::Arrow(Direction::Right) => line.right(),
-        Key::Home => line.home(),
-        Key::End => line.end(),
-        // Text: a letter with Ctrl or Alt types nothing.
-        Key::Char(c) if !press.mods.ctrl && !press.mods.alt && !c.is_control() => {
-            line.insert(c.encode_utf8(&mut [0u8; 4]));
+        // Text: one line of it, nothing that controls.
+        LineAct::Insert(text) => {
+            let line: String = (text.chars())
+                .take_while(|c| *c != '\n' && *c != '\r')
+                .filter(|c| !c.is_control())
+                .collect();
+            prompt.line.insert(&line);
         }
-        Key::Char(_)
-        | Key::Tab
-        | Key::Insert
-        | Key::Arrow(_)
-        | Key::PageUp
-        | Key::PageDown
-        | Key::F(_) => {}
+        act => crate::copy::edit(&mut prompt.line, &act),
     }
 }
 
 /// Pasted text goes into a prompt, one line of it; nothing else takes pastes.
 pub fn prompt_paste(session: &mut Session, client: ClientId, text: &str) {
-    let Some(view) = session.views.get_mut(&client) else {
-        return;
-    };
-    let Mode::Prompt(prompt) = &mut view.mode else {
-        return;
-    };
-    let line: String = text
-        .chars()
-        .take_while(|c| *c != '\n' && *c != '\r')
-        .filter(|c| !c.is_control())
-        .collect();
-    if prompt.line.insert(&line) {
-        view.dirty = true;
-    }
+    prompt_act(session, client, LineAct::Insert(text.to_owned()));
 }
 
 fn submit(session: &mut Session, client: ClientId, prompt: Prompt) {
     match prompt.purpose {
+        // fuxth, which the client runs, as it runs its keys' programs.
         PromptFor::Command => {
-            let argv = match crate::words::split(&prompt.line.text()) {
-                Ok(argv) if argv.is_empty() => return,
-                Ok(argv) => argv,
-                Err(error) => return session.error_to(client, error.to_string()),
-            };
-            session.run(&argv, &Origin::Client(client));
+            let code = prompt.line.text();
+            if !code.trim().is_empty() {
+                session.outbox.push(Outgoing::Run(client, code));
+            }
         }
         PromptFor::Rename(target) => {
-            // The command is built, not parsed from words: a name is the
-            // text as typed, `-dev` and `--` included.
+            // A name is the text as typed.
             let target = target.map(WsRef::Id);
             let name = prompt.line.text();
             let rename = Command::Rename { target, name };
-            session.run_command(&rename, &Origin::Client(client));
+            session.run_for(client, &rename);
         }
     }
 }
 
-/// A key while a confirmation waits: `y` runs it, `n`, `q` or Escape
-/// cancels.
-pub fn confirm_key(session: &mut Session, client: ClientId, press: KeyPress) {
+/// A confirmation answered: yes runs it; no cancels.
+pub fn confirm(session: &mut Session, client: ClientId, yes: bool) {
     let Some(view) = session.views.get_mut(&client) else {
         return;
     };
@@ -771,16 +446,10 @@ pub fn confirm_key(session: &mut Session, client: ClientId, press: KeyPress) {
         return;
     };
     view.dirty = true;
-    match press.plain_key() {
-        Some(Key::Char('y')) => {
-            let command = confirm.command.clone();
-            view.mode = Mode::Normal;
-            session.run_command(&command, &Origin::Client(client));
-        }
-        Some(Key::Char('n')) | Some(Key::Escape) | Some(Key::Char('q')) => {
-            view.mode = Mode::Normal;
-        }
-        _ => {}
+    let command = confirm.command.clone();
+    view.mode = Mode::Normal;
+    if yes {
+        session.run_for(client, &command);
     }
 }
 

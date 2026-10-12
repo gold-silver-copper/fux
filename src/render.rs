@@ -9,7 +9,7 @@ use crate::id::PaneId;
 use crate::layout::{Axis, Placement, Rect};
 use crate::overlay;
 use crate::session::Session;
-use crate::view::{Choice, List, Mode, View};
+use crate::view::{List, Mode, View};
 use fux_vt::{Attributes, CellRef, Cells, Color, Rgb, Row, UnderlineStyle};
 use std::borrow::Cow;
 use std::io::Write;
@@ -719,22 +719,8 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
     };
     put_panes(grid, session, view, placement, focus, copy);
     if tab.is_some_and(|t| t.root().is_none()) && area.h() > 0 {
-        // The keys bound to these commands, whatever they are; the command
-        // itself if none is.
-        let key_for = |argv: &[&str]| {
-            session
-                .config
-                .bindings
-                .all()
-                .into_iter()
-                .find(|(_, b, _)| b.command == argv)
-                .map_or_else(|| argv.join(" "), |(keys, ..)| session.keys_named(&keys))
-        };
-        let hint = format!(
-            "empty tab: {} splits it, {} closes it",
-            key_for(&["split", "-h"]),
-            key_for(&["confirm-close", "tab"])
-        );
+        // Its keys are the client's: the server names what to do.
+        let hint = "empty tab: split it or close it";
         let y = area.h() / 2;
         let x = area.w().saturating_sub(width(&hint)) / 2;
         grid.text(
@@ -791,7 +777,7 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
     }
     bar(grid, session, view, copy);
     match &view.mode {
-        Mode::Column(c) => column(grid, session, view, c),
+        Mode::Column(c) => column(grid, view, c),
         Mode::List(list) => list_panel(grid, session, view, list),
         Mode::Prompt(prompt) => {
             // The panel's border takes a cell each side.
@@ -1070,12 +1056,12 @@ fn bar(
         Some((copy.position.as_str().into(), base))
     } else if let Mode::Column(column) = &view.mode {
         Some((
-            format!("{} …", session.keys_named(&column.path)).into(),
+            format!("{} …", column.keys).into(),
             style(Color::Idx(0), Color::Idx(11)),
         ))
-    } else if let Mode::Repeat(repeat) = &view.mode {
+    } else if let Mode::Repeat(bar) = &view.mode {
         Some((
-            repeat.bar.as_str().into(),
+            bar.as_str().into(),
             style(Color::Idx(0), Color::Idx(11)).with_bold(true),
         ))
     } else {
@@ -1231,30 +1217,22 @@ fn list_panel(grid: &mut Grid, session: &Session, view: &View, list: &List) {
 
 /// The command column: the bindings and layers of its layer, grouped, the
 /// selected one highlighted and those that cannot run now dimmed.
-fn column(grid: &mut Grid, session: &Session, view: &View, column: &overlay::Column) {
-    let all = column.entries.iter().flat_map(Choice::iter);
-    let chosen = column.entries.as_ref().map(Choice::index);
-    // Each entry's key as it is typed, written out once.
-    let keys: Vec<String> = all.clone().map(|e| e.key.to_string()).collect();
-    let key_width = keys.iter().map(|k| width(k)).max().unwrap_or(0);
+fn column(grid: &mut Grid, view: &View, column: &crate::act::Column) {
+    let key_width = column.entries.iter().map(|e| width(&e.key)).max().unwrap_or(0);
     let mut entries: Vec<Line<'_>> = Vec::new();
     let mut heading = None;
     let mut selected_row = 0usize;
-    for (index, (entry, key)) in all.zip(&keys).enumerate() {
+    for (index, entry) in column.entries.iter().enumerate() {
         let group = (entry.root, entry.group.as_str());
         if heading != Some(group) {
             entries.push((group.1.into(), panel().with_bold(true)));
             heading = Some(group);
         }
-        // Whether it cannot run now; a layer's entry opens it.
-        let dim = entry
-            .command
-            .as_ref()
-            .is_some_and(|command| session.unavailable(command, view.id).is_some());
-        let more = if entry.command.is_none() { "…" } else { "" };
+        let more = if entry.layer { "…" } else { "" };
+        let key = &entry.key;
         let pad = usize::from(key_width.saturating_sub(width(key)));
-        let mut attrs = panel().with_dim(dim);
-        if Some(index) == chosen {
+        let mut attrs = panel();
+        if index == column.selected {
             attrs = attrs.with_inverse(true);
             selected_row = entries.len();
         }
@@ -1270,7 +1248,7 @@ fn column(grid: &mut Grid, session: &Session, view: &View, column: &overlay::Col
     let total = entries.len();
     let shown = entries.into_iter().skip(start).take(body_room);
     windowed(&mut lines, total, start, body_room, shown);
-    if column.entries.is_none() {
+    if column.entries.is_empty() {
         lines.push(("no bindings".into(), panel().with_dim(true)));
     }
     surface(grid, view, &lines);

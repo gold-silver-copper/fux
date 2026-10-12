@@ -1,9 +1,7 @@
 //! One attached client's own view of the shared state.
 use crate::command::{AnyRef, Command};
 use crate::copy::Copy;
-use crate::decode::Decoder;
 use crate::id::{ClientId, WsId};
-use crate::overlay::{Column, Repeat};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notice {
@@ -213,8 +211,10 @@ pub struct Confirm {
 
 pub enum Mode {
     Normal,
-    Column(Column),
-    Repeat(Repeat),
+    /// The command column a client shows of its keys.
+    Column(crate::act::Column),
+    /// A repeat mode's bar, for a client in one.
+    Repeat(String),
     List(List),
     Prompt(Prompt),
     Confirm(Confirm),
@@ -239,7 +239,6 @@ pub struct View {
     pub zoom: bool,
     pub mode: Mode,
     pub notice: Option<Notice>,
-    pub decoder: Decoder,
     /// What the client's terminal said of itself (`outer`).
     pub terminal: crate::outer::Terminal,
     /// Something this view shows may have changed since its last paint.
@@ -249,12 +248,9 @@ pub struct View {
     /// The title its terminal was last given, with `titles` on; `None`
     /// while it shows its own.
     pub title: Option<String>,
-    /// It only watches (`attach --read-only`): its keys and clicks do
-    /// nothing but detach it.
+    /// It only watches (`watch`): its keys and clicks do nothing but
+    /// detach it.
     pub read_only: bool,
-    /// A watching client typed the prefix: its next key detaches, if that
-    /// is the key bound to detach.
-    pub prefixed: bool,
     /// Its terminal's environment, of which panes started from its keys
     /// take what `update-environment` names.
     pub env: Vec<(String, String)>,
@@ -270,13 +266,11 @@ impl View {
             zoom: false,
             mode: Mode::Normal,
             notice: None,
-            decoder: Decoder::default(),
             terminal: crate::outer::Terminal::default(),
             dirty: true,
             last_bell: None,
             title: None,
             read_only: false,
-            prefixed: false,
             env: Vec::new(),
         }
     }
@@ -295,5 +289,20 @@ impl View {
             error: true,
         });
         self.dirty = true;
+    }
+}
+
+/// What a client is told its view's mode is, which says what its keys
+/// become (`keymap::Held::press`).
+pub fn mode_name(mode: &Mode) -> &'static str {
+    match mode {
+        Mode::Normal => "normal",
+        Mode::Column(_) => "column",
+        Mode::Repeat(_) => "repeat",
+        Mode::List(_) => "list",
+        Mode::Prompt(_) => "prompt",
+        Mode::Confirm(_) => "confirm",
+        Mode::Copy(copy) if copy.typing.is_some() => "copy-search",
+        Mode::Copy(_) => "copy",
     }
 }

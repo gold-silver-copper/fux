@@ -18,6 +18,7 @@ version = "0.22.0"
 dependencies = [
  "fux-vt",
  "fuxix",
+ "fuxth",
  "signal-hook",
  "unicode-width",
 ]
