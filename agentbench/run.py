@@ -187,7 +187,8 @@ def one(tool, task_id, rep, slot, fux_bin):
     import drivers
     import solutions
     task = next(t for t in tasks() if t["id"] == task_id)
-    work = os.path.join(SCRATCH, "runs", tool, task_id, str(rep))
+    # Under its slot: runs side by side (other slot bases) never share one.
+    work = os.path.join(SCRATCH, "runs", str(slot), tool, task_id, str(rep))
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
     fixtures = prepare(task, work)
