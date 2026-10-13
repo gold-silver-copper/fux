@@ -106,11 +106,12 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
         client.write(&broken)?;
         eventually("the broken client to go", || Ok(clients()? == 1))?;
     }
-    // Detach and Attach together: the Attach comes after the end.
+    // Detach and Attach together, in one write: the Attach comes after the
+    // end. (Two writes race the server closing the connection.)
     let mut client = server.attach(5, 20)?;
     client.wait_for("$")?;
-    client.detach()?;
-    client.frame(&attach)?;
+    let detach = fux::protocol::AttachedFrame::Detach.encode().map_err(e)?;
+    client.write(&[detach, attach.encode().map_err(e)?].concat())?;
     assert_eq!(client.wait_exit()?, "detached");
     eventually("only the first client", || Ok(clients()? == 1))?;
     // The one left still sizes its pane alone.

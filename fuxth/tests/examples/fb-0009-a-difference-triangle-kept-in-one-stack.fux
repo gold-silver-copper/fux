@@ -1,0 +1,35 @@
+# A difference triangle kept in one stack (held-out spec FB-0009).
+# expect: 0 24 84 200 395 699 1402 2545 4284 6799
+# The list body holds the flat history on its own stack.
+empty let q
+list
+  4 7 30 109 304 699
+  2 7 range reverse each
+    let n
+    0 n 1 sub range each
+      drop
+      # Appending each difference offsets the next source pair's advance.
+      # Copy right, then left (one deeper because right is on the stack).
+      n 2 sub pick
+      n pick
+      sub
+    end
+  end
+
+  # Each selected value is removed into q; the source stays unchanged.
+  list 0 1 3 6 10 15 end each
+    let depth
+    depth pick let value
+    q value push let q
+  end
+end let history
+
+q each print end
+0 4 range each
+  drop
+  1 q len range each
+    let j
+    q j q j at q j 1 sub at add put let q
+  end
+  q last print
+end

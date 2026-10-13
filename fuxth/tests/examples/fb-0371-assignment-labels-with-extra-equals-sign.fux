@@ -1,0 +1,19 @@
+# Assignment labels with extra equals signs (held-out spec FB-0371).
+# expect: mode -> [fast] formula -> [a=b+c]  -> [anonymous] empty -> [] token -> [==]
+list
+  str 'mode=fast'
+  str 'formula=a=b+c'
+  str '=anonymous'
+  str 'empty='
+  str 'token==='
+end
+each
+  let entry
+  entry str '=' index-of let separator
+  list
+    entry 0 separator slice
+    str ' -> ['
+    entry separator 1 add entry len slice
+    str ']'
+  end concat
+end

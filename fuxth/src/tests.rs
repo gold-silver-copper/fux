@@ -4,7 +4,7 @@ use crate::*;
 
 /// A host with one value of its own, a ticket, and five words: `ticket`
 /// (-- t), which hands one out at once; `ask` (n -- n*10), which suspends
-/// for the host to answer; `fail`, which fails; `maybe` (n -- [n]), which
+/// for the host to answer; `nope`, which fails; `maybe` (n -- [n]), which
 /// gives n back only above 0; and `liar`, which says it gives a value and
 /// gives none.
 #[derive(Clone, Debug, PartialEq)]
@@ -55,13 +55,26 @@ impl Host for Toy {
             _ => Err(Failure::new("refused", "no")),
         }
     }
+
+    fn print(&mut self, _line: &str) -> Result<(), Failure> {
+        Ok(())
+    }
+}
+
+/// A compiler with the standard library in.
+fn with_stdlib() -> Compiler<Ticket> {
+    let mut compiler = Compiler::new(vocabulary());
+    let library = token::source("stdlib.fux", STDLIB).unwrap_or_default();
+    let added = compiler.add(&library);
+    assert_eq!(added, Ok(()), "the standard library compiles");
+    compiler
 }
 
 fn vocabulary() -> Vocabulary {
     let mut words = Vocabulary::default();
     words.add("ticket", 0, 1..=1);
     words.add("ask", 1, 1..=1);
-    words.add("fail", 0, 0..=0);
+    words.add("nope", 0, 0..=0);
     words.add("maybe", 1, 0..=1);
     words.add("liar", 0, 1..=1);
     words
@@ -71,6 +84,7 @@ fn vocabulary() -> Vocabulary {
 /// number, a step at a time to cover every pause; the stack it ends with.
 fn run(text: &str) -> Result<Vec<Value<Ticket>>, Error> {
     let mut compiler = Compiler::new(vocabulary());
+    compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
     compiler.add(&token::source("t", text)?)?;
     let mut machine = Machine::new(
         compiler.finish()?,
@@ -121,7 +135,7 @@ fn numbers_strings_and_words() -> Result<(), Error> {
 #[test]
 fn definitions_constants_and_recursion() -> Result<(), Error> {
     assert_eq!(run("define twice dup add end 5 twice twice")?, ints(&[20]));
-    assert_eq!(run("6 constant six six six mul")?, ints(&[36]));
+    assert_eq!(run("6 let six six six mul")?, ints(&[36]));
     // A word sees itself: recursion by name.
     let factorial = "define fact dup 1 gt if dup 1 sub fact mul then end 5 fact";
     assert_eq!(run(factorial)?, ints(&[120]));
@@ -134,7 +148,7 @@ fn definitions_constants_and_recursion() -> Result<(), Error> {
 #[test]
 fn a_way_that_never_returns_is_counted_too() {
     let program = "define g dup 0 eq if drop 0 g else drop drop then end 0 g";
-    let mut compiler = Compiler::<Ticket>::new(vocabulary());
+    let mut compiler = with_stdlib();
     let compiled = token::source("t", program)
         .and_then(|tokens| compiler.add(&tokens))
         .and_then(|()| compiler.finish().map(|_| ()));
@@ -151,7 +165,7 @@ fn a_way_that_never_returns_is_counted_too() {
 /// in last place, which took its caller's frame, still shows its caller.
 #[test]
 fn the_calls_under_way_show_who_called() -> Result<(), Error> {
-    let mut compiler = Compiler::<Ticket>::new(vocabulary());
+    let mut compiler = with_stdlib();
     compiler.add(&token::source(
         "t",
         "define inner 1 ask end\ndefine outer inner end\nouter",
@@ -169,6 +183,30 @@ fn the_calls_under_way_show_who_called() -> Result<(), Error> {
         ["t:3:outer", "t:1:ask"],
         "outer's frame went to inner, and its call stays"
     );
+    Ok(())
+}
+
+/// Paused anywhere in a loop, even just after it jumped back, the step it
+/// is at is the loop's own.
+#[test]
+fn a_paused_loop_shows_its_own_step() -> Result<(), Error> {
+    for budget in 1..=12 {
+        let mut compiler = with_stdlib();
+        compiler.add(&token::source("t", "str x print\nbegin 0 1 eq until")?)?;
+        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        let outcome = machine.run(&mut Toy { asked: Vec::new() }, budget)?;
+        assert_eq!(outcome, Outcome::Paused);
+        let last = machine
+            .calls()
+            .last()
+            .map(|t| format!("{}:{}", t.place, t.text));
+        let in_loop = ["t:2:0", "t:2:1", "t:2:eq", "t:2:until"];
+        let at_print = budget <= 2;
+        assert!(
+            at_print || last.as_deref().is_some_and(|l| in_loop.contains(&l)),
+            "{budget}: {last:?}"
+        );
+    }
     Ok(())
 }
 
@@ -198,14 +236,14 @@ fn control_flow_at_the_top_level_and_in_definitions() -> Result<(), Error> {
 #[test]
 fn an_application_word_suspends_and_resumes_deep_in_calls_and_loops() -> Result<(), Error> {
     assert_eq!(run("ticket")?, [Value::App(Ticket(7))]);
-    let nested = "define each 0 begin 1 add dup ask swap dup 3 eq until drop end each";
+    let nested = "define asks 0 begin 1 add dup ask swap dup 3 eq until drop end asks";
     assert_eq!(run(nested)?, ints(&[10, 20, 30]));
     Ok(())
 }
 
 #[test]
 fn arguments_are_tokens_as_given() -> Result<(), Error> {
-    let mut compiler = Compiler::<Ticket>::new(vocabulary());
+    let mut compiler = with_stdlib();
     compiler.add(&token::arguments(&["str", "two words", "str", "#x"]))?;
     let mut machine = Machine::new(compiler.finish()?, Limits::default());
     let outcome = machine.run(&mut Toy { asked: Vec::new() }, 100)?;
@@ -228,11 +266,11 @@ fn mistakes_are_found_before_anything_runs() {
         ("define 12 end", "bad_name"),
         ("define if end", "bad_name"),
         ("1 if define x end then", "not_top_level"),
-        ("define x 1 constant y end", "not_top_level"),
+        ("define x define y end end", "not_top_level"),
         ("str", "missing_token"),
         ("'unclosed", "open_quote"),
     ] {
-        let mut compiler = Compiler::<Ticket>::new(vocabulary());
+        let mut compiler = with_stdlib();
         let compiled = token::source("t", text)
             .and_then(|tokens| compiler.add(&tokens))
             .and_then(|()| compiler.finish().map(|_| ()));
@@ -278,10 +316,7 @@ fn errors_at_run_time_say_what_and_where() {
 
 #[test]
 fn nothing_is_used_before_it_is_defined() {
-    assert_eq!(
-        code(run("define peek x end 1 constant x")),
-        Some("unknown_word")
-    );
+    assert_eq!(code(run("define peek x end 1 let x")), Some("unknown_word"));
     assert_eq!(
         code(run("define early later end define later 1 end")),
         Some("unknown_word")
@@ -290,7 +325,7 @@ fn nothing_is_used_before_it_is_defined() {
 
 #[test]
 fn a_budget_pauses_a_loop_that_never_asks() -> Result<(), Error> {
-    let mut compiler = Compiler::<Ticket>::new(vocabulary());
+    let mut compiler = with_stdlib();
     compiler.add(&token::source("t", "begin 1 1 lt until")?)?;
     let mut machine = Machine::new(compiler.finish()?, Limits::default());
     let mut host = Toy { asked: Vec::new() };
@@ -327,7 +362,7 @@ fn a_deep_stack_costs_no_more_per_word() {
 #[test]
 fn the_checker_says_what_and_where() {
     let refused = |text: &str| -> String {
-        let mut compiler = Compiler::<Ticket>::new(vocabulary());
+        let mut compiler = with_stdlib();
         let compiled = token::source("t", text)
             .and_then(|tokens| compiler.add(&tokens))
             .and_then(|()| compiler.finish().map(|_| ()));
@@ -361,15 +396,15 @@ fn the_checker_says_what_and_where() {
         ),
         (
             "1 0 0 eq lt",
-            "type: t:1: lt: takes two integers, and the top one is a boolean",
+            "type: t:1: lt: lt compares two integers, two strings or two lists, not an integer and a boolean",
         ),
         (
             "str a not",
-            "type: t:1: not: takes a boolean (from eq, lt, gt or not), not a string",
+            "type: t:1: not: every way through it fails given a string on top: if: takes a boolean (from eq or lt), not a string",
         ),
         (
             "1 if 2 then",
-            "type: t:1: if: takes a boolean (from eq, lt, gt or not), not an integer",
+            "type: t:1: if: takes a boolean (from eq or lt), not an integer",
         ),
         // The first in the source, at the top level or in a definition.
         (
@@ -388,7 +423,7 @@ fn the_checker_says_what_and_where() {
         assert_eq!(refused(text), said, "{text}");
     }
     // Arguments: the first argument's mistake.
-    let mut compiler = Compiler::<Ticket>::new(vocabulary());
+    let mut compiler = with_stdlib();
     let compiled = compiler
         .add(&token::arguments(&["drop", "str", "a", "1", "add"]))
         .and_then(|()| compiler.finish().map(|_| ()));
@@ -418,7 +453,7 @@ fn what_can_not_be_known_is_never_refused() -> Result<(), Error> {
 #[test]
 fn the_checker_keeps_what_it_knows() {
     let refused = |source: Vec<Token>| -> String {
-        let mut compiler = Compiler::<Ticket>::new(vocabulary());
+        let mut compiler = with_stdlib();
         let compiled = compiler
             .add(&source)
             .and_then(|()| compiler.finish().map(|_| ()));
@@ -453,11 +488,11 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
     );
     assert_eq!(
         said("1 ticket lt"),
-        "type: t:1: lt: takes two integers, not an integer and a ticket"
+        "type: t:1: lt: lt compares two integers, two strings or two lists, not an integer and a ticket"
     );
     assert_eq!(
         said("ticket if 1 then"),
-        "type: t:1: if: takes a boolean (from eq, lt, gt or not), not a ticket"
+        "type: t:1: if: takes a boolean (from eq or lt), not a ticket"
     );
     assert_eq!(
         said("0 maybe drop 0 maybe drop"),
@@ -468,7 +503,7 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
         said("liar"),
         "contract: t:1: liar: the application gave 0 values, and its word says 1..=1"
     );
-    let mut compiler = Compiler::<Ticket>::new(vocabulary());
+    let mut compiler = with_stdlib();
     compiler.add(&token::source("t", "1\n  2 ask")?)?;
     let mut machine = Machine::new(compiler.finish()?, Limits::default());
     assert_eq!(
@@ -484,7 +519,7 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
 #[test]
 fn the_stack_fills_to_its_limit_exactly() -> Result<(), Error> {
     let run_with = |text: &str| -> Result<Outcome<i64>, Error> {
-        let mut compiler = Compiler::<Ticket>::new(vocabulary());
+        let mut compiler = with_stdlib();
         compiler.add(&token::source("t", text)?)?;
         let limits = Limits {
             stack: 2,
@@ -510,6 +545,10 @@ fn the_stack_fills_to_its_limit_exactly() -> Result<(), Error> {
 #[test]
 fn every_builtin_effect_names_what_it_takes() {
     for builtin in Builtin::ALL {
+        // pick and roll take a count, then as many values as it says.
+        if matches!(builtin, Builtin::Pick | Builtin::Roll) {
+            continue;
+        }
         let (before, after) = builtin.effect().split_once("--").unwrap_or_default();
         assert_eq!(
             before.split_whitespace().count(),
@@ -518,9 +557,350 @@ fn every_builtin_effect_names_what_it_takes() {
             builtin.name()
         );
         assert!(
-            !after.trim().is_empty() || builtin == Builtin::Drop,
+            !after.trim().is_empty()
+                || matches!(builtin, Builtin::Drop | Builtin::Print | Builtin::Fail),
             "{}",
             builtin.name()
         );
     }
+}
+
+/// The core's sequence and character words, at their edges: indexes just
+/// past the end, strings of more than ASCII, lists that share a start,
+/// counts known only as the program runs.
+#[test]
+fn the_core_at_its_edges() -> Result<(), Error> {
+    let s = |text: &str| Value::<Ticket>::str(text);
+    assert_eq!(code(run("str abc 3 at")), Some("range"));
+    assert_eq!(code(run("list 1 end 1 at")), Some("range"));
+    assert_eq!(
+        run("str héllo 1 at str héllo 1 4 slice str héllo len")?,
+        [s("é"), s("éll"), Value::Int(5)]
+    );
+    assert_eq!(run("str naïve 2 str i put")?, [s("naive")]);
+    assert_eq!(run("str abc 1 str XY put")?, [s("aXYc")]);
+    assert_eq!(run("str é code 233 char")?, [Value::Int(233), s("é")]);
+    let truth = |b: bool| Value::<Ticket>::Bool(b);
+    assert_eq!(
+        run("list 1 2 end list 1 3 end lt list 1 2 end list 1 2 3 end lt")?,
+        [truth(true), truth(true)]
+    );
+    assert_eq!(code(run("list 1 end list str a end lt")), Some("type"));
+    // Counts known only as it runs.
+    assert_eq!(
+        run("1 2 3 4 0 pick drop 2 0 pick drop pick")?,
+        ints(&[1, 2, 3, 4, 2])
+    );
+    assert_eq!(
+        run("1 2 3 4 0 pick drop 2 0 pick drop roll")?,
+        ints(&[1, 3, 4, 2])
+    );
+    assert_eq!(code(run("1 2 -1 0 pick drop pick")), Some("range"));
+    assert_eq!(code(run("1 2 str x 0 pick drop pick")), Some("type"));
+    Ok(())
+}
+
+/// What is built has limits: a value's length, and how deep lists nest.
+#[test]
+fn what_is_built_is_bounded() {
+    let long = || -> Result<Outcome<i64>, Error> {
+        let mut compiler = with_stdlib();
+        let text = "str x 1000 copies let s list 0 1001 range each drop s end end concat";
+        compiler.add(&token::source("t", text)?)?;
+        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        machine.run(&mut Toy { asked: Vec::new() }, u64::MAX)
+    };
+    assert_eq!(long().err().map(|e| e.code.name()), Some("too_long"));
+    let deep = "list end let l 0 begin list l end let l 1 add dup 70 eq until";
+    assert_eq!(code(run(deep)), Some("too_long"));
+    let fine = "list end let l 0 begin list l end let l 1 add dup 60 eq until";
+    assert_eq!(code(run(fine)), None);
+}
+
+/// `let` may take a library or host word's name for itself, not the
+/// core's; a definition may not take a `let` name's.
+#[test]
+fn let_names_and_what_they_may_hide() -> Result<(), Error> {
+    assert_eq!(
+        run("list 1 2 end let first first")?.len(),
+        1,
+        "a library word hidden"
+    );
+    assert_eq!(
+        run("5 let ticket ticket")?,
+        ints(&[5]),
+        "a host word hidden"
+    );
+    assert_eq!(code(run("1 let drop")), Some("bad_name"));
+    assert_eq!(code(run("1 let x define x 2 end")), Some("bad_name"));
+    assert_eq!(code(run("define f 1 end 2 let f f")), None);
+    Ok(())
+}
+
+/// The checker knows a string's elements are strings.
+#[test]
+fn a_strings_elements_are_strings_to_the_checker() {
+    let mut compiler = with_stdlib();
+    let compiled = token::source("t", "str abc 0 at 1 add")
+        .and_then(|tokens| compiler.add(&tokens))
+        .and_then(|()| compiler.finish().map(|_| ()));
+    assert_eq!(compiled.err().map(|e| e.code.name()), Some("type"));
+    let mut compiler = with_stdlib();
+    let compiled = token::source("t", "str abc str b at")
+        .and_then(|tokens| compiler.add(&tokens))
+        .and_then(|()| compiler.finish().map(|_| ()));
+    assert_eq!(
+        compiled.err().map(|e| e.code.name()),
+        Some("type"),
+        "an index is an integer"
+    );
+}
+
+/// A library checked once serves every program compiled from a clone, and
+/// its mistakes are still found.
+#[test]
+fn a_prepared_library_serves_every_clone() -> Result<(), Error> {
+    let mut ready = Compiler::<Ticket>::new(vocabulary());
+    ready.add(&token::source(
+        "lib",
+        "define twice 2 mul end define bad str a 1 add end",
+    )?)?;
+    ready.prepare();
+    for _ in 0..2 {
+        let mut compiler = ready.clone();
+        compiler.add(&token::source("t", "3 twice")?)?;
+        let error = compiler.finish().err().map(|e| e.to_string());
+        assert_eq!(
+            error.as_deref(),
+            Some("type: lib:1: add: takes two integers, and the one under the top is a string")
+        );
+    }
+    let mut open = Compiler::<Ticket>::new(vocabulary());
+    open.add(&token::source("lib", "define half")?)?;
+    open.prepare();
+    open.add(&token::source("lib", "2 div end 8 half")?)?;
+    assert!(
+        open.finish().is_ok(),
+        "nothing is checked while a definition is open"
+    );
+    Ok(())
+}
+
+/// Every core word says what it does, for help.
+#[test]
+fn every_core_word_says_what_it_does() {
+    for builtin in Builtin::ALL {
+        assert!(builtin.about().len() > 8, "{}", builtin.name());
+    }
+}
+
+/// push and put on lists, in place or copied, within the nesting limit;
+/// slice's bounds; a host value's kind and text.
+#[test]
+fn lists_change_and_host_values_show() -> Result<(), Error> {
+    let list = |items: Vec<Value<Ticket>>| {
+        crate::List::new(items).map(|l| Value::List(std::rc::Rc::new(l)))
+    };
+    assert_eq!(
+        run("list 1 end 2 push")?,
+        list(ints(&[1, 2])).into_iter().collect::<Vec<_>>()
+    );
+    let both: Vec<_> = list(ints(&[1, 2]))
+        .into_iter()
+        .chain(list(ints(&[9, 2])))
+        .collect();
+    assert_eq!(run("list 1 2 end dup 0 9 put")?, both);
+    assert_eq!(code(run("str abc 2 1 slice")), Some("range"));
+    assert_eq!(code(run("str abc 0 4 slice")), Some("range"));
+    let deep = "list end let l 0 begin list end l push let l 1 add dup 70 eq until";
+    assert_eq!(code(run(deep)), Some("too_long"), "push nests too");
+    let deep_put = "list 0 end let l 0 begin list 0 end 0 l put let l 1 add dup 70 eq until";
+    assert_eq!(code(run(deep_put)), Some("too_long"), "put nests too");
+    assert_eq!(
+        run("ticket kind ticket string")?,
+        [Value::str("ticket"), Value::str("a ticket")]
+    );
+    Ok(())
+}
+
+/// A definition that, some ways through, replaces a value below what it
+/// surely uses: its callers forget what they knew of that value's kind.
+/// (Found by a Codex test run; it was refused before.)
+#[test]
+fn a_value_replaced_below_what_is_surely_used_is_forgotten() -> Result<(), Error> {
+    let replace = "define replace each swap drop end end str a list 1 2 end replace 1 add";
+    assert_eq!(run(replace)?, ints(&[3]));
+    let swapped = "define f each drop drop 1 end end str a list 0 end f 1 add";
+    assert_eq!(run(swapped)?, ints(&[2]));
+    Ok(())
+}
+
+/// What the Codex QA runs found, each a test that failed before its fix.
+#[test]
+fn what_qa_found() -> Result<(), Error> {
+    let refused = |text: &str| -> Option<String> {
+        let mut compiler = with_stdlib();
+        let compiled = token::source("t", text)
+            .and_then(|tokens| compiler.add(&tokens))
+            .and_then(|()| compiler.finish().map(|_| ()));
+        compiled.err().map(|e| e.code.name().to_owned())
+    };
+    // Refused before anything runs: kinds through library calls, pairs of
+    // kinds, push and put of a non-string into a string, `mod` by -1.
+    for text in [
+        "str m print 1 sum",
+        "str m print 42 last",
+        "str m print 5 sort",
+        "str m print str x 0 gt",
+        "str m print str a str 3 copies",
+        "str m print str a 1 push",
+        "str m print str a 0 1 put",
+        "str m print str x -1 mod",
+        "str m print true negate",
+        "define id let x x end str m print str a id 1 add",
+    ] {
+        assert_eq!(refused(text).as_deref(), Some("type"), "{text}");
+    }
+    // A definition every way through which ends in `fail` still needs its
+    // values; a way ending in `fail` counts as failing, so what the ways
+    // that go on need is needed.
+    assert_eq!(
+        refused("define f fail end str m print f").as_deref(),
+        Some("stack_underflow")
+    );
+    assert_eq!(
+        refused("define f if str x fail else drop drop then end true f").as_deref(),
+        Some("stack_underflow")
+    );
+    assert_eq!(
+        refused("define f if str x fail else drop drop then end 1 2 true f"),
+        None
+    );
+    // A call to a word that only fails is as `fail`; too few values are
+    // named before a kind.
+    assert_eq!(
+        refused("define stop str s fail end define f if stop else 1 add then end str a true f")
+            .as_deref(),
+        Some("type")
+    );
+    assert_eq!(refused("str x 5 pad").as_deref(), Some("stack_underflow"));
+    // A string put into, held nowhere else, changes in place; held
+    // elsewhere, it is copied.
+    assert_eq!(
+        run("str x 1000 copies 0 let i begin 0 str y put i 1 add let i i 17000 eq until len")?,
+        ints(&[1000])
+    );
+    assert_eq!(
+        run("str héllo let s s 1 str E put s 0 str ab put")?,
+        [Value::str("hEllo"), Value::str("abéllo")]
+    );
+    // A way leaving what was given below where the stack surely reaches
+    // doesn't make the caller's stack shorter than it is.
+    assert_eq!(
+        run("define f if else drop 7 then end true f 5")?,
+        ints(&[5])
+    );
+    // `and` and `or` take two booleans.
+    assert_eq!(refused("1 true and").as_deref(), Some("type"));
+    assert_eq!(refused("true or").as_deref(), Some("stack_underflow"));
+    // A text that fits is made, however its value is nested.
+    assert_eq!(
+        run("str x 1000 copies 1000 copies let s list s end string len")?,
+        ints(&[1_000_000])
+    );
+    // A loop that grows the stack still needs its first round's values.
+    assert_eq!(
+        refused("define f begin dup true until end str m print f").as_deref(),
+        Some("stack_underflow")
+    );
+    // A call to itself inside list … end needs what the definition needs.
+    assert_eq!(
+        refused("define d dup drop list d end end str m print d").as_deref(),
+        Some("stack_underflow")
+    );
+    // Right answers: eq after put, a list's depth after put, mod by -1.
+    assert_eq!(
+        run("list list 0 end end 0 7 put list 7 end eq")?,
+        [Value::Bool(true)]
+    );
+    assert_eq!(run("-9223372036854775808 -1 mod 7 -1 mod")?, ints(&[0, 0]));
+    assert_eq!(run("str x 5 str ab pad len")?, ints(&[5]));
+    // A way ending at `fail` counts as failing, unless every way does.
+    assert_eq!(
+        refused("str m print 5 str , split-on").as_deref(),
+        Some("type")
+    );
+    assert_eq!(
+        refused("define f if str boom fail else 1 add then end str a true f").as_deref(),
+        Some("type")
+    );
+    assert_eq!(
+        refused("define die str x fail end false if die then 1"),
+        None
+    );
+    // All the calls allowed (100 here) may nest, the top level aside.
+    let deep = "define f dup 0 eq if else 1 sub f 0 drop then end";
+    assert_eq!(run(&format!("{deep} 99 f 0"))?, ints(&[0, 0]));
+    assert_eq!(code(run(&format!("{deep} 100 f 0"))), Some("call_depth"));
+    // Built to the longest a value may be, not held on the stack first;
+    // a string pushed onto, held nowhere else, grows in place.
+    assert_eq!(
+        run("0 1000000 range len str a 1000000 copies len")?,
+        ints(&[1_000_000, 1_000_000])
+    );
+    assert_eq!(
+        run("str ab let s s str c push s")?,
+        [Value::str("abc"), Value::str("ab")]
+    );
+    // Too long a text is refused with how long a string may be.
+    let wide = run("list 0 600000 range end string");
+    assert!(wide.is_err_and(|e| e.message.contains("1000000") && !e.message.contains("2000000")));
+    Ok(())
+}
+
+/// A list held many times over is as big as all its copies: past the
+/// total allowed, it is refused as it is built, so no walk over it (eq,
+/// lt, string) can run long within a step.
+#[test]
+fn a_list_held_many_times_is_counted_whole() {
+    let doubling =
+        "list 1 2 3 4 5 6 7 8 end let x 0 begin list x x end let x 1 add dup 40 eq until";
+    assert_eq!(code(run(doubling)), Some("too_long"));
+    let fine = "list 1 2 end let x 0 begin list x x end let x 1 add dup 10 eq until x x eq";
+    assert_eq!(code(run(fine)), None);
+}
+
+/// Cases mutation testing showed no test held: string order, a non-ASCII
+/// string grown and then indexed, copies of shared strings charged, and a
+/// list's depth after `put` makes it shallower.
+#[test]
+fn what_mutation_testing_found() -> Result<(), Error> {
+    assert_eq!(
+        run("str a str b lt str b str a lt str ab str a lt")?,
+        [Value::Bool(true), Value::Bool(false), Value::Bool(false)]
+    );
+    assert_eq!(
+        run("str é str ab push dup 2 at swap 0 at")?,
+        [Value::str("b"), Value::str("é")]
+    );
+    let shared = "str x 1000 copies let s 0 begin s str y push drop 1 add dup 17000 eq until";
+    assert_eq!(code(run(shared)), Some("too_long"));
+    let shared = "str x 1000 copies let s 0 begin s 0 str y put drop 1 add dup 17000 eq until";
+    assert_eq!(code(run(shared)), Some("too_long"));
+    let shared = "0 1000 range let s 0 begin s 7 push drop 1 add dup 17000 eq until";
+    assert_eq!(code(run(shared)), Some("too_long"));
+    let shared = "0 1000 range let s 0 begin s 0 7 put drop 1 add dup 17000 eq until";
+    assert_eq!(code(run(shared)), Some("too_long"));
+    // Held nowhere else, a list is put into in place, free of copies.
+    let alone = "0 1000 range 0 begin swap 0 7 put swap 1 add dup 17000 eq until drop len";
+    assert_eq!(run(alone)?, ints(&[1000]));
+    // A string put may make a string exactly as long as one may be.
+    assert_eq!(
+        run("str x 1000000 copies 0 str y put len")?,
+        ints(&[1_000_000])
+    );
+    let shallower = "list list list 1 end end end 0 5 put let x \
+        0 begin list x end let x 1 add dup 63 eq until drop x len";
+    assert_eq!(run(shallower)?, ints(&[1]));
+    Ok(())
 }

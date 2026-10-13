@@ -56,6 +56,33 @@ impl AppValue for Fux {
             Fux::Answer(_) => "an answer",
         }
     }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Fux::Pane(_) => "pane",
+            Fux::Tab(_) => "tab",
+            Fux::Workspace(_) => "workspace",
+            Fux::Client(_) => "client",
+            Fux::Opts(_) => "opts",
+            Fux::Keys(_) => "keys",
+            Fux::Mouse(_) => "mouse",
+            Fux::Extent(_) => "size",
+            Fux::Answer(_) => "answer",
+        }
+    }
+
+    fn text(&self) -> String {
+        match self {
+            Fux::Pane(p) => p.to_string(),
+            Fux::Tab(t) => t.to_string(),
+            Fux::Workspace(w) => w.to_string(),
+            Fux::Client(c) => c.to_string(),
+            Fux::Answer(answer) => answer.text.clone(),
+            Fux::Extent(Extent::Cells(n)) => n.to_string(),
+            Fux::Extent(Extent::Percent(n)) => format!("{n}%"),
+            Fux::Opts(_) | Fux::Keys(_) | Fux::Mouse(_) => format!("({})", self.kind()),
+        }
+    }
 }
 
 /// What a wait waits for, as words give it.
@@ -239,16 +266,28 @@ pub fn vocabulary() -> fuxth::Vocabulary {
 
 /// Compiles `tokens` after the library: a program ready to run.
 pub fn compile(tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
-    let mut compiler = Compiler::new(vocabulary());
-    compiler.add(&fuxth::token::source("prelude.fux", fuxth::PRELUDE)?)?;
-    compiler.add(&fuxth::token::source("library.fux", LIBRARY)?)?;
+    let mut compiler = READY.with(Clone::clone)?;
     compiler.add(&handles(tokens)?)?;
     Ok(Machine::new(compiler.finish()?, Limits::default()))
 }
 
+thread_local! {
+    /// The standard library and fux's, compiled and checked once a thread,
+    /// for every program after.
+    static READY: Result<Compiler<Fux>, Failed> = libraries();
+}
+
+fn libraries() -> Result<Compiler<Fux>, Failed> {
+    let mut compiler = Compiler::new(vocabulary());
+    compiler.add(&fuxth::token::source("stdlib.fux", fuxth::STDLIB)?)?;
+    compiler.add(&fuxth::token::source("library.fux", LIBRARY)?)?;
+    compiler.prepare();
+    Ok(compiler)
+}
+
 /// A bare id is the handle it names: `%3` is `str %3 pane`, `@2` is
 /// `str @2 tab`, `+1` is `str +1 workspace`; but not where it is the text
-/// `str` takes. Nor may `define` or `constant` give one as a name: it
+/// `str` takes. Nor may `define` or `let` give one as a name: it
 /// would always be the handle.
 fn handles(tokens: &[Token]) -> Result<Vec<Token>, Failed> {
     let mut out = Vec::with_capacity(tokens.len());
@@ -263,7 +302,7 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, Failed> {
         let id = token.text.len() > 1 && token.text.chars().skip(1).all(|c| c.is_ascii_digit());
         let handle = id && !word.is_empty();
         match after {
-            Some("define" | "constant") if handle => {
+            Some("define" | "let") if handle => {
                 return Err(Failed {
                     status: 1,
                     code: "bad_name".to_owned(),
@@ -283,7 +322,7 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, Failed> {
             Some(_) | None => out.push(token.clone()),
         }
         after = match (&*token.text, after) {
-            (text @ ("str" | "define" | "constant"), None) => Some(text),
+            (text @ ("str" | "define" | "let"), None) => Some(text),
             (_, Some(_) | None) => None,
         };
     }
@@ -528,11 +567,12 @@ pub fn run_capped(
             });
         }
         if let Some(steps) = steps.filter(|steps| taken > *steps) {
-            return Err(Failed {
+            let failed = Failed {
                 status: 1,
-                code: "too_long".to_owned(),
+                code: "steps".to_owned(),
                 message: format!("ran more than {steps} steps"),
-            });
+            };
+            return Err(placed(machine, failed));
         }
         taken = taken.saturating_add(SLICE);
         match machine
@@ -607,7 +647,7 @@ fn placed(machine: &Machine<Fux>, failed: Failed) -> Failed {
 fn ours(machine: &Machine<Fux>, mut error: fuxth::Error) -> fuxth::Error {
     let bundled = |place: Option<&fuxth::Place>| {
         matches!(place, Some(fuxth::Place::Line { source, .. })
-            if matches!(&**source, "prelude.fux" | "library.fux"))
+            if matches!(&**source, "stdlib.fux" | "library.fux"))
     };
     if !bundled(error.place.as_ref()) {
         return error;
@@ -714,21 +754,7 @@ pub fn handle(id: crate::command::AnyRef<WsId>) -> Fux {
 
 /// A value as a program's end prints it.
 pub fn display(value: &Value<Fux>) -> String {
-    match value {
-        Value::Int(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Str(s) => s.to_string(),
-        Value::App(app) => match app {
-            Fux::Pane(p) => p.to_string(),
-            Fux::Tab(t) => t.to_string(),
-            Fux::Workspace(w) => w.to_string(),
-            Fux::Client(c) => c.to_string(),
-            Fux::Answer(answer) => answer.text.clone(),
-            Fux::Extent(Extent::Cells(n)) => n.to_string(),
-            Fux::Extent(Extent::Percent(n)) => format!("{n}%"),
-            Fux::Opts(_) | Fux::Keys(_) | Fux::Mouse(_) => format!("({})", app.kind()),
-        },
-    }
+    value.text()
 }
 
 /// What a program does that the client does itself, from the command line:

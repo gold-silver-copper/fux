@@ -1,0 +1,25 @@
+# Squares in a split interval (held-out spec FB-0592).
+# expect: 47580 1989 33002416
+# lo hi -- sum of squares, using recursive interval bisection.
+define squares
+  let hi let lo
+  lo hi eq if
+    lo lo mul
+  else
+    # The difference is nonnegative, so this is floor((lo + hi) / 2).
+    lo hi lo sub 2 div add let mid
+    lo mid squares
+    mid 1 add hi squares
+    add
+  then
+end
+
+list
+  list 13 52 end
+  list -17 8 end
+  list 1000 1031 end
+end
+each
+  let interval
+  interval first interval last squares print
+end

@@ -124,7 +124,6 @@ pub const WORDS: &[Word] = &[
     word("Reading", "info", 1, "handle -- record", "a pane, tab or workspace, all of it"),
     word("Reading", "get", 2, "handle field -- value", "one field of a pane, tab or workspace: exited, revision, cwd"),
     word("Reading", "json", 1, "x -- text", "x as JSON; among a capture's options, the capture as JSON"),
-    word("Reading", "print", 1, "x -- ", "print x now"),
     word("Reading", "events", 0, "-- ", "what happens, a line each, as it happens"),
     word("Reading", "events-json", 0, "-- ", "what happens, as JSON lines"),
     word("Reading", "events-of", 1, "handle -- ", "what happens in a pane, tab or workspace"),
@@ -228,16 +227,6 @@ fn fail(code: &'static str, message: impl Into<String>) -> Failure {
     Failure::new(code, message)
 }
 
-fn kind_of(value: &Value<Fux>) -> &'static str {
-    use fuxth::AppValue;
-    match value {
-        Value::Int(_) => "an integer",
-        Value::Bool(_) => "a boolean",
-        Value::Str(_) => "a string",
-        Value::App(app) => app.kind(),
-    }
-}
-
 /// How a word of fux's is used, for a mistake in using it: what goes
 /// before it, what it leaves, and an example.
 pub fn usage(word: &str) -> Option<String> {
@@ -266,14 +255,14 @@ fn wrong(word: &str, wanted: &str, got: &Value<Fux>) -> Failure {
     let usage = usage(word).map_or_else(String::new, |u| format!(" ({u})"));
     fail(
         "type",
-        format!("{word} takes {wanted}, not {}{usage}", kind_of(got)),
+        format!("{word} takes {wanted}, not {}{usage}", got.kind()),
     )
 }
 
 fn string(word: &str, value: &Value<Fux>) -> Result<String, Failure> {
     match value {
         Value::Str(s) => Ok(s.to_string()),
-        other @ (Value::Int(_) | Value::Bool(_) | Value::App(_)) => {
+        other @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
             Err(wrong(word, "a string", other))
         }
     }
@@ -285,14 +274,28 @@ fn text(word: &str, value: &Value<Fux>) -> Result<String, Failure> {
         Value::Str(s) => Ok(s.to_string()),
         Value::Int(n) => Ok(n.to_string()),
         Value::Bool(b) => Ok(b.to_string()),
-        other => Err(wrong(word, "a string or a number", other)),
+        other @ (Value::List(_) | Value::App(_)) => Err(wrong(word, "a string or a number", other)),
+    }
+}
+
+/// A value as JSON: a list as an array of its values', anything of
+/// fux's as its text.
+fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
+    use crate::json::Json;
+    match value {
+        Value::Int(n) => Json::Number(*n),
+        Value::Bool(b) => Json::Bool(*b),
+        Value::Str(s) => Json::str(s.to_string()),
+        // As deep as lists nest, at most fuxth's limit.
+        Value::List(list) => Json::Array(list.items.iter().map(json_of).collect()),
+        Value::App(_) => Json::str(super::display(value)),
     }
 }
 
 fn int(word: &str, value: &Value<Fux>) -> Result<i64, Failure> {
     match value {
         Value::Int(n) => Ok(*n),
-        other @ (Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
+        other @ (Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_)) => {
             Err(wrong(word, "an integer", other))
         }
     }
@@ -307,18 +310,22 @@ fn count<T: TryFrom<i64>>(word: &str, value: &Value<Fux>) -> Result<T, Failure> 
 fn pane(word: &str, value: &Value<Fux>) -> Result<crate::id::PaneId, Failure> {
     match value {
         Value::App(Fux::Pane(p)) => Ok(*p),
-        other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
-            Err(wrong(word, "a pane (from pane, run or split)", other))
-        }
+        other @ (Value::Int(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::List(_)
+        | Value::App(_)) => Err(wrong(word, "a pane (from pane, run or split)", other)),
     }
 }
 
 fn client(word: &str, value: &Value<Fux>) -> Result<crate::id::ClientId, Failure> {
     match value {
         Value::App(Fux::Client(c)) => Ok(*c),
-        other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
-            Err(wrong(word, "a client (from me or client)", other))
-        }
+        other @ (Value::Int(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::List(_)
+        | Value::App(_)) => Err(wrong(word, "a client (from me or client)", other)),
     }
 }
 
@@ -328,9 +335,11 @@ fn target(word: &str, value: &Value<Fux>) -> Result<AnyRef<WsId>, Failure> {
         Value::App(Fux::Pane(p)) => Ok(AnyRef::Pane(*p)),
         Value::App(Fux::Tab(t)) => Ok(AnyRef::Tab(*t)),
         Value::App(Fux::Workspace(w)) => Ok(AnyRef::Workspace(*w)),
-        other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
-            Err(wrong(word, "a pane, tab or workspace", other))
-        }
+        other @ (Value::Int(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::List(_)
+        | Value::App(_)) => Err(wrong(word, "a pane, tab or workspace", other)),
     }
 }
 
@@ -397,7 +406,11 @@ fn with<T>(
         Value::App(Fux::Opts(opts)) => &mut opts.waits,
         Value::App(Fux::Keys(keys)) => &mut keys.waits,
         Value::App(Fux::Mouse(mouse)) => &mut mouse.waits,
-        other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
+        other @ (Value::Int(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::List(_)
+        | Value::App(_)) => {
             return Err(wrong(word, "options, keys or a mouse event", other));
         }
     };
@@ -408,18 +421,22 @@ fn with<T>(
 fn opts<'a>(word: &str, value: &'a mut Value<Fux>) -> Result<&'a mut Opts, Failure> {
     match value {
         Value::App(Fux::Opts(opts)) => Ok(opts),
-        other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
-            Err(wrong(word, "options (from opts)", other))
-        }
+        other @ (Value::Int(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::List(_)
+        | Value::App(_)) => Err(wrong(word, "options (from opts)", other)),
     }
 }
 
 fn keys<'a>(word: &str, value: &'a mut Value<Fux>) -> Result<&'a mut Keys, Failure> {
     match value {
         Value::App(Fux::Keys(keys)) => Ok(keys),
-        other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
-            Err(wrong(word, "keys (from keys)", other))
-        }
+        other @ (Value::Int(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::List(_)
+        | Value::App(_)) => Err(wrong(word, "keys (from keys)", other)),
     }
 }
 
@@ -481,6 +498,10 @@ impl fuxth::Host for Host<'_> {
     type Value = Fux;
     type Request = Ask;
 
+    fn print(&mut self, line: &str) -> Result<(), Failure> {
+        writeln!(self.out, "{line}").map_err(|e| fail("output", e.to_string()))
+    }
+
     fn call(
         &mut self,
         word: usize,
@@ -529,7 +550,7 @@ impl fuxth::Host for Host<'_> {
                             _ => resolve(super::display(&Value::App(app)), kind),
                         }
                     }
-                    other @ (Value::Int(_) | Value::Bool(_) | Value::App(_)) => {
+                    other @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
                         Err(wrong(name, "a name, or a pane, tab or workspace", &other))
                     }
                 }
@@ -612,6 +633,7 @@ impl fuxth::Host for Host<'_> {
                             other @ (Value::Int(_)
                             | Value::Bool(_)
                             | Value::Str(_)
+                            | Value::List(_)
                             | Value::App(_)) => WsRef::Name(string(name, other)?),
                         })
                     }
@@ -912,7 +934,11 @@ impl fuxth::Host for Host<'_> {
                         ));
                     }
                     Value::App(Fux::Client(c)) => (Vec::new(), Some(*c)),
-                    other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
+                    other @ (Value::Int(_)
+                    | Value::Bool(_)
+                    | Value::Str(_)
+                    | Value::List(_)
+                    | Value::App(_)) => {
                         let target = target(name, other)
                             .map_err(|_| wrong(name, "a pane, tab, workspace or client", other))?;
                         (vec![target.map(WsRef::Id)], None)
@@ -966,7 +992,11 @@ impl fuxth::Host for Host<'_> {
                 let p = pane(name, &next()?)?;
                 let m = match next()? {
                     Value::App(Fux::Mouse(m)) => m,
-                    other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
+                    other @ (Value::Int(_)
+                    | Value::Bool(_)
+                    | Value::Str(_)
+                    | Value::List(_)
+                    | Value::App(_)) => {
                         return Err(wrong(name, "a mouse event (from mouse)", &other));
                     }
                 };
@@ -1080,22 +1110,12 @@ impl fuxth::Host for Host<'_> {
                         Value::str(crate::json::Json::str(answer.text.clone()).render()),
                     ),
                 },
-                Value::Int(n) => now(out, Value::str(n.to_string())),
-                Value::Bool(b) => now(out, Value::str(b.to_string())),
-                Value::Str(s) => now(
-                    out,
-                    Value::str(crate::json::Json::str(s.to_string()).render()),
-                ),
-                other => now(
-                    out,
-                    Value::str(crate::json::Json::str(super::display(&other)).render()),
-                ),
+                other @ (Value::Int(_)
+                | Value::Bool(_)
+                | Value::Str(_)
+                | Value::List(_)
+                | Value::App(_)) => now(out, Value::str(json_of(&other).render())),
             },
-            "print" => {
-                let v = next()?;
-                let _ = writeln!(self.out, "{}", super::display(&v));
-                Ok(Done::Now)
-            }
             "events" | "events-json" => later(ask(
                 Command::Events {
                     targets: Vec::new(),
@@ -1200,7 +1220,7 @@ impl fuxth::Host for Host<'_> {
                 let extent = match next()? {
                     Value::App(Fux::Extent(e)) => e,
                     v @ Value::Int(_) => Extent::Cells(count(name, &v)?),
-                    other @ (Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
+                    other @ (Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_)) => {
                         return Err(wrong(name, "cells or a percent", &other));
                     }
                 };
@@ -1246,9 +1266,13 @@ impl fuxth::Host for Host<'_> {
                 let to = match next()? {
                     Value::App(Fux::Tab(t)) => MoveTo::Tab(t),
                     Value::App(Fux::Workspace(w)) => MoveTo::Workspace(WsRef::Id(w)),
-                    Value::Str(s) if &*s == "new-tab" => MoveTo::NewTab,
-                    Value::Str(s) if &*s == "new-workspace" => MoveTo::NewWorkspace,
-                    other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
+                    Value::Str(s) if **s == *"new-tab" => MoveTo::NewTab,
+                    Value::Str(s) if **s == *"new-workspace" => MoveTo::NewWorkspace,
+                    other @ (Value::Int(_)
+                    | Value::Bool(_)
+                    | Value::Str(_)
+                    | Value::List(_)
+                    | Value::App(_)) => {
                         return Err(wrong(
                             name,
                             "a tab, a workspace, new-tab or new-workspace",
@@ -1357,9 +1381,11 @@ impl fuxth::Host for Host<'_> {
             "attach-to" => {
                 let workspace = match next()? {
                     Value::App(Fux::Workspace(w)) => w.to_string(),
-                    other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
-                        string(name, &other)?
-                    }
+                    other @ (Value::Int(_)
+                    | Value::Bool(_)
+                    | Value::Str(_)
+                    | Value::List(_)
+                    | Value::App(_)) => string(name, &other)?,
                 };
                 later(Ask::Local(Local::Attach {
                     workspace: Some(workspace),
@@ -1392,7 +1418,11 @@ impl fuxth::Host for Host<'_> {
                 let c = client(name, &next()?)?;
                 let t = match next()? {
                     Value::App(Fux::Tab(t)) => t,
-                    other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
+                    other @ (Value::Int(_)
+                    | Value::Bool(_)
+                    | Value::Str(_)
+                    | Value::List(_)
+                    | Value::App(_)) => {
                         return Err(wrong(name, "a tab", &other));
                     }
                 };
@@ -1411,9 +1441,11 @@ impl fuxth::Host for Host<'_> {
                 let c = client(name, &next()?)?;
                 let w = match next()? {
                     Value::App(Fux::Workspace(w)) => WsRef::Id(w),
-                    other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
-                        WsRef::Name(string(name, &other)?)
-                    }
+                    other @ (Value::Int(_)
+                    | Value::Bool(_)
+                    | Value::Str(_)
+                    | Value::List(_)
+                    | Value::App(_)) => WsRef::Name(string(name, &other)?),
                 };
                 later(act(c, ClientAction::SelectWorkspace(Pick::Id(w))))
             }
@@ -1498,9 +1530,11 @@ impl fuxth::Host for Host<'_> {
             "grant" => {
                 let workspace = match next()? {
                     Value::App(Fux::Workspace(w)) => WsRef::Id(w),
-                    other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
-                        WsRef::Name(string(name, &other)?)
-                    }
+                    other @ (Value::Int(_)
+                    | Value::Bool(_)
+                    | Value::Str(_)
+                    | Value::List(_)
+                    | Value::App(_)) => WsRef::Name(string(name, &other)?),
                 };
                 let socket = string(name, &next()?)?;
                 later(ask(

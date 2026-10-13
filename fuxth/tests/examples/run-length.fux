@@ -1,0 +1,17 @@
+# Run-length encoding: each run of one character as a count and the character.
+# expect: 3a2b1c4d
+# s -- s
+define encode
+  let s 0 let i
+  list str ''
+    begin
+      i s len lt if
+        s i at let c 0 let n
+        begin i s len lt if s i at c eq else false then dup if i 1 add let i n 1 add let n then not until
+        n string c
+        false
+      else true then
+    until
+  end concat
+end
+str aaabbcdddd encode

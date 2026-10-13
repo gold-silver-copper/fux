@@ -1,0 +1,12 @@
+# Compact shelf labels (held-out spec FB-0005).
+# expect: a ox ash elm fig moss
+# Sort by character count, then by the label itself.
+list str moss str fig str ox str ash str a str elm end let labels
+list
+  labels each
+    let label
+    list label len label end
+  end
+end
+sort
+each 1 at end

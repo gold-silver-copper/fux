@@ -1,0 +1,13 @@
+# Rotate a rectangular picture (held-out spec FB-0144).
+# expect: 5 9 3 8 2 -1 9 6 4 7 5 1 9 3 5
+# Reverse the row order, then collect each column as an output row.
+list
+  list 3 -1 4 1 5 end
+  list 9 2 6 5 3 end
+  list 5 8 9 7 9 end
+end reverse let rows
+
+0 rows first len range each
+  let column
+  list rows each column at end end print
+end

@@ -1,0 +1,36 @@
+# Equalize surviving token frequencies (held-out spec FB-0441).
+# expect: 12 3 5
+# Input tokens, with their original multiplicities.
+list
+  2 5 8 11 14 17 17 14 11 8 5 2 5 8 11 14 17 17 14 11 14 17 11 17 14 17 17
+end let tokens
+
+# Collect distinct values, then count each in the original list.
+empty let distinct
+tokens each
+  let token
+  distinct token contains not if
+    distinct token push let distinct
+  then
+end
+list distinct each tokens swap count end end let frequencies
+
+# For fixed f, retain f copies of every value with at least f copies.
+# Ascending candidates and strict improvement preserve the smallest f.
+0 let best-kept
+0 let best-frequency
+0 let best-distinct
+1 frequencies largest 1 add range each
+  let frequency
+  0 frequencies each frequency ge if 1 add then end let survivors
+  frequency survivors mul let kept
+  kept best-kept gt if
+    kept let best-kept
+    frequency let best-frequency
+    survivors let best-distinct
+  then
+end
+
+tokens len best-kept sub
+best-frequency
+best-distinct

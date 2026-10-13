@@ -1,0 +1,22 @@
+# Wrap a museum caption (held-out spec FB-0584).
+# expect: brass birds gather near the quiet clock tower at dusk
+# Split on ASCII spaces and greedily append each nonempty word.
+16 let width
+str '' let line
+str '  brass  birds gather near the quiet clock tower at dusk  '
+str ' ' split-on each
+  let word
+  word len 0 gt if
+    line len 0 eq if
+      word let line
+    else
+      line len 1 add word len add width le if
+        line str ' ' push word push let line
+      else
+        line print
+        word let line
+      then
+    then
+  then
+end
+line len 0 gt if line print then

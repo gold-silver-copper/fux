@@ -9,7 +9,7 @@ mod common;
 use common::{Ended, Gen, Rng, V, fuxth};
 use std::process::Command;
 
-const PROGRAMS: u64 = 4000;
+const PROGRAMS: u64 = 25_000;
 
 /// Words gforth spells otherwise, or lacks.
 const HELPERS: &str = "\
@@ -40,7 +40,7 @@ fn shown(left: &[V]) -> Option<String> {
         .map(|v| match v {
             V::Int(n) => Some(n.to_string()),
             V::Bool(b) => Some(if *b { "-1" } else { "0" }.to_owned()),
-            V::Str(_) => None,
+            V::Str(_) | V::List(_) => None,
         })
         .collect();
     let values = values?;
@@ -57,13 +57,19 @@ fn fuxth_leaves_what_gforth_leaves() -> std::io::Result<()> {
     let mut expected = Vec::new();
     for seed in 0..PROGRAMS {
         let mut rng = Rng::new(seed.wrapping_add(3 << 32));
-        let text = Gen::new(&mut rng).typed_program();
+        let text = Gen::new(&mut rng).numeric_program();
+        if text.is_empty() {
+            continue;
+        }
         if text.lines().any(|l| matches!(l, "str" | "ask" | "maybe")) {
             continue;
         }
-        let Ended::Left(left) = fuxth(&text, u64::MAX) else {
+        let Ended::Left(printed, left) = fuxth(&text, u64::MAX) else {
             continue;
         };
+        if !printed.is_empty() {
+            continue;
+        }
         let Some(shown) = shown(&left) else {
             continue;
         };

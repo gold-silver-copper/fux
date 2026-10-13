@@ -1,0 +1,17 @@
+# Unlimited voucher combinations (held-out spec FB-0107).
+# fails: overflow
+1000 let target
+1 51 range let denominations
+
+list 1 0 target range each drop 0 end end let ways
+
+denominations each
+  let c
+  c target 1 add range each
+    let s
+    ways s at ways s c sub at add let updated
+    ways s updated put let ways
+  end
+end
+
+ways target at

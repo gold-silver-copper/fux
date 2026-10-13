@@ -1,0 +1,14 @@
+# Seven-eighths invoice (held-out spec FB-0098).
+# expect: 9223372036854775604 8070450532247928653
+4 let quantity
+2305843009213693901 let unit-price
+7 let numerator
+8 let denominator
+
+quantity unit-price mul let subtotal
+subtotal
+
+# Split into quotient and remainder before multiplying to stay within int64.
+# floor((q*d+r)*n/d) = q*n + floor(r*n/d), for these positive inputs.
+subtotal denominator div numerator mul
+subtotal denominator mod numerator mul denominator div add

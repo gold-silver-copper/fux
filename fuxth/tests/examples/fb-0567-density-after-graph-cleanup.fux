@@ -1,0 +1,24 @@
+# Density after graph cleanup (held-out spec FB-0567).
+# fails: div_by_zero
+list str oak end let vertices
+list
+  list str oak str oak end
+  list str oak str oak end
+end let edges
+1000 let scale
+
+# Remove self-loops and retain only the first copy of each directed edge.
+empty let cleaned
+edges each
+  let edge
+  edge first edge last ne if
+    cleaned edge contains not if
+      cleaned edge push let cleaned
+    then
+  then
+end
+
+# All declared vertices survive, including isolated vertices.
+vertices len let n
+cleaned len let m
+scale m mul n n 1 sub mul div

@@ -1,0 +1,258 @@
+# fuxth's standard library, written in fuxth: every program may use it.
+# Each comment says what the word does to the stack, then what it is for.
+# Short words are copied in where they are used, so they cost no call.
+
+# ---- The stack (the core has drop, pick and roll)
+# a -- a a : a copy of the top
+define dup 0 pick end
+# a b -- b a : the top two swapped
+define swap 1 roll end
+# a b -- a b a : a copy of the value under the top, on top
+define over 1 pick end
+# a b c -- b c a : the third value moved to the top
+define rot 2 roll end
+# a b c -- c a b : the top value moved under the other two
+define -rot 2 roll 2 roll end
+# a b -- b : the value under the top dropped
+define nip 1 roll drop end
+# a b -- b a b : a copy of the top put under the value below it
+define tuck 1 roll 1 pick end
+# a b -- a b a b : copies of the top two
+define 2dup 1 pick 1 pick end
+# a b -- : the top two dropped
+define 2drop drop drop end
+
+# ---- Booleans
+# -- true : the boolean true
+define true 0 0 eq end
+# -- false : the boolean false
+define false 0 1 eq end
+# flag -- flag : the other boolean
+define not if false else true then end
+# a b -- flag : whether both are true (both are worked out first)
+define and if not not else not drop false then end
+# a b -- flag : whether either is true (both are worked out first)
+define or if not drop true else not not then end
+
+# ---- Comparing (lt compares two integers, two strings or two lists)
+# a b -- flag : whether a comes after b
+define gt swap lt end
+# a b -- flag : whether a is at most b
+define le gt not end
+# a b -- flag : whether a is at least b
+define ge lt not end
+# a b -- flag : whether they differ
+define ne eq not end
+# a b -- min : the smaller
+define min 2dup gt if swap then drop end
+# a b -- max : the larger
+define max 2dup lt if swap then drop end
+
+# ---- Integers
+# n m -- r : the remainder of n div m, with the sign of n
+define mod let m let n m -1 eq if n 0 mul else n n m div m mul sub then end
+# n -- -n : n negated
+define negate 0 swap sub end
+# n -- |n| : n without its sign
+define abs dup 0 lt if negate then end
+# n -- flag : whether n is even
+define even 2 mod 0 eq end
+
+# ---- Kinds (kind gives integer, boolean, string, list, or the host's kind)
+# x -- flag : whether x is an integer
+define is-int kind str integer eq end
+# x -- flag : whether x is a boolean
+define is-bool kind str boolean eq end
+# x -- flag : whether x is a string
+define is-string kind str string eq end
+# x -- flag : whether x is a list
+define is-list kind str list eq end
+
+# ---- Sequences: strings and lists alike (a string's elements are one-character strings)
+# seq -- x1 … xn : every element onto the stack, the first deepest
+define unpack each end end
+# -- list : the empty list
+define empty list end end
+# a b -- ab : two strings, or two lists, joined
+define cat let b let a list a b end concat end
+# list -- s : a list of strings joined into one string (an empty list, an empty string)
+define glue let l list str '' l unpack end concat end
+# seq -- x : the first element
+define first 0 at end
+# seq -- x : the last element
+define last dup len 1 sub at end
+# seq -- rest last : the last element taken off
+define pop
+  let s
+  s len 0 eq if str 'it is empty' fail then
+  s 0 s len 1 sub slice s last
+end
+# seq -- rest first : the first element taken off
+define shift
+  let s
+  s len 0 eq if str 'it is empty' fail then
+  s 1 s len slice s first
+end
+# seq i -- seq : element i taken out
+define remove
+  let i let s
+  s i at drop
+  s 0 i slice s i 1 add s len slice cat
+end
+# s -- list : a string's characters, as a list of one-character strings
+define chars let s list s unpack end end
+# from to -- list : from, from+1, …, to-1 (empty when to is at most from)
+define range
+  let to
+  empty swap begin dup to lt if tuck push swap 1 add false else true then until drop
+end
+# n e -- n^e : n to the power e, e at least 0
+define pow
+  let e let n
+  e 0 lt if str 'the exponent is below 0' fail then
+  1 0 e range each drop n mul end
+end
+# seq -- seq : the elements in the opposite order
+define reverse
+  let s s len let i
+  list
+    s is-string if str '' then
+    begin i 0 gt if i 1 sub let i s i at false else true then until
+  end
+  s is-string if concat then
+end
+# seq x -- i : where x first is (in a string, x may be a longer string), or -1
+define index-of
+  let x let s
+  s is-string if x len else 1 then let k
+  s len k sub 1 add let n
+  -1 let found 0 let i
+  begin
+    i n lt found -1 eq and if
+      s is-string if s i i k add slice else s i at then
+      x eq if i let found then
+      i 1 add let i false
+    else true then
+  until
+  found
+end
+# seq x -- flag : whether x is in it (in a string, x may be a longer string)
+define contains index-of -1 ne end
+# seq x -- n : how many elements equal x
+define count let x 0 swap each x eq if 1 add then end end
+# list -- n : the integers added up
+define sum 0 swap each add end end
+# seq -- x : the largest element
+define largest dup first swap each max end end
+# seq -- x : the smallest element
+define smallest dup first swap each min end end
+# a b -- list : two sorted lists merged, a's first on ties
+define merge
+  let b let a 0 let i 0 let j
+  list
+    a len b len add 0 gt if
+      begin
+        i a len eq if b j at j 1 add let j
+        else j b len eq if a i at i 1 add let i
+        else b j at a i at lt if b j at j 1 add let j
+        else a i at i 1 add let i then then then
+        i a len eq j b len eq and
+      until
+    then
+  end
+end
+# list -- list : sorted with lt, smallest first; equal ones keep their order
+define sort-list
+  let s
+  s len 2 lt if s else
+    s len 2 div let h
+    s 0 h slice sort-list s h s len slice sort-list merge
+  then
+end
+# seq -- seq : sorted with lt, smallest first (to sort by a key, sort lists that start with it)
+define sort dup is-string if chars sort-list glue else sort-list then end
+# x1 … xn n -- list : the top n values as a list, the deepest first
+define pack
+  let n
+  n 0 lt if str 'the count is below 0' fail then
+  empty 0 n range each drop swap push end reverse
+end
+
+# ---- Text
+# s -- n : the integer s writes in decimal, a - first or not
+define number
+  let s
+  s len 0 eq if str 'the string is empty' fail then
+  s first str - eq let negative
+  negative if 1 else 0 then let from
+  from s len eq if str 'no digits' fail then
+  0 s from s len slice each
+    let c c code 48 sub let d
+    d 0 lt d 9 gt or if list str 'not a digit:' c end string fail then
+    10 mul negative if d sub else d add then
+  end
+end
+# list sep -- s : the elements' text, with sep between
+define join
+  let sep let l
+  true let start
+  list str '' l each let y start if false let start else sep then y string end end concat
+end
+# s sep -- list : the pieces of s between each sep, a one-character string
+define split-on
+  let sep let s
+  sep len 1 ne if str 'the separator must be one character' fail then
+  list
+    0 let from 0 let i
+    s each sep eq if s from i slice i 1 add let from then i 1 add let i end
+    s from i slice
+  end
+end
+# c -- flag : whether a one-character string is a space, tab or line end
+define is-space let c c str ' ' eq c 9 char eq or c 10 char eq or c 13 char eq or end
+# s -- list : the words of s: runs of characters other than spaces, tabs and line ends
+define words
+  let s
+  list
+    0 let from 0 let i
+    s each is-space if from i lt if s from i slice then i 1 add let from then i 1 add let i end
+    from i lt if s from i slice then
+  end
+end
+# s -- list : the lines of s
+define lines 10 char split-on end
+# s -- s : spaces, tabs and line ends taken off both ends
+define trim
+  let s 0 let a s len let b
+  begin a b lt if s a at is-space else false then dup if a 1 add let a then not until
+  begin a b lt if s b 1 sub at is-space else false then dup if b 1 sub let b then not until
+  s a b slice
+end
+# s p -- flag : whether s starts with p
+define starts-with let p let s s len p len lt if false else s 0 p len slice p eq then end
+# c -- flag : whether a one-character string is a digit 0-9
+define is-digit code let n n 48 ge n 57 le and end
+# c -- flag : whether a one-character string is A-Z
+define is-upper code let n n 65 ge n 90 le and end
+# c -- flag : whether a one-character string is a-z
+define is-lower code let n n 97 ge n 122 le and end
+# c -- flag : whether a one-character string is a letter A-Z or a-z
+define is-letter let c c is-upper c is-lower or end
+# s -- s : a-z made A-Z
+define upper let s list str '' s each let c c is-lower if c code 32 sub char else c then end end concat end
+# s -- s : A-Z made a-z
+define lower let s list str '' s each let c c is-upper if c code 32 add char else c then end end concat end
+# s n -- s : s n times over
+define copies
+  let n let s
+  str '' n begin dup 0 gt if swap s push swap 1 sub false else true then until drop
+end
+# x width fill -- s : x's text, with fill (a non-empty string) put before it, cut to fit, until it is width long
+define pad
+  let fill let width string let s
+  fill len 0 eq if str 'the fill is empty' fail then
+  width s len sub let n
+  n 0 gt if
+    fill n fill len div 1 add copies 0 n slice s cat
+  else s then
+end

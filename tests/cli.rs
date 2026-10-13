@@ -303,7 +303,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         "{before}"
     );
     assert!(!server.ok(&["ls"])?.contains("agent"), "nothing ran");
-    let named = said(&["1", "constant", "+7"])?;
+    let named = said(&["1", "let", "+7"])?;
     assert!(
         named.contains("+7: cannot be defined: it names a workspace"),
         "{named}"

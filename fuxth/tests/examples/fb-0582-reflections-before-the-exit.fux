@@ -1,0 +1,19 @@
+# Reflections before the exit (held-out spec FB-0582).
+# fails: call_depth
+define count-moves
+  let direction let position
+  position 3 eq if
+    0
+  else
+    position 0 eq if
+      1 let direction
+    then
+    position 2 eq if
+      -1 let direction
+    then
+    position direction add direction count-moves
+    1 add
+  then
+end
+
+1 1 count-moves

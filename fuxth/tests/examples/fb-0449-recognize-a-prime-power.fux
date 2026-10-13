@@ -1,0 +1,38 @@
+# Recognize a prime power (held-out spec FB-0449).
+# expect: none 17 1 2 6 3 4 none 5 4 3 6 none
+# n -- result: a prime and exponent, or the string none.
+define prime-power
+  let n
+  n 2 lt if
+    str none
+  else
+    # The smallest divisor is prime. Past the square root, n is prime.
+    2 let p
+    begin
+      n p mod 0 eq if
+        true
+      else
+        p n p div gt if
+          n let p true
+        else
+          p 1 add let p false
+        then
+      then
+    until
+
+    0 let e
+    begin
+      n p mod 0 eq if
+        n p div let n
+        e 1 add let e
+        false
+      else
+        true
+      then
+    until
+    n 1 eq if list p e end else str none then
+  then
+end
+
+list 1 17 64 81 72 625 729 2025 end
+each prime-power end

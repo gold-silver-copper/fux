@@ -1,0 +1,17 @@
+# Only the heavy moves (held-out spec FB-0166).
+# expect: 4 A B 5 A C 4 B C
+4 let minimum-disk
+
+# n source target spare -- : recursively visit every canonical move.
+define hanoi
+  let spare let target let source let n
+  n 0 gt if
+    n 1 sub source spare target hanoi
+    n minimum-disk ge if
+      list n source target end print
+    then
+    n 1 sub spare target source hanoi
+  then
+end
+
+5 str A str C str B hanoi

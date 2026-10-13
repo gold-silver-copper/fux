@@ -1,0 +1,24 @@
+# Coalescing reservation windows (held-out spec FB-0484).
+# expect: 2 15 18 19 20 21
+# Sort interval pairs lexicographically by start, then end.
+list
+  list 12 15 end
+  list 2 6 end
+  list 5 9 end
+  list 20 21 end
+  list 9 12 end
+  list 18 19 end
+end sort
+
+# Keep the first interval current and scan the remaining intervals.
+shift let current
+each
+  let interval
+  interval first current last le if
+    current 1 current last interval last max put let current
+  else
+    current print
+    interval let current
+  then
+end
+current print

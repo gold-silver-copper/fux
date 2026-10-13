@@ -3,7 +3,7 @@
 //! (`# fails: CODE`), or the error that refuses it before it runs
 //! (`# refused: CODE at LINE`).
 use fuxth::{
-    AppValue, Args, Compiler, Done, Error, Failure, Host, Limits, Machine, Outcome, PRELUDE, Place,
+    AppValue, Args, Compiler, Done, Error, Failure, Host, Limits, Machine, Outcome, Place, STDLIB,
     Value, Vocabulary, token,
 };
 
@@ -17,7 +17,10 @@ impl AppValue for Nothing {
 }
 
 /// A host with no words.
-struct Bare;
+#[derive(Default)]
+struct Bare {
+    printed: Vec<String>,
+}
 
 impl Host for Bare {
     type Value = Nothing;
@@ -29,6 +32,11 @@ impl Host for Bare {
         _out: &mut Vec<Value<Nothing>>,
     ) -> Result<Done<()>, Failure> {
         Err(Failure::new("no_words", "this host has no words"))
+    }
+
+    fn print(&mut self, line: &str) -> Result<(), Failure> {
+        self.printed.push(line.to_owned());
+        Ok(())
     }
 }
 
@@ -44,8 +52,7 @@ fn shown(value: &Value<Nothing>) -> String {
     match value {
         Value::Int(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
-        Value::Str(s) => s.to_string(),
-        Value::App(a) => a.kind().to_owned(),
+        Value::Str(_) | Value::List(_) | Value::App(_) => value.text(),
     }
 }
 
@@ -58,7 +65,7 @@ fn run(name: &str, text: &str) -> Ended {
         Ended::Refused(e.code.name().to_owned(), line)
     };
     let mut compiler = Compiler::new(Vocabulary::default());
-    let compiled = token::source("prelude.fux", PRELUDE)
+    let compiled = token::source("stdlib.fux", STDLIB)
         .and_then(|tokens| compiler.add(&tokens))
         .and_then(|()| token::source(name, text))
         .and_then(|tokens| compiler.add(&tokens))
@@ -68,9 +75,12 @@ fn run(name: &str, text: &str) -> Ended {
         Err(e) => return refused(e),
     };
     let mut machine = Machine::new(program, Limits::default());
-    match machine.run(&mut Bare, 50_000_000) {
+    let mut host = Bare::default();
+    match machine.run(&mut host, 50_000_000) {
         Ok(Outcome::Finished) => {
-            let left: Vec<String> = machine.stack().iter().map(shown).collect();
+            let left: Vec<String> = (host.printed.iter().cloned())
+                .chain(machine.stack().iter().map(shown))
+                .collect();
             Ended::Left(left.join(" "))
         }
         Ok(Outcome::Paused | Outcome::Suspended(())) => Ended::Failed("steps".to_owned()),

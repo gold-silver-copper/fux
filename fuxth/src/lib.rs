@@ -3,17 +3,19 @@
 //! A program is words. Numbers push themselves; `str` pushes the next word
 //! as a string; every other word takes values from the stack and gives
 //! values back, and never reads the words after it. The parsing words are
-//! few and fixed: `str`, `define NAME … end`, `constant NAME`, and control
-//! flow, `if … else … then` and `begin … until`. Built-in words have names,
+//! few and fixed: `str`, `define NAME … end`, `let NAME`, `list … end`,
+//! `each … end`, `if … else … then` and `begin … until`. Words have names,
 //! not symbols (`add`, `eq`, `dup`), and none uses a character a shell
 //! treats specially, so a program can be a shell command's arguments as
 //! well as a file.
 //!
+//! The core is small (21 words: `drop pick roll`, arithmetic, `lt eq`,
+//! sequences, characters, `kind string print fail`); everything else is
+//! the standard library ([`STDLIB`]), written in fuxth.
+//!
 //! ```text
-//! define countdown
-//!   begin dup 1 sub dup 0 eq until
-//! end
-//! 3 countdown          # leaves 3 2 1 0
+//! define squares let n list 1 n 1 add range each dup mul end end end
+//! 4 squares print          # prints 1 4 9 16
 //! ```
 //!
 //! An application embeds it: it gives a [`Vocabulary`] of its own words,
@@ -41,14 +43,14 @@ mod value;
 
 pub use compile::{Builtin, Compiler, PARSING, Program, Vocabulary};
 pub use error::{Code, Error, Failure};
-pub use machine::{Args, Done, Host, Limits, Machine, Outcome};
+pub use machine::{Args, BUILT, Done, Host, LONGEST, Limits, Machine, Outcome};
 pub use token::{Place, Token};
-pub use value::{AppValue, Value};
+pub use value::{AppValue, List, NESTING, TOTAL, Text, Value};
 
-/// Words written in fuxth for every program: `true false nip tuck -rot
-/// 2dup 2drop negate abs min max ne le ge`. An application compiles it
-/// before its own words' library and the program.
-pub const PRELUDE: &str = include_str!("prelude.fux");
+/// fuxth's standard library, written in fuxth: every word beyond the core
+/// (`dup swap over rot`, booleans, comparing, sequences, text …). An
+/// application compiles it before its own words' library and the program.
+pub const STDLIB: &str = include_str!("stdlib.fux");
 
 #[cfg(test)]
 mod tests;

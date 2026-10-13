@@ -1,0 +1,13 @@
+# Closest neighboring stations (held-out spec FB-0490).
+# expect: -8 -5 3
+# Sort stations, then compare adjacent pairs by distance and lower coordinate.
+list 25 -8 14 3 17 -5 40 end sort let stations
+list
+  1 stations len range each
+    let i
+    stations i 1 sub at let lower
+    stations i at let higher
+    list higher lower sub lower higher end
+  end
+end
+smallest unpack rot
