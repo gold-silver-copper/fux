@@ -23,7 +23,10 @@ fuzz_target!(|data: &[u8]| {
             let mut last = 1;
             for t in &tokens {
                 let at = line(&t.place);
-                assert!(at >= last && at <= lines, "{t:?} after line {last}, of {lines}");
+                assert!(
+                    at >= last && at <= lines,
+                    "{t:?} after line {last}, of {lines}"
+                );
                 last = at;
             }
             let quoted: Vec<String> = (tokens.iter())

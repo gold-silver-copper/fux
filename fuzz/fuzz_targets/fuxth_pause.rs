@@ -20,6 +20,11 @@ fuzz_target!(|data: &[u8]| {
     let paused = host::run(paused, u64::from(budget).saturating_add(1));
     // Past the steps allowed, the two stop at different places.
     if let (Some(whole), Some(paused)) = (whole, paused) {
-        assert_eq!(whole, paused, "budget {}", u64::from(budget).saturating_add(1));
+        assert_eq!(
+            whole,
+            paused,
+            "budget {}",
+            u64::from(budget).saturating_add(1)
+        );
     }
 });

@@ -62,7 +62,10 @@ pub fn compile(text: &str) -> Result<fuxth::Program<Nothing>, Error> {
 }
 
 /// How a run ended: what it left, or its error; `None` past `STEPS`.
-pub fn run(program: fuxth::Program<Nothing>, budget: u64) -> Option<Result<Vec<Value<Nothing>>, Error>> {
+pub fn run(
+    program: fuxth::Program<Nothing>,
+    budget: u64,
+) -> Option<Result<Vec<Value<Nothing>>, Error>> {
     let mut machine = Machine::new(program, LIMITS);
     let budget = budget.clamp(1, STEPS);
     let mut taken = 0u64;
@@ -87,7 +90,11 @@ pub fn placed(error: &Error, text: &str) -> bool {
     let lines = |t: &str| u32::try_from(t.split('\n').count()).unwrap_or(u32::MAX);
     match &error.place {
         Some(Place::Line { source, line }) => {
-            let most = if &**source == "fuzz" { lines(text) } else { lines(fuxth::PRELUDE) };
+            let most = if &**source == "fuzz" {
+                lines(text)
+            } else {
+                lines(fuxth::PRELUDE)
+            };
             *line >= 1 && *line <= most
         }
         Some(Place::Argument(_)) => false,
