@@ -1,0 +1,254 @@
+[
+  {
+    "id": "Q-42",
+    "severity": "low",
+    "owner": "noah",
+    "revision": 1,
+    "description": "Mirror of Q-24; keep this ticket unchanged."
+  },
+  {
+    "id": "Q-24",
+    "severity": "low",
+    "owner": "mina",
+    "revision": 1,
+    "description": "Inbound receipt mismatch; preserve this description."
+  },
+  {
+    "id": "R-00",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 0."
+  },
+  {
+    "id": "R-01",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 1."
+  },
+  {
+    "id": "R-02",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 2."
+  },
+  {
+    "id": "R-03",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 3."
+  },
+  {
+    "id": "R-04",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 4."
+  },
+  {
+    "id": "R-05",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 5."
+  },
+  {
+    "id": "R-06",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 6."
+  },
+  {
+    "id": "R-07",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 7."
+  },
+  {
+    "id": "R-08",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 8."
+  },
+  {
+    "id": "R-09",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 9."
+  },
+  {
+    "id": "R-10",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 10."
+  },
+  {
+    "id": "R-11",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 11."
+  },
+  {
+    "id": "R-12",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 12."
+  },
+  {
+    "id": "R-13",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 13."
+  },
+  {
+    "id": "R-14",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 14."
+  },
+  {
+    "id": "R-15",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 15."
+  },
+  {
+    "id": "R-16",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 16."
+  },
+  {
+    "id": "R-17",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 17."
+  },
+  {
+    "id": "R-18",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 18."
+  },
+  {
+    "id": "R-19",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 19."
+  },
+  {
+    "id": "R-20",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 20."
+  },
+  {
+    "id": "R-21",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 21."
+  },
+  {
+    "id": "R-22",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 22."
+  },
+  {
+    "id": "R-23",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 23."
+  },
+  {
+    "id": "R-24",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 24."
+  },
+  {
+    "id": "R-25",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 25."
+  },
+  {
+    "id": "R-26",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 26."
+  },
+  {
+    "id": "R-27",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 27."
+  },
+  {
+    "id": "R-28",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 28."
+  },
+  {
+    "id": "R-29",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 29."
+  },
+  {
+    "id": "R-30",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 30."
+  },
+  {
+    "id": "R-31",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 31."
+  },
+  {
+    "id": "R-32",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 32."
+  },
+  {
+    "id": "R-33",
+    "severity": "medium",
+    "owner": "team",
+    "revision": 1,
+    "description": "Routine inspection 33."
+  }
+]

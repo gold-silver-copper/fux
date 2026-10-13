@@ -999,3 +999,51 @@ id = "audit-scrollback-wide-row"
 cat = "read"
 goal = "Run python3 -I {fixtures}/audit_view.py {work}. Read the sealed archive identifier from row 0041 of the initial audit output and the checksum at the far right of the WIDE INDEX row 0779. Later archive candidates are not the sealed archive. Wait until LIVE MONITOR appears, send freeze, and wait for FROZEN and successful exit. Read the frozen queue value, not an earlier overwritten value. Write {work}/answer.txt with exactly three lines: archive=<sealed identifier>, wide=<checksum>, and queue=<frozen value>, one entry per line in that order, without colour codes or extra text. Every answer line must end with a newline; include no extra lines. Do not include terminal prompt, completion, or shell status marker lines. Input prompts and coordination waits have no response deadline."
 held = "audit-scrollback-wide-row"
+
+[[task]]
+id = "first-real-scan-outcome"
+cat = "wait"
+goal = "Run python3 -I {fixtures}/scanner.py {work}. Watch for the first line beginning exactly OUTCOME READY or OUTCOME FAILED. Ignore quoted examples, cached results, and progress redraws. For READY, answer accept followed by its ticket at the decision prompt; for FAILED, answer recover followed by its ticket. After recovery, wait for the RECOVERY IDLE line and its continuation prompt before sending continue followed by the displayed generation. Wait for the final SCAN COMPLETE line and successful exit. Write {work}/answer.txt as one newline-terminated line <observed OUTCOME>|<observed ticket>|<observed final digest>, using the observed outcome and final digest. Include only the specified answer lines, with no terminal marker lines. Programs wait for prompted input without a deadline; earlier failed attempts are allowed."
+held = "first-real-scan-outcome"
+
+[[task]]
+id = "build-verify-serve-chain"
+cat = "panes"
+goal = "Run python3 -I {fixtures}/build.py {work} and answer its build prompt. Keep it running after it reports ARTIFACT. Only then start python3 -I {fixtures}/verify.py {work} <artifact> using the reported artifact. Keep both running after the verifier reports PROOF. Only then start python3 -I {fixtures}/server.py {work} <artifact> <proof>. All three programs must remain running together while the server becomes ready. At its request prompt send GET /health, then POST /publish <health nonce> <proof> using the live response and verifier proof. After publication, close the server with quit, then the verifier with release, then the build with release, observing each exit. Leave the correct {work}/manifest.json created by the server and write {work}/answer.txt as health=<nonce>, artifact=<artifact>, proof=<proof>, on three lines with a final newline. The three programs use terminal input and output only; no network is involved. The answer file contains exactly 3 lines, each ending with a newline; include only the specified value lines, with no terminal marker lines."
+held = "build-verify-serve-chain"
+
+[[task]]
+id = "shell-status-repair"
+cat = "shell"
+goal = "Use an interactive Bash shell. Create and change into {work}/project, and export BATCH_TAG as the literal value tidal batch. Run python3 -I {fixtures}/shell_job.py {work} ingest as a command in that shell. Wait for the shell prompt to return and preserve the command's actual exit status before another command overwrites it. Then run python3 -I {fixtures}/shell_job.py {work} repair STATUS in the same shell, replacing STATUS with that preserved value. At the repair prompt enter retry followed by that value. Wait for the shell prompt to return and preserve the repair's exit status. From that shell write {work}/answer.txt with four newline-terminated lines: ingest=<actual exit status>, repair=<actual exit status>, tag=tidal batch, cwd=project. Both commands must inherit the exported variable and project working directory. Configure any shell history file under {work}. Include only the answer lines specified above; do not include terminal marker lines. Run all programs with both stdin and stdout attached to a terminal. Earlier failed attempts are allowed."
+held = "shell-status-repair"
+
+[[task]]
+id = "packager-preflight-recovery"
+cat = "start"
+goal = "Run `python3 -I {fixtures}/packager.py {work} preflight` from `{work}/project`, with BUILD_FLAVOR=release and a terminal exactly 96 columns by 26 rows. It intentionally fails during startup; observe its actual exit status. After it has exited, run `python3 -I {fixtures}/packager.py {work} package` with the same directory, environment and terminal size. Wait for its packaging-key prompt and enter the displayed key. Observe the successful process exit. Write `{work}/answer.txt` with exactly three newline-terminated lines: `preflight_exit=<status>`, `package_exit=<status>`, and `artifact=<artifact identifier printed by the successful program>`. Start each mode exactly once. Include no prompt, receipt-prefix, or other marker lines beyond the specified answer lines."
+held = "packager-preflight-recovery"
+
+[[task]]
+id = "eight-reducers-retry"
+cat = "scripting"
+goal = "Run each program exactly once. Start eight separate terminal programs, python3 -I {fixtures}/reducer.py {work} INDEX, with INDEX 1 through 8, before collecting any result. Watch each independently. A RETRY_REQUIRED line requests retry TOKEN; a COMMIT_READY line requests collect TOKEN. Submit only the action and token currently requested by that worker. Some workers need a retry before they can commit; text saying COMMIT_READY? is only a diagnostic. After all eight report RESULT and exit successfully, write {work}/answer.txt with exactly eight lines in ascending numeric index order, each <worker index>:<observed result value> using that worker's displayed result. Do not restart a reducer or skip its retry. Each of the eight lines ends with a newline; No output marker lines are included; RESULT prefixes are omitted. Registration and prompts wait without a deadline."
+held = "eight-reducers-retry"
+
+[[task]]
+id = "sixteen-part-aggregation"
+cat = "many"
+goal = "Run sixteen concurrent terminal programs python3 -I {fixtures}/shards.py {work} worker N for N=0 through 15, each on its own terminal. Keep every worker alive until the collector releases the group. Wait until all workers have printed READY_PART and collect their part number and token from terminal output. Start python3 -I {fixtures}/shards.py {work} collector on another terminal. At Parts> submit sixteen lines, in increasing part-number order, exactly part NN TOKEN using the two-digit part number and that worker's token. Wait for PUBLISH_READY, then send publish followed by its displayed ticket. Wait for the collector and all sixteen workers to exit successfully. Write {work}/answer.txt as the exact SUMMARY line printed by the collector, including its prefix and a trailing newline. The summary must cover every row of the supplied input.csv exactly once. Early collection, missing or duplicated parts, and worker shutdown before release invalidate the run. The answer has exactly one line ending with a newline. Include the SUMMARY prefix; no other output marker lines are included. Fleet registration, release and input wait without deadlines."
+held = "sixteen-part-aggregation"
+
+[[task]]
+id = "incident-stale-revision"
+cat = "tui"
+goal = "Run each program exactly once; each specified mode, subcommand, or shard index counts as a separate program. Every program must have terminal stdin and stdout. Wait for each prompt before responding; input prompts have no deadline. Run python3 -I {fixtures}/notebook.py {work}. Use the application's ? help pager to find the approval key for dependency D-07, then return to the incident list. Filter for Q-24; a different incident mentions Q-24 in its description, so choose the incident whose ID is exactly Q-24. Change its severity to high and owner to ivy, supplying the D-07 approval key. When the first save reports a stale revision, reload with R and reapply those edits. Approve the final write in the confirmation modal and let the application exit. All other incidents and all descriptions must stay unchanged. Use the new revision displayed after the reload. Write {work}/answer.txt as exactly five newline-terminated lines: ticket=Q-24, severity=high, owner=ivy, revision=<saved revision>, receipt=<saved receipt>, in that order. Do not edit records outside the application's controls. Include only the specified answer lines, in the listed order, each ending with a newline; do not include terminal marker lines."
+held = "incident-stale-revision"
+
+[[task]]
+id = "build-load-probe-drain"
+cat = "panes"
+goal = "Run each program exactly once. Use three separate terminals for python3 -I {fixtures}/builder.py {work}, python3 -I {fixtures}/service.py {work}, and python3 -I {fixtures}/probe.py {work} <service ready token>. Start the service first; wait for WAITING_ARTIFACT before starting the builder. Answer the builder's build challenge, then use its completed artifact hash to answer the service's load prompt. Start the probe only after SERVICE_READY, passing that ready token, and answer its check prompt with the endpoint printed by the service. Once the probe has exited successfully, stop the service with stop <the probe receipt>. Wait for all three programs to exit successfully. Write {work}/answer.txt with exactly three newline-terminated lines: ARTIFACT=<hash>, PROBE=<receipt>, SERVICE=stopped. These fixtures simulate a local service without network access. Include only these answer lines, with no extra marker lines. Input prompts wait indefinitely; there is no response deadline."
+held = "build-load-probe-drain"
