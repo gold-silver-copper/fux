@@ -355,10 +355,6 @@ pub struct Compiler<A> {
     /// Whether the last step compiled is a number written just before, so
     /// a `pick` or `roll` after it may take it as its count.
     literal: bool,
-    /// How many definitions earlier sources made (the standard library's,
-    /// say): only theirs are copied in at a call, so a program's own words
-    /// stay calls, and its mistakes name them as written.
-    earlier: usize,
     /// What the checker has worked out of the definitions so far.
     known: crate::check::Known,
 }
@@ -383,7 +379,6 @@ impl<A: Clone> Compiler<A> {
             open: Vec::new(),
             current: None,
             literal: false,
-            earlier: 0,
             known: crate::check::Known::default(),
         }
     }
@@ -399,7 +394,6 @@ impl<A: Clone> Compiler<A> {
 
     /// Compiles `tokens` onto what was compiled before.
     pub fn add(&mut self, tokens: &[Token]) -> Result<(), Error> {
-        self.earlier = self.words.len();
         let mut tokens = tokens.iter();
         while let Some(token) = tokens.next() {
             let text = &*token.text;
@@ -575,8 +569,7 @@ impl<A: Clone> Compiler<A> {
             Some(Entry::Builtin(b)) => self.code().push(Op::Builtin(b), token),
             Some(Entry::App(id)) => self.code().push(Op::App(id), token),
             Some(Entry::Word(id)) => {
-                let leaf = id < self.earlier;
-                let body = self.words.get(id).filter(|w| leaf && w.leaf()).cloned();
+                let body = self.words.get(id).filter(|w| w.leaf()).cloned();
                 match body {
                     // Short and straight: copied in, each step named by the
                     // word the program wrote.

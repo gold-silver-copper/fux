@@ -127,9 +127,9 @@ The host implements [`Host`]: `call(word, args, out)` gets the word's values
 host pushes before running the machine again. `print(line)` prints. A word
 gives as many values as its vocabulary says (a range, for one that gives a
 value only sometimes): the checker counts on it, and the machine fails a run
-with `contract` if a host gives otherwise. Words of an earlier `add` (the
-standard library) that are one step (`dup` is `0 pick`) are copied in where they are
-called.
+with `contract` if a host gives otherwise. A word that is one step (`dup`
+is `0 pick`) is copied in where it is called, so a mistake in it is placed
+at the call.
 
 ## Tested
 
