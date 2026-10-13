@@ -58,8 +58,8 @@ dependencies = [
 name = "fux"
 version = "0.23.0"
 dependencies = [
- "fux-vt 0.4.1",
- "fuxix 0.2.0",
+ "fux-vt 0.5.0",
+ "fuxix 0.3.0",
  "fuxth",
  "signal-hook",
  "unicode-width",
@@ -72,9 +72,9 @@ dependencies = [
  "fux 0.20.0",
  "fux 0.23.0",
  "fux-vt 0.3.3",
- "fux-vt 0.4.1",
+ "fux-vt 0.5.0",
  "fuxix 0.1.6",
- "fuxix 0.2.0",
+ "fuxix 0.3.0",
 ]
 
 [[package]]
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "fux-vt"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "unicode-width",
 ]
@@ -106,7 +106,7 @@ name = "fux-vt-oracle"
 version = "0.0.0"
 dependencies = [
  "fux-vt 0.4.0",
- "fux-vt 0.4.1",
+ "fux-vt 0.5.0",
  "serde_json",
 ]
 
@@ -129,7 +129,7 @@ dependencies = [
 
 [[package]]
 name = "fuxix"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
 ]
