@@ -10,7 +10,7 @@ use fuxth::{
 use std::collections::{HashMap, HashSet};
 
 /// Steps either interpreter takes before a run counts as endless.
-pub const STEPS: u64 = 200_000;
+pub const STEPS: u64 = 50_000;
 
 /// The limits both keep to.
 pub const LIMITS: Limits = Limits {
@@ -614,7 +614,11 @@ impl<'a> Gen<'a> {
                     stack.push(gives);
                     w
                 }
-                45..=49 if above >= 2 => {
+                // Values of one kind: a boolean is never an integer here,
+                // though it is in Forth.
+                45..=49
+                    if above >= 2 && top(2).chars().all(|c| Some(c) == stack.last().copied()) =>
+                {
                     stack.pop();
                     stack.pop();
                     stack.push('b');
