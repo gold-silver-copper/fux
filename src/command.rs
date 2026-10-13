@@ -235,14 +235,8 @@ pub struct Wait {
     /// Only what comes after it began counts: text that appears anew, a
     /// screen that changed (send-keys' waits, armed before the keys).
     pub after: bool,
-    /// The text send-keys types, run by run: a line holding a run that
-    /// holds the awaited text is its echo, not what the keys brought.
-    pub echo: Vec<String>,
     /// What it prints with reverse video marked, as `capture`'s `marks`.
     pub marks: bool,
-    /// How many command lines send-keys types (each Enter, or newline in
-    /// text): with none, no row is taken for their echo.
-    pub lines: u32,
     /// Over several panes, it waits for each (send-keys' waits, as each
     /// pane got the keys), rather than for any (`fux wait`).
     pub all: bool,

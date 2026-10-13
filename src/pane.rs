@@ -460,7 +460,7 @@ impl Alerts {
     }
 }
 
-/// How a pane stood when input last went in.
+/// How a pane stood when input last went in, or its program started.
 #[derive(Clone, Debug)]
 pub struct InputFrom {
     /// The row the cursor was on: what came since is said from there.
@@ -475,6 +475,23 @@ pub struct InputFrom {
     pub before: String,
     /// The bells and notifications heard by then.
     pub alerts: u64,
+}
+
+impl InputFrom {
+    /// How `screen` stands as `inputs` go in, `alerts` heard by then.
+    fn new(screen: &fux_vt::Screen, inputs: &[crate::command::Input], alerts: u64) -> InputFrom {
+        let row = screen.window().row(screen.cursor_position().0);
+        let (echo, lines) = crate::command::typed_lines(inputs);
+        InputFrom {
+            cursor: row.map(|row| row.id()),
+            mark: screen.mark(),
+            finished: screen.commands().finished,
+            echo,
+            lines,
+            before: row.map(crate::capture::row_text).unwrap_or_default(),
+            alerts,
+        }
+    }
 }
 
 pub struct Pane {
@@ -508,10 +525,10 @@ pub struct Pane {
     /// When input last went to the program: it is busy with it at first,
     /// even while still blocked reading (the kernel has yet to wake it).
     pub written_at: Instant,
-    /// How the pane stood when input last went in: a wait counts what
-    /// changed since, so it never starts too late nor takes what was
-    /// already there. None: since the program started.
-    pub input_from: Option<InputFrom>,
+    /// How the pane stood when input last went in, or its program
+    /// started: a wait counts what changed since, so it never starts too
+    /// late nor takes what was already there.
+    pub input_from: InputFrom,
     /// How many times what the screen shows has changed: a wait for a change
     /// past one read earlier waits for it to grow.
     pub revision: u64,
@@ -612,6 +629,7 @@ impl Pane {
                 source,
             }
         })?;
+        let input_from = InputFrom::new(parser.screen(), &[], 0);
         Ok(Pane {
             id,
             name,
@@ -628,7 +646,7 @@ impl Pane {
             shown: 0,
             changed_at: Instant::now(),
             written_at: Instant::now(),
-            input_from: None,
+            input_from,
             revision: 0,
             starts: 0,
             mouse_held: None,
@@ -792,18 +810,7 @@ impl Pane {
     /// Notes how the pane stands as `inputs` go in (`input_from`): a wait
     /// after them counts what comes since, and knows their echo.
     pub fn note_input(&mut self, inputs: &[crate::command::Input]) {
-        let screen = self.screen();
-        let row = screen.window().row(screen.cursor_position().0);
-        let (echo, lines) = crate::command::typed_lines(inputs);
-        self.input_from = Some(InputFrom {
-            cursor: row.map(|row| row.id()),
-            mark: screen.mark(),
-            finished: screen.commands().finished,
-            echo,
-            lines,
-            before: row.map(crate::capture::row_text).unwrap_or_default(),
-            alerts: self.alerts.count(),
-        });
+        self.input_from = InputFrom::new(self.screen(), inputs, self.alerts.count());
     }
 
     /// The name the bar shows: the program's title, else the pane's name.
@@ -895,7 +902,7 @@ impl Pane {
         self.changed_at = Instant::now();
         // A new program: a wait counts from its start, not the last input
         // to the one before.
-        self.input_from = None;
+        self.input_from = InputFrom::new(self.screen(), &[], 0);
         Ok(std::mem::replace(
             &mut self.process,
             process.unwrap_or(Process::Absent),

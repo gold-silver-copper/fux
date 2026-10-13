@@ -518,8 +518,9 @@ pub enum Activity {
 enum Blocked {
     /// read and its kind, on this descriptor.
     Read(u64),
-    /// poll and its kind, with no time limit (`true`) or with one.
-    Poll(bool),
+    /// poll and its kind, with no time limit (`true`) or with one, and
+    /// what it watches.
+    Poll(bool, Watched),
     /// A sleep on a timer.
     Sleep,
     /// A wait for a child.
@@ -527,6 +528,17 @@ enum Blocked {
     /// A futex: a thread parked; what the others do decides.
     Futex,
     Other,
+}
+
+/// Where the descriptors a poll watches are: an array of `pollfd` in the
+/// program's memory and its length (poll), the length and address of the
+/// set read from (select), or an epoll descriptor (epoll_wait).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Watched {
+    Fds(u64, u64),
+    Set(u64, u64),
+    Epoll(u64),
 }
 
 /// The system call numbers this machine uses, by what they wait for.
@@ -540,11 +552,11 @@ fn blocked_in(nr: u64, args: &[u64]) -> Blocked {
     match nr {
         // read, pread64, readv, preadv, splice (`cat` from a terminal).
         0 | 17 | 19 | 295 | 275 => Blocked::Read(arg(0)),
-        7 => Blocked::Poll(forever(arg(2))),
-        23 | 270 => Blocked::Poll(arg(4) == 0),
-        271 => Blocked::Poll(arg(2) == 0),
-        232 | 281 => Blocked::Poll(forever(arg(3))),
-        441 => Blocked::Poll(arg(3) == 0),
+        7 => Blocked::Poll(forever(arg(2)), Watched::Fds(arg(0), arg(1))),
+        23 | 270 => Blocked::Poll(arg(4) == 0, Watched::Set(arg(0), arg(1))),
+        271 => Blocked::Poll(arg(2) == 0, Watched::Fds(arg(0), arg(1))),
+        232 | 281 => Blocked::Poll(forever(arg(3)), Watched::Epoll(arg(0))),
+        441 => Blocked::Poll(arg(3) == 0, Watched::Epoll(arg(0))),
         35 | 230 => Blocked::Sleep,
         61 | 247 => Blocked::Child,
         202 => Blocked::Futex,
@@ -563,10 +575,10 @@ fn blocked_in(nr: u64, args: &[u64]) -> Blocked {
     match nr {
         // read, readv, pread64, preadv, splice (`cat` from a terminal).
         63 | 65 | 67 | 69 | 76 => Blocked::Read(arg(0)),
-        72 => Blocked::Poll(arg(4) == 0),
-        73 => Blocked::Poll(arg(2) == 0),
-        22 => Blocked::Poll(forever(arg(3))),
-        441 => Blocked::Poll(arg(3) == 0),
+        72 => Blocked::Poll(arg(4) == 0, Watched::Set(arg(0), arg(1))),
+        73 => Blocked::Poll(arg(2) == 0, Watched::Fds(arg(0), arg(1))),
+        22 => Blocked::Poll(forever(arg(3)), Watched::Epoll(arg(0))),
+        441 => Blocked::Poll(arg(3) == 0, Watched::Epoll(arg(0))),
         101 | 115 => Blocked::Sleep,
         260 | 95 => Blocked::Child,
         98 => Blocked::Futex,
@@ -610,6 +622,64 @@ fn is_terminal(pid: Pid, fd: u64, tty: &std::path::Path) -> bool {
         .is_ok_and(|target| target == tty || target == std::path::Path::new("/dev/tty"))
 }
 
+/// Whether a poll in `pid` watches the terminal at `tty` for input: a
+/// `pollfd` asking `POLLIN` of it, its bit in the set select reads, or a
+/// descriptor of the epoll set asking `EPOLLIN` (its `fdinfo`). Read from
+/// the program's memory, which a process that may read its system calls
+/// may read too.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
+    use std::os::unix::fs::FileExt;
+    // `len` bytes of its memory at `at`; none at a null address.
+    let memory = |at: u64, len: u64| -> Vec<u8> {
+        let mut bytes = vec![0; usize::try_from(len).unwrap_or(0)];
+        let read = std::fs::File::open(format!("/proc/{pid}/mem"))
+            .and_then(|mem| mem.read_exact_at(&mut bytes, at));
+        if at == 0 || read.is_err() {
+            bytes.clear();
+        }
+        bytes
+    };
+    let fds: Vec<u64> = match watched {
+        Watched::Fds(at, n) => {
+            let array = memory(at, n.min(1024).saturating_mul(8));
+            let (pollfds, _) = array.as_chunks::<8>();
+            (pollfds.iter())
+                .filter_map(|&[a, b, c, d, events, more, _, _]| {
+                    let asks = i16::from_ne_bytes([events, more]) & libc::POLLIN != 0;
+                    asks.then(|| u64::try_from(i32::from_ne_bytes([a, b, c, d])).ok())?
+                })
+                .collect()
+        }
+        Watched::Set(n, at) => {
+            let n = n.min(1024);
+            let set = memory(at, n.div_ceil(64).saturating_mul(8));
+            let (words, _) = set.as_chunks::<8>();
+            let words: Vec<u64> = words.iter().map(|w| u64::from_ne_bytes(*w)).collect();
+            (0..n)
+                .filter(|fd| {
+                    let word = usize::try_from(fd / 64).ok().and_then(|i| words.get(i));
+                    let bit = u32::try_from(fd % 64).unwrap_or(0);
+                    word.is_some_and(|w| w.checked_shr(bit).is_some_and(|w| w & 1 == 1))
+                })
+                .collect()
+        }
+        Watched::Epoll(fd) => std::fs::read_to_string(format!("/proc/{pid}/fdinfo/{fd}"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| {
+                // `tfd:        5 events:       19 data: …`
+                let mut words = line.split_whitespace();
+                let fd = (words.next() == Some("tfd:")).then(|| words.next())??;
+                let events = (words.next() == Some("events:")).then(|| words.next())??;
+                let events = u32::from_str_radix(events, 16).ok()?;
+                (events & 1 != 0).then(|| fd.parse().ok())?
+            })
+            .collect(),
+    };
+    fds.into_iter().any(|fd| is_terminal(pid, fd, tty))
+}
+
 /// What one process of the group does, by its main thread and its others:
 /// busy while one runs, or the main one sleeps on a timer; reading while it
 /// (or, the main one parked, another) waits for the terminal and none of
@@ -619,12 +689,14 @@ fn is_terminal(pid: Pid, fd: u64, tty: &std::path::Path) -> bool {
 fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
     let on_terminal = |blocked: Blocked| match blocked {
         Blocked::Read(fd) if is_terminal(pid, fd, tty) => Some(Activity::Reading),
-        Blocked::Poll(forever) if is_terminal(pid, 0, tty) => Some(if forever {
-            Activity::Reading
-        } else {
-            Activity::Polling
-        }),
-        Blocked::Read(_) | Blocked::Poll(_) | Blocked::Other => Some(Activity::Waiting),
+        Blocked::Poll(forever, watched) if watches_terminal(pid, watched, tty) => {
+            Some(if forever {
+                Activity::Reading
+            } else {
+                Activity::Polling
+            })
+        }
+        Blocked::Read(_) | Blocked::Poll(..) | Blocked::Other => Some(Activity::Waiting),
         Blocked::Sleep => Some(Activity::Busy),
         Blocked::Child | Blocked::Futex => None,
     };

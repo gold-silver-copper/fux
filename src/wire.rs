@@ -684,8 +684,6 @@ impl Wire for Wait {
         for flag in [self.print, self.after, self.marks, self.all] {
             flag.put(out);
         }
-        self.echo.put(out);
-        self.lines.put(out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         Ok(Wait {
@@ -695,8 +693,6 @@ impl Wire for Wait {
             after: bool::get(r)?,
             marks: bool::get(r)?,
             all: bool::get(r)?,
-            echo: Vec::get(r)?,
-            lines: u32::get(r)?,
         })
     }
 }

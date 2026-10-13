@@ -710,12 +710,6 @@ fn met(reply: &Reply) -> bool {
     reply.message.is_empty() && reply.code.is_none()
 }
 
-/// The pane an answer is of: its first word, which its state or the line
-/// found follows (`%2 reading`; `%2`, then a line).
-fn pane_of(text: &str) -> Option<PaneId> {
-    text.split([' ', '\n']).next()?.parse().ok()
-}
-
 /// What a reply puts on the stack, `then` saying what it is; a failure,
 /// with its status, if it failed: why, else what it answered.
 pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fux>>, Failed> {
@@ -743,9 +737,17 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
     }
     let text = reply.text.trim_end_matches('\n').to_owned();
     let json = Some(reply.json.trim_end().to_owned()).filter(|j| !j.is_empty());
-    // An action's answer is its pane's, when it is of one pane alone (a
-    // wait on a tab's panes answers each, a line of JSON for each).
-    let pane = pane_of(&text).filter(|_| json.as_deref().is_none_or(|j| !j.contains('\n')));
+    // An action's answer is its pane's, when the reply names one pane alone
+    // (a wait on a tab's panes answers each): never read from what the
+    // program wrote.
+    let mut panes = reply.ids.iter().filter_map(|id| match id {
+        crate::command::AnyRef::Pane(p) => Some(*p),
+        crate::command::AnyRef::Tab(_) | crate::command::AnyRef::Workspace(_) => None,
+    });
+    let pane = match (panes.next(), panes.next()) {
+        (Some(pane), None) => Some(pane),
+        (Some(_), Some(_)) | (None, _) => None,
+    };
     let action = |text: String, json: Option<String>| {
         Value::App(Fux::Answer(Box::new(Answer {
             text,
@@ -758,7 +760,9 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
         Then::Nothing => Vec::new(),
         Then::Handle(kind) => match reply.ids.iter().rev().find(|id| id.kind() == kind) {
             // A pane an action settled: its answer, which is its pane too.
-            Some(crate::command::AnyRef::Pane(p)) if pane == Some(*p) => vec![action(text, json)],
+            Some(crate::command::AnyRef::Pane(p)) if json.is_some() && pane == Some(*p) => {
+                vec![action(text, json)]
+            }
             Some(id) => vec![Value::App(handle(*id))],
             None => {
                 return Err(Failed {

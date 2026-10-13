@@ -52,22 +52,27 @@ redraws in place on the main screen answers from the top row it changed:
   within one). The pane stays after the program ends.
 - **Keys:** names are tmux's (`Enter`, `Escape`, `Tab`, `Up`, `PageDown`,
   `BSpace`, `F5`, `C-c` Ctrl, `M-s` Alt, `S-Tab` Shift; a typo is refused).
-  Inside `keys … send-keys`: `str T text`, `str NAME key`, `str T paste` (one
-  bracketed paste), `str FILE paste-file` (400 KiB at most); `N times` (1 to 1000)
-  repeats only the input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
-- **Waiting for a text:** `str T wait-text` (case ignored, blanks as one,
-  from a word's start: `READY` is not in `NOT_READY`; `^T` a line's start,
-  `T$` its end), `str T wait-gone`, `wait-exit`, `wait-bell`; several:
-  whichever first. Met, it answers the first new line that holds the text
-  (`run`: the pane, then that line; `wait-gone`, the pane's state), never
-  the line holding what you typed (with the keys, or for a later wait your
-  last input). A wait counts what came since your last input to the pane (or
-  since the program started), scrolled away too: it never starts too late;
-  but a later wait does not see a line overwritten in place before it began.
-  **Status 7:** the program reads its terminal and the text has not come: it
-  cannot before you type; the answer is the screen. Status 3: the program
-  exited first. `wait-exit` answers `%2 exited 0` and what came, with the
-  program's status.
+  Inside `keys … send-keys`: `str T text`, `str NAME key`, `str T paste`
+  (one bracketed paste), `str FILE paste-file` (900 KiB at most); `N times`
+  (1 to 1000) repeats only the input just before it: `str Down key 2 times
+  str Enter key` is Down Down Enter.
+- **Waiting for a text:** `str T wait-text`, `str T wait-gone`, `wait-exit`,
+  `wait-bell`; several: whichever first. A text: case ignored, blanks as
+  one, from a word's start (`READY` is not in `NOT_READY`); `^T` a line's
+  first word, indented or not, `T$` its last. Met, it answers the first new
+  line that holds the text (`run`: the pane, then that line; `wait-gone`,
+  the pane's state), never what you typed, Enter or not, nor the prompt
+  before it, on each row it went on (with the keys, or for a later wait your
+  last input); what the program writes after it on that row counts. A wait
+  counts what came since your last input to the pane (or since the program
+  started), scrolled away too: it never starts too late; but a later wait
+  does not see a line overwritten in place before it began. **Status 7:**
+  the program reads its terminal and the text has not come: it cannot before
+  you type; the answer is the screen (it starts `… earlier lines not kept`
+  if lines since were let go past history-lines before the wait read them:
+  the text may have passed unseen). Status 3: the program exited first.
+  `wait-exit` answers `%2 exited 0` and what came, with the program's
+  status.
 - **Read:** `capture` READ: `100 history`, `all-history`, `main-screen`
   (what was printed before a program took the screen), `alt-screen`,
   `last-output` (a shell command's output), `joined`, `marks`, `styles`,

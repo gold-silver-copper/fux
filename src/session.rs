@@ -2434,9 +2434,7 @@ impl Session {
                     timeout: limit,
                     print: false,
                     after: false,
-                    echo: Vec::new(),
                     marks: false,
-                    lines: 0,
                     all: false,
                 };
                 let here = match self.here(origin) {
@@ -2611,11 +2609,15 @@ impl Session {
             Ok(panes) => crate::wait::Waiting::new(&panes, wait, now),
             Err(error) => return self.failed(error, origin),
         };
-        if let Some(command) = keys {
-            let outcome = self.run_command(&command, origin);
-            if outcome.status != 0 {
-                return Begun::Done(outcome);
+        match keys {
+            Some(command) => {
+                let outcome = self.run_command(&command, origin);
+                if outcome.status != 0 {
+                    return Begun::Done(outcome);
+                }
+                waiting.typed(self);
             }
+            None => waiting.more = true,
         }
         match waiting.answer(self, now) {
             Some(outcome) => Begun::Done(outcome),

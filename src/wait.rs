@@ -10,7 +10,7 @@
 //! For send-keys and the other waits armed before an action, a match counts
 //! only on a line that changed since the wait began (it "appears anew"),
 //! and not on a line holding the text typed (its echo).
-use crate::command::{CaptureView, Until, Wait};
+use crate::command::{AnyRef, CaptureView, Until, Wait};
 use crate::id::PaneId;
 use crate::json::Json;
 use crate::pane::Pane;
@@ -28,6 +28,10 @@ pub const STOPPED: u8 = 7;
 /// As `timeout(1)`.
 pub const TIMED_OUT: u8 = 124;
 
+/// Said first of what came when lines of it were let go past history's
+/// limit.
+const CUT: &str = "… earlier lines not kept (past history-lines)\n";
+
 /// How often a wait that asks what a pane's program is blocked in looks
 /// again: that changes with nothing on the screen to wake the server.
 const PROBE: std::time::Duration = std::time::Duration::from_millis(30);
@@ -44,6 +48,9 @@ pub struct Waiting {
     /// The program has just started (`run`, `respawn`): its screen is
     /// blank, so a text is gone only once it has appeared.
     pub fresh: bool,
+    /// A bare `wait`: on a pane that may go on alone (`waiting`, or quiet
+    /// with nothing known) it waits for something new.
+    pub more: bool,
     /// What the command it follows made, for its reply.
     pub made: Vec<crate::command::AnyRef<crate::id::WsId>>,
     /// What each pane said, for a wait on each of several (`Wait::all`).
@@ -63,17 +70,8 @@ struct Since {
     revision: u64,
     /// The screen as it began: a row changed since is what came.
     mark: fux_vt::Mark,
-}
-
-/// What was typed before a wait, to tell its echo.
-struct Typed {
-    /// The row the cursor was on as the keys went in.
-    cursor: Option<fux_vt::RowId>,
-    /// How many lines the keys ended (Enter).
-    lines: u32,
-    echo: Vec<String>,
-    /// That row's text before the keys: the prompt.
-    before: String,
+    /// Lines written since were let go before the wait read them.
+    cut: bool,
 }
 
 /// One pane a wait watches, and what it found as it began.
@@ -114,13 +112,16 @@ struct Watch {
     /// The row the cursor was on as the wait began: what is written from
     /// it on is what the action brought.
     cursor: Option<fux_vt::RowId>,
-    /// No input has gone in since the program started: every line counts.
-    all_new: bool,
+
     /// Since when its program has been seen reading its terminal, probe
     /// after probe: a text it stops short of is said only once that holds.
     reading_since: Option<Instant>,
-    /// What was typed, to tell its echo from what the program wrote.
-    typed: Option<Typed>,
+    /// The last input to the pane, to tell its echo from what the program
+    /// wrote: these keys', for a wait armed before them.
+    typed: crate::pane::InputFrom,
+    /// Rows written since it began were let go past history's limit
+    /// before it read them: a text may have come unseen.
+    dropped: bool,
     /// Since when, and at which revision, its pane has looked settled.
     settled_since: Option<(Instant, u64)>,
 }
@@ -161,45 +162,29 @@ impl Waiting {
                     .window()
                     .row(screen.cursor_position().0)
                     .map(|row| row.id());
-                let (anchor, mark, all_new, cursor, finished) = match (wait.after, &pane.input_from)
-                {
-                    (true, _) => (
+                let from = &pane.input_from;
+                let (anchor, mark, cursor, finished, alerts) = match wait.after {
+                    true => (
                         screen.window().row(0).map(|row| row.id()),
                         screen.mark(),
-                        false,
                         cursor,
                         commands.finished,
+                        pane.alerts.count(),
                     ),
-                    (false, Some(from)) => {
-                        (from.cursor, from.mark, false, from.cursor, from.finished)
-                    }
-                    (false, None) => {
-                        let first = screen.rows().next().map(|row| row.id());
-                        (first, screen.mark(), true, first, 0)
-                    }
-                };
-                // What was typed, to tell its echo: these keys', or for a
-                // wait of its own, the last input's.
-                let typed = match (wait.after, &pane.input_from) {
-                    (true, _) => Some(Typed {
-                        cursor,
-                        lines: wait.lines,
-                        echo: wait.echo.clone(),
-                        before: cursor
-                            .and_then(|c| was.get(&c).cloned())
-                            .unwrap_or_default(),
-                    }),
-                    (false, Some(from)) => Some(Typed {
-                        cursor: from.cursor,
-                        lines: from.lines,
-                        echo: from.echo.clone(),
-                        before: from.before.clone(),
-                    }),
-                    (false, None) => None,
+                    false => (
+                        from.cursor,
+                        from.mark,
+                        from.cursor,
+                        from.finished,
+                        from.alerts,
+                    ),
                 };
                 Watch {
                     pane: pane.id,
-                    typed,
+                    // A wait armed before keys learns them once they went
+                    // in (`Waiting::typed`).
+                    typed: from.clone(),
+                    dropped: false,
                     anchor,
                     mark,
                     was,
@@ -214,14 +199,8 @@ impl Waiting {
                     revision: pane.revision,
                     finished,
                     starts: pane.starts,
-                    // Bells, as texts, since the last input or the start.
-                    alerts: match (wait.after, &pane.input_from) {
-                        (true, _) => pane.alerts.count(),
-                        (false, Some(from)) => from.alerts,
-                        (false, None) => 0,
-                    },
+                    alerts,
                     cursor,
-                    all_new,
                     reading_since: None,
                     settled_since: None,
                 }
@@ -236,7 +215,18 @@ impl Waiting {
             lead: String::new(),
             made: Vec::new(),
             fresh: false,
+            more: false,
             capture: None,
+        }
+    }
+
+    /// Learns what the action it was armed before typed in each pane (for
+    /// one that typed nothing, the last input), to tell its echo.
+    pub fn typed(&mut self, session: &Session) {
+        for watch in &mut self.watches {
+            if let Some(pane) = session.panes.get(&watch.pane) {
+                watch.typed = pane.input_from.clone();
+            }
         }
     }
 
@@ -282,9 +272,13 @@ impl Waiting {
         } else {
             self.lead.as_str()
         };
+        // What it made, then the pane it answers of: an answer of one pane
+        // is that pane.
+        let mut ids = self.made.clone();
+        ids.extend(outcome.ids.iter().filter(|id| !self.made.contains(id)));
         Some(Outcome {
             stdout: format!("{lead}{}", outcome.stdout),
-            ids: self.made.clone(),
+            ids,
             ..outcome
         })
     }
@@ -312,8 +306,13 @@ impl Waiting {
                 ended.get_or_insert((watch.pane, Told::Replaced));
                 continue;
             }
-            if let Some(found) = watch.look(pane, &self.wait, &texts, (self.began, now), self.fresh)
-            {
+            if let Some(found) = watch.look(
+                pane,
+                &self.wait,
+                &texts,
+                (self.began, now),
+                (self.fresh, self.more),
+            ) {
                 let id = watch.pane;
                 if several && matches!(found, Found::Stopped(_)) {
                     stopped.get_or_insert((id, found, watch.since(Some(pane))));
@@ -332,7 +331,7 @@ impl Waiting {
             }
             match pane.process.exit_status() {
                 Some(status) => {
-                    ended.get_or_insert((watch.pane, Told::Exited(status, watch.echo_hint())));
+                    ended.get_or_insert((watch.pane, Told::Exited(status, watch.unseen())));
                 }
                 None => live = true,
             }
@@ -400,12 +399,14 @@ impl Waiting {
             let since = Some(watch.since(Some(pane)));
             let told = if pane.starts != watch.starts {
                 Some((EXITED, Told::Replaced))
-            } else if let Some(found) = watch.look(pane, &self.wait, texts, window, self.fresh) {
+            } else if let Some(found) =
+                watch.look(pane, &self.wait, texts, window, (self.fresh, self.more))
+            {
                 Some((found.status(), Told::Found(found)))
             } else {
                 pane.process
                     .exit_status()
-                    .map(|ended| (EXITED, Told::Exited(ended, watch.echo_hint())))
+                    .map(|ended| (EXITED, Told::Exited(ended, watch.unseen())))
             };
             if let Some((status, told)) = told {
                 *answer = Some(self.wait.told(id, Some(pane), status, told, true, since));
@@ -444,6 +445,7 @@ impl Waiting {
             stdout: answers.iter().map(|a| a.stdout.as_str()).collect(),
             stderr,
             json: answers.iter().map(|a| a.json.as_str()).collect(),
+            ids: answers.iter().flat_map(|a| a.ids.iter().copied()).collect(),
             ..Outcome::default()
         })
     }
@@ -494,8 +496,6 @@ impl Wait {
         // A settling action, or a wait the program stopped short of: its
         // state, then what came since it began.
         let settles = self.until.contains(&Until::Settled);
-        // `0 timeout`: at once, as it is, and no failure.
-        let at_once = settles && self.timeout.is_zero();
         let (state, status) = match (&told, pane) {
             (Told::Found(Found::Settled(state) | Found::Stopped(state)), _) => {
                 (Some(*state), status)
@@ -509,12 +509,12 @@ impl Wait {
             (Told::Found(Found::Gone(_)), Some(pane)) => {
                 (Some(crate::ready::state(pane, Instant::now())), status)
             }
-            (Told::TimedOut(_), Some(pane)) if at_once => {
-                (Some(crate::ready::state(pane, Instant::now())), 0)
-            }
-            // At the limit: as it is, busy or waiting still.
+            // At the limit: as it is, a failure (124) only while busy;
+            // `0 timeout` answers at once, as it is, and never fails.
             (Told::TimedOut(_), Some(pane)) if settles => {
-                (Some(crate::ready::state(pane, Instant::now())), status)
+                let state = crate::ready::state(pane, Instant::now());
+                let busy = state == crate::ready::State::Busy && !self.timeout.is_zero();
+                (Some(state), if busy { status } else { 0 })
             }
             (Told::TimedOut(_), None) if settles => (Some(crate::ready::State::Busy), status),
             (
@@ -537,14 +537,22 @@ impl Wait {
                     ])
                     .render()
                 ),
+                ids: vec![AnyRef::Pane(id)],
                 ..Outcome::default()
             };
         }
         if let (Some(state), Some(pane)) = (state, pane) {
-            let line = self.state_line(id, pane, state, since);
+            let (line, notes) = self.state_line(id, pane, state, since);
             // A text that cannot come: the screen, to act on what is there.
             let body = match told {
-                Told::Found(Found::Stopped(_)) => text(pane, self.marks),
+                Told::Found(Found::Stopped(_)) => {
+                    let cut = if since.is_some_and(|s| s.cut) {
+                        CUT
+                    } else {
+                        ""
+                    };
+                    format!("{cut}{}", text(pane, self.marks))
+                }
                 Told::Found(Found::Exit(_) | Found::Gone(_)) => since_text(pane, since, self.marks),
                 Told::Found(_)
                 | Told::Exited(..)
@@ -564,17 +572,20 @@ impl Wait {
             // Said on stdout, with its status: still busy (124), stopped
             // short of the text (7). Not a failure: the answer is the screen.
             let stderr = String::new();
-            let json = Json::Object(vec![
+            let mut fields = vec![
                 ("pane", Json::str(id.to_string())),
                 ("state", Json::str(state.word())),
-                ("status", Json::Number(i64::from(status))),
-                ("output", Json::str(body.clone())),
-            ]);
+            ];
+            fields.extend(notes);
+            fields.push(("status", Json::Number(i64::from(status))));
+            fields.push(("output", Json::str(body.clone())));
+            let json = Json::Object(fields);
             return Outcome {
                 status,
                 stdout: format!("{line}\n{body}"),
                 stderr,
                 json: format!("{}\n", json.render()),
+                ids: vec![AnyRef::Pane(id)],
                 ..Outcome::default()
             };
         }
@@ -678,6 +689,7 @@ impl Wait {
             stdout: format!("{said}{}", screen.unwrap_or_default()),
             stderr: problem.unwrap_or_default(),
             json,
+            ids: vec![AnyRef::Pane(id)],
             ..Outcome::default()
         }
     }
@@ -686,35 +698,46 @@ impl Wait {
 impl Wait {
     /// A settled pane's first line: its id and state, then what else is
     /// known: a shell command that ended, keys read that drew nothing, keys
-    /// not read yet.
+    /// not read yet; and those notes as JSON fields.
     fn state_line(
         &self,
         id: PaneId,
         pane: &Pane,
         state: crate::ready::State,
         since: Option<Since>,
-    ) -> String {
+    ) -> (String, Vec<(&'static str, Json<'static>)>) {
         let mut line = format!("{id} {}", state.word());
+        let mut fields = Vec::new();
         let commands = pane.screen().commands();
         if let Some(since) = since {
             if commands.finished > since.finished {
-                match commands.last_status {
+                let status = commands.last_status;
+                match status {
                     Some(status) => line.push_str(&format!(" · done {status}")),
                     None => line.push_str(" · done"),
                 }
+                fields.push((
+                    "done",
+                    status.map_or(Json::Null, |s| Json::Number(i64::from(s))),
+                ));
             }
             if self.after
                 && pane.revision == since.revision
                 && state == crate::ready::State::Reading
             {
                 line.push_str(" · no change");
+                fields.push(("no_change", Json::Bool(true)));
             }
         }
         let queued = pane.input_queued();
         if queued > 0 {
             line.push_str(&format!(" · {queued} bytes unread"));
+            fields.push((
+                "unread",
+                Json::Number(i64::try_from(queued).unwrap_or(i64::MAX)),
+            ));
         }
-        line
+        (line, fields)
     }
 
     /// Its conditions, as an error says what did not come.
@@ -833,19 +856,26 @@ impl Watch {
             return Some(
                 "the text is on the screen, but on a line that reads as it did when the \
                  wait began (drawn again the same, it brings nothing new); read it with \
-                 `PANE capture`",
+                 `PANE opts capture`",
             );
         }
-        self.echo_hint()
+        self.unseen()
     }
 
-    /// Why a text that showed went unseen: the line it was on held what was
+    /// Why a text may have come unseen: lines were let go past history's
+    /// limit before the wait read them, or the line it was on held what was
     /// typed too.
-    fn echo_hint(&self) -> Option<&'static str> {
+    fn unseen(&self) -> Option<&'static str> {
+        if self.dropped {
+            return Some(
+                "lines written since the input were let go past history-lines before the \
+                 wait read them: the text may have come unseen",
+            );
+        }
         self.echo_skipped.then_some(
             "the text was on the line typed, within what was typed, and was taken as its \
              echo, as a later wait takes it too; wait for text only the output has, or \
-             read the screen with `PANE capture`",
+             read the screen with `PANE opts capture`",
         )
     }
 
@@ -856,12 +886,12 @@ impl Watch {
         wait: &Wait,
         texts: &[String],
         (began, now): (Instant, Instant),
-        fresh: bool,
+        (fresh, more): (bool, bool),
     ) -> Option<Found> {
         let screen = pane.screen();
         // Only lines changed since it began (send-keys), or since the last
         // input to the pane (a wait of its own).
-        let mark = (!self.all_new).then_some(self.mark);
+        let mark = Some(self.mark);
         let shown = lines(screen.rows().skip(screen.history_len()), mark);
         for line in &shown {
             if self
@@ -893,7 +923,7 @@ impl Watch {
                 Until::Text(_) if texts_looked => None,
                 Until::Text(_) => {
                     texts_looked = true;
-                    self.first_text(texts, behind.iter().chain(shown.iter()))
+                    self.first_text(screen, texts, behind.iter().chain(shown.iter()))
                 }
                 Until::Gone(text) => {
                     let present = shown.iter().any(|l| found_in(&l.text, text) > 0);
@@ -909,15 +939,14 @@ impl Watch {
                     // Settled on two looks a probe apart, the screen as it
                     // was: output still in the terminal's buffers, which
                     // the kernel has yet to hand fux, is in by then.
-                    // A wait of its own on a pane that may go on alone
+                    // A bare `wait` on a pane that may go on alone
                     // (`waiting`, or quiet with nothing known) waits for
                     // something new: what it waits on, or a change.
                     let maybe = matches!(
                         state,
                         crate::ready::State::Waiting | crate::ready::State::Settled
                     );
-                    if !state.settled() || (!wait.after && maybe && pane.revision == self.revision)
-                    {
+                    if !state.settled() || (more && maybe && pane.revision == self.revision) {
                         self.settled_since = None;
                         None
                     } else if let crate::ready::State::Exited(_) = state {
@@ -970,26 +999,27 @@ impl Watch {
 
     fn since(&self, pane: Option<&Pane>) -> Since {
         Since {
-            cursor: pane.and_then(|p| self.redrawn_above(p)).or(self.cursor),
+            cursor: pane.and_then(|p| self.top_changed(p)).or(self.cursor),
             finished: self.finished,
             revision: self.revision,
             mark: self.mark,
+            cut: self.dropped,
         }
     }
 
-    /// The topmost row the keys changed, when it is above the cursor's row:
-    /// a menu or form that redraws in place, on the main screen. What came
-    /// is said from there.
-    fn redrawn_above(&self, pane: &Pane) -> Option<fux_vt::RowId> {
+    /// The topmost row the keys changed, from the screen's top (or the
+    /// cursor's row, scrolled into history) on: a menu or form redrawn in
+    /// place on the main screen, above the cursor's row or below it. What
+    /// came is said from there.
+    fn top_changed(&self, pane: &Pane) -> Option<fux_vt::RowId> {
         if self.was.is_empty() {
             return None;
         }
         let screen = pane.screen();
         let at = self.cursor.and_then(|row| screen.row_index(row))?;
-        lines(screen.rows().skip(screen.history_len()), None)
+        lines(screen.rows().skip(at.min(screen.history_len())), None)
             .into_iter()
             .find(|l| self.was.get(&l.first).map(String::as_str) != Some(l.text.as_str()))
-            .filter(|l| screen.row_index(l.first).is_some_and(|i| i < at))
             .map(|l| l.first)
     }
 
@@ -999,6 +1029,7 @@ impl Watch {
     /// a later line that holds one too.
     fn first_text<'a>(
         &mut self,
+        screen: &fux_vt::Screen,
         texts: &[String],
         lines: impl Iterator<Item = &'a Line>,
     ) -> Option<Found> {
@@ -1013,7 +1044,7 @@ impl Watch {
         }
         for line in lines.filter(|l| is_new(l, &self.was, &self.touched)) {
             for text in texts.iter().filter(|t| found_in(&line.text, t) > 0) {
-                if echoed(line, self.typed.as_ref(), text) {
+                if echoed(screen, &self.typed, line, text) {
                     self.echo_skipped = true;
                 } else {
                     return Some(Found::Text {
@@ -1032,7 +1063,7 @@ impl Watch {
     /// yet, from the anchor, or the last row read, to the screen: for each
     /// text, the first line holding it, if none was found before.
     fn read_history(&mut self, screen: &fux_vt::Screen, texts: &[String]) {
-        let mark = (!self.all_new).then_some(self.mark);
+        let mark = Some(self.mark);
         let seen = self.departed;
         let departed = (screen.departed().iter()).filter(|d| seen.is_none_or(|s| d.seq > s));
         let mut read = departed_lines(departed, mark);
@@ -1045,7 +1076,9 @@ impl Watch {
             (None, Some(anchor)) => screen.row_index(anchor),
             (None, None) => Some(history),
         };
-        // An anchor gone past the history's limit: what is kept is read.
+        // An anchor gone past the history's limit before the first read:
+        // what is kept is read, and the rest may have held a text.
+        self.dropped |= self.read.is_none() && self.anchor.is_some() && from.is_none();
         let from = from.unwrap_or(0);
         if from < history {
             let rows: Vec<fux_vt::Row<'_>> = screen
@@ -1064,7 +1097,7 @@ impl Watch {
                 if found.is_some() || found_in(&line.text, text) == 0 {
                     continue;
                 }
-                if echoed(line, self.typed.as_ref(), text) {
+                if echoed(screen, &self.typed, line, text) {
                     self.echo_skipped = true;
                 } else {
                     *found = Some((self.order, line.text.clone()));
@@ -1149,54 +1182,81 @@ fn joined(rows: impl Iterator<Item = (fux_vt::RowId, bool, String, bool)>) -> Ve
     out
 }
 
-/// Whether `text` on a line is in the echo of what was typed: only the
-/// line the cursor was on as the keys went in, and only when they ended a
-/// line (Enter): a shell or prompt shows the command there, and its output
-/// comes below. A field edited in place (no Enter) shows its value, which
-/// counts.
-fn echoed(line: &Line, typed: Option<&Typed>, text: &str) -> bool {
-    let Some(typed) = typed else {
+/// Whether `text` on `line` is in the echo of what was typed: on the row
+/// the cursor was on as the keys went in, the prompt and the first line
+/// typed; below it, each line typed after, on the first line from there on
+/// that shows it, in order. What the program writes past the echo, or in
+/// its place, is output.
+fn echoed(
+    screen: &fux_vt::Screen,
+    typed: &crate::pane::InputFrom,
+    line: &Line,
+    text: &str,
+) -> bool {
+    let Some(cursor) = typed.cursor else {
         return false;
     };
-    if typed.lines == 0 || typed.cursor != Some(line.first) {
-        return false;
-    }
-    // While it still starts as it read before the keys (the prompt, the
-    // keys' echo after it): output that cleared the row and wrote over it
-    // (`clear; echo READY`) is not the echo.
     let before = typed.before.trim_end();
-    let Some(rest) = line.text.strip_prefix(before) else {
+    let mut keys = typed.echo.iter().map(|t| t.trim());
+    let within = |end: Option<usize>| {
+        end.is_some_and(|end| found_in(line.text.get(..end).unwrap_or(&line.text), text) > 0)
+    };
+    let first = keys.next();
+    if line.first == cursor {
+        // Keys alone (Up, Enter: a command recalled): only a row that held
+        // a prompt, and starts with it still, shows one; an empty row, or
+        // one written over, takes the program's output.
+        return match first {
+            Some(first) => within(echo_end(&line.text, before, first, true)),
+            None => typed.lines > 0 && !before.is_empty() && line.text.starts_with(before),
+        };
+    }
+    let Some(from) = screen.row_index(cursor) else {
         return false;
     };
-    // And then shows what was typed, its first word: a program that
-    // echoes nothing (a password, a raw-mode reader), or writes over the
-    // echo, puts its own output on that row.
-    let keys = typed.echo.iter().map(|t| t.trim()).find(|t| !t.is_empty());
-    match keys {
-        Some(keys) => {
-            let word = keys.split_whitespace().next().unwrap_or_default();
-            // Its echo, or the echo still being drawn (`2` of `2**10`).
-            let shows = (rest.split_whitespace().next())
-                .is_none_or(|shown| word.starts_with(shown) || shown.starts_with(word));
-            // And the text is within it, the prompt and as much as was
-            // typed: what the row shows past that (a reply after keys
-            // that were not echoed) is output.
-            let shown = rest.trim_start();
-            let end =
-                (shown.char_indices().nth(keys.chars().count())).map_or(shown.len(), |(at, _)| at);
-            let echo = (before.len())
-                .saturating_add(rest.len().saturating_sub(shown.len()))
-                .saturating_add(end);
-            shows && found_in(line.text.get(..echo).unwrap_or(&line.text), text) > 0
+    let mut next = keys.next();
+    for shown in lines(screen.rows().skip(from), None).iter().skip(1) {
+        let Some(keys_now) = next else {
+            return false;
+        };
+        let end = echo_end(&shown.text, before, keys_now, false);
+        if shown.first == line.first {
+            return within(end);
         }
-        // Keys alone (Up, Enter: a command recalled): only a row that held
-        // a prompt shows one; an empty row takes the program's output.
-        None => !before.is_empty(),
+        if end.is_some() {
+            next = keys.next();
+        }
     }
+    false
 }
 
-/// A text as a wait compares it: case ignored, runs of blanks as one. A
-/// leading `^` holds it to a line's start, a trailing `$` to its end.
+/// Where the echo of a line typed, `keys`, ends on a line of `text`: after
+/// the prompt (`before`: the row the keys went in on must still start with
+/// it, as output that cleared the row and wrote over it does not; a line
+/// below may), the blanks after it, and as many characters as were typed.
+/// Only while the line shows them, their first word or its start (`2` of
+/// `2**10`, still being drawn), or on the keys' own row nothing yet: a
+/// program that echoes nothing, or writes over the echo, puts its own
+/// output there.
+fn echo_end(text: &str, before: &str, keys: &str, own_row: bool) -> Option<usize> {
+    let rest = match text.strip_prefix(before) {
+        Some(rest) => rest,
+        None if own_row => return None,
+        None => text,
+    };
+    let shown = rest.trim_start();
+    let word = keys.split_whitespace().next().unwrap_or_default();
+    let shows = match shown.split_whitespace().next() {
+        Some(first) => word.starts_with(first) || first.starts_with(word),
+        None => own_row,
+    };
+    let end = (shown.char_indices().nth(keys.chars().count())).map_or(shown.len(), |(at, _)| at);
+    shows.then(|| text.len().saturating_sub(shown.len()).saturating_add(end))
+}
+
+/// A text as a wait compares it: case ignored, runs of blanks as one, and
+/// none at its ends. A leading `^` holds it to a line's first word, a
+/// trailing `$` to its last.
 fn normal(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
@@ -1332,11 +1392,7 @@ fn since_text(pane: &Pane, since: Option<Since>, marks: bool) -> String {
             (false, false) => String::new(),
         };
     };
-    let lead = if cut {
-        "… earlier lines not kept (past history-lines)\n"
-    } else {
-        ""
-    };
+    let lead = if cut { CUT } else { "" };
     let body: String = (texts.get(..end).unwrap_or_default().iter())
         .map(|t| format!("{t}\n"))
         .collect();
@@ -1364,5 +1420,9 @@ mod tests {
         assert_eq!(found_in("^CINTERRUPT_IGNORED", "interrupt_ignored"), 1);
         assert_eq!(found_in("^C^CREADY", "^ready"), 1);
         assert_eq!(found_in("x^CREADY", "^ready"), 0);
+        // Blanks as one, leading ones too: `^` holds a text to a line's
+        // first word, indented or not.
+        assert_eq!(found_in("    READY", "^READY"), 1);
+        assert_eq!(found_in("READY", " READY"), 1);
     }
 }

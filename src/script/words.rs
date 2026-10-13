@@ -96,7 +96,7 @@ pub const WORDS: &[Word] = &[
     word("Input", "text", 2, "keys text -- keys", "text, typed"),
     word("Input", "key", 2, "keys name -- keys", "a key by its name: Enter, C-c, Up, F5"),
     word("Input", "paste", 2, "keys text -- keys", "text as a paste"),
-    word("Input", "paste-file", 2, "keys file -- keys", "a file's text as a paste, at most 400 KiB"),
+    word("Input", "paste-file", 2, "keys file -- keys", "a file's text as a paste, at most 900 KiB"),
     word("Input", "times", 2, "keys n -- keys", "the input just before it, n times (1 to 1000): str Down key 2 times"),
     word("Input", "send-keys", 2, "target keys -- [outcome]", "send to a pane, every pane of a tab, or a client as typed at its terminal"),
     word("Input", "mouse", 3, "action row col -- mouse", "click right middle press release wheel-up wheel-down or move, at a cell from 0"),
@@ -208,11 +208,11 @@ pub const WORDS: &[Word] = &[
 
 /// At most `limit` bytes of the file at `path`, and one more if it has
 /// them: never more is read, whatever it is (`/dev/zero`).
-fn bounded(path: &str, limit: u64) -> std::io::Result<Vec<u8>> {
+fn bounded(path: &str, limit: usize) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
     let mut read = Vec::new();
     std::fs::File::open(path)?
-        .take(limit.saturating_add(1))
+        .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
         .read_to_end(&mut read)?;
     Ok(read)
 }
@@ -476,6 +476,9 @@ fn keys<'a>(word: &str, value: &'a mut Value<Fux>) -> Result<&'a mut Keys, Failu
     }
 }
 
+/// The most input one send-keys sends: a request holds it whole.
+const INPUT_MAX: usize = 900 * 1024;
+
 /// A wait as the server takes it, armed after an action when `after`.
 /// How long an action waits for its pane to settle when it names nothing.
 pub const SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -498,9 +501,7 @@ fn wait(waits: &Waits, after: bool, settle: bool) -> Option<Box<Wait>> {
         }),
         print: waits.print || settles,
         after,
-        echo: Vec::new(),
         marks: waits.marks,
-        lines: 0,
         all: true,
     }))
 }
@@ -520,9 +521,7 @@ fn own_wait(waits: &Waits) -> Wait {
         timeout: waits.timeout.unwrap_or(WAIT_TIMEOUT),
         print: waits.print || settles,
         after: false,
-        echo: Vec::new(),
         marks: waits.marks,
-        lines: 0,
         all: settles,
     }
 }
@@ -958,15 +957,12 @@ impl fuxth::Host for Host<'_> {
                     "paste" => built.inputs.push(Input::Paste(string(name, &v)?)),
                     "paste-file" => {
                         let path = string(name, &v)?;
-                        // A request carries its input twice (the keys, and
-                        // the echo a wait skips) within one frame.
-                        let most = 400 * 1024;
-                        let read = bounded(&path, most)
+                        let read = bounded(&path, INPUT_MAX)
                             .map_err(|e| fail("paste", format!("{path}: {e}")))?;
-                        if read.len() as u64 > most {
+                        if read.len() > INPUT_MAX {
                             return Err(fail(
                                 "paste",
-                                format!("{path}: more than 400 KiB, the most one paste takes"),
+                                format!("{path}: more than 900 KiB, the most one paste takes"),
                             ));
                         }
                         let text = String::from_utf8(read)
@@ -1002,12 +998,21 @@ impl fuxth::Host for Host<'_> {
                 if built.inputs.is_empty() {
                     return Err(fail("no_keys", "send-keys needs keys: keys str hello text"));
                 }
-                let mut then = wait(&built.waits, true, self.settle);
-                if let Some(wait) = &mut then {
-                    let (echo, lines) = crate::command::typed_lines(&built.inputs);
-                    wait.echo = echo;
-                    wait.lines = lines;
+                let typed: usize = (built.inputs.iter())
+                    .map(|input| match input {
+                        Input::Text(text) | Input::Paste(text) => text.len(),
+                        Input::Key(_) => 1,
+                    })
+                    .sum();
+                if typed > INPUT_MAX {
+                    return Err(fail(
+                        "too_long",
+                        format!(
+                            "send-keys: {typed} bytes, more than 900 KiB, the most it sends at once"
+                        ),
+                    ));
                 }
+                let then = wait(&built.waits, true, self.settle);
                 let waited = then.is_some();
                 let (targets, to_client) = match &to {
                     // Typed at its terminal: whatever pane they reach is the

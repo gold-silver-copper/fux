@@ -1810,7 +1810,11 @@ fn a_reply_after_the_typed_text_is_not_its_echo() -> Outcome {
     server.ok(&run(&["str", "e", "name"], &["sh", "-c", "read l; exit 0"]))?;
     let echoed = server.fux(&typed("e", "exit46", &["str", "exit46", "wait-text"]))?;
     assert_eq!(echoed.status, 3, "{}", echoed.stderr);
-    assert!(echoed.stderr.contains("capture"), "{}", echoed.stderr);
+    assert!(
+        echoed.stderr.contains("PANE opts capture"),
+        "{}",
+        echoed.stderr
+    );
     Ok(())
 }
 
@@ -1882,5 +1886,235 @@ fn answers_name_the_pane_once_and_the_busy_one() -> Outcome {
         "{}",
         out.stderr
     );
+    Ok(())
+}
+
+/// A met text wait's answer is its pane: a word that wants a pane takes it,
+/// never a pane named by what the program wrote (a line `%13 fake`). What
+/// `cat` writes back is output, though it reads as what was typed.
+#[test]
+fn a_met_waits_answer_is_its_pane() -> Outcome {
+    let server = Server::start("")?;
+    let fake = "read x; echo '%13 fake'; exec cat";
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", fake]))?);
+    let met = [
+        &typed(&pane, "go", &["str", "fake", "wait-text"])[..],
+        &["str", "name", "get"],
+    ];
+    assert_eq!(server.ok(&met.concat())?.trim(), "sh");
+    let wait = [
+        "str",
+        &pane,
+        "pane",
+        "opts",
+        "str",
+        "fake",
+        "wait-text",
+        "wait",
+        "str",
+        "name",
+        "get",
+    ];
+    assert_eq!(server.ok(&wait)?.trim(), "sh");
+    let cat = id(&server.ok(&run(&[], &["cat"]))?);
+    let back = [
+        &typed(&cat, "hi", &["str", "hi", "wait-text"])[..],
+        &["str", "x", "line"],
+    ];
+    assert_eq!(server.ok(&back.concat())?, format!("{cat} reading\nx\nx\n"));
+    Ok(())
+}
+
+/// Input as large as a paste may be goes in one send-keys; more is refused
+/// as too long, before anything is sent.
+#[test]
+fn send_keys_takes_input_up_to_its_limit() -> Outcome {
+    let server = Server::start("")?;
+    let file = server.dir.join("paste.txt");
+    let line: String = std::iter::repeat_n('a', 99).chain(['\n']).collect();
+    std::fs::write(&file, std::iter::repeat_n(line, 6000).collect::<String>()).map_err(e)?;
+    let sink = id(&server.ok(&run(&[], &["sh", "-c", "stty -echo; cat > /dev/null"]))?);
+    let path = file.to_string_lossy();
+    let paste = [
+        "str",
+        &sink,
+        "pane",
+        "keys",
+        "str",
+        &path,
+        "paste-file",
+        "0",
+        "timeout",
+        "send-keys",
+    ];
+    let pasted = server.fux(&paste)?;
+    assert_eq!(pasted.status, 0, "{}", pasted.stderr);
+    let long: String = std::iter::repeat_n('b', 1000).collect();
+    let many = [
+        "str",
+        &sink,
+        "pane",
+        "keys",
+        "str",
+        &long,
+        "text",
+        "1000",
+        "times",
+        "send-keys",
+    ];
+    let refused = server.fux(&many)?;
+    assert_eq!(refused.status, 1);
+    assert!(refused.stderr.contains("too_long"), "{}", refused.stderr);
+    Ok(())
+}
+
+/// Typed text with no Enter is its echo too, on every row it spans, and
+/// the prompt already there is no new text: a wait for it is never met by
+/// the keys (7: the program reads), only by what the program writes.
+#[test]
+fn keys_with_no_enter_are_their_echo() -> Outcome {
+    let server = Server::start("")?;
+    let prompt = "import sys\nprint('PROMPT> ', end='', flush=True)\n\
+                  for line in sys.stdin: print('ACCEPTED ' + line.strip(), flush=True)\n";
+    let pane = id(&server.ok(&run(&[], &["python3", "-c", prompt]))?);
+    let keys = |text: &str, wanted: &str| -> Result<Output, String> {
+        server.fux(&[
+            "str",
+            &pane,
+            "pane",
+            "keys",
+            "str",
+            text,
+            "text",
+            "str",
+            wanted,
+            "wait-text",
+            "2",
+            "timeout",
+            "send-keys",
+        ])
+    };
+    assert_eq!(keys("ECHO_ONE", "ECHO_ONE")?.status, 7);
+    assert_eq!(keys("X", "PROMPT")?.status, 7);
+    let later = server.fux(&[
+        "str",
+        &pane,
+        "pane",
+        "opts",
+        "str",
+        "ECHO_ONE",
+        "wait-text",
+        "1",
+        "timeout",
+        "wait",
+    ])?;
+    assert_eq!(later.status, 7, "{}", later.stdout);
+    let two = keys("\nCOMPLETE\nPARTIAL", "PARTIAL")?;
+    assert_eq!(two.status, 7, "{}", two.stdout);
+    let accepted = keys("\n", "ACCEPTED PARTIAL")?;
+    assert_eq!(accepted.status, 0, "{}", accepted.stdout);
+    // Enter alone, after the text: a program that writes over the typed
+    // row writes output there.
+    let over = "import sys, tty\ntty.setraw(0)\nw = sys.stdout.write\nw('> '); sys.stdout.flush()\n\
+                while True:\n c = sys.stdin.read(1)\n w('\\rWORKING\\x1b[K' if c == '\\r' else c)\n \
+                sys.stdout.flush()\n";
+    let pane = id(&server.ok(&run(&[], &["python3", "-c", over]))?);
+    server.ok(&["str", &pane, "pane", "str", "slow", "type"])?;
+    let enter = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "Enter",
+        "key",
+        "str",
+        "WORKING",
+        "wait-text",
+        "2",
+        "timeout",
+        "send-keys",
+    ];
+    assert_eq!(server.ok(&enter)?, "WORKING\n");
+    Ok(())
+}
+
+/// A later text wait that begins after the lines it would read left
+/// history says they were let go: the text may have come unseen.
+#[test]
+fn a_wait_says_when_lines_were_let_go_unread() -> Outcome {
+    let server = Server::start("str history-lines 20 set")?;
+    let flood = "echo GONE_LINE; seq 200; read x";
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", flood]))?);
+    let out = server.fux(&[
+        "str",
+        &pane,
+        "pane",
+        "opts",
+        "str",
+        "GONE_LINE",
+        "wait-text",
+        "3",
+        "timeout",
+        "wait",
+    ])?;
+    assert_eq!(out.status, 7, "{}", out.stderr);
+    assert!(
+        out.stdout.contains("earlier lines not kept"),
+        "{}",
+        out.stdout
+    );
+    Ok(())
+}
+
+/// A form redrawn in place below the cursor's row is answered from the top
+/// row that changed, not from the cursor's unchanged row.
+#[test]
+fn a_form_redrawn_below_is_answered_from_its_change() -> Outcome {
+    let server = Server::start("")?;
+    let form = "import sys, tty\ntty.setraw(0)\nw = sys.stdout.write\n\
+                w('MAIN FORM\\r\\nVALUE: A\\r\\nSubmit with Enter\\r\\nFOOTER\\x1b[2;9H')\n\
+                sys.stdout.flush(); sys.stdin.read(1)\n\
+                w('\\x1b[3;1H\\x1b[2KSUBMITTED: A\\x1b[2;9H'); sys.stdout.flush()\n\
+                sys.stdin.read(1)\n";
+    let pane = id(&server.ok(&run(&[], &["python3", "-c", form]))?);
+    let submitted = server.ok(&["str", &pane, "pane", "str", "Enter", "press"])?;
+    assert_eq!(body(&submitted), "SUBMITTED: A\nFOOTER\n", "{submitted}");
+    Ok(())
+}
+
+/// JSON answers carry the state line's notes: a shell command's end, keys
+/// read that drew nothing.
+#[test]
+fn json_answers_carry_the_state_notes() -> Outcome {
+    let server = Server::start("")?;
+    server.ok(&run(&["str", "sh", "name"], &["bash", "--norc", "-i"]))?;
+    let done = server.ok(&["str", "sh", "pane", "str", "(exit 4)", "line", "json"])?;
+    assert!(done.contains("\"done\":4"), "{done}");
+    let silent = "import sys, tty\ntty.setraw(0)\nprint('ready', end='', flush=True)\n\
+                  while True: sys.stdin.read(1)\n";
+    let pane = id(&server.ok(&run(&[], &["python3", "-c", silent]))?);
+    let quiet = server.ok(&["str", &pane, "pane", "str", "x", "type", "json"])?;
+    assert!(quiet.contains("\"no_change\":true"), "{quiet}");
+    Ok(())
+}
+
+/// A `run` whose wait fails still prints the pane it started, then says
+/// why it failed.
+#[test]
+fn a_failed_runs_pane_is_printed() -> Outcome {
+    let server = Server::start("")?;
+    let out = server.fux(&run(
+        &["str", "NEVER", "wait-text"],
+        &["sh", "-c", "exit 2"],
+    ))?;
+    assert_eq!(out.status, 3, "{}", out.stderr);
+    let pane = id(&out.stdout);
+    assert!(
+        pane.starts_with('%') && out.stdout == format!("{pane}\n"),
+        "{}",
+        out.stdout
+    );
+    assert!(out.stderr.starts_with("fux: exited: "), "{}", out.stderr);
     Ok(())
 }

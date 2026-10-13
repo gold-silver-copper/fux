@@ -94,8 +94,11 @@ its own status):
 
 `state` is the pane's (above), or `closed` (status 4); `output` what came
 since the input, or the screen of a full-screen program, or the screen
-for status 7; a met `wait-exit` or `wait-gone` answers so too. A wait for a
-text or a bell answers what met it:
+for status 7; a met `wait-exit` or `wait-gone` answers so too. The state
+line's notes are fields, each only when said: `done` (a shell command
+ended: its status, `null` if not known), `no_change` (`true`: the keys
+were read and drew nothing), `unread` (bytes of input not read yet). A
+wait for a text or a bell answers what met it:
 
 ```json
 {"pane":"%3","met":"text","text":"PASS","line":"12 tests PASS","status":0}
@@ -109,7 +112,9 @@ text or a bell answers what met it:
 `status` is the exit status. A wait that fails (the program exited first
 or was started again, 3; the pane closed, 4; the time limit, 124) ends the
 program with that status and says why on stderr, `fux: CODE: MESSAGE`: it
-leaves no answer to print.
+leaves no answer to print, but what `run` or `split` started is printed
+first, its pane alone (`%2`, as text, `json` or not), and so are the
+answers of the words before it.
 
 ## `events-json`, `X events-of-json`
 
