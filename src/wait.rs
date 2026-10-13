@@ -795,7 +795,7 @@ impl Watch {
                         .chain(behind.iter().rev())
                         .filter(|l| is_new(l, was, touched) && found_in(&l.text, text) > 0)
                         .find(|l| {
-                            let echo = echoed(l, wait, cursor);
+                            let echo = echoed(l, wait, cursor, was);
                             skipped |= echo;
                             !echo
                         })
@@ -882,7 +882,7 @@ impl Watch {
                 *found = (read.iter())
                     .filter(|l| is_new(l, &self.was, &self.touched) && found_in(&l.text, text) > 0)
                     .find(|l| {
-                        let echo = echoed(l, wait, self.cursor);
+                        let echo = echoed(l, wait, self.cursor, &self.was);
                         skipped |= echo;
                         !echo
                     })
@@ -957,11 +957,17 @@ fn lines<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>, mark: Option<fux_vt::M
 /// was on as the keys went in, and only when they ended a line (Enter): a
 /// shell or prompt shows the command there, and its output comes below. A
 /// field edited in place (no Enter) shows its value, which counts.
-fn echoed(line: &Line, wait: &Wait, cursor: Option<fux_vt::RowId>) -> bool {
-    // Still showing what was typed: output that cleared the row and wrote
-    // over it (`clear; echo READY`) is not the echo.
-    let typed = |t: &String| !t.trim().is_empty() && line.text.contains(t.trim());
-    wait.after && wait.lines > 0 && cursor == Some(line.first) && wait.echo.iter().any(typed)
+fn echoed(
+    line: &Line,
+    wait: &Wait,
+    cursor: Option<fux_vt::RowId>,
+    was: &std::collections::HashMap<fux_vt::RowId, String>,
+) -> bool {
+    // While it still starts as it read before the keys (the prompt, the
+    // keys' echo after it): output that cleared the row and wrote over it
+    // (`clear; echo READY`) is not the echo.
+    let before = was.get(&line.first).map_or("", |t| t.trim_end());
+    wait.after && wait.lines > 0 && cursor == Some(line.first) && line.text.starts_with(before)
 }
 
 /// A text as a wait compares it: case ignored, runs of blanks as one. A

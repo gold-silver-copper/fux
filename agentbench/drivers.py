@@ -345,8 +345,9 @@ class Fux(Driver):
         words += ["str", argv[0], "program"]
         for a in argv[1:]:
             words += ["str", a, "arg"]
-        # Answers `%2 STATE` and the first output once it settles: the pane.
-        return self.fux(*words, "run").stdout.split()[0]
+        # Started at once (`0 timeout`): the recipes wait for what they need.
+        # The answer starts with the pane: `%2 STATE`.
+        return self.fux(*words, "0", "timeout", "run").stdout.split()[0]
 
     def shell(self, size=None):
         """bash, which marks its commands with no setup."""
@@ -491,7 +492,7 @@ class Fux(Driver):
                                   "timeout", "capture").stdout)
 
     def respawn(self, pane):
-        self.fux(*self.pane(pane), "opts", "respawn")
+        self.fux(*self.pane(pane), "opts", "0", "timeout", "respawn")
 
     def resize(self, pane, cols, rows):
         self.fux(*self.pane(pane), "tab", str(cols), str(rows), "resize")
