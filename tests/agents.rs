@@ -1504,6 +1504,66 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     Ok(())
 }
 
+/// The key after a lone Escape waits until the program has taken the
+/// Escape alone (here after 120ms), so it is not read as Alt and that key;
+/// a text wait on several panes outlasts one that reads without it; a
+/// program that leaves its full screen and exits answers with that screen.
+#[test]
+fn escape_alone_full_screens_and_waits_on_many() -> Outcome {
+    let server = Server::start("")?;
+    let esc = "import os, select, tty\n\
+               tty.setraw(0); os.write(1, b'ready\\r\\n')\n\
+               while True:\n\
+               \x20   b = os.read(0, 1)\n\
+               \x20   if b == b'\\x1b':\n\
+               \x20       alt = select.select([0], [], [], 0.12)[0]\n\
+               \x20       os.write(1, b'ALT\\r\\n' if alt else b'ESC alone\\r\\n')\n\
+               \x20       if alt: os.read(0, 1)\n\
+               \x20   elif b == b'\\x13': os.write(1, b'CTRL-S\\r\\n'); break\n";
+    let pane = id(&server.ok(&run(
+        &["str", "ready", "wait-text"],
+        &["python3", "-c", esc],
+    ))?);
+    let keys = server.ok(&[
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "Escape",
+        "key",
+        "str",
+        "C-s",
+        "key",
+        "send-keys",
+    ])?;
+    assert!(keys.contains("ESC alone\nCTRL-S\n"), "{keys}");
+    let full = "printf '\\033[?1049hEDIT> '; read x; echo saved; sleep 0.2; printf '\\033[?1049l'";
+    let editor = id(&server.ok(&run(&["str", "EDIT>", "wait-text"], &["sh", "-c", full]))?);
+    let saved = server.ok(&typed(&editor, "q", &[]))?;
+    assert!(
+        saved.starts_with(&format!("{editor} exited 0\n")) && saved.contains("saved"),
+        "{saved}"
+    );
+    server.ok(&run(&["0", "timeout"], &["sh", "-c", "echo idle; read x"]))?;
+    server.ok(&run(
+        &["0", "timeout"],
+        &["sh", "-c", "sleep 1; echo SEALED; read x"],
+    ))?;
+    let sealed = server.ok(&[
+        "str",
+        "agent",
+        "workspace",
+        "opts",
+        "str",
+        "SEALED",
+        "wait-text",
+        "wait",
+    ])?;
+    assert!(sealed.ends_with("SEALED\n"), "{sealed}");
+    Ok(())
+}
+
 /// A signal that ends the program answers how it ended, even after the
 /// pane has been quiet a while.
 #[test]
