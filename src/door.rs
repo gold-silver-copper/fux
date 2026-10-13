@@ -315,6 +315,11 @@ impl Link {
         &self.output
     }
 
+    /// Whether it is a socket: what can carry a descriptor.
+    pub fn is_socket(&self) -> bool {
+        self.socket.is_some()
+    }
+
     /// A copy of its socket, to shut down from another thread.
     pub fn socket_copy(&self) -> Option<UnixStream> {
         self.socket.as_ref().and_then(|s| s.try_clone().ok())

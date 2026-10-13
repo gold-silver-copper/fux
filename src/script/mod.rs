@@ -718,6 +718,15 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
                     pane: Some(*p),
                 })))]
             }
+            // One a text was waited for in: its pane, then the line.
+            Some(crate::command::AnyRef::Pane(p)) if text.starts_with(&format!("{p}\n")) => {
+                vec![Value::App(Fux::Answer(Box::new(Answer {
+                    text,
+                    json: Some(reply.json.trim_end().to_owned()).filter(|j| !j.is_empty()),
+                    query: None,
+                    pane: Some(*p),
+                })))]
+            }
             Some(id) => vec![Value::App(handle(*id))],
             None => {
                 return Err(Failed {

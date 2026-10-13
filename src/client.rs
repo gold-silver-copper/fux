@@ -1111,6 +1111,11 @@ fn send_with_terminal<'a>(
     frame: &impl Frame<'a>,
     terminal: impl std::os::fd::AsFd,
 ) -> Result<(), Error> {
+    // Through a door, a FIFO, no descriptor can go: the server relays
+    // the paints instead.
+    if !stream.is_socket() {
+        return send(stream, frame);
+    }
     let bytes = frame.encode()?;
     let sent = loop {
         match fuxix::socket::send_with_fd(stream.output(), &bytes, &terminal) {

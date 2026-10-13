@@ -679,7 +679,11 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
         "wait-text",
         "respawn",
     ];
-    assert_eq!(server.ok(&again)?, format!("{pane}\n"));
+    assert_eq!(
+        server.ok(&again)?,
+        format!("{pane}\nfull b\n"),
+        "its pane, then the line waited for"
+    );
     let empty = server.fux(&["str", &pane, "pane", "opts", "str", "", "wait-text", "wait"])?;
     assert_eq!(
         empty.status, 1,

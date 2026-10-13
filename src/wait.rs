@@ -99,6 +99,9 @@ struct Watch {
     cursor: Option<fux_vt::RowId>,
     /// No input has gone in since the program started: every line counts.
     all_new: bool,
+    /// Since when its program has been seen reading its terminal, probe
+    /// after probe: a text it stops short of is said only once that holds.
+    reading_since: Option<Instant>,
 }
 
 /// What a wait found.
@@ -171,6 +174,7 @@ impl Waiting {
                     alerts: pane.alerts.count(),
                     cursor,
                     all_new,
+                    reading_since: None,
                 }
             })
             .collect();
@@ -849,8 +853,19 @@ impl Watch {
         // A text that cannot come: the program reads its terminal, having
         // had a moment to print after what began the wait.
         let settles = wait.until.contains(&Until::Settled);
+        if texts.is_empty() || settles {
+            return None;
+        }
         let after_moment = now >= crate::after(began, crate::ready::SETTLE.saturating_mul(2));
-        if !texts.is_empty() && !settles && after_moment && crate::ready::reading(pane, now) {
+        let since = if crate::ready::reading(pane, now) {
+            *self.reading_since.get_or_insert(now)
+        } else {
+            self.reading_since = None;
+            return None;
+        };
+        // Seen so on more than one probe: never on one look alone.
+        let held = now >= crate::after(since, crate::ready::SETTLE.saturating_mul(2));
+        if after_moment && held {
             return Some(Found::Stopped(crate::ready::State::Reading));
         }
         None
