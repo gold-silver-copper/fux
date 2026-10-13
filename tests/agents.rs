@@ -1439,6 +1439,22 @@ fn every_pane_and_every_start_is_waited_for() -> Outcome {
     Ok(())
 }
 
+/// A menu redrawn in place, above the row the keys were typed on, is in
+/// the answer: what came is said from the topmost row that changed.
+#[test]
+fn a_menu_redrawn_above_is_answered() -> Outcome {
+    let server = Server::start("")?;
+    let menu = "printf '> one\\n  two\\nchoose: '; read -r x; \
+                printf '\\033[2A\\r  one\\033[K\\n> two\\033[K\\nchoose: \\033[K'; exec cat";
+    server.ok(&run(
+        &["str", "m", "name", "str", "choose:", "wait-text"],
+        &["sh", "-c", menu],
+    ))?;
+    let moved = server.ok(&typed("m", "j", &[]))?;
+    assert!(moved.contains("  one\n> two\n"), "{moved}");
+    Ok(())
+}
+
 /// A signal that ends the program answers how it ended, even after the
 /// pane has been quiet a while.
 #[test]

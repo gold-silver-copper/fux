@@ -33,6 +33,13 @@ impl Termios {
         self.0.c_lflag & libc::ICANON != 0
     }
 
+    /// Whether a read waits for keys only so long (`VTIME`, with no line
+    /// editing): a program that times its reads, as one telling a lone
+    /// Escape from a key's sequence does.
+    pub fn timed_reads(&self) -> bool {
+        !self.line_mode() && self.0.c_cc.get(libc::VTIME).is_some_and(|t| *t > 0)
+    }
+
     /// Raw mode: no echo, no line editing, no signals from keys, and no
     /// output processing.
     pub fn make_raw(&mut self) {

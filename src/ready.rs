@@ -77,9 +77,17 @@ pub fn state(pane: &Pane, now: Instant) -> State {
         return State::Busy;
     };
     let tty = child.master.slave_path();
-    let activity = tty.as_ref().map_or(Activity::Unknown, |tty| {
-        fuxix::process::activity(group, tty)
-    });
+    let activity = match tty.as_ref().map(|tty| fuxix::process::activity(group, tty)) {
+        // A read with a time limit is a poll: the program goes on alone
+        // when it runs out.
+        Some(Activity::Reading)
+            if fuxix::terminal::attributes(&child.master).is_ok_and(|t| t.timed_reads()) =>
+        {
+            Activity::Polling
+        }
+        Some(activity) => activity,
+        None => Activity::Unknown,
+    };
     // A shell command still runs a program that is not full-screen and
     // does not read: it is at work until it ends or asks.
     let screen = pane.screen();

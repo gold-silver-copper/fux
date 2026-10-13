@@ -259,7 +259,7 @@ impl Waiting {
             {
                 let status = found.status();
                 let id = watch.pane;
-                let since = Some(watch.since());
+                let since = Some(watch.since(Some(pane)));
                 return Some(self.wait.told(
                     id,
                     Some(pane),
@@ -295,7 +295,7 @@ impl Waiting {
                 .or(self.watches.first());
             let pane = first.and_then(|w| session.panes.get(&w.pane));
             let hint = first.zip(pane).and_then(|(w, p)| w.hint(p, &self.wait));
-            let since = first.map(Watch::since);
+            let since = first.map(|w| w.since(pane));
             let first = first.map(|w| w.pane);
             return first.map(|id| {
                 self.wait
@@ -321,7 +321,7 @@ impl Waiting {
                 *answer = Some(self.wait.told(id, None, GONE, Told::Gone, true, None));
                 continue;
             };
-            let since = Some(watch.since());
+            let since = Some(watch.since(Some(pane)));
             let told = if pane.starts != watch.starts {
                 Some((EXITED, Told::Replaced))
             } else if let Some(found) = watch.look(pane, &self.wait, texts, window, self.fresh) {
@@ -341,7 +341,7 @@ impl Waiting {
                     let pane = session.panes.get(&watch.pane);
                     let hint = pane.and_then(|p| watch.hint(p, &self.wait));
                     let told = Told::TimedOut(hint);
-                    let since = Some(watch.since());
+                    let since = Some(watch.since(pane));
                     *answer = Some(
                         self.wait
                             .told(watch.pane, pane, TIMED_OUT, told, true, since),
@@ -892,12 +892,28 @@ impl Watch {
         None
     }
 
-    fn since(&self) -> Since {
+    fn since(&self, pane: Option<&Pane>) -> Since {
         Since {
-            cursor: self.cursor,
+            cursor: pane.and_then(|p| self.redrawn_above(p)).or(self.cursor),
             finished: self.finished,
             revision: self.revision,
         }
+    }
+
+    /// The topmost row the keys changed, when it is above the cursor's row:
+    /// a menu or form that redraws in place, on the main screen. What came
+    /// is said from there.
+    fn redrawn_above(&self, pane: &Pane) -> Option<fux_vt::RowId> {
+        if self.was.is_empty() {
+            return None;
+        }
+        let screen = pane.screen();
+        let at = self.cursor.and_then(|row| screen.row_index(row))?;
+        lines(screen.rows().skip(screen.history_len()), None)
+            .into_iter()
+            .find(|l| self.was.get(&l.first).map(String::as_str) != Some(l.text.as_str()))
+            .filter(|l| screen.row_index(l.first).is_some_and(|i| i < at))
+            .map(|l| l.first)
     }
 
     /// Reads the history rows written since the wait began and not read
