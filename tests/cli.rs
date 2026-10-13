@@ -288,6 +288,29 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "{}",
         timed_out.stderr
     );
+    // A run whose program exits before the text: its pane on stdout, and
+    // why on one line of stderr, its last lines with it; what the words
+    // before it left is printed first.
+    let exited = server.fux(&[
+        "str",
+        "before",
+        "opts",
+        "str",
+        "sh -c 'echo ONE; echo TWO; exit 5'",
+        "command",
+        "str",
+        "NEVER",
+        "wait-text",
+        "run",
+    ])?;
+    assert_eq!(exited.status, 3, "{}", exited.stderr);
+    assert!(
+        exited.stdout.starts_with("before\n%") && exited.stdout.lines().count() == 2,
+        "{}",
+        exited.stdout
+    );
+    assert_eq!(exited.stderr.lines().count(), 1, "{}", exited.stderr);
+    assert!(exited.stderr.contains("ONE; TWO"), "{}", exited.stderr);
     let left = server.ok(&[
         "1", "2", "add", "str", "a b", "str", "%1", "pane", "dup", "tab",
     ])?;

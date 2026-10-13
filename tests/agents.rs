@@ -1305,7 +1305,7 @@ fn the_rechecks_hold() -> Outcome {
             "timeout",
         ][..],
         &program(&["sleep", "60"]),
-        &["split"],
+        &["0", "timeout", "split"],
     ]
     .concat();
     server.ok(&split)?;

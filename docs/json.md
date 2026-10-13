@@ -2,7 +2,8 @@
 
 (`fux help-json`.) `json` turns the value on top of the stack into JSON:
 what a word left, as below; a string as a JSON string; a number or boolean
-as itself. Every shape below is part of fux's interface: a field is added,
+as itself; a list as an array of these, an action's answer in it as its
+object (a capture or listing in it as its text). Every shape below is part of fux's interface: a field is added,
 never renamed or dropped without a release saying so. Rows and
 columns count from 0; times are milliseconds; ids are strings (`"%3"`,
 `"@2"`, `"+1"`, `"c1"`).
@@ -59,7 +60,9 @@ a number or boolean as itself, a string as text, `null` as the text
 {"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":["…"],PANE FIELDS…}
 ```
 
-`cursor` is `null` while hidden or outside the rows printed. With the
+`cursor` is where it is among `lines`: `null` while hidden, or on no line
+printed (a blank row trimmed, outside `rows` or `cols`, the screen not
+captured). With `marks`, each line holds its marks as text does. With the
 `styles` option, `"styles"` holds a list per line of its runs of cells that are not
 plain: `{"col":0,"len":3,"fg":1,"bg":"#1e1e20","bold":true,"dim":true,
 "italic":true,"underline":true,"blink":true,"inverse":true,

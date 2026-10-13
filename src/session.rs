@@ -1428,15 +1428,23 @@ impl Session {
                 Ok(id) => Ok(AnyRef::Pane(self.pane(Some(id), here)?.id)),
                 Err(_) => {
                     // A tab's name, else a pane's own (what `rename` gave
-                    // it, or its program's).
+                    // it, or its program's), else the title its program
+                    // set, as `ls` shows it.
                     let tab = match named() {
                         Ok(tab) => tab,
                         Err(no_tab) => {
-                            let mut panes: Vec<PaneId> = (self.panes.values())
-                                .filter(|p| p.name == text)
-                                .map(|p| p.id)
-                                .collect();
-                            panes.sort();
+                            let with = |of: fn(&Pane) -> &str| {
+                                let mut panes: Vec<PaneId> = (self.panes.values())
+                                    .filter(|p| of(p) == text)
+                                    .map(|p| p.id)
+                                    .collect();
+                                panes.sort();
+                                panes
+                            };
+                            let mut panes = with(|p| p.name.as_str());
+                            if panes.is_empty() {
+                                panes = with(|p| p.title.as_str());
+                            }
                             return match panes.as_slice() {
                                 [pane] => Ok(AnyRef::Pane(*pane)),
                                 [] => Err(no_tab),
@@ -3835,7 +3843,11 @@ impl Session {
                 let scalar = match &value {
                     Json::Number(n) => Scalar::Int(*n),
                     Json::Bool(b) => Scalar::Bool(*b),
-                    Json::Null | Json::String(_) | Json::Array(_) | Json::Object(_) => Scalar::Null,
+                    Json::Null
+                    | Json::String(_)
+                    | Json::Array(_)
+                    | Json::Object(_)
+                    | Json::Raw(_) => Scalar::Null,
                 };
                 (scalar, format!("{}\n", value.render()))
             }
@@ -4971,11 +4983,111 @@ mod tests {
         let (mut s, _) = attached(10, 40)?;
         assert_eq!(output(&mut s, "%1 str name get")?, "sh\n");
         assert_eq!(output(&mut s, "@1 str name get")?, "main\n");
+        // A pane's title names it too, as `ls` shows it.
+        s.output(PaneId::of(1), b"\x1b]2;spool\x07");
+        assert_eq!(output(&mut s, "str spool pane")?, "%1\n");
         assert_eq!(output(&mut s, "str %1")?, "%1\n");
         let json = output(&mut s, "%1 opts json capture")?;
         assert!(json.starts_with(r#"{"pane":"%1""#), "{json}");
         let made = output(&mut s, "opts str 'sh -c \"exit 0\"' command run")?;
         assert!(made.starts_with('%'), "{made}");
+        Ok(())
+    }
+
+    /// A capture's cursor is where it is among the lines printed: none
+    /// while hidden, on a row trimmed away, outside the columns taken, or
+    /// on the screen not captured; past the columns cut and the rows
+    /// joined.
+    #[test]
+    fn a_captures_cursor_is_among_its_lines() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, _) = attached(10, 40)?;
+        let cursor = |s: &mut Session, read: &str| -> Result<String, String> {
+            let json = output(s, &format!("%1 opts {read} json capture"))?;
+            let after = json.split("\"cursor\":").nth(1).unwrap_or_default();
+            Ok(after
+                .split(",\"lines\"")
+                .next()
+                .unwrap_or_default()
+                .to_owned())
+        };
+        s.output(PaneId::of(1), b"0123456789\x1b[1;6H");
+        assert_eq!(cursor(&mut s, "")?, "[0,5]");
+        assert_eq!(cursor(&mut s, "2 7 cols")?, "[0,3]");
+        assert_eq!(cursor(&mut s, "0 2 cols")?, "null");
+        s.output(PaneId::of(1), b"\x1b[?25l");
+        assert_eq!(cursor(&mut s, "")?, "null", "hidden");
+        s.output(PaneId::of(1), b"\x1b[?25h\x1b[3;1H");
+        assert_eq!(cursor(&mut s, "")?, "null", "on a blank row trimmed");
+        s.output(
+            PaneId::of(1),
+            &[b"\x1b[2J\x1b[H".as_slice(), &[b'A'; 45], b"\r\nBC"].concat(),
+        );
+        assert_eq!(cursor(&mut s, "")?, "[2,2]");
+        assert_eq!(cursor(&mut s, "joined")?, "[1,2]");
+        s.output(PaneId::of(1), b"\x1b[?1049h\x1b[HALT");
+        assert_eq!(cursor(&mut s, "alt-screen")?, "[0,3]");
+        assert_eq!(cursor(&mut s, "main-screen")?, "null");
+        s.output(PaneId::of(1), b"\x1b[?1049l");
+        assert_eq!(cursor(&mut s, "alt-screen")?, "null");
+        assert_eq!(cursor(&mut s, "main-screen")?, "[2,2]");
+        // What is highlighted is marked in JSON's lines too.
+        s.output(PaneId::of(1), b"\x1b[7mSEL\x1b[0m");
+        let json = output(&mut s, "%1 opts marks json capture")?;
+        assert!(json.contains("\"BC⟦SEL⟧\""), "{json}");
+        let inverted = output(&mut s, "%1 opts 5 2 rows capture");
+        assert!(
+            inverted.as_ref().is_err_and(|e| e.starts_with("range: ")),
+            "{inverted:?}"
+        );
+        Ok(())
+    }
+
+    /// An action's answer is its pane, to every word that wants a pane:
+    /// `pane`, `tab` and `workspace` too; and `json` gives it as it gives
+    /// it alone, in a list too.
+    #[test]
+    fn an_actions_answer_is_its_pane() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, _) = attached(10, 40)?;
+        assert_eq!(output(&mut s, "%1 opts wait str name get")?, "sh\n");
+        assert_eq!(
+            output(&mut s, "%1 opts wait dup tab swap workspace")?,
+            "@1\n+1\n"
+        );
+        let alone = output(&mut s, "%1 opts wait json")?;
+        assert!(alone.starts_with(r#"{"pane":"%1","state":"#), "{alone}");
+        let listed = output(&mut s, "list %1 opts wait end json")?;
+        assert_eq!(listed, format!("[{}]\n", alone.trim_end()));
+        Ok(())
+    }
+
+    /// A failure is one line, says what a word takes and how it is used,
+    /// and is of the kind it is: a string counted is a type error, a file
+    /// not there says so.
+    #[test]
+    fn failures_say_what_a_word_takes() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, _) = attached(10, 40)?;
+        let failed = |s: &mut Session, code: &str| match output(s, code) {
+            Ok(out) => format!("ran: {out}"),
+            Err(error) => error,
+        };
+        let timeout = failed(&mut s, "%1 opts -1 timeout wait");
+        assert!(timeout.starts_with("range: "), "{timeout}");
+        assert!(
+            timeout.contains("-1 is out of range: from 0 (use: "),
+            "{timeout}"
+        );
+        let mouse = failed(&mut s, "%1 str click -1 0 mouse send-mouse");
+        assert!(mouse.contains("out of range: 0 to 65535 (use: "), "{mouse}");
+        let times = failed(&mut s, "keys str a text str 2 times");
+        assert!(times.starts_with("type: "), "{times}");
+        let none = failed(&mut s, "keys str a text 0 times");
+        assert!(none.contains("a count from 1 to 1000 (use: "), "{none}");
+        let missing = failed(&mut s, "str /no/such/file.fux check");
+        assert!(missing.contains("No such file"), "{missing}");
+        let split = failed(&mut s, "str 'two\nlines' fail");
+        assert!(split.ends_with("two; lines"), "{split}");
+        // A tab in a waited text is a blank, as in the screen's.
+        run(&mut s, "%1 opts str 'ready\tnow' wait-text drop drop")?;
         Ok(())
     }
 

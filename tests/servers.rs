@@ -440,6 +440,21 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     );
     let (made, _) = server.newest_pane()?;
     server.ok(&["str", &made, "pane", "str", "built", "await"])?;
+    // A workspace `run` made: its dump takes the workspace from the answer
+    // `run` leaves.
+    server.ok(&[
+        "opts", "str", "jobs", "in", "str", "job", "name", "str", "sleep 60", "command", "0",
+        "timeout", "run",
+    ])?;
+    let dump = server.ok(&["str", "jobs", "workspace", "dump-of"])?;
+    server.ok(&["str", "jobs", "workspace", "kill"])?;
+    std::fs::write(&file, &dump).map_err(e)?;
+    server.ok(&[&file.to_string_lossy()])?;
+    let ls = server.ok(&["ls"])?;
+    assert!(
+        ls.contains(" jobs\n") && ls.contains(" job\n"),
+        "{ls}\nfrom\n{dump}"
+    );
     Ok(())
 }
 

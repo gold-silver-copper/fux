@@ -230,8 +230,28 @@ pub struct Failed {
 }
 
 impl std::fmt::Display for Failed {
+    /// One line, as `fux: CODE: MESSAGE` is read: a message of several (a
+    /// program's last lines, a path holding a newline) joined with `; `,
+    /// any other control character escaped.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.code, self.message)
+        let lines = self
+            .message
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty());
+        let mut message = String::new();
+        for (i, line) in lines.enumerate() {
+            if i > 0 {
+                message.push_str("; ");
+            }
+            for c in line.chars() {
+                match c.is_control() {
+                    true => message.extend(c.escape_default()),
+                    false => message.push(c),
+                }
+            }
+        }
+        write!(f, "{}: {message}", self.code)
     }
 }
 
@@ -605,6 +625,12 @@ pub fn run_capped(
                 if met(&reply) && reply.status != 0 {
                     status = reply.status;
                 }
+                // A failure that answered too (`run`'s pane): its answer is
+                // left, printed before why it failed.
+                let answer = !reply.message.trim().is_empty() && !reply.text.trim().is_empty();
+                if reply.status != 0 && answer {
+                    machine.push(Value::str(reply.text.trim_end()))?;
+                }
                 for value in answered(reply, then, query).map_err(|f| placed(machine, f))? {
                     machine.push(value)?;
                 }
@@ -680,15 +706,21 @@ fn met(reply: &Reply) -> bool {
     reply.message.is_empty() && reply.code.is_none()
 }
 
+/// The pane an answer is of: its first word, which its state or the line
+/// found follows (`%2 reading`; `%2`, then a line).
+fn pane_of(text: &str) -> Option<PaneId> {
+    text.split([' ', '\n']).next()?.parse().ok()
+}
+
 /// What a reply puts on the stack, `then` saying what it is; a failure,
-/// with its status, if it failed.
+/// with its status, if it failed: why, else what it answered.
 pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fux>>, Failed> {
     if reply.status != 0 && !met(&reply) {
         let message = match (reply.message.trim_end(), reply.text.trim_end()) {
-            ("", text) => text.to_owned(),
-            (message, "") => message.to_owned(),
-            (message, text) => format!("{text}\n{message}"),
-        };
+            ("", text) => text,
+            (message, _) => message,
+        }
+        .to_owned();
         let code = reply.code.unwrap_or_else(|| {
             match reply.status {
                 3 => "exited",
@@ -706,27 +738,23 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
         });
     }
     let text = reply.text.trim_end_matches('\n').to_owned();
+    let json = Some(reply.json.trim_end().to_owned()).filter(|j| !j.is_empty());
+    // An action's answer is its pane's, when it is of one pane alone (a
+    // wait on a tab's panes answers each, a line of JSON for each).
+    let pane = pane_of(&text).filter(|_| json.as_deref().is_none_or(|j| !j.contains('\n')));
+    let action = |text: String, json: Option<String>| {
+        Value::App(Fux::Answer(Box::new(Answer {
+            text,
+            json,
+            query: None,
+            pane,
+        })))
+    };
     Ok(match then {
         Then::Nothing => Vec::new(),
         Then::Handle(kind) => match reply.ids.iter().rev().find(|id| id.kind() == kind) {
             // A pane an action settled: its answer, which is its pane too.
-            Some(crate::command::AnyRef::Pane(p)) if text.starts_with(&format!("{p} ")) => {
-                vec![Value::App(Fux::Answer(Box::new(Answer {
-                    text,
-                    json: Some(reply.json.trim_end().to_owned()).filter(|j| !j.is_empty()),
-                    query: None,
-                    pane: Some(*p),
-                })))]
-            }
-            // One a text was waited for in: its pane, then the line.
-            Some(crate::command::AnyRef::Pane(p)) if text.starts_with(&format!("{p}\n")) => {
-                vec![Value::App(Fux::Answer(Box::new(Answer {
-                    text,
-                    json: Some(reply.json.trim_end().to_owned()).filter(|j| !j.is_empty()),
-                    query: None,
-                    pane: Some(*p),
-                })))]
-            }
+            Some(crate::command::AnyRef::Pane(p)) if pane == Some(*p) => vec![action(text, json)],
             Some(id) => vec![Value::App(handle(*id))],
             None => {
                 return Err(Failed {
@@ -757,12 +785,7 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
             }))),
         }],
         Then::Outcome { waited: false } => Vec::new(),
-        Then::Outcome { waited: true } => vec![Value::App(Fux::Answer(Box::new(Answer {
-            text,
-            json: Some(reply.json.trim_end().to_owned()).filter(|j| !j.is_empty()),
-            query: None,
-            pane: None,
-        })))],
+        Then::Outcome { waited: true } => vec![action(text, json)],
     })
 }
 
@@ -1123,8 +1146,13 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         out: &mut out,
         settle: true,
     };
-    let ended = run(&mut machine, &mut host, &mut Cli::default())?;
-    for value in &ended.stack {
+    let ran = run(&mut machine, &mut host, &mut Cli::default());
+    // What the words before a failure left is printed too: their answers.
+    let stack = match &ran {
+        Ok(ended) => ended.stack.as_slice(),
+        Err(_) => machine.stack(),
+    };
+    for value in stack {
         // An answer with nothing to say (a wait for quiet, an empty
         // listing) prints no blank line.
         if matches!(value, Value::App(Fux::Answer(a)) if a.text.is_empty()) {
@@ -1133,13 +1161,14 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         let _ = writeln!(host.out, "{}", display(value));
     }
     let _ = host.out.flush();
+    let status = ran?.status;
     match out.failed {
         Some(error) => Err(Failed {
             status: 1,
             code: "output".to_owned(),
             message: format!("writing the output: {error}"),
         }),
-        None => Ok(ended.status),
+        None => Ok(status),
     }
 }
 

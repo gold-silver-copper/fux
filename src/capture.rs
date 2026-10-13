@@ -29,13 +29,15 @@ pub fn pane(
     // A soft-wrapped row goes on in the next, joined with `-J`.
     let mut wraps = false;
     let read = rows_of(screen, history, view);
-    // History rows above the screen, which the cursor's row counts past
-    // in `lines` (`-S`).
-    let above = if view.last_output || view.main || view.alt || view.join {
-        0
-    } else {
-        read.len().saturating_sub(usize::from(screen.size().rows()))
-    };
+    // The cursor's row and column, if it shows on the screen captured.
+    let alt = screen.mode(Mode::AlternateScreen);
+    let live = if view.main { !alt } else { !view.alt || alt };
+    let (cursor_row, cursor_col) = screen.cursor_position();
+    let cursor_id = (live && screen.mode(Mode::ShowCursor))
+        .then(|| screen.window().row(cursor_row).map(|row| row.id()))
+        .flatten();
+    // Where it is among the lines captured, found as they are made.
+    let mut cursor = None;
     // Whether the row before ended in a blank no glyph was written to: the
     // cell a wide glyph left, not fitting at the row's end.
     let mut padded = false;
@@ -84,6 +86,24 @@ pub fn pane(
             }
             None => cells.collect(),
         };
+        // The cursor's cell among these, if it is on this row and in its
+        // columns taken.
+        let at = (Some(row.id()) == cursor_id)
+            .then(|| {
+                let col = usize::from(cursor_col);
+                let col = col
+                    .checked_sub(span.start)
+                    .filter(|_| span.contains(&col))?;
+                match view.cols {
+                    Some((start, end)) if col <= usize::from(end) => {
+                        col.checked_sub(usize::from(start))
+                    }
+                    Some(_) => None,
+                    None => Some(col),
+                }
+            })
+            .flatten();
+        let count = lines.len();
         match lines.last_mut() {
             Some(last) if wraps => {
                 // The blank a wide glyph left at the row's end, not fitting
@@ -91,27 +111,25 @@ pub fn pane(
                 if padded && cells.get(1).is_some_and(|(text, _)| text.is_empty()) {
                     last.pop();
                 }
+                if let Some(col) = at {
+                    cursor = Some((count.saturating_sub(1), last.len().saturating_add(col)));
+                }
                 last.extend(cells);
             }
-            _ => lines.push(cells),
+            _ => {
+                if let Some(col) = at {
+                    cursor = Some((count, col));
+                }
+                lines.push(cells);
+            }
         }
         wraps = view.join && row.wrapped();
         padded = (row.cells().last())
             .is_some_and(|c| c.contents().is_empty() && !c.is_wide_continuation());
     }
     let (rows, cols) = screen.size().into();
-    // The cursor's row in `lines`: past the history `-S` adds, from the
-    // first row `--rows` takes; none if outside them.
-    let cursor = Some(screen.cursor_position()).and_then(|(row, col)| {
-        let above = u16::try_from(above).unwrap_or(u16::MAX);
-        let row = row.saturating_add(above);
-        match view.rows {
-            Some((start, end)) => (start..=end)
-                .contains(&row)
-                .then(|| (row.saturating_sub(start), col)),
-            None => Some((row, col)),
-        }
-    });
+    let cursor =
+        cursor.and_then(|(row, col)| Some((u16::try_from(row).ok()?, u16::try_from(col).ok()?)));
     let state = json.then(|| state(pane, Instant::now(), copy_mode));
     print(
         ("pane", pane.id.to_string()),
@@ -403,7 +421,12 @@ fn print(
             lines.pop();
         }
     }
-    let text = |line: &Cells<'_>| line.iter().map(|(text, _)| *text).collect::<String>();
+    // On a row trimmed away, the cursor is on none printed.
+    let cursor = cursor.filter(|(row, _)| usize::from(*row) < lines.len());
+    let text = |line: &Cells<'_>| match view.marks {
+        true => marked(line, &highlighted),
+        false => line.iter().map(|(text, _)| *text).collect::<String>(),
+    };
     let mut out = match state {
         Some(state) => {
             let number = |n: u16| Json::Number(i64::from(n));
@@ -429,10 +452,6 @@ fn print(
             let styled: Vec<String> = lines.iter().map(sgr_line).collect();
             styled.join("\n")
         }
-        None if view.marks => (lines.iter())
-            .map(|line| marked(line, &highlighted))
-            .collect::<Vec<_>>()
-            .join("\n"),
         None => lines.iter().map(text).collect::<Vec<_>>().join("\n"),
     };
     out.push('\n');

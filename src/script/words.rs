@@ -273,8 +273,8 @@ fn text(word: &str, value: &Value<Fux>) -> Result<String, Failure> {
     }
 }
 
-/// A value as JSON: a list as an array of its values', anything of
-/// fux's as its text.
+/// A value as JSON: a list as an array of its values', an answer as its
+/// JSON, as alone (an action's object), anything else of fux's as its text.
 fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
     use crate::json::Json;
     match value {
@@ -283,6 +283,10 @@ fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
         Value::Str(s) => Json::str(s.to_string()),
         // As deep as lists nest, at most fuxth's limit.
         Value::List(list) => Json::Array(list.items.iter().map(json_of).collect()),
+        Value::App(Fux::Answer(answer)) => match &answer.json {
+            Some(json) => Json::Raw(json.clone().into()),
+            None => Json::str(answer.text.clone()),
+        },
         Value::App(_) => Json::str(super::display(value)),
     }
 }
@@ -296,10 +300,36 @@ fn int(word: &str, value: &Value<Fux>) -> Result<i64, Failure> {
     }
 }
 
+/// A value outside what `word` takes: what it takes, and how it is used.
+fn out_of_range(word: &str, message: impl std::fmt::Display) -> Failure {
+    let usage = usage(word).map_or_else(String::new, |u| format!(" ({u})"));
+    fail("range", format!("{message}{usage}"))
+}
+
+/// What a count or a cell can be: from 0 to the most it holds.
+trait Count: TryFrom<i64> {
+    const MOST: i64;
+}
+
+impl Count for u16 {
+    const MOST: i64 = u16::MAX as i64;
+}
+
+impl Count for u64 {
+    const MOST: i64 = i64::MAX;
+}
+
+impl Count for usize {
+    const MOST: i64 = i64::MAX;
+}
+
 /// A count or a cell: an integer from 0 that fits.
-fn count<T: TryFrom<i64>>(word: &str, value: &Value<Fux>) -> Result<T, Failure> {
+fn count<T: Count>(word: &str, value: &Value<Fux>) -> Result<T, Failure> {
     let n = int(word, value)?;
-    T::try_from(n).map_err(|_| fail("range", format!("{n} is out of range")))
+    T::try_from(n).map_err(|_| match T::MOST {
+        i64::MAX => out_of_range(word, format!("{n} is out of range: from 0")),
+        most => out_of_range(word, format!("{n} is out of range: 0 to {most}")),
+    })
 }
 
 fn pane(word: &str, value: &Value<Fux>) -> Result<crate::id::PaneId, Failure> {
@@ -574,7 +604,14 @@ impl fuxth::Host for Host<'_> {
                     "tab" => Kind::Tab,
                     _ => Kind::Workspace,
                 };
-                match next()? {
+                // An action's answer is its pane.
+                let mut found = next()?;
+                if let Value::App(Fux::Answer(answer)) = &found
+                    && let Some(p) = answer.pane
+                {
+                    found = Value::App(Fux::Pane(p));
+                }
+                match found {
                     // An empty name names nothing: never the caller's own,
                     // which `here` is, so that an empty variable closes
                     // nothing.
@@ -684,7 +721,9 @@ impl fuxth::Host for Host<'_> {
                 let size = (cols > 0 && rows > 0 && cols <= 500 && rows <= 500)
                     .then(|| fux_vt::Size::new(rows, cols).ok())
                     .flatten()
-                    .ok_or_else(|| fail("range", format!("size {cols} {rows}: each 1 to 500")))?;
+                    .ok_or_else(|| {
+                        out_of_range(name, format!("size {cols} {rows}: each 1 to 500"))
+                    })?;
                 opts(name, &mut o)?.size = Some(size);
                 now(out, o)
             }
@@ -736,6 +775,12 @@ impl fuxth::Host for Host<'_> {
             "rows" | "cols" => {
                 let mut o = next()?;
                 let (from, to) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
+                if from > to {
+                    return Err(out_of_range(
+                        name,
+                        format!("{from} {to}: the first {name} before the last"),
+                    ));
+                }
                 let view = &mut opts(name, &mut o)?.view;
                 match name {
                     "rows" => view.rows = Some((from, to)),
@@ -838,10 +883,11 @@ impl fuxth::Host for Host<'_> {
                 let x = next()?;
                 let t = string(name, &next()?)?;
                 let bare = t.trim_start_matches('^').trim_end_matches('$').trim();
-                if bare.is_empty() || t.contains(['\n', '\t']) {
+                // A tab is a blank, as a wait compares: blanks as one.
+                if bare.is_empty() || t.contains(['\n', '\r']) {
                     return Err(fail(
                         "bad_value",
-                        "a text of one line, not empty (^ and $ alone hold nothing), with no tab",
+                        "a text of one line, not empty (^ and $ alone hold nothing)",
                     ));
                 }
                 now(
@@ -926,10 +972,13 @@ impl fuxth::Host for Host<'_> {
                     }
                     // The input just before it, n times in all.
                     _ => {
-                        let n: usize = count(name, &v)
+                        let n = int(name, &v)?;
+                        let n = usize::try_from(n)
                             .ok()
-                            .filter(|n| *n > 0 && *n <= 1000)
-                            .ok_or_else(|| fail("range", "a count from 1 to 1000"))?;
+                            .filter(|n| (1..=1000).contains(n))
+                            .ok_or_else(|| {
+                                out_of_range(name, format!("{n}: a count from 1 to 1000"))
+                            })?;
                         let Some(last) = built.inputs.last().cloned() else {
                             return Err(fail(
                                 "no_keys",
@@ -1219,7 +1268,7 @@ impl fuxth::Host for Host<'_> {
                 let size = fux_vt::Size::new(rows, cols)
                     .ok()
                     .filter(|_| cols <= 500 && rows <= 500)
-                    .ok_or_else(|| fail("range", "columns and rows each 1 to 500"))?;
+                    .ok_or_else(|| out_of_range(name, "columns and rows each 1 to 500"))?;
                 later(ask(
                     Command::Resize {
                         what: Resized::Tabs(t),
@@ -1243,7 +1292,7 @@ impl fuxth::Host for Host<'_> {
                 let (cols, rows) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
                 let size = fux_vt::Size::new(rows, cols)
                     .ok()
-                    .ok_or_else(|| fail("range", "columns and rows each from 1"))?;
+                    .ok_or_else(|| out_of_range(name, "columns and rows each from 1"))?;
                 later(ask(
                     Command::Resize {
                         what: Resized::Client(c),
@@ -1282,7 +1331,10 @@ impl fuxth::Host for Host<'_> {
             "percent" => {
                 let n = int(name, &next()?)?;
                 let Some(n) = u8::try_from(n).ok().filter(|n| (1..=100).contains(n)) else {
-                    return Err(fail("range", format!("percent takes 1 to 100, not {n}")));
+                    return Err(out_of_range(
+                        name,
+                        format!("percent takes 1 to 100, not {n}"),
+                    ));
                 };
                 now(out, Value::App(Fux::Extent(Extent::Percent(n))))
             }
@@ -1432,7 +1484,7 @@ impl fuxth::Host for Host<'_> {
             "headless" => {
                 let (cols, rows) = (count::<u16>(name, &next()?)?, count::<u16>(name, &next()?)?);
                 if cols == 0 || rows == 0 {
-                    return Err(fail("range", "a size of at least 1 by 1"));
+                    return Err(out_of_range(name, "a size of at least 1 by 1"));
                 }
                 later(Ask::Local(Local::Headless { cols, rows }))
             }
@@ -1640,16 +1692,11 @@ impl fuxth::Host for Host<'_> {
             }
             "check" => {
                 let path = string(name, &next()?)?;
-                let text = bounded(&path, 16 << 20)
-                    .ok()
-                    .filter(|t| t.len() <= 16 << 20)
-                    .and_then(|t| String::from_utf8(t).ok())
-                    .ok_or_else(|| {
-                        fail(
-                            "read",
-                            format!("{path}: not a fuxth file of at most 16 MiB"),
-                        )
-                    })?;
+                // Read as running it reads it, and refused alike.
+                let text = std::fs::File::open(&path)
+                    .map_err(|e| super::read_failed(&path, &e.to_string()))
+                    .and_then(|file| super::source(&path, file))
+                    .map_err(|f| fail("read", f.message))?;
                 let tokens =
                     fuxth::token::source(&path, &text).map_err(|e| fail("check", e.to_string()))?;
                 super::compile(&tokens).map_err(|e| fail("check", e.to_string()))?;

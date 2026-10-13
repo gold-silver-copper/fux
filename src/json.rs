@@ -12,6 +12,8 @@ pub enum Json<'a> {
     String(Cow<'a, str>),
     Array(Vec<Json<'a>>),
     Object(Vec<(&'static str, Json<'a>)>),
+    /// JSON written already (an answer's), as it is.
+    Raw(Cow<'a, str>),
 }
 
 impl<'a> Json<'a> {
@@ -33,6 +35,7 @@ impl<'a> Json<'a> {
                 let _ = write!(out, "{n}");
             }
             Json::String(s) => write_str(out, s),
+            Json::Raw(json) => out.push_str(json),
             Json::Array(items) => {
                 out.push('[');
                 for (i, item) in items.iter().enumerate() {
