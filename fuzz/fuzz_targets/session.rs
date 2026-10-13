@@ -276,6 +276,7 @@ impl Run {
             keymap: Some(&mut keymap),
             last_bound: None,
             out: &mut out,
+            settle: false,
         };
         let ended = loop {
             let ran = machine.run(&mut host, BUDGET).map_err(Failed::from);
