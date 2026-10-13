@@ -7,12 +7,11 @@
 //! mode's `[` and `]`).
 //!
 //! Each shell is given a startup file fux writes beside its socket, which
-//! reads the user's own first: bash's `--rcfile` sources `~/.bashrc`, zsh's
+//! reads the user's own first: bash's `--rcfile` sources `~/.bashrc` (a
+//! login bash's, the profile files; with `--norc`, nothing), zsh's
 //! `ZDOTDIR` shim puts the user's back and sources their `.zshenv`, fish's
-//! `--init-command` only adds two event handlers; bash with `--norc`, or a
-//! login bash, reads no file of fux's, so takes them from `PS0` and
-//! `PROMPT_COMMAND`. A shell started with a script or a command is left as
-//! it is, as is any other program.
+//! `--init-command` only adds two event handlers. A shell started with a
+//! script or a command is left as it is, as is any other program.
 use std::path::{Path, PathBuf};
 
 /// bash: the user's own startup, then the marks, set by `__fux_marks`, a
@@ -36,10 +35,12 @@ use std::path::{Path, PathBuf};
 ///   then print before that end.
 /// - bash 4.4 and later print `PS0` as a command's output begins. Older
 ///   ones (macOS's 3.2) mark it from a DEBUG trap, set after the function
-///   (there a function's own is dropped as it returns), in place of the
-///   user's, and armed last thing before the prompt, so it fires once, for
-///   the command typed; and there `HISTCMD` reads 1 in `PROMPT_COMMAND`, so
-///   `history 1` tells the history number.
+///   (there a function's own is dropped as it returns), and armed last
+///   thing before the prompt, so it fires once, for the command typed; and
+///   there `HISTCMD` reads 1 in `PROMPT_COMMAND`, so `history 1` tells the
+///   history number. The user's own DEBUG trap runs on in it, after the
+///   mark, with its `$?`; it sees the command that sets the trap too, as
+///   nothing a function sets outlasts its call there.
 ///
 /// A variable the user made readonly is left as it is, unmarked (told from
 /// `declare -p`: an assignment tried in a subshell leaves bash 3.2's
@@ -63,11 +64,12 @@ unset __fux_f
 const END: &str = r#"{ ([ "$__fux_m" = 1 ] && printf "\033]133;C\007" >&2; printf "\033]133;D;%s\007\033]133;A\007" "$__fux_s" >&2; exit "$__fux_s") && (:); } 2>&$((__fux_s = $?, __fux_n = {H}, __fux_m = ${__fux_w-0} && __fux_n != ${__fux_h-0}, __fux_w = 1, __fux_h = __fux_n, 2))"#;
 const HISTORY_NEW: &str = "${HISTCMD-0}";
 const HISTORY_OLD: &str = r#"$(__fux_n=$(history 1); __fux_n=${__fux_n#"${__fux_n%%[0-9]*}"}; echo "${__fux_n%%[!0-9]*}") + 1"#;
-/// Before bash 4.4: the trap that marks a command's start (a `case`, as a
-/// command there would change `PIPESTATUS`), and its arming, last in
+/// Before bash 4.4: the DEBUG trap, as a `printf` format of the user's own
+/// trap twice (`trap -p` in a command substitution still shows it): once
+/// armed, the start mark (a `case`, as a command there would change
+/// `PIPESTATUS`) and `$?` put back, then theirs. Its arming, last in
 /// `PROMPT_COMMAND` and in `PS1`.
-const START: &str =
-    r#"case ${__fux_a-} in 1) __fux_a=0; __fux_w=0; printf "\033]133;C\007" >&2 ;; esac"#;
+const START: &str = r#"case ${__fux_a-}${__fux_z[__fux_q = $?]-} in 1) __fux_a=0; __fux_w=0; printf "\\033]133;C\\007" >&2; (exit $__fux_q)\n%s\n;; *) %s\n;; esac"#;
 const ARM: &str = "{ (:); } 2>&$((__fux_a = 1, 2))";
 /// What `PS1` starts with: a command's end, should `END` not have run, and
 /// the trap's arming.
@@ -109,20 +111,10 @@ __fux_marks() {{
   unset -f __fux_free
 }}
 {startup}__fux_marks
-([ "${{BASH_VERSINFO[0]}}${{BASH_VERSINFO[1]}}" -ge 44 ]) || trap '{START}' DEBUG
+([ "${{BASH_VERSINFO[0]}}${{BASH_VERSINFO[1]}}" -ge 44 ]) || trap -- "$(eval "set -- $(trap -p DEBUG)"; printf '{START}' "${{3-}}" "${{3-}}")" DEBUG
 "#,
     )
 }
-
-/// bash that reads no file of fux's (`--norc`), from its variables.
-/// PROMPT_COMMAND never comes from the environment: bash 5.3 empties
-/// `PIPESTATUS` for good once it imports one. The first prompt's `PS1`
-/// sets it from `__fux_pc` (an expansion that prints nothing), and starts
-/// the marks' state (`END`); its first run, once the first command
-/// ends, sets the PROMPT_COMMAND that stays (`__fux_pn`, or before bash
-/// 4.4 `__fux_po` and the trap), puts the caller's `PS1` back, forgets
-/// fux's variables, and runs it.
-const BARE_FIRST: &str = r#"__fux_s=$?; if [ "${BASH_VERSINFO[0]}${BASH_VERSINFO[1]}" -ge 44 ]; then PROMPT_COMMAND=$__fux_pn; else PROMPT_COMMAND=$__fux_po; trap '{START}' DEBUG; fi; if [ -n "${__fux_ps1+x}" ]; then PS1='{PS1_END}'$__fux_ps1; else PS1='{PS1_END}\s-\v\$ '; export -n PS1; fi; unset __fux_pc __fux_pn __fux_po __fux_ps1; export -n PS0 PROMPT_COMMAND; (exit "$__fux_s") && :; eval "$PROMPT_COMMAND""#;
 
 /// zsh: read first of all startup files, from the shim `ZDOTDIR`; it puts
 /// the user's `ZDOTDIR` back, so the rest of their files are read from
@@ -143,13 +135,11 @@ const FISH: &str = "function __fux_preexec --on-event fish_preexec; printf '\\e]
      function __fux_postexec --on-event fish_postexec; printf '\\e]133;D;%s\\a\\e]133;A\\a' $status >&2; end";
 
 /// How a shell is started so that it marks its commands: its words, and
-/// variables to add and remove.
+/// variables to add.
 #[derive(Debug, Default)]
 pub struct Marked {
     pub argv: Vec<String>,
     pub env: Vec<(String, String)>,
-    /// Variables the shell must not be given, whoever set them.
-    pub unset: Vec<String>,
 }
 
 /// `argv` and the variables to start it with so that it marks its commands,
@@ -169,63 +159,25 @@ pub fn marked(argv: &[String], env: &[(String, String)], dir: &Path) -> Option<M
             .map(|(_, v)| v.clone())
     };
     match name {
-        // Without fux's startup file (`--norc`, or a login shell) bash
-        // takes the marks from its variables, around the caller's own.
-        "bash"
-            if flags_only(&["-i", "--norc", "--noprofile"])
-                && args.iter().any(|a| a == "--norc") =>
-        {
-            let (new, old) = ends();
-            let (new, old) = match theirs("PROMPT_COMMAND") {
-                Some(own) => (format!("{new}\n{own}"), format!("{old}\n{own}\n{ARM}")),
-                None => (new, format!("{old}\n{ARM}")),
+        // fux's rc file reads what bash would: a login shell, which takes
+        // no rc file, the profile files (unless --noprofile), another
+        // `~/.bashrc` (unless --norc).
+        "bash" if flags_only(&["-i", "--norc", "--noprofile", "-l", "--login"]) => {
+            let has = |flag: &str| args.iter().any(|a| a == flag);
+            let login = has("-l") || has("--login");
+            let (name, startup) = if login && !has("--noprofile") {
+                ("bash_login", BASH_LOGIN)
+            } else if !login && !has("--norc") {
+                ("bashrc", BASHRC)
+            } else {
+                ("bash_bare", "")
             };
-            let first_run = BARE_FIRST
-                .replace("{START}", START)
-                .replace("{PS1_END}", PS1_END);
-            let start = format!("{}{PS0_START}", theirs("PS0").unwrap_or_default());
-            // The first prompt sets PROMPT_COMMAND from `__fux_pc`, as the
-            // pattern removed from `__fux_pc` itself: all of it, so it shows
-            // nothing; and starts the marks' state.
-            let first = format!(
-                "${{__fux_pc#\"${{PROMPT_COMMAND:=$__fux_pc}}\"}}\
-                 ${{__fux_z[__fux_w = 1, __fux_h = ${{HISTCMD-0}}]-}}{}",
-                theirs("PS1").unwrap_or_else(|| "\\s-\\v\\$ ".to_owned())
-            );
-            let mut env = vec![
-                ("__fux_pc".to_owned(), first_run),
-                ("__fux_pn".to_owned(), new),
-                ("__fux_po".to_owned(), old),
-                ("PS1".to_owned(), first),
-                ("PS0".to_owned(), start),
-            ];
-            if let Some(own) = theirs("PS1") {
-                env.push(("__fux_ps1".to_owned(), own));
-            }
-            Some(Marked {
-                argv: argv.to_vec(),
-                env,
-                unset: vec!["PROMPT_COMMAND".to_owned()],
-            })
-        }
-        // A login shell reads the profile files instead, here from fux's
-        // rc file, a login shell taking none.
-        "bash" if flags_only(&["-i", "--noprofile", "-l", "--login"]) => {
-            let login = args.iter().any(|a| a == "-l" || a == "--login");
-            let noprofile = args.iter().any(|a| a == "--noprofile");
-            // A login shell reads the profile files, unless --noprofile.
-            let (name, startup) = match (login, noprofile) {
-                (true, true) => ("bash_bare", ""),
-                (true, false) => ("bash_login", BASH_LOGIN),
-                (false, _) => ("bashrc", BASHRC),
-            };
-
             let rc = write(dir, name, &bash_rc(startup))?;
             let mut argv = vec![program.clone(), "--rcfile".into()];
             argv.push(rc.to_string_lossy().into_owned());
             argv.extend(
-                args.iter()
-                    .filter(|a| *a != "-l" && *a != "--login")
+                (args.iter())
+                    .filter(|a| !["-l", "--login", "--norc"].contains(&a.as_str()))
                     .cloned(),
             );
             Some(Marked {
@@ -314,15 +266,12 @@ mod tests {
         }
         let argv = marked(&words("bash"), &[], &dir).unwrap_or_default().argv;
         assert_eq!(argv.get(1).map(String::as_str), Some("--rcfile"));
-        // The caller's own PROMPT_COMMAND goes along: bare bash keeps it.
-        let own = [("PROMPT_COMMAND".to_owned(), "mine".to_owned())];
-        let bare = marked(&words("bash --norc"), &own, &dir)
+        // bash --norc reads an rc file of fux's alone.
+        let bare = marked(&words("bash --norc -i"), &[], &dir)
             .unwrap_or_default()
-            .env;
-        assert!(
-            bare.iter()
-                .any(|(k, v)| k == "__fux_pn" && v.ends_with("\nmine"))
-        );
+            .argv;
+        assert!(bare.get(2).is_some_and(|rc| rc.ends_with("bash_bare")));
+        assert_eq!(bare.get(3..), Some(&["-i".to_owned()][..]));
         let zdot = [("ZDOTDIR".to_owned(), "/home/me/.config/zsh".to_owned())];
         let vars = marked(&words("zsh"), &zdot, &dir).unwrap_or_default().env;
         assert!(vars.contains(&("FUX_ZDOTDIR".to_owned(), "/home/me/.config/zsh".to_owned())));

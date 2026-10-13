@@ -1238,9 +1238,9 @@ fn screens_and_shells_hold_up_under_stress() -> Outcome {
     Ok(())
 }
 
-/// A bash that reads no file of fux's (`--norc`) keeps `PIPESTATUS`, which
-/// bash 5.3 empties for good once it imports a PROMPT_COMMAND, and shows its
-/// own prompt with nothing of fux's left in its variables.
+/// A bash that reads no file of its own (`--norc`) keeps `PIPESTATUS`, marks
+/// its first command too, and shows its own prompt with no function of
+/// fux's left.
 #[test]
 fn a_bare_bash_keeps_its_pipestatus_and_prompt() -> Outcome {
     let server = Server::start("")?;
@@ -1250,7 +1250,7 @@ fn a_bare_bash_keeps_its_pipestatus_and_prompt() -> Outcome {
     ))?;
     line(&server, "n", "false | true; echo \"<${PIPESTATUS[*]}>\"")?;
     assert_eq!(last_output(&server, "n")?, "<1 0>\n");
-    line(&server, "n", "echo \"[${__fux_pc-}${__fux_ps1-}]\"")?;
+    line(&server, "n", "echo \"[$(declare -F | grep fux)]\"")?;
     assert_eq!(last_output(&server, "n")?, "[]\n");
     let screen = server.ok(&["str", "n", "pane", "opts", "capture"])?;
     assert!(
@@ -1258,6 +1258,19 @@ fn a_bare_bash_keeps_its_pipestatus_and_prompt() -> Outcome {
         "{screen}"
     );
     Ok(())
+}
+
+/// Whether the `bash` panes run is older than 4.4 (macOS's 3.2).
+fn old_bash() -> Result<bool, String> {
+    let version = std::process::Command::new("bash")
+        .args(["-c", "echo $((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1]))"])
+        .output()
+        .map_err(e)?;
+    let version: u32 = String::from_utf8_lossy(&version.stdout)
+        .trim()
+        .parse()
+        .map_err(e)?;
+    Ok(version < 404)
 }
 
 /// The marks set off none of the user's traps: a DEBUG trap sees one
@@ -1278,7 +1291,8 @@ fn bash_marks_leave_the_users_traps_and_hooks_alone() -> Outcome {
         &["bash"],
     ))?;
     // Of fux's startup the DEBUG trap sees one command: the call that sets
-    // the marks.
+    // the marks; before bash 4.4 (macOS's 3.2) also the line after it that
+    // sets fux's trap, as nothing a function sets outlasts its call there.
     let first = server.ok(&["str", "t", "pane", "opts", "capture"])?;
     let fuxs = [
         "fux",
@@ -1291,7 +1305,13 @@ fn bash_marks_leave_the_users_traps_and_hooks_alone() -> Outcome {
     let seen: Vec<&str> = (first.lines())
         .filter(|l| l.starts_with("DBG") && fuxs.iter().any(|f| l.contains(f)))
         .collect();
-    assert_eq!(seen, ["DBG __fux_marks"], "{first}");
+    let (call, trap) = seen.split_first().ok_or(first.clone())?;
+    assert_eq!(*call, "DBG __fux_marks", "{first}");
+    assert_eq!(trap.len(), usize::from(old_bash()?), "{first}");
+    assert!(
+        trap.iter().all(|l| l.starts_with("DBG trap -- ")),
+        "{first}"
+    );
     line(&server, "t", "echo hi")?;
     assert_eq!(last_output(&server, "t")?, "DBG echo hi\nhi\n");
     assert_eq!(done(&line(&server, "t", "false")?), Some("done 1"));
@@ -1300,7 +1320,9 @@ fn bash_marks_leave_the_users_traps_and_hooks_alone() -> Outcome {
     line(&server, "t", "PROMPT_COMMAND=:")?;
     assert_eq!(done(&line(&server, "t", "(exit 3)")?), Some("done 3"));
     line(&server, "t", "unset PROMPT_COMMAND")?;
-    assert_eq!(done(&line(&server, "t", "(exit 5)")?), Some("done 5"));
+    // `true` first: with PS1's marks alone, bash before 4.4 starts a
+    // command from its trap, which a subshell alone does not set off.
+    assert_eq!(done(&line(&server, "t", "true; (exit 5)")?), Some("done 5"));
     // A readonly PS1 is left as it is, with no complaint, and the marks
     // come from PROMPT_COMMAND.
     let ro = server.dir.join("ro");

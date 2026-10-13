@@ -3933,12 +3933,10 @@ impl Launcher {
         let mut vars = self.vars(id, fresh.socket.as_deref()).to_vec();
         let given = (fresh.set.iter()).chain(env).chain(&marks.env);
         vars.extend(given.map(|(k, v)| (k.as_str(), v.clone())));
-        vars.retain(|(k, _)| !marks.unset.iter().any(|u| u == k));
-        let mut unset: Vec<String> = (fresh.unset.iter())
+        let unset: Vec<String> = (fresh.unset.iter())
             .filter(|name| !env.iter().any(|(k, _)| k == *name))
             .cloned()
             .collect();
-        unset.extend(marks.unset.iter().cloned());
         Ok(crate::process::spawn(
             &marks.argv,
             cwd,
