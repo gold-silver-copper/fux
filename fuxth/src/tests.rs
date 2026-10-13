@@ -549,16 +549,28 @@ fn the_core_at_its_edges() -> Result<(), Error> {
     let s = |text: &str| Value::<Ticket>::str(text);
     assert_eq!(code(run("str abc 3 at")), Some("range"));
     assert_eq!(code(run("list 1 end 1 at")), Some("range"));
-    assert_eq!(run("str héllo 1 at str héllo 1 4 slice str héllo len")?, [s("é"), s("éll"), Value::Int(5)]);
+    assert_eq!(
+        run("str héllo 1 at str héllo 1 4 slice str héllo len")?,
+        [s("é"), s("éll"), Value::Int(5)]
+    );
     assert_eq!(run("str naïve 2 str i put")?, [s("naive")]);
     assert_eq!(run("str abc 1 str XY put")?, [s("aXYc")]);
     assert_eq!(run("str é code 233 char")?, [Value::Int(233), s("é")]);
     let truth = |b: bool| Value::<Ticket>::Bool(b);
-    assert_eq!(run("list 1 2 end list 1 3 end lt list 1 2 end list 1 2 3 end lt")?, [truth(true), truth(true)]);
+    assert_eq!(
+        run("list 1 2 end list 1 3 end lt list 1 2 end list 1 2 3 end lt")?,
+        [truth(true), truth(true)]
+    );
     assert_eq!(code(run("list 1 end list str a end lt")), Some("type"));
     // Counts known only as it runs.
-    assert_eq!(run("1 2 3 4 0 pick drop 2 0 pick drop pick")?, ints(&[1, 2, 3, 4, 2]));
-    assert_eq!(run("1 2 3 4 0 pick drop 2 0 pick drop roll")?, ints(&[1, 3, 4, 2]));
+    assert_eq!(
+        run("1 2 3 4 0 pick drop 2 0 pick drop pick")?,
+        ints(&[1, 2, 3, 4, 2])
+    );
+    assert_eq!(
+        run("1 2 3 4 0 pick drop 2 0 pick drop roll")?,
+        ints(&[1, 3, 4, 2])
+    );
     assert_eq!(code(run("1 2 -1 0 pick drop pick")), Some("range"));
     assert_eq!(code(run("1 2 str x 0 pick drop pick")), Some("type"));
     Ok(())
@@ -585,8 +597,16 @@ fn what_is_built_is_bounded() {
 /// core's; a definition may not take a `let` name's.
 #[test]
 fn let_names_and_what_they_may_hide() -> Result<(), Error> {
-    assert_eq!(run("list 1 2 end let first first")?.len(), 1, "a library word hidden");
-    assert_eq!(run("5 let ticket ticket")?, ints(&[5]), "a host word hidden");
+    assert_eq!(
+        run("list 1 2 end let first first")?.len(),
+        1,
+        "a library word hidden"
+    );
+    assert_eq!(
+        run("5 let ticket ticket")?,
+        ints(&[5]),
+        "a host word hidden"
+    );
     assert_eq!(code(run("1 let drop")), Some("bad_name"));
     assert_eq!(code(run("1 let x define x 2 end")), Some("bad_name"));
     assert_eq!(code(run("define f 1 end 2 let f f")), None);
@@ -605,7 +625,11 @@ fn a_strings_elements_are_strings_to_the_checker() {
     let compiled = token::source("t", "str abc str b at")
         .and_then(|tokens| compiler.add(&tokens))
         .and_then(|()| compiler.finish().map(|_| ()));
-    assert_eq!(compiled.err().map(|e| e.code.name()), Some("type"), "an index is an integer");
+    assert_eq!(
+        compiled.err().map(|e| e.code.name()),
+        Some("type"),
+        "an index is an integer"
+    );
 }
 
 /// A library checked once serves every program compiled from a clone, and
@@ -613,19 +637,28 @@ fn a_strings_elements_are_strings_to_the_checker() {
 #[test]
 fn a_prepared_library_serves_every_clone() -> Result<(), Error> {
     let mut ready = Compiler::<Ticket>::new(vocabulary());
-    ready.add(&token::source("lib", "define twice 2 mul end define bad str a 1 add end")?)?;
+    ready.add(&token::source(
+        "lib",
+        "define twice 2 mul end define bad str a 1 add end",
+    )?)?;
     ready.prepare();
     for _ in 0..2 {
         let mut compiler = ready.clone();
         compiler.add(&token::source("t", "3 twice")?)?;
         let error = compiler.finish().err().map(|e| e.to_string());
-        assert_eq!(error.as_deref(), Some("type: lib:1: add: takes two integers, and the one under the top is a string"));
+        assert_eq!(
+            error.as_deref(),
+            Some("type: lib:1: add: takes two integers, and the one under the top is a string")
+        );
     }
     let mut open = Compiler::<Ticket>::new(vocabulary());
     open.add(&token::source("lib", "define half")?)?;
     open.prepare();
     open.add(&token::source("lib", "2 div end 8 half")?)?;
-    assert!(open.finish().is_ok(), "nothing is checked while a definition is open");
+    assert!(
+        open.finish().is_ok(),
+        "nothing is checked while a definition is open"
+    );
     Ok(())
 }
 
@@ -635,4 +668,33 @@ fn every_core_word_says_what_it_does() {
     for builtin in Builtin::ALL {
         assert!(builtin.about().len() > 8, "{}", builtin.name());
     }
+}
+
+/// push and put on lists, in place or copied, within the nesting limit;
+/// slice's bounds; a host value's kind and text.
+#[test]
+fn lists_change_and_host_values_show() -> Result<(), Error> {
+    let list = |items: Vec<Value<Ticket>>| {
+        crate::List::new(items).map(|l| Value::List(std::rc::Rc::new(l)))
+    };
+    assert_eq!(
+        run("list 1 end 2 push")?,
+        list(ints(&[1, 2])).into_iter().collect::<Vec<_>>()
+    );
+    let both: Vec<_> = list(ints(&[1, 2]))
+        .into_iter()
+        .chain(list(ints(&[9, 2])))
+        .collect();
+    assert_eq!(run("list 1 2 end dup 0 9 put")?, both);
+    assert_eq!(code(run("str abc 2 1 slice")), Some("range"));
+    assert_eq!(code(run("str abc 0 4 slice")), Some("range"));
+    let deep = "list end let l 0 begin list end l push let l 1 add dup 70 eq until";
+    assert_eq!(code(run(deep)), Some("too_long"), "push nests too");
+    let deep_put = "list 0 end let l 0 begin list 0 end 0 l put let l 1 add dup 70 eq until";
+    assert_eq!(code(run(deep_put)), Some("too_long"), "put nests too");
+    assert_eq!(
+        run("ticket kind ticket string")?,
+        [Value::str("ticket"), Value::str("a ticket")]
+    );
+    Ok(())
 }
