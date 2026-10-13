@@ -277,6 +277,42 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     Ok(())
 }
 
+/// A mistake is named by what the program wrote: a failure inside a
+/// bundled word by the step that called it; a mistake every run makes,
+/// before anything runs; a name that would always be a handle, refused.
+#[test]
+fn mistakes_name_what_the_program_wrote() -> Outcome {
+    let server = Server::start("")?;
+    let said = |args: &[&str]| -> Result<String, String> {
+        let ran = server.fux(args)?;
+        assert_eq!(ran.status, 1, "{args:?}: {}", ran.stdout);
+        Ok(ran.stderr)
+    };
+    let inside = said(&["1", "2", "type"])?;
+    assert!(
+        inside.starts_with("fux: type: argument 3: type: inside type, send-keys: "),
+        "{inside}"
+    );
+    assert!(inside.ends_with("(use: PANE TEXT type)\n"), "{inside}");
+    // Refused before `run` starts anything.
+    let before = said(&[
+        "opts", "str", "sh", "program", "run", "str", "a", "1", "add",
+    ])?;
+    assert!(
+        before.starts_with("fux: type: argument 9: add: "),
+        "{before}"
+    );
+    assert!(!server.ok(&["ls"])?.contains("agent"), "nothing ran");
+    let named = said(&["1", "constant", "+7"])?;
+    assert!(
+        named.contains("+7: cannot be defined: it names a workspace"),
+        "{named}"
+    );
+    let client = said(&["str", "c9", "client", "focused"])?;
+    assert!(client.contains("no client c9"), "{client}");
+    Ok(())
+}
+
 /// `fux -` runs stdin, and `fux FILE` a file: a word with a `/` or ending
 /// `.fux`.
 #[test]

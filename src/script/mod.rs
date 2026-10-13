@@ -213,7 +213,8 @@ impl From<fuxth::Error> for Failed {
         {
             error.message.push_str(&format!(" ({usage})"));
         }
-        let message = match (&error.place, &error.word) {
+        let word = error.word.as_deref().filter(|w| !w.is_empty());
+        let message = match (&error.place, word) {
             (Some(place), Some(word)) => format!("{place}: {word}: {}", error.message),
             (Some(place), None) => format!("{place}: {}", error.message),
             (None, Some(word)) => format!("{word}: {}", error.message),
@@ -241,16 +242,17 @@ pub fn compile(tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
     let mut compiler = Compiler::new(vocabulary());
     compiler.add(&fuxth::token::source("prelude.fux", fuxth::PRELUDE)?)?;
     compiler.add(&fuxth::token::source("library.fux", LIBRARY)?)?;
-    compiler.add(&handles(tokens))?;
+    compiler.add(&handles(tokens)?)?;
     Ok(Machine::new(compiler.finish()?, Limits::default()))
 }
 
 /// A bare id is the handle it names: `%3` is `str %3 pane`, `@2` is
 /// `str @2 tab`, `+1` is `str +1 workspace`; but not where it is the text
-/// `str` takes, nor the name `define` or `constant` gives.
-fn handles(tokens: &[Token]) -> Vec<Token> {
+/// `str` takes. Nor may `define` or `constant` give one as a name: it
+/// would always be the handle.
+fn handles(tokens: &[Token]) -> Result<Vec<Token>, Failed> {
     let mut out = Vec::with_capacity(tokens.len());
-    let mut quoted = false;
+    let mut after: Option<&str> = None;
     for token in tokens {
         let word = match token.text.chars().next() {
             Some('%') => "pane",
@@ -259,18 +261,33 @@ fn handles(tokens: &[Token]) -> Vec<Token> {
             Some(_) | None => "",
         };
         let id = token.text.len() > 1 && token.text.chars().skip(1).all(|c| c.is_ascii_digit());
-        if !quoted && id && !word.is_empty() {
-            let at = |text: &str| Token {
-                text: text.into(),
-                place: token.place.clone(),
-            };
-            out.extend([at("str"), token.clone(), at(word)]);
-        } else {
-            out.push(token.clone());
+        let handle = id && !word.is_empty();
+        match after {
+            Some("define" | "constant") if handle => {
+                return Err(Failed {
+                    status: 1,
+                    code: "bad_name".to_owned(),
+                    message: format!(
+                        "{}: {}: cannot be defined: it names a {word}",
+                        token.place, token.text
+                    ),
+                });
+            }
+            None if handle => {
+                let at = |text: &str| Token {
+                    text: text.into(),
+                    place: token.place.clone(),
+                };
+                out.extend([at("str"), token.clone(), at(word)]);
+            }
+            Some(_) | None => out.push(token.clone()),
         }
-        quoted = matches!(&*token.text, "str" | "define" | "constant") && !quoted;
+        after = match (&*token.text, after) {
+            (text @ ("str" | "define" | "constant"), None) => Some(text),
+            (_, Some(_) | None) => None,
+        };
     }
-    out
+    Ok(out)
 }
 
 /// The server a program names: the default (`FUX_SOCKET`, else
@@ -518,7 +535,10 @@ pub fn run_capped(
             });
         }
         taken = taken.saturating_add(SLICE);
-        match machine.run(host, SLICE)? {
+        match machine
+            .run(host, SLICE)
+            .map_err(|e| Failed::from(ours(machine, e)))?
+        {
             Outcome::Finished => {
                 return Ok(Ended {
                     status,
@@ -564,10 +584,50 @@ fn placed(machine: &Machine<Fux>, failed: Failed) -> Failed {
     let Some(at) = machine.at() else {
         return failed;
     };
-    Failed {
-        message: format!("{}: {}: {}", at.place, at.text, failed.message),
-        ..failed
+    let error = ours(
+        machine,
+        fuxth::Error {
+            code: fuxth::Code::Host("placed"),
+            message: failed.message,
+            place: Some(at.place),
+            word: Some(at.text),
+        },
+    );
+    let message = match (&error.place, &error.word) {
+        (Some(place), Some(word)) => format!("{place}: {word}: {}", error.message),
+        (Some(_) | None, Some(_) | None) => error.message,
+    };
+    Failed { message, ..failed }
+}
+
+/// An error placed where the program is: a failure inside a word of the
+/// prelude's or library's is named by the program's step that called it,
+/// with the bundled word's own step in the message, and how the program's
+/// word is used.
+fn ours(machine: &Machine<Fux>, mut error: fuxth::Error) -> fuxth::Error {
+    let bundled = |place: Option<&fuxth::Place>| {
+        matches!(place, Some(fuxth::Place::Line { source, .. })
+            if matches!(&**source, "prelude.fux" | "library.fux"))
+    };
+    if !bundled(error.place.as_ref()) {
+        return error;
     }
+    let Some(step) = machine
+        .calls()
+        .into_iter()
+        .rev()
+        .find(|t| !bundled(Some(&t.place)))
+    else {
+        return error;
+    };
+    let inner = error.word.as_deref().unwrap_or_default();
+    // How the program's word is used, in place of the bundled step's.
+    let message = error.message.split(" (use: ").next().unwrap_or_default();
+    let usage = words::usage(&step.text).map_or_else(String::new, |u| format!(" ({u})"));
+    error.message = format!("inside {}, {inner}: {message}{usage}", step.text);
+    error.place = Some(step.place);
+    error.word = Some(step.text);
+    error
 }
 
 /// Whether a reply with a status other than 0 is a wait met by its
@@ -1012,6 +1072,11 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     };
     let ended = run(&mut machine, &mut host, &mut Cli::default())?;
     for value in &ended.stack {
+        // An answer with nothing to say (a wait for quiet, an empty
+        // listing) prints no blank line.
+        if matches!(value, Value::App(Fux::Answer(a)) if a.text.is_empty()) {
+            continue;
+        }
         let _ = writeln!(host.out, "{}", display(value));
     }
     let _ = host.out.flush();

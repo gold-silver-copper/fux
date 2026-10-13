@@ -115,12 +115,60 @@ fn definitions_constants_and_recursion() -> Result<(), Error> {
     Ok(())
 }
 
+/// A definition that calls itself forever on one way, and uses more values
+/// on another, never fails on the first: a call isn't refused for what
+/// only the second needs.
+#[test]
+fn a_way_that_never_returns_is_counted_too() {
+    let program = "define g dup 0 eq if drop 0 g else drop drop then end 0 g";
+    let mut compiler = Compiler::<Ticket>::new(vocabulary());
+    let compiled = token::source("t", program)
+        .and_then(|tokens| compiler.add(&tokens))
+        .and_then(|()| compiler.finish().map(|_| ()));
+    assert_eq!(compiled, Ok(()));
+    assert_eq!(
+        code(run(
+            "define g dup 0 eq if drop 0 g else drop drop then end 1 g"
+        )),
+        Some("stack_underflow")
+    );
+}
+
+/// The calls under way, each at its step, as an error names them: a call
+/// in last place, which took its caller's frame, still shows its caller.
+#[test]
+fn the_calls_under_way_show_who_called() -> Result<(), Error> {
+    let mut compiler = Compiler::<Ticket>::new(vocabulary());
+    compiler.add(&token::source(
+        "t",
+        "define inner 1 ask end\ndefine outer inner end\nouter",
+    )?)?;
+    let mut machine = Machine::new(compiler.finish()?, Limits::default());
+    let outcome = machine.run(&mut Toy { asked: Vec::new() }, 100)?;
+    assert_eq!(outcome, Outcome::Suspended(1));
+    let calls: Vec<String> = machine
+        .calls()
+        .iter()
+        .map(|t| format!("{}:{}", t.place, t.text))
+        .collect();
+    assert_eq!(
+        calls,
+        ["t:3:outer", "t:1:ask"],
+        "outer's frame went to inner, and its call stays"
+    );
+    Ok(())
+}
+
 /// A call that is its definition's last step runs in its caller's frame:
 /// a loop written as recursion never runs out of calls.
 #[test]
 fn a_call_in_last_place_reuses_its_frame() -> Result<(), Error> {
     let down = "define down dup 0 eq if else 1 sub down then end 5000 down";
     assert_eq!(run(down)?, ints(&[0]), "5000 deep, the call limit 100");
+    // Last in an `if` inside an `if`: the jumps that end both lead out.
+    let nested =
+        "define f dup 0 gt if dup 1 gt if 1 sub f else 1 sub f then else drop then end 5000 f";
+    assert_eq!(run(nested)?, ints(&[]), "both calls in last place");
     Ok(())
 }
 
@@ -210,7 +258,7 @@ fn errors_at_run_time_say_what_and_where() {
     let error = run("define f str x add end\n1 f").err();
     assert_eq!(
         error.map(|e| e.to_string()).as_deref(),
-        Some("type: t:1: add: add takes two integers, and the top one is a string"),
+        Some("type: t:1: add: takes two integers, and the top one is a string"),
         "found before it runs"
     );
 }

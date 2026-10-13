@@ -90,6 +90,30 @@ struct State {
     used: i64,
 }
 
+/// What a definition does, as its callers see it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Summary {
+    /// How many of its caller's values every way through it uses, whether
+    /// that way returns or not: fewer, and every call fails.
+    need: i64,
+    /// The stack where it returns, counted from where it was called;
+    /// `None` if it never returns.
+    exit: Option<State>,
+}
+
+impl Summary {
+    /// What a definition might do, for one the checker can't follow.
+    fn anything() -> Summary {
+        let mut exit = State::start();
+        exit.forget(BIG.saturating_neg(), BIG, Entry::Unknown);
+        exit.used = 0;
+        Summary {
+            need: 0,
+            exit: Some(exit),
+        }
+    }
+}
+
 /// A step that surely fails: why.
 enum Failing {
     /// It takes `takes`, and the stack has from `lo` to `hi`.
@@ -211,24 +235,27 @@ fn len(top: &[Kinds]) -> i64 {
 
 /// Checks `program`: the first step that surely fails, if one does.
 pub(crate) fn check<A>(program: &Program<A>) -> Result<(), Error> {
-    let mut summaries: Vec<Option<State>> = Vec::with_capacity(program.words.len());
+    let mut summaries: Vec<Option<Summary>> = Vec::with_capacity(program.words.len());
     let mut first: Option<Error> = None;
     for (id, code) in program.words.iter().enumerate() {
         summaries.push(None);
-        // Recursion: gone over until its summary stays the same.
+        // Recursion: gone over until its summary stays the same, starting
+        // from knowing nothing of what a call to itself does.
         for round in 0..=RECURSION_ROUNDS {
-            let exit = Unit::new(program, code, Entry::Unknown, &summaries).run();
+            let new = Unit::new(program, code, Entry::Unknown, &summaries).run();
             let current = summaries.get(id).cloned().flatten();
-            let next = match (&current, exit) {
+            let next = match (&current, new) {
                 (_, None) => current.clone(),
-                (None, Some(exit)) => Some(exit),
-                (Some(old), Some(exit)) if round >= RECURSION_ROUNDS => {
-                    let mut anything = old.join(&exit);
-                    anything.forget(BIG.saturating_neg(), BIG, Entry::Unknown);
-                    anything.used = 0;
-                    Some(anything)
-                }
-                (Some(old), Some(exit)) => Some(old.widen(old.join(&exit), Entry::Unknown)),
+                (None, Some(new)) => Some(new),
+                (Some(_), Some(_)) if round >= RECURSION_ROUNDS => Some(Summary::anything()),
+                (Some(old), Some(new)) => Some(Summary {
+                    need: old.need.min(new.need),
+                    exit: match (&old.exit, new.exit) {
+                        (Some(old), Some(new)) => Some(old.widen(old.join(&new), Entry::Unknown)),
+                        (Some(old), None) => Some(old.clone()),
+                        (None, new) => new,
+                    },
+                }),
             };
             if next == current {
                 break;
@@ -272,7 +299,7 @@ struct Unit<'a, A> {
     program: &'a Program<A>,
     code: &'a Steps<A>,
     entry: Entry,
-    summaries: &'a [Option<State>],
+    summaries: &'a [Option<Summary>],
     /// The steps where a block starts: the first, every jump's target, and
     /// each step after a jump.
     starts: BTreeSet<usize>,
@@ -283,7 +310,7 @@ impl<'a, A> Unit<'a, A> {
         program: &'a Program<A>,
         code: &'a Steps<A>,
         entry: Entry,
-        summaries: &'a [Option<State>],
+        summaries: &'a [Option<Summary>],
     ) -> Unit<'a, A> {
         let mut starts = BTreeSet::from([0]);
         for (at, op) in code.ops.iter().enumerate() {
@@ -306,9 +333,13 @@ impl<'a, A> Unit<'a, A> {
     /// if it goes on past what any program needs, which only a mistake in
     /// the checker would make it do: then the code goes unchecked, and a
     /// program is never kept from running by it.
-    fn states(&self) -> Option<std::collections::BTreeMap<usize, (State, u32)>> {
+    ///
+    /// With them, the least of what the ways that never return (a call to a
+    /// definition that doesn't) had used of the entry's values.
+    fn states(&self) -> Option<(std::collections::BTreeMap<usize, (State, u32)>, Option<i64>)> {
         let mut states = std::collections::BTreeMap::from([(0, (State::start(), 0))]);
         let mut todo = BTreeSet::from([0usize]);
+        let mut diverged: Option<i64> = None;
         // A block's state changes a bounded number of times: widened twice,
         // its kept values shrinking, their kinds growing.
         let mut left = self.starts.len().saturating_add(1).saturating_mul(1024);
@@ -317,7 +348,7 @@ impl<'a, A> Unit<'a, A> {
             let Some((state, _)) = states.get(&start).cloned() else {
                 continue;
             };
-            for (to, next) in self.block(start, state, &mut |_, _| {}) {
+            for (to, next) in self.block(start, state, &mut |_, _| {}, &mut diverged) {
                 let merged = match states.get(&to) {
                     None => Some((next, 0)),
                     Some((old, seen)) => {
@@ -336,42 +367,51 @@ impl<'a, A> Unit<'a, A> {
                 }
             }
         }
-        Some(states)
+        Some((states, diverged))
     }
 
-    /// The state where the code ends, if it can end: anything at all, if
-    /// the code goes unchecked.
-    fn run(&self) -> Option<State> {
+    /// What the code does, as a definition's callers see it: `None` if no
+    /// way through it gets anywhere (each fails, or calls what is not known
+    /// yet); anything at all, if the code goes unchecked.
+    fn run(&self) -> Option<Summary> {
         let end = self.code.ops.len();
-        let Some(mut states) = self.states() else {
-            let mut anything = State::start();
-            anything.forget(BIG.saturating_neg(), BIG, Entry::Unknown);
-            anything.used = 0;
-            return Some(anything);
+        let Some((mut states, diverged)) = self.states() else {
+            return Some(Summary::anything());
         };
-        states.remove(&end).map(|(state, _)| state)
+        let exit = states.remove(&end).map(|(state, _)| state);
+        let need = match (&exit, diverged) {
+            (Some(exit), Some(diverged)) => exit.used.min(diverged),
+            (Some(exit), None) => exit.used,
+            (None, Some(diverged)) => diverged,
+            (None, None) => return None,
+        };
+        Some(Summary { need, exit })
     }
 
     fn first_error(&self) -> Option<Error> {
         let mut first: Option<(usize, Error)> = None;
-        for (start, (state, _)) in self.states()? {
-            self.block(start, state, &mut |at, error| {
+        let (states, _) = self.states()?;
+        for (start, (state, _)) in states {
+            let mut failed = |at, error| {
                 if first.as_ref().is_none_or(|(seen, _)| at < *seen) {
                     first = Some((at, error));
                 }
-            });
+            };
+            self.block(start, state, &mut failed, &mut None);
         }
         first.map(|(_, error)| error)
     }
 
     /// Goes through the block at `start`, from `state`: the blocks it may
     /// go on to, and the state each starts with. A step that surely fails
-    /// goes to `failed`, and the way through it ends there.
+    /// goes to `failed`, and the way through it ends there; a way that
+    /// never returns ends too, the least it had used kept in `diverged`.
     fn block(
         &self,
         start: usize,
         mut state: State,
         failed: &mut dyn FnMut(usize, Error),
+        diverged: &mut Option<i64>,
     ) -> Vec<(usize, State)> {
         let mut at = start;
         loop {
@@ -385,7 +425,10 @@ impl<'a, A> Unit<'a, A> {
                     failed(at, self.error(at, op, failing));
                     return Vec::new();
                 }
-                Ok(false) => return Vec::new(),
+                Ok(false) => {
+                    *diverged = Some(diverged.map_or(state.used, |d| d.min(state.used)));
+                    return Vec::new();
+                }
                 Ok(true) => {}
             }
             match op {
@@ -430,17 +473,20 @@ impl<'a, A> Unit<'a, A> {
             }
             Op::Call(id) => {
                 let Some(Some(summary)) = self.summaries.get(*id) else {
-                    // Never returns, as far as is known yet.
+                    // Nothing known of it yet: a call to itself, the first
+                    // time through.
                     return Ok(false);
                 };
-                let uses = usize::try_from(summary.used).unwrap_or(0);
-                state.pop(uses, entry)?;
-                let lo = summary.lo.saturating_add(summary.used);
-                let hi = summary.hi.saturating_add(summary.used);
+                state.pop(usize::try_from(summary.need).unwrap_or(0), entry)?;
+                let Some(exit) = &summary.exit else {
+                    return Ok(false);
+                };
+                let lo = exit.lo.saturating_add(summary.need);
+                let hi = exit.hi.saturating_add(summary.need);
                 if lo != 0 || hi != 0 {
                     state.forget(lo, hi, entry);
                 }
-                for kinds in &summary.top {
+                for kinds in &exit.top {
                     state.push(*kinds);
                 }
             }
@@ -514,10 +560,7 @@ fn builtin_step(builtin: Builtin, state: &mut State, entry: Entry) -> Result<(),
             [_, b] if !b.may_be(INT) => format!("and the top one is {}", b.describe()),
             [_, _] | [] | [_] | [_, _, _, ..] => return Ok(()),
         };
-        let name = builtin.name();
-        Err(Failing::Type(format!(
-            "{name} takes two integers, {message}"
-        )))
+        Err(Failing::Type(format!("takes two integers, {message}")))
     };
     match (builtin, taken.as_slice()) {
         (Builtin::Dup, [a]) => {

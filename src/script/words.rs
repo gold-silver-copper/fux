@@ -241,8 +241,17 @@ fn kind_of(value: &Value<Fux>) -> &'static str {
 /// How a word of fux's is used, for a mistake in using it: what goes
 /// before it, what it leaves, and an example.
 pub fn usage(word: &str) -> Option<String> {
-    let w = WORDS.iter().find(|w| w.name == word)?;
-    let (takes, leaves) = w.effect.split_once("--").unwrap_or((w.effect, ""));
+    let effect = match WORDS.iter().find(|w| w.name == word) {
+        Some(w) => w.effect,
+        // A word of the prelude's or library's.
+        None => {
+            crate::help::library()
+                .into_iter()
+                .find(|(name, ..)| *name == word)?
+                .1
+        }
+    };
+    let (takes, leaves) = effect.split_once("--").unwrap_or((effect, ""));
     let takes = takes.trim().to_uppercase();
     let leaves = match leaves.trim() {
         "" => String::new(),
@@ -893,9 +902,20 @@ impl fuxth::Host for Host<'_> {
                 }
                 let waited = then.is_some();
                 let (targets, to_client) = match &to {
+                    // Typed at its terminal: whatever pane they reach is the
+                    // client's to choose, so there is none to wait on here.
+                    Value::App(Fux::Client(_)) if waited || built.if_revision.is_some() => {
+                        return Err(fail(
+                            "unused",
+                            "send-keys to a client takes no wait or if-revision: \
+                             wait on the pane after (PANE opts … wait)",
+                        ));
+                    }
                     Value::App(Fux::Client(c)) => (Vec::new(), Some(*c)),
                     other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
-                        (vec![target(name, other)?.map(WsRef::Id)], None)
+                        let target = target(name, other)
+                            .map_err(|_| wrong(name, "a pane, tab, workspace or client", other))?;
+                        (vec![target.map(WsRef::Id)], None)
                     }
                 };
                 later(ask(
@@ -1203,10 +1223,10 @@ impl fuxth::Host for Host<'_> {
                 ))
             }
             "percent" => {
-                let n = count::<u8>(name, &next()?)?;
-                if n == 0 || n > 100 {
-                    return Err(fail("range", "a percent from 1 to 100"));
-                }
+                let n = int(name, &next()?)?;
+                let Some(n) = u8::try_from(n).ok().filter(|n| (1..=100).contains(n)) else {
+                    return Err(fail("range", format!("percent takes 1 to 100, not {n}")));
+                };
                 now(out, Value::App(Fux::Extent(Extent::Percent(n))))
             }
             "move-border" => {

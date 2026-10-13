@@ -80,7 +80,9 @@ pub struct Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: ", self.code.name())?;
-        match (&self.place, &self.word) {
+        // An empty word (`define ''`) is said in its message, not here.
+        let word = self.word.as_deref().filter(|w| !w.is_empty());
+        match (&self.place, word) {
             (Some(place), Some(word)) => write!(f, "{place}: {word}: ")?,
             (Some(place), None) => write!(f, "{place}: ")?,
             (None, Some(word)) => write!(f, "{word}: ")?,

@@ -1760,6 +1760,18 @@ impl Server {
             conn.answer(session, outcome);
             return;
         }
+        // A program run as a client (`str c2 client focused`) names one
+        // that must be there.
+        if let Some(c) = client.filter(|c| scope.is_none() && !session.views.contains_key(c)) {
+            let outcome = Outcome {
+                status: 1,
+                stderr: format!("no client {c}"),
+                code: Some("no_client"),
+                ..Outcome::default()
+            };
+            conn.answer(session, outcome);
+            return;
+        }
         // A key's or the prompt's program acts where its client is; one
         // from a grant never does.
         let origin = match client.filter(|c| scope.is_none() && session.views.contains_key(c)) {

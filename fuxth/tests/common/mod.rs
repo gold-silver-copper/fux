@@ -155,10 +155,7 @@ pub fn fuxth(text: &str, budget: u64) -> Ended {
             return Ended::Endless;
         }
         taken = taken.saturating_add(budget);
-        let failed = |e: Error| match e.code.name() {
-            "call_depth" | "stack_overflow" => Ended::Endless,
-            code => Ended::Failed(code.to_owned(), line(e.place.as_ref())),
-        };
+        let failed = |e: Error| Ended::Failed(e.code.name().to_owned(), line(e.place.as_ref()));
         match machine.run(&mut Toy, budget) {
             Ok(Outcome::Finished) => {
                 return Ended::Left(machine.stack().iter().map(value).collect());
@@ -232,9 +229,11 @@ impl Naive {
         let program = tokens("program", text);
         let ended = match naive.exec(&prelude).and_then(|()| naive.exec(&program)) {
             Ok(()) => Ended::Left(naive.stack.clone()),
-            Err((code, _)) if code == "steps" || code == "calls" || code == "full" => {
-                Ended::Endless
-            }
+            Err((code, _)) if code == "steps" => Ended::Endless,
+            // Limits, which fuxth meets elsewhere: past a call in last
+            // place, it needs no room.
+            Err((code, line)) if code == "calls" => Ended::Failed("call_depth".to_owned(), line),
+            Err((code, line)) if code == "full" => Ended::Failed("stack_overflow".to_owned(), line),
             Err((code, line)) => Ended::Failed(code, line),
         };
         (ended, naive.reached)
@@ -545,7 +544,16 @@ impl<'a> Gen<'a> {
             let name = format!("w{n}");
             self.out.push("define".into());
             self.out.push(name.clone());
-            if self.rng.chance(30) {
+            if self.rng.chance(10) {
+                // Recursion that may never return: at 0 it calls itself
+                // again, at once; else it uses what the rest of it takes.
+                let body = ["dup", "0", "eq", "if", "drop", "0"];
+                self.out.extend(body.iter().map(|s| s.to_string()));
+                self.out.push(name.clone());
+                self.out.push("else".into());
+                self.seq(4, 1);
+                self.out.push("then".into());
+            } else if self.rng.chance(30) {
                 // Recursion that counts down: n -- …
                 let body = ["dup", "0", "gt", "if", "1", "sub"];
                 self.out.extend(body.iter().map(|s| s.to_string()));
@@ -771,6 +779,10 @@ impl<'a> Gen<'a> {
                     .get(self.rng.below(words.len()))
                     .cloned()
                     .unwrap_or_default();
+                // 0 on top, where a word may call itself forever.
+                if self.rng.chance(40) {
+                    self.out.push("0".into());
+                }
                 self.out.push(w);
             }
             95..=99 if !constants.is_empty() => {

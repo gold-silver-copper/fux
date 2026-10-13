@@ -78,8 +78,9 @@ T opts all-history last-output capture
 decide and repeat, `eq lt gt not add sub` compute, `dup drop swap over rot`
 and the prelude's `nip tuck 2dup max true …` move values; `fux help` has
 the rest. A mistake every run would make (a word given too few values, a
-string where an integer goes) fails before any word acts, so a long
-program never stops halfway for one.
+string given to `add` or `if`) fails before any word acts, so a long
+program never stops halfway for one; fux's own words check what kind of
+value they get as they run.
 
 ## Shells
 

@@ -29,6 +29,21 @@ pub trait Host {
     ) -> Result<Done<Self::Request>, Failure>;
 }
 
+/// Whether the code returns from step `at` doing nothing more: it is past
+/// the last step, or jumps there, through any number of jumps (the ends of
+/// nested `if`s).
+fn returns_from<A>(ops: &[Op<A>], mut at: usize) -> bool {
+    // Each jump is followed once at most: a chain can't be longer.
+    for _ in 0..=ops.len() {
+        match ops.get(at) {
+            None => return true,
+            Some(Op::Jump(to)) => at = *to,
+            Some(_) => return false,
+        }
+    }
+    false
+}
+
 /// The values an application word takes, the deepest first, moved off the
 /// stack as they are read. Those not read go too.
 pub struct Args<'a, A> {
@@ -97,6 +112,10 @@ impl Default for Limits {
 struct Frame {
     code: Option<usize>,
     step: usize,
+    /// For a call in last place, which took its caller's frame: the call
+    /// that began the chain of such calls, as a code and the step after it.
+    /// Only the first is kept, so a loop written as recursion keeps one.
+    via: Option<(Option<usize>, usize)>,
 }
 
 /// A program being run.
@@ -122,6 +141,7 @@ impl<A: AppValue> Machine<A> {
             frames: vec![Frame {
                 code: None,
                 step: 0,
+                via: None,
             }],
             constants,
             limits,
@@ -149,6 +169,22 @@ impl<A: AppValue> Machine<A> {
     /// the host's failure in doing it may name.
     pub fn at(&self) -> Option<Token> {
         self.token()
+    }
+
+    /// The step each call under way is at, the outermost first: the word
+    /// that called each definition, down to the word it ran last.
+    /// A call in last place, which took its caller's frame, still shows
+    /// the call that began it.
+    pub fn calls(&self) -> Vec<Token> {
+        let at = |code: Option<usize>, step: usize| {
+            self.code(code)?.tokens.get(step.checked_sub(1)?).cloned()
+        };
+        (self.frames.iter())
+            .flat_map(|frame| {
+                let via = frame.via.and_then(|(code, step)| at(code, step));
+                via.into_iter().chain(at(frame.code, frame.step))
+            })
+            .collect()
     }
 
     fn token(&self) -> Option<Token> {
@@ -249,13 +285,9 @@ impl<A: AppValue> Machine<A> {
                     // A call that is its caller's last step replaces it:
                     // the caller has nothing left to do, so a loop written
                     // as recursion runs in one frame.
-                    let next = frame.step;
-                    let last = match code.ops.get(next) {
-                        None => true,
-                        Some(Op::Jump(to)) => *to >= code.ops.len(),
-                        Some(_) => false,
-                    };
-                    if last {
+                    let mut via = None;
+                    if returns_from(&code.ops, frame.step) {
+                        via = Some(frame.via.unwrap_or((frame.code, frame.step)));
                         self.frames.pop();
                     } else if self.frames.len() >= self.limits.calls {
                         let message =
@@ -265,6 +297,7 @@ impl<A: AppValue> Machine<A> {
                     self.frames.push(Frame {
                         code: Some(*id),
                         step: 0,
+                        via,
                     });
                 }
                 Op::Jump(to) => frame.step = *to,
@@ -352,16 +385,11 @@ impl<A: AppValue> Machine<A> {
         }
     }
 
-    fn ints(&mut self, builtin: Builtin) -> Result<(i64, i64), Error> {
+    fn ints(&mut self) -> Result<(i64, i64), Error> {
         match self.pop2()? {
             (Value::Int(a), Value::Int(b)) => Ok((a, b)),
             (a, b) => {
-                let message = format!(
-                    "{} takes two integers, not {} and {}",
-                    builtin.name(),
-                    a.kind(),
-                    b.kind()
-                );
+                let message = format!("takes two integers, not {} and {}", a.kind(), b.kind());
                 Err(self.fail(ErrorCode::Type, message, None))
             }
         }
@@ -395,7 +423,7 @@ impl<A: AppValue> Machine<A> {
                 self.push(a)
             }
             Builtin::Add | Builtin::Sub | Builtin::Mul | Builtin::Div | Builtin::Mod => {
-                let (a, b) = self.ints(builtin)?;
+                let (a, b) = self.ints()?;
                 let n = match builtin {
                     Builtin::Add => a.checked_add(b),
                     Builtin::Sub => a.checked_sub(b),
@@ -435,7 +463,7 @@ impl<A: AppValue> Machine<A> {
                 self.push(Value::Bool(a == b))
             }
             Builtin::Lt | Builtin::Gt => {
-                let (a, b) = self.ints(builtin)?;
+                let (a, b) = self.ints()?;
                 let flag = if builtin == Builtin::Lt { a < b } else { a > b };
                 self.push(Value::Bool(flag))
             }

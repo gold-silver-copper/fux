@@ -25,7 +25,10 @@ fn every_example_prints_what_its_header_says() -> Outcome {
                 .collect()
         };
         let expected: String = header("expect").iter().map(|l| format!("{l}\n")).collect();
-        let status: i32 = header("status").first().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let status: i32 = header("status")
+            .first()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
         let path = file.to_string_lossy();
         let ran = server.fux(&[&path])?;
         if (ran.status, ran.stdout.as_str()) != (status, expected.as_str()) {

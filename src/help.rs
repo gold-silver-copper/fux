@@ -41,8 +41,8 @@ Most steps have one of these shapes (UPPER = what you fill in):
 Language: dup drop swap over rot  add sub mul div mod  eq lt gt not
   if … else … then   begin … until   define NAME … end   constant NAME
   str WORD   # a comment to the end of the line
-  Mistakes a run would surely make (too few values, a string where an
-  integer goes) are found before anything runs.
+  Mistakes a run would surely make (too few values, a string given to add
+  or if) are found before anything runs.
 
 At a terminal, the prefix then Esc stops a program a key or the prompt runs.
 Driving programs from a script or an agent: `fux help-agents`.
@@ -75,7 +75,7 @@ One word at length: `fux str WORD explain`.
 /// The prelude's and library's words: each name, stack effect, what it
 /// does, and its definition, from the comment before its `define`:
 /// `# pane text -- : what it does`.
-fn library() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
+pub fn library() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
     let mut words = Vec::new();
     let mut comment = None;
     for line in fuxth::PRELUDE.lines().chain(LIBRARY.lines()) {
@@ -120,6 +120,11 @@ pub fn explain(name: &str) -> Option<String> {
     }
     if let Some(builtin) = fuxth::Builtin::ALL.iter().find(|b| b.name() == name) {
         let about = match builtin {
+            fuxth::Builtin::Dup => ": a copy of the top value",
+            fuxth::Builtin::Drop => ": the top value dropped",
+            fuxth::Builtin::Swap => ": the top two swapped",
+            fuxth::Builtin::Over => ": a copy of the second value, on top",
+            fuxth::Builtin::Rot => ": the third value moved to the top",
             fuxth::Builtin::Add
             | fuxth::Builtin::Sub
             | fuxth::Builtin::Mul
@@ -128,14 +133,8 @@ pub fn explain(name: &str) -> Option<String> {
                 ": integer arithmetic, checked; div truncates toward zero, and mod takes the sign of n"
             }
             fuxth::Builtin::Eq => ": whether two values are the same, of one kind",
-            fuxth::Builtin::Dup
-            | fuxth::Builtin::Drop
-            | fuxth::Builtin::Swap
-            | fuxth::Builtin::Over
-            | fuxth::Builtin::Rot
-            | fuxth::Builtin::Lt
-            | fuxth::Builtin::Gt
-            | fuxth::Builtin::Not => "",
+            fuxth::Builtin::Lt | fuxth::Builtin::Gt => ": comparing two integers",
+            fuxth::Builtin::Not => ": the other boolean",
         };
         return Some(format!("{name}  ( {} ){about}\n", builtin.effect()));
     }

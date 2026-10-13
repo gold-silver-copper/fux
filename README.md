@@ -73,9 +73,10 @@ fux str %3 pane opts wait-exit wait               # prints: exited 0
   tuck -rot 2dup 2drop negate abs min max ne le ge`. Integers are checked:
   an overflow fails; `div` truncates toward zero.
 - A program is checked before it runs: a word given fewer values than the
-  stack surely holds, or a value of a kind it never takes (`str a 1 add`),
-  fails before any word acts. What can't be known before it runs (a loop
-  that leaves values) is never refused.
+  stack surely holds, or a value the language's own words never take (`str a
+  1 add`, `1 if`), fails before any word acts. What can't be known before it
+  runs (a loop that leaves values) is never refused. fux's own words check
+  what kind of value they get as they run.
 - No word is a character a shell treats specially, so a program needs no
   quoting beyond the text you give `str`.
 
