@@ -957,3 +957,45 @@ id = "interrupt-loader-drain-relay"
 cat = "signals"
 goal = "Run python3 -I {fixtures}/service.py {work} loader in an interactive terminal. Wait for CANCELLATION WINDOW OPEN, then send Ctrl-C once and capture its actual shell exit status. Next run python3 -I {fixtures}/service.py {work} relay. Wait for RELAY READY, then send Ctrl-C once. It ignores the interrupt; keep it running and wait for its DRAIN prompt. Enter drain followed by the displayed token, then wait for the drain to finish and capture the relay’s actual shell exit status. Write {work}/answer.txt with exactly four lines in this order: loader=<observed loader exit status>, relay=<observed relay exit status>, ignored=<observed ignored interrupt count>, and drained=<observed drained record count>. Every answer line must end with a newline; include no extra lines. Do not include terminal prompt, completion, or shell status marker lines. Input prompts and coordination waits have no response deadline."
 held = "interrupt-loader-drain-relay"
+
+[[task]]
+id = "calibration-crash-recovery"
+cat = "start"
+goal = "Run `python3 -I {fixtures}/calibrate.py {work} probe` in a terminal with exactly 96 columns and 28 rows, working directory `{work}/station`, and environment variable CAL_PROFILE=amber. Let this diagnostic attempt finish and observe its exit status. Then run `python3 -I {fixtures}/calibrate.py {work} recover` with the same terminal size, directory and environment. At its live recovery prompt, enter `recover <observed probe exit status>`; at its later live confirmation prompt enter the calibration seal it just printed. Wait for recovery to exit. Write exactly three lines, in this order: `probe=<observed probe exit status>`, `recover=<observed recovery exit status>`, and `seal=<printed calibration seal>` to `{work}/answer.txt`. Both attempts must finish with their recorded protocols intact. Every answer line must end with a newline; include no marker lines. Input prompts wait indefinitely. Earlier failed launches are allowed; the completed runs must satisfy the protocol."
+held = "calibration-crash-recovery"
+
+[[task]]
+id = "interrupt-job-flush-journal"
+cat = "signals"
+goal = "Start python3 -I {fixtures}/journal.py {work} and python3 -I {fixtures}/foreground.py {work} run in separate terminals. Wait for JOURNAL ARMED and JOB ARMED respectively. Send Ctrl-C exactly once to the foreground job and observe its exit status. After that job exits, run python3 -I {fixtures}/foreground.py {work} recover in the same terminal and let it finish normally. Send Ctrl-C exactly once to the journal; it deliberately ignores the interrupt. Wait for its IGNORED SIGINT acknowledgement, then request its orderly shutdown with SIGTERM using the PID it displayed. Wait for the journal to flush and exit. Write {work}/answer.txt as job=<interrupted exit status>, recovery=<recovery exit status>, journal=<journal exit status>, on three lines with a final newline. Keep the fixture-created {work}/recovery.txt and {work}/journal.txt. The answer file contains exactly 3 lines, each ending with a newline; include only the specified value lines, with no terminal marker lines."
+held = "interrupt-job-flush-journal"
+
+[[task]]
+id = "eight-workers-selective-retry"
+cat = "scripting"
+goal = "Run each program exactly once: start eight instances of `python3 -I {fixtures}/worker.py {work} ID`, where ID is 1 through 8, and keep them running together. For each worker, wait for its BEGIN READY announcement and send `begin CODE` with that worker's code. Monitor all eight. If a worker reports RETRY REQUIRED, send `retry TOKEN` with its displayed token; never retry a worker that has already reported DONE. Wait until every worker reports DONE and exits. Write `{work}/answer.txt` with eight lines sorted by numeric ID, each containing `ID<TAB>VALUE<TAB>ATTEMPTS`, using each worker's final value and attempt count. Use actual tab characters and end every line with a newline. Include only the specified answer lines; terminal prompts, headings and marker lines are not included."
+held = "eight-workers-selective-retry"
+
+[[task]]
+id = "import-queue-quiet-commit"
+cat = "wait"
+goal = "Run python3 -I {fixtures}/import_queue.py {work}. Wait for whichever terminal outcome it reports: CACHE_MISS requires the command retry, while FATAL would require stopping without further input. On the retry path, wait for the DRAINED message and then for at least two seconds of output silence (QUIET_READY marks completion of this quiet interval) before sending commit followed by the ticket shown in DRAINED. Wait for the final receipt and program exit. Write only the final receipt plus a newline to {work}/answer.txt. Commands sent before their prompts, or a commit before the quiet interval, invalidate the run. Input prompts wait without deadlines. The answer has exactly one line, ending with a newline: <observed receipt>. Omit the RECEIPT prefix and all other output marker lines."
+held = "import-queue-quiet-commit"
+
+[[task]]
+id = "review-agent-scoped-recovery"
+cat = "agents"
+goal = "Start python3 -I {fixtures}/review_agent.py {work} to review {work}/case.txt. Preserve that source file. At PLAN>, request revise preserve-input rather than accepting its destructive draft. At WRITE_PERMISSION>, grant approve report-only, and at NETWORK_PERMISSION>, send deny. Supervise it until it reports a blocked offline cache lock; press Escape only after that notice, then request status at OPERATOR>. Follow the reported recovery instructions: run python3 -I {fixtures}/offline_verifier.py {work} in another terminal area and wait for its successful exit, then submit retry offline EVIDENCE to the agent's RETRY prompt using the verifier's printed evidence. Wait for the agent's REVIEW_DONE and successful exit. Its only approved report is {work}/.fx/review-report.json; approve no source deletion or network access. Write {work}/answer.txt as exactly reviewed=<observed reviewed count> and source=<observed source result>, taking both values from REVIEW_DONE, on two newline-terminated lines. Include only the specified answer lines; exclude all other fixture and shell marker lines."
+held = "review-agent-scoped-recovery"
+
+[[task]]
+id = "shell-pipestatus-producers"
+cat = "shell"
+goal = "Run each program exactly once; each specified mode, subcommand, or shard index counts as a separate program. Every program must have terminal stdin and stdout. Wait for each prompt before responding; input prompts have no deadline. Use one persistent interactive bash shell for this entire workflow. Change to {work}/project and export BUILD_FLAVOR=strict. Run the lint producer in a PTY using script -q -e -c 'python3 -I {fixtures}/buildctl.py {work} lint' /dev/null, piping the wrapper's output through tee into {work}/lint.txt. The -e wrapper preserves the producer's exit status. Capture that status, not tee's, and pass it to python3 -I {fixtures}/buildctl.py {work} record-lint <status>. Next run python3 -I {fixtures}/buildctl.py {work} compile, wait for it to finish and capture its exit status. Finalize using python3 -I {fixtures}/buildctl.py {work} finalize <lint status> <compile status>. Keep the same shell, directory and exported variable throughout. Write {work}/answer.txt with exactly five newline-terminated lines: lint=<status>, compile=<status>, cwd=project, flavor=strict, artifact=<the displayed compilation artifact>. Include only the specified answer lines, in the listed order, each ending with a newline; do not include terminal marker lines."
+held = "shell-pipestatus-producers"
+
+[[task]]
+id = "audit-scrollback-wide-row"
+cat = "read"
+goal = "Run python3 -I {fixtures}/audit_view.py {work}. Read the sealed archive identifier from row 0041 of the initial audit output and the checksum at the far right of the WIDE INDEX row 0779. Later archive candidates are not the sealed archive. Wait until LIVE MONITOR appears, send freeze, and wait for FROZEN and successful exit. Read the frozen queue value, not an earlier overwritten value. Write {work}/answer.txt with exactly three lines: archive=<sealed identifier>, wide=<checksum>, and queue=<frozen value>, one entry per line in that order, without colour codes or extra text. Every answer line must end with a newline; include no extra lines. Do not include terminal prompt, completion, or shell status marker lines. Input prompts and coordination waits have no response deadline."
+held = "audit-scrollback-wide-row"

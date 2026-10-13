@@ -1,0 +1,1 @@
+core-lib=12; include=obsolete; target=release
