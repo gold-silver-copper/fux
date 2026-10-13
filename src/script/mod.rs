@@ -231,7 +231,7 @@ impl From<fuxth::Error> for Failed {
 pub fn vocabulary() -> fuxth::Vocabulary {
     let mut vocabulary = fuxth::Vocabulary::default();
     for word in WORDS {
-        vocabulary.add(word.name, word.takes);
+        vocabulary.add(word.name, word.takes, word.gives());
     }
     vocabulary
 }
@@ -605,12 +605,16 @@ pub fn answered(reply: Reply, then: Then, query: Command) -> Result<Vec<Value<Fu
     let text = reply.text.trim_end_matches('\n').to_owned();
     Ok(match then {
         Then::Nothing => Vec::new(),
-        Then::Handle(kind) => (reply.ids.iter())
-            .rev()
-            .find(|id| id.kind() == kind)
-            .map(|id| Value::App(handle(*id)))
-            .into_iter()
-            .collect(),
+        Then::Handle(kind) => match reply.ids.iter().rev().find(|id| id.kind() == kind) {
+            Some(id) => vec![Value::App(handle(*id))],
+            None => {
+                return Err(Failed {
+                    status: 1,
+                    code: "no_target".to_owned(),
+                    message: format!("the server named no {}", kind.name()),
+                });
+            }
+        },
         Then::Answer => vec![Value::App(Fux::Answer(Box::new(Answer {
             text,
             json: None,

@@ -1,0 +1,4 @@
+# A string is never an integer: found before anything runs.
+# refused: type at 4
+str five
+1 add

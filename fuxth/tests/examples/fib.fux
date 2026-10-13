@@ -1,0 +1,14 @@
+# Fibonacci numbers, iteratively in one frame: 92 is the last that fits.
+# expect: 0 1 55 6765 7540113804746346429
+
+# a b n -- fib, stepping a b to b a+b until n is 1; b is the answer, and
+# the next number, which may not fit, is never made
+define fib-step dup 1 eq if drop nip else -rot swap over add rot 1 sub fib-step then end
+# n -- fib(n)
+define fib dup 0 eq if else 0 1 rot fib-step then end
+
+0 fib
+1 fib
+10 fib
+20 fib
+92 fib

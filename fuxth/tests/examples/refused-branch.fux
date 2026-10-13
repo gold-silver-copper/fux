@@ -1,0 +1,4 @@
+# A step that fails on every way to it is refused, even in one branch.
+# refused: type at 4
+define pick-one if 1 else str one then end
+define broken if str two 1 add then end

@@ -1,0 +1,15 @@
+# Powers, by squaring: about log2(e) multiplications.
+# expect: 1 1024 4052555153018976267 -8 4611686018427387904
+
+# b e -- b^e
+define power
+  dup 0 eq if 2drop 1 else
+  dup 2 mod 0 eq if 2 div swap dup mul swap power
+  else over swap 1 sub power mul then then
+end
+
+7 0 power
+2 10 power
+3 39 power
+-2 3 power
+2 62 power

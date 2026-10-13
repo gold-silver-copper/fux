@@ -24,9 +24,10 @@ impl Host for Toy {
     fn call(
         &mut self,
         word: usize,
-        args: Vec<Value<Ticket>>,
+        args: Args<'_, Ticket>,
         out: &mut Vec<Value<Ticket>>,
     ) -> Result<Done<i64>, Failure> {
+        let args: Vec<_> = args.collect();
         match (word, args.as_slice()) {
             (0, []) => {
                 out.push(Value::App(Ticket(7)));
@@ -47,9 +48,9 @@ impl Host for Toy {
 
 fn vocabulary() -> Vocabulary {
     let mut words = Vocabulary::default();
-    words.add("ticket", 0);
-    words.add("ask", 1);
-    words.add("fail", 0);
+    words.add("ticket", 0, 1..=1);
+    words.add("ask", 1, 1..=1);
+    words.add("fail", 0, 0..=0);
     words
 }
 
@@ -111,6 +112,15 @@ fn definitions_constants_and_recursion() -> Result<(), Error> {
     // A word sees itself: recursion by name.
     let factorial = "define fact dup 1 gt if dup 1 sub fact mul then end 5 fact";
     assert_eq!(run(factorial)?, ints(&[120]));
+    Ok(())
+}
+
+/// A call that is its definition's last step runs in its caller's frame:
+/// a loop written as recursion never runs out of calls.
+#[test]
+fn a_call_in_last_place_reuses_its_frame() -> Result<(), Error> {
+    let down = "define down dup 0 eq if else 1 sub down then end 5000 down";
+    assert_eq!(run(down)?, ints(&[0]), "5000 deep, the call limit 100");
     Ok(())
 }
 
@@ -181,7 +191,7 @@ fn errors_at_run_time_say_what_and_where() {
     assert_eq!(code(run("-9223372036854775808 -1 div")), Some("overflow"));
     assert_eq!(code(run("1 str a add")), Some("type"));
     assert_eq!(code(run("1 if 2 then")), Some("type"), "if takes a boolean");
-    assert_eq!(code(run("define loop loop end loop")), Some("call_depth"));
+    assert_eq!(code(run("define deep deep 1 end deep")), Some("call_depth"));
     assert_eq!(
         code(run("99999999999999999999")),
         Some("overflow"),
@@ -200,7 +210,8 @@ fn errors_at_run_time_say_what_and_where() {
     let error = run("define f str x add end\n1 f").err();
     assert_eq!(
         error.map(|e| e.to_string()).as_deref(),
-        Some("type: t:1: add: add takes two integers, not an integer and a string")
+        Some("type: t:1: add: add takes two integers, and the top one is a string"),
+        "found before it runs"
     );
 }
 

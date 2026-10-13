@@ -1,0 +1,4 @@
+# Recursion in last place runs in one frame, however deep it goes.
+# expect: 0
+define down dup 0 eq if else 1 sub down then end
+1000000 down

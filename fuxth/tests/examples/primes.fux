@@ -1,0 +1,13 @@
+# The primes below 50, by trial division up to each number's root.
+# expect: 2 3 5 7 11 13 17 19 23 29 31 37 41 43 47
+
+# n d -- flag: no number from d to n's root divides n
+define no-divisor-from
+  2dup dup mul lt if 2drop true else
+  2dup mod 0 eq if 2drop false else
+  1 add no-divisor-from then then
+end
+# n -- flag
+define prime dup 2 lt if drop false else 2 no-divisor-from then end
+
+2 begin dup prime if dup swap then 1 add dup 50 eq until drop

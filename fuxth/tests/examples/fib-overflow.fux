@@ -1,0 +1,5 @@
+# Fibonacci 93 is past what an integer holds.
+# fails: overflow
+define fib-step dup 1 eq if drop nip else -rot swap over add rot 1 sub fib-step then end
+define fib dup 0 eq if else 0 1 rot fib-step then end
+93 fib

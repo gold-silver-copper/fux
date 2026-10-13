@@ -1,0 +1,12 @@
+# Greatest common divisors, by Euclid's algorithm, written as recursion
+# that runs in one frame (the call is the definition's last step).
+# expect: 6 1 7 7 12
+
+# a b -- gcd
+define gcd dup 0 eq if drop else swap over mod gcd then end
+
+48 18 gcd
+17 5 gcd
+7 0 gcd
+0 7 gcd
+-36 24 gcd abs

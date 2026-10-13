@@ -36,6 +36,9 @@ pub enum Code {
     Overflow,
     /// A constant read before its line set it.
     UnsetConstant,
+    /// An application word gave more or fewer values than its vocabulary
+    /// says: a mistake in the application, not the program.
+    Contract,
     /// The application's own failure, its code given.
     Host(&'static str),
 }
@@ -58,6 +61,7 @@ impl Code {
             Code::DivByZero => "div_by_zero",
             Code::Overflow => "overflow",
             Code::UnsetConstant => "unset_constant",
+            Code::Contract => "contract",
             Code::Host(code) => code,
         }
     }

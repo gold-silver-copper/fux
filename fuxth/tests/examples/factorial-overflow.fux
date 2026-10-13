@@ -1,0 +1,4 @@
+# 21! is past what an integer holds: the multiplication says so.
+# fails: overflow
+define fact dup 1 gt if dup 1 sub fact mul else drop 1 then end
+21 fact

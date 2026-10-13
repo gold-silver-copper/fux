@@ -28,6 +28,7 @@
 //! defines, a block left open or a stray `end` is an error before the
 //! program does anything. Every error has a stable code, a message, and
 //! the file, line and word it was at.
+mod check;
 mod compile;
 mod error;
 mod machine;
@@ -36,9 +37,14 @@ mod value;
 
 pub use compile::{Builtin, Compiler, PARSING, Program, Vocabulary};
 pub use error::{Code, Error, Failure};
-pub use machine::{Done, Host, Limits, Machine, Outcome};
+pub use machine::{Args, Done, Host, Limits, Machine, Outcome};
 pub use token::{Place, Token};
 pub use value::{AppValue, Value};
+
+/// Words written in fuxth for every program: `true false nip tuck -rot
+/// 2dup 2drop negate abs min max ne le ge`. An application compiles it
+/// before its own words' library and the program.
+pub const PRELUDE: &str = include_str!("prelude.fux");
 
 #[cfg(test)]
 mod tests;

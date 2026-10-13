@@ -1,0 +1,31 @@
+# fuxth's prelude: words written in fuxth, for every program an
+# application compiles after it. Each line says what it does to the stack.
+
+# -- true
+define true 0 0 eq end
+# -- false
+define false 0 1 eq end
+# a b -- b
+define nip swap drop end
+# a b -- b a b
+define tuck swap over end
+# a b c -- c a b
+define -rot rot rot end
+# a b -- a b a b
+define 2dup over over end
+# a b --
+define 2drop drop drop end
+# n -- -n
+define negate 0 swap sub end
+# n -- |n|
+define abs dup 0 lt if negate then end
+# n m -- the smaller
+define min 2dup gt if swap then drop end
+# n m -- the larger
+define max 2dup lt if swap then drop end
+# a b -- a≠b
+define ne eq not end
+# n m -- n≤m
+define le gt not end
+# n m -- n≥m
+define ge lt not end

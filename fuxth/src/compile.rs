@@ -12,6 +12,7 @@ use crate::error::{Code, Error};
 use crate::token::Token;
 use crate::value::Value;
 use std::collections::HashMap;
+use std::ops::RangeInclusive;
 use std::rc::Rc;
 
 /// The words fuxth itself gives.
@@ -21,6 +22,7 @@ pub enum Builtin {
     Drop,
     Swap,
     Over,
+    Rot,
     Add,
     Sub,
     Mul,
@@ -33,11 +35,12 @@ pub enum Builtin {
 }
 
 impl Builtin {
-    pub const ALL: [Builtin; 13] = [
+    pub const ALL: [Builtin; 14] = [
         Builtin::Dup,
         Builtin::Drop,
         Builtin::Swap,
         Builtin::Over,
+        Builtin::Rot,
         Builtin::Add,
         Builtin::Sub,
         Builtin::Mul,
@@ -55,6 +58,7 @@ impl Builtin {
             Builtin::Drop => "drop",
             Builtin::Swap => "swap",
             Builtin::Over => "over",
+            Builtin::Rot => "rot",
             Builtin::Add => "add",
             Builtin::Sub => "sub",
             Builtin::Mul => "mul",
@@ -74,6 +78,7 @@ impl Builtin {
             Builtin::Drop => "a --",
             Builtin::Swap => "a b -- b a",
             Builtin::Over => "a b -- a b a",
+            Builtin::Rot => "a b c -- b c a",
             Builtin::Add => "n m -- n+m",
             Builtin::Sub => "n m -- n-m",
             Builtin::Mul => "n m -- n*m",
@@ -100,6 +105,7 @@ impl Builtin {
             | Builtin::Eq
             | Builtin::Lt
             | Builtin::Gt => 2,
+            Builtin::Rot => 3,
         }
     }
 }
@@ -110,22 +116,24 @@ pub const PARSING: [&str; 9] = [
     "str", "define", "end", "constant", "if", "else", "then", "begin", "until",
 ];
 
-/// The application's words: each a name, and how many values it takes.
+/// The application's words: each a name, how many values it takes, and
+/// how many it gives (a range, for a word that gives a value only
+/// sometimes).
 #[derive(Clone, Debug, Default)]
 pub struct Vocabulary {
-    words: Vec<(String, usize)>,
+    words: Vec<(String, usize, RangeInclusive<usize>)>,
     index: HashMap<String, usize>,
 }
 
 impl Vocabulary {
-    /// Adds a word taking `takes` values; its id, which the host is called
-    /// with. A name given twice keeps its first word.
-    pub fn add(&mut self, name: &str, takes: usize) -> usize {
+    /// Adds a word taking `takes` values and giving `gives`; its id, which
+    /// the host is called with. A name given twice keeps its first word.
+    pub fn add(&mut self, name: &str, takes: usize, gives: RangeInclusive<usize>) -> usize {
         if let Some(id) = self.index.get(name) {
             return *id;
         }
         let id = self.words.len();
-        self.words.push((name.to_owned(), takes));
+        self.words.push((name.to_owned(), takes, gives));
         self.index.insert(name.to_owned(), id);
         id
     }
@@ -134,11 +142,12 @@ impl Vocabulary {
         self.index.get(name).copied()
     }
 
-    /// The word `id`'s name and how many values it takes.
-    pub fn word(&self, id: usize) -> Option<(&str, usize)> {
+    /// The word `id`'s name, how many values it takes, and how many it
+    /// gives.
+    pub fn word(&self, id: usize) -> Option<(&str, usize, RangeInclusive<usize>)> {
         self.words
             .get(id)
-            .map(|(name, takes)| (name.as_str(), *takes))
+            .map(|(name, takes, gives)| (name.as_str(), *takes, gives.clone()))
     }
 }
 
@@ -225,7 +234,7 @@ impl<A: Clone> Compiler<A> {
         for builtin in Builtin::ALL {
             names.insert(Rc::from(builtin.name()), Entry::Builtin(builtin));
         }
-        for (id, (name, _)) in vocabulary.words.iter().enumerate() {
+        for (id, (name, _, _)) in vocabulary.words.iter().enumerate() {
             names.insert(Rc::from(name.as_str()), Entry::App(id));
         }
         Compiler {
@@ -346,14 +355,11 @@ impl<A: Clone> Compiler<A> {
                     None => return Err(unmatched(token, "no begin is open")),
                 },
                 text => {
-                    let op = match (text.parse::<i64>(), self.names.get(text)) {
-                        (Ok(n), _) => Op::Push(Value::Int(n)),
-                        (Err(_), Some(Entry::Builtin(b))) => Op::Builtin(*b),
-                        (Err(_), Some(Entry::App(id))) => Op::App(*id),
-                        (Err(_), Some(Entry::Word(id))) => Op::Call(*id),
-                        (Err(_), Some(Entry::Const(slot))) => Op::GetConst(*slot),
+                    let number = is_number(text).then(|| text.parse::<i64>());
+                    let op = match (number, self.names.get(text)) {
+                        (Some(Ok(n)), _) => Op::Push(Value::Int(n)),
                         // Digits, but more than an integer holds.
-                        (Err(_), None) if is_number(text) => {
+                        (Some(Err(_)), _) => {
                             return Err(Error {
                                 code: Code::Overflow,
                                 message: "a number past what an integer holds (64 bits)".to_owned(),
@@ -361,7 +367,11 @@ impl<A: Clone> Compiler<A> {
                                 word: Some(Rc::clone(&token.text)),
                             });
                         }
-                        (Err(_), None) => {
+                        (None, Some(Entry::Builtin(b))) => Op::Builtin(*b),
+                        (None, Some(Entry::App(id))) => Op::App(*id),
+                        (None, Some(Entry::Word(id))) => Op::Call(*id),
+                        (None, Some(Entry::Const(slot))) => Op::GetConst(*slot),
+                        (None, None) => {
                             return Err(Error {
                                 code: Code::UnknownWord,
                                 message: "no such word".to_owned(),
@@ -382,12 +392,14 @@ impl<A: Clone> Compiler<A> {
         if let Some(open) = self.open.last() {
             return Err(unclosed(open));
         }
-        Ok(Program {
+        let program = Program {
             main: self.main,
             words: self.words,
             constants: self.constants,
             vocabulary: self.vocabulary,
-        })
+        };
+        crate::check::check(&program)?;
+        Ok(program)
     }
 
     fn top_level(&self, token: &Token) -> Result<(), Error> {
@@ -407,7 +419,7 @@ impl<A: Clone> Compiler<A> {
         let text = &*name.text;
         let why = if text.is_empty() {
             Some("an empty name")
-        } else if text.parse::<i64>().is_ok() {
+        } else if is_number(text) {
             Some("a number")
         } else if PARSING.contains(&text) {
             Some("a word of the language")
@@ -476,6 +488,7 @@ fn mismatched(token: &Token, open: &Open) -> Error {
 }
 
 /// Whether `text` is written as an integer: digits, after a `-` or not.
+/// Nothing else is a number: `+5` and `1e3` are names.
 fn is_number(text: &str) -> bool {
     let digits = text.strip_prefix('-').unwrap_or(text);
     !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
