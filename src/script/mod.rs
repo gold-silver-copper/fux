@@ -249,8 +249,19 @@ impl std::fmt::Display for Failed {
 
 impl From<fuxth::Error> for Failed {
     fn from(mut error: fuxth::Error) -> Failed {
-        // A word of fux's given too few values says how it is used.
-        if error.code == fuxth::Code::StackUnderflow
+        // A bundled word that fails whatever way it takes is told by its
+        // own name and use, not by the word inside it that would fail.
+        let bundled = |w: &str| crate::help::library().iter().any(|(name, ..)| *name == w);
+        if error.word.as_deref().is_some_and(bundled)
+            && let Some((whole, _)) = error.message.split_once(": ")
+            && whole.starts_with("every way through it fails")
+        {
+            error.message = whole.to_owned();
+        }
+        // A word given too few values, or the wrong kind, says how it is
+        // used.
+        if matches!(error.code, fuxth::Code::StackUnderflow | fuxth::Code::Type)
+            && !error.message.contains("(use: ")
             && let Some(usage) = error.word.as_deref().and_then(words::usage)
         {
             error.message.push_str(&format!(" ({usage})"));

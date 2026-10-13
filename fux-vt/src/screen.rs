@@ -299,6 +299,10 @@ pub struct Screen {
     version: u64,
     structural: u64,
     alternate_active: bool,
+    /// Left by 1047 with this pen: the alternate screen is cleared in its
+    /// colours when shown again, and keeps what the program drew till then
+    /// (`alternate_rows`).
+    clear_on_show: Option<Attributes>,
     attributes: Attributes,
     /// The pen's style, and the style of its colours alone (what erasing
     /// fills with), if each is a style that is its own number (`style.rs`),
@@ -445,6 +449,7 @@ impl Screen {
             version: 1,
             structural: 1,
             alternate_active: false,
+            clear_on_show: None,
             attributes: Attributes::default(),
             pen_style: 0,
             blank_style: 0,
@@ -874,8 +879,8 @@ impl Screen {
         }
     }
     /// The alternate screen's rows, whichever screen is in use: what a
-    /// full-screen program drew last, kept after it leaves (1049, 47) until
-    /// the alternate screen is shown again. None if it never was.
+    /// full-screen program drew last, kept after it leaves (1049, 1047, 47)
+    /// until the alternate screen is shown again. None if it never was.
     pub fn alternate_rows(&self) -> Rows<'_> {
         let grid = &self.alternate;
         Rows {
@@ -1775,6 +1780,7 @@ impl Screen {
                 self.primary.reset_links();
                 self.alternate.reset_links();
                 self.alternate_active = false;
+                self.clear_on_show = None;
                 self.attributes = Attributes::default();
                 self.pen_changed();
                 self.saved_attributes = Attributes::default();
@@ -1971,15 +1977,15 @@ impl Screen {
         }
     }
 
-    /// Clears the alternate screen, its blanks in the pen's colours
-    /// (`bce`), as xterm clears it for 1047 and 1049. The cursor, origin
-    /// mode, the margins and the screen's saved cursor stay, and a pending
-    /// wrap ends, as ED's does (DEC STD 070, Appendix D.6.1).
-    fn clear_alternate(&mut self) -> Result<(), Error> {
+    /// Clears the alternate screen, its blanks in `pen`'s colours (`bce`),
+    /// as xterm clears it for 1047 and 1049. The cursor, origin mode, the
+    /// margins and the screen's saved cursor stay, and a pending wrap ends,
+    /// as ED's does (DEC STD 070, Appendix D.6.1).
+    fn clear_alternate(&mut self, pen: Attributes) -> Result<(), Error> {
         let g = &self.alternate;
         let (cursor, saved, lines, columns) = (g.cursor, g.saved, g.lines, g.columns());
         self.alternate.clear(&mut self.next_id, self.version)?;
-        let blank = self.attributes.erased();
+        let blank = pen.erased();
         let blank = match blank.inline_style() {
             Some(style) => style,
             None => self.alternate.style(blank),
@@ -2165,21 +2171,30 @@ impl Screen {
                 self.break_cluster();
                 match switch {
                     Switch::Plain => self.switch_screen(on),
+                    // Cleared on leaving, as xterm does it, but only once
+                    // shown again: till then, what the program drew is
+                    // kept to read. The clear's end of a pending wrap is
+                    // now.
                     Switch::ClearedOnLeaving => {
                         if !on && self.alternate_active {
-                            self.clear_alternate()?;
+                            self.clear_on_show = Some(self.attributes);
+                            self.alternate.cursor.pending_wrap = false;
                         }
                         self.switch_screen(on);
                     }
                     Switch::SavingCursor if on => {
                         self.save();
                         self.switch_screen(true);
-                        self.clear_alternate()?;
+                        self.clear_on_show = None;
+                        self.clear_alternate(self.attributes)?;
                     }
                     Switch::SavingCursor => {
                         self.switch_screen(false);
                         self.restore();
                     }
+                }
+                if let Some(pen) = self.clear_on_show.take_if(|_| on) {
+                    self.clear_alternate(pen)?;
                 }
             }
             Kind::SaveCursor if on => self.save(),

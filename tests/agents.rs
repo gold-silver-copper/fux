@@ -576,7 +576,7 @@ fn answers_say_what_the_program_does() -> Outcome {
 #[test]
 fn shell_marks_and_bells_are_heard() -> Outcome {
     let server = Server::start("")?;
-    let script = r"read go; printf '\033]133;C\007'; echo out1; echo out2; printf '\033]133;D;7\007'; echo prompt; read go; printf '\a\033]9;tests passed\007'; exec cat";
+    let script = r"read go; printf '\033]133;C\007'; echo out1; echo out2; printf '\033]133;D;7\007'; echo prompt; read go; printf '\a\033]9;tests passed\007'; read go; printf '\a'; exec cat";
     let pane = id(&server.ok(&run(&[], &["sh", "-c", script]))?);
     let enter = ["str", pane.as_str(), "pane", "keys", "str", "Enter", "key"];
     let done = server.ok(&[&enter[..], &["send-keys"]].concat())?;
@@ -589,10 +589,13 @@ fn shell_marks_and_bells_are_heard() -> Outcome {
         r#""command_running":false"#,
         r#""last_status":7"#,
         r#""notification":"tests passed""#,
+        r#""bells":2"#,
     ] {
         assert!(json.contains(field), "{field} in {json}");
     }
-    assert!(!json.contains(r#""bells":0"#), "{json}");
+    // A plain bell that meets a later wait is said as one.
+    let bell = server.ok(&[&enter[..], &["wait-bell", "send-keys", "json"]].concat())?;
+    assert!(bell.contains(r#""notification":null"#), "{bell}");
     Ok(())
 }
 
@@ -1835,6 +1838,25 @@ fn an_answer_holds_only_what_came() -> Outcome {
         left.contains("AFTER-MAIN") && !left.contains("MENU"),
         "{left}"
     );
+    // Left with nothing printed after, nor drawn for the keys: the screen
+    // as it is, not the full screen it left (1047's, kept, too).
+    for mode in ["1049", "1047"] {
+        let menu = format!(
+            "stty -echo; echo MAIN-{mode}; printf '\\033[?{mode}hMENU> '; read x; \
+             printf '\\033[?{mode}l'; exec cat"
+        );
+        let pane = id(&server.ok(&run(
+            &["40", "10", "size", "str", "MENU>", "wait-text"],
+            &["sh", "-c", &menu],
+        ))?);
+        let left = server.ok(&typed(&pane, "q", &[]))?;
+        assert!(
+            left.contains(&format!("MAIN-{mode}")) && !left.contains("MENU"),
+            "{left}"
+        );
+        let alt = server.ok(&["str", &pane, "pane", "opts", "alt-screen", "capture"])?;
+        assert!(alt.contains("MENU>"), "{alt}");
+    }
     let quiet = id(&server.ok(&run(&[], &["sh", "-c", "echo BEFORE-INPUT; read x"]))?);
     let keys = [
         "str",
@@ -2159,5 +2181,98 @@ fn a_later_wait_skips_a_line_redrawn_the_same() -> Outcome {
         "wait",
     ];
     assert_eq!(server.ok(&wait)?, "PREVIEW VALID\n");
+    Ok(())
+}
+
+/// The prompt on the row the keys went in on was there before them: a
+/// program that echoes nothing and writes on that row after does not make
+/// the prompt new, for the keys' own wait or a later one.
+#[test]
+fn the_prompt_on_the_typed_row_is_never_new() -> Outcome {
+    let server = Server::start("")?;
+    let quiet = "import sys, tty\ntty.setraw(0)\nw = sys.stdout.write\n\
+                 w('READY prompt> '); sys.stdout.flush(); sys.stdin.read(1)\n\
+                 w(' other output'); sys.stdout.flush(); sys.stdin.read(1)\n";
+    let pane = id(&server.ok(&run(&[], &["python3", "-c", quiet]))?);
+    let wait = |words: &[&str]| -> Result<Output, String> {
+        server.fux(&[&["str", &pane, "pane"][..], words].concat())
+    };
+    let keys = wait(&[
+        "keys",
+        "str",
+        "x",
+        "text",
+        "str",
+        "READY",
+        "wait-text",
+        "2",
+        "timeout",
+        "send-keys",
+    ])?;
+    assert_eq!(keys.status, 7, "{}{}", keys.stdout, keys.stderr);
+    let later = wait(&["opts", "str", "READY", "wait-text", "1", "timeout", "wait"])?;
+    assert_eq!(later.status, 7, "{}{}", later.stdout, later.stderr);
+    Ok(())
+}
+
+/// What was typed is taken as a terminal shows it after its line editing:
+/// a character, a word or the line taken back, a Tab a blank, a control
+/// character as `^A`. Its echo holds no text that only the keys had.
+#[test]
+fn line_editing_is_in_the_echo() -> Outcome {
+    let server = Server::start("")?;
+    let lines = "import sys\nprint('Prompt> ', end='', flush=True)\n\
+                 for line in sys.stdin: pass\n";
+    let pane = id(&server.ok(&run(&[], &["python3", "-c", lines]))?);
+    let typed = |input: &[&str]| -> Result<i32, String> {
+        let words = [
+            &["str", &pane, "pane", "keys"][..],
+            input,
+            &[
+                "str",
+                "Enter",
+                "key",
+                "str",
+                "TOKEN",
+                "wait-text",
+                "1",
+                "timeout",
+                "send-keys",
+            ],
+        ]
+        .concat();
+        Ok(server.fux(&words)?.status)
+    };
+    let texts = [
+        "TOKEX\x7fN",
+        "hello\tTOKEN",
+        "hello\x15TOKEN",
+        "a b\x17TOKEN",
+        "hello\x01 TOKEN",
+    ];
+    for text in texts {
+        assert_eq!(typed(&["str", text, "text"])?, 7, "{text:?}");
+    }
+    for key in ["Tab", "C-u", "C-w", "BSpace"] {
+        let input = [
+            "str", "hello", "text", "str", key, "key", "str", "TOKEN", "text",
+        ];
+        assert_eq!(typed(&input)?, 7, "{key}");
+    }
+    Ok(())
+}
+
+/// A line deleted from a screen redrawn in place (CSI M) changes the rows
+/// below it, though they keep their text: what came is said from there.
+#[test]
+fn a_deleted_line_is_answered() -> Outcome {
+    let server = Server::start("")?;
+    let delete = "import sys, tty\ntty.setraw(0)\nw = sys.stdout.write\n\
+                  w('\\x1b[H\\x1b[2JTITLE\\r\\nROW1\\r\\nROW2\\r\\nROW3'); sys.stdout.flush()\n\
+                  sys.stdin.read(1); w('\\x1b[2;1H\\x1b[M'); sys.stdout.flush()\n\
+                  sys.stdin.read(1)\n";
+    let pane = id(&server.ok(&run(&["40", "10", "size"], &["python3", "-c", delete]))?);
+    let answer = server.ok(&["str", &pane, "pane", "str", "x", "type"])?;
+    assert_eq!(body(&answer), "ROW2\nROW3\n", "{answer}");
     Ok(())
 }

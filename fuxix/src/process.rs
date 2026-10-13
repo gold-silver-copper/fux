@@ -527,6 +527,11 @@ enum Blocked {
     Child,
     /// A futex: a thread parked; what the others do decides.
     Futex,
+    /// Its system call cannot be read (a program that may not be traced:
+    /// set-uid, or non-dumpable).
+    Unread,
+    /// Ended, its parent yet to reap it (a zombie): it does nothing.
+    Ended,
     Other,
 }
 
@@ -599,11 +604,14 @@ fn blocked_in(_nr: u64, _args: &[u64]) -> Blocked {
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn thread_blocked(pid: Pid, tid: &str) -> Option<Blocked> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/stat")).ok()?;
-    let state = stat.rsplit_once(')')?.1.split_whitespace().next()?;
-    if state != "S" {
-        return None;
+    match stat.rsplit_once(')')?.1.split_whitespace().next()? {
+        "S" => {}
+        "Z" | "X" => return Some(Blocked::Ended),
+        _ => return None,
     }
-    let call = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/syscall")).ok()?;
+    let Ok(call) = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/syscall")) else {
+        return Some(Blocked::Unread);
+    };
     let mut words = call.split_whitespace();
     let nr: u64 = words.next()?.parse().ok()?;
     let args: Vec<u64> = words
@@ -679,11 +687,13 @@ fn watches_terminal(pid: Pid, watched: Watched, tty: &std::path::Path) -> bool {
     fds.into_iter().any(|fd| is_terminal(pid, fd, tty))
 }
 
-/// What one process of the group does, by its main thread and its others:
-/// busy while one runs, or the main one sleeps on a timer; reading while it
-/// (or, the main one parked, another) waits for the terminal and none of
-/// the others can go on alone, on a timer or polling: else polling, as it
-/// may draw again on its own; else waiting.
+/// What one process of the group does, by its main thread and its others,
+/// if anything (not one ended, or waiting for a child): busy while one
+/// runs, or the main one sleeps on a timer; not known while its system call
+/// cannot be read; reading while it (or, the main one parked, another)
+/// waits for the terminal and none of the others can go on alone, on a
+/// timer or polling: else polling, as it may draw again on its own; else
+/// waiting.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
     let on_terminal = |blocked: Blocked| match blocked {
@@ -697,13 +707,14 @@ fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
         }
         Blocked::Read(_) | Blocked::Poll(..) | Blocked::Other => Some(Activity::Waiting),
         Blocked::Sleep => Some(Activity::Busy),
-        Blocked::Child | Blocked::Futex => None,
+        Blocked::Unread => Some(Activity::Unknown),
+        Blocked::Child | Blocked::Futex | Blocked::Ended => None,
     };
     let main = pid.to_string();
     let Some(blocked) = thread_blocked(pid, &main) else {
         return Some(Activity::Busy);
     };
-    if blocked == Blocked::Child {
+    if matches!(blocked, Blocked::Child | Blocked::Ended) {
         return None;
     }
     let first = on_terminal(blocked);
@@ -725,7 +736,8 @@ fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
     }
     Some(match first {
         Some(Activity::Busy) => Activity::Busy,
-        Some(Activity::Waiting | Activity::Unknown) => Activity::Waiting,
+        Some(Activity::Waiting) => Activity::Waiting,
+        Some(Activity::Unknown) => Activity::Unknown,
         Some(Activity::Polling) => Activity::Polling,
         Some(Activity::Reading) | None if alone => Activity::Polling,
         Some(Activity::Reading) => Activity::Reading,

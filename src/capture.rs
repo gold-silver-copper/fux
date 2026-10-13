@@ -359,7 +359,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         ),
         (
             "bells",
-            count(usize::try_from(pane.alerts.bells).unwrap_or(usize::MAX)),
+            count(usize::try_from(pane.alerts.count()).unwrap_or(usize::MAX)),
         ),
         (
             "notification",

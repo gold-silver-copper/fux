@@ -94,9 +94,9 @@ impl std::fmt::Display for Error {
             {
                 write!(
                     f,
-                    "no fux server is running at {} (its socket is left from one that stopped); \
-                     `fux` in a terminal starts one, or `fux start` (or `fux str NAME server start`) one with no terminal",
-                    path.display()
+                    "no fux server is running at {} (its socket is left from one that stopped); {}",
+                    path.display(),
+                    crate::socket::start_hint(path)
                 )
             }
             Error::Connect { path, source } => {

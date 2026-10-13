@@ -150,9 +150,9 @@ impl std::fmt::Display for Error {
             Error::NoServer(path) => {
                 write!(
                     f,
-                    "no fux server is running at {}; `fux` in a terminal starts one, or \
-                     `fux start` (or `fux str NAME server start`) one with no terminal",
-                    path.display()
+                    "no fux server is running at {}; {}",
+                    path.display(),
+                    start_hint(path)
                 )
             }
             Error::BadName(name) => write!(
@@ -302,6 +302,26 @@ pub fn socket_path(choice: Choice<'_>) -> Result<SocketPath, Error> {
             None => in_directory(DEFAULT_NAME),
         },
     }
+}
+
+/// What starts the server at `path`: `fux start` the default's (or
+/// `FUX_SOCKET`'s), the command that names its socket another's.
+pub fn start_hint(path: &Path) -> String {
+    let default = socket_path(Choice::Default).is_ok_and(|s| s.path == path);
+    if default {
+        return "`fux` in a terminal starts one, or `fux start` one with no terminal".into();
+    }
+    let name = (path.parent().zip(directory().ok()))
+        .filter(|(parent, directory)| parent == directory)
+        .and_then(|_| path.file_name()?.to_str()?.strip_suffix(".sock"));
+    let words = match name {
+        Some(name) => format!("str {name} server"),
+        None if path.to_string_lossy().contains(char::is_whitespace) => {
+            format!("str '{}' socket", path.display())
+        }
+        None => format!("str {} socket", path.display()),
+    };
+    format!("`fux {words} start` starts one")
 }
 
 /// fux's directory: under `XDG_RUNTIME_DIR`, else `TMPDIR`.
@@ -651,6 +671,12 @@ mod tests {
             Error::NoLocation.to_string(),
             "no socket location: neither XDG_RUNTIME_DIR nor TMPDIR is set; \
              set FUX_SOCKET to an absolute socket path"
+        );
+        // No server at a socket chosen by its path: what starts that one.
+        assert!(
+            Error::NoServer(PathBuf::from("/x/y/absent.sock"))
+                .to_string()
+                .ends_with("`fux str /x/y/absent.sock socket start` starts one")
         );
     }
 

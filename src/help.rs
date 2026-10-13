@@ -119,9 +119,13 @@ pub fn explain(name: &str) -> Option<String> {
             out.push_str(&format!("\n{usage}\n"));
         }
         if let Some(takes) = options(name) {
-            out.push_str(&format!(
-                "\nIts options, after opts (or keys) and before {name}:\n"
-            ));
+            // What they go on: send-keys' input, send-mouse's event.
+            let on = match name {
+                "send-keys" => "keys (opts is refused)",
+                "send-mouse" => "mouse",
+                _ => "opts",
+            };
+            out.push_str(&format!("\nIts options, after {on} and before {name}:\n"));
             for option in takes {
                 if let Some(w) = WORDS.iter().find(|w| w.name == *option) {
                     out.push_str(&format!("  {:<14} {:<26} {}\n", w.name, w.effect, w.about));
@@ -315,6 +319,11 @@ mod tests {
         assert!(range.ends_with("\n  end\n"), "{range}");
         for (name, ..) in library() {
             assert!(explain(name).is_some(), "{name}");
+        }
+        // Each word's options go on what it takes.
+        for (name, on) in [("send-keys", "after keys"), ("run", "after opts")] {
+            let explained = explain(name).unwrap_or_default();
+            assert!(explained.contains(&format!("options, {on}")), "{explained}");
         }
         assert!(AGENTS.contains("fux "));
     }

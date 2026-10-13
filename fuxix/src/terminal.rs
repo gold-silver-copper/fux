@@ -34,13 +34,16 @@ impl Termios {
     }
 
     /// Whether a read may return on a timer (`VTIME`, and no line
-    /// editing): a program that times its reads, as one telling a lone
-    /// Escape from a key's sequence does. With `VMIN` too, the timer runs
-    /// from the first key on, which the program may have read already: it
-    /// is never surely waiting for more.
-    pub fn timed_reads(&self) -> bool {
-        let vtime = self.0.c_cc.get(libc::VTIME).copied().unwrap_or(0);
-        !self.line_mode() && vtime > 0
+    /// editing), the last key written `since_key` ago: a program that
+    /// times its reads, as one telling a lone Escape from a key's sequence
+    /// does. With `VMIN` too, the timer runs from a key on and only times
+    /// the gap after it: within `VTIME` of the last key; before any, or
+    /// once that has passed, a read waits for keys with no limit.
+    pub fn timed_reads(&self, since_key: std::time::Duration) -> bool {
+        let cc = |i| self.0.c_cc.get(i).copied().unwrap_or(0);
+        let (vmin, vtime) = (cc(libc::VMIN), cc(libc::VTIME));
+        let timer = std::time::Duration::from_millis(u64::from(vtime).saturating_mul(100));
+        !self.line_mode() && vtime > 0 && (vmin == 0 || since_key < timer)
     }
 
     /// Raw mode: no echo, no line editing, no signals from keys, and no
@@ -184,19 +187,24 @@ mod tests {
         let again = attributes(&slave).map_err(|e| e.to_string())?;
         assert!(!again.echoes() && !again.line_mode());
         // Raw, a read waits for a key (VMIN 1, VTIME 0): not timed.
-        assert!(!again.timed_reads());
+        let (now, later) = (std::time::Duration::ZERO, std::time::Duration::from_secs(1));
+        assert!(!again.timed_reads(now));
         let mut timed = again.clone();
         if let Some(t) = timed.0.c_cc.get_mut(libc::VTIME) {
             *t = 2;
         }
         assert!(
-            timed.timed_reads(),
+            timed.timed_reads(now),
             "VTIME with VMIN times the gap after a key"
+        );
+        assert!(
+            !timed.timed_reads(later),
+            "and waits with no limit once it passed"
         );
         if let Some(m) = timed.0.c_cc.get_mut(libc::VMIN) {
             *m = 0;
         }
-        assert!(timed.timed_reads());
+        assert!(timed.timed_reads(later));
         // The master reads the modes the program set on its side.
         let seen = attributes(&master).map_err(|e| e.to_string())?;
         assert!(!seen.echoes() && !seen.line_mode());

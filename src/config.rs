@@ -48,7 +48,8 @@ impl std::fmt::Display for Error {
             Error::NoProgram => f.write_str("shell: a program is needed"),
             Error::NotAVariable { name } => write!(
                 f,
-                "update-environment: {name:?} is no variable's name (letters, digits and _)"
+                "update-environment: {name:?} is no variable's name (letters, digits and _, \
+                 not first a digit)"
             ),
             Error::Words(why) => write!(f, "shell: {why}"),
         }

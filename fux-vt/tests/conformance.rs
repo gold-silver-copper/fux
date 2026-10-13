@@ -615,7 +615,13 @@ fn modes_1047_and_1048() -> Result {
     p.process(b"\x1b[?1047l\x1b[?1048lY")?;
     assert!(!p.screen().mode(Mode::AlternateScreen));
     assert_eq!(lines(&p), ["abY", ""]);
-    p.process(b"\x1b[?1047h")?;
+    // What the program drew is kept to read until the screen is shown
+    // again, cleared, as 1049's and 47's are.
+    let kept: Vec<String> = (p.screen().alternate_rows())
+        .map(|r| r.cells_text().trim_end().to_owned())
+        .collect();
+    assert_eq!(kept, ["  X", ""]);
+    p.process(b"\x1b[?47h")?;
     assert_eq!(lines(&p), ["", ""]);
     Ok(())
 }

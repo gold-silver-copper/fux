@@ -806,9 +806,9 @@ impl Watch {
             );
         }
         self.echo_skipped.then_some(
-            "the text was on the line typed, within what was typed, and was taken as its \
-             echo, as a later wait takes it too; wait for text only the output has, or \
-             read the screen with `PANE opts capture`",
+            "the text was on the line typed, within its prompt or what was typed, and was \
+             taken as its echo, as a later wait takes it too; wait for text only the output \
+             has, or read the screen with `PANE opts capture`",
         )
     }
 
@@ -901,7 +901,7 @@ impl Watch {
                 }
                 Until::Bell => (pane.alerts.count() > self.from.alerts).then(|| {
                     let notification = pane.alerts.last.clone();
-                    Found::Bell(notification.filter(|_| pane.alerts.notifications > 0))
+                    Found::Bell(notification.filter(|_| pane.alerts.last_notified))
                 }),
             };
             if found.is_some() {
@@ -936,17 +936,28 @@ impl Watch {
 
     /// The topmost row the keys changed, from the screen's top (or the
     /// cursor's row, scrolled into history) on: a menu or form redrawn in
-    /// place on the main screen, above the cursor's row or below it. What
-    /// came is said from there.
+    /// place on the main screen, above the cursor's row or below it, or
+    /// lines deleted from it. What came is said from there.
     fn top_changed(&self, pane: &Pane) -> Option<fux_vt::RowId> {
         if !self.after {
             return None;
         }
         let screen = pane.screen();
         let at = self.from.cursor.and_then(|row| screen.row_index(row))?;
+        // A line that reads as it did changed too if it moved (lines
+        // deleted or put in above it): it no longer follows the line it
+        // followed, or that line is gone.
+        let mut up: Option<fux_vt::RowId> = None;
         lines(screen.rows().skip(at.min(screen.history_len())), None)
             .into_iter()
-            .find(|l| self.was.get(&l.first).map(String::as_str) != Some(l.text.as_str()))
+            .find(|l| {
+                let moved = (self.from.above.get(&l.first)).is_some_and(|was| match up {
+                    Some(up) => up != *was,
+                    None => screen.row_index(*was).is_none(),
+                });
+                up = Some(l.first);
+                moved || self.was.get(&l.first).map(String::as_str) != Some(l.text.as_str())
+            })
             .map(|l| l.first)
     }
 
@@ -1031,10 +1042,23 @@ fn is_new(
     line.new && (was.get(&line.first) != Some(&line.text) || touched.contains(&line.first))
 }
 
-/// The screen's lines as they read now, by first row.
-pub(crate) fn shown(screen: &fux_vt::Screen) -> std::collections::HashMap<fux_vt::RowId, String> {
+/// The screen's lines as they read now, by first row; and the line above
+/// each, by first rows.
+pub(crate) fn shown(
+    screen: &fux_vt::Screen,
+) -> (
+    std::collections::HashMap<fux_vt::RowId, String>,
+    std::collections::HashMap<fux_vt::RowId, fux_vt::RowId>,
+) {
     let shown = lines(screen.rows().skip(screen.history_len()), None);
-    shown.into_iter().map(|l| (l.first, l.text)).collect()
+    let above = (shown.iter().skip(1))
+        .zip(&shown)
+        .map(|(line, up)| (line.first, up.first))
+        .collect();
+    (
+        shown.into_iter().map(|l| (l.first, l.text)).collect(),
+        above,
+    )
 }
 
 /// Rows as lines: soft-wrapped rows joined into the lines they wrap.
@@ -1101,12 +1125,15 @@ fn echoed(
     };
     let first = keys.next();
     if line.first == cursor {
-        // Keys alone (Up, Enter: a command recalled): only a row that held
-        // a prompt, and starts with it still, shows one; an empty row, or
-        // one written over, takes the program's output.
+        // The prompt the row held, while it starts with it still, is never
+        // new. Keys alone (Up, Enter: a command recalled) on it show one
+        // whole; an empty row, or one written over, takes the program's
+        // output.
+        let prompt = (!before.is_empty() && line.text.starts_with(before)).then_some(before.len());
         return match first {
-            Some(first) => within(echo_end(&line.text, before, first, true)),
-            None => typed.lines > 0 && !before.is_empty() && line.text.starts_with(before),
+            Some(first) => within(echo_end(&line.text, before, first, true).or(prompt)),
+            None if typed.lines > 0 => prompt.is_some(),
+            None => within(prompt),
         };
     }
     let Some(from) = screen.row_index(cursor) else {
@@ -1131,7 +1158,8 @@ fn echoed(
 /// Where the echo of a line typed, `keys`, ends on a line of `text`: after
 /// the prompt (`before`: the row the keys went in on must still start with
 /// it, as output that cleared the row and wrote over it does not; a line
-/// below may), the blanks after it, and as many characters as were typed.
+/// below may), the blanks after it, and as many characters as were typed,
+/// a run of blanks typed as the run shown (a Tab goes to a tab stop).
 /// Only while the line shows them, their first word or its start (`2` of
 /// `2**10`, still being drawn), or on the keys' own row nothing yet: a
 /// program that echoes nothing, or writes over the echo, puts its own
@@ -1148,7 +1176,28 @@ fn echo_end(text: &str, before: &str, keys: &str, own_row: bool) -> Option<usize
         Some(first) => word.starts_with(first) || first.starts_with(word),
         None => own_row,
     };
-    let end = (shown.char_indices().nth(keys.chars().count())).map_or(shown.len(), |(at, _)| at);
+    let (mut on, mut typed) = (shown.char_indices().peekable(), keys.chars().peekable());
+    let blank = |c: &char| c.is_whitespace();
+    while let Some(c) = typed.next() {
+        if !c.is_whitespace() {
+            on.next();
+            continue;
+        }
+        let mut run = 1usize;
+        while typed.next_if(blank).is_some() {
+            run = run.saturating_add(1);
+        }
+        // Blanks shown take the run; else (an echo masked) a character
+        // each.
+        if on.next_if(|(_, c)| c.is_whitespace()).is_some() {
+            while on.next_if(|(_, c)| c.is_whitespace()).is_some() {}
+        } else {
+            for _ in 0..run {
+                on.next();
+            }
+        }
+    }
+    let end = on.peek().map_or(shown.len(), |(at, _)| *at);
     shows.then(|| text.len().saturating_sub(shown.len()).saturating_add(end))
 }
 
@@ -1239,12 +1288,12 @@ fn since_text(pane: &Pane, since: Since, marks: bool) -> String {
     let from = match screen.row_index(cursor) {
         Some(from) => from,
         // The keys went in on a full screen the program has since left:
-        // what it printed after, else that last full screen (an editor
-        // that saved and quit).
+        // what it printed after, else that last full screen if it drew it
+        // since (an editor that saved and quit), else the screen as it is.
         None if screen.alternate_rows().any(|r| r.id() == cursor) => {
             match screen.rows().position(|r| r.changed_since(since.mark)) {
                 Some(from) => from,
-                None if changed => return full(),
+                None if changed && drew_full() => return full(),
                 None => return text(pane, marks, false),
             }
         }

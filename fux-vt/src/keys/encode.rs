@@ -567,7 +567,10 @@ fn legacy(press: KeyPress, application: bool, out: &mut Vec<u8>) {
         }
         Form::Numbered(number, final_byte) => numbered(out, number, modifier, final_byte),
         Form::Control(control) => match control {
-            Control::Tab if shift => out.extend_from_slice(b"\x1b[Z"),
+            // Shift-Tab is CSI Z; with Ctrl or Alt too, `CSI 1 ; modifier
+            // Z`, as a numbered key carries them.
+            Control::Tab if shift && !ctrl && !alt => out.extend_from_slice(b"\x1b[Z"),
+            Control::Tab if shift => numbered(out, 1, modifier, 'Z'),
             // Ctrl-Backspace is BS, as xterm, kitty's legacy encoding, VTE
             // and Alacritty send it, and as modifyOtherKeys's code says.
             Control::Backspace if ctrl => out.push(0x08),
@@ -946,6 +949,9 @@ mod tests {
             ("C-M-[", LEGACY, "\x1b\x1b"),
             ("C-M-3", LEGACY, "\x1b\x1b"),
             ("M-Delete", LEGACY, "\x1b[3;3~"),
+            ("BTab", LEGACY, "\x1b[Z"),
+            ("M-BTab", LEGACY, "\x1b[1;4Z"),
+            ("C-S-Tab", LEGACY, "\x1b[1;6Z"),
         ] {
             assert_eq!(named(name, mode), bytes, "{name}");
         }

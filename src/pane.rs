@@ -312,9 +312,11 @@ impl fux_vt::Sink for Sink<'_> {
             fux_vt::Event::Bell => {
                 *self.bell = true;
                 self.alerts.bells = self.alerts.bells.saturating_add(1);
+                self.alerts.last_notified = false;
             }
             fux_vt::Event::Notification(text) => {
                 self.alerts.notifications = self.alerts.notifications.saturating_add(1);
+                self.alerts.last_notified = true;
                 let text = String::from_utf8_lossy(text);
                 self.alerts.last =
                     Some(text.chars().filter(|c| !c.is_control()).take(500).collect());
@@ -445,12 +447,14 @@ pub struct Launch {
 }
 
 /// What a program rang or announced since it started: bells, and desktop
-/// notifications (OSC 9, 777, 99) with the last one's text.
+/// notifications (OSC 9, 777, 99) with the last one's text, and whether the
+/// last alert was that notification.
 #[derive(Clone, Debug, Default)]
 pub struct Alerts {
     pub bells: u64,
     pub notifications: u64,
     pub last: Option<String>,
+    pub last_notified: bool,
 }
 
 impl Alerts {
@@ -474,8 +478,10 @@ pub struct InputFrom {
     pub lines: u32,
     pub before: String,
     /// The screen's lines then, by first row: one redrawn the same since
-    /// brings nothing new.
+    /// brings nothing new; and the line above each, by first rows: one
+    /// that follows another since moved (lines deleted or put in above it).
     pub shown: std::collections::HashMap<fux_vt::RowId, String>,
+    pub above: std::collections::HashMap<fux_vt::RowId, fux_vt::RowId>,
     /// The bells and notifications heard by then.
     pub alerts: u64,
 }
@@ -489,6 +495,7 @@ impl InputFrom {
     ) -> InputFrom {
         let row = screen.window().row(screen.cursor_position().0);
         let (echo, lines) = crate::command::typed_lines(inputs);
+        let (shown, above) = crate::wait::shown(screen);
         InputFrom {
             cursor: row.map(|row| row.id()),
             mark: screen.mark(),
@@ -496,7 +503,8 @@ impl InputFrom {
             echo,
             lines,
             before: row.map(crate::capture::row_text).unwrap_or_default(),
-            shown: crate::wait::shown(screen),
+            shown,
+            above,
             alerts,
         }
     }
@@ -856,7 +864,9 @@ impl Pane {
             && !self.paced.waiting.is_empty()
         {
             let took = match &self.process {
-                Process::Reading(child) => crate::ready::took_keys(child),
+                Process::Reading(child) => {
+                    crate::ready::took_keys(child, now.saturating_duration_since(self.written_at))
+                }
                 Process::Absent | Process::HungUp(_) | Process::Exited(_) => true,
             };
             if !took && now < by {

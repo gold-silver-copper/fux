@@ -75,7 +75,8 @@ pub fn state(pane: &Pane, now: Instant) -> State {
     let quiet = now.saturating_duration_since(pane.changed_at.max(pane.written_at));
     let tty = child.master.slave_path();
     // No foreground group: its program is gone, its end not yet heard.
-    let Some(activity) = activity(child, tty.as_deref()) else {
+    let since_key = now.saturating_duration_since(pane.written_at);
+    let Some(activity) = activity(child, tty.as_deref(), since_key) else {
         return State::Busy;
     };
     // A shell command still runs a program that is not full-screen and
@@ -98,16 +99,21 @@ pub fn state(pane: &Pane, now: Instant) -> State {
 }
 
 /// What the foreground group of `child`'s terminal, at `tty`, is blocked
-/// in; `None` with no foreground group (its program gone, its end not yet
-/// heard).
-fn activity(child: &crate::process::Child, tty: Option<&Path>) -> Option<Activity> {
+/// in, the last key written `since_key` ago; `None` with no foreground
+/// group (its program gone, its end not yet heard).
+fn activity(
+    child: &crate::process::Child,
+    tty: Option<&Path>,
+    since_key: Duration,
+) -> Option<Activity> {
     let group = fuxix::terminal::foreground_group(&child.master)?;
     Some(
         match tty.map(|tty| fuxix::process::activity(group, tty, child.leader.pid())) {
             // A read with a time limit is a poll: the program goes on alone
             // when it runs out.
             Some(Activity::Reading)
-                if fuxix::terminal::attributes(&child.master).is_ok_and(|t| t.timed_reads()) =>
+                if fuxix::terminal::attributes(&child.master)
+                    .is_ok_and(|t| t.timed_reads(since_key)) =>
             {
                 Activity::Polling
             }
@@ -119,9 +125,10 @@ fn activity(child: &crate::process::Child, tty: Option<&Path>) -> Option<Activit
 
 /// Whether the program has read every key and waits for more, with no time
 /// limit: a lone Escape sent is taken alone by then, its timer run out.
-pub fn took_keys(child: &crate::process::Child) -> bool {
+pub fn took_keys(child: &crate::process::Child, since_key: Duration) -> bool {
     let tty = child.master.slave_path();
-    activity(child, tty.as_deref()) == Some(Activity::Reading) && !keys_unread(tty.as_deref())
+    activity(child, tty.as_deref(), since_key) == Some(Activity::Reading)
+        && !keys_unread(tty.as_deref())
 }
 
 /// Whether keys wait in the terminal for its program to read: blocked in a

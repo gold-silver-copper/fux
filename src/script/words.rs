@@ -98,7 +98,7 @@ pub const WORDS: &[Word] = &[
     word("Input", "paste", 2, "keys text -- keys", "text as a paste"),
     word("Input", "paste-file", 2, "keys file -- keys", "a file's text as a paste, at most 900 KiB"),
     word("Input", "times", 2, "keys n -- keys", "the input just before it, n times (1 to 1000): str Down key 2 times"),
-    word("Input", "send-keys", 2, "target keys -- [outcome]", "send to a pane, every pane of a tab, or a client as typed at its terminal"),
+    word("Input", "send-keys", 2, "target keys -- [outcome]", "send to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all"),
     word("Input", "mouse", 3, "action row col -- mouse", "click right middle press release wheel-up wheel-down or move, at a cell from 0"),
     word("Input", "send-mouse", 2, "pane mouse -- [outcome]", "send a mouse event"),
     word("Input", "signal", 2, "pane name -- [answer]", "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH, to the pane's foreground; answers once it exits or settles"),
@@ -225,15 +225,22 @@ fn fail(code: &'static str, message: impl Into<String>) -> Failure {
 /// How a word of fux's is used, for a mistake in using it: what goes
 /// before it, what it leaves, and an example.
 pub fn usage(word: &str) -> Option<String> {
+    let library = || {
+        let mut library = crate::help::library().into_iter();
+        Some(library.find(|(name, ..)| *name == word)?.1)
+    };
+    let core = || {
+        Some(
+            fuxth::Builtin::ALL
+                .iter()
+                .find(|b| b.name() == word)?
+                .effect(),
+        )
+    };
+    // Fux's, the prelude's or library's, or the core's.
     let effect = match WORDS.iter().find(|w| w.name == word) {
         Some(w) => w.effect,
-        // A word of the prelude's or library's.
-        None => {
-            crate::help::library()
-                .into_iter()
-                .find(|(name, ..)| *name == word)?
-                .1
-        }
+        None => library().or_else(core)?,
     };
     let (takes, leaves) = effect.split_once("--").unwrap_or((effect, ""));
     let takes = takes.trim().to_uppercase();
@@ -723,7 +730,9 @@ impl fuxth::Host for Host<'_> {
                 if !crate::command::shell_name(&key) {
                     return Err(fail(
                         "bad_value",
-                        format!("{key:?} is no variable's name (letters, digits and _)"),
+                        format!(
+                            "{key:?} is no variable's name (letters, digits and _, not first a digit)"
+                        ),
                     ));
                 }
                 opts(name, &mut o)?.env.push((key, value));

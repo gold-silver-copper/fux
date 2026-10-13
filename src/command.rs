@@ -653,48 +653,81 @@ fn one_off(a: &str, b: &str) -> bool {
     }
 }
 
-/// The lines send-keys types, as a shell or an input box would echo them
-/// (Space joins words, BSpace takes the last character back, pasted text is
-/// shown too), and how many it ends (Enter, or a newline in text).
+/// The lines send-keys types, as a terminal shows them after its line
+/// editing (Space joins words, BSpace or DEL takes the last character back,
+/// C-w the last word, C-u the line; Tab is a blank, and another control
+/// character in text shows as `^A`; pasted text is shown too), and how many
+/// it ends (Enter, or a line end in text).
 pub fn typed_lines(inputs: &[Input]) -> (Vec<String>, u32) {
+    use fux_vt::keys::{Key, Modifiers};
     let mut lines: Vec<String> = vec![String::new()];
     let mut ended = 0u32;
-    let add = |text: &str, lines: &mut Vec<String>, counts: bool, ended: &mut u32| {
-        for (i, part) in text.split('\n').enumerate() {
-            if i > 0 {
-                lines.push(String::new());
-                if counts {
-                    *ended = ended.saturating_add(1);
-                }
-            }
-            if let Some(last) = lines.last_mut() {
-                last.push_str(part);
-            }
+    let mut end = |lines: &mut Vec<String>, counts: bool| {
+        lines.push(String::new());
+        if counts {
+            ended = ended.saturating_add(1);
         }
     };
     for input in inputs {
         match input {
-            Input::Text(text) => add(text, &mut lines, true, &mut ended),
-            Input::Paste(text) => add(text, &mut lines, false, &mut ended),
-            Input::Key(key) => match (key.key, key.mods == fux_vt::keys::Modifiers::default()) {
-                (fux_vt::keys::Key::Char(c), true) => {
-                    add(&c.to_string(), &mut lines, true, &mut ended)
-                }
-                (fux_vt::keys::Key::Backspace, true) => {
-                    if let Some(last) = lines.last_mut() {
-                        last.pop();
+            Input::Text(text) => {
+                for c in text.chars() {
+                    match c {
+                        '\n' | '\r' => end(&mut lines, true),
+                        c => type_char(&mut lines, c),
                     }
                 }
-                (fux_vt::keys::Key::Enter, _) => {
-                    ended = ended.saturating_add(1);
-                    lines.push(String::new());
+            }
+            Input::Paste(text) => {
+                for (i, part) in text.split('\n').enumerate() {
+                    if i > 0 {
+                        end(&mut lines, false);
+                    }
+                    if let Some(last) = lines.last_mut() {
+                        last.push_str(part);
+                    }
                 }
-                // Another key (an arrow, Tab, a control key) leaves the
-                // line as the program makes it: its echo is not known.
-                _ => lines.push(String::new()),
+            }
+            Input::Key(key) => match (key.key, key.mods) {
+                (Key::Char(c), Modifiers::NONE) => type_char(&mut lines, c),
+                (Key::Char(c @ ('h' | 'u' | 'w')), Modifiers::CTRL) => {
+                    type_char(&mut lines, char::from(u8::try_from(c).unwrap_or(0) & 0x1f));
+                }
+                (Key::Backspace, Modifiers::NONE) => type_char(&mut lines, '\x7f'),
+                (Key::Tab, Modifiers::NONE) => type_char(&mut lines, '\t'),
+                (Key::Enter, _) => end(&mut lines, true),
+                // Another key (an arrow, a control key) leaves the line as
+                // the program makes it: its echo is not known.
+                _ => end(&mut lines, false),
             },
         }
     }
     lines.retain(|l| !l.trim().is_empty());
     (lines, ended)
+}
+
+/// Types `c` on the last of `lines`, as a terminal's line editing shows it.
+fn type_char(lines: &mut [String], c: char) {
+    let Some(line) = lines.last_mut() else {
+        return;
+    };
+    match c {
+        '\x7f' | '\x08' => {
+            line.pop();
+        }
+        '\x15' => line.clear(),
+        '\x17' => {
+            let kept = line.trim_end();
+            let word = (kept.char_indices().rev())
+                .find(|(_, c)| c.is_whitespace())
+                .map_or(0, |(at, c)| at.saturating_add(c.len_utf8()));
+            *line = kept.get(..word).unwrap_or_default().to_owned();
+        }
+        '\t' => line.push('\t'),
+        c if c.is_ascii_control() => {
+            line.push('^');
+            line.push(char::from(u8::try_from(c).unwrap_or(0) ^ 0x40));
+        }
+        c => line.push(c),
+    }
 }

@@ -53,9 +53,9 @@ redraws in place on the main screen answers from the top row it changed:
 - **Keys:** names are tmux's (`Enter`, `Escape`, `Tab`, `Up`, `PageDown`,
   `BSpace`, `F5`, `C-c` Ctrl, `M-s` Alt, `S-Tab` Shift; a typo is refused).
   Inside `keys … send-keys`: `str T text`, `str NAME key`, `str T paste`
-  (one bracketed paste), `str FILE paste-file` (900 KiB at most); `N times`
-  (1 to 1000) repeats only the input just before it: `str Down key 2 times
-  str Enter key` is Down Down Enter.
+  (one bracketed paste), `str FILE paste-file`; 900 KiB at most in all,
+  repeats too. `N times` (1 to 1000) repeats only the input just before
+  it: `str Down key 2 times str Enter key` is Down Down Enter.
 - **Waiting for a text:** `str T wait-text`, `str T wait-gone`, `wait-exit`,
   `wait-bell`; several: whichever first. A text: case ignored, blanks as
   one, from a word's start (`READY` is not in `NOT_READY`); `^T` a line's
@@ -68,7 +68,8 @@ redraws in place on the main screen answers from the top row it changed:
   started), scrolled away too: it never starts too late; but a later wait
   does not see a line overwritten in place before it began. **Status 7:**
   the program reads its terminal and the text has not come: it cannot before
-  you type; the answer is the screen (it starts `… earlier lines not kept`
+  you type (fux judges the terminal's foreground program; one left running
+  in the background may still write it); the answer is the screen (it starts `… earlier lines not kept`
   if lines since were let go past history-lines before the wait read them:
   the text may have passed unseen). Status 3: the program exited first.
   `wait-exit` answers `%2 exited 0` and what came, with the program's
@@ -76,7 +77,9 @@ redraws in place on the main screen answers from the top row it changed:
 - **Read:** `capture` READ: `100 history`, `all-history`, `main-screen`
   (what was printed before a program took the screen), `alt-screen`,
   `last-output` (a shell command's output), `joined`, `marks`, `styles`,
-  `json` (screen and state). Rows and columns count from 0.
+  `json` (screen and state). Rows and columns count from 0. Keys after
+  which a program leaves its full screen answer what it printed after,
+  else that full screen if they changed it, else the screen as it is.
 - **Mouse:** `%2 str click ROW COL mouse send-mouse` (`right`, `wheel-up`,
   `press`, `release`, `move`), a cell counted from 0 as a capture counts:
   a program's own "row 22" hint is usually counted from 1.
@@ -134,8 +137,9 @@ that prompts (`read`, `sudo`) answers `reading`, its prompt shown.
 Output with no line end of its own is followed by the prompt on a row of
 its own. bash marks from `PROMPT_COMMAND` and `PS1`: one set anew in the
 running shell has `last-output` take what its hooks print too; with both
-replaced (or made readonly) a command never ends: `line` answers `reading`
-with no `done`, and `command_running` stays true.
+replaced, or made readonly in a startup file (before fux sets them), a
+command never ends: `line` answers `reading` with no `done`, and
+`command_running` stays true; made readonly later, they keep fux's marks.
 `str shell-marks str off set` turns marks off for shells started after.
 
 ## Sizes

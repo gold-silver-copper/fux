@@ -92,9 +92,12 @@ its own status):
 {"pane":"%4","state":"exited 5","status":5,"output":"bye\n"}
 ```
 
-`state` is the pane's (above), or `closed` (status 4); `output` what came
-since the input, or the screen of a full-screen program, or the screen
-for status 7; a met `wait-exit` or `wait-gone` answers so too. The state
+`state` is the pane's (above), or `closed`: a settling action or bare
+`wait` whose pane closed answers `{"pane":"%3","state":"closed","status":4}`,
+with no `output` and nothing on stderr. `output` is what came since the
+input, or the screen of a full-screen program (one the keys made leave
+it: what it printed after, else that full screen if they changed it, else
+the screen), or the screen for status 7; a met `wait-exit` or `wait-gone` answers so too. The state
 line's notes are fields, each only when said: `done` (a shell command
 ended: its status, `null` if not known), `no_change` (`true`: the keys
 were read and drew nothing), `unread` (bytes of input not read yet). A
@@ -109,8 +112,9 @@ wait for a text or a bell answers what met it:
 | `text` | `text`, `line` |
 | `bell` | `notification`: its text, else `null` |
 
-`status` is the exit status. A wait that fails (the program exited first
-or was started again, 3; the pane closed, 4; the time limit, 124) ends the
+`status` is the exit status. A wait for a text, a bell or the exit that
+fails (the program exited first or was started again, 3; the pane closed,
+4; the time limit, 124) ends the
 program with that status and says why on stderr, `fux: CODE: MESSAGE`: it
 leaves no answer to print, but what `run` or `split` started is printed
 first, its pane alone (`%2`, as text, `json` or not), and so are the

@@ -112,11 +112,12 @@ fn started(server: &Server, code: &str) -> Result<(String, String), String> {
 
 /// What a program waits on decides whether it reads: a select, poll or
 /// epoll that watches its terminal with no time limit is `reading`, and a
-/// text it has not printed cannot come (status 7); one that watches a pipe
-/// alone, or a raw read whose timer runs once a key came (VMIN 1, VTIME
-/// 10), may go on alone: `waiting`, never 7. Nor is a program whose main
-/// thread reads its terminal while another sleeps on a timer: what that
-/// thread prints next is waited for.
+/// text it has not printed cannot come (status 7): so does a raw read whose
+/// timer runs only once a key came (VMIN 1, VTIME 10), no key sent, and one
+/// whose child ended unreaped (a zombie). One that watches a pipe alone may
+/// go on alone: `waiting`, never 7. Nor is a program whose main thread
+/// reads its terminal while another sleeps on a timer: what that thread
+/// prints next is waited for.
 #[test]
 fn reads_are_told_from_programs_that_go_on_alone() -> Outcome {
     if !cfg!(target_os = "linux") {
@@ -147,8 +148,13 @@ fn reads_are_told_from_programs_that_go_on_alone() -> Outcome {
              m[6][termios.VMIN] = 1; m[6][termios.VTIME] = 10\n\
              termios.tcsetattr(0, termios.TCSANOW, m)\n\
              sys.stdout.write('ready\\r\\n'); sys.stdout.flush(); sys.stdin.read(5)\n",
-            "waiting",
-            124,
+            "reading",
+            7,
+        ),
+        (
+            "import os\nif os.fork() == 0: os._exit(0)\nprint('ready', flush=True); input()\n",
+            "reading",
+            7,
         ),
     ];
     for (code, state, status) in programs {
@@ -193,6 +199,11 @@ fn reads_are_told_from_programs_that_go_on_alone() -> Outcome {
     ])?;
     assert_eq!(later.status, 0, "{}{}", later.stdout, later.stderr);
     assert!(later.stdout.ends_with("\nLATER\n"), "{}", later.stdout);
+    // A program that may not be traced (non-dumpable) hides what it is
+    // blocked in: its quiet screen is taken as settled, not busy.
+    let hidden = "import ctypes\nctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n\
+                  print('ready', flush=True); input()\n";
+    assert_eq!(started(&server, hidden)?.1, "settled");
     Ok(())
 }
 
