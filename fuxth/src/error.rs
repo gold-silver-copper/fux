@@ -13,10 +13,10 @@ pub enum Code {
     UnknownWord,
     /// A parsing word at the end of the program, with nothing to read.
     MissingToken,
-    /// A name for `define` or `constant` that is taken, a number, or a
-    /// parsing word.
+    /// A name for `define` or `let` that is taken, a number, or a parsing
+    /// word.
     BadName,
-    /// `define` or `constant` inside a definition or a block.
+    /// `define` inside a definition or a block.
     NotTopLevel,
     /// `end`, `else`, `then` or `until` with nothing open for it.
     Unmatched,
@@ -34,8 +34,16 @@ pub enum Code {
     DivByZero,
     /// Arithmetic past what an integer holds.
     Overflow,
-    /// A constant read before its line set it.
-    UnsetConstant,
+    /// A `let` name read before its `let` ran.
+    Unset,
+    /// An index or slice past a string's or list's end, or a number out of
+    /// a word's range (a character code, a negative depth).
+    Range,
+    /// `fail`: the program stopped itself, saying why.
+    Fail,
+    /// A string or list past the length or nesting allowed, or a run that
+    /// built more than its share.
+    TooLong,
     /// An application word gave more or fewer values than its vocabulary
     /// says: a mistake in the application, not the program.
     Contract,
@@ -60,7 +68,10 @@ impl Code {
             Code::Type => "type",
             Code::DivByZero => "div_by_zero",
             Code::Overflow => "overflow",
-            Code::UnsetConstant => "unset_constant",
+            Code::Unset => "unset",
+            Code::Range => "range",
+            Code::Fail => "fail",
+            Code::TooLong => "too_long",
             Code::Contract => "contract",
             Code::Host(code) => code,
         }

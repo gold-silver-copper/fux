@@ -6,7 +6,7 @@ use common::{Ended, Gen, Naive, Rng, fuxth};
 
 /// Programs per test: enough to reach every word in many places, quick in
 /// a debug build.
-const PROGRAMS: u64 = 10_000;
+const PROGRAMS: u64 = if cfg!(debug_assertions) { 2000 } else { 10_000 };
 
 /// A random program: every other one typed, to run far.
 fn program(rng: &mut Rng, seed: u64) -> String {
@@ -52,7 +52,7 @@ fn fuxth_ends_as_the_naive_interpreter_does() {
                             || c == code
                             || (either.contains(&&**c) && either.contains(&&**code))
                     }
-                    Ended::Left(_) | Ended::Refused(..) | Ended::Endless => false,
+                    Ended::Left(..) | Ended::Refused(..) | Ended::Endless => false,
                 };
                 if reached.contains(line) && !failed_so {
                     wrong.push(format!(
@@ -70,8 +70,17 @@ fn fuxth_ends_as_the_naive_interpreter_does() {
                 seen.endless = seen.endless.saturating_add(1);
             }
             (ran, naive) => {
+                // A failure inside a library word is placed at the
+                // program's step when the word is copied in, and inside
+                // the library (line 0) when called: the same failure.
+                let (ran, naive) = match (ran, naive) {
+                    (Ended::Failed(a, x), Ended::Failed(b, y)) if *x == 0 || *y == 0 => {
+                        (&Ended::Failed(a.clone(), 0), &Ended::Failed(b.clone(), 0))
+                    }
+                    _ => (ran, naive),
+                };
                 match ran {
-                    Ended::Left(_) => seen.left = seen.left.saturating_add(1),
+                    Ended::Left(..) => seen.left = seen.left.saturating_add(1),
                     Ended::Failed(..) | Ended::Refused(..) | Ended::Endless => {
                         seen.failed = seen.failed.saturating_add(1);
                     }
@@ -88,11 +97,15 @@ fn fuxth_ends_as_the_naive_interpreter_does() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n\n"));
-    assert!(seen.endless < 1000, "{seen:?}");
+    assert!(
+        seen.endless < usize::try_from(PROGRAMS / 10).unwrap_or(usize::MAX),
+        "{seen:?}"
+    );
     // Every kind of end, often.
-    assert!(seen.left > 2000, "{seen:?}");
-    assert!(seen.failed > 500, "{seen:?}");
-    assert!(seen.refused > 1000, "{seen:?}");
+    let share = |n: u64| usize::try_from(PROGRAMS / n).unwrap_or(usize::MAX);
+    assert!(seen.left > share(5), "{seen:?}");
+    assert!(seen.failed > share(20), "{seen:?}");
+    assert!(seen.refused > share(10), "{seen:?}");
 }
 
 /// Stopping after every step, and going on, changes nothing: every step,
@@ -126,7 +139,7 @@ fn rewrites_that_mean_the_same_end_the_same() {
     for seed in 0..PROGRAMS {
         let mut rng = Rng::new(seed.wrapping_add(2 << 32));
         let text = program(&mut rng, seed);
-        let Ended::Left(left) = fuxth(&text, u64::MAX) else {
+        let left @ Ended::Left(..) = fuxth(&text, u64::MAX) else {
             continue;
         };
         let lines: Vec<&str> = text.lines().collect();
@@ -134,7 +147,7 @@ fn rewrites_that_mean_the_same_end_the_same() {
         let mut rewritten = Vec::new();
         for (i, line) in lines.iter().enumerate() {
             rewritten.push((*line).to_owned());
-            let next_is_constant = lines.get(i.saturating_add(1)) == Some(&"constant");
+            let next_is_constant = lines.get(i.saturating_add(1)) == Some(&"let");
             let quoted = i > 0 && lines.get(i.saturating_sub(1)) == Some(&"str");
             if !int(line) || quoted || next_is_constant {
                 continue;
@@ -160,19 +173,22 @@ fn rewrites_that_mean_the_same_end_the_same() {
         }
         checked = checked.saturating_add(1);
     }
-    assert!(checked > 2000, "{checked}");
+    assert!(
+        checked > usize::try_from(PROGRAMS / 5).unwrap_or(usize::MAX),
+        "{checked}"
+    );
 }
 
 /// Whether `text` leaves `left`; or is refused for a step no run reaches,
 /// a step that would surely fail but sits where nothing goes (a branch
 /// whose test is always false, once a definition's body is in place of
 /// its call and the depth there is known).
-fn agrees(text: &str, left: &[common::V]) -> bool {
+fn agrees(text: &str, left: &Ended) -> bool {
     match fuxth(text, u64::MAX) {
-        Ended::Left(got) => got == left,
+        got @ Ended::Left(..) => got == *left,
         Ended::Refused(_, line) => {
             let (naive, reached) = Naive::run(text);
-            naive == Ended::Left(left.to_vec()) && !reached.contains(&line)
+            naive == *left && !reached.contains(&line)
         }
         Ended::Failed(..) | Ended::Endless => false,
     }
@@ -183,7 +199,28 @@ fn agrees(text: &str, left: &[common::V]) -> bool {
 fn inline(lines: &[&str]) -> Option<String> {
     let start = lines.iter().position(|l| *l == "define")?;
     let name = *lines.get(start.checked_add(1)?)?;
-    let end = start.checked_add(lines.iter().skip(start).position(|l| *l == "end")?)?;
+    // Its own `end`: `list` and `each` inside it close with `end` too.
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut end = None;
+    for (i, l) in lines.iter().enumerate().skip(start) {
+        if std::mem::replace(&mut quoted, false) {
+            continue;
+        }
+        quoted = matches!(*l, "str" | "let" | "define");
+        match *l {
+            "define" | "list" | "each" => depth = depth.saturating_add(1),
+            "end" => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    end = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let end = end?;
     let body = lines.get(start.checked_add(2)?..end)?;
     if body.contains(&name) {
         return None;

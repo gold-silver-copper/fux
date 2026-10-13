@@ -55,6 +55,19 @@ impl Host for Toy {
             _ => Err(Failure::new("refused", "no")),
         }
     }
+
+    fn print(&mut self, _line: &str) -> Result<(), Failure> {
+        Ok(())
+    }
+}
+
+/// A compiler with the standard library in.
+fn with_stdlib() -> Compiler<Ticket> {
+    let mut compiler = Compiler::new(vocabulary());
+    let library = token::source("stdlib.fux", STDLIB).unwrap_or_default();
+    let added = compiler.add(&library);
+    assert_eq!(added, Ok(()), "the standard library compiles");
+    compiler
 }
 
 fn vocabulary() -> Vocabulary {
@@ -71,6 +84,7 @@ fn vocabulary() -> Vocabulary {
 /// number, a step at a time to cover every pause; the stack it ends with.
 fn run(text: &str) -> Result<Vec<Value<Ticket>>, Error> {
     let mut compiler = Compiler::new(vocabulary());
+    compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
     compiler.add(&token::source("t", text)?)?;
     let mut machine = Machine::new(
         compiler.finish()?,
@@ -121,7 +135,7 @@ fn numbers_strings_and_words() -> Result<(), Error> {
 #[test]
 fn definitions_constants_and_recursion() -> Result<(), Error> {
     assert_eq!(run("define twice dup add end 5 twice twice")?, ints(&[20]));
-    assert_eq!(run("6 constant six six six mul")?, ints(&[36]));
+    assert_eq!(run("6 let six six six mul")?, ints(&[36]));
     // A word sees itself: recursion by name.
     let factorial = "define fact dup 1 gt if dup 1 sub fact mul then end 5 fact";
     assert_eq!(run(factorial)?, ints(&[120]));
@@ -134,7 +148,7 @@ fn definitions_constants_and_recursion() -> Result<(), Error> {
 #[test]
 fn a_way_that_never_returns_is_counted_too() {
     let program = "define g dup 0 eq if drop 0 g else drop drop then end 0 g";
-    let mut compiler = Compiler::<Ticket>::new(vocabulary());
+    let mut compiler = with_stdlib();
     let compiled = token::source("t", program)
         .and_then(|tokens| compiler.add(&tokens))
         .and_then(|()| compiler.finish().map(|_| ()));
@@ -151,7 +165,7 @@ fn a_way_that_never_returns_is_counted_too() {
 /// in last place, which took its caller's frame, still shows its caller.
 #[test]
 fn the_calls_under_way_show_who_called() -> Result<(), Error> {
-    let mut compiler = Compiler::<Ticket>::new(vocabulary());
+    let mut compiler = with_stdlib();
     compiler.add(&token::source(
         "t",
         "define inner 1 ask end\ndefine outer inner end\nouter",
@@ -198,14 +212,14 @@ fn control_flow_at_the_top_level_and_in_definitions() -> Result<(), Error> {
 #[test]
 fn an_application_word_suspends_and_resumes_deep_in_calls_and_loops() -> Result<(), Error> {
     assert_eq!(run("ticket")?, [Value::App(Ticket(7))]);
-    let nested = "define each 0 begin 1 add dup ask swap dup 3 eq until drop end each";
+    let nested = "define asks 0 begin 1 add dup ask swap dup 3 eq until drop end asks";
     assert_eq!(run(nested)?, ints(&[10, 20, 30]));
     Ok(())
 }
 
 #[test]
 fn arguments_are_tokens_as_given() -> Result<(), Error> {
-    let mut compiler = Compiler::<Ticket>::new(vocabulary());
+    let mut compiler = with_stdlib();
     compiler.add(&token::arguments(&["str", "two words", "str", "#x"]))?;
     let mut machine = Machine::new(compiler.finish()?, Limits::default());
     let outcome = machine.run(&mut Toy { asked: Vec::new() }, 100)?;
@@ -228,11 +242,11 @@ fn mistakes_are_found_before_anything_runs() {
         ("define 12 end", "bad_name"),
         ("define if end", "bad_name"),
         ("1 if define x end then", "not_top_level"),
-        ("define x 1 constant y end", "not_top_level"),
+        ("define x define y end end", "not_top_level"),
         ("str", "missing_token"),
         ("'unclosed", "open_quote"),
     ] {
-        let mut compiler = Compiler::<Ticket>::new(vocabulary());
+        let mut compiler = with_stdlib();
         let compiled = token::source("t", text)
             .and_then(|tokens| compiler.add(&tokens))
             .and_then(|()| compiler.finish().map(|_| ()));
@@ -278,10 +292,7 @@ fn errors_at_run_time_say_what_and_where() {
 
 #[test]
 fn nothing_is_used_before_it_is_defined() {
-    assert_eq!(
-        code(run("define peek x end 1 constant x")),
-        Some("unknown_word")
-    );
+    assert_eq!(code(run("define peek x end 1 let x")), Some("unknown_word"));
     assert_eq!(
         code(run("define early later end define later 1 end")),
         Some("unknown_word")
@@ -290,7 +301,7 @@ fn nothing_is_used_before_it_is_defined() {
 
 #[test]
 fn a_budget_pauses_a_loop_that_never_asks() -> Result<(), Error> {
-    let mut compiler = Compiler::<Ticket>::new(vocabulary());
+    let mut compiler = with_stdlib();
     compiler.add(&token::source("t", "begin 1 1 lt until")?)?;
     let mut machine = Machine::new(compiler.finish()?, Limits::default());
     let mut host = Toy { asked: Vec::new() };
@@ -327,7 +338,7 @@ fn a_deep_stack_costs_no_more_per_word() {
 #[test]
 fn the_checker_says_what_and_where() {
     let refused = |text: &str| -> String {
-        let mut compiler = Compiler::<Ticket>::new(vocabulary());
+        let mut compiler = with_stdlib();
         let compiled = token::source("t", text)
             .and_then(|tokens| compiler.add(&tokens))
             .and_then(|()| compiler.finish().map(|_| ()));
@@ -361,15 +372,15 @@ fn the_checker_says_what_and_where() {
         ),
         (
             "1 0 0 eq lt",
-            "type: t:1: lt: takes two integers, and the top one is a boolean",
+            "type: t:1: lt: lt compares two integers, two strings or two lists, not an integer and a boolean",
         ),
         (
             "str a not",
-            "type: t:1: not: takes a boolean (from eq, lt, gt or not), not a string",
+            "type: t:1: not: takes a boolean (from eq or lt), not a string",
         ),
         (
             "1 if 2 then",
-            "type: t:1: if: takes a boolean (from eq, lt, gt or not), not an integer",
+            "type: t:1: if: takes a boolean (from eq or lt), not an integer",
         ),
         // The first in the source, at the top level or in a definition.
         (
@@ -388,7 +399,7 @@ fn the_checker_says_what_and_where() {
         assert_eq!(refused(text), said, "{text}");
     }
     // Arguments: the first argument's mistake.
-    let mut compiler = Compiler::<Ticket>::new(vocabulary());
+    let mut compiler = with_stdlib();
     let compiled = compiler
         .add(&token::arguments(&["drop", "str", "a", "1", "add"]))
         .and_then(|()| compiler.finish().map(|_| ()));
@@ -418,7 +429,7 @@ fn what_can_not_be_known_is_never_refused() -> Result<(), Error> {
 #[test]
 fn the_checker_keeps_what_it_knows() {
     let refused = |source: Vec<Token>| -> String {
-        let mut compiler = Compiler::<Ticket>::new(vocabulary());
+        let mut compiler = with_stdlib();
         let compiled = compiler
             .add(&source)
             .and_then(|()| compiler.finish().map(|_| ()));
@@ -453,11 +464,11 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
     );
     assert_eq!(
         said("1 ticket lt"),
-        "type: t:1: lt: takes two integers, not an integer and a ticket"
+        "type: t:1: lt: lt compares two integers, two strings or two lists, not an integer and a ticket"
     );
     assert_eq!(
         said("ticket if 1 then"),
-        "type: t:1: if: takes a boolean (from eq, lt, gt or not), not a ticket"
+        "type: t:1: if: takes a boolean (from eq or lt), not a ticket"
     );
     assert_eq!(
         said("0 maybe drop 0 maybe drop"),
@@ -468,7 +479,7 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
         said("liar"),
         "contract: t:1: liar: the application gave 0 values, and its word says 1..=1"
     );
-    let mut compiler = Compiler::<Ticket>::new(vocabulary());
+    let mut compiler = with_stdlib();
     compiler.add(&token::source("t", "1\n  2 ask")?)?;
     let mut machine = Machine::new(compiler.finish()?, Limits::default());
     assert_eq!(
@@ -484,7 +495,7 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
 #[test]
 fn the_stack_fills_to_its_limit_exactly() -> Result<(), Error> {
     let run_with = |text: &str| -> Result<Outcome<i64>, Error> {
-        let mut compiler = Compiler::<Ticket>::new(vocabulary());
+        let mut compiler = with_stdlib();
         compiler.add(&token::source("t", text)?)?;
         let limits = Limits {
             stack: 2,
@@ -510,6 +521,10 @@ fn the_stack_fills_to_its_limit_exactly() -> Result<(), Error> {
 #[test]
 fn every_builtin_effect_names_what_it_takes() {
     for builtin in Builtin::ALL {
+        // pick and roll take a count, then as many values as it says.
+        if matches!(builtin, Builtin::Pick | Builtin::Roll) {
+            continue;
+        }
         let (before, after) = builtin.effect().split_once("--").unwrap_or_default();
         assert_eq!(
             before.split_whitespace().count(),
@@ -518,7 +533,8 @@ fn every_builtin_effect_names_what_it_takes() {
             builtin.name()
         );
         assert!(
-            !after.trim().is_empty() || builtin == Builtin::Drop,
+            !after.trim().is_empty()
+                || matches!(builtin, Builtin::Drop | Builtin::Print | Builtin::Fail),
             "{}",
             builtin.name()
         );

@@ -8,10 +8,11 @@
 //!
 //! The stack is described from the top down: the kinds of the top values,
 //! as far as they are known, and below them the rest, whose depth is a
-//! range. In a definition the depth is counted from where the stack was
-//! when it was called, which isn't known; each definition is summed up by
-//! how many of its caller's values it surely uses and what it leaves, and a
-//! call applies that summary.
+//! range. At the top level, and inside `list … end`, the depth is counted
+//! from an empty stack. In a definition it is counted from where the stack
+//! was when it was called, which isn't known; each definition is summed up
+//! by how many of its caller's values it surely uses and what it leaves,
+//! and a call applies that summary.
 use crate::compile::{Builtin, Op, Program, Steps};
 use crate::error::{Code, Error};
 use crate::value::Value;
@@ -39,8 +40,11 @@ struct Kinds(u8);
 const INT: Kinds = Kinds(1);
 const BOOL: Kinds = Kinds(2);
 const STR: Kinds = Kinds(4);
-const APP: Kinds = Kinds(8);
-const ANY: Kinds = Kinds(15);
+const LIST: Kinds = Kinds(8);
+const APP: Kinds = Kinds(16);
+const ANY: Kinds = Kinds(31);
+/// A string or a list.
+const SEQ: Kinds = Kinds(12);
 
 impl Kinds {
     fn of<A>(value: &Value<A>) -> Kinds {
@@ -48,12 +52,17 @@ impl Kinds {
             Value::Int(_) => INT,
             Value::Bool(_) => BOOL,
             Value::Str(_) => STR,
+            Value::List(_) => LIST,
             Value::App(_) => APP,
         }
     }
 
     fn union(self, other: Kinds) -> Kinds {
         Kinds(self.0 | other.0)
+    }
+
+    fn and(self, other: Kinds) -> Kinds {
+        Kinds(self.0 & other.0)
     }
 
     fn may_be(self, kind: Kinds) -> bool {
@@ -66,6 +75,7 @@ impl Kinds {
             (INT, "an integer"),
             (BOOL, "a boolean"),
             (STR, "a string"),
+            (LIST, "a list"),
             (APP, "an application value"),
         ];
         let said: Vec<&str> = names
@@ -88,6 +98,16 @@ struct State {
     hi: i64,
     /// How many of the values there at entry every way here has used.
     used: i64,
+    /// Whether the depth is counted from an empty stack (the top level, or
+    /// a `list` body), so too few values is an error here.
+    bounded: bool,
+    /// The states each open `list` began from, innermost last.
+    outer: Vec<State>,
+    /// What kind each open `each` gives, innermost last.
+    iters: Vec<Kinds>,
+    /// Whether a `roll` of a depth not known before running ran: values
+    /// below may have moved, so what was known of their kinds is not.
+    scrambled: bool,
 }
 
 /// What a definition does, as its callers see it.
@@ -99,48 +119,73 @@ struct Summary {
     /// The stack where it returns, counted from where it was called;
     /// `None` if it never returns.
     exit: Option<State>,
+    /// Whether it may move its caller's values (a `roll` of unknown depth).
+    scrambled: bool,
+    /// For each of its top inputs (the top first), the kinds every way
+    /// through it fails on, each with why: a call given one is refused.
+    refuses: Vec<Vec<(Kinds, String)>>,
 }
+
+/// How many of a definition's top inputs have the kinds they take found.
+const INPUTS: usize = 4;
+
+/// The kinds a definition's input may be tried as, one by one.
+const EACH_KIND: [Kinds; 5] = [INT, BOOL, STR, LIST, APP];
 
 impl Summary {
     /// What a definition might do, for one the checker can't follow.
     fn anything() -> Summary {
-        let mut exit = State::start();
-        exit.forget(BIG.saturating_neg(), BIG, Entry::Unknown);
+        let mut exit = State::start(false);
+        exit.forget(BIG.saturating_neg(), BIG);
         exit.used = 0;
         Summary {
             need: 0,
             exit: Some(exit),
+            scrambled: true,
+            refuses: Vec::new(),
         }
     }
 }
 
 /// A step that surely fails: why.
 enum Failing {
-    /// It takes `takes`, and the stack has from `lo` to `hi`.
-    Underflow { takes: i64, lo: i64, hi: i64 },
+    /// It takes `takes`, and the stack has from `lo` to `hi`; `inside`
+    /// a `list` body.
+    Underflow {
+        takes: i64,
+        lo: i64,
+        hi: i64,
+        inside: bool,
+    },
     /// Its values can't be the kinds it takes.
     Type(String),
 }
 
-/// How deep the stack is where a unit's code starts: known for the top
-/// level (empty), not for a definition.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Entry {
-    Empty,
-    Unknown,
+/// Whether a run can go on past a step.
+enum Flow {
+    Go,
+    /// It never returns, and doesn't fail: a call to a definition that
+    /// doesn't return.
+    Diverge,
+    /// It stops the run on purpose (`fail`).
+    Stop,
 }
 
 impl State {
-    fn start() -> State {
+    fn start(bounded: bool) -> State {
         State {
             top: Vec::new(),
             lo: 0,
             hi: 0,
             used: 0,
+            bounded,
+            outer: Vec::new(),
+            iters: Vec::new(),
+            scrambled: false,
         }
     }
 
-    /// The depth, from `lo` to `hi`, where it is known (the top level).
+    /// The depth, from `lo` to `hi`, where it is known.
     fn depth(&self) -> (i64, i64) {
         let top = len(&self.top);
         (self.lo.saturating_add(top), self.hi.saturating_add(top))
@@ -149,8 +194,8 @@ impl State {
     /// Keeps the ranges true: no depth below empty where it starts empty,
     /// and every way here has used at least what the deepest it can be
     /// leaves.
-    fn settle(&mut self, entry: Entry) {
-        if entry == Entry::Empty {
+    fn settle(&mut self) {
+        if self.bounded {
             self.lo = self.lo.max(0);
         }
         self.used = self.used.max(self.hi.saturating_neg());
@@ -166,20 +211,21 @@ impl State {
     }
 
     /// Takes `n` values; their kinds, the deepest first.
-    fn pop(&mut self, n: usize, entry: Entry) -> Result<Vec<Kinds>, Failing> {
+    fn pop(&mut self, n: usize) -> Result<Vec<Kinds>, Failing> {
         let from_rest = n.saturating_sub(self.top.len());
         let missing = i64::try_from(from_rest).unwrap_or(BIG);
-        if entry == Entry::Empty && self.hi.saturating_sub(missing) < 0 {
+        if self.bounded && self.hi.saturating_sub(missing) < 0 {
             let (lo, hi) = self.depth();
             return Err(Failing::Underflow {
                 takes: i64::try_from(n).unwrap_or(BIG),
                 lo,
                 hi,
+                inside: !self.outer.is_empty(),
             });
         }
         self.lo = self.lo.saturating_sub(missing);
         self.hi = self.hi.saturating_sub(missing);
-        self.settle(entry);
+        self.settle();
         let keep = self.top.len().saturating_sub(n);
         let mut taken = vec![ANY; from_rest];
         taken.extend(self.top.iter().skip(keep).copied());
@@ -189,12 +235,12 @@ impl State {
 
     /// Forgets the top values' kinds, and adds from `lo` to `hi` values of
     /// any kind.
-    fn forget(&mut self, lo: i64, hi: i64, entry: Entry) {
+    fn forget(&mut self, lo: i64, hi: i64) {
         let top = len(&self.top);
         self.top.clear();
         self.lo = self.lo.saturating_add(top).saturating_add(lo);
         self.hi = self.hi.saturating_add(top).saturating_add(hi);
-        self.settle(entry);
+        self.settle();
     }
 
     /// What either way may be.
@@ -204,17 +250,35 @@ impl State {
         let top = self.top.iter().rev().zip(other.top.iter().rev());
         let mut top: Vec<Kinds> = top.take(kept).map(|(a, b)| a.union(*b)).collect();
         top.reverse();
+        let outer = if self.outer.len() == other.outer.len() {
+            (self.outer.iter().zip(&other.outer))
+                .map(|(a, b)| a.join(b))
+                .collect()
+        } else {
+            self.outer.clone()
+        };
+        let iters = if self.iters.len() == other.iters.len() {
+            (self.iters.iter().zip(&other.iters))
+                .map(|(a, b)| a.union(*b))
+                .collect()
+        } else {
+            self.iters.clone()
+        };
         State {
             top,
             lo: (self.lo.saturating_add(rest(self))).min(other.lo.saturating_add(rest(other))),
             hi: (self.hi.saturating_add(rest(self))).max(other.hi.saturating_add(rest(other))),
             used: self.used.min(other.used),
+            bounded: self.bounded,
+            outer,
+            iters,
+            scrambled: self.scrambled || other.scrambled,
         }
     }
 
     /// `joined` (this joined with a new way), with a depth that keeps
     /// changing taken as unbounded.
-    fn widen(&self, mut joined: State, entry: Entry) -> State {
+    fn widen(&self, mut joined: State) -> State {
         let (lo, hi) = self.depth();
         let (new_lo, new_hi) = joined.depth();
         let top = len(&joined.top);
@@ -224,7 +288,7 @@ impl State {
         if new_hi > hi {
             joined.hi = BIG;
         }
-        joined.settle(entry);
+        joined.settle();
         joined
     }
 }
@@ -242,7 +306,7 @@ pub(crate) fn check<A>(program: &Program<A>) -> Result<(), Error> {
         // Recursion: gone over until its summary stays the same, starting
         // from knowing nothing of what a call to itself does.
         for round in 0..=RECURSION_ROUNDS {
-            let new = Unit::new(program, code, Entry::Unknown, &summaries).run();
+            let new = Unit::new(program, code, State::start(false), &summaries).run();
             let current = summaries.get(id).cloned().flatten();
             let next = match (&current, new) {
                 (_, None) => current.clone(),
@@ -251,10 +315,12 @@ pub(crate) fn check<A>(program: &Program<A>) -> Result<(), Error> {
                 (Some(old), Some(new)) => Some(Summary {
                     need: old.need.min(new.need),
                     exit: match (&old.exit, new.exit) {
-                        (Some(old), Some(new)) => Some(old.widen(old.join(&new), Entry::Unknown)),
+                        (Some(old), Some(new)) => Some(old.widen(old.join(&new))),
                         (Some(old), None) => Some(old.clone()),
                         (None, new) => new,
                     },
+                    scrambled: old.scrambled || new.scrambled,
+                    refuses: Vec::new(),
                 }),
             };
             if next == current {
@@ -264,14 +330,58 @@ pub(crate) fn check<A>(program: &Program<A>) -> Result<(), Error> {
                 *slot = next;
             }
         }
-        let error = Unit::new(program, code, Entry::Unknown, &summaries).first_error();
+        let refuses = refusals(program, code, &summaries, id);
+        if let Some(Some(summary)) = summaries.get_mut(id) {
+            summary.refuses = refuses;
+        }
+        let error = Unit::new(program, code, State::start(false), &summaries).first_error();
         first = earliest(first, error);
     }
-    let error = Unit::new(program, &program.main, Entry::Empty, &summaries).first_error();
+    let error = Unit::new(program, &program.main, State::start(true), &summaries).first_error();
     match earliest(first, error) {
         Some(error) => Err(error),
         None => Ok(()),
     }
+}
+
+/// For each of definition `id`'s top inputs, the kinds every way through
+/// it fails on, and why: it is gone over with that input taken as each
+/// kind in turn.
+fn refusals<A>(
+    program: &Program<A>,
+    code: &Steps<A>,
+    summaries: &[Option<Summary>],
+    id: usize,
+) -> Vec<Vec<(Kinds, String)>> {
+    let need = match summaries.get(id) {
+        Some(Some(summary)) => usize::try_from(summary.need).unwrap_or(0),
+        Some(None) | None => 0,
+    };
+    let inputs = need.min(INPUTS);
+    (0..inputs)
+        .map(|slot| {
+            EACH_KIND
+                .iter()
+                .filter_map(|kind| {
+                    let mut start = State::start(false);
+                    let depth = i64::try_from(need).unwrap_or(BIG);
+                    start.lo = depth.saturating_neg();
+                    start.hi = start.lo;
+                    start.top = vec![ANY; need];
+                    let at = need.saturating_sub(1).saturating_sub(slot);
+                    if let Some(input) = start.top.get_mut(at) {
+                        *input = *kind;
+                    }
+                    let unit = Unit::new(program, code, start, summaries);
+                    if unit.run().is_some() {
+                        return None;
+                    }
+                    let why = unit.first_error().map(|e| e.message);
+                    Some((*kind, why.unwrap_or_else(|| "it always fails".to_owned())))
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// The error written first in the source.
@@ -302,7 +412,8 @@ type Blocks = std::collections::BTreeMap<usize, (State, u32)>;
 struct Unit<'a, A> {
     program: &'a Program<A>,
     code: &'a Steps<A>,
-    entry: Entry,
+    /// The stack where the code starts: empty at the top level.
+    start: State,
     summaries: &'a [Option<Summary>],
     /// The steps where a block starts: the first, every jump's target, and
     /// each step after a jump.
@@ -313,12 +424,12 @@ impl<'a, A> Unit<'a, A> {
     fn new(
         program: &'a Program<A>,
         code: &'a Steps<A>,
-        entry: Entry,
+        start: State,
         summaries: &'a [Option<Summary>],
     ) -> Unit<'a, A> {
         let mut starts = BTreeSet::from([0]);
         for (at, op) in code.ops.iter().enumerate() {
-            if let Op::Jump(to) | Op::JumpUnless(to) = op {
+            if let Op::Jump(to) | Op::JumpUnless(to) | Op::EachNext(to) = op {
                 starts.insert(*to);
                 starts.insert(at.saturating_add(1));
             }
@@ -326,7 +437,7 @@ impl<'a, A> Unit<'a, A> {
         Unit {
             program,
             code,
-            entry,
+            start,
             summaries,
             starts,
         }
@@ -341,7 +452,8 @@ impl<'a, A> Unit<'a, A> {
     /// With them, the least of what the ways that never return (a call to a
     /// definition that doesn't) had used of the entry's values.
     fn states(&self) -> Option<(Blocks, Option<i64>)> {
-        let mut states = std::collections::BTreeMap::from([(0, (State::start(), 0))]);
+        let first = (self.start.clone(), 0);
+        let mut states = std::collections::BTreeMap::from([(0, first)]);
         let mut todo = BTreeSet::from([0usize]);
         let mut diverged: Option<i64> = None;
         // A block's state changes a bounded number of times: widened twice,
@@ -358,7 +470,7 @@ impl<'a, A> Unit<'a, A> {
                     Some((old, seen)) => {
                         let joined = old.join(&next);
                         let joined = if *seen >= WIDEN_AFTER {
-                            old.widen(joined, self.entry)
+                            old.widen(joined)
                         } else {
                             joined
                         };
@@ -382,6 +494,7 @@ impl<'a, A> Unit<'a, A> {
         let Some((mut states, diverged)) = self.states() else {
             return Some(Summary::anything());
         };
+        let scrambled = states.values().any(|(s, _)| s.scrambled);
         let exit = states.remove(&end).map(|(state, _)| state);
         let need = match (&exit, diverged) {
             (Some(exit), Some(diverged)) => exit.used.min(diverged),
@@ -389,7 +502,12 @@ impl<'a, A> Unit<'a, A> {
             (None, Some(diverged)) => diverged,
             (None, None) => return None,
         };
-        Some(Summary { need, exit })
+        Some(Summary {
+            need,
+            exit,
+            scrambled,
+            refuses: Vec::new(),
+        })
     }
 
     fn first_error(&self) -> Option<Error> {
@@ -423,27 +541,43 @@ impl<'a, A> Unit<'a, A> {
                 return Vec::new();
             };
             let next = at.saturating_add(1);
-            let step = self.step(op, &mut state);
-            match step {
+            // The head of an `each`: on into the body with an element, or
+            // out past the loop.
+            if let Op::EachNext(out) = op {
+                let mut body = state.clone();
+                body.push(state.iters.last().copied().unwrap_or(ANY));
+                state.iters.pop();
+                return vec![(next, body), (*out, state)];
+            }
+            match self.step(op, &mut state) {
                 Err(failing) => {
                     failed(at, self.error(at, op, failing));
                     return Vec::new();
                 }
-                Ok(false) => {
+                Ok(Flow::Diverge) => {
                     *diverged = Some(diverged.map_or(state.used, |d| d.min(state.used)));
                     return Vec::new();
                 }
-                Ok(true) => {}
+                Ok(Flow::Stop) => return Vec::new(),
+                Ok(Flow::Go) => {}
             }
             match op {
                 Op::Jump(to) => return vec![(*to, state)],
                 Op::JumpUnless(to) => return vec![(next, state.clone()), (*to, state)],
                 Op::Push(_)
                 | Op::Builtin(_)
+                | Op::PickN(_)
+                | Op::RollN(_)
                 | Op::App(_)
                 | Op::Call(_)
-                | Op::SetConst(_)
-                | Op::GetConst(_) => {}
+                | Op::SetLocal(_)
+                | Op::GetLocal(_)
+                | Op::SetGlobal(_)
+                | Op::GetGlobal(_)
+                | Op::Mark
+                | Op::Gather
+                | Op::EachStart
+                | Op::EachNext(_) => {}
             }
             if self.starts.contains(&next) || next >= self.code.ops.len() {
                 return vec![(next, state)];
@@ -453,18 +587,32 @@ impl<'a, A> Unit<'a, A> {
     }
 
     /// One step: whether a run can go on past it.
-    fn step(&self, op: &Op<A>, state: &mut State) -> Result<bool, Failing> {
-        let entry = self.entry;
+    fn step(&self, op: &Op<A>, state: &mut State) -> Result<Flow, Failing> {
         match op {
             Op::Push(value) => state.push(Kinds::of(value)),
-            Op::Builtin(builtin) => builtin_step(*builtin, state, entry)?,
+            Op::Builtin(builtin) => return builtin_step(*builtin, state),
+            Op::PickN(n) => {
+                let taken = state.pop(n.saturating_add(1))?;
+                let copy = taken.first().copied().unwrap_or(ANY);
+                for kinds in taken {
+                    state.push(kinds);
+                }
+                state.push(copy);
+            }
+            Op::RollN(n) => {
+                let taken = state.pop(n.saturating_add(1))?;
+                for kinds in taken.iter().skip(1) {
+                    state.push(*kinds);
+                }
+                state.push(taken.first().copied().unwrap_or(ANY));
+            }
             Op::App(id) => {
                 let (takes, gives) = self
                     .program
                     .vocabulary
                     .word(*id)
                     .map_or((0, 0..=0), |(_, takes, gives)| (takes, gives));
-                state.pop(takes, entry)?;
+                state.pop(takes)?;
                 let (lo, hi) = (*gives.start(), *gives.end());
                 if lo == hi {
                     for _ in 0..lo {
@@ -472,36 +620,84 @@ impl<'a, A> Unit<'a, A> {
                     }
                 } else {
                     let count = |n: usize| i64::try_from(n).unwrap_or(BIG);
-                    state.forget(count(lo), count(hi), entry);
+                    state.forget(count(lo), count(hi));
                 }
             }
             Op::Call(id) => {
                 let Some(Some(summary)) = self.summaries.get(*id) else {
                     // Nothing known of it yet: a call to itself, the first
                     // time through.
-                    return Ok(false);
+                    return Ok(Flow::Diverge);
                 };
-                state.pop(usize::try_from(summary.need).unwrap_or(0), entry)?;
+                let given: Vec<Kinds> = state.top.iter().rev().copied().collect();
+                for (slot, refused) in summary.refuses.iter().enumerate() {
+                    let Some(kinds) = given.get(slot) else {
+                        break;
+                    };
+                    let fails = refused.iter().fold(Kinds(0), |all, (k, _)| all.union(*k));
+                    if kinds.and(fails) == *kinds && kinds.0 != 0 {
+                        let why = refused.iter().find(|(k, _)| kinds.may_be(*k));
+                        let why = why.map_or("it always fails", |(_, why)| why.as_str());
+                        return Err(Failing::Type(why.to_owned()));
+                    }
+                }
+                state.pop(usize::try_from(summary.need).unwrap_or(0))?;
+                if summary.scrambled {
+                    state.forget(0, 0);
+                    state.scrambled = true;
+                }
                 let Some(exit) = &summary.exit else {
-                    return Ok(false);
+                    return Ok(Flow::Diverge);
                 };
                 let lo = exit.lo.saturating_add(summary.need);
                 let hi = exit.hi.saturating_add(summary.need);
                 if lo != 0 || hi != 0 {
-                    state.forget(lo, hi, entry);
+                    state.forget(lo, hi);
                 }
                 for kinds in &exit.top {
                     state.push(*kinds);
                 }
             }
-            Op::Jump(_) => {}
-            Op::JumpUnless(_) => flag(state, entry)?,
-            Op::SetConst(_) => {
-                state.pop(1, entry)?;
+            Op::Jump(_) | Op::EachNext(_) => {}
+            Op::JumpUnless(_) => flag(state)?,
+            Op::SetLocal(_) | Op::SetGlobal(_) => {
+                state.pop(1)?;
             }
-            Op::GetConst(_) => state.push(ANY),
+            Op::GetLocal(_) | Op::GetGlobal(_) => state.push(ANY),
+            Op::Mark => {
+                let mut inner = State::start(true);
+                inner.iters = state.iters.clone();
+                inner.outer = std::mem::take(&mut state.outer);
+                inner
+                    .outer
+                    .push(std::mem::replace(state, State::start(true)));
+                *state = inner;
+            }
+            Op::Gather => {
+                let mut outer = state.outer.pop().unwrap_or_else(|| {
+                    let mut unknown = State::start(false);
+                    unknown.forget(BIG.saturating_neg(), BIG);
+                    unknown
+                });
+                outer.outer = std::mem::take(&mut state.outer);
+                outer.iters = state.iters.clone();
+                outer.scrambled = outer.scrambled || state.scrambled;
+                outer.push(LIST);
+                *state = outer;
+            }
+            Op::EachStart => {
+                let taken = state.pop(1)?;
+                let kinds = taken.first().copied().unwrap_or(ANY);
+                if !kinds.may_be(SEQ) {
+                    return Err(Failing::Type(format!(
+                        "each walks a string or a list, not {}",
+                        kinds.describe()
+                    )));
+                }
+                state.iters.push(if kinds == STR { STR } else { ANY });
+            }
         }
-        Ok(true)
+        Ok(Flow::Go)
     }
 
     fn error(&self, at: usize, op: &Op<A>, failing: Failing) -> Error {
@@ -511,7 +707,12 @@ impl<'a, A> Unit<'a, A> {
             Failing::Type(_) => Code::Type,
         };
         let message = match failing {
-            Failing::Underflow { takes, lo, hi } => {
+            Failing::Underflow {
+                takes,
+                lo,
+                hi,
+                inside,
+            } => {
                 let values = if takes == 1 { "value" } else { "values" };
                 let has = if lo == hi {
                     format!("{hi}")
@@ -522,13 +723,26 @@ impl<'a, A> Unit<'a, A> {
                     Op::Call(_) => format!("needs at least {takes}"),
                     Op::Push(_)
                     | Op::Builtin(_)
+                    | Op::PickN(_)
+                    | Op::RollN(_)
                     | Op::App(_)
                     | Op::Jump(_)
                     | Op::JumpUnless(_)
-                    | Op::SetConst(_)
-                    | Op::GetConst(_) => format!("takes {takes}"),
+                    | Op::SetLocal(_)
+                    | Op::GetLocal(_)
+                    | Op::SetGlobal(_)
+                    | Op::GetGlobal(_)
+                    | Op::Mark
+                    | Op::Gather
+                    | Op::EachStart
+                    | Op::EachNext(_) => format!("takes {takes}"),
                 };
-                format!("{takes} {values}, and the stack has {has} here")
+                let inside = if inside {
+                    " (inside list … end, which starts with an empty stack)"
+                } else {
+                    ""
+                };
+                format!("{takes} {values}, and the stack has {has} here{inside}")
             }
             Failing::Type(message) => message,
         };
@@ -541,67 +755,137 @@ impl<'a, A> Unit<'a, A> {
     }
 }
 
-/// Takes a boolean, as `if`, `until` and `not` do.
-fn flag(state: &mut State, entry: Entry) -> Result<(), Failing> {
-    let taken = state.pop(1, entry)?;
+/// Takes a boolean, as `if` and `until` do.
+fn flag(state: &mut State) -> Result<(), Failing> {
+    let taken = state.pop(1)?;
     match taken.as_slice() {
         [kinds] if !kinds.may_be(BOOL) => Err(Failing::Type(format!(
-            "takes a boolean (from eq, lt, gt or not), not {}",
+            "takes a boolean (from eq or lt), not {}",
             kinds.describe()
         ))),
         [_] | [] | [_, _, ..] => Ok(()),
     }
 }
 
-fn builtin_step(builtin: Builtin, state: &mut State, entry: Entry) -> Result<(), Failing> {
-    let taken = state.pop(builtin.takes(), entry)?;
-    let ints = |taken: &[Kinds]| {
-        let message = match taken {
-            [a, b] if !a.may_be(INT) && !b.may_be(INT) => {
-                format!("not {} and {}", a.describe(), b.describe())
+/// A value that must be a string or a list, for `word`.
+fn seq(word: &str, kinds: Kinds) -> Result<Kinds, Failing> {
+    if kinds.may_be(SEQ) {
+        Ok(kinds.and(SEQ))
+    } else {
+        Err(Failing::Type(format!(
+            "{word} takes a string or a list, not {}",
+            kinds.describe()
+        )))
+    }
+}
+
+/// A value that must be an integer, for `word`.
+fn int(word: &str, kinds: Kinds) -> Result<(), Failing> {
+    if kinds.may_be(INT) {
+        Ok(())
+    } else {
+        Err(Failing::Type(format!(
+            "{word} takes an integer, not {}",
+            kinds.describe()
+        )))
+    }
+}
+
+fn builtin_step(builtin: Builtin, state: &mut State) -> Result<Flow, Failing> {
+    let name = builtin.name();
+    let taken = state.pop(builtin.takes())?;
+    let at = |i: usize| taken.get(i).copied().unwrap_or(ANY);
+    match builtin {
+        Builtin::Drop | Builtin::Print => {}
+        Builtin::Fail => return Ok(Flow::Stop),
+        Builtin::Pick => {
+            int(name, at(0))?;
+            // At least the value it copies; which one isn't known.
+            let one = state.pop(1)?;
+            state.push(one.first().copied().unwrap_or(ANY));
+            state.push(ANY);
+        }
+        Builtin::Roll => {
+            int(name, at(0))?;
+            let one = state.pop(1)?;
+            state.push(one.first().copied().unwrap_or(ANY));
+            // Some value from below comes up: what was known of their
+            // kinds, and of the caller's, is not any more.
+            state.forget(0, 0);
+            state.scrambled = true;
+        }
+        Builtin::Add | Builtin::Sub | Builtin::Mul | Builtin::Div => {
+            let (a, b) = (at(0), at(1));
+            let message = match (a.may_be(INT), b.may_be(INT)) {
+                (false, false) => Some(format!("not {} and {}", a.describe(), b.describe())),
+                (false, true) => Some(format!("and the one under the top is {}", a.describe())),
+                (true, false) => Some(format!("and the top one is {}", b.describe())),
+                (true, true) => None,
+            };
+            if let Some(message) = message {
+                return Err(Failing::Type(format!("takes two integers, {message}")));
             }
-            [a, _] if !a.may_be(INT) => format!("and the one under the top is {}", a.describe()),
-            [_, b] if !b.may_be(INT) => format!("and the top one is {}", b.describe()),
-            [_, _] | [] | [_] | [_, _, _, ..] => return Ok(()),
-        };
-        Err(Failing::Type(format!("takes two integers, {message}")))
-    };
-    match (builtin, taken.as_slice()) {
-        (Builtin::Dup, [a]) => {
-            state.push(*a);
-            state.push(*a);
-        }
-        (Builtin::Swap, [a, b]) => {
-            state.push(*b);
-            state.push(*a);
-        }
-        (Builtin::Over, [a, b]) => {
-            state.push(*a);
-            state.push(*b);
-            state.push(*a);
-        }
-        (Builtin::Rot, [a, b, c]) => {
-            state.push(*b);
-            state.push(*c);
-            state.push(*a);
-        }
-        (Builtin::Add | Builtin::Sub | Builtin::Mul | Builtin::Div | Builtin::Mod, taken) => {
-            ints(taken)?;
             state.push(INT);
         }
-        (Builtin::Lt | Builtin::Gt, taken) => {
-            ints(taken)?;
+        Builtin::Lt => {
+            let (a, b) = (at(0), at(1));
+            if !a.and(b).may_be(Kinds(INT.0 | SEQ.0)) {
+                return Err(Failing::Type(format!(
+                    "lt compares two integers, two strings or two lists, not {} and {}",
+                    a.describe(),
+                    b.describe()
+                )));
+            }
             state.push(BOOL);
         }
-        (Builtin::Eq, _) => state.push(BOOL),
-        (Builtin::Not, [kinds]) if !kinds.may_be(BOOL) => {
-            return Err(Failing::Type(format!(
-                "takes a boolean (from eq, lt, gt or not), not {}",
-                kinds.describe()
-            )));
+        Builtin::Eq => state.push(BOOL),
+        Builtin::Len => {
+            seq(name, at(0))?;
+            state.push(INT);
         }
-        (Builtin::Not, _) => state.push(BOOL),
-        (Builtin::Drop, _) | (Builtin::Dup | Builtin::Swap | Builtin::Over | Builtin::Rot, _) => {}
+        Builtin::At => {
+            let s = seq(name, at(0))?;
+            int(name, at(1))?;
+            state.push(if s == STR { STR } else { ANY });
+        }
+        Builtin::Slice => {
+            let s = seq(name, at(0))?;
+            int(name, at(1))?;
+            int(name, at(2))?;
+            state.push(s);
+        }
+        Builtin::Concat => {
+            if !at(0).may_be(LIST) {
+                return Err(Failing::Type(format!(
+                    "concat takes a list of strings or of lists, not {}",
+                    at(0).describe()
+                )));
+            }
+            state.push(SEQ);
+        }
+        Builtin::Push => {
+            let s = seq(name, at(0))?;
+            state.push(s);
+        }
+        Builtin::Put => {
+            let s = seq(name, at(0))?;
+            int(name, at(1))?;
+            state.push(s);
+        }
+        Builtin::Code => {
+            if !at(0).may_be(STR) {
+                return Err(Failing::Type(format!(
+                    "code takes a one-character string, not {}",
+                    at(0).describe()
+                )));
+            }
+            state.push(INT);
+        }
+        Builtin::Char => {
+            int(name, at(0))?;
+            state.push(STR);
+        }
+        Builtin::Kind | Builtin::String => state.push(STR),
     }
-    Ok(())
+    Ok(Flow::Go)
 }

@@ -27,6 +27,10 @@ impl Host for Ticks {
         out.push(Value::Int(1));
         Ok(Done::Now)
     }
+
+    fn print(&mut self, _line: &str) -> Result<(), Failure> {
+        Ok(())
+    }
 }
 
 const PROGRAMS: [(&str, &str); 4] = [

@@ -38,9 +38,13 @@ Most steps have one of these shapes (UPPER = what you fill in):
   fux %2 str Load await                 wait until it shows Load
   fux ls                                what there is
 
-Language: dup drop swap over rot  add sub mul div mod  eq lt gt not
-  if … else … then   begin … until   define NAME … end   constant NAME
-  str WORD   # a comment to the end of the line
+The language's core: str WORD   define NAME … end   let NAME (names the
+  top value)   if … else … then   begin … until   list … end (a list of
+  what its body leaves)   each … end (the body once per element)
+  drop pick roll   add sub mul div   lt eq   len at slice concat push put
+  code char   kind string print fail   # a comment to the end of the line
+  Everything else (dup swap over rot, not, mod, sort, upper, join, …) is
+  the standard library, written in fuxth: listed below.
   Mistakes a run would surely make (too few values, a string given to add
   or if) are found before anything runs.
 
@@ -60,7 +64,7 @@ One word at length: `fux str WORD explain`.
             word.name, word.effect, word.about
         ));
     }
-    out.push_str("\nBundled words (written in fuxth: its prelude, then fux's library):\n");
+    out.push_str("\nThe standard library and fux's library (both written in fuxth):\n");
     for (name, effect, about, _) in library() {
         out.push_str(&format!("  {name:<20} {effect:<28} {about}\n"));
     }
@@ -78,7 +82,7 @@ One word at length: `fux str WORD explain`.
 pub fn library() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
     let mut words = Vec::new();
     let mut comment = None;
-    for line in fuxth::PRELUDE.lines().chain(LIBRARY.lines()) {
+    for line in fuxth::STDLIB.lines().chain(LIBRARY.lines()) {
         if let Some(text) = line.strip_prefix("# ") {
             comment = text.split_once(" : ");
         } else if let Some(rest) = line.strip_prefix("define ") {
@@ -119,30 +123,25 @@ pub fn explain(name: &str) -> Option<String> {
         ));
     }
     if let Some(builtin) = fuxth::Builtin::ALL.iter().find(|b| b.name() == name) {
-        let about = match builtin {
-            fuxth::Builtin::Dup => ": a copy of the top value",
-            fuxth::Builtin::Drop => ": the top value dropped",
-            fuxth::Builtin::Swap => ": the top two swapped",
-            fuxth::Builtin::Over => ": a copy of the second value, on top",
-            fuxth::Builtin::Rot => ": the third value moved to the top",
-            fuxth::Builtin::Add
-            | fuxth::Builtin::Sub
-            | fuxth::Builtin::Mul
-            | fuxth::Builtin::Div
-            | fuxth::Builtin::Mod => {
-                ": integer arithmetic, checked; div truncates toward zero, and mod takes the sign of n"
-            }
-            fuxth::Builtin::Eq => ": whether two values are the same, of one kind",
-            fuxth::Builtin::Lt | fuxth::Builtin::Gt => ": comparing two integers",
-            fuxth::Builtin::Not => ": the other boolean",
-        };
-        return Some(format!("{name}  ( {} ){about}\n", builtin.effect()));
+        return Some(format!(
+            "{name}  ( {} )\n\n{}. One of the core's words.\n",
+            builtin.effect(),
+            builtin.about()
+        ));
     }
     let language = match name {
         "if" | "else" | "then" => "bool if … else … then: runs one branch",
         "begin" | "until" => "begin … bool until: runs until the bool is true",
-        "define" | "end" => "define NAME … end: a word of your own; it may call itself",
-        "constant" => "x constant NAME: NAME pushes x from then on",
+        "define" | "end" => {
+            "define NAME … end: a word of your own; it may call itself (end also closes list and each)"
+        }
+        "let" => "x let NAME: NAME pushes x from then on (in a definition, for that call)",
+        "list" => {
+            "list … end: a list of the values its body leaves; the body starts with an empty stack"
+        }
+        "each" => {
+            "seq each … end: the body once per element of a string or list, the element pushed"
+        }
         "str" => "str WORD: WORD as text, whatever it looks like",
         _ => return None,
     };

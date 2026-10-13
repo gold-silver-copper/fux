@@ -5,7 +5,7 @@
 
 opts str ask name 60 10 size
 str 'sh -c "printf \"name? \"; read n; echo got \${#n} letters; sleep 30"' command
-run constant ASK
+run let ASK
 
 ASK str 'name?' await drop
 ASK keys str fuxth text str Enter key str letters wait-text send-keys drop

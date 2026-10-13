@@ -7,7 +7,7 @@
 # expect: 0
 
 opts str 'sh -c "for i in 1 2 3; do echo tick \$i; sleep 0.1; done; echo done"' command
-run constant TICKS
+run let TICKS
 TICKS str done await
 dup opts capture
 swap exited str exited get

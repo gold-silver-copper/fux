@@ -4,10 +4,11 @@
 //! program does anything.
 //!
 //! The parsing words are a fixed set, the only ones that read the token
-//! after them: `str`, `define NAME … end` and `constant NAME`. Control flow
-//! (`if … else … then`, `begin … until`) is compiled to jumps, its open
-//! blocks kept on a compile-time stack. Every other word takes and gives
-//! values on the stack, and nothing else.
+//! after them or shape the program: `str`, `define NAME … end`,
+//! `let NAME`, `if … else … then`, `begin … until`, `list … end` and
+//! `each … end`. Control flow is compiled to jumps, its open blocks kept on
+//! a compile-time stack. Every other word takes and gives values on the
+//! stack, and nothing else.
 use crate::error::{Code, Error};
 use crate::token::Token;
 use crate::value::Value;
@@ -15,105 +16,170 @@ use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 
-/// The words fuxth itself gives.
+/// The words fuxth itself gives: its core. Everything else is the
+/// standard library, written in fuxth.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Builtin {
-    Dup,
     Drop,
-    Swap,
-    Over,
-    Rot,
+    Pick,
+    Roll,
     Add,
     Sub,
     Mul,
     Div,
-    Mod,
-    Eq,
     Lt,
-    Gt,
-    Not,
+    Eq,
+    Len,
+    At,
+    Slice,
+    Concat,
+    Push,
+    Put,
+    Code,
+    Char,
+    Kind,
+    String,
+    Print,
+    Fail,
 }
 
 impl Builtin {
-    pub const ALL: [Builtin; 14] = [
-        Builtin::Dup,
+    pub const ALL: [Builtin; 21] = [
         Builtin::Drop,
-        Builtin::Swap,
-        Builtin::Over,
-        Builtin::Rot,
+        Builtin::Pick,
+        Builtin::Roll,
         Builtin::Add,
         Builtin::Sub,
         Builtin::Mul,
         Builtin::Div,
-        Builtin::Mod,
-        Builtin::Eq,
         Builtin::Lt,
-        Builtin::Gt,
-        Builtin::Not,
+        Builtin::Eq,
+        Builtin::Len,
+        Builtin::At,
+        Builtin::Slice,
+        Builtin::Concat,
+        Builtin::Push,
+        Builtin::Put,
+        Builtin::Code,
+        Builtin::Char,
+        Builtin::Kind,
+        Builtin::String,
+        Builtin::Print,
+        Builtin::Fail,
     ];
 
     pub fn name(self) -> &'static str {
         match self {
-            Builtin::Dup => "dup",
             Builtin::Drop => "drop",
-            Builtin::Swap => "swap",
-            Builtin::Over => "over",
-            Builtin::Rot => "rot",
+            Builtin::Pick => "pick",
+            Builtin::Roll => "roll",
             Builtin::Add => "add",
             Builtin::Sub => "sub",
             Builtin::Mul => "mul",
             Builtin::Div => "div",
-            Builtin::Mod => "mod",
-            Builtin::Eq => "eq",
             Builtin::Lt => "lt",
-            Builtin::Gt => "gt",
-            Builtin::Not => "not",
+            Builtin::Eq => "eq",
+            Builtin::Len => "len",
+            Builtin::At => "at",
+            Builtin::Slice => "slice",
+            Builtin::Concat => "concat",
+            Builtin::Push => "push",
+            Builtin::Put => "put",
+            Builtin::Code => "code",
+            Builtin::Char => "char",
+            Builtin::Kind => "kind",
+            Builtin::String => "string",
+            Builtin::Print => "print",
+            Builtin::Fail => "fail",
         }
     }
 
     /// What it does to the stack, as help shows it.
     pub fn effect(self) -> &'static str {
         match self {
-            Builtin::Dup => "a -- a a",
-            Builtin::Drop => "a --",
-            Builtin::Swap => "a b -- b a",
-            Builtin::Over => "a b -- a b a",
-            Builtin::Rot => "a b c -- b c a",
+            Builtin::Drop => "x --",
+            Builtin::Pick => "xn … x0 n -- xn … x0 xn",
+            Builtin::Roll => "xn … x0 n -- xn-1 … x0 xn",
             Builtin::Add => "n m -- n+m",
             Builtin::Sub => "n m -- n-m",
             Builtin::Mul => "n m -- n*m",
             Builtin::Div => "n m -- n/m",
-            Builtin::Mod => "n m -- remainder",
+            Builtin::Lt => "a b -- a<b",
             Builtin::Eq => "a b -- a=b",
-            Builtin::Lt => "n m -- n<m",
-            Builtin::Gt => "n m -- n>m",
-            Builtin::Not => "flag -- !flag",
+            Builtin::Len => "seq -- n",
+            Builtin::At => "seq i -- x",
+            Builtin::Slice => "seq from to -- seq",
+            Builtin::Concat => "list -- seq",
+            Builtin::Push => "seq x -- seq",
+            Builtin::Put => "seq i x -- seq",
+            Builtin::Code => "c -- n",
+            Builtin::Char => "n -- c",
+            Builtin::Kind => "x -- name",
+            Builtin::String => "x -- s",
+            Builtin::Print => "x --",
+            Builtin::Fail => "x --",
         }
     }
 
-    /// How many values it takes.
+    /// What it does, in a line, as help says it.
+    pub fn about(self) -> &'static str {
+        match self {
+            Builtin::Drop => "the top value dropped",
+            Builtin::Pick => "a copy of the value n under the top (0 pick copies the top)",
+            Builtin::Roll => "the value n under the top moved to the top (1 roll swaps)",
+            Builtin::Add | Builtin::Sub | Builtin::Mul => "integer arithmetic, checked",
+            Builtin::Div => "integer division, checked; it truncates toward zero",
+            Builtin::Lt => "whether a comes before b: two integers, two strings or two lists",
+            Builtin::Eq => "whether two values are the same, of one kind",
+            Builtin::Len => "how many elements a string or list has",
+            Builtin::At => "element i, from 0 (of a string, a one-character string)",
+            Builtin::Slice => "the elements from `from` up to before `to`",
+            Builtin::Concat => {
+                "a list of strings joined into one string, or a list of lists into one list"
+            }
+            Builtin::Push => "x added at the end (to a string, x is a string)",
+            Builtin::Put => "element i replaced by x (in a string, by a string)",
+            Builtin::Code => "the character code of a one-character string",
+            Builtin::Char => "the one-character string with code n",
+            Builtin::Kind => "integer, boolean, string, list, or the host's kind",
+            Builtin::String => "x as text, as print shows it",
+            Builtin::Print => "print x now, a line",
+            Builtin::Fail => "stop the program, with x as the reason",
+        }
+    }
+
+    /// How many values it takes: `pick` and `roll` take a count, then as
+    /// many values as it says (the machine checks those).
     pub fn takes(self) -> usize {
         match self {
-            Builtin::Dup | Builtin::Drop | Builtin::Not => 1,
-            Builtin::Swap
-            | Builtin::Over
-            | Builtin::Add
+            Builtin::Drop
+            | Builtin::Pick
+            | Builtin::Roll
+            | Builtin::Len
+            | Builtin::Concat
+            | Builtin::Code
+            | Builtin::Char
+            | Builtin::Kind
+            | Builtin::String
+            | Builtin::Print
+            | Builtin::Fail => 1,
+            Builtin::Add
             | Builtin::Sub
             | Builtin::Mul
             | Builtin::Div
-            | Builtin::Mod
-            | Builtin::Eq
             | Builtin::Lt
-            | Builtin::Gt => 2,
-            Builtin::Rot => 3,
+            | Builtin::Eq
+            | Builtin::At
+            | Builtin::Push => 2,
+            Builtin::Slice | Builtin::Put => 3,
         }
     }
 }
 
 /// The words that read the token after them, or shape the program: no
-/// definition may take their names.
-pub const PARSING: [&str; 9] = [
-    "str", "define", "end", "constant", "if", "else", "then", "begin", "until",
+/// definition or `let` may take their names.
+pub const PARSING: [&str; 11] = [
+    "str", "define", "end", "let", "if", "else", "then", "begin", "until", "list", "each",
 ];
 
 /// The application's words: each a name, how many values it takes, and
@@ -152,24 +218,50 @@ impl Vocabulary {
 pub(crate) enum Op<A> {
     Push(Value<A>),
     Builtin(Builtin),
+    /// `pick` with its count written just before it.
+    PickN(usize),
+    /// `roll` with its count written just before it.
+    RollN(usize),
     App(usize),
     /// A definition, by its index.
     Call(usize),
     Jump(usize),
     /// Takes a boolean; jumps if it is false.
     JumpUnless(usize),
-    SetConst(usize),
-    GetConst(usize),
+    /// A `let` name of the definition's own, by its slot.
+    SetLocal(usize),
+    GetLocal(usize),
+    /// A `let` name of the top level's, by its slot.
+    SetGlobal(usize),
+    GetGlobal(usize),
+    /// `list`: the stack from here is the list's.
+    Mark,
+    /// `end` of a `list`: what is above the mark, gathered into a list.
+    Gather,
+    /// `each`: takes the string or list to walk.
+    EachStart,
+    /// The head of an `each` loop: the next element pushed, or, past the
+    /// last, a jump out to the step given.
+    EachNext(usize),
 }
 
-/// Steps, each with the token it came from.
+/// Steps, each with the token it came from, and how many `let` names of
+/// its own a definition keeps.
 #[derive(Clone, Debug)]
 pub(crate) struct Steps<A> {
     pub ops: Vec<Op<A>>,
     pub tokens: Vec<Token>,
+    pub locals: usize,
 }
 
 impl<A> Steps<A> {
+    fn new() -> Steps<A> {
+        Steps {
+            ops: Vec::new(),
+            tokens: Vec::new(),
+            locals: 0,
+        }
+    }
     fn push(&mut self, op: Op<A>, token: &Token) {
         self.ops.push(op);
         self.tokens.push(token.clone());
@@ -179,9 +271,32 @@ impl<A> Steps<A> {
     }
     /// Points the jump at `at` to `to`.
     fn patch(&mut self, at: usize, to: usize) {
-        if let Some(Op::Jump(target) | Op::JumpUnless(target)) = self.ops.get_mut(at) {
+        if let Some(Op::Jump(target) | Op::JumpUnless(target) | Op::EachNext(target)) =
+            self.ops.get_mut(at)
+        {
             *target = to;
         }
+    }
+
+    /// Whether it is short and straight enough to copy in at each call: a
+    /// few steps of literals and built-ins, no jumps, calls or names.
+    fn leaf(&self) -> bool {
+        self.ops.len() <= 4
+            && self.ops.iter().all(|op| match op {
+                Op::Push(_) | Op::Builtin(_) | Op::PickN(_) | Op::RollN(_) => true,
+                Op::App(_)
+                | Op::Call(_)
+                | Op::Jump(_)
+                | Op::JumpUnless(_)
+                | Op::SetLocal(_)
+                | Op::GetLocal(_)
+                | Op::SetGlobal(_)
+                | Op::GetGlobal(_)
+                | Op::Mark
+                | Op::Gather
+                | Op::EachStart
+                | Op::EachNext(_) => false,
+            })
     }
 }
 
@@ -190,7 +305,7 @@ impl<A> Steps<A> {
 pub struct Program<A> {
     pub(crate) main: Steps<A>,
     pub(crate) words: Vec<Steps<A>>,
-    pub(crate) constants: usize,
+    pub(crate) globals: usize,
     pub(crate) vocabulary: Vocabulary,
 }
 
@@ -200,7 +315,7 @@ enum Entry {
     Builtin(Builtin),
     App(usize),
     Word(usize),
-    Const(usize),
+    Global(usize),
 }
 
 /// A block open as compiling goes: where its jumps are, to patch.
@@ -209,6 +324,16 @@ enum Open {
     If { jump: usize, at: Token },
     Else { jump: usize, at: Token },
     Begin { start: usize, at: Token },
+    List { at: Token },
+    Each { head: usize, at: Token },
+}
+
+/// The definition being compiled: its index, its steps, and its own `let`
+/// names.
+struct Current<A> {
+    id: usize,
+    code: Steps<A>,
+    locals: HashMap<Rc<str>, usize>,
 }
 
 /// Compiles programs: sources added in order, all into one, then finished.
@@ -218,10 +343,16 @@ pub struct Compiler<A> {
     names: HashMap<Rc<str>, Entry>,
     main: Steps<A>,
     words: Vec<Steps<A>>,
-    constants: usize,
+    globals: usize,
     open: Vec<Open>,
-    /// The definition being compiled, while one is.
-    current: Option<(usize, Steps<A>)>,
+    current: Option<Current<A>>,
+    /// Whether the last step compiled is a number written just before, so
+    /// a `pick` or `roll` after it may take it as its count.
+    literal: bool,
+    /// How many definitions earlier sources made (the standard library's,
+    /// say): only theirs are copied in at a call, so a program's own words
+    /// stay calls, and its mistakes name them as written.
+    earlier: usize,
 }
 
 impl<A: Clone> Compiler<A> {
@@ -236,14 +367,13 @@ impl<A: Clone> Compiler<A> {
         Compiler {
             vocabulary,
             names,
-            main: Steps {
-                ops: Vec::new(),
-                tokens: Vec::new(),
-            },
+            main: Steps::new(),
             words: Vec::new(),
-            constants: 0,
+            globals: 0,
             open: Vec::new(),
             current: None,
+            literal: false,
+            earlier: 0,
         }
     }
 
@@ -251,16 +381,18 @@ impl<A: Clone> Compiler<A> {
     /// level.
     fn code(&mut self) -> &mut Steps<A> {
         match &mut self.current {
-            Some((_, code)) => code,
+            Some(current) => &mut current.code,
             None => &mut self.main,
         }
     }
 
     /// Compiles `tokens` onto what was compiled before.
     pub fn add(&mut self, tokens: &[Token]) -> Result<(), Error> {
+        self.earlier = self.words.len();
         let mut tokens = tokens.iter();
         while let Some(token) = tokens.next() {
             let text = &*token.text;
+            let literal = std::mem::replace(&mut self.literal, false);
             match text {
                 "str" => {
                     let next = tokens.next().ok_or_else(|| missing(token, "a string"))?;
@@ -270,42 +402,60 @@ impl<A: Clone> Compiler<A> {
                 "define" => {
                     self.top_level(token)?;
                     let name = tokens.next().ok_or_else(|| missing(token, "a name"))?;
-                    self.check_name(name)?;
+                    self.check_name(name, false)?;
                     let id = self.words.len();
                     // Visible from here on, its own body included.
                     self.names.insert(Rc::clone(&name.text), Entry::Word(id));
-                    self.words.push(Steps {
-                        ops: Vec::new(),
-                        tokens: Vec::new(),
-                    });
-                    self.current = Some((
+                    self.words.push(Steps::new());
+                    self.current = Some(Current {
                         id,
-                        Steps {
-                            ops: Vec::new(),
-                            tokens: Vec::new(),
-                        },
-                    ));
+                        code: Steps::new(),
+                        locals: HashMap::new(),
+                    });
                     self.open.push(Open::Define { at: token.clone() });
                 }
                 "end" => match self.open.pop() {
                     Some(Open::Define { .. }) => {
-                        if let Some((id, code)) = self.current.take()
-                            && let Some(slot) = self.words.get_mut(id)
+                        if let Some(current) = self.current.take()
+                            && let Some(slot) = self.words.get_mut(current.id)
                         {
-                            *slot = code;
+                            *slot = current.code;
                         }
                     }
+                    Some(Open::List { .. }) => self.code().push(Op::Gather, token),
+                    Some(Open::Each { head, .. }) => {
+                        self.code().push(Op::Jump(head), token);
+                        let out = self.code().len();
+                        self.code().patch(head, out);
+                    }
                     Some(other) => return Err(unclosed(&other)),
-                    None => return Err(unmatched(token, "no define is open")),
+                    None => return Err(unmatched(token, "no define, list or each is open")),
                 },
-                "constant" => {
-                    self.top_level(token)?;
+                "let" => {
                     let name = tokens.next().ok_or_else(|| missing(token, "a name"))?;
-                    self.check_name(name)?;
-                    let slot = self.constants;
-                    self.constants = slot.saturating_add(1);
-                    self.code().push(Op::SetConst(slot), token);
-                    self.names.insert(Rc::clone(&name.text), Entry::Const(slot));
+                    self.check_name(name, true)?;
+                    let op = match &mut self.current {
+                        Some(current) => {
+                            let next = current.locals.len();
+                            let slot = *current.locals.entry(Rc::clone(&name.text)).or_insert(next);
+                            current.code.locals = current.locals.len();
+                            Op::SetLocal(slot)
+                        }
+                        None => {
+                            let slot = match self.names.get(&name.text) {
+                                Some(Entry::Global(slot)) => *slot,
+                                Some(Entry::Builtin(_) | Entry::App(_) | Entry::Word(_)) | None => {
+                                    let slot = self.globals;
+                                    self.globals = slot.saturating_add(1);
+                                    self.names
+                                        .insert(Rc::clone(&name.text), Entry::Global(slot));
+                                    slot
+                                }
+                            };
+                            Op::SetGlobal(slot)
+                        }
+                    };
+                    self.code().push(op, token);
                 }
                 "if" => {
                     let jump = self.code().len();
@@ -350,34 +500,92 @@ impl<A: Clone> Compiler<A> {
                     Some(other) => return Err(mismatched(token, &other)),
                     None => return Err(unmatched(token, "no begin is open")),
                 },
-                text => {
-                    let number = is_number(text).then(|| text.parse::<i64>());
-                    let op = match (number, self.names.get(text)) {
-                        (Some(Ok(n)), _) => Op::Push(Value::Int(n)),
-                        // Digits, but more than an integer holds.
-                        (Some(Err(_)), _) => {
-                            return Err(Error {
-                                code: Code::Overflow,
-                                message: "a number past what an integer holds (64 bits)".to_owned(),
-                                place: Some(token.place.clone()),
-                                word: Some(Rc::clone(&token.text)),
-                            });
-                        }
-                        (None, Some(Entry::Builtin(b))) => Op::Builtin(*b),
-                        (None, Some(Entry::App(id))) => Op::App(*id),
-                        (None, Some(Entry::Word(id))) => Op::Call(*id),
-                        (None, Some(Entry::Const(slot))) => Op::GetConst(*slot),
-                        (None, None) => {
-                            return Err(Error {
-                                code: Code::UnknownWord,
-                                message: "no such word".to_owned(),
-                                place: Some(token.place.clone()),
-                                word: Some(Rc::clone(&token.text)),
-                            });
-                        }
-                    };
-                    self.code().push(op, token);
+                "list" => {
+                    self.code().push(Op::Mark, token);
+                    self.open.push(Open::List { at: token.clone() });
                 }
+                "each" => {
+                    self.code().push(Op::EachStart, token);
+                    let head = self.code().len();
+                    self.code().push(Op::EachNext(0), token);
+                    self.open.push(Open::Each {
+                        head,
+                        at: token.clone(),
+                    });
+                }
+                text => self.word(token, text, literal)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// A word that is not a parsing word: a number, or a name.
+    fn word(&mut self, token: &Token, text: &str, literal: bool) -> Result<(), Error> {
+        if is_number(text) {
+            let Ok(n) = text.parse::<i64>() else {
+                return Err(Error {
+                    code: Code::Overflow,
+                    message: "a number past what an integer holds (64 bits)".to_owned(),
+                    place: Some(token.place.clone()),
+                    word: Some(Rc::clone(&token.text)),
+                });
+            };
+            self.code().push(Op::Push(Value::Int(n)), token);
+            self.literal = true;
+            return Ok(());
+        }
+        let local = (self.current.as_ref()).and_then(|c| c.locals.get(text).copied());
+        if let Some(slot) = local {
+            self.code().push(Op::GetLocal(slot), token);
+            return Ok(());
+        }
+        let entry = self.names.get(text).copied();
+        match entry {
+            Some(Entry::Builtin(b @ (Builtin::Pick | Builtin::Roll))) => {
+                // `3 pick`: the count is known, so the step is one.
+                let count = match (literal, self.code().ops.last()) {
+                    (true, Some(Op::Push(Value::Int(n)))) => usize::try_from(*n).ok(),
+                    _ => None,
+                };
+                match count {
+                    Some(n) => {
+                        let code = self.code();
+                        code.ops.pop();
+                        code.tokens.pop();
+                        let op = if b == Builtin::Pick {
+                            Op::PickN(n)
+                        } else {
+                            Op::RollN(n)
+                        };
+                        code.push(op, token);
+                    }
+                    None => self.code().push(Op::Builtin(b), token),
+                }
+            }
+            Some(Entry::Builtin(b)) => self.code().push(Op::Builtin(b), token),
+            Some(Entry::App(id)) => self.code().push(Op::App(id), token),
+            Some(Entry::Word(id)) => {
+                let leaf = id < self.earlier;
+                let body = self.words.get(id).filter(|w| leaf && w.leaf()).cloned();
+                match body {
+                    // Short and straight: copied in, each step named by the
+                    // word the program wrote.
+                    Some(body) => {
+                        for op in body.ops {
+                            self.code().push(op, token);
+                        }
+                    }
+                    None => self.code().push(Op::Call(id), token),
+                }
+            }
+            Some(Entry::Global(slot)) => self.code().push(Op::GetGlobal(slot), token),
+            None => {
+                return Err(Error {
+                    code: Code::UnknownWord,
+                    message: "no such word".to_owned(),
+                    place: Some(token.place.clone()),
+                    word: Some(Rc::clone(&token.text)),
+                });
             }
         }
         Ok(())
@@ -391,7 +599,7 @@ impl<A: Clone> Compiler<A> {
         let program = Program {
             main: self.main,
             words: self.words,
-            constants: self.constants,
+            globals: self.globals,
             vocabulary: self.vocabulary,
         };
         crate::check::check(&program)?;
@@ -404,14 +612,16 @@ impl<A: Clone> Compiler<A> {
         }
         Err(Error {
             code: Code::NotTopLevel,
-            message: "define and constant go at the top level, outside any definition or block"
-                .to_owned(),
+            message: "define goes at the top level, outside any definition or block".to_owned(),
             place: Some(token.place.clone()),
             word: Some(Rc::clone(&token.text)),
         })
     }
 
-    fn check_name(&self, name: &Token) -> Result<(), Error> {
+    /// Whether `name` may be defined (`define`), or named (`let`, which may
+    /// take a library or host word's name for itself: only the core and the
+    /// parsing words are kept).
+    fn check_name(&self, name: &Token, by_let: bool) -> Result<(), Error> {
         let text = &*name.text;
         let why = if text.is_empty() {
             Some("an empty name")
@@ -419,10 +629,13 @@ impl<A: Clone> Compiler<A> {
             Some("a number")
         } else if PARSING.contains(&text) {
             Some("a word of the language")
-        } else if self.names.contains_key(text) {
-            Some("a word there already")
         } else {
-            None
+            match self.names.get(text) {
+                Some(Entry::Builtin(_)) => Some("a word of the core"),
+                Some(Entry::App(_) | Entry::Word(_)) if !by_let => Some("a word there already"),
+                Some(Entry::Global(_)) if !by_let => Some("a let name there already"),
+                Some(Entry::App(_) | Entry::Word(_) | Entry::Global(_)) | None => None,
+            }
         };
         match why {
             None => Ok(()),
@@ -460,6 +673,8 @@ fn opened(open: &Open) -> (&Token, &'static str) {
         Open::If { at, .. } => (at, "if … then"),
         Open::Else { at, .. } => (at, "else … then"),
         Open::Begin { at, .. } => (at, "begin … until"),
+        Open::List { at } => (at, "list … end"),
+        Open::Each { at, .. } => (at, "each … end"),
     }
 }
 

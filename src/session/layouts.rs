@@ -91,21 +91,21 @@ impl Session {
             (false, true) => "new-workspace".to_owned(),
             (false, false) => "new-tab".to_owned(),
         });
-        line.extend(["constant".to_owned(), constant(first)]);
+        line.extend(["let".to_owned(), pane_name(first)]);
         push(out, &line);
         if opens {
             push(
                 out,
                 &[
-                    constant(first),
+                    pane_name(first),
                     "workspace".into(),
-                    "constant".into(),
+                    "let".into(),
                     workspace(ws.id),
                 ],
             );
         }
         if named && makes {
-            let mut rename = vec![constant(first), "tab".to_owned()];
+            let mut rename = vec![pane_name(first), "tab".to_owned()];
             rename.extend(string(&tab.name).chain(["rename".to_owned()]));
             push(out, &rename);
         }
@@ -122,7 +122,7 @@ impl Session {
                 let Some(size) = self.panes.get(pane).map(|p| p.size()) else {
                     continue;
                 };
-                let name = constant(*pane);
+                let name = pane_name(*pane);
                 push(
                     out,
                     &[name.clone(), size.cols().to_string(), "resize-x".into()],
@@ -140,7 +140,7 @@ impl Session {
                 None => self.config.shell.first().map(|s| basename(s)),
             };
             if default.as_deref() != Some(p.name.as_str()) {
-                let mut rename = vec![constant(pane)];
+                let mut rename = vec![pane_name(pane)];
                 rename.extend(string(&p.name).chain(["rename".to_owned()]));
                 push(out, &rename);
             }
@@ -156,9 +156,9 @@ impl Session {
             Axis::Vertical => "vertical",
         };
         for (before, pane) in firsts.iter().zip(firsts.iter().skip(1)) {
-            let mut line = vec![constant(*before), "opts".into(), way.into()];
+            let mut line = vec![pane_name(*before), "opts".into(), way.into()];
             self.pane_words(*pane, ids, &mut line);
-            line.extend(["split".to_owned(), "constant".to_owned(), constant(*pane)]);
+            line.extend(["split".to_owned(), "let".to_owned(), pane_name(*pane)]);
             push(out, &line);
         }
         for child in split.children() {
@@ -213,12 +213,12 @@ impl Session {
     }
 }
 
-/// The constant a dump names pane `id` by.
-fn constant(id: PaneId) -> String {
+/// The `let` name a dump names pane `id` by.
+fn pane_name(id: PaneId) -> String {
     format!("p{}", id.number())
 }
 
-/// The constant a dump names workspace `id` by.
+/// The `let` name a dump names workspace `id` by.
 fn workspace(id: WsId) -> String {
     format!("w{}", id.number())
 }

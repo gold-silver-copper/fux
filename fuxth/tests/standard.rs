@@ -6,11 +6,11 @@ mod common;
 use common::{Ended, V, fuxth};
 
 fn ints(values: &[i64]) -> Ended {
-    Ended::Left(values.iter().map(|n| V::Int(*n)).collect())
+    Ended::Left(Vec::new(), values.iter().map(|n| V::Int(*n)).collect())
 }
 
 fn bools(values: &[bool]) -> Ended {
-    Ended::Left(values.iter().map(|b| V::Bool(*b)).collect())
+    Ended::Left(Vec::new(), values.iter().map(|b| V::Bool(*b)).collect())
 }
 
 fn ends(code: &str) -> impl Fn(&Ended) -> bool + '_ {
@@ -111,7 +111,7 @@ fn core_control_and_definitions() {
             "define gi4 dup 1 gt if dup 1 sub gi4 mul then end 5 gi4".to_owned(),
             &[120],
         ),
-        ("123 constant x123 x123".to_owned(), &[123]),
+        ("123 let x123 x123".to_owned(), &[123]),
         ("define nop end 1 nop".to_owned(), &[1]),
     ] {
         assert_eq!(fuxth(&program, u64::MAX), ints(left), "{program}");
