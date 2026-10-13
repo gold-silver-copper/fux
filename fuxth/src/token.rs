@@ -182,6 +182,17 @@ mod tests {
         Ok(())
     }
 
+    /// In double quotes, a backslash escapes only `"` and itself; and a
+    /// newline inside them counts toward the next token's line.
+    #[test]
+    fn double_quotes_escape_little_and_count_lines() -> Result<(), Error> {
+        assert_eq!(texts(r#""a\"b" "c\\d" "e\x""#)?, [r#"a"b"#, r"c\d", r"e\x"]);
+        let tokens = source("t", "\"one\ntwo\" three")?;
+        let lines: Vec<String> = tokens.iter().map(|t| t.place.to_string()).collect();
+        assert_eq!(lines, ["t:1", "t:2"]);
+        Ok(())
+    }
+
     #[test]
     fn arguments_stay_whole() {
         let tokens = arguments(&["str", "hello world", "# not a comment"]);

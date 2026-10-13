@@ -329,7 +329,7 @@ impl<A: AppValue> Machine<A> {
     /// gave any.
     fn given(&self, (depth, gives): (usize, RangeInclusive<usize>)) -> Result<(), Error> {
         let given = self.stack.len().saturating_sub(depth);
-        if gives.contains(&given) && self.stack.len() >= depth {
+        if gives.contains(&given) {
             return Ok(());
         }
         let message = format!(

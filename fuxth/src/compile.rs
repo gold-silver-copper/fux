@@ -138,10 +138,6 @@ impl Vocabulary {
         id
     }
 
-    pub fn find(&self, name: &str) -> Option<usize> {
-        self.index.get(name).copied()
-    }
-
     /// The word `id`'s name, how many values it takes, and how many it
     /// gives.
     pub fn word(&self, id: usize) -> Option<(&str, usize, RangeInclusive<usize>)> {
