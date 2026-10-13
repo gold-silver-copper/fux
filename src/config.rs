@@ -80,11 +80,27 @@ pub struct Config {
 pub const MAX_HISTORY: usize = 250_000;
 pub const MAX_BUFFERS: usize = 1000;
 
+/// The user's login shell from `/etc/passwd`, for when `SHELL` is unset
+/// (a service, a sandbox, a cleared environment): bash or zsh there marks
+/// its commands, where `/bin/sh` would not.
+fn login_shell() -> Option<String> {
+    let euid = fuxix::process::geteuid().to_string();
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    passwd.lines().find_map(|line| {
+        let fields: Vec<&str> = line.split(':').collect();
+        (fields.get(2) == Some(&euid.as_str()))
+            .then(|| fields.get(6).map(|s| s.trim().to_owned()))
+            .flatten()
+            .filter(|s| !s.is_empty())
+    })
+}
+
 impl Default for Config {
     fn default() -> Self {
         let shell = std::env::var("SHELL")
             .ok()
             .filter(|s| !s.is_empty())
+            .or_else(login_shell)
             .unwrap_or_else(|| "/bin/sh".into());
         Self {
             shell: vec![shell],
