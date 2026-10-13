@@ -1506,23 +1506,7 @@ impl Session {
     /// Sends `inputs` to pane `id`'s program.
     fn send_inputs(&mut self, id: PaneId, inputs: &[Input]) -> Result<(), Error> {
         let p = self.panes.get_mut(&id).ok_or(Error::NoPane(id))?;
-        let screen = p.screen();
-        let cursor = (screen.window())
-            .row(screen.cursor_position().0)
-            .map(|row| row.id());
-        let (echo, lines) = crate::command::typed_lines(inputs);
-        let before = (screen.window())
-            .row(screen.cursor_position().0)
-            .map(crate::capture::row_text)
-            .unwrap_or_default();
-        p.input_from = Some(crate::pane::InputFrom {
-            cursor,
-            mark: screen.mark(),
-            finished: screen.commands().finished,
-            echo,
-            lines,
-            before,
-        });
+        p.note_input(inputs);
         let (mode, bracketed) = (
             p.screen().key_mode(),
             p.screen().mode(fux_vt::Mode::BracketedPaste),
@@ -3144,6 +3128,7 @@ impl Session {
                     }
                 }
                 p.input.push(&report)?;
+                p.note_input(&[]);
                 p.mouse_held = held;
                 Ok(String::new())
             }
@@ -3393,6 +3378,7 @@ impl Session {
                 let bracketed = p.screen().mode(fux_vt::Mode::BracketedPaste);
                 p.input
                     .push_with(|out| crate::encode::paste(&text, bracketed, out))?;
+                p.note_input(&[Input::Paste(text)]);
                 Ok(String::new())
             }
             &Command::Client { client, ref action } => {

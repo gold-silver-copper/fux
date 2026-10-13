@@ -1051,7 +1051,9 @@ impl Server {
         }
     }
 
-    /// Answers each wait that has its answer.
+    /// Answers each wait that has its answer. Each has read the rows its
+    /// panes let go, which are forgotten: kept on only for the panes a
+    /// text wait still watches.
     fn answer_waits(&mut self, now: Instant) {
         for conn in &mut self.conns {
             let Stage::Waiting(waiting) = &mut conn.stage else {
@@ -1060,6 +1062,23 @@ impl Server {
             if let Some(outcome) = waiting.answer(&self.session, now) {
                 conn.answer(&mut self.session, outcome);
             }
+        }
+        let tapped: std::collections::HashSet<PaneId> = (self.conns.iter())
+            .filter_map(|conn| match &conn.stage {
+                Stage::Waiting(waiting) => Some(waiting.tapped()),
+                Stage::Hello(_)
+                | Stage::Attaching(..)
+                | Stage::Attached(_)
+                | Stage::Command
+                | Stage::Events(_)
+                | Stage::Closing
+                | Stage::Dead => None,
+            })
+            .flatten()
+            .collect();
+        for (id, pane) in &mut self.session.panes {
+            pane.parser.forget_departed();
+            pane.parser.keep_departed(tapped.contains(id));
         }
     }
 
@@ -1841,7 +1860,15 @@ impl Server {
         };
         match session.begin(command, &origin) {
             Begun::Done(outcome) => conn.answer(session, outcome),
-            Begun::Waiting(waiting) => conn.enter(session, Stage::Waiting(waiting)),
+            Begun::Waiting(waiting) => {
+                // What its panes let go from now on is kept for it to read.
+                for id in waiting.tapped() {
+                    if let Some(pane) = session.panes.get_mut(&id) {
+                        pane.parser.keep_departed(true);
+                    }
+                }
+                conn.enter(session, Stage::Waiting(waiting));
+            }
             Begun::Events(subscription) => {
                 // Told it is armed: from here on, nothing is missed.
                 let ready = Event::stream("ready", Vec::new()).line(subscription.json);

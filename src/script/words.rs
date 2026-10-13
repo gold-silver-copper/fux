@@ -475,6 +475,28 @@ fn wait(waits: &Waits, after: bool, settle: bool) -> Option<Box<Wait>> {
     }))
 }
 
+/// The wait the `wait` word makes: for what it names, else for the pane
+/// to settle, with a wait's time either way. Settling a tab or workspace
+/// waits for each of its panes; a condition, for whichever pane meets it
+/// first.
+fn own_wait(waits: &Waits) -> Wait {
+    let until = match waits.until.is_empty() {
+        true => vec![Until::Settled],
+        false => waits.until.clone(),
+    };
+    let settles = until == [Until::Settled];
+    Wait {
+        until,
+        timeout: waits.timeout.unwrap_or(WAIT_TIMEOUT),
+        print: waits.print || settles,
+        after: false,
+        echo: Vec::new(),
+        marks: waits.marks,
+        lines: 0,
+        all: settles,
+    }
+}
+
 fn ask(command: Command, then: Then) -> Ask {
     Ask::Server {
         command,
@@ -861,20 +883,11 @@ impl fuxth::Host for Host<'_> {
             "wait" => {
                 let p = target(name, &next()?)?.map(WsRef::Id);
                 let mut o = next()?;
-                let built = opts(name, &mut o)?.clone();
-                let Some(mut wait) = wait(&built.waits, false, true) else {
-                    return Err(fail(
-                        "no_condition",
-                        "wait needs a condition: wait-text, wait-exit, …",
-                    ));
-                };
-                // Settling a tab or workspace waits for each of its panes; a
-                // condition, for whichever pane meets it first.
-                wait.all = wait.until == [Until::Settled];
+                let built = opts(name, &mut o)?;
                 later(ask(
                     Command::Wait {
                         targets: vec![p],
-                        wait: *wait,
+                        wait: own_wait(&built.waits),
                     },
                     Then::Outcome { waited: true },
                 ))
@@ -1861,6 +1874,24 @@ mod tests {
             .find(|w| w.name == "send-keys")
             .map(Word::gives);
         assert_eq!(send, Some(0..=1), "an outcome only with a wait");
+    }
+
+    /// `wait` has a wait's time, settling or not; an action settles within
+    /// its own.
+    #[test]
+    fn a_wait_of_its_own_has_a_waits_time() {
+        let settle = own_wait(&Waits::default());
+        assert_eq!(
+            (settle.until, settle.timeout),
+            (vec![Until::Settled], WAIT_TIMEOUT)
+        );
+        let text = Waits {
+            until: vec![Until::Text("x".into())],
+            ..Waits::default()
+        };
+        assert_eq!(own_wait(&text).timeout, WAIT_TIMEOUT);
+        let action = wait(&Waits::default(), true, true).map(|w| w.timeout);
+        assert_eq!(action, Some(SETTLE_TIMEOUT));
     }
 
     #[test]

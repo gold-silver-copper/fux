@@ -473,6 +473,8 @@ pub struct InputFrom {
     pub echo: Vec<String>,
     pub lines: u32,
     pub before: String,
+    /// The bells and notifications heard by then.
+    pub alerts: u64,
 }
 
 pub struct Pane {
@@ -785,6 +787,23 @@ impl Pane {
 
     pub fn screen(&self) -> &fux_vt::Screen {
         self.parser.screen()
+    }
+
+    /// Notes how the pane stands as `inputs` go in (`input_from`): a wait
+    /// after them counts what comes since, and knows their echo.
+    pub fn note_input(&mut self, inputs: &[crate::command::Input]) {
+        let screen = self.screen();
+        let row = screen.window().row(screen.cursor_position().0);
+        let (echo, lines) = crate::command::typed_lines(inputs);
+        self.input_from = Some(InputFrom {
+            cursor: row.map(|row| row.id()),
+            mark: screen.mark(),
+            finished: screen.commands().finished,
+            echo,
+            lines,
+            before: row.map(crate::capture::row_text).unwrap_or_default(),
+            alerts: self.alerts.count(),
+        });
     }
 
     /// The name the bar shows: the program's title, else the pane's name.

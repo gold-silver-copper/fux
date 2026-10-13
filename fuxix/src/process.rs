@@ -610,8 +610,11 @@ fn is_terminal(pid: Pid, fd: u64, tty: &std::path::Path) -> bool {
         .is_ok_and(|target| target == tty || target == std::path::Path::new("/dev/tty"))
 }
 
-/// What one process of the group does, by its main thread, or by its other
-/// threads when the main thread waits for them or for a child.
+/// What one process of the group does, by its main thread and its others:
+/// busy while one runs, or the main one sleeps on a timer; reading while it
+/// (or, the main one parked, another) waits for the terminal and none of
+/// the others can go on alone, on a timer or polling: else polling, as it
+/// may draw again on its own; else waiting.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
     let on_terminal = |blocked: Blocked| match blocked {
@@ -629,27 +632,35 @@ fn process_activity(pid: Pid, tty: &std::path::Path) -> Option<Activity> {
     let Some(blocked) = thread_blocked(pid, &main) else {
         return Some(Activity::Busy);
     };
-    if let Some(activity) = on_terminal(blocked) {
-        return Some(activity);
-    }
     if blocked == Blocked::Child {
         return None;
     }
-    // The main thread is parked: a thread waiting on the terminal says.
+    let first = on_terminal(blocked);
+    let (mut reading, mut alone) = (false, false);
     let tasks = std::fs::read_dir(format!("/proc/{pid}/task")).ok()?;
-    let mut seen = Activity::Waiting;
     for task in tasks.filter_map(|t| t.ok()) {
         let Some(tid) = task.file_name().to_str().map(str::to_owned) else {
             continue;
         };
+        if tid == main {
+            continue;
+        }
         match thread_blocked(pid, &tid).map(on_terminal) {
-            Some(Some(Activity::Reading)) => return Some(Activity::Reading),
-            Some(Some(Activity::Polling)) => seen = Activity::Polling,
-            Some(Some(Activity::Waiting | Activity::Busy | Activity::Unknown) | None) => {}
+            Some(Some(Activity::Reading)) => reading = true,
+            Some(Some(Activity::Polling | Activity::Busy)) => alone = true,
+            Some(Some(Activity::Waiting | Activity::Unknown) | None) => {}
             None => return Some(Activity::Busy),
         }
     }
-    Some(seen)
+    Some(match first {
+        Some(Activity::Busy) => Activity::Busy,
+        Some(Activity::Waiting | Activity::Unknown) => Activity::Waiting,
+        Some(Activity::Polling) => Activity::Polling,
+        Some(Activity::Reading) | None if alone => Activity::Polling,
+        Some(Activity::Reading) => Activity::Reading,
+        None if reading => Activity::Reading,
+        None => Activity::Waiting,
+    })
 }
 
 /// What the programs in foreground group `group` of the terminal at `tty`

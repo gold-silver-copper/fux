@@ -523,11 +523,5 @@ fn described(a: Attributes) -> Vec<(&'static str, Json<'static>)> {
 
 /// A row's text, wide glyphs whole and trailing blanks trimmed.
 pub fn row_text(row: fux_vt::Row<'_>) -> String {
-    row_cells_text(row).trim_end_matches(' ').to_owned()
-}
-
-/// A row's text, every cell, blanks at its end kept.
-pub fn row_cells_text(row: fux_vt::Row<'_>) -> String {
-    let row = row.cells().filter(|c| !c.is_wide_continuation());
-    row.map(crate::render::shown).collect()
+    row.cells_text().trim_end_matches(' ').to_owned()
 }

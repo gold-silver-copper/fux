@@ -88,7 +88,8 @@ terminal before the waited text came (7):
 
 `state` is the pane's (above), or `closed` (status 4); `output` what came
 since the input, or the screen of a full-screen program, or the screen
-for status 7. A wait for a condition answers what met it:
+for status 7; a met `wait-gone` answers so too. A wait for another
+condition answers what met it:
 
 ```json
 {"pane":"%3","met":"text","text":"PASS","line":"12 tests PASS","status":0}
@@ -97,7 +98,6 @@ for status 7. A wait for a condition answers what met it:
 | `met` | Also |
 | --- | --- |
 | `text` | `text`, `line` |
-| `gone` | `text` |
 | `exit` | `exit` (its status) or `signal` |
 | `bell` | `notification`: its text, else `null` |
 | `exited` | `exit` or `signal`, `last_lines`: the program exited first (status 3) |
@@ -136,7 +136,7 @@ the file, line and word it came from. CODE stays: `no_server`, `mismatch`,
 `still_running`, `not_run`, `own_server`, `people_attached`,
 `not_granted`, `name_taken`, `bad_name`, `ambiguous`, `size`, `mouse`,
 `no_field`, `id`, `not_reading`, `start`, `paste`, `timeout`, `closed`,
-`gone`, `no_buffer`, `not_a_key`, `no_program`, `no_condition`,
+`gone`, `no_buffer`, `not_a_key`, `no_program`,
 `no_keys`, `not_a_client`, `grant`, `config`, `unused`, `too_long`; and the
 language's: `type` (a word given the wrong kind of value), `stack_underflow`,
 `unknown_word`, `open_quote`, `unmatched`, `unclosed`, `range`, `bad_value`,

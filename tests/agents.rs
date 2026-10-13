@@ -115,7 +115,10 @@ fn wait_answers_as_the_pane_shows_or_settles() -> Outcome {
         start.elapsed() < std::time::Duration::from_secs(4),
         "it answers as it comes"
     );
-    server.ok(&[&p[..], &["str", "never shown", "wait-gone", "wait"]].concat())?;
+    let gone = server.ok(&[&p[..], &["str", "never shown", "wait-gone", "wait"]].concat())?;
+    // Met at once: the pane's state as it is, and what came.
+    assert!(gone.starts_with(&format!("{pane} ")), "{gone}");
+    assert_eq!(body(&gone), "one\ntwo\n");
     let quiet = server.ok(&[&p[..], &["wait"]].concat())?;
     assert_eq!(
         quiet,
@@ -1292,7 +1295,15 @@ fn the_rechecks_hold() -> Outcome {
         &["sleep", "60"],
     ))?);
     let split = [
-        &["str", small.as_str(), "pane", "opts", "vertical"][..],
+        &[
+            "str",
+            small.as_str(),
+            "pane",
+            "opts",
+            "vertical",
+            "0",
+            "timeout",
+        ][..],
         &program(&["sleep", "60"]),
         &["split"],
     ]
@@ -1602,5 +1613,200 @@ fn a_signal_that_ends_the_program_says_so() -> Outcome {
     assert_eq!(quiet.status, 124, "{}", quiet.stderr);
     let killed = server.ok(&["str", &pane, "pane", "str", "KILL", "signal"])?;
     assert_eq!(killed, format!("{pane} killed by SIGKILL\n"));
+    Ok(())
+}
+
+/// A text wait sees every line written since it began, however fast they
+/// pass: past history's limit between two looks, or off the alternate
+/// screen, which keeps none. Of several texts already shown, the one that
+/// came first answers. An answer whose start was let go says so.
+#[test]
+fn a_wait_misses_no_line_however_fast_it_passes() -> Outcome {
+    let server = Server::start("str history-lines 20 set")?;
+    let flood = "import os; os.write(1, b'FIRST_READY\\n' + b'filler\\n' * 5000); input()";
+    let first = server.fux(&run(
+        &["str", "FIRST_READY", "wait-text"],
+        &["python3", "-c", flood],
+    ))?;
+    assert_eq!(first.status, 0, "{}{}", first.stdout, first.stderr);
+    assert_eq!(body(&first.stdout), "FIRST_READY\n");
+    let full = "printf '\\033[?1049h'; echo START SCROLLED MATCH; seq 100; read x";
+    let scrolled = server.ok(&run(
+        &["40", "10", "size", "str", "SCROLLED MATCH", "wait-text"],
+        &["sh", "-c", full],
+    ))?;
+    assert_eq!(body(&scrolled), "START SCROLLED MATCH\n");
+    let two = "echo FIRST one; sleep 0.2; echo SECOND two; read x";
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", two]))?);
+    let came = server.ok(&[
+        "str",
+        &pane,
+        "pane",
+        "opts",
+        "str",
+        "SECOND",
+        "wait-text",
+        "str",
+        "FIRST",
+        "wait-text",
+        "wait",
+    ])?;
+    assert_eq!(came, "FIRST one\n");
+    let long = server.ok(&run(&[], &["sh", "-c", "seq 100; read x"]))?;
+    assert!(
+        body(&long).starts_with("… earlier lines not kept") && long.ends_with("\n100\n"),
+        "{long}"
+    );
+    Ok(())
+}
+
+/// A later wait counts what came since the last input, a click or a bell
+/// included, or since the program started: an old line is not new to it,
+/// a bell rung since is.
+#[test]
+fn a_later_wait_counts_from_any_input() -> Outcome {
+    let server = Server::start("")?;
+    let mouse = "import os, tty\n\
+                 tty.setraw(0); os.write(1, b'\\x1b[?1000h\\x1b[?1006hOLD43\\r\\n')\n\
+                 while True: os.read(0, 64); os.write(1, b'EVENT43\\r\\n')\n";
+    let pane = id(&server.ok(&run(
+        &["str", "OLD43", "wait-text"],
+        &["python3", "-c", mouse],
+    ))?);
+    server.ok(&[
+        "str",
+        &pane,
+        "pane",
+        "str",
+        "click",
+        "0",
+        "0",
+        "mouse",
+        "send-mouse",
+    ])?;
+    let later = server.ok(&["str", &pane, "pane", "opts", "wait"])?;
+    assert!(
+        later.contains("EVENT43") && !later.contains("OLD43"),
+        "{later}"
+    );
+    let old = server.fux(&[
+        "str",
+        &pane,
+        "pane",
+        "opts",
+        "str",
+        "OLD43",
+        "wait-text",
+        "2",
+        "timeout",
+        "wait",
+    ])?;
+    assert_eq!(old.status, 7, "{}{}", old.stdout, old.stderr);
+    let bells = "printf '\\a'; echo rang; read x; printf '\\aDONE\\n'; exec cat";
+    let rang = id(&server.ok(&run(&[], &["sh", "-c", bells]))?);
+    let bell = [
+        "str",
+        &rang,
+        "pane",
+        "opts",
+        "wait-bell",
+        "2",
+        "timeout",
+        "wait",
+    ];
+    assert_eq!(server.fux(&bell)?.status, 0, "a bell since the start");
+    server.ok(&typed(&rang, "x", &["str", "DONE", "wait-text"]))?;
+    assert_eq!(server.fux(&bell)?.status, 0, "a bell since the input");
+    Ok(())
+}
+
+/// The echo is only what was typed: a reply the program writes after it
+/// on the same row (its terminal not echoing) is output.
+#[test]
+fn a_reply_after_the_typed_text_is_not_its_echo() -> Outcome {
+    let server = Server::start("")?;
+    let reply = "stty -echo; echo ready; read l; echo \"$l DONE42\"; exec cat";
+    server.ok(&run(
+        &["str", "q", "name", "str", "ready", "wait-text"],
+        &["sh", "-c", reply],
+    ))?;
+    let done = server.ok(&typed("q", "request42", &["str", "DONE42", "wait-text"]))?;
+    assert_eq!(done, "request42 DONE42\n");
+    // Within what was typed, it is the echo; the hint says what works.
+    server.ok(&run(&["str", "e", "name"], &["sh", "-c", "read l; exit 0"]))?;
+    let echoed = server.fux(&typed("e", "exit46", &["str", "exit46", "wait-text"]))?;
+    assert_eq!(echoed.status, 3, "{}", echoed.stderr);
+    assert!(echoed.stderr.contains("capture"), "{}", echoed.stderr);
+    Ok(())
+}
+
+/// What came is what a program wrote since the input: what it printed on
+/// the main screen after leaving its full screen, and nothing when the
+/// keys only moved the cursor.
+#[test]
+fn an_answer_holds_only_what_came() -> Outcome {
+    let server = Server::start("")?;
+    let menu = "printf '\\033[?1049hMENU> '; read x; printf '\\033[?1049l'; echo AFTER-MAIN; \
+                exec cat";
+    let pane = id(&server.ok(&run(
+        &["40", "10", "size", "str", "MENU>", "wait-text"],
+        &["sh", "-c", menu],
+    ))?);
+    let left = server.ok(&typed(&pane, "q", &[]))?;
+    assert!(
+        left.contains("AFTER-MAIN") && !left.contains("MENU"),
+        "{left}"
+    );
+    let quiet = id(&server.ok(&run(&[], &["sh", "-c", "echo BEFORE-INPUT; read x"]))?);
+    let keys = [
+        "str",
+        &quiet,
+        "pane",
+        "keys",
+        "str",
+        "Enter",
+        "key",
+        "send-keys",
+    ];
+    assert_eq!(server.ok(&keys)?, format!("{quiet} exited 0\n"));
+    Ok(())
+}
+
+/// `run`'s answer names its pane once, a state answer too; a wait on a tab
+/// that runs out names the pane at work, not the one reading.
+#[test]
+fn answers_name_the_pane_once_and_the_busy_one() -> Outcome {
+    let server = Server::start("")?;
+    let stopped = server.fux(&run(
+        &["str", "READY", "wait-text", "3", "timeout"],
+        &["sh", "-c", "echo hi; read x"],
+    ))?;
+    assert_eq!(stopped.status, 7, "{}", stopped.stderr);
+    let pane = id(&stopped.stdout);
+    assert_eq!(head(&stopped.stdout), format!("{pane} reading"));
+    let reader = id(&server.ok(&run(&[], &["sh", "-c", "echo R; read x"]))?);
+    let busy = id(&server.ok(&[
+        "str", &reader, "pane", "opts", "str", "sleep", "program", "str", "30", "arg", "0",
+        "timeout", "split",
+    ])?);
+    let out = server.fux(&[
+        "str",
+        &reader,
+        "pane",
+        "tab",
+        "opts",
+        "str",
+        "NEVER",
+        "wait-text",
+        "1",
+        "timeout",
+        "wait",
+    ])?;
+    assert_eq!(out.status, 124, "{}", out.stderr);
+    assert!(
+        out.stderr.contains(&format!("{busy}: timed out")),
+        "{}",
+        out.stderr
+    );
     Ok(())
 }

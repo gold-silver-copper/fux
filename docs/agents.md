@@ -57,8 +57,8 @@ screen of a full-screen program (an editor, a menu, a form):
 - **Waiting for a text:** `str T wait-text` (case ignored, blanks as one,
   from a word's start: `READY` is not in `NOT_READY`; `^T` a line's start,
   `T$` its end), `str T wait-gone`, `wait-exit`, `wait-bell`; several:
-  whichever first. Met, it answers the first new line that holds the text
-  (`run`: the pane, then that line). A wait counts what came since your last input
+  whichever first. Met, it answers the first new line that holds a text
+  (`run`: the pane, then that line); `wait-gone`, the pane's state. A wait counts what came since your last input
   to the pane (or since the program started), scrolled away too: it never
   starts too late. **Status 7:** the program reads its terminal and the text has not
   come: it cannot before you type; the answer is the screen. Status 3: the

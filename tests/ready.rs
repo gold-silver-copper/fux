@@ -99,3 +99,61 @@ fn a_shell_command_that_polls_is_answered_when_it_ends() -> Outcome {
     assert!(answer.contains("\nend\n"), "{answer}");
     Ok(())
 }
+
+/// A raw read that times only the gap between keys (VMIN 1, VTIME 10)
+/// waits for the first key for good: `reading`, and a text it has not
+/// printed cannot come (status 7). A program whose main thread reads its
+/// terminal while another sleeps on a timer is not: what that thread
+/// prints next is waited for.
+#[test]
+fn reads_are_told_from_programs_that_go_on_alone() -> Outcome {
+    if !cfg!(target_os = "linux") {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let gap = "import sys, termios, tty\n\
+               tty.setraw(0); m = termios.tcgetattr(0)\n\
+               m[6][termios.VMIN] = 1; m[6][termios.VTIME] = 10\n\
+               termios.tcsetattr(0, termios.TCSANOW, m)\n\
+               sys.stdout.write('ready\\r\\n'); sys.stdout.flush(); sys.stdin.read(1)\n";
+    let started = server.ok(&[
+        "opts", "str", "python3", "program", "str", "-c", "arg", "str", gap, "arg", "run",
+    ])?;
+    let pane = started.split_whitespace().next().unwrap_or_default();
+    assert!(started.starts_with(&format!("{pane} reading")), "{started}");
+    let never = server.fux(&[
+        "str",
+        pane,
+        "pane",
+        "opts",
+        "str",
+        "NOPE",
+        "wait-text",
+        "5",
+        "timeout",
+        "wait",
+    ])?;
+    assert_eq!(never.status, 7, "{}{}", never.stdout, never.stderr);
+    let thread = "import threading, time\n\
+                  def later(): time.sleep(0.8); print('LATER', flush=True)\n\
+                  threading.Thread(target=later).start(); input()\n";
+    let later = server.fux(&[
+        "opts",
+        "str",
+        "python3",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        thread,
+        "arg",
+        "str",
+        "LATER",
+        "wait-text",
+        "run",
+    ])?;
+    assert_eq!(later.status, 0, "{}{}", later.stdout, later.stderr);
+    assert!(later.stdout.ends_with("\nLATER\n"), "{}", later.stdout);
+    Ok(())
+}

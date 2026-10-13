@@ -361,6 +361,10 @@ pub struct Screen {
     /// The colours the program set, with `Feature::Palette`: made when
     /// the first is set, so a screen whose program sets none keeps none.
     colours: Option<Box<crate::palette::Colours>>,
+    /// The rows let go since the host last forgot them, while it keeps
+    /// them (`keep_departed`), and how many it has been given.
+    departed: Option<Vec<crate::Departed>>,
+    departures: u64,
 }
 
 mod pictures;
@@ -468,6 +472,8 @@ impl Screen {
             links_seen: false,
             next_link: 1,
             colours: None,
+            departed: None,
+            departures: 0,
         })
     }
     /// The primary screen's grid, as a test starts from it.
@@ -991,6 +997,9 @@ impl Screen {
         // (allocation failure). Even that partial result must
         // invalidate every reader's window, not just its newly blank rows.
         self.structural = self.version;
+        if up && self.departed.is_some() {
+            self.depart(region, count, history);
+        }
         // The rows brought in take the pen's colours (`bce`), as in xterm.
         let blank = self.blank_style();
         self.with_grid(|g, next, version| {
@@ -1001,6 +1010,66 @@ impl Screen {
             };
             g.scroll(region, count, direction, blank, next, version)
         })
+    }
+    /// Keeps the rows an upward scroll of `count` rows in `region` is
+    /// about to let go: history's oldest past its limit, for a scroll into
+    /// history; else those scrolled out of the region's top.
+    #[cold]
+    #[inline(never)]
+    fn depart(&mut self, region: Span, count: u16, history: bool) {
+        let g = self.grid();
+        let size = g.size();
+        let (from, gone) = if history && region == size.lines() && g.history_limit() > 0 {
+            let count = usize::from(count.min(size.rows()));
+            let over = (g.history_len().saturating_add(count)).saturating_sub(g.history_limit());
+            (0, over)
+        } else {
+            let top = g.history_len().saturating_add(usize::from(region.first()));
+            (top, usize::from(count.min(region.len())))
+        };
+        let rows: Vec<Row<'_>> = (from..from.saturating_add(gone))
+            .filter_map(|i| g.row_at(i))
+            .collect();
+        let mut seq = self.departures;
+        let departed: Vec<crate::Departed> = (rows.into_iter())
+            .map(|row| {
+                seq = seq.wrapping_add(1);
+                crate::Departed {
+                    seq,
+                    id: row.id,
+                    version: row.version,
+                    wrapped: row.wrapped,
+                    text: row.cells_text(),
+                }
+            })
+            .collect();
+        self.departures = seq;
+        if let Some(kept) = &mut self.departed {
+            kept.extend(departed);
+        }
+    }
+    /// Starts keeping the rows scrolls let go, for the host to read
+    /// (`departed`) before it forgets them (`forget_departed`); or stops,
+    /// forgetting those kept. A row of history is let go only past its
+    /// limit, and the alternate screen keeps none: a reader looking now and
+    /// then misses none of what scrolled out between its looks.
+    pub fn keep_departed(&mut self, keep: bool) {
+        match (keep, &self.departed) {
+            (true, None) => self.departed = Some(Vec::new()),
+            (false, Some(_)) => self.departed = None,
+            (true, Some(_)) | (false, None) => {}
+        }
+    }
+    /// The rows let go since they were last forgotten, in the order they
+    /// went, while they are kept.
+    pub fn departed(&self) -> &[crate::Departed] {
+        self.departed.as_deref().unwrap_or_default()
+    }
+    /// Forgets the rows let go so far, keeping on.
+    pub fn forget_departed(&mut self) {
+        if let Some(kept) = &mut self.departed {
+            kept.clear();
+        }
     }
     /// A scroll inside left and right margins (`Grid::scroll_columns`),
     /// its blanks in the pen's colours. Out of line: without margins it is

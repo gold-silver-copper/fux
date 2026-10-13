@@ -33,11 +33,14 @@ impl Termios {
         self.0.c_lflag & libc::ICANON != 0
     }
 
-    /// Whether a read waits for keys only so long (`VTIME`, with no line
-    /// editing): a program that times its reads, as one telling a lone
-    /// Escape from a key's sequence does.
+    /// Whether a read waits for keys only so long (`VTIME` with no `VMIN`,
+    /// and no line editing): a program that times its reads, as one telling
+    /// a lone Escape from a key's sequence does. With `VMIN` too, `VTIME`
+    /// only times the gap between keys: the read waits for the first for
+    /// good.
     pub fn timed_reads(&self) -> bool {
-        !self.line_mode() && self.0.c_cc.get(libc::VTIME).is_some_and(|t| *t > 0)
+        let cc = |i: usize| self.0.c_cc.get(i).copied().unwrap_or(0);
+        !self.line_mode() && cc(libc::VTIME) > 0 && cc(libc::VMIN) == 0
     }
 
     /// Raw mode: no echo, no line editing, no signals from keys, and no
@@ -180,6 +183,17 @@ mod tests {
         set_attributes(&slave, &modes).map_err(|e| e.to_string())?;
         let again = attributes(&slave).map_err(|e| e.to_string())?;
         assert!(!again.echoes() && !again.line_mode());
+        // Raw, a read waits for a key (VMIN 1): timed only with VMIN 0.
+        assert!(!again.timed_reads());
+        let mut timed = again.clone();
+        if let Some(t) = timed.0.c_cc.get_mut(libc::VTIME) {
+            *t = 2;
+        }
+        assert!(!timed.timed_reads(), "VTIME with VMIN times only the gap");
+        if let Some(m) = timed.0.c_cc.get_mut(libc::VMIN) {
+            *m = 0;
+        }
+        assert!(timed.timed_reads());
         // The master reads the modes the program set on its side.
         let seen = attributes(&master).map_err(|e| e.to_string())?;
         assert!(!seen.echoes() && !seen.line_mode());

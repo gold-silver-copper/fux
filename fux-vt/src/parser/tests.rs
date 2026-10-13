@@ -484,6 +484,31 @@ fn the_alternate_screen_holds_no_cells_until_shown() -> Result<(), Error> {
     Ok(())
 }
 
+/// Kept, the rows a scroll lets go are there to read, in order: history's
+/// oldest past its limit, and rows scrolled off the alternate screen,
+/// which keeps no history. Not kept, none are.
+#[test]
+fn rows_let_go_are_kept_while_asked() -> Result<(), Error> {
+    let gone = |parser: &Parser| -> Vec<String> {
+        (parser.screen().departed().iter())
+            .map(|d| d.text.trim_end().to_owned())
+            .collect()
+    };
+    let mut parser = Parser::new(Size::of(3, 10), 2)?;
+    parser.process(b"a\r\nb\r\nc\r\nd\r\n")?;
+    assert!(parser.screen().departed().is_empty());
+    parser.keep_departed(true);
+    parser.process(b"e\r\nf\r\ng\r\n")?;
+    assert_eq!(gone(&parser), ["a", "b", "c"]);
+    parser.forget_departed();
+    parser.process(b"\x1b[?1049h\x1b[Hx\r\ny\r\nz\r\nw\r\nv")?;
+    assert_eq!(gone(&parser), ["x", "y"]);
+    parser.keep_departed(false);
+    parser.process(b"\r\nu\r\n")?;
+    assert!(parser.screen().departed().is_empty());
+    Ok(())
+}
+
 /// The printable run, as the general path counts it: a byte at a time.
 fn printable_slowly(bytes: &[u8]) -> usize {
     bytes
