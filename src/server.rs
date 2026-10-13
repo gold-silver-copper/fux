@@ -562,6 +562,8 @@ struct Saved {
     /// One was started, and its end is yet to be seen to
     /// (`Server::after_restore`).
     restored: bool,
+    /// The server stops: nothing more is saved (or what was, forgotten).
+    done: bool,
 }
 
 /// Which workspaces, tabs and panes there are.
@@ -604,6 +606,7 @@ impl Saved {
             shape: Shape::default(),
             restoring: std::sync::Arc::default(),
             restored: false,
+            done: false,
         })
     }
 
@@ -659,6 +662,9 @@ impl Saved {
     /// was last saved; else it is saved then. A workspace, tab or pane made
     /// or closed is saved at once: a crash must not lose a pane.
     fn save_by(&mut self, session: &Session, now: Instant) {
+        if self.done {
+            return;
+        }
         let shape = Shape::of(session);
         if now < self.at && shape == self.shape {
             self.pending = true;
@@ -715,7 +721,7 @@ impl Saved {
     /// purpose, or its last pane closed.
     fn forget(&mut self) {
         self.pending = false;
-        self.at = crate::after(Instant::now(), Duration::from_secs(3600));
+        self.done = true;
         self.forget_file();
     }
 
@@ -728,7 +734,7 @@ impl Saved {
     /// was before its panes ended, is what the next brings back.
     fn freeze(&mut self) {
         self.pending = false;
-        self.at = crate::after(Instant::now(), Duration::from_secs(3600));
+        self.done = true;
     }
 
     fn forget_file(&self) {

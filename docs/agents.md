@@ -59,14 +59,15 @@ redraws in place on the main screen answers from the top row it changed:
   from a word's start: `READY` is not in `NOT_READY`; `^T` a line's start,
   `T$` its end), `str T wait-gone`, `wait-exit`, `wait-bell`; several:
   whichever first. Met, it answers the first new line that holds the text
-  (`run`: the pane, then that line; `wait-gone`, the pane's state), never the line holding what you typed
-  (with the keys, or for a later wait your last input). A wait counts what
-  came since your last input to the pane (or since the program started),
-  scrolled away too: it never starts too late; but a later wait does not
-  see a line overwritten in place before it began. **Status 7:** the program reads its terminal and the text has not
-  come: it cannot before you type; the answer is the screen. Status 3: the
-  program exited first. `wait-exit` answers `%2 exited 0` and what came,
-  with the program's status.
+  (`run`: the pane, then that line; `wait-gone`, the pane's state), never
+  the line holding what you typed (with the keys, or for a later wait your
+  last input). A wait counts what came since your last input to the pane (or
+  since the program started), scrolled away too: it never starts too late;
+  but a later wait does not see a line overwritten in place before it began.
+  **Status 7:** the program reads its terminal and the text has not come: it
+  cannot before you type; the answer is the screen. Status 3: the program
+  exited first. `wait-exit` answers `%2 exited 0` and what came, with the
+  program's status.
 - **Read:** `capture` READ: `100 history`, `all-history`, `main-screen`
   (what was printed before a program took the screen), `alt-screen`,
   `last-output` (a shell command's output), `joined`, `marks`, `styles`,
