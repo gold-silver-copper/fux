@@ -1,0 +1,12 @@
+# FizzBuzz from 1 to 15: each number, or Fizz, Buzz or FizzBuzz.
+# expect: 1 2 Fizz 4 Buzz Fizz 7 8 Fizz Buzz 11 Fizz 13 14 FizzBuzz
+
+# n -- n, or its word
+define fizzbuzz
+  dup 15 mod 0 eq if drop str FizzBuzz else
+  dup 3 mod 0 eq if drop str Fizz else
+  dup 5 mod 0 eq if drop str Buzz then then then
+end
+
+# The counter stays on top; each answer is left under it.
+0 begin 1 add dup fizzbuzz swap dup 15 eq until drop
