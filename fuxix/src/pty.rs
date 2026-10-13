@@ -170,10 +170,35 @@ fn become_program<S: AsRef<OsStr>>(argv: &[S]) -> std::io::Error {
     if let Err(errno) = controlling {
         return errno.into();
     }
-    match terminal.as_fd().try_clone_to_owned() {
+    let error = match terminal.as_fd().try_clone_to_owned() {
         Ok(stdout) => Command::new(program).args(args).stdout(stdout).exec(),
         Err(error) => error,
+    };
+    if error.kind() == std::io::ErrorKind::NotFound
+        && let Some(interpreter) = missing_interpreter(program.as_ref())
+    {
+        return std::io::Error::other(format!("its interpreter {interpreter} does not exist"));
     }
+    error
+}
+
+/// The `#!` interpreter `program`'s file names, looked up as `exec` looks
+/// it up, if the file is there and the interpreter is not: what `exec`
+/// found missing.
+fn missing_interpreter(program: &OsStr) -> Option<String> {
+    let file = if program.as_encoded_bytes().contains(&b'/') {
+        PathBuf::from(program)
+    } else {
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|dir| dir.join(program))
+            .find(|file| file.is_file())?
+    };
+    let mut head = [0u8; 256];
+    let read = std::fs::File::open(file).ok()?.read(&mut head).ok()?;
+    let line = head.get(..read)?.strip_prefix(b"#!")?;
+    let line = line.split(|b| *b == b'\n').next()?;
+    let interpreter = std::str::from_utf8(line).ok()?.split_whitespace().next()?;
+    (!Path::new(interpreter).exists()).then(|| interpreter.to_owned())
 }
 
 /// Opens a PTY of `size`: its master and its slave.

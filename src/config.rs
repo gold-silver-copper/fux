@@ -13,15 +13,15 @@ pub enum Error {
     NotANumber {
         option: String,
     },
-    TooLarge {
+    OutOfRange {
         option: String,
+        min: usize,
         max: usize,
     },
     NotOnOff {
         option: String,
         value: String,
     },
-    NoBuffers,
     NoProgram,
     /// A name `update-environment` is given that no variable has.
     NotAVariable {
@@ -39,11 +39,12 @@ impl std::fmt::Display for Error {
                  buffers, bell, titles, shell-marks and update-environment"
             ),
             Error::NotANumber { option } => write!(f, "{option}: not a number"),
-            Error::TooLarge { option, max } => write!(f, "{option}: at most {max}"),
+            Error::OutOfRange { option, min, max } => {
+                write!(f, "{option}: out of range, {min} to {max}")
+            }
             Error::NotOnOff { option, value } => {
                 write!(f, "{option}: {value:?} is not on or off (true or false)")
             }
-            Error::NoBuffers => f.write_str("buffers: at least 1"),
             Error::NoProgram => f.write_str("shell: a program is needed"),
             Error::NotAVariable { name } => write!(
                 f,
@@ -132,17 +133,17 @@ impl Config {
     /// `update-environment`.
     pub fn set(&mut self, option: &str, value: &str) -> Result<(), Error> {
         let name = || option.to_owned();
-        let number = |max: usize| -> Result<usize, Error> {
-            let n: usize = value
+        let number = |min: usize, max: usize| -> Result<usize, Error> {
+            let n: i128 = value
                 .parse()
                 .map_err(|_| Error::NotANumber { option: name() })?;
-            match n > max {
-                true => Err(Error::TooLarge {
+            (usize::try_from(n).ok())
+                .filter(|n| (min..=max).contains(n))
+                .ok_or(Error::OutOfRange {
                     option: name(),
+                    min,
                     max,
-                }),
-                false => Ok(n),
-            }
+                })
         };
         let on = || match value {
             "on" | "true" => Ok(true),
@@ -160,7 +161,7 @@ impl Config {
                 }
                 self.shell = argv;
             }
-            "history-lines" => self.history_lines = number(MAX_HISTORY)?,
+            "history-lines" => self.history_lines = number(0, MAX_HISTORY)?,
             "clipboard" => self.clipboard = on()?,
             "bell" => self.bell = on()?,
             "titles" => self.titles = on()?,
@@ -172,13 +173,7 @@ impl Config {
                 }
                 self.update_environment = names;
             }
-            "buffers" => {
-                let n = number(MAX_BUFFERS)?;
-                if n == 0 {
-                    return Err(Error::NoBuffers);
-                }
-                self.buffers = n;
-            }
+            "buffers" => self.buffers = number(1, MAX_BUFFERS)?,
             other => {
                 return Err(Error::UnknownOption {
                     option: other.to_owned(),
@@ -214,6 +209,8 @@ mod tests {
         assert_eq!(config.set("shell", "/bin/zsh -l"), Ok(()));
         assert_eq!(config.shell, ["/bin/zsh", "-l"]);
         assert!(config.set("history-lines", "lots").is_err());
+        let below = config.set("history-lines", "-1").map_err(|e| e.to_string());
+        assert!(below.is_err_and(|e| e.contains("out of range")));
         assert!(config.set("buffers", "0").is_err());
         assert!(config.set("nonsense", "1").is_err());
         assert!(config.set("update-environment", "OK BAD-NAME").is_err());

@@ -243,9 +243,23 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     let unknown = server.fux(&["frobnicate"])?;
     assert_eq!(unknown.status, 1);
     assert!(
-        unknown.stderr.starts_with("fux: unknown_word: "),
+        unknown.stderr.starts_with("fux: unknown_word: ") && unknown.stderr.contains("fux help"),
         "{}",
         unknown.stderr
+    );
+    // A program's path holding a line end fails to start, the line end
+    // shown as `\n`, as is a line separator in a message.
+    let path = server.fux(&["opts", "str", "no\nsuch", "program", "run"])?;
+    assert!(
+        path.stderr.starts_with("fux: start: ") && path.stderr.contains(r"no\nsuch:"),
+        "{}",
+        path.stderr
+    );
+    let separator = server.fux(&["str", "a\u{2028}b", "fail"])?;
+    assert!(
+        separator.stderr.contains(r"a\u{2028}b"),
+        "{}",
+        separator.stderr
     );
     // A text wait on a program reading its terminal ends at once: the text
     // cannot come before more input.
@@ -310,7 +324,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         exited.stdout
     );
     assert_eq!(exited.stderr.lines().count(), 1, "{}", exited.stderr);
-    assert!(exited.stderr.contains("ONE; TWO"), "{}", exited.stderr);
+    assert!(exited.stderr.contains(r"ONE\nTWO"), "{}", exited.stderr);
     let left = server.ok(&[
         "1", "2", "add", "str", "a b", "str", "%1", "pane", "dup", "tab",
     ])?;

@@ -2944,7 +2944,12 @@ impl Session {
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
-                let name = name.clone().or_else(|| argv.first().map(|p| basename(p)));
+                // Named after its program, if that makes a name.
+                let derived = argv
+                    .first()
+                    .map(|p| basename(p))
+                    .filter(|n| check_name(n).is_ok());
+                let name = name.clone().or(derived);
                 let start = (Start::Program(argv, env), cwd.as_path());
                 let workspace = workspace
                     .clone()
@@ -5087,7 +5092,7 @@ mod tests {
         let missing = failed(&mut s, "str /no/such/file.fux check");
         assert!(missing.contains("No such file"), "{missing}");
         let split = failed(&mut s, "str 'two\nlines' fail");
-        assert!(split.ends_with("two; lines"), "{split}");
+        assert!(split.ends_with(r"two\nlines"), "{split}");
         // A tab in a waited text is a blank, as in the screen's.
         run(&mut s, "%1 opts str 'ready\tnow' wait-text drop drop")?;
         Ok(())

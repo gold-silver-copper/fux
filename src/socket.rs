@@ -88,11 +88,6 @@ pub enum Error {
         path: PathBuf,
         source: io::Error,
     },
-    /// Whether a server listens could not be told.
-    Probe {
-        path: PathBuf,
-        source: io::Error,
-    },
 }
 
 impl std::fmt::Display for Error {
@@ -188,11 +183,6 @@ impl std::fmt::Display for Error {
                 path,
                 source,
             } => write!(f, "{doing}{}: {source}", path.display()),
-            Error::Probe { path, source } => write!(
-                f,
-                "cannot tell whether {} is in use ({source}); it was left in place",
-                path.display()
-            ),
         }
     }
 }
@@ -208,7 +198,7 @@ impl Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::Io { source, .. } | Error::Probe { source, .. } => Some(source),
+            Error::Io { source, .. } => Some(source),
             Error::NotUtf8 { .. }
             | Error::NoLocation
             | Error::EmptyVariable { .. }
@@ -557,21 +547,14 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Option<UnixListener
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(io(path)(error)),
         Ok(meta) if foreign(&meta) => return Err(refused()),
-        Ok(_) => match probe(path) {
-            Ok(()) => return Err(Error::Listening(path.to_owned())),
-            Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
-                if stale.as_ref().is_ok_and(|stale| stale.still_at(path)) {
-                    fs::remove_file(path).map_err(failed("removing stale socket ", path))?;
-                }
+        Ok(_) if probe(path).is_ok() => return Err(Error::Listening(path.to_owned())),
+        // No answer: with the lock held, no server owns it, whether connect
+        // was refused or denied (a sandbox that forbids sockets).
+        Ok(_) => {
+            if stale.as_ref().is_ok_and(|stale| stale.still_at(path)) {
+                fs::remove_file(path).map_err(failed("removing stale socket ", path))?;
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(source) => {
-                return Err(Error::Probe {
-                    path: path.to_owned(),
-                    source,
-                });
-            }
-        },
+        }
     }
     let mut endpoint = Endpoint {
         path: path.to_owned(),
@@ -699,9 +682,11 @@ mod tests {
         assert_eq!(fuxix::socket::peer_uid(&served).ok(), Some(geteuid()));
         drop((client, served, listener, endpoint));
         assert!(!exists(&path), "the socket is removed at exit");
-        // A stale socket (nothing listening) is replaced.
+        // A stale socket (nothing listening) is replaced, even one whose
+        // connect is denied, as a sandbox denies sockets.
         let stale = UnixListener::bind(&path).map_err(|e| e.to_string())?;
         drop(stale);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).map_err(|e| e.to_string())?;
         let (endpoint, _listener) = bind(&path)?;
         // A replacement bound by someone else at the same path is left alone.
         fs::remove_file(&path).map_err(|e| e.to_string())?;

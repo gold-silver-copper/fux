@@ -231,8 +231,9 @@ pub struct Failed {
 
 impl std::fmt::Display for Failed {
     /// One line, as `fux: CODE: MESSAGE` is read: a message of several (a
-    /// program's last lines, a path holding a newline) joined with `; `,
-    /// any other control character escaped.
+    /// program's last lines, a path holding a line end) has its lines
+    /// trimmed and joined with `\n`, any other control character or line
+    /// separator escaped.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let lines = self
             .message
@@ -242,10 +243,10 @@ impl std::fmt::Display for Failed {
         let mut message = String::new();
         for (i, line) in lines.enumerate() {
             if i > 0 {
-                message.push_str("; ");
+                message.push_str("\\n");
             }
             for c in line.chars() {
-                match c.is_control() {
+                match c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
                     true => message.extend(c.escape_default()),
                     false => message.push(c),
                 }
@@ -262,6 +263,9 @@ impl From<fuxth::Error> for Failed {
             && let Some(usage) = error.word.as_deref().and_then(words::usage)
         {
             error.message.push_str(&format!(" ({usage})"));
+        }
+        if error.code == fuxth::Code::UnknownWord {
+            error.message.push_str(" (`fux help` lists every word)");
         }
         let word = error.word.as_deref().filter(|w| !w.is_empty());
         let message = match (&error.place, word) {

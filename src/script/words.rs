@@ -96,7 +96,7 @@ pub const WORDS: &[Word] = &[
     word("Input", "text", 2, "keys text -- keys", "text, typed"),
     word("Input", "key", 2, "keys name -- keys", "a key by its name: Enter, C-c, Up, F5"),
     word("Input", "paste", 2, "keys text -- keys", "text as a paste"),
-    word("Input", "paste-file", 2, "keys file -- keys", "a file's text as a paste"),
+    word("Input", "paste-file", 2, "keys file -- keys", "a file's text as a paste, at most 400 KiB"),
     word("Input", "times", 2, "keys n -- keys", "the input just before it, n times (1 to 1000): str Down key 2 times"),
     word("Input", "send-keys", 2, "target keys -- [outcome]", "send to a pane, every pane of a tab, or a client as typed at its terminal"),
     word("Input", "mouse", 3, "action row col -- mouse", "click right middle press release wheel-up wheel-down or move, at a cell from 0"),
@@ -958,12 +958,15 @@ impl fuxth::Host for Host<'_> {
                     "paste" => built.inputs.push(Input::Paste(string(name, &v)?)),
                     "paste-file" => {
                         let path = string(name, &v)?;
-                        let read = bounded(&path, 900 * 1024)
+                        // A request carries its input twice (the keys, and
+                        // the echo a wait skips) within one frame.
+                        let most = 400 * 1024;
+                        let read = bounded(&path, most)
                             .map_err(|e| fail("paste", format!("{path}: {e}")))?;
-                        if read.len() > 900 * 1024 {
+                        if read.len() as u64 > most {
                             return Err(fail(
                                 "paste",
-                                format!("{path}: more than 900 KiB, the most one paste takes"),
+                                format!("{path}: more than 400 KiB, the most one paste takes"),
                             ));
                         }
                         let text = String::from_utf8(read)

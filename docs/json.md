@@ -51,8 +51,8 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 
 `X info json` gives that pane, tab (`{"id","name","panes"}`) or workspace
 (`{"id","name","tabs"}`) alone; `X str FIELD get` leaves one of its fields:
-a number or boolean as itself, a string as text, `null` as the text
-`null`.
+a number or boolean as itself, a string as text, `null` as an answer that
+prints `null` (`string` makes it the text).
 
 ## `PANE opts capture json`
 

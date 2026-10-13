@@ -79,10 +79,21 @@ pub fn pane(
         let cells: Cells<'_> = match view.cols {
             Some((start, end)) => {
                 let (start, end) = (usize::from(start), usize::from(end));
-                cells
-                    .skip(start)
-                    .take(end.saturating_sub(start).saturating_add(1))
-                    .collect()
+                let len = end.saturating_sub(start).saturating_add(1);
+                // With the cell after them, to tell a wide glyph cut there.
+                let mut cut: Cells<'_> = cells.skip(start).take(len.saturating_add(1)).collect();
+                let next = (cut.len() > len).then(|| cut.pop()).flatten();
+                // A wide glyph cut in two shows as a blank in the half taken,
+                // so each column is one cell.
+                if next.is_some_and(|(text, _)| text.is_empty())
+                    && let Some(last) = cut.last_mut()
+                {
+                    last.0 = " ";
+                }
+                if let Some(first) = cut.first_mut().filter(|(text, _)| text.is_empty()) {
+                    first.0 = " ";
+                }
+                cut
             }
             None => cells.collect(),
         };

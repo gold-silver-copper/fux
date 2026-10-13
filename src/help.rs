@@ -82,17 +82,29 @@ One word at length: `fux str WORD explain`.
 
 /// The prelude's and library's words: each name, stack effect, what it
 /// does, and its definition, from the comment before its `define`:
-/// `# pane text -- : what it does`.
-pub fn library() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
-    let mut words = Vec::new();
+/// `# pane text -- : what it does`. A definition over several lines is
+/// its indented body and the `end` closing it.
+pub fn library() -> Vec<(&'static str, &'static str, &'static str, String)> {
+    let mut words: Vec<(_, _, _, String)> = Vec::new();
     let mut comment = None;
+    let mut open = false;
     for line in fuxth::STDLIB.lines().chain(LIBRARY.lines()) {
+        if open && (line.starts_with("  ") || line == "end") {
+            if let Some((.., code)) = words.last_mut() {
+                code.push_str("\n  ");
+                code.push_str(line);
+            }
+            open = line != "end";
+            continue;
+        }
+        open = false;
         if let Some(text) = line.strip_prefix("# ") {
             comment = text.split_once(" : ");
         } else if let Some(rest) = line.strip_prefix("define ") {
             let name = rest.split_whitespace().next().unwrap_or_default();
             if let Some((effect, about)) = comment.take() {
-                words.push((name, effect, about, line));
+                words.push((name, effect, about, line.to_owned()));
+                open = true;
             }
         }
     }
@@ -297,6 +309,10 @@ mod tests {
             }
         }
         assert!(library().len() >= 5);
+        // A word defined over several lines shows all of them.
+        let range = explain("range").unwrap_or_default();
+        assert!(range.contains("  define range\n    let to\n"), "{range}");
+        assert!(range.ends_with("\n  end\n"), "{range}");
         for (name, ..) in library() {
             assert!(explain(name).is_some(), "{name}");
         }

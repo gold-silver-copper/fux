@@ -15,37 +15,43 @@
 //! it is, as is any other program.
 use std::path::{Path, PathBuf};
 
-/// bash: the user's own startup, then the marks. They run no command of
-/// the shell's own, so the user's DEBUG, ERR and RETURN traps see nothing
-/// of fux's, and `$?` and `PIPESTATUS` stay the command's:
+/// bash: the user's own startup, then the marks, set by `__fux_marks`, a
+/// function defined first. A function inherits no DEBUG or RETURN trap
+/// (unless `set -T`), so a trap the user's startup set sees one command of
+/// fux's: its call. The marks run no command of the shell's own either, so
+/// the user's DEBUG, ERR and RETURN traps see nothing of them, and `$?` and
+/// `PIPESTATUS` stay the command's:
 ///
 /// - `END`, first in `PROMPT_COMMAND`, so before the user's own hooks
-///   print: subshells, which inherit no DEBUG trap (unless `set -T`), the
-///   first exiting with the command's status (its `&&` keeps the ERR trap
-///   from it), print `D;STATUS` and `A`. The status and the state
-///   (`__fux_w`, a prompt shown and no command started since; `__fux_h`,
-///   the next history number then) are kept in the arithmetic of a
-///   redirection of its own, as no subshell can keep them: a line run with
-///   no start mark (one bash could not parse, or a comment: the history
-///   number moved) gets one as it ends.
+///   print: subshells, which inherit no DEBUG trap, the first exiting with
+///   the command's status (its `&&` keeps the ERR trap from it), print
+///   `D;STATUS` and `A`. The status and the state (`__fux_w`, a prompt
+///   shown and no command started since; `__fux_h`, the next history
+///   number then) are kept in the arithmetic of a redirection of its own,
+///   as no subshell can keep them: a line run with no start mark (one bash
+///   could not parse, or a comment: the history number moved) gets one as
+///   it ends.
 /// - `PS1` ends a command too, in case `PROMPT_COMMAND` is set anew while
-///   the shell runs (a `D` that ends no command does nothing).
+///   the shell runs (a `D` that ends no command does nothing); its hooks
+///   then print before that end.
 /// - bash 4.4 and later print `PS0` as a command's output begins. Older
-///   ones (macOS's 3.2) mark it from a DEBUG trap, armed last thing before
-///   the prompt, so it fires once, for the command typed; and there
-///   `HISTCMD` reads 1 in `PROMPT_COMMAND`, so `history 1` tells the
-///   history number.
+///   ones (macOS's 3.2) mark it from a DEBUG trap, set after the function
+///   (there a function's own is dropped as it returns), in place of the
+///   user's, and armed last thing before the prompt, so it fires once, for
+///   the command typed; and there `HISTCMD` reads 1 in `PROMPT_COMMAND`, so
+///   `history 1` tells the history number.
 ///
-/// Marks go to stderr, as the prompt does; fux's PROMPT_COMMAND is not
-/// exported, so shells started from this one do not inherit it.
-const BASHRC: &str = r#"# fux: OSC 133 shell marks, after your own startup. Off: `str shell-marks str off set`.
-if [ -r ~/.bashrc ]; then . ~/.bashrc; fi
+/// A variable the user made readonly is left as it is, unmarked (told from
+/// `declare -p`: an assignment tried in a subshell leaves bash 3.2's
+/// subshell reading the terminal in the shell's place). Marks go to
+/// stderr, as the prompt does; fux's PROMPT_COMMAND is not exported, so
+/// shells started from this one do not inherit it.
+const BASHRC: &str = r#"if [ -r ~/.bashrc ]; then . ~/.bashrc; fi
 "#;
 
 /// A login bash's startup, read as `bash -l` reads it (a login shell takes
 /// no --rcfile, so fux starts bash interactive with this one instead).
-const BASH_LOGIN: &str = r#"# fux: a login shell's startup, as bash -l reads it, then OSC 133 marks.
-if [ -r /etc/profile ]; then . /etc/profile; fi
+const BASH_LOGIN: &str = r#"if [ -r /etc/profile ]; then . /etc/profile; fi
 for __fux_f in ~/.bash_profile ~/.bash_login ~/.profile; do
   if [ -r "$__fux_f" ]; then . "$__fux_f"; break; fi
 done
@@ -77,27 +83,33 @@ fn ends() -> (String, String) {
     )
 }
 
-/// The marks, after either startup.
-fn bash_marks() -> String {
+/// A bash startup file: fux's function, `startup`, then the marks.
+fn bash_rc(startup: &str) -> String {
     let (new, old) = ends();
     format!(
-        r#"if [ "${{BASH_VERSINFO[0]}}${{BASH_VERSINFO[1]}}" -ge 44 ]; then __fux_e='{new}'; else __fux_e='{old}'; fi
-case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
-  "declare -a"*) PROMPT_COMMAND=("$__fux_e" "${{PROMPT_COMMAND[@]}}") ;;
-  *) PROMPT_COMMAND="$__fux_e${{PROMPT_COMMAND:+$'\n'$PROMPT_COMMAND}}" ;;
-esac
-if [ "${{BASH_VERSINFO[0]}}${{BASH_VERSINFO[1]}}" -ge 44 ]; then
-  PS0="${{PS0-}}"'{PS0_START}'
-else
-  trap '{START}' DEBUG
-  case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
-    "declare -a"*) PROMPT_COMMAND+=('{ARM}') ;;
-    *) PROMPT_COMMAND="$PROMPT_COMMAND"$'\n''{ARM}' ;;
-  esac
-fi
-PS1='{PS1_END}'"${{PS1-}}"
-unset __fux_e
-export -n PROMPT_COMMAND PS0
+        r#"# fux: OSC 133 shell marks, after your own startup. Off: `str shell-marks str off set`.
+__fux_marks() {{
+  unset -f __fux_marks
+  __fux_free() {{ local d; d=$(declare -p "$1" 2>/dev/null); d=${{d#declare -}}; case ${{d%% *}} in *r*) return 1 ;; esac; }}
+  local __fux_new=0 __fux_end
+  if [ "${{BASH_VERSINFO[0]}}${{BASH_VERSINFO[1]}}" -ge 44 ]; then __fux_new=1; __fux_end='{new}'; else __fux_end='{old}'; fi
+  if __fux_free PROMPT_COMMAND; then
+    case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
+      "declare -a"*) PROMPT_COMMAND=("$__fux_end" "${{PROMPT_COMMAND[@]}}") ;;
+      *) PROMPT_COMMAND="$__fux_end${{PROMPT_COMMAND:+$'\n'$PROMPT_COMMAND}}" ;;
+    esac
+    if [ $__fux_new = 0 ]; then PROMPT_COMMAND="$PROMPT_COMMAND"$'\n''{ARM}'; fi
+    export -n PROMPT_COMMAND
+  fi
+  if [ $__fux_new = 1 ] && __fux_free PS0; then
+    PS0="${{PS0-}}"'{PS0_START}'
+    export -n PS0
+  fi
+  if __fux_free PS1; then PS1='{PS1_END}'"${{PS1-}}"; fi
+  unset -f __fux_free
+}}
+{startup}__fux_marks
+([ "${{BASH_VERSINFO[0]}}${{BASH_VERSINFO[1]}}" -ge 44 ]) || trap '{START}' DEBUG
 "#,
     )
 }
@@ -106,7 +118,7 @@ export -n PROMPT_COMMAND PS0
 /// PROMPT_COMMAND never comes from the environment: bash 5.3 empties
 /// `PIPESTATUS` for good once it imports one. The first prompt's `PS1`
 /// sets it from `__fux_pc` (an expansion that prints nothing), and starts
-/// the marks' state (`BASHRC`); its first run, once the first command
+/// the marks' state (`END`); its first run, once the first command
 /// ends, sets the PROMPT_COMMAND that stays (`__fux_pn`, or before bash
 /// 4.4 `__fux_po` and the trap), puts the caller's `PS1` back, forgets
 /// fux's variables, and runs it.
@@ -207,7 +219,7 @@ pub fn marked(argv: &[String], env: &[(String, String)], dir: &Path) -> Option<M
                 (false, _) => ("bashrc", BASHRC),
             };
 
-            let rc = write(dir, name, &format!("{startup}{}", bash_marks()))?;
+            let rc = write(dir, name, &bash_rc(startup))?;
             let mut argv = vec![program.clone(), "--rcfile".into()];
             argv.push(rc.to_string_lossy().into_owned());
             argv.extend(

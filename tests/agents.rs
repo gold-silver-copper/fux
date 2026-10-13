@@ -1257,9 +1257,10 @@ fn a_bare_bash_keeps_its_pipestatus_and_prompt() -> Outcome {
     Ok(())
 }
 
-/// The marks set off none of the user's traps: a DEBUG trap sees only the
-/// command typed, an ERR trap counts a failure once; and a PROMPT_COMMAND
-/// set anew in the running shell leaves them marked.
+/// The marks set off none of the user's traps: a DEBUG trap sees one
+/// command of fux's startup, then only the command typed, an ERR trap
+/// counts a failure once; a PROMPT_COMMAND set anew in the running shell
+/// leaves them marked; a readonly PS1 is left alone.
 #[test]
 fn bash_marks_leave_the_users_traps_and_hooks_alone() -> Outcome {
     let server = Server::start("")?;
@@ -1273,6 +1274,21 @@ fn bash_marks_leave_the_users_traps_and_hooks_alone() -> Outcome {
         &["str", "t", "name", "str", "HOME", "str", &home, "env"],
         &["bash"],
     ))?;
+    // Of fux's startup the DEBUG trap sees one command: the call that sets
+    // the marks.
+    let first = server.ok(&["str", "t", "pane", "opts", "capture"])?;
+    let fuxs = [
+        "fux",
+        "BASH_VERSINFO",
+        "PS0",
+        "PS1",
+        "PROMPT_COMMAND",
+        "export",
+    ];
+    let seen: Vec<&str> = (first.lines())
+        .filter(|l| l.starts_with("DBG") && fuxs.iter().any(|f| l.contains(f)))
+        .collect();
+    assert_eq!(seen, ["DBG __fux_marks"], "{first}");
     line(&server, "t", "echo hi")?;
     assert_eq!(last_output(&server, "t")?, "DBG echo hi\nhi\n");
     assert_eq!(done(&line(&server, "t", "false")?), Some("done 1"));
@@ -1282,6 +1298,22 @@ fn bash_marks_leave_the_users_traps_and_hooks_alone() -> Outcome {
     assert_eq!(done(&line(&server, "t", "(exit 3)")?), Some("done 3"));
     line(&server, "t", "unset PROMPT_COMMAND")?;
     assert_eq!(done(&line(&server, "t", "(exit 5)")?), Some("done 5"));
+    // A readonly PS1 is left as it is, with no complaint, and the marks
+    // come from PROMPT_COMMAND.
+    let ro = server.dir.join("ro");
+    std::fs::create_dir_all(&ro).map_err(e)?;
+    std::fs::write(ro.join(".bashrc"), "readonly PS1='ro> '\n").map_err(e)?;
+    let ro = ro.to_string_lossy().into_owned();
+    server.ok(&run(
+        &["str", "ro", "name", "str", "HOME", "str", &ro, "env"],
+        &["bash"],
+    ))?;
+    assert_eq!(done(&line(&server, "ro", "(exit 2)")?), Some("done 2"));
+    let screen = server.ok(&["str", "ro", "pane", "opts", "capture"])?;
+    assert!(
+        screen.contains("ro> ") && !screen.contains("readonly"),
+        "{screen}"
+    );
     Ok(())
 }
 
@@ -1530,7 +1562,8 @@ fn a_later_wait_skips_the_last_inputs_echo() -> Outcome {
     Ok(())
 }
 
-/// Joined, a row range takes each line it touches whole.
+/// Joined, a row range takes each line it touches whole; a column range
+/// cuts a wide glyph to a blank.
 #[test]
 fn a_row_range_takes_joined_lines_whole() -> Outcome {
     let server = Server::start("")?;
@@ -1540,6 +1573,19 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
         "str", &pane, "pane", "opts", "1", "1", "rows", "joined", "capture",
     ])?;
     assert_eq!(body(&line), "aaaaaaaaaaaaaaaaaaaaBBBBBBBBBBBBBBBBBBBBcc\n");
+    // A column range cuts a wide glyph to a blank, a column a cell.
+    let wide = id(&server.ok(&run(
+        &["20", "6", "size"],
+        &["sh", "-c", "printf 'A界BC'; exec cat"],
+    ))?);
+    let cut = |first: &str, last: &str| {
+        let opts = [
+            "str", &wide, "pane", "opts", "0", "0", "rows", first, last, "cols", "capture",
+        ];
+        server.ok(&opts).map(|c| body(&c).to_owned())
+    };
+    assert_eq!(cut("2", "4")?, " BC\n");
+    assert_eq!(cut("0", "1")?, "A\n");
     Ok(())
 }
 

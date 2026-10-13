@@ -10,9 +10,9 @@ a pane (`@2` a tab, `+1` a workspace). What is left is printed. The server is
 then answers with what happened: you never choose a wait or sleep to read.
 
 ```sh
-fux opts str app name str './app --fast' command run   # start: answers %2 reading, then its output
+fux opts str app name str './app --fast' command run    # start: answers %2 reading, then its output
 fux %2 keys str y text str Enter key send-keys          # type: answers as run does
-fux %2 str y type    fux %2 str Enter press             # the same, bundled
+fux %2 str y type; fux %2 str Enter press               # the same, bundled
 fux %3 str 'make test' line                             # a shell command: %3 reading · done 0, its output
 fux %2 opts wait                                        # settle again (60s), what came since your input
 fux %2 opts str 'listening on' wait-text wait           # wait for a text (case ignored)
@@ -20,8 +20,8 @@ fux %2 opts all-history capture                         # read: the screen once 
 fux %2 str state get                                    # one value: state, exited, pid, cwd, title
 fux %2 opts json capture                                # also: main-screen, last-output, styles, marks
 fux %2 str click 3 10 mouse send-mouse                  # a cell from 0, as a capture counts
-fux %2 tab 80 24 resize    fux %2 50 percent resize-x   # sizes; also: opts horizontal … split
-fux %2 str TERM signal     fux %2 opts respawn          # stop; start again on a new terminal
+fux %2 tab 80 24 resize; fux %2 50 percent resize-x     # sizes; also: opts horizontal … split
+fux %2 str TERM signal; fux %2 opts respawn             # stop; start again on a new terminal
 fux str agent workspace kill                            # at the end: everything run started, at once
 ```
 
@@ -53,8 +53,8 @@ redraws in place on the main screen answers from the top row it changed:
 - **Keys:** names are tmux's (`Enter`, `Escape`, `Tab`, `Up`, `PageDown`,
   `BSpace`, `F5`, `C-c` Ctrl, `M-s` Alt, `S-Tab` Shift; a typo is refused).
   Inside `keys … send-keys`: `str T text`, `str NAME key`, `str T paste` (one
-  bracketed paste), `str FILE paste-file`; `N times` (1 to 1000) repeats only
-  the input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
+  bracketed paste), `str FILE paste-file` (400 KiB at most); `N times` (1 to 1000)
+  repeats only the input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
 - **Waiting for a text:** `str T wait-text` (case ignored, blanks as one,
   from a word's start: `READY` is not in `NOT_READY`; `^T` a line's start,
   `T$` its end), `str T wait-gone`, `wait-exit`, `wait-bell`; several:
@@ -82,9 +82,11 @@ redraws in place on the main screen answers from the top row it changed:
 ## Status
 
 0 done (settled, or the wait met); 1 failed, `fux: CODE: MESSAGE` on stderr,
-one line, with how the word is used; 3 the program exited before the wait;
+one line (a line end in it shown as `\n`), with how the word is used when
+it was given too few values or the wrong kind; 3 the program exited before the wait;
 4 the pane closed; 7 the program reads its terminal and the text has not
-come; 124 still busy at the time limit. A wait for the exit (`wait-exit`)
+come; 124 still busy at the time limit (with `0 timeout`, a wait for a text
+or the exit not met at once). A wait for the exit (`wait-exit`)
 answers with the program's own status instead, which may be any of these:
 its state line (`exited 3`) tells them apart. Words before a failing one
 have already acted. `fux ls` (`ls json`, with titles and states) lists everything.
@@ -111,9 +113,9 @@ The standard library, written in fuxth, does the rest: text (`words lines
 split-on trim upper number join contains starts-with`), lists (`range sort
 reverse sum count first last`), and `dup swap over rot not mod min max …`;
 `fux help` lists every word, `fux help WORD` explains one. A mistake every
-run would make (a word given too few values, a string given to `add` or
-`if`) fails before any word acts; of fux's own words only the count of
-values is checked so, their kinds as they run.
+run would make (a word given too few values, a string written just before
+`add` or `if`) fails before any word acts; a value from a list or a word,
+and the kinds fux's own words take, are checked as they run.
 
 ## Shells
 
@@ -124,7 +126,12 @@ the shell reads again, `last-output` reads a command's output alone, and
 `$?`, `PIPESTATUS`, your prompt and your hooks behave as without fux. A
 command longer than the limit answers `busy` (124): `wait` on. A command
 that prompts (`read`, `sudo`) answers `reading`, its prompt shown.
-`str shell-marks str off set` turns marks off.
+Output with no line end of its own is followed by the prompt on a row of
+its own. bash marks from `PROMPT_COMMAND` and `PS1`: one set anew in the
+running shell has `last-output` take what its hooks print too; with both
+replaced (or made readonly) a command never ends: `line` answers `reading`
+with no `done`, and `command_running` stays true.
+`str shell-marks str off set` turns marks off for shells started after.
 
 ## Sizes
 
@@ -133,7 +140,8 @@ A tab no client shows is laid out on its `size` (an option of `run`,
 resize` changes it later (a pane's: its tab; `resize-auto` goes back to a
 client's screen). `PANE 95 percent resize-x` sizes a pane within its tab. A
 size that cannot be had (over 500 a side, too small for a tab's panes, a
-split with no room left) is refused, and nothing changes.
+split with no room left) is refused, and nothing changes. A client's size
+is its terminal's, whatever it is.
 
 ## Which server
 
