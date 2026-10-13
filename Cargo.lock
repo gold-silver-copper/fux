@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "fux-vt"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "unicode-segmentation",
  "unicode-width",
@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "fuxix"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
 ]
