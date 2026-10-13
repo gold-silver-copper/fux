@@ -1491,6 +1491,19 @@ fn a_later_wait_skips_the_last_inputs_echo() -> Outcome {
     Ok(())
 }
 
+/// Joined, a row range takes each line it touches whole.
+#[test]
+fn a_row_range_takes_joined_lines_whole() -> Outcome {
+    let server = Server::start("")?;
+    let long = "echo aaaaaaaaaaaaaaaaaaaaBBBBBBBBBBBBBBBBBBBBcc; echo next; exec cat";
+    let pane = id(&server.ok(&run(&["20", "6", "size"], &["sh", "-c", long]))?);
+    let line = server.ok(&[
+        "str", &pane, "pane", "opts", "1", "1", "rows", "joined", "capture",
+    ])?;
+    assert_eq!(body(&line), "aaaaaaaaaaaaaaaaaaaaBBBBBBBBBBBBBBBBBBBBcc\n");
+    Ok(())
+}
+
 /// A signal that ends the program answers how it ended, even after the
 /// pane has been quiet a while.
 #[test]

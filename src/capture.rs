@@ -39,7 +39,26 @@ pub fn pane(
     // Whether the row before ended in a blank no glyph was written to: the
     // cell a wide glyph left, not fitting at the row's end.
     let mut padded = false;
-    for (_, (row, span)) in read.into_iter().enumerate().filter(|(i, _)| in_rows(i)) {
+    // Joined, a line some of whose rows `rows` takes is taken whole: the
+    // line each row is part of, and the lines the range touches.
+    let line_of: Vec<usize> = read
+        .iter()
+        .scan((0usize, false), |(line, wrapped), (row, _)| {
+            if !*wrapped {
+                *line = line.saturating_add(1);
+            }
+            *wrapped = view.join && row.wrapped();
+            Some(*line)
+        })
+        .collect();
+    let touched: std::collections::HashSet<usize> = (line_of.iter().enumerate())
+        .filter(|(i, _)| in_rows(i))
+        .map(|(_, line)| *line)
+        .collect();
+    let taken = |i: &usize| {
+        in_rows(i) || (view.join && line_of.get(*i).is_some_and(|line| touched.contains(line)))
+    };
+    for (_, (row, span)) in read.into_iter().enumerate().filter(|(i, _)| taken(i)) {
         // A wide glyph's second cell is drawn as its first: the same style,
         // so a run of it is not broken in two.
         let mut lead = Attributes::default();
