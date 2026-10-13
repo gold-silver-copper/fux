@@ -246,3 +246,30 @@ fn a_waiting_pane_is_answered_as_it_is() -> Outcome {
     assert!(began.elapsed() < std::time::Duration::from_secs(15));
     Ok(())
 }
+
+/// A shell back at its prompt, its command ended, reads: a job it left in
+/// its own group (job control off; fish's start-up work) is not the
+/// agent's command.
+#[test]
+fn a_shell_at_its_prompt_reads_whatever_it_left_running() -> Outcome {
+    if !cfg!(target_os = "linux") {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let pane = server
+        .ok(&[
+            "opts", "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg", "run",
+        ])?
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let p = ["str", pane.as_str(), "pane"];
+    server.ok(&[&p[..], &["str", "set +m; (sleep 30; :) & disown", "line"]].concat())?;
+    let answer = server.ok(&[&p[..], &["str", "echo hi", "line"]].concat())?;
+    assert!(
+        answer.starts_with(&format!("{pane} reading · done 0\n")),
+        "{answer}"
+    );
+    Ok(())
+}

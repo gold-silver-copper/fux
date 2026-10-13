@@ -814,6 +814,18 @@ fn descendants(root: Pid) -> Vec<Pid> {
     found
 }
 
+/// Whether process `pid` itself is blocked reading the terminal at `tty`.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn reads_terminal(pid: Pid, tty: &std::path::Path) -> bool {
+    process_activity(pid, tty) == Some(Activity::Reading)
+}
+
+/// macOS keeps what a thread is blocked in to itself: not known.
+#[cfg(target_os = "macos")]
+pub fn reads_terminal(_pid: Pid, _tty: &std::path::Path) -> bool {
+    false
+}
+
 /// macOS keeps what a thread is blocked in to itself: not known.
 #[cfg(target_os = "macos")]
 pub fn activity(_group: Pid, _tty: &std::path::Path, _root: Pid) -> Activity {
