@@ -695,9 +695,27 @@ pub fn resize_to(root: &Tree, area: Rect, pane: PaneId, axis: Axis, len: u16) ->
             return Some(tree);
         }
         let amount = now.abs_diff(len);
-        let tried = directions.iter().filter_map(|&direction| {
+        // The pane grows (or shrinks from its far side) itself; or, to
+        // shrink, a neighbour grows into it: a pane between two has no far
+        // side of its own to give from.
+        let placed = place(&tree, area);
+        let growing = directions.iter().map(|&direction| (pane, direction));
+        let neighbours = directions
+            .iter()
+            .filter(|_| now > len)
+            .filter_map(|&direction| {
+                let other = neighbor(&placed, pane, direction)?;
+                let back = match direction {
+                    Direction::Left => Direction::Right,
+                    Direction::Right => Direction::Left,
+                    Direction::Up => Direction::Down,
+                    Direction::Down => Direction::Up,
+                };
+                Some((other, back))
+            });
+        let tried = growing.chain(neighbours).filter_map(|(which, direction)| {
             let mut moved = tree.clone();
-            resize(&mut moved, area, pane, direction, amount).then_some(())?;
+            resize(&mut moved, area, which, direction, amount).then_some(())?;
             Some((size(&moved)?.abs_diff(len), moved))
         });
         match tried.min_by_key(|(off, _)| *off) {
@@ -829,6 +847,20 @@ mod tests {
         let mut root = Tree::Pane(p(0));
         root.split(p(0), p(1), Axis::Horizontal, Side::After);
         root
+    }
+
+    /// A pane between two shrinks: a neighbour grows into it.
+    #[test]
+    fn a_middle_pane_shrinks_to_a_length() {
+        let mut root = tree();
+        root.split(p(1), p(2), Axis::Horizontal, Side::After);
+        let area = area(90, 20);
+        let width = |t: &Tree| place(t, area).rect(p(1)).map(|r| r.w);
+        assert!(width(&root).is_some_and(|w| w > 12));
+        let smaller = resize_to(&root, area, p(1), Axis::Horizontal, 12);
+        assert_eq!(smaller.as_ref().and_then(width), Some(12));
+        let wider = smaller.and_then(|t| resize_to(&t, area, p(1), Axis::Horizontal, 40));
+        assert_eq!(wider.as_ref().and_then(width), Some(40));
     }
 
     #[test]
