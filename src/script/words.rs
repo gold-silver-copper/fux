@@ -385,7 +385,7 @@ fn ignored(word: &str, built: &Opts) -> Result<(), Failure> {
             "program",
             "it starts a shell; run starts a program, or `str LINE typed` types one",
         ),
-        "new-tab" | "new-workspace" | "split" if !built.waits.until.is_empty() => {
+        "new-tab" | "new-workspace" if !built.waits.until.is_empty() => {
             refuse("wait", "wait on the pane it leaves: PANE opts … wait")
         }
         "run" if built.typed.is_some() => refuse("typed line", "it starts no shell to type into"),
@@ -786,6 +786,7 @@ impl fuxth::Host for Host<'_> {
                         run,
                         ids: built.ids,
                         json: false,
+                        then: wait(&built.waits, false, self.settle),
                     },
                     Then::Handle(Kind::Pane),
                 ))
@@ -862,7 +863,9 @@ impl fuxth::Host for Host<'_> {
                         "wait needs a condition: wait-text, wait-exit, …",
                     ));
                 };
-                wait.all = false;
+                // Settling a tab or workspace waits for each of its panes; a
+                // condition, for whichever pane meets it first.
+                wait.all = wait.until == [Until::Settled];
                 later(ask(
                     Command::Wait {
                         targets: vec![p],

@@ -41,7 +41,7 @@ screen of a full-screen program (an editor, a menu, a form):
 - **Time:** an action or `capture` settles within 10s, a `wait` within 60s;
   `SECS timeout` changes it. `0 timeout` acts and answers at once, the
   state as it is (start many programs with it, then one `wait` on their tab
-  or workspace). Busy at the limit: status 124; `PANE opts wait` waits on.
+  or workspace: it settles each pane). Busy at the limit: status 124; `PANE opts wait` waits on.
 - **Start:** `run` starts a program (not a shell) in a tab of its own in
   workspace `agent`. OPTIONS: `str app name` (the tab's; one in use is
   refused), `100 30 size`, `str "$PWD" cwd` (a real path), `str K str V env`,
@@ -57,8 +57,8 @@ screen of a full-screen program (an editor, a menu, a form):
 - **Waiting for a text:** `str T wait-text` (case ignored, blanks as one,
   from a word's start: `READY` is not in `NOT_READY`; `^T` a line's start,
   `T$` its end), `str T wait-gone`, `wait-exit`, `wait-bell`; several:
-  whichever first. Met, it answers the line that holds the text (`run`:
-  the pane, then that line). A wait counts what came since your last input
+  whichever first. Met, it answers the first new line that holds the text
+  (`run`: the pane, then that line). A wait counts what came since your last input
   to the pane (or since the program started), scrolled away too: it never
   starts too late. **Status 7:** the program reads its terminal and the text has not
   come: it cannot before you type; the answer is the screen. Status 3: the

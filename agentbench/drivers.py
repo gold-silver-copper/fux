@@ -575,7 +575,8 @@ class Fux(Driver):
         words = [*self.pane(pane), "opts", "horizontal", "str", argv[0], "program"]
         for a in argv[1:]:
             words += ["str", a, "arg"]
-        return self.fux(*words, "split").stdout.strip()
+        # Started at once, as spawn starts one; the answer starts with the pane.
+        return self.fux(*words, "0", "timeout", "split").stdout.split()[0]
 
     def kill(self, pane):
         self.fux(*self.pane(pane), "kill")

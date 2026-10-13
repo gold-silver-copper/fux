@@ -2499,6 +2499,30 @@ impl Session {
                 };
                 return self.start_waiting(&run, *wait, origin);
             }
+            Command::Split {
+                axis,
+                target,
+                cmd,
+                cwd,
+                env,
+                run,
+                ids,
+                then: Some(wait),
+                ..
+            } => {
+                let split = Command::Split {
+                    axis,
+                    target,
+                    cmd,
+                    cwd,
+                    env,
+                    run,
+                    ids,
+                    json: false,
+                    then: None,
+                };
+                return self.start_waiting(&split, *wait, origin);
+            }
             Command::Respawn {
                 target,
                 kill,
@@ -3104,6 +3128,7 @@ impl Session {
                 run,
                 ref ids,
                 json,
+                then: _,
             } => {
                 self.want(ids, &[Kind::Pane])?;
                 let target = self.pane(target, here)?.id;

@@ -1384,6 +1384,61 @@ fn a_program_that_echoes_nothing_is_heard() -> Outcome {
     Ok(())
 }
 
+/// Settling a workspace settles each of its panes; `split` and `respawn`
+/// answer as `run` does, a respawned program's wait counting from its own
+/// start; a met text answers the first line that held it.
+#[test]
+fn every_pane_and_every_start_is_waited_for() -> Outcome {
+    let server = Server::start("")?;
+    for s in ["0.1", "1"] {
+        let late = format!("sleep {s}; echo done-{s}; exec cat");
+        server.ok(&run(&["0", "timeout"], &["sh", "-c", &late]))?;
+    }
+    let all = server.ok(&["str", "agent", "workspace", "opts", "wait"])?;
+    assert!(all.contains("done-0.1") && all.contains("done-1"), "{all}");
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", "read x; echo got"]))?);
+    server.ok(&typed(&pane, "hi", &[]))?;
+    let again = "echo 'value 7'; echo 'value>'; exec cat";
+    let respawned = server.ok(&[
+        "str",
+        &pane,
+        "pane",
+        "opts",
+        "str",
+        "sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        again,
+        "arg",
+        "str",
+        "value",
+        "wait-text",
+        "respawn",
+    ])?;
+    assert_eq!(respawned, format!("{pane}\nvalue 7\n"));
+    let split = server.ok(&[
+        "str",
+        &pane,
+        "pane",
+        "opts",
+        "str",
+        "sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        "sleep 0.3; echo SPLIT; exec cat",
+        "arg",
+        "split",
+    ])?;
+    assert!(split.ends_with(" reading\nSPLIT\n"), "{split}");
+    Ok(())
+}
+
 /// A signal that ends the program answers how it ended, even after the
 /// pane has been quiet a while.
 #[test]

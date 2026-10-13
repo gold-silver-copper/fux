@@ -855,6 +855,7 @@ impl Wire for Command {
                 run,
                 ids,
                 json,
+                then,
             } => {
                 tag(out, 4);
                 axis.put(out);
@@ -865,6 +866,7 @@ impl Wire for Command {
                 run.put(out);
                 ids.put(out);
                 json.put(out);
+                then.put(out);
             }
             Command::Run {
                 workspace,
@@ -1100,6 +1102,7 @@ impl Wire for Command {
                 run: bool::get(r)?,
                 ids: Vec::get(r)?,
                 json: bool::get(r)?,
+                then: Option::get(r)?,
             },
             5 => Command::Run {
                 workspace: Option::get(r)?,

@@ -312,6 +312,8 @@ pub enum Command {
         run: bool,
         ids: Vec<AnyId>,
         json: bool,
+        /// Then waits on the new pane, armed before its program writes.
+        then: Option<Box<Wait>>,
     },
     /// A program, started in place of a shell in a tab of its own, in a
     /// workspace no client is moved to.

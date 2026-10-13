@@ -102,6 +102,8 @@ struct Watch {
     /// Since when its program has been seen reading its terminal, probe
     /// after probe: a text it stops short of is said only once that holds.
     reading_since: Option<Instant>,
+    /// Since when, and at which revision, its pane has looked settled.
+    settled_since: Option<(Instant, u64)>,
 }
 
 /// What a wait found.
@@ -175,6 +177,7 @@ impl Waiting {
                     cursor,
                     all_new,
                     reading_since: None,
+                    settled_since: None,
                 }
             })
             .collect();
@@ -458,9 +461,7 @@ impl Wait {
             // A text that cannot come: the screen, to act on what is there.
             let body = match told {
                 Told::Found(Found::Stopped(_)) => text(pane, self.marks),
-                Told::Found(Found::Exit(_)) => {
-                    since_text(pane, since.and_then(|s| s.cursor), self.marks)
-                }
+                Told::Found(Found::Exit(_)) => since_text(pane, since, self.marks),
                 Told::Found(_)
                 | Told::Exited(..)
                 | Told::Replaced
@@ -468,7 +469,7 @@ impl Wait {
                 | Told::TimedOut(_)
                     if self.print =>
                 {
-                    since_text(pane, since.and_then(|s| s.cursor), self.marks)
+                    since_text(pane, since, self.marks)
                 }
                 Told::Found(_)
                 | Told::Exited(..)
@@ -807,17 +808,19 @@ impl Watch {
                     let scrolled = self.in_history.get(i).cloned().flatten();
                     let mut skipped = false;
                     let (was, touched, cursor) = (&self.was, &self.touched, self.cursor);
-                    // The newest line holding it, on the screen or behind it.
-                    let line = (shown.iter().rev())
-                        .chain(behind.iter().rev())
+                    // The first line to hold it, behind the screen or on it:
+                    // where it came, not a later line that holds it too.
+                    let line = (behind.iter())
+                        .chain(shown.iter())
                         .filter(|l| is_new(l, was, touched) && found_in(&l.text, text) > 0)
                         .find(|l| {
                             let echo = echoed(l, wait, cursor, was);
                             skipped |= echo;
                             !echo
                         })
-                        .map(|l| l.text.clone())
-                        .or(scrolled);
+                        .map(|l| l.text.clone());
+                    // One seen as it scrolled away came first of all.
+                    let line = scrolled.or(line);
                     self.echo_skipped |= skipped;
                     line.map(|line| Found::Text {
                         text: text.clone(),
@@ -835,7 +838,25 @@ impl Watch {
                 Until::Exit => pane.process.exit_status().map(Found::Exit),
                 Until::Settled => {
                     let state = crate::ready::state(pane, now);
-                    state.settled().then_some(Found::Settled(state))
+                    // Settled on two looks a probe apart, the screen as it
+                    // was: output still in the terminal's buffers, which
+                    // the kernel has yet to hand fux, is in by then.
+                    if !state.settled() {
+                        self.settled_since = None;
+                        None
+                    } else if let crate::ready::State::Exited(_) = state {
+                        Some(Found::Settled(state))
+                    } else {
+                        let since = match self.settled_since {
+                            Some(since) if since.1 == pane.revision => since,
+                            _ => {
+                                let since = (now, pane.revision);
+                                self.settled_since = Some(since);
+                                since
+                            }
+                        };
+                        (now >= crate::after(since.0, PROBE)).then_some(Found::Settled(state))
+                    }
                 }
                 Until::Bell => (pane.alerts.count() > self.alerts).then(|| {
                     Found::Bell(
@@ -1075,7 +1096,9 @@ fn text(pane: &Pane, marks: bool) -> String {
 /// What a pane shows from the row `cursor` was on to its last line with
 /// text: what came since an action began. A full-screen program's whole
 /// screen; all of it if that row is gone.
-fn since_text(pane: &Pane, cursor: Option<fux_vt::RowId>, marks: bool) -> String {
+fn since_text(pane: &Pane, since: Option<Since>, marks: bool) -> String {
+    let cursor = since.and_then(|s| s.cursor);
+    let changed = since.is_none_or(|s| s.revision != pane.revision);
     let screen = pane.screen();
     let from = cursor
         .filter(|_| !screen.mode(fux_vt::Mode::AlternateScreen))
@@ -1085,10 +1108,19 @@ fn since_text(pane: &Pane, cursor: Option<fux_vt::RowId>, marks: bool) -> String
     };
     let found = lines(screen.rows().skip(from), None);
     let texts: Vec<&str> = found.iter().map(|l| l.text.trim_end()).collect();
-    let end = texts
+    let Some(end) = texts
         .iter()
         .rposition(|t| !t.is_empty())
-        .map_or(0, |i| i.saturating_add(1));
+        .map(|i| i.saturating_add(1))
+    else {
+        // Nothing from that row on, though the screen changed: the program
+        // cleared it and drew above. The screen, then.
+        return if changed {
+            text(pane, marks)
+        } else {
+            String::new()
+        };
+    };
     texts
         .get(..end)
         .unwrap_or_default()

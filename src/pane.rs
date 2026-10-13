@@ -844,6 +844,9 @@ impl Pane {
         self.starts = self.starts.wrapping_add(1);
         self.mouse_held = None;
         self.changed_at = Instant::now();
+        // A new program: a wait counts from its start, not the last input
+        // to the one before.
+        self.input_from = None;
         Ok(std::mem::replace(
             &mut self.process,
             process.unwrap_or(Process::Absent),
