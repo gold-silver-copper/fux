@@ -1,0 +1,5 @@
+# A matrix as a list of rows, transposed: its columns as rows.
+# expect: 1 4 7 2 5 8 3 6 9
+list list 1 2 3 end list 4 5 6 end list 7 8 9 end end let m
+list 0 3 range each let j list m each j at end end end end
+concat

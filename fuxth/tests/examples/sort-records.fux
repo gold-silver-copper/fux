@@ -1,0 +1,5 @@
+# Records sorted by a key: lists that start with the key sort by it.
+# expect: ann 31 bob 25 cy 40
+list list 31 str ann end list 25 str bob end list 40 str cy end end let people
+list people each let p list p 1 at p 0 at end end end sort let byname
+byname each print end

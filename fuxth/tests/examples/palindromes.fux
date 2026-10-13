@@ -1,0 +1,6 @@
+# Which words read the same backwards, ignoring case.
+# expect: Level Racecar Noon
+# s -- flag
+define palindrome lower dup reverse eq end
+list str 'Level Rotor-ish Racecar Python Noon' words each dup palindrome if else drop then end end
+str ' ' join

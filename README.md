@@ -65,13 +65,19 @@ fux str %3 pane opts wait-exit wait               # prints: exited 0
 - `fux FILE` runs a file (a word with a `/` or ending `.fux`); `fux -` runs
   what stdin says; a single word with spaces is a whole program
   (`fux 'ls json'`). `#` starts a comment. A paste is at most 900 KiB.
-- The language is small on purpose: `dup drop swap over rot`, `add sub mul
-  div mod`, `eq lt gt not`, `if … else … then`, `begin … until`, `define
-  NAME … end` (a word of your own; it may call itself, and a call in last
-  place loops in one frame) and `constant NAME` (`x constant NAME`: NAME
-  pushes x from then on). A prelude written in fuxth adds `true false nip
-  tuck -rot 2dup 2drop negate abs min max ne le ge`. Integers are checked:
-  an overflow fails; `div` truncates toward zero.
+- The language's core is small on purpose: 21 words (`drop pick roll`, `add
+  sub mul div`, `lt eq`, `len at slice concat push put`, `code char`, `kind
+  string print fail`) and its parsing words: `str WORD`, `define NAME …
+  end` (a word of your own; it may call itself, and a call in last place
+  loops in one frame), `X let NAME` (NAME pushes X from then on), `if …
+  else … then`, `begin … until`, `list … end` (a list of what its body
+  leaves) and `SEQ each … end` (its body once per element of a string or
+  list). Values are integers (checked: an overflow fails; `div` truncates
+  toward zero), booleans, strings, lists, and fux's own (panes, options …).
+- Everything else is the standard library, written in fuxth: `dup swap over
+  rot`, `not and or gt min max mod abs`, text (`words lines split-on trim
+  upper lower number join contains starts-with pad`), lists (`range sort
+  reverse sum count first last pack`) and more; `fux help` lists them all.
 - A program is checked before it runs: a word given fewer values than the
   stack surely holds, or a value the language's own words never take (`str a
   1 add`, `1 if`), fails before any word acts. What can't be known before it
@@ -100,7 +106,7 @@ fux str %3 pane keys str 'make test' text str Enter key wait-done send-keys
 A program can name what it made:
 
 ```sh
-fux opts str sh program run constant P   P str 'echo hi' type   P str Enter press   P settle screen
+fux opts str sh program run let P   P str 'echo hi' type   P str Enter press   P settle screen
 ```
 
 The bundled words are written in fuxth themselves: `type` and `press` (text
@@ -336,7 +342,7 @@ both. Esc after the prefix always closes the column. `label`, `group` and
 ## Saved sessions
 
 `dump` prints what there is as a fuxth program that makes it again, each
-pane a constant later lines name; `X dump-of` one tab or workspace. Run it
+pane a `let` name later lines use; `X dump-of` one tab or workspace. Run it
 to make it again on a running server, each tab in the workspace of its
 name (made if missing; a tab's name is the server's alone, so close what it
 holds first): `fux str dev workspace dump-of > dev.fux; fux dev.fux`.

@@ -1,0 +1,8 @@
+# Lines of comma-separated numbers: each line's sum, then the total.
+# expect: 6 15 -3 18
+str '1,2,3
+4,5,6
+-1,-2,0' lines let rows
+list rows each str , split-on 0 swap each number add end end end let sums
+sums each end
+sums sum

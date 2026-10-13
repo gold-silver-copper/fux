@@ -1,0 +1,6 @@
+# Counting words: how many, the first of the longest, and each length.
+# expect: 9 quick 3 5 5 3 5 4 3 4 3
+str 'the quick brown fox jumps over the lazy dog' words let ws
+ws len
+str '' ws each let w w len over len gt if drop w then end
+list ws each len end end

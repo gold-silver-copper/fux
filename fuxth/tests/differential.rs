@@ -6,7 +6,7 @@ use common::{Ended, Gen, Naive, Rng, fuxth};
 
 /// Programs per test: enough to reach every word in many places, quick in
 /// a debug build.
-const PROGRAMS: u64 = if cfg!(debug_assertions) { 2000 } else { 10_000 };
+const PROGRAMS: u64 = 10_000;
 
 /// A random program: every other one typed, to run far.
 fn program(rng: &mut Rng, seed: u64) -> String {

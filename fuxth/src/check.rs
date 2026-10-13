@@ -298,15 +298,36 @@ fn len(top: &[Kinds]) -> i64 {
 }
 
 /// Checks `program`: the first step that surely fails, if one does.
-pub(crate) fn check<A>(program: &Program<A>) -> Result<(), Error> {
-    let mut summaries: Vec<Option<Summary>> = Vec::with_capacity(program.words.len());
-    let mut first: Option<Error> = None;
-    for (id, code) in program.words.iter().enumerate() {
+pub(crate) fn check<A>(program: &Program<A>, mut known: Known) -> Result<(), Error> {
+    definitions(program, &mut known);
+    let Known { summaries, first } = known;
+    let error = Unit::new(program, &program.main, State::start(true), &summaries).first_error();
+    match earliest(first, error) {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// What the checker knows of a program's definitions so far: what each
+/// does, and the first mistake among them. A library's, worked out once,
+/// serves every program compiled after it.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Known {
+    summaries: Vec<Option<Summary>>,
+    first: Option<Error>,
+}
+
+/// Works out what each of `program`'s definitions does, from the first
+/// `known` doesn't know yet.
+pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known) {
+    let Known { summaries, first } = known;
+    let from = summaries.len();
+    for (id, code) in program.words.iter().enumerate().skip(from) {
         summaries.push(None);
         // Recursion: gone over until its summary stays the same, starting
         // from knowing nothing of what a call to itself does.
         for round in 0..=RECURSION_ROUNDS {
-            let new = Unit::new(program, code, State::start(false), &summaries).run();
+            let new = Unit::new(program, code, State::start(false), summaries).run();
             let current = summaries.get(id).cloned().flatten();
             let next = match (&current, new) {
                 (_, None) => current.clone(),
@@ -330,17 +351,12 @@ pub(crate) fn check<A>(program: &Program<A>) -> Result<(), Error> {
                 *slot = next;
             }
         }
-        let refuses = refusals(program, code, &summaries, id);
+        let refuses = refusals(program, code, summaries, id);
         if let Some(Some(summary)) = summaries.get_mut(id) {
             summary.refuses = refuses;
         }
-        let error = Unit::new(program, code, State::start(false), &summaries).first_error();
-        first = earliest(first, error);
-    }
-    let error = Unit::new(program, &program.main, State::start(true), &summaries).first_error();
-    match earliest(first, error) {
-        Some(error) => Err(error),
-        None => Ok(()),
+        let error = Unit::new(program, code, State::start(false), summaries).first_error();
+        *first = earliest(first.take(), error);
     }
 }
 

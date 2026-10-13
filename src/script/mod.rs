@@ -266,11 +266,23 @@ pub fn vocabulary() -> fuxth::Vocabulary {
 
 /// Compiles `tokens` after the library: a program ready to run.
 pub fn compile(tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
+    let mut compiler = READY.with(Clone::clone)?;
+    compiler.add(&handles(tokens)?)?;
+    Ok(Machine::new(compiler.finish()?, Limits::default()))
+}
+
+thread_local! {
+    /// The standard library and fux's, compiled and checked once a thread,
+    /// for every program after.
+    static READY: Result<Compiler<Fux>, Failed> = libraries();
+}
+
+fn libraries() -> Result<Compiler<Fux>, Failed> {
     let mut compiler = Compiler::new(vocabulary());
     compiler.add(&fuxth::token::source("stdlib.fux", fuxth::STDLIB)?)?;
     compiler.add(&fuxth::token::source("library.fux", LIBRARY)?)?;
-    compiler.add(&handles(tokens)?)?;
-    Ok(Machine::new(compiler.finish()?, Limits::default()))
+    compiler.prepare();
+    Ok(compiler)
 }
 
 /// A bare id is the handle it names: `%3` is `str %3 pane`, `@2` is

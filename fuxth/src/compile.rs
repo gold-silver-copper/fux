@@ -319,6 +319,7 @@ enum Entry {
 }
 
 /// A block open as compiling goes: where its jumps are, to patch.
+#[derive(Clone)]
 enum Open {
     Define { at: Token },
     If { jump: usize, at: Token },
@@ -330,6 +331,7 @@ enum Open {
 
 /// The definition being compiled: its index, its steps, and its own `let`
 /// names.
+#[derive(Clone)]
 struct Current<A> {
     id: usize,
     code: Steps<A>,
@@ -337,7 +339,10 @@ struct Current<A> {
 }
 
 /// Compiles programs: sources added in order, all into one, then finished.
-/// A library's definitions first, then a script, say.
+/// A library's definitions first, then a script, say. A compiler with a
+/// library in, [`prepare`](Compiler::prepare)d, can be cloned for each
+/// program: the library is compiled and checked once.
+#[derive(Clone)]
 pub struct Compiler<A> {
     vocabulary: Vocabulary,
     names: HashMap<Rc<str>, Entry>,
@@ -353,6 +358,8 @@ pub struct Compiler<A> {
     /// say): only theirs are copied in at a call, so a program's own words
     /// stay calls, and its mistakes name them as written.
     earlier: usize,
+    /// What the checker has worked out of the definitions so far.
+    known: crate::check::Known,
 }
 
 impl<A: Clone> Compiler<A> {
@@ -374,6 +381,7 @@ impl<A: Clone> Compiler<A> {
             current: None,
             literal: false,
             earlier: 0,
+            known: crate::check::Known::default(),
         }
     }
 
@@ -591,6 +599,21 @@ impl<A: Clone> Compiler<A> {
         Ok(())
     }
 
+    /// Checks the definitions compiled so far, once, so that clones of
+    /// this compiler don't check them again: call it after a library.
+    pub fn prepare(&mut self) {
+        if self.current.is_some() || !self.open.is_empty() {
+            return;
+        }
+        let program = Program {
+            main: Steps::new(),
+            words: self.words.clone(),
+            globals: self.globals,
+            vocabulary: self.vocabulary.clone(),
+        };
+        crate::check::definitions(&program, &mut self.known);
+    }
+
     /// The program, every block closed.
     pub fn finish(self) -> Result<Program<A>, Error> {
         if let Some(open) = self.open.last() {
@@ -602,7 +625,7 @@ impl<A: Clone> Compiler<A> {
             globals: self.globals,
             vocabulary: self.vocabulary,
         };
-        crate::check::check(&program)?;
+        crate::check::check(&program, self.known)?;
         Ok(program)
     }
 

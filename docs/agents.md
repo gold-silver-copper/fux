@@ -33,7 +33,7 @@ fux str agent workspace kill         # at the end: all run started, closed at on
   (split as a shell splits), or `str PROG program` and `str A arg` per
   argument. A WAIT among them waits from its first output (`str T wait-text`).
   Use the `%2` it prints: names repeat, and each `fux` is a fresh program
-  (a `constant` lasts only within one). The pane stays after the program ends.
+  (a `let` name lasts only within one). The pane stays after the program ends.
 - **Wait:** `str T wait-text` (T shows anew, even scrolled away; not a typed
   line's echo), `str T wait-gone`, `MS wait-idle` (no change for MS; after keys,
   status 5 if they changed nothing), `wait-change`, `wait-done` (a shell's
@@ -69,18 +69,23 @@ names between steps:
 
 ```sh
 # test.fux
-opts str tests name str bash program 300 wait-idle run constant T
+opts str tests name str bash program 300 wait-idle run let T
 T str 'cargo test' line drop
 T opts all-history last-output capture
 ```
 
-`define NAME … end` makes a word, `if … else … then` and `begin … until`
-decide and repeat, `eq lt gt not add sub` compute, `dup drop swap over rot`
-and the prelude's `nip tuck 2dup max true …` move values; `fux help` has
-the rest. A mistake every run would make (a word given too few values, a
-string given to `add` or `if`) fails before any word acts, so a long
-program never stops halfway for one; fux's own words check what kind of
-value they get as they run.
+`X let NAME` names a value, `define NAME … end` makes a word, `if … else …
+then` and `begin … until` decide and repeat, `list … end` gathers what its
+body leaves into a list, `SEQ each … end` runs its body once per element of
+a string or list. The standard library, written in fuxth, does the rest:
+text (`words lines split-on trim upper number join contains starts-with`),
+lists (`range sort reverse sum count first last`), and `dup swap over rot
+not mod min max …`; `fux help` lists every word, `fux help WORD` explains one.
+A capture is text with `string`, so `%2 screen string str error contains`
+asks the screen a question. A mistake every run would make (a word given
+too few values, a string given to `add` or `if`) fails before any word acts,
+so a long program never stops halfway for one; fux's own words check what
+kind of value they get as they run.
 
 ## Shells
 

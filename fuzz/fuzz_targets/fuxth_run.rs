@@ -1,8 +1,8 @@
 #![no_main]
 //! Input: fuxth source (UTF-8, invalid bytes replaced), compiled after the
-//! prelude with two host words, `ask` and `maybe` (see `fuxth_host.rs`).
+//! standard library with two host words, `ask` and `maybe` (see `fuxth_host.rs`).
 //! - Compiling and running never panic, and a run ends within its limits.
-//! - Every error is at a line of the source or the prelude.
+//! - Every error is at a line of the source or the standard library.
 //! - A program the checker lets through never finds its host giving more
 //!   or fewer values than the vocabulary says (`contract`), and never fails
 //!   for too few values where its depth was known to be enough: an error

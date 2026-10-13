@@ -39,6 +39,10 @@ impl Host for Toy {
             _ => Err(Failure::new("not_a_number", "takes an integer")),
         }
     }
+
+    fn print(&mut self, _line: &str) -> Result<(), Failure> {
+        Ok(())
+    }
 }
 
 /// Small limits, so a fuzzed program meets them quickly.
@@ -50,15 +54,26 @@ pub const LIMITS: Limits = Limits {
 /// Steps a run may take in all.
 pub const STEPS: u64 = 100_000;
 
-/// `text` compiled after the prelude.
+/// `text` compiled after the standard library.
 pub fn compile(text: &str) -> Result<fuxth::Program<Nothing>, Error> {
+    let mut compiler = READY.with(Clone::clone)?;
+    compiler.add(&token::source("fuzz", text)?)?;
+    compiler.finish()
+}
+
+thread_local! {
+    /// The standard library, compiled and checked once.
+    static READY: Result<Compiler<Nothing>, Error> = library();
+}
+
+fn library() -> Result<Compiler<Nothing>, Error> {
     let mut words = Vocabulary::default();
     words.add("ask", 1, 1..=1);
     words.add("maybe", 1, 0..=1);
     let mut compiler = Compiler::new(words);
-    compiler.add(&token::source("prelude.fux", fuxth::PRELUDE)?)?;
-    compiler.add(&token::source("fuzz", text)?)?;
-    compiler.finish()
+    compiler.add(&token::source("stdlib.fux", fuxth::STDLIB)?)?;
+    compiler.prepare();
+    Ok(compiler)
 }
 
 /// How a run ended: what it left, or its error; `None` past `STEPS`.
@@ -85,7 +100,7 @@ pub fn run(
     None
 }
 
-/// Whether an error's place is a line of its source, or of the prelude.
+/// Whether an error's place is a line of its source, or of the standard library.
 pub fn placed(error: &Error, text: &str) -> bool {
     let lines = |t: &str| u32::try_from(t.split('\n').count()).unwrap_or(u32::MAX);
     match &error.place {
@@ -93,7 +108,7 @@ pub fn placed(error: &Error, text: &str) -> bool {
             let most = if &**source == "fuzz" {
                 lines(text)
             } else {
-                lines(fuxth::PRELUDE)
+                lines(fuxth::STDLIB)
             };
             *line >= 1 && *line <= most
         }

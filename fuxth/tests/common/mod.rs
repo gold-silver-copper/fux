@@ -154,10 +154,21 @@ fn value(v: &Value<Nothing>) -> V {
 
 /// Compiles `text` after the standard library.
 pub fn compile(text: &str) -> Result<fuxth::Program<Nothing>, Error> {
-    let mut compiler = Compiler::new(vocabulary());
-    compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
+    let mut compiler = READY.with(Clone::clone)?;
     compiler.add(&token::source("program", text)?)?;
     compiler.finish()
+}
+
+thread_local! {
+    /// The standard library, compiled and checked once a thread.
+    static READY: Result<Compiler<Nothing>, Error> = library();
+}
+
+fn library() -> Result<Compiler<Nothing>, Error> {
+    let mut compiler = Compiler::new(vocabulary());
+    compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
+    compiler.prepare();
+    Ok(compiler)
 }
 
 /// Runs `text` in fuxth, `budget` steps at a time, answering each `ask`.
