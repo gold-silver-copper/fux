@@ -73,21 +73,10 @@ pub fn state(pane: &Pane, now: Instant) -> State {
     // Quiet since the screen last changed and input last went in.
     let quiet = now.saturating_duration_since(pane.changed_at.max(pane.written_at));
     // No foreground group: its program is gone, its end not yet heard.
-    let Some(group) = fuxix::terminal::foreground_group(&child.master) else {
+    let Some(activity) = activity(child) else {
         return State::Busy;
     };
     let tty = child.master.slave_path();
-    let activity = match tty.as_ref().map(|tty| fuxix::process::activity(group, tty)) {
-        // A read with a time limit is a poll: the program goes on alone
-        // when it runs out.
-        Some(Activity::Reading)
-            if fuxix::terminal::attributes(&child.master).is_ok_and(|t| t.timed_reads()) =>
-        {
-            Activity::Polling
-        }
-        Some(activity) => activity,
-        None => Activity::Unknown,
-    };
     // A shell command still runs a program that is not full-screen and
     // does not read: it is at work until it ends or asks.
     let screen = pane.screen();
@@ -105,6 +94,35 @@ pub fn state(pane: &Pane, now: Instant) -> State {
         | Activity::Unknown
         | Activity::Busy => State::Busy,
     }
+}
+
+/// What the terminal's foreground group of `child` is blocked in; `None`
+/// with no foreground group (its program gone, its end not yet heard).
+fn activity(child: &crate::process::Child) -> Option<Activity> {
+    let group = fuxix::terminal::foreground_group(&child.master)?;
+    Some(
+        match child
+            .master
+            .slave_path()
+            .map(|tty| fuxix::process::activity(group, &tty))
+        {
+            // A read with a time limit is a poll: the program goes on alone
+            // when it runs out.
+            Some(Activity::Reading)
+                if fuxix::terminal::attributes(&child.master).is_ok_and(|t| t.timed_reads()) =>
+            {
+                Activity::Polling
+            }
+            Some(activity) => activity,
+            None => Activity::Unknown,
+        },
+    )
+}
+
+/// Whether the program has read every key and waits for more, with no time
+/// limit: a lone Escape sent is taken alone by then, its timer run out.
+pub fn took_keys(child: &crate::process::Child) -> bool {
+    activity(child) == Some(Activity::Reading) && !keys_unread(child.master.slave_path().as_deref())
 }
 
 /// Whether keys wait in the terminal for its program to read: blocked in a

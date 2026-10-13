@@ -1427,7 +1427,27 @@ impl Session {
             Kind::Pane => match text.parse::<PaneId>() {
                 Ok(id) => Ok(AnyRef::Pane(self.pane(Some(id), here)?.id)),
                 Err(_) => {
-                    let tab = named()?;
+                    // A tab's name, else a pane's own (what `rename` gave
+                    // it, or its program's).
+                    let tab = match named() {
+                        Ok(tab) => tab,
+                        Err(no_tab) => {
+                            let mut panes: Vec<PaneId> = (self.panes.values())
+                                .filter(|p| p.name == text)
+                                .map(|p| p.id)
+                                .collect();
+                            panes.sort();
+                            return match panes.as_slice() {
+                                [pane] => Ok(AnyRef::Pane(*pane)),
+                                [] => Err(no_tab),
+                                panes => Err(Error::NotNamed(format!(
+                                    "{text:?} names {} panes ({}): use an id",
+                                    panes.len(),
+                                    ids(panes).join(" ")
+                                ))),
+                            };
+                        }
+                    };
                     match panes_of(tab).as_slice() {
                         [pane] => Ok(AnyRef::Pane(*pane)),
                         panes => Err(Error::NotNamed(format!(

@@ -278,6 +278,9 @@ impl Waiting {
         // exited or was started again, or the pane went) ends the wait only
         // once none is left that could.
         let mut ended: Option<(PaneId, Told)> = None;
+        // A pane that stopped short of the text (reading its terminal)
+        // ends the wait only once no other pane could still show it.
+        let mut stopped: Option<(PaneId, Found, Since)> = None;
         let mut live = false;
         for watch in &mut self.watches {
             let Some(pane) = session.panes.get(&watch.pane) else {
@@ -290,8 +293,12 @@ impl Waiting {
             }
             if let Some(found) = watch.look(pane, &self.wait, &texts, (self.began, now), self.fresh)
             {
-                let status = found.status();
                 let id = watch.pane;
+                if several && matches!(found, Found::Stopped(_)) {
+                    stopped.get_or_insert((id, found, watch.since(Some(pane))));
+                    continue;
+                }
+                let status = found.status();
                 let since = Some(watch.since(Some(pane)));
                 return Some(self.wait.told(
                     id,
@@ -308,6 +315,16 @@ impl Waiting {
                 }
                 None => live = true,
             }
+        }
+        if !live && let Some((id, found, since)) = stopped {
+            return Some(self.wait.told(
+                id,
+                session.panes.get(&id),
+                found.status(),
+                Told::Found(found),
+                several,
+                Some(since),
+            ));
         }
         if !live && let Some((id, told)) = ended {
             let status = match told {
@@ -1114,11 +1131,40 @@ fn found_in(line: &str, text: &str) -> usize {
     let wordy = word(body.chars().next());
     line.match_indices(body.as_str())
         .filter(|(at, _)| {
-            let before = line.get(..*at).and_then(|s| s.chars().next_back());
+            // A control key's echo just before (`^C`, a program's output
+            // after Ctrl-C) is no text of the line's: the text starts there.
+            let mut before = line.get(..*at).unwrap_or_default();
+            while let Some(rest) = control_echo(before) {
+                before = rest;
+            }
             let after_at = at.saturating_add(body.len());
-            (!start || *at == 0) && (!end || after_at == line.len()) && !(wordy && word(before))
+            (!start || before.is_empty())
+                && (!end || after_at == line.len())
+                && !(wordy && word(before.chars().next_back()))
         })
         .count()
+}
+
+/// The full screen a program last drew, if it drew one.
+fn last_full_screen(pane: &Pane, marks: bool) -> Option<String> {
+    let alt = CaptureView {
+        join: true,
+        marks,
+        alt: true,
+        ..CaptureView::default()
+    };
+    let last = crate::capture::pane(pane, None, alt, false, false);
+    (!last.trim().is_empty()).then_some(last)
+}
+
+/// `text` without the control key's echo it ends with (`^C`, lowercased
+/// as a wait compares: `^c`), if it ends with one.
+fn control_echo(text: &str) -> Option<&str> {
+    let mut chars = text.char_indices().rev();
+    let (_, key) = chars.next()?;
+    let (caret, _) = chars.next().filter(|(_, c)| *c == '^')?;
+    let control = key.is_ascii_lowercase() || "@[\\]^_?".contains(key);
+    control.then(|| text.get(..caret)).flatten()
 }
 
 /// A pane's screen as a wait prints it: trimmed, soft-wrapped rows joined;
@@ -1146,10 +1192,16 @@ fn since_text(pane: &Pane, since: Option<Since>, marks: bool) -> String {
     let cursor = since.and_then(|s| s.cursor);
     let changed = since.is_none_or(|s| s.revision != pane.revision);
     let screen = pane.screen();
+    let on_full = screen.mode(fux_vt::Mode::AlternateScreen);
     let from = cursor
-        .filter(|_| !screen.mode(fux_vt::Mode::AlternateScreen))
+        .filter(|_| !on_full)
         .and_then(|row| screen.row_index(row));
     let Some(from) = from else {
+        // The keys went in on a full screen the program has since left (an
+        // editor that saved and quit): that last full screen.
+        if !on_full && cursor.is_some() && changed {
+            return last_full_screen(pane, marks).unwrap_or_else(|| text(pane, marks));
+        }
         return text(pane, marks);
     };
     let found = lines(screen.rows().skip(from), None);
@@ -1160,12 +1212,12 @@ fn since_text(pane: &Pane, since: Option<Since>, marks: bool) -> String {
         .map(|i| i.saturating_add(1))
     else {
         // Nothing from that row on, though the screen changed: the program
-        // cleared it and drew above. The screen, then.
-        return if changed {
-            text(pane, marks)
-        } else {
-            String::new()
-        };
+        // cleared it and drew above, or drew on the full screen and left
+        // it. The screen, or that last full screen.
+        if !changed {
+            return String::new();
+        }
+        return last_full_screen(pane, marks).unwrap_or_else(|| text(pane, marks));
     };
     texts
         .get(..end)
@@ -1193,5 +1245,8 @@ mod tests {
         assert_eq!(found_in("Recovery key > x", "key >$"), 0);
         assert_eq!(found_in("name> ", "name> "), 1);
         assert_eq!(found_in("total: 3", "$"), 0);
+        assert_eq!(found_in("^CINTERRUPT_IGNORED", "interrupt_ignored"), 1);
+        assert_eq!(found_in("^C^CREADY", "^ready"), 1);
+        assert_eq!(found_in("x^CREADY", "^ready"), 0);
     }
 }

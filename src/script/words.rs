@@ -389,6 +389,10 @@ fn ignored(word: &str, built: &Opts) -> Result<(), Failure> {
             refuse("wait", "wait on the pane it leaves: PANE opts … wait")
         }
         "run" if built.typed.is_some() => refuse("typed line", "it starts no shell to type into"),
+        "respawn" if built.log.is_some() => refuse(
+            "log",
+            "PANE str FILE start-log keeps what it writes from now on",
+        ),
         "split" if built.name.is_some() || built.size.is_some() || built.log.is_some() => refuse(
             "name, size or log",
             "a pane takes its tab's; name, size and log-to are run's",
@@ -795,6 +799,7 @@ impl fuxth::Host for Host<'_> {
                 let p = pane(name, &next()?)?;
                 let mut o = next()?;
                 let built = opts(name, &mut o)?.clone();
+                ignored(name, &built)?;
                 later(ask(
                     Command::Respawn {
                         target: Some(p),

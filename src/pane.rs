@@ -540,7 +540,14 @@ pub struct Paced {
     waiting: VecDeque<Vec<u8>>,
     /// Until when the last piece written is given.
     until: Option<Instant>,
+    /// A lone Escape written: the next piece waits, until this at most,
+    /// for its program to take it alone (its timer for a sequence run out).
+    escape_by: Option<Instant>,
 }
+
+/// How long the key after a lone Escape waits at most for the program to
+/// take the Escape alone: ncurses waits a second for a sequence to go on.
+pub const ESCAPE: Duration = Duration::from_secs(1);
 
 /// After the shell's output has been quiet this long, it is taken to be
 /// waiting at its prompt. Output within one burst -- a prompt drawn in
@@ -809,10 +816,28 @@ impl Pane {
         if self.paced.until.is_some_and(|until| until > now) {
             return;
         }
+        // After a lone Escape, the next waits for the program to have
+        // taken it alone: back to reading, with no time limit.
+        if let Some(by) = self.paced.escape_by
+            && !self.paced.waiting.is_empty()
+        {
+            let took = match &self.process {
+                Process::Reading(child) => crate::ready::took_keys(child),
+                Process::Absent | Process::HungUp(_) | Process::Exited(_) => true,
+            };
+            if !took && now < by {
+                self.paced.until = Some(crate::after(now, PACE));
+                return;
+            }
+        }
+        self.paced.escape_by = None;
         match self.paced.waiting.pop_front() {
             Some(piece) => {
                 let _ = self.input.push(&piece);
                 self.paced.until = Some(crate::after(now, PACE));
+                if piece == b"\x1b" {
+                    self.paced.escape_by = Some(crate::after(now, ESCAPE));
+                }
             }
             None => self.paced.until = None,
         }
