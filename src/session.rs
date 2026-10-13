@@ -1520,6 +1520,11 @@ impl Session {
     /// Sends `inputs`, `repeat` times, to pane `id`'s program.
     fn send_inputs(&mut self, id: PaneId, inputs: &[Input], repeat: u16) -> Result<(), Error> {
         let p = self.panes.get_mut(&id).ok_or(Error::NoPane(id))?;
+        let screen = p.screen();
+        let cursor = (screen.window())
+            .row(screen.cursor_position().0)
+            .map(|row| row.id());
+        p.input_from = Some((cursor, screen.mark()));
         let (mode, bracketed) = (
             p.screen().key_mode(),
             p.screen().mode(fux_vt::Mode::BracketedPaste),

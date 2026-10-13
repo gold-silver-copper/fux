@@ -491,6 +491,10 @@ pub struct Pane {
     /// When input last went to the program: it is busy with it at first,
     /// even while still blocked reading (the kernel has yet to wake it).
     pub written_at: Instant,
+    /// Where the cursor was and how the screen stood when input last went
+    /// in: a wait counts what changed since, so it never starts too late
+    /// nor takes what was already there. None: since the program started.
+    pub input_from: Option<(Option<fux_vt::RowId>, fux_vt::Mark)>,
     /// How many times what the screen shows has changed: a wait for a change
     /// past one read earlier waits for it to grow.
     pub revision: u64,
@@ -600,6 +604,7 @@ impl Pane {
             shown: 0,
             changed_at: Instant::now(),
             written_at: Instant::now(),
+            input_from: None,
             revision: 0,
             starts: 0,
             mouse_held: None,

@@ -108,6 +108,8 @@ struct Watch {
     /// The row the cursor was on as the wait began: what is written from
     /// it on is what the action brought.
     cursor: Option<fux_vt::RowId>,
+    /// No input has gone in since the program started: every line counts.
+    all_new: bool,
 }
 
 /// What a wait found.
@@ -154,10 +156,25 @@ impl Waiting {
                 } else {
                     std::collections::HashMap::new()
                 };
+                // A wait of its own counts what came since the last input
+                // to the pane, or since its program started.
+                let (anchor, mark, all_new) = match (wait.after, pane.input_from) {
+                    (true, _) => (
+                        screen.window().row(0).map(|row| row.id()),
+                        screen.mark(),
+                        false,
+                    ),
+                    (false, Some((cursor, mark))) => (cursor, mark, false),
+                    (false, None) => (
+                        screen.rows().next().map(|row| row.id()),
+                        screen.mark(),
+                        true,
+                    ),
+                };
                 Watch {
                     pane: pane.id,
-                    anchor: screen.window().row(0).map(|row| row.id()),
-                    mark: screen.mark(),
+                    anchor,
+                    mark,
                     was,
                     touched: std::collections::HashSet::new(),
                     read: None,
@@ -177,6 +194,7 @@ impl Waiting {
                         .window()
                         .row(screen.cursor_position().0)
                         .map(|row| row.id()),
+                    all_new,
                 }
             })
             .collect();
@@ -842,8 +860,9 @@ impl Watch {
         fresh: bool,
     ) -> Option<Found> {
         let screen = pane.screen();
-        // A send-keys wait takes only lines changed since it began.
-        let mark = wait.after.then_some(self.mark);
+        // Only lines changed since it began (send-keys), or since the last
+        // input to the pane (a wait of its own).
+        let mark = (!self.all_new).then_some(self.mark);
         let shown = lines(screen.rows().skip(screen.history_len()), mark);
         for line in &shown {
             if self
@@ -874,13 +893,13 @@ impl Watch {
                     let i = texts.iter().position(|t| t == text).unwrap_or(0);
                     let scrolled = self.in_history.get(i).cloned().flatten();
                     let mut skipped = false;
-                    let (was, touched) = (&self.was, &self.touched);
+                    let (was, touched, cursor) = (&self.was, &self.touched, self.cursor);
                     // The newest line holding it, on the screen or behind it.
                     let line = (shown.iter().rev())
                         .chain(behind.iter().rev())
                         .filter(|l| is_new(l, was, touched) && found_in(&l.text, text) > 0)
                         .find(|l| {
-                            let echo = echoes(&l.text, text, &wait.echo);
+                            let echo = echoed(l, wait, cursor);
                             skipped |= echo;
                             !echo
                         })
@@ -983,7 +1002,7 @@ impl Watch {
         if let Some(last) = rows.last() {
             self.read = Some(last.id());
         }
-        let mark = wait.after.then_some(self.mark);
+        let mark = (!self.all_new).then_some(self.mark);
         let read = lines(rows.into_iter(), mark);
         let mut skipped = false;
         for (found, text) in self.in_history.iter_mut().zip(texts) {
@@ -991,7 +1010,7 @@ impl Watch {
                 *found = (read.iter())
                     .filter(|l| is_new(l, &self.was, &self.touched) && found_in(&l.text, text) > 0)
                     .find(|l| {
-                        let echo = echoes(&l.text, text, &wait.echo);
+                        let echo = echoed(l, wait, self.cursor);
                         skipped |= echo;
                         !echo
                     })
@@ -1068,43 +1087,48 @@ fn lines<'a>(rows: impl Iterator<Item = fux_vt::Row<'a>>, mark: Option<fux_vt::M
     out
 }
 
-/// Whether a line is the echo of typed text holding `text`: a shell, or an
-/// input box, shows what is typed, and that is not what the keys brought.
-fn echoes(line: &str, _text: &str, echo: &[String]) -> bool {
-    // A line holding a typed line, or ending in the start of one (an input
-    // box redrawn as the keys come in), is its echo, whatever is awaited:
-    // a prompt with the command typed after it is not the next prompt.
-    // Only where it stands alone: typed `a` is not the echo in `answer: A`.
-    let line = line.trim_end();
-    echo.iter().any(|typed| {
-        let typed = typed.trim_end();
-        let alone = line.match_indices(typed).any(|(at, _)| {
-            let after = at.saturating_add(typed.len());
-            !word_char(line.get(..at).and_then(|s| s.chars().next_back()))
-                && !word_char(line.get(after..).and_then(|s| s.chars().next()))
-        });
-        alone
-            || (1..typed.chars().count()).any(|n| {
-                let start: String = typed.chars().take(n).collect();
-                line.strip_suffix(start.as_str())
-                    .is_some_and(|before| !word_char(before.chars().next_back()))
-            })
-    })
+/// Whether a line is the echo of what was typed: only the line the cursor
+/// was on as the keys went in, and only when they ended a line (Enter): a
+/// shell or prompt shows the command there, and its output comes below. A
+/// field edited in place (no Enter) shows its value, which counts.
+fn echoed(line: &Line, wait: &Wait, cursor: Option<fux_vt::RowId>) -> bool {
+    wait.after && wait.lines > 0 && cursor == Some(line.first)
 }
 
-/// Whether a character joins the typed text it touches into a longer word.
-fn word_char(c: Option<char>) -> bool {
-    c.is_some_and(char::is_alphanumeric)
+/// A text as a wait compares it: case ignored, runs of blanks as one. A
+/// leading `^` holds it to a line's start, a trailing `$` to its end.
+fn normal(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
-/// How many times a line shows TEXT. Lines are trimmed, so blanks that end
-/// TEXT (a prompt's `> `) may also be the line's end.
+/// How many times a line shows TEXT: case ignored, runs of blanks as one,
+/// starting where a word does (`READY` is not in `NOT_READY`), `^` and `$`
+/// holding it to the line's start and end.
 fn found_in(line: &str, text: &str) -> usize {
-    let trimmed = text.trim_end();
-    let at_end = trimmed.len() < text.len() && !trimmed.is_empty() && line.ends_with(trimmed);
-    line.matches(text)
+    let (start, rest) = match text.strip_prefix('^') {
+        Some(rest) => (true, rest),
+        None => (false, text),
+    };
+    let (end, body) = match rest.strip_suffix('$') {
+        Some(body) => (true, body),
+        None => (false, rest),
+    };
+    let (line, body) = (normal(line), normal(body));
+    if body.is_empty() {
+        return 0;
+    }
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let wordy = word(body.chars().next());
+    line.match_indices(body.as_str())
+        .filter(|(at, _)| {
+            let before = line.get(..*at).and_then(|s| s.chars().next_back());
+            let after_at = at.saturating_add(body.len());
+            (!start || *at == 0) && (!end || after_at == line.len()) && !(wordy && word(before))
+        })
         .count()
-        .saturating_add(usize::from(at_end))
 }
 
 /// A pane's screen as a wait prints it: trimmed, soft-wrapped rows joined;
@@ -1148,4 +1172,25 @@ fn since_text(pane: &Pane, cursor: Option<fux_vt::RowId>, marks: bool) -> String
         .iter()
         .map(|t| format!("{t}\n"))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::found_in;
+
+    /// A text waited for: case ignored, blanks as one, from a word's start,
+    /// and `^`/`$` for a line's start and end.
+    #[test]
+    fn a_text_is_found_as_a_reader_would_find_it() {
+        assert_eq!(found_in("Server READY on :8080", "ready"), 1);
+        assert_eq!(found_in("NOT_READY slot=3", "READY"), 0);
+        assert_eq!(found_in("NOT READY slot=3", "READY"), 1);
+        assert_eq!(found_in("Plan  [fast/safe]>", "plan [fast"), 1);
+        assert_eq!(found_in("[history] READY", "^READY"), 0);
+        assert_eq!(found_in("READY now", "^ready"), 1);
+        assert_eq!(found_in("Recovery key >", "key >$"), 1);
+        assert_eq!(found_in("Recovery key > x", "key >$"), 0);
+        assert_eq!(found_in("name> ", "name> "), 1);
+        assert_eq!(found_in("total: 3", "$"), 0);
+    }
 }
