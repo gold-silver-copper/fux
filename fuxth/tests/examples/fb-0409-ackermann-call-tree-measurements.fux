@@ -1,0 +1,30 @@
+# Ackermann call-tree measurements (held-out spec FB-0409).
+# expect: 6 10 6 9 44 10 29 541 31
+# m n -- result calls depth
+# Each subtree includes its own root in both measurements.
+define measured-ack
+  let n let m
+  m 0 eq if
+    n 1 add 1 1
+  else
+    n 0 eq if
+      m 1 sub 1 measured-ack
+      let depth let calls let result
+      result calls 1 add depth 1 add
+    else
+      m n 1 sub measured-ack
+      let inner-depth let inner-calls let inner-result
+      m 1 sub inner-result measured-ack
+      let outer-depth let outer-calls let result
+      result
+      inner-calls outer-calls add 1 add
+      inner-depth outer-depth max 1 add
+    then
+  then
+end
+
+list list 1 4 end list 2 3 end list 3 2 end end
+each
+  let pair
+  pair 0 at pair 1 at measured-ack
+end

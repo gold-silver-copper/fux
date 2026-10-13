@@ -1,0 +1,46 @@
+# Integer roots at the signed limit (held-out spec FB-0176).
+# expect: 2097151 13194133241856 6208 2785645994967039 372 14173293596557311 0 0
+# base exponent limit product -- flag
+# Guard every multiplication by division against the nonnegative limit.
+define power-within
+  let product let limit let exponent let base
+  exponent 0 eq if
+    product limit le
+  else base 0 eq if
+    true
+  else product limit base div gt if
+    false
+  else
+    base exponent 1 sub limit product base mul power-within
+  then then then
+end
+
+# n k low high -- root: recursively bisect an inclusive interval.
+define bisect
+  let high let low let k let n
+  low high eq if
+    low
+  else
+    high low sub let width
+    low width 2 div add width 2 mod add let middle
+    middle k n 1 power-within if
+      n k middle high bisect
+    else
+      n k low middle 1 sub bisect
+    then
+  then
+end
+
+list
+  list 9223372036854775807 3 end
+  list 9223372036854775807 5 end
+  list 999999999999999999 7 end
+  list 0 3 end
+end each
+  let case
+  case 0 at let n
+  case 1 at let k
+  n k 0 n bisect let root
+  root
+  n root k pow sub
+end

@@ -1,0 +1,15 @@
+# Lit indicators in a byte (held-out spec FB-0613).
+# expect: 0 1 2 1 4 1 4 4 7 8
+# n -- count: inspect all eight binary digits, including leading zeros.
+define bit-count
+  let n
+  0
+  0 8 range each
+    drop
+    n 2 mod add
+    n 2 div let n
+  end
+end
+
+list 0 1 3 16 85 128 170 240 254 255 end
+each bit-count end

@@ -1,0 +1,22 @@
+# Sentence lamp (held-out spec FB-0349).
+# expect: The light is on... 42Bottles? "Yes!" Really; maybe. 7Next
+# Transform letters while carrying the sentence-capitalization flag.
+define sentence-case
+  let text
+  true let capitalize
+  str ''
+  text each
+    let c
+    c is-letter if
+      capitalize if c upper else c lower then
+      false let capitalize
+    else
+      str '.?!' c contains if true let capitalize then
+      c
+    then
+    push
+  end
+end
+
+str 'tHE light is ON... 42bOTTLES? "yES!" rEALLY; maybe. 7nEXT'
+sentence-case

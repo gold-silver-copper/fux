@@ -1,0 +1,45 @@
+# Out-of-order shipment debt (held-out spec FB-0024).
+# expect: 27 121 D B A Z M C T P K R
+# Input records, in original bottom-to-top order: label, priority.
+list
+  list str K 6 end
+  list str B -2 end
+  list str R 6 end
+  list str M 1 end
+  list str A -2 end
+  list str T 5 end
+  list str C 1 end
+  list str Z 0 end
+  list str P 5 end
+  list str D -3 end
+end let shipments
+
+0 let inversions
+0 let debt
+empty let ordered
+shipments each
+  let shipment
+  shipment 1 at let priority
+  false let inserted
+  list
+    ordered each
+      let earlier
+      earlier 1 at priority gt if
+        # Every earlier record with greater priority forms an inversion.
+        inversions 1 add let inversions
+        debt earlier 1 at priority sub add let debt
+        inserted not if
+          shipment
+          true let inserted
+        then
+      then
+      earlier
+    end
+    # Insert after all equal priorities, including when there is no greater one.
+    inserted not if shipment then
+  end let ordered
+end
+
+inversions
+debt
+ordered each first end

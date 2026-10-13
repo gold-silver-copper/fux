@@ -1,0 +1,13 @@
+# Rotating the wrong lock pattern (held-out spec FB-0486).
+# fails: call_depth
+define rotations
+  let s
+  s str 1221 eq if
+    0
+  else
+    s 1 s len slice s 0 at push
+    rotations 1 add
+  then
+end
+
+str 1212 rotations print

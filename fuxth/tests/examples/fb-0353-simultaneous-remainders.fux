@@ -1,0 +1,22 @@
+# Simultaneous remainders (held-out spec FB-0353).
+# expect: 2747 5005
+# Merge congruences by searching the solutions already found.
+list 5 7 11 13 end let moduli
+list 2 3 8 4 end let remainders
+0 let x
+1 let period
+
+0 moduli len range each
+  let i
+  moduli i at let modulus
+  remainders i at let remainder
+  begin
+    x modulus mod remainder eq
+    dup not if x period add let x then
+  until
+  # These moduli are pairwise coprime, so their lcm is their product.
+  period modulus mul let period
+end
+
+x
+period

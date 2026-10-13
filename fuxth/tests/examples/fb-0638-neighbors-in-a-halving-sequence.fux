@@ -1,0 +1,19 @@
+# Neighbors in a halving sequence (held-out spec FB-0638).
+# expect: 0 1 1 1 11 7 136 95 226718 175079
+# n -- s(n) s(n+1), computing both neighbors in one halving recursion.
+define neighbors
+  let n
+  n 0 eq if
+    0 1
+  else
+    n 2 div neighbors
+    let b let a
+    n even if
+      a a b add
+    else
+      a b add b
+    then
+  then
+end
+
+list 0 1 37 12345 987654321 end each neighbors end

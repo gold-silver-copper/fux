@@ -1,0 +1,28 @@
+# Shelf repair reaches a quiet pass (held-out spec FB-0255).
+# expect: 1 2 3 4 5 6 7 2 3
+list 2 1 4 3 6 5 7 end let shelf
+6 let max-passes
+0 let passes
+0 let swaps
+
+max-passes 0 gt if
+  begin
+    0 let pass-swaps
+    0 shelf len 1 sub range each
+      let i
+      shelf i at let left
+      shelf i 1 add at let right
+      left right gt if
+        shelf i right put i 1 add left put let shelf
+        pass-swaps 1 add let pass-swaps
+        swaps 1 add let swaps
+      then
+    end
+    passes 1 add let passes
+    pass-swaps 0 eq passes max-passes ge or
+  until
+then
+
+shelf string
+passes
+swaps

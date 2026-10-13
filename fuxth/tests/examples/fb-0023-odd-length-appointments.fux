@@ -1,0 +1,10 @@
+# Odd length appointments (held-out spec FB-0023).
+# expect: 17 18
+# Advance the clock once per appointment.
+1385
+0 29 range each
+  drop 137 add 1440 mod
+end
+
+# Leave the hour, followed by the minute.
+dup 60 div swap 60 mod
