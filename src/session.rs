@@ -677,7 +677,7 @@ impl From<Outcome> for crate::protocol::Reply {
 }
 
 /// What a command line from the CLI begins: its outcome, now, or a wait
-/// for one (`wait`, `send-keys --wait-idle`).
+/// for one (`wait`, or an action that settles).
 pub enum Begun {
     Done(Outcome),
     Waiting(Box<crate::wait::Waiting>),

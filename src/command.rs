@@ -230,7 +230,7 @@ pub enum Until {
 pub struct Wait {
     pub until: Vec<Until>,
     pub timeout: Duration,
-    /// The screen as the wait ends, after what it says.
+    /// What came since it began, or the screen, as the wait ends.
     pub print: bool,
     /// Only what comes after it began counts: text that appears anew, a
     /// screen that changed (send-keys' waits, armed before the keys).
@@ -238,17 +238,17 @@ pub struct Wait {
     /// The text send-keys types, run by run: a line holding a run that
     /// holds the awaited text is its echo, not what the keys brought.
     pub echo: Vec<String>,
-    /// `--print`'s screen with reverse video marked, as `capture-pane --marks`.
+    /// What it prints with reverse video marked, as `capture`'s `marks`.
     pub marks: bool,
     /// How many command lines send-keys types (each Enter, or newline in
-    /// text): a wait for `--done` waits for the last of them.
+    /// text): with none, no row is taken for their echo.
     pub lines: u32,
     /// Over several panes, it waits for each (send-keys' waits, as each
     /// pane got the keys), rather than for any (`fux wait`).
     pub all: bool,
 }
 
-/// How long a wait lasts at most if `--timeout` does not say: well inside
+/// How long a wait lasts at most if `timeout` does not say: well inside
 /// what a tool running a command waits for it.
 pub const WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 

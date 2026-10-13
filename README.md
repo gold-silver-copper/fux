@@ -44,10 +44,9 @@ values from a stack and leaving its own.
 
 ```sh
 fux ls                                            # what there is
-fux opts str htop program run                     # start htop; prints its pane, %3
+fux opts str htop program run                     # start htop; answers its pane, %3, and screen
 fux str %3 pane str Load await                    # wait until it shows "Load"
-fux str %3 pane keys str q text send-keys         # press q
-fux str %3 pane opts wait-exit wait               # prints: exited 0
+fux str %3 pane keys str q text send-keys         # press q; answers: %3 exited 0
 ```
 
 - A number is a value; `%3`, `@2` and `+1` alone are a pane, a tab and a
@@ -56,12 +55,16 @@ fux str %3 pane opts wait-exit wait               # prints: exited 0
 - What is left at the end is printed, a value a line: a pane as `%3`, a tab
   `@2`, a workspace `+1`, a client `c1`, a capture or listing as its text.
   `json` turns a value into JSON: `fux ls json`, `fux str %3 pane info json`.
-- A failure prints `fux: CODE: MESSAGE` on stderr, with the file, line and
-  word, and exits 1; a wait's own status is the exit status: 3 the program
-  exited first, 4 the pane closed, 5 nothing changed, 6 the screen changed
-  (`if-revision`), 124 a timeout. A wait met by its program's exit (`wait-exit`)
-  is no failure: the run exits with the program's own status, as
-  `timeout(1)` does.
+- An action (`run`, `send-keys`, `capture`, a bare `wait` …) answers once
+  its pane settles, with its state and what came since: `%3 reading · done
+  0`, then the output. A failure prints `fux: CODE: MESSAGE` on stderr,
+  with the file, line and word, and exits 1; an action's or wait's own
+  status is the exit status: 3 the program exited first, 4 the pane closed,
+  7 the program reads its terminal and the waited text has not come, 124
+  still busy at the time limit (`SECS timeout`: 10 for an action, 60 for a
+  wait; `0 timeout` answers at once). A wait met by its program's exit
+  (`wait-exit`) is no failure: the run exits with the program's own status,
+  as `timeout(1)` does.
 - `fux FILE` runs a file (a word with a `/` or ending `.fux`); `fux -` runs
   what stdin says; a single word with spaces is a whole program
   (`fux 'ls json'`). `#` starts a comment. A paste is at most 900 KiB.
@@ -100,20 +103,20 @@ Words that start, wait, type and read build their request from **options**:
 fux opts str app name 120 40 size str './app --verbose' command run
 fux str %3 pane opts str ready wait-text 30 timeout wait
 fux str %3 pane opts 200 history joined capture
-fux str %3 pane keys str 'make test' text str Enter key wait-done send-keys
+fux str %3 pane keys str 'make test' text str Enter key send-keys
 ```
 
 A program can name what it made:
 
 ```sh
-fux opts str sh program run let P   P str 'echo hi' type   P str Enter press   P settle screen
+fux opts str sh program run let P   P str 'echo hi' line   P screen
 ```
 
 The bundled words are written in fuxth themselves: `type` and `press` (text
 and a key into a pane), `line` (a line typed, then the shell's command
 waited for), `screen` (a capture), `await` (text waited for), `settle` (the
-screen waited for to be still), `done`, `exited`, `launch` and `shell` (a
-tab with a shell in workspace `agent`).
+pane waited for to settle), `exited`, `launch` and `shell` (a tab with a
+shell in workspace `agent`).
 
 ### Finding things
 
@@ -248,8 +251,8 @@ and Helix do, copies the same way. fux never reads the clipboard.
 | `opts … run` (`-- pane`) | start a program in a tab of its own in workspace `agent` (`str WS in` elsewhere), no client moved to it; its pane stays once it exits, with its last screen and status. Options: `name`, `size` (COLS ROWS), `cwd`, `env` (KEY VALUE), `program`, `arg`, `log-to`, and any wait condition, which waits from its first output on |
 | `pane opts split`, `opts new-tab`, `opts new-workspace` | a shell beside a pane (or with `program`, that program), in a new tab (`str WS in`: a workspace, made if missing) or a new workspace; `horizontal`/`vertical`, `typed LINE` types a line into the new shell. Names are unique, and do not start with `+`, `%` or `@`. An option a word does not use is refused |
 | `pane opts respawn` | start again in its pane what `run` started, its id and size kept; `kill-first` ends it first |
-| `pane opts … wait` | wait until the pane shows text anew (`str T wait-text`, even in a line that scrolled away), stops showing it (`wait-gone`), shows no change for a while (`MS wait-idle`), changes (`wait-change`), its program exits (`wait-exit`), its shell command ends (`wait-done`, OSC 133), or it rings or notifies (`wait-bell`); `SECS timeout` (60), `with-screen` adds the screen as it ends |
-| `pane keys … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked); `N times`; `N if-revision` sends nothing, status 6, if the screen changed; any wait condition waits for what the keys brought, armed before they go in. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
+| `pane opts … wait` | wait until the pane settles (its program reads its terminal, waits quiet, or exits) and answer its state and what came since the last input; or until it shows text anew (`str T wait-text`, even in a line that scrolled away), stops showing it (`wait-gone`), its program exits (`wait-exit`), or it rings or notifies (`wait-bell`); `SECS timeout` (60) |
+| `pane keys … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked); `N times` repeats the input just before it; answers once the pane settles, or as a wait condition says, which waits for what the keys brought, armed before they go in. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
 | `pane str ACTION ROW COL mouse send-mouse` | a mouse event at a cell, from 0 (`click right middle press release wheel-up wheel-down move`), encoded as the program asked |
 | `pane opts … capture` | the pane's text, trimmed; `N history`, `all-history`, `joined`, `full`, `styles`, `marks` (highlights as `⟦this⟧`), `main-screen`, `alt-screen`, `last-output`, `A B rows`, `A B cols` |
 | `ls`, `X info`, `X str FIELD get` | everything; one pane, tab or workspace; one field of its JSON, as a number, boolean or text |
@@ -280,7 +283,7 @@ version, and primary ones (`CSI c`) a VT220-class terminal.
 ### JSON
 
 `json` on what a word left gives its JSON: `ls json`, `X info json`,
-`pane opts capture json`, `client capture-client json`, a wait's outcome
+`pane opts capture json`, `client capture-client json`, an action's answer
 `… wait json`, `status json`, `servers json`; `events-json` and
 `events-of-json` stream an object a line. These shapes are part of fux's
 interface; `fux help-json` lists every one ([docs/json.md](docs/json.md)).
@@ -288,7 +291,7 @@ interface; `fux help-json` lists every one ([docs/json.md](docs/json.md)).
 ```json
 {"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main",
   "panes":[{"id":"%1","name":"zsh","title":"","rows":23,"cols":80,"pid":4242,
-    "program":"vim","paused":false,"exited":null,"signal":null,"idle_ms":1520,"alt_screen":true,
+    "program":"vim","state":"reading","paused":false,"exited":null,"signal":null,"idle_ms":1520,"alt_screen":true,
     "mouse":true,"mouse_mode":"press_release","bracketed_paste":true,"pictures":[],"cursor_visible":true,
     "history_lines":0,"copy_mode":false,"revision":38,"command_running":false,
     "last_status":null,"bells":0,"notification":null,"cwd":"/home/me",
@@ -328,7 +331,7 @@ str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
 | `buffers` | paste buffers kept, 1 to 1000 | 16 |
 | `bell` | `on` or `off`: a pane's bell rings your terminal and marks its tab | `on` |
 | `titles` | `on` or `off`: your terminal's title follows the focused pane | `off` |
-| `shell-marks` | `on` or `off`: the bash, zsh and fish fux starts mark each command (OSC 133) after reading your own startup files, so `wait-done` and `last-output` work with no setup | `on` |
+| `shell-marks` | `on` or `off`: the bash, zsh and fish fux starts mark each command (OSC 133) after reading your own startup files, so `line` answers `· done STATUS` and `last-output` works with no setup | `on` |
 | `update-environment` | variable names: a new pane takes these from whoever starts it, rather than from the server, which may have started long ago; one they lack is unset | `DISPLAY KRB5CCNAME SSH_AGENT_PID SSH_ASKPASS SSH_AUTH_SOCK SSH_CONNECTION WAYLAND_DISPLAY XAUTHORITY` |
 
 **Bindings** run fuxth, compiled when bound, run fresh each time their keys

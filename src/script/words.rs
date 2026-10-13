@@ -674,7 +674,7 @@ impl fuxth::Host for Host<'_> {
                 opts(name, &mut o)?.env.push((key, value));
                 now(out, o)
             }
-            // On a capture's options, and on a wait's screen (`with-screen`),
+            // On a capture's options, and on what a wait prints,
             // whether among options, keys or a mouse event.
             "marks" => {
                 let mut x = next()?;

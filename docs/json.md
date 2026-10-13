@@ -33,7 +33,7 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `cursor_visible` | the cursor shows |
 | `history_lines` | lines of history it holds |
 | `copy_mode` | a client has it in copy mode |
-| `revision` | grows with every change to the screen: `keys … N if-revision send-keys` |
+| `revision` | grows with every change to the screen |
 | `command_running` | a shell command runs (OSC 133 marks) |
 | `last_status` | the last shell command's status, else `null` |
 | `bells` | bells and notifications rung since it started |
@@ -75,13 +75,20 @@ palette numbers or `"#rrggbb"`.
 a pane, tab or workspace is its id as a string, `"%4"`, and `X info json`
 all of it.
 
-## Waits
+## Answers and waits
 
-`json` of a wait's outcome (`… wait`, or `send-keys`, `send-mouse` given a
-wait condition): one object, or a line each for keys sent to several panes.
-A wait that fails (`exited`, `closed`, `respawned`, `timeout`, `idle` with
-nothing changed) ends the program, its status the wait's, and says why on
-stderr: those rows below are what `events`, and its status, tell of it.
+`json` of an action's answer (`run`, `send-keys`, `send-mouse`, `signal`,
+a bare `wait` …): one object, or a line each for keys sent to several panes. A
+pane that settled, still busy at the limit (124), or that reads its
+terminal before the waited text came (7):
+
+```json
+{"pane":"%3","state":"reading","status":0,"output":"$ make test\n12 tests PASS\n"}
+```
+
+`state` is the pane's (above), or `closed` (status 4); `output` what came
+since the input, or the screen of a full-screen program, or the screen
+for status 7. A wait for a condition answers what met it:
 
 ```json
 {"pane":"%3","met":"text","text":"PASS","line":"12 tests PASS","status":0}
@@ -91,17 +98,15 @@ stderr: those rows below are what `events`, and its status, tell of it.
 | --- | --- |
 | `text` | `text`, `line` |
 | `gone` | `text` |
-| `idle` | `changed` (false: the keys changed nothing; status 5) |
-| `change` | `revision` |
 | `exit` | `exit` (its status) or `signal` |
-| `done` | `exit`: the command's status, else `null` |
 | `bell` | `notification`: its text, else `null` |
 | `exited` | `exit` or `signal`, `last_lines`: the program exited first (status 3) |
 | `respawned` | it was started again first (status 3) |
 | `closed` | the pane closed (status 4) |
 | `timeout` | `idle_ms`, `last_line` (status 124) |
 
-`status` is the wait's exit status; `screen`, with `with-screen`, the screen.
+`status` is the exit status. A wait that fails (`exited`, `respawned`,
+`closed`, `timeout`) ends the program and says why on stderr.
 
 ## `events-json`, `X events-of-json`
 
@@ -128,10 +133,10 @@ that came several times in one round of the server's carry `count`.
 A failure is one line on stderr, `fux: CODE: MESSAGE`, the message naming
 the file, line and word it came from. CODE stays: `no_server`, `mismatch`,
 `no_pane`, `no_tab`, `no_workspace`, `no_target`, `stray_pane`, `exited`,
-`still_running`, `not_run`, `changed`, `own_server`, `people_attached`,
+`still_running`, `not_run`, `own_server`, `people_attached`,
 `not_granted`, `name_taken`, `bad_name`, `ambiguous`, `size`, `mouse`,
 `no_field`, `id`, `not_reading`, `start`, `paste`, `timeout`, `closed`,
-`unchanged`, `gone`, `no_buffer`, `not_a_key`, `no_program`, `no_condition`,
+`gone`, `no_buffer`, `not_a_key`, `no_program`, `no_condition`,
 `no_keys`, `not_a_client`, `grant`, `config`, `unused`, `too_long`; and the
 language's: `type` (a word given the wrong kind of value), `stack_underflow`,
 `unknown_word`, `open_quote`, `unmatched`, `unclosed`, `range`, `bad_value`,

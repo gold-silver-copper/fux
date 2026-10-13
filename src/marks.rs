@@ -3,8 +3,8 @@
 //! as it ends, and `A` where the next prompt starts), after reading the
 //! user's own startup files as they would. A host then knows when a command
 //! typed into them is done, how, which output was its, and where each
-//! prompt is, with nothing set up (`wait-done`, `last-output`, copy mode's
-//! `[` and `]`).
+//! prompt is, with nothing set up (`line`'s `· done`, `last-output`, copy
+//! mode's `[` and `]`).
 //!
 //! Each shell is given a startup file fux writes beside its socket, which
 //! reads the user's own first: bash's `--rcfile` sources `~/.bashrc`, zsh's
