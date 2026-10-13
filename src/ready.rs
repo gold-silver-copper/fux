@@ -7,6 +7,7 @@
 use crate::pane::{Pane, Process};
 use crate::process::Ended;
 use fuxix::process::Activity;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// How long a program reading its terminal must leave the screen as it is:
@@ -72,11 +73,11 @@ pub fn state(pane: &Pane, now: Instant) -> State {
     }
     // Quiet since the screen last changed and input last went in.
     let quiet = now.saturating_duration_since(pane.changed_at.max(pane.written_at));
+    let tty = child.master.slave_path();
     // No foreground group: its program is gone, its end not yet heard.
-    let Some(activity) = activity(child) else {
+    let Some(activity) = activity(child, tty.as_deref()) else {
         return State::Busy;
     };
-    let tty = child.master.slave_path();
     // A shell command still runs a program that is not full-screen and
     // does not read: it is at work until it ends or asks.
     let screen = pane.screen();
@@ -96,40 +97,36 @@ pub fn state(pane: &Pane, now: Instant) -> State {
     }
 }
 
-/// What the terminal's foreground group of `child` is blocked in; `None`
-/// with no foreground group (its program gone, its end not yet heard).
-fn activity(child: &crate::process::Child) -> Option<Activity> {
+/// What the foreground group of `child`'s terminal, at `tty`, is blocked
+/// in; `None` with no foreground group (its program gone, its end not yet
+/// heard).
+fn activity(child: &crate::process::Child, tty: Option<&Path>) -> Option<Activity> {
     let group = fuxix::terminal::foreground_group(&child.master)?;
-    Some(
-        match child
-            .master
-            .slave_path()
-            .map(|tty| fuxix::process::activity(group, &tty))
+    Some(match tty.map(|tty| fuxix::process::activity(group, tty)) {
+        // A read with a time limit is a poll: the program goes on alone
+        // when it runs out.
+        Some(Activity::Reading)
+            if fuxix::terminal::attributes(&child.master).is_ok_and(|t| t.timed_reads()) =>
         {
-            // A read with a time limit is a poll: the program goes on alone
-            // when it runs out.
-            Some(Activity::Reading)
-                if fuxix::terminal::attributes(&child.master).is_ok_and(|t| t.timed_reads()) =>
-            {
-                Activity::Polling
-            }
-            Some(activity) => activity,
-            None => Activity::Unknown,
-        },
-    )
+            Activity::Polling
+        }
+        Some(activity) => activity,
+        None => Activity::Unknown,
+    })
 }
 
 /// Whether the program has read every key and waits for more, with no time
 /// limit: a lone Escape sent is taken alone by then, its timer run out.
 pub fn took_keys(child: &crate::process::Child) -> bool {
-    activity(child) == Some(Activity::Reading) && !keys_unread(child.master.slave_path().as_deref())
+    let tty = child.master.slave_path();
+    activity(child, tty.as_deref()) == Some(Activity::Reading) && !keys_unread(tty.as_deref())
 }
 
 /// Whether keys wait in the terminal for its program to read: blocked in a
 /// read still, it has yet to be woken (a busy machine) to read them. The
 /// terminal is opened only to ask, so that its program's end still closes
 /// it.
-fn keys_unread(tty: Option<&std::path::Path>) -> bool {
+fn keys_unread(tty: Option<&Path>) -> bool {
     use std::os::unix::fs::OpenOptionsExt;
     tty.and_then(|tty| {
         std::fs::OpenOptions::new()

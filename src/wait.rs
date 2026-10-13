@@ -113,7 +113,7 @@ struct Watch {
     /// screen, what the main screen got since (from the anchor) counts
     /// too, so a line printed just before it took the screen is seen.
     on_main: bool,
-    /// The `--gone` texts seen since the wait began, for a fresh program.
+    /// The `wait-gone` texts seen since the wait began, for a fresh program.
     appeared: Vec<String>,
     /// A line held the text but was taken as the echo of what was typed.
     echo_skipped: bool,
@@ -676,16 +676,11 @@ impl Found {
 
 /// An end as JSON: what it met, and its status or signal.
 fn ended_json(met: &'static str, ended: Ended) -> Vec<(&'static str, Json<'static>)> {
-    match ended {
-        Ended::Exited(code) => vec![
-            ("met", Json::str(met)),
-            ("exit", Json::Number(i64::from(code))),
-        ],
-        Ended::Signalled(signal) => vec![
-            ("met", Json::str(met)),
-            ("signal", Json::Number(i64::from(signal))),
-        ],
-    }
+    let (key, n) = match ended {
+        Ended::Exited(code) => ("exit", code),
+        Ended::Signalled(signal) => ("signal", signal),
+    };
+    vec![("met", Json::str(met)), (key, Json::Number(i64::from(n)))]
 }
 
 impl Watch {
@@ -1145,8 +1140,7 @@ fn echo_end(text: &str, before: &str, keys: &str, own_row: bool) -> Option<usize
 }
 
 /// A text as a wait compares it: case ignored, runs of blanks as one, and
-/// none at its ends. A leading `^` holds it to a line's first word, a
-/// trailing `$` to its last.
+/// none at its ends.
 fn normal(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()

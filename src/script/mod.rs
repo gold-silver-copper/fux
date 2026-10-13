@@ -235,24 +235,15 @@ impl std::fmt::Display for Failed {
     /// trimmed and joined with `\n`, any other control character or line
     /// separator escaped.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let lines = self
-            .message
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty());
-        let mut message = String::new();
-        for (i, line) in lines.enumerate() {
-            if i > 0 {
-                message.push_str("\\n");
-            }
-            for c in line.chars() {
-                match c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
-                    true => message.extend(c.escape_default()),
-                    false => message.push(c),
-                }
-            }
-        }
-        write!(f, "{}: {message}", self.code)
+        let escaped = |c: char| match c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+            true => c.escape_default().to_string(),
+            false => c.to_string(),
+        };
+        let lines: Vec<String> = (self.message.lines().map(str::trim))
+            .filter(|l| !l.is_empty())
+            .map(|line| line.chars().map(escaped).collect())
+            .collect();
+        write!(f, "{}: {}", self.code, lines.join("\\n"))
     }
 }
 

@@ -605,8 +605,7 @@ fn thread_blocked(pid: Pid, tid: &str) -> Option<Blocked> {
     }
     let call = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/syscall")).ok()?;
     let mut words = call.split_whitespace();
-    let nr = words.next()?;
-    let nr: u64 = nr.parse().ok()?;
+    let nr: u64 = words.next()?.parse().ok()?;
     let args: Vec<u64> = words
         .take(6)
         .filter_map(|w| u64::from_str_radix(w.trim_start_matches("0x"), 16).ok())
@@ -751,19 +750,13 @@ pub fn activity(group: Pid, tty: &std::path::Path) -> Activity {
     if all.is_empty() {
         return Activity::Unknown;
     }
-    // None in the group: it is changing hands (a program starting or
-    // ending), so at work.
-    let members: Vec<Pid> = all.into_iter().filter(in_group).collect();
-    if members.is_empty() {
-        return Activity::Busy;
-    }
-    let mut seen: Vec<Activity> = members
-        .iter()
-        .filter_map(|p| process_activity(*p, tty))
+    let seen: Vec<Activity> = (all.into_iter().filter(in_group))
+        .filter_map(|p| process_activity(p, tty))
         .collect();
+    // None in the group (it is changing hands: a program starting or
+    // ending), or every one waits for a child of another group: at work.
     if seen.is_empty() {
-        // Every one waits for a child of another group: still at work.
-        seen.push(Activity::Busy);
+        return Activity::Busy;
     }
     [
         Activity::Busy,

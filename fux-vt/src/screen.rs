@@ -1027,23 +1027,19 @@ impl Screen {
             let top = g.history_len().saturating_add(usize::from(region.first()));
             (top, usize::from(count.min(region.len())))
         };
-        let rows: Vec<Row<'_>> = (from..from.saturating_add(gone))
+        let before = self.departures;
+        let departed: Vec<crate::Departed> = (from..from.saturating_add(gone))
             .filter_map(|i| g.row_at(i))
-            .collect();
-        let mut seq = self.departures;
-        let departed: Vec<crate::Departed> = (rows.into_iter())
-            .map(|row| {
-                seq = seq.wrapping_add(1);
-                crate::Departed {
-                    seq,
-                    id: row.id,
-                    version: row.version,
-                    wrapped: row.wrapped,
-                    text: row.cells_text(),
-                }
+            .zip(1u64..)
+            .map(|(row, n)| crate::Departed {
+                seq: before.wrapping_add(n),
+                id: row.id,
+                version: row.version,
+                wrapped: row.wrapped,
+                text: row.cells_text(),
             })
             .collect();
-        self.departures = seq;
+        self.departures = departed.last().map_or(before, |d| d.seq);
         if let Some(kept) = &mut self.departed {
             kept.extend(departed);
         }
