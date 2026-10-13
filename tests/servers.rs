@@ -433,3 +433,37 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     server.ok(&["str", &made, "pane", "str", "built", "await"])?;
     Ok(())
 }
+
+/// A server opens a door beside its socket (`NAME.door`): a client that
+/// cannot use the socket (a sandbox that denies sockets; here, the socket
+/// file gone) reaches the server through it, FIFOs of its own relayed to a
+/// connection as the socket's.
+#[test]
+fn a_client_reaches_the_server_through_its_door() -> Outcome {
+    let server = Server::start("")?;
+    let mut door = server.socket.as_os_str().to_owned();
+    door.push(".door");
+    let door = std::path::PathBuf::from(door);
+    assert!(door.exists(), "a door beside {}", server.socket.display());
+    std::fs::remove_file(&server.socket).map_err(|e| e.to_string())?;
+    let ls = server.ok(&["ls"])?;
+    assert!(ls.contains("+1 main"), "{ls}");
+    let answer = server.ok(&[
+        "opts",
+        "str",
+        "sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        "echo through-the-door; read x",
+        "arg",
+        "run",
+    ])?;
+    assert!(
+        answer.contains("reading") && answer.contains("through-the-door"),
+        "{answer}"
+    );
+    Ok(())
+}

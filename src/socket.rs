@@ -61,11 +61,6 @@ pub enum Error {
         limit: usize,
     },
     /// A directory above the socket's that another user could change.
-    Shared {
-        path: PathBuf,
-        mode: u32,
-        uid: u32,
-    },
     Symlink(PathBuf),
     /// The socket's directory, not a directory of ours with mode 0700.
     NotPrivate {
@@ -135,12 +130,6 @@ impl std::fmt::Display for Error {
                  domain socket on this platform (from {from}): {value}",
                 value.len()
             ),
-            Error::Shared { path, mode, uid } => write!(
-                f,
-                "{} (mode {mode:04o}, owner uid {uid}) could be changed by another user, so the socket \
-                 beneath it would not be private; choose another location with FUX_SOCKET",
-                path.display()
-            ),
             Error::Symlink(path) => write!(
                 f,
                 "{} is a symbolic link; the socket directory must be a real directory",
@@ -208,6 +197,14 @@ impl std::fmt::Display for Error {
     }
 }
 
+impl Error {
+    /// Whether the system denied a socket at all (a sandbox that forbids
+    /// them): a door may serve instead (`crate::door`).
+    pub fn denied(&self) -> bool {
+        matches!(self, Error::Io { source, .. } if source.kind() == io::ErrorKind::PermissionDenied)
+    }
+}
+
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
@@ -221,7 +218,6 @@ impl std::error::Error for Error {
             | Error::Relative { .. }
             | Error::NoFile { .. }
             | Error::TooLong { .. }
-            | Error::Shared { .. }
             | Error::Symlink(_)
             | Error::NotPrivate { .. }
             | Error::NoServer(_)
@@ -395,28 +391,18 @@ fn checked(value: &str, from: &'static str) -> Result<SocketPath, Error> {
     })
 }
 
-/// The directory holding the socket must be ours, mode 0700, reached only
-/// through directories no other user can rewrite. `create` makes it when it
-/// is missing; nothing that already exists is modified.
+/// The directory holding the socket must be ours, mode 0700. The
+/// directories above it are not checked: inside a sandbox's user namespace
+/// root's show as another uid (65534), and what keeps a connection private
+/// is that each side checks the other's user (the server its clients', a
+/// client its server's), whoever could rename what lies above. `create`
+/// makes it when it is missing; nothing that already exists is modified.
 fn private_directory(socket: &SocketPath, create: bool) -> Result<(), Error> {
     let (directory, above) = (socket.directory(), socket.above.as_path());
     let euid = geteuid();
-    let canonical = above
+    above
         .canonicalize()
         .map_err(failed("socket directory parent ", above))?;
-    for ancestor in canonical.ancestors() {
-        let meta = fs::metadata(ancestor).map_err(io(ancestor))?;
-        let mode = meta.permissions().mode();
-        let owned = meta.uid() == 0 || meta.uid() == euid;
-        let shared = mode & 0o022 != 0;
-        if !owned || (shared && mode & 0o1000 == 0) {
-            return Err(Error::Shared {
-                path: ancestor.to_owned(),
-                mode: mode & 0o7777,
-                uid: meta.uid(),
-            });
-        }
-    }
     match fs::symlink_metadata(directory) {
         Err(error) if error.kind() == io::ErrorKind::NotFound && create => {
             match DirBuilder::new().mode(0o700).create(directory) {

@@ -10,6 +10,7 @@ pub mod client;
 pub mod command;
 pub mod config;
 pub mod copy;
+pub mod door;
 pub mod events;
 pub mod help;
 pub mod id;
@@ -36,8 +37,8 @@ pub mod wire;
 pub mod words;
 pub mod workspace;
 
+use std::io::PipeReader;
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -47,11 +48,14 @@ pub(crate) fn after(from: Instant, wait: Duration) -> Instant {
     from.checked_add(wait).unwrap_or(from)
 }
 
-/// A socket that becomes readable when any of `signals` arrives: each writes
-/// a byte to the other end, of which it holds a copy.
-pub(crate) fn signal_pipe(signals: &[std::ffi::c_int]) -> std::io::Result<UnixStream> {
-    let (pipe, write) = UnixStream::pair()?;
-    pipe.set_nonblocking(true)?;
+/// A pipe that becomes readable when any of `signals` arrives: each writes
+/// a byte to the other end, of which it holds a copy. A pipe, not a socket
+/// pair: a sandbox may refuse send(2), which a signal writes a socket with.
+pub(crate) fn signal_pipe(signals: &[std::ffi::c_int]) -> std::io::Result<PipeReader> {
+    let (pipe, write) = std::io::pipe()?;
+    fuxix::io::set_nonblocking(&pipe, true)?;
+    // A signal never waits on a full pipe: one byte there is enough.
+    fuxix::io::set_nonblocking(&write, true)?;
     for &signal in signals {
         signal_hook::low_level::pipe::register(signal, write.try_clone()?)?;
     }
@@ -59,7 +63,7 @@ pub(crate) fn signal_pipe(signals: &[std::ffi::c_int]) -> std::io::Result<UnixSt
 }
 
 /// Reads whatever a signal pipe holds.
-pub(crate) fn drain(mut pipe: &UnixStream) {
+pub(crate) fn drain(mut pipe: &PipeReader) {
     let mut buffer = [0u8; 256];
     while matches!(pipe.read(&mut buffer), Ok(n) if n > 0) {}
 }

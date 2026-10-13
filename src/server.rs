@@ -71,9 +71,13 @@ struct Shortage {
 /// moment it stops, its listener closes and the socket is gone, and a
 /// client finds no server rather than one that never answers.
 struct Listening {
-    listener: UnixListener,
+    /// None where the system denies sockets: the door alone serves.
+    listener: Option<UnixListener>,
+    /// The door beside the socket, for clients in a sandbox that denies
+    /// them sockets (`crate::door`).
+    door: Option<crate::door::Door>,
     /// Removes the socket once dropped, after the listener closes.
-    _endpoint: Endpoint,
+    _endpoint: Option<Endpoint>,
 }
 
 /// Where the server is in its life, each stage holding the moment it waits
@@ -488,11 +492,11 @@ pub struct Server {
     /// Where the layout is saved, for a server after a crash to bring
     /// back; none if there is nowhere to.
     saved: Option<Saved>,
-    children: UnixStream,
+    children: std::io::PipeReader,
     /// Closed panes' programs killed but not yet exited, reaped once SIGCHLD
     /// says they have.
     killed: Vec<Leader>,
-    stops: UnixStream,
+    stops: std::io::PipeReader,
     /// Where bytes read from a client's connection or terminal land before
     /// they are taken; one for the server, reused by every read.
     read_buffer: Vec<u8>,
@@ -752,8 +756,9 @@ fn grant(
         .ok();
     grants.push(Grant {
         listening: Listening {
-            listener,
-            _endpoint: endpoint,
+            listener: Some(listener),
+            door: None,
+            _endpoint: Some(endpoint),
         },
         socket: path.clone(),
         workspace,
@@ -804,8 +809,23 @@ impl std::error::Error for Error {
 /// Runs a server on `socket` until it is told to stop or its last pane
 /// closes.
 pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
-    let (endpoint, listener) = crate::socket::bind_socket(socket).map_err(Error::Socket)?;
-    listener.set_nonblocking(true).map_err(Error::Setup)?;
+    // A sandbox that denies sockets: served through the door alone.
+    let (endpoint, listener) = match crate::socket::bind_socket(socket) {
+        Ok((endpoint, listener)) => {
+            listener.set_nonblocking(true).map_err(Error::Setup)?;
+            (Some(endpoint), Some(listener))
+        }
+        Err(error) if error.denied() => (None, None),
+        Err(error) => return Err(Error::Socket(error)),
+    };
+    let door = match crate::door::Door::open(socket.path()) {
+        Ok(door) => Some(door),
+        Err(error) if listener.is_none() => return Err(Error::Setup(error)),
+        Err(error) => {
+            log(&format!("no door beside the socket: {error}"));
+            None
+        }
+    };
     let children = crate::signal_pipe(&[SIGCHLD]).map_err(Error::Setup)?;
     let stops = crate::signal_pipe(&[SIGTERM, SIGINT, SIGHUP]).map_err(Error::Setup)?;
     // Settings come from clients (`set`), each running its config.
@@ -834,6 +854,7 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
         phase: Phase::Serving {
             listening: Listening {
                 listener,
+                door,
                 _endpoint: endpoint,
             },
             resting: None,
@@ -864,6 +885,8 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
 #[derive(Clone, Copy)]
 enum Slot {
     Listener,
+    /// The door beside the socket: knocks waiting.
+    Door,
     /// A socket `fux grant` made, by its index into `grants`.
     Grant(usize),
     Children,
@@ -918,6 +941,7 @@ impl Server {
             for &(slot, flags) in &ready {
                 match slot {
                     Slot::Listener => self.accept(None),
+                    Slot::Door => self.open_door(),
                     Slot::Grant(i) => self.accept(Some(i)),
                     Slot::Children => {
                         crate::drain(&self.children);
@@ -1133,11 +1157,19 @@ impl Server {
             resting: None,
         } = &self.phase
         {
-            fds.push(PollFd::new(&listening.listener, PollFlags::IN));
-            slots.push(Slot::Listener);
+            if let Some(listener) = &listening.listener {
+                fds.push(PollFd::new(listener, PollFlags::IN));
+                slots.push(Slot::Listener);
+            }
+            if let Some(door) = &listening.door {
+                fds.push(PollFd::new(door.fd(), PollFlags::IN));
+                slots.push(Slot::Door);
+            }
             for (i, grant) in self.grants.iter().enumerate() {
-                fds.push(PollFd::new(&grant.listening.listener, PollFlags::IN));
-                slots.push(Slot::Grant(i));
+                if let Some(listener) = &grant.listening.listener {
+                    fds.push(PollFd::new(listener, PollFlags::IN));
+                    slots.push(Slot::Grant(i));
+                }
             }
         }
         fds.push(PollFd::new(&self.children, PollFlags::IN));
@@ -1371,6 +1403,9 @@ impl Server {
                 None if grant.is_some() => return,
                 None => (&listening.listener, None),
             };
+            let Some(listener) = listener else {
+                return;
+            };
             let accepted = listener.accept();
             let room = match std::fs::File::open("/dev/null") {
                 Ok(spare) => {
@@ -1444,6 +1479,23 @@ impl Server {
                     }
                     return;
                 }
+            }
+        }
+    }
+
+    /// Takes the connections knocks at the door bring: each is the server's
+    /// end of a pair relayed to a client's FIFOs, whose owner the door
+    /// checked, as the socket's peer check does.
+    fn open_door(&mut self) {
+        let Phase::Serving { listening, .. } = &mut self.phase else {
+            return;
+        };
+        let Some(door) = &mut listening.door else {
+            return;
+        };
+        for stream in door.knocks() {
+            if stream.set_nonblocking(true).is_ok() {
+                self.conns.push(Conn::new(stream, None));
             }
         }
     }

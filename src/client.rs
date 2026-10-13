@@ -4,6 +4,7 @@
 //! a headless one; and the connection a program's requests go over.
 use crate::act::Act;
 use crate::decode::Input;
+use crate::door::Link;
 use crate::keymap::{Held, Keymap, Step};
 use crate::keys::KeyPress;
 use crate::protocol::{
@@ -184,12 +185,53 @@ fn restore() {
     }
 }
 
-fn connect(socket: &SocketPath, role: Role) -> Result<(UnixStream, Decoder), Error> {
-    crate::socket::check_client_socket(socket)?;
-    let mut stream = UnixStream::connect(socket.path()).map_err(|source| Error::Connect {
-        path: socket.path().to_owned(),
-        source,
-    })?;
+/// The stream to the server at `socket`: its socket, once it is checked to
+/// be served by this user; or its door (`crate::door`), where the system
+/// denies sockets (a sandbox) or the server serves its door alone.
+fn open(socket: &SocketPath) -> Result<Link, Error> {
+    let door = crate::door::path(socket.path());
+    let by_door = || {
+        crate::door::knock(socket.path()).map_err(|source| Error::Connect {
+            path: door.clone(),
+            source,
+        })
+    };
+    match crate::socket::check_client_socket(socket) {
+        Err(crate::socket::Error::NoServer(_)) if door.exists() => return by_door(),
+        Err(error) => return Err(error.into()),
+        Ok(()) => {}
+    }
+    match UnixStream::connect(socket.path()) {
+        Ok(stream) => {
+            // Its server is this user's, whoever made the path's directories.
+            let euid = fuxix::process::geteuid();
+            match fuxix::socket::peer_uid(&stream) {
+                Ok(uid) if uid == euid => Link::socket(stream).map_err(|source| Error::Connect {
+                    path: socket.path().to_owned(),
+                    source,
+                }),
+                Ok(uid) => Err(Error::Connect {
+                    path: socket.path().to_owned(),
+                    source: std::io::Error::other(format!(
+                        "its server runs as uid {uid}, not this user's ({euid})"
+                    )),
+                }),
+                Err(source) => Err(Error::Connect {
+                    path: socket.path().to_owned(),
+                    source: source.into(),
+                }),
+            }
+        }
+        Err(e) if e.kind() == ErrorKind::PermissionDenied && door.exists() => by_door(),
+        Err(source) => Err(Error::Connect {
+            path: socket.path().to_owned(),
+            source,
+        }),
+    }
+}
+
+fn connect(socket: &SocketPath, role: Role) -> Result<(Link, Decoder), Error> {
+    let mut stream = open(socket)?;
     let ours = Hello {
         protocol: PROTOCOL,
         version: env!("CARGO_PKG_VERSION"),
@@ -233,18 +275,18 @@ fn greeted(
     }
 }
 
-fn send<'a>(stream: &mut UnixStream, frame: &impl Frame<'a>) -> Result<(), Error> {
+fn send<'a>(stream: &mut Link, frame: &impl Frame<'a>) -> Result<(), Error> {
     let bytes = frame.encode()?;
     stream.write_all(&bytes).map_err(Error::Write)
 }
 
 fn read_frame<'d>(
-    stream: &mut UnixStream,
+    stream: &mut Link,
     decoder: &'d mut Decoder,
     buffer: &mut [u8],
     timeout: Option<Duration>,
 ) -> Result<Option<ServerFrame<'d>>, Error> {
-    let _ = stream.set_read_timeout(timeout);
+    stream.set_read_timeout(timeout);
     while !decoder.ready()? {
         match stream.read(buffer) {
             Ok(0) => return Ok(None),
@@ -263,7 +305,7 @@ fn read_frame<'d>(
 /// before the next. One per run of a program, made when its first request
 /// is.
 pub struct Requests {
-    stream: UnixStream,
+    stream: Link,
     decoder: Decoder,
     buffer: Vec<u8>,
     /// The pieces of a reply too large for one frame, so far.
@@ -300,7 +342,7 @@ impl Requests {
 
     /// Sends `request`, not waiting for its reply.
     pub fn send(&mut self, request: &Request) -> Result<(), Error> {
-        let _ = self.stream.set_read_timeout(None);
+        self.stream.set_read_timeout(None);
         send(&mut self.stream, request)
     }
 
@@ -353,8 +395,9 @@ impl Requests {
         }
     }
 
-    pub fn stream(&self) -> &UnixStream {
-        &self.stream
+    /// A copy of its socket, to shut down from another thread.
+    pub fn socket_copy(&self) -> Option<UnixStream> {
+        self.stream.socket_copy()
     }
 }
 
@@ -415,21 +458,22 @@ pub enum Probe {
 /// Who answers on `socket`, asking only for its `Hello`, which every
 /// version answers.
 pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
+    let door = crate::door::path(socket.path());
     match crate::socket::check_client_socket(socket) {
-        Err(crate::socket::Error::NoServer(_)) => return Ok(Probe::Absent),
+        Err(crate::socket::Error::NoServer(_)) if !door.exists() => return Ok(Probe::Absent),
+        Err(crate::socket::Error::NoServer(_)) | Ok(()) => {}
         Err(error) => return Err(error.into()),
-        Ok(()) => {}
     }
-    let mut stream = match UnixStream::connect(socket.path()) {
+    let mut stream = match open(socket) {
         Ok(stream) => stream,
         // A socket left by a server that is gone.
-        Err(e) if e.kind() == ErrorKind::ConnectionRefused => return Ok(Probe::Left),
-        Err(source) => {
-            return Err(Error::Connect {
-                path: socket.path().to_owned(),
-                source,
-            });
+        Err(Error::Connect { source, .. }) if source.kind() == ErrorKind::ConnectionRefused => {
+            return Ok(Probe::Left);
         }
+        Err(Error::Connect { source, .. }) if source.kind() == ErrorKind::TimedOut => {
+            return Ok(Probe::Left);
+        }
+        Err(error) => return Err(error),
     };
     let ours = Hello {
         protocol: PROTOCOL,
@@ -470,8 +514,11 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
         .stderr(output);
     let mut child = command.spawn().map_err(Error::Spawn)?;
     let deadline = crate::after(Instant::now(), Duration::from_secs(2));
+    // Its socket answers, or, where sockets are denied, its door is there.
+    let door = crate::door::path(socket.path());
+    let answers = || UnixStream::connect(socket.path()).is_ok() || door.exists();
     loop {
-        if UnixStream::connect(socket.path()).is_ok() {
+        if answers() {
             // The child is left to run; it is not ours to wait for, and
             // dropping a `Child` neither waits for nor kills it.
             drop(child);
@@ -480,7 +527,7 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
         if let Ok(Some(status)) = child.try_wait() {
             // It lost a race to another server, or failed: connect to the
             // winner if there is one.
-            if UnixStream::connect(socket.path()).is_ok() {
+            if answers() {
                 return Ok(());
             }
             return Err(Error::Exited { status, log });
@@ -573,7 +620,7 @@ pub struct Keyboard {
     decoder: crate::decode::Decoder,
     jobs: std::sync::mpsc::Sender<Job>,
     told: std::sync::mpsc::Receiver<Ran>,
-    wake: UnixStream,
+    wake: std::io::PipeReader,
     /// Programs sent to the worker and not yet done, in order, each with
     /// whether it may open a screen.
     running: std::collections::VecDeque<bool>,
@@ -594,8 +641,8 @@ impl Keyboard {
     ) -> Result<Keyboard, Error> {
         let (jobs, todo) = std::sync::mpsc::channel::<Job>();
         let (tell, told) = std::sync::mpsc::channel::<Ran>();
-        let (wake, mut poke) = UnixStream::pair().map_err(Error::Signals)?;
-        wake.set_nonblocking(true).map_err(Error::Signals)?;
+        let (wake, mut poke) = std::io::pipe().map_err(Error::Signals)?;
+        fuxix::io::set_nonblocking(&wake, true).map_err(|e| Error::Signals(e.into()))?;
         let path = socket.path().to_string_lossy().into_owned();
         let stop = crate::script::Stop::default();
         let stops = stop.clone();
@@ -638,7 +685,7 @@ impl Keyboard {
     }
 
     /// Readable when a program it ran is done (`Keyboard::ran`).
-    pub fn wake(&self) -> &UnixStream {
+    pub fn wake(&self) -> &std::io::PipeReader {
         &self.wake
     }
 
@@ -1008,8 +1055,8 @@ const STOPPED: &str = "detached by a signal";
 /// detach it. Made before the terminal goes raw, so that no wait in raw
 /// mode can miss one.
 struct Signals {
-    winch: UnixStream,
-    stops: UnixStream,
+    winch: std::io::PipeReader,
+    stops: std::io::PipeReader,
 }
 
 impl Signals {
@@ -1060,13 +1107,13 @@ impl Drop for Raw {
 /// Sends `frame` with this process's terminal attached, its first bytes
 /// carrying it.
 fn send_with_terminal<'a>(
-    stream: &mut UnixStream,
+    stream: &mut Link,
     frame: &impl Frame<'a>,
     terminal: impl std::os::fd::AsFd,
 ) -> Result<(), Error> {
     let bytes = frame.encode()?;
     let sent = loop {
-        match fuxix::socket::send_with_fd(&*stream, &bytes, &terminal) {
+        match fuxix::socket::send_with_fd(stream.output(), &bytes, &terminal) {
             Ok(n) => break n,
             Err(fuxix::Errno::INTR) => continue,
             Err(errno) => return Err(Error::Write(errno.into())),
@@ -1084,14 +1131,14 @@ fn send_with_terminal<'a>(
 /// (its first `Stdout`), an `Exit` is a refusal.
 fn attached(
     socket: &SocketPath,
-    stream: &mut UnixStream,
+    stream: &mut Link,
     decoder: &mut Decoder,
     signals: &Signals,
     attaching: &Attaching,
     terminal: bool,
 ) -> Result<String, Error> {
     let Signals { winch, stops } = signals;
-    let _ = stream.set_read_timeout(None);
+    stream.set_read_timeout(None);
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     let mut buffer = vec![0u8; 64 * 1024];
@@ -1219,7 +1266,8 @@ mod tests {
     /// What the client makes of the server's answer to Hello, as read from
     /// a socket in `wait`.
     fn answer(server: impl FnOnce(&mut UnixStream), wait: Duration) -> Result<(), Error> {
-        let (mut client, mut peer) = UnixStream::pair().map_err(Error::Signals)?;
+        let (client, mut peer) = UnixStream::pair().map_err(Error::Signals)?;
+        let mut client = Link::socket(client).map_err(Error::Signals)?;
         server(&mut peer);
         let mut decoder = Decoder::default();
         let mut buffer = [0u8; 256];

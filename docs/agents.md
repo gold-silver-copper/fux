@@ -138,6 +138,13 @@ workspace `agent` alone, which they can watch in their own server (`str PATH
 socket` first). `kill-server` from inside the server you would stop is
 refused; `force-kill-server` stops it.
 
+**In a sandbox** fux works as outside it. Where Unix sockets are refused
+(Codex's sandbox), the client and server meet through a FIFO beside the
+socket, `NAME.door`, in the same private directory; a server that cannot
+bind its socket serves through the door alone. Where uids are remapped,
+only the socket's own directory must be yours (mode 0700), and the client
+checks that the server runs as you.
+
 ## More
 
 - `opts str FILE log-to` on `run` keeps everything a program writes

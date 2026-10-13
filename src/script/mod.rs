@@ -427,7 +427,7 @@ impl Server {
                 if let Some(stop) = &self.stop
                     && let Ok(mut held) = stop.stream.lock()
                 {
-                    *held = opened.stream().try_clone().ok();
+                    *held = opened.socket_copy();
                 }
                 self.requests.insert(opened)
             }
