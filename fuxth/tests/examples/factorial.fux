@@ -1,0 +1,14 @@
+# Factorials, recursive and with a loop: 20! is the largest that fits.
+# expect: 1 1 120 2432902008176640000 3628800
+
+# n -- n!
+define fact dup 1 gt if dup 1 sub fact mul else drop 1 then end
+
+# n -- n!, counting down with the product under the counter
+define fact-loop 1 swap begin dup 1 gt if tuck mul swap 1 sub false else true then until drop end
+
+0 fact
+1 fact
+5 fact
+20 fact
+10 fact-loop

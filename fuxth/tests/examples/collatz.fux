@@ -1,0 +1,17 @@
+# Collatz: how many steps each number takes to reach 1.
+# expect: 0 1 7 111 178
+
+# steps n -- steps
+define steps
+  dup 1 eq if drop else
+  dup 2 mod 0 eq if 2 div else 3 mul 1 add then
+  swap 1 add swap steps then
+end
+# n -- steps
+define collatz 0 swap steps end
+
+1 collatz
+2 collatz
+3 collatz
+27 collatz
+871 collatz

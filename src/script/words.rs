@@ -24,6 +24,18 @@ pub struct Word {
     pub group: &'static str,
 }
 
+impl Word {
+    /// How many values it gives, read from its effect: each word after the
+    /// `--`, one in brackets given only sometimes.
+    pub fn gives(&self) -> std::ops::RangeInclusive<usize> {
+        let after = self.effect.split_once("--").map_or("", |(_, after)| after);
+        let words = after.split_whitespace();
+        let sometimes = words.clone().filter(|w| w.starts_with('[')).count();
+        let all = words.count();
+        all.saturating_sub(sometimes)..=all
+    }
+}
+
 const fn word(
     group: &'static str,
     name: &'static str,
@@ -177,7 +189,7 @@ pub const WORDS: &[Word] = &[
     word("Server", "kill-server", 0, "-- ", "stop the server: not from its own panes, nor with people attached"),
     word("Server", "force-kill-server", 0, "-- ", "stop it anyway, whatever fux version it is"),
     word("Server", "set", 2, "setting value -- ", "shell history-lines clipboard buffers bell titles shell-marks update-environment"),
-    word("Server", "grant", 2, "workspace socket -- ", "a socket whose requests reach that workspace alone"),
+    word("Server", "grant", 2, "workspace socket -- path", "a socket whose requests reach that workspace alone; its path"),
     word("Server", "revoke", 1, "socket -- ", "close a grant's socket"),
     word("Server", "version", 0, "-- text", "this fux's version"),
     // Config
@@ -229,8 +241,17 @@ fn kind_of(value: &Value<Fux>) -> &'static str {
 /// How a word of fux's is used, for a mistake in using it: what goes
 /// before it, what it leaves, and an example.
 pub fn usage(word: &str) -> Option<String> {
-    let w = WORDS.iter().find(|w| w.name == word)?;
-    let (takes, leaves) = w.effect.split_once("--").unwrap_or((w.effect, ""));
+    let effect = match WORDS.iter().find(|w| w.name == word) {
+        Some(w) => w.effect,
+        // A word of the prelude's or library's.
+        None => {
+            crate::help::library()
+                .into_iter()
+                .find(|(name, ..)| *name == word)?
+                .1
+        }
+    };
+    let (takes, leaves) = effect.split_once("--").unwrap_or((effect, ""));
     let takes = takes.trim().to_uppercase();
     let leaves = match leaves.trim() {
         "" => String::new(),
@@ -463,7 +484,7 @@ impl fuxth::Host for Host<'_> {
     fn call(
         &mut self,
         word: usize,
-        args: Vec<Value<Fux>>,
+        args: fuxth::Args<'_, Fux>,
         out: &mut Vec<Value<Fux>>,
     ) -> Result<Done<Ask>, Failure> {
         let Some(spec) = WORDS.get(word) else {
@@ -881,9 +902,20 @@ impl fuxth::Host for Host<'_> {
                 }
                 let waited = then.is_some();
                 let (targets, to_client) = match &to {
+                    // Typed at its terminal: whatever pane they reach is the
+                    // client's to choose, so there is none to wait on here.
+                    Value::App(Fux::Client(_)) if waited || built.if_revision.is_some() => {
+                        return Err(fail(
+                            "unused",
+                            "send-keys to a client takes no wait or if-revision: \
+                             wait on the pane after (PANE opts … wait)",
+                        ));
+                    }
                     Value::App(Fux::Client(c)) => (Vec::new(), Some(*c)),
                     other @ (Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_)) => {
-                        (vec![target(name, other)?.map(WsRef::Id)], None)
+                        let target = target(name, other)
+                            .map_err(|_| wrong(name, "a pane, tab, workspace or client", other))?;
+                        (vec![target.map(WsRef::Id)], None)
                     }
                 };
                 later(ask(
@@ -1191,10 +1223,10 @@ impl fuxth::Host for Host<'_> {
                 ))
             }
             "percent" => {
-                let n = count::<u8>(name, &next()?)?;
-                if n == 0 || n > 100 {
-                    return Err(fail("range", "a percent from 1 to 100"));
-                }
+                let n = int(name, &next()?)?;
+                let Some(n) = u8::try_from(n).ok().filter(|n| (1..=100).contains(n)) else {
+                    return Err(fail("range", format!("percent takes 1 to 100, not {n}")));
+                };
                 now(out, Value::App(Fux::Extent(Extent::Percent(n))))
             }
             "move-border" => {
@@ -1750,6 +1782,26 @@ mod tests {
                 "{name}: a character a shell treats specially"
             );
         }
+    }
+
+    /// A word's effect names what it takes and gives: the checker counts
+    /// on both.
+    #[test]
+    fn every_effect_matches_its_word() {
+        for word in WORDS {
+            let (before, _) = word.effect.split_once("--").unwrap_or_default();
+            assert_eq!(
+                before.split_whitespace().count(),
+                word.takes,
+                "{}",
+                word.name
+            );
+        }
+        let send = WORDS
+            .iter()
+            .find(|w| w.name == "send-keys")
+            .map(Word::gives);
+        assert_eq!(send, Some(0..=1), "an outcome only with a wait");
     }
 
     #[test]

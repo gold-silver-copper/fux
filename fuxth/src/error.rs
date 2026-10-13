@@ -36,6 +36,9 @@ pub enum Code {
     Overflow,
     /// A constant read before its line set it.
     UnsetConstant,
+    /// An application word gave more or fewer values than its vocabulary
+    /// says: a mistake in the application, not the program.
+    Contract,
     /// The application's own failure, its code given.
     Host(&'static str),
 }
@@ -58,6 +61,7 @@ impl Code {
             Code::DivByZero => "div_by_zero",
             Code::Overflow => "overflow",
             Code::UnsetConstant => "unset_constant",
+            Code::Contract => "contract",
             Code::Host(code) => code,
         }
     }
@@ -76,7 +80,9 @@ pub struct Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: ", self.code.name())?;
-        match (&self.place, &self.word) {
+        // An empty word (`define ''`) is said in its message, not here.
+        let word = self.word.as_deref().filter(|w| !w.is_empty());
+        match (&self.place, word) {
             (Some(place), Some(word)) => write!(f, "{place}: {word}: ")?,
             (Some(place), None) => write!(f, "{place}: ")?,
             (None, Some(word)) => write!(f, "{word}: ")?,

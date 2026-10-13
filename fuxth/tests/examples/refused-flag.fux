@@ -1,0 +1,3 @@
+# if takes a boolean, and 1 never is one.
+# refused: type at 3
+1 if str yes then

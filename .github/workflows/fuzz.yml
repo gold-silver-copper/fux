@@ -37,7 +37,7 @@ jobs:
           ASAN_OPTIONS: quarantine_size_mb=16
         run: |
           set -euo pipefail
-          for target in protocol paint layout config session; do
+          for target in protocol paint layout config session fuxth_tokens fuxth_run fuxth_pause; do
             cargo +nightly fuzz run "$target" --fuzz-dir fuzz "fuzz/corpus/$target" -- -runs=0 -rss_limit_mb=2048 -timeout=25
           done
 

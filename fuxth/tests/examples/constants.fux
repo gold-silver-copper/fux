@@ -1,0 +1,7 @@
+# Constants name a value once; a definition may use one set before it.
+# expect: 1440 86400
+60 constant minute
+minute 24 mul constant day-minutes
+define seconds-in-a-day day-minutes minute mul end
+day-minutes
+seconds-in-a-day

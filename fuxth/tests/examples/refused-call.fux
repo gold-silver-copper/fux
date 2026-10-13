@@ -1,0 +1,5 @@
+# A definition needs as many values as it surely uses: its caller must
+# have them, found before anything runs.
+# refused: stack_underflow at 5
+define sum3 add add end
+1 2 sum3

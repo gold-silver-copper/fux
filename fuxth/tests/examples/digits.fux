@@ -1,0 +1,12 @@
+# Digit sums, and the digital root (summed until one digit is left).
+# expect: 0 29 45 2
+
+# n -- the sum of its digits
+define digits 0 swap begin dup 10 mod rot add swap 10 div dup 0 eq until drop end
+# n -- its digital root
+define root begin digits dup 10 lt until end
+
+0 digits
+9875 digits
+123456789 digits
+9875 root

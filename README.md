@@ -65,11 +65,18 @@ fux str %3 pane opts wait-exit wait               # prints: exited 0
 - `fux FILE` runs a file (a word with a `/` or ending `.fux`); `fux -` runs
   what stdin says; a single word with spaces is a whole program
   (`fux 'ls json'`). `#` starts a comment. A paste is at most 900 KiB.
-- The language is small on purpose: `dup drop swap over`, `add sub mul div
-  mod`, `eq lt gt not`, `if … else … then`, `begin … until`, `define NAME …
-  end` (a word of your own; it may call itself) and `constant NAME` (`x
-  constant NAME`: NAME pushes x from then on). Integers are checked: an
-  overflow fails.
+- The language is small on purpose: `dup drop swap over rot`, `add sub mul
+  div mod`, `eq lt gt not`, `if … else … then`, `begin … until`, `define
+  NAME … end` (a word of your own; it may call itself, and a call in last
+  place loops in one frame) and `constant NAME` (`x constant NAME`: NAME
+  pushes x from then on). A prelude written in fuxth adds `true false nip
+  tuck -rot 2dup 2drop negate abs min max ne le ge`. Integers are checked:
+  an overflow fails; `div` truncates toward zero.
+- A program is checked before it runs: a word given fewer values than the
+  stack surely holds, or a value the language's own words never take (`str a
+  1 add`, `1 if`), fails before any word acts. What can't be known before it
+  runs (a loop that leaves values) is never refused. fux's own words check
+  what kind of value they get as they run.
 - No word is a character a shell treats specially, so a program needs no
   quoting beyond the text you give `str`.
 

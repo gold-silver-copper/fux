@@ -1,0 +1,4 @@
+# A loop may leave a value each time round: they are printed in order.
+# expect: 5 4 3 2 1 0
+define countdown begin dup 1 sub dup 0 eq until end
+5 countdown

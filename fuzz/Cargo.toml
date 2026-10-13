@@ -51,3 +51,24 @@ path = "fuzz_targets/session.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuxth_tokens"
+path = "fuzz_targets/fuxth_tokens.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuxth_run"
+path = "fuzz_targets/fuxth_run.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuxth_pause"
+path = "fuzz_targets/fuxth_pause.rs"
+test = false
+doc = false
+bench = false

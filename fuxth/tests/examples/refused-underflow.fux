@@ -1,0 +1,4 @@
+# Taking more values than the stack holds is found before anything runs.
+# refused: stack_underflow at 4
+1
+drop drop

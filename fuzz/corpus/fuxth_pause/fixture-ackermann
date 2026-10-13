@@ -1,0 +1,15 @@
+# Ackermann's function: deep recursion that isn't in last place, well
+# inside the call limit.
+# expect: 1 3 9 61
+
+# m n -- A(m, n)
+define ack
+  over 0 eq if nip 1 add else
+  dup 0 eq if drop 1 sub 1 ack else
+  over 1 sub -rot 1 sub ack ack then then
+end
+
+0 0 ack
+1 1 ack
+2 3 ack
+3 3 ack

@@ -1,0 +1,15 @@
+# Three programs at once, each exiting with its own status; once all have
+# exited, the sum of their statuses. `fux examples/jobs.fux` prints 6, and
+# exits 3: a run whose last wait was met by its program's exit exits with
+# that program's status, as timeout(1) does.
+# expect: 6
+# status: 3
+
+# n -- pane: a program that exits with status n
+define job json opts str sh program str -c arg str 'exit "$0"' arg swap arg run end
+# pane -- status: once its program has exited
+define exit-status exited str exited get end
+
+1 job 2 job 3 job
+rot exit-status rot exit-status rot exit-status
+add add

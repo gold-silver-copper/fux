@@ -1,0 +1,5 @@
+# A loop that leaves values leaves a depth that can't be known before it
+# runs: the program runs, and is never refused for it.
+# expect: 6 6
+define countdown begin dup 1 sub dup 0 eq until drop end
+3 countdown add add 6
