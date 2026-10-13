@@ -159,6 +159,9 @@ pub struct Machine<A> {
     extra: u64,
     /// Elements built so far.
     built: u64,
+    /// The step taken last: how many frames there were, its code, and its
+    /// place in it.
+    last: Option<(usize, Option<usize>, usize)>,
 }
 
 impl<A: AppValue> Machine<A> {
@@ -183,6 +186,7 @@ impl<A: AppValue> Machine<A> {
             pending: None,
             extra: 0,
             built: 0,
+            last: None,
         }
     }
 
@@ -215,12 +219,30 @@ impl<A: AppValue> Machine<A> {
         let at = |code: Option<usize>, step: usize| {
             self.code(code)?.tokens.get(step.checked_sub(1)?).cloned()
         };
-        (self.frames.iter())
+        let mut calls: Vec<Token> = (self.frames.iter())
             .flat_map(|frame| {
                 let via = frame.via.and_then(|(code, step)| at(code, step));
                 via.into_iter().chain(at(frame.code, frame.step))
             })
-            .collect()
+            .collect();
+        // The innermost: the step it really took last, a jump's too.
+        if let Some(last) = self.taken() {
+            if (self.frames.last()).is_some_and(|f| at(f.code, f.step).is_some()) {
+                calls.pop();
+            }
+            calls.push(last);
+        }
+        calls
+    }
+
+    /// The token of the step the innermost frame took last: none for a
+    /// call just begun (its caller took the call).
+    fn taken(&self) -> Option<Token> {
+        let (depth, code, step) = self.last?;
+        let frame = self.frames.last()?;
+        let begun = frame.step == 0 && code != frame.code;
+        let ours = depth == self.frames.len() && !begun;
+        ours.then(|| self.code(code)?.tokens.get(step).cloned())?
     }
 
     /// The step taken last: in a frame at its first step (a call just
@@ -230,6 +252,9 @@ impl<A: AppValue> Machine<A> {
         let at = |code: Option<usize>, step: usize| {
             self.code(code)?.tokens.get(step.checked_sub(1)?).cloned()
         };
+        if let Some(taken) = self.taken() {
+            return Some(taken);
+        }
         let frame = self.frames.last()?;
         at(frame.code, frame.step)
             .or_else(|| frame.via.and_then(|(code, step)| at(code, step)))
@@ -278,6 +303,7 @@ impl<A: AppValue> Machine<A> {
             steps = steps
                 .saturating_add(1)
                 .saturating_add(std::mem::take(&mut self.extra));
+            let depth = self.frames.len();
             let Some(frame) = self.frames.last_mut() else {
                 return Ok(Outcome::Finished);
             };
@@ -294,6 +320,7 @@ impl<A: AppValue> Machine<A> {
                 self.leave();
                 continue;
             };
+            self.last = Some((depth, frame.code, frame.step));
             frame.step = frame.step.saturating_add(1);
             match op {
                 Op::Push(value) => self.push(value.clone())?,
@@ -922,30 +949,37 @@ impl<A: AppValue> Machine<A> {
         match (seq, x) {
             (Value::List(mut list), x) => {
                 // Held elsewhere too, it is copied first: that is built.
-                if Rc::strong_count(&list) > 1 {
-                    self.build(list.items.len())?;
-                }
+                let copied = if Rc::strong_count(&list) > 1 {
+                    list.items.len().saturating_sub(1)
+                } else {
+                    0
+                };
+                self.build(copied.saturating_add(1))?;
                 match Rc::make_mut(&mut list).put(i, x) {
                     Some(()) => Ok(Value::List(list)),
                     None => Err(self.nested()),
                 }
             }
-            (Value::Str(s), Value::Str(x)) => {
+            (Value::Str(mut s), Value::Str(x)) => {
                 // One character replaced by x's.
                 let n = s
                     .chars_len()
                     .saturating_sub(1)
                     .saturating_add(x.chars_len());
-                self.build(n)?;
-                let mut text = String::with_capacity(s.len().saturating_add(x.len()));
-                for (at, c) in s.chars().enumerate() {
-                    if at == i {
-                        text.push_str(&x);
-                    } else {
-                        text.push(c);
-                    }
+                if n > LONGEST {
+                    return Err(
+                        self.too_long(format!("a string holds at most {LONGEST} characters"))
+                    );
                 }
-                Ok(Value::str(text))
+                // Held elsewhere too, it is copied first, as a list is.
+                let copied = if Rc::strong_count(&s) > 1 {
+                    s.chars_len().saturating_sub(1)
+                } else {
+                    0
+                };
+                self.build(copied.saturating_add(x.chars_len()))?;
+                Rc::make_mut(&mut s).replace(i, &x);
+                Ok(Value::Str(s))
             }
             (Value::Str(_), x) => Err(self.type_error(format!(
                 "put into a string takes a string, not {}",

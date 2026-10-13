@@ -30,9 +30,9 @@ define false 0 1 eq end
 # flag -- flag : the other boolean
 define not if false else true then end
 # a b -- flag : whether both are true (both are worked out first)
-define and if else drop false then end
+define and if not not else not drop false then end
 # a b -- flag : whether either is true (both are worked out first)
-define or if drop true then end
+define or if not drop true else not not then end
 
 # ---- Comparing (lt compares two integers, two strings or two lists)
 # a b -- flag : whether a comes after b

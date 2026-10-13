@@ -186,6 +186,30 @@ fn the_calls_under_way_show_who_called() -> Result<(), Error> {
     Ok(())
 }
 
+/// Paused anywhere in a loop, even just after it jumped back, the step it
+/// is at is the loop's own.
+#[test]
+fn a_paused_loop_shows_its_own_step() -> Result<(), Error> {
+    for budget in 1..=12 {
+        let mut compiler = with_stdlib();
+        compiler.add(&token::source("t", "str x print\nbegin 0 1 eq until")?)?;
+        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        let outcome = machine.run(&mut Toy { asked: Vec::new() }, budget)?;
+        assert_eq!(outcome, Outcome::Paused);
+        let last = machine
+            .calls()
+            .last()
+            .map(|t| format!("{}:{}", t.place, t.text));
+        let in_loop = ["t:2:0", "t:2:1", "t:2:eq", "t:2:until"];
+        let at_print = budget <= 2;
+        assert!(
+            at_print || last.as_deref().is_some_and(|l| in_loop.contains(&l)),
+            "{budget}: {last:?}"
+        );
+    }
+    Ok(())
+}
+
 /// A call that is its definition's last step runs in its caller's frame:
 /// a loop written as recursion never runs out of calls.
 #[test]
@@ -760,6 +784,25 @@ fn what_qa_found() -> Result<(), Error> {
         Some("type")
     );
     assert_eq!(refused("str x 5 pad").as_deref(), Some("stack_underflow"));
+    // A string put into, held nowhere else, changes in place; held
+    // elsewhere, it is copied.
+    assert_eq!(
+        run("str x 1000 copies 0 let i begin 0 str y put i 1 add let i i 17000 eq until len")?,
+        ints(&[1000])
+    );
+    assert_eq!(
+        run("str héllo let s s 1 str E put s 0 str ab put")?,
+        [Value::str("hEllo"), Value::str("abéllo")]
+    );
+    // A way leaving what was given below where the stack surely reaches
+    // doesn't make the caller's stack shorter than it is.
+    assert_eq!(
+        run("define f if else drop 7 then end true f 5")?,
+        ints(&[5])
+    );
+    // `and` and `or` take two booleans.
+    assert_eq!(refused("1 true and").as_deref(), Some("type"));
+    assert_eq!(refused("true or").as_deref(), Some("stack_underflow"));
     // A text that fits is made, however its value is nested.
     assert_eq!(
         run("str x 1000 copies 1000 copies let s list s end string len")?,

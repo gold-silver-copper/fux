@@ -63,6 +63,29 @@ impl Text {
         self.ascii &= other.ascii;
     }
 
+    /// Character `i` replaced by `other`; nothing if there is none.
+    pub fn replace(&mut self, i: usize, other: &Text) {
+        let start = if self.ascii {
+            Some(i).filter(|i| *i < self.text.len())
+        } else {
+            self.text.char_indices().nth(i).map(|(at, _)| at)
+        };
+        let Some(start) = start else {
+            return;
+        };
+        let end = (self.text.get(start..))
+            .and_then(|rest| rest.chars().next())
+            .map_or(start, |c| start.saturating_add(c.len_utf8()));
+        let (head, tail) = (self.text.get(..start), self.text.get(end..));
+        let mut text = String::with_capacity(self.text.len().saturating_add(other.text.len()));
+        text.push_str(head.unwrap_or_default());
+        text.push_str(&other.text);
+        text.push_str(tail.unwrap_or_default());
+        self.text = text;
+        self.chars = self.chars.saturating_sub(1).saturating_add(other.chars);
+        self.ascii = (self.ascii && other.ascii) || self.text.is_ascii();
+    }
+
     /// How many characters it has.
     pub fn chars_len(&self) -> usize {
         self.chars

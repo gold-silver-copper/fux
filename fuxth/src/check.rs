@@ -837,8 +837,28 @@ impl<'a, A> Unit<'a, A> {
                     }
                 }
                 state.pop(usize::try_from(summary.need).unwrap_or(0))?;
-                let (exit, scrambled) = match &special {
-                    Some(does) => (does.exit.as_ref(), does.scrambled || summary.scrambled),
+                // Depths as every call has them; kinds, where the kinds
+                // this call gives tell more, as this call has them (a way
+                // may leave what was given below where the stack surely
+                // reaches, which this call may not have).
+                let refined = special.as_ref().map(|does| {
+                    let mut exit = summary.exit.clone();
+                    if let (Some(exit), Some(known)) = (exit.as_mut(), does.exit.as_ref()) {
+                        for (kinds, better) in exit.top.iter_mut().rev().zip(known.top.iter().rev())
+                        {
+                            let both = Kinds(kinds.0 & better.0);
+                            if both.0 != 0 {
+                                *kinds = both;
+                            }
+                        }
+                    }
+                    (
+                        does.exit.as_ref().and(exit),
+                        does.scrambled || summary.scrambled,
+                    )
+                });
+                let (exit, scrambled) = match &refined {
+                    Some((exit, scrambled)) => (exit.as_ref(), *scrambled),
                     None => (summary.exit.as_ref(), summary.scrambled),
                 };
                 // A way that went deeper than every way surely does may
