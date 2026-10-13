@@ -1257,6 +1257,34 @@ fn a_bare_bash_keeps_its_pipestatus_and_prompt() -> Outcome {
     Ok(())
 }
 
+/// The marks set off none of the user's traps: a DEBUG trap sees only the
+/// command typed, an ERR trap counts a failure once; and a PROMPT_COMMAND
+/// set anew in the running shell leaves them marked.
+#[test]
+fn bash_marks_leave_the_users_traps_and_hooks_alone() -> Outcome {
+    let server = Server::start("")?;
+    let home = server.dir.join("home");
+    std::fs::create_dir_all(&home).map_err(e)?;
+    let rc = "PS1='mine> '\nE=0\ntrap 'E=$((E+1))' ERR\n\
+              trap 'printf \"DBG %s\\n\" \"$BASH_COMMAND\"' DEBUG\n";
+    std::fs::write(home.join(".bashrc"), rc).map_err(e)?;
+    let home = home.to_string_lossy().into_owned();
+    server.ok(&run(
+        &["str", "t", "name", "str", "HOME", "str", &home, "env"],
+        &["bash"],
+    ))?;
+    line(&server, "t", "echo hi")?;
+    assert_eq!(last_output(&server, "t")?, "DBG echo hi\nhi\n");
+    assert_eq!(done(&line(&server, "t", "false")?), Some("done 1"));
+    line(&server, "t", "echo E=$E")?;
+    assert_eq!(last_output(&server, "t")?, "DBG echo E=$E\nE=1\n");
+    line(&server, "t", "PROMPT_COMMAND=:")?;
+    assert_eq!(done(&line(&server, "t", "(exit 3)")?), Some("done 3"));
+    line(&server, "t", "unset PROMPT_COMMAND")?;
+    assert_eq!(done(&line(&server, "t", "(exit 5)")?), Some("done 5"));
+    Ok(())
+}
+
 /// What the agents' rechecks found: Ctrl-C ends a command, with fewer
 /// command ends than lines; a command still at work at the limit answers
 /// `busy`; a command typed while another runs answers for its own end;

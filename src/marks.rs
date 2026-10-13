@@ -15,14 +15,29 @@
 //! it is, as is any other program.
 use std::path::{Path, PathBuf};
 
-/// bash: the user's own startup, then the marks. bash 4.4 and later print
-/// `PS0` as a command's output begins; older ones (macOS's 3.2) mark it
-/// from a DEBUG trap instead, armed last thing before each prompt, so it
-/// fires once, for the command typed. A line run with no start mark (one
-/// bash could not parse, or a comment: the history count moved, which
-/// before 4.4 only `history 1` tells, as `HISTCMD` reads 1 in
-/// PROMPT_COMMAND) gets one as it ends. Marks go to stderr, as the prompt does; fux's PROMPT_COMMAND is
-/// not exported, so shells started from this one do not inherit it.
+/// bash: the user's own startup, then the marks. They run no command of
+/// the shell's own, so the user's DEBUG, ERR and RETURN traps see nothing
+/// of fux's, and `$?` and `PIPESTATUS` stay the command's:
+///
+/// - `END`, first in `PROMPT_COMMAND`, so before the user's own hooks
+///   print: subshells, which inherit no DEBUG trap (unless `set -T`), the
+///   first exiting with the command's status (its `&&` keeps the ERR trap
+///   from it), print `D;STATUS` and `A`. The status and the state
+///   (`__fux_w`, a prompt shown and no command started since; `__fux_h`,
+///   the next history number then) are kept in the arithmetic of a
+///   redirection of its own, as no subshell can keep them: a line run with
+///   no start mark (one bash could not parse, or a comment: the history
+///   number moved) gets one as it ends.
+/// - `PS1` ends a command too, in case `PROMPT_COMMAND` is set anew while
+///   the shell runs (a `D` that ends no command does nothing).
+/// - bash 4.4 and later print `PS0` as a command's output begins. Older
+///   ones (macOS's 3.2) mark it from a DEBUG trap, armed last thing before
+///   the prompt, so it fires once, for the command typed; and there
+///   `HISTCMD` reads 1 in `PROMPT_COMMAND`, so `history 1` tells the
+///   history number.
+///
+/// Marks go to stderr, as the prompt does; fux's PROMPT_COMMAND is not
+/// exported, so shells started from this one do not inherit it.
 const BASHRC: &str = r#"# fux: OSC 133 shell marks, after your own startup. Off: `str shell-marks str off set`.
 if [ -r ~/.bashrc ]; then . ~/.bashrc; fi
 "#;
@@ -37,46 +52,65 @@ done
 unset __fux_f
 "#;
 
-/// The marks, after either startup.
-const BASH_MARKS: &str = r#"__fux_end() {
-  local s=$? h=${HISTCMD-0}
-  if [ -n "${__fux_old-}" ]; then h=$(history 1); h=${h#"${h%%[0-9]*}"}; h=${h%%[!0-9]*}; fi
-  if [ -z "${__fux_c+x}" ] && [ "$h" != "${__fux_h-$h}" ]; then printf '\033]133;C\007' >&2; fi
-  unset __fux_c; __fux_h=$h; __fux_armed=
-  printf '\033]133;D;%s\007\033]133;A\007' "$s" >&2
-  return $s
-}
-case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
-  "declare -a"*) PROMPT_COMMAND=(__fux_end "${PROMPT_COMMAND[@]}") ;;
-  *) PROMPT_COMMAND="__fux_end${PROMPT_COMMAND:+$'\n'$PROMPT_COMMAND}" ;;
-esac
-if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; }; then
-  PS0="${PS0-}"$'\033]133;C\007''${__fux_c=}'
-else
-  __fux_old=1
-  __fux_arm() { __fux_armed=1; }
-  __fux_start() { case "$BASH_COMMAND" in __fux_*) return 0 ;; esac; [ -n "${__fux_armed-}" ] || return 0; __fux_armed=; __fux_c=; printf '\033]133;C\007' >&2; }
-  case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
-    "declare -a"*) PROMPT_COMMAND+=(__fux_arm) ;;
-    *) PROMPT_COMMAND="${PROMPT_COMMAND}"$'\n'"__fux_arm" ;;
-  esac
-  trap '__fux_start' DEBUG
-fi
-export -n PROMPT_COMMAND PS0
-"#;
+/// A command's end, `{H}` the next history number (see `BASHRC`). No
+/// single quotes: the startup file quotes it with them.
+const END: &str = r#"{ ([ "$__fux_m" = 1 ] && printf "\033]133;C\007" >&2; printf "\033]133;D;%s\007\033]133;A\007" "$__fux_s" >&2; exit "$__fux_s") && (:); } 2>&$((__fux_s = $?, __fux_n = {H}, __fux_m = ${__fux_w-0} && __fux_n != ${__fux_h-0}, __fux_w = 1, __fux_h = __fux_n, 2))"#;
+const HISTORY_NEW: &str = "${HISTCMD-0}";
+const HISTORY_OLD: &str = r#"$(__fux_n=$(history 1); __fux_n=${__fux_n#"${__fux_n%%[0-9]*}"}; echo "${__fux_n%%[!0-9]*}") + 1"#;
+/// Before bash 4.4: the trap that marks a command's start (a `case`, as a
+/// command there would change `PIPESTATUS`), and its arming, last in
+/// `PROMPT_COMMAND` and in `PS1`.
+const START: &str =
+    r#"case ${__fux_a-} in 1) __fux_a=0; __fux_w=0; printf "\033]133;C\007" >&2 ;; esac"#;
+const ARM: &str = "{ (:); } 2>&$((__fux_a = 1, 2))";
+/// What `PS1` starts with: a command's end, should `END` not have run, and
+/// the trap's arming.
+const PS1_END: &str = r"\[\033]133;D;$?\007\033]133;A\007${__fux_z[__fux_a = 1]-}\]";
+/// What `PS0` ends with: a command's start.
+const PS0_START: &str = r"\033]133;C\007${__fux_z[__fux_w = 0]-}";
 
-/// bash that reads no file of fux's (`--norc`), from its variables, before
-/// and after the caller's own PROMPT_COMMAND: it ends a command (giving a
-/// start mark to a line run without one), and keeps the variables to itself.
+/// `END` for bash 4.4 and later, and for older ones.
+fn ends() -> (String, String) {
+    (
+        END.replace("{H}", HISTORY_NEW),
+        END.replace("{H}", HISTORY_OLD),
+    )
+}
+
+/// The marks, after either startup.
+fn bash_marks() -> String {
+    let (new, old) = ends();
+    format!(
+        r#"if [ "${{BASH_VERSINFO[0]}}${{BASH_VERSINFO[1]}}" -ge 44 ]; then __fux_e='{new}'; else __fux_e='{old}'; fi
+case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
+  "declare -a"*) PROMPT_COMMAND=("$__fux_e" "${{PROMPT_COMMAND[@]}}") ;;
+  *) PROMPT_COMMAND="$__fux_e${{PROMPT_COMMAND:+$'\n'$PROMPT_COMMAND}}" ;;
+esac
+if [ "${{BASH_VERSINFO[0]}}${{BASH_VERSINFO[1]}}" -ge 44 ]; then
+  PS0="${{PS0-}}"'{PS0_START}'
+else
+  trap '{START}' DEBUG
+  case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
+    "declare -a"*) PROMPT_COMMAND+=('{ARM}') ;;
+    *) PROMPT_COMMAND="$PROMPT_COMMAND"$'\n''{ARM}' ;;
+  esac
+fi
+PS1='{PS1_END}'"${{PS1-}}"
+unset __fux_e
+export -n PROMPT_COMMAND PS0
+"#,
+    )
+}
+
+/// bash that reads no file of fux's (`--norc`), from its variables.
 /// PROMPT_COMMAND never comes from the environment: bash 5.3 empties
-/// `PIPESTATUS` for good once it imports one. It comes as `__fux_pc`, and
-/// the first prompt's `PS1` sets it (an expansion that prints nothing); its
-/// first run puts the caller's `PS1` back. `PS0` marks
-/// the next command's start, or before bash 4.4, a DEBUG trap armed last
-/// does (fux's commands, an empty line, and a line that starts with a
-/// subshell, which the trap does not see, mark nothing).
-const BARE_END: &str = r#"__fux_s=$?; __fux_a=; if [ -n "${__fux_pc+x}" ]; then if [ -n "${__fux_ps1+x}" ]; then PS1=$__fux_ps1; else PS1='\s-\v\$ '; export -n PS1; fi; unset __fux_pc __fux_ps1; fi; export -n PS0 PROMPT_COMMAND; __fux_n=${HISTCMD-0}; if [ "${BASH_VERSINFO[0]}${BASH_VERSINFO[1]}" -lt 44 ]; then __fux_n=$(history 1); __fux_n=${__fux_n#"${__fux_n%%[0-9]*}"}; __fux_n=${__fux_n%%[!0-9]*}; fi; if [ -z "${__fux_c+x}" ] && [ "$__fux_n" != "${__fux_h-$__fux_n}" ]; then printf '\033]133;C\007' >&2; fi; unset __fux_c; __fux_h=$__fux_n; printf '\033]133;D;%s\007\033]133;A\007' "$__fux_s" >&2; __fux_r() { return "$1"; }; __fux_r "$__fux_s""#;
-const BARE_ARM: &str = r#"if [ "${BASH_VERSINFO[0]}${BASH_VERSINFO[1]}" -lt 44 ]; then __fux_t() { case "$BASH_COMMAND" in __fux_*) return 0 ;; esac; [ -n "${__fux_a-}" ] || return 0; __fux_a=; __fux_c=; printf '\033]133;C\007' >&2; }; trap __fux_t DEBUG; __fux_a=1; fi"#;
+/// `PIPESTATUS` for good once it imports one. The first prompt's `PS1`
+/// sets it from `__fux_pc` (an expansion that prints nothing), and starts
+/// the marks' state (`BASHRC`); its first run, once the first command
+/// ends, sets the PROMPT_COMMAND that stays (`__fux_pn`, or before bash
+/// 4.4 `__fux_po` and the trap), puts the caller's `PS1` back, forgets
+/// fux's variables, and runs it.
+const BARE_FIRST: &str = r#"__fux_s=$?; if [ "${BASH_VERSINFO[0]}${BASH_VERSINFO[1]}" -ge 44 ]; then PROMPT_COMMAND=$__fux_pn; else PROMPT_COMMAND=$__fux_po; trap '{START}' DEBUG; fi; if [ -n "${__fux_ps1+x}" ]; then PS1='{PS1_END}'$__fux_ps1; else PS1='{PS1_END}\s-\v\$ '; export -n PS1; fi; unset __fux_pc __fux_pn __fux_po __fux_ps1; export -n PS0 PROMPT_COMMAND; (exit "$__fux_s") && :; eval "$PROMPT_COMMAND""#;
 
 /// zsh: read first of all startup files, from the shim `ZDOTDIR`; it puts
 /// the user's `ZDOTDIR` back, so the rest of their files are read from
@@ -128,23 +162,27 @@ pub fn marked(argv: &[String], env: &[(String, String)], dir: &Path) -> Option<M
                     .find(|(k, _)| k == key)
                     .map(|(_, v)| v.clone())
             };
-            let command = match theirs("PROMPT_COMMAND") {
-                Some(own) => format!("{BARE_END}\n{own}\n{BARE_ARM}"),
-                None => format!("{BARE_END}\n{BARE_ARM}"),
+            let (new, old) = ends();
+            let (new, old) = match theirs("PROMPT_COMMAND") {
+                Some(own) => (format!("{new}\n{own}"), format!("{old}\n{own}\n{ARM}")),
+                None => (new, format!("{old}\n{ARM}")),
             };
-            let start = format!(
-                "{}\\e]133;C\\a${{__fux_c=}}",
-                theirs("PS0").unwrap_or_default()
-            );
+            let first_run = BARE_FIRST
+                .replace("{START}", START)
+                .replace("{PS1_END}", PS1_END);
+            let start = format!("{}{PS0_START}", theirs("PS0").unwrap_or_default());
             // The first prompt sets PROMPT_COMMAND from `__fux_pc`, as the
             // pattern removed from `__fux_pc` itself: all of it, so it shows
-            // nothing.
+            // nothing; and starts the marks' state.
             let first = format!(
-                "${{__fux_pc#\"${{PROMPT_COMMAND:=$__fux_pc}}\"}}{}",
+                "${{__fux_pc#\"${{PROMPT_COMMAND:=$__fux_pc}}\"}}\
+                 ${{__fux_z[__fux_w = 1, __fux_h = ${{HISTCMD-0}}]-}}{}",
                 theirs("PS1").unwrap_or_else(|| "\\s-\\v\\$ ".to_owned())
             );
             let mut env = vec![
-                ("__fux_pc".to_owned(), command),
+                ("__fux_pc".to_owned(), first_run),
+                ("__fux_pn".to_owned(), new),
+                ("__fux_po".to_owned(), old),
                 ("PS1".to_owned(), first),
                 ("PS0".to_owned(), start),
             ];
@@ -169,7 +207,7 @@ pub fn marked(argv: &[String], env: &[(String, String)], dir: &Path) -> Option<M
                 (false, _) => ("bashrc", BASHRC),
             };
 
-            let rc = write(dir, name, &format!("{startup}{BASH_MARKS}"))?;
+            let rc = write(dir, name, &format!("{startup}{}", bash_marks()))?;
             let mut argv = vec![program.clone(), "--rcfile".into()];
             argv.push(rc.to_string_lossy().into_owned());
             argv.extend(
@@ -275,7 +313,7 @@ mod tests {
             .env;
         assert!(
             bare.iter()
-                .any(|(k, v)| k == "__fux_pc" && v.contains("\nmine\n"))
+                .any(|(k, v)| k == "__fux_pn" && v.ends_with("\nmine"))
         );
         let zdot = [("ZDOTDIR".to_owned(), "/home/me/.config/zsh".to_owned())];
         let vars = marked(&words("zsh"), &zdot, &dir).unwrap_or_default().env;

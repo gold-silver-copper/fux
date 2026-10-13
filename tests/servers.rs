@@ -491,3 +491,53 @@ fn a_client_reaches_the_server_through_its_door() -> Outcome {
     );
     Ok(())
 }
+
+/// A server is found by its door alone, as one that serves through it
+/// alone (a sandbox that denies sockets) is: `start` starts no second one,
+/// `servers` lists it, and a grant has a door too. A door no server holds
+/// open, left by one that stopped, is no server: `status` says so, and the
+/// next server takes it.
+#[test]
+fn a_door_alone_is_a_server() -> Outcome {
+    use std::os::unix::fs::PermissionsExt;
+    let server = Server::start("")?;
+    let rt = private(&server.dir)?;
+    let dir = rt.join("fux");
+    std::fs::create_dir_all(&dir).map_err(e)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
+    let made = Command::new("mkfifo")
+        .args(["-m", "600"])
+        .arg(dir.join("t.sock.door"))
+        .status()
+        .map_err(e)?;
+    assert!(made.success());
+    let t = |args: &[&str]| {
+        let args: Vec<&str> = ["str", "t", "server"].iter().chain(args).copied().collect();
+        named(&rt, &args, &[])
+    };
+    let left = t(&["status"])?;
+    assert_eq!(left.status, 0, "{}", left.stderr);
+    assert!(left.stdout.starts_with("no fux server"), "{}", left.stdout);
+    assert_eq!(t(&["start"])?.status, 0);
+    std::fs::remove_file(dir.join("t.sock")).map_err(e)?;
+    assert_eq!(t(&["start"])?.status, 0);
+    let log = std::fs::read_to_string(dir.join("fux.log")).unwrap_or_default();
+    assert!(!log.contains("already"), "a second server started: {log}");
+    let servers = named(&rt, &["servers"], &[])?;
+    assert!(servers.stdout.starts_with("t  "), "{}", servers.stdout);
+    let granted = rt.join("g").join("s.sock");
+    let socket = granted.to_string_lossy().into_owned();
+    assert_eq!(t(&["str", "agent", "str", &socket, "grant"])?.status, 0);
+    std::fs::remove_file(&granted).map_err(e)?;
+    let through = named(
+        &rt,
+        &[
+            "str", &socket, "socket", "opts", "str", "true", "program", "run",
+        ],
+        &[],
+    )?;
+    assert_eq!(through.status, 0, "{}", through.stderr);
+    assert!(t(&["ls"])?.stdout.contains("agent"));
+    assert_eq!(t(&["force-kill-server"])?.status, 0);
+    Ok(())
+}

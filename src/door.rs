@@ -208,9 +208,29 @@ fn copy(mut from: impl Read, mut into: impl Write) {
     }
 }
 
+/// The door beside `socket` opened to knock at, if a server holds it open.
+/// One no server reads, left by a server that stopped, is refused as a
+/// socket left so is.
+fn open_door(socket: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .write(true)
+        .custom_flags(fuxix::file::NONBLOCK | fuxix::file::NOFOLLOW)
+        .open(path(socket))
+        .map_err(|e| match fuxix::Errno::from_io_error(&e) {
+            Some(fuxix::Errno::NXIO) => io::ErrorKind::ConnectionRefused.into(),
+            _ => e,
+        })
+}
+
+/// Whether a server holds the door beside `socket` open.
+pub fn served(socket: &Path) -> bool {
+    open_door(socket).is_ok()
+}
+
 /// Knocks at the door beside `socket`, as a client: its FIFOs, to read and
 /// to write, once the server has opened them.
 pub fn knock(socket: &Path) -> io::Result<Link> {
+    let mut knocked = open_door(socket)?;
     let door = path(socket);
     let dir = door
         .parent()
@@ -243,10 +263,6 @@ pub fn knock(socket: &Path) -> io::Result<Link> {
             .write(true)
             .custom_flags(flags)
             .open(&up_path)?;
-        let mut knocked = OpenOptions::new()
-            .write(true)
-            .custom_flags(flags)
-            .open(&door)?;
         knocked.write_all(format!("{name}\n").as_bytes())?;
         // The server's byte: it has opened both.
         let mut down = Link::door(down, up)?;

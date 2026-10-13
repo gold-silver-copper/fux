@@ -178,11 +178,16 @@ pub(crate) fn servers(json: bool) -> Result<String, socket::Error> {
     let mut names: Vec<String> = match std::fs::read_dir(&directory) {
         Ok(entries) => entries
             .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-            .filter_map(|name| Some(name.strip_suffix(".sock")?.to_owned()))
+            // A server that serves its door alone has no socket.
+            .filter_map(|name| {
+                let name = name.strip_suffix(".door").unwrap_or(&name);
+                Some(name.strip_suffix(".sock")?.to_owned())
+            })
             .collect(),
         Err(_) => Vec::new(),
     };
     names.sort();
+    names.dedup();
     let mut lines = Vec::new();
     let mut objects = Vec::new();
     for name in names {

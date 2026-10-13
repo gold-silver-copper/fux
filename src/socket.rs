@@ -491,17 +491,19 @@ impl Pinned {
     }
 }
 
-/// The bound socket and the lock that makes this server its only owner.
-/// Dropping it removes the socket if it is still the one this server bound.
+/// The lock that makes this server its only owner, and the socket it bound
+/// if the system let it (a sandbox may deny sockets: a door serves instead,
+/// `crate::door`). Dropping it removes the socket if it is still the one
+/// this server bound.
 pub struct Endpoint {
     path: PathBuf,
-    socket: Pinned,
+    socket: Option<Pinned>,
     _lock: File,
 }
 
 impl Drop for Endpoint {
     fn drop(&mut self) {
-        if self.socket.still_at(&self.path) {
+        if self.socket.as_ref().is_some_and(|s| s.still_at(&self.path)) {
             let _ = fs::remove_file(&self.path);
         }
     }
@@ -520,8 +522,10 @@ fn probe(path: &Path) -> io::Result<()> {
 }
 
 /// Takes ownership of `path` and binds it. Refuses a live server's socket and
-/// anything that is not a socket; replaces only a socket proven stale.
-pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Error> {
+/// anything that is not a socket; replaces only a socket proven stale. Where
+/// the system denies sockets the lock is taken all the same, with no
+/// listener: its owner serves through its door alone.
+pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Option<UnixListener>), Error> {
     let path = socket.path();
     private_directory(socket, true)?;
     let euid = geteuid();
@@ -569,18 +573,28 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Erro
             }
         },
     }
-    let fd = fuxix::socket::stream().map_err(failed("a socket for ", path))?;
-    fuxix::socket::bind(&fd, path).map_err(failed("binding ", path))?;
-    let endpoint = Endpoint {
+    let mut endpoint = Endpoint {
         path: path.to_owned(),
-        socket: Pinned::new(path).map_err(io(path))?,
+        socket: None,
         _lock: lock,
     };
+    let bound = fuxix::socket::stream()
+        .map_err(failed("a socket for ", path))
+        .and_then(|fd| {
+            fuxix::socket::bind(&fd, path).map_err(failed("binding ", path))?;
+            Ok(fd)
+        });
+    let fd = match bound {
+        Ok(fd) => fd,
+        Err(error) if error.denied() => return Ok((endpoint, None)),
+        Err(error) => return Err(error),
+    };
+    endpoint.socket = Some(Pinned::new(path).map_err(io(path))?);
     // From here a failure drops `endpoint`, which removes the socket. The mode
     // is set before `listen`, so no connection is accepted on an open socket.
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(io(path))?;
     fuxix::socket::listen(&fd, 128).map_err(failed("listening on ", path))?;
-    Ok((endpoint, UnixListener::from(fd)))
+    Ok((endpoint, Some(UnixListener::from(fd))))
 }
 
 #[cfg(test)]
@@ -594,7 +608,10 @@ mod tests {
     }
 
     fn bind(path: &Path) -> Result<(Endpoint, UnixListener), Error> {
-        bind_socket(&checked(&path.to_string_lossy(), "test")?)
+        match bind_socket(&checked(&path.to_string_lossy(), "test")?)? {
+            (endpoint, Some(listener)) => Ok((endpoint, listener)),
+            (_, None) => Err(io(path)(io::ErrorKind::PermissionDenied.into())),
+        }
     }
 
     fn scratch(name: &str) -> std::io::Result<PathBuf> {

@@ -494,6 +494,12 @@ pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
     }
 }
 
+/// Whether a server answers on `socket`: its socket, or, where sockets are
+/// denied, its door.
+pub fn answers(socket: &SocketPath) -> bool {
+    UnixStream::connect(socket.path()).is_ok() || crate::door::served(socket.path())
+}
+
 /// Starts a server in the background, in a new session with its output in
 /// `fux.log` beside the socket, and waits for it to answer.
 pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
@@ -514,11 +520,8 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
         .stderr(output);
     let mut child = command.spawn().map_err(Error::Spawn)?;
     let deadline = crate::after(Instant::now(), Duration::from_secs(2));
-    // Its socket answers, or, where sockets are denied, its door is there.
-    let door = crate::door::path(socket.path());
-    let answers = || UnixStream::connect(socket.path()).is_ok() || door.exists();
     loop {
-        if answers() {
+        if answers(socket) {
             // The child is left to run; it is not ours to wait for, and
             // dropping a `Child` neither waits for nor kills it.
             drop(child);
@@ -527,7 +530,7 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
         if let Ok(Some(status)) = child.try_wait() {
             // It lost a race to another server, or failed: connect to the
             // winner if there is one.
-            if answers() {
+            if answers(socket) {
                 return Ok(());
             }
             return Err(Error::Exited { status, log });

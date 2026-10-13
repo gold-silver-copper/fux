@@ -892,7 +892,7 @@ fn answer(text: String, json: String) -> Value<Fux> {
 /// started has the config's settings (`set`) at once.
 fn started(server: &mut Server) -> Result<crate::socket::SocketPath, Failed> {
     let socket = server.socket()?;
-    if std::os::unix::net::UnixStream::connect(socket.path()).is_err() {
+    if !crate::client::answers(&socket) {
         crate::client::start_server(&socket).map_err(client_failed)?;
         if let (_, Some(problem)) = configured(server) {
             let _ = writeln!(std::io::stderr(), "fux: {problem}");

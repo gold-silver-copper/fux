@@ -76,8 +76,33 @@ struct Listening {
     /// The door beside the socket, for clients in a sandbox that denies
     /// them sockets (`crate::door`).
     door: Option<crate::door::Door>,
-    /// Removes the socket once dropped, after the listener closes.
-    _endpoint: Option<Endpoint>,
+    /// Holds the lock; removes the socket once dropped, after the listener
+    /// closes.
+    _endpoint: Endpoint,
+}
+
+impl Listening {
+    /// The socket at `socket` bound and its door opened; where the system
+    /// denies sockets, the door alone, the lock held all the same.
+    fn open(socket: &SocketPath) -> Result<Listening, Error> {
+        let (endpoint, listener) = crate::socket::bind_socket(socket).map_err(Error::Socket)?;
+        if let Some(listener) = &listener {
+            listener.set_nonblocking(true).map_err(Error::Setup)?;
+        }
+        let door = match crate::door::Door::open(socket.path()) {
+            Ok(door) => Some(door),
+            Err(error) if listener.is_none() => return Err(Error::Setup(error)),
+            Err(error) => {
+                log(&format!("no door beside the socket: {error}"));
+                None
+            }
+        };
+        Ok(Listening {
+            listener,
+            door,
+            _endpoint: endpoint,
+        })
+    }
 }
 
 /// Where the server is in its life, each stage holding the moment it waits
@@ -742,24 +767,19 @@ fn grant(
         &path.to_string_lossy(),
         "grant --socket",
     ));
-    let bound = checked.and_then(|socket| crate::socket::bind_socket(&socket));
-    let (endpoint, listener) = match bound {
-        Ok(bound) => bound,
+    let listening = match checked
+        .map_err(Error::Socket)
+        .and_then(|s| Listening::open(&s))
+    {
+        Ok(listening) => listening,
         Err(error) => return failed(error.to_string()),
     };
-    if let Err(error) = listener.set_nonblocking(true) {
-        return failed(format!("{}: {error}", path.display()));
-    }
     session.grants.push((path.clone(), workspace.clone()));
     let pinned = session
         .resolve_ws(&crate::command::WsRef::Name(workspace.clone()))
         .ok();
     grants.push(Grant {
-        listening: Listening {
-            listener: Some(listener),
-            door: None,
-            _endpoint: Some(endpoint),
-        },
+        listening,
         socket: path.clone(),
         workspace,
         pinned,
@@ -809,23 +829,7 @@ impl std::error::Error for Error {
 /// Runs a server on `socket` until it is told to stop or its last pane
 /// closes.
 pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
-    // A sandbox that denies sockets: served through the door alone.
-    let (endpoint, listener) = match crate::socket::bind_socket(socket) {
-        Ok((endpoint, listener)) => {
-            listener.set_nonblocking(true).map_err(Error::Setup)?;
-            (Some(endpoint), Some(listener))
-        }
-        Err(error) if error.denied() => (None, None),
-        Err(error) => return Err(Error::Socket(error)),
-    };
-    let door = match crate::door::Door::open(socket.path()) {
-        Ok(door) => Some(door),
-        Err(error) if listener.is_none() => return Err(Error::Setup(error)),
-        Err(error) => {
-            log(&format!("no door beside the socket: {error}"));
-            None
-        }
-    };
+    let listening = Listening::open(socket)?;
     let children = crate::signal_pipe(&[SIGCHLD]).map_err(Error::Setup)?;
     let stops = crate::signal_pipe(&[SIGTERM, SIGINT, SIGHUP]).map_err(Error::Setup)?;
     // Settings come from clients (`set`), each running its config.
@@ -852,11 +856,7 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
     let mut server = Server {
         session,
         phase: Phase::Serving {
-            listening: Listening {
-                listener,
-                door,
-                _endpoint: endpoint,
-            },
+            listening,
             resting: None,
         },
         conns: Vec::new(),
@@ -885,8 +885,9 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
 #[derive(Clone, Copy)]
 enum Slot {
     Listener,
-    /// The door beside the socket: knocks waiting.
-    Door,
+    /// The door beside the socket, or with an index beside that grant's:
+    /// knocks waiting.
+    Door(Option<usize>),
     /// A socket `fux grant` made, by its index into `grants`.
     Grant(usize),
     Children,
@@ -941,7 +942,7 @@ impl Server {
             for &(slot, flags) in &ready {
                 match slot {
                     Slot::Listener => self.accept(None),
-                    Slot::Door => self.open_door(),
+                    Slot::Door(grant) => self.open_door(grant),
                     Slot::Grant(i) => self.accept(Some(i)),
                     Slot::Children => {
                         crate::drain(&self.children);
@@ -1182,12 +1183,16 @@ impl Server {
             }
             if let Some(door) = &listening.door {
                 fds.push(PollFd::new(door.fd(), PollFlags::IN));
-                slots.push(Slot::Door);
+                slots.push(Slot::Door(None));
             }
             for (i, grant) in self.grants.iter().enumerate() {
                 if let Some(listener) = &grant.listening.listener {
                     fds.push(PollFd::new(listener, PollFlags::IN));
                     slots.push(Slot::Grant(i));
+                }
+                if let Some(door) = &grant.listening.door {
+                    fds.push(PollFd::new(door.fd(), PollFlags::IN));
+                    slots.push(Slot::Door(Some(i)));
                 }
             }
         }
@@ -1504,17 +1509,23 @@ impl Server {
 
     /// Takes the connections knocks at the door bring: each is the server's
     /// end of a pair relayed to a client's FIFOs, whose owner the door
-    /// checked, as the socket's peer check does.
-    fn open_door(&mut self) {
+    /// checked, as the socket's peer check does. With `grant`, the door
+    /// beside that grant's socket.
+    fn open_door(&mut self, grant: Option<usize>) {
         let Phase::Serving { listening, .. } = &mut self.phase else {
             return;
         };
-        let Some(door) = &mut listening.door else {
+        let (door, through) = match grant.map(|i| self.grants.get_mut(i)) {
+            Some(Some(grant)) => (&mut grant.listening.door, Some(grant.socket.clone())),
+            Some(None) => return,
+            None => (&mut listening.door, None),
+        };
+        let Some(door) = door else {
             return;
         };
         for stream in door.knocks() {
             if stream.set_nonblocking(true).is_ok() {
-                self.conns.push(Conn::new(stream, None));
+                self.conns.push(Conn::new(stream, through.clone()));
             }
         }
     }
