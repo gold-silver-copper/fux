@@ -2118,3 +2118,46 @@ fn a_failed_runs_pane_is_printed() -> Outcome {
     assert!(out.stderr.starts_with("fux: exited: "), "{}", out.stderr);
     Ok(())
 }
+
+/// A later text wait does not take a line a full-screen program redrew the
+/// same since the input for new: it answers the line that came after.
+#[test]
+fn a_later_wait_skips_a_line_redrawn_the_same() -> Outcome {
+    let server = Server::start("")?;
+    let editor = "import sys, time, tty\ntty.setraw(0)\nw = sys.stdout.write\n\
+                  w('\\x1b[?1049h')\n\
+                  draw = lambda: (w('\\x1b[H\\x1b[2JF5 preview\\r\\nbody'), sys.stdout.flush())\n\
+                  draw(); sys.stdin.read(1); draw(); time.sleep(0.5)\n\
+                  w('\\r\\nPREVIEW VALID'); sys.stdout.flush(); sys.stdin.read(1)\n";
+    let pane = id(&server.ok(&run(
+        &["str", "body", "wait-text"],
+        &["python3", "-c", editor],
+    ))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "keys",
+        "str",
+        "x",
+        "text",
+        "0",
+        "timeout",
+        "send-keys",
+    ];
+    server.ok(&keys)?;
+    let wait = [
+        "str",
+        &pane,
+        "pane",
+        "opts",
+        "str",
+        "PREVIEW",
+        "wait-text",
+        "5",
+        "timeout",
+        "wait",
+    ];
+    assert_eq!(server.ok(&wait)?, "PREVIEW VALID\n");
+    Ok(())
+}

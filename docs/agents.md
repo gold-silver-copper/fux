@@ -34,7 +34,7 @@ redraws in place on the main screen answers from the top row it changed:
 %2 reading                     it waits for you: blocked reading its terminal, every key read
 %2 reading · done 0            a shell command ended with status 0, and the shell reads again
 %2 reading · no change         it read your keys and drew nothing: do not send them again
-%2 waiting                     quiet 1s, but it may go on alone: `PANE opts wait` waits for more
+%2 waiting                     quiet 1s, but it may go on alone: `PANE opts wait` waits up to 5s for more, then answers so (status 0)
 %2 busy · 12 bytes unread      still running or printing at the time limit (status 124)
 %2 exited 3                    the program ended; its last output follows
 ```

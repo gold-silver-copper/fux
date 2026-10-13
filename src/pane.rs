@@ -473,6 +473,9 @@ pub struct InputFrom {
     pub echo: Vec<String>,
     pub lines: u32,
     pub before: String,
+    /// The screen's lines then, by first row: one redrawn the same since
+    /// brings nothing new.
+    pub shown: std::collections::HashMap<fux_vt::RowId, String>,
     /// The bells and notifications heard by then.
     pub alerts: u64,
 }
@@ -493,6 +496,7 @@ impl InputFrom {
             echo,
             lines,
             before: row.map(crate::capture::row_text).unwrap_or_default(),
+            shown: crate::wait::shown(screen),
             alerts,
         }
     }

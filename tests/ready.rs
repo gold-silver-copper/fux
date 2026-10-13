@@ -227,5 +227,11 @@ fn a_waiting_pane_is_answered_as_it_is() -> Outcome {
         "{}",
         wait.stdout
     );
+    // With a wait's own limit, nothing new within 5s: answered as it is.
+    let began = std::time::Instant::now();
+    let plain = server.fux(&["str", &pane, "pane", "opts", "wait"])?;
+    assert_eq!(plain.status, 0, "{}{}", plain.stdout, plain.stderr);
+    assert!(plain.stdout.starts_with(&format!("{pane} waiting")));
+    assert!(began.elapsed() < std::time::Duration::from_secs(15));
     Ok(())
 }

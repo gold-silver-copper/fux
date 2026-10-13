@@ -32,6 +32,11 @@ pub const TIMED_OUT: u8 = 124;
 /// limit.
 const CUT: &str = "… earlier lines not kept (past history-lines)\n";
 
+/// How long a bare `wait` on a pane that may go on alone waits for
+/// something new before it answers the pane as it is: longer than the
+/// pauses of a program polling for keys.
+const MORE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// How often a wait that asks what a pane's program is blocked in looks
 /// again: that changes with nothing on the screen to wake the server.
 const PROBE: std::time::Duration = std::time::Duration::from_millis(30);
@@ -89,10 +94,12 @@ struct Watch {
     /// The row lines count from: the screen's top as a wait armed before an
     /// action began, else `from`'s cursor row.
     anchor: Option<fux_vt::RowId>,
-    /// For a wait armed before an action, the screen's lines as it began,
-    /// by first row: a line that reads as it did (a redraw, a reflow on
-    /// resize) is not new.
+    /// The screen's lines where it counts from (`from`'s), by first row: a
+    /// line that reads as it did (a redraw, a reflow on resize) is not new.
     was: std::collections::HashMap<fux_vt::RowId, String>,
+    /// Armed before an action: what came is said from the top row it
+    /// changed.
+    after: bool,
     /// Lines whose text has read otherwise than as the wait began, at
     /// some look since: one erased and written again the same is new.
     touched: std::collections::HashSet<fux_vt::RowId>,
@@ -687,24 +694,19 @@ impl Watch {
     /// pane, or its program's start.
     fn new(pane: &Pane, after: bool) -> Watch {
         let screen = pane.screen();
-        let (from, anchor, was) = if after {
-            let shown = lines(screen.rows().skip(screen.history_len()), None);
-            (
-                InputFrom::new(screen, &[], pane.alerts.count()),
-                screen.window().row(0).map(|row| row.id()),
-                shown.into_iter().map(|l| (l.first, l.text)).collect(),
-            )
+        let (from, anchor) = if after {
+            let from = InputFrom::new(screen, &[], pane.alerts.count());
+            (from, screen.window().row(0).map(|row| row.id()))
         } else {
-            let from = pane.input_from.clone();
-            let anchor = from.cursor;
-            (from, anchor, std::collections::HashMap::new())
+            (pane.input_from.clone(), pane.input_from.cursor)
         };
         Watch {
             pane: pane.id,
+            was: from.shown.clone(),
+            after,
             from,
             typed: pane.input_from.clone(),
             anchor,
-            was,
             touched: std::collections::HashSet::new(),
             read: None,
             departed: screen.departed().last().map(|d| d.seq),
@@ -869,11 +871,13 @@ impl Watch {
                     // the kernel has yet to hand fux, is in by then.
                     // A bare `wait` on a pane that may go on alone
                     // (`waiting`, or quiet with nothing known) waits for
-                    // something new: what it waits on, or a change.
+                    // something new, what it waits on or a change, for
+                    // `MORE` at most.
                     let maybe = matches!(
                         state,
                         crate::ready::State::Waiting | crate::ready::State::Settled
                     );
+                    let more = more && now < crate::after(began, MORE);
                     if !state.settled() || (more && maybe && pane.revision == self.revision) {
                         self.settled_since = None;
                         None
@@ -927,7 +931,7 @@ impl Watch {
     /// place on the main screen, above the cursor's row or below it. What
     /// came is said from there.
     fn top_changed(&self, pane: &Pane) -> Option<fux_vt::RowId> {
-        if self.was.is_empty() {
+        if !self.after {
             return None;
         }
         let screen = pane.screen();
@@ -1017,6 +1021,12 @@ fn is_new(
     touched: &std::collections::HashSet<fux_vt::RowId>,
 ) -> bool {
     line.new && (was.get(&line.first) != Some(&line.text) || touched.contains(&line.first))
+}
+
+/// The screen's lines as they read now, by first row.
+pub(crate) fn shown(screen: &fux_vt::Screen) -> std::collections::HashMap<fux_vt::RowId, String> {
+    let shown = lines(screen.rows().skip(screen.history_len()), None);
+    shown.into_iter().map(|l| (l.first, l.text)).collect()
 }
 
 /// Rows as lines: soft-wrapped rows joined into the lines they wrap.
