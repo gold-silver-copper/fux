@@ -248,8 +248,12 @@ define upper let s list str '' s each let c c is-lower if c code 32 sub char els
 define lower let s list str '' s each let c c is-upper if c code 32 add char else c then end end concat end
 # s n -- s : s n times over
 define copies let n let s list str '' 0 n range each drop s end end concat end
-# x width fill -- s : x's text, with fill put before it until it is width long
+# x width fill -- s : x's text, with fill (a non-empty string) put before it, cut to fit, until it is width long
 define pad
   let fill let width string let s
-  list str '' 0 width s len sub 0 max range each drop fill end s end concat
+  fill len 0 eq if str 'the fill is empty' fail then
+  width s len sub let n
+  n 0 gt if
+    fill n fill len div 1 add copies 0 n slice s cat
+  else s then
 end

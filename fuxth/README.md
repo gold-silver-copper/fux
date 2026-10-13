@@ -28,7 +28,9 @@ line, the deepest first; `print` prints a value at once.
   word or an unclosed block is an error before anything happens; so is a step
   that every run reaching it would fail: a word given fewer values than the
   stack surely holds, or a value of a kind it never takes (`str a 1 add`,
-  `str a not`). The checker follows depths as ranges and kinds as sets through
+  `str a not`: for a word of the library or your own, a kind on which every
+  way through it fails). It follows depths and kinds, not values: `1 0 div`
+  fails as it runs. The checker follows depths as ranges and kinds as sets through
   branches, loops, `list` and `each`, definitions (each summed up by what it
   uses, leaves, and which kinds of input it always fails on) and recursion;
   what it can't know is never an error.
@@ -113,7 +115,7 @@ host pushes before running the machine again. `print(line)` prints. A word
 gives as many values as its vocabulary says (a range, for one that gives a
 value only sometimes): the checker counts on it, and the machine fails a run
 with `contract` if a host gives otherwise. Words of an earlier `add` (the
-standard library) that are a few straight steps are copied in where they are
+standard library) that are one step (`dup` is `0 pick`) are copied in where they are
 called.
 
 ## Tested

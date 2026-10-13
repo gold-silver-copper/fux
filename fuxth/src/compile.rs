@@ -278,10 +278,11 @@ impl<A> Steps<A> {
         }
     }
 
-    /// Whether it is short and straight enough to copy in at each call: a
-    /// few steps of literals and built-ins, no jumps, calls or names.
+    /// Whether it is one step, a literal or a built-in, to copy in at each
+    /// call (`dup` is `0 pick`). Longer words stay calls, so a mistake in
+    /// one is said as the whole word's, not one of its steps'.
     fn leaf(&self) -> bool {
-        self.ops.len() <= 4
+        self.ops.len() == 1
             && self.ops.iter().all(|op| match op {
                 Op::Push(_) | Op::Builtin(_) | Op::PickN(_) | Op::RollN(_) => true,
                 Op::App(_)

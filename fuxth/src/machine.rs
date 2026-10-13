@@ -645,11 +645,7 @@ impl<A: AppValue> Machine<A> {
                 self.cost(a.size().min(b.size()));
                 match compare(&a, &b) {
                     Some(order) => self.push(Value::Bool(order == Ordering::Less)),
-                    None => Err(self.type_error(format!(
-                        "lt compares two integers, two strings or two lists, not {} and {}",
-                        a.kind(),
-                        b.kind()
-                    ))),
+                    None => Err(self.type_error(unordered(&a, &b))),
                 }
             }
             Builtin::Eq => {
@@ -891,7 +887,12 @@ impl<A: AppValue> Machine<A> {
                 None => Err(self.nested()),
             },
             (Value::Str(s), Value::Str(x)) => {
-                self.build(s.chars_len().saturating_add(x.chars_len()))?;
+                // One character replaced by x's.
+                let n = s
+                    .chars_len()
+                    .saturating_sub(1)
+                    .saturating_add(x.chars_len());
+                self.build(n)?;
                 let mut text = String::with_capacity(s.len().saturating_add(x.len()));
                 for (at, c) in s.chars().enumerate() {
                     if at == i {
@@ -919,6 +920,37 @@ fn element<A: Clone>(seq: &Value<A>, i: usize) -> Option<Value<A>> {
         Value::Str(s) => s.char_at(i).map(|c| Value::str(c.to_string())),
         Value::List(list) => list.items.get(i).cloned(),
         Value::Int(_) | Value::Bool(_) | Value::App(_) => None,
+    }
+}
+
+/// Why `lt` can't order two values: their kinds, or, in two lists, the
+/// first elements that can't be ordered, found through nested lists.
+fn unordered<A: AppValue>(a: &Value<A>, b: &Value<A>) -> String {
+    let mut path = Vec::new();
+    let (mut a, mut b) = (a, b);
+    // As deep as lists nest, at most `NESTING`.
+    while let (Value::List(x), Value::List(y)) = (a, b) {
+        let next = (x.items.iter().zip(&y.items).enumerate())
+            .find(|(_, (p, q))| p != q && compare(p, q).is_none());
+        let Some((i, (p, q))) = next else {
+            break;
+        };
+        path.push(format!("element {i}"));
+        (a, b) = (p, q);
+    }
+    if path.is_empty() {
+        format!(
+            "lt compares two integers, two strings or two lists, not {} and {}",
+            a.kind(),
+            b.kind()
+        )
+    } else {
+        format!(
+            "lt compares lists element by element, and at {} it finds {} and {}",
+            path.join(", "),
+            a.kind(),
+            b.kind()
+        )
     }
 }
 

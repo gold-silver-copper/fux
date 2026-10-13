@@ -24,6 +24,7 @@ fn a_corpus_ends_the_same_every_way() -> std::io::Result<()> {
         }
     }
     files.sort();
+    assert!(!files.is_empty(), "no programs under the corpus");
     let mut wrong = Vec::new();
     for file in &files {
         let text = std::fs::read_to_string(file)?;

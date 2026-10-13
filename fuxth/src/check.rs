@@ -98,6 +98,9 @@ struct State {
     hi: i64,
     /// How many of the values there at entry every way here has used.
     used: i64,
+    /// The deepest any way here has reached below the depth at entry: the
+    /// values down to there may have been replaced.
+    reached: i64,
     /// Whether the depth is counted from an empty stack (the top level, or
     /// a `list` body), so too few values is an error here.
     bounded: bool,
@@ -108,6 +111,32 @@ struct State {
     /// Whether a `roll` of a depth not known before running ran: values
     /// below may have moved, so what was known of their kinds is not.
     scrambled: bool,
+    /// The kinds the code's own `let` names hold, by slot.
+    names: Vec<Kinds>,
+    /// The kinds the top level's `let` names hold, by slot: kept only at
+    /// the top level (a definition may run when one has changed).
+    globals: Vec<Kinds>,
+}
+
+/// The kinds slot `slot` of `names` holds: any, if not known.
+fn named(names: &[Kinds], slot: usize) -> Kinds {
+    names.get(slot).copied().unwrap_or(ANY)
+}
+
+/// Sets slot `slot` of `names` to `kinds`.
+fn name(names: &mut Vec<Kinds>, slot: usize, kinds: Kinds) {
+    if names.len() <= slot {
+        names.resize(slot.saturating_add(1), ANY);
+    }
+    if let Some(at) = names.get_mut(slot) {
+        *at = kinds;
+    }
+}
+
+/// Either way's kinds, slot by slot.
+fn join_names(a: &[Kinds], b: &[Kinds]) -> Vec<Kinds> {
+    let n = a.len().max(b.len());
+    (0..n).map(|i| named(a, i).union(named(b, i))).collect()
 }
 
 /// What a definition does, as its callers see it.
@@ -178,10 +207,13 @@ impl State {
             lo: 0,
             hi: 0,
             used: 0,
+            reached: 0,
             bounded,
             outer: Vec::new(),
             iters: Vec::new(),
             scrambled: false,
+            names: Vec::new(),
+            globals: Vec::new(),
         }
     }
 
@@ -199,6 +231,7 @@ impl State {
             self.lo = self.lo.max(0);
         }
         self.used = self.used.max(self.hi.saturating_neg());
+        self.reached = self.reached.min(self.lo);
     }
 
     fn push(&mut self, kinds: Kinds) {
@@ -269,10 +302,13 @@ impl State {
             lo: (self.lo.saturating_add(rest(self))).min(other.lo.saturating_add(rest(other))),
             hi: (self.hi.saturating_add(rest(self))).max(other.hi.saturating_add(rest(other))),
             used: self.used.min(other.used),
+            reached: self.reached.min(other.reached),
             bounded: self.bounded,
             outer,
             iters,
             scrambled: self.scrambled || other.scrambled,
+            names: join_names(&self.names, &other.names),
+            globals: join_names(&self.globals, &other.globals),
         }
     }
 
@@ -392,8 +428,11 @@ fn refusals<A>(
                     if unit.run().is_some() {
                         return None;
                     }
-                    let why = unit.first_error().map(|e| e.message);
-                    Some((*kind, why.unwrap_or_else(|| "it always fails".to_owned())))
+                    let why = unit.first_error().map(|e| match e.word {
+                        Some(word) => format!("{word}: {}", e.message),
+                        None => e.message,
+                    });
+                    Some((*kind, why.unwrap_or_else(|| "it stops".to_owned())))
                 })
                 .collect()
         })
@@ -430,6 +469,8 @@ struct Unit<'a, A> {
     code: &'a Steps<A>,
     /// The stack where the code starts: empty at the top level.
     start: State,
+    /// Whether it is the top level, whose `let` names it follows.
+    top: bool,
     summaries: &'a [Option<Summary>],
     /// The steps where a block starts: the first, every jump's target, and
     /// each step after a jump.
@@ -450,10 +491,12 @@ impl<'a, A> Unit<'a, A> {
                 starts.insert(at.saturating_add(1));
             }
         }
+        let top = std::ptr::eq(code, &program.main);
         Unit {
             program,
             code,
             start,
+            top,
             summaries,
             starts,
         }
@@ -653,11 +696,26 @@ impl<'a, A> Unit<'a, A> {
                     let fails = refused.iter().fold(Kinds(0), |all, (k, _)| all.union(*k));
                     if kinds.and(fails) == *kinds && kinds.0 != 0 {
                         let why = refused.iter().find(|(k, _)| kinds.may_be(*k));
-                        let why = why.map_or("it always fails", |(_, why)| why.as_str());
-                        return Err(Failing::Type(why.to_owned()));
+                        let why = why.map_or("it stops", |(_, why)| why.as_str());
+                        let place = if slot == 0 {
+                            "on top".to_owned()
+                        } else {
+                            format!("{slot} under the top")
+                        };
+                        return Err(Failing::Type(format!(
+                            "every way through it fails given {} {place}: {why}",
+                            kinds.describe()
+                        )));
                     }
                 }
                 state.pop(usize::try_from(summary.need).unwrap_or(0))?;
+                // A way that went deeper than every way surely does may
+                // have replaced the caller's values down to there.
+                let deeper = (summary.exit.as_ref())
+                    .is_some_and(|exit| exit.reached.saturating_add(summary.need) < 0);
+                if deeper {
+                    state.forget(0, 0);
+                }
                 if summary.scrambled {
                     state.forget(0, 0);
                     state.scrambled = true;
@@ -676,13 +734,35 @@ impl<'a, A> Unit<'a, A> {
             }
             Op::Jump(_) | Op::EachNext(_) => {}
             Op::JumpUnless(_) => flag(state)?,
-            Op::SetLocal(_) | Op::SetGlobal(_) => {
-                state.pop(1)?;
+            Op::SetLocal(slot) => {
+                let taken = state.pop(1)?;
+                name(
+                    &mut state.names,
+                    *slot,
+                    taken.first().copied().unwrap_or(ANY),
+                );
             }
-            Op::GetLocal(_) | Op::GetGlobal(_) => state.push(ANY),
+            Op::GetLocal(slot) => state.push(named(&state.names, *slot)),
+            Op::SetGlobal(slot) => {
+                let taken = state.pop(1)?;
+                if self.top {
+                    let kinds = taken.first().copied().unwrap_or(ANY);
+                    name(&mut state.globals, *slot, kinds);
+                }
+            }
+            Op::GetGlobal(slot) => {
+                let kinds = if self.top {
+                    named(&state.globals, *slot)
+                } else {
+                    ANY
+                };
+                state.push(kinds);
+            }
             Op::Mark => {
                 let mut inner = State::start(true);
                 inner.iters = state.iters.clone();
+                inner.names = state.names.clone();
+                inner.globals = state.globals.clone();
                 inner.outer = std::mem::take(&mut state.outer);
                 inner
                     .outer
@@ -697,6 +777,8 @@ impl<'a, A> Unit<'a, A> {
                 });
                 outer.outer = std::mem::take(&mut state.outer);
                 outer.iters = state.iters.clone();
+                outer.names = std::mem::take(&mut state.names);
+                outer.globals = std::mem::take(&mut state.globals);
                 outer.scrambled = outer.scrambled || state.scrambled;
                 outer.push(LIST);
                 *state = outer;

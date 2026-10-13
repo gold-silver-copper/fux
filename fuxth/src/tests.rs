@@ -376,7 +376,7 @@ fn the_checker_says_what_and_where() {
         ),
         (
             "str a not",
-            "type: t:1: not: takes a boolean (from eq or lt), not a string",
+            "type: t:1: not: every way through it fails given a string on top: if: takes a boolean (from eq or lt), not a string",
         ),
         (
             "1 if 2 then",
@@ -696,5 +696,17 @@ fn lists_change_and_host_values_show() -> Result<(), Error> {
         run("ticket kind ticket string")?,
         [Value::str("ticket"), Value::str("a ticket")]
     );
+    Ok(())
+}
+
+/// A definition that, some ways through, replaces a value below what it
+/// surely uses: its callers forget what they knew of that value's kind.
+/// (Found by a Codex test run; it was refused before.)
+#[test]
+fn a_value_replaced_below_what_is_surely_used_is_forgotten() -> Result<(), Error> {
+    let replace = "define replace each swap drop end end str a list 1 2 end replace 1 add";
+    assert_eq!(run(replace)?, ints(&[3]));
+    let swapped = "define f each drop drop 1 end end str a list 0 end f 1 add";
+    assert_eq!(run(swapped)?, ints(&[2]));
     Ok(())
 }
