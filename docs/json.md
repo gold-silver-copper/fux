@@ -21,7 +21,7 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `rows`, `cols` | its size |
 | `pid` | its program's process, `null` once it exited |
 | `program` | what runs in its foreground, `null` if unknown |
-| `state` | what it is doing: `reading` (blocked on its terminal, every key read), `waiting` (quiet 1s, but it may go on alone: the network, a poll with a time limit; a program asleep is `busy`), `busy`, `settled` (quiet; nothing else known), `exited N`, `killed SIG`, or `empty` |
+| `state` | what it is doing: `reading` (blocked on its terminal, every key read), `waiting` (quiet 1s, but it may go on alone: the network, a poll with a time limit; a program asleep is `busy`), `busy`, `settled` (quiet; nothing else known), `exited N`, `killed by SIGTERM` (`killed by signal 10` for a signal with no name), or `empty` |
 | `paused` | a program a restore brought back, waiting for `respawn` |
 | `exited` | the status its program exited with (a pane `run` started), else `null` |
 | `signal` | the signal that killed it (its number), else `null` |
@@ -74,25 +74,28 @@ palette numbers or `"#rrggbb"`.
 
 ## What a word made
 
-`run`, `split`, `new-tab` and `new-workspace` leave the new pane; `json` of
-a pane, tab or workspace is its id as a string, `"%4"`, and `X info json`
-all of it.
+`new-tab` and `new-workspace` leave the new pane: `json` of a pane, tab or
+workspace is its id as a string, `"%4"`, and `X info json` all of it.
+`run` and `split` leave an answer (below), which is also the new pane: a
+word that wants a pane takes it as one.
 
 ## Answers and waits
 
 `json` of an action's answer (`run`, `send-keys`, `send-mouse`, `signal`,
 a bare `wait` …): one object, or a line each for keys sent to several panes. A
-pane that settled, still busy at the limit (124), or that reads its
-terminal before the waited text came (7):
+pane that settled, still busy at the limit (124), that reads its terminal
+before the waited text came (7), or whose exit was waited for (`wait-exit`,
+its own status):
 
 ```json
 {"pane":"%3","state":"reading","status":0,"output":"$ make test\n12 tests PASS\n"}
+{"pane":"%4","state":"exited 5","status":5,"output":"bye\n"}
 ```
 
 `state` is the pane's (above), or `closed` (status 4); `output` what came
 since the input, or the screen of a full-screen program, or the screen
-for status 7; a met `wait-gone` answers so too. A wait for another
-condition answers what met it:
+for status 7; a met `wait-exit` or `wait-gone` answers so too. A wait for a
+text or a bell answers what met it:
 
 ```json
 {"pane":"%3","met":"text","text":"PASS","line":"12 tests PASS","status":0}
@@ -101,15 +104,12 @@ condition answers what met it:
 | `met` | Also |
 | --- | --- |
 | `text` | `text`, `line` |
-| `exit` | `exit` (its status) or `signal` |
 | `bell` | `notification`: its text, else `null` |
-| `exited` | `exit` or `signal`, `last_lines`: the program exited first (status 3) |
-| `respawned` | it was started again first (status 3) |
-| `closed` | the pane closed (status 4) |
-| `timeout` | `idle_ms`, `last_line` (status 124) |
 
-`status` is the exit status. A wait that fails (`exited`, `respawned`,
-`closed`, `timeout`) ends the program and says why on stderr.
+`status` is the exit status. A wait that fails (the program exited first
+or was started again, 3; the pane closed, 4; the time limit, 124) ends the
+program with that status and says why on stderr, `fux: CODE: MESSAGE`: it
+leaves no answer to print.
 
 ## `events-json`, `X events-of-json`
 

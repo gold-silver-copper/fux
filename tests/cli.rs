@@ -326,6 +326,17 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         server.ok(&["str", "%1", "pane", "str", "exited", "get"])?,
         "null\n"
     );
+    // A new tab from outside a pane is told the option that places it.
+    let nowhere = server.fux(&["opts", "str", "logs", "name", "new-tab"])?;
+    assert!(
+        nowhere.stderr.contains("`str NAME in`"),
+        "{}",
+        nowhere.stderr
+    );
+    let placed = [
+        "opts", "str", "logs", "name", "str", "agent", "in", "new-tab",
+    ];
+    assert_eq!(server.fux(&placed)?.status, 0);
     Ok(())
 }
 

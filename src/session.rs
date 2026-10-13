@@ -372,9 +372,10 @@ impl std::fmt::Display for Error {
             Error::NoPane(id) => write!(f, "no pane {id}"),
             Error::NoTabGiven => f.write_str("no tab given: name one (`str @N tab`)"),
             Error::NoTab(id) => write!(f, "no tab {id}"),
-            Error::NoWorkspaceGiven => {
-                f.write_str("no workspace given: name one (`str NAME workspace`)")
-            }
+            Error::NoWorkspaceGiven => f.write_str(
+                "no workspace given: name one (`str NAME workspace`; for new-tab, the \
+                     option `str NAME in`)",
+            ),
             Error::NoField {
                 target,
                 field,

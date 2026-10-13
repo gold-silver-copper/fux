@@ -85,7 +85,7 @@ pub const WORDS: &[Word] = &[
     word("Starting", "new-workspace", 1, "opts -- pane", "a workspace with a tab and a shell"),
     word("Starting", "respawn", 2, "pane opts -- pane", "start again in its pane the program run started"),
     // Waiting
-    word("Waiting", "wait-text", 2, "x text -- x", "wait until text shows anew (options, keys or a mouse event)"),
+    word("Waiting", "wait-text", 2, "x text -- x", "wait until text shows anew, not on the line typed (options, keys or a mouse event)"),
     word("Waiting", "wait-gone", 2, "x text -- x", "wait until text is no longer shown"),
     word("Waiting", "wait-exit", 1, "x -- x", "wait until the program exits"),
     word("Waiting", "wait-bell", 1, "x -- x", "wait until the program rings or notifies"),
@@ -97,7 +97,7 @@ pub const WORDS: &[Word] = &[
     word("Input", "key", 2, "keys name -- keys", "a key by its name: Enter, C-c, Up, F5"),
     word("Input", "paste", 2, "keys text -- keys", "text as a paste"),
     word("Input", "paste-file", 2, "keys file -- keys", "a file's text as a paste"),
-    word("Input", "times", 2, "keys n -- keys", "the input just before it, n times: str Down key 2 times"),
+    word("Input", "times", 2, "keys n -- keys", "the input just before it, n times (1 to 1000): str Down key 2 times"),
     word("Input", "send-keys", 2, "target keys -- [outcome]", "send to a pane, every pane of a tab, or a client as typed at its terminal"),
     word("Input", "mouse", 3, "action row col -- mouse", "click right middle press release wheel-up wheel-down or move, at a cell from 0"),
     word("Input", "send-mouse", 2, "pane mouse -- [outcome]", "send a mouse event"),

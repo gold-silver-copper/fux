@@ -133,9 +133,10 @@ impl Workspace {
         };
         let viewed = self.viewers.contains(&client);
         for t in &mut self.tabs {
+            if viewed && t.id != tab {
+                t.hidden(client);
+            }
             if let Some(seat) = t.seats.get_mut(&client) {
-                // The tab it leaves goes back to its own fit.
-                t.changed |= viewed && seat.shown && t.id != tab;
                 seat.shown = t.id == tab;
             }
             if let Some(pane) = pane.filter(|_| t.id == tab) {
@@ -194,19 +195,20 @@ impl Workspace {
         }
     }
 
-    /// `client` no longer looks here: the tab it showed is laid out again
-    /// on its own fit (its `size`), not left at the client's.
+    /// `client` no longer looks here.
     pub(crate) fn hide(&mut self, client: ClientId) {
-        let viewed = self.viewers.remove(&client);
-        for tab in &mut self.tabs {
-            tab.changed |= viewed && tab.shown_to(client);
+        if self.viewers.remove(&client) {
+            self.tabs.iter_mut().for_each(|t| t.hidden(client));
         }
     }
 
     /// A client detaches: nothing here names it.
     pub(crate) fn forget(&mut self, client: ClientId) {
-        self.hide(client);
+        let viewed = self.viewers.remove(&client);
         for tab in &mut self.tabs {
+            // A tab the client showed is laid out again on its own fit (its
+            // `--size`), not left at the client's.
+            tab.changed |= viewed && tab.shown_to(client);
             tab.seats.remove(&client);
             tab.typist = tab.typist.filter(|t| *t != client);
         }
@@ -261,6 +263,14 @@ impl Tab {
 
     pub(crate) fn seat_mut(&mut self, client: ClientId) -> Option<&mut Seat> {
         self.seats.get_mut(&client)
+    }
+
+    /// `client`, which looked at its workspace, no longer sees it: with a
+    /// size of its own, it is laid out on that again, not left at the
+    /// client's (laid out on clients' screens, it keeps what it has: a
+    /// zoomed pane, its whole screen).
+    fn hidden(&mut self, client: ClientId) {
+        self.changed |= self.shown_to(client) && matches!(self.fit, Fit::Fixed(_));
     }
 
     /// Whether `client` is shown this tab in its workspace.

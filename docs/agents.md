@@ -27,7 +27,8 @@ fux str agent workspace kill                            # at the end: everything
 
 The answer's first line is the pane and its **state**; the lines after it
 are what the program wrote since you acted (your echo too), or the whole
-screen of a full-screen program (an editor, a menu, a form):
+screen of a full-screen program (an editor, a menu, a form); one that
+redraws in place on the main screen answers from the top row it changed:
 
 ```
 %2 reading                     it waits for you: blocked reading its terminal, every key read
@@ -52,15 +53,17 @@ screen of a full-screen program (an editor, a menu, a form):
 - **Keys:** names are tmux's (`Enter`, `Escape`, `Tab`, `Up`, `PageDown`,
   `BSpace`, `F5`, `C-c` Ctrl, `M-s` Alt, `S-Tab` Shift; a typo is refused).
   Inside `keys … send-keys`: `str T text`, `str NAME key`, `str T paste` (one
-  bracketed paste), `str FILE paste-file`; `N times` repeats only the input
-  just before it: `str Down key 2 times str Enter key` is Down Down Enter.
+  bracketed paste), `str FILE paste-file`; `N times` (1 to 1000) repeats only
+  the input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
 - **Waiting for a text:** `str T wait-text` (case ignored, blanks as one,
   from a word's start: `READY` is not in `NOT_READY`; `^T` a line's start,
   `T$` its end), `str T wait-gone`, `wait-exit`, `wait-bell`; several:
-  whichever first. Met, it answers the first new line that holds a text
-  (`run`: the pane, then that line); `wait-gone`, the pane's state. A wait counts what came since your last input
-  to the pane (or since the program started), scrolled away too: it never
-  starts too late. **Status 7:** the program reads its terminal and the text has not
+  whichever first. Met, it answers the first new line that holds the text
+  (`run`: the pane, then that line; `wait-gone`, the pane's state), never the line holding what you typed
+  (with the keys, or for a later wait your last input). A wait counts what
+  came since your last input to the pane (or since the program started),
+  scrolled away too: it never starts too late; but a later wait does not
+  see a line overwritten in place before it began. **Status 7:** the program reads its terminal and the text has not
   come: it cannot before you type; the answer is the screen. Status 3: the
   program exited first. `wait-exit` answers `%2 exited 0` and what came,
   with the program's status.
@@ -80,8 +83,10 @@ screen of a full-screen program (an editor, a menu, a form):
 0 done (settled, or the wait met); 1 failed, `fux: CODE: MESSAGE` on stderr,
 one line, with how the word is used; 3 the program exited before the wait;
 4 the pane closed; 7 the program reads its terminal and the text has not
-come; 124 still busy at the time limit. Words before a failing one have
-already acted. `fux ls` (`ls json`, with titles and states) lists everything.
+come; 124 still busy at the time limit. A wait for the exit (`wait-exit`)
+answers with the program's own status instead, which may be any of these:
+its state line (`exited 3`) tells them apart. Words before a failing one
+have already acted. `fux ls` (`ls json`, with titles and states) lists everything.
 
 ## A program
 
@@ -106,7 +111,8 @@ split-on trim upper number join contains starts-with`), lists (`range sort
 reverse sum count first last`), and `dup swap over rot not mod min max …`;
 `fux help` lists every word, `fux help WORD` explains one. A mistake every
 run would make (a word given too few values, a string given to `add` or
-`if`) fails before any word acts.
+`if`) fails before any word acts; of fux's own words only the count of
+values is checked so, their kinds as they run.
 
 ## Shells
 
